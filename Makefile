@@ -99,7 +99,7 @@ setup:
 	go install github.com/a-h/templ/cmd/templ@latest
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 	go install github.com/pressly/goose/v3/cmd/goose@latest
-	curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$$(go env GOPATH)/bin" v2.1.6
+	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
 	@if [ -f package.json ]; then npm install; fi
 
 clean:
