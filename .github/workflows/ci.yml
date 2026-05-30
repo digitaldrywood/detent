@@ -87,5 +87,8 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install sqlc
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
+
       - name: Build
         run: make build
