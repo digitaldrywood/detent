@@ -1,0 +1,166 @@
+package telemetry_test
+
+import (
+	"encoding/json"
+	"testing"
+	"time"
+
+	"github.com/digitaldrywood/symphony-go/internal/telemetry"
+)
+
+func TestSnapshotJSONShape(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 5, 30, 22, 15, 0, 0, time.UTC)
+	startedAt := generatedAt.Add(-5 * time.Minute)
+	completedAt := generatedAt.Add(-time.Minute)
+	perDay := 50.0
+	perIssue := 5.0
+
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: generatedAt,
+		Counts: telemetry.Counts{
+			Running:   1,
+			Queue:     2,
+			Blocked:   3,
+			Completed: 4,
+		},
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-1",
+					Identifier: "DD-1",
+					State:      "In Progress",
+					Title:      "Port hub",
+					URL:        "https://example.com/issues/1",
+				},
+				SessionID:      "thread-1",
+				TurnCount:      2,
+				StartedAt:      startedAt,
+				RuntimeSeconds: 300,
+				Tokens: telemetry.Tokens{
+					Input:  10,
+					Output: 20,
+					Total:  30,
+				},
+			},
+		},
+		Queue: []telemetry.Queued{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-2",
+					Identifier: "DD-2",
+				},
+				Attempt: 2,
+				Error:   "no available orchestrator slots",
+			},
+		},
+		Blocked: []telemetry.Blocked{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-3",
+					Identifier: "DD-3",
+					State:      "Blocked",
+				},
+				Error: "dependency #2 is not merged",
+			},
+		},
+		Completed: []telemetry.Completed{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-4",
+					Identifier: "DD-4",
+				},
+				StartedAt:      startedAt,
+				CompletedAt:    completedAt,
+				Turns:          3,
+				RuntimeSeconds: 240,
+				FinalState:     "Done",
+				Model:          "gpt-5",
+				Tokens: telemetry.Tokens{
+					Input:  100,
+					Output: 200,
+					Total:  300,
+				},
+			},
+		},
+		Budget: telemetry.Budget{
+			Enabled:          true,
+			PerDayMaxUSD:     &perDay,
+			PerIssueMaxUSD:   &perIssue,
+			CurrentSpendUSD:  12.5,
+			ProjectedCostUSD: 0.75,
+		},
+		RateLimits: &telemetry.RateLimits{
+			LimitID: "codex-primary",
+			Primary: &telemetry.RateLimitBucket{
+				Remaining:      90,
+				Limit:          100,
+				ResetInSeconds: 60,
+			},
+		},
+		Tokens: telemetry.Tokens{
+			Input:          110,
+			Output:         220,
+			Total:          330,
+			RuntimeSeconds: 540,
+		},
+	}
+
+	data, err := json.Marshal(snapshot)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	for _, key := range []string{
+		"generated_at",
+		"counts",
+		"running",
+		"queue",
+		"blocked",
+		"completed",
+		"budget",
+		"rate_limits",
+		"tokens",
+	} {
+		if _, ok := got[key]; !ok {
+			t.Fatalf("snapshot JSON missing %q: %s", key, string(data))
+		}
+	}
+
+	counts := got["counts"].(map[string]any)
+	if counts["running"] != float64(1) || counts["queue"] != float64(2) || counts["blocked"] != float64(3) || counts["completed"] != float64(4) {
+		t.Fatalf("counts = %#v", counts)
+	}
+
+	running := got["running"].([]any)[0].(map[string]any)
+	if running["issue_id"] != "issue-1" || running["identifier"] != "DD-1" {
+		t.Fatalf("running row = %#v", running)
+	}
+	if _, ok := running["issue"]; ok {
+		t.Fatalf("running row has nested issue: %#v", running)
+	}
+
+	budget := got["budget"].(map[string]any)
+	if budget["per_day_max_usd"] != 50.0 || budget["per_issue_max_usd"] != 5.0 {
+		t.Fatalf("budget caps = %#v", budget)
+	}
+	if budget["projected_cost_usd"] != 0.75 {
+		t.Fatalf("budget projected cost = %#v", budget)
+	}
+
+	rateLimits := got["rate_limits"].(map[string]any)
+	if rateLimits["limit_id"] != "codex-primary" {
+		t.Fatalf("rate_limits = %#v", rateLimits)
+	}
+
+	tokens := got["tokens"].(map[string]any)
+	if tokens["input_tokens"] != float64(110) || tokens["output_tokens"] != float64(220) || tokens["total_tokens"] != float64(330) {
+		t.Fatalf("tokens = %#v", tokens)
+	}
+}
