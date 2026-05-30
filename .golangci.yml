@@ -1,0 +1,89 @@
+version: "2"
+
+run:
+  timeout: 5m
+  tests: true
+  modules-download-mode: readonly
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - errcheck
+    - gosec
+    - govet
+    - ineffassign
+    - misspell
+    - noctx
+    - sqlclosecheck
+    - staticcheck
+    - unconvert
+    - unused
+
+  settings:
+    errcheck:
+      check-blank: true
+      check-type-assertions: true
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - fmt.Print
+        - fmt.Printf
+        - fmt.Println
+        - (net/http.ResponseWriter).Write
+        - (github.com/labstack/echo/v4.Context).String
+        - (github.com/labstack/echo/v4.Context).NoContent
+        - (*encoding/json.Encoder).Encode
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (*net/http.Response.Body).Close
+        - (*database/sql.DB).Close
+        - (*database/sql.Rows).Close
+        - (*database/sql.Stmt).Close
+        - (*database/sql.Tx).Rollback
+
+    govet:
+      enable-all: true
+      disable:
+        - fieldalignment
+        - shadow
+
+    gosec:
+      severity: medium
+      confidence: medium
+      excludes:
+        - G115
+        - G304
+        - G306
+        - G301
+        - G107
+
+  exclusions:
+    generated: strict
+    rules:
+      - path: _test\.go
+        linters:
+          - gosec
+          - errcheck
+      - path: _templ\.go$
+        linters:
+          - all
+      - path: internal/database/sqlc/
+        linters:
+          - all
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+formatters:
+  enable:
+    - gofmt
+    - goimports
+  settings:
+    goimports:
+      local-prefixes:
+        - github.com/digitaldrywood/symphony-go
+  exclusions:
+    generated: strict

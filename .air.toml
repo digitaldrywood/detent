@@ -1,0 +1,54 @@
+#:schema https://json.schemastore.org/any.json
+
+root = "."
+testdata_dir = "testdata"
+tmp_dir = "tmp"
+
+[build]
+  args_bin = []
+  bin = "./tmp/symphony"
+  cmd = "go build -o ./tmp/symphony ./cmd/symphony"
+  delay = 1000
+  exclude_dir = ["tmp", "vendor", "testdata", "node_modules", "internal/database/sqlc"]
+  exclude_file = ["go.sum"]
+  exclude_regex = ["_test\\.go", "_templ\\.go$"]
+  exclude_unchanged = false
+  follow_symlink = false
+  full_bin = "SYMPHONY_ENV=development SYMPHONY_LOG_LEVEL=debug ./tmp/symphony"
+  include_dir = []
+  include_ext = ["go", "templ", "sql", "css", "js", "html", "yaml", "yml", "toml"]
+  include_file = []
+  kill_delay = "500ms"
+  log = "build-errors.log"
+  poll = false
+  poll_interval = 0
+  post_cmd = []
+  pre_cmd = ["mkdir -p tmp; lsof -ti:${PORT:-8080} | xargs kill -9 2>/dev/null || true; sleep 0.5", "go generate ./...", "go mod tidy"]
+  rerun = false
+  rerun_delay = 500
+  send_interrupt = true
+  stop_on_error = true
+
+[color]
+  app = ""
+  build = "yellow"
+  main = "magenta"
+  runner = "green"
+  watcher = "cyan"
+
+[log]
+  main_only = false
+  silent = false
+  time = false
+
+[misc]
+  clean_on_exit = false
+
+[proxy]
+  app_port = 0
+  enabled = false
+  proxy_port = 0
+
+[screen]
+  clear_on_rebuild = false
+  keep_scroll = true
