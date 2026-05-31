@@ -121,6 +121,42 @@ func TestRunNormalizesTokenModelOrder(t *testing.T) {
 	}
 }
 
+func TestRunDiffsDispatchDetailsWhenBothReportsIncludeThem(t *testing.T) {
+	t.Parallel()
+
+	input := Input{
+		Date: "2026-05-31",
+		Go: &Observation{
+			Dispatch: DispatchObservation{
+				DispatchOrder: []string{"issue-1"},
+				Dispatches: []DispatchDetail{
+					{IssueID: "issue-1", Attempt: 2, Retry: true, WorkerHost: "worker-a"},
+				},
+			},
+		},
+		Elixir: Observation{
+			Dispatch: DispatchObservation{
+				DispatchOrder: []string{"issue-1"},
+				Dispatches: []DispatchDetail{
+					{IssueID: "issue-1", Attempt: 1, Retry: true, WorkerHost: "worker-b"},
+				},
+			},
+		},
+	}
+
+	report, err := Run(input)
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !report.Diff.HasDifferences {
+		t.Fatal("HasDifferences = false, want true")
+	}
+	if !diffFieldsContain(report.Diff.Dispatch, "dispatch_details") {
+		t.Fatalf("Dispatch diffs = %#v, want dispatch_details", report.Diff.Dispatch)
+	}
+}
+
 func diffFieldsContain(diffs []DispatchDiff, field string) bool {
 	for _, diff := range diffs {
 		if diff.Field == field {

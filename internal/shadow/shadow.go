@@ -490,7 +490,34 @@ func dispatchDiffs(goDispatch DispatchObservation, elixirDispatch DispatchObserv
 			Elixir: append([]string(nil), check.exIDs...),
 		})
 	}
+	if len(goDispatch.Dispatches) > 0 && len(elixirDispatch.Dispatches) > 0 {
+		goDetails := dispatchDetailValues(goDispatch.Dispatches)
+		elixirDetails := dispatchDetailValues(elixirDispatch.Dispatches)
+		if !reflect.DeepEqual(goDetails, elixirDetails) {
+			diffs = append(diffs, DispatchDiff{
+				Field:  "dispatch_details",
+				Go:     goDetails,
+				Elixir: elixirDetails,
+			})
+		}
+	}
 	return diffs
+}
+
+func dispatchDetailValues(dispatches []DispatchDetail) []string {
+	values := make([]string, 0, len(dispatches))
+	for _, dispatch := range dispatches {
+		values = append(values, fmt.Sprintf(
+			"%s|identifier=%s|state=%s|attempt=%d|worker_host=%s|retry=%t",
+			dispatch.IssueID,
+			dispatch.Identifier,
+			dispatch.State,
+			dispatch.Attempt,
+			dispatch.WorkerHost,
+			dispatch.Retry,
+		))
+	}
+	return values
 }
 
 func tokenDiffs(goTokens TokenAccounting, elixirTokens TokenAccounting) []TokenDiff {
