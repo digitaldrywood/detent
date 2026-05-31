@@ -19,6 +19,7 @@ const (
 	defaultMaxRetryBackoff       = 5 * time.Minute
 	defaultContinuationRetry     = time.Second
 	defaultFailureRetryBaseDelay = 10 * time.Second
+	runUpdateBufferSize          = 128
 )
 
 var (
@@ -135,7 +136,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		configUpdates: make(chan configUpdateRequest),
 		refreshes:     make(chan time.Time, 1),
 		runResults:    make(chan runpkg.Completion),
-		runUpdates:    make(chan runUpdate),
+		runUpdates:    make(chan runUpdate, runUpdateBufferSize),
 		done:          make(chan struct{}),
 	}, nil
 }
@@ -486,10 +487,16 @@ func (o *Orchestrator) dispatchIssue(
 func (o *Orchestrator) usageUpdateHandler(ctx context.Context, issueID string) runpkg.UsageUpdateHandler {
 	return func(update runpkg.UsageUpdate) error {
 		select {
-		case o.runUpdates <- runUpdate{issueID: issueID, usage: update}:
-			return nil
 		case <-ctx.Done():
 			return ctx.Err()
+		default:
+		}
+
+		select {
+		case o.runUpdates <- runUpdate{issueID: issueID, usage: update}:
+			return nil
+		default:
+			return nil
 		}
 	}
 }
