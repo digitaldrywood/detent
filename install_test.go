@@ -3,11 +3,16 @@
 package symphony_test
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
+	"crypto/sha256"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -71,6 +76,215 @@ func TestInstallScriptInstallsBinaryAndRefusesExistingLock(t *testing.T) {
 	}
 }
 
+func TestInstallScriptDetectsSupportedTargets(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	tmp := t.TempDir()
+	source := filepath.Join(tmp, "source-symphony")
+	if err := os.WriteFile(source, []byte("#!/usr/bin/env sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		unameS string
+		unameM string
+		want   string
+	}{
+		{name: "darwin arm64", unameS: "Darwin", unameM: "arm64", want: "Detected target darwin/arm64"},
+		{name: "linux amd64", unameS: "Linux", unameM: "x86_64", want: "Detected target linux/amd64"},
+		{name: "linux arm64", unameS: "Linux", unameM: "aarch64", want: "Detected target linux/arm64"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			caseDir := filepath.Join(tmp, strings.ReplaceAll(tt.name, " ", "-"))
+			installDir := filepath.Join(caseDir, "bin")
+			stateDir := filepath.Join(caseDir, "state")
+			env := append(os.Environ(),
+				"HOME="+caseDir,
+				"SYMPHONY_INSTALL_SOURCE="+source,
+				"SYMPHONY_INSTALL_DIR="+installDir,
+				"SYMPHONY_STATE_DIR="+stateDir,
+				"SYMPHONY_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
+				"SYMPHONY_INSTALL_TEST_UNAME_S="+tt.unameS,
+				"SYMPHONY_INSTALL_TEST_UNAME_M="+tt.unameM,
+			)
+
+			result := runInstall(t, root, env)
+			if result.err != nil {
+				t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", result.err, result.stdout, result.stderr)
+			}
+			if !strings.Contains(result.stdout, tt.want) {
+				t.Fatalf("install stdout = %q, want %q", result.stdout, tt.want)
+			}
+		})
+	}
+}
+
+func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	archiveName := "symphony_1.2.3_linux_amd64.tar.gz"
+	archive := symphonyArchive(t, "#!/usr/bin/env sh\nprintf 'release-ok\\n'\n")
+	server := newInstallReleaseServer("v1.2.3", archiveName, archive, archiveChecksum(archive))
+	defer server.Close()
+
+	tmp := t.TempDir()
+	installDir := filepath.Join(tmp, "bin")
+	stateDir := filepath.Join(tmp, "state")
+	env := append(os.Environ(),
+		"HOME="+tmp,
+		"SYMPHONY_GITHUB_API_BASE="+server.URL,
+		"SYMPHONY_RELEASE_DOWNLOAD_BASE="+server.URL,
+		"SYMPHONY_INSTALL_DIR="+installDir,
+		"SYMPHONY_STATE_DIR="+stateDir,
+		"SYMPHONY_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
+		"SYMPHONY_INSTALL_TEST_UNAME_S=Linux",
+		"SYMPHONY_INSTALL_TEST_UNAME_M=x86_64",
+	)
+
+	result := runInstall(t, root, env)
+	if result.err != nil {
+		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", result.err, result.stdout, result.stderr)
+	}
+
+	binary := filepath.Join(installDir, "symphony")
+	if _, err := os.Stat(binary); err != nil {
+		t.Fatalf("installed binary stat error = %v", err)
+	}
+	stdout, stderr, err := runSymphonyCommandOutput(t, binary, root, env)
+	if err != nil {
+		t.Fatalf("installed release binary error = %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	if stdout != "release-ok\n" {
+		t.Fatalf("installed release binary stdout = %q, want release-ok", stdout)
+	}
+}
+
+func TestInstallScriptAbortsOnChecksumMismatch(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	archiveName := "symphony_1.2.3_linux_amd64.tar.gz"
+	archive := symphonyArchive(t, "#!/usr/bin/env sh\nexit 0\n")
+	server := newInstallReleaseServer("v1.2.3", archiveName, archive, strings.Repeat("0", 64))
+	defer server.Close()
+
+	tmp := t.TempDir()
+	installDir := filepath.Join(tmp, "bin")
+	stateDir := filepath.Join(tmp, "state")
+	env := append(os.Environ(),
+		"HOME="+tmp,
+		"SYMPHONY_GITHUB_API_BASE="+server.URL,
+		"SYMPHONY_RELEASE_DOWNLOAD_BASE="+server.URL,
+		"SYMPHONY_INSTALL_DIR="+installDir,
+		"SYMPHONY_STATE_DIR="+stateDir,
+		"SYMPHONY_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
+		"SYMPHONY_INSTALL_TEST_UNAME_S=Linux",
+		"SYMPHONY_INSTALL_TEST_UNAME_M=x86_64",
+	)
+
+	result := runInstall(t, root, env)
+	if result.err == nil {
+		t.Fatal("install error = nil, want checksum failure")
+	}
+	if !strings.Contains(result.stderr, "Checksum mismatch for "+archiveName) {
+		t.Fatalf("install stderr = %q, want checksum mismatch for %s", result.stderr, archiveName)
+	}
+	if _, err := os.Stat(filepath.Join(installDir, "symphony")); !os.IsNotExist(err) {
+		t.Fatalf("installed binary stat error = %v, want not exist", err)
+	}
+}
+
+func TestInstallScriptFallsBackToGoInstallWhenReleaseAssetMissing(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/releases/latest" {
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"tag_name":"v1.2.3"}`)
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	tmp := t.TempDir()
+	fakeBin := filepath.Join(tmp, "fakebin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(fakebin) error = %v", err)
+	}
+	fakeGo := filepath.Join(fakeBin, "go")
+	fakeGoScript := `#!/usr/bin/env sh
+if [ "$1" = install ]; then
+mkdir -p "$GOBIN"
+cat > "$GOBIN/symphony" <<'EOF'
+#!/usr/bin/env sh
+printf 'go-install-ok\n'
+EOF
+chmod 755 "$GOBIN/symphony"
+exit 0
+fi
+exit 1
+`
+	if err := os.WriteFile(fakeGo, []byte(fakeGoScript), 0o755); err != nil {
+		t.Fatalf("WriteFile(fake go) error = %v", err)
+	}
+
+	installDir := filepath.Join(tmp, "bin")
+	stateDir := filepath.Join(tmp, "state")
+	env := append(os.Environ(),
+		"HOME="+tmp,
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"SYMPHONY_GITHUB_API_BASE="+server.URL,
+		"SYMPHONY_RELEASE_DOWNLOAD_BASE="+server.URL,
+		"SYMPHONY_INSTALL_DIR="+installDir,
+		"SYMPHONY_STATE_DIR="+stateDir,
+		"SYMPHONY_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
+		"SYMPHONY_INSTALL_TEST_UNAME_S=Linux",
+		"SYMPHONY_INSTALL_TEST_UNAME_M=x86_64",
+	)
+
+	result := runInstall(t, root, env)
+	if result.err != nil {
+		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", result.err, result.stdout, result.stderr)
+	}
+	if !strings.Contains(result.stderr, "No Symphony release asset found") {
+		t.Fatalf("install stderr = %q, want release asset fallback", result.stderr)
+	}
+
+	binary := filepath.Join(installDir, "symphony")
+	stdout, stderr, err := runSymphonyCommandOutput(t, binary, root, env)
+	if err != nil {
+		t.Fatalf("installed fallback binary error = %v\nstdout:\n%s\nstderr:\n%s", err, stdout, stderr)
+	}
+	if stdout != "go-install-ok\n" {
+		t.Fatalf("installed fallback binary stdout = %q, want go-install-ok", stdout)
+	}
+}
+
 func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	root, err := os.Getwd()
 	if err != nil {
@@ -82,6 +296,7 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	stateDir := filepath.Join(tmp, "state")
 	env := append(os.Environ(),
 		"SYMPHONY_INSTALL_DIR="+installDir,
+		"SYMPHONY_INSTALL_MODE=local",
 		"SYMPHONY_STATE_DIR="+stateDir,
 		"SYMPHONY_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
 	)
@@ -122,6 +337,58 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	runInstalledSubcommands(t, binary, tmp, serverEnv)
 }
 
+func symphonyArchive(t *testing.T, content string) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	header := &tar.Header{
+		Name: "symphony",
+		Mode: 0o755,
+		Size: int64(len(content)),
+	}
+	if err := tw.WriteHeader(header); err != nil {
+		t.Fatalf("WriteHeader() error = %v", err)
+	}
+	if _, err := tw.Write([]byte(content)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatalf("tar Close() error = %v", err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatalf("gzip Close() error = %v", err)
+	}
+	return buf.Bytes()
+}
+
+func archiveChecksum(content []byte) string {
+	sum := sha256.Sum256(content)
+	return fmt.Sprintf("%x", sum)
+}
+
+func newInstallReleaseServer(tag string, archiveName string, archive []byte, checksum string) *httptest.Server {
+	version := strings.TrimPrefix(tag, "v")
+	checksumName := "symphony_" + version + "_checksums.txt"
+
+	return httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/latest":
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprintf(w, `{"tag_name":%q}`, tag)
+		case "/" + tag + "/" + archiveName:
+			w.Header().Set("Content-Type", "application/gzip")
+			_, _ = w.Write(archive)
+		case "/" + tag + "/" + checksumName:
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprintf(w, "%s  %s\n", checksum, archiveName)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+}
+
 type installRun struct {
 	stdout string
 	stderr string
@@ -140,7 +407,7 @@ func runInstallWithTimeout(t *testing.T, root string, env []string, timeout time
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	cmd := exec.CommandContext(ctx, "bash", "install.sh")
+	cmd := exec.CommandContext(ctx, "sh", "install.sh")
 	cmd.Dir = root
 	cmd.Env = env
 
