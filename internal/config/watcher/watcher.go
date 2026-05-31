@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"time"
 
@@ -134,6 +135,7 @@ func (w *Watcher) run(ctx context.Context, fsWatcher *fsnotify.Watcher, updates 
 		<-timer.C
 	}
 	var timerC <-chan time.Time
+	var lastUpdate *Update
 
 	for {
 		select {
@@ -154,7 +156,13 @@ func (w *Watcher) run(ctx context.Context, fsWatcher *fsnotify.Watcher, updates 
 			w.send(ctx, updates, Update{Path: w.path, Err: err, At: time.Now()})
 		case <-timerC:
 			timerC = nil
-			w.reload(ctx, updates)
+			update := w.reload(ctx)
+			if sameUpdate(update, lastUpdate) {
+				continue
+			}
+			w.send(ctx, updates, update)
+			last := update
+			lastUpdate = &last
 		}
 	}
 }
@@ -166,7 +174,7 @@ func (w *Watcher) matches(event fsnotify.Event) bool {
 	return filepath.Clean(event.Name) == w.path
 }
 
-func (w *Watcher) reload(ctx context.Context, updates chan<- Update) {
+func (w *Watcher) reload(ctx context.Context) Update {
 	update := Update{
 		Path: w.path,
 		At:   time.Now(),
@@ -179,7 +187,7 @@ func (w *Watcher) reload(ctx context.Context, updates chan<- Update) {
 		update.Workflow = workflow
 	}
 
-	w.send(ctx, updates, update)
+	return update
 }
 
 func (w *Watcher) load(ctx context.Context) (workflowconfig.Workflow, error) {
@@ -230,6 +238,19 @@ func (w *Watcher) send(ctx context.Context, updates chan<- Update, update Update
 	case updates <- update:
 	case <-ctx.Done():
 	}
+}
+
+func sameUpdate(update Update, last *Update) bool {
+	if last == nil || update.Path != last.Path {
+		return false
+	}
+	if (update.Err == nil) != (last.Err == nil) {
+		return false
+	}
+	if update.Err != nil {
+		return update.Err.Error() == last.Err.Error()
+	}
+	return reflect.DeepEqual(update.Workflow, last.Workflow)
 }
 
 func resetTimer(timer *time.Timer, debounce time.Duration) {

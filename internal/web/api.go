@@ -118,12 +118,20 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time) stateAPIR
 		Retrying:       retryEntries(snapshot.Queue),
 		Blocked:        blockedEntries(snapshot.Blocked),
 		Stats:          statsAPIResponse{Status: "enabled"},
+		Board:          boardResponse(snapshot),
 		CodexTotals:    totalsResponse(snapshot.Tokens),
 		Throughput:     throughputResponse(snapshot.Throughput),
 		LifetimeTotals: lifetimeTotalsResponseFromTelemetry(snapshot.LifetimeTotals),
 		RecentSessions: recentSessionEntries(snapshot.Completed),
 		RateLimits:     snapshot.RateLimits,
 		Budget:         budgetResponse(snapshot.Budget),
+	}
+}
+
+func boardResponse(snapshot telemetry.Snapshot) boardAPIResponse {
+	return boardAPIResponse{
+		StateDistribution: telemetry.BoardStateCounts(snapshot),
+		Flow:              telemetry.BoardProgressPoints(snapshot),
 	}
 }
 
@@ -696,12 +704,18 @@ type stateAPIResponse struct {
 	Retrying       []retryAPIResponse         `json:"retrying"`
 	Blocked        []blockedAPIResponse       `json:"blocked"`
 	Stats          statsAPIResponse           `json:"stats"`
+	Board          boardAPIResponse           `json:"board"`
 	CodexTotals    tokenTotalsAPIResponse     `json:"codex_totals"`
 	Throughput     throughputAPIResponse      `json:"throughput"`
 	LifetimeTotals lifetimeTotalsResponse     `json:"lifetime_totals"`
 	RecentSessions []recentSessionAPIResponse `json:"recent_sessions"`
 	RateLimits     *telemetry.RateLimits      `json:"rate_limits"`
 	Budget         budgetAPIResponse          `json:"budget"`
+}
+
+type boardAPIResponse struct {
+	StateDistribution []telemetry.BoardStateCount    `json:"state_distribution"`
+	Flow              []telemetry.BoardProgressPoint `json:"flow"`
 }
 
 type countsAPIResponse struct {

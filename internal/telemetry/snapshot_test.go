@@ -269,3 +269,145 @@ func TestSnapshotJSONShape(t *testing.T) {
 func timePointer(value time.Time) *time.Time {
 	return &value
 }
+
+func TestBoardStateCountsAggregateSnapshotStates(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{ID: "running", State: "In Progress"}},
+			{Issue: telemetry.Issue{ID: "merging", State: "Merging"}},
+		},
+		Queue: []telemetry.Queued{
+			{Issue: telemetry.Issue{ID: "todo", State: "Todo"}},
+			{Issue: telemetry.Issue{ID: "rework", State: "Rework"}},
+		},
+		Blocked: []telemetry.Blocked{
+			{Issue: telemetry.Issue{ID: "blocked", State: "Blocked"}},
+		},
+		Completed: []telemetry.Completed{
+			{Issue: telemetry.Issue{ID: "review"}, FinalState: "Human Review"},
+			{Issue: telemetry.Issue{ID: "done"}, FinalState: "Done"},
+			{Issue: telemetry.Issue{ID: "cancelled"}, FinalState: "Cancelled"},
+		},
+	}
+
+	got := telemetry.BoardStateCounts(snapshot)
+	want := []telemetry.BoardStateCount{
+		{State: "Todo", Count: 1},
+		{State: "In Progress", Count: 1},
+		{State: "Review", Count: 1},
+		{State: "Merging", Count: 1},
+		{State: "Done", Count: 2},
+		{State: "Rework", Count: 1},
+		{State: "Blocked", Count: 1},
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("BoardStateCounts() len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("BoardStateCounts()[%d] = %#v, want %#v; got %#v", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestBoardStateCountsIncludeAggregateDetailDelta(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{
+		Counts: telemetry.Counts{
+			Running:   3,
+			Queue:     2,
+			Blocked:   2,
+			Completed: 3,
+		},
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{ID: "merging", State: "Merging"}},
+		},
+		Queue: []telemetry.Queued{
+			{Issue: telemetry.Issue{ID: "todo", State: "Todo"}},
+		},
+		Blocked: []telemetry.Blocked{
+			{Issue: telemetry.Issue{ID: "blocked", State: "Blocked"}},
+		},
+		Completed: []telemetry.Completed{
+			{Issue: telemetry.Issue{ID: "review"}, FinalState: "Human Review"},
+		},
+	}
+
+	got := telemetry.BoardStateCounts(snapshot)
+	want := []telemetry.BoardStateCount{
+		{State: "Todo", Count: 2},
+		{State: "In Progress", Count: 2},
+		{State: "Review", Count: 1},
+		{State: "Merging", Count: 1},
+		{State: "Done", Count: 2},
+		{State: "Blocked", Count: 2},
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("BoardStateCounts() len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("BoardStateCounts()[%d] = %#v, want %#v; got %#v", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestBoardProgressPointsSortCompletedSessions(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	snapshot := telemetry.Snapshot{
+		Completed: []telemetry.Completed{
+			{Issue: telemetry.Issue{ID: "later"}, CompletedAt: base.Add(2 * time.Minute), FinalState: "Done"},
+			{Issue: telemetry.Issue{ID: "earlier"}, CompletedAt: base, FinalState: "Human Review"},
+		},
+	}
+
+	got := telemetry.BoardProgressPoints(snapshot)
+	want := []telemetry.BoardProgressPoint{
+		{At: base, Label: "15:00", Count: 1},
+		{At: base.Add(2 * time.Minute), Label: "15:02", Count: 2},
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("BoardProgressPoints() len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if !got[i].At.Equal(want[i].At) || got[i].Label != want[i].Label || got[i].Count != want[i].Count {
+			t.Fatalf("BoardProgressPoints()[%d] = %#v, want %#v; got %#v", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestBoardProgressPointsOffsetAggregateCompletedCount(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	snapshot := telemetry.Snapshot{
+		Counts: telemetry.Counts{Completed: 5},
+		Completed: []telemetry.Completed{
+			{Issue: telemetry.Issue{ID: "first"}, CompletedAt: base},
+			{Issue: telemetry.Issue{ID: "second"}, CompletedAt: base.Add(time.Minute)},
+		},
+	}
+
+	got := telemetry.BoardProgressPoints(snapshot)
+	want := []telemetry.BoardProgressPoint{
+		{At: base, Label: "15:00", Count: 4},
+		{At: base.Add(time.Minute), Label: "15:01", Count: 5},
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("BoardProgressPoints() len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if !got[i].At.Equal(want[i].At) || got[i].Label != want[i].Label || got[i].Count != want[i].Count {
+			t.Fatalf("BoardProgressPoints()[%d] = %#v, want %#v; got %#v", i, got[i], want[i], got)
+		}
+	}
+}
