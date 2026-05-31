@@ -284,6 +284,116 @@ func TestDispatchableChecksSlots(t *testing.T) {
 	}
 }
 
+func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 3,
+		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:      []string{"Done"},
+	})
+	orch := Orchestrator{cfg: cfg}
+
+	tests := []struct {
+		name  string
+		issue connector.Issue
+		want  bool
+	}{
+		{
+			name:  "todo without pull request dispatches",
+			issue: dispatchTestIssue("issue-no-pr", "Todo"),
+			want:  true,
+		},
+		{
+			name:  "todo with open pull request skips",
+			issue: dispatchTestIssueWithPullRequest("issue-todo-open-pr", "Todo", "OPEN"),
+			want:  false,
+		},
+		{
+			name:  "in progress with open pull request skips",
+			issue: dispatchTestIssueWithPullRequest("issue-progress-open-pr", "In Progress", "OPEN"),
+			want:  false,
+		},
+		{
+			name:  "rework with open pull request dispatches",
+			issue: dispatchTestIssueWithPullRequest("issue-rework-open-pr", "Rework", "OPEN"),
+			want:  true,
+		},
+		{
+			name:  "merging with open pull request dispatches",
+			issue: dispatchTestIssueWithPullRequest("issue-merging-open-pr", "Merging", "OPEN"),
+			want:  true,
+		},
+		{
+			name:  "todo with merged pull request skips",
+			issue: dispatchTestIssueWithPullRequest("issue-todo-merged-pr", "Todo", "MERGED"),
+			want:  false,
+		},
+		{
+			name:  "rework with merged pull request skips",
+			issue: dispatchTestIssueWithPullRequest("issue-rework-merged-pr", "Rework", "MERGED"),
+			want:  false,
+		},
+		{
+			name:  "todo with closed unmerged pull request dispatches",
+			issue: dispatchTestIssueWithPullRequest("issue-todo-closed-pr", "Todo", "CLOSED"),
+			want:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newState(cfg)
+			got := orch.dispatchable(tt.issue, &state, now)
+			if got != tt.want {
+				t.Fatalf("dispatchable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDispatchCandidatesClaimsDuplicateIssueWithinCycle(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+	})
+	runner := newWorkerHostRunner()
+	orch := Orchestrator{
+		cfg:        cfg,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion),
+	}
+	state := newState(cfg)
+	now := time.Now()
+	candidate := dispatchTestIssue("issue-duplicate", "Todo")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orch.dispatchCandidates(ctx, &state, []connector.Issue{candidate, candidate}, now)
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != candidate.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, candidate.ID)
+	}
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected duplicate dispatch = %#v", request)
+	default:
+	}
+	if len(state.Running) != 1 {
+		t.Fatalf("Running len = %d, want 1", len(state.Running))
+	}
+	if len(state.Claimed) != 1 {
+		t.Fatalf("Claimed len = %d, want 1", len(state.Claimed))
+	}
+}
+
 func TestDispatchCandidatesAssignsLeastLoadedWorkerHost(t *testing.T) {
 	t.Parallel()
 
@@ -350,6 +460,17 @@ func dispatchTestIssue(id, state string) connector.Issue {
 	issue.Identifier = "digitaldrywood/symphony#" + id
 	issue.Title = "Dispatch test issue"
 	issue.State = state
+	return issue
+}
+
+func dispatchTestIssueWithPullRequest(id, state, prState string) connector.Issue {
+	issue := dispatchTestIssue(id, state)
+	issue.PullRequest = &connector.PullRequest{
+		Number:     187,
+		URL:        "https://github.com/digitaldrywood/symphony/pull/187",
+		BranchName: "symphony/digitaldrywood_symphony_187",
+		State:      prState,
+	}
 	return issue
 }
 

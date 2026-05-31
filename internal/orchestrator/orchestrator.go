@@ -474,6 +474,9 @@ func (o *Orchestrator) dispatchableIssue(
 	if !stateIn(issue.State, o.cfg.ActiveStates) || stateIn(issue.State, o.cfg.TerminalStates) {
 		return false
 	}
+	if duplicatePullRequestWork(issue) {
+		return false
+	}
 	if todoBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
 		return false
 	}
@@ -830,6 +833,24 @@ func validCandidate(issue connector.Issue) bool {
 		issue.Title != "" &&
 		issue.State != "" &&
 		issue.AssignedToWorker
+}
+
+func duplicatePullRequestWork(issue connector.Issue) bool {
+	if issue.PullRequest == nil {
+		return false
+	}
+	switch normalizePullRequestState(issue.PullRequest.State) {
+	case "merged":
+		return true
+	case "open":
+		return normalizeState(issue.State) == "todo" || normalizeState(issue.State) == "in progress"
+	default:
+		return false
+	}
+}
+
+func normalizePullRequestState(state string) string {
+	return strings.ToLower(strings.TrimSpace(state))
 }
 
 func todoBlockedByNonTerminal(issue connector.Issue, terminalStates []string) bool {

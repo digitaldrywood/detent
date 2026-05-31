@@ -108,6 +108,24 @@ func TestBuildPromptUsesDefaultPromptDescriptionFallback(t *testing.T) {
 	}
 }
 
+func TestBuildPromptAppendsGitHubClosingReferenceInstruction(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Prompt: "Base prompt",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/symphony#193",
+		Title:      "Dedupe dispatch",
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	if !strings.Contains(prompt, "Fixes #193") {
+		t.Fatalf("prompt missing closing reference instruction:\n%s", prompt)
+	}
+}
+
 func TestBuildPromptRejectsUnknownTemplateVariables(t *testing.T) {
 	t.Parallel()
 

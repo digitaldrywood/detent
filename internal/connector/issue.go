@@ -16,6 +16,7 @@ type Issue struct {
 	BranchName       string       `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	URL              string       `json:"url,omitempty" yaml:"url,omitempty"`
 	PRNumber         *int         `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
+	PullRequest      *PullRequest `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
 	AssigneeID       string       `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
 	BlockedBy        []BlockedRef `json:"blocked_by" yaml:"blocked_by"`
 	BlockerReason    string       `json:"blocker_reason,omitempty" yaml:"blocker_reason,omitempty"`
@@ -29,6 +30,13 @@ type Issue struct {
 type BlockedRef struct {
 	ID         string `json:"id,omitempty" yaml:"id,omitempty"`
 	Identifier string `json:"identifier" yaml:"identifier"`
+	State      string `json:"state,omitempty" yaml:"state,omitempty"`
+}
+
+type PullRequest struct {
+	Number     int    `json:"number,omitempty" yaml:"number,omitempty"`
+	URL        string `json:"url,omitempty" yaml:"url,omitempty"`
+	BranchName string `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	State      string `json:"state,omitempty" yaml:"state,omitempty"`
 }
 

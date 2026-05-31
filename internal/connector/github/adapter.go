@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -13,8 +14,10 @@ import (
 )
 
 const (
-	projectItemsPageSize = 50
-	projectItemsPerIssue = 100
+	projectItemsPageSize  = 50
+	projectItemsPerIssue  = 100
+	pullRequestsPageSize  = 100
+	pullRequestsPageLimit = 3
 )
 
 const projectItemsQuery = `
@@ -100,6 +103,21 @@ query SymphonyGitHubIssueComments($issueIds: [ID!]!) {
   }
 }`
 
+const pullRequestsQuery = `
+query SymphonyGitHubPullRequests($owner: String!, $name: String!, $states: [PullRequestState!]!, $first: Int!, $after: String) {
+  repository(owner: $owner, name: $name) {
+    pullRequests(first: $first, after: $after, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
+      pageInfo { hasNextPage endCursor }
+      nodes {
+        number
+        url
+        state
+        headRefName
+      }
+    }
+  }
+}`
+
 const addCommentMutation = `
 mutation SymphonyGitHubAddComment($subjectId: ID!, $body: String!) {
   addComment(input: {subjectId: $subjectId, body: $body}) {
@@ -159,6 +177,7 @@ var (
 	dependencyLinePattern = regexp.MustCompile("(?i)^\\s*(?:>\\s*)?(?:[-*+]\\s+)?(?:[*_`~]+)?\\s*(?:blocked\\s+by|depends[\\s-]+on)(?:[*_`~]+)?\\s*:\\s*(?:[*_`~]+)?\\s*(.+)\\s*$")
 	issueRefPattern       = regexp.MustCompile(`(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(\d+)`)
 	numberedListPattern   = regexp.MustCompile(`^\d+[.)]\s+`)
+	branchKeyPattern      = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 )
 
 type pageInfo struct {
@@ -218,6 +237,18 @@ type pullRequest struct {
 	URL    string `json:"url"`
 }
 
+type pullRequestNode struct {
+	Number      int    `json:"number"`
+	URL         string `json:"url"`
+	State       string `json:"state"`
+	HeadRefName string `json:"headRefName"`
+}
+
+type pullRequestsConnection struct {
+	PageInfo pageInfo          `json:"pageInfo"`
+	Nodes    []pullRequestNode `json:"nodes"`
+}
+
 type repository struct {
 	NameWithOwner string `json:"nameWithOwner"`
 }
@@ -235,9 +266,16 @@ func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue
 		return nil, ErrMissingProject
 	}
 
-	return c.fetchProjectItems(ctx, func(issue connector.Issue) bool {
+	issues, err := c.fetchProjectItems(ctx, func(issue connector.Issue) bool {
 		return stateInList(issue.State, c.activeStates)
 	})
+	if err != nil {
+		return nil, err
+	}
+	if err := c.attachPullRequests(ctx, issues); err != nil {
+		return nil, err
+	}
+	return issues, nil
 }
 
 func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string) ([]connector.Issue, error) {
@@ -366,6 +404,14 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 		return ErrMissingProject
 	}
 
+	item, err := c.resolveProjectItem(ctx, strings.TrimSpace(issueID))
+	if err != nil {
+		return err
+	}
+	if c.terminalStatusUpdateBlocked(item.StatusName, stateName) {
+		return nil
+	}
+
 	githubState := c.symphonyToGitHubState(stateName)
 	fieldID, optionID, err := c.resolveStatusOption(ctx, githubState)
 	if err != nil {
@@ -375,12 +421,7 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 		return err
 	}
 
-	itemID, err := c.resolveProjectItemID(ctx, strings.TrimSpace(issueID))
-	if err != nil {
-		return err
-	}
-
-	if err := c.updateStatusFieldValue(ctx, itemID, fieldID, optionID); err == nil {
+	if err := c.updateStatusFieldValue(ctx, item.ID, fieldID, optionID); err == nil {
 		return nil
 	}
 
@@ -389,7 +430,132 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 	if err != nil {
 		return err
 	}
-	return c.updateStatusFieldValue(ctx, itemID, fieldID, optionID)
+	return c.updateStatusFieldValue(ctx, item.ID, fieldID, optionID)
+}
+
+type issuePullRequestCandidate struct {
+	Index        int
+	BranchPrefix string
+}
+
+type pullRequestRepo struct {
+	Owner string
+	Name  string
+}
+
+func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.Issue) error {
+	byRepo := make(map[pullRequestRepo][]issuePullRequestCandidate)
+	for index, issue := range issues {
+		repo, ok := pullRequestRepoFromIdentifier(issue.Identifier)
+		if !ok {
+			continue
+		}
+		branchPrefix := symphonyIssueBranchPrefix(issue.Identifier)
+		if branchPrefix == "" {
+			continue
+		}
+		byRepo[repo] = append(byRepo[repo], issuePullRequestCandidate{
+			Index:        index,
+			BranchPrefix: branchPrefix,
+		})
+	}
+	if len(byRepo) == 0 {
+		return nil
+	}
+
+	repos := make([]pullRequestRepo, 0, len(byRepo))
+	for repo := range byRepo {
+		repos = append(repos, repo)
+	}
+	sort.Slice(repos, func(i, j int) bool {
+		left := repos[i].Owner + "/" + repos[i].Name
+		right := repos[j].Owner + "/" + repos[j].Name
+		return left < right
+	})
+
+	for _, repo := range repos {
+		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
+		if err != nil {
+			return err
+		}
+		attachMatchingPullRequests(issues, byRepo[repo], pullRequests)
+	}
+	return nil
+}
+
+func (c *Connector) fetchRepositoryPullRequests(ctx context.Context, repo pullRequestRepo) ([]pullRequestNode, error) {
+	return c.fetchRepositoryPullRequestsPage(ctx, repo, nil, 1)
+}
+
+func (c *Connector) fetchRepositoryPullRequestsPage(
+	ctx context.Context,
+	repo pullRequestRepo,
+	after *string,
+	page int,
+) ([]pullRequestNode, error) {
+	var response struct {
+		Repository *struct {
+			PullRequests pullRequestsConnection `json:"pullRequests"`
+		} `json:"repository"`
+	}
+	if err := c.client.GraphQL(ctx, pullRequestsQuery, map[string]any{
+		"owner":  repo.Owner,
+		"name":   repo.Name,
+		"states": []string{"OPEN", "MERGED"},
+		"first":  pullRequestsPageSize,
+		"after":  after,
+	}, &response); err != nil {
+		return nil, fmt.Errorf("fetch github pull requests: %w", err)
+	}
+	if response.Repository == nil {
+		return nil, ErrInvalidResponse
+	}
+
+	pullRequests := append([]pullRequestNode(nil), response.Repository.PullRequests.Nodes...)
+	if !response.Repository.PullRequests.PageInfo.HasNextPage || page >= pullRequestsPageLimit {
+		return pullRequests, nil
+	}
+	cursor := strings.TrimSpace(response.Repository.PullRequests.PageInfo.EndCursor)
+	if cursor == "" {
+		return nil, ErrInvalidResponse
+	}
+	next, err := c.fetchRepositoryPullRequestsPage(ctx, repo, &cursor, page+1)
+	if err != nil {
+		return nil, err
+	}
+	return append(pullRequests, next...), nil
+}
+
+func attachMatchingPullRequests(
+	issues []connector.Issue,
+	candidates []issuePullRequestCandidate,
+	pullRequests []pullRequestNode,
+) {
+	for _, pullRequest := range pullRequests {
+		branchName := strings.TrimSpace(pullRequest.HeadRefName)
+		if branchName == "" {
+			continue
+		}
+		for _, candidate := range candidates {
+			if issues[candidate.Index].PullRequest != nil {
+				continue
+			}
+			if !branchMatchesIssuePrefix(branchName, candidate.BranchPrefix) {
+				continue
+			}
+
+			issues[candidate.Index].PullRequest = &connector.PullRequest{
+				Number:     pullRequest.Number,
+				URL:        strings.TrimSpace(pullRequest.URL),
+				BranchName: branchName,
+				State:      strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+			}
+			if issues[candidate.Index].PRNumber == nil && pullRequest.Number > 0 {
+				number := pullRequest.Number
+				issues[candidate.Index].PRNumber = &number
+			}
+		}
+	}
 }
 
 func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
@@ -617,14 +783,16 @@ func (c *Connector) resolveStatusMetadata(ctx context.Context) (statusMetadata, 
 	return metadata, nil
 }
 
-func (c *Connector) resolveProjectItemID(ctx context.Context, issueID string) (string, error) {
-	if itemID, ok := c.projectCache.GetItemID(c.projectID, issueID); ok {
-		return itemID, nil
-	}
-	return c.fetchProjectItemIDPage(ctx, issueID, nil)
+type projectItemStatus struct {
+	ID         string
+	StatusName string
 }
 
-func (c *Connector) fetchProjectItemIDPage(ctx context.Context, issueID string, after *string) (string, error) {
+func (c *Connector) resolveProjectItem(ctx context.Context, issueID string) (projectItemStatus, error) {
+	return c.fetchProjectItemPage(ctx, issueID, nil)
+}
+
+func (c *Connector) fetchProjectItemPage(ctx context.Context, issueID string, after *string) (projectItemStatus, error) {
 	var response struct {
 		Node *struct {
 			ProjectItems projectItemsConnection `json:"projectItems"`
@@ -635,26 +803,37 @@ func (c *Connector) fetchProjectItemIDPage(ctx context.Context, issueID string, 
 		"projectItemsFirst": projectItemsPerIssue,
 		"after":             after,
 	}, &response); err != nil {
-		return "", fmt.Errorf("fetch github project item: %w", err)
+		return projectItemStatus{}, fmt.Errorf("fetch github project item: %w", err)
 	}
 	if response.Node == nil {
-		return "", ErrProjectItemNotFound
+		return projectItemStatus{}, ErrProjectItemNotFound
 	}
 
 	for _, item := range response.Node.ProjectItems.Nodes {
 		if item.Project != nil && item.Project.ID == c.projectID && strings.TrimSpace(item.ID) != "" {
 			c.projectCache.SetItemID(c.projectID, issueID, item.ID)
-			return item.ID, nil
+			return projectItemStatus{
+				ID:         item.ID,
+				StatusName: singleSelectName(item.StatusValue),
+			}, nil
 		}
 	}
 	if !response.Node.ProjectItems.PageInfo.HasNextPage {
-		return "", ErrProjectItemNotFound
+		return projectItemStatus{}, ErrProjectItemNotFound
 	}
 	cursor := strings.TrimSpace(response.Node.ProjectItems.PageInfo.EndCursor)
 	if cursor == "" {
-		return "", ErrProjectItemNotFound
+		return projectItemStatus{}, ErrProjectItemNotFound
 	}
-	return c.fetchProjectItemIDPage(ctx, issueID, &cursor)
+	return c.fetchProjectItemPage(ctx, issueID, &cursor)
+}
+
+func (c *Connector) terminalStatusUpdateBlocked(currentStatus string, targetState string) bool {
+	currentState := c.githubToSymphonyState(currentStatus)
+	if !stateInList(currentState, c.terminalStates) {
+		return false
+	}
+	return !stateInList(targetState, c.terminalStates)
 }
 
 func (c *Connector) updateStatusFieldValue(ctx context.Context, itemID string, fieldID string, optionID string) error {
@@ -758,6 +937,66 @@ func buildIdentifier(repo string, number int) string {
 		return fmt.Sprintf("#%d", number)
 	}
 	return fmt.Sprintf("%s#%d", repo, number)
+}
+
+func pullRequestRepoFromIdentifier(identifier string) (pullRequestRepo, bool) {
+	repo, _, ok := splitIssueIdentifier(identifier)
+	if !ok {
+		return pullRequestRepo{}, false
+	}
+	parts := strings.Split(repo, "/")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return pullRequestRepo{}, false
+	}
+	return pullRequestRepo{Owner: strings.TrimSpace(parts[0]), Name: strings.TrimSpace(parts[1])}, true
+}
+
+func symphonyIssueBranchPrefix(identifier string) string {
+	_, _, ok := splitIssueIdentifier(identifier)
+	if !ok {
+		return ""
+	}
+
+	key := branchKeyPattern.ReplaceAllString(strings.TrimSpace(identifier), "_")
+	key = strings.TrimSpace(key)
+	if key == "" || key == "." || key == ".." {
+		return ""
+	}
+	return "symphony/" + strings.ToLower(key)
+}
+
+func splitIssueIdentifier(identifier string) (string, int, bool) {
+	identifier = strings.TrimSpace(identifier)
+	index := strings.LastIndex(identifier, "#")
+	if index <= 0 || index == len(identifier)-1 {
+		return "", 0, false
+	}
+	number, err := strconv.Atoi(identifier[index+1:])
+	if err != nil || number <= 0 {
+		return "", 0, false
+	}
+	repo := strings.TrimSpace(identifier[:index])
+	if repo == "" {
+		return "", 0, false
+	}
+	return repo, number, true
+}
+
+func branchMatchesIssuePrefix(branchName string, prefix string) bool {
+	branchName = strings.ToLower(strings.TrimSpace(branchName))
+	prefix = strings.ToLower(strings.TrimSpace(prefix))
+	if branchName == "" || prefix == "" {
+		return false
+	}
+	if branchName == prefix {
+		return true
+	}
+	for _, suffix := range []string{"_", "-", "/"} {
+		if strings.HasPrefix(branchName, prefix+suffix) {
+			return true
+		}
+	}
+	return false
 }
 
 func firstAssigneeLogin(assignees nodeConnection[assignee]) string {

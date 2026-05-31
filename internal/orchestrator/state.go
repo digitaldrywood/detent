@@ -155,6 +155,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		prNumber := *issue.PRNumber
 		cloned.PRNumber = &prNumber
 	}
+	if issue.PullRequest != nil {
+		pullRequest := *issue.PullRequest
+		cloned.PullRequest = &pullRequest
+	}
 	if issue.CreatedAt != nil {
 		createdAt := *issue.CreatedAt
 		cloned.CreatedAt = &createdAt
