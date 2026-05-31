@@ -1,11 +1,12 @@
 version: 2
-
 project_name: symphony
+dist: tmp/goreleaser
 
 before:
   hooks:
-    - go mod tidy
-    - go generate ./...
+    - go mod download
+    - go install github.com/sqlc-dev/sqlc/cmd/sqlc@v1.30.0
+    - make generate
     - go test ./...
 
 builds:
@@ -14,6 +15,10 @@ builds:
     binary: symphony
     env:
       - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w -X main.version={{ .Version }} -X main.commit={{ .ShortCommit }} -X main.date={{ .Date }}
     goos:
       - darwin
       - linux
@@ -21,8 +26,6 @@ builds:
     goarch:
       - amd64
       - arm64
-    ldflags:
-      - -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
 
 archives:
   - id: symphony
@@ -34,9 +37,14 @@ archives:
       - goos: windows
         formats:
           - zip
+    name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}"
     files:
       - README.md
       - LICENSE
 
 checksum:
-  name_template: checksums.txt
+  name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot"

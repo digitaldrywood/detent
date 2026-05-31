@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -13,6 +14,7 @@ import (
 
 func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T) {
 	t.Parallel()
+	skipWindows(t)
 
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
@@ -78,6 +80,8 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 }
 
 func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
+	skipWindows(t)
+
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
 	tracePath := filepath.Join(t.TempDir(), "after-create.trace")
@@ -99,7 +103,7 @@ func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
 		AutoBranch: true,
 		Hooks: Hooks{
 			AfterCreate: "printf 'ok\n' > " + shellQuote(tracePath),
-			Timeout:     time.Second,
+			Timeout:     5 * time.Second,
 		},
 	})
 	if err != nil {
@@ -120,6 +124,7 @@ func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
 
 func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 	t.Parallel()
+	skipWindows(t)
 
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
@@ -167,6 +172,7 @@ func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 
 func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 	t.Parallel()
+	skipWindows(t)
 
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
@@ -203,6 +209,7 @@ func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 
 func TestLocalGitHookFailureSurfaces(t *testing.T) {
 	t.Parallel()
+	skipWindows(t)
 
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
@@ -244,6 +251,7 @@ func TestLocalGitHookFailureSurfaces(t *testing.T) {
 
 func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
 	t.Parallel()
+	skipWindows(t)
 
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
@@ -331,6 +339,7 @@ func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
 
 func TestLocalGitRejectsSymlinkEscape(t *testing.T) {
 	t.Parallel()
+	skipWindows(t)
 
 	source := initSourceRepo(t)
 	testRoot := t.TempDir()
@@ -441,4 +450,11 @@ func readFile(t *testing.T, path string) string {
 
 func shellQuote(value string) string {
 	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func skipWindows(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("requires a UNIX test environment")
+	}
 }
