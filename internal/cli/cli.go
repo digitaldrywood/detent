@@ -176,6 +176,7 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
 	cmd.PersistentFlags().BoolVar(&headless, "headless", false, "stream logs instead of launching the terminal dashboard")
 	cmd.AddCommand(
+		newDoctorCommand(&configPath, &host, &port, opts),
 		newInitCommand(&configPath, opts),
 		newAddProjectCommand(&configPath, opts),
 		newEditProjectCommand(&configPath, opts, OperationPauseProject, "pause", "Pause a project", func(project *globalconfig.Project) error {

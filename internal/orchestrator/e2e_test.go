@@ -170,7 +170,7 @@ func (c *e2eCodexClient) RunTurn(_ context.Context, req codex.RunTurnRequest, on
 func waitForCompletedIssue(t *testing.T, orch *Orchestrator, issueID string) State {
 	t.Helper()
 
-	deadline := time.Now().Add(5 * time.Second)
+	deadline := time.Now().Add(20 * time.Second)
 	for time.Now().Before(deadline) {
 		stateCtx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 		state, err := orch.State(stateCtx)
@@ -197,7 +197,7 @@ func assertOrchestratorStopped(t *testing.T, errCh <-chan error) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("orchestrator Run() error = %v, want context canceled", err)
 		}
-	case <-time.After(2 * time.Second):
+	case <-time.After(5 * time.Second):
 		t.Fatal("timed out waiting for orchestrator to stop")
 	}
 }

@@ -31,7 +31,7 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, want := range []string{"symphony", "agent orchestrator", "init", "add-project", "pause", "unpause", "promote", "remove-project"} {
+	for _, want := range []string{"symphony", "agent orchestrator", "doctor", "init", "add-project", "pause", "unpause", "promote", "remove-project"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
