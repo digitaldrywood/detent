@@ -32,6 +32,7 @@ type Backend interface {
 	Cleanup(context.Context, string) error
 	BeforeRun(context.Context, Info, Issue) error
 	AfterRun(context.Context, Info, Issue)
+	DiffStat(context.Context, Info, Issue) (DiffStat, error)
 }
 
 type Issue struct {
