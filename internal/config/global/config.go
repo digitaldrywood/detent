@@ -279,18 +279,22 @@ func defaultConfig(path string) Config {
 		Path:       path,
 		APIVersion: APIVersion,
 		Kind:       Kind,
-		Global: Settings{
-			MaxConcurrentAgents: 8,
-			Scheduling:          SchedulingWeighted,
-			FairShare: map[string]any{
-				"half_life": "1h",
-			},
-			Startup: map[string]any{
-				"jitter_seconds":       10,
-				"max_spawn_per_second": 2,
-			},
+		Global:     defaultSettings(),
+		Projects:   []Project{},
+	}
+}
+
+func defaultSettings() Settings {
+	return Settings{
+		MaxConcurrentAgents: 8,
+		Scheduling:          SchedulingWeighted,
+		FairShare: map[string]any{
+			"half_life": "1h",
 		},
-		Projects: []Project{},
+		Startup: map[string]any{
+			"jitter_seconds":       10,
+			"max_spawn_per_second": 2,
+		},
 	}
 }
 
@@ -633,12 +637,12 @@ func build(attrs map[string]any, path string, opts options) Config {
 }
 
 func buildSettings(attrs map[string]any) Settings {
-	return Settings{
-		MaxConcurrentAgents: mustInt(attrs["max_concurrent_agents"]),
-		Scheduling:          mustString(attrs["scheduling"]),
-		FairShare:           optionalMap(attrs["fair_share"]),
-		Startup:             optionalMap(attrs["startup"]),
-	}
+	settings := defaultSettings()
+	settings.MaxConcurrentAgents = mustInt(attrs["max_concurrent_agents"])
+	settings.Scheduling = mustString(attrs["scheduling"])
+	settings.FairShare = mergeMap(settings.FairShare, attrs["fair_share"])
+	settings.Startup = mergeMap(settings.Startup, attrs["startup"])
+	return settings
 }
 
 func buildProjects(projects []any, opts options) []Project {
@@ -667,13 +671,17 @@ func buildProjects(projects []any, opts options) []Project {
 	return out
 }
 
-func optionalMap(value any) map[string]any {
+func mergeMap(defaults map[string]any, value any) map[string]any {
+	out := make(map[string]any, len(defaults))
+	for key, nestedValue := range defaults {
+		out[key] = nestedValue
+	}
+
 	if value == nil {
-		return map[string]any{}
+		return out
 	}
 
 	source := mustMap(value)
-	out := make(map[string]any, len(source))
 	for key, nestedValue := range source {
 		out[key] = nestedValue
 	}

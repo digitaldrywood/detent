@@ -3,6 +3,7 @@ package global
 import (
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -159,6 +160,63 @@ func TestReadValidConfig(t *testing.T) {
 	}
 	if project.CredentialRef != "github-default" {
 		t.Fatalf("Project.CredentialRef = %q, want github-default", project.CredentialRef)
+	}
+}
+
+func TestReadPreservesGlobalDefaultsForOptionalSections(t *testing.T) {
+	paths := createProjectFiles(t)
+
+	tests := []struct {
+		name          string
+		global        string
+		wantFairShare map[string]any
+		wantStartup   map[string]any
+	}{
+		{
+			name: "omitted sections",
+			global: `  max_concurrent_agents: 8
+  scheduling: weighted
+`,
+			wantFairShare: map[string]any{
+				"half_life": "1h",
+			},
+			wantStartup: map[string]any{
+				"jitter_seconds":       10,
+				"max_spawn_per_second": 2,
+			},
+		},
+		{
+			name: "partial sections",
+			global: `  max_concurrent_agents: 8
+  scheduling: weighted
+  fair_share: {ratio: 1.5}
+  startup:
+    max_spawn_per_second: 4
+`,
+			wantFairShare: map[string]any{
+				"half_life": "1h",
+				"ratio":     1.5,
+			},
+			wantStartup: map[string]any{
+				"jitter_seconds":       10,
+				"max_spawn_per_second": 4,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			configPath := filepath.Join(paths.root, strings.ReplaceAll(tt.name, " ", "-")+".yaml")
+			writeFile(t, configPath, minimalYAML(paths, tt.global))
+
+			cfg, err := Read(configPath, WithHome(paths.home))
+			if err != nil {
+				t.Fatalf("Read() error = %v", err)
+			}
+
+			assertMap(t, "Global.FairShare", cfg.Global.FairShare, tt.wantFairShare)
+			assertMap(t, "Global.Startup", cfg.Global.Startup, tt.wantStartup)
+		})
 	}
 }
 
@@ -362,6 +420,27 @@ func writeFile(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
+}
+
+func assertMap(t *testing.T, name string, got map[string]any, want map[string]any) {
+	t.Helper()
+
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("%s = %#v, want %#v", name, got, want)
+	}
+}
+
+func minimalYAML(paths projectPaths, global string) string {
+	return `apiVersion: symphony/v1
+kind: GlobalConfig
+global:
+` + global + `projects:
+  - id: symphony
+    workflow: ` + paths.workflow + `
+    workdir: ` + paths.workdir + `
+    weight: 5
+    priority: 50
+`
 }
 
 func validYAML(paths projectPaths, overrides map[string]string) string {
