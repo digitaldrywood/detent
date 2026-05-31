@@ -136,6 +136,85 @@ func (q *Queries) CreateSymphonyRun(ctx context.Context, arg CreateSymphonyRunPa
 	return i, err
 }
 
+const createUsageEvent = `-- name: CreateUsageEvent :one
+INSERT INTO usage_events (
+  project_id,
+  run_id,
+  session_id,
+  issue_id,
+  identifier,
+  pr_number,
+  model,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  runtime_seconds,
+  started_at,
+  finished_at,
+  event_day,
+  outcome
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome
+`
+
+type CreateUsageEventParams struct {
+	ProjectID      string         `json:"project_id"`
+	RunID          sql.NullInt64  `json:"run_id"`
+	SessionID      sql.NullInt64  `json:"session_id"`
+	IssueID        sql.NullString `json:"issue_id"`
+	Identifier     sql.NullString `json:"identifier"`
+	PrNumber       sql.NullInt64  `json:"pr_number"`
+	Model          string         `json:"model"`
+	InputTokens    int64          `json:"input_tokens"`
+	OutputTokens   int64          `json:"output_tokens"`
+	TotalTokens    int64          `json:"total_tokens"`
+	RuntimeSeconds int64          `json:"runtime_seconds"`
+	StartedAt      string         `json:"started_at"`
+	FinishedAt     string         `json:"finished_at"`
+	EventDay       string         `json:"event_day"`
+	Outcome        string         `json:"outcome"`
+}
+
+func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventParams) (UsageEvent, error) {
+	row := q.db.QueryRowContext(ctx, createUsageEvent,
+		arg.ProjectID,
+		arg.RunID,
+		arg.SessionID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.PrNumber,
+		arg.Model,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.TotalTokens,
+		arg.RuntimeSeconds,
+		arg.StartedAt,
+		arg.FinishedAt,
+		arg.EventDay,
+		arg.Outcome,
+	)
+	var i UsageEvent
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.RunID,
+		&i.SessionID,
+		&i.IssueID,
+		&i.Identifier,
+		&i.PrNumber,
+		&i.Model,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.TotalTokens,
+		&i.RuntimeSeconds,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.EventDay,
+		&i.Outcome,
+	)
+	return i, err
+}
+
 const dailyTokenSpend = `-- name: DailyTokenSpend :many
 SELECT
   CAST(COALESCE(model, '') AS TEXT) AS model,
@@ -277,6 +356,36 @@ func (q *Queries) GetSymphonyRun(ctx context.Context, id int64) (SymphonyRun, er
 		&i.OutputTokens,
 		&i.TotalTokens,
 		&i.RuntimeSeconds,
+	)
+	return i, err
+}
+
+const getUsageEvent = `-- name: GetUsageEvent :one
+SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome
+FROM usage_events
+WHERE id = ?
+`
+
+func (q *Queries) GetUsageEvent(ctx context.Context, id int64) (UsageEvent, error) {
+	row := q.db.QueryRowContext(ctx, getUsageEvent, id)
+	var i UsageEvent
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.RunID,
+		&i.SessionID,
+		&i.IssueID,
+		&i.Identifier,
+		&i.PrNumber,
+		&i.Model,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.TotalTokens,
+		&i.RuntimeSeconds,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.EventDay,
+		&i.Outcome,
 	)
 	return i, err
 }

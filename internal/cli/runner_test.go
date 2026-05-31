@@ -25,7 +25,7 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
 
-	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, nil, nil)
+	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", nil, nil)
 	if err != nil {
 		t.Fatalf("buildRunner() error = %v", err)
 	}

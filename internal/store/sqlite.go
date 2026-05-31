@@ -166,6 +166,49 @@ func (s *sqliteStore) FinishSession(ctx context.Context, sessionID int64, attrs 
 	return requireAffected(rows, "codex session", sessionID)
 }
 
+func (s *sqliteStore) RecordUsageEvent(ctx context.Context, attrs UsageEvent) (int64, error) {
+	projectID := strings.TrimSpace(attrs.ProjectID)
+	if projectID == "" {
+		return 0, errors.New("project_id is required")
+	}
+
+	startedAt, err := requiredTimestamp("started_at", attrs.StartedAt)
+	if err != nil {
+		return 0, err
+	}
+	finishedAt, err := requiredTimestamp("finished_at", attrs.FinishedAt)
+	if err != nil {
+		return 0, err
+	}
+
+	outcome := strings.TrimSpace(attrs.Outcome)
+	if outcome == "" {
+		return 0, errors.New("outcome is required")
+	}
+
+	event, err := s.queries.CreateUsageEvent(ctx, sqlc.CreateUsageEventParams{
+		ProjectID:      projectID,
+		RunID:          nullInt64(attrs.RunID),
+		SessionID:      nullInt64(attrs.SessionID),
+		IssueID:        nullString(attrs.IssueID),
+		Identifier:     nullString(attrs.Identifier),
+		PrNumber:       nullOptionalInt64(attrs.PRNumber),
+		Model:          strings.TrimSpace(attrs.Model),
+		InputTokens:    nonNegative(attrs.InputTokens),
+		OutputTokens:   nonNegative(attrs.OutputTokens),
+		TotalTokens:    nonNegative(attrs.TotalTokens),
+		RuntimeSeconds: nonNegative(attrs.RuntimeSeconds),
+		StartedAt:      startedAt,
+		FinishedAt:     finishedAt,
+		EventDay:       attrs.FinishedAt.UTC().Format("2006-01-02"),
+		Outcome:        outcome,
+	})
+	if err != nil {
+		return 0, fmt.Errorf("recording usage event: %w", err)
+	}
+	return event.ID, nil
+}
+
 func (s *sqliteStore) DailyTokenSpend(ctx context.Context, day time.Time) (TokenSpend, error) {
 	date, err := dateString(day)
 	if err != nil {
@@ -342,6 +385,13 @@ func nullInt64(value int64) sql.NullInt64 {
 		return sql.NullInt64{}
 	}
 	return sql.NullInt64{Int64: value, Valid: true}
+}
+
+func nullOptionalInt64(value *int64) sql.NullInt64 {
+	if value == nil || *value <= 0 {
+		return sql.NullInt64{}
+	}
+	return sql.NullInt64{Int64: *value, Valid: true}
 }
 
 func nonNegative(value int64) int64 {

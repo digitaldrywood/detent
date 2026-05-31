@@ -81,6 +81,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	)
 
 	runner, err := NewRunner(Dependencies{
+		ProjectID: "symphony",
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Agent: config.Agent{
@@ -202,6 +203,21 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 {
 		t.Fatalf("SessionFinish = %#v, want completed session with tokens", sessionStore.finished)
+	}
+	if sessionStore.usage.ProjectID != "symphony" || sessionStore.usage.SessionID != 42 {
+		t.Fatalf("UsageEvent identity = %#v, want project symphony and session 42", sessionStore.usage)
+	}
+	if sessionStore.usage.IssueID != "issue-22" || sessionStore.usage.Identifier != "digitaldrywood/symphony#22" {
+		t.Fatalf("UsageEvent issue = %#v, want issue-22/digitaldrywood/symphony#22", sessionStore.usage)
+	}
+	if sessionStore.usage.Model != "gpt-5-codex-high" || sessionStore.usage.TotalTokens != 125 {
+		t.Fatalf("UsageEvent totals = %#v, want model gpt-5-codex-high and total 125", sessionStore.usage)
+	}
+	if sessionStore.usage.StartedAt != startedAt || sessionStore.usage.FinishedAt != completedAt {
+		t.Fatalf("UsageEvent timestamps = %s/%s, want %s/%s", sessionStore.usage.StartedAt, sessionStore.usage.FinishedAt, startedAt, completedAt)
+	}
+	if sessionStore.usage.Outcome != FinalStateCompleted {
+		t.Fatalf("UsageEvent outcome = %q, want %q", sessionStore.usage.Outcome, FinalStateCompleted)
 	}
 }
 
@@ -408,6 +424,7 @@ type fakeSessionStore struct {
 	sessionID int64
 	started   store.SessionStart
 	finished  store.SessionFinish
+	usage     store.UsageEvent
 }
 
 func (s *fakeSessionStore) StartSession(_ context.Context, attrs store.SessionStart) (int64, error) {
@@ -418,6 +435,11 @@ func (s *fakeSessionStore) StartSession(_ context.Context, attrs store.SessionSt
 func (s *fakeSessionStore) FinishSession(_ context.Context, _ int64, attrs store.SessionFinish) error {
 	s.finished = attrs
 	return nil
+}
+
+func (s *fakeSessionStore) RecordUsageEvent(_ context.Context, attrs store.UsageEvent) (int64, error) {
+	s.usage = attrs
+	return 1, nil
 }
 
 type fakeClock struct {

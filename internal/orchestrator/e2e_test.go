@@ -53,6 +53,7 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	}
 
 	runnerBackend, err := runpkg.NewRunner(runpkg.Dependencies{
+		ProjectID: "symphony",
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Codex: config.Codex{

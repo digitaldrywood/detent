@@ -36,6 +36,7 @@ type StatsStore interface {
 	StopRun(context.Context, int64, RunStop) error
 	StartSession(context.Context, SessionStart) (int64, error)
 	FinishSession(context.Context, int64, SessionFinish) error
+	RecordUsageEvent(context.Context, UsageEvent) (int64, error)
 	DailyTokenSpend(context.Context, time.Time) (TokenSpend, error)
 	IssueTokenSpend(context.Context, IssueIdentity) (TokenSpend, error)
 }
@@ -93,6 +94,23 @@ type SessionFinish struct {
 	RuntimeSeconds int64
 	FinalState     string
 	Model          string
+}
+
+type UsageEvent struct {
+	ProjectID      string
+	RunID          int64
+	SessionID      int64
+	IssueID        string
+	Identifier     string
+	PRNumber       *int64
+	Model          string
+	InputTokens    int64
+	OutputTokens   int64
+	TotalTokens    int64
+	RuntimeSeconds int64
+	StartedAt      time.Time
+	FinishedAt     time.Time
+	Outcome        string
 }
 
 type IssueIdentity struct {

@@ -41,7 +41,7 @@ func withRunnerFactory(
 			return nil, fmt.Errorf("load project workflow %s: %w", cfg.ID, err)
 		}
 
-		run, err := buildRunner(workflow, sessionStore, deps.Logger)
+		run, err := buildRunner(workflow, cfg.ID, sessionStore, deps.Logger)
 		if err != nil {
 			return nil, fmt.Errorf("build project runner %s: %w", cfg.ID, err)
 		}
@@ -60,6 +60,7 @@ func withRunnerFactory(
 // wiring its workspace backend, codex app-server client, and session store.
 func buildRunner(
 	workflow workflowconfig.Workflow,
+	projectID string,
 	sessionStore runnerpkg.SessionStore,
 	logger *slog.Logger,
 ) (orchestrator.Runner, error) {
@@ -76,6 +77,7 @@ func buildRunner(
 	}
 
 	run, err := runnerpkg.NewRunner(runnerpkg.Dependencies{
+		ProjectID: projectID,
 		Workflow:  workflow,
 		Workspace: backend,
 		Codex:     codexClient,

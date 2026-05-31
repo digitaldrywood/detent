@@ -40,8 +40,8 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	if got := queryInt(t, sqliteBackend.db, "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", got)
 	}
-	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('symphony_runs', 'codex_sessions', 'fair_share_usage')"); got != 3 {
-		t.Fatalf("migrated table count = %d, want 3", got)
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('symphony_runs', 'codex_sessions', 'fair_share_usage', 'usage_events')"); got != 4 {
+		t.Fatalf("migrated table count = %d, want 4", got)
 	}
 }
 
@@ -310,6 +310,114 @@ func TestFairShareStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUsageLedgerRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		event UsageEvent
+	}{
+		{
+			name: "persists usage event across reopen",
+			event: UsageEvent{
+				ProjectID:      " symphony ",
+				RunID:          11,
+				SessionID:      42,
+				IssueID:        " I_kwDOSskuwc8AAAABD6psJQ ",
+				Identifier:     " digitaldrywood/symphony#117 ",
+				PRNumber:       int64Ptr(91),
+				Model:          " gpt-5-codex ",
+				InputTokens:    123,
+				OutputTokens:   45,
+				TotalTokens:    168,
+				RuntimeSeconds: 73,
+				StartedAt:      time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC),
+				FinishedAt:     time.Date(2026, 5, 31, 13, 1, 13, 0, time.UTC),
+				Outcome:        " completed ",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			dbPath := filepath.Join(t.TempDir(), "symphony.db")
+
+			backend, err := Open(ctx, Config{
+				Backend: BackendSQLite,
+				Path:    dbPath,
+			})
+			if err != nil {
+				t.Fatalf("Open() error = %v", err)
+			}
+
+			eventID, err := backend.RecordUsageEvent(ctx, tt.event)
+			if err != nil {
+				t.Fatalf("RecordUsageEvent() error = %v", err)
+			}
+
+			got, err := backend.Queries().GetUsageEvent(ctx, eventID)
+			if err != nil {
+				t.Fatalf("GetUsageEvent() error = %v", err)
+			}
+			if got.ProjectID != "symphony" {
+				t.Fatalf("ProjectID = %q, want symphony", got.ProjectID)
+			}
+			if got.RunID.Int64 != 11 || got.SessionID.Int64 != 42 {
+				t.Fatalf("run/session = %d/%d, want 11/42", got.RunID.Int64, got.SessionID.Int64)
+			}
+			if got.IssueID.String != "I_kwDOSskuwc8AAAABD6psJQ" || got.Identifier.String != "digitaldrywood/symphony#117" {
+				t.Fatalf("issue identity = %q/%q", got.IssueID.String, got.Identifier.String)
+			}
+			if got.PrNumber.Int64 != 91 {
+				t.Fatalf("pr_number = %d, want 91", got.PrNumber.Int64)
+			}
+			if got.Model != "gpt-5-codex" {
+				t.Fatalf("model = %q, want gpt-5-codex", got.Model)
+			}
+			if got.InputTokens != 123 || got.OutputTokens != 45 || got.TotalTokens != 168 || got.RuntimeSeconds != 73 {
+				t.Fatalf("tokens/runtime = %d/%d/%d/%d", got.InputTokens, got.OutputTokens, got.TotalTokens, got.RuntimeSeconds)
+			}
+			if got.StartedAt != "2026-05-31T13:00:00Z" || got.FinishedAt != "2026-05-31T13:01:13Z" {
+				t.Fatalf("timestamps = %q/%q", got.StartedAt, got.FinishedAt)
+			}
+			if got.EventDay != "2026-05-31" {
+				t.Fatalf("event_day = %q, want 2026-05-31", got.EventDay)
+			}
+			if got.Outcome != "completed" {
+				t.Fatalf("outcome = %q, want completed", got.Outcome)
+			}
+
+			if err := backend.Close(); err != nil {
+				t.Fatalf("Close() error = %v", err)
+			}
+
+			reopened, err := Open(ctx, Config{
+				Backend: BackendSQLite,
+				Path:    dbPath,
+			})
+			if err != nil {
+				t.Fatalf("reopen Open() error = %v", err)
+			}
+			t.Cleanup(func() {
+				if err := reopened.Close(); err != nil {
+					t.Fatalf("reopened Close() error = %v", err)
+				}
+			})
+
+			persisted, err := reopened.Queries().GetUsageEvent(ctx, eventID)
+			if err != nil {
+				t.Fatalf("GetUsageEvent() after reopen error = %v", err)
+			}
+			if persisted.TotalTokens != 168 {
+				t.Fatalf("persisted total_tokens = %d, want 168", persisted.TotalTokens)
+			}
+		})
+	}
+}
+
 func TestOpenRejectsUnsupportedBackend(t *testing.T) {
 	t.Parallel()
 
@@ -420,4 +528,8 @@ func queryInt(t *testing.T, db *sql.DB, query string) int64 {
 		t.Fatalf("querying %q: %v", query, err)
 	}
 	return value
+}
+
+func int64Ptr(value int64) *int64 {
+	return &value
 }

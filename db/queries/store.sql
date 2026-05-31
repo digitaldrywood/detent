@@ -96,6 +96,31 @@ WHERE issue_id = sqlc.arg(issue_id)
 GROUP BY COALESCE(model, '')
 ORDER BY COALESCE(model, '');
 
+-- name: CreateUsageEvent :one
+INSERT INTO usage_events (
+  project_id,
+  run_id,
+  session_id,
+  issue_id,
+  identifier,
+  pr_number,
+  model,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  runtime_seconds,
+  started_at,
+  finished_at,
+  event_day,
+  outcome
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetUsageEvent :one
+SELECT *
+FROM usage_events
+WHERE id = ?;
+
 -- name: ListFairShareUsage :many
 SELECT
   project_id,
