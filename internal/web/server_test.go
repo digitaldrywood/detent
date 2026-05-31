@@ -444,6 +444,7 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 				},
 				SessionID:   "thread-live",
 				TurnCount:   6,
+				StartedAt:   generatedAt.Add(-6 * time.Minute),
 				DiffAdded:   4,
 				DiffRemoved: 2,
 				DiffFiles:   3,
@@ -461,6 +462,7 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 					ID:         "issue-done-1",
 					Identifier: "DD-DONE-1",
 				},
+				StartedAt:   generatedAt.Add(-2 * time.Minute),
 				CompletedAt: generatedAt.Add(-45 * time.Second),
 			},
 			{
@@ -468,6 +470,7 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 					ID:         "issue-done-2",
 					Identifier: "DD-DONE-2",
 				},
+				StartedAt:   generatedAt.Add(-5 * time.Minute),
 				CompletedAt: generatedAt.Add(-3 * time.Minute),
 			},
 		},
@@ -542,6 +545,10 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 		"0.4 completions/min",
 		"Runtime",
 		"1m 0s",
+		"Agent activity",
+		"Live now",
+		"DD-LIVE",
+		"DD-DONE-1",
 	} {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("snapshot event missing %q:\n%s", want, event.data)
