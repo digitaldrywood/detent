@@ -17,6 +17,10 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Worker.SSHHosts = []string{"worker-a", "worker-b"}
 	cfg.Worker.MaxConcurrentAgentsPerHost = &perHost
 	cfg.Budget.RefusalCooldownSeconds = 45
+	cfg.Agent.AutoPromote.Enabled = true
+	cfg.Agent.AutoPromote.QuietSeconds = 30
+	cfg.Agent.AutoPromote.OptoutLabel = " Requires-Human-Review "
+	cfg.Agent.AutoPromote.AllowedIssueLabels = []string{" Docs ", "docs", "Chore"}
 
 	got := ConfigFromWorkflow(cfg)
 
@@ -28,6 +32,20 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.BudgetRefusalCooldown != 45*time.Second {
 		t.Fatalf("BudgetRefusalCooldown = %s, want 45s", got.BudgetRefusalCooldown)
+	}
+	if !got.AutoPromote.Enabled {
+		t.Fatal("AutoPromote.Enabled = false, want true")
+	}
+	if got.AutoPromote.QuietDuration != 30*time.Second {
+		t.Fatalf("AutoPromote.QuietDuration = %s, want 30s", got.AutoPromote.QuietDuration)
+	}
+	if got.AutoPromote.OptoutLabel != "requires-human-review" {
+		t.Fatalf("AutoPromote.OptoutLabel = %q, want requires-human-review", got.AutoPromote.OptoutLabel)
+	}
+	if len(got.AutoPromote.AllowedIssueLabels) != 2 ||
+		got.AutoPromote.AllowedIssueLabels[0] != "docs" ||
+		got.AutoPromote.AllowedIssueLabels[1] != "chore" {
+		t.Fatalf("AutoPromote.AllowedIssueLabels = %#v, want docs and chore", got.AutoPromote.AllowedIssueLabels)
 	}
 }
 
