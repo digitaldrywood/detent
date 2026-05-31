@@ -68,11 +68,13 @@ templ SnapshotView(data DashboardData) {
 	if data.Snapshot.GeneratedAt.IsZero() {
 		@snapshotLoading()
 	}
-	<section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+	<section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
 		@metricCard("Running", formatCount(runningCount(data.Snapshot)), "Active issue sessions", "border-t-accent", "bg-accent")
 		@metricCard("Queue", formatCount(queueCount(data.Snapshot)), "Waiting or retrying", "border-t-warning", "bg-warning")
 		@metricCard("Blocked", formatCount(blockedCount(data.Snapshot)), "Needs operator action", "border-t-danger", "bg-danger")
 		@metricCard("Completed", formatCount(completedCount(data.Snapshot)), "Finished sessions", "border-t-success", "bg-success")
+		@metricCard("Throughput", throughputRate(data.Snapshot), "Current completions/min", "border-t-accent", "bg-accent")
+		@metricCard("Runtime", runtimeLabel(data.Snapshot), "Aggregate agent uptime", "border-t-success", "bg-success")
 	</section>
 	<section class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
@@ -151,10 +153,31 @@ templ SnapshotView(data DashboardData) {
 			}
 		</section>
 		<aside class="grid content-start gap-5">
+			@throughputCard(data)
 			@budgetCard(data.Snapshot.Budget)
 			@rateLimitsCard(data.Snapshot.RateLimits)
 			@tokenCard(data)
 		</aside>
+	</section>
+}
+
+templ throughputCard(data DashboardData) {
+	<section class="rounded-md border border-border bg-card p-5 shadow-sm">
+		<div class="flex items-start justify-between gap-3">
+			<h2 class="text-lg font-semibold text-foreground">Throughput trend</h2>
+			<span class="rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ throughputRate(data.Snapshot) }</span>
+		</div>
+		<div class="mt-5 grid gap-2">
+			<div class="font-mono text-3xl font-semibold text-foreground">{ throughputRate(data.Snapshot) }</div>
+			<div class="text-sm text-muted-foreground">{ throughputWindowLabel() }</div>
+		</div>
+		<div class="mt-5">
+			if len(throughputTrendPoints(data.Snapshot)) == 0 {
+				<p class="rounded-md border border-dashed border-border bg-muted/60 px-4 py-6 text-center text-sm text-muted-foreground">No throughput data yet.</p>
+			} else {
+				@LineAreaChart(throughputTrendChart(data))
+			}
+		</div>
 	</section>
 }
 

@@ -424,8 +424,10 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 
 	body := openEventStream(t, server)
 	defer body.Close()
+	generatedAt := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 
 	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: generatedAt,
 		Counts: telemetry.Counts{
 			Running:   5,
 			Queue:     4,
@@ -451,6 +453,22 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 					Output: 221,
 					Total:  321,
 				},
+			},
+		},
+		Completed: []telemetry.Completed{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-done-1",
+					Identifier: "DD-DONE-1",
+				},
+				CompletedAt: generatedAt.Add(-45 * time.Second),
+			},
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-done-2",
+					Identifier: "DD-DONE-2",
+				},
+				CompletedAt: generatedAt.Add(-3 * time.Minute),
 			},
 		},
 		Budget: telemetry.Budget{
@@ -520,6 +538,10 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 		"Token trend",
 		"Input 15:01: 100 tokens",
 		"Output 15:01: 221 tokens",
+		"Throughput trend",
+		"0.4 completions/min",
+		"Runtime",
+		"1m 0s",
 	} {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("snapshot event missing %q:\n%s", want, event.data)
