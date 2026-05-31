@@ -41,7 +41,7 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 		"Agents: 1 running | 1 queued | 1 blocked | 1 completed",
 		"Tokens: in 110 | out 220 | total 330",
 		"Budget: enabled current $12.50 | projected $0.75 | day max $50.00 | issue max $5.00",
-		"Rate Limits: codex-primary | primary 90/100 reset 60s | secondary n/a | credits n/a",
+		"Rate Limits: codex-primary | primary 90/100 reset 60s | secondary 0/100 reset 30s | credits 0/1",
 		"Running",
 		"DD-44",
 		"In Progress",
@@ -224,6 +224,13 @@ func testSnapshot() telemetry.Snapshot {
 				Limit:          100,
 				ResetAt:        &resetAt,
 				ResetInSeconds: 60,
+			},
+			Secondary: &telemetry.RateLimitBucket{
+				Limit:          100,
+				ResetInSeconds: 30,
+			},
+			Credits: &telemetry.RateLimitBucket{
+				Limit: 1,
 			},
 		},
 		Tokens: telemetry.Tokens{

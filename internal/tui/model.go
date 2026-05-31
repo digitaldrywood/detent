@@ -367,12 +367,12 @@ func formatRateLimitBucket(bucket *telemetry.RateLimitBucket, now func() time.Ti
 
 	var base string
 	switch {
-	case bucket.Remaining > 0 && bucket.Limit > 0:
+	case bucket.Limit > 0:
 		base = formatCount(bucket.Remaining) + "/" + formatCount(bucket.Limit)
 	case bucket.Remaining > 0:
 		base = "remaining " + formatCount(bucket.Remaining)
-	case bucket.Limit > 0:
-		base = "limit " + formatCount(bucket.Limit)
+	case bucket.Remaining == 0:
+		base = "remaining 0"
 	default:
 		base = "n/a"
 	}
