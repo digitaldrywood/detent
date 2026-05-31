@@ -143,6 +143,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 
 	result := RunResult{FinalState: FinalStateCompleted}
+	progress := newCodexRunProgress()
 	turnResult, turnErr := r.codex.RunTurn(ctx, codex.RunTurnRequest{
 		Workspace:         info.Path,
 		Prompt:            prompt,
@@ -152,7 +153,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Model:             model,
 	}, func(update codex.Update) error {
 		applyCodexUpdate(&result, update)
-		if err := r.publishUsageUpdate(req, result, update, runStartedAt); err != nil {
+		if err := r.publishRunUpdate(ctx, req, info, workspaceIssue, progress, result, update, runStartedAt); err != nil {
 			return err
 		}
 		return nil
@@ -299,8 +300,63 @@ func applyCodexUpdate(result *RunResult, update codex.Update) {
 	}
 }
 
-func (r *Runner) publishUsageUpdate(
+type codexRunProgress struct {
+	sessionID   string
+	turnIDs     map[string]struct{}
+	messages    map[string]string
+	lastEventAt time.Time
+	lastEvent   string
+	lastMessage string
+}
+
+func newCodexRunProgress() *codexRunProgress {
+	return &codexRunProgress{
+		turnIDs:  map[string]struct{}{},
+		messages: map[string]string{},
+	}
+}
+
+func (p *codexRunProgress) apply(update codex.Update, eventAt time.Time) {
+	if update.ThreadID != "" && update.TurnID != "" {
+		p.sessionID = update.ThreadID + "-" + update.TurnID
+		p.turnIDs[update.TurnID] = struct{}{}
+	}
+	if update.Type != "" {
+		p.lastEvent = string(update.Type)
+	} else {
+		p.lastEvent = update.Method
+	}
+	p.lastEventAt = eventAt.UTC()
+
+	switch update.Type {
+	case codex.UpdateAgentMessageDelta:
+		key := update.ItemID
+		if key == "" {
+			key = update.TurnID
+		}
+		p.messages[key] += update.Delta
+		p.lastMessage = strings.TrimSpace(p.messages[key])
+	case codex.UpdateTurnStarted:
+		p.lastMessage = "turn started"
+	case codex.UpdateTurnCompleted:
+		status := update.Status
+		if status == "" {
+			status = "completed"
+		}
+		p.lastMessage = "turn " + status
+	}
+}
+
+func (p *codexRunProgress) turnCount() int {
+	return len(p.turnIDs)
+}
+
+func (r *Runner) publishRunUpdate(
+	ctx context.Context,
 	req RunRequest,
+	info workspace.Info,
+	issue workspace.Issue,
+	progress *codexRunProgress,
 	result RunResult,
 	update codex.Update,
 	runStartedAt time.Time,
@@ -308,17 +364,41 @@ func (r *Runner) publishUsageUpdate(
 	if req.OnUsageUpdate == nil {
 		return nil
 	}
-	if update.Type != codex.UpdateTokenUsage {
-		return nil
-	}
 
-	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, r.now())
+	eventAt := r.now()
+	progress.apply(update, eventAt)
+	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, eventAt)
 	usage := UsageUpdate{
-		Tokens:     result.Tokens,
-		TurnCount:  1,
-		RateLimits: result.RateLimits,
+		SessionID:   progress.sessionID,
+		TurnCount:   progress.turnCount(),
+		LastEventAt: progress.lastEventAt,
+		LastEvent:   progress.lastEvent,
+		LastMessage: progress.lastMessage,
+		Tokens:      result.Tokens,
+		RateLimits:  result.RateLimits,
+	}
+	diffStats, ok := r.liveDiffStats(ctx, info, issue)
+	if ok {
+		usage.DiffStats = diffStats
 	}
 	return req.OnUsageUpdate(usage)
+}
+
+func (r *Runner) liveDiffStats(ctx context.Context, info workspace.Info, issue workspace.Issue) (DiffStats, bool) {
+	stat, err := r.workspace.DiffStat(ctx, info, issue)
+	if err != nil {
+		r.logger.Warn(
+			"workspace live diff stat failed",
+			slog.String("issue_id", issue.ID),
+			slog.String("issue_identifier", issue.Identifier),
+			slog.String("error", err.Error()),
+		)
+		return DiffStats{}, false
+	}
+
+	diffStats := diffStatsFromWorkspace(stat)
+	diffStats.Status = "ok"
+	return diffStats, true
 }
 
 func rateLimitsFromCodex(snapshot *codex.RateLimitSnapshot) *telemetry.RateLimits {

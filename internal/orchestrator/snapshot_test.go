@@ -47,12 +47,17 @@ func TestStateSnapshotPopulated(t *testing.T) {
 
 	state := newState(normalizeConfig(Config{}))
 	state.Running["i-2"] = Running{
-		Issue:      connector.Issue{ID: "i-2", Identifier: "ISS-2", Title: "Two", State: "In Progress", URL: "u2"},
-		Attempt:    1,
-		StartedAt:  startedAt,
-		WorkerHost: "host-b",
-		TurnCount:  2,
-		Tokens:     CodexTotals{InputTokens: 20, OutputTokens: 8, TotalTokens: 28, RuntimeSeconds: 30},
+		Issue:       connector.Issue{ID: "i-2", Identifier: "ISS-2", Title: "Two", State: "In Progress", URL: "u2"},
+		Attempt:     1,
+		StartedAt:   startedAt,
+		WorkerHost:  "host-b",
+		SessionID:   "thread-2-turn-2",
+		TurnCount:   2,
+		LastEventAt: now.Add(-10 * time.Second),
+		LastEvent:   "agent_message_delta",
+		LastMessage: "editing dashboard telemetry",
+		DiffStats:   DiffStats{FilesChanged: 3, AddedLines: 12, RemovedLines: 4, Status: "ok"},
+		Tokens:      CodexTotals{InputTokens: 20, OutputTokens: 8, TotalTokens: 28, RuntimeSeconds: 30},
 	}
 	state.Running["i-1"] = Running{
 		Issue:     connector.Issue{ID: "i-1", Identifier: "ISS-1", Title: "One", State: "In Progress"},
@@ -111,6 +116,18 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if snapshot.Running[1].RuntimeSeconds != 30 {
 		t.Fatalf("Running[1].RuntimeSeconds = %v, want 30", snapshot.Running[1].RuntimeSeconds)
+	}
+	if snapshot.Running[1].SessionID != "thread-2-turn-2" || snapshot.Running[1].LastEvent != "agent_message_delta" {
+		t.Fatalf("Running[1] live activity = %#v", snapshot.Running[1])
+	}
+	if snapshot.Running[1].LastEventAt == nil || !snapshot.Running[1].LastEventAt.Equal(now.Add(-10*time.Second)) {
+		t.Fatalf("Running[1].LastEventAt = %v", snapshot.Running[1].LastEventAt)
+	}
+	if snapshot.Running[1].LastMessage != "editing dashboard telemetry" {
+		t.Fatalf("Running[1].LastMessage = %q", snapshot.Running[1].LastMessage)
+	}
+	if snapshot.Running[1].DiffFiles != 3 || snapshot.Running[1].DiffAdded != 12 || snapshot.Running[1].DiffRemoved != 4 || snapshot.Running[1].DiffStatus != "ok" {
+		t.Fatalf("Running[1] diff = %#v", snapshot.Running[1])
 	}
 
 	if len(snapshot.Queue) != 1 {

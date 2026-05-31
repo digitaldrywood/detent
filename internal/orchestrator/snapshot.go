@@ -38,12 +38,21 @@ func runningSnapshots(running map[string]Running) []telemetry.Running {
 	out := make([]telemetry.Running, 0, len(ids))
 	for _, id := range ids {
 		entry := running[id]
+		lastEventAt := timePointer(entry.LastEventAt)
 		out = append(out, telemetry.Running{
 			Issue:          telemetryIssue(entry.Issue),
 			WorkerHost:     entry.WorkerHost,
+			SessionID:      entry.SessionID,
 			StartedAt:      entry.StartedAt,
+			LastEventAt:    lastEventAt,
+			LastEvent:      entry.LastEvent,
+			LastMessage:    entry.LastMessage,
 			TurnCount:      entry.TurnCount,
 			RuntimeSeconds: entry.Tokens.RuntimeSeconds,
+			DiffAdded:      entry.DiffStats.AddedLines,
+			DiffRemoved:    entry.DiffStats.RemovedLines,
+			DiffFiles:      entry.DiffStats.FilesChanged,
+			DiffStatus:     entry.DiffStats.Status,
 			Tokens:         tokensFromCodexTotals(entry.Tokens),
 		})
 	}
@@ -153,6 +162,13 @@ func tokensFromCodexTotals(totals CodexTotals) telemetry.Tokens {
 		Total:          totals.TotalTokens,
 		RuntimeSeconds: totals.RuntimeSeconds,
 	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	return &value
 }
 
 func (s State) liveCodexTotals() CodexTotals {

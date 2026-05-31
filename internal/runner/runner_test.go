@@ -23,19 +23,33 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	writeSkill(t, workspacePath, "review.md", "review", "Review code.", "Issue needs code review.")
 
 	startedAt := time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC)
-	completedAt := startedAt.Add(2 * time.Second)
+	completedAt := startedAt.Add(4 * time.Second)
 	workspaceBackend := &fakeWorkspaceBackend{
 		info: workspace.Info{
 			Path:   workspacePath,
 			Key:    "digitaldrywood_symphony_22",
 			Branch: "symphony/digitaldrywood_symphony_22",
 		},
-		diffStat: workspace.DiffStat{Files: 2, Added: 5, Removed: 1},
+		diffStats: []workspace.DiffStat{
+			{Files: 1, Added: 2},
+			{Files: 2, Added: 5, Removed: 1},
+			{Files: 2, Added: 5, Removed: 1},
+			{Files: 2, Added: 5, Removed: 1},
+		},
 	}
 	codexClient := &fakeCodexClient{
 		updates: []codex.Update{
 			{
-				Type: codex.UpdateTokenUsage,
+				Type:     codex.UpdateAgentMessageDelta,
+				ThreadID: "thread-1",
+				TurnID:   "turn-1",
+				ItemID:   "item-1",
+				Delta:    "hello",
+			},
+			{
+				Type:     codex.UpdateTokenUsage,
+				ThreadID: "thread-1",
+				TurnID:   "turn-1",
 				Tokens: codex.TokenUsage{
 					InputTokens:  100,
 					OutputTokens: 25,
@@ -57,7 +71,14 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		result: codex.RunTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "thread-1-turn-1"},
 	}
 	sessionStore := &fakeSessionStore{sessionID: 42}
-	now := newFakeClock(startedAt, startedAt.Add(time.Second), completedAt)
+	now := newFakeClock(
+		startedAt,
+		startedAt.Add(time.Second),
+		startedAt.Add(2*time.Second),
+		startedAt.Add(3*time.Second),
+		completedAt,
+		completedAt,
+	)
 
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
@@ -113,17 +134,35 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if result.FinalState != FinalStateCompleted {
 		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateCompleted)
 	}
-	if result.Tokens.TotalTokens != 125 || result.Tokens.RuntimeSeconds != 2 {
-		t.Fatalf("Tokens = %#v, want total 125 and runtime 2s", result.Tokens)
+	if result.Tokens.TotalTokens != 125 || result.Tokens.RuntimeSeconds != 4 {
+		t.Fatalf("Tokens = %#v, want total 125 and runtime 4s", result.Tokens)
 	}
-	if len(usageUpdates) != 1 {
-		t.Fatalf("usage updates len = %d, want 1", len(usageUpdates))
+	if len(usageUpdates) != 3 {
+		t.Fatalf("usage updates len = %d, want 3", len(usageUpdates))
 	}
-	if usageUpdates[0].TurnCount != 1 || usageUpdates[0].Tokens.TotalTokens != 125 {
-		t.Fatalf("usage update = %#v, want 1 turn and 125 tokens", usageUpdates[0])
+	if usageUpdates[0].SessionID != "thread-1-turn-1" || usageUpdates[0].TurnCount != 1 {
+		t.Fatalf("first usage update = %#v, want live session and one turn", usageUpdates[0])
 	}
-	if usageUpdates[0].Tokens.RuntimeSeconds != 1 {
-		t.Fatalf("usage update runtime = %v, want 1", usageUpdates[0].Tokens.RuntimeSeconds)
+	if usageUpdates[0].LastEvent != "agent_message_delta" || usageUpdates[0].LastMessage != "hello" {
+		t.Fatalf("first usage update activity = %#v, want agent message", usageUpdates[0])
+	}
+	if usageUpdates[0].LastEventAt.IsZero() {
+		t.Fatal("first usage update LastEventAt is zero")
+	}
+	if usageUpdates[0].DiffStats.FilesChanged != 1 || usageUpdates[0].DiffStats.AddedLines != 2 || usageUpdates[0].DiffStats.Status != "ok" {
+		t.Fatalf("first usage update DiffStats = %#v, want live diff", usageUpdates[0].DiffStats)
+	}
+	if usageUpdates[1].TurnCount != 1 || usageUpdates[1].Tokens.TotalTokens != 125 {
+		t.Fatalf("second usage update = %#v, want 1 turn and 125 tokens", usageUpdates[1])
+	}
+	if usageUpdates[1].Tokens.RuntimeSeconds != 2 {
+		t.Fatalf("second usage update runtime = %v, want 2", usageUpdates[1].Tokens.RuntimeSeconds)
+	}
+	if usageUpdates[1].DiffStats.FilesChanged != 2 || usageUpdates[1].DiffStats.AddedLines != 5 || usageUpdates[1].DiffStats.RemovedLines != 1 {
+		t.Fatalf("second usage update DiffStats = %#v, want changed diff", usageUpdates[1].DiffStats)
+	}
+	if usageUpdates[2].RateLimits == nil || usageUpdates[2].RateLimits.LimitID != "codex-primary" {
+		t.Fatalf("third usage update RateLimits = %#v, want codex-primary", usageUpdates[2].RateLimits)
 	}
 	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 {
 		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed", result.DiffStats)
@@ -291,11 +330,13 @@ func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
 type fakeWorkspaceBackend struct {
 	info        workspace.Info
 	diffStat    workspace.DiffStat
+	diffStats   []workspace.DiffStat
 	created     bool
 	beforeRun   bool
 	afterRun    bool
 	afterRunErr error
 	diffed      bool
+	diffCalls   int
 }
 
 func (b *fakeWorkspaceBackend) Create(_ context.Context, issue workspace.Issue) (workspace.Info, error) {
@@ -320,6 +361,14 @@ func (b *fakeWorkspaceBackend) AfterRun(ctx context.Context, _ workspace.Info, _
 
 func (b *fakeWorkspaceBackend) DiffStat(context.Context, workspace.Info, workspace.Issue) (workspace.DiffStat, error) {
 	b.diffed = true
+	if len(b.diffStats) > 0 {
+		index := b.diffCalls
+		if index >= len(b.diffStats) {
+			index = len(b.diffStats) - 1
+		}
+		b.diffCalls++
+		return b.diffStats[index], nil
+	}
 	return b.diffStat, nil
 }
 
