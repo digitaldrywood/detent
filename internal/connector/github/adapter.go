@@ -14,9 +14,10 @@ import (
 )
 
 const (
-	projectItemsPageSize = 50
-	projectItemsPerIssue = 100
-	pullRequestsPageSize = 100
+	projectItemsPageSize  = 50
+	projectItemsPerIssue  = 100
+	pullRequestsPageSize  = 100
+	pullRequestsPageLimit = 3
 )
 
 const projectItemsQuery = `
@@ -473,7 +474,7 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 	})
 
 	for _, repo := range repos {
-		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo, nil)
+		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
 		if err != nil {
 			return err
 		}
@@ -482,10 +483,15 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 	return nil
 }
 
-func (c *Connector) fetchRepositoryPullRequests(
+func (c *Connector) fetchRepositoryPullRequests(ctx context.Context, repo pullRequestRepo) ([]pullRequestNode, error) {
+	return c.fetchRepositoryPullRequestsPage(ctx, repo, nil, 1)
+}
+
+func (c *Connector) fetchRepositoryPullRequestsPage(
 	ctx context.Context,
 	repo pullRequestRepo,
 	after *string,
+	page int,
 ) ([]pullRequestNode, error) {
 	var response struct {
 		Repository *struct {
@@ -506,14 +512,14 @@ func (c *Connector) fetchRepositoryPullRequests(
 	}
 
 	pullRequests := append([]pullRequestNode(nil), response.Repository.PullRequests.Nodes...)
-	if !response.Repository.PullRequests.PageInfo.HasNextPage {
+	if !response.Repository.PullRequests.PageInfo.HasNextPage || page >= pullRequestsPageLimit {
 		return pullRequests, nil
 	}
 	cursor := strings.TrimSpace(response.Repository.PullRequests.PageInfo.EndCursor)
 	if cursor == "" {
 		return nil, ErrInvalidResponse
 	}
-	next, err := c.fetchRepositoryPullRequests(ctx, repo, &cursor)
+	next, err := c.fetchRepositoryPullRequestsPage(ctx, repo, &cursor, page+1)
 	if err != nil {
 		return nil, err
 	}
