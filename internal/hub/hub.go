@@ -24,9 +24,10 @@ type Hub[T any] struct {
 }
 
 type Subscription[T any] struct {
-	hub  *Hub[T]
-	ch   chan T
-	once sync.Once
+	hub       *Hub[T]
+	ch        chan T
+	done      chan struct{}
+	closeOnce sync.Once
 }
 
 func New[T any](opts ...Option) *Hub[T] {
@@ -58,8 +59,9 @@ func (h *Hub[T]) Subscribe(ctx context.Context) (*Subscription[T], error) {
 	}
 
 	sub := &Subscription[T]{
-		hub: h,
-		ch:  make(chan T, h.buffer),
+		hub:  h,
+		ch:   make(chan T, h.buffer),
+		done: make(chan struct{}),
 	}
 
 	h.mu.Lock()
@@ -75,8 +77,11 @@ func (h *Hub[T]) Subscribe(ctx context.Context) (*Subscription[T], error) {
 
 	if done := ctx.Done(); done != nil {
 		go func() {
-			<-done
-			sub.Close()
+			select {
+			case <-done:
+				sub.Close()
+			case <-sub.done:
+			}
 		}()
 	}
 
@@ -111,7 +116,7 @@ func (h *Hub[T]) Close() {
 	h.closed = true
 	for sub := range h.subscribers {
 		delete(h.subscribers, sub)
-		close(sub.ch)
+		sub.close()
 	}
 }
 
@@ -120,21 +125,23 @@ func (s *Subscription[T]) C() <-chan T {
 }
 
 func (s *Subscription[T]) Close() {
-	s.once.Do(func() {
-		s.hub.unsubscribe(s)
-	})
+	s.hub.unsubscribe(s)
 }
 
 func (h *Hub[T]) unsubscribe(sub *Subscription[T]) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
-	if _, ok := h.subscribers[sub]; !ok {
-		return
-	}
-
 	delete(h.subscribers, sub)
-	close(sub.ch)
+
+	sub.close()
+}
+
+func (s *Subscription[T]) close() {
+	s.closeOnce.Do(func() {
+		close(s.done)
+		close(s.ch)
+	})
 }
 
 func sendLatest[T any](ch chan T, value T) {
