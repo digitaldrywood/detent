@@ -7,6 +7,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
 	"github.com/digitaldrywood/symphony-go/internal/connector"
+	runpkg "github.com/digitaldrywood/symphony-go/internal/runner"
 )
 
 func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
@@ -278,8 +279,8 @@ func TestDispatchCandidatesAssignsLeastLoadedWorkerHost(t *testing.T) {
 	runner := newWorkerHostRunner()
 	orch := Orchestrator{
 		cfg:        cfg,
-		runner:     runner,
-		runResults: make(chan runResultEvent),
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion),
 	}
 	state := newState(cfg)
 	now := time.Now()

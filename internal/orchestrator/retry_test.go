@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/symphony-go/internal/connector"
+	runpkg "github.com/digitaldrywood/symphony-go/internal/runner"
 )
 
 func TestDispatchReadyIssuesKeepsRetryAttemptWhenCapacityIsFull(t *testing.T) {
@@ -61,8 +62,8 @@ func TestDispatchReadyIssuesRanksDueRetriesWithCandidates(t *testing.T) {
 	})
 	orch := Orchestrator{
 		cfg:        cfg,
-		runner:     FakeRunner{},
-		runResults: make(chan runResultEvent, 1),
+		supervisor: newTestSupervisor(t, FakeRunner{}, cfg),
+		runResults: make(chan runpkg.Completion, 1),
 	}
 	state := newState(cfg)
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)

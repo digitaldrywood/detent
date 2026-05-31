@@ -1,36 +1,21 @@
 package orchestrator
 
 import (
-	"context"
-	"time"
-
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
+	"github.com/digitaldrywood/symphony-go/internal/runner"
 )
 
-const FinalStateCompleted = "completed"
+const FinalStateCompleted = runner.FinalStateCompleted
 
-type Runner interface {
-	Run(context.Context, RunRequest) (RunResult, error)
-}
+type Runner = runner.Backend
 
-type RunRequest struct {
-	Issue      connector.Issue
-	Attempt    int
-	StartedAt  time.Time
-	WorkerHost string
-}
+type RunRequest = runner.RunRequest
 
-type RunResult struct {
-	FinalState    string
-	Tokens        CodexTotals
-	DiffStats     DiffStats
-	RateLimits    *telemetry.RateLimits
-	BudgetRefusal *BudgetRefusal
-}
+type RunResult = runner.RunResult
 
-type FakeRunner struct{}
+type BudgetRefusal = runner.BudgetRefusal
 
-func (FakeRunner) Run(context.Context, RunRequest) (RunResult, error) {
-	return RunResult{FinalState: FinalStateCompleted}, nil
-}
+type DiffStats = runner.DiffStats
+
+type CodexTotals = runner.CodexTotals
+
+type FakeRunner = runner.FakeRunner
