@@ -67,6 +67,7 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 		}`),
 		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
 	})
+	transport.processIdentity = "4242"
 	server, err := NewAppServer(staticTransportFactory{transport: transport},
 		WithClientInfo(ClientInfo{
 			Name:    "symphony-test",
@@ -125,35 +126,38 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	assertJSONContains(t, sent[3].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.type", "workspaceWrite")
 
-	if len(updates) != 5 {
-		t.Fatalf("updates = %d, want 5: %#v", len(updates), updates)
+	if len(updates) != 6 {
+		t.Fatalf("updates = %d, want 6: %#v", len(updates), updates)
 	}
-	if updates[0].Type != UpdateTurnStarted || updates[0].ThreadID != "thread-1" || updates[0].TurnID != "turn-1" {
-		t.Fatalf("updates[0] = %#v, want turn started", updates[0])
+	if updates[0].Type != UpdateProcessStarted || updates[0].ProcessIdentity != "4242" {
+		t.Fatalf("updates[0] = %#v, want process identity", updates[0])
 	}
-	if updates[1].Type != UpdateAgentMessageDelta || updates[1].Delta != "hello" {
-		t.Fatalf("updates[1] = %#v, want agent message delta", updates[1])
+	if updates[1].Type != UpdateTurnStarted || updates[1].ThreadID != "thread-1" || updates[1].TurnID != "turn-1" {
+		t.Fatalf("updates[1] = %#v, want turn started", updates[1])
 	}
-	if updates[2].Type != UpdateTokenUsage || updates[2].Tokens.TotalTokens != 27 {
-		t.Fatalf("updates[2] = %#v, want token usage total 27", updates[2])
+	if updates[2].Type != UpdateAgentMessageDelta || updates[2].Delta != "hello" {
+		t.Fatalf("updates[2] = %#v, want agent message delta", updates[2])
 	}
-	if updates[2].Tokens.CachedInputTokens != 5 || updates[2].Tokens.ReasoningOutputTokens != 3 {
-		t.Fatalf("updates[2].Tokens = %#v", updates[2].Tokens)
+	if updates[3].Type != UpdateTokenUsage || updates[3].Tokens.TotalTokens != 27 {
+		t.Fatalf("updates[3] = %#v, want token usage total 27", updates[3])
 	}
-	if updates[2].Tokens.ModelContextWindow == nil || *updates[2].Tokens.ModelContextWindow != 200000 {
-		t.Fatalf("updates[2].Tokens.ModelContextWindow = %#v", updates[2].Tokens.ModelContextWindow)
+	if updates[3].Tokens.CachedInputTokens != 5 || updates[3].Tokens.ReasoningOutputTokens != 3 {
+		t.Fatalf("updates[3].Tokens = %#v", updates[3].Tokens)
 	}
-	if updates[3].Type != UpdateRateLimits || updates[3].RateLimits == nil {
-		t.Fatalf("updates[3] = %#v, want rate limits", updates[3])
+	if updates[3].Tokens.ModelContextWindow == nil || *updates[3].Tokens.ModelContextWindow != 200000 {
+		t.Fatalf("updates[3].Tokens.ModelContextWindow = %#v", updates[3].Tokens.ModelContextWindow)
 	}
-	if updates[3].RateLimits.LimitID != "codex-primary" || updates[3].RateLimits.Primary == nil {
-		t.Fatalf("updates[3].RateLimits = %#v", updates[3].RateLimits)
+	if updates[4].Type != UpdateRateLimits || updates[4].RateLimits == nil {
+		t.Fatalf("updates[4] = %#v, want rate limits", updates[4])
 	}
-	if updates[3].RateLimits.Primary.UsedPercent != 12.5 {
-		t.Fatalf("Primary.UsedPercent = %f, want 12.5", updates[3].RateLimits.Primary.UsedPercent)
+	if updates[4].RateLimits.LimitID != "codex-primary" || updates[4].RateLimits.Primary == nil {
+		t.Fatalf("updates[4].RateLimits = %#v", updates[4].RateLimits)
 	}
-	if updates[4].Type != UpdateTurnCompleted || updates[4].TurnID != "turn-1" {
-		t.Fatalf("updates[4] = %#v, want turn completed", updates[4])
+	if updates[4].RateLimits.Primary.UsedPercent != 12.5 {
+		t.Fatalf("Primary.UsedPercent = %f, want 12.5", updates[4].RateLimits.Primary.UsedPercent)
+	}
+	if updates[5].Type != UpdateTurnCompleted || updates[5].TurnID != "turn-1" {
+		t.Fatalf("updates[5] = %#v, want turn completed", updates[5])
 	}
 }
 
@@ -234,8 +238,9 @@ func (f staticTransportFactory) NewTransport(context.Context) (Transport, error)
 }
 
 type fakeAppServerTransport struct {
-	received []Message
-	sent     []Message
+	received        []Message
+	sent            []Message
+	processIdentity string
 }
 
 func newFakeAppServerTransport(received []Message) *fakeAppServerTransport {
@@ -258,6 +263,10 @@ func (t *fakeAppServerTransport) Receive(context.Context) (Message, error) {
 
 func (t *fakeAppServerTransport) Close(context.Context) error {
 	return nil
+}
+
+func (t *fakeAppServerTransport) ProcessIdentity() string {
+	return t.processIdentity
 }
 
 func (t *fakeAppServerTransport) sentMessages() []Message {

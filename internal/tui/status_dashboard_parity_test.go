@@ -68,6 +68,9 @@ func renderParitySnapshot(snapshot telemetry.Snapshot) string {
 }
 
 type statusDashboardParity struct {
+	Project        string
+	Dashboard      string
+	NextRefresh    string
 	AgentCount     int
 	Throughput     string
 	Runtime        string
@@ -117,6 +120,12 @@ func parseStatusDashboardParity(content string) statusDashboardParity {
 		switch {
 		case strings.HasPrefix(line, "│ Agents:"):
 			parsed.AgentCount = firstInteger(line)
+		case strings.HasPrefix(line, "│ Project:"):
+			parsed.Project = strings.TrimSpace(strings.TrimPrefix(line, "│ Project:"))
+		case strings.HasPrefix(line, "│ Dashboard:"):
+			parsed.Dashboard = strings.TrimSpace(strings.TrimPrefix(line, "│ Dashboard:"))
+		case strings.HasPrefix(line, "│ Next refresh:"):
+			parsed.NextRefresh = strings.TrimSpace(strings.TrimPrefix(line, "│ Next refresh:"))
 		case strings.HasPrefix(line, "│ Throughput:"):
 			parsed.Throughput = strings.TrimSpace(strings.TrimPrefix(line, "│ Throughput:"))
 		case strings.HasPrefix(line, "│ Runtime:"):
@@ -254,13 +263,13 @@ func sideBySide(want string, got string) string {
 }
 
 func parityIdleSnapshot() telemetry.Snapshot {
-	return telemetry.Snapshot{
+	return paritySnapshot(telemetry.Snapshot{
 		Tokens: telemetry.Tokens{},
-	}
+	})
 }
 
 func paritySuperBusySnapshot() telemetry.Snapshot {
-	return telemetry.Snapshot{
+	return paritySnapshot(telemetry.Snapshot{
 		Counts: telemetry.Counts{Running: 2},
 		Running: []telemetry.Running{
 			parityRunning(telemetry.Running{
@@ -269,13 +278,14 @@ func paritySuperBusySnapshot() telemetry.Snapshot {
 					Identifier: parityIdentifier("101"),
 					State:      "running",
 				},
-				WorkerHost:     "4242",
-				SessionID:      "thread-1234567890",
-				TurnCount:      11,
-				LastEvent:      "turn_completed",
-				LastMessage:    "turn completed (completed)",
-				RuntimeSeconds: 785,
-				Tokens:         telemetry.Tokens{Total: 120_450},
+				WorkerHost:      "worker-a",
+				ProcessIdentity: "4242",
+				SessionID:       "thread-1234567890",
+				TurnCount:       11,
+				LastEvent:       "turn_completed",
+				LastMessage:     "turn completed (completed)",
+				RuntimeSeconds:  785,
+				Tokens:          telemetry.Tokens{Total: 120_450},
 			}),
 			parityRunning(telemetry.Running{
 				Issue: telemetry.Issue{
@@ -283,13 +293,14 @@ func paritySuperBusySnapshot() telemetry.Snapshot {
 					Identifier: parityIdentifier("102"),
 					State:      "running",
 				},
-				WorkerHost:     "5252",
-				SessionID:      "thread-abcdef1234567890",
-				TurnCount:      4,
-				LastEvent:      "codex/event/task_started",
-				LastMessage:    "mix test --cover",
-				RuntimeSeconds: 412,
-				Tokens:         telemetry.Tokens{Total: 89_200},
+				WorkerHost:      "worker-b",
+				ProcessIdentity: "5252",
+				SessionID:       "thread-abcdef1234567890",
+				TurnCount:       4,
+				LastEvent:       "codex/event/task_started",
+				LastMessage:     "mix test --cover",
+				RuntimeSeconds:  412,
+				Tokens:          telemetry.Tokens{Total: 89_200},
 			}),
 		},
 		RateLimits: &telemetry.RateLimits{
@@ -316,11 +327,11 @@ func paritySuperBusySnapshot() telemetry.Snapshot {
 			RuntimeSeconds: 4_321,
 		},
 		Throughput: telemetry.TokenThroughput{TokensPerSecond: 1_842},
-	}
+	})
 }
 
 func parityBackoffQueueSnapshot() telemetry.Snapshot {
-	return telemetry.Snapshot{
+	return paritySnapshot(telemetry.Snapshot{
 		Counts: telemetry.Counts{Running: 1, Queue: 4},
 		Running: []telemetry.Running{
 			parityRunning(telemetry.Running{
@@ -329,13 +340,14 @@ func parityBackoffQueueSnapshot() telemetry.Snapshot {
 					Identifier: parityIdentifier("638"),
 					State:      "retrying",
 				},
-				WorkerHost:     "4242",
-				SessionID:      "thread-1234567890",
-				TurnCount:      7,
-				LastEvent:      "notification",
-				LastMessage:    "agent message streaming: waiting on rate-limit backoff window",
-				RuntimeSeconds: 1_225,
-				Tokens:         telemetry.Tokens{Total: 14_200},
+				WorkerHost:      "worker-a",
+				ProcessIdentity: "4242",
+				SessionID:       "thread-1234567890",
+				TurnCount:       7,
+				LastEvent:       "notification",
+				LastMessage:     "agent message streaming: waiting on rate-limit backoff window",
+				RuntimeSeconds:  1_225,
+				Tokens:          telemetry.Tokens{Total: 14_200},
 			}),
 		},
 		Queue: []telemetry.Queued{
@@ -363,11 +375,11 @@ func parityBackoffQueueSnapshot() telemetry.Snapshot {
 			RuntimeSeconds: 2_700,
 		},
 		Throughput: telemetry.TokenThroughput{TokensPerSecond: 15},
-	}
+	})
 }
 
 func parityCreditsUnlimitedSnapshot() telemetry.Snapshot {
-	return telemetry.Snapshot{
+	return paritySnapshot(telemetry.Snapshot{
 		Counts: telemetry.Counts{Running: 1},
 		Running: []telemetry.Running{
 			parityRunning(telemetry.Running{
@@ -376,13 +388,14 @@ func parityCreditsUnlimitedSnapshot() telemetry.Snapshot {
 					Identifier: parityIdentifier("777"),
 					State:      "running",
 				},
-				WorkerHost:     "4242",
-				SessionID:      "thread-1234567890",
-				TurnCount:      7,
-				LastEvent:      "codex/event/token_count",
-				LastMessage:    "thread token usage updated (in 90, out 12, total 102)",
-				RuntimeSeconds: 75,
-				Tokens:         telemetry.Tokens{Total: 3_200},
+				WorkerHost:      "worker-a",
+				ProcessIdentity: "4242",
+				SessionID:       "thread-1234567890",
+				TurnCount:       7,
+				LastEvent:       "codex/event/token_count",
+				LastMessage:     "thread token usage updated (in 90, out 12, total 102)",
+				RuntimeSeconds:  75,
+				Tokens:          telemetry.Tokens{Total: 3_200},
 			}),
 		},
 		RateLimits: &telemetry.RateLimits{
@@ -408,7 +421,13 @@ func parityCreditsUnlimitedSnapshot() telemetry.Snapshot {
 			RuntimeSeconds: 75,
 		},
 		Throughput: telemetry.TokenThroughput{TokensPerSecond: 42},
-	}
+	})
+}
+
+func paritySnapshot(snapshot telemetry.Snapshot) telemetry.Snapshot {
+	snapshot.Project = telemetry.Project{URL: parityProjectURL}
+	snapshot.DashboardURL = parityDashboardURL
+	return snapshot
 }
 
 func parityRunning(row telemetry.Running) telemetry.Running {
@@ -432,6 +451,11 @@ func parityIdentifier(number string) string {
 	return "M" + "T-" + number
 }
 
+const (
+	parityProjectURL   = "https://linear.app/project/project/issues"
+	parityDashboardURL = "http://localhost:4000"
+)
+
 const elixirIdleStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
 \e[1m│ Agents: \e[0m\e[32m0\e[0m\e[90m/\e[0m\e[90m10\e[0m
 \e[1m│ Throughput: \e[0m\e[36m0 tps\e[0m
@@ -439,6 +463,7 @@ const elixirIdleStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
 \e[1m│ Tokens: \e[0m\e[33min 0\e[0m\e[90m | \e[0m\e[33mout 0\e[0m\e[90m | \e[0m\e[33mtotal 0\e[0m
 \e[1m│ Rate Limits: \e[0m\e[90munavailable\e[0m
 \e[1m│ Project: \e[0m\e[36mhttps://linear.app/project/project/issues\e[0m
+\e[1m│ Dashboard: \e[0m\e[36mhttp://localhost:4000\e[0m
 \e[1m│ Next refresh: \e[0m\e[90mn/a\e[0m
 \e[1m├─ Running\e[0m
 │
@@ -459,6 +484,7 @@ const elixirSuperBusyStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
 \e[1m│ Tokens: \e[0m\e[33min 250,000\e[0m\e[90m | \e[0m\e[33mout 18,500\e[0m\e[90m | \e[0m\e[33mtotal 268,500\e[0m
 \e[1m│ Rate Limits: \e[0m\e[33mgpt-5\e[0m\e[90m | \e[0m\e[36mprimary 12,345/20,000 reset 30s\e[0m\e[90m | \e[0m\e[36msecondary 45/60 reset 12s\e[0m\e[90m | \e[0m\e[32mcredits 9876.50\e[0m
 \e[1m│ Project: \e[0m\e[36mhttps://linear.app/project/project/issues\e[0m
+\e[1m│ Dashboard: \e[0m\e[36mhttp://localhost:4000\e[0m
 \e[1m│ Next refresh: \e[0m\e[90mn/a\e[0m
 \e[1m├─ Running\e[0m
 │
@@ -480,6 +506,7 @@ const elixirBackoffQueueStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
 \e[1m│ Tokens: \e[0m\e[33min 18,000\e[0m\e[90m | \e[0m\e[33mout 2,200\e[0m\e[90m | \e[0m\e[33mtotal 20,200\e[0m
 \e[1m│ Rate Limits: \e[0m\e[33mgpt-5\e[0m\e[90m | \e[0m\e[36mprimary 0/20,000 reset 95s\e[0m\e[90m | \e[0m\e[36msecondary 0/60 reset 45s\e[0m\e[90m | \e[0m\e[32mcredits none\e[0m
 \e[1m│ Project: \e[0m\e[36mhttps://linear.app/project/project/issues\e[0m
+\e[1m│ Dashboard: \e[0m\e[36mhttp://localhost:4000\e[0m
 \e[1m│ Next refresh: \e[0m\e[90mn/a\e[0m
 \e[1m├─ Running\e[0m
 │
@@ -503,6 +530,7 @@ const elixirCreditsUnlimitedStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
 \e[1m│ Tokens: \e[0m\e[33min 90\e[0m\e[90m | \e[0m\e[33mout 12\e[0m\e[90m | \e[0m\e[33mtotal 102\e[0m
 \e[1m│ Rate Limits: \e[0m\e[33mpriority-tier\e[0m\e[90m | \e[0m\e[36mprimary 100/100 reset 1s\e[0m\e[90m | \e[0m\e[36msecondary 500/500 reset 1s\e[0m\e[90m | \e[0m\e[32mcredits unlimited\e[0m
 \e[1m│ Project: \e[0m\e[36mhttps://linear.app/project/project/issues\e[0m
+\e[1m│ Dashboard: \e[0m\e[36mhttp://localhost:4000\e[0m
 \e[1m│ Next refresh: \e[0m\e[90mn/a\e[0m
 \e[1m├─ Running\e[0m
 │

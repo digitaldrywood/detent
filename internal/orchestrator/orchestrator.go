@@ -230,6 +230,8 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 }
 
 func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
+	o.markRefresh(state, now)
+
 	issues, err := o.connector.FetchCandidateIssues(ctx)
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
@@ -241,6 +243,17 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	o.pruneBudgetRefusals(state, now)
 	o.trackBlockedCandidates(state, issues, now)
 	o.dispatchReadyIssues(ctx, state, issues, now)
+}
+
+func (o *Orchestrator) markRefresh(state *State, now time.Time) {
+	state.PollInterval = o.cfg.PollInterval
+	state.MaxConcurrentAgents = o.cfg.MaxConcurrentAgents
+	state.LastRefreshAt = now
+	if o.cfg.PollInterval > 0 {
+		state.NextRefreshAt = now.Add(o.cfg.PollInterval)
+		return
+	}
+	state.NextRefreshAt = time.Time{}
 }
 
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
@@ -255,6 +268,9 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	})
 	state.PollInterval = cfg.PollInterval
 	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
+	if !state.LastRefreshAt.IsZero() && cfg.PollInterval > 0 {
+		state.NextRefreshAt = state.LastRefreshAt.Add(cfg.PollInterval)
+	}
 	ticker.Reset(cfg.PollInterval)
 }
 
@@ -521,6 +537,9 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	}
 	if event.usage.LastMessage != "" {
 		running.LastMessage = event.usage.LastMessage
+	}
+	if event.usage.ProcessIdentity != "" {
+		running.ProcessIdentity = event.usage.ProcessIdentity
 	}
 	if diffStatsPresent(event.usage.DiffStats) {
 		running.DiffStats = event.usage.DiffStats

@@ -38,16 +38,19 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 	view := stripANSI(next.(Model).View())
 	for _, want := range []string{
 		"SYMPHONY STATUS",
-		"Dashboard: http://localhost:4000",
+		"Project: https://github.com/digitaldrywood/symphony",
+		"Dashboard: http://localhost:4101",
+		"Next refresh: 2026-05-31T00:16:00Z",
 		"Agents: 1 running | 1 queued | 1 blocked | 1 completed",
 		"Throughput: 7 tps",
 		"Tokens: in 110 | out 220 | total 330",
 		"Budget: enabled current $12.50 | projected $0.75 | day max $50.00 | issue max $5.00",
 		"Rate Limits: codex-primary | primary 90/100 reset 60s | secondary 0/100 reset 30s | credits 0/1",
 		"Running",
-		"HOST",
+		"PID",
 		"DD-44",
 		"In Progress",
+		"4242",
 		"12m 5s / 3",
 		"sess...567890",
 		"turn completed",
@@ -64,6 +67,9 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q:\n%s", want, view)
 		}
+	}
+	if strings.Contains(view, "worker-1") {
+		t.Fatalf("View() rendered worker host as process identity:\n%s", view)
 	}
 }
 
@@ -139,6 +145,16 @@ func testSnapshot() telemetry.Snapshot {
 
 	return telemetry.Snapshot{
 		GeneratedAt: generatedAt,
+		Project: telemetry.Project{
+			DisplayName: "Symphony",
+			URL:         "https://github.com/digitaldrywood/symphony",
+		},
+		DashboardURL: "http://localhost:4101",
+		Refresh: telemetry.Refresh{
+			PollIntervalSeconds: 30,
+			LastRefreshAt:       &generatedAt,
+			NextRefreshAt:       timePointer(generatedAt.Add(30 * time.Second)),
+		},
 		Counts: telemetry.Counts{
 			Running:   1,
 			Queue:     1,
@@ -153,14 +169,15 @@ func testSnapshot() telemetry.Snapshot {
 					State:      "In Progress",
 					Title:      "feat(tui): bubbletea ANSI dashboard on hub",
 				},
-				WorkerHost:     "worker-1",
-				WorkspacePath:  "/tmp/symphony/worktree",
-				SessionID:      "session-1234567890",
-				TurnCount:      3,
-				StartedAt:      startedAt,
-				LastEvent:      "turn_completed",
-				LastMessage:    "turn completed",
-				RuntimeSeconds: 12*60 + 5,
+				WorkerHost:      "worker-1",
+				ProcessIdentity: "4242",
+				WorkspacePath:   "/tmp/symphony/worktree",
+				SessionID:       "session-1234567890",
+				TurnCount:       3,
+				StartedAt:       startedAt,
+				LastEvent:       "turn_completed",
+				LastMessage:     "turn completed",
+				RuntimeSeconds:  12*60 + 5,
 				Tokens: telemetry.Tokens{
 					Input:  40,
 					Output: 60,
@@ -253,4 +270,8 @@ func testSnapshot() telemetry.Snapshot {
 func stripANSI(value string) string {
 	ansi := regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	return ansi.ReplaceAllString(value, "")
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
 }

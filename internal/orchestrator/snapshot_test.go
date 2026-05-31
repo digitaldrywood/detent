@@ -46,18 +46,21 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	blockedAt := now.Add(-3 * time.Minute)
 
 	state := newState(normalizeConfig(Config{}))
+	state.LastRefreshAt = now.Add(-30 * time.Second)
+	state.NextRefreshAt = now.Add(30 * time.Second)
 	state.Running["i-2"] = Running{
-		Issue:       connector.Issue{ID: "i-2", Identifier: "ISS-2", Title: "Two", State: "In Progress", URL: "u2"},
-		Attempt:     1,
-		StartedAt:   startedAt,
-		WorkerHost:  "host-b",
-		SessionID:   "thread-2-turn-2",
-		TurnCount:   2,
-		LastEventAt: now.Add(-10 * time.Second),
-		LastEvent:   "agent_message_delta",
-		LastMessage: "editing dashboard telemetry",
-		DiffStats:   DiffStats{FilesChanged: 3, AddedLines: 12, RemovedLines: 4, Status: "ok"},
-		Tokens:      CodexTotals{InputTokens: 20, OutputTokens: 8, TotalTokens: 28, RuntimeSeconds: 30},
+		Issue:           connector.Issue{ID: "i-2", Identifier: "ISS-2", Title: "Two", State: "In Progress", URL: "u2"},
+		Attempt:         1,
+		StartedAt:       startedAt,
+		WorkerHost:      "host-b",
+		ProcessIdentity: "4242",
+		SessionID:       "thread-2-turn-2",
+		TurnCount:       2,
+		LastEventAt:     now.Add(-10 * time.Second),
+		LastEvent:       "agent_message_delta",
+		LastMessage:     "editing dashboard telemetry",
+		DiffStats:       DiffStats{FilesChanged: 3, AddedLines: 12, RemovedLines: 4, Status: "ok"},
+		Tokens:          CodexTotals{InputTokens: 20, OutputTokens: 8, TotalTokens: 28, RuntimeSeconds: 30},
 	}
 	state.Running["i-1"] = Running{
 		Issue:     connector.Issue{ID: "i-1", Identifier: "ISS-1", Title: "One", State: "In Progress"},
@@ -104,6 +107,9 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if snapshot.Running[1].WorkerHost != "host-b" {
 		t.Fatalf("Running[1].WorkerHost = %q, want host-b", snapshot.Running[1].WorkerHost)
+	}
+	if snapshot.Running[1].ProcessIdentity != "4242" {
+		t.Fatalf("Running[1].ProcessIdentity = %q, want 4242", snapshot.Running[1].ProcessIdentity)
 	}
 	if snapshot.Running[0].Identifier != "ISS-1" || snapshot.Running[0].Title != "One" {
 		t.Fatalf("Running[0] issue mapping = %#v", snapshot.Running[0].Issue)
@@ -172,6 +178,9 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if snapshot.RateLimits == nil || snapshot.RateLimits.LimitID != "lim" {
 		t.Fatalf("RateLimits = %#v, want lim", snapshot.RateLimits)
+	}
+	if snapshot.Refresh.PollIntervalSeconds != 30 || snapshot.Refresh.LastRefreshAt == nil || snapshot.Refresh.NextRefreshAt == nil {
+		t.Fatalf("Refresh = %#v, want poll interval and refresh timestamps", snapshot.Refresh)
 	}
 }
 

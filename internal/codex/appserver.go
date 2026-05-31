@@ -67,6 +67,7 @@ type UpdateHandler func(Update) error
 type UpdateType string
 
 const (
+	UpdateProcessStarted    UpdateType = "process_started"
 	UpdateAgentMessageDelta UpdateType = "agent_message_delta"
 	UpdateTokenUsage        UpdateType = "token_usage"
 	UpdateRateLimits        UpdateType = "rate_limits"
@@ -75,16 +76,17 @@ const (
 )
 
 type Update struct {
-	Type       UpdateType
-	Method     string
-	ThreadID   string
-	TurnID     string
-	ItemID     string
-	Delta      string
-	Status     string
-	Tokens     TokenUsage
-	RateLimits *RateLimitSnapshot
-	Payload    json.RawMessage
+	Type            UpdateType
+	Method          string
+	ProcessIdentity string
+	ThreadID        string
+	TurnID          string
+	ItemID          string
+	Delta           string
+	Status          string
+	Tokens          TokenUsage
+	RateLimits      *RateLimitSnapshot
+	Payload         json.RawMessage
 }
 
 type TokenUsage struct {
@@ -183,6 +185,16 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 			err = closeErr
 		}
 	}()
+
+	if identity := transportProcessIdentity(transport); identity != "" {
+		if err := emitUpdate(Update{
+			Type:            UpdateProcessStarted,
+			Method:          "process/start",
+			ProcessIdentity: identity,
+		}, onUpdate); err != nil {
+			return RunTurnResult{}, err
+		}
+	}
 
 	if err := s.initialize(ctx, transport, onUpdate); err != nil {
 		return RunTurnResult{}, err
@@ -490,6 +502,16 @@ func emitUpdate(update Update, onUpdate UpdateHandler) error {
 		return fmt.Errorf("handle codex update: %w", err)
 	}
 	return nil
+}
+
+func transportProcessIdentity(transport Transport) string {
+	provider, ok := transport.(interface {
+		ProcessIdentity() string
+	})
+	if !ok {
+		return ""
+	}
+	return provider.ProcessIdentity()
 }
 
 func updateFromMessage(msg Message) (Update, bool, error) {

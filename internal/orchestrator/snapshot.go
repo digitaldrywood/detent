@@ -14,12 +14,17 @@ import (
 func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: now,
-		Running:     runningSnapshots(s.Running),
-		Queue:       queueSnapshots(s.Retry),
-		Blocked:     blockedSnapshots(s.Blocked),
-		Completed:   completedSnapshots(s.Completed),
-		RateLimits:  cloneRateLimits(s.RateLimits),
-		Tokens:      tokensFromCodexTotals(s.liveCodexTotals()),
+		Refresh: telemetry.Refresh{
+			PollIntervalSeconds: int64(s.PollInterval / time.Second),
+			LastRefreshAt:       timePointer(s.LastRefreshAt),
+			NextRefreshAt:       timePointer(s.NextRefreshAt),
+		},
+		Running:    runningSnapshots(s.Running),
+		Queue:      queueSnapshots(s.Retry),
+		Blocked:    blockedSnapshots(s.Blocked),
+		Completed:  completedSnapshots(s.Completed),
+		RateLimits: cloneRateLimits(s.RateLimits),
+		Tokens:     tokensFromCodexTotals(s.liveCodexTotals()),
 		Budget: telemetry.Budget{
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
 		},
@@ -40,20 +45,21 @@ func runningSnapshots(running map[string]Running) []telemetry.Running {
 		entry := running[id]
 		lastEventAt := timePointer(entry.LastEventAt)
 		out = append(out, telemetry.Running{
-			Issue:          telemetryIssue(entry.Issue),
-			WorkerHost:     entry.WorkerHost,
-			SessionID:      entry.SessionID,
-			StartedAt:      entry.StartedAt,
-			LastEventAt:    lastEventAt,
-			LastEvent:      entry.LastEvent,
-			LastMessage:    entry.LastMessage,
-			TurnCount:      entry.TurnCount,
-			RuntimeSeconds: entry.Tokens.RuntimeSeconds,
-			DiffAdded:      entry.DiffStats.AddedLines,
-			DiffRemoved:    entry.DiffStats.RemovedLines,
-			DiffFiles:      entry.DiffStats.FilesChanged,
-			DiffStatus:     entry.DiffStats.Status,
-			Tokens:         tokensFromCodexTotals(entry.Tokens),
+			Issue:           telemetryIssue(entry.Issue),
+			WorkerHost:      entry.WorkerHost,
+			ProcessIdentity: entry.ProcessIdentity,
+			SessionID:       entry.SessionID,
+			StartedAt:       entry.StartedAt,
+			LastEventAt:     lastEventAt,
+			LastEvent:       entry.LastEvent,
+			LastMessage:     entry.LastMessage,
+			TurnCount:       entry.TurnCount,
+			RuntimeSeconds:  entry.Tokens.RuntimeSeconds,
+			DiffAdded:       entry.DiffStats.AddedLines,
+			DiffRemoved:     entry.DiffStats.RemovedLines,
+			DiffFiles:       entry.DiffStats.FilesChanged,
+			DiffStatus:      entry.DiffStats.Status,
+			Tokens:          tokensFromCodexTotals(entry.Tokens),
 		})
 	}
 	return out

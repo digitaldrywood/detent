@@ -43,11 +43,12 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	codexClient := &fakeCodexClient{
 		updates: []codex.Update{
 			{
-				Type:     codex.UpdateAgentMessageDelta,
-				ThreadID: "thread-1",
-				TurnID:   "turn-1",
-				ItemID:   "item-1",
-				Delta:    "hello",
+				Type:            codex.UpdateAgentMessageDelta,
+				ProcessIdentity: "4242",
+				ThreadID:        "thread-1",
+				TurnID:          "turn-1",
+				ItemID:          "item-1",
+				Delta:           "hello",
 			},
 			{
 				Type:     codex.UpdateTokenUsage,
@@ -154,6 +155,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if usageUpdates[0].SessionID != "thread-1-turn-1" || usageUpdates[0].TurnCount != 1 {
 		t.Fatalf("first usage update = %#v, want live session and one turn", usageUpdates[0])
+	}
+	if usageUpdates[0].ProcessIdentity != "4242" {
+		t.Fatalf("first usage update ProcessIdentity = %q, want 4242", usageUpdates[0].ProcessIdentity)
 	}
 	if usageUpdates[0].LastEvent != "agent_message_delta" || usageUpdates[0].LastMessage != "hello" {
 		t.Fatalf("first usage update activity = %#v, want agent message", usageUpdates[0])

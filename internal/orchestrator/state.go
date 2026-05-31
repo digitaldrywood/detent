@@ -10,6 +10,8 @@ import (
 type State struct {
 	PollInterval        time.Duration
 	MaxConcurrentAgents int
+	LastRefreshAt       time.Time
+	NextRefreshAt       time.Time
 	Running             map[string]Running
 	Claimed             map[string]Claimed
 	Blocked             map[string]Blocked
@@ -22,17 +24,18 @@ type State struct {
 }
 
 type Running struct {
-	Issue       connector.Issue
-	Attempt     int
-	StartedAt   time.Time
-	WorkerHost  string
-	SessionID   string
-	TurnCount   int
-	LastEventAt time.Time
-	LastEvent   string
-	LastMessage string
-	DiffStats   DiffStats
-	Tokens      CodexTotals
+	Issue           connector.Issue
+	Attempt         int
+	StartedAt       time.Time
+	WorkerHost      string
+	ProcessIdentity string
+	SessionID       string
+	TurnCount       int
+	LastEventAt     time.Time
+	LastEvent       string
+	LastMessage     string
+	DiffStats       DiffStats
+	Tokens          CodexTotals
 }
 
 type Claimed struct {
@@ -80,6 +83,8 @@ func (s State) clone() State {
 	cloned := State{
 		PollInterval:        s.PollInterval,
 		MaxConcurrentAgents: s.MaxConcurrentAgents,
+		LastRefreshAt:       s.LastRefreshAt,
+		NextRefreshAt:       s.NextRefreshAt,
 		Running:             make(map[string]Running, len(s.Running)),
 		Claimed:             make(map[string]Claimed, len(s.Claimed)),
 		Blocked:             make(map[string]Blocked, len(s.Blocked)),
