@@ -48,18 +48,29 @@ type Dependencies struct {
 	Logger    *slog.Logger
 }
 
+type RuntimeUpdate struct {
+	Config    Config
+	Connector connector.Connector
+}
+
 type Orchestrator struct {
 	cfg           Config
 	connector     connector.Connector
 	supervisor    *runpkg.Supervisor
 	logger        *slog.Logger
 	stateRequests chan stateRequest
+	configUpdates chan configUpdateRequest
 	runResults    chan runpkg.Completion
 	done          chan struct{}
 }
 
 type stateRequest struct {
 	reply chan State
+}
+
+type configUpdateRequest struct {
+	update RuntimeUpdate
+	reply  chan struct{}
 }
 
 func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
@@ -114,6 +125,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		supervisor:    supervisor,
 		logger:        logger,
 		stateRequests: make(chan stateRequest),
+		configUpdates: make(chan configUpdateRequest),
 		runResults:    make(chan runpkg.Completion),
 		done:          make(chan struct{}),
 	}, nil
@@ -139,9 +151,43 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.tick(ctx, &state, now)
 		case result := <-o.runResults:
 			o.handleRunResult(&state, result)
+		case update := <-o.configUpdates:
+			o.applyRuntimeUpdate(&state, update.update, ticker)
+			update.reply <- struct{}{}
 		case request := <-o.stateRequests:
 			request.reply <- state.clone()
 		}
+	}
+}
+
+func (o *Orchestrator) UpdateConfig(ctx context.Context, cfg Config) error {
+	return o.UpdateRuntime(ctx, RuntimeUpdate{Config: cfg})
+}
+
+func (o *Orchestrator) UpdateRuntime(ctx context.Context, update RuntimeUpdate) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	request := configUpdateRequest{
+		update: update,
+		reply:  make(chan struct{}, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case o.configUpdates <- request:
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case <-request.reply:
+		return nil
 	}
 }
 
@@ -181,6 +227,21 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	o.pruneBudgetRefusals(state, now)
 	o.trackBlockedCandidates(state, issues, now)
 	o.dispatchReadyIssues(ctx, state, issues, now)
+}
+
+func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
+	cfg := normalizeConfig(update.Config)
+	o.cfg = cfg
+	if update.Connector != nil {
+		o.connector = update.Connector
+	}
+	o.supervisor.UpdateConfig(runpkg.SupervisorConfig{
+		MaxRetryBackoff:       cfg.MaxRetryBackoff,
+		FailureRetryBaseDelay: cfg.FailureRetryBaseDelay,
+	})
+	state.PollInterval = cfg.PollInterval
+	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
+	ticker.Reset(cfg.PollInterval)
 }
 
 func (o *Orchestrator) trackBlockedCandidates(state *State, issues []connector.Issue, now time.Time) {

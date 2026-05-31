@@ -139,6 +139,53 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 }
 
+func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-41", Branch: "symphony/issue-41"},
+	}
+	codexClient := &fakeCodexClient{}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Codex: config.Codex{ThreadSandbox: "workspace-write"},
+			},
+			Prompt: "initial {{ issue.identifier }}",
+		},
+		Workspace: workspaceBackend,
+		Codex:     codexClient,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	runner.UpdateWorkflow(config.Workflow{
+		Config: config.Config{
+			Codex: config.Codex{ThreadSandbox: "danger-full-access"},
+		},
+		Prompt: "reloaded {{ issue.identifier }}",
+	})
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-41",
+			Identifier: "digitaldrywood/symphony-go#41",
+			Title:      "Reload workflow",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if !strings.Contains(codexClient.request.Prompt, "reloaded digitaldrywood/symphony-go#41") {
+		t.Fatalf("codex prompt = %q, want reloaded workflow prompt", codexClient.request.Prompt)
+	}
+	if codexClient.request.ThreadSandbox != "danger-full-access" {
+		t.Fatalf("ThreadSandbox = %q, want danger-full-access", codexClient.request.ThreadSandbox)
+	}
+}
+
 func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	t.Parallel()
 

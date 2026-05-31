@@ -111,6 +111,115 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 	})
 }
 
+func TestUpdateConfigAppliesBeforeNextTick(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-reload", "digitaldrywood/symphony-go#41", "Todo")
+	tracker := newFakeConnector(issue)
+	runner := newBlockingRunner()
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        time.Hour,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Backlog"},
+		TerminalStates:      []string{"Done"},
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected run before config update = %#v", request)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	updateCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := orch.UpdateConfig(updateCtx, orchestrator.Config{
+		PollInterval:        5 * time.Millisecond,
+		MaxConcurrentAgents: 2,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+	}); err != nil {
+		t.Fatalf("UpdateConfig() error = %v", err)
+	}
+
+	request := receiveRunRequest(t, runner.started)
+	if request.Issue.ID != issue.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
+	}
+
+	state, err := orch.State(context.Background())
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+	if state.PollInterval != 5*time.Millisecond {
+		t.Fatalf("State().PollInterval = %s, want 5ms", state.PollInterval)
+	}
+	if state.MaxConcurrentAgents != 2 {
+		t.Fatalf("State().MaxConcurrentAgents = %d, want 2", state.MaxConcurrentAgents)
+	}
+
+	close(runner.release)
+}
+
+func TestUpdateRuntimeSwapsConnectorBeforeNextTick(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-reload-connector", "digitaldrywood/symphony-go#41", "Todo")
+	initialTracker := newFakeConnector()
+	reloadedTracker := newFakeConnector(issue)
+	runner := newBlockingRunner()
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        time.Hour,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+	}, orchestrator.Dependencies{
+		Connector: initialTracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected run before connector update = %#v", request)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	updateCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := orch.UpdateRuntime(updateCtx, orchestrator.RuntimeUpdate{
+		Config: orchestrator.Config{
+			PollInterval:        5 * time.Millisecond,
+			MaxConcurrentAgents: 1,
+			ActiveStates:        []string{"Todo"},
+			TerminalStates:      []string{"Done"},
+		},
+		Connector: reloadedTracker,
+	}); err != nil {
+		t.Fatalf("UpdateRuntime() error = %v", err)
+	}
+
+	request := receiveRunRequest(t, runner.started)
+	if request.Issue.ID != issue.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
+	}
+
+	close(runner.release)
+}
+
 func TestRunDispatchesByStateRankBeforePriorityAndAge(t *testing.T) {
 	t.Parallel()
 

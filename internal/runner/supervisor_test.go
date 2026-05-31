@@ -75,6 +75,27 @@ func TestSupervisorAppliesCappedBackoffForRunnerErrors(t *testing.T) {
 	}
 }
 
+func TestSupervisorUpdateConfigChangesRetryDelay(t *testing.T) {
+	t.Parallel()
+
+	supervisor, err := NewSupervisor(errorBackend{}, SupervisorConfig{
+		FailureRetryBaseDelay: 10 * time.Second,
+		MaxRetryBackoff:       25 * time.Second,
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	supervisor.UpdateConfig(SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       2 * time.Second,
+	})
+
+	if got := supervisor.RetryDelay(4); got != 2*time.Second {
+		t.Fatalf("RetryDelay(4) = %s, want 2s", got)
+	}
+}
+
 func TestSupervisorDispatchSendsCompletion(t *testing.T) {
 	t.Parallel()
 

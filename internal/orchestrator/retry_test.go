@@ -51,6 +51,42 @@ func TestDispatchReadyIssuesKeepsRetryAttemptWhenCapacityIsFull(t *testing.T) {
 	}
 }
 
+func TestApplyRuntimeUpdateRefreshesSupervisorRetryConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		PollInterval:           time.Hour,
+		MaxConcurrentAgents:    1,
+		MaxRetryBackoff:        time.Minute,
+		FailureRetryBaseDelay:  10 * time.Second,
+		ActiveStates:           []string{"Todo"},
+		TerminalStates:         []string{"Done"},
+		ContinuationRetryDelay: time.Second,
+	})
+	orch := Orchestrator{
+		cfg:        cfg,
+		supervisor: newTestSupervisor(t, FakeRunner{}, cfg),
+	}
+	state := newState(cfg)
+	ticker := time.NewTicker(time.Hour)
+	defer ticker.Stop()
+
+	orch.applyRuntimeUpdate(&state, RuntimeUpdate{
+		Config: Config{
+			PollInterval:          time.Hour,
+			MaxConcurrentAgents:   1,
+			MaxRetryBackoff:       2 * time.Second,
+			FailureRetryBaseDelay: time.Second,
+			ActiveStates:          []string{"Todo"},
+			TerminalStates:        []string{"Done"},
+		},
+	}, ticker)
+
+	if got := orch.supervisor.RetryDelay(4); got != 2*time.Second {
+		t.Fatalf("RetryDelay(4) = %s, want reloaded 2s cap", got)
+	}
+}
+
 func TestDispatchReadyIssuesRanksDueRetriesWithCandidates(t *testing.T) {
 	t.Parallel()
 
