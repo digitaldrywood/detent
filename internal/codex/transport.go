@@ -32,6 +32,7 @@ type localTransport struct {
 	stdin     io.WriteCloser
 	codec     *Codec
 	received  chan transportResult
+	readDone  chan struct{}
 	done      chan struct{}
 	sendLock  chan struct{}
 	waitErr   error
@@ -82,6 +83,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 		stdin:    stdin,
 		codec:    NewCodec(stdout, stdin),
 		received: make(chan transportResult, 64),
+		readDone: make(chan struct{}),
 		done:     make(chan struct{}),
 		sendLock: make(chan struct{}, 1),
 	}
@@ -207,6 +209,7 @@ func (t *localTransport) closedError() error {
 }
 
 func (t *localTransport) readLoop() {
+	defer close(t.readDone)
 	defer close(t.received)
 
 	for {
@@ -221,6 +224,7 @@ func (t *localTransport) readLoop() {
 }
 
 func (t *localTransport) wait() {
+	<-t.readDone
 	err := t.cmd.Wait()
 	t.waitMu.Lock()
 	t.waitErr = err
