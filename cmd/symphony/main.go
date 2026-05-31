@@ -8,8 +8,6 @@ import (
 	"io"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 
 	"github.com/spf13/cobra"
 
@@ -91,8 +89,4 @@ func runShadowRun(out io.Writer, inputPath string, allowDiff bool) error {
 		return shadow.ErrDifferences
 	}
 	return nil
-}
-
-func newSignalContext(parent context.Context) (context.Context, context.CancelFunc) {
-	return signal.NotifyContext(parent, os.Interrupt, syscall.SIGTERM)
 }

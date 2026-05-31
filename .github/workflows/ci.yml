@@ -84,10 +84,27 @@ jobs:
       - name: Check coverage
         run: make test-cover
 
+  windows-core:
+    name: Windows Core
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Run non-agent core tests
+        run: go test ./cmd/symphony ./internal/config ./internal/config/global ./internal/store ./internal/web ./internal/tui ./internal/orchestrator ./internal/cli
+
+      - name: Build command
+        run: go build ./cmd/symphony
+
   goreleaser-snapshot:
     name: GoReleaser Snapshot
     runs-on: ubuntu-latest
-    needs: [lint, verify, test-cover]
+    needs: [lint, verify, test-cover, windows-core]
     steps:
       - uses: actions/checkout@v5
         with:
