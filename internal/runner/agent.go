@@ -387,6 +387,7 @@ func (p *codexRunProgress) apply(update codex.Update, eventAt time.Time) {
 	}
 	p.lastEventAt = eventAt.UTC()
 
+	eventMessage := ""
 	switch update.Type {
 	case codex.UpdateAgentMessageDelta:
 		key := update.ItemID
@@ -395,21 +396,58 @@ func (p *codexRunProgress) apply(update codex.Update, eventAt time.Time) {
 		}
 		p.messages[key] += update.Delta
 		p.lastMessage = strings.TrimSpace(p.messages[key])
+		eventMessage = p.lastMessage
 	case codex.UpdateTurnStarted:
 		p.lastMessage = "turn started"
+		eventMessage = p.lastMessage
 	case codex.UpdateTurnCompleted:
 		status := update.Status
 		if status == "" {
 			status = "completed"
 		}
 		p.lastMessage = "turn " + status
+		eventMessage = p.lastMessage
+	case codex.UpdateTokenUsage:
+		eventMessage = tokenUsageActivityMessage(update.Tokens)
+	case codex.UpdateRateLimits:
+		eventMessage = rateLimitsActivityMessage(update.RateLimits)
+	case codex.UpdateProcessStarted:
+		if p.processIdentity != "" {
+			eventMessage = "process " + p.processIdentity + " started"
+		} else {
+			eventMessage = "process started"
+		}
 	}
 
 	p.addRecentEvent(telemetry.ActivityEvent{
 		At:      p.lastEventAt,
 		Event:   p.lastEvent,
-		Message: p.lastMessage,
+		Message: eventMessage,
 	})
+}
+
+func tokenUsageActivityMessage(tokens codex.TokenUsage) string {
+	if tokens.TotalTokens > 0 && (tokens.InputTokens > 0 || tokens.OutputTokens > 0) {
+		return fmt.Sprintf("%d total tokens (%d in, %d out)", tokens.TotalTokens, tokens.InputTokens, tokens.OutputTokens)
+	}
+	if tokens.TotalTokens > 0 {
+		return fmt.Sprintf("%d total tokens", tokens.TotalTokens)
+	}
+	return "tokens updated"
+}
+
+func rateLimitsActivityMessage(snapshot *codex.RateLimitSnapshot) string {
+	if snapshot == nil {
+		return "rate limits updated"
+	}
+	name := strings.TrimSpace(snapshot.LimitName)
+	if name == "" {
+		name = strings.TrimSpace(snapshot.LimitID)
+	}
+	if name == "" {
+		return "rate limits updated"
+	}
+	return name + " rate limits updated"
 }
 
 func (p *codexRunProgress) turnCount() int {

@@ -177,11 +177,17 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[1].Tokens.RuntimeSeconds != 2 {
 		t.Fatalf("second usage update runtime = %v, want 2", usageUpdates[1].Tokens.RuntimeSeconds)
 	}
+	if len(usageUpdates[1].RecentEvents) != 2 || usageUpdates[1].RecentEvents[1].Event != "token_usage" || usageUpdates[1].RecentEvents[1].Message != "125 total tokens (100 in, 25 out)" {
+		t.Fatalf("second usage update RecentEvents = %#v, want token-specific activity", usageUpdates[1].RecentEvents)
+	}
 	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.RemovedLines != 0 {
 		t.Fatalf("second usage update DiffStats = %#v, want cached diff", usageUpdates[1].DiffStats)
 	}
 	if usageUpdates[2].RateLimits == nil || usageUpdates[2].RateLimits.LimitID != "codex-primary" {
 		t.Fatalf("third usage update RateLimits = %#v, want codex-primary", usageUpdates[2].RateLimits)
+	}
+	if len(usageUpdates[2].RecentEvents) != 3 || usageUpdates[2].RecentEvents[2].Event != "rate_limits" || usageUpdates[2].RecentEvents[2].Message != "Codex primary rate limits updated" {
+		t.Fatalf("third usage update RecentEvents = %#v, want rate-limit-specific activity", usageUpdates[2].RecentEvents)
 	}
 	if usageUpdates[2].DiffStats.FilesChanged != 2 || usageUpdates[2].DiffStats.AddedLines != 5 || usageUpdates[2].DiffStats.RemovedLines != 1 {
 		t.Fatalf("third usage update DiffStats = %#v, want refreshed diff", usageUpdates[2].DiffStats)
