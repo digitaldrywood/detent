@@ -207,9 +207,9 @@ func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 		}
 		rows = append(rows, rateLimitRow{
 			Name:        name,
-			Remaining:   formatInt(bucket.Remaining),
-			Used:        formatInt(bucket.Used),
-			Limit:       formatLimit(bucket.Limit),
+			Remaining:   formatInt(bucket.Remaining) + " left",
+			Used:        formatInt(bucket.Used) + " used",
+			Limit:       formatLimit(bucket.Limit) + " limit",
 			Reset:       resetLabel(bucket),
 			UsedPercent: usedPercent(bucket),
 		})
@@ -217,8 +217,46 @@ func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 
 	appendBucket("Primary", limits.Primary)
 	appendBucket("Secondary", limits.Secondary)
-	appendBucket("Credits", limits.Credits)
+	if limits.Credits != nil {
+		rows = append(rows, creditRateLimitRow(limits.Credits))
+	}
 	return rows
+}
+
+func creditRateLimitRow(bucket *telemetry.RateLimitBucket) rateLimitRow {
+	row := rateLimitRow{
+		Name:        "Credits",
+		Remaining:   formatInt(bucket.Remaining) + " left",
+		Used:        formatInt(bucket.Used) + " used",
+		Limit:       formatLimit(bucket.Limit) + " limit",
+		Reset:       resetLabel(bucket),
+		UsedPercent: usedPercent(bucket),
+	}
+
+	switch {
+	case bucket.Unlimited:
+		row.Remaining = "unlimited credits"
+		row.Used = "available"
+		row.Limit = "n/a limit"
+		row.UsedPercent = 0
+	case bucket.HasCredits && strings.TrimSpace(bucket.Balance) != "":
+		row.Remaining = strings.TrimSpace(bucket.Balance) + " credits"
+		row.Used = "available"
+		row.Limit = "n/a limit"
+		row.UsedPercent = 0
+	case bucket.HasCredits:
+		row.Remaining = "available credits"
+		row.Used = "available"
+		row.Limit = "n/a limit"
+		row.UsedPercent = 0
+	case bucket.Limit == 0 && bucket.Remaining == 0 && bucket.Used == 0:
+		row.Remaining = "no credits"
+		row.Used = "unavailable"
+		row.Limit = "n/a limit"
+		row.UsedPercent = 0
+	}
+
+	return row
 }
 
 func rateLimitName(limits *telemetry.RateLimits) string {

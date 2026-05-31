@@ -427,7 +427,7 @@ func runningTableHeader(eventWidth int, s styles) string {
 	cells := []string{
 		formatCell("ID", runningIDWidth, alignLeft),
 		formatCell("STAGE", runningStageWidth, alignLeft),
-		formatCell("PID", runningHostWidth, alignLeft),
+		formatCell("HOST", runningHostWidth, alignLeft),
 		formatCell("AGE / TURN", runningAgeWidth, alignLeft),
 		formatCell("TOKENS", runningTokensWidth, alignLeft),
 		formatCell("SESSION", runningSessionWidth, alignLeft),
@@ -645,13 +645,13 @@ func newStyles() styles {
 }
 
 const (
-	defaultTerminalColumns = 115
+	defaultTerminalColumns = 123
 	runningIDWidth         = 8
 	runningStageWidth      = 14
-	runningHostWidth       = 8
+	runningHostWidth       = 12
 	runningAgeWidth        = 12
 	runningTokensWidth     = 10
-	runningSessionWidth    = 14
+	runningSessionWidth    = 18
 	runningEventMinWidth   = 12
 	runningRowChromeWidth  = 10
 	runningColumnGaps      = 6

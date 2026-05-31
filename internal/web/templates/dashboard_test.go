@@ -17,7 +17,6 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	perDay := 100.0
 	perIssue := 10.0
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
-	resetAt := now.Add(45 * time.Minute)
 
 	html := renderDashboard(t, templates.DashboardData{
 		Title:         "Symphony",
@@ -73,10 +72,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 					ResetInSeconds: 3_600,
 				},
 				Credits: &telemetry.RateLimitBucket{
-					Remaining: 45,
-					Used:      5,
-					Limit:     50,
-					ResetAt:   &resetAt,
+					HasCredits: true,
+					Balance:    "7.25",
 				},
 			},
 			Tokens: telemetry.Tokens{
@@ -108,6 +105,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Primary",
 		"800",
 		"Credits",
+		"7.25 credits",
+		"available",
 		"Token sparkline",
 		"14:55: 20,000 tokens",
 		"15:00: 200,000 tokens",
