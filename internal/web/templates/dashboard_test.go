@@ -434,6 +434,11 @@ func TestDashboardRendersHealthIndicators(t *testing.T) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
 		}
 	}
+	snapshotIndex := strings.Index(html, `id="snapshot"`)
+	healthIndex := strings.Index(html, `aria-label="Runtime status"`)
+	if snapshotIndex == -1 || healthIndex == -1 || healthIndex < snapshotIndex {
+		t.Fatalf("dashboard health indicators must render inside the SSE snapshot surface:\n%s", html)
+	}
 
 	offlineHTML := renderDashboard(t, templates.DashboardData{
 		Title:         "Symphony",

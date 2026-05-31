@@ -88,7 +88,7 @@ templ Dashboard(data DashboardData) {
 									<span class="truncate font-mono text-xs text-foreground">{ generatedAtLabel(data.Snapshot) }</span>
 								</span>
 							</div>
-							@dashboardControls(data.Snapshot)
+							@dashboardDensityControls()
 						</div>
 					</div>
 					@dashboardNav("dashboard")
@@ -102,6 +102,7 @@ templ Dashboard(data DashboardData) {
 }
 
 templ SnapshotView(data DashboardData) {
+	@dashboardHealth(data.Snapshot)
 	if data.Snapshot.GeneratedAt.IsZero() {
 		@snapshotLoading()
 	}
@@ -264,8 +265,8 @@ templ LiveTick(timestamp time.Time) {
 	<span class="truncate font-mono text-xs text-foreground">Updated { timestamp.UTC().Format("15:04:05 UTC") }</span>
 }
 
-templ dashboardControls(snapshot telemetry.Snapshot) {
-	<div class="flex w-full flex-wrap items-center gap-2 lg:justify-end">
+templ dashboardHealth(snapshot telemetry.Snapshot) {
+	<section class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card p-3 shadow-sm" aria-label="Dashboard health">
 		<span class={ "inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + runtimeStatusClass(snapshot) } aria-label="Runtime status">
 			<span class="h-2 w-2 rounded-full bg-current"></span>
 			<span>{ runtimeStatusLabel(snapshot) }</span>
@@ -274,6 +275,11 @@ templ dashboardControls(snapshot telemetry.Snapshot) {
 			<span class="h-2 w-2 rounded-full bg-current"></span>
 			<span>{ statsStatusLabel(snapshot) }</span>
 		</span>
+	</section>
+}
+
+templ dashboardDensityControls() {
+	<div class="flex w-full flex-wrap items-center gap-2 lg:justify-end">
 		<div class="density-control inline-grid min-h-8 grid-cols-2 overflow-hidden rounded-md border border-border bg-muted" role="group" aria-label="Dashboard density">
 			<button type="button" class="density-button px-3 text-xs font-medium text-muted-foreground" data-density-choice="comfortable" aria-pressed="true">Comfortable</button>
 			<button type="button" class="density-button px-3 text-xs font-medium text-muted-foreground" data-density-choice="compact" aria-pressed="false">Compact</button>
