@@ -566,6 +566,87 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 	}
 }
 
+func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "responsive-running",
+						Identifier: "digitaldrywood/symphony#170",
+						URL:        "https://github.com/digitaldrywood/symphony/issues/170",
+						Title:      "Responsive dashboard",
+						State:      "In Progress",
+					},
+					SessionID:      "thread-responsive-running",
+					StartedAt:      now.Add(-5 * time.Minute),
+					LastEvent:      "turn_completed",
+					LastMessage:    "responsive pass",
+					RuntimeSeconds: 300,
+				},
+			},
+			Queue: []telemetry.Queued{
+				{
+					Issue: telemetry.Issue{
+						ID:         "responsive-retry",
+						Identifier: "digitaldrywood/symphony#171",
+						Title:      "Retry responsive dashboard",
+					},
+					Attempt: 1,
+				},
+			},
+			Blocked: []telemetry.Blocked{
+				{
+					Issue: telemetry.Issue{
+						ID:         "responsive-blocked",
+						Identifier: "digitaldrywood/symphony#172",
+						Title:      "Blocked responsive dashboard",
+						State:      "Blocked",
+					},
+					SessionID: "thread-responsive-blocked",
+				},
+			},
+			Completed: []telemetry.Completed{
+				{
+					Issue: telemetry.Issue{
+						ID:         "responsive-recent",
+						Identifier: "digitaldrywood/symphony#173",
+						Title:      "Recent responsive dashboard",
+					},
+					SessionID:   "thread-responsive-recent",
+					CompletedAt: now,
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"overflow-x-hidden",
+		"px-3 py-3",
+		"grid grid-cols-3 gap-2",
+		"min-h-11",
+		"min-h-10",
+		"h-10 w-10",
+		"sm:hidden",
+		"hidden overflow-hidden rounded-md border border-border sm:block",
+		"running-mobile-issue-popover-0",
+		"retry-mobile-issue-popover-0",
+		"blocked-mobile-issue-popover-0",
+		"recent-mobile-issue-popover-0",
+		"grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing responsive marker %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestDashboardRendersUnknownDiffStatusAsPending(t *testing.T) {
 	t.Parallel()
 

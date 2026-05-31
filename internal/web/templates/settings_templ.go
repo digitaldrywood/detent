@@ -42,7 +42,7 @@ func Settings(data SettingsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</title><script>\n\t\t\t\tdocument.documentElement.classList.toggle(\"dark\", Boolean(window.matchMedia && window.matchMedia(\"(prefers-color-scheme: dark)\").matches))\n\t\t\t\tfunction copySettingValue(button) {\n\t\t\t\t\tconst value = button.dataset.copy || \"\"\n\t\t\t\t\tconst label = button.querySelector(\"[data-copy-label]\")\n\t\t\t\t\tconst reset = button.dataset.label || \"Copy\"\n\t\t\t\t\tconst done = () => {\n\t\t\t\t\t\tif (!label) return\n\t\t\t\t\t\tlabel.textContent = \"Copied!\"\n\t\t\t\t\t\tclearTimeout(button._copyTimer)\n\t\t\t\t\t\tbutton._copyTimer = setTimeout(() => { label.textContent = reset }, 1200)\n\t\t\t\t\t}\n\t\t\t\t\tif (navigator.clipboard && navigator.clipboard.writeText) {\n\t\t\t\t\t\tnavigator.clipboard.writeText(value).then(done, done)\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\tdone()\n\t\t\t\t}\n\t\t\t</script><link rel=\"icon\" href=\"data:,\"><link rel=\"stylesheet\" href=\"/static/css/output.css\"></head><body class=\"min-h-screen bg-background text-foreground antialiased\"><main class=\"mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6 lg:px-8\"><header class=\"rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between\"><div class=\"min-w-0\"><div class=\"flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground\"><span class=\"inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent\"><span class=\"h-1.5 w-1.5 rounded-full bg-accent\"></span> <span>Symphony</span></span> <span>Configuration</span></div><h1 class=\"mt-2 text-2xl font-semibold text-foreground sm:text-3xl\">Settings</h1><p class=\"mt-1 max-w-3xl text-sm text-muted-foreground\">Running configuration, project paths, and runtime files.</p></div><span class=\"inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground lg:w-auto\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Version</span> <span class=\"font-mono text-xs font-semibold text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</title><script>\n\t\t\t\tdocument.documentElement.classList.toggle(\"dark\", Boolean(window.matchMedia && window.matchMedia(\"(prefers-color-scheme: dark)\").matches))\n\t\t\t\tfunction copySettingValue(button) {\n\t\t\t\t\tconst value = button.dataset.copy || \"\"\n\t\t\t\t\tconst label = button.querySelector(\"[data-copy-label]\")\n\t\t\t\t\tconst reset = button.dataset.label || \"Copy\"\n\t\t\t\t\tconst done = () => {\n\t\t\t\t\t\tif (!label) return\n\t\t\t\t\t\tlabel.textContent = \"Copied!\"\n\t\t\t\t\t\tclearTimeout(button._copyTimer)\n\t\t\t\t\t\tbutton._copyTimer = setTimeout(() => { label.textContent = reset }, 1200)\n\t\t\t\t\t}\n\t\t\t\t\tif (navigator.clipboard && navigator.clipboard.writeText) {\n\t\t\t\t\t\tnavigator.clipboard.writeText(value).then(done, done)\n\t\t\t\t\t\treturn\n\t\t\t\t\t}\n\t\t\t\t\tdone()\n\t\t\t\t}\n\t\t\t</script><link rel=\"icon\" href=\"data:,\"><link rel=\"stylesheet\" href=\"/static/css/output.css\"></head><body class=\"min-h-screen bg-background text-foreground antialiased\"><main class=\"mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6 lg:px-8\"><header class=\"min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between\"><div class=\"min-w-0\"><div class=\"flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground\"><span class=\"inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent\"><span class=\"h-1.5 w-1.5 rounded-full bg-accent\"></span> <span>Symphony</span></span> <span>Configuration</span></div><h1 class=\"mt-2 text-2xl font-semibold text-foreground sm:text-3xl\">Settings</h1><p class=\"mt-1 max-w-3xl text-sm text-muted-foreground\">Running configuration, project paths, and runtime files.</p></div><span class=\"inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground lg:w-auto\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Version</span> <span class=\"font-mono text-xs font-semibold text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -260,7 +260,7 @@ func dashboardNav(active string) templ.Component {
 			templ_7745c5c3_Var11 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "<nav class=\"mt-4 flex flex-wrap gap-2 border-t border-border pt-4\" aria-label=\"Dashboard sections\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 20, "<nav class=\"mt-4 grid grid-cols-3 gap-2 border-t border-border pt-4 sm:flex sm:flex-wrap\" aria-label=\"Dashboard sections\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -306,14 +306,14 @@ func dashboardNavItem(active string, id string, href string, label string) templ
 		}
 		ctx = templ.ClearChildren(ctx)
 		if active == id {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, "<a class=\"inline-flex items-center rounded-md border border-accent bg-accent-soft px-3 py-2 text-sm font-medium text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 22, "<a class=\"inline-flex min-h-11 items-center justify-center rounded-md border border-accent bg-accent-soft px-3 py-2 text-sm font-medium text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var13 templ.SafeURL
 			templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinURLErrs(href)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/settings.templ`, Line: 133, Col: 212}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/settings.templ`, Line: 133, Col: 236}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 			if templ_7745c5c3_Err != nil {
@@ -326,7 +326,7 @@ func dashboardNavItem(active string, id string, href string, label string) templ
 			var templ_7745c5c3_Var14 string
 			templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/settings.templ`, Line: 133, Col: 242}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/settings.templ`, Line: 133, Col: 266}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 			if templ_7745c5c3_Err != nil {
@@ -337,14 +337,14 @@ func dashboardNavItem(active string, id string, href string, label string) templ
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "<a class=\"inline-flex items-center rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "<a class=\"inline-flex min-h-11 items-center justify-center rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var15 templ.SafeURL
 			templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinURLErrs(href)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/settings.templ`, Line: 135, Col: 253}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/settings.templ`, Line: 135, Col: 277}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 			if templ_7745c5c3_Err != nil {
@@ -357,7 +357,7 @@ func dashboardNavItem(active string, id string, href string, label string) templ
 			var templ_7745c5c3_Var16 string
 			templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/settings.templ`, Line: 135, Col: 263}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/settings.templ`, Line: 135, Col: 287}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 			if templ_7745c5c3_Err != nil {

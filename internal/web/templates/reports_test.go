@@ -52,3 +52,33 @@ func TestReportsRendersEveryProjectBreakdown(t *testing.T) {
 		}
 	}
 }
+
+func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
+	t.Parallel()
+
+	html := renderComponent(t, templates.Reports(templates.ReportsData{
+		Title:       "Symphony reports",
+		GeneratedAt: time.Date(2026, 5, 31, 17, 0, 0, 0, time.UTC),
+		Day: templates.UsageReportData{
+			Totals: templates.UsageTotalsData{
+				TotalTokens: 125_000,
+				SpendUSD:    4.25,
+				Events:      3,
+			},
+		},
+	}))
+
+	for _, want := range []string{
+		"overflow-x-hidden",
+		"px-3 py-3",
+		"grid grid-cols-3 gap-2",
+		"min-h-11",
+		"grid min-w-0 gap-5 xl:grid-cols-2",
+		"grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]",
+		"break-all font-mono text-2xl",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("reports page missing responsive marker %q:\n%s", want, html)
+		}
+	}
+}
