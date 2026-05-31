@@ -111,6 +111,10 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	if !strings.Contains(onboarding, "Symphony onboarding") {
 		t.Fatalf("onboarding page missing wizard heading:\n%s", onboarding)
 	}
+	css := readURL(t, fmt.Sprintf("http://127.0.0.1:%d/static/css/output.css", port))
+	if !strings.Contains(css, "tailwindcss") {
+		t.Fatalf("static CSS missing Tailwind marker:\n%s", css)
+	}
 	stop()
 
 	runInstalledSubcommands(t, binary, tmp, serverEnv)
