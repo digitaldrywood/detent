@@ -19,6 +19,8 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
 		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","body":"Depends on: #24 digitaldrywood/symphony#25\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/26","createdAt":"2026-05-31T01:02:03Z","updatedAt":"2026-05-31T02:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[{"name":"Enhancement"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/symphony"},"closedByPullRequestsReferences":{"nodes":[{"number":42,"url":"https://github.com/digitaldrywood/symphony/pull/42"}]}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/27","createdAt":"2026-05-31T03:02:03Z","updatedAt":"2026-05-31T04:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
+	}, {
+		body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
 	}})
 
 	c := newGitHubTestConnector(t, server, Config{
@@ -62,8 +64,8 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 1 {
-		t.Fatalf("request count = %d, want 1", len(requests))
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
 	}
 	variables := requests[0]["variables"].(map[string]any)
 	if variables["projectId"] != "PVT_1" {
@@ -72,6 +74,10 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	if variables["first"] != float64(50) {
 		t.Fatalf("first = %v, want 50", variables["first"])
 	}
+	prVariables := requests[1]["variables"].(map[string]any)
+	if prVariables["owner"] != "digitaldrywood" || prVariables["name"] != "symphony" {
+		t.Fatalf("pull request repo variables = %#v, want digitaldrywood/symphony", prVariables)
+	}
 }
 
 func TestConnectorFetchCandidateIssuesResolvesBlockedByProjectState(t *testing.T) {
@@ -79,6 +85,8 @@ func TestConnectorFetchCandidateIssuesResolvesBlockedByProjectState(t *testing.T
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
 		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_candidate","number":26,"title":"Candidate","body":"Depends on: DigitalDryWood/Symphony#24 digitaldrywood/symphony#25 digitaldrywood/symphony#999","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/26","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Ready"},"priorityValue":null},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_done","number":24,"title":"Done blocker","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/24","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Done"},"priorityValue":null},{"id":"PVTI_3","content":{"__typename":"Issue","id":"I_progress","number":25,"title":"Active blocker","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/25","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Working"},"priorityValue":null}]}}}}`,
+	}, {
+		body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
 	}})
 
 	c := newGitHubTestConnector(t, server, Config{
@@ -105,6 +113,47 @@ func TestConnectorFetchCandidateIssuesResolvesBlockedByProjectState(t *testing.T
 	}
 	if !reflect.DeepEqual(got[0].BlockedBy, want) {
 		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
+	}
+}
+
+func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_182","content":{"__typename":"Issue","id":"I_182","number":182,"title":"First issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/182","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Todo"},"priorityValue":null},{"id":"PVTI_18","content":{"__typename":"Issue","id":"I_18","number":18,"title":"Prefix neighbor","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/18","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
+		},
+		{
+			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":187,"url":"https://github.com/digitaldrywood/symphony/pull/187","state":"OPEN","headRefName":"symphony/digitaldrywood_symphony_182_followup"},{"number":188,"url":"https://github.com/digitaldrywood/symphony/pull/188","state":"MERGED","headRefName":"symphony/digitaldrywood_symphony_181"}]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:  "PVT_1",
+		ActiveStates: []string{"Todo"},
+	})
+
+	got, err := c.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("FetchCandidateIssues() len = %d, want 2", len(got))
+	}
+
+	byID := map[string]connector.Issue{}
+	for _, issue := range got {
+		byID[issue.ID] = issue
+	}
+	pr := byID["I_182"].PullRequest
+	if pr == nil {
+		t.Fatal("I_182 PullRequest = nil, want matching open PR")
+	}
+	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "symphony/digitaldrywood_symphony_182_followup" {
+		t.Fatalf("I_182 PullRequest = %#v, want PR 187 open followup", pr)
+	}
+	if byID["I_18"].PullRequest != nil {
+		t.Fatalf("I_18 PullRequest = %#v, want nil", byID["I_18"].PullRequest)
 	}
 }
 
@@ -299,8 +348,8 @@ func TestConnectorUpdateIssueStateWritesStatusOptionID(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_ready","name":"Ready"},{"id":"OPT_todo","name":"Todo"}]}}}}`},
 		{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"}}]}}}}`},
+		{body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_ready","name":"Ready"},{"id":"OPT_todo","name":"Todo"}]}}}}`},
 		{body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_1"}}}}`},
 	})
 	c := newGitHubTestConnector(t, server, Config{
@@ -334,6 +383,30 @@ func TestConnectorUpdateIssueStateWritesStatusOptionID(t *testing.T) {
 	}
 	if variables["optionId"] == "Ready" {
 		t.Fatal("optionId used the option name, want option id")
+	}
+}
+
+func TestConnectorUpdateIssueStateSkipsTerminalToActiveTransition(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Done"}}]}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:    "PVT_1",
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+
+	if err := c.UpdateIssueState(context.Background(), "I_kw1", "In Progress"); err != nil {
+		t.Fatalf("UpdateIssueState() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	if strings.Contains(requests[0]["query"].(string), "updateProjectV2ItemFieldValue") {
+		t.Fatalf("terminal guard issued update mutation: %q", requests[0]["query"])
 	}
 }
 

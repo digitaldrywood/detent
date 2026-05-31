@@ -962,6 +962,14 @@ func cloneIssues(issues []connector.Issue) []connector.Issue {
 	cloned := make([]connector.Issue, len(issues))
 	for i, issue := range issues {
 		cloned[i] = issue
+		if issue.PRNumber != nil {
+			prNumber := *issue.PRNumber
+			cloned[i].PRNumber = &prNumber
+		}
+		if issue.PullRequest != nil {
+			pullRequest := *issue.PullRequest
+			cloned[i].PullRequest = &pullRequest
+		}
 		cloned[i].BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
 		cloned[i].Labels = append([]string(nil), issue.Labels...)
 	}

@@ -58,7 +58,8 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		return "", err
 	}
 
-	return appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills)), nil
+	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
+	return appendClosingReferenceInstruction(rendered, issue), nil
 }
 
 func AvailableSkillsBlock(skillList []skills.Skill) string {
@@ -80,6 +81,40 @@ func appendAvailableSkills(prompt string, skillsBlock string) string {
 	}
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + skillsBlock
+}
+
+func appendClosingReferenceInstruction(prompt string, issue connector.Issue) string {
+	number := githubIssueNumber(issue.Identifier)
+	if number == "" {
+		return prompt
+	}
+
+	reference := "Fixes #" + number
+	if strings.Contains(prompt, reference) ||
+		strings.Contains(prompt, "Closes #"+number) ||
+		strings.Contains(prompt, "Resolves #"+number) {
+		return prompt
+	}
+
+	return strings.TrimRight(prompt, " \t\r\n") +
+		"\n\n## Pull request\n\nWhen creating or updating the pull request body, include `" +
+		reference + "`."
+}
+
+func githubIssueNumber(identifier string) string {
+	identifier = strings.TrimSpace(identifier)
+	index := strings.LastIndex(identifier, "#")
+	if index == -1 || index == len(identifier)-1 {
+		return ""
+	}
+
+	number := identifier[index+1:]
+	for _, r := range number {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return number
 }
 
 func appendLessonsBlock(prompt string, cfg config.Lessons, workspacePath string) (string, error) {

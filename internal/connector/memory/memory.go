@@ -118,6 +118,14 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		priority := *issue.Priority
 		issue.Priority = &priority
 	}
+	if issue.PRNumber != nil {
+		prNumber := *issue.PRNumber
+		issue.PRNumber = &prNumber
+	}
+	if issue.PullRequest != nil {
+		pullRequest := *issue.PullRequest
+		issue.PullRequest = &pullRequest
+	}
 	if issue.BlockedBy != nil {
 		issue.BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
 	}
