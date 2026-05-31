@@ -16,6 +16,81 @@ The previous Elixir implementation is retained only as a cutover reference and
 should remain archived after the Go repository is renamed to
 `digitaldrywood/symphony`.
 
+## Philosophy / Why
+
+This project is a system, not an agent. Most agent tools are positioned around
+autonomy: give the model a goal, give it tools, and let it discover a path.
+This project takes the opposite bet. It is an execution system for engineers
+who already know how the work should be done and want that process run
+consistently across many issues at once.
+
+The engineer authors the workflow: the `WORKFLOW.md` contract, the board
+states, the issue breakdown, the dependency rules, the review gates, and the
+merge discipline. The system executes that contract. The useful intelligence is
+in the spec and in the engineer's judgment. The runtime supplies rigor,
+parallelism, isolation, observability, and control.
+
+That distinction matters because the unit of work is a well-specified issue,
+not a freeform prompt. If the spec is vague, the result will be vague. That is
+intentional. This project rewards the same habits that make engineering teams
+effective without agents: small scopes, explicit acceptance criteria, tests,
+reviewable diffs, green CI, and clean merges.
+
+The original Elixir Symphony was an OTP agent orchestrator for a single
+project-backed engineering queue. It established the important shape:
+tracker-backed dispatch, pluggable connector boundaries, explicit workflow
+states, deterministic scheduling, dashboard visibility, and a terminal status
+surface. This codebase credits that lineage, but it is not a runtime port. It
+is a ground-up Go rewrite delivered as a single CGO-free binary for macOS,
+Linux, and Windows, so there is no BEAM runtime to deploy. Distribution is
+meant to stay simple: `go install`, Homebrew once the tap lands, or copying one
+binary to a host.
+
+The Go version has also moved beyond the original scope. A single host can run
+many repositories from `global.yaml`, with project weights, priority, pause
+controls, and fair scheduling. GitHub Projects v2 is the production board and
+state machine: issues, status columns, priorities, labels, blockers, comments,
+and pull requests drive dispatch. The live dashboard has grown into an
+operator surface with charts, trends, timelines, hover detail, rate-limit
+state, budget state, and session detail. The CLI includes `symphony doctor`
+for preflight checks, flexible config discovery across explicit flags,
+environment variables, OS config paths, and legacy locations, plus a GoReleaser
+pipeline for release archives and checksums.
+
+Compared with autonomy-first frameworks such as OpenClaw or Hermes, the
+difference is the interaction model. Those projects center a persistent
+assistant experience: a user talks to an agent through a CLI or messaging
+channel, the assistant keeps sessions or memory, selects tools or skills, and
+acts on behalf of the user. That is useful for exploration and personal
+automation. It is not the operating model here.
+
+With an autonomy-first agent, you might say "add feature X", let the agent
+decide how to decompose the work, watch the run, interrupt when it drifts, and
+course-correct from whatever state it produced. You are steering an agent.
+
+With this system, you write the issue first. You decide the scope, acceptance
+criteria, expected tests, dependency ordering, review policy, CI gate, and
+merge rule. The board state and priority determine when the work is eligible.
+The runtime creates an isolated Git worktree, dispatches the agent with the
+project contract, runs validation, opens or updates a PR, waits for human and
+automated review gates, and serializes the merge train. You are running your
+own engineering process at scale.
+
+For the same task, the difference is concrete. In an autonomy-first workflow,
+"add OAuth token rotation" starts as a prompt and becomes an interactive
+supervision loop: review the plan, inspect partial edits, redirect when the
+agent misses migration or test requirements, and decide when the result is good
+enough. In this system, the task starts as an issue that names the storage
+change, CLI behavior, migration expectations, rollback concerns, and tests.
+The worker receives that issue, works in its own branch and worktree, produces
+a reviewable PR, and does not land until the gates you encoded pass.
+
+The goal is not to replace engineers or hide the work behind opaque agent
+behavior. The goal is to scale the judgment of engineers who already have a
+high bar. You stay in control of the workflow, the state, the review, and the
+merge. The system does not try to be smarter than you; it tries to be as
+disciplined as you would be, every time, in parallel.
+
 ## Install
 
 Install the latest released binary with Go:
