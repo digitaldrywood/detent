@@ -122,6 +122,9 @@ func TestProjectStartStopPublishesLifecycleEvents(t *testing.T) {
 	if err := got.Stop(context.Background()); !errors.Is(err, project.ErrNotRunning) {
 		t.Fatalf("Stop() second error = %v, want %v", err, project.ErrNotRunning)
 	}
+	if err := got.Start(context.Background()); !errors.Is(err, project.ErrProjectStopped) {
+		t.Fatalf("Start() after Stop error = %v, want %v", err, project.ErrProjectStopped)
+	}
 }
 
 func TestNewRejectsInvalidProjectConfig(t *testing.T) {
@@ -165,6 +168,42 @@ func TestNewRejectsInvalidProjectConfig(t *testing.T) {
 				t.Fatalf("New() error = %v, want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestProjectWaitersReceiveRunError(t *testing.T) {
+	t.Parallel()
+
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:     "symphony",
+			Weight: 1,
+		},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowConfigWithMemoryIssue("issue-1"),
+		},
+	}, project.Dependencies{})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	runCtx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	if err := got.Start(runCtx); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			errs <- got.Wait(context.Background())
+		}()
+	}
+
+	for range 2 {
+		if err := <-errs; !errors.Is(err, context.DeadlineExceeded) {
+			t.Fatalf("Wait() error = %v, want %v", err, context.DeadlineExceeded)
+		}
 	}
 }
 

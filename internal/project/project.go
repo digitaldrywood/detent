@@ -27,6 +27,7 @@ var (
 	ErrMissingProjectID    = errors.New("project id is required")
 	ErrNotRunning          = errors.New("project is not running")
 	ErrProjectPaused       = errors.New("project is paused")
+	ErrProjectStopped      = errors.New("project is stopped")
 )
 
 const (
@@ -74,9 +75,11 @@ type Project struct {
 	events       *hub.Hub[Event]
 	logger       *slog.Logger
 
-	mu     sync.Mutex
-	cancel context.CancelFunc
-	done   chan error
+	mu      sync.Mutex
+	cancel  context.CancelFunc
+	done    chan struct{}
+	runErr  error
+	started bool
 }
 
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
@@ -200,11 +203,17 @@ func (p *Project) Start(ctx context.Context) error {
 		p.mu.Unlock()
 		return ErrAlreadyRunning
 	}
+	if p.started {
+		p.mu.Unlock()
+		return ErrProjectStopped
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
-	done := make(chan error, 1)
+	done := make(chan struct{})
 	p.cancel = cancel
 	p.done = done
+	p.runErr = nil
+	p.started = true
 	p.mu.Unlock()
 
 	p.publish(Event{
@@ -232,12 +241,7 @@ func (p *Project) Stop(ctx context.Context) error {
 	cancel()
 	p.mu.Unlock()
 
-	select {
-	case err := <-done:
-		return err
-	case <-ctx.Done():
-		return ctx.Err()
-	}
+	return p.waitDone(ctx, done)
 }
 
 func (p *Project) Wait(ctx context.Context) error {
@@ -253,15 +257,22 @@ func (p *Project) Wait(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 
+	return p.waitDone(ctx, done)
+}
+
+func (p *Project) waitDone(ctx context.Context, done <-chan struct{}) error {
 	select {
-	case err := <-done:
-		return err
+	case <-done:
+		p.mu.Lock()
+		defer p.mu.Unlock()
+
+		return p.runErr
 	case <-ctx.Done():
 		return ctx.Err()
 	}
 }
 
-func (p *Project) run(ctx context.Context, done chan<- error) {
+func (p *Project) run(ctx context.Context, done chan struct{}) {
 	err := p.orchestrator.Run(ctx)
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		err = nil
@@ -271,6 +282,7 @@ func (p *Project) run(ctx context.Context, done chan<- error) {
 	if p.done == done {
 		p.cancel = nil
 		p.done = nil
+		p.runErr = err
 	}
 	p.mu.Unlock()
 
@@ -281,7 +293,6 @@ func (p *Project) run(ctx context.Context, done chan<- error) {
 		Error:     errorString(err),
 	})
 
-	done <- err
 	close(done)
 }
 
