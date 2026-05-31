@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -32,6 +33,8 @@ const (
 	defaultProjectID    = "default"
 	defaultWebHost      = "127.0.0.1"
 	defaultWebPort      = 4000
+	dashboardHost       = "localhost"
+	projectURL          = "https://github.com/digitaldrywood/symphony"
 )
 
 func resolveBootConfig(configPath string, host string, port int, opts options) (BootConfig, error) {
@@ -131,6 +134,19 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		}
 	}()
 
+	listener, displayURL, err := listenForBoot(cfg)
+	if err != nil {
+		return err
+	}
+	listenerOwned := true
+	defer func() {
+		if listenerOwned {
+			if err := listener.Close(); err != nil {
+				logger.Warn("close web listener failed", "error", err)
+			}
+		}
+	}()
+
 	events := hub.New[project.Event]()
 	projectFactory := withRunnerFactory(project.Dependencies{
 		Events: events,
@@ -154,6 +170,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		Mode:         web.ModeRunning,
 		WorkflowPath: firstWorkflowPath(cfg),
 		Version:      cfg.Version,
+		DashboardURL: displayURL,
 	}, web.Dependencies{
 		Hub:       snapshotHub,
 		Store:     runtimeStore,
@@ -166,28 +183,55 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 
 	if useDashboard {
-		return serveWithTerminalDashboard(runCtx, server, serverAddr(cfg), snapshotHub)
+		if err := printBootBanner(cfg, displayURL); err != nil {
+			return err
+		}
+		listenerOwned = false
+		return serveWithTerminalDashboard(runCtx, server, listener, snapshotHub)
 	}
-	return serve(runCtx, server, serverAddr(cfg))
+	if err := printBootBanner(cfg, displayURL); err != nil {
+		return err
+	}
+	listenerOwned = false
+	return serve(runCtx, server, listener)
 }
 
 func startOnboarding(ctx context.Context, cfg BootConfig) error {
+	logger := slog.Default()
+	listener, displayURL, err := listenForBoot(cfg)
+	if err != nil {
+		return err
+	}
+	listenerOwned := true
+	defer func() {
+		if listenerOwned {
+			if err := listener.Close(); err != nil {
+				logger.Warn("close web listener failed", "error", err)
+			}
+		}
+	}()
+
 	server, err := web.NewServer(web.Config{
 		Mode:         web.ModeOnboarding,
 		WorkflowPath: firstWorkflowPath(cfg),
 		Version:      cfg.Version,
+		DashboardURL: displayURL,
 	}, web.Dependencies{})
 	if err != nil {
 		return err
 	}
 
-	return serve(ctx, server, serverAddr(cfg))
+	if err := printBootBanner(cfg, displayURL); err != nil {
+		return err
+	}
+	listenerOwned = false
+	return serve(ctx, server, listener)
 }
 
-func serve(ctx context.Context, server *web.Server, addr string) error {
+func serve(ctx context.Context, server *web.Server, listener net.Listener) error {
 	errs := make(chan error, 1)
 	go func() {
-		errs <- server.Start(addr)
+		errs <- server.StartListener(listener)
 	}()
 
 	select {
@@ -210,10 +254,18 @@ func serve(ctx context.Context, server *web.Server, addr string) error {
 	}
 }
 
-func serveWithTerminalDashboard(ctx context.Context, server *web.Server, addr string, snapshots *hub.Hub[telemetry.Snapshot]) error {
+func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listener net.Listener, snapshots *hub.Hub[telemetry.Snapshot]) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	listenerOwned := true
+	defer func() {
+		if listenerOwned && listener != nil {
+			if err := listener.Close(); err != nil {
+				slog.Default().Warn("close web listener failed", "error", err)
+			}
+		}
+	}()
 
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -225,8 +277,9 @@ func serveWithTerminalDashboard(ctx context.Context, server *web.Server, addr st
 	defer model.Close()
 
 	errs := make(chan error, 2)
+	listenerOwned = false
 	go func() {
-		errs <- serve(runCtx, server, addr)
+		errs <- serve(runCtx, server, listener)
 	}()
 	go func() {
 		_, err := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(runCtx)).Run()
@@ -499,6 +552,69 @@ func serverAddr(cfg BootConfig) string {
 		port = *cfg.Port
 	}
 	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+func listenForBoot(cfg BootConfig) (net.Listener, string, error) {
+	listener, err := net.Listen("tcp", serverAddr(cfg))
+	if err != nil {
+		return nil, "", err
+	}
+	return listener, dashboardURL(listener.Addr()), nil
+}
+
+func dashboardURL(addr net.Addr) string {
+	port := dashboardPort(addr)
+	return "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(port))
+}
+
+func dashboardPort(addr net.Addr) int {
+	if tcpAddr, ok := addr.(*net.TCPAddr); ok && tcpAddr.Port > 0 {
+		return tcpAddr.Port
+	}
+	if addr == nil {
+		return defaultWebPort
+	}
+	_, port, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		return defaultWebPort
+	}
+	value, err := strconv.Atoi(port)
+	if err != nil || value <= 0 {
+		return defaultWebPort
+	}
+	return value
+}
+
+func printBootBanner(cfg BootConfig, displayURL string) error {
+	out := cfg.Output
+	if out == nil {
+		out = os.Stdout
+	}
+	_, err := io.WriteString(out, bootBanner(cfg.Version, displayURL))
+	return err
+}
+
+func bootBanner(version string, displayURL string) string {
+	version = strings.TrimSpace(version)
+	if version == "" {
+		version = "dev"
+	}
+	displayURL = strings.TrimSpace(displayURL)
+	if displayURL == "" {
+		displayURL = "http://" + net.JoinHostPort(dashboardHost, strconv.Itoa(defaultWebPort))
+	}
+
+	var out strings.Builder
+	out.WriteString("Symphony ")
+	out.WriteString(version)
+	out.WriteByte('\n')
+	out.WriteString("Project: ")
+	out.WriteString(projectURL)
+	out.WriteByte('\n')
+	out.WriteString("Dashboard: ")
+	out.WriteString(displayURL)
+	out.WriteByte('\n')
+	return out.String()
 }
 
 func mustGetwd() string {

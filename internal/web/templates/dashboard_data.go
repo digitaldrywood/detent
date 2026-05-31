@@ -56,7 +56,7 @@ func versionLabel(data DashboardData) string {
 func dashboardURL(data DashboardData) string {
 	url := strings.TrimSpace(data.DashboardURL)
 	if url == "" {
-		return "/"
+		return "http://localhost:4000"
 	}
 	return url
 }
@@ -64,7 +64,7 @@ func dashboardURL(data DashboardData) string {
 func dashboardURLLabel(data DashboardData) string {
 	url := strings.TrimSpace(data.DashboardURL)
 	if url == "" {
-		return "Dashboard"
+		return "http://localhost:4000"
 	}
 	return url
 }

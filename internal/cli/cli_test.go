@@ -125,6 +125,39 @@ func TestRootCommandCapturesHeadlessFlagAndTerminalState(t *testing.T) {
 	}
 }
 
+func TestRootCommandPrintsBootBanner(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	cmd := cli.NewRootCommand(ctx, cli.WithVersion("v1.2.3"))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", filepath.Join(root, ".symphony", "global.yaml"), "--host", "127.0.0.1", "--port", "0"})
+
+	if err := cmd.Execute(); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Execute() error = %v, want %v", err, context.Canceled)
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"Symphony v1.2.3",
+		"Project: https://github.com/digitaldrywood/symphony",
+		"Dashboard: http://localhost:",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("boot banner missing %q:\n%s", want, output)
+		}
+	}
+	for _, unwanted := range []string{"http://0.0.0.0", "http://127.0.0.1", "http://localhost:0"} {
+		if strings.Contains(output, unwanted) {
+			t.Fatalf("boot banner contains non-localhost URL %q:\n%s", unwanted, output)
+		}
+	}
+}
+
 func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
