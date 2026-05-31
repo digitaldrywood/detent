@@ -7,8 +7,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
-
-	"github.com/digitaldrywood/symphony-go/internal/connector"
 )
 
 func TestConnectorAuthenticateValidatesViewerAndProject(t *testing.T) {
@@ -118,7 +116,7 @@ func TestConnectorAuthenticateReportsProjectProblems(t *testing.T) {
 	}
 }
 
-func TestConnectorOperationsRemainExplicitlyUnimplemented(t *testing.T) {
+func TestConnectorReportsMissingProjectForProjectOperations(t *testing.T) {
 	t.Parallel()
 
 	c, err := NewConnector(Config{APIKey: "token"})
@@ -126,19 +124,16 @@ func TestConnectorOperationsRemainExplicitlyUnimplemented(t *testing.T) {
 		t.Fatalf("NewConnector() error = %v", err)
 	}
 
-	if _, err := c.FetchCandidateIssues(context.Background()); !errors.Is(err, connector.ErrNotImplemented) {
-		t.Fatalf("FetchCandidateIssues() error = %v, want ErrNotImplemented", err)
+	if _, err := c.FetchCandidateIssues(context.Background()); !errors.Is(err, ErrMissingProject) {
+		t.Fatalf("FetchCandidateIssues() error = %v, want ErrMissingProject", err)
 	}
-	if _, err := c.FetchIssuesByStates(context.Background(), []string{"Todo"}); !errors.Is(err, connector.ErrNotImplemented) {
-		t.Fatalf("FetchIssuesByStates() error = %v, want ErrNotImplemented", err)
+	if _, err := c.FetchIssuesByStates(context.Background(), []string{"Todo"}); !errors.Is(err, ErrMissingProject) {
+		t.Fatalf("FetchIssuesByStates() error = %v, want ErrMissingProject", err)
 	}
-	if _, err := c.FetchIssueStatesByIDs(context.Background(), []string{"I_kw1"}); !errors.Is(err, connector.ErrNotImplemented) {
-		t.Fatalf("FetchIssueStatesByIDs() error = %v, want ErrNotImplemented", err)
+	if _, err := c.FetchIssueStatesByIDs(context.Background(), []string{"I_kw1"}); !errors.Is(err, ErrMissingProject) {
+		t.Fatalf("FetchIssueStatesByIDs() error = %v, want ErrMissingProject", err)
 	}
-	if err := c.CreateComment(context.Background(), "I_kw1", "body"); !errors.Is(err, connector.ErrNotImplemented) {
-		t.Fatalf("CreateComment() error = %v, want ErrNotImplemented", err)
-	}
-	if err := c.UpdateIssueState(context.Background(), "I_kw1", "Done"); !errors.Is(err, connector.ErrNotImplemented) {
-		t.Fatalf("UpdateIssueState() error = %v, want ErrNotImplemented", err)
+	if err := c.UpdateIssueState(context.Background(), "I_kw1", "Done"); !errors.Is(err, ErrMissingProject) {
+		t.Fatalf("UpdateIssueState() error = %v, want ErrMissingProject", err)
 	}
 }
