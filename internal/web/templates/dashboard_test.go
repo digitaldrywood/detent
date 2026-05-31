@@ -369,6 +369,7 @@ func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 	t.Parallel()
 
 	perDay := 100.0
+	perIssue := 25.0
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 	html := renderDashboard(t, templates.DashboardData{
 		Title:         "Symphony",
@@ -378,6 +379,7 @@ func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 			Budget: telemetry.Budget{
 				Enabled:         true,
 				PerDayMaxUSD:    &perDay,
+				PerIssueMaxUSD:  &perIssue,
 				CurrentSpendUSD: 12.5,
 				Days: []telemetry.BudgetDay{
 					{Date: "2026-05-25", SpendUSD: 4},
@@ -395,13 +397,79 @@ func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 	for _, want := range []string{
 		"Spend today",
 		"$12.50 / $100.00",
+		`aria-label="Help: Current spend"`,
 		`aria-label="Daily budget usage"`,
 		`style="width: 13%;"`,
 		"Budget history",
+		`aria-label="Help: Budget history"`,
 		`aria-label="Spend over the last seven days"`,
 		`title="2026-05-25: $4.00"`,
 		`title="2026-05-30: $15.00"`,
 		`style="height: 100%;"`,
+		`aria-label="Help: Projected spend"`,
+		`aria-label="Help: Daily cap"`,
+		`aria-label="Help: Issue cap"`,
+		"$25.00",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			Counts: telemetry.Counts{
+				Running:   1,
+				Queue:     1,
+				Blocked:   1,
+				Completed: 1,
+			},
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{Identifier: "DD-173", State: "In Progress"},
+				},
+			},
+			Queue: []telemetry.Queued{
+				{
+					Issue:   telemetry.Issue{Identifier: "DD-174"},
+					Attempt: 1,
+				},
+			},
+			Blocked: []telemetry.Blocked{
+				{
+					Issue: telemetry.Issue{Identifier: "DD-175", State: "Blocked"},
+				},
+			},
+			Completed: []telemetry.Completed{
+				{
+					Issue: telemetry.Issue{Identifier: "DD-176"},
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`data-help-tip`,
+		`aria-label="Help: Running"`,
+		`aria-describedby="help-dashboard-running"`,
+		`id="help-dashboard-running"`,
+		`role="tooltip"`,
+		`aria-label="Help: Token throughput"`,
+		`aria-label="Help: Runtime"`,
+		`aria-label="Help: Backoff queue"`,
+		`aria-label="Help: Budget"`,
+		`aria-label="Help: Rate limits"`,
+		`aria-label="Help: Tokens"`,
+		`aria-label="Help: Diff"`,
+		`aria-label="Help: Session"`,
+		`tps`,
+		`USD`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)

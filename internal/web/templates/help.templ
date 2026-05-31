@@ -1,0 +1,98 @@
+package templates
+
+templ helpScript() {
+	<script>
+		function hydrateHelpTip(button) {
+			const wrapper = button.closest("[data-help-tip]")
+			const panel = wrapper && wrapper.querySelector("[data-help-panel]")
+			if (!panel) return
+			const title = panel.querySelector("[data-help-title]")
+			const description = panel.querySelector("[data-help-description]")
+			if (title) title.textContent = button.dataset.helpLabel || ""
+			if (description) description.textContent = button.dataset.helpDescription || ""
+		}
+		function setHelpTipOpen(wrapper, open) {
+			if (!wrapper) return
+			if (open) {
+				const button = wrapper.querySelector("button")
+				if (button) hydrateHelpTip(button)
+			}
+			wrapper.dataset.open = open ? "true" : "false"
+			const button = wrapper.querySelector("button")
+			if (button) button.setAttribute("aria-expanded", open ? "true" : "false")
+		}
+		function toggleHelpTip(button) {
+			const wrapper = button.closest("[data-help-tip]")
+			const open = wrapper && wrapper.dataset.open === "true"
+			document.querySelectorAll("[data-help-tip][data-open='true']").forEach((tip) => {
+				if (tip !== wrapper) setHelpTipOpen(tip, false)
+			})
+			setHelpTipOpen(wrapper, !open)
+		}
+		function closeHelpTipAfterFocus(wrapper) {
+			requestAnimationFrame(() => {
+				if (wrapper && !wrapper.matches(":focus-within")) setHelpTipOpen(wrapper, false)
+			})
+		}
+		document.addEventListener("click", (event) => {
+			document.querySelectorAll("[data-help-tip][data-open='true']").forEach((tip) => {
+				if (!tip.contains(event.target)) setHelpTipOpen(tip, false)
+			})
+		})
+		document.addEventListener("keydown", (event) => {
+			if (event.key !== "Escape") return
+			document.querySelectorAll("[data-help-tip][data-open='true']").forEach((tip) => setHelpTipOpen(tip, false))
+		})
+	</script>
+}
+
+templ helpIcon(term helpTerm, scope string) {
+	if hasHelp(term) {
+		<span class="help-tip relative inline-flex shrink-0 align-middle" data-help-tip onfocusout="closeHelpTipAfterFocus(this)">
+			<button
+				type="button"
+				class="help-tip-button"
+				aria-label={ "Help: " + helpLabel(term) }
+				aria-describedby={ helpID(term, scope) }
+				aria-expanded="false"
+				data-help-label={ helpLabel(term) }
+				data-help-description={ helpDescription(term) }
+				onmouseenter="hydrateHelpTip(this)"
+				onfocus="hydrateHelpTip(this)"
+				onclick="toggleHelpTip(this)"
+			>
+				<span aria-hidden="true">?</span>
+			</button>
+			<span
+				id={ helpID(term, scope) }
+				role="tooltip"
+				class="help-tip-panel"
+				data-help-panel
+			>
+				<span class="help-tip-title" data-help-title></span>
+				<span class="help-tip-description" data-help-description></span>
+			</span>
+		</span>
+	}
+}
+
+templ helpInlineLabel(label string, term helpTerm, scope string, class string) {
+	<span class={ "inline-flex min-w-0 items-center gap-1.5 " + class }>
+		<span>{ label }</span>
+		@helpIcon(term, scope)
+	</span>
+}
+
+templ helpHeading2(label string, term helpTerm, scope string) {
+	<h2 class="inline-flex min-w-0 items-center gap-2 text-lg font-semibold text-foreground">
+		<span>{ label }</span>
+		@helpIcon(term, scope)
+	</h2>
+}
+
+templ helpHeading3(label string, term helpTerm, scope string) {
+	<h3 class="inline-flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground">
+		<span>{ label }</span>
+		@helpIcon(term, scope)
+	</h3>
+}
