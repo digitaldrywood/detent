@@ -18,7 +18,7 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","body":"Depends on: #24 digitaldrywood/symphony#25\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/26","createdAt":"2026-05-31T01:02:03Z","updatedAt":"2026-05-31T02:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[{"name":"Enhancement"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/27","createdAt":"2026-05-31T03:02:03Z","updatedAt":"2026-05-31T04:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","body":"Depends on: #24 digitaldrywood/symphony#25\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/26","createdAt":"2026-05-31T01:02:03Z","updatedAt":"2026-05-31T02:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[{"name":"Enhancement"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/symphony"},"closedByPullRequestsReferences":{"nodes":[{"number":42,"url":"https://github.com/digitaldrywood/symphony/pull/42"}]}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/27","createdAt":"2026-05-31T03:02:03Z","updatedAt":"2026-05-31T04:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
 	}})
 
 	c := newGitHubTestConnector(t, server, Config{
@@ -39,6 +39,7 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	createdAt := time.Date(2026, 5, 31, 1, 2, 3, 0, time.UTC)
 	updatedAt := time.Date(2026, 5, 31, 2, 3, 4, 0, time.UTC)
 	priority := 1
+	prNumber := 42
 	want := connector.Issue{
 		ID:               "I_kw1",
 		Identifier:       "digitaldrywood/symphony#26",
@@ -47,6 +48,7 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 		Priority:         &priority,
 		State:            "Todo",
 		URL:              "https://github.com/digitaldrywood/symphony/issues/26",
+		PRNumber:         &prNumber,
 		AssigneeID:       "worker-1",
 		BlockedBy:        []connector.BlockedRef{{Identifier: "digitaldrywood/symphony#24"}, {Identifier: "digitaldrywood/symphony#25"}},
 		Labels:           []string{"enhancement", "stage:s4"},
@@ -146,7 +148,7 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw1","number":1,"title":"First","body":"","state":"OPEN","url":"https://github.com/example/repo/issues/1","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"example/repo"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"}}]}},{"__typename":"Issue","id":"I_kw2","number":2,"title":"Second","body":"","state":"OPEN","url":"https://github.com/example/repo/issues/2","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"example/repo"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_2","project":{"id":"PVT_1"},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"No priority"}}]}}]}}`,
+		body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw1","number":1,"title":"First","body":"","state":"OPEN","url":"https://github.com/example/repo/issues/1","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"example/repo"},"closedByPullRequestsReferences":{"nodes":[{"number":81,"url":"https://github.com/example/repo/pull/81"}]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"}}]}},{"__typename":"Issue","id":"I_kw2","number":2,"title":"Second","body":"","state":"OPEN","url":"https://github.com/example/repo/issues/2","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"example/repo"},"closedByPullRequestsReferences":{"nodes":[]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_2","project":{"id":"PVT_1"},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"No priority"}}]}}]}}`,
 	}})
 
 	c := newGitHubTestConnector(t, server, Config{
@@ -170,6 +172,9 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 	}
 	if got[1].Priority == nil || *got[1].Priority != 2 {
 		t.Fatalf("second Priority = %v, want 2", got[1].Priority)
+	}
+	if got[1].PRNumber == nil || *got[1].PRNumber != 81 {
+		t.Fatalf("second PRNumber = %v, want 81", got[1].PRNumber)
 	}
 }
 

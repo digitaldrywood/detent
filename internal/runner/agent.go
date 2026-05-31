@@ -468,6 +468,11 @@ func (p *codexRunProgress) cachedDiffStats() (DiffStats, bool) {
 }
 
 func pullRequestNumber(issue connector.Issue) *int64 {
+	if issue.PRNumber != nil && *issue.PRNumber > 0 {
+		number := int64(*issue.PRNumber)
+		return &number
+	}
+
 	value := strings.TrimSpace(issue.URL)
 	const marker = "/pull/"
 	index := strings.LastIndex(value, marker)

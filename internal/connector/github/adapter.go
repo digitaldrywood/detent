@@ -39,6 +39,7 @@ query SymphonyGitHubProjectItems($projectId: ID!, $first: Int!, $after: String) 
               assignees(first: 5) { nodes { login } }
               labels(first: 20) { nodes { name } }
               repository { nameWithOwner }
+              closedByPullRequestsReferences(first: 5) { nodes { number url } }
             }
           }
           statusValue: fieldValueByName(name: "Status") {
@@ -69,6 +70,7 @@ query SymphonyGitHubIssuesByID($issueIds: [ID!]!, $projectItemsFirst: Int!) {
       assignees(first: 5) { nodes { login } }
       labels(first: 20) { nodes { name } }
       repository { nameWithOwner }
+      closedByPullRequestsReferences(first: 5) { nodes { number url } }
       projectItems(first: $projectItemsFirst) {
         pageInfo { hasNextPage endCursor }
         nodes {
@@ -165,19 +167,20 @@ type projectItemNode struct {
 }
 
 type githubIssueNode struct {
-	TypeName     string                   `json:"__typename"`
-	ID           string                   `json:"id"`
-	Number       int                      `json:"number"`
-	Title        string                   `json:"title"`
-	Body         string                   `json:"body"`
-	State        string                   `json:"state"`
-	URL          string                   `json:"url"`
-	CreatedAt    *string                  `json:"createdAt"`
-	UpdatedAt    *string                  `json:"updatedAt"`
-	Assignees    nodeConnection[assignee] `json:"assignees"`
-	Labels       nodeConnection[label]    `json:"labels"`
-	Repository   repository               `json:"repository"`
-	ProjectItems *projectItemsConnection  `json:"projectItems"`
+	TypeName                       string                      `json:"__typename"`
+	ID                             string                      `json:"id"`
+	Number                         int                         `json:"number"`
+	Title                          string                      `json:"title"`
+	Body                           string                      `json:"body"`
+	State                          string                      `json:"state"`
+	URL                            string                      `json:"url"`
+	CreatedAt                      *string                     `json:"createdAt"`
+	UpdatedAt                      *string                     `json:"updatedAt"`
+	Assignees                      nodeConnection[assignee]    `json:"assignees"`
+	Labels                         nodeConnection[label]       `json:"labels"`
+	Repository                     repository                  `json:"repository"`
+	ClosedByPullRequestsReferences nodeConnection[pullRequest] `json:"closedByPullRequestsReferences"`
+	ProjectItems                   *projectItemsConnection     `json:"projectItems"`
 }
 
 type nodeConnection[T any] struct {
@@ -190,6 +193,11 @@ type assignee struct {
 
 type label struct {
 	Name string `json:"name"`
+}
+
+type pullRequest struct {
+	Number int    `json:"number"`
+	URL    string `json:"url"`
 }
 
 type repository struct {
@@ -480,6 +488,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		Priority:         c.priorityRank(priorityName),
 		State:            c.githubToSymphonyState(statusName),
 		URL:              issue.URL,
+		PRNumber:         firstPullRequestNumber(issue.ClosedByPullRequestsReferences),
 		AssigneeID:       firstAssigneeLogin(issue.Assignees),
 		BlockedBy:        parseBlockedBy(issue.Body, repo),
 		Labels:           labelNames(issue.Labels),
@@ -692,6 +701,16 @@ func firstAssigneeLogin(assignees nodeConnection[assignee]) string {
 		}
 	}
 	return ""
+}
+
+func firstPullRequestNumber(pullRequests nodeConnection[pullRequest]) *int {
+	for _, pullRequest := range pullRequests.Nodes {
+		if pullRequest.Number > 0 {
+			number := pullRequest.Number
+			return &number
+		}
+	}
+	return nil
 }
 
 func labelNames(labels nodeConnection[label]) []string {

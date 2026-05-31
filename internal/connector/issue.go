@@ -15,6 +15,7 @@ type Issue struct {
 	State            string       `json:"state,omitempty" yaml:"state,omitempty"`
 	BranchName       string       `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	URL              string       `json:"url,omitempty" yaml:"url,omitempty"`
+	PRNumber         *int         `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
 	AssigneeID       string       `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
 	BlockedBy        []BlockedRef `json:"blocked_by" yaml:"blocked_by"`
 	Labels           []string     `json:"labels" yaml:"labels"`

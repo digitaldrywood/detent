@@ -136,6 +136,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		priority := *issue.Priority
 		cloned.Priority = &priority
 	}
+	if issue.PRNumber != nil {
+		prNumber := *issue.PRNumber
+		cloned.PRNumber = &prNumber
+	}
 	if issue.CreatedAt != nil {
 		createdAt := *issue.CreatedAt
 		cloned.CreatedAt = &createdAt

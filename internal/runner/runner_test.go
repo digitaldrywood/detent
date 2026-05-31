@@ -79,6 +79,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		completedAt,
 		completedAt,
 	)
+	prNumber := 133
 
 	runner, err := NewRunner(Dependencies{
 		ProjectID: "symphony",
@@ -118,6 +119,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			Identifier:    "digitaldrywood/symphony#22",
 			Title:         "Add runner",
 			URL:           "https://github.com/digitaldrywood/symphony/issues/22",
+			PRNumber:      &prNumber,
 			BranchName:    "symphony/digitaldrywood_symphony_22",
 			ModelOverride: "gpt-5-codex-high",
 		},
@@ -212,6 +214,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.usage.Model != "gpt-5-codex-high" || sessionStore.usage.TotalTokens != 125 {
 		t.Fatalf("UsageEvent totals = %#v, want model gpt-5-codex-high and total 125", sessionStore.usage)
+	}
+	if sessionStore.usage.PRNumber == nil || *sessionStore.usage.PRNumber != 133 {
+		t.Fatalf("UsageEvent PRNumber = %v, want 133", sessionStore.usage.PRNumber)
 	}
 	if sessionStore.usage.StartedAt != startedAt || sessionStore.usage.FinishedAt != completedAt {
 		t.Fatalf("UsageEvent timestamps = %s/%s, want %s/%s", sessionStore.usage.StartedAt, sessionStore.usage.FinishedAt, startedAt, completedAt)
