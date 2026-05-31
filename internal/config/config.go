@@ -69,6 +69,7 @@ type Polling struct {
 
 type Workspace struct {
 	Root       string `yaml:"root"`
+	SourceRoot string `yaml:"source_root"`
 	AutoBranch bool   `yaml:"auto_branch"`
 }
 
