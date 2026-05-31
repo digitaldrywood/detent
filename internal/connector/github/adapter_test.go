@@ -72,6 +72,40 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchCandidateIssuesResolvesBlockedByProjectState(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_candidate","number":26,"title":"Candidate","body":"Depends on: #24 digitaldrywood/symphony#25 digitaldrywood/symphony#999","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/26","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Ready"},"priorityValue":null},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_done","number":24,"title":"Done blocker","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/24","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Done"},"priorityValue":null},{"id":"PVTI_3","content":{"__typename":"Issue","id":"I_progress","number":25,"title":"Active blocker","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/25","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Working"},"priorityValue":null}]}}}}`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:  "PVT_1",
+		ActiveStates: []string{"Todo"},
+		StateMap: map[string]string{
+			"Todo":        "Ready",
+			"In Progress": "Working",
+		},
+	})
+
+	got, err := c.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchCandidateIssues() len = %d, want 1", len(got))
+	}
+
+	want := []connector.BlockedRef{
+		{ID: "I_done", Identifier: "digitaldrywood/symphony#24", State: "Done"},
+		{ID: "I_progress", Identifier: "digitaldrywood/symphony#25", State: "In Progress"},
+		{Identifier: "digitaldrywood/symphony#999"},
+	}
+	if !reflect.DeepEqual(got[0].BlockedBy, want) {
+		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
+	}
+}
+
 func TestConnectorFetchIssuesByStatesFiltersMappedStates(t *testing.T) {
 	t.Parallel()
 

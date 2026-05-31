@@ -745,7 +745,10 @@ func todoBlockedByNonTerminal(issue connector.Issue, terminalStates []string) bo
 	}
 
 	for _, blocker := range issue.BlockedBy {
-		if blocker.State == "" || !stateIn(blocker.State, terminalStates) {
+		if strings.TrimSpace(blocker.State) == "" {
+			continue
+		}
+		if !stateIn(blocker.State, terminalStates) {
 			return true
 		}
 	}

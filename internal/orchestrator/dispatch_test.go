@@ -94,6 +94,24 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "todo unblocked by terminal dependency",
+			issue: func() connector.Issue {
+				issue := dispatchTestIssue("issue-terminal-dependency", "Todo")
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/symphony#10", State: "Done"}}
+				return issue
+			}(),
+			want: true,
+		},
+		{
+			name: "todo unblocked by unknown dependency state",
+			issue: func() connector.Issue {
+				issue := dispatchTestIssue("issue-unknown-dependency", "Todo")
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/symphony#10"}}
+				return issue
+			}(),
+			want: true,
+		},
+		{
 			name:  "already running",
 			issue: dispatchTestIssue("issue-running", "Todo"),
 			state: func(state State) {

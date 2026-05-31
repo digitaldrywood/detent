@@ -321,7 +321,7 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 
 func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
 	var after *string
-	issues := []connector.Issue{}
+	allIssues := []connector.Issue{}
 
 	for {
 		var response struct {
@@ -342,13 +342,20 @@ func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connec
 
 		for _, item := range response.Node.Items.Nodes {
 			issue, ok := c.normalizeProjectItem(item)
-			if !ok || !keepIssue(issue) {
+			if !ok {
 				continue
 			}
-			issues = append(issues, issue)
+			allIssues = append(allIssues, issue)
 		}
 
 		if !response.Node.Items.PageInfo.HasNextPage {
+			resolveBlockedByProjectState(allIssues)
+			issues := make([]connector.Issue, 0, len(allIssues))
+			for _, issue := range allIssues {
+				if keepIssue(issue) {
+					issues = append(issues, issue)
+				}
+			}
 			return issues, nil
 		}
 		cursor := strings.TrimSpace(response.Node.Items.PageInfo.EndCursor)
@@ -364,6 +371,28 @@ func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue,
 		return connector.Issue{}, false
 	}
 	return c.buildIssue(*item.Content, singleSelectName(item.StatusValue), singleSelectName(item.PriorityValue)), true
+}
+
+func resolveBlockedByProjectState(issues []connector.Issue) {
+	byIdentifier := make(map[string]connector.Issue, len(issues))
+	for _, issue := range issues {
+		identifier := strings.TrimSpace(issue.Identifier)
+		if identifier != "" {
+			byIdentifier[identifier] = issue
+		}
+	}
+
+	for issueIndex := range issues {
+		for blockerIndex := range issues[issueIndex].BlockedBy {
+			identifier := strings.TrimSpace(issues[issueIndex].BlockedBy[blockerIndex].Identifier)
+			blocker, ok := byIdentifier[identifier]
+			if !ok {
+				continue
+			}
+			issues[issueIndex].BlockedBy[blockerIndex].ID = blocker.ID
+			issues[issueIndex].BlockedBy[blockerIndex].State = blocker.State
+		}
+	}
 }
 
 func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNode) (connector.Issue, bool, error) {
