@@ -46,6 +46,10 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 					LastEvent:      "turn_completed",
 					LastMessage:    "turn completed successfully",
 					RuntimeSeconds: 540,
+					DiffAdded:      4,
+					DiffRemoved:    2,
+					DiffFiles:      3,
+					DiffStatus:     "ok",
 					Tokens: telemetry.Tokens{
 						Input:  120_000,
 						Output: 42_000,
@@ -96,6 +100,7 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"digitaldrywood/symphony-go#35",
 		"Dashboard templates",
 		"turn completed successfully",
+		"+4 -2 (3 files)",
 		"162,000",
 		"$12.50",
 		"$100.00",
@@ -110,6 +115,33 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
 		}
+	}
+}
+
+func TestDashboardRendersUnknownDiffStatusAsPending(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-35",
+						Identifier: "digitaldrywood/symphony-go#35",
+						State:      "In Progress",
+					},
+				},
+			},
+		},
+	})
+
+	if !strings.Contains(html, "pending") {
+		t.Fatalf("dashboard missing pending diff status:\n%s", html)
+	}
+	if strings.Contains(html, ">error<") {
+		t.Fatalf("dashboard rendered missing diff status as error:\n%s", html)
 	}
 }
 

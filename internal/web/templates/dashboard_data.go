@@ -155,6 +155,16 @@ func lastCodexMeta(row telemetry.Running) string {
 	return strings.Join(parts, " / ")
 }
 
+func formatDiffStat(row telemetry.Running) string {
+	if row.DiffStatus == "ok" {
+		return "+" + formatInt(int64(row.DiffAdded)) + " -" + formatInt(int64(row.DiffRemoved)) + " (" + formatInt(int64(row.DiffFiles)) + " files)"
+	}
+	if row.DiffStatus != "" {
+		return row.DiffStatus
+	}
+	return "pending"
+}
+
 func formatCount(value int) string {
 	return formatInt(int64(value))
 }

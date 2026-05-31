@@ -38,6 +38,10 @@ func TestSnapshotJSONShape(t *testing.T) {
 				TurnCount:      2,
 				StartedAt:      startedAt,
 				RuntimeSeconds: 300,
+				DiffAdded:      4,
+				DiffRemoved:    2,
+				DiffFiles:      3,
+				DiffStatus:     "ok",
 				Tokens: telemetry.Tokens{
 					Input:  10,
 					Output: 20,
@@ -90,6 +94,9 @@ func TestSnapshotJSONShape(t *testing.T) {
 			PerIssueMaxUSD:   &perIssue,
 			CurrentSpendUSD:  12.5,
 			ProjectedCostUSD: 0.75,
+			Days: []telemetry.BudgetDay{
+				{Date: "2026-05-30", SpendUSD: 12.5},
+			},
 		},
 		RateLimits: &telemetry.RateLimits{
 			LimitID: "codex-primary",
@@ -142,6 +149,9 @@ func TestSnapshotJSONShape(t *testing.T) {
 	if running["issue_id"] != "issue-1" || running["identifier"] != "DD-1" {
 		t.Fatalf("running row = %#v", running)
 	}
+	if running["diff_added"] != float64(4) || running["diff_removed"] != float64(2) || running["diff_files"] != float64(3) || running["diff_status"] != "ok" {
+		t.Fatalf("running diff fields = %#v", running)
+	}
 	if _, ok := running["issue"]; ok {
 		t.Fatalf("running row has nested issue: %#v", running)
 	}
@@ -152,6 +162,10 @@ func TestSnapshotJSONShape(t *testing.T) {
 	}
 	if budget["projected_cost_usd"] != 0.75 {
 		t.Fatalf("budget projected cost = %#v", budget)
+	}
+	days := budget["days"].([]any)
+	if len(days) != 1 || days[0].(map[string]any)["date"] != "2026-05-30" || days[0].(map[string]any)["spend_usd"] != 12.5 {
+		t.Fatalf("budget days = %#v", days)
 	}
 
 	rateLimits := got["rate_limits"].(map[string]any)

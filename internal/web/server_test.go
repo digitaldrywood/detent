@@ -281,6 +281,107 @@ func TestServerEventsStreamsPublishedSnapshots(t *testing.T) {
 	}
 }
 
+func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
+	t.Parallel()
+
+	perDay := 25.0
+	perIssue := 5.0
+	deps := testDeps(t)
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := openEventStream(t, server)
+	defer body.Close()
+
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		Counts: telemetry.Counts{
+			Running:   5,
+			Queue:     4,
+			Blocked:   3,
+			Completed: 2,
+		},
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-live",
+					Identifier: "DD-LIVE",
+					Title:      "Live dashboard row",
+					State:      "In Progress",
+				},
+				SessionID:   "thread-live",
+				TurnCount:   6,
+				DiffAdded:   4,
+				DiffRemoved: 2,
+				DiffFiles:   3,
+				DiffStatus:  "ok",
+				Tokens: telemetry.Tokens{
+					Input:  100,
+					Output: 221,
+					Total:  321,
+				},
+			},
+		},
+		Budget: telemetry.Budget{
+			Enabled:          true,
+			PerDayMaxUSD:     &perDay,
+			PerIssueMaxUSD:   &perIssue,
+			CurrentSpendUSD:  12.34,
+			ProjectedCostUSD: 20,
+		},
+		RateLimits: &telemetry.RateLimits{
+			LimitName: "Codex",
+			Primary: &telemetry.RateLimitBucket{
+				Remaining:      87,
+				Used:           13,
+				Limit:          100,
+				ResetInSeconds: 3600,
+			},
+		},
+		Tokens: telemetry.Tokens{
+			Input:          100,
+			Output:         221,
+			Total:          321,
+			RuntimeSeconds: 60,
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	event := readSSEEvent(t, body)
+	if event.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", event.name)
+	}
+	for _, want := range []string{
+		"Running",
+		"5",
+		"Queue",
+		"4",
+		"Blocked",
+		"3",
+		"Completed",
+		"2",
+		"$12.34",
+		"$20.00",
+		"DD-LIVE",
+		"Live dashboard row",
+		"+4 -2 (3 files)",
+		"321",
+		"Codex rate limits",
+		"Primary",
+		"87",
+		"13",
+		"100",
+		"Token sparkline",
+		"DD-LIVE: 321 tokens",
+	} {
+		if !strings.Contains(event.data, want) {
+			t.Fatalf("snapshot event missing %q:\n%s", want, event.data)
+		}
+	}
+}
+
 func TestServerEventsSendsTickEvents(t *testing.T) {
 	t.Parallel()
 
@@ -310,6 +411,7 @@ func TestServerAPIRoutes(t *testing.T) {
 	lastEventAt := generatedAt.Add(-time.Minute)
 	dueAt := generatedAt.Add(time.Minute)
 	completedAt := generatedAt.Add(-30 * time.Second)
+	perDay := 50.0
 
 	events := hub.New[telemetry.Snapshot]()
 	if err := events.Publish(telemetry.Snapshot{
@@ -333,6 +435,10 @@ func TestServerAPIRoutes(t *testing.T) {
 				LastEvent:      "notification",
 				LastMessage:    "rendered",
 				RuntimeSeconds: 300,
+				DiffAdded:      4,
+				DiffRemoved:    2,
+				DiffFiles:      3,
+				DiffStatus:     "ok",
 				Tokens: telemetry.Tokens{
 					Input:  10,
 					Output: 20,
@@ -403,6 +509,14 @@ func TestServerAPIRoutes(t *testing.T) {
 			Total:          33,
 			RuntimeSeconds: 44.5,
 		},
+		Budget: telemetry.Budget{
+			Enabled:         true,
+			CurrentSpendUSD: 1.25,
+			PerDayMaxUSD:    &perDay,
+			Days: []telemetry.BudgetDay{
+				{Date: "2026-05-31", SpendUSD: 1.25},
+			},
+		},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -450,6 +564,16 @@ func TestServerAPIRoutes(t *testing.T) {
 	if running["budget_alert?"] != false {
 		t.Fatalf("budget_alert? = %#v, want false", running["budget_alert?"])
 	}
+	for key, want := range map[string]any{
+		"diff_added":   float64(4),
+		"diff_removed": float64(2),
+		"diff_files":   float64(3),
+		"diff_status":  "ok",
+	} {
+		if running[key] != want {
+			t.Fatalf("running[%q] = %#v, want %#v; row = %#v", key, running[key], want, running)
+		}
+	}
 
 	retrying := state["retrying"].([]any)[0].(map[string]any)
 	if retrying["issue_identifier"] != "DD-RETRY" || retrying["attempt"] != float64(2) {
@@ -462,6 +586,13 @@ func TestServerAPIRoutes(t *testing.T) {
 	if len(state["recent_sessions"].([]any)) != 1 {
 		t.Fatalf("recent_sessions = %#v, want one entry", state["recent_sessions"])
 	}
+	if got := nestedString(t, state, "budget", "today_spend_usd"); got != "1.25" {
+		t.Fatalf("budget.today_spend_usd = %s, want 1.25", got)
+	}
+	days := state["budget"].(map[string]any)["days"].([]any)
+	if len(days) != 1 || days[0].(map[string]any)["date"] != "2026-05-31" || days[0].(map[string]any)["spend_usd"] != float64(1.25) {
+		t.Fatalf("budget.days = %#v", days)
+	}
 
 	issue := requestJSON(t, server, http.MethodGet, "/api/v1/digitaldrywood/symphony-go%2337", http.StatusOK)
 	if issue["status"] != "running" || issue["issue_id"] != "issue-running" {
@@ -469,6 +600,17 @@ func TestServerAPIRoutes(t *testing.T) {
 	}
 	if issue["retry"] != nil || issue["blocked"] != nil || issue["last_error"] != nil {
 		t.Fatalf("running issue nullable fields = %#v", issue)
+	}
+	runningIssue := issue["running"].(map[string]any)
+	for key, want := range map[string]any{
+		"diff_added":   float64(4),
+		"diff_removed": float64(2),
+		"diff_files":   float64(3),
+		"diff_status":  "ok",
+	} {
+		if runningIssue[key] != want {
+			t.Fatalf("issue.running[%q] = %#v, want %#v; running = %#v", key, runningIssue[key], want, runningIssue)
+		}
 	}
 
 	retryIssue := requestJSON(t, server, http.MethodGet, "/api/v1/DD-RETRY", http.StatusOK)
@@ -492,6 +634,45 @@ func TestServerAPIRoutes(t *testing.T) {
 	}
 	if operations := refresh["operations"].([]any); len(operations) != 2 || operations[0] != "poll" || operations[1] != "reconcile" {
 		t.Fatalf("refresh operations = %#v", refresh["operations"])
+	}
+}
+
+func TestServerAPIPreservesUnknownDiffStatus(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[telemetry.Snapshot]()
+	if err := events.Publish(telemetry.Snapshot{
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-running",
+					Identifier: "DD-RUNNING",
+					State:      "In Progress",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Hub = events
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	running := state["running"].([]any)[0].(map[string]any)
+	if got, ok := running["diff_status"].(string); !ok || got != "" {
+		t.Fatalf("state running diff_status = %#v, want empty string", running["diff_status"])
+	}
+
+	issue := requestJSON(t, server, http.MethodGet, "/api/v1/DD-RUNNING", http.StatusOK)
+	runningIssue := issue["running"].(map[string]any)
+	if got, ok := runningIssue["diff_status"].(string); !ok || got != "" {
+		t.Fatalf("issue running diff_status = %#v, want empty string", runningIssue["diff_status"])
 	}
 }
 
