@@ -99,6 +99,15 @@ func (p PricingTable) Lookup(model string) (ModelPricing, bool) {
 	return row, ok
 }
 
+func UsageCostUSD(pricing PricingTable, model string, inputTokens int64, outputTokens int64) (float64, bool) {
+	modelPricing, ok := pricing.Lookup(model)
+	if !ok {
+		return 0, false
+	}
+	return float64(nonNegative(inputTokens))*modelPricing.USDPerInputToken +
+		float64(nonNegative(outputTokens))*modelPricing.USDPerOutputToken, true
+}
+
 func normalizePricingRow(value any) (ModelPricing, bool) {
 	row := mapValue(value)
 	if row == nil {

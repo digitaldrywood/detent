@@ -107,6 +107,7 @@ type UsageEvent struct {
 	InputTokens    int64
 	OutputTokens   int64
 	TotalTokens    int64
+	CostUSD        float64
 	RuntimeSeconds int64
 	StartedAt      time.Time
 	FinishedAt     time.Time

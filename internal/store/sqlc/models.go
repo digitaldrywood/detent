@@ -63,4 +63,5 @@ type UsageEvent struct {
 	FinishedAt     string         `json:"finished_at"`
 	EventDay       string         `json:"event_day"`
 	Outcome        string         `json:"outcome"`
+	CostUsd        float64        `json:"cost_usd"`
 }
