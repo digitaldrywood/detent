@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/symphony-go/internal/connector"
+	githubconnector "github.com/digitaldrywood/symphony-go/internal/connector/github"
 	"github.com/digitaldrywood/symphony-go/internal/connector/memory"
 )
 
@@ -104,7 +105,7 @@ func TestFactoryMemoryConnectorUsesConfiguredIssues(t *testing.T) {
 	}
 }
 
-func TestFactoryPlaceholderConnectorOperationsAreExplicitlyUnimplemented(t *testing.T) {
+func TestFactoryGitHubConnectorRequiresProjectForPolling(t *testing.T) {
 	t.Parallel()
 
 	c, err := NewFromConfig(Config{Kind: "github"})
@@ -112,11 +113,8 @@ func TestFactoryPlaceholderConnectorOperationsAreExplicitlyUnimplemented(t *test
 		t.Fatalf("NewFromConfig() error = %v", err)
 	}
 
-	if _, err := c.FetchCandidateIssues(context.Background()); !errors.Is(err, connector.ErrNotImplemented) {
-		t.Fatalf("FetchCandidateIssues() error = %v, want ErrNotImplemented", err)
-	}
-	if err := c.CreateComment(context.Background(), "issue-1", "body"); !errors.Is(err, connector.ErrNotImplemented) {
-		t.Fatalf("CreateComment() error = %v, want ErrNotImplemented", err)
+	if _, err := c.FetchCandidateIssues(context.Background()); !errors.Is(err, githubconnector.ErrMissingProject) {
+		t.Fatalf("FetchCandidateIssues() error = %v, want ErrMissingProject", err)
 	}
 }
 

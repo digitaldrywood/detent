@@ -27,6 +27,10 @@ type Config struct {
 	GitHubAppPrivateKeyPath string
 	GitHubAppInstallationID string
 	ProjectSlug             string
+	ActiveStates            []string
+	TerminalStates          []string
+	StateMap                map[string]string
+	PriorityMap             map[string]*int
 	TokenSource             TokenSource
 	HTTPClient              HTTPClient
 	Logger                  *slog.Logger
@@ -36,10 +40,14 @@ type Config struct {
 }
 
 type Connector struct {
-	client       *Client
-	projectID    string
-	statusCache  *statusCache
-	projectCache *projectCache
+	client         *Client
+	projectID      string
+	activeStates   []string
+	terminalStates []string
+	stateMap       map[string]string
+	priorityMap    map[string]*int
+	statusCache    *statusCache
+	projectCache   *projectCache
 }
 
 func NewConnector(cfg Config) (*Connector, error) {
@@ -70,10 +78,14 @@ func NewConnector(cfg Config) (*Connector, error) {
 	}
 
 	return &Connector{
-		client:       client,
-		projectID:    strings.TrimSpace(cfg.ProjectSlug),
-		statusCache:  newStatusCache(githubCacheTTL, cfg.Now),
-		projectCache: newProjectCache(githubCacheTTL, cfg.Now),
+		client:         client,
+		projectID:      strings.TrimSpace(cfg.ProjectSlug),
+		activeStates:   normalizeStateList(cfg.ActiveStates, []string{"Todo", "In Progress"}),
+		terminalStates: normalizeStateList(cfg.TerminalStates, []string{"Done", "Cancelled", "Canceled", "Closed"}),
+		stateMap:       cloneStateMap(cfg.StateMap),
+		priorityMap:    clonePriorityMapWithDefault(cfg.PriorityMap),
+		statusCache:    newStatusCache(githubCacheTTL, cfg.Now),
+		projectCache:   newProjectCache(githubCacheTTL, cfg.Now),
 	}, nil
 }
 
@@ -106,26 +118,6 @@ func (c *Connector) Authenticate(ctx context.Context) error {
 	}
 
 	return nil
-}
-
-func (*Connector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
-	return nil, connector.ErrNotImplemented
-}
-
-func (*Connector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
-	return nil, connector.ErrNotImplemented
-}
-
-func (*Connector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
-	return nil, connector.ErrNotImplemented
-}
-
-func (*Connector) CreateComment(context.Context, string, string) error {
-	return connector.ErrNotImplemented
-}
-
-func (*Connector) UpdateIssueState(context.Context, string, string) error {
-	return connector.ErrNotImplemented
 }
 
 var _ connector.Connector = (*Connector)(nil)

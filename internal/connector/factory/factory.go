@@ -26,6 +26,10 @@ type Config struct {
 	GitHubAppPrivateKeyPath string
 	GitHubAppInstallationID string
 	ProjectSlug             string
+	ActiveStates            []string
+	TerminalStates          []string
+	StateMap                map[string]string
+	PriorityMap             map[string]*int
 }
 
 func NewFromConfig(cfg Config) (connector.Connector, error) {
@@ -45,6 +49,10 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
 			GitHubAppInstallationID: cfg.GitHubAppInstallationID,
 			ProjectSlug:             cfg.ProjectSlug,
+			ActiveStates:            cfg.ActiveStates,
+			TerminalStates:          cfg.TerminalStates,
+			StateMap:                cfg.StateMap,
+			PriorityMap:             cfg.PriorityMap,
 		})
 	case connector.BackendGitLab, connector.BackendJira:
 		return nil, fmt.Errorf("%w: %s", ErrBackendNotReady, kind)
