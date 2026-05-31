@@ -41,7 +41,11 @@ templ Dashboard(data DashboardData) {
 						</div>
 						if len(data.Snapshot.Running) == 0 {
 							<div class="mt-5 grid min-h-56 place-items-center rounded-md border border-dashed border-border bg-muted px-4 text-sm text-muted-foreground">
-								No active issue sessions.
+								if runningCount(data.Snapshot) > 0 {
+									Running session details are not available for this snapshot.
+								} else {
+									No active issue sessions.
+								}
 							</div>
 						} else {
 							<div class="mt-5 overflow-x-auto">

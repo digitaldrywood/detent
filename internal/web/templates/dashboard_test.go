@@ -133,6 +133,27 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 	}
 }
 
+func TestDashboardDistinguishesMissingRunningDetails(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			Counts: telemetry.Counts{
+				Running: 2,
+			},
+		},
+	})
+
+	if !strings.Contains(html, "Running session details are not available for this snapshot.") {
+		t.Fatalf("dashboard missing running details placeholder:\n%s", html)
+	}
+	if strings.Contains(html, "No active issue sessions.") {
+		t.Fatalf("dashboard rendered empty running state for summary-only snapshot:\n%s", html)
+	}
+}
+
 func renderDashboard(t *testing.T, data templates.DashboardData) string {
 	t.Helper()
 
