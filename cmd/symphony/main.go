@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	"github.com/spf13/cobra"
+
+	"github.com/digitaldrywood/symphony-go/internal/cli"
 )
 
 func main() {
@@ -29,18 +31,7 @@ func main() {
 }
 
 func newRootCommand(ctx context.Context) *cobra.Command {
-	cmd := &cobra.Command{
-		Use:          "symphony",
-		Short:        "Symphony agent orchestrator",
-		Long:         "Symphony is an agent orchestrator for tracker-backed work queues.",
-		SilenceUsage: true,
-		RunE: func(cmd *cobra.Command, _ []string) error {
-			return cmd.Help()
-		},
-	}
-	cmd.SetContext(ctx)
-
-	return cmd
+	return cli.NewRootCommand(ctx)
 }
 
 func newSignalContext(parent context.Context) (context.Context, context.CancelFunc) {

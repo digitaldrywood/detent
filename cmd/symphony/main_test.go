@@ -28,7 +28,9 @@ func TestRootCommandHelp(t *testing.T) {
 	}
 }
 
-func TestRootCommandWithoutArgsShowsHelp(t *testing.T) {
+func TestRootCommandWithoutArgsBootsFromGlobalConfig(t *testing.T) {
+	t.Setenv("SYMPHONY_HOME", t.TempDir())
+
 	cmd := newRootCommand(context.Background())
 
 	var stdout bytes.Buffer
@@ -36,12 +38,12 @@ func TestRootCommandWithoutArgsShowsHelp(t *testing.T) {
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{})
 
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("Execute() error = %v", err)
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing global config")
 	}
-
-	if !strings.Contains(stdout.String(), "Usage:") {
-		t.Fatalf("expected usage output, got:\n%s", stdout.String())
+	if !strings.Contains(err.Error(), "read global config") {
+		t.Fatalf("Execute() error = %v, want missing global config", err)
 	}
 }
 

@@ -1,6 +1,7 @@
 package global
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -95,6 +96,75 @@ func TestReadOrDefaultUsesDefaultForMissingFile(t *testing.T) {
 	}
 }
 
+func TestWriteRoundTripsConfig(t *testing.T) {
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "written", "global.yaml")
+
+	cfg := Config{
+		Path:       configPath,
+		APIVersion: APIVersion,
+		Kind:       Kind,
+		Global: Settings{
+			MaxConcurrentAgents: 3,
+			Scheduling:          SchedulingStrict,
+			FairShare:           map[string]any{"half_life": "30m"},
+			Startup:             map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
+		},
+		Projects: []Project{
+			{
+				ID:            "symphony",
+				Workflow:      paths.workflowPath,
+				Workdir:       paths.workdirPath,
+				Weight:        5,
+				Priority:      2,
+				Paused:        true,
+				CredentialRef: "github-default",
+			},
+		},
+	}
+
+	if err := Write(configPath, cfg, WithHome(paths.home)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	got, err := Read(configPath, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	if !reflect.DeepEqual(got.Global, cfg.Global) {
+		t.Fatalf("Global = %#v, want %#v", got.Global, cfg.Global)
+	}
+	if !reflect.DeepEqual(got.Projects, cfg.Projects) {
+		t.Fatalf("Projects = %#v, want %#v", got.Projects, cfg.Projects)
+	}
+}
+
+func TestWriteValidatesConfigBeforeWriting(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "global.yaml")
+
+	err := Write(path, Config{
+		APIVersion: APIVersion,
+		Kind:       Kind,
+		Global: Settings{
+			MaxConcurrentAgents: 8,
+			Scheduling:          SchedulingWeighted,
+		},
+		Projects: []Project{
+			{ID: "symphony", Weight: 0},
+		},
+	})
+	if err == nil {
+		t.Fatal("Write() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "projects[0].workflow") {
+		t.Fatalf("Write() error = %v, want workflow validation", err)
+	}
+	if _, statErr := os.Stat(path); !errors.Is(statErr, os.ErrNotExist) {
+		t.Fatalf("Stat() error = %v, want not exist", statErr)
+	}
+}
+
 func TestReadValidConfig(t *testing.T) {
 	paths := createProjectFiles(t)
 	configPath := filepath.Join(paths.root, "global.yaml")
@@ -160,6 +230,28 @@ func TestReadValidConfig(t *testing.T) {
 	}
 	if project.CredentialRef != "github-default" {
 		t.Fatalf("Project.CredentialRef = %q, want github-default", project.CredentialRef)
+	}
+}
+
+func TestReadWithProjectPathLiteralsPreservesYAMLLiterals(t *testing.T) {
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeFile(t, configPath, validYAML(paths, nil))
+
+	cfg, err := Read(configPath, WithHome(paths.home), WithProjectPathLiterals())
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	if len(cfg.Projects) != 1 {
+		t.Fatalf("Projects length = %d, want 1", len(cfg.Projects))
+	}
+	project := cfg.Projects[0]
+	if project.Workflow != paths.workflow {
+		t.Fatalf("Project.Workflow = %q, want %q", project.Workflow, paths.workflow)
+	}
+	if project.Workdir != paths.workdir {
+		t.Fatalf("Project.Workdir = %q, want %q", project.Workdir, paths.workdir)
 	}
 }
 

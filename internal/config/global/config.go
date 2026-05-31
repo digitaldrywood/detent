@@ -38,8 +38,8 @@ type Config struct {
 type Settings struct {
 	MaxConcurrentAgents int            `yaml:"max_concurrent_agents"`
 	Scheduling          string         `yaml:"scheduling"`
-	FairShare           map[string]any `yaml:"fair_share"`
-	Startup             map[string]any `yaml:"startup"`
+	FairShare           map[string]any `yaml:"fair_share,omitempty"`
+	Startup             map[string]any `yaml:"startup,omitempty"`
 }
 
 type Project struct {
@@ -48,8 +48,8 @@ type Project struct {
 	Workdir       string `yaml:"workdir"`
 	Weight        int    `yaml:"weight"`
 	Priority      int    `yaml:"priority"`
-	Paused        bool   `yaml:"paused"`
-	CredentialRef string `yaml:"credential_ref"`
+	Paused        bool   `yaml:"paused,omitempty"`
+	CredentialRef string `yaml:"credential_ref,omitempty"`
 }
 
 type Option func(*options)
@@ -70,8 +70,9 @@ type ValidationError struct {
 }
 
 type options struct {
-	home       string
-	relativeTo string
+	home                string
+	relativeTo          string
+	projectPathLiterals bool
 }
 
 func WithHome(home string) Option {
@@ -83,6 +84,12 @@ func WithHome(home string) Option {
 func WithRelativeTo(path string) Option {
 	return func(opts *options) {
 		opts.relativeTo = path
+	}
+}
+
+func WithProjectPathLiterals() Option {
+	return func(opts *options) {
+		opts.projectPathLiterals = true
 	}
 }
 
@@ -111,6 +118,23 @@ func Default() (Config, error) {
 	return defaultConfig(path), nil
 }
 
+func DefaultAt(path string, opts ...Option) (Config, error) {
+	if strings.TrimSpace(path) == "" {
+		return Config{}, errors.New("global config path is required")
+	}
+
+	readOptions := defaultOptions()
+	for _, opt := range opts {
+		opt(&readOptions)
+	}
+
+	expandedPath, err := expandPath(path, readOptions)
+	if err != nil {
+		return Config{}, err
+	}
+	return defaultConfig(expandedPath), nil
+}
+
 func Read(path string, opts ...Option) (Config, error) {
 	readOptions := defaultOptions()
 	for _, opt := range opts {
@@ -128,6 +152,41 @@ func Read(path string, opts ...Option) (Config, error) {
 	}
 
 	return Parse(raw, expandedPath, opts...)
+}
+
+func Write(path string, cfg Config, opts ...Option) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("global config path is required")
+	}
+
+	writeOptions := defaultOptions()
+	for _, opt := range opts {
+		opt(&writeOptions)
+	}
+
+	expandedPath, err := expandPath(path, writeOptions)
+	if err != nil {
+		return err
+	}
+
+	cfg.Path = expandedPath
+	if err := cfg.Validate(opts...); err != nil {
+		return err
+	}
+
+	raw, err := yaml.Marshal(cfg)
+	if err != nil {
+		return fmt.Errorf("marshal global config %s: %w", expandedPath, err)
+	}
+
+	if err := os.MkdirAll(filepath.Dir(expandedPath), 0o755); err != nil {
+		return fmt.Errorf("create global config directory %s: %w", filepath.Dir(expandedPath), err)
+	}
+	if err := os.WriteFile(expandedPath, raw, 0o644); err != nil {
+		return fmt.Errorf("write global config %s: %w", expandedPath, err)
+	}
+
+	return nil
 }
 
 func ReadOrDefault(path string, opts ...Option) (Config, error) {
@@ -649,13 +708,19 @@ func buildProjects(projects []any, opts options) []Project {
 	out := make([]Project, 0, len(projects))
 	for _, item := range projects {
 		project := mustMap(item)
-		workflow, err := expandPath(mustString(project["workflow"]), opts)
-		if err != nil {
-			panic("validated global config workflow path did not expand")
-		}
-		workdir, err := expandPath(mustString(project["workdir"]), opts)
-		if err != nil {
-			panic("validated global config workdir path did not expand")
+		workflow := mustString(project["workflow"])
+		workdir := mustString(project["workdir"])
+		if !opts.projectPathLiterals {
+			expandedWorkflow, err := expandPath(workflow, opts)
+			if err != nil {
+				panic("validated global config workflow path did not expand")
+			}
+			expandedWorkdir, err := expandPath(workdir, opts)
+			if err != nil {
+				panic("validated global config workdir path did not expand")
+			}
+			workflow = expandedWorkflow
+			workdir = expandedWorkdir
 		}
 
 		out = append(out, Project{
