@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/symphony-go/internal/connector"
+	runpkg "github.com/digitaldrywood/symphony-go/internal/runner"
 )
 
 func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
@@ -32,7 +33,11 @@ func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
 				MaxConcurrentAgentsPerHost: tt.Config.MaxConcurrentAgentsPerHost,
 				BudgetRefusalCooldown:      time.Duration(tt.Config.BudgetRefusalCooldownSeconds) * time.Second,
 			})
-			orch := Orchestrator{cfg: cfg, runner: parityBlockingRunner{}, runResults: make(chan runResultEvent)}
+			orch := Orchestrator{
+				cfg:        cfg,
+				supervisor: newTestSupervisor(t, parityBlockingRunner{}, cfg),
+				runResults: make(chan runpkg.Completion),
+			}
 			state := newState(cfg)
 			applyParityInitialState(t, &state, tt.InitialState, now)
 
@@ -222,9 +227,14 @@ func parityDispatchOrder(orch *Orchestrator, state State, candidates []connector
 			continue
 		}
 
+		workerHost, ok := orch.selectWorkerHost(&state, "")
+		if !ok {
+			continue
+		}
+
 		issue = cloneIssue(issue)
 		order = append(order, issue.ID)
-		state.Running[issue.ID] = Running{Issue: issue, StartedAt: now}
+		state.Running[issue.ID] = Running{Issue: issue, StartedAt: now, WorkerHost: workerHost}
 		state.Claimed[issue.ID] = Claimed{Issue: issue, ClaimedAt: now}
 		delete(state.Retry, issue.ID)
 		delete(state.Blocked, issue.ID)
