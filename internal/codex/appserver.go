@@ -14,6 +14,7 @@ const (
 	initializeRequestID  = 1
 	threadStartRequestID = 2
 	turnStartRequestID   = 3
+	methodNotFoundCode   = -32601
 
 	defaultClientName    = "symphony-orchestrator"
 	defaultClientTitle   = "Symphony Orchestrator"
@@ -350,6 +351,13 @@ func (s *AppServer) awaitResponse(
 			return msg.Result, nil
 		}
 
+		handled, err := handleServerRequest(ctx, transport, msg)
+		if err != nil {
+			return nil, err
+		}
+		if handled {
+			continue
+		}
 		if err := maybeEmitUpdate(msg, onUpdate); err != nil {
 			return nil, err
 		}
@@ -361,6 +369,14 @@ func (s *AppServer) streamTurn(ctx context.Context, transport Transport, onUpdat
 		msg, err := receiveWithTimeout(ctx, transport, s.turnTimeout)
 		if err != nil {
 			return fmt.Errorf("stream turn: %w", err)
+		}
+
+		handled, err := handleServerRequest(ctx, transport, msg)
+		if err != nil {
+			return err
+		}
+		if handled {
+			continue
 		}
 
 		update, ok, err := updateFromMessage(msg)
@@ -394,6 +410,55 @@ func sendRequest(ctx context.Context, transport Transport, id int, method string
 		Method: method,
 		Params: data,
 	})
+}
+
+func handleServerRequest(ctx context.Context, transport Transport, msg Message) (bool, error) {
+	if msg.Method == "" || len(msg.ID) == 0 {
+		return false, nil
+	}
+
+	response := Message{
+		ID: msg.ID,
+	}
+	result, ok, err := serverRequestResult(msg.Method)
+	if err != nil {
+		return true, err
+	}
+	if ok {
+		response.Result = result
+	} else {
+		response.Error = &RPCError{
+			Code:    methodNotFoundCode,
+			Message: fmt.Sprintf("unsupported server request: %s", msg.Method),
+		}
+	}
+
+	if err := transport.Send(ctx, response); err != nil {
+		return true, fmt.Errorf("respond to codex server request %s: %w", msg.Method, err)
+	}
+	return true, nil
+}
+
+func serverRequestResult(method string) (json.RawMessage, bool, error) {
+	var result any
+	switch method {
+	case "item/commandExecution/requestApproval", "item/fileChange/requestApproval":
+		result = map[string]string{"decision": "decline"}
+	case "item/permissions/requestApproval":
+		result = map[string]any{"permissions": map[string]any{}}
+	case "item/tool/requestUserInput":
+		result = map[string]any{"answers": map[string]any{}}
+	case "mcpServer/elicitation/request":
+		result = map[string]any{"action": "decline", "content": nil}
+	default:
+		return nil, false, nil
+	}
+
+	data, err := json.Marshal(result)
+	if err != nil {
+		return nil, true, fmt.Errorf("marshal %s server request response: %w", method, err)
+	}
+	return data, true, nil
 }
 
 func maybeEmitUpdate(msg Message, onUpdate UpdateHandler) error {

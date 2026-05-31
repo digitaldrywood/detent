@@ -154,6 +154,51 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	}
 }
 
+func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
+	t.Parallel()
+
+	transport := newFakeAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+		serverRequestMessage(t, 40, "item/tool/requestUserInput", `{"threadId":"thread-1","turnId":"turn-1"}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
+		serverRequestMessage(t, 41, "item/commandExecution/requestApproval", `{"threadId":"thread-1","turnId":"turn-1"}`),
+		serverRequestMessage(t, 42, "item/fileChange/requestApproval", `{"threadId":"thread-1","turnId":"turn-1"}`),
+		serverRequestMessage(t, 43, "item/permissions/requestApproval", `{"threadId":"thread-1","turnId":"turn-1"}`),
+		serverRequestMessage(t, 44, "mcpServer/elicitation/request", `{"threadId":"thread-1","turnId":"turn-1"}`),
+		serverRequestMessage(t, 45, "custom/request", `{"threadId":"thread-1","turnId":"turn-1"}`),
+		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport},
+		WithReadTimeout(time.Second),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: "/tmp/symphony-workspace",
+		Prompt:    "Ship issue #18",
+	}, nil)
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+
+	sent := transport.sentMessages()
+	if len(sent) != 10 {
+		t.Fatalf("sent messages = %d, want 10: %#v", len(sent), sent)
+	}
+
+	assertResponseResultContains(t, sent[4], 40, "answers", map[string]any{})
+	assertResponseResultContains(t, sent[5], 41, "decision", "decline")
+	assertResponseResultContains(t, sent[6], 42, "decision", "decline")
+	assertResponseResultContains(t, sent[7], 43, "permissions", map[string]any{})
+	assertResponseResultContains(t, sent[8], 44, "action", "decline")
+	assertResponseResultContains(t, sent[8], 44, "content", nil)
+	assertErrorResponse(t, sent[9], 45, methodNotFoundCode, "unsupported server request: custom/request")
+}
+
 func TestAppServerRunTurnReportsResponseErrors(t *testing.T) {
 	t.Parallel()
 
@@ -249,6 +294,14 @@ func notificationMessage(t *testing.T, method string, params string) Message {
 	}
 }
 
+func serverRequestMessage(t *testing.T, id int, method string, params string) Message {
+	t.Helper()
+
+	msg := notificationMessage(t, method, params)
+	msg.ID = json.RawMessage(mustMarshalJSON(t, id))
+	return msg
+}
+
 func assertRequest(t *testing.T, msg Message, id int, method string) {
 	t.Helper()
 
@@ -260,6 +313,42 @@ func assertRequest(t *testing.T, msg Message, id int, method string) {
 	}
 	if len(msg.Params) == 0 {
 		t.Fatalf("Params empty for %s", method)
+	}
+}
+
+func assertResponseResultContains(t *testing.T, msg Message, id int, path string, want any) {
+	t.Helper()
+
+	assertResponseID(t, msg, id)
+	if msg.Error != nil {
+		t.Fatalf("Error = %#v, want result", msg.Error)
+	}
+	if len(msg.Result) == 0 {
+		t.Fatalf("Result empty for response %d", id)
+	}
+	assertJSONContains(t, msg.Result, path, want)
+}
+
+func assertErrorResponse(t *testing.T, msg Message, id int, code int, message string) {
+	t.Helper()
+
+	assertResponseID(t, msg, id)
+	if msg.Error == nil {
+		t.Fatalf("Error = nil, want code %d", code)
+	}
+	if msg.Error.Code != code || msg.Error.Message != message {
+		t.Fatalf("Error = %#v, want code %d message %q", msg.Error, code, message)
+	}
+}
+
+func assertResponseID(t *testing.T, msg Message, id int) {
+	t.Helper()
+
+	if msg.Method != "" {
+		t.Fatalf("Method = %q, want response", msg.Method)
+	}
+	if string(msg.ID) != mustMarshalJSON(t, id) {
+		t.Fatalf("ID = %s, want %d", msg.ID, id)
 	}
 }
 
