@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"strings"
 	"testing"
 )
 
@@ -86,6 +87,46 @@ func TestProductionLoggerWritesJSON(t *testing.T) {
 	}
 	if record["component"] != "test" {
 		t.Fatalf("component = %v, want test", record["component"])
+	}
+}
+
+func TestUseTextLogs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		env       string
+		envSet    bool
+		stdoutTTY bool
+		want      bool
+	}{
+		{name: "dev env uses text without tty", env: "dev", envSet: true, stdoutTTY: false, want: true},
+		{name: "unset env uses text with tty", env: "", envSet: false, stdoutTTY: true, want: true},
+		{name: "unset env uses json without tty", env: "", envSet: false, stdoutTTY: false, want: false},
+		{name: "prod env uses json with tty", env: "prod", envSet: true, stdoutTTY: true, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := useTextLogs(tt.env, tt.envSet, tt.stdoutTTY); got != tt.want {
+				t.Fatalf("useTextLogs(%q, %v, %v) = %v, want %v", tt.env, tt.envSet, tt.stdoutTTY, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestInteractiveDefaultLoggerWritesText(t *testing.T) {
+	var out bytes.Buffer
+	logger := slog.New(newLogHandlerForTerminal("", false, "debug", &out, true))
+	logger.Debug("ready", "component", "test")
+
+	if json.Valid(out.Bytes()) {
+		t.Fatalf("log output is JSON, want text:\n%s", out.String())
+	}
+	if !strings.Contains(out.String(), "ready") {
+		t.Fatalf("log output missing message:\n%s", out.String())
 	}
 }
 

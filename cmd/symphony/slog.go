@@ -11,22 +11,31 @@ import (
 )
 
 func setupLoggerFromEnv(w io.Writer) *slog.Logger {
-	return setupLogger(envValue("SYMPHONY_ENV", "ENV"), envValue("SYMPHONY_LOG_LEVEL", "LOG_LEVEL"), w)
+	env, envSet := envValueWithPresence("SYMPHONY_ENV", "ENV")
+	return setupLoggerForTerminal(env, envSet, envValue("SYMPHONY_LOG_LEVEL", "LOG_LEVEL"), w, stdoutIsTTY())
 }
 
 func setupLogger(env string, level string, w io.Writer) *slog.Logger {
-	logger := slog.New(newLogHandler(env, level, w))
+	return setupLoggerForTerminal(env, strings.TrimSpace(env) != "", level, w, false)
+}
+
+func setupLoggerForTerminal(env string, envSet bool, level string, w io.Writer, stdoutTTY bool) *slog.Logger {
+	logger := slog.New(newLogHandlerForTerminal(env, envSet, level, w, stdoutTTY))
 	slog.SetDefault(logger)
 	return logger
 }
 
 func newLogHandler(env string, level string, w io.Writer) slog.Handler {
+	return newLogHandlerForTerminal(env, strings.TrimSpace(env) != "", level, w, false)
+}
+
+func newLogHandlerForTerminal(env string, envSet bool, level string, w io.Writer, stdoutTTY bool) slog.Handler {
 	if w == nil {
 		w = io.Discard
 	}
 
 	logLevel := parseLogLevel(level)
-	if isDevelopment(env) {
+	if useTextLogs(env, envSet, stdoutTTY) {
 		return tint.NewHandler(w, &tint.Options{
 			Level:      logLevel,
 			TimeFormat: time.Kitchen,
@@ -37,6 +46,21 @@ func newLogHandler(env string, level string, w io.Writer) slog.Handler {
 	return slog.NewJSONHandler(w, &slog.HandlerOptions{
 		Level: logLevel,
 	})
+}
+
+func useTextLogs(env string, envSet bool, stdoutTTY bool) bool {
+	if isDevelopment(env) {
+		return true
+	}
+	if envSet {
+		return false
+	}
+	return stdoutTTY
+}
+
+func stdoutIsTTY() bool {
+	info, err := os.Stdout.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func parseLogLevel(level string) slog.Level {
@@ -62,8 +86,16 @@ func isDevelopment(env string) bool {
 }
 
 func envValue(primary string, fallback string) string {
-	if value := os.Getenv(primary); value != "" {
-		return value
+	value, _ := envValueWithPresence(primary, fallback)
+	return value
+}
+
+func envValueWithPresence(primary string, fallback string) (string, bool) {
+	if value, ok := os.LookupEnv(primary); ok && value != "" {
+		return value, true
 	}
-	return os.Getenv(fallback)
+	if value, ok := os.LookupEnv(fallback); ok && value != "" {
+		return value, true
+	}
+	return "", false
 }

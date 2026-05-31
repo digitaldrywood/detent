@@ -26,9 +26,18 @@ make setup
 make dev
 ```
 
-`make dev` runs Air, builds `./tmp/symphony`, rotates `tmp/air-combined.log`, and streams combined build and application output to `tmp/air-combined.log`.
+`make dev` runs Air with `SYMPHONY_ENV=dev` and `SYMPHONY_LOG_LEVEL=debug`, builds `./tmp/symphony`, rotates `tmp/air-combined.log`, and streams combined build and application output to `tmp/air-combined.log`.
 
 The default web bind is `127.0.0.1:4000` when no config or port is supplied. If another Symphony process is already using that port, do not start a second server on it. Run a built binary with `./tmp/symphony --port 0` when you need an ephemeral port.
+
+## Logging
+
+Symphony logs with `log/slog`.
+
+- `SYMPHONY_ENV=dev`, `development`, or `local` enables tint text logs.
+- `SYMPHONY_ENV=prod` or any other non-development value keeps JSON logs.
+- When `SYMPHONY_ENV` is unset, interactive stdout TTY runs use tint text logs; non-TTY runs use JSON logs.
+- `SYMPHONY_LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
 
 ## Validation
 

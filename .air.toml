@@ -14,7 +14,7 @@ tmp_dir = "tmp"
   exclude_regex = ["_test\\.go", "_templ\\.go$"]
   exclude_unchanged = false
   follow_symlink = false
-  full_bin = "SYMPHONY_ENV=development SYMPHONY_LOG_LEVEL=debug ./tmp/symphony"
+  full_bin = "./tmp/symphony"
   include_dir = []
   include_ext = ["go", "templ", "sql", "css", "js", "html", "yaml", "yml", "toml"]
   include_file = []
