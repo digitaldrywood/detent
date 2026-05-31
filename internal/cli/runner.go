@@ -78,7 +78,7 @@ func buildRunner(
 	}
 
 	pricing, err := budget.PricingForConfig(budget.Config{
-		PricingPath: cfg.Agent.Budget.PricingPath,
+		PricingPath: cfg.Budget.PricingPath,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("load pricing: %w", err)

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -34,6 +35,23 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	}
 	if _, ok := run.(*runnerpkg.Runner); !ok {
 		t.Fatalf("buildRunner() = %T, want *runner.Runner", run)
+	}
+}
+
+func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Workspace.Root = t.TempDir()
+	cfg.Budget.PricingPath = filepath.Join(t.TempDir(), "missing-models.yaml")
+
+	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", nil, nil)
+	if err == nil {
+		t.Fatal("buildRunner() error = nil, want pricing load error")
+	}
+	if !strings.Contains(err.Error(), "load pricing") {
+		t.Fatalf("buildRunner() error = %v, want load pricing error", err)
 	}
 }
 
