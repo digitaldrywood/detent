@@ -29,7 +29,7 @@ func helpScript() templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<script>\n\t\tfunction hydrateHelpTip(button) {\n\t\t\tconst wrapper = button.closest(\"[data-help-tip]\")\n\t\t\tconst panel = wrapper && wrapper.querySelector(\"[data-help-panel]\")\n\t\t\tif (!panel) return\n\t\t\tconst title = panel.querySelector(\"[data-help-title]\")\n\t\t\tconst description = panel.querySelector(\"[data-help-description]\")\n\t\t\tif (title) title.textContent = button.dataset.helpLabel || \"\"\n\t\t\tif (description) description.textContent = button.dataset.helpDescription || \"\"\n\t\t}\n\t\tfunction setHelpTipOpen(wrapper, open) {\n\t\t\tif (!wrapper) return\n\t\t\tif (open) {\n\t\t\t\tconst button = wrapper.querySelector(\"button\")\n\t\t\t\tif (button) hydrateHelpTip(button)\n\t\t\t}\n\t\t\twrapper.dataset.open = open ? \"true\" : \"false\"\n\t\t\tconst button = wrapper.querySelector(\"button\")\n\t\t\tif (button) button.setAttribute(\"aria-expanded\", open ? \"true\" : \"false\")\n\t\t}\n\t\tfunction toggleHelpTip(button) {\n\t\t\tconst wrapper = button.closest(\"[data-help-tip]\")\n\t\t\tconst open = wrapper && wrapper.dataset.open === \"true\"\n\t\t\tdocument.querySelectorAll(\"[data-help-tip][data-open='true']\").forEach((tip) => {\n\t\t\t\tif (tip !== wrapper) setHelpTipOpen(tip, false)\n\t\t\t})\n\t\t\tsetHelpTipOpen(wrapper, !open)\n\t\t}\n\t\tfunction closeHelpTipAfterFocus(wrapper) {\n\t\t\trequestAnimationFrame(() => {\n\t\t\t\tif (wrapper && !wrapper.matches(\":focus-within\")) setHelpTipOpen(wrapper, false)\n\t\t\t})\n\t\t}\n\t\tdocument.addEventListener(\"click\", (event) => {\n\t\t\tdocument.querySelectorAll(\"[data-help-tip][data-open='true']\").forEach((tip) => {\n\t\t\t\tif (!tip.contains(event.target)) setHelpTipOpen(tip, false)\n\t\t\t})\n\t\t})\n\t\tdocument.addEventListener(\"keydown\", (event) => {\n\t\t\tif (event.key !== \"Escape\") return\n\t\t\tdocument.querySelectorAll(\"[data-help-tip][data-open='true']\").forEach((tip) => setHelpTipOpen(tip, false))\n\t\t})\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<script>\n\t\tfunction hydrateHelpTip(button) {\n\t\t\tconst wrapper = button.closest(\"[data-help-tip]\")\n\t\t\tconst panel = wrapper && wrapper.querySelector(\"[data-help-panel]\")\n\t\t\tif (!panel) return\n\t\t\tconst title = panel.querySelector(\"[data-help-title]\")\n\t\t\tconst description = panel.querySelector(\"[data-help-description]\")\n\t\t\tif (title) title.textContent = button.dataset.helpLabel || \"\"\n\t\t\tif (description) description.textContent = button.dataset.helpDescription || \"\"\n\t\t\tpositionHelpTip(button, panel)\n\t\t}\n\t\tfunction positionHelpTip(button, panel) {\n\t\t\tconst width = Math.min(256, Math.max(160, window.innerWidth - 32))\n\t\t\tpanel.style.width = width + \"px\"\n\t\t\tconst rect = button.getBoundingClientRect()\n\t\t\tconst maxLeft = Math.max(16, window.innerWidth - width - 16)\n\t\t\tconst left = Math.min(Math.max(16, rect.left + rect.width / 2 - width / 2), maxLeft)\n\t\t\tconst below = rect.bottom + 8\n\t\t\tconst height = panel.offsetHeight || 96\n\t\t\tconst top = below + height > window.innerHeight - 16 ? Math.max(16, rect.top - height - 8) : below\n\t\t\tpanel.style.left = left + \"px\"\n\t\t\tpanel.style.top = top + \"px\"\n\t\t}\n\t\tfunction setHelpTipOpen(wrapper, open) {\n\t\t\tif (!wrapper) return\n\t\t\tif (open) {\n\t\t\t\tconst button = wrapper.querySelector(\"button\")\n\t\t\t\tif (button) hydrateHelpTip(button)\n\t\t\t}\n\t\t\twrapper.dataset.open = open ? \"true\" : \"false\"\n\t\t\tconst button = wrapper.querySelector(\"button\")\n\t\t\tif (button) button.setAttribute(\"aria-expanded\", open ? \"true\" : \"false\")\n\t\t}\n\t\tfunction toggleHelpTip(button) {\n\t\t\tconst wrapper = button.closest(\"[data-help-tip]\")\n\t\t\tconst open = wrapper && wrapper.dataset.open === \"true\"\n\t\t\tdocument.querySelectorAll(\"[data-help-tip][data-open='true']\").forEach((tip) => {\n\t\t\t\tif (tip !== wrapper) setHelpTipOpen(tip, false)\n\t\t\t})\n\t\t\tsetHelpTipOpen(wrapper, !open)\n\t\t}\n\t\tfunction closeHelpTipAfterFocus(wrapper) {\n\t\t\trequestAnimationFrame(() => {\n\t\t\t\tif (wrapper && !wrapper.matches(\":focus-within\")) setHelpTipOpen(wrapper, false)\n\t\t\t})\n\t\t}\n\t\tdocument.addEventListener(\"click\", (event) => {\n\t\t\tdocument.querySelectorAll(\"[data-help-tip][data-open='true']\").forEach((tip) => {\n\t\t\t\tif (!tip.contains(event.target)) setHelpTipOpen(tip, false)\n\t\t\t})\n\t\t})\n\t\tdocument.addEventListener(\"keydown\", (event) => {\n\t\t\tif (event.key !== \"Escape\") return\n\t\t\tdocument.querySelectorAll(\"[data-help-tip][data-open='true']\").forEach((tip) => setHelpTipOpen(tip, false))\n\t\t})\n\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -66,7 +66,7 @@ func helpIcon(term helpTerm, scope string) templ.Component {
 			var templ_7745c5c3_Var3 string
 			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs("Help: " + helpLabel(term))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 55, Col: 43}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 68, Col: 43}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
 			if templ_7745c5c3_Err != nil {
@@ -79,7 +79,7 @@ func helpIcon(term helpTerm, scope string) templ.Component {
 			var templ_7745c5c3_Var4 string
 			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(helpID(term, scope))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 56, Col: 42}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 69, Col: 42}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
@@ -92,7 +92,7 @@ func helpIcon(term helpTerm, scope string) templ.Component {
 			var templ_7745c5c3_Var5 string
 			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(helpLabel(term))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 58, Col: 37}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 71, Col: 37}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {
@@ -105,7 +105,7 @@ func helpIcon(term helpTerm, scope string) templ.Component {
 			var templ_7745c5c3_Var6 string
 			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(helpDescription(term))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 59, Col: 49}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 72, Col: 49}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {
@@ -118,7 +118,7 @@ func helpIcon(term helpTerm, scope string) templ.Component {
 			var templ_7745c5c3_Var7 string
 			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(helpID(term, scope))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 67, Col: 28}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 80, Col: 28}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
@@ -179,7 +179,7 @@ func helpInlineLabel(label string, term helpTerm, scope string, class string) te
 		var templ_7745c5c3_Var11 string
 		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 81, Col: 15}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 94, Col: 15}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
@@ -229,7 +229,7 @@ func helpHeading2(label string, term helpTerm, scope string) templ.Component {
 		var templ_7745c5c3_Var13 string
 		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 88, Col: 15}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 101, Col: 15}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
 		if templ_7745c5c3_Err != nil {
@@ -279,7 +279,7 @@ func helpHeading3(label string, term helpTerm, scope string) templ.Component {
 		var templ_7745c5c3_Var15 string
 		templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 95, Col: 15}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 108, Col: 15}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
 		if templ_7745c5c3_Err != nil {

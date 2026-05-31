@@ -10,6 +10,19 @@ templ helpScript() {
 			const description = panel.querySelector("[data-help-description]")
 			if (title) title.textContent = button.dataset.helpLabel || ""
 			if (description) description.textContent = button.dataset.helpDescription || ""
+			positionHelpTip(button, panel)
+		}
+		function positionHelpTip(button, panel) {
+			const width = Math.min(256, Math.max(160, window.innerWidth - 32))
+			panel.style.width = width + "px"
+			const rect = button.getBoundingClientRect()
+			const maxLeft = Math.max(16, window.innerWidth - width - 16)
+			const left = Math.min(Math.max(16, rect.left + rect.width / 2 - width / 2), maxLeft)
+			const below = rect.bottom + 8
+			const height = panel.offsetHeight || 96
+			const top = below + height > window.innerHeight - 16 ? Math.max(16, rect.top - height - 8) : below
+			panel.style.left = left + "px"
+			panel.style.top = top + "px"
 		}
 		function setHelpTipOpen(wrapper, open) {
 			if (!wrapper) return

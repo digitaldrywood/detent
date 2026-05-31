@@ -152,11 +152,9 @@
     opacity: 0;
     padding: 0.75rem;
     pointer-events: none;
-    position: absolute;
-    right: 0;
+    position: fixed;
     text-align: left;
     text-transform: none;
-    top: 1.5rem;
     transform: translateY(-0.125rem);
     transition:
       opacity 150ms ease,
@@ -186,12 +184,5 @@
     opacity: 1;
     pointer-events: auto;
     transform: translateY(0);
-  }
-
-  @media (min-width: 40rem) {
-    .help-tip-panel {
-      left: 0;
-      right: auto;
-    }
   }
 }
