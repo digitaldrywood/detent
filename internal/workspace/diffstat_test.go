@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -97,7 +98,6 @@ func TestLocalGitDiffStat(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(info.Path, "added.txt"), []byte("first\nsecond\n"), 0o600); err != nil {
 		t.Fatalf("write added file: %v", err)
 	}
-	runGit(t, info.Path, "add", "added.txt")
 	if err := os.Remove(filepath.Join(info.Path, "README.md")); err != nil {
 		t.Fatalf("remove README.md: %v", err)
 	}
@@ -109,5 +109,10 @@ func TestLocalGitDiffStat(t *testing.T) {
 	want := DiffStat{Files: 2, Added: 2, Removed: 1}
 	if got != want {
 		t.Fatalf("DiffStat() = %+v, want %+v", got, want)
+	}
+
+	status := runGit(t, info.Path, "status", "--short")
+	if !strings.Contains(status, "?? added.txt") {
+		t.Fatalf("git status = %q, want added.txt to remain untracked", status)
 	}
 }
