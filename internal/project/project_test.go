@@ -3,7 +3,11 @@ package project_test
 import (
 	"context"
 	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -295,6 +299,85 @@ func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
 	}
 	if len(issues) != 1 || issues[0].ID != "issue-1" {
 		t.Fatalf("restarted connector issues = %#v, want issue-1", issues)
+	}
+
+	close(runner.release)
+	if err := got.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	writeProjectGateWorkflow(t, workflowPath, int(time.Hour/time.Millisecond), "", "initial")
+
+	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+
+	events := hub.New[project.Event](hub.WithBuffer(4))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	runner := newProjectBlockingRunner()
+	var orchestratorCreates atomic.Int32
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:       "symphony",
+			Workflow: workflowPath,
+			Weight:   1,
+		},
+		Workflow: workflow,
+	}, project.Dependencies{
+		Events: events,
+		Runner: runner,
+		OrchestratorFactory: func(cfg orchestrator.Config, deps orchestrator.Dependencies) (*orchestrator.Orchestrator, error) {
+			orchestratorCreates.Add(1)
+			return orchestrator.New(cfg, deps)
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if orchestratorCreates.Load() != 1 {
+		t.Fatalf("orchestrator creations = %d, want 1", orchestratorCreates.Load())
+	}
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	started := receiveEvent(t, sub.C())
+	if started.Kind != project.EventStarted {
+		t.Fatalf("started event = %#v, want project started", started)
+	}
+
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected run before workflow reload = %#v", request)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	request := receiveHotReloadRun(t, runner.started, func() {
+		writeProjectGateWorkflow(t, workflowPath, 5, "issue-43", "reloaded")
+	})
+	if request.Issue.ID != "issue-43" {
+		t.Fatalf("RunRequest.Issue.ID = %q, want issue-43", request.Issue.ID)
+	}
+	if got.Workflow().Prompt != "reloaded\n" {
+		t.Fatalf("Workflow().Prompt = %q, want reloaded", got.Workflow().Prompt)
+	}
+	if orchestratorCreates.Load() != 1 {
+		t.Fatalf("orchestrator creations after reload = %d, want no restart", orchestratorCreates.Load())
+	}
+
+	select {
+	case event := <-sub.C():
+		t.Fatalf("unexpected lifecycle event after hot reload = %#v", event)
+	case <-time.After(25 * time.Millisecond):
 	}
 
 	close(runner.release)
@@ -762,6 +845,52 @@ func receiveRunRequest(t *testing.T, ch <-chan orchestrator.RunRequest) orchestr
 	}
 
 	return orchestrator.RunRequest{}
+}
+
+func receiveHotReloadRun(t *testing.T, ch <-chan orchestrator.RunRequest, reload func()) orchestrator.RunRequest {
+	t.Helper()
+
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	deadline := time.After(3 * time.Second)
+
+	for {
+		reload()
+		select {
+		case request := <-ch:
+			return request
+		case <-ticker.C:
+		case <-deadline:
+			t.Fatal("timed out waiting for hot-reload runner request")
+		}
+	}
+}
+
+func writeProjectGateWorkflow(t *testing.T, path string, intervalMS int, issueID string, prompt string) {
+	t.Helper()
+
+	issues := ""
+	if issueID != "" {
+		issues = fmt.Sprintf(`  issues:
+    - id: %s
+      identifier: %s
+      title: Hot reload gate
+      state: Todo
+      assigned_to_worker: true
+`, issueID, issueID)
+	}
+
+	raw := fmt.Sprintf(`---
+tracker:
+  kind: memory
+%spolling:
+  interval_ms: %d
+---
+%s
+`, issues, intervalMS, prompt)
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
 }
 
 func receiveOrchestratorConfig(t *testing.T, ch <-chan orchestrator.Config) orchestrator.Config {
