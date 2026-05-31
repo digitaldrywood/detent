@@ -194,6 +194,10 @@ func runningEntries(entries []telemetry.Running) []runningAPIResponse {
 			LastMessage:      optionalString(entry.LastMessage),
 			StartedAt:        timestampString(entry.StartedAt),
 			LastEventAt:      timestampStringPtr(entry.LastEventAt),
+			DiffAdded:        entry.DiffAdded,
+			DiffRemoved:      entry.DiffRemoved,
+			DiffFiles:        entry.DiffFiles,
+			DiffStatus:       diffStatus(entry.DiffStatus),
 			Tokens:           tokenCountsResponse(entry.Tokens),
 		})
 	}
@@ -277,6 +281,10 @@ func runningIssueResponse(entry telemetry.Running) *runningIssueAPIResponse {
 		LastEvent:     optionalString(entry.LastEvent),
 		LastMessage:   optionalString(entry.LastMessage),
 		LastEventAt:   timestampStringPtr(entry.LastEventAt),
+		DiffAdded:     entry.DiffAdded,
+		DiffRemoved:   entry.DiffRemoved,
+		DiffFiles:     entry.DiffFiles,
+		DiffStatus:    diffStatus(entry.DiffStatus),
 		Tokens:        tokenCountsResponse(entry.Tokens),
 	}
 }
@@ -375,6 +383,11 @@ func tokenCountsResponse(tokens telemetry.Tokens) tokenCountsAPIResponse {
 }
 
 func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
+	days := budget.Days
+	if days == nil {
+		days = []telemetry.BudgetDay{}
+	}
+
 	return budgetAPIResponse{
 		Enabled:          budget.Enabled,
 		TodaySpendUSD:    budget.CurrentSpendUSD,
@@ -382,6 +395,7 @@ func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
 		ProjectedCostUSD: budget.ProjectedCostUSD,
 		PerDayMaxUSD:     budget.PerDayMaxUSD,
 		PerIssueMaxUSD:   budget.PerIssueMaxUSD,
+		Days:             days,
 		Refusals:         budget.Refusals,
 	}
 }
@@ -415,6 +429,10 @@ func issueDescription(description string) *string {
 func optionalTrimmedString(value string) *string {
 	value = strings.TrimSpace(value)
 	return optionalString(value)
+}
+
+func diffStatus(value string) string {
+	return strings.TrimSpace(value)
 }
 
 func optionalString(value string) *string {
@@ -513,6 +531,10 @@ type runningAPIResponse struct {
 	LastMessage      *string                `json:"last_message"`
 	StartedAt        *string                `json:"started_at"`
 	LastEventAt      *string                `json:"last_event_at"`
+	DiffAdded        int                    `json:"diff_added"`
+	DiffRemoved      int                    `json:"diff_removed"`
+	DiffFiles        int                    `json:"diff_files"`
+	DiffStatus       string                 `json:"diff_status"`
 	Tokens           tokenCountsAPIResponse `json:"tokens"`
 }
 
@@ -598,6 +620,7 @@ type budgetAPIResponse struct {
 	ProjectedCostUSD float64                   `json:"projected_cost_usd"`
 	PerDayMaxUSD     *float64                  `json:"per_day_max_usd"`
 	PerIssueMaxUSD   *float64                  `json:"per_issue_max_usd"`
+	Days             []telemetry.BudgetDay     `json:"days"`
 	Refusals         []telemetry.BudgetRefusal `json:"refusals,omitempty"`
 }
 
@@ -636,6 +659,10 @@ type runningIssueAPIResponse struct {
 	LastEvent     *string                `json:"last_event"`
 	LastMessage   *string                `json:"last_message"`
 	LastEventAt   *string                `json:"last_event_at"`
+	DiffAdded     int                    `json:"diff_added"`
+	DiffRemoved   int                    `json:"diff_removed"`
+	DiffFiles     int                    `json:"diff_files"`
+	DiffStatus    string                 `json:"diff_status"`
 	Tokens        tokenCountsAPIResponse `json:"tokens"`
 }
 

@@ -62,13 +62,14 @@ templ SnapshotView(data DashboardData) {
 				</div>
 			} else {
 				<div class="mt-5 overflow-x-auto">
-					<table class="w-full min-w-[58rem] table-fixed border-collapse text-sm">
+					<table class="w-full min-w-[66rem] table-fixed border-collapse text-sm">
 						<thead>
 							<tr class="border-b border-border text-left text-muted-foreground">
 								<th class="w-[18rem] pb-3 pr-4 font-medium">Issue</th>
 								<th class="w-[9rem] pb-3 pr-4 font-medium">State</th>
 								<th class="w-[10rem] pb-3 pr-4 font-medium">Runtime / turns</th>
 								<th class="pb-3 pr-4 font-medium">Codex update</th>
+								<th class="w-[8rem] pb-3 pr-4 font-medium">Diff</th>
 								<th class="w-[10rem] pb-3 pr-4 font-medium">Tokens</th>
 								<th class="w-[9rem] pb-3 font-medium">Session</th>
 							</tr>
@@ -96,6 +97,7 @@ templ SnapshotView(data DashboardData) {
 											<span class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
 										</div>
 									</td>
+									<td class="py-4 pr-4 align-top font-mono text-muted-foreground">{ formatDiffStat(row) }</td>
 									<td class="py-4 pr-4 align-top">
 										<div class="grid gap-1 font-mono">
 											<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>

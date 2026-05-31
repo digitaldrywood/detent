@@ -41,6 +41,10 @@ type Running struct {
 	LastEvent      string     `json:"last_event,omitempty"`
 	LastMessage    string     `json:"last_message,omitempty"`
 	RuntimeSeconds float64    `json:"runtime_seconds"`
+	DiffAdded      int        `json:"diff_added"`
+	DiffRemoved    int        `json:"diff_removed"`
+	DiffFiles      int        `json:"diff_files"`
+	DiffStatus     string     `json:"diff_status,omitempty"`
 	Tokens         Tokens     `json:"tokens"`
 }
 
@@ -85,7 +89,13 @@ type Budget struct {
 	PerIssueMaxUSD   *float64        `json:"per_issue_max_usd"`
 	CurrentSpendUSD  float64         `json:"current_spend_usd"`
 	ProjectedCostUSD float64         `json:"projected_cost_usd"`
+	Days             []BudgetDay     `json:"days,omitempty"`
 	Refusals         []BudgetRefusal `json:"refusals,omitempty"`
+}
+
+type BudgetDay struct {
+	Date     string  `json:"date"`
+	SpendUSD float64 `json:"spend_usd"`
 }
 
 type BudgetRefusal struct {
