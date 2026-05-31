@@ -10,6 +10,7 @@ import (
 	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
 
+	symphony "github.com/digitaldrywood/symphony"
 	"github.com/digitaldrywood/symphony/internal/connector"
 	"github.com/digitaldrywood/symphony/internal/hub"
 	"github.com/digitaldrywood/symphony/internal/store"
@@ -118,7 +119,11 @@ func (s *Server) Shutdown(ctx context.Context) error {
 }
 
 func (s *Server) registerRoutes(staticDir string) {
-	s.echo.Static("/static", staticDir)
+	if staticDir != "" {
+		s.echo.Static("/static", staticDir)
+	} else {
+		s.echo.StaticFS("/static", symphony.StaticFS())
+	}
 	s.echo.GET("/health", s.health)
 	if s.mode == ModeOnboarding {
 		s.echo.GET("/", s.redirectToOnboarding)
@@ -212,10 +217,7 @@ func (cfg Config) mode() Mode {
 }
 
 func (cfg Config) staticDir() string {
-	if cfg.StaticDir != "" {
-		return cfg.StaticDir
-	}
-	return "static"
+	return cfg.StaticDir
 }
 
 func (cfg Config) sseTickInterval() time.Duration {

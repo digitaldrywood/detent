@@ -143,6 +143,41 @@ func TestServerRoutes(t *testing.T) {
 	}
 }
 
+func TestServerServesDefaultStaticAssetsFromArbitraryWorkingDirectory(t *testing.T) {
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	if err := os.Chdir(t.TempDir()); err != nil {
+		t.Fatalf("Chdir() error = %v", err)
+	}
+	defer func() {
+		if err := os.Chdir(wd); err != nil {
+			t.Fatalf("restore Chdir() error = %v", err)
+		}
+	}()
+
+	server, err := web.NewServer(web.Config{Mode: web.ModeOnboarding}, web.Dependencies{})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/static/css/output.css", nil)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := rec.Header().Get("Content-Type"); !strings.HasPrefix(got, "text/css") {
+		t.Fatalf("Content-Type = %q, want text/css", got)
+	}
+	if !strings.Contains(rec.Body.String(), "tailwindcss") {
+		t.Fatalf("body missing embedded CSS marker:\n%s", rec.Body.String())
+	}
+}
+
 func TestOnboardingModeDoesNotRequireRuntimeDependencies(t *testing.T) {
 	t.Parallel()
 
