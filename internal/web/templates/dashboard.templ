@@ -59,6 +59,7 @@ templ Dashboard(data DashboardData) {
 							</span>
 						</div>
 					</div>
+					@dashboardNav("dashboard")
 				</header>
 				<div id="snapshot" class="sse-surface grid gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="innerHTML settle:160ms">
 					@SnapshotView(data)

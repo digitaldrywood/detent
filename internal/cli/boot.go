@@ -171,10 +171,15 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, runtimeStore, defaultSnapshotInterval, time.Now)
 	server, err := web.NewServer(web.Config{
-		Mode:         web.ModeRunning,
-		WorkflowPath: firstWorkflowPath(cfg),
-		Version:      cfg.Version,
-		DashboardURL: displayURL,
+		Mode:           web.ModeRunning,
+		WorkflowPath:   firstWorkflowPath(cfg),
+		Version:        cfg.Version,
+		DashboardURL:   displayURL,
+		GlobalConfig:   cfg.Global,
+		ConfigPathRule: cfg.ConfigPathRule,
+		RuntimeDBPath:  runtimeStorePath(cfg),
+		RuntimeLogPath: runtimeLogPath(cfg),
+		ServerAddress:  listener.Addr().String(),
 	}, web.Dependencies{
 		Hub:       snapshotHub,
 		Store:     runtimeStore,

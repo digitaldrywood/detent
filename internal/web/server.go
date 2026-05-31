@@ -14,8 +14,10 @@ import (
 
 	symphony "github.com/digitaldrywood/symphony"
 	"github.com/digitaldrywood/symphony/internal/budget"
+	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
 	"github.com/digitaldrywood/symphony/internal/connector"
 	"github.com/digitaldrywood/symphony/internal/hub"
+	"github.com/digitaldrywood/symphony/internal/project"
 	"github.com/digitaldrywood/symphony/internal/store"
 	"github.com/digitaldrywood/symphony/internal/telemetry"
 	"github.com/digitaldrywood/symphony/internal/web/templates"
@@ -31,7 +33,7 @@ var (
 type Dependencies struct {
 	Hub       *hub.Hub[telemetry.Snapshot]
 	Store     store.Store
-	Registry  any
+	Registry  *project.Registry
 	Connector connector.Connector
 	Refresher Refresher
 }
@@ -52,13 +54,18 @@ type Config struct {
 	Version         string
 	DashboardURL    string
 	Pricing         budget.PricingTable
+	GlobalConfig    globalconfig.Config
+	ConfigPathRule  globalconfig.PathRule
+	RuntimeDBPath   string
+	RuntimeLogPath  string
+	ServerAddress   string
 }
 
 type Server struct {
 	echo         *echo.Echo
 	hub          *hub.Hub[telemetry.Snapshot]
 	store        store.Store
-	registry     any
+	registry     *project.Registry
 	connector    connector.Connector
 	refresher    Refresher
 	logger       *slog.Logger
@@ -68,6 +75,11 @@ type Server struct {
 	version      string
 	dashboardURL string
 	pricing      budget.PricingTable
+	globalConfig globalconfig.Config
+	configRule   globalconfig.PathRule
+	dbPath       string
+	logPath      string
+	serverAddr   string
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -105,6 +117,11 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		version:      strings.TrimSpace(cfg.Version),
 		dashboardURL: cfg.dashboardURL(),
 		pricing:      cfg.pricing(),
+		globalConfig: cfg.GlobalConfig,
+		configRule:   cfg.ConfigPathRule,
+		dbPath:       strings.TrimSpace(cfg.RuntimeDBPath),
+		logPath:      strings.TrimSpace(cfg.RuntimeLogPath),
+		serverAddr:   strings.TrimSpace(cfg.ServerAddress),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes(cfg.staticDir())
@@ -154,6 +171,7 @@ func (s *Server) registerRoutes(staticDir string) {
 	}
 
 	s.echo.GET("/", s.dashboard)
+	s.echo.GET("/settings", s.settings)
 	s.echo.GET("/events", s.events)
 	s.echo.GET("/onboarding", s.redirectToDashboard)
 	s.echo.POST("/onboarding/tracker", s.onboardingTracker)
