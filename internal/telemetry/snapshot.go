@@ -124,6 +124,9 @@ type RateLimitBucket struct {
 	Limit          int64      `json:"limit,omitempty"`
 	ResetAt        *time.Time `json:"reset_at,omitempty"`
 	ResetInSeconds int64      `json:"reset_in_seconds,omitempty"`
+	HasCredits     bool       `json:"has_credits,omitempty"`
+	Unlimited      bool       `json:"unlimited,omitempty"`
+	Balance        string     `json:"balance,omitempty"`
 }
 
 type Tokens struct {
