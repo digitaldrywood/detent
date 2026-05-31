@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net"
 	"net/http"
@@ -12,6 +13,8 @@ import (
 	"strings"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
 	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
 	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
 	"github.com/digitaldrywood/symphony/internal/connector"
@@ -20,6 +23,7 @@ import (
 	"github.com/digitaldrywood/symphony/internal/project"
 	"github.com/digitaldrywood/symphony/internal/store"
 	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/tui"
 	"github.com/digitaldrywood/symphony/internal/web"
 )
 
@@ -100,12 +104,28 @@ func defaultBoot(ctx context.Context, cfg BootConfig) error {
 }
 
 func startRunning(ctx context.Context, cfg BootConfig) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, stop := context.WithCancel(ctx)
+	defer stop()
+
+	useDashboard := shouldLaunchTerminalDashboard(cfg)
+	if useDashboard {
+		restoreLogger, err := redirectDefaultLogger(runtimeLogPath(cfg))
+		if err != nil {
+			return err
+		}
+		defer restoreLogger()
+	}
+
 	logger := slog.Default()
-	runtimeStore, err := openRuntimeStore(ctx, cfg)
+	runtimeStore, err := openRuntimeStore(runCtx, cfg)
 	if err != nil {
 		return err
 	}
 	defer func() {
+		stop()
 		if err := runtimeStore.Close(); err != nil {
 			logger.Warn("close runtime store failed", "error", err)
 		}
@@ -124,12 +144,12 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := manager.Start(ctx); err != nil {
+	if err := manager.Start(runCtx); err != nil {
 		return err
 	}
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
-	go publishSnapshots(ctx, manager.Registry(), snapshotHub, defaultSnapshotInterval, time.Now)
+	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, defaultSnapshotInterval, time.Now)
 	server, err := web.NewServer(web.Config{
 		Mode:         web.ModeRunning,
 		WorkflowPath: firstWorkflowPath(cfg),
@@ -145,7 +165,10 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		return err
 	}
 
-	return serve(ctx, server, serverAddr(cfg))
+	if useDashboard {
+		return serveWithTerminalDashboard(runCtx, server, serverAddr(cfg), snapshotHub)
+	}
+	return serve(runCtx, server, serverAddr(cfg))
 }
 
 func startOnboarding(ctx context.Context, cfg BootConfig) error {
@@ -187,6 +210,88 @@ func serve(ctx context.Context, server *web.Server, addr string) error {
 	}
 }
 
+func serveWithTerminalDashboard(ctx context.Context, server *web.Server, addr string, snapshots *hub.Hub[telemetry.Snapshot]) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	model, err := tui.NewModel(runCtx, snapshots)
+	if err != nil {
+		return err
+	}
+	defer model.Close()
+
+	errs := make(chan error, 2)
+	go func() {
+		errs <- serve(runCtx, server, addr)
+	}()
+	go func() {
+		_, err := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(runCtx)).Run()
+		errs <- err
+	}()
+
+	first := <-errs
+	cancel()
+	second := <-errs
+	return terminalDashboardError(first, second)
+}
+
+func terminalDashboardError(first error, second error) error {
+	if err := unexpectedTerminalDashboardError(first); err != nil {
+		return err
+	}
+	if err := unexpectedTerminalDashboardError(second); err != nil {
+		return err
+	}
+	if first == nil || second == nil {
+		return nil
+	}
+	if errors.Is(first, context.Canceled) || errors.Is(second, context.Canceled) {
+		return context.Canceled
+	}
+	return nil
+}
+
+func unexpectedTerminalDashboardError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
+}
+
+func shouldLaunchTerminalDashboard(cfg BootConfig) bool {
+	return cfg.Mode == BootModeRunning && cfg.StdoutTTY && !cfg.Headless
+}
+
+func redirectDefaultLogger(path string) (func(), error) {
+	if strings.TrimSpace(path) == "" {
+		return nil, errors.New("log path is required")
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return nil, fmt.Errorf("create log directory: %w", err)
+	}
+
+	file, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600)
+	if err != nil {
+		return nil, fmt.Errorf("open log file: %w", err)
+	}
+
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{
+		Level: logLevelFromEnv(),
+	})))
+
+	return func() {
+		slog.SetDefault(previous)
+		if err := file.Close(); err != nil {
+			previous.Warn("close log file failed", "path", path, "error", err)
+		}
+	}, nil
+}
+
 func missingGlobalConfig(err error) bool {
 	var missing globalconfig.MissingFileError
 	return errors.As(err, &missing) && errors.Is(missing.Err, os.ErrNotExist)
@@ -220,14 +325,44 @@ func globalConfigFromWorkflow(globalPath string, workflowPath string) (globalcon
 }
 
 func openRuntimeStore(ctx context.Context, cfg BootConfig) (store.Store, error) {
+	return store.Open(ctx, store.Config{
+		Backend: store.BackendSQLite,
+		Path:    runtimeStorePath(cfg),
+	})
+}
+
+func runtimeStorePath(cfg BootConfig) string {
 	path := filepath.Join(filepath.Dir(cfg.Global.Path), "symphony.db")
 	if strings.TrimSpace(cfg.Global.Path) == "" {
 		path = filepath.Join(mustGetwd(), ".symphony", "symphony.db")
 	}
-	return store.Open(ctx, store.Config{
-		Backend: store.BackendSQLite,
-		Path:    path,
-	})
+	return path
+}
+
+func runtimeLogPath(cfg BootConfig) string {
+	return filepath.Join(filepath.Dir(runtimeStorePath(cfg)), "symphony.log")
+}
+
+func logLevelFromEnv() slog.Level {
+	for _, key := range []string{"SYMPHONY_LOG_LEVEL", "LOG_LEVEL"} {
+		if level, ok := os.LookupEnv(key); ok {
+			return parseSlogLevel(level)
+		}
+	}
+	return slog.LevelInfo
+}
+
+func parseSlogLevel(level string) slog.Level {
+	switch strings.ToLower(strings.TrimSpace(level)) {
+	case "debug":
+		return slog.LevelDebug
+	case "warn", "warning":
+		return slog.LevelWarn
+	case "error":
+		return slog.LevelError
+	default:
+		return slog.LevelInfo
+	}
 }
 
 func firstConnector(manager *project.Manager) connector.Connector {
