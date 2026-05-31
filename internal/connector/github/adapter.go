@@ -70,7 +70,7 @@ query SymphonyGitHubIssuesByID($issueIds: [ID!]!, $projectItemsFirst: Int!) {
       labels(first: 20) { nodes { name } }
       repository { nameWithOwner }
       projectItems(first: $projectItemsFirst) {
-        pageInfo { hasNextPage }
+        pageInfo { hasNextPage endCursor }
         nodes {
           id
           project { id }
@@ -113,7 +113,16 @@ query SymphonyGitHubProjectItemForIssue($issueId: ID!, $projectItemsFirst: Int!,
     ... on Issue {
       projectItems(first: $projectItemsFirst, after: $after) {
         pageInfo { hasNextPage endCursor }
-        nodes { id project { id } }
+        nodes {
+          id
+          project { id }
+          statusValue: fieldValueByName(name: "Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+          priorityValue: fieldValueByName(name: "Priority") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+        }
       }
     }
   }
@@ -241,7 +250,11 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 
 	issues := make([]connector.Issue, 0, len(response.Nodes))
 	for _, node := range response.Nodes {
-		if issue, ok := c.normalizeIssueNode(node); ok {
+		issue, ok, err := c.normalizeIssueNode(ctx, node)
+		if err != nil {
+			return nil, err
+		}
+		if ok {
 			issues = append(issues, issue)
 		}
 	}
@@ -353,14 +366,32 @@ func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue,
 	return c.buildIssue(*item.Content, singleSelectName(item.StatusValue), singleSelectName(item.PriorityValue)), true
 }
 
-func (c *Connector) normalizeIssueNode(issue githubIssueNode) (connector.Issue, bool) {
+func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNode) (connector.Issue, bool, error) {
 	if issue.TypeName != "Issue" {
-		return connector.Issue{}, false
+		return connector.Issue{}, false, nil
 	}
-	if stateName, priorityName, ok := c.projectFields(issue.ID, issue.ProjectItems); ok {
-		return c.buildIssue(issue, stateName, priorityName), true
+	stateName, priorityName, ok, err := c.resolveIssueProjectFields(ctx, issue.ID, issue.ProjectItems)
+	if err != nil {
+		return connector.Issue{}, false, err
 	}
-	return c.buildIssue(issue, c.githubIssueStateToSymphonyState(issue.State), ""), true
+	if ok {
+		return c.buildIssue(issue, stateName, priorityName), true, nil
+	}
+	return c.buildIssue(issue, c.githubIssueStateToSymphonyState(issue.State), ""), true, nil
+}
+
+func (c *Connector) resolveIssueProjectFields(ctx context.Context, issueID string, items *projectItemsConnection) (string, string, bool, error) {
+	if stateName, priorityName, ok := c.projectFields(issueID, items); ok {
+		return stateName, priorityName, true, nil
+	}
+	if items == nil || !items.PageInfo.HasNextPage {
+		return "", "", false, nil
+	}
+	cursor := strings.TrimSpace(items.PageInfo.EndCursor)
+	if cursor == "" {
+		return "", "", false, ErrInvalidResponse
+	}
+	return c.fetchProjectFieldsPage(ctx, issueID, &cursor)
 }
 
 func (c *Connector) projectFields(issueID string, items *projectItemsConnection) (string, string, bool) {
@@ -374,6 +405,35 @@ func (c *Connector) projectFields(issueID string, items *projectItemsConnection)
 		}
 	}
 	return "", "", false
+}
+
+func (c *Connector) fetchProjectFieldsPage(ctx context.Context, issueID string, after *string) (string, string, bool, error) {
+	var response struct {
+		Node *struct {
+			ProjectItems projectItemsConnection `json:"projectItems"`
+		} `json:"node"`
+	}
+	if err := c.client.GraphQL(ctx, projectItemForIssueQuery, map[string]any{
+		"issueId":           issueID,
+		"projectItemsFirst": projectItemsPerIssue,
+		"after":             after,
+	}, &response); err != nil {
+		return "", "", false, fmt.Errorf("fetch github project item fields: %w", err)
+	}
+	if response.Node == nil {
+		return "", "", false, ErrProjectItemNotFound
+	}
+	if stateName, priorityName, ok := c.projectFields(issueID, &response.Node.ProjectItems); ok {
+		return stateName, priorityName, true, nil
+	}
+	if !response.Node.ProjectItems.PageInfo.HasNextPage {
+		return "", "", false, nil
+	}
+	cursor := strings.TrimSpace(response.Node.ProjectItems.PageInfo.EndCursor)
+	if cursor == "" {
+		return "", "", false, ErrInvalidResponse
+	}
+	return c.fetchProjectFieldsPage(ctx, issueID, &cursor)
 }
 
 func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorityName string) connector.Issue {

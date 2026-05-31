@@ -139,6 +139,53 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 	}
 }
 
+func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw1","number":1,"title":"Later project","body":"","state":"OPEN","url":"https://github.com/example/repo/issues/1","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"example/repo"},"projectItems":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[{"id":"PVTI_other","project":{"id":"PVT_other"},"statusValue":{"name":"Open"},"priorityValue":{"name":"P1"}}]}}]}}`,
+		},
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Reviewing"},"priorityValue":{"name":"P2"}}]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+		StateMap: map[string]string{
+			"Human Review": "Reviewing",
+		},
+		PriorityMap: map[string]*int{"P2": intPtr(3)},
+	})
+
+	got, err := c.FetchIssueStatesByIDs(context.Background(), []string{"I_kw1"})
+	if err != nil {
+		t.Fatalf("FetchIssueStatesByIDs() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() len = %d, want 1", len(got))
+	}
+	if got[0].State != "Human Review" {
+		t.Fatalf("State = %q, want Human Review", got[0].State)
+	}
+	if got[0].Priority == nil || *got[0].Priority != 3 {
+		t.Fatalf("Priority = %v, want 3", got[0].Priority)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	variables := requests[1]["variables"].(map[string]any)
+	if variables["after"] != "cursor-1" {
+		t.Fatalf("after = %v, want cursor-1", variables["after"])
+	}
+	if variables["issueId"] != "I_kw1" {
+		t.Fatalf("issueId = %v, want I_kw1", variables["issueId"])
+	}
+}
+
 func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	t.Parallel()
 
