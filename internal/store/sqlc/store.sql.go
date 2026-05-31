@@ -136,6 +136,99 @@ func (q *Queries) CreateSymphonyRun(ctx context.Context, arg CreateSymphonyRunPa
 	return i, err
 }
 
+const dailyTokenSpend = `-- name: DailyTokenSpend :many
+SELECT
+  CAST(COALESCE(model, '') AS TEXT) AS model,
+  CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COUNT(*) AS INTEGER) AS sessions
+FROM codex_sessions
+WHERE substr(completed_at, 1, 10) = ?
+GROUP BY COALESCE(model, '')
+ORDER BY COALESCE(model, '')
+`
+
+type DailyTokenSpendRow struct {
+	Model        string `json:"model"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	TotalTokens  int64  `json:"total_tokens"`
+	Sessions     int64  `json:"sessions"`
+}
+
+func (q *Queries) DailyTokenSpend(ctx context.Context, completedAt sql.NullString) ([]DailyTokenSpendRow, error) {
+	rows, err := q.db.QueryContext(ctx, dailyTokenSpend, completedAt)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []DailyTokenSpendRow{}
+	for rows.Next() {
+		var i DailyTokenSpendRow
+		if err := rows.Scan(
+			&i.Model,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.TotalTokens,
+			&i.Sessions,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const finishCodexSession = `-- name: FinishCodexSession :execrows
+UPDATE codex_sessions
+SET completed_at = ?,
+    turns = ?,
+    input_tokens = ?,
+    output_tokens = ?,
+    total_tokens = ?,
+    runtime_seconds = ?,
+    final_state = ?,
+    model = ?
+WHERE id = ?
+`
+
+type FinishCodexSessionParams struct {
+	CompletedAt    sql.NullString `json:"completed_at"`
+	Turns          int64          `json:"turns"`
+	InputTokens    int64          `json:"input_tokens"`
+	OutputTokens   int64          `json:"output_tokens"`
+	TotalTokens    int64          `json:"total_tokens"`
+	RuntimeSeconds int64          `json:"runtime_seconds"`
+	FinalState     sql.NullString `json:"final_state"`
+	Model          sql.NullString `json:"model"`
+	ID             int64          `json:"id"`
+}
+
+func (q *Queries) FinishCodexSession(ctx context.Context, arg FinishCodexSessionParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, finishCodexSession,
+		arg.CompletedAt,
+		arg.Turns,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.TotalTokens,
+		arg.RuntimeSeconds,
+		arg.FinalState,
+		arg.Model,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const getCodexSession = `-- name: GetCodexSession :one
 SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model
 FROM codex_sessions
@@ -231,4 +324,47 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 		return nil, err
 	}
 	return items, nil
+}
+
+const updateSymphonyRun = `-- name: UpdateSymphonyRun :execrows
+UPDATE symphony_runs
+SET stopped_at = COALESCE(?, stopped_at),
+    restart_reason = COALESCE(?, restart_reason),
+    peak_concurrent_agents = ?,
+    sessions_launched = ?,
+    input_tokens = ?,
+    output_tokens = ?,
+    total_tokens = ?,
+    runtime_seconds = ?
+WHERE id = ?
+`
+
+type UpdateSymphonyRunParams struct {
+	StoppedAt            sql.NullString `json:"stopped_at"`
+	RestartReason        sql.NullString `json:"restart_reason"`
+	PeakConcurrentAgents int64          `json:"peak_concurrent_agents"`
+	SessionsLaunched     int64          `json:"sessions_launched"`
+	InputTokens          int64          `json:"input_tokens"`
+	OutputTokens         int64          `json:"output_tokens"`
+	TotalTokens          int64          `json:"total_tokens"`
+	RuntimeSeconds       int64          `json:"runtime_seconds"`
+	ID                   int64          `json:"id"`
+}
+
+func (q *Queries) UpdateSymphonyRun(ctx context.Context, arg UpdateSymphonyRunParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateSymphonyRun,
+		arg.StoppedAt,
+		arg.RestartReason,
+		arg.PeakConcurrentAgents,
+		arg.SessionsLaunched,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.TotalTokens,
+		arg.RuntimeSeconds,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
 }
