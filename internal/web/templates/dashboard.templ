@@ -1,56 +1,106 @@
 package templates
 
-type DashboardData struct {
-	Title         string
-	ConnectorName string
-}
-
 templ Dashboard(data DashboardData) {
 	<!doctype html>
 	<html lang="en">
 		<head>
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
-			<title>{ data.Title }</title>
+			<title>{ pageTitle(data) }</title>
 			<link rel="stylesheet" href="/static/css/output.css"/>
 		</head>
 		<body class="min-h-screen bg-background text-foreground antialiased">
-			<main class="mx-auto flex min-h-screen w-full max-w-6xl flex-col gap-6 px-5 py-6 sm:px-8">
-				<header class="flex flex-col gap-4 border-b border-border pb-6 md:flex-row md:items-end md:justify-between">
+			<main class="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
+				<header class="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
 					<div>
-						<p class="text-sm font-medium text-muted-foreground">Symphony</p>
-						<h1 class="mt-1 text-3xl font-semibold text-foreground sm:text-4xl">Agent orchestration</h1>
+						<p class="text-sm font-medium text-muted-foreground">Symphony Observability</p>
+						<h1 class="mt-1 text-3xl font-semibold text-foreground sm:text-4xl">Operations dashboard</h1>
 					</div>
-					<div class="inline-flex w-fit items-center gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm text-muted-foreground">
-						<span class="h-2 w-2 rounded-full bg-accent"></span>
-						<span>{ data.ConnectorName }</span>
+					<div class="flex flex-col gap-2 text-sm text-muted-foreground sm:flex-row sm:items-center">
+						<span class="inline-flex w-fit items-center gap-2 rounded-md border border-border bg-card px-3 py-2">
+							<span class="h-2 w-2 rounded-full bg-accent"></span>
+							<span>{ connectorName(data) }</span>
+						</span>
+						<span class="inline-flex w-fit items-center rounded-md border border-border bg-muted px-3 py-2">{ generatedAtLabel(data.Snapshot) }</span>
 					</div>
 				</header>
 				<section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-					@metricCard("Running", "0", "bg-accent")
-					@metricCard("Queued", "0", "bg-warning")
-					@metricCard("Blocked", "0", "bg-danger")
-					@metricCard("Completed", "0", "bg-success")
+					@metricCard("Running", formatCount(runningCount(data.Snapshot)), "Active issue sessions", "bg-accent")
+					@metricCard("Queue", formatCount(queueCount(data.Snapshot)), "Waiting or retrying", "bg-warning")
+					@metricCard("Blocked", formatCount(blockedCount(data.Snapshot)), "Needs operator action", "bg-danger")
+					@metricCard("Completed", formatCount(completedCount(data.Snapshot)), "Finished sessions", "bg-success")
 				</section>
-				<section class="grid flex-1 gap-4 lg:grid-cols-[minmax(0,2fr)_minmax(18rem,1fr)]">
-					<div class="rounded-md border border-border bg-card p-5">
-						<h2 class="text-lg font-semibold text-foreground">Work queue</h2>
-						<div class="mt-5 grid min-h-56 place-items-center rounded-md border border-dashed border-border bg-muted text-sm text-muted-foreground">
-							No active work items
-						</div>
-					</div>
-					<aside class="rounded-md border border-border bg-card p-5">
-						<h2 class="text-lg font-semibold text-foreground">Budget</h2>
-						<div class="mt-5 space-y-3 text-sm text-muted-foreground">
-							<div class="flex items-center justify-between gap-4">
-								<span>Current spend</span>
-								<strong class="font-medium text-foreground">$0.00</strong>
+				<section class="grid flex-1 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+					<section class="rounded-md border border-border bg-card p-5">
+						<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+							<div>
+								<h2 class="text-lg font-semibold text-foreground">Running issues</h2>
+								<p class="text-sm text-muted-foreground">Active Codex sessions and their latest known activity.</p>
 							</div>
-							<div class="flex items-center justify-between gap-4">
-								<span>Projected</span>
-								<strong class="font-medium text-foreground">$0.00</strong>
-							</div>
+							<span class="inline-flex w-fit rounded-md bg-muted px-2 py-1 text-sm font-medium text-muted-foreground">{ formatCount(len(data.Snapshot.Running)) }</span>
 						</div>
+						if len(data.Snapshot.Running) == 0 {
+							<div class="mt-5 grid min-h-56 place-items-center rounded-md border border-dashed border-border bg-muted px-4 text-sm text-muted-foreground">
+								if runningCount(data.Snapshot) > 0 {
+									Running session details are not available for this snapshot.
+								} else {
+									No active issue sessions.
+								}
+							</div>
+						} else {
+							<div class="mt-5 overflow-x-auto">
+								<table class="w-full min-w-[58rem] table-fixed border-collapse text-sm">
+									<thead>
+										<tr class="border-b border-border text-left text-muted-foreground">
+											<th class="w-[18rem] pb-3 pr-4 font-medium">Issue</th>
+											<th class="w-[9rem] pb-3 pr-4 font-medium">State</th>
+											<th class="w-[10rem] pb-3 pr-4 font-medium">Runtime / turns</th>
+											<th class="pb-3 pr-4 font-medium">Codex update</th>
+											<th class="w-[10rem] pb-3 pr-4 font-medium">Tokens</th>
+											<th class="w-[9rem] pb-3 font-medium">Session</th>
+										</tr>
+									</thead>
+									<tbody>
+										for _, row := range data.Snapshot.Running {
+											<tr class="border-b border-border last:border-b-0">
+												<td class="py-4 pr-4 align-top">
+													<div class="grid gap-1">
+														if row.URL != "" {
+															<a class="font-medium text-foreground hover:text-accent" href={ row.URL } target="_blank" rel="noopener noreferrer">{ issueIdentifier(row.Issue) }</a>
+														} else {
+															<span class="font-medium text-foreground">{ issueIdentifier(row.Issue) }</span>
+														}
+														<span class="line-clamp-2 text-muted-foreground">{ issueTitle(row.Issue) }</span>
+													</div>
+												</td>
+												<td class="py-4 pr-4 align-top">
+													<span class="inline-flex rounded-md bg-muted px-2 py-1 font-medium text-foreground">{ issueState(row.Issue, "Running") }</span>
+												</td>
+												<td class="py-4 pr-4 align-top font-mono text-muted-foreground">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
+												<td class="py-4 pr-4 align-top">
+													<div class="grid gap-1">
+														<span class="line-clamp-2 text-foreground">{ lastCodexUpdate(row) }</span>
+														<span class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
+													</div>
+												</td>
+												<td class="py-4 pr-4 align-top">
+													<div class="grid gap-1 font-mono">
+														<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
+														<span class="text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
+													</div>
+												</td>
+												<td class="py-4 align-top font-mono text-muted-foreground">{ sessionLabel(row.SessionID) }</td>
+											</tr>
+										}
+									</tbody>
+								</table>
+							</div>
+						}
+					</section>
+					<aside class="grid content-start gap-5">
+						@budgetCard(data.Snapshot.Budget)
+						@rateLimitsCard(data.Snapshot.RateLimits)
+						@tokenCard(data)
 					</aside>
 				</section>
 			</main>
@@ -58,12 +108,103 @@ templ Dashboard(data DashboardData) {
 	</html>
 }
 
-templ metricCard(label string, value string, accentClass string) {
-	<div class="rounded-md border border-border bg-card p-4">
-		<div class="flex items-center justify-between gap-3">
-			<span class="text-sm font-medium text-muted-foreground">{ label }</span>
+templ metricCard(label string, value string, detail string, accentClass string) {
+	<article class="rounded-md border border-border bg-card p-4 shadow-sm">
+		<div class="flex items-start justify-between gap-3">
+			<div class="grid gap-1">
+				<span class="text-sm font-medium text-muted-foreground">{ label }</span>
+				<span class="text-xs text-muted-foreground">{ detail }</span>
+			</div>
 			<span class={ "h-2.5 w-2.5 rounded-full " + accentClass }></span>
 		</div>
-		<div class="mt-3 text-3xl font-semibold text-foreground">{ value }</div>
-	</div>
+		<div class="mt-4 font-mono text-3xl font-semibold text-foreground">{ value }</div>
+	</article>
+}
+
+templ budgetCard(budget Budget) {
+	<section class="rounded-md border border-border bg-card p-5 shadow-sm">
+		<div class="flex items-start justify-between gap-3">
+			<h2 class="text-lg font-semibold text-foreground">Budget</h2>
+			<span class="rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ budgetStatus(budget) }</span>
+		</div>
+		<div class="mt-5 grid gap-3 text-sm">
+			<div class="flex items-center justify-between gap-4">
+				<span class="text-muted-foreground">Current spend</span>
+				<strong class="font-mono font-medium text-foreground">{ formatUSD(budget.CurrentSpendUSD) }</strong>
+			</div>
+			<div class="flex items-center justify-between gap-4">
+				<span class="text-muted-foreground">Projected</span>
+				<strong class="font-mono font-medium text-foreground">{ formatUSD(budget.ProjectedCostUSD) }</strong>
+			</div>
+			<div class="flex items-center justify-between gap-4">
+				<span class="text-muted-foreground">Daily cap</span>
+				<strong class="font-mono font-medium text-foreground">{ optionalUSD(budget.PerDayMaxUSD) }</strong>
+			</div>
+			<div class="flex items-center justify-between gap-4">
+				<span class="text-muted-foreground">Issue cap</span>
+				<strong class="font-mono font-medium text-foreground">{ optionalUSD(budget.PerIssueMaxUSD) }</strong>
+			</div>
+		</div>
+	</section>
+}
+
+templ rateLimitsCard(limits *RateLimits) {
+	<section class="rounded-md border border-border bg-card p-5 shadow-sm">
+		<div class="flex items-start justify-between gap-3">
+			<h2 class="text-lg font-semibold text-foreground">Codex rate limits</h2>
+			<span class="rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ rateLimitName(limits) }</span>
+		</div>
+		if len(rateLimitRows(limits)) == 0 {
+			<p class="mt-5 rounded-md border border-dashed border-border bg-muted px-4 py-6 text-center text-sm text-muted-foreground">No Codex rate-limit snapshot.</p>
+		} else {
+			<div class="mt-5 grid gap-4">
+				for _, row := range rateLimitRows(limits) {
+					<div class="grid gap-2">
+						<div class="flex items-center justify-between gap-3">
+							<span class="font-medium text-foreground">{ row.Name }</span>
+							<span class="font-mono text-sm text-muted-foreground">{ row.Reset }</span>
+						</div>
+						<div class="h-2 overflow-hidden rounded-full bg-muted">
+							<div class="h-full rounded-full bg-accent" style={ percentStyle(row.UsedPercent) }></div>
+						</div>
+						<div class="grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground">
+							<span>{ row.Remaining } left</span>
+							<span>{ row.Used } used</span>
+							<span>{ row.Limit } limit</span>
+						</div>
+					</div>
+				}
+			</div>
+		}
+	</section>
+}
+
+templ tokenCard(data DashboardData) {
+	<section class="rounded-md border border-border bg-card p-5 shadow-sm">
+		<div class="flex items-start justify-between gap-3">
+			<h2 class="text-lg font-semibold text-foreground">Tokens</h2>
+			<span class="rounded-md bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground">{ tokenRate(data.Snapshot) }</span>
+		</div>
+		<div class="mt-5 grid gap-2">
+			<div class="font-mono text-3xl font-semibold text-foreground">{ formatTokens(data.Snapshot.Tokens) }</div>
+			<div class="font-mono text-sm text-muted-foreground">{ formatTokenBreakdown(data.Snapshot.Tokens) }</div>
+		</div>
+		<div class="mt-5">
+			<div class="mb-2 flex items-center justify-between gap-3 text-sm">
+				<span class="font-medium text-muted-foreground">Token sparkline</span>
+				<span class="font-mono text-xs text-muted-foreground">{ formatDuration(data.Snapshot.Tokens.RuntimeSeconds) }</span>
+			</div>
+			if len(tokenSparklineBars(data)) == 0 {
+				<p class="rounded-md border border-dashed border-border bg-muted px-4 py-6 text-center text-sm text-muted-foreground">No token activity yet.</p>
+			} else {
+				<div class="grid h-20 grid-cols-[repeat(auto-fit,minmax(0,1fr))] items-end gap-1 rounded-md border border-border bg-muted p-2" aria-label="Token sparkline">
+					for _, bar := range tokenSparklineBars(data) {
+						<span class="block min-h-2 rounded-t-sm bg-success" style={ bar.HeightStyle } title={ bar.Title }>
+							<span class="sr-only">{ bar.Title }</span>
+						</span>
+					}
+				</div>
+			}
+		</div>
+	</section>
 }

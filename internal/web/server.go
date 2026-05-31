@@ -103,7 +103,25 @@ func (s *Server) dashboard(c echo.Context) error {
 	return render(c, templates.Dashboard(templates.DashboardData{
 		Title:         "Symphony",
 		ConnectorName: s.connector.Name(),
+		Snapshot:      s.latestSnapshot(c.Request().Context()),
 	}))
+}
+
+func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
+	sub, err := s.hub.Subscribe(ctx)
+	if err != nil {
+		return telemetry.Snapshot{}
+	}
+	defer sub.Close()
+
+	select {
+	case snapshot, ok := <-sub.C():
+		if ok {
+			return snapshot
+		}
+	default:
+	}
+	return telemetry.Snapshot{}
 }
 
 func (s *Server) health(c echo.Context) error {

@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/digitaldrywood/symphony-go/internal/connector"
 	"github.com/digitaldrywood/symphony-go/internal/hub"
@@ -135,6 +136,61 @@ func TestServerRoutes(t *testing.T) {
 				t.Fatalf("body missing %q:\n%s", tt.wantContent, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestDashboardRendersLatestSnapshot(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC),
+		Counts: telemetry.Counts{
+			Running:   1,
+			Queue:     2,
+			Blocked:   3,
+			Completed: 4,
+		},
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-35",
+					Identifier: "digitaldrywood/symphony-go#35",
+					Title:      "Dashboard templates",
+					State:      "In Progress",
+				},
+				TurnCount:      2,
+				RuntimeSeconds: 120,
+				Tokens: telemetry.Tokens{
+					Total: 42_000,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, want := range []string{
+		"digitaldrywood/symphony-go#35",
+		"Dashboard templates",
+		"42,000",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+		}
 	}
 }
 
