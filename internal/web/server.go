@@ -36,6 +36,7 @@ type Config struct {
 	Logger          *slog.Logger
 	StaticDir       string
 	SSETickInterval time.Duration
+	WorkflowPath    string
 }
 
 type Server struct {
@@ -47,6 +48,7 @@ type Server struct {
 	refresher Refresher
 	logger    *slog.Logger
 	tickEvery time.Duration
+	workflow  string
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -76,6 +78,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		refresher: deps.Refresher,
 		logger:    cfg.logger(),
 		tickEvery: cfg.sseTickInterval(),
+		workflow:  cfg.workflowPath(),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes(cfg.staticDir())
@@ -105,6 +108,12 @@ func (s *Server) registerRoutes(staticDir string) {
 	s.echo.Static("/static", staticDir)
 	s.echo.GET("/", s.dashboard)
 	s.echo.GET("/events", s.events)
+	s.echo.GET("/onboarding", s.onboarding)
+	s.echo.POST("/onboarding/tracker", s.onboardingTracker)
+	s.echo.POST("/onboarding/credentials", s.onboardingCredentials)
+	s.echo.POST("/onboarding/project", s.onboardingProject)
+	s.echo.POST("/onboarding/agent", s.onboardingAgent)
+	s.echo.POST("/onboarding/write", s.onboardingWrite)
 	s.echo.GET("/health", s.health)
 	s.echo.GET("/api/v1/state", s.apiState)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh)
@@ -174,6 +183,13 @@ func (cfg Config) sseTickInterval() time.Duration {
 		return cfg.SSETickInterval
 	}
 	return time.Second
+}
+
+func (cfg Config) workflowPath() string {
+	if cfg.WorkflowPath != "" {
+		return cfg.WorkflowPath
+	}
+	return "WORKFLOW.md"
 }
 
 func configuredStatus(value any) string {
