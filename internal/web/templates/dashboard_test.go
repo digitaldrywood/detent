@@ -786,7 +786,9 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 		"retry-mobile-issue-popover-0",
 		"blocked-mobile-issue-popover-0",
 		"recent-mobile-issue-popover-0",
-		"grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]",
+		"dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]",
+		"dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5",
+		"dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing responsive marker %q:\n%s", want, html)
@@ -841,9 +843,19 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 		"No Codex rate-limit snapshot.",
 		"No token trend yet.",
 		"Lifetime totals unavailable.",
+		"dashboard-empty-state",
+		"items-start gap-3",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+	for _, forbidden := range []string{
+		"min-h-56",
+		"py-8",
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard empty states should stay compact, found %q:\n%s", forbidden, html)
 		}
 	}
 }
