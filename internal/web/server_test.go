@@ -121,6 +121,12 @@ func TestServerRoutes(t *testing.T) {
 			wantContent: "Settings",
 		},
 		{
+			name:        "reports",
+			path:        "/reports",
+			wantStatus:  http.StatusOK,
+			wantContent: "Usage reports",
+		},
+		{
 			name:        "health",
 			path:        "/health",
 			wantStatus:  http.StatusOK,
@@ -326,6 +332,7 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 	for _, want := range []string{
 		"v9.8.7",
 		`href="http://localhost:4000"`,
+		`href="/reports"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
@@ -420,6 +427,7 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 	for _, want := range []string{
 		"Settings",
 		`href="/"`,
+		`href="/reports"`,
 		`href="/settings"`,
 		`aria-current="page"`,
 		"v1.2.3",
@@ -1176,6 +1184,63 @@ func TestServerUsageAPIRejectsInvalidParameters(t *testing.T) {
 	}
 }
 
+func TestReportsPageRendersUsageCharts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	usageStore := openWebTestStore(t)
+	seedUsageAPIEvents(t, ctx, usageStore)
+
+	deps := testDeps(t)
+	deps.Store = usageStore
+	server, err := web.NewServer(web.Config{
+		Pricing: budget.PricingTable{
+			"gpt-report": {
+				USDPerInputToken:  0.01,
+				USDPerOutputToken: 0.02,
+			},
+			"gpt-report-mini": {
+				USDPerInputToken:  0.001,
+				USDPerOutputToken: 0.002,
+			},
+		},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/reports", nil)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Usage reports",
+		`href="/"`,
+		`href="/reports"`,
+		`href="/settings"`,
+		"Spend trend",
+		"Token trend",
+		"Top issues by tokens",
+		"Top PRs by tokens",
+		"Per-project breakdown",
+		"Model split",
+		"$3.40",
+		"325",
+		"digitaldrywood/symphony#119",
+		"symphony#141",
+		"pyroapex",
+		"gpt-report",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("reports page missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
 func testDeps(t *testing.T) web.Dependencies {
 	t.Helper()
 
@@ -1349,6 +1414,10 @@ type storeProbe struct {
 
 func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) {
 	return store.LifetimeTotals{}, nil
+}
+
+func (storeProbe) UsageReport(_ context.Context, query store.UsageReportQuery) (store.UsageReport, error) {
+	return store.UsageReport{By: query.By}, nil
 }
 
 func (storeProbe) Queries() *sqlc.Queries {
