@@ -105,6 +105,11 @@ func TestSnapshotJSONShape(t *testing.T) {
 				Limit:          100,
 				ResetInSeconds: 60,
 			},
+			Credits: &telemetry.RateLimitBucket{
+				HasCredits: true,
+				Unlimited:  false,
+				Balance:    "7.25",
+			},
 		},
 		Tokens: telemetry.Tokens{
 			Input:          110,
@@ -171,6 +176,10 @@ func TestSnapshotJSONShape(t *testing.T) {
 	rateLimits := got["rate_limits"].(map[string]any)
 	if rateLimits["limit_id"] != "codex-primary" {
 		t.Fatalf("rate_limits = %#v", rateLimits)
+	}
+	credits := rateLimits["credits"].(map[string]any)
+	if credits["has_credits"] != true || credits["balance"] != "7.25" {
+		t.Fatalf("credits = %#v", credits)
 	}
 
 	tokens := got["tokens"].(map[string]any)

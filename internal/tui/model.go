@@ -171,7 +171,7 @@ func (m Model) renderSnapshot() string {
 	runningWidth := runningEventWidth(m.width)
 	lines = append(lines, runningTableHeader(runningWidth, m.styles), runningTableSeparator(runningWidth, m.styles))
 	lines = append(lines, formatRunningRows(snapshot.Running, runningWidth, m.styles)...)
-	lines = append(lines, m.styles.title.Render("├─ Queue"), "│")
+	lines = append(lines, m.styles.title.Render("├─ Backoff queue"), "│")
 	lines = append(lines, formatQueueRows(snapshot.Queue, m.styles)...)
 	lines = append(lines, m.styles.title.Render("├─ Blocked"), "│")
 	lines = append(lines, formatBlockedRows(snapshot.Blocked, m.styles)...)
@@ -209,7 +209,7 @@ func formatRunningRows(running []telemetry.Running, eventWidth int, s styles) []
 			formatCell(defaultString(row.WorkerHost, "n/a"), runningHostWidth, alignLeft),
 			formatCell(formatRuntimeAndTurns(row.RuntimeSeconds, row.TurnCount), runningAgeWidth, alignLeft),
 			formatCell(formatCount(row.Tokens.Total), runningTokensWidth, alignRight),
-			formatCell(defaultString(row.SessionID, "n/a"), runningSessionWidth, alignLeft),
+			formatCell(compactSessionID(row.SessionID), runningSessionWidth, alignLeft),
 			formatCell(cleanInline(event), eventWidth, alignLeft),
 		}
 
@@ -228,7 +228,7 @@ func formatRunningRows(running []telemetry.Running, eventWidth int, s styles) []
 
 func formatQueueRows(queue []telemetry.Queued, s styles) []string {
 	if len(queue) == 0 {
-		return []string{"│  " + s.muted.Render("No queued work")}
+		return []string{"│  " + s.muted.Render("No queued retries")}
 	}
 
 	rows := append([]telemetry.Queued(nil), queue...)
@@ -354,10 +354,29 @@ func formatRateLimits(rateLimits *telemetry.RateLimits, now func() time.Time, s 
 		s.warn.Render(limitID),
 		s.info.Render("primary " + formatRateLimitBucket(rateLimits.Primary, now)),
 		s.info.Render("secondary " + formatRateLimitBucket(rateLimits.Secondary, now)),
-		s.ok.Render("credits " + formatRateLimitBucket(rateLimits.Credits, now)),
+		s.ok.Render(formatRateLimitCredits(rateLimits.Credits, now)),
 	}
 
 	return strings.Join(parts, s.muted.Render(" | "))
+}
+
+func formatRateLimitCredits(bucket *telemetry.RateLimitBucket, now func() time.Time) string {
+	if bucket == nil {
+		return "credits n/a"
+	}
+	if bucket.Unlimited {
+		return "credits unlimited"
+	}
+	if bucket.HasCredits {
+		if strings.TrimSpace(bucket.Balance) != "" {
+			return "credits " + strings.TrimSpace(bucket.Balance)
+		}
+		return "credits available"
+	}
+	if bucket.Limit > 0 || bucket.Remaining > 0 || bucket.Used > 0 || bucket.ResetAt != nil || bucket.ResetInSeconds > 0 {
+		return "credits " + formatRateLimitBucket(bucket, now)
+	}
+	return "credits none"
 }
 
 func formatRateLimitBucket(bucket *telemetry.RateLimitBucket, now func() time.Time) string {
@@ -456,6 +475,21 @@ func defaultString(value string, fallback string) string {
 	return cleanInline(value)
 }
 
+func compactSessionID(sessionID string) string {
+	if strings.TrimSpace(sessionID) == "" {
+		return "n/a"
+	}
+	sessionID = cleanInline(sessionID)
+	if len(sessionID) <= 10 {
+		return sessionID
+	}
+	runes := []rune(sessionID)
+	if len(runes) <= 10 {
+		return sessionID
+	}
+	return string(runes[:4]) + "..." + string(runes[len(runes)-6:])
+}
+
 func countOrLen(count int, length int) int {
 	if count > 0 {
 		return count
@@ -548,6 +582,14 @@ func formatCell(value string, width int, alignment align) string {
 }
 
 func cleanInline(value string) string {
+	value = strings.NewReplacer(
+		`\r\n`, " ",
+		`\r`, " ",
+		`\n`, " ",
+		"\r\n", " ",
+		"\r", " ",
+		"\n", " ",
+	).Replace(value)
 	return strings.Join(strings.Fields(value), " ")
 }
 
@@ -603,7 +645,7 @@ func newStyles() styles {
 }
 
 const (
-	defaultTerminalColumns = 115
+	defaultTerminalColumns = 123
 	runningIDWidth         = 8
 	runningStageWidth      = 14
 	runningHostWidth       = 12

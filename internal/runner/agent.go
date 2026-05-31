@@ -305,6 +305,7 @@ func rateLimitsFromCodex(snapshot *codex.RateLimitSnapshot) *telemetry.RateLimit
 		LimitName: snapshot.LimitName,
 		Primary:   rateLimitBucketFromCodex(snapshot.Primary),
 		Secondary: rateLimitBucketFromCodex(snapshot.Secondary),
+		Credits:   creditsBucketFromCodex(snapshot.Credits),
 	}
 }
 
@@ -331,6 +332,17 @@ func rateLimitBucketFromCodex(window *codex.RateLimitWindow) *telemetry.RateLimi
 		bucket.ResetAt = &resetAt
 	}
 	return bucket
+}
+
+func creditsBucketFromCodex(credits *codex.CreditsSnapshot) *telemetry.RateLimitBucket {
+	if credits == nil {
+		return nil
+	}
+	return &telemetry.RateLimitBucket{
+		HasCredits: credits.HasCredits,
+		Unlimited:  credits.Unlimited,
+		Balance:    credits.Balance,
+	}
 }
 
 func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {

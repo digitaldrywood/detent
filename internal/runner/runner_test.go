@@ -47,6 +47,10 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 				RateLimits: &codex.RateLimitSnapshot{
 					LimitID:   "codex-primary",
 					LimitName: "Codex primary",
+					Credits: &codex.CreditsSnapshot{
+						HasCredits: true,
+						Balance:    "7.25",
+					},
 				},
 			},
 		},
@@ -112,6 +116,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if result.RateLimits == nil || result.RateLimits.LimitID != "codex-primary" {
 		t.Fatalf("RateLimits = %#v, want codex-primary", result.RateLimits)
+	}
+	if result.RateLimits.Credits == nil || !result.RateLimits.Credits.HasCredits || result.RateLimits.Credits.Balance != "7.25" {
+		t.Fatalf("RateLimits.Credits = %#v, want available balance 7.25", result.RateLimits.Credits)
 	}
 	if !workspaceBackend.created || !workspaceBackend.beforeRun || !workspaceBackend.afterRun || !workspaceBackend.diffed {
 		t.Fatalf("workspace calls = created:%v before:%v after:%v diff:%v, want all true", workspaceBackend.created, workspaceBackend.beforeRun, workspaceBackend.afterRun, workspaceBackend.diffed)

@@ -3,7 +3,7 @@ package templates
 import "time"
 
 templ Dashboard(data DashboardData) {
-	<!doctype html>
+	<!DOCTYPE html>
 	<html lang="en">
 		<head>
 			<meta charset="utf-8"/>
@@ -184,9 +184,9 @@ templ rateLimitsCard(limits *RateLimits) {
 							<div class="h-full rounded-full bg-accent" style={ percentStyle(row.UsedPercent) }></div>
 						</div>
 						<div class="grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground">
-							<span>{ row.Remaining } left</span>
-							<span>{ row.Used } used</span>
-							<span>{ row.Limit } limit</span>
+							<span>{ row.Remaining }</span>
+							<span>{ row.Used }</span>
+							<span>{ row.Limit }</span>
 						</div>
 					</div>
 				}
