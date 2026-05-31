@@ -117,6 +117,20 @@ func TestSnapshotJSONShape(t *testing.T) {
 			Total:          330,
 			RuntimeSeconds: 540,
 		},
+		Throughput: telemetry.TokenThroughput{
+			TokensPerSecond: 42.5,
+			WindowSeconds:   60,
+			Tokens:          2550,
+		},
+		LifetimeTotals: telemetry.LifetimeTotals{
+			Available:      true,
+			InputTokens:    1000,
+			OutputTokens:   500,
+			TotalTokens:    1500,
+			RuntimeSeconds: 600,
+			Sessions:       6,
+			Runs:           2,
+		},
 		TokenTrend: []telemetry.TokenTrendPoint{
 			{
 				At:     generatedAt.Add(-time.Minute),
@@ -153,6 +167,8 @@ func TestSnapshotJSONShape(t *testing.T) {
 		"budget",
 		"rate_limits",
 		"tokens",
+		"throughput",
+		"lifetime_totals",
 		"token_trend",
 	} {
 		if _, ok := got[key]; !ok {
@@ -200,6 +216,16 @@ func TestSnapshotJSONShape(t *testing.T) {
 	tokens := got["tokens"].(map[string]any)
 	if tokens["input_tokens"] != float64(110) || tokens["output_tokens"] != float64(220) || tokens["total_tokens"] != float64(330) {
 		t.Fatalf("tokens = %#v", tokens)
+	}
+
+	throughput := got["throughput"].(map[string]any)
+	if throughput["tokens_per_second"] != 42.5 || throughput["window_seconds"] != float64(60) || throughput["tokens"] != float64(2550) {
+		t.Fatalf("throughput = %#v", throughput)
+	}
+
+	lifetime := got["lifetime_totals"].(map[string]any)
+	if lifetime["available"] != true || lifetime["total_tokens"] != float64(1500) || lifetime["sessions"] != float64(6) || lifetime["runs"] != float64(2) {
+		t.Fatalf("lifetime_totals = %#v", lifetime)
 	}
 
 	trend := got["token_trend"].([]any)

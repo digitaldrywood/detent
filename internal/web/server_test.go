@@ -497,6 +497,11 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 			Total:          321,
 			RuntimeSeconds: 60,
 		},
+		Throughput: telemetry.TokenThroughput{
+			TokensPerSecond: 2.85,
+			WindowSeconds:   60,
+			Tokens:          171,
+		},
 		TokenTrend: []telemetry.TokenTrendPoint{
 			{
 				At:     time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC),
@@ -542,8 +547,9 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 		"Token trend",
 		"Input 15:01: 100 tokens",
 		"Output 15:01: 221 tokens",
-		"Throughput trend",
-		"0.4 completions/min",
+		"Token throughput",
+		"2.9 tps",
+		"Last 1m token throughput",
 		"Runtime",
 		"1m 0s",
 		"Agent activity",
@@ -684,6 +690,20 @@ func TestServerAPIRoutes(t *testing.T) {
 			Total:          33,
 			RuntimeSeconds: 44.5,
 		},
+		Throughput: telemetry.TokenThroughput{
+			TokensPerSecond: 7.5,
+			WindowSeconds:   60,
+			Tokens:          450,
+		},
+		LifetimeTotals: telemetry.LifetimeTotals{
+			Available:      true,
+			InputTokens:    1000,
+			OutputTokens:   250,
+			TotalTokens:    1250,
+			RuntimeSeconds: 600,
+			Sessions:       5,
+			Runs:           2,
+		},
 		Budget: telemetry.Budget{
 			Enabled:         true,
 			CurrentSpendUSD: 1.25,
@@ -764,6 +784,18 @@ func TestServerAPIRoutes(t *testing.T) {
 
 	if got := nestedString(t, state, "codex_totals", "seconds_running"); got != "44.5" {
 		t.Fatalf("codex_totals.seconds_running = %s, want 44.5", got)
+	}
+	if got := nestedString(t, state, "throughput", "tokens_per_second"); got != "7.5" {
+		t.Fatalf("throughput.tokens_per_second = %s, want 7.5", got)
+	}
+	if got := nestedString(t, state, "throughput", "tokens"); got != "450" {
+		t.Fatalf("throughput.tokens = %s, want 450", got)
+	}
+	if got := nestedString(t, state, "lifetime_totals", "total_tokens"); got != "1250" {
+		t.Fatalf("lifetime_totals.total_tokens = %s, want 1250", got)
+	}
+	if got := nestedString(t, state, "lifetime_totals", "sessions"); got != "5" {
+		t.Fatalf("lifetime_totals.sessions = %s, want 5", got)
 	}
 	if len(state["recent_sessions"].([]any)) != 1 {
 		t.Fatalf("recent_sessions = %#v, want one entry", state["recent_sessions"])
@@ -1192,6 +1224,10 @@ func nestedString(t *testing.T, payload map[string]any, keys ...string) string {
 
 type storeProbe struct {
 	store.Store
+}
+
+func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) {
+	return store.LifetimeTotals{}, nil
 }
 
 func (storeProbe) Queries() *sqlc.Queries {

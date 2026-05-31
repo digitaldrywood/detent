@@ -145,6 +145,20 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 				Total:          200_000,
 				RuntimeSeconds: 540,
 			},
+			Throughput: telemetry.TokenThroughput{
+				TokensPerSecond: 23.5,
+				WindowSeconds:   60,
+				Tokens:          1410,
+			},
+			LifetimeTotals: telemetry.LifetimeTotals{
+				Available:      true,
+				InputTokens:    750_000,
+				OutputTokens:   249_000,
+				TotalTokens:    999_000,
+				RuntimeSeconds: 7_200,
+				Sessions:       12,
+				Runs:           3,
+			},
 			TokenTrend: []telemetry.TokenTrendPoint{
 				{
 					At:     now.Add(-5 * time.Minute),
@@ -207,6 +221,11 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"7.25 credits",
 		"available",
 		"Token trend",
+		"Lifetime totals",
+		"999,000",
+		"12",
+		"2h 0m",
+		"3",
 		`aria-label="Token trend"`,
 		"<title>Token trend</title>",
 		`stroke="currentColor"`,
@@ -302,21 +321,31 @@ func TestDashboardRendersThroughputAndRuntimeTrend(t *testing.T) {
 			Tokens: telemetry.Tokens{
 				RuntimeSeconds: 5_400,
 			},
+			Throughput: telemetry.TokenThroughput{
+				TokensPerSecond: 9.5,
+				WindowSeconds:   60,
+				Tokens:          570,
+			},
+			TokenTrend: []telemetry.TokenTrendPoint{
+				{At: now.Add(-3 * time.Minute), Total: 100},
+				{At: now.Add(-2 * time.Minute), Total: 220},
+				{At: now.Add(-time.Minute), Total: 400},
+			},
 		},
 	})
 
 	for _, want := range []string{
 		"Throughput",
-		"Current completions/min",
-		"0.4 completions/min",
+		"Rolling tokens/sec",
+		"9.5 tps",
+		"Last 1m token throughput",
 		"Runtime",
 		"1h 30m",
-		"Throughput trend",
-		`aria-label="Rolling throughput trend"`,
-		"<title>Throughput trend</title>",
-		"14:52: 1 completions/min",
-		"14:58: 1 completions/min",
-		"14:59: 1 completions/min",
+		"Token throughput trend",
+		`aria-label="Rolling token throughput trend"`,
+		"<title>Token throughput trend</title>",
+		"14:58: 2 tps",
+		"14:59: 3 tps",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
@@ -451,6 +480,7 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 		"Budget disabled",
 		"No Codex rate-limit snapshot.",
 		"No token trend yet.",
+		"Lifetime totals unavailable.",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)

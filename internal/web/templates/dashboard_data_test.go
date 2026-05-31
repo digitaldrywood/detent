@@ -7,40 +7,31 @@ import (
 	"github.com/digitaldrywood/symphony/internal/telemetry"
 )
 
-func TestCurrentThroughputPerMinute(t *testing.T) {
+func TestThroughputRateFormatsRollingTokenTPS(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name     string
 		snapshot telemetry.Snapshot
-		want     float64
+		want     string
 	}{
 		{
-			name: "empty snapshot",
+			name: "empty throughput",
+			want: "0 tps",
 		},
 		{
-			name: "rolling five minute window",
+			name: "integer tps",
 			snapshot: telemetry.Snapshot{
-				GeneratedAt: now,
-				Completed: []telemetry.Completed{
-					completedAt(now.Add(-30 * time.Second)),
-					completedAt(now.Add(-4 * time.Minute)),
-					completedAt(now.Add(-6 * time.Minute)),
-					completedAt(now.Add(time.Minute)),
-				},
+				Throughput: telemetry.TokenThroughput{TokensPerSecond: 42},
 			},
-			want: 0.4,
+			want: "42 tps",
 		},
 		{
-			name: "latest completion anchors missing generated time",
+			name: "decimal tps",
 			snapshot: telemetry.Snapshot{
-				Completed: []telemetry.Completed{
-					completedAt(now.Add(-2 * time.Minute)),
-					completedAt(now),
-				},
+				Throughput: telemetry.TokenThroughput{TokensPerSecond: 7.25},
 			},
-			want: 0.4,
+			want: "7.3 tps",
 		},
 	}
 
@@ -48,9 +39,9 @@ func TestCurrentThroughputPerMinute(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := currentThroughputPerMinute(tt.snapshot)
+			got := throughputRate(tt.snapshot)
 			if got != tt.want {
-				t.Fatalf("currentThroughputPerMinute() = %v, want %v", got, tt.want)
+				t.Fatalf("throughputRate() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -61,23 +52,22 @@ func TestThroughputTrendPoints(t *testing.T) {
 
 	now := time.Date(2026, 5, 31, 15, 0, 30, 0, time.UTC)
 	points := throughputTrendPoints(telemetry.Snapshot{
-		GeneratedAt: now,
-		Completed: []telemetry.Completed{
-			completedAt(now.Add(-8 * time.Minute)),
-			completedAt(now.Add(-2 * time.Minute)),
-			completedAt(now.Add(-30 * time.Second)),
-			completedAt(now.Add(10 * time.Second)),
+		TokenTrend: []telemetry.TokenTrendPoint{
+			{At: now.Add(-8 * time.Minute), Total: 120},
+			{At: now.Add(-2 * time.Minute), Total: 480},
+			{At: now.Add(-30 * time.Second), Total: 570},
+			{At: now.Add(10 * time.Second), Total: 690},
 		},
 	})
 
-	if len(points) != throughputTrendBuckets {
-		t.Fatalf("throughputTrendPoints() len = %d, want %d", len(points), throughputTrendBuckets)
+	if len(points) != 3 {
+		t.Fatalf("throughputTrendPoints() len = %d, want 3", len(points))
 	}
 
 	wantValues := map[string]float64{
-		"14:52": 1,
-		"14:58": 1,
-		"15:00": 1,
+		"14:58:30": 1,
+		"15:00":    1,
+		"15:00:40": 3,
 	}
 	for _, point := range points {
 		want := wantValues[point.Label]
@@ -86,7 +76,6 @@ func TestThroughputTrendPoints(t *testing.T) {
 		}
 	}
 }
-
 func TestAgentTimelineRows(t *testing.T) {
 	t.Parallel()
 
@@ -211,8 +200,4 @@ func TestAgentTimelineRows(t *testing.T) {
 			}
 		})
 	}
-}
-
-func completedAt(completed time.Time) telemetry.Completed {
-	return telemetry.Completed{CompletedAt: completed}
 }

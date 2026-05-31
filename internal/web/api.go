@@ -119,7 +119,8 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time) stateAPIR
 		Blocked:        blockedEntries(snapshot.Blocked),
 		Stats:          statsAPIResponse{Status: "enabled"},
 		CodexTotals:    totalsResponse(snapshot.Tokens),
-		LifetimeTotals: lifetimeTotalsResponse{},
+		Throughput:     throughputResponse(snapshot.Throughput),
+		LifetimeTotals: lifetimeTotalsResponseFromTelemetry(snapshot.LifetimeTotals),
 		RecentSessions: recentSessionEntries(snapshot.Completed),
 		RateLimits:     snapshot.RateLimits,
 		Budget:         budgetResponse(snapshot.Budget),
@@ -399,6 +400,31 @@ func tokenCountsResponse(tokens telemetry.Tokens) tokenCountsAPIResponse {
 	}
 }
 
+func throughputResponse(throughput telemetry.TokenThroughput) throughputAPIResponse {
+	return throughputAPIResponse{
+		TokensPerSecond: throughput.TokensPerSecond,
+		WindowSeconds:   throughput.WindowSeconds,
+		Tokens:          throughput.Tokens,
+	}
+}
+
+func lifetimeTotalsResponseFromTelemetry(totals telemetry.LifetimeTotals) lifetimeTotalsResponse {
+	reason := totals.DegradedReason
+	if !totals.Available && reason == "" {
+		reason = "runtime store unavailable"
+	}
+	return lifetimeTotalsResponse{
+		Available:      totals.Available,
+		DegradedReason: reason,
+		InputTokens:    totals.InputTokens,
+		OutputTokens:   totals.OutputTokens,
+		TotalTokens:    totals.TotalTokens,
+		RuntimeSeconds: totals.RuntimeSeconds,
+		Sessions:       totals.Sessions,
+		Runs:           totals.Runs,
+	}
+}
+
 func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
 	days := budget.Days
 	if days == nil {
@@ -671,6 +697,7 @@ type stateAPIResponse struct {
 	Blocked        []blockedAPIResponse       `json:"blocked"`
 	Stats          statsAPIResponse           `json:"stats"`
 	CodexTotals    tokenTotalsAPIResponse     `json:"codex_totals"`
+	Throughput     throughputAPIResponse      `json:"throughput"`
 	LifetimeTotals lifetimeTotalsResponse     `json:"lifetime_totals"`
 	RecentSessions []recentSessionAPIResponse `json:"recent_sessions"`
 	RateLimits     *telemetry.RateLimits      `json:"rate_limits"`
@@ -756,13 +783,21 @@ type tokenTotalsAPIResponse struct {
 	RuntimeSeconds float64 `json:"seconds_running"`
 }
 
+type throughputAPIResponse struct {
+	TokensPerSecond float64 `json:"tokens_per_second"`
+	WindowSeconds   int64   `json:"window_seconds"`
+	Tokens          int64   `json:"tokens"`
+}
+
 type lifetimeTotalsResponse struct {
-	InputTokens    int64 `json:"input_tokens"`
-	OutputTokens   int64 `json:"output_tokens"`
-	TotalTokens    int64 `json:"total_tokens"`
-	RuntimeSeconds int64 `json:"runtime_seconds"`
-	Sessions       int64 `json:"sessions"`
-	Runs           int64 `json:"runs"`
+	Available      bool   `json:"available"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
+	InputTokens    int64  `json:"input_tokens"`
+	OutputTokens   int64  `json:"output_tokens"`
+	TotalTokens    int64  `json:"total_tokens"`
+	RuntimeSeconds int64  `json:"runtime_seconds"`
+	Sessions       int64  `json:"sessions"`
+	Runs           int64  `json:"runs"`
 }
 
 type recentSessionAPIResponse struct {

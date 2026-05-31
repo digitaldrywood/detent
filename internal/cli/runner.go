@@ -16,14 +16,20 @@ import (
 	"github.com/digitaldrywood/symphony/internal/orchestrator"
 	"github.com/digitaldrywood/symphony/internal/project"
 	runnerpkg "github.com/digitaldrywood/symphony/internal/runner"
+	"github.com/digitaldrywood/symphony/internal/store"
 	"github.com/digitaldrywood/symphony/internal/telemetry"
 	"github.com/digitaldrywood/symphony/internal/workspace"
 )
 
 const (
-	defaultSnapshotInterval     = time.Second
-	defaultTokenTrendWindowSize = 60
+	defaultSnapshotInterval      = time.Second
+	defaultTokenTrendWindowSize  = 60
+	defaultTokenThroughputWindow = time.Minute
 )
+
+type lifetimeTotalsSource interface {
+	LifetimeTotals(context.Context) (store.LifetimeTotals, error)
+}
 
 // withRunnerFactory returns a project.ProjectFactory that constructs a
 // per-project agent Runner from the project's own workflow (so each project's
@@ -160,6 +166,7 @@ func publishSnapshots(
 	ctx context.Context,
 	registry *project.Registry,
 	snapshotHub *hub.Hub[telemetry.Snapshot],
+	lifetimeSource lifetimeTotalsSource,
 	interval time.Duration,
 	now func() time.Time,
 ) {
@@ -178,7 +185,7 @@ func publishSnapshots(
 	defer ticker.Stop()
 
 	for {
-		if err := publishSnapshotOnce(ctx, registry, snapshotHub, now(), trend); err != nil {
+		if err := publishSnapshotOnce(ctx, registry, snapshotHub, now(), trend, lifetimeSource); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
 		}
 		select {
@@ -195,6 +202,7 @@ func publishSnapshotOnce(
 	snapshotHub *hub.Hub[telemetry.Snapshot],
 	now time.Time,
 	trend *tokenTrendRecorder,
+	lifetimeSource lifetimeTotalsSource,
 ) error {
 	merged := telemetry.Snapshot{GeneratedAt: now}
 	for _, trackedProject := range registry.List() {
@@ -214,6 +222,7 @@ func publishSnapshotOnce(
 	if trend != nil {
 		merged = trend.apply(merged)
 	}
+	merged.LifetimeTotals = lifetimeTotals(ctx, lifetimeSource)
 	if err := snapshotHub.Publish(merged); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
@@ -222,6 +231,7 @@ func publishSnapshotOnce(
 
 type tokenTrendRecorder struct {
 	limit  int
+	window time.Duration
 	points []telemetry.TokenTrendPoint
 }
 
@@ -229,7 +239,7 @@ func newTokenTrendRecorder(limit int) *tokenTrendRecorder {
 	if limit <= 0 {
 		limit = defaultTokenTrendWindowSize
 	}
-	return &tokenTrendRecorder{limit: limit}
+	return &tokenTrendRecorder{limit: limit, window: defaultTokenThroughputWindow}
 }
 
 func (r *tokenTrendRecorder) apply(snapshot telemetry.Snapshot) telemetry.Snapshot {
@@ -238,12 +248,16 @@ func (r *tokenTrendRecorder) apply(snapshot telemetry.Snapshot) telemetry.Snapsh
 		if total <= 0 {
 			total = snapshot.Tokens.Input + snapshot.Tokens.Output
 		}
-		r.points = append(r.points, telemetry.TokenTrendPoint{
+		point := telemetry.TokenTrendPoint{
 			At:     snapshot.GeneratedAt,
 			Input:  snapshot.Tokens.Input,
 			Output: snapshot.Tokens.Output,
 			Total:  total,
-		})
+		}
+		if r.shouldReset(point) {
+			r.points = nil
+		}
+		r.points = append(r.points, point)
 		if len(r.points) > r.limit {
 			r.points = append([]telemetry.TokenTrendPoint(nil), r.points[len(r.points)-r.limit:]...)
 		}
@@ -251,7 +265,72 @@ func (r *tokenTrendRecorder) apply(snapshot telemetry.Snapshot) telemetry.Snapsh
 		r.points = nil
 	}
 	snapshot.TokenTrend = append([]telemetry.TokenTrendPoint(nil), r.points...)
+	snapshot.Throughput = r.throughput()
 	return snapshot
+}
+
+func (r *tokenTrendRecorder) shouldReset(point telemetry.TokenTrendPoint) bool {
+	if len(r.points) == 0 {
+		return false
+	}
+	latest := r.points[len(r.points)-1]
+	return point.Total < latest.Total || !point.At.After(latest.At)
+}
+
+func (r *tokenTrendRecorder) throughput() telemetry.TokenThroughput {
+	window := r.window
+	if window <= 0 {
+		window = defaultTokenThroughputWindow
+	}
+
+	throughput := telemetry.TokenThroughput{WindowSeconds: int64(window / time.Second)}
+	if len(r.points) < 2 {
+		return throughput
+	}
+
+	latest := r.points[len(r.points)-1]
+	windowStart := latest.At.Add(-window)
+	base := latest
+	for _, point := range r.points[:len(r.points)-1] {
+		if point.At.Before(windowStart) {
+			continue
+		}
+		base = point
+		break
+	}
+
+	elapsed := latest.At.Sub(base.At).Seconds()
+	if elapsed <= 0 {
+		return throughput
+	}
+
+	tokens := latest.Total - base.Total
+	if tokens <= 0 {
+		return throughput
+	}
+
+	throughput.Tokens = tokens
+	throughput.TokensPerSecond = float64(tokens) / elapsed
+	return throughput
+}
+
+func lifetimeTotals(ctx context.Context, source lifetimeTotalsSource) telemetry.LifetimeTotals {
+	if source == nil {
+		return telemetry.LifetimeTotals{DegradedReason: "runtime store unavailable"}
+	}
+	totals, err := source.LifetimeTotals(ctx)
+	if err != nil {
+		return telemetry.LifetimeTotals{DegradedReason: "read runtime store lifetime totals: " + err.Error()}
+	}
+	return telemetry.LifetimeTotals{
+		Available:      true,
+		InputTokens:    totals.InputTokens,
+		OutputTokens:   totals.OutputTokens,
+		TotalTokens:    totals.TotalTokens,
+		RuntimeSeconds: totals.RuntimeSeconds,
+		Sessions:       totals.Sessions,
+		Runs:           totals.Runs,
+	}
 }
 
 func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {

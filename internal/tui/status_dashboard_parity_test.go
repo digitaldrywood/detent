@@ -69,6 +69,7 @@ func renderParitySnapshot(snapshot telemetry.Snapshot) string {
 
 type statusDashboardParity struct {
 	AgentCount     int
+	Throughput     string
 	Runtime        string
 	Tokens         string
 	RateLimits     string
@@ -116,6 +117,8 @@ func parseStatusDashboardParity(content string) statusDashboardParity {
 		switch {
 		case strings.HasPrefix(line, "│ Agents:"):
 			parsed.AgentCount = firstInteger(line)
+		case strings.HasPrefix(line, "│ Throughput:"):
+			parsed.Throughput = strings.TrimSpace(strings.TrimPrefix(line, "│ Throughput:"))
 		case strings.HasPrefix(line, "│ Runtime:"):
 			parsed.Runtime = strings.TrimSpace(strings.TrimPrefix(line, "│ Runtime:"))
 		case strings.HasPrefix(line, "│ Tokens:"):
@@ -312,6 +315,7 @@ func paritySuperBusySnapshot() telemetry.Snapshot {
 			Total:          268_500,
 			RuntimeSeconds: 4_321,
 		},
+		Throughput: telemetry.TokenThroughput{TokensPerSecond: 1_842},
 	}
 }
 
@@ -358,6 +362,7 @@ func parityBackoffQueueSnapshot() telemetry.Snapshot {
 			Total:          20_200,
 			RuntimeSeconds: 2_700,
 		},
+		Throughput: telemetry.TokenThroughput{TokensPerSecond: 15},
 	}
 }
 
@@ -402,6 +407,7 @@ func parityCreditsUnlimitedSnapshot() telemetry.Snapshot {
 			Total:          102,
 			RuntimeSeconds: 75,
 		},
+		Throughput: telemetry.TokenThroughput{TokensPerSecond: 42},
 	}
 }
 
