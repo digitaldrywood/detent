@@ -104,3 +104,60 @@ func TestPricingForConfigUsesEmbeddedDefaultPath(t *testing.T) {
 		t.Fatal("PricingForConfig(default).Lookup(gpt-5.5) ok = false, want true")
 	}
 }
+
+func TestUsageCostUSD(t *testing.T) {
+	t.Parallel()
+
+	pricing := PricingTable{
+		"gpt-test": {
+			USDPerInputToken:  0.01,
+			USDPerOutputToken: 0.02,
+		},
+	}
+
+	tests := []struct {
+		name         string
+		model        string
+		inputTokens  int64
+		outputTokens int64
+		want         float64
+		wantOK       bool
+	}{
+		{
+			name:         "known model",
+			model:        " GPT-TEST ",
+			inputTokens:  10,
+			outputTokens: 5,
+			want:         0.20,
+			wantOK:       true,
+		},
+		{
+			name:         "unknown model",
+			model:        "missing",
+			inputTokens:  10,
+			outputTokens: 5,
+			want:         0,
+			wantOK:       false,
+		},
+		{
+			name:         "negative tokens are ignored",
+			model:        "gpt-test",
+			inputTokens:  -10,
+			outputTokens: 5,
+			want:         0.10,
+			wantOK:       true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := UsageCostUSD(pricing, tt.model, tt.inputTokens, tt.outputTokens)
+			if ok != tt.wantOK {
+				t.Fatalf("UsageCostUSD() ok = %v, want %v", ok, tt.wantOK)
+			}
+			assertInDelta(t, got, tt.want)
+		})
+	}
+}

@@ -148,13 +148,14 @@ INSERT INTO usage_events (
   input_tokens,
   output_tokens,
   total_tokens,
+  cost_usd,
   runtime_seconds,
   started_at,
   finished_at,
   event_day,
   outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd
 `
 
 type CreateUsageEventParams struct {
@@ -168,6 +169,7 @@ type CreateUsageEventParams struct {
 	InputTokens    int64          `json:"input_tokens"`
 	OutputTokens   int64          `json:"output_tokens"`
 	TotalTokens    int64          `json:"total_tokens"`
+	CostUsd        float64        `json:"cost_usd"`
 	RuntimeSeconds int64          `json:"runtime_seconds"`
 	StartedAt      string         `json:"started_at"`
 	FinishedAt     string         `json:"finished_at"`
@@ -187,6 +189,7 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 		arg.InputTokens,
 		arg.OutputTokens,
 		arg.TotalTokens,
+		arg.CostUsd,
 		arg.RuntimeSeconds,
 		arg.StartedAt,
 		arg.FinishedAt,
@@ -211,6 +214,7 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 		&i.FinishedAt,
 		&i.EventDay,
 		&i.Outcome,
+		&i.CostUsd,
 	)
 	return i, err
 }
@@ -361,7 +365,7 @@ func (q *Queries) GetSymphonyRun(ctx context.Context, id int64) (SymphonyRun, er
 }
 
 const getUsageEvent = `-- name: GetUsageEvent :one
-SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome
+SELECT id, project_id, run_id, session_id, issue_id, identifier, pr_number, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd
 FROM usage_events
 WHERE id = ?
 `
@@ -386,6 +390,7 @@ func (q *Queries) GetUsageEvent(ctx context.Context, id int64) (UsageEvent, erro
 		&i.FinishedAt,
 		&i.EventDay,
 		&i.Outcome,
+		&i.CostUsd,
 	)
 	return i, err
 }

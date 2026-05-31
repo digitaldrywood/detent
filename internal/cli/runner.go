@@ -8,6 +8,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/symphony/internal/budget"
 	"github.com/digitaldrywood/symphony/internal/codex"
 	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
 	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
@@ -76,12 +77,20 @@ func buildRunner(
 		return nil, err
 	}
 
+	pricing, err := budget.PricingForConfig(budget.Config{
+		PricingPath: cfg.Budget.PricingPath,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("load pricing: %w", err)
+	}
+
 	run, err := runnerpkg.NewRunner(runnerpkg.Dependencies{
 		ProjectID: projectID,
 		Workflow:  workflow,
 		Workspace: backend,
 		Codex:     codexClient,
 		Store:     sessionStore,
+		Pricing:   pricing,
 		Logger:    logger,
 	})
 	if err != nil {

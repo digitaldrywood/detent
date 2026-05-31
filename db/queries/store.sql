@@ -108,12 +108,13 @@ INSERT INTO usage_events (
   input_tokens,
   output_tokens,
   total_tokens,
+  cost_usd,
   runtime_seconds,
   started_at,
   finished_at,
   event_day,
   outcome
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetUsageEvent :one

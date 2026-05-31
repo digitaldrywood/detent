@@ -330,6 +330,7 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 				InputTokens:    123,
 				OutputTokens:   45,
 				TotalTokens:    168,
+				CostUSD:        0.00123,
 				RuntimeSeconds: 73,
 				StartedAt:      time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC),
 				FinishedAt:     time.Date(2026, 5, 31, 13, 1, 13, 0, time.UTC),
@@ -380,6 +381,9 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 			if got.InputTokens != 123 || got.OutputTokens != 45 || got.TotalTokens != 168 || got.RuntimeSeconds != 73 {
 				t.Fatalf("tokens/runtime = %d/%d/%d/%d", got.InputTokens, got.OutputTokens, got.TotalTokens, got.RuntimeSeconds)
 			}
+			if got.CostUsd != 0.00123 {
+				t.Fatalf("cost_usd = %.12f, want 0.001230000000", got.CostUsd)
+			}
 			if got.StartedAt != "2026-05-31T13:00:00Z" || got.FinishedAt != "2026-05-31T13:01:13Z" {
 				t.Fatalf("timestamps = %q/%q", got.StartedAt, got.FinishedAt)
 			}
@@ -413,6 +417,9 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 			}
 			if persisted.TotalTokens != 168 {
 				t.Fatalf("persisted total_tokens = %d, want 168", persisted.TotalTokens)
+			}
+			if persisted.CostUsd != 0.00123 {
+				t.Fatalf("persisted cost_usd = %.12f, want 0.001230000000", persisted.CostUsd)
 			}
 		})
 	}

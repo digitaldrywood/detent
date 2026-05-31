@@ -13,6 +13,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/digitaldrywood/symphony/internal/budget"
 	"github.com/digitaldrywood/symphony/internal/codex"
 	"github.com/digitaldrywood/symphony/internal/config"
 	"github.com/digitaldrywood/symphony/internal/connector"
@@ -49,6 +50,7 @@ type Dependencies struct {
 	Workspace       workspace.Backend
 	Codex           CodexClient
 	Store           SessionStore
+	Pricing         budget.PricingTable
 	Now             func() time.Time
 	Logger          *slog.Logger
 	AfterRunTimeout time.Duration
@@ -61,6 +63,7 @@ type Runner struct {
 	workspace       workspace.Backend
 	codex           CodexClient
 	store           SessionStore
+	pricing         budget.PricingTable
 	now             func() time.Time
 	logger          *slog.Logger
 	afterRunTimeout time.Duration
@@ -93,6 +96,7 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		workspace:       deps.Workspace,
 		codex:           deps.Codex,
 		store:           deps.Store,
+		pricing:         deps.Pricing,
 		now:             deps.Now,
 		logger:          deps.Logger,
 		afterRunTimeout: deps.AfterRunTimeout,
@@ -307,6 +311,7 @@ func (r *Runner) finishSession(
 		InputTokens:    result.Tokens.InputTokens,
 		OutputTokens:   result.Tokens.OutputTokens,
 		TotalTokens:    result.Tokens.TotalTokens,
+		CostUSD:        r.usageCostUSD(model, result.Tokens.InputTokens, result.Tokens.OutputTokens),
 		RuntimeSeconds: int64(math.Round(result.Tokens.RuntimeSeconds)),
 		StartedAt:      startedAt,
 		FinishedAt:     finishedAt,
@@ -315,6 +320,15 @@ func (r *Runner) finishSession(
 		return fmt.Errorf("record usage event: %w", err)
 	}
 	return nil
+}
+
+func (r *Runner) usageCostUSD(model string, inputTokens int64, outputTokens int64) float64 {
+	cost, ok := budget.UsageCostUSD(r.pricing, model, inputTokens, outputTokens)
+	if !ok {
+		r.logger.Warn("usage event model pricing not found", "model", strings.TrimSpace(model))
+		return 0
+	}
+	return cost
 }
 
 func workspaceIssue(issue connector.Issue) workspace.Issue {

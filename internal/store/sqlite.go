@@ -197,6 +197,7 @@ func (s *sqliteStore) RecordUsageEvent(ctx context.Context, attrs UsageEvent) (i
 		InputTokens:    nonNegative(attrs.InputTokens),
 		OutputTokens:   nonNegative(attrs.OutputTokens),
 		TotalTokens:    nonNegative(attrs.TotalTokens),
+		CostUsd:        nonNegativeFloat(attrs.CostUSD),
 		RuntimeSeconds: nonNegative(attrs.RuntimeSeconds),
 		StartedAt:      startedAt,
 		FinishedAt:     finishedAt,
@@ -395,6 +396,13 @@ func nullOptionalInt64(value *int64) sql.NullInt64 {
 }
 
 func nonNegative(value int64) int64 {
+	if value < 0 {
+		return 0
+	}
+	return value
+}
+
+func nonNegativeFloat(value float64) float64 {
 	if value < 0 {
 		return 0
 	}

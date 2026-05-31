@@ -1,14 +1,17 @@
 package runner
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/symphony/internal/budget"
 	"github.com/digitaldrywood/symphony/internal/codex"
 	"github.com/digitaldrywood/symphony/internal/config"
 	"github.com/digitaldrywood/symphony/internal/connector"
@@ -106,7 +109,13 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		Workspace: workspaceBackend,
 		Codex:     codexClient,
 		Store:     sessionStore,
-		Now:       now.Now,
+		Pricing: budget.PricingTable{
+			"gpt-5-codex-high": {
+				USDPerInputToken:  0.000004,
+				USDPerOutputToken: 0.00002,
+			},
+		},
+		Now: now.Now,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -215,6 +224,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if sessionStore.usage.Model != "gpt-5-codex-high" || sessionStore.usage.TotalTokens != 125 {
 		t.Fatalf("UsageEvent totals = %#v, want model gpt-5-codex-high and total 125", sessionStore.usage)
 	}
+	if sessionStore.usage.CostUSD != 0.0009 {
+		t.Fatalf("UsageEvent CostUSD = %.12f, want 0.000900000000", sessionStore.usage.CostUSD)
+	}
 	if sessionStore.usage.PRNumber == nil || *sessionStore.usage.PRNumber != 133 {
 		t.Fatalf("UsageEvent PRNumber = %v, want 133", sessionStore.usage.PRNumber)
 	}
@@ -223,6 +235,24 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.usage.Outcome != FinalStateCompleted {
 		t.Fatalf("UsageEvent outcome = %q, want %q", sessionStore.usage.Outcome, FinalStateCompleted)
+	}
+}
+
+func TestRunnerUsageCostWarnsForUnknownModel(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	runner := &Runner{
+		pricing: budget.PricingTable{},
+		logger:  slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+
+	cost := runner.usageCostUSD(" missing-model ", 10, 5)
+	if cost != 0 {
+		t.Fatalf("usageCostUSD() = %.12f, want 0", cost)
+	}
+	if got := logs.String(); !strings.Contains(got, "usage event model pricing not found") || !strings.Contains(got, "missing-model") {
+		t.Fatalf("log output = %q, want unknown pricing warning", got)
 	}
 }
 
