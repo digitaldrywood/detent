@@ -70,6 +70,17 @@ FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?;
 
+-- name: LifetimeTotals :one
+SELECT
+  CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COALESCE(SUM(runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
+  CAST(COUNT(*) AS INTEGER) AS sessions,
+  CAST((SELECT COUNT(*) FROM symphony_runs) AS INTEGER) AS runs
+FROM codex_sessions
+WHERE completed_at IS NOT NULL;
+
 -- name: DailyTokenSpend :many
 SELECT
   CAST(COALESCE(model, '') AS TEXT) AS model,

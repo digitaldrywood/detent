@@ -160,6 +160,7 @@ func (m Model) renderSnapshot() string {
 			m.styles.error.Render(fmt.Sprintf("%d blocked", countOrLen(snapshot.Counts.Blocked, len(snapshot.Blocked)))) +
 			m.styles.muted.Render(" | ") +
 			m.styles.info.Render(fmt.Sprintf("%d completed", countOrLen(snapshot.Counts.Completed, len(snapshot.Completed)))),
+		"│ Throughput: " + m.styles.info.Render(formatTokenThroughput(snapshot.Throughput)),
 		"│ Runtime: " + m.styles.accent.Render(formatRuntimeSeconds(snapshot.Tokens.RuntimeSeconds)),
 		"│ Tokens: " + m.styles.warn.Render("in "+formatCount(snapshot.Tokens.Input)) +
 			m.styles.muted.Render(" | ") +
@@ -517,6 +518,13 @@ func formatRuntimeAndTurns(seconds float64, turns int) string {
 	}
 
 	return runtime
+}
+
+func formatTokenThroughput(throughput telemetry.TokenThroughput) string {
+	if throughput.TokensPerSecond <= 0 || math.IsNaN(throughput.TokensPerSecond) || math.IsInf(throughput.TokensPerSecond, 0) {
+		return "0 tps"
+	}
+	return formatCount(int64(math.Round(throughput.TokensPerSecond))) + " tps"
 }
 
 func formatRuntimeSeconds(seconds float64) string {

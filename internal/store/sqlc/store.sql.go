@@ -453,6 +453,41 @@ func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams
 	return items, nil
 }
 
+const lifetimeTotals = `-- name: LifetimeTotals :one
+SELECT
+  CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COALESCE(SUM(runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
+  CAST(COUNT(*) AS INTEGER) AS sessions,
+  CAST((SELECT COUNT(*) FROM symphony_runs) AS INTEGER) AS runs
+FROM codex_sessions
+WHERE completed_at IS NOT NULL
+`
+
+type LifetimeTotalsRow struct {
+	InputTokens    int64 `json:"input_tokens"`
+	OutputTokens   int64 `json:"output_tokens"`
+	TotalTokens    int64 `json:"total_tokens"`
+	RuntimeSeconds int64 `json:"runtime_seconds"`
+	Sessions       int64 `json:"sessions"`
+	Runs           int64 `json:"runs"`
+}
+
+func (q *Queries) LifetimeTotals(ctx context.Context) (LifetimeTotalsRow, error) {
+	row := q.db.QueryRowContext(ctx, lifetimeTotals)
+	var i LifetimeTotalsRow
+	err := row.Scan(
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.TotalTokens,
+		&i.RuntimeSeconds,
+		&i.Sessions,
+		&i.Runs,
+	)
+	return i, err
+}
+
 const listFairShareUsage = `-- name: ListFairShareUsage :many
 SELECT
   project_id,

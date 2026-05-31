@@ -40,6 +40,7 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 		"SYMPHONY STATUS",
 		"Dashboard: http://localhost:4000",
 		"Agents: 1 running | 1 queued | 1 blocked | 1 completed",
+		"Throughput: 7 tps",
 		"Tokens: in 110 | out 220 | total 330",
 		"Budget: enabled current $12.50 | projected $0.75 | day max $50.00 | issue max $5.00",
 		"Rate Limits: codex-primary | primary 90/100 reset 60s | secondary 0/100 reset 30s | credits 0/1",
@@ -240,6 +241,11 @@ func testSnapshot() telemetry.Snapshot {
 			Output:         220,
 			Total:          330,
 			RuntimeSeconds: 725,
+		},
+		Throughput: telemetry.TokenThroughput{
+			TokensPerSecond: 7,
+			WindowSeconds:   60,
+			Tokens:          420,
 		},
 	}
 }

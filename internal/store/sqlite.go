@@ -306,6 +306,21 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 	return report, nil
 }
 
+func (s *sqliteStore) LifetimeTotals(ctx context.Context) (LifetimeTotals, error) {
+	row, err := s.queries.LifetimeTotals(ctx)
+	if err != nil {
+		return LifetimeTotals{}, fmt.Errorf("reading lifetime totals: %w", err)
+	}
+	return LifetimeTotals{
+		InputTokens:    row.InputTokens,
+		OutputTokens:   row.OutputTokens,
+		TotalTokens:    row.TotalTokens,
+		RuntimeSeconds: row.RuntimeSeconds,
+		Sessions:       row.Sessions,
+		Runs:           row.Runs,
+	}, nil
+}
+
 func (s *sqliteStore) DailyTokenSpend(ctx context.Context, day time.Time) (TokenSpend, error) {
 	date, err := dateString(day)
 	if err != nil {

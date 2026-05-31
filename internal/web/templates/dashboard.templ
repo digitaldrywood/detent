@@ -77,7 +77,7 @@ templ SnapshotView(data DashboardData) {
 		@metricCard("Queue", formatCount(queueCount(data.Snapshot)), "Waiting or retrying", "border-t-warning", "bg-warning")
 		@metricCard("Blocked", formatCount(blockedCount(data.Snapshot)), "Needs operator action", "border-t-danger", "bg-danger")
 		@metricCard("Completed", formatCount(completedCount(data.Snapshot)), "Finished sessions", "border-t-success", "bg-success")
-		@metricCard("Throughput", throughputRate(data.Snapshot), "Current completions/min", "border-t-accent", "bg-accent")
+		@metricCard("Throughput", throughputRate(data.Snapshot), "Rolling tokens/sec", "border-t-accent", "bg-accent")
 		@metricCard("Runtime", runtimeLabel(data.Snapshot), "Aggregate agent uptime", "border-t-success", "bg-success")
 	</section>
 	@agentActivityTimeline(data.Snapshot)
@@ -157,6 +157,7 @@ templ SnapshotView(data DashboardData) {
 			@budgetCard(data.Snapshot.Budget)
 			@rateLimitsCard(data.Snapshot.RateLimits)
 			@tokenCard(data)
+			@lifetimeCard(data.Snapshot.LifetimeTotals)
 		</aside>
 	</section>
 	<section class="grid gap-5 xl:grid-cols-2">
@@ -169,12 +170,12 @@ templ SnapshotView(data DashboardData) {
 templ throughputCard(data DashboardData) {
 	<section class="rounded-md border border-border bg-card p-5 shadow-sm">
 		<div class="flex items-start justify-between gap-3">
-			<h2 class="text-lg font-semibold text-foreground">Throughput trend</h2>
+			<h2 class="text-lg font-semibold text-foreground">Token throughput</h2>
 			<span class="rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ throughputRate(data.Snapshot) }</span>
 		</div>
 		<div class="mt-5 grid gap-2">
 			<div class="font-mono text-3xl font-semibold text-foreground">{ throughputRate(data.Snapshot) }</div>
-			<div class="text-sm text-muted-foreground">{ throughputWindowLabel() }</div>
+			<div class="text-sm text-muted-foreground">{ throughputWindowLabel(data.Snapshot) }</div>
 		</div>
 		<div class="mt-5">
 			if len(throughputTrendPoints(data.Snapshot)) == 0 {
@@ -183,6 +184,44 @@ templ throughputCard(data DashboardData) {
 				@LineAreaChart(throughputTrendChart(data))
 			}
 		</div>
+	</section>
+}
+
+templ lifetimeCard(totals telemetry.LifetimeTotals) {
+	<section class="rounded-md border border-border bg-card p-5 shadow-sm">
+		<div class="flex items-start justify-between gap-3">
+			<h2 class="text-lg font-semibold text-foreground">Lifetime totals</h2>
+			<span class="rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ lifetimeStatus(totals) }</span>
+		</div>
+		if !totals.Available {
+			<div class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-6 text-sm text-muted-foreground">
+				<p class="font-medium text-foreground">Lifetime totals unavailable.</p>
+				<p class="mt-1">{ lifetimeDegradedReason(totals) }</p>
+			</div>
+		} else {
+			<div class="mt-5 grid gap-3 text-sm">
+				<div class="flex items-center justify-between gap-4">
+					<span class="text-muted-foreground">Tokens</span>
+					<strong class="font-mono font-medium text-foreground">{ formatInt(totals.TotalTokens) }</strong>
+				</div>
+				<div class="flex items-center justify-between gap-4">
+					<span class="text-muted-foreground">Input / output</span>
+					<strong class="font-mono font-medium text-foreground">{ formatInt(totals.InputTokens) } / { formatInt(totals.OutputTokens) }</strong>
+				</div>
+				<div class="flex items-center justify-between gap-4">
+					<span class="text-muted-foreground">Sessions</span>
+					<strong class="font-mono font-medium text-foreground">{ lifetimeSessions(totals) }</strong>
+				</div>
+				<div class="flex items-center justify-between gap-4">
+					<span class="text-muted-foreground">Runtime</span>
+					<strong class="font-mono font-medium text-foreground">{ lifetimeRuntime(totals) }</strong>
+				</div>
+				<div class="flex items-center justify-between gap-4">
+					<span class="text-muted-foreground">Runs</span>
+					<strong class="font-mono font-medium text-foreground">{ lifetimeRuns(totals) }</strong>
+				</div>
+			</div>
+		}
 	</section>
 }
 

@@ -38,6 +38,7 @@ type StatsStore interface {
 	FinishSession(context.Context, int64, SessionFinish) error
 	RecordUsageEvent(context.Context, UsageEvent) (int64, error)
 	UsageReport(context.Context, UsageReportQuery) (UsageReport, error)
+	LifetimeTotals(context.Context) (LifetimeTotals, error)
 	DailyTokenSpend(context.Context, time.Time) (TokenSpend, error)
 	IssueTokenSpend(context.Context, IssueIdentity) (TokenSpend, error)
 }
@@ -180,6 +181,15 @@ type TokenSpend struct {
 	TotalTokens  int64
 	Sessions     int64
 	ByModel      []ModelTokenSpend
+}
+
+type LifetimeTotals struct {
+	InputTokens    int64
+	OutputTokens   int64
+	TotalTokens    int64
+	RuntimeSeconds int64
+	Sessions       int64
+	Runs           int64
 }
 
 type ModelTokenSpend struct {

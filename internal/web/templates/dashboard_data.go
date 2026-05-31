@@ -14,9 +14,8 @@ import (
 )
 
 const (
-	throughputRateWindow   = 5 * time.Minute
-	throughputTrendWindow  = 10 * time.Minute
-	throughputTrendBuckets = 10
+	throughputTrendWindow   = 10 * time.Minute
+	defaultThroughputWindow = time.Minute
 )
 
 type DashboardData struct {
@@ -671,20 +670,24 @@ func tokenTrendChart(snapshot telemetry.Snapshot) SplitSeriesChartData {
 
 func throughputTrendChart(data DashboardData) SeriesChartData {
 	return SeriesChartData{
-		Title:       "Throughput trend",
-		AriaLabel:   "Rolling throughput trend",
+		Title:       "Token throughput trend",
+		AriaLabel:   "Rolling token throughput trend",
 		Points:      throughputTrendPoints(data.Snapshot),
-		ValueSuffix: "completions/min",
+		ValueSuffix: "tps",
 		ColorClass:  "text-accent",
 	}
 }
 
 func throughputRate(snapshot telemetry.Snapshot) string {
-	return formatDecimal(currentThroughputPerMinute(snapshot)) + " completions/min"
+	return formatDecimal(snapshot.Throughput.TokensPerSecond) + " tps"
 }
 
-func throughputWindowLabel() string {
-	return "Last " + formatDurationWindow(throughputRateWindow) + " completions/min"
+func throughputWindowLabel(snapshot telemetry.Snapshot) string {
+	window := time.Duration(snapshot.Throughput.WindowSeconds) * time.Second
+	if window <= 0 {
+		window = defaultThroughputWindow
+	}
+	return "Last " + formatDurationWindow(window) + " token throughput"
 }
 
 func runtimeLabel(snapshot telemetry.Snapshot) string {
@@ -699,85 +702,72 @@ func tokenRate(snapshot telemetry.Snapshot) string {
 	return formatInt(perMinute) + " tokens/min"
 }
 
-func currentThroughputPerMinute(snapshot telemetry.Snapshot) float64 {
-	now, ok := throughputNow(snapshot)
-	if !ok {
-		return 0
+func lifetimeStatus(totals telemetry.LifetimeTotals) string {
+	if totals.Available {
+		return "available"
 	}
+	return "unavailable"
+}
 
-	windowStart := now.Add(-throughputRateWindow)
-	completed := 0
-	for _, entry := range snapshot.Completed {
-		if completedWithin(entry.CompletedAt, windowStart, now) {
-			completed++
-		}
+func lifetimeDegradedReason(totals telemetry.LifetimeTotals) string {
+	if strings.TrimSpace(totals.DegradedReason) != "" {
+		return totals.DegradedReason
 	}
-	return float64(completed) / throughputRateWindow.Minutes()
+	return "runtime store unavailable"
+}
+
+func lifetimeRuntime(totals telemetry.LifetimeTotals) string {
+	return formatDuration(float64(totals.RuntimeSeconds))
+}
+
+func lifetimeSessions(totals telemetry.LifetimeTotals) string {
+	return formatInt(totals.Sessions)
+}
+
+func lifetimeRuns(totals telemetry.LifetimeTotals) string {
+	return formatInt(totals.Runs)
 }
 
 func throughputTrendPoints(snapshot telemetry.Snapshot) []webchart.Point {
-	now, ok := throughputNow(snapshot)
-	if !ok {
+	points := tokenTrendPoints(snapshot)
+	if len(points) < 2 {
 		return nil
 	}
 
-	bucketDuration := throughputTrendWindow / throughputTrendBuckets
-	activeBucketStart := now.Truncate(bucketDuration)
-	windowStart := activeBucketStart.Add(-bucketDuration * time.Duration(throughputTrendBuckets-1))
-	windowEnd := activeBucketStart.Add(bucketDuration)
-	buckets := make([]int, throughputTrendBuckets)
-
-	total := 0
-	for _, entry := range snapshot.Completed {
-		completedAt := entry.CompletedAt.UTC()
-		if completedAt.IsZero() || completedAt.After(now) || completedAt.Before(windowStart) || !completedAt.Before(windowEnd) {
+	latest := points[len(points)-1].At.UTC()
+	windowStart := latest.Add(-throughputTrendWindow)
+	chartPoints := make([]webchart.Point, 0, len(points)-1)
+	for index := 1; index < len(points); index++ {
+		previous := points[index-1]
+		current := points[index]
+		if current.At.IsZero() || previous.At.IsZero() || current.At.Before(windowStart) {
 			continue
 		}
-		index := int(completedAt.Sub(windowStart) / bucketDuration)
-		if index < 0 || index >= len(buckets) {
+		elapsed := current.At.Sub(previous.At).Seconds()
+		if elapsed <= 0 {
 			continue
 		}
-		buckets[index]++
-		total++
-	}
-	if total == 0 {
-		return nil
-	}
-
-	points := make([]webchart.Point, 0, len(buckets))
-	for index, count := range buckets {
-		label := windowStart.Add(time.Duration(index) * bucketDuration).Format("15:04")
-		points = append(points, webchart.Point{
-			Label: label,
-			Value: float64(count) / bucketDuration.Minutes(),
+		tokens := current.Total - previous.Total
+		if tokens <= 0 {
+			continue
+		}
+		chartPoints = append(chartPoints, webchart.Point{
+			Label: throughputTrendLabel(current.At),
+			Value: float64(tokens) / elapsed,
 		})
 	}
-	return points
+	return chartPoints
 }
 
-func throughputNow(snapshot telemetry.Snapshot) (time.Time, bool) {
-	if !snapshot.GeneratedAt.IsZero() {
-		return snapshot.GeneratedAt.UTC(), true
+func throughputTrendLabel(at time.Time) string {
+	if at.IsZero() {
+		return "Latest"
 	}
-
-	var latest time.Time
-	for _, entry := range snapshot.Completed {
-		if entry.CompletedAt.After(latest) {
-			latest = entry.CompletedAt
-		}
+	at = at.UTC()
+	if at.Second() == 0 {
+		return at.Format("15:04")
 	}
-	if latest.IsZero() {
-		return time.Time{}, false
-	}
-	return latest.UTC(), true
-}
-
-func completedWithin(completedAt time.Time, start time.Time, end time.Time) bool {
-	if completedAt.IsZero() {
-		return false
-	}
-	completedAt = completedAt.UTC()
-	return !completedAt.Before(start) && !completedAt.After(end)
+	return at.Format("15:04:05")
 }
 
 func formatDuration(seconds float64) string {

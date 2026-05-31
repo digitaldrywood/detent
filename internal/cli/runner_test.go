@@ -98,7 +98,7 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		publishSnapshots(ctx, registry, snapshotHub, 5*time.Millisecond, func() time.Time { return now })
+		publishSnapshots(ctx, registry, snapshotHub, nil, 5*time.Millisecond, func() time.Time { return now })
 	}()
 
 	var (
@@ -147,6 +147,55 @@ func TestTokenTrendRecorderAppliesRollingWindow(t *testing.T) {
 	}
 	if got.TokenTrend[1].Input != 30 || got.TokenTrend[1].Output != 3 || got.TokenTrend[1].Total != 33 {
 		t.Fatalf("TokenTrend[1] = %#v, want latest totals", got.TokenTrend[1])
+	}
+}
+
+func TestTokenTrendRecorderCalculatesRollingThroughput(t *testing.T) {
+	t.Parallel()
+
+	recorder := newTokenTrendRecorder(10)
+	start := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	snapshots := []telemetry.Snapshot{
+		{GeneratedAt: start, Tokens: telemetry.Tokens{Input: 90, Output: 10, Total: 100}},
+		{GeneratedAt: start.Add(10 * time.Second), Tokens: telemetry.Tokens{Input: 225, Output: 25, Total: 250}},
+		{GeneratedAt: start.Add(70 * time.Second), Tokens: telemetry.Tokens{Input: 279, Output: 31, Total: 310}},
+	}
+
+	var got telemetry.Snapshot
+	for _, snapshot := range snapshots {
+		got = recorder.apply(snapshot)
+	}
+
+	if got.Throughput.TokensPerSecond != 1 {
+		t.Fatalf("Throughput.TokensPerSecond = %v, want 1", got.Throughput.TokensPerSecond)
+	}
+	if got.Throughput.WindowSeconds != 60 {
+		t.Fatalf("Throughput.WindowSeconds = %d, want 60", got.Throughput.WindowSeconds)
+	}
+	if got.Throughput.Tokens != 60 {
+		t.Fatalf("Throughput.Tokens = %d, want 60", got.Throughput.Tokens)
+	}
+}
+
+func TestTokenTrendRecorderResetsThroughputWhenTotalsDecrease(t *testing.T) {
+	t.Parallel()
+
+	recorder := newTokenTrendRecorder(10)
+	start := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	_ = recorder.apply(telemetry.Snapshot{
+		GeneratedAt: start,
+		Tokens:      telemetry.Tokens{Input: 90, Output: 10, Total: 100},
+	})
+	got := recorder.apply(telemetry.Snapshot{
+		GeneratedAt: start.Add(10 * time.Second),
+		Tokens:      telemetry.Tokens{Input: 40, Output: 10, Total: 50},
+	})
+
+	if len(got.TokenTrend) != 1 {
+		t.Fatalf("TokenTrend len = %d, want 1 after reset", len(got.TokenTrend))
+	}
+	if got.Throughput.TokensPerSecond != 0 || got.Throughput.Tokens != 0 {
+		t.Fatalf("Throughput = %#v, want reset zero throughput", got.Throughput)
 	}
 }
 

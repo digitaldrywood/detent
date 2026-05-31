@@ -3,16 +3,18 @@ package telemetry
 import "time"
 
 type Snapshot struct {
-	GeneratedAt time.Time         `json:"generated_at"`
-	Counts      Counts            `json:"counts"`
-	Running     []Running         `json:"running"`
-	Queue       []Queued          `json:"queue"`
-	Blocked     []Blocked         `json:"blocked"`
-	Completed   []Completed       `json:"completed"`
-	Budget      Budget            `json:"budget"`
-	RateLimits  *RateLimits       `json:"rate_limits"`
-	Tokens      Tokens            `json:"tokens"`
-	TokenTrend  []TokenTrendPoint `json:"token_trend,omitempty"`
+	GeneratedAt    time.Time         `json:"generated_at"`
+	Counts         Counts            `json:"counts"`
+	Running        []Running         `json:"running"`
+	Queue          []Queued          `json:"queue"`
+	Blocked        []Blocked         `json:"blocked"`
+	Completed      []Completed       `json:"completed"`
+	Budget         Budget            `json:"budget"`
+	RateLimits     *RateLimits       `json:"rate_limits"`
+	Tokens         Tokens            `json:"tokens"`
+	Throughput     TokenThroughput   `json:"throughput"`
+	LifetimeTotals LifetimeTotals    `json:"lifetime_totals"`
+	TokenTrend     []TokenTrendPoint `json:"token_trend,omitempty"`
 }
 
 type Counts struct {
@@ -135,6 +137,23 @@ type Tokens struct {
 	Output         int64   `json:"output_tokens"`
 	Total          int64   `json:"total_tokens"`
 	RuntimeSeconds float64 `json:"seconds_running,omitempty"`
+}
+
+type TokenThroughput struct {
+	TokensPerSecond float64 `json:"tokens_per_second"`
+	WindowSeconds   int64   `json:"window_seconds"`
+	Tokens          int64   `json:"tokens"`
+}
+
+type LifetimeTotals struct {
+	Available      bool   `json:"available"`
+	DegradedReason string `json:"degraded_reason,omitempty"`
+	InputTokens    int64  `json:"input_tokens"`
+	OutputTokens   int64  `json:"output_tokens"`
+	TotalTokens    int64  `json:"total_tokens"`
+	RuntimeSeconds int64  `json:"runtime_seconds"`
+	Sessions       int64  `json:"sessions"`
+	Runs           int64  `json:"runs"`
 }
 
 type TokenTrendPoint struct {

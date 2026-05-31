@@ -256,6 +256,17 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 			if urlSpend.TotalTokens != 125 {
 				t.Fatalf("IssueTokenSpend(url).TotalTokens = %d, want 125", urlSpend.TotalTokens)
 			}
+
+			lifetime, err := backend.LifetimeTotals(ctx)
+			if err != nil {
+				t.Fatalf("LifetimeTotals() error = %v", err)
+			}
+			if lifetime.InputTokens != 100 || lifetime.OutputTokens != 25 || lifetime.TotalTokens != 125 || lifetime.RuntimeSeconds != 240 {
+				t.Fatalf("LifetimeTotals() token/runtime totals = %#v", lifetime)
+			}
+			if lifetime.Sessions != 1 || lifetime.Runs != 1 {
+				t.Fatalf("LifetimeTotals() sessions/runs = %#v, want 1/1", lifetime)
+			}
 		})
 	}
 }
