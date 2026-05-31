@@ -128,8 +128,8 @@ func TestManagerLiveAddRemovePauseUnpause(t *testing.T) {
 	}
 	unpaused := receiveEvent(t, sub.C())
 	restarted := receiveEvent(t, sub.C())
-	if unpaused.Kind != project.EventUnpaused || restarted.Kind != project.EventStarted {
-		t.Fatalf("unpause events = %#v %#v, want unpaused then started", unpaused, restarted)
+	if unpaused.Kind != project.EventStarted || restarted.Kind != project.EventUnpaused {
+		t.Fatalf("unpause events = %#v %#v, want started then unpaused", unpaused, restarted)
 	}
 	if got.Paused() {
 		t.Fatal("Paused() = true, want false")

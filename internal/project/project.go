@@ -270,10 +270,12 @@ func (p *Project) Pause(ctx context.Context) error {
 		p.mu.Unlock()
 		return nil
 	}
-	p.cfg.Paused = true
 	cancel := p.cancel
 	done := p.done
 	wasRunning := done != nil
+	if !wasRunning {
+		p.cfg.Paused = true
+	}
 	p.mu.Unlock()
 
 	if wasRunning {
@@ -284,7 +286,8 @@ func (p *Project) Pause(ctx context.Context) error {
 	}
 
 	p.mu.Lock()
-	if wasRunning && p.cfg.Paused && p.done == nil {
+	if wasRunning && p.done == nil {
+		p.cfg.Paused = true
 		p.started = false
 		p.orchestrator = nil
 	}
@@ -312,15 +315,22 @@ func (p *Project) Unpause(ctx context.Context) error {
 	running := p.done != nil
 	p.mu.Unlock()
 
+	if !running {
+		if err := p.Start(ctx); err != nil {
+			p.mu.Lock()
+			if p.done == nil {
+				p.cfg.Paused = true
+			}
+			p.mu.Unlock()
+			return err
+		}
+	}
 	p.publish(Event{
 		ProjectID: p.id,
 		Kind:      EventUnpaused,
 		At:        time.Now(),
 	})
-	if running {
-		return nil
-	}
-	return p.Start(ctx)
+	return nil
 }
 
 func (p *Project) Stop(ctx context.Context) error {
