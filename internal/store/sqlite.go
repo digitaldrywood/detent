@@ -198,6 +198,37 @@ func (s *sqliteStore) DailyTokenSpend(ctx context.Context, day time.Time) (Token
 	return spend, nil
 }
 
+func (s *sqliteStore) IssueTokenSpend(ctx context.Context, issueID string) (TokenSpend, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return TokenSpend{ByModel: []ModelTokenSpend{}}, nil
+	}
+
+	rows, err := s.queries.IssueTokenSpend(ctx, sql.NullString{String: issueID, Valid: true})
+	if err != nil {
+		return TokenSpend{}, fmt.Errorf("reading issue token spend: %w", err)
+	}
+
+	spend := TokenSpend{
+		ByModel: make([]ModelTokenSpend, 0, len(rows)),
+	}
+	for _, row := range rows {
+		modelSpend := ModelTokenSpend{
+			Model:        row.Model,
+			InputTokens:  row.InputTokens,
+			OutputTokens: row.OutputTokens,
+			TotalTokens:  row.TotalTokens,
+			Sessions:     row.Sessions,
+		}
+		spend.InputTokens += modelSpend.InputTokens
+		spend.OutputTokens += modelSpend.OutputTokens
+		spend.TotalTokens += modelSpend.TotalTokens
+		spend.Sessions += modelSpend.Sessions
+		spend.ByModel = append(spend.ByModel, modelSpend)
+	}
+	return spend, nil
+}
+
 func configureSQLite(ctx context.Context, db *sql.DB, busyTimeoutMillis int64) error {
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", busyTimeoutMillis)); err != nil {
 		return fmt.Errorf("setting sqlite busy_timeout: %w", err)

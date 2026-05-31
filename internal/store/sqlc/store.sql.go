@@ -281,6 +281,56 @@ func (q *Queries) GetSymphonyRun(ctx context.Context, id int64) (SymphonyRun, er
 	return i, err
 }
 
+const issueTokenSpend = `-- name: IssueTokenSpend :many
+SELECT
+  CAST(COALESCE(model, '') AS TEXT) AS model,
+  CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COUNT(*) AS INTEGER) AS sessions
+FROM codex_sessions
+WHERE issue_id = ?
+GROUP BY COALESCE(model, '')
+ORDER BY COALESCE(model, '')
+`
+
+type IssueTokenSpendRow struct {
+	Model        string `json:"model"`
+	InputTokens  int64  `json:"input_tokens"`
+	OutputTokens int64  `json:"output_tokens"`
+	TotalTokens  int64  `json:"total_tokens"`
+	Sessions     int64  `json:"sessions"`
+}
+
+func (q *Queries) IssueTokenSpend(ctx context.Context, issueID sql.NullString) ([]IssueTokenSpendRow, error) {
+	rows, err := q.db.QueryContext(ctx, issueTokenSpend, issueID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []IssueTokenSpendRow{}
+	for rows.Next() {
+		var i IssueTokenSpendRow
+		if err := rows.Scan(
+			&i.Model,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.TotalTokens,
+			&i.Sessions,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
 SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model
 FROM codex_sessions

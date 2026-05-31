@@ -229,6 +229,17 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 			if len(spend.ByModel) != 1 || spend.ByModel[0].Model != "gpt-5" {
 				t.Fatalf("DailyTokenSpend().ByModel = %#v", spend.ByModel)
 			}
+
+			issueSpend, err := backend.IssueTokenSpend(ctx, "I_kwDOSskuwc8AAAABD42c3Q")
+			if err != nil {
+				t.Fatalf("IssueTokenSpend() error = %v", err)
+			}
+			if issueSpend.InputTokens != 100 || issueSpend.OutputTokens != 25 || issueSpend.TotalTokens != 125 || issueSpend.Sessions != 1 {
+				t.Fatalf("IssueTokenSpend() = %#v", issueSpend)
+			}
+			if len(issueSpend.ByModel) != 1 || issueSpend.ByModel[0].Model != "gpt-5" {
+				t.Fatalf("IssueTokenSpend().ByModel = %#v", issueSpend.ByModel)
+			}
 		})
 	}
 }
