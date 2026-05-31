@@ -198,13 +198,17 @@ func (s *sqliteStore) DailyTokenSpend(ctx context.Context, day time.Time) (Token
 	return spend, nil
 }
 
-func (s *sqliteStore) IssueTokenSpend(ctx context.Context, issueID string) (TokenSpend, error) {
-	issueID = strings.TrimSpace(issueID)
-	if issueID == "" {
+func (s *sqliteStore) IssueTokenSpend(ctx context.Context, identity IssueIdentity) (TokenSpend, error) {
+	identity = normalizeIssueIdentity(identity)
+	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
 		return TokenSpend{ByModel: []ModelTokenSpend{}}, nil
 	}
 
-	rows, err := s.queries.IssueTokenSpend(ctx, sql.NullString{String: issueID, Valid: true})
+	rows, err := s.queries.IssueTokenSpend(ctx, sqlc.IssueTokenSpendParams{
+		IssueID:    nullString(identity.IssueID),
+		Identifier: nullString(identity.Identifier),
+		IssueUrl:   nullString(identity.IssueURL),
+	})
 	if err != nil {
 		return TokenSpend{}, fmt.Errorf("reading issue token spend: %w", err)
 	}
@@ -227,6 +231,14 @@ func (s *sqliteStore) IssueTokenSpend(ctx context.Context, issueID string) (Toke
 		spend.ByModel = append(spend.ByModel, modelSpend)
 	}
 	return spend, nil
+}
+
+func normalizeIssueIdentity(identity IssueIdentity) IssueIdentity {
+	return IssueIdentity{
+		IssueID:    strings.TrimSpace(identity.IssueID),
+		Identifier: strings.TrimSpace(identity.Identifier),
+		IssueURL:   strings.TrimSpace(identity.IssueURL),
+	}
 }
 
 func configureSQLite(ctx context.Context, db *sql.DB, busyTimeoutMillis int64) error {

@@ -289,10 +289,18 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COUNT(*) AS INTEGER) AS sessions
 FROM codex_sessions
-WHERE issue_id = ?
+WHERE issue_id = ?1
+   OR identifier = ?2
+   OR issue_url = ?3
 GROUP BY COALESCE(model, '')
 ORDER BY COALESCE(model, '')
 `
+
+type IssueTokenSpendParams struct {
+	IssueID    sql.NullString `json:"issue_id"`
+	Identifier sql.NullString `json:"identifier"`
+	IssueUrl   sql.NullString `json:"issue_url"`
+}
 
 type IssueTokenSpendRow struct {
 	Model        string `json:"model"`
@@ -302,8 +310,8 @@ type IssueTokenSpendRow struct {
 	Sessions     int64  `json:"sessions"`
 }
 
-func (q *Queries) IssueTokenSpend(ctx context.Context, issueID sql.NullString) ([]IssueTokenSpendRow, error) {
-	rows, err := q.db.QueryContext(ctx, issueTokenSpend, issueID)
+func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams) ([]IssueTokenSpendRow, error) {
+	rows, err := q.db.QueryContext(ctx, issueTokenSpend, arg.IssueID, arg.Identifier, arg.IssueUrl)
 	if err != nil {
 		return nil, err
 	}

@@ -31,7 +31,7 @@ type Config struct {
 
 type SpendStore interface {
 	DailyTokenSpend(context.Context, time.Time) (store.TokenSpend, error)
-	IssueTokenSpend(context.Context, string) (store.TokenSpend, error)
+	IssueTokenSpend(context.Context, store.IssueIdentity) (store.TokenSpend, error)
 }
 
 type Checker struct {
@@ -149,11 +149,16 @@ func (c *Checker) CheckDispatch(ctx context.Context, req DispatchRequest) (Decis
 
 	if capActive(c.cfg.PerIssueMaxUSD) {
 		currentSpend := 0.0
-		if strings.TrimSpace(req.IssueID) != "" {
+		identity := store.IssueIdentity{
+			IssueID:    req.IssueID,
+			Identifier: req.Identifier,
+			IssueURL:   req.IssueURL,
+		}
+		if issueIdentityPresent(identity) {
 			if missingSpendStore(c.spend) {
 				return Decision{}, ErrMissingSpendStore
 			}
-			issueSpend, err := c.spend.IssueTokenSpend(ctx, req.IssueID)
+			issueSpend, err := c.spend.IssueTokenSpend(ctx, identity)
 			if err != nil {
 				return Decision{}, fmt.Errorf("issue token spend: %w", err)
 			}
@@ -344,6 +349,12 @@ func tokenCostUSD(tokens TokenEstimate, pricing ModelPricing) float64 {
 
 func capActive(cap float64) bool {
 	return cap > 0
+}
+
+func issueIdentityPresent(identity store.IssueIdentity) bool {
+	return strings.TrimSpace(identity.IssueID) != "" ||
+		strings.TrimSpace(identity.Identifier) != "" ||
+		strings.TrimSpace(identity.IssueURL) != ""
 }
 
 func missingSpendStore(spend SpendStore) bool {

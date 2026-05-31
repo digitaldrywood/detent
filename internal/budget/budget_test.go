@@ -85,7 +85,7 @@ func TestCheckerCheckDispatch(t *testing.T) {
 			},
 			spend: &fakeSpendStore{
 				issues: map[string]store.TokenSpend{
-					"issue-expensive": {
+					"issue-expensive|MT-EXPENSIVE|https://example.com/issue-expensive": {
 						ByModel: []store.ModelTokenSpend{
 							{Model: "gpt-test", InputTokens: 45},
 						},
@@ -93,10 +93,38 @@ func TestCheckerCheckDispatch(t *testing.T) {
 				},
 			},
 			req: DispatchRequest{
-				IssueID:  "issue-expensive",
-				Model:    "gpt-test",
-				Now:      now,
-				Estimate: TokenEstimate{InputTokens: 10},
+				IssueID:    "issue-expensive",
+				Identifier: "MT-EXPENSIVE",
+				IssueURL:   "https://example.com/issue-expensive",
+				Model:      "gpt-test",
+				Now:        now,
+				Estimate:   TokenEstimate{InputTokens: 10},
+			},
+			wantCode:   ReasonPerIssueMaxUSD,
+			wantSpend:  0.55,
+			wantMax:    0.5,
+			wantIssues: 1,
+		},
+		{
+			name: "per issue cap uses identifier when issue id is missing",
+			cfg: Config{
+				Enabled:        true,
+				PerIssueMaxUSD: 0.5,
+			},
+			spend: &fakeSpendStore{
+				issues: map[string]store.TokenSpend{
+					"|MT-FALLBACK|": {
+						ByModel: []store.ModelTokenSpend{
+							{Model: "gpt-test", InputTokens: 45},
+						},
+					},
+				},
+			},
+			req: DispatchRequest{
+				Identifier: "MT-FALLBACK",
+				Model:      "gpt-test",
+				Now:        now,
+				Estimate:   TokenEstimate{InputTokens: 10},
 			},
 			wantCode:   ReasonPerIssueMaxUSD,
 			wantSpend:  0.55,
@@ -326,16 +354,16 @@ func (s *fakeSpendStore) DailyTokenSpend(_ context.Context, day time.Time) (stor
 	return s.daily, nil
 }
 
-func (s *fakeSpendStore) IssueTokenSpend(_ context.Context, issueID string) (store.TokenSpend, error) {
+func (s *fakeSpendStore) IssueTokenSpend(_ context.Context, identity store.IssueIdentity) (store.TokenSpend, error) {
 	s.issueCalls++
-	s.issueLookups = append(s.issueLookups, issueID)
+	s.issueLookups = append(s.issueLookups, issueKey(identity))
 	if s.issueErr != nil {
 		return store.TokenSpend{}, s.issueErr
 	}
 	if s.issues == nil {
 		return store.TokenSpend{}, nil
 	}
-	return s.issues[issueID], nil
+	return s.issues[issueKey(identity)], nil
 }
 
 func assertCallCounts(t *testing.T, spend *fakeSpendStore, wantDaily int, wantIssues int) {
@@ -360,4 +388,8 @@ func assertInDelta(t *testing.T, got float64, want float64) {
 	if delta > tolerance {
 		t.Fatalf("value = %.12f, want %.12f", got, want)
 	}
+}
+
+func issueKey(identity store.IssueIdentity) string {
+	return identity.IssueID + "|" + identity.Identifier + "|" + identity.IssueURL
 }
