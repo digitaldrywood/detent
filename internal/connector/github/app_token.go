@@ -236,7 +236,7 @@ func installationTokenURL(endpoint string, installationID string) (string, error
 		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
 	}
 
-	basePath := parsed.Path
+	basePath := strings.TrimRight(parsed.Path, "/")
 	if parsed.Host == "api.github.com" {
 		basePath = ""
 	} else if strings.HasSuffix(basePath, "/api/graphql") {

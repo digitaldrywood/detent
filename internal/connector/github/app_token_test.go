@@ -173,7 +173,7 @@ func TestInstallationTokenSourceLoadsPrivateKeyPathAndGHESURL(t *testing.T) {
 	t.Cleanup(server.Close)
 
 	source, err := NewInstallationTokenSource(InstallationTokenConfig{
-		Endpoint:       server.URL + "/api/graphql",
+		Endpoint:       server.URL + "/api/graphql/",
 		AppID:          "123",
 		InstallationID: "987",
 		PrivateKeyPath: "$PRIVATE_KEY_PATH",
