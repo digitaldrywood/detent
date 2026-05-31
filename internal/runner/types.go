@@ -18,10 +18,11 @@ type Backend interface {
 }
 
 type RunRequest struct {
-	Issue      connector.Issue
-	Attempt    int
-	StartedAt  time.Time
-	WorkerHost string
+	Issue         connector.Issue
+	Attempt       int
+	StartedAt     time.Time
+	WorkerHost    string
+	OnUsageUpdate UsageUpdateHandler
 }
 
 type RunResult struct {
@@ -30,6 +31,14 @@ type RunResult struct {
 	DiffStats     DiffStats
 	RateLimits    *telemetry.RateLimits
 	BudgetRefusal *BudgetRefusal
+}
+
+type UsageUpdateHandler func(UsageUpdate) error
+
+type UsageUpdate struct {
+	Tokens     CodexTotals
+	TurnCount  int
+	RateLimits *telemetry.RateLimits
 }
 
 type BudgetRefusal struct {

@@ -57,7 +57,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		result: codex.RunTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "thread-1-turn-1"},
 	}
 	sessionStore := &fakeSessionStore{sessionID: 42}
-	now := newFakeClock(startedAt, completedAt)
+	now := newFakeClock(startedAt, startedAt.Add(time.Second), completedAt)
 
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
@@ -89,6 +89,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
+	var usageUpdates []UsageUpdate
 	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
 			ID:            "issue-22",
@@ -100,6 +101,10 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		},
 		Attempt:   2,
 		StartedAt: startedAt,
+		OnUsageUpdate: func(update UsageUpdate) error {
+			usageUpdates = append(usageUpdates, update)
+			return nil
+		},
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -110,6 +115,15 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if result.Tokens.TotalTokens != 125 || result.Tokens.RuntimeSeconds != 2 {
 		t.Fatalf("Tokens = %#v, want total 125 and runtime 2s", result.Tokens)
+	}
+	if len(usageUpdates) != 1 {
+		t.Fatalf("usage updates len = %d, want 1", len(usageUpdates))
+	}
+	if usageUpdates[0].TurnCount != 1 || usageUpdates[0].Tokens.TotalTokens != 125 {
+		t.Fatalf("usage update = %#v, want 1 turn and 125 tokens", usageUpdates[0])
+	}
+	if usageUpdates[0].Tokens.RuntimeSeconds != 1 {
+		t.Fatalf("usage update runtime = %v, want 1", usageUpdates[0].Tokens.RuntimeSeconds)
 	}
 	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 {
 		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed", result.DiffStats)

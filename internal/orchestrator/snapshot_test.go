@@ -51,11 +51,15 @@ func TestStateSnapshotPopulated(t *testing.T) {
 		Attempt:    1,
 		StartedAt:  startedAt,
 		WorkerHost: "host-b",
+		TurnCount:  2,
+		Tokens:     CodexTotals{InputTokens: 20, OutputTokens: 8, TotalTokens: 28, RuntimeSeconds: 30},
 	}
 	state.Running["i-1"] = Running{
 		Issue:     connector.Issue{ID: "i-1", Identifier: "ISS-1", Title: "One", State: "In Progress"},
 		Attempt:   0,
 		StartedAt: startedAt,
+		TurnCount: 1,
+		Tokens:    CodexTotals{InputTokens: 2, OutputTokens: 1, TotalTokens: 3, RuntimeSeconds: 15},
 	}
 	state.Retry["i-3"] = Retry{
 		Issue:      connector.Issue{ID: "i-3", Identifier: "ISS-3", Title: "Three", State: "Todo"},
@@ -102,6 +106,12 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	if !snapshot.Running[0].StartedAt.Equal(startedAt) {
 		t.Fatalf("Running[0].StartedAt = %v, want %v", snapshot.Running[0].StartedAt, startedAt)
 	}
+	if snapshot.Running[0].TurnCount != 1 || snapshot.Running[0].Tokens.Total != 3 {
+		t.Fatalf("Running[0] live usage = turns %d tokens %#v, want 1 turn and 3 tokens", snapshot.Running[0].TurnCount, snapshot.Running[0].Tokens)
+	}
+	if snapshot.Running[1].RuntimeSeconds != 30 {
+		t.Fatalf("Running[1].RuntimeSeconds = %v, want 30", snapshot.Running[1].RuntimeSeconds)
+	}
 
 	if len(snapshot.Queue) != 1 {
 		t.Fatalf("Queue len = %d, want 1", len(snapshot.Queue))
@@ -139,7 +149,7 @@ func TestStateSnapshotPopulated(t *testing.T) {
 		t.Fatalf("Completed[0].Tokens.Total = %d, want 15", c.Tokens.Total)
 	}
 
-	wantTokens := telemetry.Tokens{Input: 100, Output: 50, Total: 150, RuntimeSeconds: 120}
+	wantTokens := telemetry.Tokens{Input: 122, Output: 59, Total: 181, RuntimeSeconds: 165}
 	if snapshot.Tokens != wantTokens {
 		t.Fatalf("Tokens = %#v, want %#v", snapshot.Tokens, wantTokens)
 	}

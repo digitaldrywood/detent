@@ -26,6 +26,8 @@ type Running struct {
 	Attempt    int
 	StartedAt  time.Time
 	WorkerHost string
+	TurnCount  int
+	Tokens     CodexTotals
 }
 
 type Claimed struct {

@@ -111,6 +111,46 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 	})
 }
 
+func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-live-usage", "digitaldrywood/symphony#115", "In Progress")
+	tracker := newFakeConnector(issue)
+	runner := newUsageStreamingRunner(orchestrator.UsageUpdate{
+		TurnCount: 1,
+		Tokens: orchestrator.CodexTotals{
+			InputTokens:    40,
+			OutputTokens:   12,
+			TotalTokens:    52,
+			RuntimeSeconds: 3.5,
+		},
+	})
+
+	orch := newTestOrchestrator(t, tracker, runner)
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	receiveRunRequest(t, runner.started)
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		running, ok := state.Running[issue.ID]
+		return ok && running.Tokens.TotalTokens == 52 && running.TurnCount == 1
+	})
+
+	running := state.Running[issue.ID]
+	if running.Tokens.InputTokens != 40 || running.Tokens.OutputTokens != 12 {
+		t.Fatalf("Running[%q].Tokens = %#v, want input 40 output 12", issue.ID, running.Tokens)
+	}
+	if running.Tokens.RuntimeSeconds != 3.5 {
+		t.Fatalf("Running[%q].Tokens.RuntimeSeconds = %v, want 3.5", issue.ID, running.Tokens.RuntimeSeconds)
+	}
+	if state.CodexTotals.TotalTokens != 0 {
+		t.Fatalf("CodexTotals.TotalTokens = %d, want completed totals only", state.CodexTotals.TotalTokens)
+	}
+
+	close(runner.release)
+}
+
 func TestUpdateConfigAppliesBeforeNextTick(t *testing.T) {
 	t.Parallel()
 
@@ -720,6 +760,42 @@ func (r *blockingRunner) Run(ctx context.Context, request orchestrator.RunReques
 	select {
 	case <-r.release:
 		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}, nil
+	case <-ctx.Done():
+		return orchestrator.RunResult{}, ctx.Err()
+	}
+}
+
+type usageStreamingRunner struct {
+	started chan orchestrator.RunRequest
+	release chan struct{}
+	update  orchestrator.UsageUpdate
+}
+
+func newUsageStreamingRunner(update orchestrator.UsageUpdate) *usageStreamingRunner {
+	return &usageStreamingRunner{
+		started: make(chan orchestrator.RunRequest, 1),
+		release: make(chan struct{}),
+		update:  update,
+	}
+}
+
+func (r *usageStreamingRunner) Run(ctx context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
+	select {
+	case r.started <- request:
+	case <-ctx.Done():
+		return orchestrator.RunResult{}, ctx.Err()
+	}
+
+	if request.OnUsageUpdate == nil {
+		return orchestrator.RunResult{}, errors.New("missing usage update callback")
+	}
+	if err := request.OnUsageUpdate(r.update); err != nil {
+		return orchestrator.RunResult{}, err
+	}
+
+	select {
+	case <-r.release:
+		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted, Tokens: r.update.Tokens}, nil
 	case <-ctx.Done():
 		return orchestrator.RunResult{}, ctx.Err()
 	}
