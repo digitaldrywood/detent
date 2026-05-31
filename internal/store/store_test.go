@@ -157,6 +157,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				Identifier: "digitaldrywood/symphony-go#6",
 				IssueURL:   "https://github.com/digitaldrywood/symphony-go/issues/6",
 				StartedAt:  time.Date(2026, 5, 30, 12, 1, 0, 0, time.UTC),
+				Model:      "gpt-5",
 			})
 			if err != nil {
 				t.Fatalf("StartSession() error = %v", err)
@@ -170,7 +171,6 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				TotalTokens:    125,
 				RuntimeSeconds: 240,
 				FinalState:     "Human Review",
-				Model:          "gpt-5",
 			}); err != nil {
 				t.Fatalf("FinishSession() error = %v", err)
 			}
@@ -214,6 +214,9 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 			}
 			if session.FinalState.String != "Human Review" {
 				t.Fatalf("session final_state = %q, want Human Review", session.FinalState.String)
+			}
+			if session.Model.String != "gpt-5" {
+				t.Fatalf("session model = %q, want gpt-5", session.Model.String)
 			}
 
 			spend, err := backend.DailyTokenSpend(ctx, time.Date(2026, 5, 30, 0, 0, 0, 0, time.UTC))

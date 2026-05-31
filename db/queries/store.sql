@@ -61,7 +61,7 @@ SET completed_at = ?,
     total_tokens = ?,
     runtime_seconds = ?,
     final_state = ?,
-    model = ?
+    model = COALESCE(?, model)
 WHERE id = ?;
 
 -- name: ListRecentCodexSessions :many
