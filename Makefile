@@ -26,7 +26,7 @@ dev:
 		mv tmp/air-combined.log tmp/air-combined-$$(date +%Y%m%d-%H%M%S).log; \
 	fi
 	@ls -t tmp/air-combined-*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
-	@air 2>&1 | tee tmp/air-combined.log
+	@SYMPHONY_ENV=dev SYMPHONY_LOG_LEVEL=debug air 2>&1 | tee tmp/air-combined.log
 
 generate:
 	@go generate ./...
@@ -116,7 +116,7 @@ clean:
 
 help:
 	@echo "Available targets:"
-	@echo "  dev          Run Air with combined log rotation"
+	@echo "  dev          Run Air with dev logging and combined log rotation"
 	@echo "  generate     Run go generate, templ, sqlc, and Tailwind"
 	@echo "  css          Build Tailwind CSS"
 	@echo "  css-watch    Watch and rebuild Tailwind CSS"
