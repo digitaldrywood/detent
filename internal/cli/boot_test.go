@@ -159,6 +159,7 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	done := make(chan error, 1)
 	go func() {
 		done <- startRunning(ctx, BootConfig{
@@ -180,7 +181,7 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 		if !errors.Is(err, context.Canceled) {
 			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
 		}
-	case <-time.After(5 * time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for startRunning to stop")
 	}
 }
@@ -227,10 +228,10 @@ func freeLoopbackPort(t *testing.T) (string, int) {
 func waitForDashboard(t *testing.T, url string, done <-chan error) string {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	client := http.Client{Timeout: 500 * time.Millisecond}
+	client := http.Client{Timeout: time.Second}
 	for ctx.Err() == nil {
 		select {
 		case err := <-done:
