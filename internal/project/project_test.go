@@ -3,6 +3,7 @@ package project_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -226,6 +227,144 @@ func TestProjectStartRejectsPausedProject(t *testing.T) {
 	}
 }
 
+func TestProjectPauseUnpauseRestartsProject(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(4))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:     "symphony",
+			Weight: 1,
+		},
+	}, project.Dependencies{
+		Events: events,
+		Runner: blockingRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if event := receiveEvent(t, sub.C()); event.Kind != project.EventStarted {
+		t.Fatalf("first event = %#v, want started", event)
+	}
+
+	if err := got.Pause(context.Background()); err != nil {
+		t.Fatalf("Pause() error = %v", err)
+	}
+	stopped := receiveEvent(t, sub.C())
+	paused := receiveEvent(t, sub.C())
+	if stopped.Kind != project.EventStopped || paused.Kind != project.EventPaused {
+		t.Fatalf("pause events = %#v %#v, want stopped then paused", stopped, paused)
+	}
+	if !got.Paused() {
+		t.Fatal("Paused() = false, want true")
+	}
+
+	if err := got.Unpause(context.Background()); err != nil {
+		t.Fatalf("Unpause() error = %v", err)
+	}
+	unpaused := receiveEvent(t, sub.C())
+	restarted := receiveEvent(t, sub.C())
+	if unpaused.Kind != project.EventStarted || restarted.Kind != project.EventUnpaused {
+		t.Fatalf("unpause events = %#v %#v, want started then unpaused", unpaused, restarted)
+	}
+	if got.Paused() {
+		t.Fatal("Paused() = true, want false")
+	}
+}
+
+func TestProjectPauseDoesNotMarkPausedWhenShutdownTimesOut(t *testing.T) {
+	t.Parallel()
+
+	blocker := newPauseBlockingConnector()
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:     "symphony",
+			Weight: 1,
+		},
+	}, project.Dependencies{
+		Connector: blocker,
+		Runner:    blockingRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	blocker.waitEntered(t)
+
+	pauseCtx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+	defer cancel()
+	if err := got.Pause(pauseCtx); !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Pause() error = %v, want %v", err, context.DeadlineExceeded)
+	}
+	if got.Paused() {
+		t.Fatal("Paused() = true after failed Pause, want false")
+	}
+
+	blocker.release()
+	if err := got.Wait(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+		t.Fatalf("Wait() error = %v, want nil", err)
+	}
+}
+
+func TestProjectUnpauseKeepsProjectPausedWhenRestartFails(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(4))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	calls := 0
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:     "symphony",
+			Weight: 1,
+		},
+	}, project.Dependencies{
+		Events: events,
+		Runner: blockingRunner{},
+		OrchestratorFactory: func(cfg orchestrator.Config, deps orchestrator.Dependencies) (*orchestrator.Orchestrator, error) {
+			calls++
+			if calls > 1 {
+				return nil, errors.New("recreate failed")
+			}
+			return orchestrator.New(cfg, deps)
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	receiveEvent(t, sub.C())
+	if err := got.Pause(context.Background()); err != nil {
+		t.Fatalf("Pause() error = %v", err)
+	}
+	receiveEvent(t, sub.C())
+	receiveEvent(t, sub.C())
+
+	if err := got.Unpause(context.Background()); err == nil || err.Error() != "create project orchestrator: recreate failed" {
+		t.Fatalf("Unpause() error = %v, want recreate failure", err)
+	}
+	if !got.Paused() {
+		t.Fatal("Paused() = false after failed Unpause, want true")
+	}
+}
+
 func workflowConfigWithMemoryIssue(id string) workflowconfig.Config {
 	cfg := workflowConfig("memory")
 	cfg.Agent.MaxConcurrentAgents = 4
@@ -249,6 +388,61 @@ type blockingRunner struct{}
 func (blockingRunner) Run(ctx context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	<-ctx.Done()
 	return orchestrator.RunResult{}, ctx.Err()
+}
+
+type pauseBlockingConnector struct {
+	entered  chan struct{}
+	releasec chan struct{}
+	once     sync.Once
+}
+
+func newPauseBlockingConnector() *pauseBlockingConnector {
+	return &pauseBlockingConnector{
+		entered:  make(chan struct{}),
+		releasec: make(chan struct{}),
+	}
+}
+
+func (c *pauseBlockingConnector) Name() string {
+	return "pause-blocking"
+}
+
+func (c *pauseBlockingConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	c.once.Do(func() {
+		close(c.entered)
+	})
+	<-c.releasec
+	return nil, ctx.Err()
+}
+
+func (c *pauseBlockingConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (c *pauseBlockingConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (c *pauseBlockingConnector) CreateComment(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (c *pauseBlockingConnector) UpdateIssueState(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (c *pauseBlockingConnector) waitEntered(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-c.entered:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for connector fetch")
+	}
+}
+
+func (c *pauseBlockingConnector) release() {
+	close(c.releasec)
 }
 
 func receiveEvent(t *testing.T, ch <-chan project.Event) project.Event {
