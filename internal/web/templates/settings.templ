@@ -1,0 +1,171 @@
+package templates
+
+templ Settings(data SettingsData) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="color-scheme" content="light dark"/>
+			<title>{ settingsPageTitle(data) }</title>
+			<script>
+				document.documentElement.classList.toggle("dark", Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches))
+				function copySettingValue(button) {
+					const value = button.dataset.copy || ""
+					const label = button.querySelector("[data-copy-label]")
+					const reset = button.dataset.label || "Copy"
+					const done = () => {
+						if (!label) return
+						label.textContent = "Copied!"
+						clearTimeout(button._copyTimer)
+						button._copyTimer = setTimeout(() => { label.textContent = reset }, 1200)
+					}
+					if (navigator.clipboard && navigator.clipboard.writeText) {
+						navigator.clipboard.writeText(value).then(done, done)
+						return
+					}
+					done()
+				}
+			</script>
+			<link rel="icon" href="data:,"/>
+			<link rel="stylesheet" href="/static/css/output.css"/>
+		</head>
+		<body class="min-h-screen bg-background text-foreground antialiased">
+			<main class="mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6 lg:px-8">
+				<header class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+					<div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+						<div class="min-w-0">
+							<div class="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
+								<span class="inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent">
+									<span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
+									<span>Symphony</span>
+								</span>
+								<span>Configuration</span>
+							</div>
+							<h1 class="mt-2 text-2xl font-semibold text-foreground sm:text-3xl">Settings</h1>
+							<p class="mt-1 max-w-3xl text-sm text-muted-foreground">Running configuration, project paths, and runtime files.</p>
+						</div>
+						<span class="inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground lg:w-auto">
+							<span class="text-xs font-medium uppercase text-muted-foreground">Version</span>
+							<span class="font-mono text-xs font-semibold text-foreground">{ settingsVersionLabel(data) }</span>
+						</span>
+					</div>
+					@dashboardNav("settings")
+				</header>
+				<section class="grid gap-5">
+					<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+						<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+							<div>
+								<h2 class="text-lg font-semibold text-foreground">Global config</h2>
+								<p class="text-sm text-muted-foreground">Resolved startup configuration.</p>
+							</div>
+							<span class="rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ settingsPathRule(data.Global.PathRule) }</span>
+						</div>
+						<div class="mt-5 grid gap-3">
+							@settingsPathRow("Resolved global config path", data.Global.ConfigPath)
+							@settingsValueRow("Discovery rule", settingsPathRule(data.Global.PathRule))
+						</div>
+					</section>
+					<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+						<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+							<div>
+								<h2 class="text-lg font-semibold text-foreground">Projects</h2>
+								<p class="text-sm text-muted-foreground">Loaded project configuration and tracker wiring.</p>
+							</div>
+							<span class="inline-flex min-w-9 justify-center rounded-full bg-muted px-2 py-1 text-sm font-medium text-muted-foreground">{ settingsInt(len(data.Projects)) }</span>
+						</div>
+						if len(data.Projects) == 0 {
+							<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No projects loaded.</p>
+						} else {
+							<div class="mt-5 grid gap-4">
+								for _, project := range data.Projects {
+									<article class="border-t border-border pt-4 first:border-t-0 first:pt-0">
+										<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+											<div class="min-w-0">
+												<h3 class="truncate text-sm font-semibold text-foreground">{ settingsText(project.ID) }</h3>
+												<p class="font-mono text-xs text-muted-foreground">{ settingsText(project.TrackerKind) }</p>
+											</div>
+											<div class="flex flex-wrap gap-2 text-xs">
+												<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">weight { settingsInt(project.Weight) }</span>
+												<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">priority { settingsInt(project.Priority) }</span>
+												<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">paused { settingsBool(project.Paused) }</span>
+											</div>
+										</div>
+										<div class="mt-4 grid gap-3">
+											@settingsPathRow("Workflow path", project.WorkflowPath)
+											@settingsPathRow("Workdir", project.Workdir)
+											@settingsPathRow("Worktree root", project.WorktreeRoot)
+											@settingsValueRow("Tracker kind", settingsText(project.TrackerKind))
+											@settingsPathRow("Project URL", project.TrackerProject)
+										</div>
+									</article>
+								}
+							</div>
+						}
+					</section>
+					<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+						<div>
+							<h2 class="text-lg font-semibold text-foreground">Runtime paths</h2>
+							<p class="text-sm text-muted-foreground">Files and listener for this running server.</p>
+						</div>
+						<div class="mt-5 grid gap-3">
+							@settingsPathRow("SQLite db path", data.Runtime.DBPath)
+							@settingsPathRow("Log file path", data.Runtime.LogPath)
+							@settingsPathRow("Server host:port", data.Runtime.ServerAddress)
+						</div>
+					</section>
+				</section>
+			</main>
+		</body>
+	</html>
+}
+
+templ dashboardNav(active string) {
+	<nav class="mt-4 flex flex-wrap gap-2 border-t border-border pt-4" aria-label="Dashboard sections">
+		@dashboardNavItem(active, "dashboard", "/", "Dashboard")
+		@dashboardNavItem(active, "settings", "/settings", "Settings")
+	</nav>
+}
+
+templ dashboardNavItem(active string, id string, href string, label string) {
+	if active == id {
+		<a class="inline-flex items-center rounded-md border border-accent bg-accent-soft px-3 py-2 text-sm font-medium text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href } aria-current="page">{ label }</a>
+	} else {
+		<a class="inline-flex items-center rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>{ label }</a>
+	}
+}
+
+templ settingsPathRow(label string, value string) {
+	<div class="grid gap-2 border-t border-border py-3 first:border-t-0 first:pt-0 md:grid-cols-[13rem_minmax(0,1fr)_auto] md:items-center">
+		<span class="text-xs font-medium uppercase text-muted-foreground">{ label }</span>
+		<code class="min-w-0 break-all font-mono text-sm text-foreground">{ settingsText(value) }</code>
+		if hasSettingsValue(value) {
+			@settingsCopyButton(label, value)
+		}
+	</div>
+}
+
+templ settingsValueRow(label string, value string) {
+	<div class="grid gap-2 border-t border-border py-3 first:border-t-0 first:pt-0 md:grid-cols-[13rem_minmax(0,1fr)] md:items-center">
+		<span class="text-xs font-medium uppercase text-muted-foreground">{ label }</span>
+		<span class="min-w-0 break-all font-mono text-sm text-foreground">{ settingsText(value) }</span>
+	</div>
+}
+
+templ settingsCopyButton(label string, value string) {
+	<button
+		type="button"
+		class="inline-flex w-fit items-center gap-1 rounded-md border border-border bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+		data-label="Copy"
+		data-copy={ value }
+		title={ "Copy " + label }
+		aria-label={ "Copy " + label }
+		onclick="copySettingValue(this)"
+	>
+		<svg class="shrink-0" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+			<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+			<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+		</svg>
+		<span data-copy-label>Copy</span>
+	</button>
+}

@@ -16,8 +16,11 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/symphony/internal/budget"
+	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
+	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
 	"github.com/digitaldrywood/symphony/internal/connector"
 	"github.com/digitaldrywood/symphony/internal/hub"
+	"github.com/digitaldrywood/symphony/internal/project"
 	"github.com/digitaldrywood/symphony/internal/store"
 	"github.com/digitaldrywood/symphony/internal/store/sqlc"
 	"github.com/digitaldrywood/symphony/internal/telemetry"
@@ -110,6 +113,12 @@ func TestServerRoutes(t *testing.T) {
 			path:        "/",
 			wantStatus:  http.StatusOK,
 			wantContent: "Symphony",
+		},
+		{
+			name:        "settings",
+			path:        "/settings",
+			wantStatus:  http.StatusOK,
+			wantContent: "Settings",
 		},
 		{
 			name:        "health",
@@ -356,6 +365,92 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	configPath := filepath.Join(root, "global.yaml")
+	workflowPath := filepath.Join(root, "WORKFLOW.md")
+	workdir := filepath.Join(root, "repo")
+	worktreeRoot := filepath.Join(root, "worktrees")
+	dbPath := filepath.Join(root, "symphony.db")
+	logPath := filepath.Join(root, "symphony.log")
+	projectURL := "https://github.com/orgs/digitaldrywood/projects/4"
+
+	registry := project.NewRegistry()
+	trackedProject := newSettingsTestProject(t, globalconfig.Project{
+		ID:       "symphony",
+		Workflow: workflowPath,
+		Workdir:  workdir,
+		Weight:   3,
+		Priority: 2,
+		Paused:   true,
+	}, worktreeRoot, projectURL)
+	if err := registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Registry = registry
+	server, err := web.NewServer(web.Config{
+		StaticDir:      t.TempDir(),
+		Version:        "v1.2.3",
+		GlobalConfig:   globalconfig.Config{Path: configPath},
+		ConfigPathRule: globalconfig.PathRuleFlag,
+		RuntimeDBPath:  dbPath,
+		RuntimeLogPath: logPath,
+		ServerAddress:  "127.0.0.1:4101",
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/settings", nil)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Settings",
+		`href="/"`,
+		`href="/settings"`,
+		`aria-current="page"`,
+		"v1.2.3",
+		"Resolved global config path",
+		configPath,
+		string(globalconfig.PathRuleFlag),
+		"symphony",
+		workflowPath,
+		workdir,
+		worktreeRoot,
+		"weight 3",
+		"priority 2",
+		"paused true",
+		"github",
+		projectURL,
+		dbPath,
+		logPath,
+		"127.0.0.1:4101",
+		"navigator.clipboard.writeText",
+		"Copied!",
+		`data-copy="` + configPath + `"`,
+		`data-copy="` + workflowPath + `"`,
+		`data-copy="` + workdir + `"`,
+		`data-copy="` + worktreeRoot + `"`,
+		`data-copy="` + projectURL + `"`,
+		`data-copy="` + dbPath + `"`,
+		`data-copy="` + logPath + `"`,
+		`data-copy="127.0.0.1:4101"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
 		}
 	}
 }
@@ -1087,9 +1182,35 @@ func testDeps(t *testing.T) web.Dependencies {
 	return web.Dependencies{
 		Hub:       hub.New[telemetry.Snapshot](),
 		Store:     storeProbe{},
-		Registry:  struct{}{},
+		Registry:  project.NewRegistry(),
 		Connector: connectorProbe{name: "memory"},
 	}
+}
+
+func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot string, projectURL string) *project.Project {
+	t.Helper()
+
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflowCfg.Tracker.Endpoint = "https://api.github.com/graphql"
+	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
+	workflowCfg.Tracker.ProjectSlug = projectURL
+	workflowCfg.Workspace.Root = worktreeRoot
+	workflowCfg.Workspace.SourceRoot = cfg.Workdir
+
+	trackedProject, err := project.New(project.Config{
+		Project: cfg,
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "github"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return trackedProject
 }
 
 func openWebTestStore(t *testing.T) store.Store {
