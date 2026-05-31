@@ -122,6 +122,26 @@ func TestBuildPromptRejectsUnknownTemplateVariables(t *testing.T) {
 	}
 }
 
+func TestBuildPromptRendersNestedConditionals(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Prompt: `{% if issue.description %}{{ issue.description }} {% if issue.title %}{{ issue.title }}{% endif %}{% else %}No body{% endif %}`,
+	}, connector.Issue{
+		Identifier: "MT-1",
+		Title:      "Nested title",
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	if prompt != "No body" {
+		t.Fatalf("prompt = %q, want No body", prompt)
+	}
+	if strings.Contains(prompt, "{% endif %}") {
+		t.Fatalf("prompt left template delimiter: %q", prompt)
+	}
+}
+
 func TestBuildPromptIgnoresUnreadableLessons(t *testing.T) {
 	t.Parallel()
 

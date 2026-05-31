@@ -30,7 +30,7 @@ No description provided.
 
 var (
 	templateVariablePattern = regexp.MustCompile(`{{\s*([A-Za-z_][A-Za-z0-9_.]*)\s*}}`)
-	templateIfPattern       = regexp.MustCompile(`(?s){%\s*if\s+([A-Za-z_][A-Za-z0-9_.]*)\s*%}(.*?)(?:{%\s*else\s*%}(.*?))?{%\s*endif\s*%}`)
+	conditionalTagPattern   = regexp.MustCompile(`{%\s*(if\s+([A-Za-z_][A-Za-z0-9_.]*)|else|endif)\s*%}`)
 	windowsAbsPathPattern   = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
 )
 
@@ -191,33 +191,113 @@ func renderTemplate(template string, assigns map[string]any) (string, error) {
 }
 
 func renderConditionals(template string, assigns map[string]any) (string, error) {
-	for {
-		matches := templateIfPattern.FindStringSubmatchIndex(template)
-		if matches == nil {
-			return template, nil
+	var out strings.Builder
+	offset := 0
+
+	for offset < len(template) {
+		tag := findConditionalTag(template, offset)
+		if tag == nil {
+			out.WriteString(template[offset:])
+			break
+		}
+		if tag.kind != "if" {
+			return "", fmt.Errorf("unexpected template tag %q", tag.kind)
 		}
 
-		name := template[matches[2]:matches[3]]
+		out.WriteString(template[offset:tag.start])
+
+		name := tag.expr
 		value, ok := lookupAssign(assigns, name)
 		if !ok {
 			return "", fmt.Errorf("unknown template variable %q", name)
 		}
 
-		selected := template[matches[4]:matches[5]]
+		thenBranch, elseBranch, nextOffset, err := splitConditional(template, tag.end)
+		if err != nil {
+			return "", err
+		}
+
+		selected := thenBranch
 		if !truthy(value) {
-			selected = ""
-			if matches[6] >= 0 {
-				selected = template[matches[6]:matches[7]]
-			}
+			selected = elseBranch
 		}
 
 		rendered, err := renderConditionals(selected, assigns)
 		if err != nil {
 			return "", err
 		}
-
-		template = template[:matches[0]] + rendered + template[matches[1]:]
+		out.WriteString(rendered)
+		offset = nextOffset
 	}
+
+	return out.String(), nil
+}
+
+type conditionalTag struct {
+	start int
+	end   int
+	kind  string
+	expr  string
+}
+
+func findConditionalTag(template string, offset int) *conditionalTag {
+	matches := conditionalTagPattern.FindStringSubmatchIndex(template[offset:])
+	if matches == nil {
+		return nil
+	}
+
+	start := offset + matches[0]
+	end := offset + matches[1]
+	kind := template[offset+matches[2] : offset+matches[3]]
+	expr := ""
+	if matches[4] >= 0 {
+		kind = "if"
+		expr = template[offset+matches[4] : offset+matches[5]]
+	}
+
+	return &conditionalTag{
+		start: start,
+		end:   end,
+		kind:  kind,
+		expr:  expr,
+	}
+}
+
+func splitConditional(template string, offset int) (string, string, int, error) {
+	depth := 1
+	thenStart := offset
+	elseTagStart := -1
+	elseStart := -1
+	searchOffset := offset
+
+	for searchOffset < len(template) {
+		tag := findConditionalTag(template, searchOffset)
+		if tag == nil {
+			return "", "", 0, errors.New("missing endif template tag")
+		}
+
+		switch tag.kind {
+		case "if":
+			depth++
+		case "else":
+			if depth == 1 && elseStart < 0 {
+				elseTagStart = tag.start
+				elseStart = tag.end
+			}
+		case "endif":
+			depth--
+			if depth == 0 {
+				if elseStart >= 0 {
+					return template[thenStart:elseTagStart], template[elseStart:tag.start], tag.end, nil
+				}
+				return template[thenStart:tag.start], "", tag.end, nil
+			}
+		}
+
+		searchOffset = tag.end
+	}
+
+	return "", "", 0, errors.New("missing endif template tag")
 }
 
 func lookupAssign(assigns map[string]any, name string) (any, bool) {
