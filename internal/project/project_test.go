@@ -303,6 +303,102 @@ func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
 	}
 }
 
+func TestProjectStartRunsProvisionerWhenAutoProvisionEnabled(t *testing.T) {
+	t.Parallel()
+
+	provisioned := false
+	c := provisioningConnector{
+		provision: func(context.Context) error {
+			provisioned = true
+			return nil
+		},
+	}
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: "symphony", Weight: 1},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowConfig("memory"),
+		},
+	}, project.Dependencies{
+		Connector: c,
+		Runner:    blockingRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if !provisioned {
+		t.Fatal("Provision() was not called")
+	}
+	if err := got.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+func TestProjectStartSkipsProvisionerWhenAutoProvisionDisabled(t *testing.T) {
+	t.Parallel()
+
+	c := provisioningConnector{
+		provision: func(context.Context) error {
+			t.Fatal("Provision() called")
+			return nil
+		},
+	}
+	cfg := workflowConfig("memory")
+	cfg.Tracker.AutoProvision = false
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: "symphony", Weight: 1},
+		Workflow: workflowconfig.Workflow{
+			Config: cfg,
+		},
+	}, project.Dependencies{
+		Connector: c,
+		Runner:    blockingRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := got.Stop(context.Background()); err != nil {
+		t.Fatalf("Stop() error = %v", err)
+	}
+}
+
+func TestProjectStartReturnsProvisionerError(t *testing.T) {
+	t.Parallel()
+
+	want := errors.New("provision failed")
+	c := provisioningConnector{
+		provision: func(context.Context) error {
+			return want
+		},
+	}
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: "symphony", Weight: 1},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowConfig("memory"),
+		},
+	}, project.Dependencies{
+		Connector: c,
+		Runner:    blockingRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := got.Start(context.Background()); !errors.Is(err, want) {
+		t.Fatalf("Start() error = %v, want %v", err, want)
+	}
+	if got.Running() {
+		t.Fatal("Running() = true, want false")
+	}
+}
+
 func TestNewRejectsInvalidProjectConfig(t *testing.T) {
 	t.Parallel()
 
@@ -692,6 +788,41 @@ func receiveConnector(t *testing.T, ch <-chan connector.Connector) connector.Con
 	}
 
 	return nil
+}
+
+type provisioningConnector struct {
+	provision func(context.Context) error
+}
+
+func (provisioningConnector) Name() string {
+	return "provisioning"
+}
+
+func (provisioningConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (provisioningConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (provisioningConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (provisioningConnector) CreateComment(context.Context, string, string) error {
+	return nil
+}
+
+func (provisioningConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (c provisioningConnector) Provision(ctx context.Context) error {
+	if c.provision == nil {
+		return nil
+	}
+	return c.provision(ctx)
 }
 
 func receiveEvent(t *testing.T, ch <-chan project.Event) project.Event {

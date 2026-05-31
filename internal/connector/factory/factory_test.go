@@ -129,3 +129,15 @@ func TestFactoryGitHubConnectorImplementsAuthenticator(t *testing.T) {
 		t.Fatalf("connector = %T, want connector.Authenticator", c)
 	}
 }
+
+func TestFactoryGitHubConnectorImplementsProvisioner(t *testing.T) {
+	t.Parallel()
+
+	c, err := NewFromConfig(Config{Kind: "github"})
+	if err != nil {
+		t.Fatalf("NewFromConfig() error = %v", err)
+	}
+	if _, ok := c.(connector.Provisioner); !ok {
+		t.Fatalf("connector = %T, want connector.Provisioner", c)
+	}
+}

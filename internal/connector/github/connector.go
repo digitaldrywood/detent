@@ -28,6 +28,7 @@ type Config struct {
 	GitHubAppInstallationID string
 	ProjectSlug             string
 	ActiveStates            []string
+	ObservedStates          []string
 	TerminalStates          []string
 	StateMap                map[string]string
 	PriorityMap             map[string]*int
@@ -43,6 +44,7 @@ type Connector struct {
 	client         *Client
 	projectID      string
 	activeStates   []string
+	observedStates []string
 	terminalStates []string
 	stateMap       map[string]string
 	priorityMap    map[string]*int
@@ -81,6 +83,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		client:         client,
 		projectID:      strings.TrimSpace(cfg.ProjectSlug),
 		activeStates:   normalizeStateList(cfg.ActiveStates, []string{"Todo", "In Progress"}),
+		observedStates: normalizeStateList(cfg.ObservedStates, nil),
 		terminalStates: normalizeStateList(cfg.TerminalStates, []string{"Done", "Cancelled", "Canceled", "Closed"}),
 		stateMap:       cloneStateMap(cfg.StateMap),
 		priorityMap:    clonePriorityMapWithDefault(cfg.PriorityMap),
