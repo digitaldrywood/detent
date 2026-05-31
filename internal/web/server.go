@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"time"
 
 	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
@@ -31,8 +32,9 @@ type Dependencies struct {
 }
 
 type Config struct {
-	Logger    *slog.Logger
-	StaticDir string
+	Logger          *slog.Logger
+	StaticDir       string
+	SSETickInterval time.Duration
 }
 
 type Server struct {
@@ -42,6 +44,7 @@ type Server struct {
 	registry  any
 	connector connector.Connector
 	logger    *slog.Logger
+	tickEvery time.Duration
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -69,6 +72,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		registry:  deps.Registry,
 		connector: deps.Connector,
 		logger:    cfg.logger(),
+		tickEvery: cfg.sseTickInterval(),
 	}
 	server.registerRoutes(cfg.staticDir())
 
@@ -96,6 +100,7 @@ func (s *Server) Shutdown(ctx context.Context) error {
 func (s *Server) registerRoutes(staticDir string) {
 	s.echo.Static("/static", staticDir)
 	s.echo.GET("/", s.dashboard)
+	s.echo.GET("/events", s.events)
 	s.echo.GET("/health", s.health)
 }
 
@@ -154,6 +159,13 @@ func (cfg Config) staticDir() string {
 		return cfg.StaticDir
 	}
 	return "static"
+}
+
+func (cfg Config) sseTickInterval() time.Duration {
+	if cfg.SSETickInterval > 0 {
+		return cfg.SSETickInterval
+	}
+	return time.Second
 }
 
 func configuredStatus(value any) string {
