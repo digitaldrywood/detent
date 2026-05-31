@@ -158,11 +158,14 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[1].Tokens.RuntimeSeconds != 2 {
 		t.Fatalf("second usage update runtime = %v, want 2", usageUpdates[1].Tokens.RuntimeSeconds)
 	}
-	if usageUpdates[1].DiffStats.FilesChanged != 2 || usageUpdates[1].DiffStats.AddedLines != 5 || usageUpdates[1].DiffStats.RemovedLines != 1 {
-		t.Fatalf("second usage update DiffStats = %#v, want changed diff", usageUpdates[1].DiffStats)
+	if usageUpdates[1].DiffStats.FilesChanged != 1 || usageUpdates[1].DiffStats.AddedLines != 2 || usageUpdates[1].DiffStats.RemovedLines != 0 {
+		t.Fatalf("second usage update DiffStats = %#v, want cached diff", usageUpdates[1].DiffStats)
 	}
 	if usageUpdates[2].RateLimits == nil || usageUpdates[2].RateLimits.LimitID != "codex-primary" {
 		t.Fatalf("third usage update RateLimits = %#v, want codex-primary", usageUpdates[2].RateLimits)
+	}
+	if usageUpdates[2].DiffStats.FilesChanged != 2 || usageUpdates[2].DiffStats.AddedLines != 5 || usageUpdates[2].DiffStats.RemovedLines != 1 {
+		t.Fatalf("third usage update DiffStats = %#v, want refreshed diff", usageUpdates[2].DiffStats)
 	}
 	if result.DiffStats.FilesChanged != 2 || result.DiffStats.AddedLines != 5 || result.DiffStats.RemovedLines != 1 {
 		t.Fatalf("DiffStats = %#v, want 2 files, 5 added, 1 removed", result.DiffStats)
@@ -175,6 +178,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if !workspaceBackend.created || !workspaceBackend.beforeRun || !workspaceBackend.afterRun || !workspaceBackend.diffed {
 		t.Fatalf("workspace calls = created:%v before:%v after:%v diff:%v, want all true", workspaceBackend.created, workspaceBackend.beforeRun, workspaceBackend.afterRun, workspaceBackend.diffed)
+	}
+	if workspaceBackend.diffCalls != 3 {
+		t.Fatalf("DiffStat calls = %d, want throttled live calls plus final stat", workspaceBackend.diffCalls)
 	}
 	if codexClient.request.Workspace != workspacePath {
 		t.Fatalf("codex workspace = %q, want %q", codexClient.request.Workspace, workspacePath)

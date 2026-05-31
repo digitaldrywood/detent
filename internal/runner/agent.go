@@ -21,7 +21,10 @@ import (
 	"github.com/digitaldrywood/symphony/internal/workspace"
 )
 
-const defaultAfterRunTimeout = time.Minute
+const (
+	defaultAfterRunTimeout = time.Minute
+	liveDiffStatsInterval  = 2 * time.Second
+)
 
 var (
 	ErrMissingWorkspace = errors.New("runner workspace backend is required")
@@ -301,12 +304,15 @@ func applyCodexUpdate(result *RunResult, update codex.Update) {
 }
 
 type codexRunProgress struct {
-	sessionID   string
-	turnIDs     map[string]struct{}
-	messages    map[string]string
-	lastEventAt time.Time
-	lastEvent   string
-	lastMessage string
+	sessionID          string
+	turnIDs            map[string]struct{}
+	messages           map[string]string
+	lastEventAt        time.Time
+	lastEvent          string
+	lastMessage        string
+	diffStats          DiffStats
+	diffStatsCollected bool
+	diffStatsCheckedAt time.Time
 }
 
 func newCodexRunProgress() *codexRunProgress {
@@ -377,14 +383,25 @@ func (r *Runner) publishRunUpdate(
 		Tokens:      result.Tokens,
 		RateLimits:  result.RateLimits,
 	}
-	diffStats, ok := r.liveDiffStats(ctx, info, issue)
+	diffStats, ok := r.liveDiffStats(ctx, info, issue, progress, eventAt)
 	if ok {
 		usage.DiffStats = diffStats
 	}
 	return req.OnUsageUpdate(usage)
 }
 
-func (r *Runner) liveDiffStats(ctx context.Context, info workspace.Info, issue workspace.Issue) (DiffStats, bool) {
+func (r *Runner) liveDiffStats(
+	ctx context.Context,
+	info workspace.Info,
+	issue workspace.Issue,
+	progress *codexRunProgress,
+	eventAt time.Time,
+) (DiffStats, bool) {
+	if !progress.shouldRefreshDiffStats(eventAt) {
+		return progress.cachedDiffStats()
+	}
+
+	progress.diffStatsCheckedAt = eventAt
 	stat, err := r.workspace.DiffStat(ctx, info, issue)
 	if err != nil {
 		r.logger.Warn(
@@ -393,12 +410,28 @@ func (r *Runner) liveDiffStats(ctx context.Context, info workspace.Info, issue w
 			slog.String("issue_identifier", issue.Identifier),
 			slog.String("error", err.Error()),
 		)
-		return DiffStats{}, false
+		return progress.cachedDiffStats()
 	}
 
 	diffStats := diffStatsFromWorkspace(stat)
 	diffStats.Status = "ok"
+	progress.diffStats = diffStats
+	progress.diffStatsCollected = true
 	return diffStats, true
+}
+
+func (p *codexRunProgress) shouldRefreshDiffStats(eventAt time.Time) bool {
+	if p.diffStatsCheckedAt.IsZero() {
+		return true
+	}
+	return eventAt.Sub(p.diffStatsCheckedAt) >= liveDiffStatsInterval
+}
+
+func (p *codexRunProgress) cachedDiffStats() (DiffStats, bool) {
+	if !p.diffStatsCollected {
+		return DiffStats{}, false
+	}
+	return p.diffStats, true
 }
 
 func rateLimitsFromCodex(snapshot *codex.RateLimitSnapshot) *telemetry.RateLimits {
