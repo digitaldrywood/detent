@@ -1,0 +1,296 @@
+package templates
+
+type OnboardingData struct {
+	Title        string
+	WorkflowPath string
+	Step         string
+	Form         OnboardingForm
+	Errors       []string
+	Result       OnboardingResult
+}
+
+type OnboardingForm struct {
+	Step                  string
+	TrackerKind           string
+	Endpoint              string
+	APIKey                string
+	ProjectSlug           string
+	Repo                  string
+	WorkspaceRoot         string
+	MaxConcurrentAgents   string
+	MaxTurns              string
+	PollingIntervalMS     string
+	MergingConcurrency    string
+	DispatchPriorityState string
+}
+
+type OnboardingResult struct {
+	Kind    string
+	Message string
+}
+
+type onboardingProgressItem struct {
+	Step  string
+	Label string
+}
+
+func onboardingProgress() []onboardingProgressItem {
+	return []onboardingProgressItem{
+		{Step: "tracker", Label: "Tracker"},
+		{Step: "credentials", Label: "Credentials"},
+		{Step: "project", Label: "Project"},
+		{Step: "agent", Label: "Agent"},
+		{Step: "write", Label: "Write"},
+	}
+}
+
+func progressClass(current string, step string) string {
+	base := "flex h-9 min-w-9 items-center justify-center rounded-md border px-3 text-sm font-medium"
+	if current == step {
+		return base + " border-accent bg-accent text-white"
+	}
+	return base + " border-border bg-card text-muted-foreground"
+}
+
+func fieldClass() string {
+	return "mt-1 w-full rounded-md border border-border bg-card px-3 py-2 text-sm text-foreground outline-none focus:border-accent"
+}
+
+func buttonClass() string {
+	return "inline-flex items-center justify-center rounded-md bg-accent px-4 py-2 text-sm font-semibold text-white hover:opacity-90"
+}
+
+func secondaryButtonClass() string {
+	return "inline-flex items-center justify-center rounded-md border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+}
+
+templ OnboardingPage(data OnboardingData) {
+	<!doctype html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<title>{ data.Title }</title>
+			<link rel="stylesheet" href="/static/css/output.css"/>
+			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+		</head>
+		<body class="min-h-screen bg-background text-foreground antialiased">
+			<main class="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 px-5 py-6 sm:px-8">
+				<header class="border-b border-border pb-6">
+					<p class="text-sm font-medium text-muted-foreground">Symphony</p>
+					<h1 class="mt-1 text-3xl font-semibold text-foreground sm:text-4xl">Symphony onboarding</h1>
+				</header>
+				@OnboardingStep(data)
+			</main>
+		</body>
+	</html>
+}
+
+templ OnboardingStep(data OnboardingData) {
+	<section id="onboarding-step" class="flex flex-col gap-5">
+		<nav class="flex flex-wrap gap-2" aria-label="Onboarding steps">
+			for _, item := range onboardingProgress() {
+				<span class={ progressClass(data.Step, item.Step) }>{ item.Label }</span>
+			}
+		</nav>
+		if len(data.Errors) > 0 {
+			<div class="rounded-md border border-danger bg-card p-4 text-sm text-danger">
+				<p class="font-semibold">Fix these fields before continuing.</p>
+				<ul class="mt-2 list-disc space-y-1 pl-5">
+					for _, problem := range data.Errors {
+						<li>{ problem }</li>
+					}
+				</ul>
+			</div>
+		}
+		if data.Step == "tracker" {
+			@trackerStep(data)
+		} else if data.Step == "credentials" {
+			@credentialsStep(data)
+		} else if data.Step == "project" {
+			@projectStep(data)
+		} else if data.Step == "agent" {
+			@agentStep(data)
+		} else {
+			@writeStep(data)
+		}
+	</section>
+}
+
+templ trackerStep(data OnboardingData) {
+	<div class="rounded-md border border-border bg-card p-5">
+		<h2 class="text-xl font-semibold">Choose tracker</h2>
+		<form class="mt-5 space-y-3" hx-post="/onboarding/tracker" hx-target="#onboarding-step" hx-swap="outerHTML">
+			@trackerChoice(data, "github", "GitHub Projects", "ProjectV2-backed issues and pull requests")
+			@trackerChoice(data, "memory", "Memory", "Local sample issues for development")
+			<div class="pt-2">
+				<button class={ buttonClass() } type="submit">Continue</button>
+			</div>
+		</form>
+	</div>
+}
+
+templ trackerChoice(data OnboardingData, value string, label string, description string) {
+	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3 hover:bg-muted">
+		<input class="mt-1" type="radio" name="tracker_kind" value={ value } checked?={ data.Form.TrackerKind == value }/>
+		<span>
+			<span class="block text-sm font-semibold text-foreground">{ label }</span>
+			<span class="block text-sm text-muted-foreground">{ description }</span>
+		</span>
+	</label>
+}
+
+templ credentialsStep(data OnboardingData) {
+	<div class="rounded-md border border-border bg-card p-5">
+		<h2 class="text-xl font-semibold">Credentials</h2>
+		<form class="mt-5 space-y-4" hx-post="/onboarding/credentials" hx-target="#onboarding-step" hx-swap="outerHTML">
+			@hiddenTracker(data.Form)
+			if data.Form.TrackerKind == "memory" {
+				<p class="text-sm text-muted-foreground">The memory tracker does not need external credentials.</p>
+			} else {
+				<label class="block">
+					<span class="text-sm font-medium">Endpoint</span>
+					<input class={ fieldClass() } type="url" name="endpoint" value={ data.Form.Endpoint }/>
+				</label>
+				<label class="block">
+					<span class="text-sm font-medium">API key</span>
+					<input class={ fieldClass() } type="text" name="api_key" value={ data.Form.APIKey } autocomplete="off"/>
+				</label>
+			}
+			<div class="flex flex-wrap gap-2 pt-2">
+				<button class={ buttonClass() } type="submit">Continue</button>
+				<button class={ secondaryButtonClass() } type="button" hx-get="/onboarding" hx-target="#onboarding-step" hx-select="#onboarding-step" hx-swap="outerHTML">Back</button>
+			</div>
+		</form>
+	</div>
+}
+
+templ projectStep(data OnboardingData) {
+	<div class="rounded-md border border-border bg-card p-5">
+		<h2 class="text-xl font-semibold">Pick project</h2>
+		<form class="mt-5 space-y-4" hx-post="/onboarding/project" hx-target="#onboarding-step" hx-swap="outerHTML">
+			@hiddenCredentials(data.Form)
+			if data.Form.TrackerKind == "memory" {
+				<p class="text-sm text-muted-foreground">Memory projects are created from the generated workflow.</p>
+			} else {
+				<label class="block">
+					<span class="text-sm font-medium">ProjectV2 ID</span>
+					<input class={ fieldClass() } type="text" name="project_slug" value={ data.Form.ProjectSlug } placeholder="PVT_..."/>
+				</label>
+				<label class="block">
+					<span class="text-sm font-medium">Dispatch repository</span>
+					<input class={ fieldClass() } type="text" name="repo" value={ data.Form.Repo } placeholder="owner/repo"/>
+				</label>
+			}
+			<div class="flex flex-wrap gap-2 pt-2">
+				<button class={ buttonClass() } type="submit">Continue</button>
+				<button class={ secondaryButtonClass() } type="submit" hx-post="/onboarding/tracker">Back</button>
+			</div>
+		</form>
+	</div>
+}
+
+templ agentStep(data OnboardingData) {
+	<div class="rounded-md border border-border bg-card p-5">
+		<h2 class="text-xl font-semibold">Agent config</h2>
+		<form class="mt-5 grid gap-4 sm:grid-cols-2" hx-post="/onboarding/agent" hx-target="#onboarding-step" hx-swap="outerHTML">
+			@hiddenProject(data.Form)
+			<label class="block sm:col-span-2">
+				<span class="text-sm font-medium">Workspace root</span>
+				<input class={ fieldClass() } type="text" name="workspace_root" value={ data.Form.WorkspaceRoot }/>
+			</label>
+			<label class="block">
+				<span class="text-sm font-medium">Max agents</span>
+				<input class={ fieldClass() } type="number" min="1" name="max_concurrent_agents" value={ data.Form.MaxConcurrentAgents }/>
+			</label>
+			<label class="block">
+				<span class="text-sm font-medium">Max turns</span>
+				<input class={ fieldClass() } type="number" min="1" name="max_turns" value={ data.Form.MaxTurns }/>
+			</label>
+			<label class="block">
+				<span class="text-sm font-medium">Polling interval</span>
+				<input class={ fieldClass() } type="number" min="1" name="polling_interval_ms" value={ data.Form.PollingIntervalMS }/>
+			</label>
+			<label class="block">
+				<span class="text-sm font-medium">Merging concurrency</span>
+				<input class={ fieldClass() } type="number" min="1" name="merging_concurrency" value={ data.Form.MergingConcurrency }/>
+			</label>
+			<label class="block sm:col-span-2">
+				<span class="text-sm font-medium">Dispatch priority by state</span>
+				<textarea class={ fieldClass() + " min-h-24" } name="dispatch_priority_by_state">{ data.Form.DispatchPriorityState }</textarea>
+			</label>
+			<div class="flex flex-wrap gap-2 pt-2 sm:col-span-2">
+				<button class={ buttonClass() } type="submit">Continue</button>
+				<button class={ secondaryButtonClass() } type="submit" hx-post="/onboarding/credentials">Back</button>
+			</div>
+		</form>
+	</div>
+}
+
+templ writeStep(data OnboardingData) {
+	<div class="rounded-md border border-border bg-card p-5">
+		<h2 class="text-xl font-semibold">Write WORKFLOW.md</h2>
+		<div class="mt-4 grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
+			<p><span class="font-medium text-foreground">Tracker:</span> { data.Form.TrackerKind }</p>
+			if data.Form.ProjectSlug != "" {
+				<p><span class="font-medium text-foreground">ProjectV2:</span> { data.Form.ProjectSlug }</p>
+			}
+			if data.Form.Repo != "" {
+				<p><span class="font-medium text-foreground">Repo:</span> { data.Form.Repo }</p>
+			}
+			<p><span class="font-medium text-foreground">Output:</span> { data.WorkflowPath }</p>
+		</div>
+		@resultPanel(data)
+		<form class="mt-5 flex flex-wrap gap-2" hx-post="/onboarding/write" hx-target="#onboarding-step" hx-swap="outerHTML">
+			@hiddenAgent(data.Form)
+			<button class={ buttonClass() } type="submit">Write WORKFLOW.md</button>
+		</form>
+	</div>
+}
+
+templ resultPanel(data OnboardingData) {
+	if data.Result.Kind == "success" {
+		<div class="mt-4 rounded-md border border-success bg-card p-4 text-sm text-success">
+			<strong>{ data.Result.Message }</strong>
+		</div>
+	} else if data.Result.Kind == "exists" {
+		<div class="mt-4 rounded-md border border-warning bg-card p-4 text-sm text-warning">
+			<p><strong>{ data.Result.Message }</strong></p>
+			<form class="mt-3" hx-post="/onboarding/write" hx-target="#onboarding-step" hx-swap="outerHTML">
+				@hiddenAgent(data.Form)
+				<input type="hidden" name="replace" value="true"/>
+				<button class={ buttonClass() } type="submit">Overwrite</button>
+			</form>
+		</div>
+	} else if data.Result.Kind == "error" {
+		<div class="mt-4 rounded-md border border-danger bg-card p-4 text-sm text-danger">
+			<strong>{ data.Result.Message }</strong>
+		</div>
+	}
+}
+
+templ hiddenTracker(form OnboardingForm) {
+	<input type="hidden" name="tracker_kind" value={ form.TrackerKind }/>
+}
+
+templ hiddenCredentials(form OnboardingForm) {
+	@hiddenTracker(form)
+	<input type="hidden" name="endpoint" value={ form.Endpoint }/>
+	<input type="hidden" name="api_key" value={ form.APIKey }/>
+}
+
+templ hiddenProject(form OnboardingForm) {
+	@hiddenCredentials(form)
+	<input type="hidden" name="project_slug" value={ form.ProjectSlug }/>
+	<input type="hidden" name="repo" value={ form.Repo }/>
+}
+
+templ hiddenAgent(form OnboardingForm) {
+	@hiddenProject(form)
+	<input type="hidden" name="workspace_root" value={ form.WorkspaceRoot }/>
+	<input type="hidden" name="max_concurrent_agents" value={ form.MaxConcurrentAgents }/>
+	<input type="hidden" name="max_turns" value={ form.MaxTurns }/>
+	<input type="hidden" name="polling_interval_ms" value={ form.PollingIntervalMS }/>
+	<input type="hidden" name="merging_concurrency" value={ form.MergingConcurrency }/>
+	<input type="hidden" name="dispatch_priority_by_state" value={ form.DispatchPriorityState }/>
+}
