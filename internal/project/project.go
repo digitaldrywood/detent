@@ -76,19 +76,21 @@ type Dependencies struct {
 }
 
 type Project struct {
-	id           ProjectID
-	cfg          globalconfig.Project
-	workflow     workflowconfig.Workflow
-	connector    connector.Connector
-	orchestrator *orchestrator.Orchestrator
-	orchFactory  OrchestratorFactory
-	orchConfig   orchestrator.Config
-	orchDeps     orchestrator.Dependencies
-	runner       orchestrator.Runner
-	scheduler    scheduler.Scheduler
-	events       *hub.Hub[Event]
-	logger       *slog.Logger
-	watcher      WorkflowWatcherFactory
+	id               ProjectID
+	cfg              globalconfig.Project
+	workflow         workflowconfig.Workflow
+	connector        connector.Connector
+	connectorFactory ConnectorFactory
+	orchestrator     *orchestrator.Orchestrator
+	orchFactory      OrchestratorFactory
+	orchConfig       orchestrator.Config
+	orchDeps         orchestrator.Dependencies
+	runner           orchestrator.Runner
+	scheduler        scheduler.Scheduler
+	schedulerFactory schedulerFactory
+	events           *hub.Hub[Event]
+	logger           *slog.Logger
+	watcher          WorkflowWatcherFactory
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -117,12 +119,14 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		return nil, fmt.Errorf("validate project workflow: %w", err)
 	}
 
-	projectConnector, err := buildConnector(workflow.Config, deps)
+	connectorFactory := resolveConnectorFactory(deps)
+	projectConnector, err := buildConnector(workflow.Config, connectorFactory)
 	if err != nil {
 		return nil, err
 	}
 
-	projectScheduler, err := buildScheduler(workflow.Config, deps)
+	schedulerFactory := resolveSchedulerFactory(deps)
+	projectScheduler, err := buildScheduler(workflow.Config, schedulerFactory)
 	if err != nil {
 		return nil, err
 	}
@@ -163,19 +167,21 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 
 	cfg.Project.ID = string(id)
 	return &Project{
-		id:           id,
-		cfg:          cfg.Project,
-		workflow:     workflow,
-		connector:    projectConnector,
-		orchestrator: orch,
-		orchFactory:  orchestratorFactory,
-		orchConfig:   orchConfig,
-		orchDeps:     orchDeps,
-		runner:       deps.Runner,
-		scheduler:    projectScheduler,
-		events:       projectEvents,
-		logger:       logger,
-		watcher:      watcherFactory,
+		id:               id,
+		cfg:              cfg.Project,
+		workflow:         workflow,
+		connector:        projectConnector,
+		connectorFactory: connectorFactory,
+		orchestrator:     orch,
+		orchFactory:      orchestratorFactory,
+		orchConfig:       orchConfig,
+		orchDeps:         orchDeps,
+		runner:           deps.Runner,
+		scheduler:        projectScheduler,
+		schedulerFactory: schedulerFactory,
+		events:           projectEvents,
+		logger:           logger,
+		watcher:          watcherFactory,
 	}, nil
 }
 
@@ -201,6 +207,9 @@ func (p *Project) Workflow() workflowconfig.Workflow {
 }
 
 func (p *Project) Connector() connector.Connector {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	return p.connector
 }
 
@@ -209,6 +218,9 @@ func (p *Project) Orchestrator() *orchestrator.Orchestrator {
 }
 
 func (p *Project) Scheduler() scheduler.Scheduler {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	return p.scheduler
 }
 
@@ -487,15 +499,35 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		return
 	}
 
-	p.mu.Lock()
-	p.workflow = workflow
-	p.mu.Unlock()
+	projectConnector, err := buildConnector(workflow.Config, p.connectorFactory)
+	if err != nil {
+		p.logger.Warn("workflow reload connector failed",
+			"project_id", p.id,
+			"path", update.Path,
+			"error", err,
+		)
+		return
+	}
+
+	projectScheduler, err := buildScheduler(workflow.Config, p.schedulerFactory)
+	if err != nil {
+		p.logger.Warn("workflow reload scheduler failed",
+			"project_id", p.id,
+			"path", update.Path,
+			"error", err,
+		)
+		return
+	}
 
 	if updater, ok := p.runner.(workflowUpdater); ok {
 		updater.UpdateWorkflow(workflow)
 	}
 
-	if err := p.orchestrator.UpdateConfig(ctx, orchestrator.ConfigFromWorkflow(workflow.Config)); err != nil {
+	runtimeConfig := orchestrator.ConfigFromWorkflow(workflow.Config)
+	if err := p.orchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
+		Config:    runtimeConfig,
+		Connector: projectConnector,
+	}); err != nil {
 		if ctx.Err() != nil {
 			return
 		}
@@ -506,6 +538,14 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		)
 		return
 	}
+
+	p.mu.Lock()
+	p.workflow = workflow
+	p.connector = projectConnector
+	p.scheduler = projectScheduler
+	p.orchConfig = runtimeConfig
+	p.orchDeps.Connector = projectConnector
+	p.mu.Unlock()
 
 	p.logger.Info("workflow reloaded", "project_id", p.id, "path", update.Path)
 }
@@ -524,16 +564,21 @@ type workflowUpdater interface {
 	UpdateWorkflow(workflowconfig.Workflow)
 }
 
-func buildConnector(cfg workflowconfig.Config, deps Dependencies) (connector.Connector, error) {
+type schedulerFactory func(workflowconfig.Config) (scheduler.Scheduler, error)
+
+func resolveConnectorFactory(deps Dependencies) ConnectorFactory {
 	if deps.Connector != nil {
-		return deps.Connector, nil
+		return func(workflowconfig.Config) (connector.Connector, error) {
+			return deps.Connector, nil
+		}
 	}
-
-	connectorFactory := deps.ConnectorFactory
-	if connectorFactory == nil {
-		connectorFactory = defaultConnectorFactory
+	if deps.ConnectorFactory != nil {
+		return deps.ConnectorFactory
 	}
+	return defaultConnectorFactory
+}
 
+func buildConnector(cfg workflowconfig.Config, connectorFactory ConnectorFactory) (connector.Connector, error) {
 	projectConnector, err := connectorFactory(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("create project connector: %w", err)
@@ -545,18 +590,34 @@ func buildConnector(cfg workflowconfig.Config, deps Dependencies) (connector.Con
 	return projectConnector, nil
 }
 
-func buildScheduler(cfg workflowconfig.Config, deps Dependencies) (scheduler.Scheduler, error) {
+func resolveSchedulerFactory(deps Dependencies) schedulerFactory {
 	if deps.Scheduler != nil {
-		return deps.Scheduler, nil
+		return func(workflowconfig.Config) (scheduler.Scheduler, error) {
+			return deps.Scheduler, nil
+		}
 	}
+	return defaultSchedulerFactory
+}
 
+func buildScheduler(cfg workflowconfig.Config, schedulerFactory schedulerFactory) (scheduler.Scheduler, error) {
+	projectScheduler, err := schedulerFactory(cfg)
+	if err != nil {
+		return nil, fmt.Errorf("create project scheduler: %w", err)
+	}
+	if projectScheduler == nil {
+		return nil, fmt.Errorf("create project scheduler: %w", scheduler.ErrUnsupportedBackend)
+	}
+	return projectScheduler, nil
+}
+
+func defaultSchedulerFactory(cfg workflowconfig.Config) (scheduler.Scheduler, error) {
 	projectScheduler, err := scheduler.NewFromConfig(scheduler.Config{
 		Capacity:        cfg.Agent.MaxConcurrentAgents,
 		CapacityByState: cfg.Agent.MaxConcurrentAgentsByState,
 		CapacityPerHost: maxConcurrentAgentsPerHost(cfg),
 	})
 	if err != nil {
-		return nil, fmt.Errorf("create project scheduler: %w", err)
+		return nil, err
 	}
 
 	return projectScheduler, nil
@@ -573,7 +634,44 @@ func defaultConnectorFactory(cfg workflowconfig.Config) (connector.Connector, er
 		GitHubAppPrivateKeyPath: cfg.Tracker.GitHubAppPrivateKeyPath,
 		GitHubAppInstallationID: cfg.Tracker.GitHubAppInstallationID,
 		ProjectSlug:             cfg.Tracker.ProjectSlug,
+		ActiveStates:            cfg.Tracker.ActiveStates,
+		TerminalStates:          cfg.Tracker.TerminalStates,
+		StateMap:                stateMapValue(cfg.Tracker.StateMap),
+		PriorityMap:             priorityMapValue(cfg.Tracker.PriorityMap),
 	})
+}
+
+func stateMapValue(value workflowconfig.StringOrMap) map[string]string {
+	if !value.IsMap {
+		return nil
+	}
+
+	out := make(map[string]string, len(value.Map))
+	for state, mapped := range value.Map {
+		if mappedState, ok := mapped.(string); ok {
+			out[state] = mappedState
+		}
+	}
+	return out
+}
+
+func priorityMapValue(value workflowconfig.StringOrMap) map[string]*int {
+	if !value.IsMap {
+		return nil
+	}
+
+	out := make(map[string]*int, len(value.Map))
+	for name, rank := range value.Map {
+		if rank == nil {
+			out[name] = nil
+			continue
+		}
+		if intRank, ok := rank.(int); ok {
+			rankCopy := intRank
+			out[name] = &rankCopy
+		}
+	}
+	return out
 }
 
 func defaultWorkflowWatcherFactory(path string) (WorkflowWatcher, error) {

@@ -48,6 +48,11 @@ type Dependencies struct {
 	Logger    *slog.Logger
 }
 
+type RuntimeUpdate struct {
+	Config    Config
+	Connector connector.Connector
+}
+
 type Orchestrator struct {
 	cfg           Config
 	connector     connector.Connector
@@ -64,8 +69,8 @@ type stateRequest struct {
 }
 
 type configUpdateRequest struct {
-	cfg   Config
-	reply chan struct{}
+	update RuntimeUpdate
+	reply  chan struct{}
 }
 
 func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
@@ -147,7 +152,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case result := <-o.runResults:
 			o.handleRunResult(&state, result)
 		case update := <-o.configUpdates:
-			o.applyConfigUpdate(&state, update.cfg, ticker)
+			o.applyRuntimeUpdate(&state, update.update, ticker)
 			update.reply <- struct{}{}
 		case request := <-o.stateRequests:
 			request.reply <- state.clone()
@@ -156,13 +161,17 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 }
 
 func (o *Orchestrator) UpdateConfig(ctx context.Context, cfg Config) error {
+	return o.UpdateRuntime(ctx, RuntimeUpdate{Config: cfg})
+}
+
+func (o *Orchestrator) UpdateRuntime(ctx context.Context, update RuntimeUpdate) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	request := configUpdateRequest{
-		cfg:   cfg,
-		reply: make(chan struct{}, 1),
+		update: update,
+		reply:  make(chan struct{}, 1),
 	}
 	select {
 	case <-ctx.Done():
@@ -220,9 +229,16 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	o.dispatchReadyIssues(ctx, state, issues, now)
 }
 
-func (o *Orchestrator) applyConfigUpdate(state *State, cfg Config, ticker *time.Ticker) {
-	cfg = normalizeConfig(cfg)
+func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
+	cfg := normalizeConfig(update.Config)
 	o.cfg = cfg
+	if update.Connector != nil {
+		o.connector = update.Connector
+	}
+	o.supervisor.UpdateConfig(runpkg.SupervisorConfig{
+		MaxRetryBackoff:       cfg.MaxRetryBackoff,
+		FailureRetryBaseDelay: cfg.FailureRetryBaseDelay,
+	})
 	state.PollInterval = cfg.PollInterval
 	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
 	ticker.Reset(cfg.PollInterval)

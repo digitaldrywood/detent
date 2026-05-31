@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"sync"
 	"time"
 )
 
@@ -25,6 +26,7 @@ type SupervisorConfig struct {
 }
 
 type Supervisor struct {
+	mu                    sync.RWMutex
 	backend               Backend
 	maxRetryBackoff       time.Duration
 	failureRetryBaseDelay time.Duration
@@ -69,6 +71,21 @@ func NewSupervisor(backend Backend, cfg SupervisorConfig) (*Supervisor, error) {
 	}, nil
 }
 
+func (s *Supervisor) UpdateConfig(cfg SupervisorConfig) {
+	if cfg.MaxRetryBackoff <= 0 {
+		cfg.MaxRetryBackoff = defaultSupervisorMaxRetryBackoff
+	}
+	if cfg.FailureRetryBaseDelay <= 0 {
+		cfg.FailureRetryBaseDelay = defaultSupervisorFailureRetryBaseDelay
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	s.maxRetryBackoff = cfg.MaxRetryBackoff
+	s.failureRetryBaseDelay = cfg.FailureRetryBaseDelay
+}
+
 func (s *Supervisor) Dispatch(ctx context.Context, request RunRequest, completions chan<- Completion) {
 	go func() {
 		completion := s.Run(ctx, request)
@@ -111,6 +128,11 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 }
 
 func (s *Supervisor) RetryDelay(attempt int) time.Duration {
+	s.mu.RLock()
+	maxRetryBackoff := s.maxRetryBackoff
+	failureRetryBaseDelay := s.failureRetryBaseDelay
+	s.mu.RUnlock()
+
 	if attempt < 1 {
 		attempt = 1
 	}
@@ -119,9 +141,9 @@ func (s *Supervisor) RetryDelay(attempt int) time.Duration {
 		exponent = 30
 	}
 
-	delay := s.failureRetryBaseDelay * time.Duration(math.Pow(2, float64(exponent)))
-	if delay > s.maxRetryBackoff {
-		return s.maxRetryBackoff
+	delay := failureRetryBaseDelay * time.Duration(math.Pow(2, float64(exponent)))
+	if delay > maxRetryBackoff {
+		return maxRetryBackoff
 	}
 	return delay
 }

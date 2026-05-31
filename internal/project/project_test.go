@@ -134,12 +134,9 @@ func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
 
 	updates := make(chan configwatcher.Update, 1)
 	runner := newProjectBlockingRunner()
-	initial := workflowConfigWithMemoryIssue("issue-1")
+	initial := workflowConfig("memory")
 	initial.Polling.IntervalMS = int(time.Hour / time.Millisecond)
-	initial.Tracker.ActiveStates = []string{"Backlog"}
-	initial.Tracker.Issues[0].State = "Todo"
-	initial.Tracker.Issues[0].Title = "Reload workflow"
-	initial.Tracker.Issues[0].AssignedToWorker = true
+	initial.Tracker.ActiveStates = []string{"Todo"}
 
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
@@ -179,9 +176,15 @@ func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
 	case <-time.After(25 * time.Millisecond):
 	}
 
+	issue := connector.NewIssue()
+	issue.ID = "issue-1"
+	issue.Identifier = "issue-1"
+	issue.Title = "Reload workflow"
+	issue.State = "Todo"
+
 	reloaded := initial
 	reloaded.Polling.IntervalMS = 5
-	reloaded.Tracker.ActiveStates = []string{"Todo"}
+	reloaded.Tracker.Issues = []connector.Issue{issue}
 	updates <- configwatcher.Update{
 		Workflow: workflowconfig.Workflow{
 			Config: reloaded,
@@ -196,8 +199,108 @@ func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
 	if got.Workflow().Prompt != "reloaded" {
 		t.Fatalf("Workflow().Prompt = %q, want reloaded", got.Workflow().Prompt)
 	}
+	issues, err := got.Connector().FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("Connector().FetchCandidateIssues() error = %v", err)
+	}
+	if len(issues) != 1 || issues[0].ID != "issue-1" {
+		t.Fatalf("reloaded connector issues = %#v, want issue-1", issues)
+	}
 
 	close(runner.release)
+}
+
+func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
+	t.Parallel()
+
+	updates := make(chan configwatcher.Update, 1)
+	runner := newProjectBlockingRunner()
+	configs := make(chan orchestrator.Config, 2)
+	connectors := make(chan connector.Connector, 2)
+	initial := workflowConfig("memory")
+	initial.Polling.IntervalMS = int(time.Hour / time.Millisecond)
+	initial.Tracker.ActiveStates = []string{"Todo"}
+
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:       "symphony",
+			Workflow: "workflow.md",
+			Weight:   1,
+		},
+		Workflow: workflowconfig.Workflow{
+			Config: initial,
+			Prompt: "initial",
+		},
+	}, project.Dependencies{
+		Runner: runner,
+		OrchestratorFactory: func(cfg orchestrator.Config, deps orchestrator.Dependencies) (*orchestrator.Orchestrator, error) {
+			configs <- cfg
+			connectors <- deps.Connector
+			return orchestrator.New(cfg, deps)
+		},
+		WorkflowWatcherFactory: func(string) (project.WorkflowWatcher, error) {
+			return fakeWorkflowWatcher{updates: updates}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if cfg := receiveOrchestratorConfig(t, configs); cfg.PollInterval != time.Hour {
+		t.Fatalf("initial PollInterval = %v, want %v", cfg.PollInterval, time.Hour)
+	}
+	_ = receiveConnector(t, connectors)
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected run before workflow reload = %#v", request)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	issue := connector.NewIssue()
+	issue.ID = "issue-1"
+	issue.Identifier = "issue-1"
+	issue.Title = "Reload workflow"
+	issue.State = "Todo"
+
+	reloaded := initial
+	reloaded.Polling.IntervalMS = 5
+	reloaded.Tracker.Issues = []connector.Issue{issue}
+	updates <- configwatcher.Update{
+		Workflow: workflowconfig.Workflow{
+			Config: reloaded,
+			Prompt: "reloaded",
+		},
+	}
+	_ = receiveRunRequest(t, runner.started)
+
+	if err := got.Pause(context.Background()); err != nil {
+		t.Fatalf("Pause() error = %v", err)
+	}
+	if err := got.Unpause(context.Background()); err != nil {
+		t.Fatalf("Unpause() error = %v", err)
+	}
+
+	if cfg := receiveOrchestratorConfig(t, configs); cfg.PollInterval != 5*time.Millisecond {
+		t.Fatalf("restarted PollInterval = %v, want %v", cfg.PollInterval, 5*time.Millisecond)
+	}
+	restartedConnector := receiveConnector(t, connectors)
+	issues, err := restartedConnector.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("restarted connector FetchCandidateIssues() error = %v", err)
+	}
+	if len(issues) != 1 || issues[0].ID != "issue-1" {
+		t.Fatalf("restarted connector issues = %#v, want issue-1", issues)
+	}
+
+	close(runner.release)
+	if err := got.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+		t.Fatalf("Stop() error = %v", err)
+	}
 }
 
 func TestNewRejectsInvalidProjectConfig(t *testing.T) {
@@ -563,6 +666,32 @@ func receiveRunRequest(t *testing.T, ch <-chan orchestrator.RunRequest) orchestr
 	}
 
 	return orchestrator.RunRequest{}
+}
+
+func receiveOrchestratorConfig(t *testing.T, ch <-chan orchestrator.Config) orchestrator.Config {
+	t.Helper()
+
+	select {
+	case cfg := <-ch:
+		return cfg
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for orchestrator config")
+	}
+
+	return orchestrator.Config{}
+}
+
+func receiveConnector(t *testing.T, ch <-chan connector.Connector) connector.Connector {
+	t.Helper()
+
+	select {
+	case got := <-ch:
+		return got
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for connector")
+	}
+
+	return nil
 }
 
 func receiveEvent(t *testing.T, ch <-chan project.Event) project.Event {
