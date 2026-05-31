@@ -18,6 +18,7 @@ type Issue struct {
 	PRNumber         *int         `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
 	AssigneeID       string       `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
 	BlockedBy        []BlockedRef `json:"blocked_by" yaml:"blocked_by"`
+	BlockerReason    string       `json:"blocker_reason,omitempty" yaml:"blocker_reason,omitempty"`
 	Labels           []string     `json:"labels" yaml:"labels"`
 	AssignedToWorker bool         `json:"assigned_to_worker" yaml:"assigned_to_worker"`
 	CreatedAt        *time.Time   `json:"created_at,omitempty" yaml:"created_at,omitempty"`

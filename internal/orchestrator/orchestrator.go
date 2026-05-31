@@ -20,6 +20,9 @@ const (
 	defaultContinuationRetry     = time.Second
 	defaultFailureRetryBaseDelay = 10 * time.Second
 	runUpdateBufferSize          = 128
+	blockedStatusState           = "Blocked"
+	blockedReasonDependency      = "blocked by non-terminal dependency"
+	blockedReasonProjectStatus   = "blocked by project status"
 )
 
 var (
@@ -237,11 +240,19 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
 		return
 	}
+	blockedIssues, blockedErr := o.connector.FetchIssuesByStates(ctx, []string{blockedStatusState})
+	if blockedErr != nil {
+		o.logger.Warn("fetch blocked status issues failed", "error", blockedErr)
+	}
 
 	issues = cloneIssues(issues)
+	blockedIssues = cloneIssues(blockedIssues)
 	sortIssuesForDispatch(issues, o.cfg.DispatchPriorityByState)
 	o.pruneBudgetRefusals(state, now)
 	o.trackBlockedCandidates(state, issues, now)
+	if blockedErr == nil {
+		o.trackBlockedStatusIssues(state, blockedIssues, now)
+	}
 	o.dispatchReadyIssues(ctx, state, issues, now)
 }
 
@@ -284,20 +295,59 @@ func (o *Orchestrator) trackBlockedCandidates(state *State, issues []connector.I
 			seenBlocked[issue.ID] = struct{}{}
 			state.Blocked[issue.ID] = Blocked{
 				Issue:     cloneIssue(issue),
-				Reason:    "blocked by non-terminal dependency",
+				Reason:    blockedReasonDependency,
 				BlockedAt: now,
+				Source:    BlockedSourceDependency,
 			}
 		}
 	}
 
 	for issueID, blocked := range state.Blocked {
-		if blocked.Reason != "blocked by non-terminal dependency" {
+		if !blockedFromDependency(blocked) {
 			continue
 		}
 		if _, ok := seenBlocked[issueID]; !ok {
 			delete(state.Blocked, issueID)
 		}
 	}
+}
+
+func (o *Orchestrator) trackBlockedStatusIssues(state *State, issues []connector.Issue, now time.Time) {
+	seenBlocked := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		if issue.ID == "" {
+			continue
+		}
+		seenBlocked[issue.ID] = struct{}{}
+		state.Blocked[issue.ID] = Blocked{
+			Issue:     cloneIssue(issue),
+			Reason:    blockedStatusReason(issue),
+			BlockedAt: now,
+			Source:    BlockedSourceProjectStatus,
+		}
+	}
+
+	for issueID, blocked := range state.Blocked {
+		if blocked.Source != BlockedSourceProjectStatus {
+			continue
+		}
+		if _, ok := seenBlocked[issueID]; !ok {
+			delete(state.Blocked, issueID)
+		}
+	}
+}
+
+func blockedFromDependency(blocked Blocked) bool {
+	return blocked.Source == BlockedSourceDependency ||
+		(blocked.Source == "" && blocked.Reason == blockedReasonDependency)
+}
+
+func blockedStatusReason(issue connector.Issue) string {
+	reason := strings.TrimSpace(issue.BlockerReason)
+	if reason != "" {
+		return reason
+	}
+	return blockedReasonProjectStatus
 }
 
 func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
@@ -359,6 +409,10 @@ func (o *Orchestrator) releaseMissingDueRetries(
 
 	for issueID := range dueRetries {
 		if _, ok := byID[issueID]; !ok {
+			if _, blocked := state.Blocked[issueID]; blocked {
+				o.releaseClaim(state, issueID)
+				continue
+			}
 			o.releaseIssue(state, issueID)
 		}
 	}

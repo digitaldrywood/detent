@@ -43,10 +43,18 @@ type Claimed struct {
 	ClaimedAt time.Time
 }
 
+type BlockedSource string
+
+const (
+	BlockedSourceDependency    BlockedSource = "dependency"
+	BlockedSourceProjectStatus BlockedSource = "project_status"
+)
+
 type Blocked struct {
 	Issue     connector.Issue
 	Reason    string
 	BlockedAt time.Time
+	Source    BlockedSource
 }
 
 type Completed struct {
