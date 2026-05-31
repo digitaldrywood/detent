@@ -47,23 +47,30 @@ type Issue struct {
 	State       string `json:"state,omitempty"`
 }
 
+type ActivityEvent struct {
+	At      time.Time `json:"at"`
+	Event   string    `json:"event,omitempty"`
+	Message string    `json:"message,omitempty"`
+}
+
 type Running struct {
 	Issue
-	WorkerHost      string     `json:"worker_host,omitempty"`
-	ProcessIdentity string     `json:"process_identity,omitempty"`
-	WorkspacePath   string     `json:"workspace_path,omitempty"`
-	SessionID       string     `json:"session_id,omitempty"`
-	TurnCount       int        `json:"turn_count"`
-	StartedAt       time.Time  `json:"started_at"`
-	LastEventAt     *time.Time `json:"last_event_at,omitempty"`
-	LastEvent       string     `json:"last_event,omitempty"`
-	LastMessage     string     `json:"last_message,omitempty"`
-	RuntimeSeconds  float64    `json:"runtime_seconds"`
-	DiffAdded       int        `json:"diff_added"`
-	DiffRemoved     int        `json:"diff_removed"`
-	DiffFiles       int        `json:"diff_files"`
-	DiffStatus      string     `json:"diff_status,omitempty"`
-	Tokens          Tokens     `json:"tokens"`
+	WorkerHost      string          `json:"worker_host,omitempty"`
+	ProcessIdentity string          `json:"process_identity,omitempty"`
+	WorkspacePath   string          `json:"workspace_path,omitempty"`
+	SessionID       string          `json:"session_id,omitempty"`
+	TurnCount       int             `json:"turn_count"`
+	StartedAt       time.Time       `json:"started_at"`
+	LastEventAt     *time.Time      `json:"last_event_at,omitempty"`
+	LastEvent       string          `json:"last_event,omitempty"`
+	LastMessage     string          `json:"last_message,omitempty"`
+	RecentEvents    []ActivityEvent `json:"recent_events,omitempty"`
+	RuntimeSeconds  float64         `json:"runtime_seconds"`
+	DiffAdded       int             `json:"diff_added"`
+	DiffRemoved     int             `json:"diff_removed"`
+	DiffFiles       int             `json:"diff_files"`
+	DiffStatus      string          `json:"diff_status,omitempty"`
+	Tokens          Tokens          `json:"tokens"`
 }
 
 type Queued struct {

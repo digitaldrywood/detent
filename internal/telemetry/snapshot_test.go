@@ -48,10 +48,14 @@ func TestSnapshotJSONShape(t *testing.T) {
 				TurnCount:       2,
 				StartedAt:       startedAt,
 				RuntimeSeconds:  300,
-				DiffAdded:       4,
-				DiffRemoved:     2,
-				DiffFiles:       3,
-				DiffStatus:      "ok",
+				RecentEvents: []telemetry.ActivityEvent{
+					{At: generatedAt.Add(-10 * time.Second), Event: "turn_started", Message: "turn started"},
+					{At: generatedAt, Event: "agent_message_delta", Message: "writing telemetry"},
+				},
+				DiffAdded:   4,
+				DiffRemoved: 2,
+				DiffFiles:   3,
+				DiffStatus:  "ok",
 				Tokens: telemetry.Tokens{
 					Input:  10,
 					Output: 20,
@@ -212,6 +216,10 @@ func TestSnapshotJSONShape(t *testing.T) {
 	}
 	if running["process_identity"] != "4242" {
 		t.Fatalf("running process identity = %#v", running)
+	}
+	recentEvents := running["recent_events"].([]any)
+	if len(recentEvents) != 2 || recentEvents[1].(map[string]any)["message"] != "writing telemetry" {
+		t.Fatalf("running recent_events = %#v", recentEvents)
 	}
 	if running["diff_added"] != float64(4) || running["diff_removed"] != float64(2) || running["diff_files"] != float64(3) || running["diff_status"] != "ok" {
 		t.Fatalf("running diff fields = %#v", running)

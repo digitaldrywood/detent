@@ -129,6 +129,10 @@ func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 			TotalTokens:    52,
 			RuntimeSeconds: 3.5,
 		},
+		RecentEvents: []telemetry.ActivityEvent{
+			{At: lastEventAt.Add(-time.Second), Event: "turn_started", Message: "turn started"},
+			{At: lastEventAt, Event: "agent_message_delta", Message: "editing telemetry"},
+		},
 		DiffStats: orchestrator.DiffStats{
 			FilesChanged: 2,
 			AddedLines:   9,
@@ -160,6 +164,9 @@ func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 	}
 	if !running.LastEventAt.Equal(lastEventAt) {
 		t.Fatalf("Running[%q].LastEventAt = %v, want %v", issue.ID, running.LastEventAt, lastEventAt)
+	}
+	if len(running.RecentEvents) != 2 || running.RecentEvents[1].Message != "editing telemetry" {
+		t.Fatalf("Running[%q].RecentEvents = %#v", issue.ID, running.RecentEvents)
 	}
 	if running.DiffStats.FilesChanged != 2 || running.DiffStats.AddedLines != 9 || running.DiffStats.RemovedLines != 1 || running.DiffStats.Status != "ok" {
 		t.Fatalf("Running[%q].DiffStats = %#v, want live diff stats", issue.ID, running.DiffStats)

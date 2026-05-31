@@ -76,6 +76,63 @@ func TestThroughputTrendPoints(t *testing.T) {
 		}
 	}
 }
+
+func TestRunningActivityRowsUseRecentEventsNewestFirst(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 31, 15, 0, 5, 0, time.UTC)
+	row := telemetry.Running{
+		RecentEvents: []telemetry.ActivityEvent{
+			{At: now.Add(-5 * time.Second), Event: "process_started", Message: "process 4242 started"},
+			{At: now.Add(-4 * time.Second), Event: "turn_started", Message: "turn started"},
+			{At: now.Add(-3 * time.Second), Event: "agent_message_delta", Message: "editing dashboard"},
+			{At: now.Add(-2 * time.Second), Event: "token_usage", Message: "tokens updated"},
+			{At: now.Add(-time.Second), Event: "rate_limits", Message: "rate snapshot"},
+			{At: now, Event: "turn_completed", Message: "turn completed"},
+		},
+	}
+
+	rows := runningActivityRows(row)
+	if len(rows) != 5 {
+		t.Fatalf("runningActivityRows() len = %d, want 5", len(rows))
+	}
+
+	want := []struct {
+		event   string
+		message string
+		at      string
+	}{
+		{event: "turn_completed", message: "turn completed", at: "15:00:05 UTC"},
+		{event: "rate_limits", message: "rate snapshot", at: "15:00:04 UTC"},
+		{event: "token_usage", message: "tokens updated", at: "15:00:03 UTC"},
+		{event: "agent_message_delta", message: "editing dashboard", at: "15:00:02 UTC"},
+		{event: "turn_started", message: "turn started", at: "15:00:01 UTC"},
+	}
+	for i, wantRow := range want {
+		if rows[i].Event != wantRow.event || rows[i].Message != wantRow.message || rows[i].At != wantRow.at {
+			t.Fatalf("row %d = %#v, want %#v", i, rows[i], wantRow)
+		}
+	}
+}
+
+func TestRunningActivityRowsFallBackToLatestEvent(t *testing.T) {
+	t.Parallel()
+
+	at := time.Date(2026, 5, 31, 15, 3, 4, 0, time.UTC)
+	rows := runningActivityRows(telemetry.Running{
+		LastEventAt: &at,
+		LastEvent:   "agent_message_delta",
+		LastMessage: "working through review feedback",
+	})
+
+	if len(rows) != 1 {
+		t.Fatalf("runningActivityRows() len = %d, want 1", len(rows))
+	}
+	if rows[0].At != "15:03:04 UTC" || rows[0].Event != "agent_message_delta" || rows[0].Message != "working through review feedback" {
+		t.Fatalf("runningActivityRows()[0] = %#v", rows[0])
+	}
+}
+
 func TestAgentTimelineRows(t *testing.T) {
 	t.Parallel()
 

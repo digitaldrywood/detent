@@ -634,6 +634,68 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersRunningActivityHoverCard(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-running-activity",
+						Identifier: "digitaldrywood/symphony#182",
+						Title:      "Rich running activity hover card",
+						State:      "In Progress",
+					},
+					SessionID:      "thread-running-activity",
+					TurnCount:      7,
+					LastEventAt:    &now,
+					LastEvent:      "agent_message_delta",
+					LastMessage:    "full latest codex activity message with enough detail to need a hover card",
+					RuntimeSeconds: 150,
+					Tokens: telemetry.Tokens{
+						Input:  1200,
+						Output: 340,
+						Total:  1540,
+					},
+					RecentEvents: []telemetry.ActivityEvent{
+						{At: now.Add(-2 * time.Second), Event: "turn_started", Message: "turn started"},
+						{At: now.Add(-time.Second), Event: "agent_message_delta", Message: "working on templates"},
+						{At: now, Event: "token_usage", Message: "tokens updated"},
+					},
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"data-running-activity",
+		"data-running-activity-trigger",
+		"data-running-activity-panel",
+		`aria-describedby="running-activity-0"`,
+		`role="tooltip"`,
+		"Latest message",
+		"full latest codex activity message with enough detail to need a hover card",
+		"Recent activity",
+		"token_usage",
+		"tokens updated",
+		"Turn / tokens / runtime",
+		"Turn 7",
+		"In 1,200 / Out 340",
+		"2m 30s",
+		"positionRunningActivity",
+		"closeRunningActivityAfterFocus",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing running activity marker %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 	t.Parallel()
 

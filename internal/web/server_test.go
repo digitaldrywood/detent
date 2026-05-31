@@ -710,14 +710,18 @@ func TestServerAPIRoutes(t *testing.T) {
 					Description: strings.Repeat("api ", 90),
 					State:       "In Progress",
 				},
-				WorkerHost:     "host-a",
-				WorkspacePath:  "/workspaces/DD-37",
-				SessionID:      "thread-running",
-				TurnCount:      3,
-				StartedAt:      startedAt,
-				LastEventAt:    &lastEventAt,
-				LastEvent:      "notification",
-				LastMessage:    "rendered",
+				WorkerHost:    "host-a",
+				WorkspacePath: "/workspaces/DD-37",
+				SessionID:     "thread-running",
+				TurnCount:     3,
+				StartedAt:     startedAt,
+				LastEventAt:   &lastEventAt,
+				LastEvent:     "notification",
+				LastMessage:   "rendered",
+				RecentEvents: []telemetry.ActivityEvent{
+					{At: lastEventAt.Add(-time.Second), Event: "turn_started", Message: "turn started"},
+					{At: lastEventAt, Event: "notification", Message: "rendered"},
+				},
 				RuntimeSeconds: 300,
 				DiffAdded:      4,
 				DiffRemoved:    2,
@@ -892,6 +896,10 @@ func TestServerAPIRoutes(t *testing.T) {
 	if runningTokens["input_tokens"] != float64(10) || runningTokens["output_tokens"] != float64(20) || runningTokens["total_tokens"] != float64(30) {
 		t.Fatalf("running.tokens = %#v, want live token counts", runningTokens)
 	}
+	runningEvents := running["recent_events"].([]any)
+	if len(runningEvents) != 2 || runningEvents[1].(map[string]any)["message"] != "rendered" {
+		t.Fatalf("running.recent_events = %#v", runningEvents)
+	}
 
 	retrying := state["retrying"].([]any)[0].(map[string]any)
 	if retrying["issue_identifier"] != "DD-RETRY" || retrying["attempt"] != float64(2) {
@@ -948,6 +956,10 @@ func TestServerAPIRoutes(t *testing.T) {
 	issueTokens := runningIssue["tokens"].(map[string]any)
 	if issueTokens["input_tokens"] != float64(10) || issueTokens["output_tokens"] != float64(20) || issueTokens["total_tokens"] != float64(30) {
 		t.Fatalf("issue.running.tokens = %#v, want live token counts", issueTokens)
+	}
+	issueEvents := issue["recent_events"].([]any)
+	if len(issueEvents) != 2 || issueEvents[1].(map[string]any)["event"] != "notification" {
+		t.Fatalf("issue.recent_events = %#v", issueEvents)
 	}
 
 	retryIssue := requestJSON(t, server, http.MethodGet, "/api/v1/DD-RETRY", http.StatusOK)

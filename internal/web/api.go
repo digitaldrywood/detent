@@ -147,7 +147,7 @@ func issueResponse(identifier string, snapshot telemetry.Snapshot) (issueAPIResp
 			Retry:           nil,
 			Blocked:         nil,
 			Logs:            logsAPIResponse{CodexSessionLogs: []logAPIResponse{}},
-			RecentEvents:    recentEvents(running.LastEventAt, running.LastEvent, running.LastMessage),
+			RecentEvents:    recentEventsFromTelemetry(running.RecentEvents, running.LastEventAt, running.LastEvent, running.LastMessage),
 			LastError:       nil,
 			Tracked:         map[string]any{},
 		}, true
@@ -220,6 +220,7 @@ func runningEntries(entries []telemetry.Running) []runningAPIResponse {
 			LastMessage:      optionalString(entry.LastMessage),
 			StartedAt:        timestampString(entry.StartedAt),
 			LastEventAt:      timestampStringPtr(entry.LastEventAt),
+			RecentEvents:     recentEventsFromTelemetry(entry.RecentEvents, entry.LastEventAt, entry.LastEvent, entry.LastMessage),
 			DiffAdded:        entry.DiffAdded,
 			DiffRemoved:      entry.DiffRemoved,
 			DiffFiles:        entry.DiffFiles,
@@ -351,6 +352,26 @@ func recentEvents(at *time.Time, event string, message string) []recentEventAPIR
 			Message: optionalString(message),
 		},
 	}
+}
+
+func recentEventsFromTelemetry(events []telemetry.ActivityEvent, fallbackAt *time.Time, fallbackEvent string, fallbackMessage string) []recentEventAPIResponse {
+	if len(events) == 0 {
+		return recentEvents(fallbackAt, fallbackEvent, fallbackMessage)
+	}
+
+	payload := make([]recentEventAPIResponse, 0, len(events))
+	for _, event := range events {
+		timestamp := timestampString(event.At)
+		if timestamp == nil {
+			continue
+		}
+		payload = append(payload, recentEventAPIResponse{
+			At:      *timestamp,
+			Event:   optionalString(event.Event),
+			Message: optionalString(event.Message),
+		})
+	}
+	return payload
 }
 
 func findRunning(identifier string, entries []telemetry.Running) (telemetry.Running, bool) {
@@ -725,26 +746,27 @@ type countsAPIResponse struct {
 }
 
 type runningAPIResponse struct {
-	IssueID          string                 `json:"issue_id"`
-	IssueIdentifier  string                 `json:"issue_identifier"`
-	IssueURL         *string                `json:"issue_url"`
-	IssueTitle       *string                `json:"issue_title"`
-	IssueDescription *string                `json:"issue_description"`
-	BudgetAlert      bool                   `json:"budget_alert?"`
-	State            string                 `json:"state"`
-	WorkerHost       *string                `json:"worker_host"`
-	WorkspacePath    *string                `json:"workspace_path"`
-	SessionID        *string                `json:"session_id"`
-	TurnCount        int                    `json:"turn_count"`
-	LastEvent        *string                `json:"last_event"`
-	LastMessage      *string                `json:"last_message"`
-	StartedAt        *string                `json:"started_at"`
-	LastEventAt      *string                `json:"last_event_at"`
-	DiffAdded        int                    `json:"diff_added"`
-	DiffRemoved      int                    `json:"diff_removed"`
-	DiffFiles        int                    `json:"diff_files"`
-	DiffStatus       string                 `json:"diff_status"`
-	Tokens           tokenCountsAPIResponse `json:"tokens"`
+	IssueID          string                   `json:"issue_id"`
+	IssueIdentifier  string                   `json:"issue_identifier"`
+	IssueURL         *string                  `json:"issue_url"`
+	IssueTitle       *string                  `json:"issue_title"`
+	IssueDescription *string                  `json:"issue_description"`
+	BudgetAlert      bool                     `json:"budget_alert?"`
+	State            string                   `json:"state"`
+	WorkerHost       *string                  `json:"worker_host"`
+	WorkspacePath    *string                  `json:"workspace_path"`
+	SessionID        *string                  `json:"session_id"`
+	TurnCount        int                      `json:"turn_count"`
+	LastEvent        *string                  `json:"last_event"`
+	LastMessage      *string                  `json:"last_message"`
+	StartedAt        *string                  `json:"started_at"`
+	LastEventAt      *string                  `json:"last_event_at"`
+	RecentEvents     []recentEventAPIResponse `json:"recent_events"`
+	DiffAdded        int                      `json:"diff_added"`
+	DiffRemoved      int                      `json:"diff_removed"`
+	DiffFiles        int                      `json:"diff_files"`
+	DiffStatus       string                   `json:"diff_status"`
+	Tokens           tokenCountsAPIResponse   `json:"tokens"`
 }
 
 type retryAPIResponse struct {

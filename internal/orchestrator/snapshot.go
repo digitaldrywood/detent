@@ -53,6 +53,7 @@ func runningSnapshots(running map[string]Running) []telemetry.Running {
 			LastEventAt:     lastEventAt,
 			LastEvent:       entry.LastEvent,
 			LastMessage:     entry.LastMessage,
+			RecentEvents:    cloneActivityEvents(entry.RecentEvents),
 			TurnCount:       entry.TurnCount,
 			RuntimeSeconds:  entry.Tokens.RuntimeSeconds,
 			DiffAdded:       entry.DiffStats.AddedLines,
