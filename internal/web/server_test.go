@@ -15,6 +15,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/symphony/internal/budget"
 	"github.com/digitaldrywood/symphony/internal/connector"
 	"github.com/digitaldrywood/symphony/internal/hub"
 	"github.com/digitaldrywood/symphony/internal/store"
@@ -921,6 +922,126 @@ func TestServerAPIErrorRoutes(t *testing.T) {
 	}
 }
 
+func TestServerUsageAPIReportsAggregates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	usageStore, err := store.Open(ctx, store.Config{
+		Backend: store.BackendSQLite,
+		Path:    filepath.Join(t.TempDir(), "symphony.db"),
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := usageStore.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	seedUsageAPIEvents(t, ctx, usageStore)
+
+	deps := testDeps(t)
+	deps.Store = usageStore
+	server, err := web.NewServer(web.Config{
+		Pricing: budget.PricingTable{
+			"gpt-report": {
+				USDPerInputToken:  0.01,
+				USDPerOutputToken: 0.02,
+			},
+			"gpt-report-mini": {
+				USDPerInputToken:  0.001,
+				USDPerOutputToken: 0.002,
+			},
+		},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	day := requestJSON(t, server, http.MethodGet, "/api/v1/usage?by=day&from=2026-05-31&to=2026-05-31", http.StatusOK)
+	if day["by"] != "day" {
+		t.Fatalf("by = %#v, want day", day["by"])
+	}
+	if got := nestedString(t, day, "totals", "total_tokens"); got != "225" {
+		t.Fatalf("totals.total_tokens = %s, want 225", got)
+	}
+	if got := nestedString(t, day, "totals", "spend_usd"); got != "2.1" {
+		t.Fatalf("totals.spend_usd = %s, want 2.1", got)
+	}
+	series := day["series"].([]any)
+	if len(series) != 1 {
+		t.Fatalf("series len = %d, want 1: %#v", len(series), series)
+	}
+	point := series[0].(map[string]any)
+	if point["bucket"] != "2026-05-31" || point["date"] != "2026-05-31" || point["events"] != float64(2) {
+		t.Fatalf("day point = %#v", point)
+	}
+
+	project := requestJSON(t, server, http.MethodGet, "/api/v1/usage?by=project&from=2026-05-31&to=2026-06-01", http.StatusOK)
+	breakdowns := project["breakdowns"].([]any)
+	if len(breakdowns) != 2 {
+		t.Fatalf("breakdowns len = %d, want 2: %#v", len(breakdowns), breakdowns)
+	}
+	symphony := usageBucket(t, breakdowns, "symphony")
+	if symphony["total_tokens"] != float64(225) || symphony["spend_usd"] != 2.1 {
+		t.Fatalf("symphony breakdown = %#v", symphony)
+	}
+
+	tests := []struct {
+		name       string
+		path       string
+		wantBucket string
+	}{
+		{name: "issue", path: "/api/v1/usage?by=issue", wantBucket: "digitaldrywood/symphony#119"},
+		{name: "pr", path: "/api/v1/usage?by=pr", wantBucket: "symphony#141"},
+		{name: "model", path: "/api/v1/usage?by=model", wantBucket: "gpt-report"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			payload := requestJSON(t, server, http.MethodGet, tt.path, http.StatusOK)
+			rows := payload["breakdowns"].([]any)
+			if usageBucket(t, rows, tt.wantBucket) == nil {
+				t.Fatalf("missing bucket %q in %#v", tt.wantBucket, rows)
+			}
+		})
+	}
+}
+
+func TestServerUsageAPIRejectsInvalidParameters(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	deps.Store = openWebTestStore(t)
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	tests := []struct {
+		name     string
+		path     string
+		wantCode string
+	}{
+		{name: "invalid group", path: "/api/v1/usage?by=week", wantCode: "invalid_usage_group"},
+		{name: "invalid from", path: "/api/v1/usage?by=day&from=2026-31-05", wantCode: "invalid_date"},
+		{name: "invalid range", path: "/api/v1/usage?by=day&from=2026-06-02&to=2026-06-01", wantCode: "invalid_date_range"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			payload := requestJSON(t, server, http.MethodGet, tt.path, http.StatusBadRequest)
+			if got := nestedString(t, payload, "error", "code"); got != tt.wantCode {
+				t.Fatalf("error.code = %q, want %q; payload = %#v", got, tt.wantCode, payload)
+			}
+		})
+	}
+}
+
 func testDeps(t *testing.T) web.Dependencies {
 	t.Helper()
 
@@ -930,6 +1051,96 @@ func testDeps(t *testing.T) web.Dependencies {
 		Registry:  struct{}{},
 		Connector: connectorProbe{name: "memory"},
 	}
+}
+
+func openWebTestStore(t *testing.T) store.Store {
+	t.Helper()
+
+	backend, err := store.Open(context.Background(), store.Config{
+		Backend: store.BackendSQLite,
+		Path:    filepath.Join(t.TempDir(), "symphony.db"),
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	return backend
+}
+
+func seedUsageAPIEvents(t *testing.T, ctx context.Context, backend store.Store) {
+	t.Helper()
+
+	events := []store.UsageEvent{
+		{
+			ProjectID:      "symphony",
+			IssueID:        "issue-119",
+			Identifier:     "digitaldrywood/symphony#119",
+			PRNumber:       int64Ptr(141),
+			Model:          "gpt-report",
+			InputTokens:    100,
+			OutputTokens:   50,
+			TotalTokens:    150,
+			RuntimeSeconds: 30,
+			StartedAt:      time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 5, 31, 9, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+		},
+		{
+			ProjectID:      "symphony",
+			IssueID:        "issue-120",
+			Identifier:     "digitaldrywood/symphony#120",
+			PRNumber:       int64Ptr(142),
+			Model:          "gpt-report-mini",
+			InputTokens:    50,
+			OutputTokens:   25,
+			TotalTokens:    75,
+			RuntimeSeconds: 15,
+			StartedAt:      time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 5, 31, 10, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+		},
+		{
+			ProjectID:      "pyroapex",
+			IssueID:        "issue-119",
+			Identifier:     "digitaldrywood/symphony#119",
+			PRNumber:       int64Ptr(141),
+			Model:          "gpt-report",
+			InputTokens:    70,
+			OutputTokens:   30,
+			TotalTokens:    100,
+			RuntimeSeconds: 25,
+			StartedAt:      time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 6, 1, 11, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+		},
+	}
+
+	for _, event := range events {
+		if _, err := backend.RecordUsageEvent(ctx, event); err != nil {
+			t.Fatalf("RecordUsageEvent() error = %v", err)
+		}
+	}
+}
+
+func usageBucket(t *testing.T, rows []any, bucket string) map[string]any {
+	t.Helper()
+
+	for _, row := range rows {
+		object := row.(map[string]any)
+		if object["bucket"] == bucket {
+			return object
+		}
+	}
+	t.Fatalf("missing bucket %q in %#v", bucket, rows)
+	return nil
+}
+
+func int64Ptr(value int64) *int64 {
+	return &value
 }
 
 func requestJSON(t *testing.T, server *web.Server, method string, path string, wantStatus int) map[string]any {

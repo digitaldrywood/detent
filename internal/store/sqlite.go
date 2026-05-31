@@ -210,6 +210,102 @@ func (s *sqliteStore) RecordUsageEvent(ctx context.Context, attrs UsageEvent) (i
 	return event.ID, nil
 }
 
+func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (UsageReport, error) {
+	group, err := normalizeUsageReportGroup(query.By)
+	if err != nil {
+		return UsageReport{}, err
+	}
+	from, err := optionalDateString(query.From)
+	if err != nil {
+		return UsageReport{}, err
+	}
+	to, err := optionalDateString(query.To)
+	if err != nil {
+		return UsageReport{}, err
+	}
+	if from != "" && to != "" && from > to {
+		return UsageReport{}, errors.New("from date must be on or before to date")
+	}
+
+	rows, err := s.queries.UsageReportRows(ctx, sqlc.UsageReportRowsParams{
+		BucketBy: string(group),
+		FromDay:  nullString(from),
+		ToDay:    nullString(to),
+	})
+	if err != nil {
+		return UsageReport{}, fmt.Errorf("reading usage report: %w", err)
+	}
+
+	report := UsageReport{
+		By:   group,
+		From: from,
+		To:   to,
+		Rows: []UsageReportRow{},
+		Totals: UsageReportTotals{
+			Models: []UsageReportModel{},
+		},
+	}
+	rowByKey := map[string]int{}
+	modelTotals := map[string]int{}
+	for _, row := range rows {
+		key := row.GroupKey
+		if key == "" {
+			key = "unassigned"
+		}
+
+		index, ok := rowByKey[key]
+		if !ok {
+			report.Rows = append(report.Rows, UsageReportRow{
+				Key:    key,
+				Models: []UsageReportModel{},
+			})
+			index = len(report.Rows) - 1
+			rowByKey[key] = index
+		}
+
+		model := UsageReportModel{
+			Model:          row.Model,
+			InputTokens:    row.InputTokens,
+			OutputTokens:   row.OutputTokens,
+			TotalTokens:    row.TotalTokens,
+			RuntimeSeconds: row.RuntimeSeconds,
+			Events:         row.Events,
+		}
+		if model.Model == "" {
+			model.Model = "unassigned"
+		}
+
+		report.Rows[index].InputTokens += model.InputTokens
+		report.Rows[index].OutputTokens += model.OutputTokens
+		report.Rows[index].TotalTokens += model.TotalTokens
+		report.Rows[index].RuntimeSeconds += model.RuntimeSeconds
+		report.Rows[index].Events += model.Events
+		report.Rows[index].Models = append(report.Rows[index].Models, model)
+
+		report.Totals.InputTokens += model.InputTokens
+		report.Totals.OutputTokens += model.OutputTokens
+		report.Totals.TotalTokens += model.TotalTokens
+		report.Totals.RuntimeSeconds += model.RuntimeSeconds
+		report.Totals.Events += model.Events
+
+		modelIndex, ok := modelTotals[model.Model]
+		if !ok {
+			report.Totals.Models = append(report.Totals.Models, UsageReportModel{
+				Model: model.Model,
+			})
+			modelIndex = len(report.Totals.Models) - 1
+			modelTotals[model.Model] = modelIndex
+		}
+		report.Totals.Models[modelIndex].InputTokens += model.InputTokens
+		report.Totals.Models[modelIndex].OutputTokens += model.OutputTokens
+		report.Totals.Models[modelIndex].TotalTokens += model.TotalTokens
+		report.Totals.Models[modelIndex].RuntimeSeconds += model.RuntimeSeconds
+		report.Totals.Models[modelIndex].Events += model.Events
+	}
+
+	return report, nil
+}
+
 func (s *sqliteStore) DailyTokenSpend(ctx context.Context, day time.Time) (TokenSpend, error) {
 	date, err := dateString(day)
 	if err != nil {
@@ -331,6 +427,17 @@ func normalizeIssueIdentity(identity IssueIdentity) IssueIdentity {
 	}
 }
 
+func normalizeUsageReportGroup(group UsageReportGroup) (UsageReportGroup, error) {
+	switch group {
+	case "", UsageReportByDay:
+		return UsageReportByDay, nil
+	case UsageReportByProject, UsageReportByIssue, UsageReportByPR, UsageReportByModel:
+		return group, nil
+	default:
+		return "", fmt.Errorf("unsupported usage report group %q", group)
+	}
+}
+
 func configureSQLite(ctx context.Context, db *sql.DB, busyTimeoutMillis int64) error {
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", busyTimeoutMillis)); err != nil {
 		return fmt.Errorf("setting sqlite busy_timeout: %w", err)
@@ -359,6 +466,13 @@ func dateString(value time.Time) (string, error) {
 		return "", errors.New("date is required")
 	}
 	return value.Format("2006-01-02"), nil
+}
+
+func optionalDateString(value time.Time) (string, error) {
+	if value.IsZero() {
+		return "", nil
+	}
+	return dateString(value)
 }
 
 func parseTimestamp(name string, value string) (time.Time, error) {

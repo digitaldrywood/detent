@@ -10,7 +10,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
+	"github.com/digitaldrywood/symphony/internal/budget"
 	"github.com/digitaldrywood/symphony/internal/orchestrator"
+	"github.com/digitaldrywood/symphony/internal/store"
 	"github.com/digitaldrywood/symphony/internal/telemetry"
 )
 
@@ -63,6 +65,21 @@ func (s *Server) apiRefresh(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusAccepted, payload)
+}
+
+func (s *Server) apiUsage(c echo.Context) error {
+	query, response, status := usageReportQuery(c)
+	if response != nil {
+		return c.JSON(status, response)
+	}
+
+	report, err := s.store.UsageReport(c.Request().Context(), query)
+	if err != nil {
+		s.logger.Error("usage report failed", slog.Any("error", err))
+		return c.JSON(http.StatusInternalServerError, errorResponse("usage_report_failed", "Usage report failed"))
+	}
+
+	return c.JSON(http.StatusOK, usageReportResponse(report, s.pricing))
 }
 
 func (s *Server) methodNotAllowed(c echo.Context) error {
@@ -400,6 +417,157 @@ func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
 	}
 }
 
+func usageReportQuery(c echo.Context) (store.UsageReportQuery, *apiErrorResponse, int) {
+	group, ok := usageReportGroup(c.QueryParam("by"))
+	if !ok {
+		response := errorResponse("invalid_usage_group", "by must be one of day, project, issue, pr, model")
+		return store.UsageReportQuery{}, &response, http.StatusBadRequest
+	}
+
+	from, response, status := usageDate("from", c.QueryParam("from"))
+	if response != nil {
+		return store.UsageReportQuery{}, response, status
+	}
+	to, response, status := usageDate("to", c.QueryParam("to"))
+	if response != nil {
+		return store.UsageReportQuery{}, response, status
+	}
+	if !from.IsZero() && !to.IsZero() && from.After(to) {
+		response := errorResponse("invalid_date_range", "from must be on or before to")
+		return store.UsageReportQuery{}, &response, http.StatusBadRequest
+	}
+
+	return store.UsageReportQuery{
+		By:   group,
+		From: from,
+		To:   to,
+	}, nil, 0
+}
+
+func usageReportGroup(value string) (store.UsageReportGroup, bool) {
+	switch strings.TrimSpace(value) {
+	case "", string(store.UsageReportByDay):
+		return store.UsageReportByDay, true
+	case string(store.UsageReportByProject):
+		return store.UsageReportByProject, true
+	case string(store.UsageReportByIssue):
+		return store.UsageReportByIssue, true
+	case string(store.UsageReportByPR):
+		return store.UsageReportByPR, true
+	case string(store.UsageReportByModel):
+		return store.UsageReportByModel, true
+	default:
+		return "", false
+	}
+}
+
+func usageDate(name string, value string) (time.Time, *apiErrorResponse, int) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return time.Time{}, nil, 0
+	}
+
+	parsed, err := time.ParseInLocation("2006-01-02", value, time.UTC)
+	if err != nil {
+		response := errorResponse("invalid_date", name+" must use YYYY-MM-DD")
+		return time.Time{}, &response, http.StatusBadRequest
+	}
+	return parsed, nil, 0
+}
+
+func usageReportResponse(report store.UsageReport, pricing budget.PricingTable) usageReportAPIResponse {
+	rows := usageBucketResponses(report.By, report.Rows, pricing)
+	response := usageReportAPIResponse{
+		By:         string(report.By),
+		From:       optionalString(report.From),
+		To:         optionalString(report.To),
+		Totals:     usageTotalsResponse(report.Totals, pricing),
+		Series:     []usageBucketAPIResponse{},
+		Breakdowns: []usageBucketAPIResponse{},
+	}
+	if report.By == store.UsageReportByDay {
+		response.Series = rows
+		return response
+	}
+
+	response.Breakdowns = rows
+	return response
+}
+
+func usageBucketResponses(group store.UsageReportGroup, rows []store.UsageReportRow, pricing budget.PricingTable) []usageBucketAPIResponse {
+	payload := make([]usageBucketAPIResponse, 0, len(rows))
+	for _, row := range rows {
+		payload = append(payload, usageBucketResponse(group, row, pricing))
+	}
+	return payload
+}
+
+func usageBucketResponse(group store.UsageReportGroup, row store.UsageReportRow, pricing budget.PricingTable) usageBucketAPIResponse {
+	return usageBucketAPIResponse{
+		Bucket:         row.Key,
+		Label:          row.Key,
+		Date:           usageBucketDate(group, row.Key),
+		InputTokens:    row.InputTokens,
+		OutputTokens:   row.OutputTokens,
+		TotalTokens:    row.TotalTokens,
+		RuntimeSeconds: row.RuntimeSeconds,
+		Events:         row.Events,
+		SpendUSD:       usageSpendUSD(row.Models, pricing),
+		Models:         usageModelResponses(row.Models, pricing),
+	}
+}
+
+func usageTotalsResponse(totals store.UsageReportTotals, pricing budget.PricingTable) usageTotalsAPIResponse {
+	return usageTotalsAPIResponse{
+		InputTokens:    totals.InputTokens,
+		OutputTokens:   totals.OutputTokens,
+		TotalTokens:    totals.TotalTokens,
+		RuntimeSeconds: totals.RuntimeSeconds,
+		Events:         totals.Events,
+		SpendUSD:       usageSpendUSD(totals.Models, pricing),
+		Models:         usageModelResponses(totals.Models, pricing),
+	}
+}
+
+func usageModelResponses(models []store.UsageReportModel, pricing budget.PricingTable) []usageModelAPIResponse {
+	payload := make([]usageModelAPIResponse, 0, len(models))
+	for _, model := range models {
+		payload = append(payload, usageModelAPIResponse{
+			Model:          model.Model,
+			InputTokens:    model.InputTokens,
+			OutputTokens:   model.OutputTokens,
+			TotalTokens:    model.TotalTokens,
+			RuntimeSeconds: model.RuntimeSeconds,
+			Events:         model.Events,
+			SpendUSD:       usageSpendUSD([]store.UsageReportModel{model}, pricing),
+		})
+	}
+	return payload
+}
+
+func usageSpendUSD(models []store.UsageReportModel, pricing budget.PricingTable) float64 {
+	spend := store.TokenSpend{
+		ByModel: make([]store.ModelTokenSpend, 0, len(models)),
+	}
+	for _, model := range models {
+		spend.ByModel = append(spend.ByModel, store.ModelTokenSpend{
+			Model:        model.Model,
+			InputTokens:  model.InputTokens,
+			OutputTokens: model.OutputTokens,
+			TotalTokens:  model.TotalTokens,
+			Sessions:     model.Events,
+		})
+	}
+	return budget.SpendUSD(spend, pricing)
+}
+
+func usageBucketDate(group store.UsageReportGroup, key string) *string {
+	if group != store.UsageReportByDay {
+		return nil
+	}
+	return optionalString(key)
+}
+
 func dueAtString(entry telemetry.Queued) *string {
 	if entry.DueAt != nil {
 		return timestampStringPtr(entry.DueAt)
@@ -622,6 +790,48 @@ type budgetAPIResponse struct {
 	PerIssueMaxUSD   *float64                  `json:"per_issue_max_usd"`
 	Days             []telemetry.BudgetDay     `json:"days"`
 	Refusals         []telemetry.BudgetRefusal `json:"refusals,omitempty"`
+}
+
+type usageReportAPIResponse struct {
+	By         string                   `json:"by"`
+	From       *string                  `json:"from"`
+	To         *string                  `json:"to"`
+	Totals     usageTotalsAPIResponse   `json:"totals"`
+	Series     []usageBucketAPIResponse `json:"series"`
+	Breakdowns []usageBucketAPIResponse `json:"breakdowns"`
+}
+
+type usageTotalsAPIResponse struct {
+	InputTokens    int64                   `json:"input_tokens"`
+	OutputTokens   int64                   `json:"output_tokens"`
+	TotalTokens    int64                   `json:"total_tokens"`
+	RuntimeSeconds int64                   `json:"runtime_seconds"`
+	Events         int64                   `json:"events"`
+	SpendUSD       float64                 `json:"spend_usd"`
+	Models         []usageModelAPIResponse `json:"models"`
+}
+
+type usageBucketAPIResponse struct {
+	Bucket         string                  `json:"bucket"`
+	Label          string                  `json:"label"`
+	Date           *string                 `json:"date"`
+	InputTokens    int64                   `json:"input_tokens"`
+	OutputTokens   int64                   `json:"output_tokens"`
+	TotalTokens    int64                   `json:"total_tokens"`
+	RuntimeSeconds int64                   `json:"runtime_seconds"`
+	Events         int64                   `json:"events"`
+	SpendUSD       float64                 `json:"spend_usd"`
+	Models         []usageModelAPIResponse `json:"models"`
+}
+
+type usageModelAPIResponse struct {
+	Model          string  `json:"model"`
+	InputTokens    int64   `json:"input_tokens"`
+	OutputTokens   int64   `json:"output_tokens"`
+	TotalTokens    int64   `json:"total_tokens"`
+	RuntimeSeconds int64   `json:"runtime_seconds"`
+	Events         int64   `json:"events"`
+	SpendUSD       float64 `json:"spend_usd"`
 }
 
 type issueAPIResponse struct {

@@ -621,3 +621,83 @@ func (q *Queries) UpsertFairShareUsage(ctx context.Context, arg UpsertFairShareU
 	)
 	return i, err
 }
+
+const usageReportRows = `-- name: UsageReportRows :many
+WITH usage_report_rows AS (
+  SELECT
+    CASE
+      WHEN ?1 = 'day' THEN event_day
+      WHEN ?1 = 'project' THEN project_id
+      WHEN ?1 = 'issue' THEN COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), 'unassigned')
+      WHEN ?1 = 'pr' THEN project_id || '#' || COALESCE(CAST(pr_number AS TEXT), 'unassigned')
+      WHEN ?1 = 'model' THEN COALESCE(NULLIF(model, ''), 'unassigned')
+      ELSE event_day
+    END AS group_key,
+    COALESCE(NULLIF(model, ''), 'unassigned') AS model,
+    input_tokens,
+    output_tokens,
+    total_tokens,
+    runtime_seconds
+  FROM usage_events
+  WHERE (?2 IS NULL OR event_day >= ?2)
+    AND (?3 IS NULL OR event_day <= ?3)
+)
+SELECT
+  CAST(usage_report_rows.group_key AS TEXT) AS group_key,
+  CAST(usage_report_rows.model AS TEXT) AS model,
+  CAST(COALESCE(SUM(usage_report_rows.input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(usage_report_rows.output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(usage_report_rows.total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COALESCE(SUM(usage_report_rows.runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
+  CAST(COUNT(*) AS INTEGER) AS events
+FROM usage_report_rows
+GROUP BY usage_report_rows.group_key, usage_report_rows.model
+ORDER BY usage_report_rows.group_key, usage_report_rows.model
+`
+
+type UsageReportRowsParams struct {
+	BucketBy interface{} `json:"bucket_by"`
+	FromDay  interface{} `json:"from_day"`
+	ToDay    interface{} `json:"to_day"`
+}
+
+type UsageReportRowsRow struct {
+	GroupKey       string `json:"group_key"`
+	Model          string `json:"model"`
+	InputTokens    int64  `json:"input_tokens"`
+	OutputTokens   int64  `json:"output_tokens"`
+	TotalTokens    int64  `json:"total_tokens"`
+	RuntimeSeconds int64  `json:"runtime_seconds"`
+	Events         int64  `json:"events"`
+}
+
+func (q *Queries) UsageReportRows(ctx context.Context, arg UsageReportRowsParams) ([]UsageReportRowsRow, error) {
+	rows, err := q.db.QueryContext(ctx, usageReportRows, arg.BucketBy, arg.FromDay, arg.ToDay)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UsageReportRowsRow{}
+	for rows.Next() {
+		var i UsageReportRowsRow
+		if err := rows.Scan(
+			&i.GroupKey,
+			&i.Model,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.TotalTokens,
+			&i.RuntimeSeconds,
+			&i.Events,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
