@@ -8,21 +8,14 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/symphony/internal/telemetry"
-	webchart "github.com/digitaldrywood/symphony/internal/web/chart"
 )
 
 type DashboardData struct {
-	Title          string
-	Version        string
-	DashboardURL   string
-	ConnectorName  string
-	Snapshot       telemetry.Snapshot
-	TokenSparkline []TokenSparklinePoint
-}
-
-type TokenSparklinePoint struct {
-	Label string
-	Value int64
+	Title         string
+	Version       string
+	DashboardURL  string
+	ConnectorName string
+	Snapshot      telemetry.Snapshot
 }
 
 type Budget = telemetry.Budget
@@ -298,18 +291,21 @@ func percentStyle(percent int) string {
 	return fmt.Sprintf("width: %d%%;", percent)
 }
 
-func tokenSparklineChart(data DashboardData) SeriesChartData {
-	points := tokenSparklinePoints(data)
-	chartPoints := make([]webchart.Point, 0, len(points))
+func tokenTrendChart(snapshot telemetry.Snapshot) SplitSeriesChartData {
+	points := tokenTrendPoints(snapshot)
+	chartPoints := make([]SplitSeriesPoint, 0, len(points))
 	for _, point := range points {
-		chartPoints = append(chartPoints, webchart.Point{
-			Label: point.Label,
-			Value: float64(point.Value),
+		chartPoints = append(chartPoints, SplitSeriesPoint{
+			Label:  tokenTrendLabel(point),
+			Input:  float64(point.Input),
+			Output: float64(point.Output),
 		})
 	}
-	return SeriesChartData{
-		Title:       "Token sparkline",
-		AriaLabel:   "Token sparkline",
+	return SplitSeriesChartData{
+		Title:       "Token trend",
+		AriaLabel:   "Token trend",
+		InputLabel:  "Input",
+		OutputLabel: "Output",
 		Points:      chartPoints,
 		ValueSuffix: "tokens",
 	}
@@ -400,41 +396,37 @@ func usedPercent(bucket *telemetry.RateLimitBucket) int {
 	return 0
 }
 
-func tokenSparklinePoints(data DashboardData) []TokenSparklinePoint {
-	if len(data.TokenSparkline) > 0 {
-		points := make([]TokenSparklinePoint, 0, len(data.TokenSparkline))
-		for i, point := range data.TokenSparkline {
-			if point.Label == "" {
-				point.Label = "Point " + strconv.Itoa(i+1)
+func tokenTrendPoints(snapshot telemetry.Snapshot) []telemetry.TokenTrendPoint {
+	if len(snapshot.TokenTrend) > 0 {
+		points := make([]telemetry.TokenTrendPoint, 0, len(snapshot.TokenTrend))
+		for _, point := range snapshot.TokenTrend {
+			if point.Input <= 0 && point.Output <= 0 && point.Total <= 0 {
+				continue
+			}
+			if point.Total <= 0 {
+				point.Total = point.Input + point.Output
 			}
 			points = append(points, point)
 		}
 		return points
 	}
 
-	if len(data.Snapshot.Running) > 0 {
-		points := make([]TokenSparklinePoint, 0, len(data.Snapshot.Running))
-		for _, row := range data.Snapshot.Running {
-			if row.Tokens.Total <= 0 {
-				continue
-			}
-			points = append(points, TokenSparklinePoint{
-				Label: issueIdentifier(row.Issue),
-				Value: row.Tokens.Total,
-			})
-		}
-		if len(points) > 0 {
-			return points
-		}
+	if snapshot.Tokens.Input <= 0 && snapshot.Tokens.Output <= 0 && snapshot.Tokens.Total <= 0 {
+		return nil
 	}
-
-	if data.Snapshot.Tokens.Total > 0 {
-		return []TokenSparklinePoint{
-			{Label: "Input", Value: data.Snapshot.Tokens.Input},
-			{Label: "Output", Value: data.Snapshot.Tokens.Output},
-			{Label: "Total", Value: data.Snapshot.Tokens.Total},
-		}
+	return []telemetry.TokenTrendPoint{
+		{
+			At:     snapshot.GeneratedAt,
+			Input:  snapshot.Tokens.Input,
+			Output: snapshot.Tokens.Output,
+			Total:  snapshot.Tokens.Total,
+		},
 	}
+}
 
-	return nil
+func tokenTrendLabel(point telemetry.TokenTrendPoint) string {
+	if point.At.IsZero() {
+		return "Latest"
+	}
+	return point.At.UTC().Format("15:04")
 }

@@ -117,6 +117,20 @@ func TestSnapshotJSONShape(t *testing.T) {
 			Total:          330,
 			RuntimeSeconds: 540,
 		},
+		TokenTrend: []telemetry.TokenTrendPoint{
+			{
+				At:     generatedAt.Add(-time.Minute),
+				Input:  50,
+				Output: 100,
+				Total:  150,
+			},
+			{
+				At:     generatedAt,
+				Input:  110,
+				Output: 220,
+				Total:  330,
+			},
+		},
 	}
 
 	data, err := json.Marshal(snapshot)
@@ -139,6 +153,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 		"budget",
 		"rate_limits",
 		"tokens",
+		"token_trend",
 	} {
 		if _, ok := got[key]; !ok {
 			t.Fatalf("snapshot JSON missing %q: %s", key, string(data))
@@ -185,5 +200,14 @@ func TestSnapshotJSONShape(t *testing.T) {
 	tokens := got["tokens"].(map[string]any)
 	if tokens["input_tokens"] != float64(110) || tokens["output_tokens"] != float64(220) || tokens["total_tokens"] != float64(330) {
 		t.Fatalf("tokens = %#v", tokens)
+	}
+
+	trend := got["token_trend"].([]any)
+	if len(trend) != 2 {
+		t.Fatalf("token_trend len = %d, want 2", len(trend))
+	}
+	latest := trend[1].(map[string]any)
+	if latest["input_tokens"] != float64(110) || latest["output_tokens"] != float64(220) || latest["total_tokens"] != float64(330) {
+		t.Fatalf("token_trend[1] = %#v", latest)
 	}
 }

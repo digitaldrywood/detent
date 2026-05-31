@@ -84,10 +84,20 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 				Total:          200_000,
 				RuntimeSeconds: 540,
 			},
-		},
-		TokenSparkline: []templates.TokenSparklinePoint{
-			{Label: "14:55", Value: 20_000},
-			{Label: "15:00", Value: 200_000},
+			TokenTrend: []telemetry.TokenTrendPoint{
+				{
+					At:     now.Add(-5 * time.Minute),
+					Input:  20_000,
+					Output: 4_000,
+					Total:  24_000,
+				},
+				{
+					At:     now,
+					Input:  150_000,
+					Output: 50_000,
+					Total:  200_000,
+				},
+			},
 		},
 	})
 
@@ -112,12 +122,12 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Credits",
 		"7.25 credits",
 		"available",
-		"Token sparkline",
-		`aria-label="Token sparkline"`,
-		"<title>Token sparkline</title>",
+		"Token trend",
+		`aria-label="Token trend"`,
+		"<title>Token trend</title>",
 		`stroke="currentColor"`,
-		"14:55: 20,000 tokens",
-		"15:00: 200,000 tokens",
+		"Input 14:55: 20,000 tokens",
+		"Output 15:00: 50,000 tokens",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
@@ -165,7 +175,7 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 		"No active issue sessions.",
 		"Budget disabled",
 		"No Codex rate-limit snapshot.",
-		"No token activity yet.",
+		"No token trend yet.",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)

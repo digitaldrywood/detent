@@ -475,6 +475,20 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 			Total:          321,
 			RuntimeSeconds: 60,
 		},
+		TokenTrend: []telemetry.TokenTrendPoint{
+			{
+				At:     time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC),
+				Input:  50,
+				Output: 100,
+				Total:  150,
+			},
+			{
+				At:     time.Date(2026, 5, 31, 15, 1, 0, 0, time.UTC),
+				Input:  100,
+				Output: 221,
+				Total:  321,
+			},
+		},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -503,8 +517,9 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 		"87",
 		"13",
 		"100",
-		"Token sparkline",
-		"DD-LIVE: 321 tokens",
+		"Token trend",
+		"Input 15:01: 100 tokens",
+		"Output 15:01: 221 tokens",
 	} {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("snapshot event missing %q:\n%s", want, event.data)

@@ -170,6 +170,67 @@ func AreaPath(points []ScaledPoint, baselineY float64) string {
 	return path.String()
 }
 
+func SmoothLinePath(points []ScaledPoint) string {
+	if len(points) == 0 {
+		return ""
+	}
+	if len(points) < 3 {
+		return LinePath(points)
+	}
+
+	var path strings.Builder
+	path.WriteString("M ")
+	path.WriteString(FormatCoord(points[0].X))
+	path.WriteByte(' ')
+	path.WriteString(FormatCoord(points[0].Y))
+	for i := 0; i < len(points)-1; i++ {
+		p0 := boundedPoint(points, i-1)
+		p1 := boundedPoint(points, i)
+		p2 := boundedPoint(points, i+1)
+		p3 := boundedPoint(points, i+2)
+
+		c1x := p1.X + (p2.X-p0.X)/6
+		c1y := p1.Y + (p2.Y-p0.Y)/6
+		c2x := p2.X - (p3.X-p1.X)/6
+		c2y := p2.Y - (p3.Y-p1.Y)/6
+
+		path.WriteString(" C ")
+		path.WriteString(FormatCoord(c1x))
+		path.WriteByte(' ')
+		path.WriteString(FormatCoord(c1y))
+		path.WriteByte(' ')
+		path.WriteString(FormatCoord(c2x))
+		path.WriteByte(' ')
+		path.WriteString(FormatCoord(c2y))
+		path.WriteByte(' ')
+		path.WriteString(FormatCoord(p2.X))
+		path.WriteByte(' ')
+		path.WriteString(FormatCoord(p2.Y))
+	}
+	return path.String()
+}
+
+func SmoothAreaPath(points []ScaledPoint, baselineY float64) string {
+	if len(points) == 0 {
+		return ""
+	}
+
+	first := points[0]
+	last := points[len(points)-1]
+	var path strings.Builder
+	path.WriteString(SmoothLinePath(points))
+	path.WriteString(" L ")
+	path.WriteString(FormatCoord(last.X))
+	path.WriteByte(' ')
+	path.WriteString(FormatCoord(baselineY))
+	path.WriteString(" L ")
+	path.WriteString(FormatCoord(first.X))
+	path.WriteByte(' ')
+	path.WriteString(FormatCoord(baselineY))
+	path.WriteString(" Z")
+	return path.String()
+}
+
 func FormatCoord(value float64) string {
 	value = roundCoord(value)
 	if value == 0 {
@@ -237,6 +298,16 @@ func innerSize(size float64, padding float64) float64 {
 		return 0
 	}
 	return inner
+}
+
+func boundedPoint(points []ScaledPoint, index int) ScaledPoint {
+	if index < 0 {
+		return points[0]
+	}
+	if index >= len(points) {
+		return points[len(points)-1]
+	}
+	return points[index]
 }
 
 func roundCoord(value float64) float64 {

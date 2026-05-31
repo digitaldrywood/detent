@@ -104,6 +104,68 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	}
 }
 
+func TestTokenTrendRecorderAppliesRollingWindow(t *testing.T) {
+	t.Parallel()
+
+	recorder := newTokenTrendRecorder(2)
+	start := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+
+	snapshots := []telemetry.Snapshot{
+		{GeneratedAt: start, Tokens: telemetry.Tokens{Input: 10, Output: 1, Total: 11}},
+		{GeneratedAt: start.Add(time.Minute), Tokens: telemetry.Tokens{Input: 20, Output: 2, Total: 22}},
+		{GeneratedAt: start.Add(2 * time.Minute), Tokens: telemetry.Tokens{Input: 30, Output: 3, Total: 33}},
+	}
+
+	var got telemetry.Snapshot
+	for _, snapshot := range snapshots {
+		got = recorder.apply(snapshot)
+	}
+
+	if len(got.TokenTrend) != 2 {
+		t.Fatalf("TokenTrend len = %d, want 2", len(got.TokenTrend))
+	}
+	if !got.TokenTrend[0].At.Equal(start.Add(time.Minute)) {
+		t.Fatalf("TokenTrend[0].At = %v, want second sample", got.TokenTrend[0].At)
+	}
+	if got.TokenTrend[1].Input != 30 || got.TokenTrend[1].Output != 3 || got.TokenTrend[1].Total != 33 {
+		t.Fatalf("TokenTrend[1] = %#v, want latest totals", got.TokenTrend[1])
+	}
+}
+
+func TestTokenTrendRecorderKeepsEmptyStateWithoutUsage(t *testing.T) {
+	t.Parallel()
+
+	recorder := newTokenTrendRecorder(2)
+	got := recorder.apply(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC),
+		Tokens:      telemetry.Tokens{},
+	})
+
+	if len(got.TokenTrend) != 0 {
+		t.Fatalf("TokenTrend len = %d, want 0", len(got.TokenTrend))
+	}
+}
+
+func TestTokenTrendRecorderClearsStaleUsage(t *testing.T) {
+	t.Parallel()
+
+	recorder := newTokenTrendRecorder(2)
+	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+
+	_ = recorder.apply(telemetry.Snapshot{
+		GeneratedAt: now,
+		Tokens:      telemetry.Tokens{Input: 10, Output: 1, Total: 11},
+	})
+	got := recorder.apply(telemetry.Snapshot{
+		GeneratedAt: now.Add(time.Minute),
+		Tokens:      telemetry.Tokens{},
+	})
+
+	if len(got.TokenTrend) != 0 {
+		t.Fatalf("TokenTrend len = %d, want 0", len(got.TokenTrend))
+	}
+}
+
 func writeWorkflowFile(t *testing.T) string {
 	t.Helper()
 

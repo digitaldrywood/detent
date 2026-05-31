@@ -100,12 +100,28 @@ func TestPathBuilders(t *testing.T) {
 		t.Fatalf("AreaPath() = %q, want %q", got, want)
 	}
 
+	if got, want := chart.SmoothLinePath(points), "M 5 45 C 12.5 41.67 35 31.67 50 25 C 65 18.33 87.5 8.33 95 5"; got != want {
+		t.Fatalf("SmoothLinePath() = %q, want %q", got, want)
+	}
+
+	if got, want := chart.SmoothAreaPath(points, 45), "M 5 45 C 12.5 41.67 35 31.67 50 25 C 65 18.33 87.5 8.33 95 5 L 95 45 L 5 45 Z"; got != want {
+		t.Fatalf("SmoothAreaPath() = %q, want %q", got, want)
+	}
+
 	if got := chart.LinePath(nil); got != "" {
 		t.Fatalf("LinePath(nil) = %q, want empty string", got)
 	}
 
 	if got := chart.AreaPath(nil, 45); got != "" {
 		t.Fatalf("AreaPath(nil) = %q, want empty string", got)
+	}
+
+	if got := chart.SmoothLinePath(nil); got != "" {
+		t.Fatalf("SmoothLinePath(nil) = %q, want empty string", got)
+	}
+
+	if got := chart.SmoothAreaPath(nil, 45); got != "" {
+		t.Fatalf("SmoothAreaPath(nil) = %q, want empty string", got)
 	}
 }
 
