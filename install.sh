@@ -32,7 +32,11 @@ trap 'cleanup_tmp; cleanup' EXIT
 if [ -n "$source_binary" ]; then
 	cp "$source_binary" "$tmp_dir/symphony"
 else
-	(cd "$repo_root" && go build -o "$tmp_dir/symphony" ./cmd/symphony)
+	build_version="$(git -C "$repo_root" describe --tags --always 2>/dev/null || echo dev)"
+	build_commit="$(git -C "$repo_root" rev-parse --short HEAD 2>/dev/null || echo none)"
+	build_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+	ldflags="-X main.version=$build_version -X main.commit=$build_commit -X main.date=$build_date"
+	(cd "$repo_root" && go build -ldflags "$ldflags" -o "$tmp_dir/symphony" ./cmd/symphony)
 fi
 
 install -m 0755 "$tmp_dir/symphony" "$target"

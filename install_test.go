@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"sync"
@@ -92,6 +93,7 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	if _, err := os.Stat(binary); err != nil {
 		t.Fatalf("installed binary stat error = %v", err)
 	}
+	assertInstalledVersionMetadata(t, binary, root, env)
 
 	home := filepath.Join(tmp, "home")
 	workdir := filepath.Join(tmp, "fresh")
@@ -329,6 +331,15 @@ func runInstalledSubcommands(t *testing.T, binary string, root string, env []str
 func runSymphonyCommand(t *testing.T, binary string, workdir string, env []string, args ...string) {
 	t.Helper()
 
+	stdout, stderr, err := runSymphonyCommandOutput(t, binary, workdir, env, args...)
+	if err != nil {
+		t.Fatalf("symphony %v error = %v\nstdout:\n%s\nstderr:\n%s", args, err, stdout, stderr)
+	}
+}
+
+func runSymphonyCommandOutput(t *testing.T, binary string, workdir string, env []string, args ...string) (string, string, error) {
+	t.Helper()
+
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
@@ -341,9 +352,59 @@ func runSymphonyCommand(t *testing.T, binary string, workdir string, env []strin
 	cmd.Stdout = &stdout
 	cmd.Stderr = &stderr
 
-	if err := cmd.Run(); err != nil {
-		t.Fatalf("symphony %v error = %v\nstdout:\n%s\nstderr:\n%s", args, err, stdout.String(), stderr.String())
+	err := cmd.Run()
+	return stdout.String(), stderr.String(), err
+}
+
+func assertInstalledVersionMetadata(t *testing.T, binary string, root string, env []string) {
+	t.Helper()
+
+	wantVersion, ok := gitOutput(t, root, "describe", "--tags", "--always")
+	if !ok {
+		t.Skip("git metadata unavailable")
 	}
+	wantCommit, ok := gitOutput(t, root, "rev-parse", "--short", "HEAD")
+	if !ok {
+		t.Skip("git metadata unavailable")
+	}
+
+	stdout, stderr, err := runSymphonyCommandOutput(t, binary, root, env, "--version")
+	if err != nil {
+		t.Fatalf("symphony --version error = %v\nstderr:\n%s", err, stderr)
+	}
+	if got, want := stdout, wantVersion+"\n"; got != want {
+		t.Fatalf("symphony --version = %q, want %q", got, want)
+	}
+
+	stdout, stderr, err = runSymphonyCommandOutput(t, binary, root, env, "version")
+	if err != nil {
+		t.Fatalf("symphony version error = %v\nstderr:\n%s", err, stderr)
+	}
+	for _, want := range []string{
+		"version: " + wantVersion,
+		"commit: " + wantCommit,
+		"go version: " + runtime.Version(),
+		"os/arch: " + runtime.GOOS + "/" + runtime.GOARCH,
+	} {
+		if !strings.Contains(stdout, want) {
+			t.Fatalf("symphony version output missing %q:\n%s", want, stdout)
+		}
+	}
+	if strings.Contains(stdout, "build date: unknown") {
+		t.Fatalf("symphony version output kept unknown build date:\n%s", stdout)
+	}
+}
+
+func gitOutput(t *testing.T, root string, args ...string) (string, bool) {
+	t.Helper()
+
+	cmd := exec.Command("git", args...)
+	cmd.Dir = root
+	out, err := cmd.Output()
+	if err != nil {
+		return "", false
+	}
+	return strings.TrimSpace(string(out)), true
 }
 
 func assertInstalledProject(t *testing.T, configPath string, check func(globalconfig.Project)) {
