@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/symphony/internal/telemetry"
+	webchart "github.com/digitaldrywood/symphony/internal/web/chart"
 )
 
 type DashboardData struct {
@@ -33,11 +34,6 @@ type rateLimitRow struct {
 	Limit       string
 	Reset       string
 	UsedPercent int
-}
-
-type tokenSparklineBar struct {
-	Title       string
-	HeightStyle string
 }
 
 func pageTitle(data DashboardData) string {
@@ -276,31 +272,21 @@ func percentStyle(percent int) string {
 	return fmt.Sprintf("width: %d%%;", percent)
 }
 
-func tokenSparklineBars(data DashboardData) []tokenSparklineBar {
+func tokenSparklineChart(data DashboardData) SeriesChartData {
 	points := tokenSparklinePoints(data)
-	if len(points) == 0 {
-		return nil
-	}
-
-	maxValue := int64(0)
+	chartPoints := make([]webchart.Point, 0, len(points))
 	for _, point := range points {
-		if point.Value > maxValue {
-			maxValue = point.Value
-		}
-	}
-
-	bars := make([]tokenSparklineBar, 0, len(points))
-	for _, point := range points {
-		value := point.Value
-		if value < 0 {
-			value = 0
-		}
-		bars = append(bars, tokenSparklineBar{
-			Title:       point.Label + ": " + formatInt(value) + " tokens",
-			HeightStyle: heightStyle(value, maxValue),
+		chartPoints = append(chartPoints, webchart.Point{
+			Label: point.Label,
+			Value: float64(point.Value),
 		})
 	}
-	return bars
+	return SeriesChartData{
+		Title:       "Token sparkline",
+		AriaLabel:   "Token sparkline",
+		Points:      chartPoints,
+		ValueSuffix: "tokens",
+	}
 }
 
 func tokenRate(snapshot telemetry.Snapshot) string {
@@ -425,18 +411,4 @@ func tokenSparklinePoints(data DashboardData) []TokenSparklinePoint {
 	}
 
 	return nil
-}
-
-func heightStyle(value int64, maxValue int64) string {
-	if value <= 0 || maxValue <= 0 {
-		return "height: 12%;"
-	}
-	height := int(math.Round(float64(value) / float64(maxValue) * 100))
-	if height < 12 {
-		height = 12
-	}
-	if height > 100 {
-		height = 100
-	}
-	return fmt.Sprintf("height: %d%%;", height)
 }
