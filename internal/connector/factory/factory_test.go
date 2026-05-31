@@ -119,3 +119,15 @@ func TestFactoryPlaceholderConnectorOperationsAreExplicitlyUnimplemented(t *test
 		t.Fatalf("CreateComment() error = %v, want ErrNotImplemented", err)
 	}
 }
+
+func TestFactoryGitHubConnectorImplementsAuthenticator(t *testing.T) {
+	t.Parallel()
+
+	c, err := NewFromConfig(Config{Kind: "github"})
+	if err != nil {
+		t.Fatalf("NewFromConfig() error = %v", err)
+	}
+	if _, ok := c.(connector.Authenticator); !ok {
+		t.Fatalf("connector = %T, want connector.Authenticator", c)
+	}
+}
