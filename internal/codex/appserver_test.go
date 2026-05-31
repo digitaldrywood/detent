@@ -125,32 +125,35 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	assertJSONContains(t, sent[3].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.type", "workspaceWrite")
 
-	if len(updates) != 4 {
-		t.Fatalf("updates = %d, want 4: %#v", len(updates), updates)
+	if len(updates) != 5 {
+		t.Fatalf("updates = %d, want 5: %#v", len(updates), updates)
 	}
-	if updates[0].Type != UpdateAgentMessageDelta || updates[0].Delta != "hello" {
-		t.Fatalf("updates[0] = %#v, want agent message delta", updates[0])
+	if updates[0].Type != UpdateTurnStarted || updates[0].ThreadID != "thread-1" || updates[0].TurnID != "turn-1" {
+		t.Fatalf("updates[0] = %#v, want turn started", updates[0])
 	}
-	if updates[1].Type != UpdateTokenUsage || updates[1].Tokens.TotalTokens != 27 {
-		t.Fatalf("updates[1] = %#v, want token usage total 27", updates[1])
+	if updates[1].Type != UpdateAgentMessageDelta || updates[1].Delta != "hello" {
+		t.Fatalf("updates[1] = %#v, want agent message delta", updates[1])
 	}
-	if updates[1].Tokens.CachedInputTokens != 5 || updates[1].Tokens.ReasoningOutputTokens != 3 {
-		t.Fatalf("updates[1].Tokens = %#v", updates[1].Tokens)
+	if updates[2].Type != UpdateTokenUsage || updates[2].Tokens.TotalTokens != 27 {
+		t.Fatalf("updates[2] = %#v, want token usage total 27", updates[2])
 	}
-	if updates[1].Tokens.ModelContextWindow == nil || *updates[1].Tokens.ModelContextWindow != 200000 {
-		t.Fatalf("updates[1].Tokens.ModelContextWindow = %#v", updates[1].Tokens.ModelContextWindow)
+	if updates[2].Tokens.CachedInputTokens != 5 || updates[2].Tokens.ReasoningOutputTokens != 3 {
+		t.Fatalf("updates[2].Tokens = %#v", updates[2].Tokens)
 	}
-	if updates[2].Type != UpdateRateLimits || updates[2].RateLimits == nil {
-		t.Fatalf("updates[2] = %#v, want rate limits", updates[2])
+	if updates[2].Tokens.ModelContextWindow == nil || *updates[2].Tokens.ModelContextWindow != 200000 {
+		t.Fatalf("updates[2].Tokens.ModelContextWindow = %#v", updates[2].Tokens.ModelContextWindow)
 	}
-	if updates[2].RateLimits.LimitID != "codex-primary" || updates[2].RateLimits.Primary == nil {
-		t.Fatalf("updates[2].RateLimits = %#v", updates[2].RateLimits)
+	if updates[3].Type != UpdateRateLimits || updates[3].RateLimits == nil {
+		t.Fatalf("updates[3] = %#v, want rate limits", updates[3])
 	}
-	if updates[2].RateLimits.Primary.UsedPercent != 12.5 {
-		t.Fatalf("Primary.UsedPercent = %f, want 12.5", updates[2].RateLimits.Primary.UsedPercent)
+	if updates[3].RateLimits.LimitID != "codex-primary" || updates[3].RateLimits.Primary == nil {
+		t.Fatalf("updates[3].RateLimits = %#v", updates[3].RateLimits)
 	}
-	if updates[3].Type != UpdateTurnCompleted || updates[3].TurnID != "turn-1" {
-		t.Fatalf("updates[3] = %#v, want turn completed", updates[3])
+	if updates[3].RateLimits.Primary.UsedPercent != 12.5 {
+		t.Fatalf("Primary.UsedPercent = %f, want 12.5", updates[3].RateLimits.Primary.UsedPercent)
+	}
+	if updates[4].Type != UpdateTurnCompleted || updates[4].TurnID != "turn-1" {
+		t.Fatalf("updates[4] = %#v, want turn completed", updates[4])
 	}
 }
 

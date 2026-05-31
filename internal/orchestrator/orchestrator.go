@@ -507,8 +507,25 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 		return
 	}
 
+	if event.usage.SessionID != "" {
+		running.SessionID = event.usage.SessionID
+	}
+	if event.usage.TurnCount > 0 {
+		running.TurnCount = event.usage.TurnCount
+	}
+	if !event.usage.LastEventAt.IsZero() {
+		running.LastEventAt = event.usage.LastEventAt
+	}
+	if event.usage.LastEvent != "" {
+		running.LastEvent = event.usage.LastEvent
+	}
+	if event.usage.LastMessage != "" {
+		running.LastMessage = event.usage.LastMessage
+	}
+	if diffStatsPresent(event.usage.DiffStats) {
+		running.DiffStats = event.usage.DiffStats
+	}
 	running.Tokens = event.usage.Tokens
-	running.TurnCount = event.usage.TurnCount
 	state.Running[event.issueID] = running
 	if event.usage.RateLimits != nil {
 		state.RateLimits = cloneRateLimits(event.usage.RateLimits)

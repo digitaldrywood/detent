@@ -47,11 +47,14 @@ func TestAppServerRunTurnMatchesElixirTranscriptBytes(t *testing.T) {
 	if result.ThreadID != "thread-elixir-1" || result.TurnID != "turn-elixir-1" {
 		t.Fatalf("RunTurn() result = %#v, want recorded thread and turn", result)
 	}
-	if len(updates) != 3 {
-		t.Fatalf("updates = %d, want 3", len(updates))
+	if len(updates) != 4 {
+		t.Fatalf("updates = %d, want 4", len(updates))
 	}
-	if updates[1].Tokens.InputTokens != 123 || updates[1].Tokens.OutputTokens != 45 || updates[1].Tokens.TotalTokens != 168 {
-		t.Fatalf("token update = %#v, want recorded totals", updates[1].Tokens)
+	if updates[0].Type != UpdateTurnStarted {
+		t.Fatalf("updates[0] = %#v, want turn started", updates[0])
+	}
+	if updates[2].Tokens.InputTokens != 123 || updates[2].Tokens.OutputTokens != 45 || updates[2].Tokens.TotalTokens != 168 {
+		t.Fatalf("token update = %#v, want recorded totals", updates[2].Tokens)
 	}
 	assertTranscriptBytes(t, transport.sent.Bytes(), wantSent)
 }

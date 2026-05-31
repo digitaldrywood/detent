@@ -114,15 +114,26 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 	t.Parallel()
 
+	lastEventAt := time.Date(2026, 5, 31, 14, 30, 0, 0, time.UTC)
 	issue := testIssue("issue-live-usage", "digitaldrywood/symphony#115", "In Progress")
 	tracker := newFakeConnector(issue)
 	runner := newUsageStreamingRunner(orchestrator.UsageUpdate{
-		TurnCount: 1,
+		SessionID:   "thread-live-turn-live",
+		TurnCount:   1,
+		LastEventAt: lastEventAt,
+		LastEvent:   "agent_message_delta",
+		LastMessage: "editing telemetry",
 		Tokens: orchestrator.CodexTotals{
 			InputTokens:    40,
 			OutputTokens:   12,
 			TotalTokens:    52,
 			RuntimeSeconds: 3.5,
+		},
+		DiffStats: orchestrator.DiffStats{
+			FilesChanged: 2,
+			AddedLines:   9,
+			RemovedLines: 1,
+			Status:       "ok",
 		},
 	})
 
@@ -143,6 +154,15 @@ func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 	}
 	if running.Tokens.RuntimeSeconds != 3.5 {
 		t.Fatalf("Running[%q].Tokens.RuntimeSeconds = %v, want 3.5", issue.ID, running.Tokens.RuntimeSeconds)
+	}
+	if running.SessionID != "thread-live-turn-live" || running.LastEvent != "agent_message_delta" || running.LastMessage != "editing telemetry" {
+		t.Fatalf("Running[%q] live activity = %#v", issue.ID, running)
+	}
+	if !running.LastEventAt.Equal(lastEventAt) {
+		t.Fatalf("Running[%q].LastEventAt = %v, want %v", issue.ID, running.LastEventAt, lastEventAt)
+	}
+	if running.DiffStats.FilesChanged != 2 || running.DiffStats.AddedLines != 9 || running.DiffStats.RemovedLines != 1 || running.DiffStats.Status != "ok" {
+		t.Fatalf("Running[%q].DiffStats = %#v, want live diff stats", issue.ID, running.DiffStats)
 	}
 	if state.CodexTotals.TotalTokens != 0 {
 		t.Fatalf("CodexTotals.TotalTokens = %d, want completed totals only", state.CodexTotals.TotalTokens)

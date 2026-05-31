@@ -70,6 +70,7 @@ const (
 	UpdateAgentMessageDelta UpdateType = "agent_message_delta"
 	UpdateTokenUsage        UpdateType = "token_usage"
 	UpdateRateLimits        UpdateType = "rate_limits"
+	UpdateTurnStarted       UpdateType = "turn_started"
 	UpdateTurnCompleted     UpdateType = "turn_completed"
 )
 
@@ -201,6 +202,15 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		ThreadID:  threadID,
 		TurnID:    turnID,
 		SessionID: threadID + "-" + turnID,
+	}
+	if err := emitUpdate(Update{
+		Type:     UpdateTurnStarted,
+		Method:   "turn/start",
+		ThreadID: threadID,
+		TurnID:   turnID,
+		Status:   "started",
+	}, onUpdate); err != nil {
+		return RunTurnResult{}, err
 	}
 
 	if err := s.streamTurn(ctx, transport, onUpdate); err != nil {

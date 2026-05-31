@@ -22,12 +22,17 @@ type State struct {
 }
 
 type Running struct {
-	Issue      connector.Issue
-	Attempt    int
-	StartedAt  time.Time
-	WorkerHost string
-	TurnCount  int
-	Tokens     CodexTotals
+	Issue       connector.Issue
+	Attempt     int
+	StartedAt   time.Time
+	WorkerHost  string
+	SessionID   string
+	TurnCount   int
+	LastEventAt time.Time
+	LastEvent   string
+	LastMessage string
+	DiffStats   DiffStats
+	Tokens      CodexTotals
 }
 
 type Claimed struct {
