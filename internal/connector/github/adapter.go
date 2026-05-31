@@ -376,7 +376,7 @@ func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue,
 func resolveBlockedByProjectState(issues []connector.Issue) {
 	byIdentifier := make(map[string]connector.Issue, len(issues))
 	for _, issue := range issues {
-		identifier := strings.TrimSpace(issue.Identifier)
+		identifier := normalizedIssueIdentifier(issue.Identifier)
 		if identifier != "" {
 			byIdentifier[identifier] = issue
 		}
@@ -384,15 +384,20 @@ func resolveBlockedByProjectState(issues []connector.Issue) {
 
 	for issueIndex := range issues {
 		for blockerIndex := range issues[issueIndex].BlockedBy {
-			identifier := strings.TrimSpace(issues[issueIndex].BlockedBy[blockerIndex].Identifier)
+			identifier := normalizedIssueIdentifier(issues[issueIndex].BlockedBy[blockerIndex].Identifier)
 			blocker, ok := byIdentifier[identifier]
 			if !ok {
 				continue
 			}
 			issues[issueIndex].BlockedBy[blockerIndex].ID = blocker.ID
+			issues[issueIndex].BlockedBy[blockerIndex].Identifier = blocker.Identifier
 			issues[issueIndex].BlockedBy[blockerIndex].State = blocker.State
 		}
 	}
+}
+
+func normalizedIssueIdentifier(identifier string) string {
+	return strings.ToLower(strings.TrimSpace(identifier))
 }
 
 func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNode) (connector.Issue, bool, error) {
