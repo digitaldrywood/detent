@@ -10,16 +10,24 @@ import (
 	"github.com/digitaldrywood/symphony-go/internal/scheduler"
 )
 
-func TestNewFromConfigReturnsCountingSemaphore(t *testing.T) {
+func TestNewFromConfigSelectsMode(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
 		name string
 		kind string
+		want scheduler.Mode
 	}{
-		{name: "empty defaults to counting semaphore", kind: ""},
-		{name: "counting semaphore", kind: "counting_semaphore"},
-		{name: "semaphore alias", kind: " semaphore "},
+		{name: "empty defaults to weighted fair", kind: "", want: scheduler.ModeWeightedFair},
+		{name: "weighted fair", kind: "weighted_fair", want: scheduler.ModeWeightedFair},
+		{name: "weighted alias", kind: " weighted ", want: scheduler.ModeWeightedFair},
+		{name: "strict priority", kind: "strict_priority", want: scheduler.ModeStrictPriority},
+		{name: "strict alias", kind: "strict", want: scheduler.ModeStrictPriority},
+		{name: "round robin", kind: "round_robin", want: scheduler.ModeRoundRobin},
+		{name: "round-robin alias", kind: "round-robin", want: scheduler.ModeRoundRobin},
+		{name: "fair share", kind: "fair_share", want: scheduler.ModeFairShare},
+		{name: "fair-share alias", kind: "fair-share", want: scheduler.ModeFairShare},
+		{name: "counting semaphore compatibility", kind: "counting_semaphore", want: scheduler.ModeCountingSemaphore},
 	}
 
 	for _, tt := range tests {
@@ -33,8 +41,8 @@ func TestNewFromConfigReturnsCountingSemaphore(t *testing.T) {
 			if err != nil {
 				t.Fatalf("NewFromConfig() error = %v", err)
 			}
-			if got.Mode() != scheduler.ModeCountingSemaphore {
-				t.Fatalf("Mode() = %q, want %q", got.Mode(), scheduler.ModeCountingSemaphore)
+			if got.Mode() != tt.want {
+				t.Fatalf("Mode() = %q, want %q", got.Mode(), tt.want)
 			}
 		})
 	}

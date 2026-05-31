@@ -233,6 +233,52 @@ func (s *sqliteStore) IssueTokenSpend(ctx context.Context, identity IssueIdentit
 	return spend, nil
 }
 
+func (s *sqliteStore) ListFairShareUsage(ctx context.Context) ([]FairShareUsage, error) {
+	rows, err := s.queries.ListFairShareUsage(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("reading fair-share usage: %w", err)
+	}
+
+	usage := make([]FairShareUsage, 0, len(rows))
+	for _, row := range rows {
+		updatedAt, err := parseTimestamp("updated_at", row.UpdatedAt)
+		if err != nil {
+			return nil, err
+		}
+		usage = append(usage, FairShareUsage{
+			ProjectID:      row.ProjectID,
+			Weight:         int(row.Weight),
+			Dispatches:     row.Dispatches,
+			RuntimeSeconds: row.RuntimeSeconds,
+			UpdatedAt:      updatedAt,
+		})
+	}
+	return usage, nil
+}
+
+func (s *sqliteStore) RecordFairShareDispatch(ctx context.Context, attrs FairShareDispatch) error {
+	projectID := strings.TrimSpace(attrs.ProjectID)
+	if projectID == "" {
+		return errors.New("project_id is required")
+	}
+
+	dispatchedAt, err := requiredTimestamp("dispatched_at", attrs.DispatchedAt)
+	if err != nil {
+		return err
+	}
+
+	_, err = s.queries.UpsertFairShareUsage(ctx, sqlc.UpsertFairShareUsageParams{
+		ProjectID:      projectID,
+		Weight:         int64(positiveWeight(attrs.Weight)),
+		RuntimeSeconds: nonNegative(attrs.RuntimeSeconds),
+		UpdatedAt:      dispatchedAt,
+	})
+	if err != nil {
+		return fmt.Errorf("recording fair-share dispatch: %w", err)
+	}
+	return nil
+}
+
 func normalizeIssueIdentity(identity IssueIdentity) IssueIdentity {
 	return IssueIdentity{
 		IssueID:    strings.TrimSpace(identity.IssueID),
@@ -271,6 +317,18 @@ func dateString(value time.Time) (string, error) {
 	return value.Format("2006-01-02"), nil
 }
 
+func parseTimestamp(name string, value string) (time.Time, error) {
+	if strings.TrimSpace(value) == "" {
+		return time.Time{}, fmt.Errorf("%s is required", name)
+	}
+
+	parsed, err := time.Parse(time.RFC3339, value)
+	if err != nil {
+		return time.Time{}, fmt.Errorf("parse %s: %w", name, err)
+	}
+	return parsed, nil
+}
+
 func nullString(value string) sql.NullString {
 	trimmed := strings.TrimSpace(value)
 	if trimmed == "" {
@@ -289,6 +347,13 @@ func nullInt64(value int64) sql.NullInt64 {
 func nonNegative(value int64) int64 {
 	if value < 0 {
 		return 0
+	}
+	return value
+}
+
+func positiveWeight(value int) int {
+	if value <= 0 {
+		return 1
 	}
 	return value
 }

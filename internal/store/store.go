@@ -25,6 +25,7 @@ type Config struct {
 
 type Store interface {
 	StatsStore
+	FairShareStore
 	Queries() *sqlc.Queries
 	Close() error
 }
@@ -37,6 +38,11 @@ type StatsStore interface {
 	FinishSession(context.Context, int64, SessionFinish) error
 	DailyTokenSpend(context.Context, time.Time) (TokenSpend, error)
 	IssueTokenSpend(context.Context, IssueIdentity) (TokenSpend, error)
+}
+
+type FairShareStore interface {
+	ListFairShareUsage(context.Context) ([]FairShareUsage, error)
+	RecordFairShareDispatch(context.Context, FairShareDispatch) error
 }
 
 type RunStart struct {
@@ -110,6 +116,21 @@ type ModelTokenSpend struct {
 	OutputTokens int64
 	TotalTokens  int64
 	Sessions     int64
+}
+
+type FairShareUsage struct {
+	ProjectID      string
+	Weight         int
+	Dispatches     int64
+	RuntimeSeconds int64
+	UpdatedAt      time.Time
+}
+
+type FairShareDispatch struct {
+	ProjectID      string
+	Weight         int
+	RuntimeSeconds int64
+	DispatchedAt   time.Time
 }
 
 func Open(ctx context.Context, cfg Config) (Store, error) {
