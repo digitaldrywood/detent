@@ -42,6 +42,7 @@ func (s *Server) onboarding(c echo.Context) error {
 		Step:                  onboardingStepTracker,
 		TrackerKind:           config.TrackerGitHub,
 		WorkspaceRoot:         defaultWorkspaceRoot,
+		SourceRoot:            defaultSourceRoot(),
 		MaxConcurrentAgents:   defaultMaxConcurrentAgents,
 		MaxTurns:              defaultMaxTurns,
 		PollingIntervalMS:     defaultPollingIntervalMS,
@@ -173,6 +174,7 @@ func parseOnboardingForm(c echo.Context) templates.OnboardingForm {
 		ProjectSlug:           strings.TrimSpace(c.FormValue("project_slug")),
 		Repo:                  strings.TrimSpace(c.FormValue("repo")),
 		WorkspaceRoot:         strings.TrimSpace(c.FormValue("workspace_root")),
+		SourceRoot:            strings.TrimSpace(c.FormValue("source_root")),
 		MaxConcurrentAgents:   strings.TrimSpace(c.FormValue("max_concurrent_agents")),
 		MaxTurns:              strings.TrimSpace(c.FormValue("max_turns")),
 		PollingIntervalMS:     strings.TrimSpace(c.FormValue("polling_interval_ms")),
@@ -253,7 +255,11 @@ func validateAgent(form templates.OnboardingForm) []string {
 	if strings.TrimSpace(form.WorkspaceRoot) == "" {
 		problems = append(problems, "workspace root is required")
 	}
+	if strings.TrimSpace(form.SourceRoot) == "" {
+		problems = append(problems, "source root is required")
+	}
 	problems = append(problems, rejectNewlines("workspace root", form.WorkspaceRoot)...)
+	problems = append(problems, rejectNewlines("source root", form.SourceRoot)...)
 	problems = append(problems, positiveIntegerProblem("max concurrent agents", form.MaxConcurrentAgents)...)
 	problems = append(problems, positiveIntegerProblem("max turns", form.MaxTurns)...)
 	problems = append(problems, positiveIntegerProblem("polling interval", form.PollingIntervalMS)...)
@@ -315,6 +321,9 @@ func applyAgentDefaults(form *templates.OnboardingForm) {
 	if form.WorkspaceRoot == "" {
 		form.WorkspaceRoot = defaultWorkspaceRoot
 	}
+	if form.SourceRoot == "" {
+		form.SourceRoot = defaultSourceRoot()
+	}
 	if form.MaxConcurrentAgents == "" {
 		form.MaxConcurrentAgents = defaultMaxConcurrentAgents
 	}
@@ -330,6 +339,14 @@ func applyAgentDefaults(form *templates.OnboardingForm) {
 	if form.DispatchPriorityState == "" {
 		form.DispatchPriorityState = defaultDispatchPriorityText
 	}
+}
+
+func defaultSourceRoot() string {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "."
+	}
+	return cwd
 }
 
 func renderWorkflow(form templates.OnboardingForm) string {
@@ -373,6 +390,7 @@ func renderWorkflow(form templates.OnboardingForm) string {
 	writeScalar(&b, "  ", "interval_ms", form.PollingIntervalMS)
 	b.WriteString("workspace:\n")
 	writeScalar(&b, "  ", "root", form.WorkspaceRoot)
+	writeScalar(&b, "  ", "source_root", form.SourceRoot)
 	b.WriteString("  auto_branch: true\n")
 	b.WriteString("agent:\n")
 	writeScalar(&b, "  ", "max_concurrent_agents", form.MaxConcurrentAgents)
@@ -397,12 +415,6 @@ func renderWorkflow(form templates.OnboardingForm) string {
 	b.WriteString("    type: workspaceWrite\n")
 	b.WriteString("    networkAccess: true\n")
 	b.WriteString("hooks:\n")
-	if form.Repo != "" {
-		b.WriteString("  after_create: |\n")
-		b.WriteString("    git clone --depth 1 https://github.com/")
-		b.WriteString(form.Repo)
-		b.WriteString(" .\n")
-	}
 	b.WriteString("  timeout_ms: 60000\n")
 	b.WriteString("---\n\n")
 	b.WriteString(renderWorkflowPrompt(form))

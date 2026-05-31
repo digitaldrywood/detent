@@ -1,6 +1,9 @@
 package config
 
 import (
+	"fmt"
+	"os"
+	"os/exec"
 	"strings"
 	"testing"
 
@@ -10,7 +13,7 @@ import (
 func TestParseWorkflowFrontmatter(t *testing.T) {
 	t.Parallel()
 
-	raw := []byte(`---
+	raw := []byte(fmt.Sprintf(`---
 tracker:
   kind: github
   api_key: $GITHUB_TOKEN
@@ -27,6 +30,7 @@ polling:
   interval_ms: 15000
 workspace:
   root: ~/code/symphony-workspaces
+  source_root: %s
   auto_branch: false
 worker:
   ssh_hosts:
@@ -86,7 +90,7 @@ hooks:
   timeout_ms: 30000
 ---
 Ticket prompt {{ issue.title }}
-`)
+`, initConfigSourceRepo(t)))
 
 	workflow, err := ParseWorkflow(raw)
 	if err != nil {
@@ -119,6 +123,9 @@ Ticket prompt {{ issue.title }}
 	if got := cfg.Agent.DispatchPriorityByState; len(got) != 2 || got[0] != "merging" || got[1] != "rework" {
 		t.Fatalf("Agent.DispatchPriorityByState = %#v", got)
 	}
+	if cfg.Workspace.SourceRoot == "" {
+		t.Fatal("Workspace.SourceRoot is blank, want configured source root")
+	}
 	if cfg.Agent.AutoPromote.OptoutLabel != "requires-human-review" {
 		t.Fatalf("Agent.AutoPromote.OptoutLabel = %q", cfg.Agent.AutoPromote.OptoutLabel)
 	}
@@ -139,7 +146,7 @@ Ticket prompt {{ issue.title }}
 func TestParseWorkflowDefaults(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte("---\ntracker:\n  kind: memory\n---\nPrompt\n"))
+	workflow, err := ParseWorkflow([]byte(fmt.Sprintf("---\ntracker:\n  kind: memory\nworkspace:\n  source_root: %s\n---\nPrompt\n", initConfigSourceRepo(t))))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
@@ -307,16 +314,18 @@ Prompt
 func TestConfigValidateAcceptsGitHubAppCredentials(t *testing.T) {
 	t.Parallel()
 
-	workflow, err := ParseWorkflow([]byte(`---
+	workflow, err := ParseWorkflow([]byte(fmt.Sprintf(`---
 tracker:
   kind: github
   project_slug: PVT_project
   github_app_id: 12345
   github_app_private_key_path: .symphony/github-app.pem
   github_app_installation_id: 67890
+workspace:
+  source_root: %s
 ---
 Prompt
-`))
+`, initConfigSourceRepo(t))))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
 	}
@@ -447,6 +456,18 @@ Prompt
 			},
 		},
 		{
+			name: "invalid source root",
+			raw: `---
+tracker:
+  kind: memory
+workspace:
+  source_root: /path/that/does/not/exist
+---
+Prompt
+`,
+			want: []string{"workspace.source_root must be an existing git repo"},
+		},
+		{
 			name: "invalid paths and priority map",
 			raw: `---
 tracker:
@@ -519,5 +540,25 @@ func TestParseWorkflowReportsInvalidFrontmatter(t *testing.T) {
 				t.Fatalf("ParseWorkflow() error = %q, want substring %q", err, tt.want)
 			}
 		})
+	}
+}
+
+func initConfigSourceRepo(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	runConfigCommand(t, dir, "git", "init", "-b", "main")
+	return dir
+}
+
+func runConfigCommand(t *testing.T, dir string, name string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
 	}
 }

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -288,6 +289,7 @@ func (c Config) Validate() error {
 
 	c.validateTracker(&problems)
 	validatePositive("polling.interval_ms", c.Polling.IntervalMS, &problems)
+	c.Workspace.validate(&problems)
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
@@ -391,6 +393,18 @@ func (t Tracker) hasGitHubAppCredentials() bool {
 	return strings.TrimSpace(t.GitHubAppID) != "" &&
 		strings.TrimSpace(t.GitHubAppInstallationID) != "" &&
 		(strings.TrimSpace(t.GitHubAppPrivateKey) != "" || strings.TrimSpace(t.GitHubAppPrivateKeyPath) != "")
+}
+
+func (w Workspace) validate(problems *[]string) {
+	validateRequired("workspace.root", w.Root, "", problems)
+	sourceRoot := strings.TrimSpace(w.SourceRoot)
+	if sourceRoot == "" {
+		*problems = append(*problems, "workspace.source_root is required")
+		return
+	}
+	if err := validateExistingGitRepo(sourceRoot); err != nil {
+		*problems = append(*problems, "workspace.source_root must be an existing git repo: "+err.Error())
+	}
 }
 
 func (a Agent) validate(prefix string, problems *[]string) {
@@ -810,6 +824,49 @@ func validateWorkspaceRelativePath(field string, path string, problems *[]string
 		pathEscapesWorkspace(trimmed) {
 		*problems = append(*problems, field+" must be a relative path inside the workspace")
 	}
+}
+
+func validateExistingGitRepo(path string) error {
+	expanded, err := expandUserPath(path)
+	if err != nil {
+		return err
+	}
+	info, err := os.Stat(expanded)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() {
+		return fmt.Errorf("%s is not a directory", expanded)
+	}
+
+	// #nosec G204 -- source_root is operator-supplied config passed as an argv value, not shell.
+	cmd := exec.Command("git", "-C", expanded, "rev-parse", "--is-inside-work-tree")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git rev-parse failed: %w", err)
+	}
+	if strings.TrimSpace(string(output)) != "true" {
+		return errors.New("git rev-parse did not report a work tree")
+	}
+	return nil
+}
+
+func expandUserPath(path string) (string, error) {
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return home, nil
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+	}
+	return path, nil
 }
 
 func pathEscapesWorkspace(path string) bool {

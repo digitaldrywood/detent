@@ -4,7 +4,9 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -14,6 +16,7 @@ import (
 	projectpkg "github.com/digitaldrywood/symphony/internal/project"
 	runnerpkg "github.com/digitaldrywood/symphony/internal/runner"
 	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/workspace"
 )
 
 var errProjectFactoryStub = errors.New("project factory stub")
@@ -24,6 +27,7 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
+	cfg.Workspace.SourceRoot = initRunnerSourceRepo(t)
 
 	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, nil, nil)
 	if err != nil {
@@ -34,6 +38,43 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	}
 	if _, ok := run.(*runnerpkg.Runner); !ok {
 		t.Fatalf("buildRunner() = %T, want *runner.Runner", run)
+	}
+}
+
+func TestBuildWorkspaceBackendUsesConfiguredSourceRoot(t *testing.T) {
+	t.Parallel()
+
+	sourceRoot := initRunnerSourceRepo(t)
+	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
+
+	cfg := workflowconfig.Default()
+	cfg.Workspace.Root = workspaceRoot
+	cfg.Workspace.SourceRoot = sourceRoot
+	cfg.Workspace.AutoBranch = true
+
+	backend, err := buildWorkspaceBackend(cfg, nil)
+	if err != nil {
+		t.Fatalf("buildWorkspaceBackend() error = %v", err)
+	}
+
+	info, err := backend.Create(context.Background(), workspace.Issue{Identifier: "DD-110"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	canonicalWorkspaceRoot, err := filepath.EvalSymlinks(workspaceRoot)
+	if err != nil {
+		t.Fatalf("EvalSymlinks() error = %v", err)
+	}
+	if !strings.HasPrefix(info.Path, canonicalWorkspaceRoot+string(os.PathSeparator)) {
+		t.Fatalf("workspace path = %q, want under %q", info.Path, canonicalWorkspaceRoot)
+	}
+	raw, err := os.ReadFile(filepath.Join(info.Path, "README.md"))
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if string(raw) != "source repo\n" {
+		t.Fatalf("README.md = %q, want source repo", raw)
 	}
 }
 
@@ -113,9 +154,37 @@ func writeWorkflowFile(t *testing.T) string {
 		"tracker:\n  kind: memory\n" +
 		"codex:\n  command: codex app-server\n" +
 		"workspace:\n  root: " + filepath.Join(dir, "workspaces") + "\n" +
+		"  source_root: " + initRunnerSourceRepo(t) + "\n" +
 		"---\n\nTest workflow prompt.\n"
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write workflow file: %v", err)
 	}
 	return path
+}
+
+func initRunnerSourceRepo(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	runRunnerCommand(t, dir, "git", "init", "-b", "main")
+	runRunnerCommand(t, dir, "git", "config", "user.name", "Test User")
+	runRunnerCommand(t, dir, "git", "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runRunnerCommand(t, dir, "git", "add", "README.md")
+	runRunnerCommand(t, dir, "git", "commit", "-m", "initial")
+	return dir
+}
+
+func runRunnerCommand(t *testing.T, dir string, name string, args ...string) {
+	t.Helper()
+
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	cmd.Env = append(os.Environ(), "GIT_CONFIG_NOSYSTEM=1")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
+	}
 }

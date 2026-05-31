@@ -85,6 +85,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"Agent config",
 				"name=\"max_concurrent_agents\"",
 				"name=\"workspace_root\"",
+				"name=\"source_root\"",
 			},
 		},
 		{
@@ -98,6 +99,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"project_slug":               {"PVT_project"},
 				"repo":                       {"digitaldrywood/symphony"},
 				"workspace_root":             {"~/code/symphony-workspaces"},
+				"source_root":                {"."},
 				"max_concurrent_agents":      {"5"},
 				"max_turns":                  {"20"},
 				"polling_interval_ms":        {"30000"},
@@ -165,7 +167,7 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		"tracker:\n  kind: github",
 		"api_key: $GITHUB_TOKEN",
 		"project_slug: PVT_project",
-		"git clone --depth 1 https://github.com/digitaldrywood/symphony .",
+		"source_root: .",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"You are working on GitHub issue `{{ issue.identifier }}`",
 	} {
@@ -260,6 +262,35 @@ func TestOnboardingWriteDoesNotOverwriteWithoutReplace(t *testing.T) {
 	}
 }
 
+func TestOnboardingWriteDoesNotGenerateAfterCreateClone(t *testing.T) {
+	t.Parallel()
+
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := onboardingRequest(http.MethodPost, "/onboarding/write", validOnboardingForm())
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	raw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(raw)
+	for _, unwanted := range []string{"after_create:", "git clone", "git worktree add"} {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("workflow contains %q:\n%s", unwanted, content)
+		}
+	}
+}
+
 func TestOnboardingWriteValidatesInput(t *testing.T) {
 	t.Parallel()
 
@@ -337,6 +368,7 @@ func validOnboardingForm() url.Values {
 		"project_slug":               {"PVT_project"},
 		"repo":                       {"digitaldrywood/symphony"},
 		"workspace_root":             {"~/code/symphony-workspaces"},
+		"source_root":                {"."},
 		"max_concurrent_agents":      {"5"},
 		"max_turns":                  {"20"},
 		"polling_interval_ms":        {"30000"},

@@ -17,6 +17,7 @@ type OnboardingForm struct {
 	ProjectSlug           string
 	Repo                  string
 	WorkspaceRoot         string
+	SourceRoot            string
 	MaxConcurrentAgents   string
 	MaxTurns              string
 	PollingIntervalMS     string
@@ -199,6 +200,10 @@ templ agentStep(data OnboardingData) {
 				<span class="text-sm font-medium">Workspace root</span>
 				<input class={ fieldClass() } type="text" name="workspace_root" value={ data.Form.WorkspaceRoot }/>
 			</label>
+			<label class="block sm:col-span-2">
+				<span class="text-sm font-medium">Source root</span>
+				<input class={ fieldClass() } type="text" name="source_root" value={ data.Form.SourceRoot }/>
+			</label>
 			<label class="block">
 				<span class="text-sm font-medium">Max agents</span>
 				<input class={ fieldClass() } type="number" min="1" name="max_concurrent_agents" value={ data.Form.MaxConcurrentAgents }/>
@@ -288,6 +293,7 @@ templ hiddenProject(form OnboardingForm) {
 templ hiddenAgent(form OnboardingForm) {
 	@hiddenProject(form)
 	<input type="hidden" name="workspace_root" value={ form.WorkspaceRoot }/>
+	<input type="hidden" name="source_root" value={ form.SourceRoot }/>
 	<input type="hidden" name="max_concurrent_agents" value={ form.MaxConcurrentAgents }/>
 	<input type="hidden" name="max_turns" value={ form.MaxTurns }/>
 	<input type="hidden" name="polling_interval_ms" value={ form.PollingIntervalMS }/>

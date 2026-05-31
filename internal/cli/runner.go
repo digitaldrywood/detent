@@ -88,9 +88,6 @@ func buildRunner(
 func buildWorkspaceBackend(cfg workflowconfig.Config, logger *slog.Logger) (workspace.Backend, error) {
 	root := strings.TrimSpace(cfg.Workspace.Root)
 	sourceRoot := strings.TrimSpace(cfg.Workspace.SourceRoot)
-	if sourceRoot == "" {
-		sourceRoot = root
-	}
 	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
 		Root:       root,
 		SourceRoot: sourceRoot,

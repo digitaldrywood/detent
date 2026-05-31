@@ -571,6 +571,7 @@ func TestProjectStartRejectsPausedProject(t *testing.T) {
 			Paused: true,
 			Weight: 1,
 		},
+		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 	}, project.Dependencies{})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -594,6 +595,7 @@ func TestProjectPauseUnpauseRestartsProject(t *testing.T) {
 			ID:     "symphony",
 			Weight: 1,
 		},
+		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 	}, project.Dependencies{
 		Events: events,
 		Runner: blockingRunner{},
@@ -643,6 +645,7 @@ func TestProjectPauseDoesNotMarkPausedWhenShutdownTimesOut(t *testing.T) {
 			ID:     "symphony",
 			Weight: 1,
 		},
+		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 	}, project.Dependencies{
 		Connector: blocker,
 		Runner:    blockingRunner{},
@@ -686,6 +689,7 @@ func TestProjectUnpauseKeepsProjectPausedWhenRestartFails(t *testing.T) {
 			ID:     "symphony",
 			Weight: 1,
 		},
+		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 	}, project.Dependencies{
 		Events: events,
 		Runner: blockingRunner{},
@@ -734,6 +738,7 @@ func workflowConfigWithMemoryIssue(id string) workflowconfig.Config {
 func workflowConfig(kind string) workflowconfig.Config {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = kind
+	cfg.Workspace.SourceRoot = "."
 	return cfg
 }
 
@@ -885,6 +890,8 @@ tracker:
   kind: memory
 %spolling:
   interval_ms: %d
+workspace:
+  source_root: .
 ---
 %s
 `, issues, intervalMS, prompt)

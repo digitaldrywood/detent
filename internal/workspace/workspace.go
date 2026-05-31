@@ -146,6 +146,9 @@ func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
 	if err != nil {
 		return nil, fmt.Errorf("source root: %w", err)
 	}
+	if err := validateGitSourceRoot(sourceRoot); err != nil {
+		return nil, fmt.Errorf("source root: %w", err)
+	}
 
 	hooks := opts.Hooks
 	if hooks.Timeout == 0 {
@@ -508,6 +511,17 @@ func gitCommonDir(ctx context.Context, dir string) (string, error) {
 		commonDir = filepath.Join(dir, commonDir)
 	}
 	return canonicalExistingPath(commonDir)
+}
+
+func validateGitSourceRoot(path string) error {
+	output, err := runGitAt(context.Background(), path, "rev-parse", "--is-inside-work-tree")
+	if err != nil {
+		return fmt.Errorf("must be a git work tree: %w", err)
+	}
+	if strings.TrimSpace(output) != "true" {
+		return errors.New("must be a git work tree")
+	}
+	return nil
 }
 
 func hookEnv(info Info, issue Issue) []string {

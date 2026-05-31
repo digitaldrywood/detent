@@ -69,7 +69,7 @@ func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
 func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
-	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), validWorkflowContent())
+	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), validWorkflowContent(t))
 	t.Chdir(root)
 
 	booted := make(chan cli.BootConfig, 1)
@@ -103,7 +103,7 @@ func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing
 func TestRootCommandUsesDefaultWorkflowServerAddress(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
-	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer("0.0.0.0", 4101))
+	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer(t, "0.0.0.0", 4101))
 	t.Chdir(root)
 
 	booted := make(chan cli.BootConfig, 1)
@@ -125,7 +125,7 @@ func TestRootCommandUsesDefaultWorkflowServerAddress(t *testing.T) {
 func TestRootCommandUsesConfiguredProjectWorkflowServerAddress(t *testing.T) {
 	t.Parallel()
 
-	paths := createProjectFilesWithWorkflow(t, workflowContentWithServer("127.0.0.2", 4102))
+	paths := createProjectFilesWithWorkflow(t, workflowContentWithServer(t, "127.0.0.2", 4102))
 	configPath := filepath.Join(paths.root, "global.yaml")
 	writeGlobalConfig(t, configPath, []globalconfig.Project{
 		{ID: "symphony", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
@@ -150,7 +150,7 @@ func TestRootCommandUsesConfiguredProjectWorkflowServerAddress(t *testing.T) {
 func TestRootCommandCLIAddressOverridesWorkflowServerAddress(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
-	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer("0.0.0.0", 4103))
+	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer(t, "0.0.0.0", 4103))
 	t.Chdir(root)
 
 	booted := make(chan cli.BootConfig, 1)
@@ -535,7 +535,7 @@ type projectPaths struct {
 func createProjectFiles(t *testing.T) projectPaths {
 	t.Helper()
 
-	return createProjectFilesWithWorkflow(t, validWorkflowContent())
+	return createProjectFilesWithWorkflow(t, validWorkflowContent(t))
 }
 
 func createProjectFilesWithWorkflow(t *testing.T, content string) projectPaths {
@@ -568,25 +568,43 @@ func writeWorkflow(t *testing.T, path string, content string) {
 	}
 }
 
-func validWorkflowContent() string {
-	return `---
-tracker:
-  kind: memory
----
-Test workflow prompt.
-`
-}
+func validWorkflowContent(t *testing.T) string {
+	t.Helper()
 
-func workflowContentWithServer(host string, port int) string {
 	return fmt.Sprintf(`---
 tracker:
   kind: memory
+workspace:
+  source_root: %s
+---
+Test workflow prompt.
+`, testSourceRoot(t))
+}
+
+func workflowContentWithServer(t *testing.T, host string, port int) string {
+	t.Helper()
+
+	return fmt.Sprintf(`---
+tracker:
+  kind: memory
+workspace:
+  source_root: %s
 server:
   host: %s
   port: %d
 ---
 Test workflow prompt.
-`, host, port)
+`, testSourceRoot(t), host, port)
+}
+
+func testSourceRoot(t *testing.T) string {
+	t.Helper()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	return cwd
 }
 
 func assertBootServer(t *testing.T, cfg cli.BootConfig, host string, port int) {

@@ -142,6 +142,8 @@ tracker:
   kind: memory
 polling:
   interval_ms: ` + strconv.Itoa(intervalMS) + `
+workspace:
+  source_root: .
 ---
 ` + prompt + `
 `)

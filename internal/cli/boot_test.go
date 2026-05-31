@@ -59,6 +59,7 @@ func newRefreshProject(t *testing.T, id string) *projectpkg.Project {
 
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Workspace.SourceRoot = "."
 	project, err := projectpkg.New(projectpkg.Config{
 		Project: globalconfig.Project{
 			ID:      id,

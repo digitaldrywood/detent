@@ -3,6 +3,7 @@ package project_test
 import (
 	"testing"
 
+	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
 	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
 	"github.com/digitaldrywood/symphony/internal/project"
 )
@@ -84,6 +85,7 @@ func newTestProject(t *testing.T, id string) *project.Project {
 			ID:     id,
 			Weight: 1,
 		},
+		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 	}, project.Dependencies{})
 	if err != nil {
 		t.Fatalf("New(%q) error = %v", id, err)

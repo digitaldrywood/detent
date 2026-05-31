@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
 	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
 	"github.com/digitaldrywood/symphony/internal/hub"
 	"github.com/digitaldrywood/symphony/internal/project"
@@ -170,7 +171,10 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 	}, project.ManagerDependencies{
 		Events: events,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			return project.New(project.Config{Project: cfg}, project.Dependencies{
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+			}, project.Dependencies{
 				Events:    events,
 				Runner:    blockingRunner{},
 				Scheduler: global,
@@ -283,7 +287,8 @@ func newManagerTestProject(t *testing.T, cfg globalconfig.Project, events *hub.H
 		cfg.Weight = 1
 	}
 	return project.New(project.Config{
-		Project: cfg,
+		Project:  cfg,
+		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 	}, project.Dependencies{
 		Events: events,
 		Runner: blockingRunner{},
