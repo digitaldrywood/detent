@@ -806,6 +806,7 @@ func validPriorityRank(value any) bool {
 func validateWorkspaceRelativePath(field string, path string, problems *[]string) {
 	trimmed := strings.TrimSpace(path)
 	if trimmed == "" || strings.HasPrefix(trimmed, "~") || filepath.IsAbs(trimmed) ||
+		strings.HasPrefix(trimmed, `/`) ||
 		strings.HasPrefix(trimmed, `\`) || windowsAbsPathPattern.MatchString(trimmed) ||
 		pathEscapesWorkspace(trimmed) {
 		*problems = append(*problems, field+" must be a relative path inside the workspace")
