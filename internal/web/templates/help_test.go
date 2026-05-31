@@ -82,15 +82,18 @@ func TestHelpScriptUsesStableSharedPopoverUtility(t *testing.T) {
 	html := buf.String()
 
 	for _, want := range []string{
-		"data-popover-trigger",
-		"data-popover-panel",
+		"data-help-trigger",
+		"data-help-tooltip",
+		"currentHelpTerm",
+		"cancelHelpHide",
 		"showDelay",
 		"hideDelay",
 		"pointerover",
 		"pointerout",
-		"positionPopover",
+		"positionHelpTooltip",
 		"availableBelow",
 		"maxHeight",
+		"aria-describedby",
 		"Escape",
 	} {
 		if !strings.Contains(html, want) {
@@ -99,6 +102,67 @@ func TestHelpScriptUsesStableSharedPopoverUtility(t *testing.T) {
 	}
 	if strings.Contains(html, "mousemove") {
 		t.Fatalf("help script should not reposition on mousemove:\n%s", html)
+	}
+	if strings.Contains(html, "})()\n\n\t\t(()") {
+		t.Fatalf("help script IIFEs must be semicolon separated:\n%s", html)
+	}
+}
+
+func TestHelpIconUsesSharedTooltipMetadata(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := helpIcon(helpRunning, "dashboard").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	html := buf.String()
+
+	for _, want := range []string{
+		`data-help-tip`,
+		`data-help-trigger`,
+		`data-help-term="running"`,
+		`data-help-title="Running"`,
+		`data-help-description="Issues currently assigned to Codex`,
+		`aria-label="Help: Running"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("help icon missing %q:\n%s", want, html)
+		}
+	}
+	for _, unwanted := range []string{
+		`data-popover`,
+		`data-popover-panel`,
+		`class="popover-panel help-tip-panel"`,
+		`id="help-dashboard-running"`,
+		`role="tooltip"`,
+	} {
+		if strings.Contains(html, unwanted) {
+			t.Fatalf("help icon still renders per-trigger panel %q:\n%s", unwanted, html)
+		}
+	}
+}
+
+func TestHelpTooltipHostRendersSharedBodyTooltip(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := helpTooltipHost().Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	html := buf.String()
+
+	for _, want := range []string{
+		`id="help-tooltip"`,
+		`role="tooltip"`,
+		`aria-hidden="true"`,
+		`data-help-tooltip`,
+		`data-help-tooltip-title`,
+		`data-help-tooltip-description`,
+		`class="popover-panel help-tooltip"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("help tooltip host missing %q:\n%s", want, html)
+		}
 	}
 }
 
@@ -114,7 +178,7 @@ func TestHelpCSSKeepsPanelsPointerTransparent(t *testing.T) {
 	for _, want := range []string{
 		".popover-panel",
 		"pointer-events: none;",
-		`.help-tip[data-open="true"] .help-tip-panel`,
+		`.help-tooltip[data-open="true"]`,
 	} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("CSS missing %q:\n%s", want, text)

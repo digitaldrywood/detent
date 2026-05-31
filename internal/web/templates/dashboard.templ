@@ -49,6 +49,7 @@ templ Dashboard(data DashboardData) {
 			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
 		</head>
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
+			@helpTooltipHost()
 			<main class="mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-3 py-3 sm:gap-5 sm:px-6 sm:py-6 lg:px-8" hx-ext="sse" sse-connect="/events">
 				<header class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 					<div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">

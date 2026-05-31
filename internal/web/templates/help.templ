@@ -174,35 +174,235 @@ templ helpScript() {
 
 			window.addEventListener("resize", repositionActivePopover)
 			window.addEventListener("scroll", repositionActivePopover, true)
-		})()
+		})();
+
+		(() => {
+			const tooltipID = "help-tooltip"
+			const margin = 16
+			const offset = 10
+			const showDelay = 110
+			const hideDelay = 160
+			let tooltip = null
+			let activeHelpTrigger = null
+			let currentHelpTerm = ""
+			let showTimer = 0
+			let hideTimer = 0
+			let positionFrame = 0
+
+			function helpTooltip() {
+				if (tooltip && document.documentElement.contains(tooltip)) return tooltip
+				tooltip = document.getElementById(tooltipID)
+				return tooltip
+			}
+
+			function helpTriggerFor(target) {
+				if (!(target instanceof Element)) return null
+				return target.closest("[data-help-trigger]")
+			}
+
+			function helpTermFor(trigger) {
+				return trigger ? trigger.dataset.helpTerm || trigger.dataset.helpTitle || "" : ""
+			}
+
+			function sameHelpTerm(trigger, term) {
+				return helpTermFor(trigger) === term
+			}
+
+			function containsRelated(root, relatedTarget) {
+				return relatedTarget instanceof Node && root.contains(relatedTarget)
+			}
+
+			function cancelHelpHide() {
+				clearTimeout(hideTimer)
+				hideTimer = 0
+			}
+
+			function clearHelpShow() {
+				clearTimeout(showTimer)
+				showTimer = 0
+			}
+
+			function setActiveHelpTrigger(trigger) {
+				if (activeHelpTrigger && activeHelpTrigger !== trigger) activeHelpTrigger.removeAttribute("aria-describedby")
+				activeHelpTrigger = trigger
+				if (activeHelpTrigger) activeHelpTrigger.setAttribute("aria-describedby", tooltipID)
+			}
+
+			function setHelpContent(trigger) {
+				const tip = helpTooltip()
+				if (!tip || !trigger) return
+
+				const title = tip.querySelector("[data-help-tooltip-title]")
+				const description = tip.querySelector("[data-help-tooltip-description]")
+				if (title) title.textContent = trigger.dataset.helpTitle || ""
+				if (description) description.textContent = trigger.dataset.helpDescription || ""
+			}
+
+			function positionHelpTooltip() {
+				const tip = helpTooltip()
+				const trigger = activeHelpTrigger
+				if (!tip || !trigger || !trigger.isConnected) return
+
+				const requestedWidth = Number(tip.dataset.popoverWidth || "256")
+				const width = Math.min(Math.max(160, requestedWidth), Math.max(160, window.innerWidth - margin * 2))
+				tip.style.width = width + "px"
+
+				const triggerRect = trigger.getBoundingClientRect()
+				const maxLeft = Math.max(margin, window.innerWidth - width - margin)
+				const left = Math.min(Math.max(margin, triggerRect.left + triggerRect.width / 2 - width / 2), maxLeft)
+				const availableBelow = Math.max(0, window.innerHeight - triggerRect.bottom - offset - margin)
+				const availableAbove = Math.max(0, triggerRect.top - offset - margin)
+				const desiredHeight = Math.min(tip.scrollHeight || tip.offsetHeight || 96, Math.max(48, window.innerHeight - margin * 2))
+				const useTop = desiredHeight > availableBelow && availableAbove > availableBelow
+				const available = useTop ? availableAbove : availableBelow
+				const maxHeight = Math.max(48, available)
+				const height = Math.min(desiredHeight, maxHeight)
+				let top = triggerRect.bottom + offset
+				let placement = "bottom"
+
+				if (useTop) {
+					top = triggerRect.top - height - offset
+					placement = "top"
+				}
+
+				tip.style.left = left + "px"
+				tip.style.top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - height - margin)) + "px"
+				tip.style.maxHeight = maxHeight + "px"
+				tip.dataset.placement = placement
+			}
+
+			function requestHelpPosition() {
+				if (positionFrame) return
+				positionFrame = requestAnimationFrame(() => {
+					positionFrame = 0
+					const tip = helpTooltip()
+					if (tip && tip.dataset.open === "true") positionHelpTooltip()
+				})
+			}
+
+			function openHelpTooltip(trigger) {
+				const tip = helpTooltip()
+				if (!tip || !trigger) return
+
+				clearHelpShow()
+				cancelHelpHide()
+				currentHelpTerm = helpTermFor(trigger)
+				setHelpContent(trigger)
+				setActiveHelpTrigger(trigger)
+				tip.style.left = "-9999px"
+				tip.style.top = "-9999px"
+				tip.dataset.open = "true"
+				tip.setAttribute("aria-hidden", "false")
+				positionHelpTooltip()
+			}
+
+			function hideHelpTooltip(term, force) {
+				const tip = helpTooltip()
+				if (!tip) return
+				if (!force && term && currentHelpTerm && term !== currentHelpTerm) return
+				if (!force && activeHelpTrigger && document.activeElement === activeHelpTrigger) return
+
+				clearHelpShow()
+				cancelHelpHide()
+				if (activeHelpTrigger) activeHelpTrigger.removeAttribute("aria-describedby")
+				activeHelpTrigger = null
+				currentHelpTerm = ""
+				tip.removeAttribute("data-open")
+				tip.setAttribute("aria-hidden", "true")
+			}
+
+			function scheduleHelpOpen(trigger, delay) {
+				const tip = helpTooltip()
+				if (!tip || !trigger) return
+
+				cancelHelpHide()
+				if (tip.dataset.open === "true" && currentHelpTerm && sameHelpTerm(trigger, currentHelpTerm)) {
+					openHelpTooltip(trigger)
+					return
+				}
+
+				clearHelpShow()
+				showTimer = setTimeout(() => openHelpTooltip(trigger), delay)
+			}
+
+			function scheduleHelpHide(trigger, delay) {
+				const term = helpTermFor(trigger) || currentHelpTerm
+				clearHelpShow()
+				clearTimeout(hideTimer)
+				hideTimer = setTimeout(() => hideHelpTooltip(term, false), delay)
+			}
+
+			document.addEventListener("pointerover", (event) => {
+				const trigger = helpTriggerFor(event.target)
+				if (!trigger || containsRelated(trigger, event.relatedTarget)) return
+				scheduleHelpOpen(trigger, showDelay)
+			})
+
+			document.addEventListener("pointerout", (event) => {
+				const trigger = helpTriggerFor(event.target)
+				if (!trigger || containsRelated(trigger, event.relatedTarget)) return
+				scheduleHelpHide(trigger, hideDelay)
+			})
+
+			document.addEventListener("focusin", (event) => {
+				const trigger = helpTriggerFor(event.target)
+				if (trigger) openHelpTooltip(trigger)
+			})
+
+			document.addEventListener("focusout", (event) => {
+				const trigger = helpTriggerFor(event.target)
+				if (!trigger || containsRelated(trigger, event.relatedTarget)) return
+				scheduleHelpHide(trigger, hideDelay)
+			})
+
+			document.addEventListener("click", (event) => {
+				const trigger = helpTriggerFor(event.target)
+				if (trigger) {
+					openHelpTooltip(trigger)
+					return
+				}
+				hideHelpTooltip("", true)
+			})
+
+			document.addEventListener("keydown", (event) => {
+				if (event.key === "Escape") hideHelpTooltip("", true)
+			})
+
+			window.addEventListener("resize", requestHelpPosition)
+			window.addEventListener("scroll", () => hideHelpTooltip("", true), true)
+		})();
 	</script>
+}
+
+templ helpTooltipHost() {
+	<div
+		id="help-tooltip"
+		role="tooltip"
+		class="popover-panel help-tooltip"
+		aria-hidden="true"
+		data-help-tooltip
+		data-popover-width="256"
+	>
+		<span class="help-tip-title" data-help-tooltip-title></span>
+		<span class="help-tip-description" data-help-tooltip-description></span>
+	</div>
 }
 
 templ helpIcon(term helpTerm, scope string) {
 	if hasHelp(term) {
-		<span class="help-tip relative inline-flex shrink-0 align-middle" data-popover data-help-tip>
+		<span class="help-tip inline-flex shrink-0 align-middle" data-help-tip>
 			<button
 				type="button"
 				class="help-tip-button"
 				aria-label={ "Help: " + helpLabel(term) }
-				aria-describedby={ helpID(term, scope) }
-				aria-expanded="false"
-				data-popover-trigger
+				data-help-trigger
+				data-help-scope={ scope }
+				data-help-term={ string(term) }
+				data-help-title={ helpLabel(term) }
+				data-help-description={ helpDescription(term) }
 			>
 				<span aria-hidden="true">?</span>
 			</button>
-			<span
-				id={ helpID(term, scope) }
-				role="tooltip"
-				class="popover-panel help-tip-panel"
-				aria-hidden="true"
-				data-popover-panel
-				data-popover-width="256"
-				data-help-panel
-			>
-				<span class="help-tip-title">{ helpLabel(term) }</span>
-				<span class="help-tip-description">{ helpDescription(term) }</span>
-			</span>
 		</span>
 	}
 }
