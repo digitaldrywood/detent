@@ -32,8 +32,16 @@ type Dependencies struct {
 	Refresher Refresher
 }
 
+type Mode string
+
+const (
+	ModeRunning    Mode = "running"
+	ModeOnboarding Mode = "onboarding"
+)
+
 type Config struct {
 	Logger          *slog.Logger
+	Mode            Mode
 	StaticDir       string
 	SSETickInterval time.Duration
 	WorkflowPath    string
@@ -47,22 +55,26 @@ type Server struct {
 	connector connector.Connector
 	refresher Refresher
 	logger    *slog.Logger
+	mode      Mode
 	tickEvery time.Duration
 	workflow  string
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
-	if deps.Hub == nil {
-		return nil, ErrMissingHub
-	}
-	if deps.Store == nil {
-		return nil, ErrMissingStore
-	}
-	if deps.Registry == nil {
-		return nil, ErrMissingRegistry
-	}
-	if deps.Connector == nil {
-		return nil, ErrMissingConnector
+	mode := cfg.mode()
+	if mode == ModeRunning {
+		if deps.Hub == nil {
+			return nil, ErrMissingHub
+		}
+		if deps.Store == nil {
+			return nil, ErrMissingStore
+		}
+		if deps.Registry == nil {
+			return nil, ErrMissingRegistry
+		}
+		if deps.Connector == nil {
+			return nil, ErrMissingConnector
+		}
 	}
 
 	e := echo.New()
@@ -77,6 +89,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		connector: deps.Connector,
 		refresher: deps.Refresher,
 		logger:    cfg.logger(),
+		mode:      mode,
 		tickEvery: cfg.sseTickInterval(),
 		workflow:  cfg.workflowPath(),
 	}
@@ -106,15 +119,26 @@ func (s *Server) Shutdown(ctx context.Context) error {
 
 func (s *Server) registerRoutes(staticDir string) {
 	s.echo.Static("/static", staticDir)
+	s.echo.GET("/health", s.health)
+	if s.mode == ModeOnboarding {
+		s.echo.GET("/", s.redirectToOnboarding)
+		s.echo.GET("/onboarding", s.onboarding)
+		s.echo.POST("/onboarding/tracker", s.onboardingTracker)
+		s.echo.POST("/onboarding/credentials", s.onboardingCredentials)
+		s.echo.POST("/onboarding/project", s.onboardingProject)
+		s.echo.POST("/onboarding/agent", s.onboardingAgent)
+		s.echo.POST("/onboarding/write", s.onboardingWrite)
+		return
+	}
+
 	s.echo.GET("/", s.dashboard)
 	s.echo.GET("/events", s.events)
-	s.echo.GET("/onboarding", s.onboarding)
+	s.echo.GET("/onboarding", s.redirectToDashboard)
 	s.echo.POST("/onboarding/tracker", s.onboardingTracker)
 	s.echo.POST("/onboarding/credentials", s.onboardingCredentials)
 	s.echo.POST("/onboarding/project", s.onboardingProject)
 	s.echo.POST("/onboarding/agent", s.onboardingAgent)
 	s.echo.POST("/onboarding/write", s.onboardingWrite)
-	s.echo.GET("/health", s.health)
 	s.echo.GET("/api/v1/state", s.apiState)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
@@ -149,7 +173,8 @@ func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
 func (s *Server) health(c echo.Context) error {
 	return c.JSON(http.StatusOK, healthResponse{
 		Status:    "ok",
-		Connector: s.connector.Name(),
+		Mode:      string(s.mode),
+		Connector: s.connectorName(),
 		Checks: map[string]string{
 			"hub":       configuredStatus(s.hub),
 			"store":     configuredStatus(s.store),
@@ -157,6 +182,14 @@ func (s *Server) health(c echo.Context) error {
 			"connector": configuredStatus(s.connector),
 		},
 	})
+}
+
+func (s *Server) redirectToOnboarding(c echo.Context) error {
+	return c.Redirect(http.StatusFound, "/onboarding")
+}
+
+func (s *Server) redirectToDashboard(c echo.Context) error {
+	return c.Redirect(http.StatusFound, "/")
 }
 
 func render(c echo.Context, component templ.Component) error {
@@ -169,6 +202,13 @@ func (cfg Config) logger() *slog.Logger {
 		return cfg.Logger
 	}
 	return slog.Default()
+}
+
+func (cfg Config) mode() Mode {
+	if cfg.Mode == ModeOnboarding {
+		return ModeOnboarding
+	}
+	return ModeRunning
 }
 
 func (cfg Config) staticDir() string {
@@ -199,8 +239,16 @@ func configuredStatus(value any) string {
 	return "configured"
 }
 
+func (s *Server) connectorName() string {
+	if s.connector == nil {
+		return ""
+	}
+	return s.connector.Name()
+}
+
 type healthResponse struct {
 	Status    string            `json:"status"`
+	Mode      string            `json:"mode"`
 	Connector string            `json:"connector"`
 	Checks    map[string]string `json:"checks"`
 }

@@ -43,8 +43,8 @@ func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "global.yaml")
 	writeGlobalConfig(t, path, nil)
 
-	booted := make(chan globalconfig.Config, 1)
-	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg globalconfig.Config) error {
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
 		booted <- cfg
 		return nil
 	}))
@@ -57,8 +57,87 @@ func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
 	}
 
 	got := <-booted
-	if got.Path != path {
-		t.Fatalf("booted config path = %q, want %q", got.Path, path)
+	if got.Mode != cli.BootModeRunning {
+		t.Fatalf("boot mode = %q, want %q", got.Mode, cli.BootModeRunning)
+	}
+	if got.Global.Path != path {
+		t.Fatalf("booted config path = %q, want %q", got.Global.Path, path)
+	}
+}
+
+func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), validWorkflowContent())
+	t.Chdir(root)
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Mode != cli.BootModeRunning {
+		t.Fatalf("boot mode = %q, want %q", got.Mode, cli.BootModeRunning)
+	}
+	if got.WorkflowPath != filepath.Join(root, "WORKFLOW.md") {
+		t.Fatalf("workflow path = %q, want default WORKFLOW.md", got.WorkflowPath)
+	}
+	if len(got.Global.Projects) != 1 {
+		t.Fatalf("projects length = %d, want 1", len(got.Global.Projects))
+	}
+	if got.Global.Projects[0].Workflow != got.WorkflowPath {
+		t.Fatalf("project workflow = %q, want %q", got.Global.Projects[0].Workflow, got.WorkflowPath)
+	}
+}
+
+func TestRootCommandUsesOnboardingModeWithoutValidWorkflow(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "missing workflow"},
+		{name: "invalid workflow", content: "not frontmatter\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+			if tt.content != "" {
+				writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), tt.content)
+			}
+			t.Chdir(root)
+
+			booted := make(chan cli.BootConfig, 1)
+			cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+				booted <- cfg
+				return nil
+			}))
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			got := <-booted
+			if got.Mode != cli.BootModeOnboarding {
+				t.Fatalf("boot mode = %q, want %q", got.Mode, cli.BootModeOnboarding)
+			}
+			if len(got.Global.Projects) != 0 {
+				t.Fatalf("projects = %#v, want none in onboarding mode", got.Global.Projects)
+			}
+		})
 	}
 }
 
@@ -393,15 +472,33 @@ func createProjectFiles(t *testing.T) projectPaths {
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	if err := os.WriteFile(workflow, []byte("# workflow\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	writeWorkflow(t, workflow, validWorkflowContent())
 
 	return projectPaths{
 		root:         root,
 		workflowPath: workflow,
 		workdirPath:  workdir,
 	}
+}
+
+func writeWorkflow(t *testing.T, path string, content string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func validWorkflowContent() string {
+	return `---
+tracker:
+  kind: memory
+---
+Test workflow prompt.
+`
 }
 
 func writeGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {

@@ -143,6 +143,66 @@ func TestServerRoutes(t *testing.T) {
 	}
 }
 
+func TestOnboardingModeDoesNotRequireRuntimeDependencies(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{
+		Mode:      web.ModeOnboarding,
+		StaticDir: t.TempDir(),
+	}, web.Dependencies{})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		path         string
+		wantStatus   int
+		wantContent  string
+		wantLocation string
+	}{
+		{
+			name:         "root redirects to onboarding",
+			path:         "/",
+			wantStatus:   http.StatusFound,
+			wantLocation: "/onboarding",
+		},
+		{
+			name:        "onboarding page",
+			path:        "/onboarding",
+			wantStatus:  http.StatusOK,
+			wantContent: "Symphony onboarding",
+		},
+		{
+			name:        "health",
+			path:        "/health",
+			wantStatus:  http.StatusOK,
+			wantContent: `"mode":"onboarding"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+
+			server.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != tt.wantStatus {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, tt.wantStatus, rec.Body.String())
+			}
+			if tt.wantLocation != "" && rec.Header().Get("Location") != tt.wantLocation {
+				t.Fatalf("Location = %q, want %q", rec.Header().Get("Location"), tt.wantLocation)
+			}
+			if tt.wantContent != "" && !strings.Contains(rec.Body.String(), tt.wantContent) {
+				t.Fatalf("body missing %q:\n%s", tt.wantContent, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestDashboardRendersLatestSnapshot(t *testing.T) {
 	t.Parallel()
 

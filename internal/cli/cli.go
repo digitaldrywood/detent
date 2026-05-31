@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"log/slog"
 	"os"
 	"strings"
 
@@ -37,7 +36,22 @@ type Signal struct {
 	Project   globalconfig.Project
 }
 
-type BootFunc func(context.Context, globalconfig.Config) error
+type BootMode string
+
+const (
+	BootModeRunning    BootMode = "running"
+	BootModeOnboarding BootMode = "onboarding"
+)
+
+type BootConfig struct {
+	Mode         BootMode
+	Global       globalconfig.Config
+	WorkflowPath string
+	Host         string
+	Port         *int
+}
+
+type BootFunc func(context.Context, BootConfig) error
 
 type SignalFunc func(context.Context, Signal) error
 
@@ -112,6 +126,8 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	}
 
 	var configPath string
+	var host string
+	var port int
 	cmd := &cobra.Command{
 		Use:          "symphony",
 		Short:        "Symphony agent orchestrator",
@@ -119,19 +135,17 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			path, err := resolveConfigPath(configPath, opts)
+			boot, err := resolveBootConfig(configPath, host, port, opts)
 			if err != nil {
 				return err
 			}
-			cfg, err := opts.read(path)
-			if err != nil {
-				return err
-			}
-			return opts.boot(cmd.Context(), cfg)
+			return opts.boot(cmd.Context(), boot)
 		},
 	}
 	cmd.SetContext(ctx)
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "path to global.yaml")
+	cmd.PersistentFlags().StringVar(&host, "host", "", "web server host")
+	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
 	cmd.AddCommand(
 		newInitCommand(&configPath, opts),
 		newAddProjectCommand(&configPath, opts),
@@ -165,25 +179,6 @@ func defaultOptions() options {
 		boot:   defaultBoot,
 		signal: noSignal,
 	}
-}
-
-func defaultBoot(ctx context.Context, cfg globalconfig.Config) error {
-	if ctx == nil {
-		ctx = context.Background()
-	}
-
-	manager, err := project.NewManager(project.ManagerConfigFromGlobal(cfg), project.ManagerDependencies{
-		Logger: slog.Default(),
-	})
-	if err != nil {
-		return err
-	}
-	if err := manager.Start(ctx); err != nil {
-		return err
-	}
-
-	<-ctx.Done()
-	return ctx.Err()
 }
 
 func noSignal(context.Context, Signal) error {

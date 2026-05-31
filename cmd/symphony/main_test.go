@@ -30,25 +30,6 @@ func TestRootCommandHelp(t *testing.T) {
 	}
 }
 
-func TestRootCommandWithoutArgsBootsFromGlobalConfig(t *testing.T) {
-	t.Setenv("SYMPHONY_HOME", t.TempDir())
-
-	cmd := newRootCommand(context.Background())
-
-	var stdout bytes.Buffer
-	cmd.SetOut(&stdout)
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{})
-
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute() error = nil, want missing global config")
-	}
-	if !strings.Contains(err.Error(), "read global config") {
-		t.Fatalf("Execute() error = %v, want missing global config", err)
-	}
-}
-
 func TestSignalContextCancel(t *testing.T) {
 	ctx, cancel := newSignalContext(context.Background())
 	cancel()
