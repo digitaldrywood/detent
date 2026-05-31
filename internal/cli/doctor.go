@@ -291,7 +291,8 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 			})
 			continue
 		}
-		if err := deps.gitWorkTree(ctx, sourceRoot); err != nil {
+		expandedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
+		if err != nil {
 			checks = append(checks, doctorCheck{
 				Name:   "Project " + id + " source repo",
 				Status: doctorFail,
@@ -300,10 +301,19 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 			})
 			continue
 		}
+		if err := deps.gitWorkTree(ctx, expandedSourceRoot); err != nil {
+			checks = append(checks, doctorCheck{
+				Name:   "Project " + id + " source repo",
+				Status: doctorFail,
+				Detail: fmt.Sprintf("%s: %v", expandedSourceRoot, err),
+				Hint:   "Set workspace.source_root to an existing git checkout.",
+			})
+			continue
+		}
 		checks = append(checks, doctorCheck{
 			Name:   "Project " + id + " source repo",
 			Status: doctorOK,
-			Detail: sourceRoot + " is a git worktree",
+			Detail: expandedSourceRoot + " is a git worktree",
 		})
 	}
 
@@ -318,6 +328,32 @@ func projectSourceRoot(project globalconfig.Project, cfg workflowconfig.Config) 
 		return root
 	}
 	return strings.TrimSpace(project.Workdir)
+}
+
+func expandDoctorWorkspacePath(path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "~" {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return filepath.Clean(home), nil
+	}
+	if strings.HasPrefix(path, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home directory: %w", err)
+		}
+		return filepath.Join(home, strings.TrimPrefix(path, "~/")), nil
+	}
+	if filepath.IsAbs(path) {
+		return filepath.Clean(path), nil
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		return "", fmt.Errorf("absolute path: %w", err)
+	}
+	return filepath.Clean(abs), nil
 }
 
 func checkDoctorSQLite(ctx context.Context, resolution globalconfig.PathResolution, deps doctorDeps) doctorCheck {
@@ -391,7 +427,15 @@ func checkDoctorBinary(ctx context.Context, deps doctorDeps, binary string, name
 }
 
 func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps) doctorCheck {
-	token, source := doctorGitHubToken(cfg, deps)
+	token, source, hasGitHubProject := doctorGitHubToken(cfg, deps)
+	if cfg != nil && !hasGitHubProject {
+		return doctorCheck{
+			Name:   "GitHub token",
+			Status: doctorWarn,
+			Detail: "no GitHub tracker projects configured; token scope check skipped",
+			Hint:   "Add a GitHub project before relying on GitHub token preflight checks.",
+		}
+	}
 	if token == "" {
 		return doctorCheck{
 			Name:   "GitHub token",
@@ -427,25 +471,29 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps docto
 	}
 }
 
-func doctorGitHubToken(cfg *globalconfig.Config, deps doctorDeps) (string, string) {
+func doctorGitHubToken(cfg *globalconfig.Config, deps doctorDeps) (string, string, bool) {
+	hasGitHubProject := false
 	if cfg != nil {
 		for _, project := range cfg.Projects {
 			workflow, err := deps.loadWorkflow(project.Workflow)
 			if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 				continue
 			}
+			hasGitHubProject = true
 			if token, source := resolveDoctorSecret(workflow.Config.Tracker.APIKey, deps.lookupEnv); token != "" {
 				if source == "" {
 					source = "tracker.api_key"
 				}
-				return token, source
+				return token, source, true
 			}
 		}
 	}
-	if token := strings.TrimSpace(deps.lookupEnv("GITHUB_TOKEN")); token != "" {
-		return token, "GITHUB_TOKEN"
+	if cfg == nil || hasGitHubProject {
+		if token := strings.TrimSpace(deps.lookupEnv("GITHUB_TOKEN")); token != "" {
+			return token, "GITHUB_TOKEN", hasGitHubProject
+		}
 	}
-	return "", ""
+	return "", "", hasGitHubProject
 }
 
 func resolveDoctorSecret(value string, lookupEnv func(string) string) (string, string) {

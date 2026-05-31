@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -159,6 +160,37 @@ func TestCheckDoctorProjects(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
+	t.Parallel()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("UserHomeDir() error = %v", err)
+	}
+
+	workflow := validDoctorWorkflow("~/repo")
+	var gotPath string
+	checks := checkDoctorProjects(context.Background(), globalconfig.Config{
+		Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
+	}, doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: workflow}, nil
+		},
+		gitWorkTree: func(_ context.Context, path string) error {
+			gotPath = path
+			return nil
+		},
+	})
+
+	wantPath := filepath.Join(home, "repo")
+	if gotPath != wantPath {
+		t.Fatalf("git path = %q, want %q", gotPath, wantPath)
+	}
+	if len(checks) != 2 || checks[1].Status != doctorOK {
+		t.Fatalf("checks = %#v, want source repo OK", checks)
+	}
+}
+
 func TestCheckDoctorGitHub(t *testing.T) {
 	t.Parallel()
 
@@ -172,6 +204,7 @@ func TestCheckDoctorGitHub(t *testing.T) {
 		env        map[string]string
 		scopes     []string
 		scopeErr   error
+		workflow   workflowconfig.Config
 		want       doctorStatus
 		wantDetail string
 	}{
@@ -193,6 +226,15 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			scopes:     []string{"repo"},
 			want:       doctorFail,
 			wantDetail: "read:org",
+		},
+		{
+			name: "non github projects skip token scopes",
+			cfg: &globalconfig.Config{Projects: []globalconfig.Project{
+				{ID: "alpha", Workflow: "WORKFLOW.md"},
+			}},
+			workflow:   validDoctorWorkflow("/repo"),
+			want:       doctorWarn,
+			wantDetail: "token scope check skipped",
 		},
 		{
 			name: "workflow token has required scopes",
@@ -217,9 +259,13 @@ func TestCheckDoctorGitHub(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			workflow := githubWorkflow
+			if tt.workflow.Tracker.Kind != "" {
+				workflow = tt.workflow
+			}
 			got := checkDoctorGitHub(context.Background(), tt.cfg, doctorDeps{
 				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
-					return workflowconfig.Workflow{Config: githubWorkflow}, nil
+					return workflowconfig.Workflow{Config: workflow}, nil
 				},
 				lookupEnv: func(key string) string {
 					return tt.env[key]
@@ -235,6 +281,24 @@ func TestCheckDoctorGitHub(t *testing.T) {
 				t.Fatalf("Detail = %q, want containing %q", got.Detail, tt.wantDetail)
 			}
 		})
+	}
+}
+
+func TestExpandDoctorWorkspacePath(t *testing.T) {
+	t.Parallel()
+
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Skipf("UserHomeDir() error = %v", err)
+	}
+
+	got, err := expandDoctorWorkspacePath("~/repo")
+	if err != nil {
+		t.Fatalf("expandDoctorWorkspacePath() error = %v", err)
+	}
+	want := filepath.Join(home, "repo")
+	if got != want {
+		t.Fatalf("expandDoctorWorkspacePath() = %q, want %q", got, want)
 	}
 }
 
