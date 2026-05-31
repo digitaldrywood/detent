@@ -159,7 +159,7 @@ func normalizeAutoPromoteCIStatus(status string) string {
 
 func autoPromoteCodexReviewSubmitted(summary AutoPromoteSummary) bool {
 	switch strings.ToUpper(strings.TrimSpace(summary.ReviewState)) {
-	case "APPROVED", "COMMENTED", "REQUESTED_CHANGES":
+	case "APPROVED", "COMMENTED", "REQUESTED_CHANGES", "CHANGES_REQUESTED":
 		return true
 	default:
 		return false

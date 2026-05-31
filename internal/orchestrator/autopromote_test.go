@@ -134,6 +134,23 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
+			name:  "GitHub changes requested review counts as submitted",
+			issue: autoPromoteTestIssue("issue-github-changes-requested", nil),
+			cfg:   enabled,
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "CHANGES_REQUESTED",
+				P1Findings:     []AutoPromoteFinding{finding},
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action:   AutoPromoteActionRework,
+				Reason:   AutoPromoteReasonP1Findings,
+				Findings: []AutoPromoteFinding{finding},
+			},
+		},
+		{
 			name:  "recent Codex activity awaits quiet window",
 			issue: autoPromoteTestIssue("issue-recent", nil),
 			cfg:   enabled,
