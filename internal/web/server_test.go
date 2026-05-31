@@ -669,6 +669,13 @@ func TestServerAPIRoutes(t *testing.T) {
 			t.Fatalf("running[%q] = %#v, want %#v; row = %#v", key, running[key], want, running)
 		}
 	}
+	if running["turn_count"] != float64(3) {
+		t.Fatalf("running.turn_count = %#v, want 3", running["turn_count"])
+	}
+	runningTokens := running["tokens"].(map[string]any)
+	if runningTokens["input_tokens"] != float64(10) || runningTokens["output_tokens"] != float64(20) || runningTokens["total_tokens"] != float64(30) {
+		t.Fatalf("running.tokens = %#v, want live token counts", runningTokens)
+	}
 
 	retrying := state["retrying"].([]any)[0].(map[string]any)
 	if retrying["issue_identifier"] != "DD-RETRY" || retrying["attempt"] != float64(2) {
@@ -706,6 +713,13 @@ func TestServerAPIRoutes(t *testing.T) {
 		if runningIssue[key] != want {
 			t.Fatalf("issue.running[%q] = %#v, want %#v; running = %#v", key, runningIssue[key], want, runningIssue)
 		}
+	}
+	if runningIssue["turn_count"] != float64(3) {
+		t.Fatalf("issue.running.turn_count = %#v, want 3", runningIssue["turn_count"])
+	}
+	issueTokens := runningIssue["tokens"].(map[string]any)
+	if issueTokens["input_tokens"] != float64(10) || issueTokens["output_tokens"] != float64(20) || issueTokens["total_tokens"] != float64(30) {
+		t.Fatalf("issue.running.tokens = %#v, want live token counts", issueTokens)
 	}
 
 	retryIssue := requestJSON(t, server, http.MethodGet, "/api/v1/DD-RETRY", http.StatusOK)

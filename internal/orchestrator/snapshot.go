@@ -19,7 +19,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Blocked:     blockedSnapshots(s.Blocked),
 		Completed:   completedSnapshots(s.Completed),
 		RateLimits:  cloneRateLimits(s.RateLimits),
-		Tokens:      tokensFromCodexTotals(s.CodexTotals),
+		Tokens:      tokensFromCodexTotals(s.liveCodexTotals()),
 		Budget: telemetry.Budget{
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
 		},
@@ -42,8 +42,9 @@ func runningSnapshots(running map[string]Running) []telemetry.Running {
 			Issue:          telemetryIssue(entry.Issue),
 			WorkerHost:     entry.WorkerHost,
 			StartedAt:      entry.StartedAt,
-			RuntimeSeconds: 0,
-			Tokens:         telemetry.Tokens{},
+			TurnCount:      entry.TurnCount,
+			RuntimeSeconds: entry.Tokens.RuntimeSeconds,
+			Tokens:         tokensFromCodexTotals(entry.Tokens),
 		})
 	}
 	return out
@@ -152,6 +153,14 @@ func tokensFromCodexTotals(totals CodexTotals) telemetry.Tokens {
 		Total:          totals.TotalTokens,
 		RuntimeSeconds: totals.RuntimeSeconds,
 	}
+}
+
+func (s State) liveCodexTotals() CodexTotals {
+	totals := s.CodexTotals
+	for _, running := range s.Running {
+		totals = addCodexTotals(totals, running.Tokens)
+	}
+	return totals
 }
 
 func sortedKeys[V any](m map[string]V) []string {

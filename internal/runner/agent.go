@@ -152,6 +152,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Model:             model,
 	}, func(update codex.Update) error {
 		applyCodexUpdate(&result, update)
+		if err := r.publishUsageUpdate(req, result, update, runStartedAt); err != nil {
+			return err
+		}
 		return nil
 	})
 	_ = turnResult
@@ -294,6 +297,28 @@ func applyCodexUpdate(result *RunResult, update codex.Update) {
 	case codex.UpdateRateLimits:
 		result.RateLimits = rateLimitsFromCodex(update.RateLimits)
 	}
+}
+
+func (r *Runner) publishUsageUpdate(
+	req RunRequest,
+	result RunResult,
+	update codex.Update,
+	runStartedAt time.Time,
+) error {
+	if req.OnUsageUpdate == nil {
+		return nil
+	}
+	if update.Type != codex.UpdateTokenUsage {
+		return nil
+	}
+
+	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, r.now())
+	usage := UsageUpdate{
+		Tokens:     result.Tokens,
+		TurnCount:  1,
+		RateLimits: result.RateLimits,
+	}
+	return req.OnUsageUpdate(usage)
 }
 
 func rateLimitsFromCodex(snapshot *codex.RateLimitSnapshot) *telemetry.RateLimits {

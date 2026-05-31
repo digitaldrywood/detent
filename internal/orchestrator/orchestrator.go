@@ -62,6 +62,7 @@ type Orchestrator struct {
 	configUpdates chan configUpdateRequest
 	refreshes     chan time.Time
 	runResults    chan runpkg.Completion
+	runUpdates    chan runUpdate
 	done          chan struct{}
 }
 
@@ -72,6 +73,11 @@ type stateRequest struct {
 type configUpdateRequest struct {
 	update RuntimeUpdate
 	reply  chan struct{}
+}
+
+type runUpdate struct {
+	issueID string
+	usage   runpkg.UsageUpdate
 }
 
 func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
@@ -129,6 +135,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		configUpdates: make(chan configUpdateRequest),
 		refreshes:     make(chan time.Time, 1),
 		runResults:    make(chan runpkg.Completion),
+		runUpdates:    make(chan runUpdate),
 		done:          make(chan struct{}),
 	}, nil
 }
@@ -155,6 +162,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.tick(ctx, &state, now)
 		case result := <-o.runResults:
 			o.handleRunResult(&state, result)
+		case update := <-o.runUpdates:
+			o.handleRunUpdate(&state, update)
 		case update := <-o.configUpdates:
 			o.applyRuntimeUpdate(&state, update.update, ticker)
 			update.reply <- struct{}{}
@@ -465,12 +474,38 @@ func (o *Orchestrator) dispatchIssue(
 	delete(state.BudgetRefusals, issue.ID)
 
 	request := RunRequest{
-		Issue:      issue,
-		Attempt:    attempt,
-		StartedAt:  now,
-		WorkerHost: workerHost,
+		Issue:         issue,
+		Attempt:       attempt,
+		StartedAt:     now,
+		WorkerHost:    workerHost,
+		OnUsageUpdate: o.usageUpdateHandler(ctx, issue.ID),
 	}
 	o.supervisor.Dispatch(ctx, request, o.runResults)
+}
+
+func (o *Orchestrator) usageUpdateHandler(ctx context.Context, issueID string) runpkg.UsageUpdateHandler {
+	return func(update runpkg.UsageUpdate) error {
+		select {
+		case o.runUpdates <- runUpdate{issueID: issueID, usage: update}:
+			return nil
+		case <-ctx.Done():
+			return ctx.Err()
+		}
+	}
+}
+
+func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
+	running, ok := state.Running[event.issueID]
+	if !ok {
+		return
+	}
+
+	running.Tokens = event.usage.Tokens
+	running.TurnCount = event.usage.TurnCount
+	state.Running[event.issueID] = running
+	if event.usage.RateLimits != nil {
+		state.RateLimits = cloneRateLimits(event.usage.RateLimits)
+	}
 }
 
 func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {

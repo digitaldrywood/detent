@@ -18,4 +18,6 @@ type DiffStats = runner.DiffStats
 
 type CodexTotals = runner.CodexTotals
 
+type UsageUpdate = runner.UsageUpdate
+
 type FakeRunner = runner.FakeRunner
