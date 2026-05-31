@@ -42,6 +42,7 @@ templ Dashboard(data DashboardData) {
 					})
 				})
 			</script>
+			@helpScript()
 			<link rel="icon" href="data:,"/>
 			<link rel="stylesheet" href="/static/css/output.css"/>
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
@@ -107,12 +108,12 @@ templ SnapshotView(data DashboardData) {
 		@snapshotLoading()
 	}
 	<section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-		@metricCard("Running", formatCount(runningCount(data.Snapshot)), "Active issue sessions", "border-t-accent", "bg-accent")
-		@metricCard("Queue", formatCount(queueCount(data.Snapshot)), "Waiting or retrying", "border-t-warning", "bg-warning")
-		@metricCard("Blocked", formatCount(blockedCount(data.Snapshot)), "Needs operator action", "border-t-danger", "bg-danger")
-		@metricCard("Completed", formatCount(completedCount(data.Snapshot)), "Finished sessions", "border-t-success", "bg-success")
-		@metricCard("Throughput", throughputRate(data.Snapshot), "Rolling tokens/sec", "border-t-accent", "bg-accent")
-		@metricCard("Runtime", runtimeLabel(data.Snapshot), "Aggregate agent uptime", "border-t-success", "bg-success")
+		@metricCard("Running", helpRunning, formatCount(runningCount(data.Snapshot)), "Active issue sessions", "border-t-accent", "bg-accent")
+		@metricCard("Queue", helpQueue, formatCount(queueCount(data.Snapshot)), "Waiting or retrying", "border-t-warning", "bg-warning")
+		@metricCard("Blocked", helpBlocked, formatCount(blockedCount(data.Snapshot)), "Needs operator action", "border-t-danger", "bg-danger")
+		@metricCard("Completed", helpCompleted, formatCount(completedCount(data.Snapshot)), "Finished sessions", "border-t-success", "bg-success")
+		@metricCard("Throughput", helpThroughput, throughputRate(data.Snapshot), "Rolling tokens/sec", "border-t-accent", "bg-accent")
+		@metricCard("Runtime", helpRuntime, runtimeLabel(data.Snapshot), "Aggregate agent uptime", "border-t-success", "bg-success")
 	</section>
 	@boardHealthSection(data.Snapshot)
 	@agentActivityTimeline(data.Snapshot)
@@ -120,7 +121,7 @@ templ SnapshotView(data DashboardData) {
 		<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 			<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 				<div class="min-w-0">
-					<h2 class="text-lg font-semibold text-foreground">Running issues</h2>
+					@helpHeading2("Running issues", helpRunning, "running-issues")
 					<p class="text-sm text-muted-foreground">Active Codex sessions and their latest known activity.</p>
 				</div>
 				<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ formatCount(len(data.Snapshot.Running)) }</span>
@@ -151,11 +152,11 @@ templ SnapshotView(data DashboardData) {
 								<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
 									<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 									<th class="w-[9rem] px-3 py-3 font-medium">State</th>
-									<th class="w-[10rem] px-3 py-3 font-medium">Runtime / turns</th>
-									<th class="px-3 py-3 font-medium">Codex update</th>
-									<th class="w-[8rem] px-3 py-3 font-medium">Diff</th>
-									<th class="w-[10rem] px-3 py-3 font-medium">Tokens</th>
-									<th class="w-[9rem] px-3 py-3 font-medium">Session</th>
+									<th class="w-[10rem] px-3 py-3 font-medium">@helpInlineLabel("Runtime / turns", helpAgeTurn, "running-table", "")</th>
+									<th class="px-3 py-3 font-medium">@helpInlineLabel("Codex update", helpEvent, "running-table", "")</th>
+									<th class="w-[8rem] px-3 py-3 font-medium">@helpInlineLabel("Diff", helpDiff, "running-table", "")</th>
+									<th class="w-[10rem] px-3 py-3 font-medium">@helpInlineLabel("Tokens", helpTokens, "running-table", "")</th>
+									<th class="w-[9rem] px-3 py-3 font-medium">@helpInlineLabel("Session", helpSession, "running-table", "")</th>
 								</tr>
 							</thead>
 							<tbody>
@@ -210,7 +211,7 @@ templ SnapshotView(data DashboardData) {
 templ throughputCard(data DashboardData) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
-			<h2 class="min-w-0 text-lg font-semibold text-foreground">Token throughput</h2>
+			@helpHeading2("Token throughput", helpThroughput, "throughput-card")
 			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ throughputRate(data.Snapshot) }</span>
 		</div>
 		<div class="mt-5 grid gap-2">
@@ -230,7 +231,7 @@ templ throughputCard(data DashboardData) {
 templ lifetimeCard(totals telemetry.LifetimeTotals) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
-			<h2 class="min-w-0 text-lg font-semibold text-foreground">Lifetime totals</h2>
+			@helpHeading2("Lifetime totals", helpLifetimeTotals, "lifetime-card")
 			<span class="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ lifetimeStatus(totals) }</span>
 		</div>
 		if !totals.Available {
@@ -304,11 +305,11 @@ templ snapshotLoading() {
 	</section>
 }
 
-templ metricCard(label string, value string, detail string, borderClass string, dotClass string) {
+templ metricCard(label string, term helpTerm, value string, detail string, borderClass string, dotClass string) {
 	<article class={ "min-w-0 rounded-md border border-border border-t-2 bg-card p-4 shadow-sm transition-colors hover:bg-muted/40 " + borderClass }>
 		<div class="flex items-start justify-between gap-3">
 			<div class="grid min-w-0 gap-1">
-				<span class="text-sm font-medium text-muted-foreground">{ label }</span>
+				@helpInlineLabel(label, term, "dashboard", "text-sm font-medium text-muted-foreground")
 				<span class="text-xs text-muted-foreground">{ detail }</span>
 			</div>
 			<span class={ "h-2.5 w-2.5 shrink-0 rounded-full " + dotClass }></span>
@@ -326,15 +327,15 @@ templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt ti
 				<span class="rounded-full bg-accent-soft px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Runtime / turns</span>
+				@helpInlineLabel("Runtime / turns", helpAgeTurn, "running-mobile", "text-muted-foreground")
 				<span class="font-mono text-foreground">{ runningRuntime(row, generatedAt) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Diff</span>
+				@helpInlineLabel("Diff", helpDiff, "running-mobile", "text-muted-foreground")
 				<span class="font-mono text-foreground">{ formatDiffStat(row) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Tokens</span>
+				@helpInlineLabel("Tokens", helpTokens, "running-mobile", "text-muted-foreground")
 				<span class="font-mono text-foreground">{ formatTokens(row.Tokens) }</span>
 			</div>
 		</div>
@@ -352,7 +353,7 @@ templ boardHealthSection(snapshot telemetry.Snapshot) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Board health">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
-				<h2 class="text-lg font-semibold text-foreground">Board health</h2>
+				@helpHeading2("Board health", helpBoardHealth, "board-health")
 				<p class="text-sm text-muted-foreground">State distribution and completed progress from the latest snapshot.</p>
 			</div>
 			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ boardStateTotalLabel(snapshot) }</span>
@@ -360,7 +361,7 @@ templ boardHealthSection(snapshot telemetry.Snapshot) {
 		<div class="mt-5 grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
 			<div class="min-w-0">
 				<div class="flex items-center justify-between gap-3">
-					<h3 class="text-sm font-semibold text-foreground">State distribution</h3>
+					@helpHeading3("State distribution", helpStateDistribution, "board-health")
 					<span class="font-mono text-xs text-muted-foreground">{ boardStateTotalLabel(snapshot) } issues</span>
 				</div>
 				if len(boardStateRows(snapshot)) == 0 {
@@ -384,7 +385,7 @@ templ boardHealthSection(snapshot telemetry.Snapshot) {
 			</div>
 			<div class="min-w-0">
 				<div class="flex items-center justify-between gap-3">
-					<h3 class="text-sm font-semibold text-foreground">Cumulative flow</h3>
+					@helpHeading3("Cumulative flow", helpCumulativeFlow, "board-health")
 					<span class="font-mono text-xs text-muted-foreground">{ boardProgressCount(snapshot) } finished</span>
 				</div>
 				if len(telemetry.BoardProgressPoints(snapshot)) == 0 {
@@ -403,7 +404,7 @@ templ agentActivityTimeline(snapshot telemetry.Snapshot) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Agent activity timeline">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
-				<h2 class="text-lg font-semibold text-foreground">Agent activity</h2>
+				@helpHeading2("Agent activity", helpAgentActivity, "agent-activity")
 				<p class="text-sm text-muted-foreground">Live timeline of running and recently completed Codex sessions.</p>
 			</div>
 			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ formatCount(len(agentTimelineRows(snapshot))) }</span>
@@ -490,7 +491,7 @@ templ retryQueueSection(snapshot telemetry.Snapshot) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
-				<h2 class="text-lg font-semibold text-foreground">Retry queue</h2>
+				@helpHeading2("Retry queue", helpBackoffQueue, "retry-queue")
 				<p class="text-sm text-muted-foreground">Issues waiting for the next retry window.</p>
 			</div>
 			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-warning-soft px-2 py-1 text-sm font-medium text-warning">{ formatCount(queueCount(snapshot)) }</span>
@@ -515,7 +516,7 @@ templ retryQueueSection(snapshot telemetry.Snapshot) {
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[7rem] px-3 py-3 font-medium">Attempt</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Due time</th>
-								<th class="px-3 py-3 font-medium">Error</th>
+								<th class="px-3 py-3 font-medium">@helpInlineLabel("Error", helpEvent, "retry-table", "")</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -562,7 +563,7 @@ templ blockedSessionsSection(snapshot telemetry.Snapshot) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
-				<h2 class="text-lg font-semibold text-foreground">Blocked sessions</h2>
+				@helpHeading2("Blocked sessions", helpBlocked, "blocked-sessions")
 				<p class="text-sm text-muted-foreground">Issues paused because Codex requested operator input or approval.</p>
 			</div>
 			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-danger-soft px-2 py-1 text-sm font-medium text-danger">{ formatCount(blockedCount(snapshot)) }</span>
@@ -586,10 +587,10 @@ templ blockedSessionsSection(snapshot telemetry.Snapshot) {
 							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">State</th>
-								<th class="w-[11rem] px-3 py-3 font-medium">Session</th>
+								<th class="w-[11rem] px-3 py-3 font-medium">@helpInlineLabel("Session", helpSession, "blocked-table", "")</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Blocked time</th>
-								<th class="px-3 py-3 font-medium">Last update</th>
-								<th class="w-[14rem] px-3 py-3 font-medium">Error</th>
+								<th class="px-3 py-3 font-medium">@helpInlineLabel("Last update", helpEvent, "blocked-table", "")</th>
+								<th class="w-[14rem] px-3 py-3 font-medium">@helpInlineLabel("Error", helpEvent, "blocked-table-error", "")</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -654,7 +655,7 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
-				<h2 class="text-lg font-semibold text-foreground">Recent sessions</h2>
+				@helpHeading2("Recent sessions", helpRecentSessions, "recent-sessions")
 				<p class="text-sm text-muted-foreground">Last completed Codex sessions across Symphony runs.</p>
 			</div>
 			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success">{ formatCount(completedCount(snapshot)) }</span>
@@ -678,11 +679,11 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Completed</th>
-								<th class="w-[11rem] px-3 py-3 font-medium">Runtime / turns</th>
-								<th class="w-[10rem] px-3 py-3 font-medium">Tokens</th>
+								<th class="w-[11rem] px-3 py-3 font-medium">@helpInlineLabel("Runtime / turns", helpAgeTurn, "recent-table", "")</th>
+								<th class="w-[10rem] px-3 py-3 font-medium">@helpInlineLabel("Tokens", helpTokens, "recent-table", "")</th>
 								<th class="w-[10rem] px-3 py-3 font-medium">Final state</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">Model</th>
-								<th class="w-[11rem] px-3 py-3 font-medium">Session</th>
+								<th class="w-[11rem] px-3 py-3 font-medium">@helpInlineLabel("Session", helpSession, "recent-table", "")</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -725,11 +726,11 @@ templ recentSessionMobileCard(row telemetry.Completed, rowIndex int) {
 				<span class="font-mono text-foreground">{ completedAtLabel(row) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Runtime / turns</span>
+				@helpInlineLabel("Runtime / turns", helpAgeTurn, "recent-mobile", "text-muted-foreground")
 				<span class="font-mono text-foreground">{ completedRuntime(row) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				<span class="text-muted-foreground">Tokens</span>
+				@helpInlineLabel("Tokens", helpTokens, "recent-mobile", "text-muted-foreground")
 				<span class="font-mono text-foreground">{ formatTokens(row.Tokens) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
@@ -827,13 +828,13 @@ templ sessionCopyButton(sessionID string) {
 templ budgetCard(budget Budget) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
-			<h2 class="min-w-0 text-lg font-semibold text-foreground">Budget</h2>
+			@helpHeading2("Budget", helpBudget, "budget-card")
 			<span class="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ budgetStatus(budget) }</span>
 		</div>
 		<div class="mt-5 grid gap-4 text-sm">
 			<div class="grid gap-2">
 				<div class="flex items-center justify-between gap-4">
-					<span class="text-muted-foreground">Spend today</span>
+					@helpInlineLabel("Spend today", helpCurrentSpend, "budget-current-spend", "text-muted-foreground")
 					<strong class="font-mono font-medium text-foreground">{ budgetSpendTodayLabel(budget) }</strong>
 				</div>
 				<div class="h-2 overflow-hidden rounded-full bg-muted" aria-label="Daily budget usage">
@@ -845,7 +846,7 @@ templ budgetCard(budget Budget) {
 			} else {
 				<div class="grid gap-2">
 					<div class="flex items-center justify-between gap-4">
-						<span class="font-medium text-muted-foreground">Budget history</span>
+						@helpInlineLabel("Budget history", helpBudgetHistory, "budget-history", "font-medium text-muted-foreground")
 						<span class="font-mono text-xs text-muted-foreground">{ budgetHistoryCount(budget) }</span>
 					</div>
 					<div class="grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-border bg-muted px-2 py-2" aria-label="Spend over the last seven days">
@@ -859,11 +860,15 @@ templ budgetCard(budget Budget) {
 			}
 			<div class="grid gap-3 border-t border-border pt-3">
 				<div class="flex items-center justify-between gap-4">
-					<span class="text-muted-foreground">Projected</span>
+					@helpInlineLabel("Projected", helpProjectedSpend, "budget-projected", "text-muted-foreground")
 					<strong class="font-mono font-medium text-foreground">{ formatUSD(budget.ProjectedCostUSD) }</strong>
 				</div>
 				<div class="flex items-center justify-between gap-4">
-					<span class="text-muted-foreground">Issue cap</span>
+					@helpInlineLabel("Daily cap", helpDailyCap, "budget-daily-cap", "text-muted-foreground")
+					<strong class="font-mono font-medium text-foreground">{ optionalUSD(budget.PerDayMaxUSD) }</strong>
+				</div>
+				<div class="flex items-center justify-between gap-4">
+					@helpInlineLabel("Issue cap", helpIssueCap, "budget-issue-cap", "text-muted-foreground")
 					<strong class="font-mono font-medium text-foreground">{ optionalUSD(budget.PerIssueMaxUSD) }</strong>
 				</div>
 			</div>
@@ -874,7 +879,7 @@ templ budgetCard(budget Budget) {
 templ rateLimitsCard(limits *RateLimits) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
-			<h2 class="min-w-0 text-lg font-semibold text-foreground">Codex rate limits</h2>
+			@helpHeading2("Codex rate limits", helpRateLimits, "rate-limits-card")
 			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 text-xs font-medium text-accent">{ rateLimitName(limits) }</span>
 		</div>
 		if len(rateLimitRows(limits)) == 0 {
@@ -884,7 +889,7 @@ templ rateLimitsCard(limits *RateLimits) {
 				for _, row := range rateLimitRows(limits) {
 					<div class="grid gap-2">
 						<div class="flex items-center justify-between gap-3">
-							<span class="font-medium text-foreground">{ row.Name }</span>
+							@helpInlineLabel(row.Name, rateLimitHelpTerm(row.Name), "rate-limit-" + helpIDPart(row.Name), "font-medium text-foreground")
 							<span class="font-mono text-sm text-muted-foreground">{ row.Reset }</span>
 						</div>
 						<div class="h-2 overflow-hidden rounded-full bg-muted">
@@ -905,7 +910,7 @@ templ rateLimitsCard(limits *RateLimits) {
 templ tokenCard(data DashboardData) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
-			<h2 class="min-w-0 text-lg font-semibold text-foreground">Tokens</h2>
+			@helpHeading2("Tokens", helpTokens, "tokens-card")
 			<span class="shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground">{ tokenRate(data.Snapshot) }</span>
 		</div>
 		<div class="mt-5 grid gap-2">
@@ -914,7 +919,7 @@ templ tokenCard(data DashboardData) {
 		</div>
 		<div class="mt-5">
 			<div class="mb-2 flex items-center justify-between gap-3 text-sm">
-				<span class="font-medium text-muted-foreground">Token trend</span>
+				@helpInlineLabel("Token trend", helpTokenTrend, "tokens-card", "font-medium text-muted-foreground")
 				<span class="font-mono text-xs text-muted-foreground">{ formatDuration(data.Snapshot.Tokens.RuntimeSeconds) }</span>
 			</div>
 			if len(tokenTrendPoints(data.Snapshot)) == 0 {
