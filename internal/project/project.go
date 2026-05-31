@@ -214,6 +214,9 @@ func (p *Project) Connector() connector.Connector {
 }
 
 func (p *Project) Orchestrator() *orchestrator.Orchestrator {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	return p.orchestrator
 }
 

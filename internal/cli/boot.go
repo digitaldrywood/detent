@@ -42,11 +42,12 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 
 	cfg, err := opts.read(path)
 	if err == nil {
+		host, port := bootServer(host, port, firstGlobalWorkflowPath(cfg))
 		return BootConfig{
 			Mode:   BootModeRunning,
 			Global: cfg,
-			Host:   strings.TrimSpace(host),
-			Port:   bootPort(port),
+			Host:   host,
+			Port:   port,
 		}, nil
 	}
 	if !missingGlobalConfig(err) {
@@ -59,12 +60,13 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 		if err != nil {
 			return BootConfig{}, err
 		}
+		host, port := bootServer(host, port, workflowPath)
 		return BootConfig{
 			Mode:         BootModeRunning,
 			Global:       cfg,
 			WorkflowPath: workflowPath,
-			Host:         strings.TrimSpace(host),
-			Port:         bootPort(port),
+			Host:         host,
+			Port:         port,
 		}, nil
 	}
 
@@ -127,6 +129,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		Store:     runtimeStore,
 		Registry:  manager.Registry(),
 		Connector: firstConnector(manager),
+		Refresher: refresherForRegistry(manager.Registry()),
 	})
 	if err != nil {
 		return err
@@ -225,6 +228,74 @@ func firstConnector(manager *project.Manager) connector.Connector {
 	return memory.New(memory.Config{})
 }
 
+func refresherForRegistry(registry *project.Registry) web.Refresher {
+	if registry == nil {
+		return nil
+	}
+	return registryRefresher{registry: registry}
+}
+
+type registryRefresher struct {
+	registry *project.Registry
+}
+
+func (r registryRefresher) RequestRefresh(ctx context.Context) (web.RefreshResponse, error) {
+	var response web.RefreshResponse
+	refreshed := false
+	for _, trackedProject := range r.registry.List() {
+		if !trackedProject.Running() {
+			continue
+		}
+		orch := trackedProject.Orchestrator()
+		if orch == nil {
+			continue
+		}
+
+		next, err := orch.RequestRefresh(ctx)
+		if err != nil {
+			return web.RefreshResponse{}, err
+		}
+		if !refreshed {
+			response = next
+			refreshed = true
+			continue
+		}
+		response = mergeRefreshResponse(response, next)
+	}
+	if !refreshed {
+		return web.RefreshResponse{}, project.ErrProjectNotFound
+	}
+	return response, nil
+}
+
+func mergeRefreshResponse(current web.RefreshResponse, next web.RefreshResponse) web.RefreshResponse {
+	current.Queued = current.Queued || next.Queued
+	current.Coalesced = current.Coalesced || next.Coalesced
+	if current.RequestedAt.IsZero() || (!next.RequestedAt.IsZero() && next.RequestedAt.Before(current.RequestedAt)) {
+		current.RequestedAt = next.RequestedAt
+	}
+	current.Operations = appendOperations(current.Operations, next.Operations)
+	return current
+}
+
+func appendOperations(operations []string, next []string) []string {
+	for _, operation := range next {
+		if !hasOperation(operations, operation) {
+			operations = append(operations, operation)
+		}
+	}
+	return operations
+}
+
+func hasOperation(operations []string, operation string) bool {
+	for _, existing := range operations {
+		if existing == operation {
+			return true
+		}
+	}
+	return false
+}
+
 func firstWorkflowPath(cfg BootConfig) string {
 	if strings.TrimSpace(cfg.WorkflowPath) != "" {
 		return cfg.WorkflowPath
@@ -233,6 +304,35 @@ func firstWorkflowPath(cfg BootConfig) string {
 		return filepath.Join(mustGetwd(), defaultWorkflowFile)
 	}
 	return cfg.Global.Projects[0].Workflow
+}
+
+func firstGlobalWorkflowPath(cfg globalconfig.Config) string {
+	if len(cfg.Projects) == 0 {
+		return ""
+	}
+	return cfg.Projects[0].Workflow
+}
+
+func bootServer(host string, port int, workflowPath string) (string, *int) {
+	resolvedHost := strings.TrimSpace(host)
+	resolvedPort := bootPort(port)
+
+	workflowPath = strings.TrimSpace(workflowPath)
+	if workflowPath == "" || (resolvedHost != "" && resolvedPort != nil) {
+		return resolvedHost, resolvedPort
+	}
+
+	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+	if err != nil || workflow.Config.Validate() != nil {
+		return resolvedHost, resolvedPort
+	}
+	if resolvedHost == "" {
+		resolvedHost = strings.TrimSpace(workflow.Config.Server.Host)
+	}
+	if resolvedPort == nil {
+		resolvedPort = workflow.Config.Server.Port
+	}
+	return resolvedHost, resolvedPort
 }
 
 func bootPort(port int) *int {
