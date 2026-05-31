@@ -227,7 +227,7 @@ func (o *Orchestrator) dispatchDueRetries(
 		}
 		if !o.dispatchableForRetry(issue, state) {
 			if availableSlots(state) == 0 {
-				o.scheduleRetry(state, issue, retry.Attempt+1, now, "no available orchestrator slots", false)
+				o.scheduleRetry(state, issue, retry.Attempt, now, "no available orchestrator slots", false)
 				continue
 			}
 			if _, blocked := state.Blocked[issue.ID]; blocked {
