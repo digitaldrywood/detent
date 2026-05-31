@@ -3,6 +3,10 @@ SHELL := /bin/bash
 BINARY_NAME := symphony
 BINARY_PATH := tmp/$(BINARY_NAME)
 CMD_PACKAGE := ./cmd/symphony
+VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
+COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
+DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
+LDFLAGS ?= -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
 COVERPROFILE := tmp/coverage.out
 COVERPROFILE_RAW := tmp/coverage.raw.out
 COVERAGE_THRESHOLD := 70.0
@@ -54,7 +58,7 @@ css-watch:
 
 build: generate
 	@mkdir -p tmp
-	go build -o $(BINARY_PATH) $(CMD_PACKAGE)
+	go build -ldflags "$(LDFLAGS)" -o $(BINARY_PATH) $(CMD_PACKAGE)
 
 test:
 	go test ./...
