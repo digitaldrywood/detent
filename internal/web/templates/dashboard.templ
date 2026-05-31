@@ -85,6 +85,7 @@ templ SnapshotView(data DashboardData) {
 		@metricCard("Throughput", throughputRate(data.Snapshot), "Rolling tokens/sec", "border-t-accent", "bg-accent")
 		@metricCard("Runtime", runtimeLabel(data.Snapshot), "Aggregate agent uptime", "border-t-success", "bg-success")
 	</section>
+	@boardHealthSection(data.Snapshot)
 	@agentActivityTimeline(data.Snapshot)
 	<section class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
@@ -258,6 +259,57 @@ templ metricCard(label string, value string, detail string, borderClass string, 
 		</div>
 		<div class="mt-4 font-mono text-3xl font-semibold text-foreground">{ value }</div>
 	</article>
+}
+
+templ boardHealthSection(snapshot telemetry.Snapshot) {
+	<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Board health">
+		<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+			<div>
+				<h2 class="text-lg font-semibold text-foreground">Board health</h2>
+				<p class="text-sm text-muted-foreground">State distribution and completed progress from the latest snapshot.</p>
+			</div>
+			<span class="inline-flex min-w-9 justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ boardStateTotalLabel(snapshot) }</span>
+		</div>
+		<div class="mt-5 grid gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
+			<div class="min-w-0">
+				<div class="flex items-center justify-between gap-3">
+					<h3 class="text-sm font-semibold text-foreground">State distribution</h3>
+					<span class="font-mono text-xs text-muted-foreground">{ boardStateTotalLabel(snapshot) } issues</span>
+				</div>
+				if len(boardStateRows(snapshot)) == 0 {
+					<p class="mt-3 rounded-md border border-dashed border-border bg-muted/60 px-4 py-6 text-center text-sm text-muted-foreground">No board states recorded.</p>
+				} else {
+					<div class="mt-3">
+						@TimelineChart(boardDistributionChart(snapshot))
+					</div>
+					<div class="mt-4 grid gap-2 sm:grid-cols-2">
+						for _, row := range boardStateRows(snapshot) {
+							<div class="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/60 px-3 py-2">
+								<span class="inline-flex min-w-0 items-center gap-2">
+									<span class={ "h-2 w-2 shrink-0 rounded-full " + row.DotClass }></span>
+									<span class="truncate text-sm font-medium text-foreground">{ row.State }</span>
+								</span>
+								<span class="shrink-0 font-mono text-sm text-muted-foreground">{ row.CountLabel } / { row.Percent }</span>
+							</div>
+						}
+					</div>
+				}
+			</div>
+			<div class="min-w-0">
+				<div class="flex items-center justify-between gap-3">
+					<h3 class="text-sm font-semibold text-foreground">Cumulative flow</h3>
+					<span class="font-mono text-xs text-muted-foreground">{ boardProgressCount(snapshot) } finished</span>
+				</div>
+				if len(telemetry.BoardProgressPoints(snapshot)) == 0 {
+					<p class="mt-3 rounded-md border border-dashed border-border bg-muted/60 px-4 py-6 text-center text-sm text-muted-foreground">No board progress history yet.</p>
+				} else {
+					<div class="mt-3">
+						@LineAreaChart(boardProgressChart(snapshot))
+					</div>
+				}
+			</div>
+		</div>
+	</section>
 }
 
 templ agentActivityTimeline(snapshot telemetry.Snapshot) {

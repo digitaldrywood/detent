@@ -39,6 +39,14 @@ type rateLimitRow struct {
 	UsedPercent int
 }
 
+type boardStateRow struct {
+	State      string
+	Count      int
+	CountLabel string
+	Percent    string
+	DotClass   string
+}
+
 type agentTimelineRow struct {
 	Identifier   string
 	Title        string
@@ -296,6 +304,114 @@ func completedState(row telemetry.Completed) string {
 		return "completed"
 	}
 	return row.FinalState
+}
+
+func boardStateRows(snapshot telemetry.Snapshot) []boardStateRow {
+	counts := telemetry.BoardStateCounts(snapshot)
+	total := boardStateTotal(counts)
+	rows := make([]boardStateRow, 0, len(counts))
+	for _, count := range counts {
+		percent := "0%"
+		if total > 0 {
+			percent = fmt.Sprintf("%.0f%%", float64(count.Count)/float64(total)*100)
+		}
+		rows = append(rows, boardStateRow{
+			State:      count.State,
+			Count:      count.Count,
+			CountLabel: formatCount(count.Count),
+			Percent:    percent,
+			DotClass:   boardStateDotClass(count.State),
+		})
+	}
+	return rows
+}
+
+func boardStateTotal(counts []telemetry.BoardStateCount) int {
+	total := 0
+	for _, count := range counts {
+		total += count.Count
+	}
+	return total
+}
+
+func boardStateTotalLabel(snapshot telemetry.Snapshot) string {
+	return formatCount(boardStateTotal(telemetry.BoardStateCounts(snapshot)))
+}
+
+func boardDistributionChart(snapshot telemetry.Snapshot) TimelineChartData {
+	counts := telemetry.BoardStateCounts(snapshot)
+	segments := make([]TimelineSegment, 0, len(counts))
+	for _, count := range counts {
+		segments = append(segments, TimelineSegment{
+			Label: count.State,
+			Value: float64(count.Count),
+			Class: boardStateTextClass(count.State),
+		})
+	}
+	return TimelineChartData{
+		Title:       "Board state distribution",
+		AriaLabel:   "Board state distribution",
+		Segments:    segments,
+		ValueSuffix: "issues",
+		Class:       "h-9",
+		Height:      36,
+	}
+}
+
+func boardProgressChart(snapshot telemetry.Snapshot) SeriesChartData {
+	points := telemetry.BoardProgressPoints(snapshot)
+	chartPoints := make([]webchart.Point, 0, len(points))
+	for _, point := range points {
+		chartPoints = append(chartPoints, webchart.Point{
+			Label: point.Label,
+			Value: float64(point.Count),
+		})
+	}
+	return SeriesChartData{
+		Title:       "Board cumulative flow",
+		AriaLabel:   "Board cumulative flow",
+		Points:      chartPoints,
+		ValueSuffix: "issues",
+		ColorClass:  "text-success",
+	}
+}
+
+func boardProgressCount(snapshot telemetry.Snapshot) string {
+	points := telemetry.BoardProgressPoints(snapshot)
+	if len(points) == 0 {
+		return "0"
+	}
+	return formatCount(points[len(points)-1].Count)
+}
+
+func boardStateDotClass(state string) string {
+	switch normalizeTimelineState(state) {
+	case "todo", "rework":
+		return "bg-warning"
+	case "review", "done":
+		return "bg-success"
+	case "blocked":
+		return "bg-danger"
+	case "backlog":
+		return "bg-muted-foreground"
+	default:
+		return "bg-accent"
+	}
+}
+
+func boardStateTextClass(state string) string {
+	switch normalizeTimelineState(state) {
+	case "todo", "rework":
+		return "text-warning"
+	case "review", "done":
+		return "text-success"
+	case "blocked":
+		return "text-danger"
+	case "backlog":
+		return "text-muted-foreground"
+	default:
+		return "text-accent"
+	}
 }
 
 func completedModel(row telemetry.Completed) string {
