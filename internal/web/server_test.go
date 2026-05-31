@@ -318,7 +318,7 @@ func TestServerAPIRoutes(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:          "issue-running",
-					Identifier:  "DD-37",
+					Identifier:  "digitaldrywood/symphony-go#37",
 					URL:         "https://github.com/digitaldrywood/symphony-go/issues/37",
 					Title:       "REST API",
 					Description: strings.Repeat("api ", 90),
@@ -426,6 +426,9 @@ func TestServerAPIRoutes(t *testing.T) {
 	}
 
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	if state["generated_at"] != generatedAt.Format(time.RFC3339) {
+		t.Fatalf("generated_at = %q, want %q", state["generated_at"], generatedAt.Format(time.RFC3339))
+	}
 	if got := nestedString(t, state, "counts", "running"); got != "1" {
 		t.Fatalf("counts.running = %s, want 1", got)
 	}
@@ -437,7 +440,7 @@ func TestServerAPIRoutes(t *testing.T) {
 	}
 
 	running := state["running"].([]any)[0].(map[string]any)
-	if running["issue_identifier"] != "DD-37" || running["issue_title"] != "REST API" {
+	if running["issue_identifier"] != "digitaldrywood/symphony-go#37" || running["issue_title"] != "REST API" {
 		t.Fatalf("running row = %#v", running)
 	}
 	description := running["issue_description"].(string)
@@ -460,7 +463,7 @@ func TestServerAPIRoutes(t *testing.T) {
 		t.Fatalf("recent_sessions = %#v, want one entry", state["recent_sessions"])
 	}
 
-	issue := requestJSON(t, server, http.MethodGet, "/api/v1/DD-37", http.StatusOK)
+	issue := requestJSON(t, server, http.MethodGet, "/api/v1/digitaldrywood/symphony-go%2337", http.StatusOK)
 	if issue["status"] != "running" || issue["issue_id"] != "issue-running" {
 		t.Fatalf("issue payload = %#v", issue)
 	}

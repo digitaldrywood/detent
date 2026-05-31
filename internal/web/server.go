@@ -109,7 +109,7 @@ func (s *Server) registerRoutes(staticDir string) {
 	s.echo.GET("/api/v1/state", s.apiState)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
-	s.echo.GET("/api/v1/:issue", s.apiIssue)
+	s.echo.GET("/api/v1/*", s.apiIssue)
 }
 
 func (s *Server) dashboard(c echo.Context) error {

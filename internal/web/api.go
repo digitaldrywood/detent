@@ -23,13 +23,13 @@ type Refresher interface {
 type RefreshResponse = orchestrator.RefreshResponse
 
 func (s *Server) apiState(c echo.Context) error {
-	generatedAt := apiNow()
+	now := apiNow()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return c.JSON(http.StatusOK, snapshotErrorResponse(generatedAt, "snapshot_unavailable", "Snapshot unavailable"))
+		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
 
-	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt))
+	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now)))
 }
 
 func (s *Server) apiIssue(c echo.Context) error {
@@ -38,7 +38,7 @@ func (s *Server) apiIssue(c echo.Context) error {
 		return c.JSON(http.StatusNotFound, errorResponse("issue_not_found", "Issue not found"))
 	}
 
-	payload, ok := issueResponse(c.Param("issue"), snapshot)
+	payload, ok := issueResponse(issueIdentifier(c), snapshot)
 	if !ok {
 		return c.JSON(http.StatusNotFound, errorResponse("issue_not_found", "Issue not found"))
 	}
@@ -442,6 +442,20 @@ func timestampStringPtr(value *time.Time) *string {
 
 func apiNow() time.Time {
 	return time.Now().UTC().Truncate(time.Second)
+}
+
+func generatedAt(snapshot telemetry.Snapshot, fallback time.Time) time.Time {
+	if snapshot.GeneratedAt.IsZero() {
+		return fallback
+	}
+	return snapshot.GeneratedAt.UTC().Truncate(time.Second)
+}
+
+func issueIdentifier(c echo.Context) string {
+	if issue := c.Param("issue"); issue != "" {
+		return issue
+	}
+	return c.Param("*")
 }
 
 func errorResponse(code string, message string) apiErrorResponse {
