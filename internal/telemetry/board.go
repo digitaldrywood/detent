@@ -50,23 +50,17 @@ func BoardStateCounts(snapshot Snapshot) []BoardStateCount {
 	for _, row := range snapshot.Running {
 		addStateCount(row.State, "In Progress", 1)
 	}
-	if len(snapshot.Running) == 0 {
-		addStateCount("", "In Progress", snapshot.Counts.Running)
-	}
+	addStateCount("", "In Progress", aggregateDelta(snapshot.Counts.Running, len(snapshot.Running)))
 
 	for _, row := range snapshot.Queue {
 		addStateCount(row.State, "Todo", 1)
 	}
-	if len(snapshot.Queue) == 0 {
-		addStateCount("", "Todo", snapshot.Counts.Queue)
-	}
+	addStateCount("", "Todo", aggregateDelta(snapshot.Counts.Queue, len(snapshot.Queue)))
 
 	for _, row := range snapshot.Blocked {
 		addStateCount(row.State, "Blocked", 1)
 	}
-	if len(snapshot.Blocked) == 0 {
-		addStateCount("", "Blocked", snapshot.Counts.Blocked)
-	}
+	addStateCount("", "Blocked", aggregateDelta(snapshot.Counts.Blocked, len(snapshot.Blocked)))
 
 	for _, row := range snapshot.Completed {
 		state := row.FinalState
@@ -75,9 +69,7 @@ func BoardStateCounts(snapshot Snapshot) []BoardStateCount {
 		}
 		addStateCount(state, "Done", 1)
 	}
-	if len(snapshot.Completed) == 0 {
-		addStateCount("", "Done", snapshot.Counts.Completed)
-	}
+	addStateCount("", "Done", aggregateDelta(snapshot.Counts.Completed, len(snapshot.Completed)))
 
 	return orderedBoardStateCounts(counts)
 }
@@ -106,16 +98,24 @@ func BoardProgressPoints(snapshot Snapshot) []BoardProgressPoint {
 		return completed[i].ID < completed[j].ID
 	})
 
+	offset := aggregateDelta(snapshot.Counts.Completed, len(completed))
 	points := make([]BoardProgressPoint, 0, len(completed))
 	for i, row := range completed {
 		at := row.CompletedAt.UTC()
 		points = append(points, BoardProgressPoint{
 			At:    at,
 			Label: at.Format("15:04"),
-			Count: i + 1,
+			Count: offset + i + 1,
 		})
 	}
 	return points
+}
+
+func aggregateDelta(total int, details int) int {
+	if total <= details {
+		return 0
+	}
+	return total - details
 }
 
 func orderedBoardStateCounts(counts map[string]int) []BoardStateCount {
