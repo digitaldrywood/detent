@@ -3,8 +3,8 @@ package project_test
 import (
 	"testing"
 
-	globalconfig "github.com/digitaldrywood/symphony-go/internal/config/global"
-	"github.com/digitaldrywood/symphony-go/internal/project"
+	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
+	"github.com/digitaldrywood/symphony/internal/project"
 )
 
 func TestRegistryStoresAndListsProjectsByID(t *testing.T) {

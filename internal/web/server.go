@@ -10,11 +10,11 @@ import (
 	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/hub"
-	"github.com/digitaldrywood/symphony-go/internal/store"
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
-	"github.com/digitaldrywood/symphony-go/internal/web/templates"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/hub"
+	"github.com/digitaldrywood/symphony/internal/store"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/web/templates"
 )
 
 var (

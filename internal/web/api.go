@@ -10,8 +10,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/symphony-go/internal/orchestrator"
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/orchestrator"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
 )
 
 const issueDescriptionLimit = 250

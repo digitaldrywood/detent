@@ -7,7 +7,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
 )
 
 type DashboardData struct {

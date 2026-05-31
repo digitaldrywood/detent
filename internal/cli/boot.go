@@ -12,15 +12,15 @@ import (
 	"strings"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
-	globalconfig "github.com/digitaldrywood/symphony-go/internal/config/global"
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/connector/memory"
-	"github.com/digitaldrywood/symphony-go/internal/hub"
-	"github.com/digitaldrywood/symphony-go/internal/project"
-	"github.com/digitaldrywood/symphony-go/internal/store"
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
-	"github.com/digitaldrywood/symphony-go/internal/web"
+	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
+	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector/memory"
+	"github.com/digitaldrywood/symphony/internal/hub"
+	"github.com/digitaldrywood/symphony/internal/project"
+	"github.com/digitaldrywood/symphony/internal/store"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/web"
 )
 
 const (

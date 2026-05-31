@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/orchestrator"
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/orchestrator"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
 )
 
 func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-1", "digitaldrywood/symphony-go#10", "Todo")
+	issue := testIssue("issue-1", "digitaldrywood/symphony#10", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := &staticRunner{
 		result: orchestrator.RunResult{
@@ -79,7 +79,7 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-2", "digitaldrywood/symphony-go#11", "In Progress")
+	issue := testIssue("issue-2", "digitaldrywood/symphony#11", "In Progress")
 	tracker := newFakeConnector(issue)
 	runner := newBlockingRunner()
 
@@ -114,7 +114,7 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 func TestUpdateConfigAppliesBeforeNextTick(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-reload", "digitaldrywood/symphony-go#41", "Todo")
+	issue := testIssue("issue-reload", "digitaldrywood/symphony#41", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := newBlockingRunner()
 
@@ -172,7 +172,7 @@ func TestUpdateConfigAppliesBeforeNextTick(t *testing.T) {
 func TestUpdateRuntimeSwapsConnectorBeforeNextTick(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-reload-connector", "digitaldrywood/symphony-go#41", "Todo")
+	issue := testIssue("issue-reload-connector", "digitaldrywood/symphony#41", "Todo")
 	initialTracker := newFakeConnector()
 	reloadedTracker := newFakeConnector(issue)
 	runner := newBlockingRunner()
@@ -224,9 +224,9 @@ func TestRunDispatchesByStateRankBeforePriorityAndAge(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
-	todo := rankedTestIssue(testIssue("todo-old-urgent", "digitaldrywood/symphony-go#20", "Todo"), 1, now.Add(-4*time.Hour))
-	rework := rankedTestIssue(testIssue("rework-new-low", "digitaldrywood/symphony-go#21", "Rework"), 4, now.Add(-time.Hour))
-	merging := rankedTestIssue(testIssue("merging-new-low", "digitaldrywood/symphony-go#22", "Merging"), 4, now.Add(-30*time.Minute))
+	todo := rankedTestIssue(testIssue("todo-old-urgent", "digitaldrywood/symphony#20", "Todo"), 1, now.Add(-4*time.Hour))
+	rework := rankedTestIssue(testIssue("rework-new-low", "digitaldrywood/symphony#21", "Rework"), 4, now.Add(-time.Hour))
+	merging := rankedTestIssue(testIssue("merging-new-low", "digitaldrywood/symphony#22", "Merging"), 4, now.Add(-30*time.Minute))
 	tracker := newFakeConnector(todo, rework, merging)
 	runner := newBlockingRunner()
 
@@ -257,7 +257,7 @@ func TestRunDispatchesByStateRankBeforePriorityAndAge(t *testing.T) {
 func TestRunSchedulesRetryAfterRunnerError(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-3", "digitaldrywood/symphony-go#12", "Todo")
+	issue := testIssue("issue-3", "digitaldrywood/symphony#12", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := &staticRunner{err: errors.New("runner failed")}
 
@@ -287,7 +287,7 @@ func TestRunSchedulesRetryAfterRunnerError(t *testing.T) {
 func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-panic", "digitaldrywood/symphony-go#22", "Todo")
+	issue := testIssue("issue-panic", "digitaldrywood/symphony#22", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := panicRunner{}
 
@@ -317,7 +317,7 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 func TestRunRedispatchesDueRetryWithExistingClaim(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-retry", "digitaldrywood/symphony-go#16", "Todo")
+	issue := testIssue("issue-retry", "digitaldrywood/symphony#16", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := newRetryRunner()
 
@@ -364,9 +364,9 @@ func TestRunRedispatchesDueRetryWithExistingClaim(t *testing.T) {
 func TestRunSkipsTodoBlockedByNonTerminalDependency(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-4", "digitaldrywood/symphony-go#13", "Todo")
+	issue := testIssue("issue-4", "digitaldrywood/symphony#13", "Todo")
 	issue.BlockedBy = []connector.BlockedRef{{
-		Identifier: "digitaldrywood/symphony-go#4",
+		Identifier: "digitaldrywood/symphony#4",
 		State:      "In Progress",
 	}}
 	tracker := newFakeConnector(issue)
@@ -395,7 +395,7 @@ func TestRunSkipsTodoBlockedByNonTerminalDependency(t *testing.T) {
 func TestStateReturnsDefensiveCopies(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-5", "digitaldrywood/symphony-go#14", "In Progress")
+	issue := testIssue("issue-5", "digitaldrywood/symphony#14", "In Progress")
 	tracker := newFakeConnector(issue)
 	runner := newBlockingRunner()
 
@@ -503,7 +503,7 @@ func TestFakeRunnerCompletes(t *testing.T) {
 	t.Parallel()
 
 	result, err := orchestrator.FakeRunner{}.Run(context.Background(), orchestrator.RunRequest{
-		Issue: testIssue("issue-6", "digitaldrywood/symphony-go#15", "Todo"),
+		Issue: testIssue("issue-6", "digitaldrywood/symphony#15", "Todo"),
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -614,7 +614,7 @@ func testIssue(id, identifier, state string) connector.Issue {
 	issue.Identifier = identifier
 	issue.Title = "Port orchestrator"
 	issue.State = state
-	issue.URL = "https://github.com/digitaldrywood/symphony-go/issues/10"
+	issue.URL = "https://github.com/digitaldrywood/symphony/issues/10"
 	return issue
 }
 

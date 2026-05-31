@@ -12,7 +12,7 @@ import (
 
 	_ "modernc.org/sqlite"
 
-	"github.com/digitaldrywood/symphony-go/internal/store/sqlc"
+	"github.com/digitaldrywood/symphony/internal/store/sqlc"
 )
 
 type sqliteStore struct {

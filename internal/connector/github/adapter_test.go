@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector"
 )
 
 func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","body":"Depends on: #24 digitaldrywood/symphony-go#25\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/symphony-go/issues/26","createdAt":"2026-05-31T01:02:03Z","updatedAt":"2026-05-31T02:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[{"name":"Enhancement"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/symphony-go"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony-go/issues/27","createdAt":"2026-05-31T03:02:03Z","updatedAt":"2026-05-31T04:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony-go"}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","body":"Depends on: #24 digitaldrywood/symphony#25\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/26","createdAt":"2026-05-31T01:02:03Z","updatedAt":"2026-05-31T02:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[{"name":"Enhancement"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/27","createdAt":"2026-05-31T03:02:03Z","updatedAt":"2026-05-31T04:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
 	}})
 
 	c := newGitHubTestConnector(t, server, Config{
@@ -41,14 +41,14 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	priority := 1
 	want := connector.Issue{
 		ID:               "I_kw1",
-		Identifier:       "digitaldrywood/symphony-go#26",
+		Identifier:       "digitaldrywood/symphony#26",
 		Title:            "GitHub adapter",
-		Description:      "Depends on: #24 digitaldrywood/symphony-go#25\n<!-- model: gpt-5-codex-high -->",
+		Description:      "Depends on: #24 digitaldrywood/symphony#25\n<!-- model: gpt-5-codex-high -->",
 		Priority:         &priority,
 		State:            "Todo",
-		URL:              "https://github.com/digitaldrywood/symphony-go/issues/26",
+		URL:              "https://github.com/digitaldrywood/symphony/issues/26",
 		AssigneeID:       "worker-1",
-		BlockedBy:        []connector.BlockedRef{{Identifier: "digitaldrywood/symphony-go#24"}, {Identifier: "digitaldrywood/symphony-go#25"}},
+		BlockedBy:        []connector.BlockedRef{{Identifier: "digitaldrywood/symphony#24"}, {Identifier: "digitaldrywood/symphony#25"}},
 		Labels:           []string{"enhancement", "stage:s4"},
 		AssignedToWorker: true,
 		CreatedAt:        &createdAt,

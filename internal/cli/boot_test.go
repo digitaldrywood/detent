@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
-	globalconfig "github.com/digitaldrywood/symphony-go/internal/config/global"
-	projectpkg "github.com/digitaldrywood/symphony-go/internal/project"
-	"github.com/digitaldrywood/symphony-go/internal/web"
+	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
+	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
+	projectpkg "github.com/digitaldrywood/symphony/internal/project"
+	"github.com/digitaldrywood/symphony/internal/web"
 )
 
 func TestRegistryRefresherRequestsProjectOrchestrators(t *testing.T) {

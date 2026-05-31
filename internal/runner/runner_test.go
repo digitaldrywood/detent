@@ -9,11 +9,11 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/codex"
-	"github.com/digitaldrywood/symphony-go/internal/config"
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/store"
-	"github.com/digitaldrywood/symphony-go/internal/workspace"
+	"github.com/digitaldrywood/symphony/internal/codex"
+	"github.com/digitaldrywood/symphony/internal/config"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/store"
+	"github.com/digitaldrywood/symphony/internal/workspace"
 )
 
 func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
@@ -27,8 +27,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	workspaceBackend := &fakeWorkspaceBackend{
 		info: workspace.Info{
 			Path:   workspacePath,
-			Key:    "digitaldrywood_symphony-go_22",
-			Branch: "symphony/digitaldrywood_symphony-go_22",
+			Key:    "digitaldrywood_symphony_22",
+			Branch: "symphony/digitaldrywood_symphony_22",
 		},
 		diffStat: workspace.DiffStat{Files: 2, Added: 5, Removed: 1},
 	}
@@ -92,10 +92,10 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
 			ID:            "issue-22",
-			Identifier:    "digitaldrywood/symphony-go#22",
+			Identifier:    "digitaldrywood/symphony#22",
 			Title:         "Add runner",
-			URL:           "https://github.com/digitaldrywood/symphony-go/issues/22",
-			BranchName:    "symphony/digitaldrywood_symphony-go_22",
+			URL:           "https://github.com/digitaldrywood/symphony/issues/22",
+			BranchName:    "symphony/digitaldrywood_symphony_22",
 			ModelOverride: "gpt-5-codex-high",
 		},
 		Attempt:   2,
@@ -130,7 +130,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		t.Fatalf("codex model = %q, want issue override", codexClient.request.Model)
 	}
 	for _, want := range []string{
-		"Work on digitaldrywood/symphony-go#22 attempt 2",
+		"Work on digitaldrywood/symphony#22 attempt 2",
 		"## Available skills",
 		"review — Issue needs code review.",
 	} {
@@ -138,7 +138,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			t.Fatalf("codex prompt missing %q:\n%s", want, codexClient.request.Prompt)
 		}
 	}
-	if sessionStore.started.Identifier != "digitaldrywood/symphony-go#22" || sessionStore.started.Model != "gpt-5-codex-high" {
+	if sessionStore.started.Identifier != "digitaldrywood/symphony#22" || sessionStore.started.Model != "gpt-5-codex-high" {
 		t.Fatalf("SessionStart = %#v, want issue identity and model", sessionStore.started)
 	}
 	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 {
@@ -177,7 +177,7 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	_, err = runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
 			ID:         "issue-41",
-			Identifier: "digitaldrywood/symphony-go#41",
+			Identifier: "digitaldrywood/symphony#41",
 			Title:      "Reload workflow",
 		},
 	})
@@ -185,7 +185,7 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if !strings.Contains(codexClient.request.Prompt, "reloaded digitaldrywood/symphony-go#41") {
+	if !strings.Contains(codexClient.request.Prompt, "reloaded digitaldrywood/symphony#41") {
 		t.Fatalf("codex prompt = %q, want reloaded workflow prompt", codexClient.request.Prompt)
 	}
 	if codexClient.request.ThreadSandbox != "danger-full-access" {
@@ -217,7 +217,7 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	_, err = runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
 			ID:         "issue-22",
-			Identifier: "digitaldrywood/symphony-go#22",
+			Identifier: "digitaldrywood/symphony#22",
 			Title:      "Add runner",
 		},
 	})
@@ -259,7 +259,7 @@ func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
 	_, err = runner.Run(ctx, RunRequest{
 		Issue: connector.Issue{
 			ID:         "issue-22",
-			Identifier: "digitaldrywood/symphony-go#22",
+			Identifier: "digitaldrywood/symphony#22",
 			Title:      "Add runner",
 		},
 	})

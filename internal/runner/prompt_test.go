@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/config"
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/lessons"
-	"github.com/digitaldrywood/symphony-go/internal/skills"
+	"github.com/digitaldrywood/symphony/internal/config"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/lessons"
+	"github.com/digitaldrywood/symphony/internal/skills"
 )
 
 func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
@@ -50,7 +50,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		Prompt: "Prompt for {{ issue.identifier }} via {{ tracker.kind }} attempt={{ attempt }} auto={{ workspace.auto_branch }}",
 	}, connector.Issue{
 		ID:          "issue-21",
-		Identifier:  "digitaldrywood/symphony-go#21",
+		Identifier:  "digitaldrywood/symphony#21",
 		Title:       "Build prompt",
 		Description: "Wire prompt builder",
 		Labels:      []string{"enhancement", "stage:s3"},
@@ -67,7 +67,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"Prompt for digitaldrywood/symphony-go#21 via memory attempt=2 auto=true",
+		"Prompt for digitaldrywood/symphony#21 via memory attempt=2 auto=true",
 		"## Lessons from prior runs",
 		"Check generator aliases before editing.",
 		"## Available skills",

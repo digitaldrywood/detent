@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector"
 )
 
 func TestPlanDispatchReportsReadOnlyDispatchOrder(t *testing.T) {
@@ -84,7 +84,7 @@ func TestPlanDispatchRetriesDueIssueWithoutStartingRunner(t *testing.T) {
 func shadowTestIssue(id, state string, priority *int, createdAt time.Time) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id
-	issue.Identifier = "digitaldrywood/symphony-go#" + id
+	issue.Identifier = "digitaldrywood/symphony#" + id
 	issue.Title = "Shadow test issue"
 	issue.State = state
 	issue.Priority = priority

@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector"
 )
 
 func TestEvaluateAutoPromote(t *testing.T) {
@@ -242,7 +242,7 @@ func TestEvaluateAutoPromote(t *testing.T) {
 func autoPromoteTestIssue(id string, labels []string) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id
-	issue.Identifier = "digitaldrywood/symphony-go#15"
+	issue.Identifier = "digitaldrywood/symphony#15"
 	issue.Title = "Auto promote"
 	issue.State = "Human Review"
 	issue.Labels = append([]string(nil), labels...)

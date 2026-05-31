@@ -16,7 +16,7 @@ import (
 	"testing"
 	"time"
 
-	globalconfig "github.com/digitaldrywood/symphony-go/internal/config/global"
+	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
 )
 
 func TestInstallScriptInstallsBinaryAndRefusesExistingLock(t *testing.T) {

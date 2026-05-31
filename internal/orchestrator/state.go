@@ -3,8 +3,8 @@ package orchestrator
 import (
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
 )
 
 type State struct {

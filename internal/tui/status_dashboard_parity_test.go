@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
 )
 
 func TestStatusDashboardParityWithElixirSnapshots(t *testing.T) {

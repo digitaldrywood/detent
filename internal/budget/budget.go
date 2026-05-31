@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/store"
+	"github.com/digitaldrywood/symphony/internal/store"
 )
 
 type ReasonCode string

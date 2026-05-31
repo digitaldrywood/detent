@@ -134,7 +134,7 @@ func TestIssueJSONUsesElixirFieldNames(t *testing.T) {
 func TestBlockedRefJSONUsesElixirFieldNames(t *testing.T) {
 	t.Parallel()
 
-	ref := BlockedRef{ID: "issue-2", Identifier: "digitaldrywood/symphony-go#2", State: "Done"}
+	ref := BlockedRef{ID: "issue-2", Identifier: "digitaldrywood/symphony#2", State: "Done"}
 
 	raw, err := json.Marshal(ref)
 	if err != nil {
@@ -149,8 +149,8 @@ func TestBlockedRefJSONUsesElixirFieldNames(t *testing.T) {
 	if got["id"] != "issue-2" {
 		t.Fatalf("id = %q, want issue-2", got["id"])
 	}
-	if got["identifier"] != "digitaldrywood/symphony-go#2" {
-		t.Fatalf("identifier = %q, want digitaldrywood/symphony-go#2", got["identifier"])
+	if got["identifier"] != "digitaldrywood/symphony#2" {
+		t.Fatalf("identifier = %q, want digitaldrywood/symphony#2", got["identifier"])
 	}
 	if got["state"] != "Done" {
 		t.Fatalf("state = %q, want Done", got["state"])

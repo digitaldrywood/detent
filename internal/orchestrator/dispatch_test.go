@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	runpkg "github.com/digitaldrywood/symphony-go/internal/runner"
+	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	runpkg "github.com/digitaldrywood/symphony/internal/runner"
 )
 
 func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
@@ -88,7 +88,7 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 			name: "todo blocked by non-terminal dependency",
 			issue: func() connector.Issue {
 				issue := dispatchTestIssue("issue-blocked-dependency", "Todo")
-				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/symphony-go#10", State: "In Progress"}}
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/symphony#10", State: "In Progress"}}
 				return issue
 			}(),
 			want: false,
@@ -329,7 +329,7 @@ func TestSelectWorkerHostKeepsPreferredHostWhenAvailable(t *testing.T) {
 func dispatchTestIssue(id, state string) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id
-	issue.Identifier = "digitaldrywood/symphony-go#" + id
+	issue.Identifier = "digitaldrywood/symphony#" + id
 	issue.Title = "Dispatch test issue"
 	issue.State = state
 	return issue

@@ -7,10 +7,10 @@ import (
 	"testing"
 	"time"
 
-	globalconfig "github.com/digitaldrywood/symphony-go/internal/config/global"
-	"github.com/digitaldrywood/symphony-go/internal/hub"
-	"github.com/digitaldrywood/symphony-go/internal/project"
-	"github.com/digitaldrywood/symphony-go/internal/scheduler"
+	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
+	"github.com/digitaldrywood/symphony/internal/hub"
+	"github.com/digitaldrywood/symphony/internal/project"
+	"github.com/digitaldrywood/symphony/internal/scheduler"
 )
 
 func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {

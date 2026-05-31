@@ -10,8 +10,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	runpkg "github.com/digitaldrywood/symphony-go/internal/runner"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	runpkg "github.com/digitaldrywood/symphony/internal/runner"
 )
 
 func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {

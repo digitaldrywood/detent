@@ -6,7 +6,7 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/store/sqlc"
+	"github.com/digitaldrywood/symphony/internal/store/sqlc"
 )
 
 type Backend string

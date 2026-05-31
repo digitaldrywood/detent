@@ -6,9 +6,9 @@ import (
 	"fmt"
 	"strings"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	githubconnector "github.com/digitaldrywood/symphony-go/internal/connector/github"
-	"github.com/digitaldrywood/symphony-go/internal/connector/memory"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	githubconnector "github.com/digitaldrywood/symphony/internal/connector/github"
+	"github.com/digitaldrywood/symphony/internal/connector/memory"
 )
 
 var (

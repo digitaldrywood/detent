@@ -8,9 +8,9 @@ import (
 	"strings"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	runpkg "github.com/digitaldrywood/symphony-go/internal/runner"
+	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	runpkg "github.com/digitaldrywood/symphony/internal/runner"
 )
 
 const (

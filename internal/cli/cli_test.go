@@ -12,9 +12,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/digitaldrywood/symphony-go/internal/cli"
-	globalconfig "github.com/digitaldrywood/symphony-go/internal/config/global"
-	"github.com/digitaldrywood/symphony-go/internal/project"
+	"github.com/digitaldrywood/symphony/internal/cli"
+	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
+	"github.com/digitaldrywood/symphony/internal/project"
 )
 
 func TestRootCommandHelpListsAdminCommands(t *testing.T) {

@@ -9,8 +9,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	globalconfig "github.com/digitaldrywood/symphony-go/internal/config/global"
-	"github.com/digitaldrywood/symphony-go/internal/project"
+	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
+	"github.com/digitaldrywood/symphony/internal/project"
 )
 
 var (

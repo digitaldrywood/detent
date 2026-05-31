@@ -9,15 +9,15 @@ import (
 	"sync"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
-	globalconfig "github.com/digitaldrywood/symphony-go/internal/config/global"
-	configwatcher "github.com/digitaldrywood/symphony-go/internal/config/watcher"
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/connector/factory"
-	"github.com/digitaldrywood/symphony-go/internal/connector/memory"
-	"github.com/digitaldrywood/symphony-go/internal/hub"
-	"github.com/digitaldrywood/symphony-go/internal/orchestrator"
-	"github.com/digitaldrywood/symphony-go/internal/scheduler"
+	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
+	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
+	configwatcher "github.com/digitaldrywood/symphony/internal/config/watcher"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector/factory"
+	"github.com/digitaldrywood/symphony/internal/connector/memory"
+	"github.com/digitaldrywood/symphony/internal/hub"
+	"github.com/digitaldrywood/symphony/internal/orchestrator"
+	"github.com/digitaldrywood/symphony/internal/scheduler"
 )
 
 var (

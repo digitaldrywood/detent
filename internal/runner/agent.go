@@ -12,13 +12,13 @@ import (
 	"sync"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/codex"
-	"github.com/digitaldrywood/symphony-go/internal/config"
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/skills"
-	"github.com/digitaldrywood/symphony-go/internal/store"
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
-	"github.com/digitaldrywood/symphony-go/internal/workspace"
+	"github.com/digitaldrywood/symphony/internal/codex"
+	"github.com/digitaldrywood/symphony/internal/config"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/skills"
+	"github.com/digitaldrywood/symphony/internal/store"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/workspace"
 )
 
 const defaultAfterRunTimeout = time.Minute

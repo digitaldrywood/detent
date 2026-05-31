@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector"
 )
 
 func TestParseWorkflowFrontmatter(t *testing.T) {
@@ -26,7 +26,7 @@ tracker:
 polling:
   interval_ms: 15000
 workspace:
-  root: ~/code/symphony-go-workspaces
+  root: ~/code/symphony-workspaces
   auto_branch: false
 worker:
   ssh_hosts:
