@@ -22,9 +22,10 @@ type State struct {
 }
 
 type Running struct {
-	Issue     connector.Issue
-	Attempt   int
-	StartedAt time.Time
+	Issue      connector.Issue
+	Attempt    int
+	StartedAt  time.Time
+	WorkerHost string
 }
 
 type Claimed struct {
@@ -47,10 +48,11 @@ type Completed struct {
 }
 
 type Retry struct {
-	Issue   connector.Issue
-	Attempt int
-	DueAt   time.Time
-	Error   string
+	Issue      connector.Issue
+	Attempt    int
+	DueAt      time.Time
+	Error      string
+	WorkerHost string
 }
 
 type BudgetRefusal struct {

@@ -1,0 +1,349 @@
+package orchestrator
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
+	"github.com/digitaldrywood/symphony-go/internal/connector"
+)
+
+func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
+	t.Parallel()
+
+	perHost := 2
+	cfg := workflowconfig.Default()
+	cfg.Worker.SSHHosts = []string{"worker-a", "worker-b"}
+	cfg.Worker.MaxConcurrentAgentsPerHost = &perHost
+	cfg.Budget.RefusalCooldownSeconds = 45
+
+	got := ConfigFromWorkflow(cfg)
+
+	if got.MaxConcurrentAgentsPerHost != 2 {
+		t.Fatalf("MaxConcurrentAgentsPerHost = %d, want 2", got.MaxConcurrentAgentsPerHost)
+	}
+	if len(got.WorkerHosts) != 2 || got.WorkerHosts[0] != "worker-a" || got.WorkerHosts[1] != "worker-b" {
+		t.Fatalf("WorkerHosts = %#v, want worker-a and worker-b", got.WorkerHosts)
+	}
+	if got.BudgetRefusalCooldown != 45*time.Second {
+		t.Fatalf("BudgetRefusalCooldown = %s, want 45s", got.BudgetRefusalCooldown)
+	}
+}
+
+func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:    2,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		BudgetRefusalCooldown:  time.Hour,
+		ContinuationRetryDelay: time.Second,
+	})
+	orch := Orchestrator{cfg: cfg}
+
+	tests := []struct {
+		name  string
+		issue connector.Issue
+		state func(State)
+		want  bool
+	}{
+		{
+			name:  "active issue",
+			issue: dispatchTestIssue("issue-active", "Todo"),
+			want:  true,
+		},
+		{
+			name:  "terminal issue",
+			issue: dispatchTestIssue("issue-terminal", "Done"),
+			want:  false,
+		},
+		{
+			name:  "inactive issue",
+			issue: dispatchTestIssue("issue-inactive", "Backlog"),
+			want:  false,
+		},
+		{
+			name: "todo blocked by non-terminal dependency",
+			issue: func() connector.Issue {
+				issue := dispatchTestIssue("issue-blocked-dependency", "Todo")
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/symphony-go#10", State: "In Progress"}}
+				return issue
+			}(),
+			want: false,
+		},
+		{
+			name:  "already running",
+			issue: dispatchTestIssue("issue-running", "Todo"),
+			state: func(state State) {
+				issue := dispatchTestIssue("issue-running", "Todo")
+				state.Running[issue.ID] = Running{Issue: issue}
+			},
+			want: false,
+		},
+		{
+			name:  "already claimed",
+			issue: dispatchTestIssue("issue-claimed", "Todo"),
+			state: func(state State) {
+				issue := dispatchTestIssue("issue-claimed", "Todo")
+				state.Claimed[issue.ID] = Claimed{Issue: issue}
+			},
+			want: false,
+		},
+		{
+			name:  "already blocked",
+			issue: dispatchTestIssue("issue-blocked", "Todo"),
+			state: func(state State) {
+				issue := dispatchTestIssue("issue-blocked", "Todo")
+				state.Blocked[issue.ID] = Blocked{Issue: issue}
+			},
+			want: false,
+		},
+		{
+			name:  "budget cooldown active",
+			issue: dispatchTestIssue("issue-budget", "Todo"),
+			state: func(state State) {
+				issue := dispatchTestIssue("issue-budget", "Todo")
+				state.BudgetRefusals[issue.ID] = BudgetRefusal{
+					Issue:     issue,
+					RefusedAt: now.Add(-time.Minute),
+				}
+			},
+			want: false,
+		},
+		{
+			name:  "budget cooldown expired",
+			issue: dispatchTestIssue("issue-budget-expired", "Todo"),
+			state: func(state State) {
+				issue := dispatchTestIssue("issue-budget-expired", "Todo")
+				state.BudgetRefusals[issue.ID] = BudgetRefusal{
+					Issue:     issue,
+					RefusedAt: now.Add(-2 * time.Hour),
+				}
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newState(cfg)
+			if tt.state != nil {
+				tt.state(state)
+			}
+
+			got := orch.dispatchable(tt.issue, &state, now)
+			if got != tt.want {
+				t.Fatalf("dispatchable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDispatchableChecksSlots(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	issue := dispatchTestIssue("issue-candidate", "Todo")
+
+	tests := []struct {
+		name  string
+		cfg   Config
+		state func(State)
+		want  bool
+	}{
+		{
+			name: "global cap full",
+			cfg: Config{
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+			},
+			state: func(state State) {
+				running := dispatchTestIssue("issue-running", "In Progress")
+				state.Running[running.ID] = Running{Issue: running}
+			},
+			want: false,
+		},
+		{
+			name: "per-state cap full",
+			cfg: Config{
+				MaxConcurrentAgents:        2,
+				MaxConcurrentAgentsByState: map[string]int{"Todo": 1},
+				ActiveStates:               []string{"Todo", "In Progress"},
+				TerminalStates:             []string{"Done"},
+			},
+			state: func(state State) {
+				running := dispatchTestIssue("issue-running", "Todo")
+				state.Running[running.ID] = Running{Issue: running}
+			},
+			want: false,
+		},
+		{
+			name: "per-state falls back to global cap",
+			cfg: Config{
+				MaxConcurrentAgents: 2,
+				ActiveStates:        []string{"Todo", "In Progress"},
+				TerminalStates:      []string{"Done"},
+			},
+			state: func(state State) {
+				running := dispatchTestIssue("issue-running", "In Progress")
+				state.Running[running.ID] = Running{Issue: running}
+			},
+			want: true,
+		},
+		{
+			name: "per-host cap full",
+			cfg: Config{
+				MaxConcurrentAgents:        2,
+				ActiveStates:               []string{"Todo"},
+				TerminalStates:             []string{"Done"},
+				WorkerHosts:                []string{"worker-a"},
+				MaxConcurrentAgentsPerHost: 1,
+			},
+			state: func(state State) {
+				running := dispatchTestIssue("issue-running", "Todo")
+				state.Running[running.ID] = Running{Issue: running, WorkerHost: "worker-a"}
+			},
+			want: false,
+		},
+		{
+			name: "alternate host has capacity",
+			cfg: Config{
+				MaxConcurrentAgents:        3,
+				ActiveStates:               []string{"Todo"},
+				TerminalStates:             []string{"Done"},
+				WorkerHosts:                []string{"worker-a", "worker-b"},
+				MaxConcurrentAgentsPerHost: 1,
+			},
+			state: func(state State) {
+				running := dispatchTestIssue("issue-running", "Todo")
+				state.Running[running.ID] = Running{Issue: running, WorkerHost: "worker-a"}
+			},
+			want: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cfg := normalizeConfig(tt.cfg)
+			orch := Orchestrator{cfg: cfg}
+			state := newState(cfg)
+			if tt.state != nil {
+				tt.state(state)
+			}
+
+			got := orch.dispatchable(issue, &state, now)
+			if got != tt.want {
+				t.Fatalf("dispatchable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDispatchCandidatesAssignsLeastLoadedWorkerHost(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:        3,
+		ActiveStates:               []string{"Todo"},
+		TerminalStates:             []string{"Done"},
+		WorkerHosts:                []string{"worker-a", "worker-b"},
+		MaxConcurrentAgentsPerHost: 1,
+	})
+	runner := newWorkerHostRunner()
+	orch := Orchestrator{
+		cfg:        cfg,
+		runner:     runner,
+		runResults: make(chan runResultEvent),
+	}
+	state := newState(cfg)
+	now := time.Now()
+	running := dispatchTestIssue("issue-running", "Todo")
+	state.Running[running.ID] = Running{Issue: running, WorkerHost: "worker-a"}
+	candidate := dispatchTestIssue("issue-candidate", "Todo")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orch.dispatchCandidates(ctx, &state, []connector.Issue{candidate}, now)
+	request := receiveWorkerHostRunRequest(t, runner.started)
+
+	if request.WorkerHost != "worker-b" {
+		t.Fatalf("RunRequest.WorkerHost = %q, want worker-b", request.WorkerHost)
+	}
+	if got := state.Running[candidate.ID].WorkerHost; got != "worker-b" {
+		t.Fatalf("Running[%q].WorkerHost = %q, want worker-b", candidate.ID, got)
+	}
+}
+
+func TestSelectWorkerHostKeepsPreferredHostWhenAvailable(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:        3,
+		ActiveStates:               []string{"Todo"},
+		TerminalStates:             []string{"Done"},
+		WorkerHosts:                []string{"worker-a", "worker-b"},
+		MaxConcurrentAgentsPerHost: 2,
+	})
+	orch := Orchestrator{cfg: cfg}
+	state := newState(cfg)
+	running := dispatchTestIssue("issue-running", "Todo")
+	state.Running[running.ID] = Running{Issue: running, WorkerHost: "worker-a"}
+
+	host, ok := orch.selectWorkerHost(&state, "worker-a")
+	if !ok {
+		t.Fatal("selectWorkerHost() ok = false, want true")
+	}
+	if host != "worker-a" {
+		t.Fatalf("selectWorkerHost() host = %q, want worker-a", host)
+	}
+}
+
+func dispatchTestIssue(id, state string) connector.Issue {
+	issue := connector.NewIssue()
+	issue.ID = id
+	issue.Identifier = "digitaldrywood/symphony-go#" + id
+	issue.Title = "Dispatch test issue"
+	issue.State = state
+	return issue
+}
+
+type workerHostRunner struct {
+	started chan RunRequest
+}
+
+func newWorkerHostRunner() *workerHostRunner {
+	return &workerHostRunner{started: make(chan RunRequest, 1)}
+}
+
+func (r *workerHostRunner) Run(ctx context.Context, request RunRequest) (RunResult, error) {
+	select {
+	case r.started <- request:
+	case <-ctx.Done():
+		return RunResult{}, ctx.Err()
+	}
+
+	<-ctx.Done()
+	return RunResult{}, ctx.Err()
+}
+
+func receiveWorkerHostRunRequest(t *testing.T, requests <-chan RunRequest) RunRequest {
+	t.Helper()
+
+	select {
+	case request := <-requests:
+		return request
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for worker host run request")
+	}
+
+	return RunRequest{}
+}

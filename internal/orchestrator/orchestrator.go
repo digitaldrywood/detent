@@ -30,9 +30,12 @@ type Config struct {
 	MaxConcurrentAgents        int
 	MaxConcurrentAgentsByState map[string]int
 	DispatchPriorityByState    []string
+	MaxConcurrentAgentsPerHost int
 	MaxRetryBackoff            time.Duration
 	ActiveStates               []string
 	TerminalStates             []string
+	WorkerHosts                []string
+	BudgetRefusalCooldown      time.Duration
 	ContinuationRetryDelay     time.Duration
 	FailureRetryBaseDelay      time.Duration
 }
@@ -70,9 +73,12 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		MaxConcurrentAgents:        cfg.Agent.MaxConcurrentAgents,
 		MaxConcurrentAgentsByState: cloneStateLimits(cfg.Agent.MaxConcurrentAgentsByState),
 		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
+		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
 		ActiveStates:               append([]string(nil), cfg.Tracker.ActiveStates...),
 		TerminalStates:             append([]string(nil), cfg.Tracker.TerminalStates...),
+		WorkerHosts:                append([]string(nil), cfg.Worker.SSHHosts...),
+		BudgetRefusalCooldown:      durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
 	}
 }
 
@@ -162,6 +168,7 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 
 	issues = cloneIssues(issues)
 	sortIssuesForDispatch(issues, o.cfg.DispatchPriorityByState)
+	o.pruneBudgetRefusals(state, now)
 	o.trackBlockedCandidates(state, issues, now)
 	o.dispatchReadyIssues(ctx, state, issues, now)
 }
@@ -204,11 +211,24 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		if availableSlots(state) == 0 {
 			return
 		}
-		if !o.dispatchable(issue, state) {
+		if !o.dispatchable(issue, state, now) {
 			continue
 		}
 
-		o.dispatchIssue(ctx, state, issue, 0, now)
+		o.dispatchIssue(ctx, state, issue, 0, now, "")
+	}
+}
+
+func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
+	for _, issue := range issues {
+		if availableSlots(state) == 0 {
+			return
+		}
+		if !o.dispatchable(issue, state, now) {
+			continue
+		}
+
+		o.dispatchIssue(ctx, state, issue, 0, now, "")
 	}
 }
 
@@ -252,9 +272,13 @@ func (o *Orchestrator) dispatchRetryIssue(
 ) {
 	delete(state.Retry, retry.Issue.ID)
 
-	if !o.dispatchableForRetry(issue, state) {
-		if availableSlots(state) == 0 {
-			o.scheduleRetry(state, issue, retry.Attempt, now, "no available orchestrator slots", false)
+	if !o.dispatchableForRetry(issue, state, now, retry.WorkerHost) {
+		if o.budgetCooldownActive(state, issue.ID, now) {
+			o.scheduleRetry(state, issue, retry.Attempt, now, "budget cooldown active", false, retry.WorkerHost)
+			return
+		}
+		if !o.slotsAvailable(issue, state, retry.WorkerHost) {
+			o.scheduleRetry(state, issue, retry.Attempt, now, "no available orchestrator slots", false, retry.WorkerHost)
 			return
 		}
 		if _, blocked := state.Blocked[issue.ID]; blocked {
@@ -266,18 +290,29 @@ func (o *Orchestrator) dispatchRetryIssue(
 		return
 	}
 
-	o.dispatchIssue(ctx, state, issue, retry.Attempt, now)
+	o.dispatchIssue(ctx, state, issue, retry.Attempt, now, retry.WorkerHost)
 }
 
-func (o *Orchestrator) dispatchable(issue connector.Issue, state *State) bool {
-	return o.dispatchableIssue(issue, state, false)
+func (o *Orchestrator) dispatchable(issue connector.Issue, state *State, now time.Time) bool {
+	return o.dispatchableIssue(issue, state, false, now, "")
 }
 
-func (o *Orchestrator) dispatchableForRetry(issue connector.Issue, state *State) bool {
-	return o.dispatchableIssue(issue, state, true)
+func (o *Orchestrator) dispatchableForRetry(
+	issue connector.Issue,
+	state *State,
+	now time.Time,
+	preferredWorkerHost string,
+) bool {
+	return o.dispatchableIssue(issue, state, true, now, preferredWorkerHost)
 }
 
-func (o *Orchestrator) dispatchableIssue(issue connector.Issue, state *State, allowClaimed bool) bool {
+func (o *Orchestrator) dispatchableIssue(
+	issue connector.Issue,
+	state *State,
+	allowClaimed bool,
+	now time.Time,
+	preferredWorkerHost string,
+) bool {
 	if !validCandidate(issue) {
 		return false
 	}
@@ -296,11 +331,17 @@ func (o *Orchestrator) dispatchableIssue(issue connector.Issue, state *State, al
 	if _, ok := state.Blocked[issue.ID]; ok {
 		return false
 	}
-	if availableSlots(state) == 0 {
+	if o.budgetCooldownActive(state, issue.ID, now) {
 		return false
 	}
 
-	return o.stateSlotsAvailable(issue, state)
+	return o.slotsAvailable(issue, state, preferredWorkerHost)
+}
+
+func (o *Orchestrator) slotsAvailable(issue connector.Issue, state *State, preferredWorkerHost string) bool {
+	return availableSlots(state) > 0 &&
+		o.stateSlotsAvailable(issue, state) &&
+		o.workerSlotsAvailable(state, preferredWorkerHost)
 }
 
 func (o *Orchestrator) stateSlotsAvailable(issue connector.Issue, state *State) bool {
@@ -326,12 +367,19 @@ func (o *Orchestrator) dispatchIssue(
 	issue connector.Issue,
 	attempt int,
 	now time.Time,
+	preferredWorkerHost string,
 ) {
+	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
+	if !ok {
+		return
+	}
+
 	issue = cloneIssue(issue)
 	state.Running[issue.ID] = Running{
-		Issue:     issue,
-		Attempt:   attempt,
-		StartedAt: now,
+		Issue:      issue,
+		Attempt:    attempt,
+		StartedAt:  now,
+		WorkerHost: workerHost,
 	}
 	state.Claimed[issue.ID] = Claimed{
 		Issue:     issue,
@@ -342,9 +390,10 @@ func (o *Orchestrator) dispatchIssue(
 	delete(state.BudgetRefusals, issue.ID)
 
 	request := RunRequest{
-		Issue:     issue,
-		Attempt:   attempt,
-		StartedAt: now,
+		Issue:      issue,
+		Attempt:    attempt,
+		StartedAt:  now,
+		WorkerHost: workerHost,
 	}
 	go func() {
 		result, err := o.runner.Run(ctx, request)
@@ -370,7 +419,15 @@ func (o *Orchestrator) handleRunResult(state *State, event runResultEvent) {
 	delete(state.Running, event.issueID)
 
 	if event.err != nil {
-		o.scheduleRetry(state, running.Issue, nextAttempt(running.Attempt), event.completedAt, event.err.Error(), false)
+		o.scheduleRetry(
+			state,
+			running.Issue,
+			nextAttempt(running.Attempt),
+			event.completedAt,
+			event.err.Error(),
+			false,
+			running.WorkerHost,
+		)
 		return
 	}
 
@@ -399,7 +456,7 @@ func (o *Orchestrator) handleRunResult(state *State, event runResultEvent) {
 		state.BudgetRefusals[event.issueID] = refusal
 	}
 
-	o.scheduleRetry(state, running.Issue, 1, event.completedAt, "", true)
+	o.scheduleRetry(state, running.Issue, 1, event.completedAt, "", true, running.WorkerHost)
 }
 
 func (o *Orchestrator) scheduleRetry(
@@ -409,6 +466,7 @@ func (o *Orchestrator) scheduleRetry(
 	now time.Time,
 	err string,
 	continuation bool,
+	workerHost string,
 ) {
 	if attempt < 1 {
 		attempt = 1
@@ -417,10 +475,11 @@ func (o *Orchestrator) scheduleRetry(
 	delay := o.retryDelay(attempt, continuation)
 	issue = cloneIssue(issue)
 	state.Retry[issue.ID] = Retry{
-		Issue:   issue,
-		Attempt: attempt,
-		DueAt:   now.Add(delay),
-		Error:   err,
+		Issue:      issue,
+		Attempt:    attempt,
+		DueAt:      now.Add(delay),
+		Error:      err,
+		WorkerHost: workerHost,
 	}
 	if _, ok := state.Claimed[issue.ID]; !ok {
 		state.Claimed[issue.ID] = Claimed{
@@ -494,6 +553,10 @@ func normalizeConfig(cfg Config) Config {
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
+	cfg.WorkerHosts = normalizeWorkerHosts(cfg.WorkerHosts)
+	if cfg.MaxConcurrentAgentsPerHost < 0 {
+		cfg.MaxConcurrentAgentsPerHost = 0
+	}
 
 	return cfg
 }
@@ -503,6 +566,20 @@ func durationFromMillis(ms int) time.Duration {
 		return 0
 	}
 	return time.Duration(ms) * time.Millisecond
+}
+
+func durationFromSeconds(seconds int) time.Duration {
+	if seconds <= 0 {
+		return 0
+	}
+	return time.Duration(seconds) * time.Second
+}
+
+func positiveIntValue(value *int) int {
+	if value == nil || *value <= 0 {
+		return 0
+	}
+	return *value
 }
 
 func cloneStateLimits(limits map[string]int) map[string]int {

@@ -15,9 +15,10 @@ type Runner interface {
 }
 
 type RunRequest struct {
-	Issue     connector.Issue
-	Attempt   int
-	StartedAt time.Time
+	Issue      connector.Issue
+	Attempt    int
+	StartedAt  time.Time
+	WorkerHost string
 }
 
 type RunResult struct {
