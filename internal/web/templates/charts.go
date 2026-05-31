@@ -21,6 +21,27 @@ type SeriesChartData struct {
 	Padding     float64
 }
 
+type SplitSeriesPoint struct {
+	Label  string
+	Input  float64
+	Output float64
+}
+
+type SplitSeriesChartData struct {
+	Title       string
+	AriaLabel   string
+	InputLabel  string
+	OutputLabel string
+	Points      []SplitSeriesPoint
+	ValueSuffix string
+	Class       string
+	InputClass  string
+	OutputClass string
+	Width       float64
+	Height      float64
+	Padding     float64
+}
+
 type BarChartData struct {
 	Title       string
 	AriaLabel   string
@@ -60,6 +81,21 @@ type seriesChartView struct {
 	LinePath  string
 	AreaPath  string
 	Points    []pointView
+}
+
+type splitSeriesChartView struct {
+	Title          string
+	AriaLabel      string
+	Class          string
+	ViewBox        string
+	InputAreaPath  string
+	InputLinePath  string
+	OutputAreaPath string
+	OutputLinePath string
+	InputClass     string
+	OutputClass    string
+	InputPoints    []pointView
+	OutputPoints   []pointView
 }
 
 type barChartView struct {
@@ -111,6 +147,52 @@ func newLineAreaChartView(data SeriesChartData) seriesChartView {
 	return newSeriesChartView(data, true, "text-accent")
 }
 
+func newSplitSeriesChartView(data SplitSeriesChartData) splitSeriesChartView {
+	width := chartDimension(data.Width, 300)
+	height := chartDimension(data.Height, 120)
+	padding := chartPadding(data.Padding, 8)
+	baseline := height - padding
+	zero := 0.0
+	maxValue := splitSeriesMax(data.Points)
+
+	inputPoints := make([]webchart.Point, 0, len(data.Points))
+	outputPoints := make([]webchart.Point, 0, len(data.Points))
+	for _, point := range data.Points {
+		inputPoints = append(inputPoints, webchart.Point{Label: point.Label, Value: point.Input})
+		outputPoints = append(outputPoints, webchart.Point{Label: point.Label, Value: point.Output})
+	}
+
+	inputScaled := webchart.ScalePoints(inputPoints, webchart.Options{
+		Width:   width,
+		Height:  height,
+		Padding: padding,
+		Min:     &zero,
+		Max:     &maxValue,
+	})
+	outputScaled := webchart.ScalePoints(outputPoints, webchart.Options{
+		Width:   width,
+		Height:  height,
+		Padding: padding,
+		Min:     &zero,
+		Max:     &maxValue,
+	})
+
+	return splitSeriesChartView{
+		Title:          chartText(data.Title, "Split series chart"),
+		AriaLabel:      chartText(data.AriaLabel, chartText(data.Title, "Split series chart")),
+		Class:          chartClass("block h-28 w-full overflow-visible rounded-md border border-border bg-muted", data.Class),
+		ViewBox:        chartViewBox(width, height),
+		InputAreaPath:  webchart.SmoothAreaPath(inputScaled, baseline),
+		InputLinePath:  webchart.SmoothLinePath(inputScaled),
+		OutputAreaPath: webchart.SmoothAreaPath(outputScaled, baseline),
+		OutputLinePath: webchart.SmoothLinePath(outputScaled),
+		InputClass:     chartText(data.InputClass, "text-accent"),
+		OutputClass:    chartText(data.OutputClass, "text-success"),
+		InputPoints:    splitSeriesPointViews(chartText(data.InputLabel, "Input"), inputScaled, data.ValueSuffix),
+		OutputPoints:   splitSeriesPointViews(chartText(data.OutputLabel, "Output"), outputScaled, data.ValueSuffix),
+	}
+}
+
 func newSeriesChartView(data SeriesChartData, withArea bool, defaultColor string) seriesChartView {
 	width := chartDimension(data.Width, 240)
 	height := chartDimension(data.Height, 80)
@@ -148,6 +230,31 @@ func newSeriesChartView(data SeriesChartData, withArea bool, defaultColor string
 		AreaPath: areaPath,
 		Points:   points,
 	}
+}
+
+func splitSeriesMax(points []SplitSeriesPoint) float64 {
+	maxValue := 0.0
+	for _, point := range points {
+		if point.Input > maxValue {
+			maxValue = point.Input
+		}
+		if point.Output > maxValue {
+			maxValue = point.Output
+		}
+	}
+	return maxValue
+}
+
+func splitSeriesPointViews(seriesLabel string, points []webchart.ScaledPoint, suffix string) []pointView {
+	views := make([]pointView, 0, len(points))
+	for _, point := range points {
+		views = append(views, pointView{
+			X:     webchart.FormatCoord(point.X),
+			Y:     webchart.FormatCoord(point.Y),
+			Title: chartPointTitle(seriesLabel+" "+point.Label, point.Value, suffix),
+		})
+	}
+	return views
 }
 
 func newBarChartView(data BarChartData) barChartView {

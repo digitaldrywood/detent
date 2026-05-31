@@ -66,6 +66,37 @@ func TestLineAreaChartRendersAreaPath(t *testing.T) {
 	}
 }
 
+func TestSplitSeriesChartRendersInputOutputTrend(t *testing.T) {
+	t.Parallel()
+
+	html := renderComponent(t, templates.SplitSeriesChart(templates.SplitSeriesChartData{
+		Title:       "Token trend",
+		AriaLabel:   "Token trend",
+		InputLabel:  "Input",
+		OutputLabel: "Output",
+		ValueSuffix: "tokens",
+		Points: []templates.SplitSeriesPoint{
+			{Label: "15:00", Input: 120, Output: 40},
+			{Label: "15:01", Input: 240, Output: 60},
+			{Label: "15:02", Input: 360, Output: 90},
+		},
+	}))
+
+	for _, want := range []string{
+		"<title>Token trend</title>",
+		`aria-label="Token trend"`,
+		`text-accent`,
+		`text-success`,
+		" C ",
+		"Input 15:00: 120 tokens",
+		"Output 15:02: 90 tokens",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("split series chart missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestMiniBarAndTimelineChartsRenderTitles(t *testing.T) {
 	t.Parallel()
 

@@ -19,7 +19,10 @@ import (
 	"github.com/digitaldrywood/symphony/internal/workspace"
 )
 
-const defaultSnapshotInterval = time.Second
+const (
+	defaultSnapshotInterval     = time.Second
+	defaultTokenTrendWindowSize = 60
+)
 
 // withRunnerFactory returns a project.ProjectFactory that constructs a
 // per-project agent Runner from the project's own workflow (so each project's
@@ -159,11 +162,12 @@ func publishSnapshots(
 		now = time.Now
 	}
 
+	trend := newTokenTrendRecorder(defaultTokenTrendWindowSize)
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
 	for {
-		if err := publishSnapshotOnce(ctx, registry, snapshotHub, now()); err != nil {
+		if err := publishSnapshotOnce(ctx, registry, snapshotHub, now(), trend); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
 		}
 		select {
@@ -179,6 +183,7 @@ func publishSnapshotOnce(
 	registry *project.Registry,
 	snapshotHub *hub.Hub[telemetry.Snapshot],
 	now time.Time,
+	trend *tokenTrendRecorder,
 ) error {
 	merged := telemetry.Snapshot{GeneratedAt: now}
 	for _, trackedProject := range registry.List() {
@@ -195,10 +200,47 @@ func publishSnapshotOnce(
 		}
 		merged = mergeSnapshot(merged, state.Snapshot(now))
 	}
+	if trend != nil {
+		merged = trend.apply(merged)
+	}
 	if err := snapshotHub.Publish(merged); err != nil {
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
 	return nil
+}
+
+type tokenTrendRecorder struct {
+	limit  int
+	points []telemetry.TokenTrendPoint
+}
+
+func newTokenTrendRecorder(limit int) *tokenTrendRecorder {
+	if limit <= 0 {
+		limit = defaultTokenTrendWindowSize
+	}
+	return &tokenTrendRecorder{limit: limit}
+}
+
+func (r *tokenTrendRecorder) apply(snapshot telemetry.Snapshot) telemetry.Snapshot {
+	if snapshot.Tokens.Input > 0 || snapshot.Tokens.Output > 0 || snapshot.Tokens.Total > 0 {
+		total := snapshot.Tokens.Total
+		if total <= 0 {
+			total = snapshot.Tokens.Input + snapshot.Tokens.Output
+		}
+		r.points = append(r.points, telemetry.TokenTrendPoint{
+			At:     snapshot.GeneratedAt,
+			Input:  snapshot.Tokens.Input,
+			Output: snapshot.Tokens.Output,
+			Total:  total,
+		})
+		if len(r.points) > r.limit {
+			r.points = append([]telemetry.TokenTrendPoint(nil), r.points[len(r.points)-r.limit:]...)
+		}
+	} else {
+		r.points = nil
+	}
+	snapshot.TokenTrend = append([]telemetry.TokenTrendPoint(nil), r.points...)
+	return snapshot
 }
 
 func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {

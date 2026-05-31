@@ -3,15 +3,16 @@ package telemetry
 import "time"
 
 type Snapshot struct {
-	GeneratedAt time.Time   `json:"generated_at"`
-	Counts      Counts      `json:"counts"`
-	Running     []Running   `json:"running"`
-	Queue       []Queued    `json:"queue"`
-	Blocked     []Blocked   `json:"blocked"`
-	Completed   []Completed `json:"completed"`
-	Budget      Budget      `json:"budget"`
-	RateLimits  *RateLimits `json:"rate_limits"`
-	Tokens      Tokens      `json:"tokens"`
+	GeneratedAt time.Time         `json:"generated_at"`
+	Counts      Counts            `json:"counts"`
+	Running     []Running         `json:"running"`
+	Queue       []Queued          `json:"queue"`
+	Blocked     []Blocked         `json:"blocked"`
+	Completed   []Completed       `json:"completed"`
+	Budget      Budget            `json:"budget"`
+	RateLimits  *RateLimits       `json:"rate_limits"`
+	Tokens      Tokens            `json:"tokens"`
+	TokenTrend  []TokenTrendPoint `json:"token_trend,omitempty"`
 }
 
 type Counts struct {
@@ -134,4 +135,11 @@ type Tokens struct {
 	Output         int64   `json:"output_tokens"`
 	Total          int64   `json:"total_tokens"`
 	RuntimeSeconds float64 `json:"seconds_running,omitempty"`
+}
+
+type TokenTrendPoint struct {
+	At     time.Time `json:"at"`
+	Input  int64     `json:"input_tokens"`
+	Output int64     `json:"output_tokens"`
+	Total  int64     `json:"total_tokens"`
 }
