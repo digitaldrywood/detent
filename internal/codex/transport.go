@@ -34,7 +34,6 @@ type localTransport struct {
 	received  chan transportResult
 	readDone  chan struct{}
 	done      chan struct{}
-	readDone  chan struct{}
 	sendLock  chan struct{}
 	waitErr   error
 	waitMu    sync.Mutex
@@ -86,7 +85,6 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 		received: make(chan transportResult, 64),
 		readDone: make(chan struct{}),
 		done:     make(chan struct{}),
-		readDone: make(chan struct{}),
 		sendLock: make(chan struct{}, 1),
 	}
 	transport.sendLock <- struct{}{}
@@ -213,7 +211,6 @@ func (t *localTransport) closedError() error {
 func (t *localTransport) readLoop() {
 	defer close(t.readDone)
 	defer close(t.received)
-	defer close(t.readDone)
 
 	for {
 		msg, err := t.codec.ReadMessage()
