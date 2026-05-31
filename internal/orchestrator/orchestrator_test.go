@@ -579,7 +579,8 @@ func newTestOrchestrator(t *testing.T, tracker connector.Connector, runner orche
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:           5 * time.Millisecond,
 		MaxConcurrentAgents:    1,
-		MaxRetryBackoff:        50 * time.Millisecond,
+		MaxRetryBackoff:        time.Hour,
+		FailureRetryBaseDelay:  time.Hour,
 		ActiveStates:           []string{"Todo", "In Progress"},
 		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
 		ContinuationRetryDelay: time.Second,
