@@ -4,7 +4,9 @@ BINARY_NAME := symphony
 BINARY_PATH := tmp/$(BINARY_NAME)
 CMD_PACKAGE := ./cmd/symphony
 COVERPROFILE := tmp/coverage.out
+COVERPROFILE_RAW := tmp/coverage.raw.out
 COVERAGE_THRESHOLD := 70.0
+TEMPL ?= go run github.com/a-h/templ/cmd/templ@v0.3.1001
 TAILWIND_INPUT ?= static/css/input.css
 TAILWIND_OUTPUT ?= static/css/output.css
 SQLC_CONFIG ?= sqlc/sqlc.yaml
@@ -25,7 +27,7 @@ dev:
 generate:
 	@go generate ./...
 	@if [ -n "$$(git ls-files --others --exclude-standard -- '*.templ'; git ls-files -- '*.templ')" ]; then \
-		templ generate; \
+		$(TEMPL) generate; \
 	else \
 		echo "No templ files found; skipping templ generate."; \
 	fi
@@ -34,16 +36,18 @@ generate:
 
 css:
 	@if [ -f "$(TAILWIND_INPUT)" ]; then \
+		if [ -f package-lock.json ] && [ ! -x node_modules/.bin/tailwindcss ]; then npm ci; elif [ -f package.json ] && [ ! -x node_modules/.bin/tailwindcss ]; then npm install; fi; \
 		mkdir -p "$$(dirname "$(TAILWIND_OUTPUT)")"; \
-		npx @tailwindcss/cli -i "$(TAILWIND_INPUT)" -o "$(TAILWIND_OUTPUT)" --minify; \
+		node_modules/.bin/tailwindcss -i "$(TAILWIND_INPUT)" -o "$(TAILWIND_OUTPUT)" --minify; \
 	else \
 		echo "No Tailwind input at $(TAILWIND_INPUT); skipping CSS build."; \
 	fi
 
 css-watch:
 	@if [ -f "$(TAILWIND_INPUT)" ]; then \
+		if [ -f package-lock.json ] && [ ! -x node_modules/.bin/tailwindcss ]; then npm ci; elif [ -f package.json ] && [ ! -x node_modules/.bin/tailwindcss ]; then npm install; fi; \
 		mkdir -p "$$(dirname "$(TAILWIND_OUTPUT)")"; \
-		npx @tailwindcss/cli -i "$(TAILWIND_INPUT)" -o "$(TAILWIND_OUTPUT)" --watch; \
+		node_modules/.bin/tailwindcss -i "$(TAILWIND_INPUT)" -o "$(TAILWIND_OUTPUT)" --watch; \
 	else \
 		echo "No Tailwind input at $(TAILWIND_INPUT); skipping CSS watch."; \
 	fi
@@ -60,7 +64,8 @@ test-race:
 
 test-cover:
 	@mkdir -p tmp
-	go test -coverprofile=$(COVERPROFILE) ./...
+	go test -coverprofile=$(COVERPROFILE_RAW) ./...
+	@awk 'NR == 1 || ($$1 !~ /_templ\.go:/ && $$1 !~ /\/internal\/store\/sqlc\// && $$1 !~ /\/internal\/database\/sqlc\//)' "$(COVERPROFILE_RAW)" > "$(COVERPROFILE)"
 	@coverage="$$(go tool cover -func=$(COVERPROFILE) | awk '/^total:/ { gsub(/%/, "", $$3); print $$3 }')"; \
 	awk -v coverage="$$coverage" -v threshold="$(COVERAGE_THRESHOLD)" 'BEGIN { \
 		if (coverage + 0 < threshold + 0) { \
@@ -96,7 +101,7 @@ db-migrate:
 
 setup:
 	go install github.com/air-verse/air@latest
-	go install github.com/a-h/templ/cmd/templ@latest
+	go install github.com/a-h/templ/cmd/templ@v0.3.1001
 	go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 	go install github.com/pressly/goose/v3/cmd/goose@latest
 	go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@v2.1.6
