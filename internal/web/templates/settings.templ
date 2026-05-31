@@ -32,7 +32,7 @@ templ Settings(data SettingsData) {
 		</head>
 		<body class="min-h-screen bg-background text-foreground antialiased">
 			<main class="mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6 lg:px-8">
-				<header class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+				<header class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 					<div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
 						<div class="min-w-0">
 							<div class="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
@@ -121,7 +121,7 @@ templ Settings(data SettingsData) {
 }
 
 templ dashboardNav(active string) {
-	<nav class="mt-4 flex flex-wrap gap-2 border-t border-border pt-4" aria-label="Dashboard sections">
+	<nav class="mt-4 grid grid-cols-3 gap-2 border-t border-border pt-4 sm:flex sm:flex-wrap" aria-label="Dashboard sections">
 		@dashboardNavItem(active, "dashboard", "/", "Dashboard")
 		@dashboardNavItem(active, "reports", "/reports", "Reports")
 		@dashboardNavItem(active, "settings", "/settings", "Settings")
@@ -130,9 +130,9 @@ templ dashboardNav(active string) {
 
 templ dashboardNavItem(active string, id string, href string, label string) {
 	if active == id {
-		<a class="inline-flex items-center rounded-md border border-accent bg-accent-soft px-3 py-2 text-sm font-medium text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href } aria-current="page">{ label }</a>
+		<a class="inline-flex min-h-11 items-center justify-center rounded-md border border-accent bg-accent-soft px-3 py-2 text-sm font-medium text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href } aria-current="page">{ label }</a>
 	} else {
-		<a class="inline-flex items-center rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>{ label }</a>
+		<a class="inline-flex min-h-11 items-center justify-center rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>{ label }</a>
 	}
 }
 

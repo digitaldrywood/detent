@@ -42,7 +42,7 @@ func Reports(data ReportsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</title><script>\n\t\t\t\tdocument.documentElement.classList.toggle(\"dark\", Boolean(window.matchMedia && window.matchMedia(\"(prefers-color-scheme: dark)\").matches))\n\t\t\t</script><link rel=\"icon\" href=\"data:,\"><link rel=\"stylesheet\" href=\"/static/css/output.css\"></head><body class=\"min-h-screen bg-background text-foreground antialiased\"><main class=\"mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6 lg:px-8\"><header class=\"rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between\"><div class=\"min-w-0\"><div class=\"flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground\"><span class=\"inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent\"><span class=\"h-1.5 w-1.5 rounded-full bg-accent\"></span> <span>Symphony</span></span> <span>Observability</span></div><h1 class=\"mt-2 text-2xl font-semibold text-foreground sm:text-3xl\">Usage reports</h1><p class=\"mt-1 max-w-3xl text-sm text-muted-foreground\">Spend, token, project, issue, PR, and model trends from the usage ledger.</p></div><div class=\"grid w-full gap-2 text-sm text-muted-foreground sm:grid-cols-2 lg:w-auto\"><a class=\"inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"/\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Dashboard</span> <span class=\"font-mono text-xs text-foreground\">Live status</span></a> <span class=\"inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Window</span> <span class=\"truncate font-mono text-xs text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</title><script>\n\t\t\t\tdocument.documentElement.classList.toggle(\"dark\", Boolean(window.matchMedia && window.matchMedia(\"(prefers-color-scheme: dark)\").matches))\n\t\t\t</script><link rel=\"icon\" href=\"data:,\"><link rel=\"stylesheet\" href=\"/static/css/output.css\"></head><body class=\"min-h-screen overflow-x-hidden bg-background text-foreground antialiased\"><main class=\"mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-3 py-3 sm:gap-5 sm:px-6 sm:py-6 lg:px-8\"><header class=\"min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between\"><div class=\"min-w-0\"><div class=\"flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground\"><span class=\"inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent\"><span class=\"h-1.5 w-1.5 rounded-full bg-accent\"></span> <span>Symphony</span></span> <span>Observability</span></div><h1 class=\"mt-2 text-2xl font-semibold text-foreground sm:text-3xl\">Usage reports</h1><p class=\"mt-1 max-w-3xl text-sm text-muted-foreground\">Spend, token, project, issue, PR, and model trends from the usage ledger.</p></div><div class=\"grid w-full min-w-0 gap-2 text-sm text-muted-foreground sm:grid-cols-2 lg:w-auto\"><a class=\"inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"/\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Dashboard</span> <span class=\"font-mono text-xs text-foreground\">Live status</span></a> <span class=\"inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Window</span> <span class=\"truncate font-mono text-xs text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -55,7 +55,7 @@ func Reports(data ReportsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</span></span> <span class=\"inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Connector</span> <span class=\"truncate font-medium text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "</span></span> <span class=\"inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Connector</span> <span class=\"truncate font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -68,7 +68,7 @@ func Reports(data ReportsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</span></span> <span class=\"inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Report</span> <span class=\"truncate font-mono text-xs text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "</span></span> <span class=\"inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Report</span> <span class=\"truncate font-mono text-xs text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -119,14 +119,14 @@ func Reports(data ReportsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</section><section class=\"grid gap-5 xl:grid-cols-2\"><article class=\"rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\"><div><h2 class=\"text-lg font-semibold text-foreground\">Spend trend</h2><p class=\"text-sm text-muted-foreground\">Daily spend across all tracked projects.</p></div><span class=\"rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "</section><section class=\"grid min-w-0 gap-5 xl:grid-cols-2\"><article class=\"min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\"><div class=\"min-w-0\"><h2 class=\"text-lg font-semibold text-foreground\">Spend trend</h2><p class=\"text-sm text-muted-foreground\">Daily spend across all tracked projects.</p></div><span class=\"shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var6 string
 		templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(formatUSD(data.Day.Totals.SpendUSD))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/reports.templ`, Line: 77, Col: 138}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/reports.templ`, Line: 77, Col: 147}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 		if templ_7745c5c3_Err != nil {
@@ -147,14 +147,14 @@ func Reports(data ReportsData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "</div></article><article class=\"rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\"><div><h2 class=\"text-lg font-semibold text-foreground\">Token trend</h2><p class=\"text-sm text-muted-foreground\">Input and output tokens by usage day.</p></div><span class=\"rounded-full bg-success-soft px-2 py-1 font-mono text-xs font-medium text-success\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "</div></article><article class=\"min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\"><div class=\"min-w-0\"><h2 class=\"text-lg font-semibold text-foreground\">Token trend</h2><p class=\"text-sm text-muted-foreground\">Input and output tokens by usage day.</p></div><span class=\"shrink-0 rounded-full bg-success-soft px-2 py-1 font-mono text-xs font-medium text-success\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var7 string
 		templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(data.Day.Totals.TotalTokens))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/reports.templ`, Line: 93, Col: 143}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/reports.templ`, Line: 93, Col: 152}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 		if templ_7745c5c3_Err != nil {
@@ -179,7 +179,7 @@ func Reports(data ReportsData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "</div></article></section><section class=\"grid gap-5 xl:grid-cols-2\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "</div></article></section><section class=\"grid min-w-0 gap-5 xl:grid-cols-2\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -191,7 +191,7 @@ func Reports(data ReportsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</section><section class=\"grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</section><section class=\"grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -199,14 +199,14 @@ func Reports(data ReportsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<article class=\"rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\"><div><h2 class=\"text-lg font-semibold text-foreground\">Model split</h2><p class=\"text-sm text-muted-foreground\">Token distribution by model.</p></div><span class=\"rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "<article class=\"min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\"><div class=\"min-w-0\"><h2 class=\"text-lg font-semibold text-foreground\">Model split</h2><p class=\"text-sm text-muted-foreground\">Token distribution by model.</p></div><span class=\"shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var8 string
 		templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(reportsModelCount(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/reports.templ`, Line: 120, Col: 130}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/reports.templ`, Line: 120, Col: 139}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
 		if templ_7745c5c3_Err != nil {
@@ -270,7 +270,7 @@ func reportsMetricCard(label string, value string, detail string, borderClass st
 			templ_7745c5c3_Var9 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		var templ_7745c5c3_Var10 = []any{"rounded-md border border-border border-t-2 bg-card p-4 shadow-sm transition-colors hover:bg-muted/40 " + borderClass}
+		var templ_7745c5c3_Var10 = []any{"min-w-0 rounded-md border border-border border-t-2 bg-card p-4 shadow-sm transition-colors hover:bg-muted/40 " + borderClass}
 		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var10...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
@@ -288,7 +288,7 @@ func reportsMetricCard(label string, value string, detail string, borderClass st
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\"><div class=\"flex items-start justify-between gap-3\"><div class=\"grid gap-1\"><span class=\"text-sm font-medium text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 25, "\"><div class=\"flex items-start justify-between gap-3\"><div class=\"grid min-w-0 gap-1\"><span class=\"text-sm font-medium text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -318,7 +318,7 @@ func reportsMetricCard(label string, value string, detail string, borderClass st
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var14 = []any{"h-2.5 w-2.5 rounded-full " + dotClass}
+		var templ_7745c5c3_Var14 = []any{"h-2.5 w-2.5 shrink-0 rounded-full " + dotClass}
 		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var14...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
@@ -336,14 +336,14 @@ func reportsMetricCard(label string, value string, detail string, borderClass st
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, "\"></span></div><div class=\"mt-4 font-mono text-3xl font-semibold text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 29, "\"></span></div><div class=\"mt-4 break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var16 string
 		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(value)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/reports.templ`, Line: 150, Col: 76}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/reports.templ`, Line: 150, Col: 98}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
@@ -378,7 +378,7 @@ func reportsBucketCard(title string, subtitle string, rows []UsageBucketData, to
 			templ_7745c5c3_Var17 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, "<article class=\"rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\"><div><h2 class=\"text-lg font-semibold text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 31, "<article class=\"min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\"><div class=\"min-w-0\"><h2 class=\"text-lg font-semibold text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -404,14 +404,14 @@ func reportsBucketCard(title string, subtitle string, rows []UsageBucketData, to
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "</p></div><span class=\"rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 33, "</p></div><span class=\"shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var20 string
 		templ_7745c5c3_Var20, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(int64(len(rows))))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/reports.templ`, Line: 161, Col: 130}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/reports.templ`, Line: 161, Col: 139}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var20))
 		if templ_7745c5c3_Err != nil {
