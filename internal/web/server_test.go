@@ -993,7 +993,7 @@ func TestServerUsageAPIReportsAggregates(t *testing.T) {
 		wantBucket string
 	}{
 		{name: "issue", path: "/api/v1/usage?by=issue", wantBucket: "digitaldrywood/symphony#119"},
-		{name: "pr", path: "/api/v1/usage?by=pr", wantBucket: "141"},
+		{name: "pr", path: "/api/v1/usage?by=pr", wantBucket: "symphony#141"},
 		{name: "model", path: "/api/v1/usage?by=model", wantBucket: "gpt-report"},
 	}
 
@@ -1107,6 +1107,7 @@ func seedUsageAPIEvents(t *testing.T, ctx context.Context, backend store.Store) 
 			ProjectID:      "pyroapex",
 			IssueID:        "issue-119",
 			Identifier:     "digitaldrywood/symphony#119",
+			PRNumber:       int64Ptr(141),
 			Model:          "gpt-report",
 			InputTokens:    70,
 			OutputTokens:   30,

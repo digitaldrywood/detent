@@ -624,7 +624,7 @@ WITH usage_report_rows AS (
       WHEN ?1 = 'day' THEN event_day
       WHEN ?1 = 'project' THEN project_id
       WHEN ?1 = 'issue' THEN COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), 'unassigned')
-      WHEN ?1 = 'pr' THEN COALESCE(CAST(pr_number AS TEXT), 'unassigned')
+      WHEN ?1 = 'pr' THEN project_id || '#' || COALESCE(CAST(pr_number AS TEXT), 'unassigned')
       WHEN ?1 = 'model' THEN COALESCE(NULLIF(model, ''), 'unassigned')
       ELSE event_day
     END AS group_key,

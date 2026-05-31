@@ -128,7 +128,7 @@ WITH usage_report_rows AS (
       WHEN sqlc.arg(bucket_by) = 'day' THEN event_day
       WHEN sqlc.arg(bucket_by) = 'project' THEN project_id
       WHEN sqlc.arg(bucket_by) = 'issue' THEN COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), 'unassigned')
-      WHEN sqlc.arg(bucket_by) = 'pr' THEN COALESCE(CAST(pr_number AS TEXT), 'unassigned')
+      WHEN sqlc.arg(bucket_by) = 'pr' THEN project_id || '#' || COALESCE(CAST(pr_number AS TEXT), 'unassigned')
       WHEN sqlc.arg(bucket_by) = 'model' THEN COALESCE(NULLIF(model, ''), 'unassigned')
       ELSE event_day
     END AS group_key,

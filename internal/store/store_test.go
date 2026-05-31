@@ -501,7 +501,15 @@ func TestUsageReportAggregates(t *testing.T) {
 			query: UsageReportQuery{By: UsageReportByPR},
 			want: []UsageReportRow{
 				{
-					Key:            "133",
+					Key:            "pyroapex#141",
+					InputTokens:    5,
+					OutputTokens:   2,
+					TotalTokens:    7,
+					RuntimeSeconds: 3,
+					Events:         1,
+				},
+				{
+					Key:            "symphony#133",
 					InputTokens:    100,
 					OutputTokens:   50,
 					TotalTokens:    150,
@@ -509,20 +517,12 @@ func TestUsageReportAggregates(t *testing.T) {
 					Events:         1,
 				},
 				{
-					Key:            "141",
+					Key:            "symphony#141",
 					InputTokens:    120,
 					OutputTokens:   55,
 					TotalTokens:    175,
 					RuntimeSeconds: 40,
 					Events:         2,
-				},
-				{
-					Key:            "unassigned",
-					InputTokens:    5,
-					OutputTokens:   2,
-					TotalTokens:    7,
-					RuntimeSeconds: 3,
-					Events:         1,
 				},
 			},
 		},
@@ -719,6 +719,7 @@ func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {
 		},
 		{
 			ProjectID:      "pyroapex",
+			PRNumber:       int64Ptr(141),
 			Model:          "",
 			InputTokens:    5,
 			OutputTokens:   2,
