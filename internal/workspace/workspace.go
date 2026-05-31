@@ -32,6 +32,7 @@ type Backend interface {
 	Cleanup(context.Context, string) error
 	BeforeRun(context.Context, Info, Issue) error
 	AfterRun(context.Context, Info, Issue)
+	DiffStat(context.Context, Info, Issue) (DiffStat, error)
 }
 
 type Issue struct {
@@ -461,9 +462,16 @@ func (l *LocalGit) runGit(ctx context.Context, args ...string) (string, error) {
 }
 
 func runGitAt(ctx context.Context, dir string, args ...string) (string, error) {
+	return runGitAtWithEnv(ctx, dir, nil, args...)
+}
+
+func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...string) (string, error) {
 	gitArgs := append([]string{"git", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
 	output, err := cmd.CombinedOutput()
 	if err == nil {
 		return string(output), nil
