@@ -10,6 +10,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
 	"github.com/digitaldrywood/symphony-go/internal/connector"
+	runpkg "github.com/digitaldrywood/symphony-go/internal/runner"
 )
 
 const (
@@ -50,22 +51,15 @@ type Dependencies struct {
 type Orchestrator struct {
 	cfg           Config
 	connector     connector.Connector
-	runner        Runner
+	supervisor    *runpkg.Supervisor
 	logger        *slog.Logger
 	stateRequests chan stateRequest
-	runResults    chan runResultEvent
+	runResults    chan runpkg.Completion
 	done          chan struct{}
 }
 
 type stateRequest struct {
 	reply chan State
-}
-
-type runResultEvent struct {
-	issueID     string
-	result      RunResult
-	err         error
-	completedAt time.Time
 }
 
 func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
@@ -105,13 +99,22 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		logger = slog.Default()
 	}
 
+	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
+		MaxRetryBackoff:       cfg.MaxRetryBackoff,
+		FailureRetryBaseDelay: cfg.FailureRetryBaseDelay,
+		Logger:                logger,
+	})
+	if err != nil {
+		return nil, err
+	}
+
 	return &Orchestrator{
 		cfg:           cfg,
 		connector:     deps.Connector,
-		runner:        runner,
+		supervisor:    supervisor,
 		logger:        logger,
 		stateRequests: make(chan stateRequest),
-		runResults:    make(chan runResultEvent),
+		runResults:    make(chan runpkg.Completion),
 		done:          make(chan struct{}),
 	}, nil
 }
@@ -402,68 +405,63 @@ func (o *Orchestrator) dispatchIssue(
 		StartedAt:  now,
 		WorkerHost: workerHost,
 	}
-	go func() {
-		result, err := o.runner.Run(ctx, request)
-		event := runResultEvent{
-			issueID:     request.Issue.ID,
-			result:      result,
-			err:         err,
-			completedAt: time.Now(),
-		}
-
-		select {
-		case o.runResults <- event:
-		case <-ctx.Done():
-		}
-	}()
+	o.supervisor.Dispatch(ctx, request, o.runResults)
 }
 
-func (o *Orchestrator) handleRunResult(state *State, event runResultEvent) {
-	running, ok := state.Running[event.issueID]
+func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {
+	running, ok := state.Running[event.IssueID]
 	if !ok {
 		return
 	}
-	delete(state.Running, event.issueID)
+	delete(state.Running, event.IssueID)
 
-	if event.err != nil {
-		o.scheduleRetry(
+	if event.Err != nil {
+		attempt := event.RetryAttempt
+		if attempt < 1 {
+			attempt = nextAttempt(running.Attempt)
+		}
+		delay := event.RetryDelay
+		if delay <= 0 {
+			delay = o.retryDelay(attempt, false)
+		}
+		o.scheduleRetryAfter(
 			state,
 			running.Issue,
-			nextAttempt(running.Attempt),
-			event.completedAt,
-			event.err.Error(),
-			false,
+			attempt,
+			event.CompletedAt,
+			delay,
+			event.Err.Error(),
 			running.WorkerHost,
 		)
 		return
 	}
 
-	finalState := event.result.FinalState
+	finalState := event.Result.FinalState
 	if finalState == "" {
 		finalState = FinalStateCompleted
 	}
 
-	state.Completed[event.issueID] = Completed{
+	state.Completed[event.IssueID] = Completed{
 		Issue:       cloneIssue(running.Issue),
 		StartedAt:   running.StartedAt,
-		CompletedAt: event.completedAt,
+		CompletedAt: event.CompletedAt,
 		FinalState:  finalState,
-		Tokens:      event.result.Tokens,
+		Tokens:      event.Result.Tokens,
 	}
-	state.CodexTotals = addCodexTotals(state.CodexTotals, event.result.Tokens)
-	if event.result.RateLimits != nil {
-		state.RateLimits = cloneRateLimits(event.result.RateLimits)
+	state.CodexTotals = addCodexTotals(state.CodexTotals, event.Result.Tokens)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = cloneRateLimits(event.Result.RateLimits)
 	}
-	if diffStatsPresent(event.result.DiffStats) {
-		state.DiffStats[event.issueID] = event.result.DiffStats
+	if diffStatsPresent(event.Result.DiffStats) {
+		state.DiffStats[event.IssueID] = event.Result.DiffStats
 	}
-	if event.result.BudgetRefusal != nil {
-		refusal := *event.result.BudgetRefusal
+	if event.Result.BudgetRefusal != nil {
+		refusal := *event.Result.BudgetRefusal
 		refusal.Issue = cloneIssue(running.Issue)
-		state.BudgetRefusals[event.issueID] = refusal
+		state.BudgetRefusals[event.IssueID] = refusal
 	}
 
-	o.scheduleRetry(state, running.Issue, 1, event.completedAt, "", true, running.WorkerHost)
+	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
 }
 
 func (o *Orchestrator) scheduleRetry(
@@ -479,7 +477,25 @@ func (o *Orchestrator) scheduleRetry(
 		attempt = 1
 	}
 
-	delay := o.retryDelay(attempt, continuation)
+	o.scheduleRetryAfter(state, issue, attempt, now, o.retryDelay(attempt, continuation), err, workerHost)
+}
+
+func (o *Orchestrator) scheduleRetryAfter(
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	delay time.Duration,
+	err string,
+	workerHost string,
+) {
+	if attempt < 1 {
+		attempt = 1
+	}
+	if delay < 0 {
+		delay = 0
+	}
+
 	issue = cloneIssue(issue)
 	state.Retry[issue.ID] = Retry{
 		Issue:      issue,

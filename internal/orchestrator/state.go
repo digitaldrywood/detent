@@ -55,31 +55,6 @@ type Retry struct {
 	WorkerHost string
 }
 
-type BudgetRefusal struct {
-	Issue            connector.Issue
-	Code             string
-	Message          string
-	CurrentSpendUSD  float64
-	ProjectedCostUSD float64
-	MaxUSD           *float64
-	ResetAt          *time.Time
-	RefusedAt        time.Time
-}
-
-type DiffStats struct {
-	FilesChanged int
-	AddedLines   int
-	RemovedLines int
-	Status       string
-}
-
-type CodexTotals struct {
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	RuntimeSeconds float64
-}
-
 func newState(cfg Config) State {
 	return State{
 		PollInterval:        cfg.PollInterval,

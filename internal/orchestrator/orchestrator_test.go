@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -171,6 +172,36 @@ func TestRunSchedulesRetryAfterRunnerError(t *testing.T) {
 	}
 	if got := state.Retry[issue.ID].Error; got != "runner failed" {
 		t.Fatalf("Retry[%q].Error = %q, want runner failed", issue.ID, got)
+	}
+}
+
+func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-panic", "digitaldrywood/symphony-go#22", "Todo")
+	tracker := newFakeConnector(issue)
+	runner := panicRunner{}
+
+	orch := newTestOrchestrator(t, tracker, runner)
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		retry, ok := state.Retry[issue.ID]
+		return ok && retry.Error != ""
+	})
+
+	if _, ok := state.Running[issue.ID]; ok {
+		t.Fatalf("Running[%q] present after runner panic", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing after runner panic", issue.ID)
+	}
+	if got := state.Retry[issue.ID].Attempt; got != 1 {
+		t.Fatalf("Retry[%q].Attempt = %d, want 1", issue.ID, got)
+	}
+	if got := state.Retry[issue.ID].Error; !strings.Contains(got, "runner panic: boom") {
+		t.Fatalf("Retry[%q].Error = %q, want runner panic", issue.ID, got)
 	}
 }
 
@@ -505,6 +536,12 @@ func newRetryRunner() *retryRunner {
 		retryStarted: make(chan orchestrator.RunRequest, 1),
 		release:      make(chan struct{}),
 	}
+}
+
+type panicRunner struct{}
+
+func (panicRunner) Run(context.Context, orchestrator.RunRequest) (orchestrator.RunResult, error) {
+	panic("boom")
 }
 
 func (r *retryRunner) Run(ctx context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
