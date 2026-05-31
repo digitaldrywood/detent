@@ -21,8 +21,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	html := renderDashboard(t, templates.DashboardData{
 		Title:         "Symphony",
 		Version:       "v1.2.3",
-		DashboardURL:  "http://127.0.0.1:4100/",
 		ConnectorName: "github",
+		DashboardURL:  "http://localhost:4101",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
 			Counts: telemetry.Counts{
@@ -97,9 +97,10 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Blocked",
 		"Completed",
 		"v1.2.3",
-		"href=\"http://127.0.0.1:4100/\"",
+		"href=\"http://localhost:4101\"",
 		"digitaldrywood/symphony#35",
 		"Dashboard templates",
+		"http://localhost:4101",
 		"turn completed successfully",
 		"+4 -2 (3 files)",
 		"162,000",

@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"net"
 	"net/http"
 	"strings"
 	"time"
@@ -48,20 +49,22 @@ type Config struct {
 	SSETickInterval time.Duration
 	WorkflowPath    string
 	Version         string
+	DashboardURL    string
 }
 
 type Server struct {
-	echo      *echo.Echo
-	hub       *hub.Hub[telemetry.Snapshot]
-	store     store.Store
-	registry  any
-	connector connector.Connector
-	refresher Refresher
-	logger    *slog.Logger
-	mode      Mode
-	tickEvery time.Duration
-	workflow  string
-	version   string
+	echo         *echo.Echo
+	hub          *hub.Hub[telemetry.Snapshot]
+	store        store.Store
+	registry     any
+	connector    connector.Connector
+	refresher    Refresher
+	logger       *slog.Logger
+	mode         Mode
+	tickEvery    time.Duration
+	workflow     string
+	version      string
+	dashboardURL string
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -86,17 +89,18 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	e.HidePort = true
 
 	server := &Server{
-		echo:      e,
-		hub:       deps.Hub,
-		store:     deps.Store,
-		registry:  deps.Registry,
-		connector: deps.Connector,
-		refresher: deps.Refresher,
-		logger:    cfg.logger(),
-		mode:      mode,
-		tickEvery: cfg.sseTickInterval(),
-		workflow:  cfg.workflowPath(),
-		version:   strings.TrimSpace(cfg.Version),
+		echo:         e,
+		hub:          deps.Hub,
+		store:        deps.Store,
+		registry:     deps.Registry,
+		connector:    deps.Connector,
+		refresher:    deps.Refresher,
+		logger:       cfg.logger(),
+		mode:         mode,
+		tickEvery:    cfg.sseTickInterval(),
+		workflow:     cfg.workflowPath(),
+		version:      strings.TrimSpace(cfg.Version),
+		dashboardURL: cfg.dashboardURL(),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes(cfg.staticDir())
@@ -115,6 +119,11 @@ func (s *Server) Echo() *echo.Echo {
 func (s *Server) Start(addr string) error {
 	s.logger.Info("starting web server", "addr", addr)
 	return s.echo.Start(addr)
+}
+
+func (s *Server) StartListener(listener net.Listener) error {
+	s.logger.Info("starting web server", "addr", listener.Addr().String())
+	return s.echo.Server.Serve(listener)
 }
 
 func (s *Server) Shutdown(ctx context.Context) error {
@@ -158,22 +167,10 @@ func (s *Server) dashboard(c echo.Context) error {
 	return render(c, templates.Dashboard(templates.DashboardData{
 		Title:         "Symphony",
 		Version:       s.version,
-		DashboardURL:  currentDashboardURL(c),
 		ConnectorName: s.connector.Name(),
+		DashboardURL:  s.dashboardURL,
 		Snapshot:      s.latestSnapshot(c.Request().Context()),
 	}))
-}
-
-func currentDashboardURL(c echo.Context) string {
-	req := c.Request()
-	if strings.TrimSpace(req.Host) == "" {
-		return "/"
-	}
-	scheme := strings.TrimSpace(c.Scheme())
-	if scheme == "" {
-		scheme = "http"
-	}
-	return scheme + "://" + req.Host + "/"
 }
 
 func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
@@ -250,6 +247,13 @@ func (cfg Config) workflowPath() string {
 		return cfg.WorkflowPath
 	}
 	return "WORKFLOW.md"
+}
+
+func (cfg Config) dashboardURL() string {
+	if dashboardURL := strings.TrimSpace(cfg.DashboardURL); dashboardURL != "" {
+		return dashboardURL
+	}
+	return "http://localhost:4000"
 }
 
 func configuredStatus(value any) string {

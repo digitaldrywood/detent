@@ -18,6 +18,8 @@ import (
 
 var ErrNilHub = errors.New("nil telemetry hub")
 
+const dashboardURL = "http://localhost:4000"
+
 type Option func(*options)
 
 type options struct {
@@ -137,6 +139,7 @@ func waitForSnapshot(updates <-chan telemetry.Snapshot) tea.Cmd {
 func (m Model) renderWaiting() string {
 	lines := []string{
 		m.styles.title.Render("╭─ SYMPHONY STATUS"),
+		"│ Dashboard: " + m.styles.info.Render(dashboardURL),
 		"│ " + m.styles.muted.Render("Waiting for telemetry snapshot"),
 		closingBorder,
 	}
@@ -148,6 +151,7 @@ func (m Model) renderSnapshot() string {
 	snapshot := m.snapshot
 	lines := []string{
 		m.styles.title.Render("╭─ SYMPHONY STATUS"),
+		"│ Dashboard: " + m.styles.info.Render(dashboardURL),
 		"│ Generated: " + m.styles.muted.Render(formatTimestamp(snapshot.GeneratedAt)),
 		"│ Agents: " + m.styles.ok.Render(fmt.Sprintf("%d running", countOrLen(snapshot.Counts.Running, len(snapshot.Running)))) +
 			m.styles.muted.Render(" | ") +

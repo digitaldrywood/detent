@@ -38,6 +38,7 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 	view := stripANSI(next.(Model).View())
 	for _, want := range []string{
 		"SYMPHONY STATUS",
+		"Dashboard: http://localhost:4000",
 		"Agents: 1 running | 1 queued | 1 blocked | 1 completed",
 		"Tokens: in 110 | out 220 | total 330",
 		"Budget: enabled current $12.50 | projected $0.75 | day max $50.00 | issue max $5.00",
@@ -74,7 +75,7 @@ func TestModelRendersWaitingStateBeforeSnapshot(t *testing.T) {
 	}
 
 	view := stripANSI(model.View())
-	for _, want := range []string{"SYMPHONY STATUS", "Waiting for telemetry snapshot"} {
+	for _, want := range []string{"SYMPHONY STATUS", "Dashboard: http://localhost:4000", "Waiting for telemetry snapshot"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q:\n%s", want, view)
 		}

@@ -315,18 +315,21 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 	}
 	for _, want := range []string{
 		"v9.8.7",
-		`href="http://dashboard.example.test:4100/"`,
+		`href="http://localhost:4000"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
 		}
+	}
+	if strings.Contains(rec.Body.String(), "http://dashboard.example.test:4100") {
+		t.Fatalf("dashboard link used request host:\n%s", rec.Body.String())
 	}
 }
 
 func TestDashboardWiresHTMXSSE(t *testing.T) {
 	t.Parallel()
 
-	server, err := web.NewServer(web.Config{}, testDeps(t))
+	server, err := web.NewServer(web.Config{DashboardURL: "http://localhost:4101"}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -341,6 +344,7 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 	}
 
 	for _, want := range []string{
+		`href="http://localhost:4101"`,
 		`src="https://unpkg.com/htmx.org@2.0.4"`,
 		`src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"`,
 		`hx-ext="sse"`,

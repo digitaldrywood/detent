@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -52,6 +53,7 @@ type BootConfig struct {
 	Version      string
 	Headless     bool
 	StdoutTTY    bool
+	Output       io.Writer
 }
 
 type BootFunc func(context.Context, BootConfig) error
@@ -161,6 +163,7 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 			}
 			boot.Headless = headless
 			boot.StdoutTTY = opts.stdoutTTY()
+			boot.Output = cmd.OutOrStdout()
 			return opts.boot(cmd.Context(), boot)
 		},
 	}
