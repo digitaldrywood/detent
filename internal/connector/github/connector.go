@@ -36,8 +36,10 @@ type Config struct {
 }
 
 type Connector struct {
-	client    *Client
-	projectID string
+	client       *Client
+	projectID    string
+	statusCache  *statusCache
+	projectCache *projectCache
 }
 
 func NewConnector(cfg Config) (*Connector, error) {
@@ -68,8 +70,10 @@ func NewConnector(cfg Config) (*Connector, error) {
 	}
 
 	return &Connector{
-		client:    client,
-		projectID: strings.TrimSpace(cfg.ProjectSlug),
+		client:       client,
+		projectID:    strings.TrimSpace(cfg.ProjectSlug),
+		statusCache:  newStatusCache(githubCacheTTL, cfg.Now),
+		projectCache: newProjectCache(githubCacheTTL, cfg.Now),
 	}, nil
 }
 
