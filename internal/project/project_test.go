@@ -226,6 +226,59 @@ func TestProjectStartRejectsPausedProject(t *testing.T) {
 	}
 }
 
+func TestProjectPauseUnpauseRestartsProject(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(4))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:     "symphony",
+			Weight: 1,
+		},
+	}, project.Dependencies{
+		Events: events,
+		Runner: blockingRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if event := receiveEvent(t, sub.C()); event.Kind != project.EventStarted {
+		t.Fatalf("first event = %#v, want started", event)
+	}
+
+	if err := got.Pause(context.Background()); err != nil {
+		t.Fatalf("Pause() error = %v", err)
+	}
+	stopped := receiveEvent(t, sub.C())
+	paused := receiveEvent(t, sub.C())
+	if stopped.Kind != project.EventStopped || paused.Kind != project.EventPaused {
+		t.Fatalf("pause events = %#v %#v, want stopped then paused", stopped, paused)
+	}
+	if !got.Paused() {
+		t.Fatal("Paused() = false, want true")
+	}
+
+	if err := got.Unpause(context.Background()); err != nil {
+		t.Fatalf("Unpause() error = %v", err)
+	}
+	unpaused := receiveEvent(t, sub.C())
+	started := receiveEvent(t, sub.C())
+	if unpaused.Kind != project.EventUnpaused || started.Kind != project.EventStarted {
+		t.Fatalf("unpause events = %#v %#v, want unpaused then started", unpaused, started)
+	}
+	if got.Paused() {
+		t.Fatal("Paused() = true, want false")
+	}
+}
+
 func workflowConfigWithMemoryIssue(id string) workflowconfig.Config {
 	cfg := workflowConfig("memory")
 	cfg.Agent.MaxConcurrentAgents = 4

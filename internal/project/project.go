@@ -31,8 +31,10 @@ var (
 )
 
 const (
-	EventStarted EventKind = "project_started"
-	EventStopped EventKind = "project_stopped"
+	EventStarted  EventKind = "project_started"
+	EventPaused   EventKind = "project_paused"
+	EventStopped  EventKind = "project_stopped"
+	EventUnpaused EventKind = "project_unpaused"
 )
 
 type ProjectID string
@@ -71,6 +73,9 @@ type Project struct {
 	workflow     workflowconfig.Workflow
 	connector    connector.Connector
 	orchestrator *orchestrator.Orchestrator
+	orchFactory  OrchestratorFactory
+	orchConfig   orchestrator.Config
+	orchDeps     orchestrator.Dependencies
 	scheduler    scheduler.Scheduler
 	events       *hub.Hub[Event]
 	logger       *slog.Logger
@@ -127,11 +132,13 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		orchestratorFactory = orchestrator.New
 	}
 
-	orch, err := orchestratorFactory(orchestrator.ConfigFromWorkflow(workflow.Config), orchestrator.Dependencies{
+	orchConfig := orchestrator.ConfigFromWorkflow(workflow.Config)
+	orchDeps := orchestrator.Dependencies{
 		Connector: projectConnector,
 		Runner:    deps.Runner,
 		Logger:    logger,
-	})
+	}
+	orch, err := orchestratorFactory(orchConfig, orchDeps)
 	if err != nil {
 		return nil, fmt.Errorf("create project orchestrator: %w", err)
 	}
@@ -146,6 +153,9 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		workflow:     workflow,
 		connector:    projectConnector,
 		orchestrator: orch,
+		orchFactory:  orchestratorFactory,
+		orchConfig:   orchConfig,
+		orchDeps:     orchDeps,
 		scheduler:    projectScheduler,
 		events:       projectEvents,
 		logger:       logger,
@@ -160,6 +170,9 @@ func (p *Project) ID() ProjectID {
 }
 
 func (p *Project) Config() globalconfig.Project {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	return p.cfg
 }
 
@@ -190,15 +203,23 @@ func (p *Project) Running() bool {
 	return p.done != nil
 }
 
+func (p *Project) Paused() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.cfg.Paused
+}
+
 func (p *Project) Start(ctx context.Context) error {
-	if p.cfg.Paused {
-		return ErrProjectPaused
-	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
 
 	p.mu.Lock()
+	if p.cfg.Paused {
+		p.mu.Unlock()
+		return ErrProjectPaused
+	}
 	if p.done != nil {
 		p.mu.Unlock()
 		return ErrAlreadyRunning
@@ -207,9 +228,22 @@ func (p *Project) Start(ctx context.Context) error {
 		p.mu.Unlock()
 		return ErrProjectStopped
 	}
+	if p.orchestrator == nil {
+		orch, err := p.orchFactory(p.orchConfig, p.orchDeps)
+		if err != nil {
+			p.mu.Unlock()
+			return fmt.Errorf("create project orchestrator: %w", err)
+		}
+		if orch == nil {
+			p.mu.Unlock()
+			return ErrMissingOrchestrator
+		}
+		p.orchestrator = orch
+	}
 
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
+	orch := p.orchestrator
 	p.cancel = cancel
 	p.done = done
 	p.runErr = nil
@@ -222,8 +256,71 @@ func (p *Project) Start(ctx context.Context) error {
 		At:        time.Now(),
 	})
 
-	go p.run(runCtx, done)
+	go p.run(runCtx, done, orch)
 	return nil
+}
+
+func (p *Project) Pause(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	if p.cfg.Paused {
+		p.mu.Unlock()
+		return nil
+	}
+	p.cfg.Paused = true
+	cancel := p.cancel
+	done := p.done
+	wasRunning := done != nil
+	p.mu.Unlock()
+
+	if wasRunning {
+		cancel()
+		if err := p.waitDone(ctx, done); err != nil {
+			return err
+		}
+	}
+
+	p.mu.Lock()
+	if wasRunning && p.cfg.Paused && p.done == nil {
+		p.started = false
+		p.orchestrator = nil
+	}
+	p.mu.Unlock()
+
+	p.publish(Event{
+		ProjectID: p.id,
+		Kind:      EventPaused,
+		At:        time.Now(),
+	})
+	return nil
+}
+
+func (p *Project) Unpause(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	if !p.cfg.Paused {
+		p.mu.Unlock()
+		return nil
+	}
+	p.cfg.Paused = false
+	running := p.done != nil
+	p.mu.Unlock()
+
+	p.publish(Event{
+		ProjectID: p.id,
+		Kind:      EventUnpaused,
+		At:        time.Now(),
+	})
+	if running {
+		return nil
+	}
+	return p.Start(ctx)
 }
 
 func (p *Project) Stop(ctx context.Context) error {
@@ -272,8 +369,8 @@ func (p *Project) waitDone(ctx context.Context, done <-chan struct{}) error {
 	}
 }
 
-func (p *Project) run(ctx context.Context, done chan struct{}) {
-	err := p.orchestrator.Run(ctx)
+func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrator.Orchestrator) {
+	err := orch.Run(ctx)
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		err = nil
 	}
