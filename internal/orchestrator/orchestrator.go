@@ -32,6 +32,7 @@ type Config struct {
 	DispatchPriorityByState    []string
 	MaxConcurrentAgentsPerHost int
 	MaxRetryBackoff            time.Duration
+	AutoPromote                AutoPromoteConfig
 	ActiveStates               []string
 	TerminalStates             []string
 	WorkerHosts                []string
@@ -75,10 +76,16 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
-		ActiveStates:               append([]string(nil), cfg.Tracker.ActiveStates...),
-		TerminalStates:             append([]string(nil), cfg.Tracker.TerminalStates...),
-		WorkerHosts:                append([]string(nil), cfg.Worker.SSHHosts...),
-		BudgetRefusalCooldown:      durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
+		AutoPromote: normalizeAutoPromoteConfig(AutoPromoteConfig{
+			Enabled:            cfg.Agent.AutoPromote.Enabled,
+			QuietDuration:      durationFromSeconds(cfg.Agent.AutoPromote.QuietSeconds),
+			OptoutLabel:        cfg.Agent.AutoPromote.OptoutLabel,
+			AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
+		}),
+		ActiveStates:          append([]string(nil), cfg.Tracker.ActiveStates...),
+		TerminalStates:        append([]string(nil), cfg.Tracker.TerminalStates...),
+		WorkerHosts:           append([]string(nil), cfg.Worker.SSHHosts...),
+		BudgetRefusalCooldown: durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
 	}
 }
 
@@ -553,6 +560,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
+	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
 	cfg.WorkerHosts = normalizeWorkerHosts(cfg.WorkerHosts)
 	if cfg.MaxConcurrentAgentsPerHost < 0 {
 		cfg.MaxConcurrentAgentsPerHost = 0
