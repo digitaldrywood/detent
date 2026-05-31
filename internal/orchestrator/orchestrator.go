@@ -60,6 +60,7 @@ type Orchestrator struct {
 	logger        *slog.Logger
 	stateRequests chan stateRequest
 	configUpdates chan configUpdateRequest
+	refreshes     chan time.Time
 	runResults    chan runpkg.Completion
 	done          chan struct{}
 }
@@ -126,6 +127,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		logger:        logger,
 		stateRequests: make(chan stateRequest),
 		configUpdates: make(chan configUpdateRequest),
+		refreshes:     make(chan time.Time, 1),
 		runResults:    make(chan runpkg.Completion),
 		done:          make(chan struct{}),
 	}, nil
@@ -148,6 +150,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case <-ctx.Done():
 			return ctx.Err()
 		case now := <-ticker.C:
+			o.tick(ctx, &state, now)
+		case now := <-o.refreshes:
 			o.tick(ctx, &state, now)
 		case result := <-o.runResults:
 			o.handleRunResult(&state, result)

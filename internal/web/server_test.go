@@ -3,12 +3,14 @@ package web_test
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -299,6 +301,264 @@ func TestServerEventsSendsTickEvents(t *testing.T) {
 	}
 }
 
+func TestServerAPIRoutes(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 5, 31, 3, 25, 0, 0, time.UTC)
+	startedAt := generatedAt.Add(-5 * time.Minute)
+	blockedAt := generatedAt.Add(-2 * time.Minute)
+	lastEventAt := generatedAt.Add(-time.Minute)
+	dueAt := generatedAt.Add(time.Minute)
+	completedAt := generatedAt.Add(-30 * time.Second)
+
+	events := hub.New[telemetry.Snapshot]()
+	if err := events.Publish(telemetry.Snapshot{
+		GeneratedAt: generatedAt,
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:          "issue-running",
+					Identifier:  "digitaldrywood/symphony-go#37",
+					URL:         "https://github.com/digitaldrywood/symphony-go/issues/37",
+					Title:       "REST API",
+					Description: strings.Repeat("api ", 90),
+					State:       "In Progress",
+				},
+				WorkerHost:     "host-a",
+				WorkspacePath:  "/workspaces/DD-37",
+				SessionID:      "thread-running",
+				TurnCount:      3,
+				StartedAt:      startedAt,
+				LastEventAt:    &lastEventAt,
+				LastEvent:      "notification",
+				LastMessage:    "rendered",
+				RuntimeSeconds: 300,
+				Tokens: telemetry.Tokens{
+					Input:  10,
+					Output: 20,
+					Total:  30,
+				},
+			},
+		},
+		Queue: []telemetry.Queued{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-retry",
+					Identifier: "DD-RETRY",
+					URL:        "https://github.com/digitaldrywood/symphony-go/issues/38",
+					Title:      "Retry API",
+					State:      "Todo",
+				},
+				Attempt:       2,
+				DueAt:         &dueAt,
+				Error:         "no available orchestrator slots",
+				WorkspacePath: "/workspaces/DD-RETRY",
+			},
+		},
+		Blocked: []telemetry.Blocked{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-blocked",
+					Identifier: "DD-BLOCKED",
+					URL:        "https://github.com/digitaldrywood/symphony-go/issues/39",
+					Title:      "Blocked API",
+					State:      "Todo",
+				},
+				WorkerHost:    "host-b",
+				WorkspacePath: "/workspaces/DD-BLOCKED",
+				SessionID:     "thread-blocked",
+				Error:         "dependency is not merged",
+				BlockedAt:     &blockedAt,
+				LastEventAt:   &lastEventAt,
+				LastEvent:     "turn_input_required",
+				LastMessage:   "waiting for operator input",
+			},
+		},
+		Completed: []telemetry.Completed{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-completed",
+					Identifier: "DD-DONE",
+					URL:        "https://github.com/digitaldrywood/symphony-go/issues/40",
+				},
+				StartedAt:      startedAt,
+				CompletedAt:    completedAt,
+				Turns:          2,
+				RuntimeSeconds: 45,
+				FinalState:     "Done",
+				Model:          "gpt-5",
+				Tokens: telemetry.Tokens{
+					Input:  100,
+					Output: 200,
+					Total:  300,
+				},
+			},
+		},
+		RateLimits: &telemetry.RateLimits{
+			Primary: &telemetry.RateLimitBucket{Remaining: 11},
+		},
+		Tokens: telemetry.Tokens{
+			Input:          11,
+			Output:         22,
+			Total:          33,
+			RuntimeSeconds: 44.5,
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	refresher := &refreshProbe{
+		response: web.RefreshResponse{
+			Queued:      true,
+			Coalesced:   false,
+			RequestedAt: generatedAt,
+			Operations:  []string{"poll", "reconcile"},
+		},
+	}
+
+	deps := testDeps(t)
+	deps.Hub = events
+	deps.Refresher = refresher
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	if state["generated_at"] != generatedAt.Format(time.RFC3339) {
+		t.Fatalf("generated_at = %q, want %q", state["generated_at"], generatedAt.Format(time.RFC3339))
+	}
+	if got := nestedString(t, state, "counts", "running"); got != "1" {
+		t.Fatalf("counts.running = %s, want 1", got)
+	}
+	if got := nestedString(t, state, "counts", "retrying"); got != "1" {
+		t.Fatalf("counts.retrying = %s, want 1", got)
+	}
+	if got := nestedString(t, state, "counts", "blocked"); got != "1" {
+		t.Fatalf("counts.blocked = %s, want 1", got)
+	}
+
+	running := state["running"].([]any)[0].(map[string]any)
+	if running["issue_identifier"] != "digitaldrywood/symphony-go#37" || running["issue_title"] != "REST API" {
+		t.Fatalf("running row = %#v", running)
+	}
+	description := running["issue_description"].(string)
+	if len(description) != 250 || !strings.HasSuffix(description, "...") {
+		t.Fatalf("issue_description length = %d, suffix ok = %v", len(description), strings.HasSuffix(description, "..."))
+	}
+	if running["budget_alert?"] != false {
+		t.Fatalf("budget_alert? = %#v, want false", running["budget_alert?"])
+	}
+
+	retrying := state["retrying"].([]any)[0].(map[string]any)
+	if retrying["issue_identifier"] != "DD-RETRY" || retrying["attempt"] != float64(2) {
+		t.Fatalf("retrying row = %#v", retrying)
+	}
+
+	if got := nestedString(t, state, "codex_totals", "seconds_running"); got != "44.5" {
+		t.Fatalf("codex_totals.seconds_running = %s, want 44.5", got)
+	}
+	if len(state["recent_sessions"].([]any)) != 1 {
+		t.Fatalf("recent_sessions = %#v, want one entry", state["recent_sessions"])
+	}
+
+	issue := requestJSON(t, server, http.MethodGet, "/api/v1/digitaldrywood/symphony-go%2337", http.StatusOK)
+	if issue["status"] != "running" || issue["issue_id"] != "issue-running" {
+		t.Fatalf("issue payload = %#v", issue)
+	}
+	if issue["retry"] != nil || issue["blocked"] != nil || issue["last_error"] != nil {
+		t.Fatalf("running issue nullable fields = %#v", issue)
+	}
+
+	retryIssue := requestJSON(t, server, http.MethodGet, "/api/v1/DD-RETRY", http.StatusOK)
+	if retryIssue["status"] != "retrying" || retryIssue["last_error"] != "no available orchestrator slots" {
+		t.Fatalf("retry issue payload = %#v", retryIssue)
+	}
+
+	blockedIssue := requestJSON(t, server, http.MethodGet, "/api/v1/DD-BLOCKED", http.StatusOK)
+	if blockedIssue["status"] != "blocked" || blockedIssue["last_error"] != "dependency is not merged" {
+		t.Fatalf("blocked issue payload = %#v", blockedIssue)
+	}
+
+	missing := requestJSON(t, server, http.MethodGet, "/api/v1/DD-MISSING", http.StatusNotFound)
+	if nestedString(t, missing, "error", "code") != "issue_not_found" {
+		t.Fatalf("missing issue response = %#v", missing)
+	}
+
+	refresh := requestJSON(t, server, http.MethodPost, "/api/v1/refresh", http.StatusAccepted)
+	if refresher.calls != 1 || refresh["queued"] != true || refresh["coalesced"] != false {
+		t.Fatalf("refresh calls = %d, payload = %#v", refresher.calls, refresh)
+	}
+	if operations := refresh["operations"].([]any); len(operations) != 2 || operations[0] != "poll" || operations[1] != "reconcile" {
+		t.Fatalf("refresh operations = %#v", refresh["operations"])
+	}
+}
+
+func TestServerAPIErrorRoutes(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		method     string
+		path       string
+		wantStatus int
+		wantCode   string
+	}{
+		{
+			name:       "state method not allowed",
+			method:     http.MethodPost,
+			path:       "/api/v1/state",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantCode:   "method_not_allowed",
+		},
+		{
+			name:       "refresh method not allowed",
+			method:     http.MethodGet,
+			path:       "/api/v1/refresh",
+			wantStatus: http.StatusMethodNotAllowed,
+			wantCode:   "method_not_allowed",
+		},
+		{
+			name:       "unknown route",
+			method:     http.MethodGet,
+			path:       "/unknown",
+			wantStatus: http.StatusNotFound,
+			wantCode:   "not_found",
+		},
+		{
+			name:       "state unavailable",
+			method:     http.MethodGet,
+			path:       "/api/v1/state",
+			wantStatus: http.StatusOK,
+			wantCode:   "snapshot_unavailable",
+		},
+		{
+			name:       "refresh unavailable",
+			method:     http.MethodPost,
+			path:       "/api/v1/refresh",
+			wantStatus: http.StatusServiceUnavailable,
+			wantCode:   "orchestrator_unavailable",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			payload := requestJSON(t, server, tt.method, tt.path, tt.wantStatus)
+			if got := nestedString(t, payload, "error", "code"); got != tt.wantCode {
+				t.Fatalf("error.code = %q, want %q; payload = %#v", got, tt.wantCode, payload)
+			}
+		})
+	}
+}
+
 func testDeps(t *testing.T) web.Dependencies {
 	t.Helper()
 
@@ -307,6 +567,46 @@ func testDeps(t *testing.T) web.Dependencies {
 		Store:     storeProbe{},
 		Registry:  struct{}{},
 		Connector: connectorProbe{name: "memory"},
+	}
+}
+
+func requestJSON(t *testing.T, server *web.Server, method string, path string, wantStatus int) map[string]any {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, nil)
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != wantStatus {
+		t.Fatalf("%s %s status = %d, want %d; body = %s", method, path, rec.Code, wantStatus, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal(%s %s) error = %v; body = %s", method, path, err, rec.Body.String())
+	}
+	return payload
+}
+
+func nestedString(t *testing.T, payload map[string]any, keys ...string) string {
+	t.Helper()
+
+	var current any = payload
+	for _, key := range keys {
+		object, ok := current.(map[string]any)
+		if !ok {
+			t.Fatalf("value for %v is %T, want object", keys, current)
+		}
+		current = object[key]
+	}
+	switch value := current.(type) {
+	case string:
+		return value
+	case float64:
+		return strconv.FormatFloat(value, 'f', -1, 64)
+	default:
+		t.Fatalf("value for %v is %T, want string or number", keys, current)
+		return ""
 	}
 }
 
@@ -436,4 +736,18 @@ func readSSEEvent(t *testing.T, r io.Reader) sseEvent {
 			t.Fatal("timed out waiting for SSE event")
 		}
 	}
+}
+
+type refreshProbe struct {
+	response web.RefreshResponse
+	err      error
+	calls    int
+}
+
+func (p *refreshProbe) RequestRefresh(context.Context) (web.RefreshResponse, error) {
+	p.calls++
+	if p.err != nil {
+		return web.RefreshResponse{}, p.err
+	}
+	return p.response, nil
 }

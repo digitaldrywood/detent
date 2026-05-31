@@ -426,6 +426,79 @@ func TestStateReturnsDefensiveCopies(t *testing.T) {
 	close(runner.release)
 }
 
+func TestRequestRefreshQueuesImmediateTick(t *testing.T) {
+	t.Parallel()
+
+	tracker := newFakeConnector()
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        time.Hour,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    &staticRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForFetchCalls(t, tracker, 1)
+
+	refresh, err := orch.RequestRefresh(context.Background())
+	if err != nil {
+		t.Fatalf("RequestRefresh() error = %v", err)
+	}
+	if !refresh.Queued || refresh.Coalesced || len(refresh.Operations) != 2 {
+		t.Fatalf("RequestRefresh() = %#v, want queued non-coalesced poll/reconcile", refresh)
+	}
+	if refresh.Operations[0] != "poll" || refresh.Operations[1] != "reconcile" {
+		t.Fatalf("Operations = %#v, want poll/reconcile", refresh.Operations)
+	}
+	if refresh.RequestedAt.IsZero() {
+		t.Fatal("RequestedAt is zero")
+	}
+
+	waitForFetchCalls(t, tracker, 2)
+}
+
+func TestRequestRefreshCoalescesPendingTick(t *testing.T) {
+	t.Parallel()
+
+	orch := newTestOrchestrator(t, newFakeConnector(), &staticRunner{})
+
+	first, err := orch.RequestRefresh(context.Background())
+	if err != nil {
+		t.Fatalf("first RequestRefresh() error = %v", err)
+	}
+	second, err := orch.RequestRefresh(context.Background())
+	if err != nil {
+		t.Fatalf("second RequestRefresh() error = %v", err)
+	}
+	if first.Coalesced {
+		t.Fatalf("first RequestRefresh().Coalesced = true, want false")
+	}
+	if !second.Coalesced {
+		t.Fatalf("second RequestRefresh().Coalesced = false, want true")
+	}
+}
+
+func TestRequestRefreshReturnsStoppedAfterRunStops(t *testing.T) {
+	t.Parallel()
+
+	tracker := newFakeConnector()
+	orch := newTestOrchestrator(t, tracker, &staticRunner{})
+	stop := runOrchestrator(t, orch)
+	waitForFetchCalls(t, tracker, 1)
+	stop()
+
+	if _, err := orch.RequestRefresh(context.Background()); !errors.Is(err, orchestrator.ErrStopped) {
+		t.Fatalf("RequestRefresh() error = %v, want ErrStopped", err)
+	}
+}
+
 func TestFakeRunnerCompletes(t *testing.T) {
 	t.Parallel()
 
@@ -498,6 +571,24 @@ func waitForState(t *testing.T, orch *orchestrator.Orchestrator, ready func(orch
 		select {
 		case <-deadline:
 			t.Fatal("timed out waiting for orchestrator state")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func waitForFetchCalls(t *testing.T, tracker *fakeConnector, want int) {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	for {
+		if tracker.fetchCandidateCalls() >= want {
+			return
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d FetchCandidateIssues() calls; got %d", want, tracker.fetchCandidateCalls())
 		default:
 			time.Sleep(time.Millisecond)
 		}

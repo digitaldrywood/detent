@@ -58,6 +58,30 @@ func TestHubSubscribeReplaysLastEvent(t *testing.T) {
 	}
 }
 
+func TestHubLatestReturnsLastEvent(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[string]()
+	if got, ok := events.Latest(); ok || got != "" {
+		t.Fatalf("Latest() before publish = %q, %v; want empty, false", got, ok)
+	}
+
+	if err := events.Publish("ready"); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	got, ok := events.Latest()
+	if !ok || got != "ready" {
+		t.Fatalf("Latest() = %q, %v; want ready, true", got, ok)
+	}
+
+	events.Close()
+	got, ok = events.Latest()
+	if !ok || got != "ready" {
+		t.Fatalf("Latest() after Close() = %q, %v; want ready, true", got, ok)
+	}
+}
+
 func TestHubDropsOldestForSlowSubscriber(t *testing.T) {
 	t.Parallel()
 

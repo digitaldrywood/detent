@@ -105,6 +105,13 @@ func (h *Hub[T]) Publish(value T) error {
 	return nil
 }
 
+func (h *Hub[T]) Latest() (T, bool) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	return h.last, h.hasLast
+}
+
 func (h *Hub[T]) Close() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
