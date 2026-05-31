@@ -197,6 +197,11 @@ func TestCheckDoctorGitHub(t *testing.T) {
 	githubWorkflow := validDoctorWorkflow("/repo")
 	githubWorkflow.Tracker.Kind = workflowconfig.TrackerGitHub
 	githubWorkflow.Tracker.APIKey = "$PROJECT_TOKEN"
+	githubAppWorkflow := validDoctorWorkflow("/repo")
+	githubAppWorkflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	githubAppWorkflow.Tracker.GitHubAppID = "$APP_ID"
+	githubAppWorkflow.Tracker.GitHubAppInstallationID = "$INSTALLATION_ID"
+	githubAppWorkflow.Tracker.GitHubAppPrivateKey = "$PRIVATE_KEY"
 
 	tests := []struct {
 		name       string
@@ -235,6 +240,21 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			workflow:   validDoctorWorkflow("/repo"),
 			want:       doctorWarn,
 			wantDetail: "token scope check skipped",
+		},
+		{
+			name: "github app credentials skip token scopes",
+			cfg: &globalconfig.Config{Projects: []globalconfig.Project{
+				{ID: "alpha", Workflow: "WORKFLOW.md"},
+			}},
+			env: map[string]string{
+				"APP_ID":          "12345",
+				"INSTALLATION_ID": "67890",
+				"PRIVATE_KEY":     "private key",
+			},
+			scopeErr:   errors.New("scope check should not run"),
+			workflow:   githubAppWorkflow,
+			want:       doctorOK,
+			wantDetail: "GitHub App credentials configured",
 		},
 		{
 			name: "workflow token has required scopes",

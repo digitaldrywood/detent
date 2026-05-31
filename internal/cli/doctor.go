@@ -48,6 +48,13 @@ type doctorReport struct {
 	Checks []doctorCheck
 }
 
+type doctorGitHubAuth struct {
+	token            string
+	source           string
+	hasGitHubProject bool
+	hasGitHubApp     bool
+}
+
 type doctorConfig struct {
 	ConfigPath string
 	Host       string
@@ -427,8 +434,8 @@ func checkDoctorBinary(ctx context.Context, deps doctorDeps, binary string, name
 }
 
 func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps) doctorCheck {
-	token, source, hasGitHubProject := doctorGitHubToken(cfg, deps)
-	if cfg != nil && !hasGitHubProject {
+	auth := doctorGitHubAuthConfig(cfg, deps)
+	if cfg != nil && !auth.hasGitHubProject {
 		return doctorCheck{
 			Name:   "GitHub token",
 			Status: doctorWarn,
@@ -436,7 +443,14 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps docto
 			Hint:   "Add a GitHub project before relying on GitHub token preflight checks.",
 		}
 	}
-	if token == "" {
+	if auth.hasGitHubApp {
+		return doctorCheck{
+			Name:   "GitHub token",
+			Status: doctorOK,
+			Detail: "GitHub App credentials configured; PAT scope check skipped",
+		}
+	}
+	if auth.token == "" {
 		return doctorCheck{
 			Name:   "GitHub token",
 			Status: doctorFail,
@@ -445,12 +459,12 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps docto
 		}
 	}
 
-	scopes, err := deps.githubScopes(ctx, token)
+	scopes, err := deps.githubScopes(ctx, auth.token)
 	if err != nil {
 		return doctorCheck{
 			Name:   "GitHub token",
 			Status: doctorFail,
-			Detail: fmt.Sprintf("%s scope check failed: %v", source, err),
+			Detail: fmt.Sprintf("%s scope check failed: %v", auth.source, err),
 			Hint:   `Refresh the token with repo, read:org, and project scopes.`,
 		}
 	}
@@ -459,7 +473,7 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps docto
 		return doctorCheck{
 			Name:   "GitHub token",
 			Status: doctorFail,
-			Detail: fmt.Sprintf("%s missing scope(s): %s", source, strings.Join(missing, ", ")),
+			Detail: fmt.Sprintf("%s missing scope(s): %s", auth.source, strings.Join(missing, ", ")),
 			Hint:   `Run gh auth login --scopes "repo,read:org,project" and export GITHUB_TOKEN="$(gh auth token)".`,
 		}
 	}
@@ -467,33 +481,51 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps docto
 	return doctorCheck{
 		Name:   "GitHub token",
 		Status: doctorOK,
-		Detail: fmt.Sprintf("%s has required scopes: %s", source, strings.Join(requiredGitHubScopes, ", ")),
+		Detail: fmt.Sprintf("%s has required scopes: %s", auth.source, strings.Join(requiredGitHubScopes, ", ")),
 	}
 }
 
-func doctorGitHubToken(cfg *globalconfig.Config, deps doctorDeps) (string, string, bool) {
-	hasGitHubProject := false
+func doctorGitHubAuthConfig(cfg *globalconfig.Config, deps doctorDeps) doctorGitHubAuth {
+	var auth doctorGitHubAuth
 	if cfg != nil {
 		for _, project := range cfg.Projects {
 			workflow, err := deps.loadWorkflow(project.Workflow)
 			if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 				continue
 			}
-			hasGitHubProject = true
-			if token, source := resolveDoctorSecret(workflow.Config.Tracker.APIKey, deps.lookupEnv); token != "" {
+			auth.hasGitHubProject = true
+			if hasDoctorGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
+				auth.hasGitHubApp = true
+				continue
+			}
+			if auth.token == "" {
+				token, source := resolveDoctorSecret(workflow.Config.Tracker.APIKey, deps.lookupEnv)
+				if token == "" {
+					continue
+				}
 				if source == "" {
 					source = "tracker.api_key"
 				}
-				return token, source, true
+				auth.token = token
+				auth.source = source
 			}
 		}
 	}
-	if cfg == nil || hasGitHubProject {
+	if auth.token == "" && (cfg == nil || auth.hasGitHubProject) {
 		if token := strings.TrimSpace(deps.lookupEnv("GITHUB_TOKEN")); token != "" {
-			return token, "GITHUB_TOKEN", hasGitHubProject
+			auth.token = token
+			auth.source = "GITHUB_TOKEN"
 		}
 	}
-	return "", "", hasGitHubProject
+	return auth
+}
+
+func hasDoctorGitHubAppCredentials(tracker workflowconfig.Tracker, lookupEnv func(string) string) bool {
+	appID, _ := resolveDoctorSecret(tracker.GitHubAppID, lookupEnv)
+	installationID, _ := resolveDoctorSecret(tracker.GitHubAppInstallationID, lookupEnv)
+	privateKey, _ := resolveDoctorSecret(tracker.GitHubAppPrivateKey, lookupEnv)
+	privateKeyPath, _ := resolveDoctorSecret(tracker.GitHubAppPrivateKeyPath, lookupEnv)
+	return appID != "" && installationID != "" && (privateKey != "" || privateKeyPath != "")
 }
 
 func resolveDoctorSecret(value string, lookupEnv func(string) string) (string, string) {
