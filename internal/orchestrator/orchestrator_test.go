@@ -110,6 +110,40 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 	})
 }
 
+func TestRunDispatchesByStateRankBeforePriorityAndAge(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	todo := rankedTestIssue(testIssue("todo-old-urgent", "digitaldrywood/symphony-go#20", "Todo"), 1, now.Add(-4*time.Hour))
+	rework := rankedTestIssue(testIssue("rework-new-low", "digitaldrywood/symphony-go#21", "Rework"), 4, now.Add(-time.Hour))
+	merging := rankedTestIssue(testIssue("merging-new-low", "digitaldrywood/symphony-go#22", "Merging"), 4, now.Add(-30*time.Minute))
+	tracker := newFakeConnector(todo, rework, merging)
+	runner := newBlockingRunner()
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:            time.Hour,
+		MaxConcurrentAgents:     1,
+		DispatchPriorityByState: []string{"Merging", "Rework"},
+		ActiveStates:            []string{"Todo", "Rework", "Merging"},
+		TerminalStates:          []string{"Done", "Cancelled", "Canceled", "Closed"},
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	request := receiveRunRequest(t, runner.started)
+	if request.Issue.ID != merging.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, merging.ID)
+	}
+
+	close(runner.release)
+}
+
 func TestRunSchedulesRetryAfterRunnerError(t *testing.T) {
 	t.Parallel()
 
@@ -350,6 +384,12 @@ func testIssue(id, identifier, state string) connector.Issue {
 	issue.Title = "Port orchestrator"
 	issue.State = state
 	issue.URL = "https://github.com/digitaldrywood/symphony-go/issues/10"
+	return issue
+}
+
+func rankedTestIssue(issue connector.Issue, priority int, createdAt time.Time) connector.Issue {
+	issue.Priority = &priority
+	issue.CreatedAt = &createdAt
 	return issue
 }
 
