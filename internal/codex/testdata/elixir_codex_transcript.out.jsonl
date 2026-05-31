@@ -1,0 +1,4 @@
+{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{"experimentalApi":true},"clientInfo":{"name":"symphony-orchestrator","title":"Symphony Orchestrator","version":"0.1.0"}}}
+{"jsonrpc":"2.0","method":"initialized","params":{}}
+{"jsonrpc":"2.0","id":2,"method":"thread/start","params":{"approvalPolicy":"never","cwd":"/tmp/symphony-transcript","model":"gpt-5-codex","sandbox":"workspace-write"}}
+{"jsonrpc":"2.0","id":3,"method":"turn/start","params":{"approvalPolicy":"never","cwd":"/tmp/symphony-transcript","input":[{"text":"Ship issue #23","text_elements":[],"type":"text"}],"model":"gpt-5-codex","sandboxPolicy":{"networkAccess":false,"type":"workspaceWrite"},"threadId":"thread-elixir-1"}}

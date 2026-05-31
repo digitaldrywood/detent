@@ -1,0 +1,6 @@
+{"jsonrpc":"2.0","id":1,"result":{"userAgent":"codex-cli/0.135.0"}}
+{"jsonrpc":"2.0","id":2,"result":{"thread":{"id":"thread-elixir-1"}}}
+{"jsonrpc":"2.0","id":3,"result":{"turn":{"id":"turn-elixir-1"}}}
+{"jsonrpc":"2.0","method":"item/agentMessage/delta","params":{"threadId":"thread-elixir-1","turnId":"turn-elixir-1","itemId":"item-elixir-1","delta":"done"}}
+{"jsonrpc":"2.0","method":"thread/tokenUsage/updated","params":{"threadId":"thread-elixir-1","turnId":"turn-elixir-1","tokenUsage":{"total":{"inputTokens":123,"cachedInputTokens":20,"outputTokens":45,"reasoningOutputTokens":7,"totalTokens":168},"modelContextWindow":200000}}}
+{"jsonrpc":"2.0","method":"turn/completed","params":{"threadId":"thread-elixir-1","turn":{"id":"turn-elixir-1","status":"completed"}}}
