@@ -1530,6 +1530,7 @@ func readSSEEvent(t *testing.T, r io.Reader) sseEvent {
 	errs := make(chan error, 1)
 	go func() {
 		scanner := bufio.NewScanner(r)
+		scanner.Buffer(make([]byte, 0, 64*1024), 1024*1024)
 		for scanner.Scan() {
 			lines <- scanner.Text()
 		}
