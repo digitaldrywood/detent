@@ -47,6 +47,11 @@ type boardStateRow struct {
 	DotClass   string
 }
 
+type budgetHistoryBar struct {
+	Style string
+	Title string
+}
+
 type agentTimelineRow struct {
 	Identifier   string
 	Title        string
@@ -681,6 +686,133 @@ func budgetStatus(budget telemetry.Budget) string {
 		return "Budget enabled"
 	}
 	return "Budget disabled"
+}
+
+func budgetSpendTodayLabel(budget telemetry.Budget) string {
+	return formatUSD(budget.CurrentSpendUSD) + " / " + budgetDailyCapLabel(budget)
+}
+
+func budgetDailyCapLabel(budget telemetry.Budget) string {
+	if !budget.Enabled {
+		return "off"
+	}
+	return optionalUSD(budget.PerDayMaxUSD)
+}
+
+func budgetDailyUsageStyle(budget telemetry.Budget) string {
+	if budget.PerDayMaxUSD == nil || *budget.PerDayMaxUSD <= 0 {
+		return percentStyle(0)
+	}
+	return percentStyle(int(math.Round(budget.CurrentSpendUSD / *budget.PerDayMaxUSD * 100)))
+}
+
+func budgetHistoryBars(budget telemetry.Budget) []budgetHistoryBar {
+	days := budgetHistoryDays(budget.Days)
+	if len(days) == 0 {
+		return nil
+	}
+
+	maxSpend := 0.0
+	for _, day := range days {
+		if day.SpendUSD > maxSpend {
+			maxSpend = day.SpendUSD
+		}
+	}
+
+	bars := make([]budgetHistoryBar, 0, len(days))
+	for _, day := range days {
+		bars = append(bars, budgetHistoryBar{
+			Style: budgetHistoryHeightStyle(day.SpendUSD, maxSpend),
+			Title: budgetDayLabel(day) + ": " + formatUSD(day.SpendUSD),
+		})
+	}
+	return bars
+}
+
+func budgetHistoryDays(days []telemetry.BudgetDay) []telemetry.BudgetDay {
+	const maxBudgetHistoryDays = 7
+	if len(days) <= maxBudgetHistoryDays {
+		return days
+	}
+	return days[len(days)-maxBudgetHistoryDays:]
+}
+
+func budgetHistoryCount(budget telemetry.Budget) string {
+	count := len(budgetHistoryDays(budget.Days))
+	switch count {
+	case 0:
+		return "No history"
+	case 1:
+		return "1 day"
+	default:
+		return formatInt(int64(count)) + " days"
+	}
+}
+
+func budgetHistoryHeightStyle(spend float64, maxSpend float64) string {
+	percent := 12
+	if spend > 0 && maxSpend > 0 {
+		percent = int(math.Round(spend / maxSpend * 100))
+		if percent < 12 {
+			percent = 12
+		}
+	}
+	if percent > 100 {
+		percent = 100
+	}
+	return fmt.Sprintf("height: %d%%;", percent)
+}
+
+func budgetDayLabel(day telemetry.BudgetDay) string {
+	date := strings.TrimSpace(day.Date)
+	if date == "" {
+		return "n/a"
+	}
+	return date
+}
+
+func runtimeStatusLabel(snapshot telemetry.Snapshot) string {
+	if snapshot.GeneratedAt.IsZero() {
+		return "Offline"
+	}
+	return "Live"
+}
+
+func runtimeStatusClass(snapshot telemetry.Snapshot) string {
+	if snapshot.GeneratedAt.IsZero() {
+		return "border-border bg-muted text-muted-foreground"
+	}
+	return "border-success-soft bg-success-soft text-success"
+}
+
+func statsStatusLabel(snapshot telemetry.Snapshot) string {
+	if snapshot.GeneratedAt.IsZero() {
+		return "Stats pending"
+	}
+	if snapshot.LifetimeTotals.Available {
+		return "Stats healthy"
+	}
+	return "Stats degraded"
+}
+
+func statsStatusClass(snapshot telemetry.Snapshot) string {
+	if snapshot.GeneratedAt.IsZero() {
+		return "border-border bg-muted text-muted-foreground"
+	}
+	if snapshot.LifetimeTotals.Available {
+		return "border-success-soft bg-success-soft text-success"
+	}
+	return "border-danger-soft bg-danger-soft text-danger"
+}
+
+func statsStatusTitle(snapshot telemetry.Snapshot) string {
+	if snapshot.GeneratedAt.IsZero() {
+		return "Waiting for the first telemetry snapshot."
+	}
+	if snapshot.LifetimeTotals.Available {
+		return "Runtime statistics are available."
+	}
+	return lifetimeDegradedReason(snapshot.LifetimeTotals)
 }
 
 func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
