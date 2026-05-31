@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"math"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -24,6 +25,7 @@ import (
 const (
 	defaultAfterRunTimeout = time.Minute
 	liveDiffStatsInterval  = 2 * time.Second
+	defaultProjectID       = "default"
 )
 
 var (
@@ -38,9 +40,11 @@ type CodexClient interface {
 type SessionStore interface {
 	StartSession(context.Context, store.SessionStart) (int64, error)
 	FinishSession(context.Context, int64, store.SessionFinish) error
+	RecordUsageEvent(context.Context, store.UsageEvent) (int64, error)
 }
 
 type Dependencies struct {
+	ProjectID       string
 	Workflow        config.Workflow
 	Workspace       workspace.Backend
 	Codex           CodexClient
@@ -52,6 +56,7 @@ type Dependencies struct {
 
 type Runner struct {
 	mu              sync.RWMutex
+	projectID       string
 	workflow        config.Workflow
 	workspace       workspace.Backend
 	codex           CodexClient
@@ -77,8 +82,13 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	if deps.AfterRunTimeout <= 0 {
 		deps.AfterRunTimeout = defaultAfterRunTimeout
 	}
+	projectID := strings.TrimSpace(deps.ProjectID)
+	if projectID == "" {
+		projectID = defaultProjectID
+	}
 
 	return &Runner{
+		projectID:       projectID,
 		workflow:        deps.Workflow,
 		workspace:       deps.Workspace,
 		codex:           deps.Codex,
@@ -168,26 +178,29 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	if turnErr != nil {
 		result.FinalState = FinalStateFailed
-		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, r.now())
+		finishedAt := r.now().UTC()
+		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("run codex turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, result, model, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, 1),
 		)
 	}
 
 	diffStat, err := r.workspace.DiffStat(ctx, info, workspaceIssue)
 	if err != nil {
 		result.FinalState = FinalStateFailed
-		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, r.now())
+		finishedAt := r.now().UTC()
+		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("workspace diff stat: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, result, model, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, 1),
 		)
 	}
 
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
-	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, r.now())
-	if err := r.finishSession(ctx, sessionID, sessionStarted, result, model, 1); err != nil {
+	finishedAt := r.now().UTC()
+	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, 1); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -258,6 +271,9 @@ func (r *Runner) finishSession(
 	ctx context.Context,
 	sessionID int64,
 	started bool,
+	issue connector.Issue,
+	startedAt time.Time,
+	finishedAt time.Time,
 	result RunResult,
 	model string,
 	turns int64,
@@ -270,7 +286,7 @@ func (r *Runner) finishSession(
 	}
 
 	if err := r.store.FinishSession(ctx, sessionID, store.SessionFinish{
-		CompletedAt:    r.now().UTC(),
+		CompletedAt:    finishedAt,
 		Turns:          turns,
 		InputTokens:    result.Tokens.InputTokens,
 		OutputTokens:   result.Tokens.OutputTokens,
@@ -280,6 +296,23 @@ func (r *Runner) finishSession(
 		Model:          model,
 	}); err != nil {
 		return fmt.Errorf("finish codex session: %w", err)
+	}
+	if _, err := r.store.RecordUsageEvent(ctx, store.UsageEvent{
+		ProjectID:      r.projectID,
+		SessionID:      sessionID,
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		PRNumber:       pullRequestNumber(issue),
+		Model:          model,
+		InputTokens:    result.Tokens.InputTokens,
+		OutputTokens:   result.Tokens.OutputTokens,
+		TotalTokens:    result.Tokens.TotalTokens,
+		RuntimeSeconds: int64(math.Round(result.Tokens.RuntimeSeconds)),
+		StartedAt:      startedAt,
+		FinishedAt:     finishedAt,
+		Outcome:        result.FinalState,
+	}); err != nil {
+		return fmt.Errorf("record usage event: %w", err)
 	}
 	return nil
 }
@@ -432,6 +465,34 @@ func (p *codexRunProgress) cachedDiffStats() (DiffStats, bool) {
 		return DiffStats{}, false
 	}
 	return p.diffStats, true
+}
+
+func pullRequestNumber(issue connector.Issue) *int64 {
+	if issue.PRNumber != nil && *issue.PRNumber > 0 {
+		number := int64(*issue.PRNumber)
+		return &number
+	}
+
+	value := strings.TrimSpace(issue.URL)
+	const marker = "/pull/"
+	index := strings.LastIndex(value, marker)
+	if index == -1 {
+		return nil
+	}
+
+	value = value[index+len(marker):]
+	end := strings.IndexFunc(value, func(r rune) bool {
+		return r < '0' || r > '9'
+	})
+	if end != -1 {
+		value = value[:end]
+	}
+
+	number, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || number <= 0 {
+		return nil
+	}
+	return &number
 }
 
 func rateLimitsFromCodex(snapshot *codex.RateLimitSnapshot) *telemetry.RateLimits {
