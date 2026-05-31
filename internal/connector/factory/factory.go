@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/symphony-go/internal/connector"
+	githubconnector "github.com/digitaldrywood/symphony-go/internal/connector/github"
 	"github.com/digitaldrywood/symphony-go/internal/connector/memory"
 )
 
@@ -16,8 +17,15 @@ var (
 )
 
 type Config struct {
-	Kind   string
-	Memory memory.Config
+	Kind                    string
+	Memory                  memory.Config
+	Endpoint                string
+	APIKey                  string
+	GitHubAppID             string
+	GitHubAppPrivateKey     string
+	GitHubAppPrivateKeyPath string
+	GitHubAppInstallationID string
+	ProjectSlug             string
 }
 
 func NewFromConfig(cfg Config) (connector.Connector, error) {
@@ -26,8 +34,18 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 	switch connector.Backend(kind) {
 	case connector.BackendMemory:
 		return memory.New(cfg.Memory), nil
-	case connector.BackendLinear, connector.BackendGitHub:
+	case connector.BackendLinear:
 		return unimplementedConnector{name: kind}, nil
+	case connector.BackendGitHub:
+		return githubconnector.NewConnector(githubconnector.Config{
+			Endpoint:                cfg.Endpoint,
+			APIKey:                  cfg.APIKey,
+			GitHubAppID:             cfg.GitHubAppID,
+			GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
+			GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
+			GitHubAppInstallationID: cfg.GitHubAppInstallationID,
+			ProjectSlug:             cfg.ProjectSlug,
+		})
 	case connector.BackendGitLab, connector.BackendJira:
 		return nil, fmt.Errorf("%w: %s", ErrBackendNotReady, kind)
 	default:
