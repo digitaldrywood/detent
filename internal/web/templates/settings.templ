@@ -29,7 +29,7 @@ templ Settings(data SettingsData) {
 			</script>
 			@helpScript()
 			<link rel="icon" href="data:,"/>
-			<link rel="stylesheet" href="/static/css/output.css"/>
+			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
 		</head>
 		<body class="min-h-screen bg-background text-foreground antialiased">
 			@helpTooltipHost()

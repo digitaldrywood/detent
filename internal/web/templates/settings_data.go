@@ -8,6 +8,7 @@ type SettingsData struct {
 	Global   SettingsGlobal
 	Projects []SettingsProject
 	Runtime  SettingsRuntime
+	Assets   AssetPaths
 }
 
 type SettingsGlobal struct {

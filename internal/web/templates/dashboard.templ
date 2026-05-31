@@ -44,7 +44,7 @@ templ Dashboard(data DashboardData) {
 			</script>
 			@helpScript()
 			<link rel="icon" href="data:,"/>
-			<link rel="stylesheet" href="/static/css/output.css"/>
+			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
 		</head>

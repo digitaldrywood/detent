@@ -24,6 +24,7 @@ type DashboardData struct {
 	DashboardURL  string
 	ConnectorName string
 	Snapshot      telemetry.Snapshot
+	Assets        AssetPaths
 }
 
 type Budget = telemetry.Budget

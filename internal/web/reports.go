@@ -74,6 +74,7 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time) 
 		Issue:         issue,
 		PR:            pr,
 		Model:         model,
+		Assets:        s.assets.templatePaths(),
 	}, nil
 }
 

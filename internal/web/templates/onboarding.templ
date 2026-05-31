@@ -7,6 +7,7 @@ type OnboardingData struct {
 	Form         OnboardingForm
 	Errors       []string
 	Result       OnboardingResult
+	Assets       AssetPaths
 }
 
 type OnboardingForm struct {
@@ -71,7 +72,7 @@ templ OnboardingPage(data OnboardingData) {
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<title>{ data.Title }</title>
-			<link rel="stylesheet" href="/static/css/output.css"/>
+			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 		</head>
 		<body class="min-h-screen bg-background text-foreground antialiased">
