@@ -1,5 +1,7 @@
 package templates
 
+import "time"
+
 templ Dashboard(data DashboardData) {
 	<!doctype html>
 	<html lang="en">
@@ -8,9 +10,11 @@ templ Dashboard(data DashboardData) {
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<title>{ pageTitle(data) }</title>
 			<link rel="stylesheet" href="/static/css/output.css"/>
+			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
+			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
 		</head>
 		<body class="min-h-screen bg-background text-foreground antialiased">
-			<main class="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8">
+			<main class="mx-auto flex min-h-screen w-full max-w-7xl flex-col gap-5 px-4 py-5 sm:px-6 lg:px-8" hx-ext="sse" sse-connect="/events">
 				<header class="flex flex-col gap-4 border-b border-border pb-5 md:flex-row md:items-end md:justify-between">
 					<div>
 						<p class="text-sm font-medium text-muted-foreground">Symphony Observability</p>
@@ -21,91 +25,101 @@ templ Dashboard(data DashboardData) {
 							<span class="h-2 w-2 rounded-full bg-accent"></span>
 							<span>{ connectorName(data) }</span>
 						</span>
-						<span class="inline-flex w-fit items-center rounded-md border border-border bg-muted px-3 py-2">{ generatedAtLabel(data.Snapshot) }</span>
+						<span class="inline-flex w-fit items-center rounded-md border border-border bg-muted px-3 py-2" sse-swap="tick">{ generatedAtLabel(data.Snapshot) }</span>
 					</div>
 				</header>
-				<section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-					@metricCard("Running", formatCount(runningCount(data.Snapshot)), "Active issue sessions", "bg-accent")
-					@metricCard("Queue", formatCount(queueCount(data.Snapshot)), "Waiting or retrying", "bg-warning")
-					@metricCard("Blocked", formatCount(blockedCount(data.Snapshot)), "Needs operator action", "bg-danger")
-					@metricCard("Completed", formatCount(completedCount(data.Snapshot)), "Finished sessions", "bg-success")
-				</section>
-				<section class="grid flex-1 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-					<section class="rounded-md border border-border bg-card p-5">
-						<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-							<div>
-								<h2 class="text-lg font-semibold text-foreground">Running issues</h2>
-								<p class="text-sm text-muted-foreground">Active Codex sessions and their latest known activity.</p>
-							</div>
-							<span class="inline-flex w-fit rounded-md bg-muted px-2 py-1 text-sm font-medium text-muted-foreground">{ formatCount(len(data.Snapshot.Running)) }</span>
-						</div>
-						if len(data.Snapshot.Running) == 0 {
-							<div class="mt-5 grid min-h-56 place-items-center rounded-md border border-dashed border-border bg-muted px-4 text-sm text-muted-foreground">
-								if runningCount(data.Snapshot) > 0 {
-									Running session details are not available for this snapshot.
-								} else {
-									No active issue sessions.
-								}
-							</div>
-						} else {
-							<div class="mt-5 overflow-x-auto">
-								<table class="w-full min-w-[58rem] table-fixed border-collapse text-sm">
-									<thead>
-										<tr class="border-b border-border text-left text-muted-foreground">
-											<th class="w-[18rem] pb-3 pr-4 font-medium">Issue</th>
-											<th class="w-[9rem] pb-3 pr-4 font-medium">State</th>
-											<th class="w-[10rem] pb-3 pr-4 font-medium">Runtime / turns</th>
-											<th class="pb-3 pr-4 font-medium">Codex update</th>
-											<th class="w-[10rem] pb-3 pr-4 font-medium">Tokens</th>
-											<th class="w-[9rem] pb-3 font-medium">Session</th>
-										</tr>
-									</thead>
-									<tbody>
-										for _, row := range data.Snapshot.Running {
-											<tr class="border-b border-border last:border-b-0">
-												<td class="py-4 pr-4 align-top">
-													<div class="grid gap-1">
-														if row.URL != "" {
-															<a class="font-medium text-foreground hover:text-accent" href={ row.URL } target="_blank" rel="noopener noreferrer">{ issueIdentifier(row.Issue) }</a>
-														} else {
-															<span class="font-medium text-foreground">{ issueIdentifier(row.Issue) }</span>
-														}
-														<span class="line-clamp-2 text-muted-foreground">{ issueTitle(row.Issue) }</span>
-													</div>
-												</td>
-												<td class="py-4 pr-4 align-top">
-													<span class="inline-flex rounded-md bg-muted px-2 py-1 font-medium text-foreground">{ issueState(row.Issue, "Running") }</span>
-												</td>
-												<td class="py-4 pr-4 align-top font-mono text-muted-foreground">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
-												<td class="py-4 pr-4 align-top">
-													<div class="grid gap-1">
-														<span class="line-clamp-2 text-foreground">{ lastCodexUpdate(row) }</span>
-														<span class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
-													</div>
-												</td>
-												<td class="py-4 pr-4 align-top">
-													<div class="grid gap-1 font-mono">
-														<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
-														<span class="text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
-													</div>
-												</td>
-												<td class="py-4 align-top font-mono text-muted-foreground">{ sessionLabel(row.SessionID) }</td>
-											</tr>
-										}
-									</tbody>
-								</table>
-							</div>
-						}
-					</section>
-					<aside class="grid content-start gap-5">
-						@budgetCard(data.Snapshot.Budget)
-						@rateLimitsCard(data.Snapshot.RateLimits)
-						@tokenCard(data)
-					</aside>
-				</section>
+				<div class="contents" sse-swap="snapshot">
+					@SnapshotView(data)
+				</div>
 			</main>
 		</body>
 	</html>
+}
+
+templ SnapshotView(data DashboardData) {
+	<section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+		@metricCard("Running", formatCount(runningCount(data.Snapshot)), "Active issue sessions", "bg-accent")
+		@metricCard("Queue", formatCount(queueCount(data.Snapshot)), "Waiting or retrying", "bg-warning")
+		@metricCard("Blocked", formatCount(blockedCount(data.Snapshot)), "Needs operator action", "bg-danger")
+		@metricCard("Completed", formatCount(completedCount(data.Snapshot)), "Finished sessions", "bg-success")
+	</section>
+	<section class="grid flex-1 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+		<section class="rounded-md border border-border bg-card p-5">
+			<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+				<div>
+					<h2 class="text-lg font-semibold text-foreground">Running issues</h2>
+					<p class="text-sm text-muted-foreground">Active Codex sessions and their latest known activity.</p>
+				</div>
+				<span class="inline-flex w-fit rounded-md bg-muted px-2 py-1 text-sm font-medium text-muted-foreground">{ formatCount(len(data.Snapshot.Running)) }</span>
+			</div>
+			if len(data.Snapshot.Running) == 0 {
+				<div class="mt-5 grid min-h-56 place-items-center rounded-md border border-dashed border-border bg-muted px-4 text-sm text-muted-foreground">
+					if runningCount(data.Snapshot) > 0 {
+						Running session details are not available for this snapshot.
+					} else {
+						No active issue sessions.
+					}
+				</div>
+			} else {
+				<div class="mt-5 overflow-x-auto">
+					<table class="w-full min-w-[58rem] table-fixed border-collapse text-sm">
+						<thead>
+							<tr class="border-b border-border text-left text-muted-foreground">
+								<th class="w-[18rem] pb-3 pr-4 font-medium">Issue</th>
+								<th class="w-[9rem] pb-3 pr-4 font-medium">State</th>
+								<th class="w-[10rem] pb-3 pr-4 font-medium">Runtime / turns</th>
+								<th class="pb-3 pr-4 font-medium">Codex update</th>
+								<th class="w-[10rem] pb-3 pr-4 font-medium">Tokens</th>
+								<th class="w-[9rem] pb-3 font-medium">Session</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, row := range data.Snapshot.Running {
+								<tr class="border-b border-border last:border-b-0">
+									<td class="py-4 pr-4 align-top">
+										<div class="grid gap-1">
+											if row.URL != "" {
+												<a class="font-medium text-foreground hover:text-accent" href={ row.URL } target="_blank" rel="noopener noreferrer">{ issueIdentifier(row.Issue) }</a>
+											} else {
+												<span class="font-medium text-foreground">{ issueIdentifier(row.Issue) }</span>
+											}
+											<span class="line-clamp-2 text-muted-foreground">{ issueTitle(row.Issue) }</span>
+										</div>
+									</td>
+									<td class="py-4 pr-4 align-top">
+										<span class="inline-flex rounded-md bg-muted px-2 py-1 font-medium text-foreground">{ issueState(row.Issue, "Running") }</span>
+									</td>
+									<td class="py-4 pr-4 align-top font-mono text-muted-foreground">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
+									<td class="py-4 pr-4 align-top">
+										<div class="grid gap-1">
+											<span class="line-clamp-2 text-foreground">{ lastCodexUpdate(row) }</span>
+											<span class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
+										</div>
+									</td>
+									<td class="py-4 pr-4 align-top">
+										<div class="grid gap-1 font-mono">
+											<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
+											<span class="text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
+										</div>
+									</td>
+									<td class="py-4 align-top font-mono text-muted-foreground">{ sessionLabel(row.SessionID) }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			}
+		</section>
+		<aside class="grid content-start gap-5">
+			@budgetCard(data.Snapshot.Budget)
+			@rateLimitsCard(data.Snapshot.RateLimits)
+			@tokenCard(data)
+		</aside>
+	</section>
+}
+
+templ LiveTick(timestamp time.Time) {
+	{ timestamp.UTC().Format("15:04:05 UTC") }
 }
 
 templ metricCard(label string, value string, detail string, accentClass string) {
