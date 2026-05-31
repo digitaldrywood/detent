@@ -352,6 +352,7 @@ func applyCodexUpdate(result *RunResult, update codex.Update) {
 
 type codexRunProgress struct {
 	sessionID          string
+	processIdentity    string
 	turnIDs            map[string]struct{}
 	messages           map[string]string
 	lastEventAt        time.Time
@@ -370,6 +371,9 @@ func newCodexRunProgress() *codexRunProgress {
 }
 
 func (p *codexRunProgress) apply(update codex.Update, eventAt time.Time) {
+	if update.ProcessIdentity != "" {
+		p.processIdentity = update.ProcessIdentity
+	}
 	if update.ThreadID != "" && update.TurnID != "" {
 		p.sessionID = update.ThreadID + "-" + update.TurnID
 		p.turnIDs[update.TurnID] = struct{}{}
@@ -422,13 +426,14 @@ func (r *Runner) publishRunUpdate(
 	progress.apply(update, eventAt)
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, eventAt)
 	usage := UsageUpdate{
-		SessionID:   progress.sessionID,
-		TurnCount:   progress.turnCount(),
-		LastEventAt: progress.lastEventAt,
-		LastEvent:   progress.lastEvent,
-		LastMessage: progress.lastMessage,
-		Tokens:      result.Tokens,
-		RateLimits:  result.RateLimits,
+		SessionID:       progress.sessionID,
+		ProcessIdentity: progress.processIdentity,
+		TurnCount:       progress.turnCount(),
+		LastEventAt:     progress.lastEventAt,
+		LastEvent:       progress.lastEvent,
+		LastMessage:     progress.lastMessage,
+		Tokens:          result.Tokens,
+		RateLimits:      result.RateLimits,
 	}
 	diffStats, ok := r.liveDiffStats(ctx, info, issue, progress, eventAt)
 	if ok {

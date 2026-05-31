@@ -36,14 +36,15 @@ type RunResult struct {
 type UsageUpdateHandler func(UsageUpdate) error
 
 type UsageUpdate struct {
-	SessionID   string
-	TurnCount   int
-	LastEventAt time.Time
-	LastEvent   string
-	LastMessage string
-	Tokens      CodexTotals
-	DiffStats   DiffStats
-	RateLimits  *telemetry.RateLimits
+	SessionID       string
+	ProcessIdentity string
+	TurnCount       int
+	LastEventAt     time.Time
+	LastEvent       string
+	LastMessage     string
+	Tokens          CodexTotals
+	DiffStats       DiffStats
+	RateLimits      *telemetry.RateLimits
 }
 
 type BudgetRefusal struct {

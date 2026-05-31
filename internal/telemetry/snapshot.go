@@ -4,6 +4,9 @@ import "time"
 
 type Snapshot struct {
 	GeneratedAt    time.Time         `json:"generated_at"`
+	Project        Project           `json:"project"`
+	DashboardURL   string            `json:"dashboard_url,omitempty"`
+	Refresh        Refresh           `json:"refresh"`
 	Counts         Counts            `json:"counts"`
 	Running        []Running         `json:"running"`
 	Queue          []Queued          `json:"queue"`
@@ -15,6 +18,17 @@ type Snapshot struct {
 	Throughput     TokenThroughput   `json:"throughput"`
 	LifetimeTotals LifetimeTotals    `json:"lifetime_totals"`
 	TokenTrend     []TokenTrendPoint `json:"token_trend,omitempty"`
+}
+
+type Project struct {
+	DisplayName string `json:"display_name,omitempty"`
+	URL         string `json:"url,omitempty"`
+}
+
+type Refresh struct {
+	PollIntervalSeconds int64      `json:"poll_interval_seconds,omitempty"`
+	LastRefreshAt       *time.Time `json:"last_refresh_at,omitempty"`
+	NextRefreshAt       *time.Time `json:"next_refresh_at,omitempty"`
 }
 
 type Counts struct {
@@ -35,20 +49,21 @@ type Issue struct {
 
 type Running struct {
 	Issue
-	WorkerHost     string     `json:"worker_host,omitempty"`
-	WorkspacePath  string     `json:"workspace_path,omitempty"`
-	SessionID      string     `json:"session_id,omitempty"`
-	TurnCount      int        `json:"turn_count"`
-	StartedAt      time.Time  `json:"started_at"`
-	LastEventAt    *time.Time `json:"last_event_at,omitempty"`
-	LastEvent      string     `json:"last_event,omitempty"`
-	LastMessage    string     `json:"last_message,omitempty"`
-	RuntimeSeconds float64    `json:"runtime_seconds"`
-	DiffAdded      int        `json:"diff_added"`
-	DiffRemoved    int        `json:"diff_removed"`
-	DiffFiles      int        `json:"diff_files"`
-	DiffStatus     string     `json:"diff_status,omitempty"`
-	Tokens         Tokens     `json:"tokens"`
+	WorkerHost      string     `json:"worker_host,omitempty"`
+	ProcessIdentity string     `json:"process_identity,omitempty"`
+	WorkspacePath   string     `json:"workspace_path,omitempty"`
+	SessionID       string     `json:"session_id,omitempty"`
+	TurnCount       int        `json:"turn_count"`
+	StartedAt       time.Time  `json:"started_at"`
+	LastEventAt     *time.Time `json:"last_event_at,omitempty"`
+	LastEvent       string     `json:"last_event,omitempty"`
+	LastMessage     string     `json:"last_message,omitempty"`
+	RuntimeSeconds  float64    `json:"runtime_seconds"`
+	DiffAdded       int        `json:"diff_added"`
+	DiffRemoved     int        `json:"diff_removed"`
+	DiffFiles       int        `json:"diff_files"`
+	DiffStatus      string     `json:"diff_status,omitempty"`
+	Tokens          Tokens     `json:"tokens"`
 }
 
 type Queued struct {

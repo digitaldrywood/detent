@@ -18,7 +18,7 @@ import (
 
 var ErrNilHub = errors.New("nil telemetry hub")
 
-const dashboardURL = "http://localhost:4000"
+const defaultDashboardURL = "http://localhost:4000"
 
 type Option func(*options)
 
@@ -139,7 +139,7 @@ func waitForSnapshot(updates <-chan telemetry.Snapshot) tea.Cmd {
 func (m Model) renderWaiting() string {
 	lines := []string{
 		m.styles.title.Render("╭─ SYMPHONY STATUS"),
-		"│ Dashboard: " + m.styles.info.Render(dashboardURL),
+		"│ Dashboard: " + m.styles.info.Render(defaultDashboardURL),
 		"│ " + m.styles.muted.Render("Waiting for telemetry snapshot"),
 		closingBorder,
 	}
@@ -151,7 +151,6 @@ func (m Model) renderSnapshot() string {
 	snapshot := m.snapshot
 	lines := []string{
 		m.styles.title.Render("╭─ SYMPHONY STATUS"),
-		"│ Dashboard: " + m.styles.info.Render(dashboardURL),
 		"│ Generated: " + m.styles.muted.Render(formatTimestamp(snapshot.GeneratedAt)),
 		"│ Agents: " + m.styles.ok.Render(fmt.Sprintf("%d running", countOrLen(snapshot.Counts.Running, len(snapshot.Running)))) +
 			m.styles.muted.Render(" | ") +
@@ -169,6 +168,9 @@ func (m Model) renderSnapshot() string {
 			m.styles.warn.Render("total "+formatCount(snapshot.Tokens.Total)),
 		"│ Budget: " + formatBudget(snapshot.Budget, m.styles),
 		"│ Rate Limits: " + formatRateLimits(snapshot.RateLimits, m.now, m.styles),
+		"│ Project: " + formatOptionalInfo(formatProject(snapshot.Project), m.styles),
+		"│ Dashboard: " + m.styles.info.Render(formatDashboardURL(snapshot)),
+		"│ Next refresh: " + formatOptionalInfo(formatNextRefresh(snapshot.Refresh), m.styles),
 		m.styles.title.Render("├─ Running"),
 		"│",
 	}
@@ -211,7 +213,7 @@ func formatRunningRows(running []telemetry.Running, eventWidth int, s styles) []
 		cells := []string{
 			formatCell(issueLabel(row.Issue), runningIDWidth, alignLeft),
 			formatCell(defaultString(row.State, "unknown"), runningStageWidth, alignLeft),
-			formatCell(defaultString(row.WorkerHost, "n/a"), runningHostWidth, alignLeft),
+			formatCell(defaultString(row.ProcessIdentity, "n/a"), runningProcessWidth, alignLeft),
 			formatCell(formatRuntimeAndTurns(row.RuntimeSeconds, row.TurnCount), runningAgeWidth, alignLeft),
 			formatCell(formatCount(row.Tokens.Total), runningTokensWidth, alignRight),
 			formatCell(compactSessionID(row.SessionID), runningSessionWidth, alignLeft),
@@ -432,7 +434,7 @@ func runningTableHeader(eventWidth int, s styles) string {
 	cells := []string{
 		formatCell("ID", runningIDWidth, alignLeft),
 		formatCell("STAGE", runningStageWidth, alignLeft),
-		formatCell("HOST", runningHostWidth, alignLeft),
+		formatCell("PID", runningProcessWidth, alignLeft),
 		formatCell("AGE / TURN", runningAgeWidth, alignLeft),
 		formatCell("TOKENS", runningTokensWidth, alignLeft),
 		formatCell("SESSION", runningSessionWidth, alignLeft),
@@ -443,7 +445,7 @@ func runningTableHeader(eventWidth int, s styles) string {
 }
 
 func runningTableSeparator(eventWidth int, s styles) string {
-	width := runningIDWidth + runningStageWidth + runningHostWidth + runningAgeWidth + runningTokensWidth + runningSessionWidth + eventWidth + runningColumnGaps
+	width := runningIDWidth + runningStageWidth + runningProcessWidth + runningAgeWidth + runningTokensWidth + runningSessionWidth + eventWidth + runningColumnGaps
 	return "│   " + s.muted.Render(strings.Repeat("─", width))
 }
 
@@ -509,6 +511,37 @@ func formatTimestamp(value time.Time) string {
 	}
 
 	return value.UTC().Truncate(time.Second).Format(time.RFC3339)
+}
+
+func formatProject(project telemetry.Project) string {
+	if strings.TrimSpace(project.URL) != "" {
+		return cleanInline(project.URL)
+	}
+	if strings.TrimSpace(project.DisplayName) != "" {
+		return cleanInline(project.DisplayName)
+	}
+	return ""
+}
+
+func formatDashboardURL(snapshot telemetry.Snapshot) string {
+	if strings.TrimSpace(snapshot.DashboardURL) != "" {
+		return cleanInline(snapshot.DashboardURL)
+	}
+	return defaultDashboardURL
+}
+
+func formatNextRefresh(refresh telemetry.Refresh) string {
+	if refresh.NextRefreshAt == nil {
+		return ""
+	}
+	return formatTimestamp(*refresh.NextRefreshAt)
+}
+
+func formatOptionalInfo(value string, s styles) string {
+	if strings.TrimSpace(value) == "" {
+		return s.muted.Render("n/a")
+	}
+	return s.info.Render(value)
 }
 
 func formatRuntimeAndTurns(seconds float64, turns int) string {
@@ -660,13 +693,13 @@ const (
 	defaultTerminalColumns = 123
 	runningIDWidth         = 8
 	runningStageWidth      = 14
-	runningHostWidth       = 12
+	runningProcessWidth    = 12
 	runningAgeWidth        = 12
 	runningTokensWidth     = 10
 	runningSessionWidth    = 18
 	runningEventMinWidth   = 12
 	runningRowChromeWidth  = 10
 	runningColumnGaps      = 6
-	fixedRunningWidth      = runningIDWidth + runningStageWidth + runningHostWidth + runningAgeWidth + runningTokensWidth + runningSessionWidth
+	fixedRunningWidth      = runningIDWidth + runningStageWidth + runningProcessWidth + runningAgeWidth + runningTokensWidth + runningSessionWidth
 	closingBorder          = "╰─"
 )

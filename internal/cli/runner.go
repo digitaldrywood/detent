@@ -167,6 +167,7 @@ func publishSnapshots(
 	registry *project.Registry,
 	snapshotHub *hub.Hub[telemetry.Snapshot],
 	lifetimeSource lifetimeTotalsSource,
+	dashboardURL string,
 	interval time.Duration,
 	now func() time.Time,
 ) {
@@ -185,7 +186,7 @@ func publishSnapshots(
 	defer ticker.Stop()
 
 	for {
-		if err := publishSnapshotOnce(ctx, registry, snapshotHub, now(), trend, lifetimeSource); err != nil {
+		if err := publishSnapshotOnce(ctx, registry, snapshotHub, now(), trend, lifetimeSource, dashboardURL); err != nil {
 			slog.Default().Warn("publish telemetry snapshot failed", "error", err)
 		}
 		select {
@@ -203,6 +204,7 @@ func publishSnapshotOnce(
 	now time.Time,
 	trend *tokenTrendRecorder,
 	lifetimeSource lifetimeTotalsSource,
+	dashboardURL string,
 ) error {
 	merged := telemetry.Snapshot{GeneratedAt: now}
 	for _, trackedProject := range registry.List() {
@@ -217,7 +219,10 @@ func publishSnapshotOnce(
 		if err != nil {
 			continue
 		}
-		merged = mergeSnapshot(merged, state.Snapshot(now))
+		snapshot := state.Snapshot(now)
+		snapshot.Project = projectSnapshotMetadata(trackedProject)
+		snapshot.DashboardURL = cleanDashboardURL(dashboardURL)
+		merged = mergeSnapshot(merged, snapshot)
 	}
 	if trend != nil {
 		merged = trend.apply(merged)
@@ -227,6 +232,31 @@ func publishSnapshotOnce(
 		return fmt.Errorf("publish snapshot: %w", err)
 	}
 	return nil
+}
+
+func projectSnapshotMetadata(trackedProject *project.Project) telemetry.Project {
+	if trackedProject == nil {
+		return telemetry.Project{}
+	}
+
+	cfg := trackedProject.Config()
+	workflow := trackedProject.Workflow()
+	return telemetry.Project{
+		DisplayName: strings.TrimSpace(cfg.ID),
+		URL:         projectURLFromWorkflow(workflow.Config),
+	}
+}
+
+func projectURLFromWorkflow(cfg workflowconfig.Config) string {
+	slug := strings.TrimSpace(cfg.Tracker.ProjectSlug)
+	if strings.HasPrefix(slug, "http://") || strings.HasPrefix(slug, "https://") {
+		return slug
+	}
+	return ""
+}
+
+func cleanDashboardURL(value string) string {
+	return strings.TrimSpace(value)
 }
 
 type tokenTrendRecorder struct {
@@ -334,6 +364,12 @@ func lifetimeTotals(ctx context.Context, source lifetimeTotalsSource) telemetry.
 }
 
 func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
+	current.Project = mergeProject(current.Project, next.Project)
+	if strings.TrimSpace(current.DashboardURL) == "" {
+		current.DashboardURL = next.DashboardURL
+	}
+	current.Refresh = mergeRefresh(current.Refresh, next.Refresh)
+
 	current.Running = append(current.Running, next.Running...)
 	current.Queue = append(current.Queue, next.Queue...)
 	current.Blocked = append(current.Blocked, next.Blocked...)
@@ -354,6 +390,56 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 		current.RateLimits = next.RateLimits
 	}
 	return current
+}
+
+func mergeProject(current, next telemetry.Project) telemetry.Project {
+	if current == (telemetry.Project{}) {
+		return next
+	}
+	if next == (telemetry.Project{}) || current == next {
+		return current
+	}
+	return telemetry.Project{DisplayName: "multiple projects"}
+}
+
+func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {
+	if current.PollIntervalSeconds == 0 ||
+		(next.PollIntervalSeconds > 0 && next.PollIntervalSeconds < current.PollIntervalSeconds) {
+		current.PollIntervalSeconds = next.PollIntervalSeconds
+	}
+	current.LastRefreshAt = latestTime(current.LastRefreshAt, next.LastRefreshAt)
+	current.NextRefreshAt = earliestTime(current.NextRefreshAt, next.NextRefreshAt)
+	return current
+}
+
+func latestTime(current *time.Time, next *time.Time) *time.Time {
+	switch {
+	case current == nil:
+		return cloneTime(next)
+	case next == nil || current.After(*next):
+		return cloneTime(current)
+	default:
+		return cloneTime(next)
+	}
+}
+
+func earliestTime(current *time.Time, next *time.Time) *time.Time {
+	switch {
+	case current == nil:
+		return cloneTime(next)
+	case next == nil || current.Before(*next):
+		return cloneTime(current)
+	default:
+		return cloneTime(next)
+	}
+}
+
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func durationFromMillis(ms int) time.Duration {

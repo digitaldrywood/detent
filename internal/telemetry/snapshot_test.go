@@ -19,6 +19,15 @@ func TestSnapshotJSONShape(t *testing.T) {
 
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: generatedAt,
+		Project: telemetry.Project{
+			DisplayName: "Symphony",
+			URL:         "https://github.com/digitaldrywood/symphony",
+		},
+		DashboardURL: "http://localhost:4101",
+		Refresh: telemetry.Refresh{
+			PollIntervalSeconds: 30,
+			NextRefreshAt:       timePointer(generatedAt.Add(30 * time.Second)),
+		},
 		Counts: telemetry.Counts{
 			Running:   1,
 			Queue:     2,
@@ -34,14 +43,15 @@ func TestSnapshotJSONShape(t *testing.T) {
 					Title:      "Port hub",
 					URL:        "https://example.com/issues/1",
 				},
-				SessionID:      "thread-1",
-				TurnCount:      2,
-				StartedAt:      startedAt,
-				RuntimeSeconds: 300,
-				DiffAdded:      4,
-				DiffRemoved:    2,
-				DiffFiles:      3,
-				DiffStatus:     "ok",
+				ProcessIdentity: "4242",
+				SessionID:       "thread-1",
+				TurnCount:       2,
+				StartedAt:       startedAt,
+				RuntimeSeconds:  300,
+				DiffAdded:       4,
+				DiffRemoved:     2,
+				DiffFiles:       3,
+				DiffStatus:      "ok",
 				Tokens: telemetry.Tokens{
 					Input:  10,
 					Output: 20,
@@ -159,6 +169,9 @@ func TestSnapshotJSONShape(t *testing.T) {
 
 	for _, key := range []string{
 		"generated_at",
+		"project",
+		"dashboard_url",
+		"refresh",
 		"counts",
 		"running",
 		"queue",
@@ -176,6 +189,18 @@ func TestSnapshotJSONShape(t *testing.T) {
 		}
 	}
 
+	project := got["project"].(map[string]any)
+	if project["display_name"] != "Symphony" || project["url"] != "https://github.com/digitaldrywood/symphony" {
+		t.Fatalf("project = %#v", project)
+	}
+	if got["dashboard_url"] != "http://localhost:4101" {
+		t.Fatalf("dashboard_url = %#v", got["dashboard_url"])
+	}
+	refresh := got["refresh"].(map[string]any)
+	if refresh["poll_interval_seconds"] != float64(30) || refresh["next_refresh_at"] != "2026-05-30T22:15:30Z" {
+		t.Fatalf("refresh = %#v", refresh)
+	}
+
 	counts := got["counts"].(map[string]any)
 	if counts["running"] != float64(1) || counts["queue"] != float64(2) || counts["blocked"] != float64(3) || counts["completed"] != float64(4) {
 		t.Fatalf("counts = %#v", counts)
@@ -184,6 +209,9 @@ func TestSnapshotJSONShape(t *testing.T) {
 	running := got["running"].([]any)[0].(map[string]any)
 	if running["issue_id"] != "issue-1" || running["identifier"] != "DD-1" {
 		t.Fatalf("running row = %#v", running)
+	}
+	if running["process_identity"] != "4242" {
+		t.Fatalf("running process identity = %#v", running)
 	}
 	if running["diff_added"] != float64(4) || running["diff_removed"] != float64(2) || running["diff_files"] != float64(3) || running["diff_status"] != "ok" {
 		t.Fatalf("running diff fields = %#v", running)
@@ -236,4 +264,8 @@ func TestSnapshotJSONShape(t *testing.T) {
 	if latest["input_tokens"] != float64(110) || latest["output_tokens"] != float64(220) || latest["total_tokens"] != float64(330) {
 		t.Fatalf("token_trend[1] = %#v", latest)
 	}
+}
+
+func timePointer(value time.Time) *time.Time {
+	return &value
 }

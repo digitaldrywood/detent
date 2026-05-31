@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"strconv"
 	"sync"
 	"time"
 )
@@ -168,6 +169,13 @@ func (t *localTransport) Close(ctx context.Context) error {
 		}
 		return ctx.Err()
 	}
+}
+
+func (t *localTransport) ProcessIdentity() string {
+	if t.cmd == nil || t.cmd.Process == nil {
+		return ""
+	}
+	return strconv.Itoa(t.cmd.Process.Pid)
 }
 
 func (t *localTransport) acquireSend(ctx context.Context) error {

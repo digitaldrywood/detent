@@ -98,7 +98,7 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		publishSnapshots(ctx, registry, snapshotHub, nil, 5*time.Millisecond, func() time.Time { return now })
+		publishSnapshots(ctx, registry, snapshotHub, nil, "http://localhost:4101", 5*time.Millisecond, func() time.Time { return now })
 	}()
 
 	var (
@@ -119,6 +119,15 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	}
 	if !snapshot.GeneratedAt.Equal(now) {
 		t.Fatalf("snapshot.GeneratedAt = %v, want %v", snapshot.GeneratedAt, now)
+	}
+	if snapshot.Project.DisplayName != "alpha" {
+		t.Fatalf("snapshot.Project.DisplayName = %q, want alpha", snapshot.Project.DisplayName)
+	}
+	if snapshot.DashboardURL != "http://localhost:4101" {
+		t.Fatalf("snapshot.DashboardURL = %q, want dashboard URL", snapshot.DashboardURL)
+	}
+	if snapshot.Refresh.NextRefreshAt == nil {
+		t.Fatalf("snapshot.Refresh.NextRefreshAt = nil, want next refresh")
 	}
 }
 

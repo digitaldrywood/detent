@@ -169,7 +169,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
-	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, runtimeStore, defaultSnapshotInterval, time.Now)
+	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, runtimeStore, displayURL, defaultSnapshotInterval, time.Now)
 	server, err := web.NewServer(web.Config{
 		Mode:           web.ModeRunning,
 		WorkflowPath:   firstWorkflowPath(cfg),

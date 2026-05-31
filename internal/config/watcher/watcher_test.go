@@ -16,11 +16,12 @@ import (
 func TestWatchDebouncesWorkflowWrites(t *testing.T) {
 	t.Parallel()
 
+	debounce := 150 * time.Millisecond
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")
 	writeWorkflow(t, path, 100, "initial")
 
-	w, err := New(path, WithDebounce(25*time.Millisecond))
+	w, err := New(path, WithDebounce(debounce))
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
 	}
@@ -50,7 +51,7 @@ func TestWatchDebouncesWorkflowWrites(t *testing.T) {
 	select {
 	case extra := <-updates:
 		t.Fatalf("extra update after debounce = %#v", extra)
-	case <-time.After(75 * time.Millisecond):
+	case <-time.After(2 * debounce):
 	}
 }
 
