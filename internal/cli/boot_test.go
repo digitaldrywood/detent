@@ -3,9 +3,13 @@ package cli
 import (
 	"context"
 	"errors"
+	"io"
 	"log/slog"
+	"net"
+	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -144,6 +148,43 @@ func TestRegistryRefresherRequestsProjectOrchestrators(t *testing.T) {
 	assertRefresh(t, response)
 }
 
+func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
+	t.Parallel()
+
+	host, port := freeLoopbackPort(t)
+	globalPath := filepath.Join(t.TempDir(), "global.yaml")
+	global, err := globalconfig.DefaultAt(globalPath)
+	if err != nil {
+		t.Fatalf("DefaultAt() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- startRunning(ctx, BootConfig{
+			Mode:   BootModeRunning,
+			Global: global,
+			Host:   host,
+			Port:   &port,
+		})
+	}()
+
+	body := waitForDashboard(t, "http://"+net.JoinHostPort(host, strconv.Itoa(port))+"/", done)
+	if !strings.Contains(body, "Symphony") {
+		t.Fatalf("dashboard body missing Symphony:\n%s", body)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("timed out waiting for startRunning to stop")
+	}
+}
+
 func TestRegistryRefresherSkipsStoppedProjectOrchestrators(t *testing.T) {
 	t.Parallel()
 
@@ -165,6 +206,61 @@ func TestRegistryRefresherReturnsProjectNotFoundWithoutOrchestrators(t *testing.
 	if !errors.Is(err, projectpkg.ErrProjectNotFound) {
 		t.Fatalf("RequestRefresh() error = %v, want %v", err, projectpkg.ErrProjectNotFound)
 	}
+}
+
+func freeLoopbackPort(t *testing.T) (string, int) {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+	defer listener.Close()
+
+	addr, ok := listener.Addr().(*net.TCPAddr)
+	if !ok {
+		t.Fatalf("listener addr = %T, want *net.TCPAddr", listener.Addr())
+	}
+	return "127.0.0.1", addr.Port
+}
+
+func waitForDashboard(t *testing.T, url string, done <-chan error) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	client := http.Client{Timeout: 500 * time.Millisecond}
+	for ctx.Err() == nil {
+		select {
+		case err := <-done:
+			t.Fatalf("startRunning returned before dashboard responded: %v", err)
+		default:
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			t.Fatalf("NewRequestWithContext() error = %v", err)
+		}
+		resp, err := client.Do(req)
+		if err == nil {
+			body, readErr := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if readErr != nil {
+				t.Fatalf("ReadAll() error = %v", readErr)
+			}
+			if closeErr != nil {
+				t.Fatalf("Body.Close() error = %v", closeErr)
+			}
+			if resp.StatusCode == http.StatusOK {
+				return string(body)
+			}
+		}
+
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for dashboard at %s", url)
+	return ""
 }
 
 func newRefreshProject(t *testing.T, id string) *projectpkg.Project {
