@@ -3,6 +3,8 @@ package config
 import (
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/symphony-go/internal/connector"
 )
 
 func TestParseWorkflowFrontmatter(t *testing.T) {
@@ -176,6 +178,104 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Budget.PricingPath != "priv/pricing/models.yaml" {
 		t.Fatalf("Budget.PricingPath = %q", cfg.Budget.PricingPath)
+	}
+}
+
+func TestParseWorkflowMemoryTrackerIssues(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+  issues:
+    - id: issue-1
+      identifier: MT-1
+      title: Memory adapter
+      description: Load issues from config
+      priority: 2
+      state: Todo
+      branch_name: symphony/mt-1
+      url: https://example.com/issues/1
+      assignee_id: worker-1
+      blocked_by:
+        - id: issue-0
+          identifier: MT-0
+          state: Done
+      labels:
+        - stage:s1
+      assigned_to_worker: true
+      model_override: gpt-5-codex-high
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	got := workflow.Config.Tracker.Issues
+	if len(got) != 1 {
+		t.Fatalf("Tracker.Issues len = %d, want 1", len(got))
+	}
+	priority := 2
+	want := connector.Issue{
+		ID:               "issue-1",
+		Identifier:       "MT-1",
+		Title:            "Memory adapter",
+		Description:      "Load issues from config",
+		Priority:         &priority,
+		State:            "Todo",
+		BranchName:       "symphony/mt-1",
+		URL:              "https://example.com/issues/1",
+		AssigneeID:       "worker-1",
+		BlockedBy:        []connector.BlockedRef{{ID: "issue-0", Identifier: "MT-0", State: "Done"}},
+		Labels:           []string{"stage:s1"},
+		AssignedToWorker: true,
+		ModelOverride:    "gpt-5-codex-high",
+	}
+	if got[0].ID != want.ID ||
+		got[0].Identifier != want.Identifier ||
+		got[0].Title != want.Title ||
+		got[0].Description != want.Description ||
+		got[0].Priority == nil ||
+		*got[0].Priority != *want.Priority ||
+		got[0].State != want.State ||
+		got[0].BranchName != want.BranchName ||
+		got[0].URL != want.URL ||
+		got[0].AssigneeID != want.AssigneeID ||
+		len(got[0].BlockedBy) != 1 ||
+		got[0].BlockedBy[0] != want.BlockedBy[0] ||
+		len(got[0].Labels) != 1 ||
+		got[0].Labels[0] != want.Labels[0] ||
+		!got[0].AssignedToWorker ||
+		got[0].ModelOverride != want.ModelOverride {
+		t.Fatalf("Tracker.Issues[0] = %#v, want %#v", got[0], want)
+	}
+}
+
+func TestParseWorkflowMemoryTrackerIssueDefaults(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+  issues:
+    - id: issue-1
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	got := workflow.Config.Tracker.Issues[0]
+	if !got.AssignedToWorker {
+		t.Fatal("AssignedToWorker = false, want true")
+	}
+	if len(got.BlockedBy) != 0 {
+		t.Fatalf("BlockedBy len = %d, want 0", len(got.BlockedBy))
+	}
+	if len(got.Labels) != 0 {
+		t.Fatalf("Labels len = %d, want 0", len(got.Labels))
 	}
 }
 

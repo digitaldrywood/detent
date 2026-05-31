@@ -11,6 +11,8 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	"github.com/digitaldrywood/symphony-go/internal/connector"
 )
 
 const (
@@ -43,21 +45,22 @@ type Config struct {
 }
 
 type Tracker struct {
-	Kind                    string      `yaml:"kind"`
-	Endpoint                string      `yaml:"endpoint"`
-	APIKey                  string      `yaml:"api_key"`
-	GitHubAppID             string      `yaml:"github_app_id"`
-	GitHubAppPrivateKey     string      `yaml:"github_app_private_key"`
-	GitHubAppPrivateKeyPath string      `yaml:"github_app_private_key_path"`
-	GitHubAppInstallationID string      `yaml:"github_app_installation_id"`
-	ProjectSlug             string      `yaml:"project_slug"`
-	Assignee                string      `yaml:"assignee"`
-	ActiveStates            []string    `yaml:"active_states"`
-	ObservedStates          []string    `yaml:"observed_states"`
-	TerminalStates          []string    `yaml:"terminal_states"`
-	StateMap                StringOrMap `yaml:"state_map"`
-	PriorityMap             StringOrMap `yaml:"priority_map"`
-	AutoProvision           bool        `yaml:"auto_provision"`
+	Kind                    string            `yaml:"kind"`
+	Endpoint                string            `yaml:"endpoint"`
+	APIKey                  string            `yaml:"api_key"`
+	GitHubAppID             string            `yaml:"github_app_id"`
+	GitHubAppPrivateKey     string            `yaml:"github_app_private_key"`
+	GitHubAppPrivateKeyPath string            `yaml:"github_app_private_key_path"`
+	GitHubAppInstallationID string            `yaml:"github_app_installation_id"`
+	ProjectSlug             string            `yaml:"project_slug"`
+	Assignee                string            `yaml:"assignee"`
+	ActiveStates            []string          `yaml:"active_states"`
+	ObservedStates          []string          `yaml:"observed_states"`
+	TerminalStates          []string          `yaml:"terminal_states"`
+	StateMap                StringOrMap       `yaml:"state_map"`
+	PriorityMap             StringOrMap       `yaml:"priority_map"`
+	AutoProvision           bool              `yaml:"auto_provision"`
+	Issues                  []connector.Issue `yaml:"issues"`
 }
 
 type Polling struct {

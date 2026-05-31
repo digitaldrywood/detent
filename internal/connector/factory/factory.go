@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/digitaldrywood/symphony-go/internal/connector"
+	"github.com/digitaldrywood/symphony-go/internal/connector/memory"
 )
 
 var (
@@ -15,14 +16,17 @@ var (
 )
 
 type Config struct {
-	Kind string
+	Kind   string
+	Memory memory.Config
 }
 
 func NewFromConfig(cfg Config) (connector.Connector, error) {
 	kind := normalizeKind(cfg.Kind)
 
 	switch connector.Backend(kind) {
-	case connector.BackendMemory, connector.BackendLinear, connector.BackendGitHub:
+	case connector.BackendMemory:
+		return memory.New(cfg.Memory), nil
+	case connector.BackendLinear, connector.BackendGitHub:
 		return unimplementedConnector{name: kind}, nil
 	case connector.BackendGitLab, connector.BackendJira:
 		return nil, fmt.Errorf("%w: %s", ErrBackendNotReady, kind)
