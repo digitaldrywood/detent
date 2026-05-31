@@ -9,7 +9,7 @@ download_base="${SYMPHONY_RELEASE_DOWNLOAD_BASE:-https://github.com/$repo/releas
 state_dir="${SYMPHONY_STATE_DIR:-"$HOME/.symphony"}"
 lock_path="${SYMPHONY_INSTALL_LOCK:-"$state_dir/install.lock"}"
 source_binary="${SYMPHONY_INSTALL_SOURCE:-}"
-install_mode="${SYMPHONY_INSTALL_MODE:-release}"
+install_mode="${SYMPHONY_INSTALL_MODE:-auto}"
 
 abort() {
 	printf '%s\n' "$1" >&2
@@ -27,6 +27,15 @@ script_dir() {
 	else
 		printf ''
 	fi
+}
+
+source_checkout_dir() {
+	dir="$(script_dir)"
+	if [ -n "$dir" ] && [ -f "$dir/go.mod" ] && [ -d "$dir/cmd/symphony" ]; then
+		printf '%s\n' "$dir"
+		return 0
+	fi
+	return 1
 }
 
 choose_install_dir() {
@@ -229,10 +238,9 @@ install_go() {
 }
 
 install_local() {
-	dir="$(script_dir)"
-	if [ -z "$dir" ] || [ ! -f "$dir/go.mod" ]; then
+	dir="$(source_checkout_dir)" || {
 		abort "Cannot build Symphony locally: install.sh is not running from a checkout"
-	fi
+	}
 
 	build_version="$(git -C "$dir" describe --tags --always 2>/dev/null || echo dev)"
 	build_commit="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo none)"
@@ -252,6 +260,13 @@ install_binary() {
 		cp "$tmp_dir/symphony" "$target"
 		chmod 0755 "$target"
 	fi
+}
+
+install_release_or_go() {
+	if [ -n "$target_os" ] && install_release "$target_os" "$target_arch"; then
+		return
+	fi
+	install_go
 }
 
 install_dir="$(choose_install_dir)"
@@ -295,12 +310,16 @@ if [ -n "$source_binary" ]; then
 	copy_source
 elif [ "$install_mode" = "local" ]; then
 	install_local
-else
-	if [ -n "$target_os" ] && install_release "$target_os" "$target_arch"; then
-		:
+elif [ "$install_mode" = "release" ]; then
+	install_release_or_go
+elif [ "$install_mode" = "auto" ]; then
+	if source_checkout_dir >/dev/null 2>&1; then
+		install_local
 	else
-		install_go
+		install_release_or_go
 	fi
+else
+	abort "Unknown SYMPHONY_INSTALL_MODE: $install_mode"
 fi
 
 install_binary

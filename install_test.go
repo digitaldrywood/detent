@@ -150,6 +150,7 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 		"SYMPHONY_GITHUB_API_BASE="+server.URL,
 		"SYMPHONY_RELEASE_DOWNLOAD_BASE="+server.URL,
 		"SYMPHONY_INSTALL_DIR="+installDir,
+		"SYMPHONY_INSTALL_MODE=release",
 		"SYMPHONY_STATE_DIR="+stateDir,
 		"SYMPHONY_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
 		"SYMPHONY_INSTALL_TEST_UNAME_S=Linux",
@@ -195,6 +196,7 @@ func TestInstallScriptAbortsOnChecksumMismatch(t *testing.T) {
 		"SYMPHONY_GITHUB_API_BASE="+server.URL,
 		"SYMPHONY_RELEASE_DOWNLOAD_BASE="+server.URL,
 		"SYMPHONY_INSTALL_DIR="+installDir,
+		"SYMPHONY_INSTALL_MODE=release",
 		"SYMPHONY_STATE_DIR="+stateDir,
 		"SYMPHONY_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
 		"SYMPHONY_INSTALL_TEST_UNAME_S=Linux",
@@ -261,6 +263,7 @@ exit 1
 		"SYMPHONY_GITHUB_API_BASE="+server.URL,
 		"SYMPHONY_RELEASE_DOWNLOAD_BASE="+server.URL,
 		"SYMPHONY_INSTALL_DIR="+installDir,
+		"SYMPHONY_INSTALL_MODE=release",
 		"SYMPHONY_STATE_DIR="+stateDir,
 		"SYMPHONY_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
 		"SYMPHONY_INSTALL_TEST_UNAME_S=Linux",
@@ -296,7 +299,6 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	stateDir := filepath.Join(tmp, "state")
 	env := append(os.Environ(),
 		"SYMPHONY_INSTALL_DIR="+installDir,
-		"SYMPHONY_INSTALL_MODE=local",
 		"SYMPHONY_STATE_DIR="+stateDir,
 		"SYMPHONY_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
 	)
