@@ -325,6 +325,22 @@ Symphony logs with `log/slog`.
 - `SYMPHONY_LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
 - Text logs are written to stdout; JSON logs are written to stderr.
 
+## Configuration
+
+At startup, Symphony resolves `global.yaml` in this order. The first matching rule wins.
+
+| Order | Rule | Path |
+| --- | --- | --- |
+| 1 | `--config <path>` | Direct file path from the CLI flag |
+| 2 | `SYMPHONY_CONFIG=<file>` | Direct file path from the environment |
+| 3 | `SYMPHONY_HOME=<dir>` | `<dir>/global.yaml` |
+| 4 | `os.UserConfigDir()` | `<config-dir>/symphony/global.yaml` |
+| 5 | Legacy home config | `~/.symphony/global.yaml` |
+
+`os.UserConfigDir()` maps to `%AppData%\symphony\global.yaml` on Windows, `~/Library/Application Support/symphony/global.yaml` on macOS, and `~/.config/symphony/global.yaml` on Linux while honoring `XDG_CONFIG_HOME`.
+
+If no global config is found, Symphony keeps the single-project fallback and looks for `WORKFLOW.md` in the current working directory. Use `symphony config path` to print the resolved config path and the rule that selected it.
+
 ## License
 
 Symphony is released under the MIT license. See [LICENSE](LICENSE).

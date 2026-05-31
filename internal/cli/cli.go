@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -45,15 +46,16 @@ const (
 )
 
 type BootConfig struct {
-	Mode         BootMode
-	Global       globalconfig.Config
-	WorkflowPath string
-	Host         string
-	Port         *int
-	Version      string
-	Headless     bool
-	StdoutTTY    bool
-	Output       io.Writer
+	Mode           BootMode
+	Global         globalconfig.Config
+	ConfigPathRule globalconfig.PathRule
+	WorkflowPath   string
+	Host           string
+	Port           *int
+	Version        string
+	Headless       bool
+	StdoutTTY      bool
+	Output         io.Writer
 }
 
 type BootFunc func(context.Context, BootConfig) error
@@ -70,7 +72,7 @@ type ProjectManager interface {
 type Option func(*options)
 
 type options struct {
-	defaultPath   func() (string, error)
+	resolvePath   func(string) (globalconfig.PathResolution, error)
 	read          func(string) (globalconfig.Config, error)
 	readOrDefault func(string) (globalconfig.Config, error)
 	write         func(string, globalconfig.Config) error
@@ -164,6 +166,7 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 			boot.Headless = headless
 			boot.StdoutTTY = opts.stdoutTTY()
 			boot.Output = cmd.OutOrStdout()
+			slog.Info("resolved global config", "path", boot.Global.Path, "rule", boot.ConfigPathRule)
 			return opts.boot(cmd.Context(), boot)
 		},
 	}
@@ -183,6 +186,7 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 			project.Paused = false
 			return nil
 		}),
+		newConfigCommand(&configPath, opts),
 		newPromoteCommand(&configPath, opts),
 		newRemoveProjectCommand(&configPath, opts),
 	)
@@ -192,7 +196,7 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 
 func defaultOptions() options {
 	return options{
-		defaultPath: globalconfig.DefaultPath,
+		resolvePath: globalconfig.ResolvePath,
 		read: func(path string) (globalconfig.Config, error) {
 			return globalconfig.Read(path)
 		},
@@ -340,6 +344,31 @@ func newEditProjectCommand(configPath *string, opts options, operation Operation
 	}
 }
 
+func newConfigCommand(configPath *string, opts options) *cobra.Command {
+	cmd := &cobra.Command{
+		Use:   "config",
+		Short: "Inspect global config settings",
+	}
+	cmd.AddCommand(newConfigPathCommand(configPath, opts))
+	return cmd
+}
+
+func newConfigPathCommand(configPath *string, opts options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "path",
+		Short: "Print the resolved global config path",
+		Args:  cobra.NoArgs,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			resolution, err := resolveConfigPathResolution(*configPath, opts)
+			if err != nil {
+				return err
+			}
+			_, err = fmt.Fprintf(cmd.OutOrStdout(), "path: %s\nrule: %s\n", resolution.Path, resolution.Rule)
+			return err
+		},
+	}
+}
+
 func newPromoteCommand(configPath *string, opts options) *cobra.Command {
 	var priority int
 	cmd := &cobra.Command{
@@ -428,10 +457,18 @@ func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {
 }
 
 func resolveConfigPath(path string, opts options) (string, error) {
-	if strings.TrimSpace(path) != "" {
-		return strings.TrimSpace(path), nil
+	resolution, err := resolveConfigPathResolution(path, opts)
+	if err != nil {
+		return "", err
 	}
-	return opts.defaultPath()
+	return resolution.Path, nil
+}
+
+func resolveConfigPathResolution(path string, opts options) (globalconfig.PathResolution, error) {
+	if opts.resolvePath == nil {
+		opts.resolvePath = globalconfig.ResolvePath
+	}
+	return opts.resolvePath(path)
 }
 
 func projectIndex(projects []globalconfig.Project, id string) int {

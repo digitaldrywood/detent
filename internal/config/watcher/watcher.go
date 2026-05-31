@@ -14,7 +14,10 @@ import (
 	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
 )
 
-const defaultDebounce = 150 * time.Millisecond
+const (
+	defaultDebounce     = 150 * time.Millisecond
+	reloadRetryInterval = 5 * time.Millisecond
+)
 
 var ErrMissingPath = errors.New("workflow watch path is required")
 
@@ -169,10 +172,7 @@ func (w *Watcher) reload(ctx context.Context, updates chan<- Update) {
 		At:   time.Now(),
 	}
 
-	workflow, err := w.loader(w.path)
-	if err == nil {
-		err = workflow.Config.Validate()
-	}
+	workflow, err := w.load(ctx)
 	if err != nil {
 		update.Err = err
 	} else {
@@ -180,6 +180,49 @@ func (w *Watcher) reload(ctx context.Context, updates chan<- Update) {
 	}
 
 	w.send(ctx, updates, update)
+}
+
+func (w *Watcher) load(ctx context.Context) (workflowconfig.Workflow, error) {
+	workflow, err := w.loadOnce()
+	if err == nil {
+		return workflow, nil
+	}
+	lastErr := err
+
+	deadline := time.NewTimer(w.debounce)
+	defer deadline.Stop()
+	retry := time.NewTicker(retryInterval(w.debounce))
+	defer retry.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return workflowconfig.Workflow{}, ctx.Err()
+		case <-deadline.C:
+			return workflowconfig.Workflow{}, lastErr
+		case <-retry.C:
+			workflow, err := w.loadOnce()
+			if err == nil {
+				return workflow, nil
+			}
+			lastErr = err
+		}
+	}
+}
+
+func (w *Watcher) loadOnce() (workflowconfig.Workflow, error) {
+	workflow, err := w.loader(w.path)
+	if err == nil {
+		err = workflow.Config.Validate()
+	}
+	return workflow, err
+}
+
+func retryInterval(debounce time.Duration) time.Duration {
+	if debounce < reloadRetryInterval {
+		return debounce
+	}
+	return reloadRetryInterval
 }
 
 func (w *Watcher) send(ctx context.Context, updates chan<- Update, update Update) {

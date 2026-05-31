@@ -42,20 +42,22 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 		return BootConfig{}, errors.New("port must be greater than or equal to 0")
 	}
 
-	path, err := resolveConfigPath(configPath, opts)
+	resolution, err := resolveConfigPathResolution(configPath, opts)
 	if err != nil {
 		return BootConfig{}, err
 	}
+	path := resolution.Path
 
 	cfg, err := opts.read(path)
 	if err == nil {
 		host, port := bootServer(host, port, firstGlobalWorkflowPath(cfg))
 		return BootConfig{
-			Mode:    BootModeRunning,
-			Global:  cfg,
-			Host:    host,
-			Port:    port,
-			Version: opts.version,
+			Mode:           BootModeRunning,
+			Global:         cfg,
+			ConfigPathRule: resolution.Rule,
+			Host:           host,
+			Port:           port,
+			Version:        opts.version,
 		}, nil
 	}
 	if !missingGlobalConfig(err) {
@@ -70,12 +72,13 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 		}
 		host, port := bootServer(host, port, workflowPath)
 		return BootConfig{
-			Mode:         BootModeRunning,
-			Global:       cfg,
-			WorkflowPath: workflowPath,
-			Host:         host,
-			Port:         port,
-			Version:      opts.version,
+			Mode:           BootModeRunning,
+			Global:         cfg,
+			ConfigPathRule: resolution.Rule,
+			WorkflowPath:   workflowPath,
+			Host:           host,
+			Port:           port,
+			Version:        opts.version,
 		}, nil
 	}
 
@@ -84,12 +87,13 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 		return BootConfig{}, err
 	}
 	return BootConfig{
-		Mode:         BootModeOnboarding,
-		Global:       cfg,
-		WorkflowPath: workflowPath,
-		Host:         strings.TrimSpace(host),
-		Port:         bootPort(port),
-		Version:      opts.version,
+		Mode:           BootModeOnboarding,
+		Global:         cfg,
+		ConfigPathRule: resolution.Rule,
+		WorkflowPath:   workflowPath,
+		Host:           strings.TrimSpace(host),
+		Port:           bootPort(port),
+		Version:        opts.version,
 	}, nil
 }
 
