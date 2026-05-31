@@ -80,6 +80,12 @@ type agentTimelineEntry struct {
 	running bool
 }
 
+type runningActivityRow struct {
+	At      string
+	Event   string
+	Message string
+}
+
 func pageTitle(data DashboardData) string {
 	if data.Title != "" {
 		return data.Title
@@ -214,11 +220,26 @@ func sessionLabel(sessionID string) string {
 }
 
 func runningRuntime(row telemetry.Running, generatedAt time.Time) string {
+	return formatDuration(runningRuntimeSeconds(row, generatedAt)) + " / " + formatInt(int64(row.TurnCount)) + " turns"
+}
+
+func runningRuntimeSeconds(row telemetry.Running, generatedAt time.Time) float64 {
 	seconds := row.RuntimeSeconds
 	if seconds <= 0 && !row.StartedAt.IsZero() && !generatedAt.IsZero() {
 		seconds = generatedAt.Sub(row.StartedAt).Seconds()
 	}
-	return formatDuration(seconds) + " / " + formatInt(int64(row.TurnCount)) + " turns"
+	return seconds
+}
+
+func runningRuntimeOnly(row telemetry.Running, generatedAt time.Time) string {
+	return formatDuration(runningRuntimeSeconds(row, generatedAt))
+}
+
+func runningTurnLabel(row telemetry.Running) string {
+	if row.TurnCount <= 0 {
+		return "Turn n/a"
+	}
+	return "Turn " + formatInt(int64(row.TurnCount))
 }
 
 func lastCodexUpdate(row telemetry.Running) string {
@@ -243,6 +264,56 @@ func lastCodexMeta(row telemetry.Running) string {
 		parts = append(parts, row.LastEventAt.UTC().Format("15:04:05 UTC"))
 	}
 	return strings.Join(parts, " / ")
+}
+
+func runningActivityID(prefix string, index int) string {
+	return prefix + "-activity-" + strconv.Itoa(index)
+}
+
+func runningActivityRows(row telemetry.Running) []runningActivityRow {
+	events := row.RecentEvents
+	if len(events) == 0 && row.LastEventAt != nil {
+		events = []telemetry.ActivityEvent{
+			{
+				At:      *row.LastEventAt,
+				Event:   row.LastEvent,
+				Message: lastCodexUpdate(row),
+			},
+		}
+	}
+	if len(events) == 0 {
+		return nil
+	}
+
+	start := 0
+	if len(events) > 5 {
+		start = len(events) - 5
+	}
+	rows := make([]runningActivityRow, 0, len(events)-start)
+	for i := len(events) - 1; i >= start; i-- {
+		event := events[i]
+		rows = append(rows, runningActivityRow{
+			At:      activityTimeLabel(event.At),
+			Event:   activityValue(event.Event, "event"),
+			Message: activityValue(event.Message, "No message recorded."),
+		})
+	}
+	return rows
+}
+
+func activityTimeLabel(at time.Time) string {
+	if at.IsZero() {
+		return "n/a"
+	}
+	return at.UTC().Format("15:04:05 UTC")
+}
+
+func activityValue(value string, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback
+	}
+	return value
 }
 
 func queuedDueLabel(row telemetry.Queued) string {

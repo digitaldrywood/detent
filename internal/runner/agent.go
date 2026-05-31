@@ -26,6 +26,7 @@ import (
 const (
 	defaultAfterRunTimeout = time.Minute
 	liveDiffStatsInterval  = 2 * time.Second
+	recentActivityLimit    = 5
 	defaultProjectID       = "default"
 )
 
@@ -358,6 +359,7 @@ type codexRunProgress struct {
 	lastEventAt        time.Time
 	lastEvent          string
 	lastMessage        string
+	recentEvents       []telemetry.ActivityEvent
 	diffStats          DiffStats
 	diffStatsCollected bool
 	diffStatsCheckedAt time.Time
@@ -402,10 +404,35 @@ func (p *codexRunProgress) apply(update codex.Update, eventAt time.Time) {
 		}
 		p.lastMessage = "turn " + status
 	}
+
+	p.addRecentEvent(telemetry.ActivityEvent{
+		At:      p.lastEventAt,
+		Event:   p.lastEvent,
+		Message: p.lastMessage,
+	})
 }
 
 func (p *codexRunProgress) turnCount() int {
 	return len(p.turnIDs)
+}
+
+func (p *codexRunProgress) addRecentEvent(event telemetry.ActivityEvent) {
+	if event.Event == "" && event.Message == "" {
+		return
+	}
+	p.recentEvents = append(p.recentEvents, event)
+	if len(p.recentEvents) > recentActivityLimit {
+		p.recentEvents = p.recentEvents[len(p.recentEvents)-recentActivityLimit:]
+	}
+}
+
+func (p *codexRunProgress) recentActivity() []telemetry.ActivityEvent {
+	if len(p.recentEvents) == 0 {
+		return nil
+	}
+	out := make([]telemetry.ActivityEvent, len(p.recentEvents))
+	copy(out, p.recentEvents)
+	return out
 }
 
 func (r *Runner) publishRunUpdate(
@@ -432,6 +459,7 @@ func (r *Runner) publishRunUpdate(
 		LastEventAt:     progress.lastEventAt,
 		LastEvent:       progress.lastEvent,
 		LastMessage:     progress.lastMessage,
+		RecentEvents:    progress.recentActivity(),
 		Tokens:          result.Tokens,
 		RateLimits:      result.RateLimits,
 	}

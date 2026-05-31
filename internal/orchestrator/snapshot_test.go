@@ -59,8 +59,12 @@ func TestStateSnapshotPopulated(t *testing.T) {
 		LastEventAt:     now.Add(-10 * time.Second),
 		LastEvent:       "agent_message_delta",
 		LastMessage:     "editing dashboard telemetry",
-		DiffStats:       DiffStats{FilesChanged: 3, AddedLines: 12, RemovedLines: 4, Status: "ok"},
-		Tokens:          CodexTotals{InputTokens: 20, OutputTokens: 8, TotalTokens: 28, RuntimeSeconds: 30},
+		RecentEvents: []telemetry.ActivityEvent{
+			{At: now.Add(-12 * time.Second), Event: "turn_started", Message: "turn started"},
+			{At: now.Add(-10 * time.Second), Event: "agent_message_delta", Message: "editing dashboard telemetry"},
+		},
+		DiffStats: DiffStats{FilesChanged: 3, AddedLines: 12, RemovedLines: 4, Status: "ok"},
+		Tokens:    CodexTotals{InputTokens: 20, OutputTokens: 8, TotalTokens: 28, RuntimeSeconds: 30},
 	}
 	state.Running["i-1"] = Running{
 		Issue:     connector.Issue{ID: "i-1", Identifier: "ISS-1", Title: "One", State: "In Progress"},
@@ -131,6 +135,9 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if snapshot.Running[1].LastMessage != "editing dashboard telemetry" {
 		t.Fatalf("Running[1].LastMessage = %q", snapshot.Running[1].LastMessage)
+	}
+	if len(snapshot.Running[1].RecentEvents) != 2 || snapshot.Running[1].RecentEvents[1].Event != "agent_message_delta" {
+		t.Fatalf("Running[1].RecentEvents = %#v", snapshot.Running[1].RecentEvents)
 	}
 	if snapshot.Running[1].DiffFiles != 3 || snapshot.Running[1].DiffAdded != 12 || snapshot.Running[1].DiffRemoved != 4 || snapshot.Running[1].DiffStatus != "ok" {
 		t.Fatalf("Running[1] diff = %#v", snapshot.Running[1])

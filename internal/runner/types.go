@@ -42,6 +42,7 @@ type UsageUpdate struct {
 	LastEventAt     time.Time
 	LastEvent       string
 	LastMessage     string
+	RecentEvents    []telemetry.ActivityEvent
 	Tokens          CodexTotals
 	DiffStats       DiffStats
 	RateLimits      *telemetry.RateLimits

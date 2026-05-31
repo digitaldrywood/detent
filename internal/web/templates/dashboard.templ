@@ -43,6 +43,7 @@ templ Dashboard(data DashboardData) {
 				})
 			</script>
 			@helpScript()
+			@runningActivityScript()
 			<link rel="icon" href="data:,"/>
 			<link rel="stylesheet" href="/static/css/output.css"/>
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
@@ -170,10 +171,7 @@ templ SnapshotView(data DashboardData) {
 										</td>
 										<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
 										<td class="px-3 py-4 align-top">
-											<div class="grid gap-1">
-												<span class="line-clamp-2 text-foreground">{ lastCodexUpdate(row) }</span>
-												<span class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
-											</div>
+											@runningActivityCell(row, "running", i, data.Snapshot.GeneratedAt)
 										</td>
 										<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ formatDiffStat(row) }</td>
 										<td class="px-3 py-4 align-top">
@@ -305,6 +303,55 @@ templ snapshotLoading() {
 	</section>
 }
 
+templ runningActivityScript() {
+	<script>
+		function runningActivityWrapper(source) {
+			if (!source) return null
+			return source.matches("[data-running-activity]") ? source : source.closest("[data-running-activity]")
+		}
+		function positionRunningActivity(source) {
+			const wrapper = runningActivityWrapper(source)
+			const trigger = wrapper && wrapper.querySelector("[data-running-activity-trigger]")
+			const panel = wrapper && wrapper.querySelector("[data-running-activity-panel]")
+			if (!trigger || !panel) return
+			const width = Math.min(448, Math.max(220, window.innerWidth - 32))
+			panel.style.width = width + "px"
+			panel.style.maxHeight = Math.max(160, window.innerHeight - 32) + "px"
+			const rect = trigger.getBoundingClientRect()
+			const maxLeft = Math.max(16, window.innerWidth - width - 16)
+			const left = Math.min(Math.max(16, rect.left + rect.width / 2 - width / 2), maxLeft)
+			const height = Math.min(panel.offsetHeight || 240, Math.max(160, window.innerHeight - 32))
+			const below = rect.bottom + 8
+			const top = below + height > window.innerHeight - 16 ? Math.max(16, rect.top - height - 8) : below
+			panel.style.left = left + "px"
+			panel.style.top = top + "px"
+		}
+		function setRunningActivityOpen(source, open) {
+			const wrapper = runningActivityWrapper(source)
+			if (!wrapper) return
+			if (open) positionRunningActivity(wrapper)
+			wrapper.dataset.open = open ? "true" : "false"
+			const trigger = wrapper.querySelector("[data-running-activity-trigger]")
+			if (trigger) trigger.setAttribute("aria-expanded", open ? "true" : "false")
+		}
+		function closeRunningActivityAfterFocus(wrapper) {
+			requestAnimationFrame(() => {
+				if (wrapper && !wrapper.matches(":focus-within")) setRunningActivityOpen(wrapper, false)
+			})
+		}
+		document.addEventListener("keydown", (event) => {
+			if (event.key !== "Escape") return
+			document.querySelectorAll("[data-running-activity][data-open='true']").forEach((wrapper) => setRunningActivityOpen(wrapper, false))
+		})
+		window.addEventListener("resize", () => {
+			document.querySelectorAll("[data-running-activity][data-open='true']").forEach((wrapper) => positionRunningActivity(wrapper))
+		})
+		window.addEventListener("scroll", () => {
+			document.querySelectorAll("[data-running-activity][data-open='true']").forEach((wrapper) => positionRunningActivity(wrapper))
+		}, true)
+	</script>
+}
+
 templ metricCard(label string, term helpTerm, value string, detail string, borderClass string, dotClass string) {
 	<article class={ "min-w-0 rounded-md border border-border border-t-2 bg-card p-4 shadow-sm transition-colors hover:bg-muted/40 " + borderClass }>
 		<div class="flex items-start justify-between gap-3">
@@ -339,14 +386,89 @@ templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt ti
 				<span class="font-mono text-foreground">{ formatTokens(row.Tokens) }</span>
 			</div>
 		</div>
-		<div class="mt-3 rounded-md bg-muted/60 p-3">
-			<span class="line-clamp-3 text-sm text-foreground">{ lastCodexUpdate(row) }</span>
-			<span class="mt-1 block font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
+		<div class="mt-3">
+			@runningActivityCell(row, "running-mobile", rowIndex, generatedAt)
 		</div>
 		<div class="mt-3">
 			@sessionCopyButton(row.SessionID)
 		</div>
 	</article>
+}
+
+templ runningActivityCell(row telemetry.Running, prefix string, rowIndex int, generatedAt time.Time) {
+	<div
+		class="running-activity relative"
+		data-running-activity
+		onmouseenter="setRunningActivityOpen(this, true)"
+		onmouseleave="setRunningActivityOpen(this, false)"
+		onfocusin="setRunningActivityOpen(this, true)"
+		onfocusout="closeRunningActivityAfterFocus(this)"
+	>
+		<button
+			type="button"
+			class="running-activity-trigger -m-2 grid w-full gap-1 rounded-md p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+			aria-describedby={ runningActivityID(prefix, rowIndex) }
+			aria-expanded="false"
+			data-running-activity-trigger
+		>
+			<span class="line-clamp-2 text-foreground">{ lastCodexUpdate(row) }</span>
+			<span class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
+		</button>
+		@runningActivityPanel(row, prefix, rowIndex, generatedAt)
+	</div>
+}
+
+templ runningActivityPanel(row telemetry.Running, prefix string, rowIndex int, generatedAt time.Time) {
+	<div
+		id={ runningActivityID(prefix, rowIndex) }
+		class="running-activity-panel"
+		data-running-activity-panel
+		role="tooltip"
+	>
+		<div class="grid gap-4">
+			<div class="grid gap-1">
+				<span class="text-xs font-medium uppercase text-muted-foreground">Latest message</span>
+				<p class="whitespace-pre-wrap break-words text-sm text-foreground">{ lastCodexUpdate(row) }</p>
+				<p class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</p>
+			</div>
+			<div class="grid gap-2">
+				<span class="text-xs font-medium uppercase text-muted-foreground">Recent activity</span>
+				if len(runningActivityRows(row)) == 0 {
+					<p class="rounded-md border border-dashed border-border bg-muted/60 px-3 py-3 text-sm text-muted-foreground">No activity recorded.</p>
+				} else {
+					<ol class="grid gap-2">
+						for _, activity := range runningActivityRows(row) {
+							<li class="rounded-md bg-muted/60 px-3 py-2">
+								<div class="flex flex-wrap items-center justify-between gap-2">
+									<span class="font-mono text-xs text-muted-foreground">{ activity.At }</span>
+									<span class="font-mono text-xs font-medium text-accent">{ activity.Event }</span>
+								</div>
+								<p class="mt-1 whitespace-pre-wrap break-words text-sm text-foreground">{ activity.Message }</p>
+							</li>
+						}
+					</ol>
+				}
+			</div>
+			<div class="grid gap-2 border-t border-border pt-3">
+				<span class="text-xs font-medium uppercase text-muted-foreground">Turn / tokens / runtime</span>
+				<div class="grid gap-2 sm:grid-cols-3">
+					<div class="rounded-md bg-muted/60 px-3 py-2">
+						<span class="block text-xs text-muted-foreground">Turn</span>
+						<strong class="font-mono text-sm font-medium text-foreground">{ runningTurnLabel(row) }</strong>
+					</div>
+					<div class="rounded-md bg-muted/60 px-3 py-2">
+						<span class="block text-xs text-muted-foreground">Tokens</span>
+						<strong class="font-mono text-sm font-medium text-foreground">{ formatTokens(row.Tokens) }</strong>
+						<span class="block font-mono text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
+					</div>
+					<div class="rounded-md bg-muted/60 px-3 py-2">
+						<span class="block text-xs text-muted-foreground">Runtime</span>
+						<strong class="font-mono text-sm font-medium text-foreground">{ runningRuntimeOnly(row, generatedAt) }</strong>
+					</div>
+				</div>
+			</div>
+		</div>
+	</div>
 }
 
 templ boardHealthSection(snapshot telemetry.Snapshot) {

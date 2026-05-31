@@ -592,6 +592,9 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	if event.usage.LastMessage != "" {
 		running.LastMessage = event.usage.LastMessage
 	}
+	if len(event.usage.RecentEvents) > 0 {
+		running.RecentEvents = cloneActivityEvents(event.usage.RecentEvents)
+	}
 	if event.usage.ProcessIdentity != "" {
 		running.ProcessIdentity = event.usage.ProcessIdentity
 	}

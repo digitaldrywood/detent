@@ -162,6 +162,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[0].LastEvent != "agent_message_delta" || usageUpdates[0].LastMessage != "hello" {
 		t.Fatalf("first usage update activity = %#v, want agent message", usageUpdates[0])
 	}
+	if len(usageUpdates[0].RecentEvents) != 1 || usageUpdates[0].RecentEvents[0].Message != "hello" {
+		t.Fatalf("first usage update RecentEvents = %#v, want latest agent message", usageUpdates[0].RecentEvents)
+	}
 	if usageUpdates[0].LastEventAt.IsZero() {
 		t.Fatal("first usage update LastEventAt is zero")
 	}

@@ -34,6 +34,7 @@ type Running struct {
 	LastEventAt     time.Time
 	LastEvent       string
 	LastMessage     string
+	RecentEvents    []telemetry.ActivityEvent
 	DiffStats       DiffStats
 	Tokens          CodexTotals
 }
@@ -106,6 +107,7 @@ func (s State) clone() State {
 
 	for id, running := range s.Running {
 		running.Issue = cloneIssue(running.Issue)
+		running.RecentEvents = cloneActivityEvents(running.RecentEvents)
 		cloned.Running[id] = running
 	}
 	for id, claimed := range s.Claimed {
@@ -164,6 +166,15 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	cloned.BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
 	cloned.Labels = append([]string(nil), issue.Labels...)
 	return cloned
+}
+
+func cloneActivityEvents(events []telemetry.ActivityEvent) []telemetry.ActivityEvent {
+	if len(events) == 0 {
+		return nil
+	}
+	out := make([]telemetry.ActivityEvent, len(events))
+	copy(out, events)
+	return out
 }
 
 func cloneRateLimits(rateLimits *telemetry.RateLimits) *telemetry.RateLimits {
