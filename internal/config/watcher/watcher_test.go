@@ -55,6 +55,43 @@ func TestWatchDebouncesWorkflowWrites(t *testing.T) {
 	}
 }
 
+func TestWatchSuppressesDuplicateWorkflowUpdates(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "WORKFLOW.md")
+	writeWorkflow(t, path, 100, "initial")
+
+	w, err := New(path, WithDebounce(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	updates, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+
+	writeWorkflow(t, path, 300, "second")
+	update := receiveUpdate(t, updates)
+	if update.Err != nil {
+		t.Fatalf("update error = %v", update.Err)
+	}
+	if update.Workflow.Prompt != "second\n" {
+		t.Fatalf("Prompt = %q, want second", update.Workflow.Prompt)
+	}
+
+	writeWorkflow(t, path, 300, "second")
+	select {
+	case extra := <-updates:
+		t.Fatalf("duplicate update = %#v", extra)
+	case <-time.After(50 * time.Millisecond):
+	}
+}
+
 func TestWatchHandlesAtomicSaveRename(t *testing.T) {
 	t.Parallel()
 
