@@ -11,7 +11,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
+	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
 )
 
 const defaultDebounce = 150 * time.Millisecond

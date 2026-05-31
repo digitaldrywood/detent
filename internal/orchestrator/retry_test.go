@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	runpkg "github.com/digitaldrywood/symphony-go/internal/runner"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	runpkg "github.com/digitaldrywood/symphony/internal/runner"
 )
 
 func TestDispatchReadyIssuesKeepsRetryAttemptWhenCapacityIsFull(t *testing.T) {
@@ -22,8 +22,8 @@ func TestDispatchReadyIssuesKeepsRetryAttemptWhenCapacityIsFull(t *testing.T) {
 	orch := Orchestrator{cfg: cfg}
 	state := newState(cfg)
 	now := time.Now()
-	running := retryTestIssue("running", "digitaldrywood/symphony-go#20")
-	retrying := retryTestIssue("retrying", "digitaldrywood/symphony-go#21")
+	running := retryTestIssue("running", "digitaldrywood/symphony#20")
+	retrying := retryTestIssue("retrying", "digitaldrywood/symphony#21")
 
 	state.Running[running.ID] = Running{Issue: running, StartedAt: now}
 	state.Claimed[retrying.ID] = Claimed{Issue: retrying, ClaimedAt: now.Add(-time.Minute)}
@@ -103,8 +103,8 @@ func TestDispatchReadyIssuesRanksDueRetriesWithCandidates(t *testing.T) {
 	}
 	state := newState(cfg)
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
-	retrying := retryTestIssue("retrying", "digitaldrywood/symphony-go#21")
-	merging := retryTestIssue("merging", "digitaldrywood/symphony-go#22")
+	retrying := retryTestIssue("retrying", "digitaldrywood/symphony#21")
+	merging := retryTestIssue("merging", "digitaldrywood/symphony#22")
 	merging.State = "Merging"
 	priority := 4
 	merging.Priority = &priority
@@ -149,8 +149,8 @@ func TestDispatchReadyIssuesKeepsAttemptWhenWorkerCapacityIsFull(t *testing.T) {
 	orch := Orchestrator{cfg: cfg}
 	state := newState(cfg)
 	now := time.Now()
-	running := retryTestIssue("running", "digitaldrywood/symphony-go#20")
-	retrying := retryTestIssue("retrying", "digitaldrywood/symphony-go#21")
+	running := retryTestIssue("running", "digitaldrywood/symphony#20")
+	retrying := retryTestIssue("retrying", "digitaldrywood/symphony#21")
 
 	state.Running[running.ID] = Running{Issue: running, StartedAt: now, WorkerHost: "worker-a"}
 	state.Claimed[retrying.ID] = Claimed{Issue: retrying, ClaimedAt: now.Add(-time.Minute)}

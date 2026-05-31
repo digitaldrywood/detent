@@ -21,7 +21,7 @@
           {
             "issue": {
               "id": "running-todo",
-              "identifier": "digitaldrywood/symphony-go#101",
+              "identifier": "digitaldrywood/symphony#101",
               "title": "Already running Todo issue",
               "state": "Todo",
               "priority": 2,
@@ -33,7 +33,7 @@
           {
             "issue": {
               "id": "running-todo",
-              "identifier": "digitaldrywood/symphony-go#101",
+              "identifier": "digitaldrywood/symphony#101",
               "title": "Already running Todo issue",
               "state": "Todo",
               "priority": 2,
@@ -43,7 +43,7 @@
           {
             "issue": {
               "id": "claimed-existing",
-              "identifier": "digitaldrywood/symphony-go#102",
+              "identifier": "digitaldrywood/symphony#102",
               "title": "Already claimed issue",
               "state": "Todo",
               "priority": 1,
@@ -55,7 +55,7 @@
           {
             "issue": {
               "id": "blocked-existing",
-              "identifier": "digitaldrywood/symphony-go#103",
+              "identifier": "digitaldrywood/symphony#103",
               "title": "Existing operator block",
               "state": "Todo"
             },
@@ -66,7 +66,7 @@
           {
             "issue": {
               "id": "budget-active",
-              "identifier": "digitaldrywood/symphony-go#104",
+              "identifier": "digitaldrywood/symphony#104",
               "title": "Budget cooldown active",
               "state": "Todo",
               "priority": 1,
@@ -77,7 +77,7 @@
           {
             "issue": {
               "id": "budget-expired",
-              "identifier": "digitaldrywood/symphony-go#105",
+              "identifier": "digitaldrywood/symphony#105",
               "title": "Budget cooldown expired",
               "state": "Todo",
               "priority": 1,
@@ -90,7 +90,7 @@
       "candidates": [
         {
           "id": "todo-ready",
-          "identifier": "digitaldrywood/symphony-go#106",
+          "identifier": "digitaldrywood/symphony#106",
           "title": "Ready Todo issue",
           "state": "Todo",
           "priority": 1,
@@ -98,7 +98,7 @@
         },
         {
           "id": "done-candidate",
-          "identifier": "digitaldrywood/symphony-go#107",
+          "identifier": "digitaldrywood/symphony#107",
           "title": "Done issue",
           "state": "Done",
           "priority": 1,
@@ -106,21 +106,21 @@
         },
         {
           "id": "blocked-dependency",
-          "identifier": "digitaldrywood/symphony-go#108",
+          "identifier": "digitaldrywood/symphony#108",
           "title": "Blocked by in-progress dependency",
           "state": "Todo",
           "priority": 1,
           "created_at": "2026-05-31T01:00:00Z",
           "blocked_by": [
             {
-              "identifier": "digitaldrywood/symphony-go#90",
+              "identifier": "digitaldrywood/symphony#90",
               "state": "In Progress"
             }
           ]
         },
         {
           "id": "rework-ready",
-          "identifier": "digitaldrywood/symphony-go#109",
+          "identifier": "digitaldrywood/symphony#109",
           "title": "Ready Rework issue",
           "state": "Rework",
           "priority": 4,
@@ -128,7 +128,7 @@
         },
         {
           "id": "merging-ready",
-          "identifier": "digitaldrywood/symphony-go#110",
+          "identifier": "digitaldrywood/symphony#110",
           "title": "Ready Merging issue",
           "state": "Merging",
           "priority": 4,
@@ -136,7 +136,7 @@
         },
         {
           "id": "claimed-existing",
-          "identifier": "digitaldrywood/symphony-go#102",
+          "identifier": "digitaldrywood/symphony#102",
           "title": "Already claimed issue",
           "state": "Todo",
           "priority": 1,
@@ -144,7 +144,7 @@
         },
         {
           "id": "budget-active",
-          "identifier": "digitaldrywood/symphony-go#104",
+          "identifier": "digitaldrywood/symphony#104",
           "title": "Budget cooldown active",
           "state": "Todo",
           "priority": 1,
@@ -152,7 +152,7 @@
         },
         {
           "id": "budget-expired",
-          "identifier": "digitaldrywood/symphony-go#105",
+          "identifier": "digitaldrywood/symphony#105",
           "title": "Budget cooldown expired",
           "state": "Todo",
           "priority": 1,
@@ -160,7 +160,7 @@
         },
         {
           "id": "running-todo",
-          "identifier": "digitaldrywood/symphony-go#101",
+          "identifier": "digitaldrywood/symphony#101",
           "title": "Already running Todo issue",
           "state": "Todo",
           "priority": 2,
@@ -188,28 +188,28 @@
       "candidates": [
         {
           "id": "todo-missing-created",
-          "identifier": "digitaldrywood/symphony-go#203",
+          "identifier": "digitaldrywood/symphony#203",
           "title": "Ready Todo without created date",
           "state": "Todo",
           "priority": 1
         },
         {
           "id": "todo-terminal-blocker",
-          "identifier": "digitaldrywood/symphony-go#202",
+          "identifier": "digitaldrywood/symphony#202",
           "title": "Ready Todo with completed dependency",
           "state": "Todo",
           "priority": 1,
           "created_at": "2026-05-31T10:00:00Z",
           "blocked_by": [
             {
-              "identifier": "digitaldrywood/symphony-go#180",
+              "identifier": "digitaldrywood/symphony#180",
               "state": "Done"
             }
           ]
         },
         {
           "id": "todo-old",
-          "identifier": "digitaldrywood/symphony-go#201",
+          "identifier": "digitaldrywood/symphony#201",
           "title": "Old ready Todo",
           "state": "Todo",
           "priority": 1,
@@ -237,21 +237,21 @@
       "candidates": [
         {
           "id": "todo-blocked-first",
-          "identifier": "digitaldrywood/symphony-go#301",
+          "identifier": "digitaldrywood/symphony#301",
           "title": "Blocked Todo candidate",
           "state": "Todo",
           "priority": 1,
           "created_at": "2026-05-31T08:00:00Z",
           "blocked_by": [
             {
-              "identifier": "digitaldrywood/symphony-go#280",
+              "identifier": "digitaldrywood/symphony#280",
               "state": "In Progress"
             }
           ]
         },
         {
           "id": "todo-next-ready",
-          "identifier": "digitaldrywood/symphony-go#302",
+          "identifier": "digitaldrywood/symphony#302",
           "title": "Next ready Todo candidate",
           "state": "Todo",
           "priority": 2,
@@ -280,7 +280,7 @@
           {
             "issue": {
               "id": "todo-budget-first",
-              "identifier": "digitaldrywood/symphony-go#401",
+              "identifier": "digitaldrywood/symphony#401",
               "title": "Budget-refused Todo candidate",
               "state": "Todo",
               "priority": 1,
@@ -293,7 +293,7 @@
       "candidates": [
         {
           "id": "todo-budget-first",
-          "identifier": "digitaldrywood/symphony-go#401",
+          "identifier": "digitaldrywood/symphony#401",
           "title": "Budget-refused Todo candidate",
           "state": "Todo",
           "priority": 1,
@@ -301,7 +301,7 @@
         },
         {
           "id": "todo-budget-next-ready",
-          "identifier": "digitaldrywood/symphony-go#402",
+          "identifier": "digitaldrywood/symphony#402",
           "title": "Ready Todo after budget cooldown",
           "state": "Todo",
           "priority": 2,

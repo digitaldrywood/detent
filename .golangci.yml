@@ -84,6 +84,6 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/digitaldrywood/symphony-go
+        - github.com/digitaldrywood/symphony
   exclusions:
     generated: strict

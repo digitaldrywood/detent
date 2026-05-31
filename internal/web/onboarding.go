@@ -12,8 +12,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/symphony-go/internal/config"
-	"github.com/digitaldrywood/symphony-go/internal/web/templates"
+	"github.com/digitaldrywood/symphony/internal/config"
+	"github.com/digitaldrywood/symphony/internal/web/templates"
 )
 
 const (

@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
-	"github.com/digitaldrywood/symphony-go/internal/web/templates"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/web/templates"
 )
 
 func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
@@ -33,8 +33,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-35",
-						Identifier: "digitaldrywood/symphony-go#35",
-						URL:        "https://github.com/digitaldrywood/symphony-go/issues/35",
+						Identifier: "digitaldrywood/symphony#35",
+						URL:        "https://github.com/digitaldrywood/symphony/issues/35",
 						Title:      "Dashboard templates",
 						State:      "In Progress",
 					},
@@ -94,7 +94,7 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Queue",
 		"Blocked",
 		"Completed",
-		"digitaldrywood/symphony-go#35",
+		"digitaldrywood/symphony#35",
 		"Dashboard templates",
 		"turn completed successfully",
 		"+4 -2 (3 files)",
@@ -128,7 +128,7 @@ func TestDashboardRendersUnknownDiffStatusAsPending(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-35",
-						Identifier: "digitaldrywood/symphony-go#35",
+						Identifier: "digitaldrywood/symphony#35",
 						State:      "In Progress",
 					},
 				},

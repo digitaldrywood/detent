@@ -4,7 +4,7 @@ import (
 	"sort"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector"
 )
 
 type DispatchDecision struct {

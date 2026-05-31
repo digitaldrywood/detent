@@ -9,10 +9,10 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/config"
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/lessons"
-	"github.com/digitaldrywood/symphony-go/internal/skills"
+	"github.com/digitaldrywood/symphony/internal/config"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/lessons"
+	"github.com/digitaldrywood/symphony/internal/skills"
 )
 
 const DefaultPromptTemplate = `You are working on a Linear issue.

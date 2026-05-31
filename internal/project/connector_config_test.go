@@ -4,7 +4,7 @@ import (
 	"reflect"
 	"testing"
 
-	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
+	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
 )
 
 func TestTrackerStateMapConvertsWorkflowMap(t *testing.T) {

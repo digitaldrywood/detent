@@ -12,7 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector"
 )
 
 const (

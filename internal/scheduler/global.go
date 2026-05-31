@@ -10,7 +10,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/store"
+	"github.com/digitaldrywood/symphony/internal/store"
 )
 
 var ErrNoCandidates = errors.New("scheduler has no project candidates")

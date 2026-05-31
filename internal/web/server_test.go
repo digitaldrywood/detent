@@ -15,12 +15,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/hub"
-	"github.com/digitaldrywood/symphony-go/internal/store"
-	"github.com/digitaldrywood/symphony-go/internal/store/sqlc"
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
-	"github.com/digitaldrywood/symphony-go/internal/web"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/hub"
+	"github.com/digitaldrywood/symphony/internal/store"
+	"github.com/digitaldrywood/symphony/internal/store/sqlc"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/web"
 )
 
 func TestNewServerValidatesDependencies(t *testing.T) {
@@ -219,7 +219,7 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:         "issue-35",
-					Identifier: "digitaldrywood/symphony-go#35",
+					Identifier: "digitaldrywood/symphony#35",
 					Title:      "Dashboard templates",
 					State:      "In Progress",
 				},
@@ -248,7 +248,7 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	for _, want := range []string{
-		"digitaldrywood/symphony-go#35",
+		"digitaldrywood/symphony#35",
 		"Dashboard templates",
 		"42,000",
 	} {
@@ -480,8 +480,8 @@ func TestServerAPIRoutes(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:          "issue-running",
-					Identifier:  "digitaldrywood/symphony-go#37",
-					URL:         "https://github.com/digitaldrywood/symphony-go/issues/37",
+					Identifier:  "digitaldrywood/symphony#37",
+					URL:         "https://github.com/digitaldrywood/symphony/issues/37",
 					Title:       "REST API",
 					Description: strings.Repeat("api ", 90),
 					State:       "In Progress",
@@ -511,7 +511,7 @@ func TestServerAPIRoutes(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-retry",
 					Identifier: "DD-RETRY",
-					URL:        "https://github.com/digitaldrywood/symphony-go/issues/38",
+					URL:        "https://github.com/digitaldrywood/symphony/issues/38",
 					Title:      "Retry API",
 					State:      "Todo",
 				},
@@ -526,7 +526,7 @@ func TestServerAPIRoutes(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-blocked",
 					Identifier: "DD-BLOCKED",
-					URL:        "https://github.com/digitaldrywood/symphony-go/issues/39",
+					URL:        "https://github.com/digitaldrywood/symphony/issues/39",
 					Title:      "Blocked API",
 					State:      "Todo",
 				},
@@ -545,7 +545,7 @@ func TestServerAPIRoutes(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-completed",
 					Identifier: "DD-DONE",
-					URL:        "https://github.com/digitaldrywood/symphony-go/issues/40",
+					URL:        "https://github.com/digitaldrywood/symphony/issues/40",
 				},
 				StartedAt:      startedAt,
 				CompletedAt:    completedAt,
@@ -614,7 +614,7 @@ func TestServerAPIRoutes(t *testing.T) {
 	}
 
 	running := state["running"].([]any)[0].(map[string]any)
-	if running["issue_identifier"] != "digitaldrywood/symphony-go#37" || running["issue_title"] != "REST API" {
+	if running["issue_identifier"] != "digitaldrywood/symphony#37" || running["issue_title"] != "REST API" {
 		t.Fatalf("running row = %#v", running)
 	}
 	description := running["issue_description"].(string)
@@ -654,7 +654,7 @@ func TestServerAPIRoutes(t *testing.T) {
 		t.Fatalf("budget.days = %#v", days)
 	}
 
-	issue := requestJSON(t, server, http.MethodGet, "/api/v1/digitaldrywood/symphony-go%2337", http.StatusOK)
+	issue := requestJSON(t, server, http.MethodGet, "/api/v1/digitaldrywood/symphony%2337", http.StatusOK)
 	if issue["status"] != "running" || issue["issue_id"] != "issue-running" {
 		t.Fatalf("issue payload = %#v", issue)
 	}

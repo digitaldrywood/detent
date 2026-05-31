@@ -1,2 +1,5 @@
-# symphony-go
-Go rewrite of Symphony — agent orchestrator (OTP→goroutine port, single distributable binary, pluggable connectors). Elixir original lives at digitaldrywood/symphony until cutover.
+# symphony
+
+Symphony is an agent orchestrator for tracker-backed work queues, delivered as a single Go binary with pluggable connectors, isolated worktrees, and live web and terminal dashboards.
+
+The previous Elixir implementation is retained only as a cutover reference and should remain archived after the Go repository is renamed to `digitaldrywood/symphony`.

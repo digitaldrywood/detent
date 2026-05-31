@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/symphony-go/internal/web"
+	"github.com/digitaldrywood/symphony/internal/web"
 )
 
 func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
@@ -78,7 +78,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"endpoint":     {"https://api.github.com/graphql"},
 				"api_key":      {"$GITHUB_TOKEN"},
 				"project_slug": {"PVT_project"},
-				"repo":         {"digitaldrywood/symphony-go"},
+				"repo":         {"digitaldrywood/symphony"},
 			},
 			wantStatus: http.StatusOK,
 			wantContent: []string{
@@ -96,7 +96,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"endpoint":                   {"https://api.github.com/graphql"},
 				"api_key":                    {"$GITHUB_TOKEN"},
 				"project_slug":               {"PVT_project"},
-				"repo":                       {"digitaldrywood/symphony-go"},
+				"repo":                       {"digitaldrywood/symphony"},
 				"workspace_root":             {"~/code/symphony-workspaces"},
 				"max_concurrent_agents":      {"5"},
 				"max_turns":                  {"20"},
@@ -165,7 +165,7 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		"tracker:\n  kind: github",
 		"api_key: $GITHUB_TOKEN",
 		"project_slug: PVT_project",
-		"git clone --depth 1 https://github.com/digitaldrywood/symphony-go .",
+		"git clone --depth 1 https://github.com/digitaldrywood/symphony .",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"You are working on GitHub issue `{{ issue.identifier }}`",
 	} {
@@ -335,7 +335,7 @@ func validOnboardingForm() url.Values {
 		"endpoint":                   {"https://api.github.com/graphql"},
 		"api_key":                    {"$GITHUB_TOKEN"},
 		"project_slug":               {"PVT_project"},
-		"repo":                       {"digitaldrywood/symphony-go"},
+		"repo":                       {"digitaldrywood/symphony"},
 		"workspace_root":             {"~/code/symphony-workspaces"},
 		"max_concurrent_agents":      {"5"},
 		"max_turns":                  {"20"},

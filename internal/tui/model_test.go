@@ -9,8 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/digitaldrywood/symphony-go/internal/hub"
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/hub"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
 )
 
 func TestModelRendersSnapshotFromHub(t *testing.T) {

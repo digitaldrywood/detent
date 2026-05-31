@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"sort"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector"
 )
 
 func sortIssuesForDispatch(issues []connector.Issue, dispatchPriority []string) {

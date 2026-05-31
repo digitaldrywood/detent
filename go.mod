@@ -1,4 +1,4 @@
-module github.com/digitaldrywood/symphony-go
+module github.com/digitaldrywood/symphony
 
 go 1.26
 

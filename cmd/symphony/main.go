@@ -13,8 +13,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/digitaldrywood/symphony-go/internal/cli"
-	"github.com/digitaldrywood/symphony-go/internal/shadow"
+	"github.com/digitaldrywood/symphony/internal/cli"
+	"github.com/digitaldrywood/symphony/internal/shadow"
 )
 
 func main() {

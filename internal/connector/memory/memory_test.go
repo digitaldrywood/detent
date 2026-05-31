@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector"
 )
 
 func TestConnectorFetchesConfiguredIssues(t *testing.T) {

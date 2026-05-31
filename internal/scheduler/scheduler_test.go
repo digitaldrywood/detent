@@ -7,7 +7,7 @@ import (
 	"sync"
 	"testing"
 
-	"github.com/digitaldrywood/symphony-go/internal/scheduler"
+	"github.com/digitaldrywood/symphony/internal/scheduler"
 )
 
 func TestNewFromConfigSelectsMode(t *testing.T) {

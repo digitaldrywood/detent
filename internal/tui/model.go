@@ -12,8 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/digitaldrywood/symphony-go/internal/hub"
-	"github.com/digitaldrywood/symphony-go/internal/telemetry"
+	"github.com/digitaldrywood/symphony/internal/hub"
+	"github.com/digitaldrywood/symphony/internal/telemetry"
 )
 
 var ErrNilHub = errors.New("nil telemetry hub")

@@ -1,7 +1,7 @@
 package orchestrator
 
 import (
-	"github.com/digitaldrywood/symphony-go/internal/runner"
+	"github.com/digitaldrywood/symphony/internal/runner"
 )
 
 const FinalStateCompleted = runner.FinalStateCompleted

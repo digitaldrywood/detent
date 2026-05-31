@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony-go/internal/codex"
-	"github.com/digitaldrywood/symphony-go/internal/config"
-	"github.com/digitaldrywood/symphony-go/internal/connector"
-	"github.com/digitaldrywood/symphony-go/internal/connector/memory"
-	runpkg "github.com/digitaldrywood/symphony-go/internal/runner"
-	"github.com/digitaldrywood/symphony-go/internal/store"
-	"github.com/digitaldrywood/symphony-go/internal/workspace"
+	"github.com/digitaldrywood/symphony/internal/codex"
+	"github.com/digitaldrywood/symphony/internal/config"
+	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/symphony/internal/connector/memory"
+	runpkg "github.com/digitaldrywood/symphony/internal/runner"
+	"github.com/digitaldrywood/symphony/internal/store"
+	"github.com/digitaldrywood/symphony/internal/workspace"
 )
 
 func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *testing.T) {
@@ -76,10 +76,10 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 
 	issue := connector.NewIssue()
 	issue.ID = "I_kwDOSskuwc8AAAABD42gFg"
-	issue.Identifier = "digitaldrywood/symphony-go#23"
+	issue.Identifier = "digitaldrywood/symphony#23"
 	issue.Title = "transcript byte-parity + e2e gate"
 	issue.State = "Todo"
-	issue.URL = "https://github.com/digitaldrywood/symphony-go/issues/23"
+	issue.URL = "https://github.com/digitaldrywood/symphony/issues/23"
 	issue.ModelOverride = "gpt-5-codex"
 
 	orch, err := New(Config{
