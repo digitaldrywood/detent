@@ -18,7 +18,7 @@ import (
 )
 
 func main() {
-	setupLoggerFromEnv(os.Stderr)
+	setupLoggerFromEnv(os.Stdout, os.Stderr)
 
 	ctx, stop := newSignalContext(context.Background())
 	defer stop()

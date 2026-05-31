@@ -10,13 +10,21 @@ import (
 	"github.com/lmittmann/tint"
 )
 
-func setupLoggerFromEnv(w io.Writer) *slog.Logger {
+func setupLoggerFromEnv(stdout io.Writer, stderr io.Writer) *slog.Logger {
 	env, envSet := envValueWithPresence("SYMPHONY_ENV", "ENV")
-	return setupLoggerForTerminal(env, envSet, envValue("SYMPHONY_LOG_LEVEL", "LOG_LEVEL"), w, stdoutIsTTY())
+	return setupLoggerWithOutputs(env, envSet, envValue("SYMPHONY_LOG_LEVEL", "LOG_LEVEL"), stdout, stderr, writerIsTTY(stdout))
 }
 
 func setupLogger(env string, level string, w io.Writer) *slog.Logger {
 	return setupLoggerForTerminal(env, strings.TrimSpace(env) != "", level, w, false)
+}
+
+func setupLoggerWithOutputs(env string, envSet bool, level string, stdout io.Writer, stderr io.Writer, stdoutTTY bool) *slog.Logger {
+	w := stderr
+	if useTextLogs(env, envSet, stdoutTTY) {
+		w = stdout
+	}
+	return setupLoggerForTerminal(env, envSet, level, w, stdoutTTY)
 }
 
 func setupLoggerForTerminal(env string, envSet bool, level string, w io.Writer, stdoutTTY bool) *slog.Logger {
@@ -58,8 +66,12 @@ func useTextLogs(env string, envSet bool, stdoutTTY bool) bool {
 	return stdoutTTY
 }
 
-func stdoutIsTTY() bool {
-	info, err := os.Stdout.Stat()
+func writerIsTTY(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 

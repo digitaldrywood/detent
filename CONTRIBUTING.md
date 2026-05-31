@@ -38,6 +38,7 @@ Symphony logs with `log/slog`.
 - `SYMPHONY_ENV=prod` or any other non-development value keeps JSON logs.
 - When `SYMPHONY_ENV` is unset, interactive stdout TTY runs use tint text logs; non-TTY runs use JSON logs.
 - `SYMPHONY_LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
+- Text logs are written to stdout; JSON logs are written to stderr.
 
 ## Validation
 

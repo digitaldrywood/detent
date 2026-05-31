@@ -61,7 +61,7 @@ func TestSetupLoggerFromEnvUsesSymphonyVariables(t *testing.T) {
 	t.Setenv("SYMPHONY_LOG_LEVEL", "debug")
 	t.Setenv("LOG_LEVEL", "error")
 
-	logger := setupLoggerFromEnv(&bytes.Buffer{})
+	logger := setupLoggerFromEnv(&bytes.Buffer{}, &bytes.Buffer{})
 
 	if !logger.Enabled(context.Background(), slog.LevelDebug) {
 		t.Fatal("expected SYMPHONY_LOG_LEVEL to enable debug records")
@@ -127,6 +127,52 @@ func TestInteractiveDefaultLoggerWritesText(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "ready") {
 		t.Fatalf("log output missing message:\n%s", out.String())
+	}
+}
+
+func TestSetupLoggerWithOutputsRoutesTextToStdout(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	logger := setupLoggerWithOutputs("", false, "debug", &stdout, &stderr, true)
+	logger.Debug("ready")
+
+	if json.Valid(stdout.Bytes()) {
+		t.Fatalf("stdout log output is JSON, want text:\n%s", stdout.String())
+	}
+	if !strings.Contains(stdout.String(), "ready") {
+		t.Fatalf("stdout log output missing message:\n%s", stdout.String())
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("stderr = %q, want empty", stderr.String())
+	}
+}
+
+func TestSetupLoggerWithOutputsRoutesJSONToStderr(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	logger := setupLoggerWithOutputs("prod", true, "info", &stdout, &stderr, true)
+	logger.Info("ready")
+
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+
+	var record map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &record); err != nil {
+		t.Fatalf("stderr log output is not JSON: %v\n%s", err, stderr.String())
+	}
+	if record["msg"] != "ready" {
+		t.Fatalf("msg = %v, want ready", record["msg"])
 	}
 }
 
