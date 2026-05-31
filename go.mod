@@ -4,6 +4,7 @@ go 1.26
 
 require (
 	github.com/a-h/templ v0.3.1001
+	github.com/fsnotify/fsnotify v1.7.0
 	github.com/labstack/echo/v4 v4.15.1
 	github.com/lmittmann/tint v1.1.3
 	github.com/pressly/goose/v3 v3.27.1

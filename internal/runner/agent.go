@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"math"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/symphony-go/internal/codex"
@@ -47,6 +48,7 @@ type Dependencies struct {
 }
 
 type Runner struct {
+	mu              sync.RWMutex
 	workflow        config.Workflow
 	workspace       workspace.Backend
 	codex           CodexClient
@@ -84,10 +86,18 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	}, nil
 }
 
+func (r *Runner) UpdateWorkflow(workflow config.Workflow) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.workflow = workflow
+}
+
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
+	workflow := r.workflowSnapshot()
 
 	workspaceIssue := workspaceIssue(req.Issue)
 	info, err := r.workspace.Create(ctx, workspaceIssue)
@@ -106,13 +116,13 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}()
 
-	availableSkills, err := r.availableSkills(info.Path)
+	availableSkills, err := r.availableSkills(workflow, info.Path)
 	if err != nil {
 		return RunResult{}, err
 	}
 
 	attempt := req.Attempt
-	prompt, err := BuildPrompt(r.workflow, req.Issue, PromptOptions{
+	prompt, err := BuildPrompt(workflow, req.Issue, PromptOptions{
 		Attempt:         &attempt,
 		WorkspacePath:   info.Path,
 		AvailableSkills: availableSkills,
@@ -136,9 +146,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	turnResult, turnErr := r.codex.RunTurn(ctx, codex.RunTurnRequest{
 		Workspace:         info.Path,
 		Prompt:            prompt,
-		ApprovalPolicy:    stringOrMapValue(r.workflow.Config.Codex.ApprovalPolicy),
-		ThreadSandbox:     r.workflow.Config.Codex.ThreadSandbox,
-		TurnSandboxPolicy: r.workflow.Config.Codex.TurnSandboxPolicy,
+		ApprovalPolicy:    stringOrMapValue(workflow.Config.Codex.ApprovalPolicy),
+		ThreadSandbox:     workflow.Config.Codex.ThreadSandbox,
+		TurnSandboxPolicy: workflow.Config.Codex.TurnSandboxPolicy,
 		Model:             model,
 	}, func(update codex.Update) error {
 		applyCodexUpdate(&result, update)
@@ -176,8 +186,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	return result, nil
 }
 
-func (r *Runner) availableSkills(workspacePath string) ([]skills.Skill, error) {
-	cfg := r.workflow.Config.Agent.Skills
+func (r *Runner) workflowSnapshot() config.Workflow {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	return r.workflow
+}
+
+func (r *Runner) availableSkills(workflow config.Workflow, workspacePath string) ([]skills.Skill, error) {
+	cfg := workflow.Config.Agent.Skills
 	if !cfg.Enabled {
 		return nil, nil
 	}

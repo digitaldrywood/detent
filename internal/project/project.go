@@ -11,6 +11,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
 	globalconfig "github.com/digitaldrywood/symphony-go/internal/config/global"
+	configwatcher "github.com/digitaldrywood/symphony-go/internal/config/watcher"
 	"github.com/digitaldrywood/symphony-go/internal/connector"
 	"github.com/digitaldrywood/symphony-go/internal/connector/factory"
 	"github.com/digitaldrywood/symphony-go/internal/connector/memory"
@@ -57,14 +58,21 @@ type ConnectorFactory func(workflowconfig.Config) (connector.Connector, error)
 
 type OrchestratorFactory func(orchestrator.Config, orchestrator.Dependencies) (*orchestrator.Orchestrator, error)
 
+type WorkflowWatcher interface {
+	Watch(context.Context) (<-chan configwatcher.Update, error)
+}
+
+type WorkflowWatcherFactory func(string) (WorkflowWatcher, error)
+
 type Dependencies struct {
-	Connector           connector.Connector
-	ConnectorFactory    ConnectorFactory
-	OrchestratorFactory OrchestratorFactory
-	Runner              orchestrator.Runner
-	Scheduler           scheduler.Scheduler
-	Events              *hub.Hub[Event]
-	Logger              *slog.Logger
+	Connector              connector.Connector
+	ConnectorFactory       ConnectorFactory
+	OrchestratorFactory    OrchestratorFactory
+	WorkflowWatcherFactory WorkflowWatcherFactory
+	Runner                 orchestrator.Runner
+	Scheduler              scheduler.Scheduler
+	Events                 *hub.Hub[Event]
+	Logger                 *slog.Logger
 }
 
 type Project struct {
@@ -76,9 +84,11 @@ type Project struct {
 	orchFactory  OrchestratorFactory
 	orchConfig   orchestrator.Config
 	orchDeps     orchestrator.Dependencies
+	runner       orchestrator.Runner
 	scheduler    scheduler.Scheduler
 	events       *hub.Hub[Event]
 	logger       *slog.Logger
+	watcher      WorkflowWatcherFactory
 
 	mu      sync.Mutex
 	cancel  context.CancelFunc
@@ -146,6 +156,11 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		return nil, ErrMissingOrchestrator
 	}
 
+	watcherFactory := deps.WorkflowWatcherFactory
+	if watcherFactory == nil {
+		watcherFactory = defaultWorkflowWatcherFactory
+	}
+
 	cfg.Project.ID = string(id)
 	return &Project{
 		id:           id,
@@ -156,9 +171,11 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		orchFactory:  orchestratorFactory,
 		orchConfig:   orchConfig,
 		orchDeps:     orchDeps,
+		runner:       deps.Runner,
 		scheduler:    projectScheduler,
 		events:       projectEvents,
 		logger:       logger,
+		watcher:      watcherFactory,
 	}, nil
 }
 
@@ -177,6 +194,9 @@ func (p *Project) Config() globalconfig.Project {
 }
 
 func (p *Project) Workflow() workflowconfig.Workflow {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
 	return p.workflow
 }
 
@@ -380,7 +400,14 @@ func (p *Project) waitDone(ctx context.Context, done <-chan struct{}) error {
 }
 
 func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrator.Orchestrator) {
+	watcherCtx, stopWatcher := context.WithCancel(ctx)
+	watcherDone := p.startWorkflowWatcher(watcherCtx)
+
 	err := orch.Run(ctx)
+	stopWatcher()
+	if watcherDone != nil {
+		<-watcherDone
+	}
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		err = nil
 	}
@@ -403,6 +430,86 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	close(done)
 }
 
+func (p *Project) startWorkflowWatcher(ctx context.Context) <-chan struct{} {
+	path := strings.TrimSpace(p.cfg.Workflow)
+	if path == "" {
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+
+		watcher, err := p.watcher(path)
+		if err != nil {
+			p.logger.Warn("create workflow watcher failed", "project_id", p.id, "path", path, "error", err)
+			return
+		}
+
+		updates, err := watcher.Watch(ctx)
+		if err != nil {
+			p.logger.Warn("watch workflow failed", "project_id", p.id, "path", path, "error", err)
+			return
+		}
+
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case update, ok := <-updates:
+				if !ok {
+					return
+				}
+				p.handleWorkflowUpdate(ctx, update)
+			}
+		}
+	}()
+	return done
+}
+
+func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher.Update) {
+	if update.Err != nil {
+		p.logger.Warn("workflow reload failed",
+			"project_id", p.id,
+			"path", update.Path,
+			"error", update.Err,
+		)
+		return
+	}
+
+	workflow := normalizeWorkflow(update.Workflow)
+	if err := workflow.Config.Validate(); err != nil {
+		p.logger.Warn("workflow reload validation failed",
+			"project_id", p.id,
+			"path", update.Path,
+			"error", err,
+		)
+		return
+	}
+
+	p.mu.Lock()
+	p.workflow = workflow
+	p.mu.Unlock()
+
+	if updater, ok := p.runner.(workflowUpdater); ok {
+		updater.UpdateWorkflow(workflow)
+	}
+
+	if err := p.orchestrator.UpdateConfig(ctx, orchestrator.ConfigFromWorkflow(workflow.Config)); err != nil {
+		if ctx.Err() != nil {
+			return
+		}
+		p.logger.Warn("apply workflow reload failed",
+			"project_id", p.id,
+			"path", update.Path,
+			"error", err,
+		)
+		return
+	}
+
+	p.logger.Info("workflow reloaded", "project_id", p.id, "path", update.Path)
+}
+
 func (p *Project) publish(event Event) {
 	if err := p.events.Publish(event); err != nil {
 		p.logger.Warn("publish project event failed",
@@ -411,6 +518,10 @@ func (p *Project) publish(event Event) {
 			"error", err,
 		)
 	}
+}
+
+type workflowUpdater interface {
+	UpdateWorkflow(workflowconfig.Workflow)
 }
 
 func buildConnector(cfg workflowconfig.Config, deps Dependencies) (connector.Connector, error) {
@@ -463,6 +574,10 @@ func defaultConnectorFactory(cfg workflowconfig.Config) (connector.Connector, er
 		GitHubAppInstallationID: cfg.Tracker.GitHubAppInstallationID,
 		ProjectSlug:             cfg.Tracker.ProjectSlug,
 	})
+}
+
+func defaultWorkflowWatcherFactory(path string) (WorkflowWatcher, error) {
+	return configwatcher.New(path)
 }
 
 func normalizeWorkflow(workflow workflowconfig.Workflow) workflowconfig.Workflow {

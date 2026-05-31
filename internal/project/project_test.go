@@ -9,6 +9,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/symphony-go/internal/config"
 	globalconfig "github.com/digitaldrywood/symphony-go/internal/config/global"
+	configwatcher "github.com/digitaldrywood/symphony-go/internal/config/watcher"
 	"github.com/digitaldrywood/symphony-go/internal/connector"
 	"github.com/digitaldrywood/symphony-go/internal/hub"
 	"github.com/digitaldrywood/symphony-go/internal/orchestrator"
@@ -126,6 +127,77 @@ func TestProjectStartStopPublishesLifecycleEvents(t *testing.T) {
 	if err := got.Start(context.Background()); !errors.Is(err, project.ErrProjectStopped) {
 		t.Fatalf("Start() after Stop error = %v, want %v", err, project.ErrProjectStopped)
 	}
+}
+
+func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
+	t.Parallel()
+
+	updates := make(chan configwatcher.Update, 1)
+	runner := newProjectBlockingRunner()
+	initial := workflowConfigWithMemoryIssue("issue-1")
+	initial.Polling.IntervalMS = int(time.Hour / time.Millisecond)
+	initial.Tracker.ActiveStates = []string{"Backlog"}
+	initial.Tracker.Issues[0].State = "Todo"
+	initial.Tracker.Issues[0].Title = "Reload workflow"
+	initial.Tracker.Issues[0].AssignedToWorker = true
+
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:       "symphony",
+			Workflow: "workflow.md",
+			Weight:   1,
+		},
+		Workflow: workflowconfig.Workflow{
+			Config: initial,
+			Prompt: "initial",
+		},
+	}, project.Dependencies{
+		Runner: runner,
+		WorkflowWatcherFactory: func(path string) (project.WorkflowWatcher, error) {
+			if path != "workflow.md" {
+				t.Fatalf("watch path = %q, want workflow.md", path)
+			}
+			return fakeWorkflowWatcher{updates: updates}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() {
+		if err := got.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	}()
+
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected run before workflow reload = %#v", request)
+	case <-time.After(25 * time.Millisecond):
+	}
+
+	reloaded := initial
+	reloaded.Polling.IntervalMS = 5
+	reloaded.Tracker.ActiveStates = []string{"Todo"}
+	updates <- configwatcher.Update{
+		Workflow: workflowconfig.Workflow{
+			Config: reloaded,
+			Prompt: "reloaded",
+		},
+	}
+
+	request := receiveRunRequest(t, runner.started)
+	if request.Issue.ID != "issue-1" {
+		t.Fatalf("RunRequest.Issue.ID = %q, want issue-1", request.Issue.ID)
+	}
+	if got.Workflow().Prompt != "reloaded" {
+		t.Fatalf("Workflow().Prompt = %q, want reloaded", got.Workflow().Prompt)
+	}
+
+	close(runner.release)
 }
 
 func TestNewRejectsInvalidProjectConfig(t *testing.T) {
@@ -443,6 +515,54 @@ func (c *pauseBlockingConnector) waitEntered(t *testing.T) {
 
 func (c *pauseBlockingConnector) release() {
 	close(c.releasec)
+}
+
+type projectBlockingRunner struct {
+	started chan orchestrator.RunRequest
+	release chan struct{}
+}
+
+func newProjectBlockingRunner() *projectBlockingRunner {
+	return &projectBlockingRunner{
+		started: make(chan orchestrator.RunRequest, 1),
+		release: make(chan struct{}),
+	}
+}
+
+func (r *projectBlockingRunner) Run(ctx context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
+	select {
+	case r.started <- request:
+	case <-ctx.Done():
+		return orchestrator.RunResult{}, ctx.Err()
+	}
+
+	select {
+	case <-r.release:
+		return orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted}, nil
+	case <-ctx.Done():
+		return orchestrator.RunResult{}, ctx.Err()
+	}
+}
+
+type fakeWorkflowWatcher struct {
+	updates <-chan configwatcher.Update
+}
+
+func (w fakeWorkflowWatcher) Watch(context.Context) (<-chan configwatcher.Update, error) {
+	return w.updates, nil
+}
+
+func receiveRunRequest(t *testing.T, ch <-chan orchestrator.RunRequest) orchestrator.RunRequest {
+	t.Helper()
+
+	select {
+	case request := <-ch:
+		return request
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runner request")
+	}
+
+	return orchestrator.RunRequest{}
 }
 
 func receiveEvent(t *testing.T, ch <-chan project.Event) project.Event {

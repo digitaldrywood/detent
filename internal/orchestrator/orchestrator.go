@@ -54,12 +54,18 @@ type Orchestrator struct {
 	supervisor    *runpkg.Supervisor
 	logger        *slog.Logger
 	stateRequests chan stateRequest
+	configUpdates chan configUpdateRequest
 	runResults    chan runpkg.Completion
 	done          chan struct{}
 }
 
 type stateRequest struct {
 	reply chan State
+}
+
+type configUpdateRequest struct {
+	cfg   Config
+	reply chan struct{}
 }
 
 func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
@@ -114,6 +120,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		supervisor:    supervisor,
 		logger:        logger,
 		stateRequests: make(chan stateRequest),
+		configUpdates: make(chan configUpdateRequest),
 		runResults:    make(chan runpkg.Completion),
 		done:          make(chan struct{}),
 	}, nil
@@ -139,9 +146,39 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.tick(ctx, &state, now)
 		case result := <-o.runResults:
 			o.handleRunResult(&state, result)
+		case update := <-o.configUpdates:
+			o.applyConfigUpdate(&state, update.cfg, ticker)
+			update.reply <- struct{}{}
 		case request := <-o.stateRequests:
 			request.reply <- state.clone()
 		}
+	}
+}
+
+func (o *Orchestrator) UpdateConfig(ctx context.Context, cfg Config) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	request := configUpdateRequest{
+		cfg:   cfg,
+		reply: make(chan struct{}, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case o.configUpdates <- request:
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case <-request.reply:
+		return nil
 	}
 }
 
@@ -181,6 +218,14 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	o.pruneBudgetRefusals(state, now)
 	o.trackBlockedCandidates(state, issues, now)
 	o.dispatchReadyIssues(ctx, state, issues, now)
+}
+
+func (o *Orchestrator) applyConfigUpdate(state *State, cfg Config, ticker *time.Ticker) {
+	cfg = normalizeConfig(cfg)
+	o.cfg = cfg
+	state.PollInterval = cfg.PollInterval
+	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
+	ticker.Reset(cfg.PollInterval)
 }
 
 func (o *Orchestrator) trackBlockedCandidates(state *State, issues []connector.Issue, now time.Time) {
