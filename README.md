@@ -39,6 +39,17 @@ Source checkouts can also run the repository-local installer:
 
 Homebrew support is tracked separately in #98.
 
+## Release
+
+Cut releases from `main` by pushing a semver tag:
+
+```sh
+git tag v0.1.0 && git push origin v0.1.0
+```
+
+Tags matching `v*` trigger the release workflow, which runs GoReleaser and
+publishes the GitHub Release archives and checksums.
+
 ## Quick Start
 
 The quickest production-shaped setup is one GitHub ProjectV2 board and one
