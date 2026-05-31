@@ -279,6 +279,9 @@ The terminal TUI renders the same telemetry snapshot model for terminal-first
 operator surfaces. The default binary path starts the web dashboard; embedding
 the TUI uses the `internal/tui` Bubble Tea model with a telemetry hub.
 
+The standing Go-vs-Elixir parity checklist is maintained in
+[docs/parity-audit.md](docs/parity-audit.md).
+
 ## Development
 
 Common development commands:
