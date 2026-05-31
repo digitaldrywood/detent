@@ -93,6 +93,38 @@ func TestRootCommandPassesVersionToBoot(t *testing.T) {
 	}
 }
 
+func TestRootCommandCapturesHeadlessFlagAndTerminalState(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	writeGlobalConfig(t, path, nil)
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return true }),
+		cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+			booted <- cfg
+			return nil
+		}),
+	)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "--headless"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if !got.Headless {
+		t.Fatal("Headless = false, want true")
+	}
+	if !got.StdoutTTY {
+		t.Fatal("StdoutTTY = false, want true")
+	}
+}
+
 func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))

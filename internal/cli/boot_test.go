@@ -3,6 +3,10 @@ package cli
 import (
 	"context"
 	"errors"
+	"log/slog"
+	"os"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -11,6 +15,115 @@ import (
 	projectpkg "github.com/digitaldrywood/symphony/internal/project"
 	"github.com/digitaldrywood/symphony/internal/web"
 )
+
+func TestShouldLaunchTerminalDashboard(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  BootConfig
+		want bool
+	}{
+		{
+			name: "running terminal",
+			cfg:  BootConfig{Mode: BootModeRunning, StdoutTTY: true},
+			want: true,
+		},
+		{
+			name: "headless terminal",
+			cfg:  BootConfig{Mode: BootModeRunning, Headless: true, StdoutTTY: true},
+			want: false,
+		},
+		{
+			name: "non terminal",
+			cfg:  BootConfig{Mode: BootModeRunning},
+			want: false,
+		},
+		{
+			name: "onboarding terminal",
+			cfg:  BootConfig{Mode: BootModeOnboarding, StdoutTTY: true},
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := shouldLaunchTerminalDashboard(tt.cfg); got != tt.want {
+				t.Fatalf("shouldLaunchTerminalDashboard(%#v) = %v, want %v", tt.cfg, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	path := filepath.Join(t.TempDir(), "runtime", "symphony.log")
+	restore, err := redirectDefaultLogger(path)
+	if err != nil {
+		t.Fatalf("redirectDefaultLogger() error = %v", err)
+	}
+
+	slog.Info("dashboard log message", "mode", "tui")
+	restore()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	logs := string(raw)
+	for _, want := range []string{`"msg":"dashboard log message"`, `"mode":"tui"`} {
+		if !strings.Contains(logs, want) {
+			t.Fatalf("log file missing %q:\n%s", want, logs)
+		}
+	}
+	if slog.Default() != previous {
+		t.Fatal("default logger was not restored")
+	}
+}
+
+func TestTerminalDashboardError(t *testing.T) {
+	t.Parallel()
+
+	serverErr := errors.New("server failed")
+	tests := []struct {
+		name   string
+		first  error
+		second error
+		want   error
+	}{
+		{
+			name:   "dashboard quit stops server cleanly",
+			second: context.Canceled,
+		},
+		{
+			name:  "server failure wins",
+			first: serverErr,
+			want:  serverErr,
+		},
+		{
+			name:   "external cancel is preserved",
+			first:  context.Canceled,
+			second: context.Canceled,
+			want:   context.Canceled,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := terminalDashboardError(tt.first, tt.second); !errors.Is(got, tt.want) {
+				t.Fatalf("terminalDashboardError() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
 
 func TestRegistryRefresherRequestsProjectOrchestrators(t *testing.T) {
 	t.Parallel()

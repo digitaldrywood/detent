@@ -50,6 +50,8 @@ type BootConfig struct {
 	Host         string
 	Port         *int
 	Version      string
+	Headless     bool
+	StdoutTTY    bool
 }
 
 type BootFunc func(context.Context, BootConfig) error
@@ -73,6 +75,7 @@ type options struct {
 	boot          BootFunc
 	signal        SignalFunc
 	version       string
+	stdoutTTY     func() bool
 }
 
 func WithBootFunc(boot BootFunc) Option {
@@ -100,6 +103,14 @@ func WithVersion(version string) Option {
 func WithProjectManager(manager ProjectManager) Option {
 	return func(opts *options) {
 		opts.signal = ProjectManagerSignalFunc(manager)
+	}
+}
+
+func WithStdoutTTY(stdoutTTY func() bool) Option {
+	return func(opts *options) {
+		if stdoutTTY != nil {
+			opts.stdoutTTY = stdoutTTY
+		}
 	}
 }
 
@@ -136,6 +147,7 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	var configPath string
 	var host string
 	var port int
+	var headless bool
 	cmd := &cobra.Command{
 		Use:          "symphony",
 		Short:        "Symphony agent orchestrator",
@@ -147,6 +159,8 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 			if err != nil {
 				return err
 			}
+			boot.Headless = headless
+			boot.StdoutTTY = opts.stdoutTTY()
 			return opts.boot(cmd.Context(), boot)
 		},
 	}
@@ -154,6 +168,7 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "path to global.yaml")
 	cmd.PersistentFlags().StringVar(&host, "host", "", "web server host")
 	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
+	cmd.PersistentFlags().BoolVar(&headless, "headless", false, "stream logs instead of launching the terminal dashboard")
 	cmd.AddCommand(
 		newInitCommand(&configPath, opts),
 		newAddProjectCommand(&configPath, opts),
@@ -184,13 +199,19 @@ func defaultOptions() options {
 		write: func(path string, cfg globalconfig.Config) error {
 			return globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals())
 		},
-		boot:   defaultBoot,
-		signal: noSignal,
+		boot:      defaultBoot,
+		signal:    noSignal,
+		stdoutTTY: stdoutIsTTY,
 	}
 }
 
 func noSignal(context.Context, Signal) error {
 	return nil
+}
+
+func stdoutIsTTY() bool {
+	info, err := os.Stdout.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func newInitCommand(configPath *string, opts options) *cobra.Command {
