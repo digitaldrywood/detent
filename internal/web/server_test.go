@@ -3,6 +3,8 @@ package web_test
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"io"
@@ -159,6 +161,121 @@ func TestServerRoutes(t *testing.T) {
 	}
 }
 
+func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
+	t.Parallel()
+
+	staticDir := t.TempDir()
+	css := "body{color:purple}"
+	writeTestCSS(t, staticDir, css)
+
+	server, err := web.NewServer(web.Config{StaticDir: staticDir}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	onboardingServer, err := web.NewServer(web.Config{
+		Mode:      web.ModeOnboarding,
+		StaticDir: staticDir,
+	}, web.Dependencies{})
+	if err != nil {
+		t.Fatalf("NewServer() onboarding error = %v", err)
+	}
+
+	fingerprintedPath := "/static/css/output." + shortTestHash(css) + ".css"
+
+	t.Run("html links fingerprinted stylesheet and revalidates", func(t *testing.T) {
+		t.Parallel()
+
+		tests := []struct {
+			name    string
+			handler http.Handler
+			path    string
+		}{
+			{name: "dashboard", handler: server.Handler(), path: "/"},
+			{name: "settings", handler: server.Handler(), path: "/settings"},
+			{name: "reports", handler: server.Handler(), path: "/reports"},
+			{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding"},
+		}
+
+		for _, tt := range tests {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
+
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+
+				tt.handler.ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+				}
+				if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+					t.Fatalf("Cache-Control = %q, want no-cache", got)
+				}
+				if !strings.Contains(rec.Body.String(), `href="`+fingerprintedPath+`"`) {
+					t.Fatalf("body missing fingerprinted stylesheet %q:\n%s", fingerprintedPath, rec.Body.String())
+				}
+				if strings.Contains(rec.Body.String(), `href="/static/css/output.css"`) {
+					t.Fatalf("body still links non-fingerprinted stylesheet:\n%s", rec.Body.String())
+				}
+			})
+		}
+	})
+
+	t.Run("fingerprinted asset is immutable", func(t *testing.T) {
+		t.Parallel()
+
+		rec := httptest.NewRecorder()
+		req := httptest.NewRequest(http.MethodGet, fingerprintedPath, nil)
+
+		server.Handler().ServeHTTP(rec, req)
+
+		if rec.Code != http.StatusOK {
+			t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+		}
+		if rec.Body.String() != css {
+			t.Fatalf("body = %q, want %q", rec.Body.String(), css)
+		}
+		if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+			t.Fatalf("Cache-Control = %q, want immutable static caching", got)
+		}
+		if got := rec.Header().Get("ETag"); got == "" {
+			t.Fatal("ETag is empty")
+		}
+	})
+}
+
+func TestServerLegacyStaticAssetsRequireRevalidation(t *testing.T) {
+	t.Parallel()
+
+	staticDir := t.TempDir()
+	css := "body{color:green}"
+	writeTestCSS(t, staticDir, css)
+
+	server, err := web.NewServer(web.Config{StaticDir: staticDir}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/static/css/output.css", nil)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Body.String() != css {
+		t.Fatalf("body = %q, want %q", rec.Body.String(), css)
+	}
+	if got := rec.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("Cache-Control = %q, want no-cache", got)
+	}
+	if got := rec.Header().Get("ETag"); got == "" {
+		t.Fatal("ETag is empty")
+	}
+}
+
 func TestServerServesDefaultStaticAssetsFromArbitraryWorkingDirectory(t *testing.T) {
 	wd, err := os.Getwd()
 	if err != nil {
@@ -192,6 +309,23 @@ func TestServerServesDefaultStaticAssetsFromArbitraryWorkingDirectory(t *testing
 	if !strings.Contains(rec.Body.String(), "tailwindcss") {
 		t.Fatalf("body missing embedded CSS marker:\n%s", rec.Body.String())
 	}
+}
+
+func writeTestCSS(t *testing.T, staticDir string, css string) {
+	t.Helper()
+
+	cssDir := filepath.Join(staticDir, "css")
+	if err := os.MkdirAll(cssDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cssDir, "output.css"), []byte(css), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func shortTestHash(content string) string {
+	sum := sha256.Sum256([]byte(content))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 func TestOnboardingModeDoesNotRequireRuntimeDependencies(t *testing.T) {

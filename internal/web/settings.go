@@ -28,6 +28,7 @@ func (s *Server) settingsData() templates.SettingsData {
 			LogPath:       s.logPath,
 			ServerAddress: s.serverAddr,
 		},
+		Assets: s.assets.templatePaths(),
 	}
 }
 

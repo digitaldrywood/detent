@@ -162,6 +162,7 @@ func (s *Server) onboardingData(form templates.OnboardingForm, problems []string
 		Form:         form,
 		Errors:       problems,
 		Result:       result,
+		Assets:       s.assets.templatePaths(),
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
 
-	symphony "github.com/digitaldrywood/symphony"
 	"github.com/digitaldrywood/symphony/internal/budget"
 	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
 	"github.com/digitaldrywood/symphony/internal/connector"
@@ -80,6 +79,7 @@ type Server struct {
 	dbPath       string
 	logPath      string
 	serverAddr   string
+	assets       staticAssets
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -122,9 +122,10 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		dbPath:       strings.TrimSpace(cfg.RuntimeDBPath),
 		logPath:      strings.TrimSpace(cfg.RuntimeLogPath),
 		serverAddr:   strings.TrimSpace(cfg.ServerAddress),
+		assets:       newStaticAssets(cfg.staticDir()),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
-	server.registerRoutes(cfg.staticDir())
+	server.registerRoutes()
 
 	return server, nil
 }
@@ -152,12 +153,8 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	return s.echo.Shutdown(ctx)
 }
 
-func (s *Server) registerRoutes(staticDir string) {
-	if staticDir != "" {
-		s.echo.Static("/static", staticDir)
-	} else {
-		s.echo.StaticFS("/static", symphony.StaticFS())
-	}
+func (s *Server) registerRoutes() {
+	s.echo.GET("/static/*", s.assets.serve)
 	s.echo.GET("/health", s.health)
 	if s.mode == ModeOnboarding {
 		s.echo.GET("/", s.redirectToOnboarding)
@@ -194,6 +191,7 @@ func (s *Server) dashboard(c echo.Context) error {
 		ConnectorName: s.connector.Name(),
 		DashboardURL:  s.dashboardURL,
 		Snapshot:      s.latestSnapshot(c.Request().Context()),
+		Assets:        s.assets.templatePaths(),
 	}))
 }
 
@@ -238,6 +236,7 @@ func (s *Server) redirectToDashboard(c echo.Context) error {
 
 func render(c echo.Context, component templ.Component) error {
 	c.Response().Header().Set(echo.HeaderContentType, echo.MIMETextHTMLCharsetUTF8)
+	c.Response().Header().Set(echo.HeaderCacheControl, revalidateCacheControl)
 	return component.Render(c.Request().Context(), c.Response().Writer)
 }
 

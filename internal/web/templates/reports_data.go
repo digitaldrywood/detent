@@ -19,6 +19,7 @@ type ReportsData struct {
 	Issue         UsageReportData
 	PR            UsageReportData
 	Model         UsageReportData
+	Assets        AssetPaths
 }
 
 type UsageReportData struct {
