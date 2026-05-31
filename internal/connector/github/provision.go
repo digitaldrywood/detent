@@ -66,7 +66,7 @@ var defaultPriorityOptionsByName = map[string]projectSingleSelectOption{
 
 type projectOptionsMetadata struct {
 	StatusField   projectSingleSelectField
-	PriorityField projectSingleSelectField
+	PriorityField *projectSingleSelectField
 }
 
 type projectSingleSelectField struct {
@@ -84,6 +84,19 @@ type projectSingleSelectOption struct {
 type priorityOptionRequirement struct {
 	Name string
 	Rank *int
+}
+
+type projectOptionsFieldResponse struct {
+	TypeName string                  `json:"__typename"`
+	ID       string                  `json:"id"`
+	Options  []projectOptionResponse `json:"options"`
+}
+
+type projectOptionResponse struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	Color       string `json:"color"`
+	Description string `json:"description"`
 }
 
 func (c *Connector) Provision(ctx context.Context) error {
@@ -105,9 +118,11 @@ func (c *Connector) EnsureStateOptions(ctx context.Context) error {
 		return fmt.Errorf("ensure github status options: %w", err)
 	}
 
-	_, err = c.ensureFieldOptions(ctx, metadata.PriorityField, c.requiredPriorityOptions())
-	if err != nil {
-		return fmt.Errorf("ensure github priority options: %w", err)
+	if metadata.PriorityField != nil {
+		_, err = c.ensureFieldOptions(ctx, *metadata.PriorityField, c.requiredPriorityOptions())
+		if err != nil {
+			return fmt.Errorf("ensure github priority options: %w", err)
+		}
 	}
 	if statusCreated {
 		c.statusCache.Clear(c.projectID)
@@ -119,27 +134,9 @@ func (c *Connector) EnsureStateOptions(ctx context.Context) error {
 func (c *Connector) fetchProjectOptionsMetadata(ctx context.Context) (projectOptionsMetadata, error) {
 	var response struct {
 		Node *struct {
-			TypeName    string `json:"__typename"`
-			StatusField *struct {
-				TypeName string `json:"__typename"`
-				ID       string `json:"id"`
-				Options  []struct {
-					ID          string `json:"id"`
-					Name        string `json:"name"`
-					Color       string `json:"color"`
-					Description string `json:"description"`
-				} `json:"options"`
-			} `json:"statusField"`
-			PriorityField *struct {
-				TypeName string `json:"__typename"`
-				ID       string `json:"id"`
-				Options  []struct {
-					ID          string `json:"id"`
-					Name        string `json:"name"`
-					Color       string `json:"color"`
-					Description string `json:"description"`
-				} `json:"options"`
-			} `json:"priorityField"`
+			TypeName      string                       `json:"__typename"`
+			StatusField   *projectOptionsFieldResponse `json:"statusField"`
+			PriorityField *projectOptionsFieldResponse `json:"priorityField"`
 		} `json:"node"`
 	}
 	if err := c.client.GraphQL(ctx, projectOptionsQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
@@ -153,7 +150,7 @@ func (c *Connector) fetchProjectOptionsMetadata(ctx context.Context) (projectOpt
 	if err != nil {
 		return projectOptionsMetadata{}, err
 	}
-	priorityField, err := decodeProjectSingleSelectField("Priority", response.Node.PriorityField)
+	priorityField, err := decodeOptionalProjectSingleSelectField("Priority", response.Node.PriorityField)
 	if err != nil {
 		return projectOptionsMetadata{}, err
 	}
@@ -164,16 +161,7 @@ func (c *Connector) fetchProjectOptionsMetadata(ctx context.Context) (projectOpt
 	}, nil
 }
 
-func decodeProjectSingleSelectField(fieldName string, field *struct {
-	TypeName string `json:"__typename"`
-	ID       string `json:"id"`
-	Options  []struct {
-		ID          string `json:"id"`
-		Name        string `json:"name"`
-		Color       string `json:"color"`
-		Description string `json:"description"`
-	} `json:"options"`
-}) (projectSingleSelectField, error) {
+func decodeProjectSingleSelectField(fieldName string, field *projectOptionsFieldResponse) (projectSingleSelectField, error) {
 	if field == nil {
 		return projectSingleSelectField{}, fmt.Errorf("%w: %s", ErrProjectFieldNotFound, fieldName)
 	}
@@ -199,6 +187,17 @@ func decodeProjectSingleSelectField(fieldName string, field *struct {
 		ID:      strings.TrimSpace(field.ID),
 		Options: options,
 	}, nil
+}
+
+func decodeOptionalProjectSingleSelectField(fieldName string, field *projectOptionsFieldResponse) (*projectSingleSelectField, error) {
+	if field == nil {
+		return nil, nil
+	}
+	decoded, err := decodeProjectSingleSelectField(fieldName, field)
+	if err != nil {
+		return nil, err
+	}
+	return &decoded, nil
 }
 
 func (c *Connector) ensureFieldOptions(ctx context.Context, field projectSingleSelectField, required []projectSingleSelectOption) (bool, error) {

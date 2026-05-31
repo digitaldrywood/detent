@@ -113,6 +113,36 @@ func TestConnectorEnsureStateOptionsNoopsWhenOptionsPresent(t *testing.T) {
 	}
 }
 
+func TestConnectorEnsureStateOptionsSkipsMissingPriorityField(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"__typename":"ProjectV2","statusField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_status","options":[]},"priorityField":null}}}`,
+		},
+		{
+			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_todo","name":"Todo","color":"GRAY","description":"Ready for Symphony dispatch."}]}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:  "PVT_1",
+		ActiveStates: []string{"Todo"},
+	})
+
+	if err := c.EnsureStateOptions(context.Background()); err != nil {
+		t.Fatalf("EnsureStateOptions() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	input := graphQLInput(t, requests[1])
+	if input["fieldId"] != "PVTSSF_status" {
+		t.Fatalf("fieldId = %v, want PVTSSF_status", input["fieldId"])
+	}
+}
+
 func TestConnectorEnsureStateOptionsReturnsGraphQLErrorOnWriteFailure(t *testing.T) {
 	t.Parallel()
 
