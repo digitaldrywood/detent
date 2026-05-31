@@ -20,6 +20,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 
 	html := renderDashboard(t, templates.DashboardData{
 		Title:         "Symphony",
+		Version:       "v1.2.3",
+		DashboardURL:  "http://127.0.0.1:4100/",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
@@ -94,6 +96,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Queue",
 		"Blocked",
 		"Completed",
+		"v1.2.3",
+		"href=\"http://127.0.0.1:4100/\"",
 		"digitaldrywood/symphony#35",
 		"Dashboard templates",
 		"turn completed successfully",
@@ -156,10 +160,33 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 	})
 
 	for _, want := range []string{
+		"Waiting for first telemetry snapshot.",
 		"No active issue sessions.",
 		"Budget disabled",
 		"No Codex rate-limit snapshot.",
 		"No token activity yet.",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardIncludesMotionAndThemeHooks(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+	})
+
+	for _, want := range []string{
+		`document.documentElement.classList.toggle("dark"`,
+		`id="snapshot"`,
+		`sse-swap="snapshot"`,
+		`hx-swap="innerHTML settle:160ms"`,
+		`sse-surface`,
+		`sse-tick`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
@@ -180,7 +207,7 @@ func TestDashboardDistinguishesMissingRunningDetails(t *testing.T) {
 		},
 	})
 
-	if !strings.Contains(html, "Running session details are not available for this snapshot.") {
+	if !strings.Contains(html, "Running session details are unavailable.") {
 		t.Fatalf("dashboard missing running details placeholder:\n%s", html)
 	}
 	if strings.Contains(html, "No active issue sessions.") {

@@ -44,10 +44,11 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 	if err == nil {
 		host, port := bootServer(host, port, firstGlobalWorkflowPath(cfg))
 		return BootConfig{
-			Mode:   BootModeRunning,
-			Global: cfg,
-			Host:   host,
-			Port:   port,
+			Mode:    BootModeRunning,
+			Global:  cfg,
+			Host:    host,
+			Port:    port,
+			Version: opts.version,
 		}, nil
 	}
 	if !missingGlobalConfig(err) {
@@ -67,6 +68,7 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 			WorkflowPath: workflowPath,
 			Host:         host,
 			Port:         port,
+			Version:      opts.version,
 		}, nil
 	}
 
@@ -80,6 +82,7 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 		WorkflowPath: workflowPath,
 		Host:         strings.TrimSpace(host),
 		Port:         bootPort(port),
+		Version:      opts.version,
 	}, nil
 }
 
@@ -130,6 +133,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	server, err := web.NewServer(web.Config{
 		Mode:         web.ModeRunning,
 		WorkflowPath: firstWorkflowPath(cfg),
+		Version:      cfg.Version,
 	}, web.Dependencies{
 		Hub:       snapshotHub,
 		Store:     runtimeStore,
@@ -148,6 +152,7 @@ func startOnboarding(ctx context.Context, cfg BootConfig) error {
 	server, err := web.NewServer(web.Config{
 		Mode:         web.ModeOnboarding,
 		WorkflowPath: firstWorkflowPath(cfg),
+		Version:      cfg.Version,
 	}, web.Dependencies{})
 	if err != nil {
 		return err

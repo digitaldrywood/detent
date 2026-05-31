@@ -5,6 +5,7 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"github.com/a-h/templ"
@@ -46,6 +47,7 @@ type Config struct {
 	StaticDir       string
 	SSETickInterval time.Duration
 	WorkflowPath    string
+	Version         string
 }
 
 type Server struct {
@@ -59,6 +61,7 @@ type Server struct {
 	mode      Mode
 	tickEvery time.Duration
 	workflow  string
+	version   string
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -93,6 +96,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		mode:      mode,
 		tickEvery: cfg.sseTickInterval(),
 		workflow:  cfg.workflowPath(),
+		version:   strings.TrimSpace(cfg.Version),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes(cfg.staticDir())
@@ -153,9 +157,23 @@ func (s *Server) registerRoutes(staticDir string) {
 func (s *Server) dashboard(c echo.Context) error {
 	return render(c, templates.Dashboard(templates.DashboardData{
 		Title:         "Symphony",
+		Version:       s.version,
+		DashboardURL:  currentDashboardURL(c),
 		ConnectorName: s.connector.Name(),
 		Snapshot:      s.latestSnapshot(c.Request().Context()),
 	}))
+}
+
+func currentDashboardURL(c echo.Context) string {
+	req := c.Request()
+	if strings.TrimSpace(req.Host) == "" {
+		return "/"
+	}
+	scheme := strings.TrimSpace(c.Scheme())
+	if scheme == "" {
+		scheme = "http"
+	}
+	return scheme + "://" + req.Host + "/"
 }
 
 func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {

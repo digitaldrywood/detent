@@ -49,6 +49,7 @@ type BootConfig struct {
 	WorkflowPath string
 	Host         string
 	Port         *int
+	Version      string
 }
 
 type BootFunc func(context.Context, BootConfig) error
@@ -71,6 +72,7 @@ type options struct {
 	write         func(string, globalconfig.Config) error
 	boot          BootFunc
 	signal        SignalFunc
+	version       string
 }
 
 func WithBootFunc(boot BootFunc) Option {
@@ -86,6 +88,12 @@ func WithSignalFunc(signal SignalFunc) Option {
 		if signal != nil {
 			opts.signal = signal
 		}
+	}
+}
+
+func WithVersion(version string) Option {
+	return func(opts *options) {
+		opts.version = strings.TrimSpace(version)
 	}
 }
 

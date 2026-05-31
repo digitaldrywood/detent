@@ -6,29 +6,79 @@
 
 @theme {
   --font-sans: ui-sans-serif, system-ui, sans-serif;
-  --color-background: oklch(0.985 0.005 255);
-  --color-foreground: oklch(0.18 0.025 255);
+  --color-background: oklch(0.982 0.006 235);
+  --color-foreground: oklch(0.18 0.024 260);
   --color-card: oklch(1 0 0);
-  --color-muted: oklch(0.955 0.01 255);
-  --color-muted-foreground: oklch(0.46 0.03 255);
-  --color-border: oklch(0.88 0.015 255);
-  --color-accent: oklch(0.62 0.14 190);
-  --color-warning: oklch(0.72 0.17 80);
+  --color-muted: oklch(0.955 0.012 245);
+  --color-muted-foreground: oklch(0.45 0.032 260);
+  --color-border: oklch(0.875 0.018 250);
+  --color-accent: oklch(0.57 0.15 188);
+  --color-accent-soft: oklch(0.92 0.06 188);
+  --color-warning: oklch(0.62 0.14 76);
+  --color-warning-soft: oklch(0.94 0.075 82);
   --color-danger: oklch(0.58 0.2 25);
-  --color-success: oklch(0.58 0.15 145);
+  --color-danger-soft: oklch(0.94 0.055 25);
+  --color-success: oklch(0.52 0.14 145);
+  --color-success-soft: oklch(0.92 0.06 145);
 }
 
 @variant dark {
-  --color-background: oklch(0.17 0.02 255);
-  --color-foreground: oklch(0.96 0.005 255);
-  --color-card: oklch(0.22 0.025 255);
-  --color-muted: oklch(0.28 0.03 255);
-  --color-muted-foreground: oklch(0.72 0.025 255);
-  --color-border: oklch(0.34 0.025 255);
+  --color-background: oklch(0.155 0.018 260);
+  --color-foreground: oklch(0.96 0.006 245);
+  --color-card: oklch(0.215 0.022 260);
+  --color-muted: oklch(0.275 0.026 260);
+  --color-muted-foreground: oklch(0.74 0.025 250);
+  --color-border: oklch(0.34 0.03 255);
+  --color-accent: oklch(0.72 0.13 188);
+  --color-accent-soft: oklch(0.3 0.075 190);
+  --color-warning: oklch(0.78 0.14 76);
+  --color-warning-soft: oklch(0.31 0.08 70);
+  --color-danger: oklch(0.7 0.17 25);
+  --color-danger-soft: oklch(0.31 0.08 25);
+  --color-success: oklch(0.73 0.12 145);
+  --color-success-soft: oklch(0.3 0.07 145);
 }
 
 @layer base {
+  html {
+    color-scheme: light;
+  }
+
+  html.dark {
+    color-scheme: dark;
+  }
+
   body {
     font-family: var(--font-sans);
+  }
+}
+
+@layer components {
+  .sse-surface {
+    transition: opacity 160ms ease, transform 160ms ease;
+  }
+
+  .sse-surface.htmx-swapping {
+    opacity: 0;
+    transform: translateY(0.25rem);
+  }
+
+  .sse-surface.htmx-settling {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  .sse-tick {
+    transition: opacity 120ms ease, transform 120ms ease, border-color 120ms ease;
+  }
+
+  .sse-tick.htmx-swapping {
+    opacity: 0.45;
+    transform: translateY(-0.125rem);
+  }
+
+  .sse-tick.htmx-settling {
+    opacity: 1;
+    transform: translateY(0);
   }
 }
