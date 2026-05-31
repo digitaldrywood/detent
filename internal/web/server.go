@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	symphony "github.com/digitaldrywood/symphony"
+	"github.com/digitaldrywood/symphony/internal/budget"
 	"github.com/digitaldrywood/symphony/internal/connector"
 	"github.com/digitaldrywood/symphony/internal/hub"
 	"github.com/digitaldrywood/symphony/internal/store"
@@ -50,6 +51,7 @@ type Config struct {
 	WorkflowPath    string
 	Version         string
 	DashboardURL    string
+	Pricing         budget.PricingTable
 }
 
 type Server struct {
@@ -65,6 +67,7 @@ type Server struct {
 	workflow     string
 	version      string
 	dashboardURL string
+	pricing      budget.PricingTable
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -101,6 +104,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		workflow:     cfg.workflowPath(),
 		version:      strings.TrimSpace(cfg.Version),
 		dashboardURL: cfg.dashboardURL(),
+		pricing:      cfg.pricing(),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes(cfg.staticDir())
@@ -160,6 +164,7 @@ func (s *Server) registerRoutes(staticDir string) {
 	s.echo.GET("/api/v1/state", s.apiState)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
+	s.echo.GET("/api/v1/usage", s.apiUsage)
 	s.echo.GET("/api/v1/*", s.apiIssue)
 }
 
@@ -254,6 +259,13 @@ func (cfg Config) dashboardURL() string {
 		return dashboardURL
 	}
 	return "http://localhost:4000"
+}
+
+func (cfg Config) pricing() budget.PricingTable {
+	if cfg.Pricing != nil {
+		return cfg.Pricing
+	}
+	return budget.DefaultPricingTable()
 }
 
 func configuredStatus(value any) string {

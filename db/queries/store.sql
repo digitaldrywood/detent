@@ -121,6 +121,38 @@ SELECT *
 FROM usage_events
 WHERE id = ?;
 
+-- name: UsageReportRows :many
+WITH usage_report_rows AS (
+  SELECT
+    CASE
+      WHEN sqlc.arg(bucket_by) = 'day' THEN event_day
+      WHEN sqlc.arg(bucket_by) = 'project' THEN project_id
+      WHEN sqlc.arg(bucket_by) = 'issue' THEN COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), 'unassigned')
+      WHEN sqlc.arg(bucket_by) = 'pr' THEN COALESCE(CAST(pr_number AS TEXT), 'unassigned')
+      WHEN sqlc.arg(bucket_by) = 'model' THEN COALESCE(NULLIF(model, ''), 'unassigned')
+      ELSE event_day
+    END AS group_key,
+    COALESCE(NULLIF(model, ''), 'unassigned') AS model,
+    input_tokens,
+    output_tokens,
+    total_tokens,
+    runtime_seconds
+  FROM usage_events
+  WHERE (sqlc.narg(from_day) IS NULL OR event_day >= sqlc.narg(from_day))
+    AND (sqlc.narg(to_day) IS NULL OR event_day <= sqlc.narg(to_day))
+)
+SELECT
+  CAST(usage_report_rows.group_key AS TEXT) AS group_key,
+  CAST(usage_report_rows.model AS TEXT) AS model,
+  CAST(COALESCE(SUM(usage_report_rows.input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(usage_report_rows.output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(usage_report_rows.total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COALESCE(SUM(usage_report_rows.runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
+  CAST(COUNT(*) AS INTEGER) AS events
+FROM usage_report_rows
+GROUP BY usage_report_rows.group_key, usage_report_rows.model
+ORDER BY usage_report_rows.group_key, usage_report_rows.model;
+
 -- name: ListFairShareUsage :many
 SELECT
   project_id,

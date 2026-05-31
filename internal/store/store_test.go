@@ -418,6 +418,167 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 	}
 }
 
+func TestUsageReportAggregates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	seedUsageReportEvents(t, ctx, backend)
+
+	tests := []struct {
+		name  string
+		query UsageReportQuery
+		want  []UsageReportRow
+	}{
+		{
+			name:  "by day with inclusive range",
+			query: UsageReportQuery{By: UsageReportByDay, From: dateOnly(2026, 5, 31), To: dateOnly(2026, 6, 1)},
+			want: []UsageReportRow{
+				{
+					Key:            "2026-05-31",
+					InputTokens:    150,
+					OutputTokens:   75,
+					TotalTokens:    225,
+					RuntimeSeconds: 45,
+					Events:         2,
+				},
+				{
+					Key:            "2026-06-01",
+					InputTokens:    70,
+					OutputTokens:   30,
+					TotalTokens:    100,
+					RuntimeSeconds: 25,
+					Events:         1,
+				},
+			},
+		},
+		{
+			name:  "by project",
+			query: UsageReportQuery{By: UsageReportByProject, From: dateOnly(2026, 5, 31), To: dateOnly(2026, 6, 1)},
+			want: []UsageReportRow{
+				{
+					Key:            "symphony",
+					InputTokens:    220,
+					OutputTokens:   105,
+					TotalTokens:    325,
+					RuntimeSeconds: 70,
+					Events:         3,
+				},
+			},
+		},
+		{
+			name:  "by issue",
+			query: UsageReportQuery{By: UsageReportByIssue},
+			want: []UsageReportRow{
+				{
+					Key:            "digitaldrywood/symphony#117",
+					InputTokens:    100,
+					OutputTokens:   50,
+					TotalTokens:    150,
+					RuntimeSeconds: 30,
+					Events:         1,
+				},
+				{
+					Key:            "digitaldrywood/symphony#119",
+					InputTokens:    120,
+					OutputTokens:   55,
+					TotalTokens:    175,
+					RuntimeSeconds: 40,
+					Events:         2,
+				},
+				{
+					Key:            "unassigned",
+					InputTokens:    5,
+					OutputTokens:   2,
+					TotalTokens:    7,
+					RuntimeSeconds: 3,
+					Events:         1,
+				},
+			},
+		},
+		{
+			name:  "by PR",
+			query: UsageReportQuery{By: UsageReportByPR},
+			want: []UsageReportRow{
+				{
+					Key:            "133",
+					InputTokens:    100,
+					OutputTokens:   50,
+					TotalTokens:    150,
+					RuntimeSeconds: 30,
+					Events:         1,
+				},
+				{
+					Key:            "141",
+					InputTokens:    120,
+					OutputTokens:   55,
+					TotalTokens:    175,
+					RuntimeSeconds: 40,
+					Events:         2,
+				},
+				{
+					Key:            "unassigned",
+					InputTokens:    5,
+					OutputTokens:   2,
+					TotalTokens:    7,
+					RuntimeSeconds: 3,
+					Events:         1,
+				},
+			},
+		},
+		{
+			name:  "by model",
+			query: UsageReportQuery{By: UsageReportByModel, From: dateOnly(2026, 5, 31), To: dateOnly(2026, 6, 1)},
+			want: []UsageReportRow{
+				{
+					Key:            "gpt-5.4",
+					InputTokens:    150,
+					OutputTokens:   75,
+					TotalTokens:    225,
+					RuntimeSeconds: 45,
+					Events:         2,
+				},
+				{
+					Key:            "gpt-5.4-mini",
+					InputTokens:    70,
+					OutputTokens:   30,
+					TotalTokens:    100,
+					RuntimeSeconds: 25,
+					Events:         1,
+				},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			report, err := backend.UsageReport(ctx, tt.query)
+			if err != nil {
+				t.Fatalf("UsageReport() error = %v", err)
+			}
+			assertUsageRows(t, report.Rows, tt.want)
+		})
+	}
+}
+
+func TestUsageReportRejectsInvalidRange(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+
+	_, err := backend.UsageReport(ctx, UsageReportQuery{
+		By:   UsageReportByDay,
+		From: dateOnly(2026, 6, 2),
+		To:   dateOnly(2026, 6, 1),
+	})
+	if err == nil {
+		t.Fatal("UsageReport() error = nil, want invalid date range")
+	}
+}
+
 func TestOpenRejectsUnsupportedBackend(t *testing.T) {
 	t.Parallel()
 
@@ -508,6 +669,94 @@ func openTestStore(t *testing.T, ctx context.Context) Store {
 		}
 	})
 	return backend
+}
+
+func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {
+	t.Helper()
+
+	events := []UsageEvent{
+		{
+			ProjectID:      "symphony",
+			IssueID:        "issue-117",
+			Identifier:     "digitaldrywood/symphony#117",
+			PRNumber:       int64Ptr(133),
+			Model:          "gpt-5.4",
+			InputTokens:    100,
+			OutputTokens:   50,
+			TotalTokens:    150,
+			RuntimeSeconds: 30,
+			StartedAt:      time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 5, 31, 9, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+		},
+		{
+			ProjectID:      "symphony",
+			IssueID:        "issue-119",
+			Identifier:     "digitaldrywood/symphony#119",
+			PRNumber:       int64Ptr(141),
+			Model:          "gpt-5.4",
+			InputTokens:    50,
+			OutputTokens:   25,
+			TotalTokens:    75,
+			RuntimeSeconds: 15,
+			StartedAt:      time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 5, 31, 10, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+		},
+		{
+			ProjectID:      "symphony",
+			IssueID:        "issue-119",
+			Identifier:     "digitaldrywood/symphony#119",
+			PRNumber:       int64Ptr(141),
+			Model:          "gpt-5.4-mini",
+			InputTokens:    70,
+			OutputTokens:   30,
+			TotalTokens:    100,
+			RuntimeSeconds: 25,
+			StartedAt:      time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 6, 1, 11, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+		},
+		{
+			ProjectID:      "pyroapex",
+			Model:          "",
+			InputTokens:    5,
+			OutputTokens:   2,
+			TotalTokens:    7,
+			RuntimeSeconds: 3,
+			StartedAt:      time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 6, 2, 12, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+		},
+	}
+
+	for _, event := range events {
+		if _, err := backend.RecordUsageEvent(ctx, event); err != nil {
+			t.Fatalf("RecordUsageEvent() error = %v", err)
+		}
+	}
+}
+
+func assertUsageRows(t *testing.T, got []UsageReportRow, want []UsageReportRow) {
+	t.Helper()
+
+	if len(got) != len(want) {
+		t.Fatalf("rows len = %d, want %d: %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i].Key != want[i].Key ||
+			got[i].InputTokens != want[i].InputTokens ||
+			got[i].OutputTokens != want[i].OutputTokens ||
+			got[i].TotalTokens != want[i].TotalTokens ||
+			got[i].RuntimeSeconds != want[i].RuntimeSeconds ||
+			got[i].Events != want[i].Events {
+			t.Fatalf("row %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func dateOnly(year int, month time.Month, day int) time.Time {
+	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
 }
 
 func queryString(t *testing.T, db *sql.DB, query string) string {

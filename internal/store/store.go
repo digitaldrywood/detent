@@ -37,6 +37,7 @@ type StatsStore interface {
 	StartSession(context.Context, SessionStart) (int64, error)
 	FinishSession(context.Context, int64, SessionFinish) error
 	RecordUsageEvent(context.Context, UsageEvent) (int64, error)
+	UsageReport(context.Context, UsageReportQuery) (UsageReport, error)
 	DailyTokenSpend(context.Context, time.Time) (TokenSpend, error)
 	IssueTokenSpend(context.Context, IssueIdentity) (TokenSpend, error)
 }
@@ -111,6 +112,58 @@ type UsageEvent struct {
 	StartedAt      time.Time
 	FinishedAt     time.Time
 	Outcome        string
+}
+
+type UsageReportGroup string
+
+const (
+	UsageReportByDay     UsageReportGroup = "day"
+	UsageReportByProject UsageReportGroup = "project"
+	UsageReportByIssue   UsageReportGroup = "issue"
+	UsageReportByPR      UsageReportGroup = "pr"
+	UsageReportByModel   UsageReportGroup = "model"
+)
+
+type UsageReportQuery struct {
+	By   UsageReportGroup
+	From time.Time
+	To   time.Time
+}
+
+type UsageReport struct {
+	By     UsageReportGroup
+	From   string
+	To     string
+	Totals UsageReportTotals
+	Rows   []UsageReportRow
+}
+
+type UsageReportTotals struct {
+	InputTokens    int64
+	OutputTokens   int64
+	TotalTokens    int64
+	RuntimeSeconds int64
+	Events         int64
+	Models         []UsageReportModel
+}
+
+type UsageReportRow struct {
+	Key            string
+	InputTokens    int64
+	OutputTokens   int64
+	TotalTokens    int64
+	RuntimeSeconds int64
+	Events         int64
+	Models         []UsageReportModel
+}
+
+type UsageReportModel struct {
+	Model          string
+	InputTokens    int64
+	OutputTokens   int64
+	TotalTokens    int64
+	RuntimeSeconds int64
+	Events         int64
 }
 
 type IssueIdentity struct {
