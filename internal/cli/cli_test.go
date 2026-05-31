@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -43,8 +44,8 @@ func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "global.yaml")
 	writeGlobalConfig(t, path, nil)
 
-	booted := make(chan globalconfig.Config, 1)
-	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg globalconfig.Config) error {
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
 		booted <- cfg
 		return nil
 	}))
@@ -57,8 +58,156 @@ func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
 	}
 
 	got := <-booted
-	if got.Path != path {
-		t.Fatalf("booted config path = %q, want %q", got.Path, path)
+	if got.Mode != cli.BootModeRunning {
+		t.Fatalf("boot mode = %q, want %q", got.Mode, cli.BootModeRunning)
+	}
+	if got.Global.Path != path {
+		t.Fatalf("booted config path = %q, want %q", got.Global.Path, path)
+	}
+}
+
+func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), validWorkflowContent())
+	t.Chdir(root)
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Mode != cli.BootModeRunning {
+		t.Fatalf("boot mode = %q, want %q", got.Mode, cli.BootModeRunning)
+	}
+	if got.WorkflowPath != filepath.Join(root, "WORKFLOW.md") {
+		t.Fatalf("workflow path = %q, want default WORKFLOW.md", got.WorkflowPath)
+	}
+	if len(got.Global.Projects) != 1 {
+		t.Fatalf("projects length = %d, want 1", len(got.Global.Projects))
+	}
+	if got.Global.Projects[0].Workflow != got.WorkflowPath {
+		t.Fatalf("project workflow = %q, want %q", got.Global.Projects[0].Workflow, got.WorkflowPath)
+	}
+}
+
+func TestRootCommandUsesDefaultWorkflowServerAddress(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer("0.0.0.0", 4101))
+	t.Chdir(root)
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	assertBootServer(t, <-booted, "0.0.0.0", 4101)
+}
+
+func TestRootCommandUsesConfiguredProjectWorkflowServerAddress(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFilesWithWorkflow(t, workflowContentWithServer("127.0.0.2", 4102))
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "symphony", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+	})
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", configPath})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	assertBootServer(t, <-booted, "127.0.0.2", 4102)
+}
+
+func TestRootCommandCLIAddressOverridesWorkflowServerAddress(t *testing.T) {
+	root := t.TempDir()
+	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer("0.0.0.0", 4103))
+	t.Chdir(root)
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--host", "127.0.0.3", "--port", "0"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	assertBootServer(t, <-booted, "127.0.0.3", 0)
+}
+
+func TestRootCommandUsesOnboardingModeWithoutValidWorkflow(t *testing.T) {
+	tests := []struct {
+		name    string
+		content string
+	}{
+		{name: "missing workflow"},
+		{name: "invalid workflow", content: "not frontmatter\n"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			root := t.TempDir()
+			t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+			if tt.content != "" {
+				writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), tt.content)
+			}
+			t.Chdir(root)
+
+			booted := make(chan cli.BootConfig, 1)
+			cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+				booted <- cfg
+				return nil
+			}))
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			got := <-booted
+			if got.Mode != cli.BootModeOnboarding {
+				t.Fatalf("boot mode = %q, want %q", got.Mode, cli.BootModeOnboarding)
+			}
+			if len(got.Global.Projects) != 0 {
+				t.Fatalf("projects = %#v, want none in onboarding mode", got.Global.Projects)
+			}
+		})
 	}
 }
 
@@ -386,6 +535,12 @@ type projectPaths struct {
 func createProjectFiles(t *testing.T) projectPaths {
 	t.Helper()
 
+	return createProjectFilesWithWorkflow(t, validWorkflowContent())
+}
+
+func createProjectFilesWithWorkflow(t *testing.T, content string) projectPaths {
+	t.Helper()
+
 	root := t.TempDir()
 	workdir := filepath.Join(root, "project")
 	workflow := filepath.Join(workdir, "WORKFLOW.md")
@@ -393,14 +548,58 @@ func createProjectFiles(t *testing.T) projectPaths {
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	if err := os.WriteFile(workflow, []byte("# workflow\n"), 0o644); err != nil {
-		t.Fatalf("WriteFile() error = %v", err)
-	}
+	writeWorkflow(t, workflow, content)
 
 	return projectPaths{
 		root:         root,
 		workflowPath: workflow,
 		workdirPath:  workdir,
+	}
+}
+
+func writeWorkflow(t *testing.T, path string, content string) {
+	t.Helper()
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func validWorkflowContent() string {
+	return `---
+tracker:
+  kind: memory
+---
+Test workflow prompt.
+`
+}
+
+func workflowContentWithServer(host string, port int) string {
+	return fmt.Sprintf(`---
+tracker:
+  kind: memory
+server:
+  host: %s
+  port: %d
+---
+Test workflow prompt.
+`, host, port)
+}
+
+func assertBootServer(t *testing.T, cfg cli.BootConfig, host string, port int) {
+	t.Helper()
+
+	if cfg.Host != host {
+		t.Fatalf("boot host = %q, want %q", cfg.Host, host)
+	}
+	if cfg.Port == nil {
+		t.Fatalf("boot port = nil, want %d", port)
+	}
+	if *cfg.Port != port {
+		t.Fatalf("boot port = %d, want %d", *cfg.Port, port)
 	}
 }
 

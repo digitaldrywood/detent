@@ -17,7 +17,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 	t.Parallel()
 
 	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
-	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
+	server, err := web.NewServer(web.Config{Mode: web.ModeOnboarding, WorkflowPath: workflowPath}, web.Dependencies{})
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
