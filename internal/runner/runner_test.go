@@ -184,13 +184,50 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	}
 }
 
+func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-22", Branch: "symphony/issue-22"},
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	codexClient := &cancelingCodexClient{cancel: cancel}
+
+	runner, err := NewRunner(Dependencies{
+		Workflow:  config.Workflow{Config: config.Config{}},
+		Workspace: workspaceBackend,
+		Codex:     codexClient,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(ctx, RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-22",
+			Identifier: "digitaldrywood/symphony-go#22",
+			Title:      "Add runner",
+		},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Run() error = %v, want context canceled", err)
+	}
+	if !workspaceBackend.afterRun {
+		t.Fatal("AfterRun was not called")
+	}
+	if workspaceBackend.afterRunErr != nil {
+		t.Fatalf("AfterRun context error = %v, want nil", workspaceBackend.afterRunErr)
+	}
+}
+
 type fakeWorkspaceBackend struct {
-	info      workspace.Info
-	diffStat  workspace.DiffStat
-	created   bool
-	beforeRun bool
-	afterRun  bool
-	diffed    bool
+	info        workspace.Info
+	diffStat    workspace.DiffStat
+	created     bool
+	beforeRun   bool
+	afterRun    bool
+	afterRunErr error
+	diffed      bool
 }
 
 func (b *fakeWorkspaceBackend) Create(_ context.Context, issue workspace.Issue) (workspace.Info, error) {
@@ -208,8 +245,9 @@ func (b *fakeWorkspaceBackend) BeforeRun(context.Context, workspace.Info, worksp
 	return nil
 }
 
-func (b *fakeWorkspaceBackend) AfterRun(context.Context, workspace.Info, workspace.Issue) {
+func (b *fakeWorkspaceBackend) AfterRun(ctx context.Context, _ workspace.Info, _ workspace.Issue) {
 	b.afterRun = true
+	b.afterRunErr = ctx.Err()
 }
 
 func (b *fakeWorkspaceBackend) DiffStat(context.Context, workspace.Info, workspace.Issue) (workspace.DiffStat, error) {
@@ -232,6 +270,15 @@ func (c *fakeCodexClient) RunTurn(_ context.Context, req codex.RunTurnRequest, o
 		}
 	}
 	return c.result, c.err
+}
+
+type cancelingCodexClient struct {
+	cancel context.CancelFunc
+}
+
+func (c *cancelingCodexClient) RunTurn(context.Context, codex.RunTurnRequest, codex.UpdateHandler) (codex.RunTurnResult, error) {
+	c.cancel()
+	return codex.RunTurnResult{}, context.Canceled
 }
 
 type fakeSessionStore struct {

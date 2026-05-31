@@ -20,6 +20,8 @@ import (
 	"github.com/digitaldrywood/symphony-go/internal/workspace"
 )
 
+const defaultAfterRunTimeout = time.Minute
+
 var (
 	ErrMissingWorkspace = errors.New("runner workspace backend is required")
 	ErrMissingCodex     = errors.New("runner codex client is required")
@@ -35,21 +37,23 @@ type SessionStore interface {
 }
 
 type Dependencies struct {
-	Workflow  config.Workflow
-	Workspace workspace.Backend
-	Codex     CodexClient
-	Store     SessionStore
-	Now       func() time.Time
-	Logger    *slog.Logger
+	Workflow        config.Workflow
+	Workspace       workspace.Backend
+	Codex           CodexClient
+	Store           SessionStore
+	Now             func() time.Time
+	Logger          *slog.Logger
+	AfterRunTimeout time.Duration
 }
 
 type Runner struct {
-	workflow  config.Workflow
-	workspace workspace.Backend
-	codex     CodexClient
-	store     SessionStore
-	now       func() time.Time
-	logger    *slog.Logger
+	workflow        config.Workflow
+	workspace       workspace.Backend
+	codex           CodexClient
+	store           SessionStore
+	now             func() time.Time
+	logger          *slog.Logger
+	afterRunTimeout time.Duration
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
@@ -65,14 +69,18 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	if deps.Logger == nil {
 		deps.Logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
+	if deps.AfterRunTimeout <= 0 {
+		deps.AfterRunTimeout = defaultAfterRunTimeout
+	}
 
 	return &Runner{
-		workflow:  deps.Workflow,
-		workspace: deps.Workspace,
-		codex:     deps.Codex,
-		store:     deps.Store,
-		now:       deps.Now,
-		logger:    deps.Logger,
+		workflow:        deps.Workflow,
+		workspace:       deps.Workspace,
+		codex:           deps.Codex,
+		store:           deps.Store,
+		now:             deps.Now,
+		logger:          deps.Logger,
+		afterRunTimeout: deps.AfterRunTimeout,
 	}, nil
 }
 
@@ -94,7 +102,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	afterRunPending := true
 	defer func() {
 		if afterRunPending {
-			r.workspace.AfterRun(ctx, info, workspaceIssue)
+			r.afterRun(info, workspaceIssue)
 		}
 	}()
 
@@ -138,7 +146,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	})
 	_ = turnResult
 
-	r.workspace.AfterRun(ctx, info, workspaceIssue)
+	r.afterRun(info, workspaceIssue)
 	afterRunPending = false
 
 	if turnErr != nil {
@@ -190,6 +198,13 @@ func (r *Runner) availableSkills(workspacePath string) ([]skills.Skill, error) {
 		)
 	}
 	return result.Skills, nil
+}
+
+func (r *Runner) afterRun(info workspace.Info, issue workspace.Issue) {
+	ctx, cancel := context.WithTimeout(context.Background(), r.afterRunTimeout)
+	defer cancel()
+
+	r.workspace.AfterRun(ctx, info, issue)
 }
 
 func (r *Runner) startSession(
