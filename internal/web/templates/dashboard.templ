@@ -210,16 +210,10 @@ templ tokenCard(data DashboardData) {
 				<span class="font-medium text-muted-foreground">Token sparkline</span>
 				<span class="font-mono text-xs text-muted-foreground">{ formatDuration(data.Snapshot.Tokens.RuntimeSeconds) }</span>
 			</div>
-			if len(tokenSparklineBars(data)) == 0 {
+			if len(tokenSparklinePoints(data)) == 0 {
 				<p class="rounded-md border border-dashed border-border bg-muted px-4 py-6 text-center text-sm text-muted-foreground">No token activity yet.</p>
 			} else {
-				<div class="grid h-20 grid-cols-[repeat(auto-fit,minmax(0,1fr))] items-end gap-1 rounded-md border border-border bg-muted p-2" aria-label="Token sparkline">
-					for _, bar := range tokenSparklineBars(data) {
-						<span class="block min-h-2 rounded-t-sm bg-success" style={ bar.HeightStyle } title={ bar.Title }>
-							<span class="sr-only">{ bar.Title }</span>
-						</span>
-					}
-				</div>
+				@SparklineChart(tokenSparklineChart(data))
 			}
 		</div>
 	</section>

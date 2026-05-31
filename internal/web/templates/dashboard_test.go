@@ -108,6 +108,9 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"7.25 credits",
 		"available",
 		"Token sparkline",
+		`aria-label="Token sparkline"`,
+		"<title>Token sparkline</title>",
+		`stroke="currentColor"`,
 		"14:55: 20,000 tokens",
 		"15:00: 200,000 tokens",
 	} {

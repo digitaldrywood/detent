@@ -1,0 +1,56 @@
+package templates
+
+templ SparklineChart(data SeriesChartData) {
+	@seriesChart(newSparklineChartView(data))
+}
+
+templ LineAreaChart(data SeriesChartData) {
+	@seriesChart(newLineAreaChartView(data))
+}
+
+templ MiniBarChart(data BarChartData) {
+	@barChart(newBarChartView(data))
+}
+
+templ TimelineChart(data TimelineChartData) {
+	@timelineChart(newTimelineChartView(data))
+}
+
+templ seriesChart(view seriesChartView) {
+	<svg class={ view.Class } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+		<title>{ view.Title }</title>
+		if view.AreaPath != "" {
+			<path d={ view.AreaPath } fill="currentColor" opacity="0.18"></path>
+		}
+		if view.LinePath != "" {
+			<path d={ view.LinePath } fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
+		}
+		for _, point := range view.Points {
+			<circle cx={ point.X } cy={ point.Y } r="2.5" fill="currentColor" opacity="0.85">
+				<title>{ point.Title }</title>
+			</circle>
+		}
+	</svg>
+}
+
+templ barChart(view barChartView) {
+	<svg class={ view.Class } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+		<title>{ view.Title }</title>
+		for _, bar := range view.Bars {
+			<rect x={ bar.X } y={ bar.Y } width={ bar.Width } height={ bar.Height } rx="2" fill="currentColor">
+				<title>{ bar.Title }</title>
+			</rect>
+		}
+	</svg>
+}
+
+templ timelineChart(view timelineChartView) {
+	<svg class={ view.Class } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+		<title>{ view.Title }</title>
+		for _, segment := range view.Segments {
+			<rect class={ segment.Class } x={ segment.X } y={ segment.Y } width={ segment.Width } height={ segment.Height } rx="3" fill="currentColor">
+				<title>{ segment.Title }</title>
+			</rect>
+		}
+	</svg>
+}
