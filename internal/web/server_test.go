@@ -293,6 +293,36 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersServerMetadata(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{
+		StaticDir: t.TempDir(),
+		Version:   "v9.8.7",
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Host = "dashboard.example.test:4100"
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, want := range []string{
+		"v9.8.7",
+		`href="http://dashboard.example.test:4100/"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
 func TestDashboardWiresHTMXSSE(t *testing.T) {
 	t.Parallel()
 
@@ -317,6 +347,7 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 		`sse-connect="/events"`,
 		`sse-swap="snapshot"`,
 		`sse-swap="tick"`,
+		`hx-swap="innerHTML settle:160ms"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())

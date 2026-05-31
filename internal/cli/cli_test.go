@@ -66,6 +66,33 @@ func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
 	}
 }
 
+func TestRootCommandPassesVersionToBoot(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	writeGlobalConfig(t, path, nil)
+
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(),
+		cli.WithVersion("v7.6.5"),
+		cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+			booted <- cfg
+			return nil
+		}),
+	)
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	if got := <-booted; got.Version != "v7.6.5" {
+		t.Fatalf("boot version = %q, want v7.6.5", got.Version)
+	}
+}
+
 func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing.T) {
 	root := t.TempDir()
 	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))

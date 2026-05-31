@@ -13,6 +13,8 @@ import (
 
 type DashboardData struct {
 	Title          string
+	Version        string
+	DashboardURL   string
 	ConnectorName  string
 	Snapshot       telemetry.Snapshot
 	TokenSparkline []TokenSparklinePoint
@@ -41,6 +43,30 @@ func pageTitle(data DashboardData) string {
 		return data.Title
 	}
 	return "Symphony"
+}
+
+func versionLabel(data DashboardData) string {
+	version := strings.TrimSpace(data.Version)
+	if version == "" {
+		return "dev"
+	}
+	return version
+}
+
+func dashboardURL(data DashboardData) string {
+	url := strings.TrimSpace(data.DashboardURL)
+	if url == "" {
+		return "/"
+	}
+	return url
+}
+
+func dashboardURLLabel(data DashboardData) string {
+	url := strings.TrimSpace(data.DashboardURL)
+	if url == "" {
+		return "Dashboard"
+	}
+	return url
 }
 
 func connectorName(data DashboardData) string {
