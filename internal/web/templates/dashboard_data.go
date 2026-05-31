@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"math"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -37,6 +38,34 @@ type rateLimitRow struct {
 	Limit       string
 	Reset       string
 	UsedPercent int
+}
+
+type agentTimelineRow struct {
+	Identifier   string
+	Title        string
+	State        string
+	StartedAt    string
+	EndedAt      string
+	Duration     string
+	StartPercent string
+	EndPercent   string
+	Segments     []agentTimelineSegment
+}
+
+type agentTimelineSegment struct {
+	Label string
+	Class string
+	Style string
+	Title string
+	Width string
+}
+
+type agentTimelineEntry struct {
+	issue   telemetry.Issue
+	state   string
+	start   time.Time
+	end     time.Time
+	running bool
 }
 
 func pageTitle(data DashboardData) string {
@@ -282,6 +311,221 @@ func timeLabel(value time.Time) string {
 		return "n/a"
 	}
 	return value.UTC().Format("Jan 2 15:04:05 UTC")
+}
+
+func agentTimelineRows(snapshot telemetry.Snapshot) []agentTimelineRow {
+	entries := agentTimelineEntries(snapshot)
+	if len(entries) == 0 {
+		return nil
+	}
+
+	sortAgentTimelineEntries(entries)
+	start, end := agentTimelineRange(entries)
+	span := end.Sub(start).Seconds()
+	if span <= 0 {
+		span = 1
+	}
+
+	rows := make([]agentTimelineRow, 0, len(entries))
+	for _, entry := range entries {
+		startPercent := timelinePercent(entry.start, start, span)
+		endPercent := timelinePercent(entry.end, start, span)
+		width := endPercent - startPercent
+		if width < 0 {
+			width = 0
+		}
+
+		state := chartText(entry.state, "running")
+		endLabel := timeLabel(entry.end)
+		if entry.running {
+			endLabel = "Live now"
+		}
+
+		identifier := issueIdentifier(entry.issue)
+		title := issueTitle(entry.issue)
+		segmentLabel := title
+		if segmentLabel == "Untitled issue" {
+			segmentLabel = identifier
+		}
+		segmentTitle := segmentLabel + ": " + state + " from " + timeLabel(entry.start) + " to " + endLabel
+
+		rows = append(rows, agentTimelineRow{
+			Identifier:   identifier,
+			Title:        title,
+			State:        state,
+			StartedAt:    timeLabel(entry.start),
+			EndedAt:      endLabel,
+			Duration:     formatDuration(entry.end.Sub(entry.start).Seconds()),
+			StartPercent: percentLabel(startPercent),
+			EndPercent:   percentLabel(endPercent),
+			Segments: []agentTimelineSegment{
+				{
+					Label: state,
+					Class: agentTimelineStateClass(state),
+					Style: "left: " + percentLabel(startPercent) + "; width: " + percentLabel(width) + ";",
+					Title: segmentTitle,
+					Width: percentLabel(width),
+				},
+			},
+		})
+	}
+
+	return rows
+}
+
+func agentTimelineEntries(snapshot telemetry.Snapshot) []agentTimelineEntry {
+	now, hasNow := agentTimelineNow(snapshot)
+	entries := make([]agentTimelineEntry, 0, len(snapshot.Running)+len(snapshot.Completed))
+	for _, row := range snapshot.Running {
+		start, ok := agentTimelineStart(row.StartedAt, now, hasNow, row.RuntimeSeconds)
+		if !ok {
+			continue
+		}
+
+		end := now
+		if !hasNow {
+			end = start
+			if row.RuntimeSeconds > 0 {
+				end = start.Add(time.Duration(math.Round(row.RuntimeSeconds)) * time.Second)
+			}
+		}
+		if end.Before(start) {
+			end = start
+		}
+
+		entries = append(entries, agentTimelineEntry{
+			issue:   row.Issue,
+			state:   issueState(row.Issue, "Running"),
+			start:   start.UTC(),
+			end:     end.UTC(),
+			running: true,
+		})
+	}
+
+	for _, row := range snapshot.Completed {
+		if row.CompletedAt.IsZero() {
+			continue
+		}
+		end := row.CompletedAt.UTC()
+		start := row.StartedAt
+		if start.IsZero() && row.RuntimeSeconds > 0 {
+			start = end.Add(-time.Duration(math.Round(row.RuntimeSeconds)) * time.Second)
+		}
+		if start.IsZero() {
+			continue
+		}
+		if end.Before(start) {
+			end = start
+		}
+
+		entries = append(entries, agentTimelineEntry{
+			issue: row.Issue,
+			state: completedState(row),
+			start: start.UTC(),
+			end:   end.UTC(),
+		})
+	}
+
+	return entries
+}
+
+func agentTimelineNow(snapshot telemetry.Snapshot) (time.Time, bool) {
+	if !snapshot.GeneratedAt.IsZero() {
+		return snapshot.GeneratedAt.UTC(), true
+	}
+
+	var latest time.Time
+	for _, row := range snapshot.Running {
+		if row.LastEventAt != nil && row.LastEventAt.After(latest) {
+			latest = *row.LastEventAt
+		}
+		if row.StartedAt.After(latest) {
+			latest = row.StartedAt
+		}
+	}
+	for _, row := range snapshot.Completed {
+		if row.CompletedAt.After(latest) {
+			latest = row.CompletedAt
+		}
+	}
+	if latest.IsZero() {
+		return time.Time{}, false
+	}
+	return latest.UTC(), true
+}
+
+func agentTimelineStart(start time.Time, now time.Time, hasNow bool, runtimeSeconds float64) (time.Time, bool) {
+	if !start.IsZero() {
+		return start.UTC(), true
+	}
+	if hasNow && runtimeSeconds > 0 {
+		return now.Add(-time.Duration(math.Round(runtimeSeconds)) * time.Second).UTC(), true
+	}
+	return time.Time{}, false
+}
+
+func sortAgentTimelineEntries(entries []agentTimelineEntry) {
+	sort.SliceStable(entries, func(i, j int) bool {
+		if !entries[i].start.Equal(entries[j].start) {
+			return entries[i].start.Before(entries[j].start)
+		}
+		return issueIdentifier(entries[i].issue) < issueIdentifier(entries[j].issue)
+	})
+}
+
+func agentTimelineRange(entries []agentTimelineEntry) (time.Time, time.Time) {
+	start := entries[0].start
+	end := entries[0].end
+	for _, entry := range entries[1:] {
+		if entry.start.Before(start) {
+			start = entry.start
+		}
+		if entry.end.After(end) {
+			end = entry.end
+		}
+	}
+	if !end.After(start) {
+		end = start.Add(time.Second)
+	}
+	return start, end
+}
+
+func timelinePercent(value time.Time, start time.Time, spanSeconds float64) float64 {
+	if spanSeconds <= 0 {
+		return 0
+	}
+	return clampPercent(value.Sub(start).Seconds() / spanSeconds * 100)
+}
+
+func clampPercent(value float64) float64 {
+	if value < 0 {
+		return 0
+	}
+	if value > 100 {
+		return 100
+	}
+	return value
+}
+
+func percentLabel(value float64) string {
+	return fmt.Sprintf("%.2f%%", clampPercent(value))
+}
+
+func agentTimelineStateClass(state string) string {
+	switch normalizeTimelineState(state) {
+	case "completed", "complete", "done", "human review":
+		return "bg-success"
+	case "blocked", "failed", "failure", "cancelled", "canceled":
+		return "bg-danger"
+	case "backlog", "queued", "queue", "retry", "retrying", "todo":
+		return "bg-warning"
+	default:
+		return "bg-accent"
+	}
+}
+
+func normalizeTimelineState(state string) string {
+	return strings.ToLower(strings.TrimSpace(state))
 }
 
 func formatDiffStat(row telemetry.Running) string {

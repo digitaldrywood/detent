@@ -80,6 +80,7 @@ templ SnapshotView(data DashboardData) {
 		@metricCard("Throughput", throughputRate(data.Snapshot), "Current completions/min", "border-t-accent", "bg-accent")
 		@metricCard("Runtime", runtimeLabel(data.Snapshot), "Aggregate agent uptime", "border-t-success", "bg-success")
 	</section>
+	@agentActivityTimeline(data.Snapshot)
 	<section class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 			<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
@@ -213,6 +214,62 @@ templ metricCard(label string, value string, detail string, borderClass string, 
 		</div>
 		<div class="mt-4 font-mono text-3xl font-semibold text-foreground">{ value }</div>
 	</article>
+}
+
+templ agentActivityTimeline(snapshot telemetry.Snapshot) {
+	<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Agent activity timeline">
+		<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+			<div>
+				<h2 class="text-lg font-semibold text-foreground">Agent activity</h2>
+				<p class="text-sm text-muted-foreground">Live timeline of running and recently completed Codex sessions.</p>
+			</div>
+			<span class="inline-flex min-w-9 justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ formatCount(len(agentTimelineRows(snapshot))) }</span>
+		</div>
+		if len(agentTimelineRows(snapshot)) == 0 {
+			if runningCount(snapshot)+completedCount(snapshot) > 0 {
+				<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">Agent timeline details are unavailable.</p>
+			} else {
+				<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No agent activity recorded.</p>
+			}
+		} else {
+			<div class="mt-5 overflow-hidden rounded-md border border-border">
+				<div class="overflow-x-auto">
+					<div class="min-w-[68rem]">
+						<div class="grid grid-cols-[18rem_minmax(0,1fr)_12rem] gap-3 border-b border-border bg-muted/70 px-3 py-3 text-xs font-medium uppercase text-muted-foreground">
+							<span>Agent</span>
+							<span>Lifespan</span>
+							<span class="text-right">State / runtime</span>
+						</div>
+						for _, row := range agentTimelineRows(snapshot) {
+							<div class="grid min-h-14 grid-cols-[18rem_minmax(0,1fr)_12rem] items-center gap-3 border-b border-border px-3 py-3 last:border-b-0">
+								<div class="min-w-0">
+									<span class="block truncate font-medium text-foreground">{ row.Identifier }</span>
+									<span class="line-clamp-1 text-sm text-muted-foreground">{ row.Title }</span>
+								</div>
+								<div class="grid gap-1">
+									<div class="flex items-center justify-between gap-3 font-mono text-xs text-muted-foreground">
+										<span>{ row.StartedAt }</span>
+										<span>{ row.EndedAt }</span>
+									</div>
+									<div class="relative h-9 overflow-hidden rounded-md bg-muted" role="group" aria-label={ row.Identifier + " lifespan" }>
+										for _, segment := range row.Segments {
+											<span class={ "absolute bottom-1 top-1 min-w-1.5 rounded " + segment.Class } style={ segment.Style } title={ segment.Title } aria-label={ segment.Title }>
+												<span class="sr-only">{ segment.Title }</span>
+											</span>
+										}
+									</div>
+								</div>
+								<div class="grid justify-items-end gap-1">
+									<span class="rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ row.State }</span>
+									<span class="font-mono text-xs text-muted-foreground">{ row.Duration }</span>
+								</div>
+							</div>
+						}
+					</div>
+				</div>
+			</div>
+		}
+	</section>
 }
 
 templ retryQueueSection(snapshot telemetry.Snapshot) {

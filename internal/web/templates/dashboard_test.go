@@ -3,6 +3,7 @@ package templates_test
 import (
 	"bytes"
 	"context"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -211,6 +212,54 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		`stroke="currentColor"`,
 		"Input 14:55: 20,000 tokens",
 		"Output 15:00: 50,000 tokens",
+		"Agent activity",
+		"Live timeline of running and recently completed Codex sessions.",
+		`aria-label="Agent activity timeline"`,
+		"Dashboard templates: In Progress from May 31 14:51:00 UTC to Live now",
+		"Completed dashboard: Human Review from May 31 14:48:00 UTC to May 31 14:59:30 UTC",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardRendersReadableAgentTimelineForConcurrentSessions(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	running := make([]telemetry.Running, 0, 5)
+	for i := 0; i < 5; i++ {
+		running = append(running, telemetry.Running{
+			Issue: telemetry.Issue{
+				ID:         "running-" + strconv.Itoa(i),
+				Identifier: "DD-RUN-" + strconv.Itoa(i),
+				Title:      "Concurrent issue " + strconv.Itoa(i),
+				State:      "In Progress",
+			},
+			StartedAt: now.Add(-time.Duration(10-i) * time.Minute),
+		})
+	}
+
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Running:     running,
+		},
+	})
+
+	for _, want := range []string{
+		"Agent activity",
+		"DD-RUN-0",
+		"DD-RUN-1",
+		"DD-RUN-2",
+		"DD-RUN-3",
+		"DD-RUN-4",
+		"min-w-[68rem]",
+		"Live now",
+		"bg-accent",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
