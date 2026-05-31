@@ -456,6 +456,9 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 
 	for _, want := range []string{
 		`data-help-tip`,
+		`data-popover`,
+		`data-popover-trigger`,
+		`data-popover-panel`,
 		`aria-label="Help: Running"`,
 		`aria-describedby="help-dashboard-running"`,
 		`id="help-dashboard-running"`,
@@ -473,6 +476,16 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+	for _, forbidden := range []string{
+		`onmouseenter=`,
+		`onfocus=`,
+		`popovertarget=`,
+		`popover=`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard contains flicker-prone popover markup %q:\n%s", forbidden, html)
 		}
 	}
 }
@@ -676,7 +689,13 @@ func TestDashboardRendersRunningActivityHoverCard(t *testing.T) {
 		"data-running-activity",
 		"data-running-activity-trigger",
 		"data-running-activity-panel",
+		"data-popover",
+		"data-popover-trigger",
+		"data-popover-panel",
+		`data-popover-interactive="true"`,
+		`data-popover-width="448"`,
 		`aria-describedby="running-activity-0"`,
+		`aria-hidden="true"`,
 		`role="tooltip"`,
 		"Latest message",
 		"full latest codex activity message with enough detail to need a hover card",
@@ -687,8 +706,6 @@ func TestDashboardRendersRunningActivityHoverCard(t *testing.T) {
 		"Turn 7",
 		"In 1,200 / Out 340",
 		"2m 30s",
-		"positionRunningActivity",
-		"closeRunningActivityAfterFocus",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing running activity marker %q:\n%s", want, html)

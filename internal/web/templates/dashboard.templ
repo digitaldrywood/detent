@@ -43,7 +43,6 @@ templ Dashboard(data DashboardData) {
 				})
 			</script>
 			@helpScript()
-			@runningActivityScript()
 			<link rel="icon" href="data:,"/>
 			<link rel="stylesheet" href="/static/css/output.css"/>
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
@@ -303,55 +302,6 @@ templ snapshotLoading() {
 	</section>
 }
 
-templ runningActivityScript() {
-	<script>
-		function runningActivityWrapper(source) {
-			if (!source) return null
-			return source.matches("[data-running-activity]") ? source : source.closest("[data-running-activity]")
-		}
-		function positionRunningActivity(source) {
-			const wrapper = runningActivityWrapper(source)
-			const trigger = wrapper && wrapper.querySelector("[data-running-activity-trigger]")
-			const panel = wrapper && wrapper.querySelector("[data-running-activity-panel]")
-			if (!trigger || !panel) return
-			const width = Math.min(448, Math.max(220, window.innerWidth - 32))
-			panel.style.width = width + "px"
-			panel.style.maxHeight = Math.max(160, window.innerHeight - 32) + "px"
-			const rect = trigger.getBoundingClientRect()
-			const maxLeft = Math.max(16, window.innerWidth - width - 16)
-			const left = Math.min(Math.max(16, rect.left + rect.width / 2 - width / 2), maxLeft)
-			const height = Math.min(panel.offsetHeight || 240, Math.max(160, window.innerHeight - 32))
-			const below = rect.bottom + 8
-			const top = below + height > window.innerHeight - 16 ? Math.max(16, rect.top - height - 8) : below
-			panel.style.left = left + "px"
-			panel.style.top = top + "px"
-		}
-		function setRunningActivityOpen(source, open) {
-			const wrapper = runningActivityWrapper(source)
-			if (!wrapper) return
-			if (open) positionRunningActivity(wrapper)
-			wrapper.dataset.open = open ? "true" : "false"
-			const trigger = wrapper.querySelector("[data-running-activity-trigger]")
-			if (trigger) trigger.setAttribute("aria-expanded", open ? "true" : "false")
-		}
-		function closeRunningActivityAfterFocus(wrapper) {
-			requestAnimationFrame(() => {
-				if (wrapper && !wrapper.matches(":focus-within")) setRunningActivityOpen(wrapper, false)
-			})
-		}
-		document.addEventListener("keydown", (event) => {
-			if (event.key !== "Escape") return
-			document.querySelectorAll("[data-running-activity][data-open='true']").forEach((wrapper) => setRunningActivityOpen(wrapper, false))
-		})
-		window.addEventListener("resize", () => {
-			document.querySelectorAll("[data-running-activity][data-open='true']").forEach((wrapper) => positionRunningActivity(wrapper))
-		})
-		window.addEventListener("scroll", () => {
-			document.querySelectorAll("[data-running-activity][data-open='true']").forEach((wrapper) => positionRunningActivity(wrapper))
-		}, true)
-	</script>
-}
-
 templ metricCard(label string, term helpTerm, value string, detail string, borderClass string, dotClass string) {
 	<article class={ "min-w-0 rounded-md border border-border border-t-2 bg-card p-4 shadow-sm transition-colors hover:bg-muted/40 " + borderClass }>
 		<div class="flex items-start justify-between gap-3">
@@ -398,17 +348,15 @@ templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt ti
 templ runningActivityCell(row telemetry.Running, prefix string, rowIndex int, generatedAt time.Time) {
 	<div
 		class="running-activity relative"
+		data-popover
 		data-running-activity
-		onmouseenter="setRunningActivityOpen(this, true)"
-		onmouseleave="setRunningActivityOpen(this, false)"
-		onfocusin="setRunningActivityOpen(this, true)"
-		onfocusout="closeRunningActivityAfterFocus(this)"
 	>
 		<button
 			type="button"
 			class="running-activity-trigger -m-2 grid w-full gap-1 rounded-md p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
 			aria-describedby={ runningActivityID(prefix, rowIndex) }
 			aria-expanded="false"
+			data-popover-trigger
 			data-running-activity-trigger
 		>
 			<span class="line-clamp-2 text-foreground">{ lastCodexUpdate(row) }</span>
@@ -421,7 +369,11 @@ templ runningActivityCell(row telemetry.Running, prefix string, rowIndex int, ge
 templ runningActivityPanel(row telemetry.Running, prefix string, rowIndex int, generatedAt time.Time) {
 	<div
 		id={ runningActivityID(prefix, rowIndex) }
-		class="running-activity-panel"
+		class="popover-panel running-activity-panel"
+		aria-hidden="true"
+		data-popover-interactive="true"
+		data-popover-panel
+		data-popover-width="448"
 		data-running-activity-panel
 		role="tooltip"
 	>
@@ -871,13 +823,14 @@ templ recentSessionMobileCard(row telemetry.Completed, rowIndex int) {
 }
 
 templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails bool) {
-	<div class="grid gap-2">
+	<div class="grid gap-2" data-popover>
 		<div class="flex min-w-0 items-start gap-2">
 			<button
 				type="button"
 				class="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-				popovertarget={ issuePopoverID(prefix, rowIndex) }
 				aria-describedby={ issuePopoverID(prefix, rowIndex) }
+				aria-expanded="false"
+				data-popover-trigger
 			>
 				<span class="block truncate font-medium text-foreground">{ issueIdentifier(issue) }</span>
 				<span class="line-clamp-1 text-muted-foreground">{ issueTitle(issue) }</span>
@@ -900,7 +853,14 @@ templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails 
 		if jsonDetails && issueDetailURL(issue) != "" {
 			<a class="w-fit text-xs font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ issueDetailURL(issue) }>JSON details</a>
 		}
-		<div id={ issuePopoverID(prefix, rowIndex) } class="max-w-sm rounded-md border border-border bg-card p-3 text-sm text-foreground shadow-lg" popover="auto" role="tooltip">
+		<div
+			id={ issuePopoverID(prefix, rowIndex) }
+			class="popover-panel issue-popover-panel max-w-sm text-foreground"
+			role="tooltip"
+			aria-hidden="true"
+			data-popover-panel
+			data-popover-width="320"
+		>
 			<p class="font-medium text-foreground">{ issueTitle(issue) }</p>
 			if issueDescriptionPreview(issue) != "" {
 				<p class="mt-1 text-muted-foreground">{ issueDescriptionPreview(issue) }</p>
