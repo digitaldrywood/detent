@@ -214,7 +214,7 @@ func (l *LocalGit) Cleanup(ctx context.Context, identifier string) error {
 		_, pruneErr := l.runGit(ctx, "worktree", "prune")
 		return pruneErr
 	}
-	if isDir {
+	if isDir && l.isSourceWorktree(ctx, info.Path) {
 		if err := l.runHook(ctx, "before_remove", l.hooks.BeforeRemove, info, Issue{Identifier: identifier}); err != nil {
 			l.logger.Warn("workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
 		}
@@ -428,7 +428,7 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 	}
 	defer cancel()
 
-	cmd := exec.CommandContext(hookCtx, "sh", "-lc", command)
+	cmd := exec.CommandContext(hookCtx, "sh", "-c", command)
 	cmd.Dir = info.Path
 	cmd.Env = hookEnv(info, issue)
 

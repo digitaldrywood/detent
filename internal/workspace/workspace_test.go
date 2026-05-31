@@ -77,6 +77,47 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 	}
 }
 
+func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	tracePath := filepath.Join(t.TempDir(), "after-create.trace")
+	argsPath := filepath.Join(t.TempDir(), "shell-args.trace")
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	shellPath := filepath.Join(binDir, "sh")
+	shellScript := "#!/bin/sh\nprintf '%s\\n' \"$1\" > " + shellQuote(argsPath) + "\nexec /bin/sh \"$@\"\n"
+	if err := os.WriteFile(shellPath, []byte(shellScript), 0o700); err != nil {
+		t.Fatalf("write shell wrapper: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+		Hooks: Hooks{
+			AfterCreate: "printf 'ok\n' > " + shellQuote(tracePath),
+			Timeout:     time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	if _, err := backend.Create(context.Background(), Issue{Identifier: "DD-SHELL"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if got := readFile(t, argsPath); got != "-c\n" {
+		t.Fatalf("hook shell first arg = %q, want -c", got)
+	}
+	if got := readFile(t, tracePath); got != "ok\n" {
+		t.Fatalf("hook trace = %q, want ok", got)
+	}
+}
+
 func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 	t.Parallel()
 
@@ -245,6 +286,46 @@ func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
 	}
 	if got := runGit(t, source, "worktree", "list", "--porcelain"); strings.Contains(got, target.Path) {
 		t.Fatalf("git worktree list still contains removed path:\n%s", got)
+	}
+}
+
+func TestLocalGitCleanupRejectsForeignGitRepoWithoutBeforeRemove(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	foreign := filepath.Join(root, "DD-FOREIGN")
+	tracePath := filepath.Join(t.TempDir(), "cleanup.trace")
+	if err := os.MkdirAll(foreign, 0o700); err != nil {
+		t.Fatalf("mkdir foreign repo: %v", err)
+	}
+	runCommand(t, foreign, "git", "init", "-b", "main")
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+		Hooks: Hooks{
+			BeforeRemove: "printf 'ran\n' > " + shellQuote(tracePath),
+			Timeout:      time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	err = backend.Cleanup(context.Background(), "DD-FOREIGN")
+	if err == nil {
+		t.Fatal("Cleanup() error = nil, want foreign repo error")
+	}
+	if !strings.Contains(err.Error(), "not managed by source") {
+		t.Fatalf("Cleanup() error = %v, want not managed by source", err)
+	}
+	if _, err := os.Stat(tracePath); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("before_remove hook ran, stat error = %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(foreign, ".git")); err != nil {
+		t.Fatalf("foreign repo was removed, stat error = %v", err)
 	}
 }
 
