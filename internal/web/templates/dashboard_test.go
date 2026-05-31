@@ -135,6 +135,63 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersThroughputAndRuntimeTrend(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Completed: []telemetry.Completed{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-41",
+						Identifier: "DD-41",
+					},
+					CompletedAt: now.Add(-30 * time.Second),
+				},
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-42",
+						Identifier: "DD-42",
+					},
+					CompletedAt: now.Add(-2 * time.Minute),
+				},
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-43",
+						Identifier: "DD-43",
+					},
+					CompletedAt: now.Add(-8 * time.Minute),
+				},
+			},
+			Tokens: telemetry.Tokens{
+				RuntimeSeconds: 5_400,
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"Throughput",
+		"Current completions/min",
+		"0.4 completions/min",
+		"Runtime",
+		"1h 30m",
+		"Throughput trend",
+		`aria-label="Rolling throughput trend"`,
+		"<title>Throughput trend</title>",
+		"14:52: 1 completions/min",
+		"14:58: 1 completions/min",
+		"14:59: 1 completions/min",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestDashboardRendersUnknownDiffStatusAsPending(t *testing.T) {
 	t.Parallel()
 

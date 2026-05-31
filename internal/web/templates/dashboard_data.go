@@ -8,6 +8,13 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/symphony/internal/telemetry"
+	webchart "github.com/digitaldrywood/symphony/internal/web/chart"
+)
+
+const (
+	throughputRateWindow   = 5 * time.Minute
+	throughputTrendWindow  = 10 * time.Minute
+	throughputTrendBuckets = 10
 )
 
 type DashboardData struct {
@@ -311,12 +318,115 @@ func tokenTrendChart(snapshot telemetry.Snapshot) SplitSeriesChartData {
 	}
 }
 
+func throughputTrendChart(data DashboardData) SeriesChartData {
+	return SeriesChartData{
+		Title:       "Throughput trend",
+		AriaLabel:   "Rolling throughput trend",
+		Points:      throughputTrendPoints(data.Snapshot),
+		ValueSuffix: "completions/min",
+		ColorClass:  "text-accent",
+	}
+}
+
+func throughputRate(snapshot telemetry.Snapshot) string {
+	return formatDecimal(currentThroughputPerMinute(snapshot)) + " completions/min"
+}
+
+func throughputWindowLabel() string {
+	return "Last " + formatDurationWindow(throughputRateWindow) + " completions/min"
+}
+
+func runtimeLabel(snapshot telemetry.Snapshot) string {
+	return formatDuration(snapshot.Tokens.RuntimeSeconds)
+}
+
 func tokenRate(snapshot telemetry.Snapshot) string {
 	if snapshot.Tokens.Total <= 0 || snapshot.Tokens.RuntimeSeconds <= 0 {
 		return "n/a"
 	}
 	perMinute := int64(math.Round(float64(snapshot.Tokens.Total) / snapshot.Tokens.RuntimeSeconds * 60))
 	return formatInt(perMinute) + " tokens/min"
+}
+
+func currentThroughputPerMinute(snapshot telemetry.Snapshot) float64 {
+	now, ok := throughputNow(snapshot)
+	if !ok {
+		return 0
+	}
+
+	windowStart := now.Add(-throughputRateWindow)
+	completed := 0
+	for _, entry := range snapshot.Completed {
+		if completedWithin(entry.CompletedAt, windowStart, now) {
+			completed++
+		}
+	}
+	return float64(completed) / throughputRateWindow.Minutes()
+}
+
+func throughputTrendPoints(snapshot telemetry.Snapshot) []webchart.Point {
+	now, ok := throughputNow(snapshot)
+	if !ok {
+		return nil
+	}
+
+	bucketDuration := throughputTrendWindow / throughputTrendBuckets
+	activeBucketStart := now.Truncate(bucketDuration)
+	windowStart := activeBucketStart.Add(-bucketDuration * time.Duration(throughputTrendBuckets-1))
+	windowEnd := activeBucketStart.Add(bucketDuration)
+	buckets := make([]int, throughputTrendBuckets)
+
+	total := 0
+	for _, entry := range snapshot.Completed {
+		completedAt := entry.CompletedAt.UTC()
+		if completedAt.IsZero() || completedAt.After(now) || completedAt.Before(windowStart) || !completedAt.Before(windowEnd) {
+			continue
+		}
+		index := int(completedAt.Sub(windowStart) / bucketDuration)
+		if index < 0 || index >= len(buckets) {
+			continue
+		}
+		buckets[index]++
+		total++
+	}
+	if total == 0 {
+		return nil
+	}
+
+	points := make([]webchart.Point, 0, len(buckets))
+	for index, count := range buckets {
+		label := windowStart.Add(time.Duration(index) * bucketDuration).Format("15:04")
+		points = append(points, webchart.Point{
+			Label: label,
+			Value: float64(count) / bucketDuration.Minutes(),
+		})
+	}
+	return points
+}
+
+func throughputNow(snapshot telemetry.Snapshot) (time.Time, bool) {
+	if !snapshot.GeneratedAt.IsZero() {
+		return snapshot.GeneratedAt.UTC(), true
+	}
+
+	var latest time.Time
+	for _, entry := range snapshot.Completed {
+		if entry.CompletedAt.After(latest) {
+			latest = entry.CompletedAt
+		}
+	}
+	if latest.IsZero() {
+		return time.Time{}, false
+	}
+	return latest.UTC(), true
+}
+
+func completedWithin(completedAt time.Time, start time.Time, end time.Time) bool {
+	if completedAt.IsZero() {
+		return false
+	}
+	completedAt = completedAt.UTC()
+	return !completedAt.Before(start) && !completedAt.After(end)
 }
 
 func formatDuration(seconds float64) string {
@@ -338,6 +448,19 @@ func formatDuration(seconds float64) string {
 		return fmt.Sprintf("%dm %ds", minutes, secs)
 	}
 	return fmt.Sprintf("%ds", secs)
+}
+
+func formatDurationWindow(duration time.Duration) string {
+	if duration <= 0 {
+		return "0s"
+	}
+	if duration%time.Hour == 0 {
+		return formatInt(int64(duration/time.Hour)) + "h"
+	}
+	if duration%time.Minute == 0 {
+		return formatInt(int64(duration/time.Minute)) + "m"
+	}
+	return formatDuration(duration.Seconds())
 }
 
 func formatInt(value int64) string {
@@ -366,6 +489,18 @@ func formatInt(value int64) string {
 		out.WriteString(raw[i : i+3])
 	}
 	return out.String()
+}
+
+func formatDecimal(value float64) string {
+	if value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
+		return "0"
+	}
+
+	rounded := math.Round(value*10) / 10
+	if math.Abs(rounded-math.Round(rounded)) < 0.000001 {
+		return formatInt(int64(math.Round(rounded)))
+	}
+	return strconv.FormatFloat(rounded, 'f', 1, 64)
 }
 
 func formatLimit(value int64) string {
