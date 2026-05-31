@@ -29,6 +29,7 @@ type Dependencies struct {
 	Store     store.Store
 	Registry  any
 	Connector connector.Connector
+	Refresher Refresher
 }
 
 type Config struct {
@@ -43,6 +44,7 @@ type Server struct {
 	store     store.Store
 	registry  any
 	connector connector.Connector
+	refresher Refresher
 	logger    *slog.Logger
 	tickEvery time.Duration
 }
@@ -71,9 +73,11 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		store:     deps.Store,
 		registry:  deps.Registry,
 		connector: deps.Connector,
+		refresher: deps.Refresher,
 		logger:    cfg.logger(),
 		tickEvery: cfg.sseTickInterval(),
 	}
+	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes(cfg.staticDir())
 
 	return server, nil
@@ -102,6 +106,10 @@ func (s *Server) registerRoutes(staticDir string) {
 	s.echo.GET("/", s.dashboard)
 	s.echo.GET("/events", s.events)
 	s.echo.GET("/health", s.health)
+	s.echo.GET("/api/v1/state", s.apiState)
+	s.echo.POST("/api/v1/refresh", s.apiRefresh)
+	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
+	s.echo.GET("/api/v1/:issue", s.apiIssue)
 }
 
 func (s *Server) dashboard(c echo.Context) error {
