@@ -381,6 +381,7 @@ func TestBoardProgressPointsSortCompletedSessions(t *testing.T) {
 		if !got[i].At.Equal(want[i].At) || got[i].Label != want[i].Label || got[i].Count != want[i].Count {
 			t.Fatalf("BoardProgressPoints()[%d] = %#v, want %#v; got %#v", i, got[i], want[i], got)
 		}
+	}
 }
 
 func TestBoardProgressPointsOffsetAggregateCompletedCount(t *testing.T) {
