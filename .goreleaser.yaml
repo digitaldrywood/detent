@@ -1,0 +1,42 @@
+version: 2
+
+project_name: symphony
+
+before:
+  hooks:
+    - go mod tidy
+    - go generate ./...
+    - go test ./...
+
+builds:
+  - id: symphony
+    main: ./cmd/symphony
+    binary: symphony
+    env:
+      - CGO_ENABLED=0
+    goos:
+      - darwin
+      - linux
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ldflags:
+      - -X main.version={{.Version}} -X main.commit={{.Commit}} -X main.date={{.Date}}
+
+archives:
+  - id: symphony
+    ids:
+      - symphony
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - README.md
+      - LICENSE
+
+checksum:
+  name_template: checksums.txt

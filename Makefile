@@ -18,7 +18,7 @@ MIGRATIONS_DIR ?= internal/database/migrations
 GOOSE_DRIVER ?= sqlite3
 DATABASE_URL ?= tmp/symphony.db
 
-.PHONY: dev generate css css-watch build test test-race test-cover lint vet check sqlc db-migrate setup clean help
+.PHONY: dev generate css css-watch build test test-race test-cover lint vet check release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -88,6 +88,9 @@ vet:
 check: build lint vet test-race test-cover
 	@echo "All checks passed."
 
+release-snapshot:
+	goreleaser release --snapshot --clean
+
 sqlc:
 	@if [ -f "$(SQLC_CONFIG)" ]; then \
 		sqlc generate -f "$(SQLC_CONFIG)"; \
@@ -126,6 +129,7 @@ help:
 	@echo "  test-cover   Run Go coverage with a $(COVERAGE_THRESHOLD)% minimum"
 	@echo "  lint         Run golangci-lint"
 	@echo "  check        Run the local validation gate"
+	@echo "  release-snapshot  Build local GoReleaser snapshot archives"
 	@echo "  sqlc         Generate sqlc output"
 	@echo "  db-migrate   Run goose migrations"
 	@echo "  setup        Install development tools"
