@@ -42,6 +42,24 @@ archives:
       - README.md
       - LICENSE
 
+brews:
+  - name: symphony
+    ids:
+      - symphony
+    repository:
+      owner: digitaldrywood
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
+    directory: Formula
+    url_template: "https://github.com/digitaldrywood/symphony/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    homepage: https://github.com/digitaldrywood/symphony
+    description: Agent orchestrator for tracker-backed work queues
+    license: MIT
+    install: |
+      bin.install "symphony"
+    test: |
+      system "#{bin}/symphony", "--version"
+
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
   algorithm: sha256
