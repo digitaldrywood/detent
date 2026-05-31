@@ -36,6 +36,7 @@ type StatsStore interface {
 	StartSession(context.Context, SessionStart) (int64, error)
 	FinishSession(context.Context, int64, SessionFinish) error
 	DailyTokenSpend(context.Context, time.Time) (TokenSpend, error)
+	IssueTokenSpend(context.Context, IssueIdentity) (TokenSpend, error)
 }
 
 type RunStart struct {
@@ -86,6 +87,12 @@ type SessionFinish struct {
 	RuntimeSeconds int64
 	FinalState     string
 	Model          string
+}
+
+type IssueIdentity struct {
+	IssueID    string
+	Identifier string
+	IssueURL   string
 }
 
 type TokenSpend struct {

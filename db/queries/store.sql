@@ -81,3 +81,17 @@ FROM codex_sessions
 WHERE substr(completed_at, 1, 10) = ?
 GROUP BY COALESCE(model, '')
 ORDER BY COALESCE(model, '');
+
+-- name: IssueTokenSpend :many
+SELECT
+  CAST(COALESCE(model, '') AS TEXT) AS model,
+  CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
+  CAST(COALESCE(SUM(output_tokens), 0) AS INTEGER) AS output_tokens,
+  CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
+  CAST(COUNT(*) AS INTEGER) AS sessions
+FROM codex_sessions
+WHERE issue_id = sqlc.arg(issue_id)
+   OR identifier = sqlc.arg(identifier)
+   OR issue_url = sqlc.arg(issue_url)
+GROUP BY COALESCE(model, '')
+ORDER BY COALESCE(model, '');

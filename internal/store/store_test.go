@@ -229,6 +229,33 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 			if len(spend.ByModel) != 1 || spend.ByModel[0].Model != "gpt-5" {
 				t.Fatalf("DailyTokenSpend().ByModel = %#v", spend.ByModel)
 			}
+
+			issueSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{IssueID: "I_kwDOSskuwc8AAAABD42c3Q"})
+			if err != nil {
+				t.Fatalf("IssueTokenSpend() error = %v", err)
+			}
+			if issueSpend.InputTokens != 100 || issueSpend.OutputTokens != 25 || issueSpend.TotalTokens != 125 || issueSpend.Sessions != 1 {
+				t.Fatalf("IssueTokenSpend() = %#v", issueSpend)
+			}
+			if len(issueSpend.ByModel) != 1 || issueSpend.ByModel[0].Model != "gpt-5" {
+				t.Fatalf("IssueTokenSpend().ByModel = %#v", issueSpend.ByModel)
+			}
+
+			identifierSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{Identifier: "digitaldrywood/symphony-go#6"})
+			if err != nil {
+				t.Fatalf("IssueTokenSpend(identifier) error = %v", err)
+			}
+			if identifierSpend.TotalTokens != 125 {
+				t.Fatalf("IssueTokenSpend(identifier).TotalTokens = %d, want 125", identifierSpend.TotalTokens)
+			}
+
+			urlSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{IssueURL: "https://github.com/digitaldrywood/symphony-go/issues/6"})
+			if err != nil {
+				t.Fatalf("IssueTokenSpend(url) error = %v", err)
+			}
+			if urlSpend.TotalTokens != 125 {
+				t.Fatalf("IssueTokenSpend(url).TotalTokens = %d, want 125", urlSpend.TotalTokens)
+			}
 		})
 	}
 }

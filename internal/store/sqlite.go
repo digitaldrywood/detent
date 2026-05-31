@@ -198,6 +198,49 @@ func (s *sqliteStore) DailyTokenSpend(ctx context.Context, day time.Time) (Token
 	return spend, nil
 }
 
+func (s *sqliteStore) IssueTokenSpend(ctx context.Context, identity IssueIdentity) (TokenSpend, error) {
+	identity = normalizeIssueIdentity(identity)
+	if identity.IssueID == "" && identity.Identifier == "" && identity.IssueURL == "" {
+		return TokenSpend{ByModel: []ModelTokenSpend{}}, nil
+	}
+
+	rows, err := s.queries.IssueTokenSpend(ctx, sqlc.IssueTokenSpendParams{
+		IssueID:    nullString(identity.IssueID),
+		Identifier: nullString(identity.Identifier),
+		IssueUrl:   nullString(identity.IssueURL),
+	})
+	if err != nil {
+		return TokenSpend{}, fmt.Errorf("reading issue token spend: %w", err)
+	}
+
+	spend := TokenSpend{
+		ByModel: make([]ModelTokenSpend, 0, len(rows)),
+	}
+	for _, row := range rows {
+		modelSpend := ModelTokenSpend{
+			Model:        row.Model,
+			InputTokens:  row.InputTokens,
+			OutputTokens: row.OutputTokens,
+			TotalTokens:  row.TotalTokens,
+			Sessions:     row.Sessions,
+		}
+		spend.InputTokens += modelSpend.InputTokens
+		spend.OutputTokens += modelSpend.OutputTokens
+		spend.TotalTokens += modelSpend.TotalTokens
+		spend.Sessions += modelSpend.Sessions
+		spend.ByModel = append(spend.ByModel, modelSpend)
+	}
+	return spend, nil
+}
+
+func normalizeIssueIdentity(identity IssueIdentity) IssueIdentity {
+	return IssueIdentity{
+		IssueID:    strings.TrimSpace(identity.IssueID),
+		Identifier: strings.TrimSpace(identity.Identifier),
+		IssueURL:   strings.TrimSpace(identity.IssueURL),
+	}
+}
+
 func configureSQLite(ctx context.Context, db *sql.DB, busyTimeoutMillis int64) error {
 	if _, err := db.ExecContext(ctx, fmt.Sprintf("PRAGMA busy_timeout = %d", busyTimeoutMillis)); err != nil {
 		return fmt.Errorf("setting sqlite busy_timeout: %w", err)
