@@ -172,6 +172,7 @@ func (s *Server) registerRoutes(staticDir string) {
 
 	s.echo.GET("/", s.dashboard)
 	s.echo.GET("/settings", s.settings)
+	s.echo.GET("/reports", s.reports)
 	s.echo.GET("/events", s.events)
 	s.echo.GET("/onboarding", s.redirectToDashboard)
 	s.echo.POST("/onboarding/tracker", s.onboardingTracker)

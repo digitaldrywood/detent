@@ -1,0 +1,198 @@
+package templates
+
+templ Reports(data ReportsData) {
+	<!DOCTYPE html>
+	<html lang="en">
+		<head>
+			<meta charset="utf-8"/>
+			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="color-scheme" content="light dark"/>
+			<title>{ reportsPageTitle(data) }</title>
+			<script>
+				document.documentElement.classList.toggle("dark", Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches))
+			</script>
+			<link rel="icon" href="data:,"/>
+			<link rel="stylesheet" href="/static/css/output.css"/>
+		</head>
+		<body class="min-h-screen bg-background text-foreground antialiased">
+			<main class="mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6 lg:px-8">
+				<header class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+					<div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
+						<div class="min-w-0">
+							<div class="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
+								<span class="inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent">
+									<span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
+									<span>Symphony</span>
+								</span>
+								<span>Observability</span>
+							</div>
+							<h1 class="mt-2 text-2xl font-semibold text-foreground sm:text-3xl">Usage reports</h1>
+							<p class="mt-1 max-w-3xl text-sm text-muted-foreground">Spend, token, project, issue, PR, and model trends from the usage ledger.</p>
+						</div>
+						<div class="grid w-full gap-2 text-sm text-muted-foreground sm:grid-cols-2 lg:w-auto">
+							<a class="inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/">
+								<span class="text-xs font-medium uppercase text-muted-foreground">Dashboard</span>
+								<span class="font-mono text-xs text-foreground">Live status</span>
+							</a>
+							<span class="inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2">
+								<span class="text-xs font-medium uppercase text-muted-foreground">Window</span>
+								<span class="truncate font-mono text-xs text-foreground">{ reportsWindowLabel(data) }</span>
+							</span>
+							<span class="inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2">
+								<span class="text-xs font-medium uppercase text-muted-foreground">Connector</span>
+								<span class="truncate font-medium text-foreground">{ reportsConnectorName(data) }</span>
+							</span>
+							<span class="inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2">
+								<span class="text-xs font-medium uppercase text-muted-foreground">Report</span>
+								<span class="truncate font-mono text-xs text-foreground">{ reportsGeneratedAtLabel(data) }</span>
+							</span>
+						</div>
+					</div>
+					@dashboardNav("reports")
+				</header>
+				if !reportsHasUsage(data) {
+					<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm">
+						<div class="flex items-start gap-3">
+							<span class="mt-1 h-2.5 w-2.5 rounded-full bg-warning"></span>
+							<div>
+								<h2 class="text-sm font-semibold">No usage events recorded.</h2>
+								<p class="mt-1 text-sm text-warning">Charts will populate after Symphony records completed usage events.</p>
+							</div>
+						</div>
+					</section>
+				}
+				<section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+					@reportsMetricCard("Total spend", formatUSD(data.Day.Totals.SpendUSD), reportsWindowLabel(data), "border-t-accent", "bg-accent")
+					@reportsMetricCard("Tokens", formatInt(data.Day.Totals.TotalTokens), reportInputOutputTotals(data.Day.Totals), "border-t-success", "bg-success")
+					@reportsMetricCard("Usage events", formatInt(data.Day.Totals.Events), "Completed ledger rows", "border-t-warning", "bg-warning")
+					@reportsMetricCard("Models", reportsModelCount(data), "Distinct model buckets", "border-t-danger", "bg-danger")
+				</section>
+				<section class="grid gap-5 xl:grid-cols-2">
+					<article class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+						<div class="flex items-start justify-between gap-3">
+							<div>
+								<h2 class="text-lg font-semibold text-foreground">Spend trend</h2>
+								<p class="text-sm text-muted-foreground">Daily spend across all tracked projects.</p>
+							</div>
+							<span class="rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ formatUSD(data.Day.Totals.SpendUSD) }</span>
+						</div>
+						<div class="mt-5">
+							if len(data.Day.Series) == 0 {
+								<p class="rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No spend trend yet.</p>
+							} else {
+								@LineAreaChart(reportsSpendTrendChart(data))
+							}
+						</div>
+					</article>
+					<article class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+						<div class="flex items-start justify-between gap-3">
+							<div>
+								<h2 class="text-lg font-semibold text-foreground">Token trend</h2>
+								<p class="text-sm text-muted-foreground">Input and output tokens by usage day.</p>
+							</div>
+							<span class="rounded-full bg-success-soft px-2 py-1 font-mono text-xs font-medium text-success">{ formatInt(data.Day.Totals.TotalTokens) }</span>
+						</div>
+						<div class="mt-5">
+							if len(data.Day.Series) == 0 {
+								<p class="rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No token trend yet.</p>
+							} else {
+								@SplitSeriesChart(reportsTokenTrendChart(data))
+								<div class="mt-3 flex flex-wrap items-center gap-4 text-xs font-medium text-muted-foreground">
+									<span class="inline-flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-accent"></span>Input</span>
+									<span class="inline-flex items-center gap-2"><span class="h-2 w-2 rounded-full bg-success"></span>Output</span>
+								</div>
+							}
+						</div>
+					</article>
+				</section>
+				<section class="grid gap-5 xl:grid-cols-2">
+					@reportsBucketCard("Top issues by tokens", "Highest-token issue buckets.", topReportBuckets(data.Issue.Breakdowns, reportTopLimit), data.Issue.Totals.TotalTokens, reportsIssueChart(data))
+					@reportsBucketCard("Top PRs by tokens", "Highest-token PR buckets.", topReportBuckets(data.PR.Breakdowns, reportTopLimit), data.PR.Totals.TotalTokens, reportsPRChart(data))
+				</section>
+				<section class="grid gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+					@reportsBucketCard("Per-project breakdown", "Usage distribution across tracked projects.", topReportBuckets(data.Project.Breakdowns, 0), data.Project.Totals.TotalTokens, reportsProjectChart(data))
+					<article class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+						<div class="flex items-start justify-between gap-3">
+							<div>
+								<h2 class="text-lg font-semibold text-foreground">Model split</h2>
+								<p class="text-sm text-muted-foreground">Token distribution by model.</p>
+							</div>
+							<span class="rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground">{ reportsModelCount(data) }</span>
+						</div>
+						<div class="mt-5">
+							if len(data.Model.Breakdowns) == 0 {
+								<p class="rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No model usage yet.</p>
+							} else {
+								@TimelineChart(reportsModelSplitChart(data))
+								<div class="mt-4 grid gap-3">
+									for _, row := range reportModelRows(data) {
+										@reportsBucketRow(row, data.Model.Totals.TotalTokens)
+									}
+								</div>
+							}
+						</div>
+					</article>
+				</section>
+			</main>
+		</body>
+	</html>
+}
+
+templ reportsMetricCard(label string, value string, detail string, borderClass string, dotClass string) {
+	<article class={ "rounded-md border border-border border-t-2 bg-card p-4 shadow-sm transition-colors hover:bg-muted/40 " + borderClass }>
+		<div class="flex items-start justify-between gap-3">
+			<div class="grid gap-1">
+				<span class="text-sm font-medium text-muted-foreground">{ label }</span>
+				<span class="text-xs text-muted-foreground">{ detail }</span>
+			</div>
+			<span class={ "h-2.5 w-2.5 rounded-full " + dotClass }></span>
+		</div>
+		<div class="mt-4 font-mono text-3xl font-semibold text-foreground">{ value }</div>
+	</article>
+}
+
+templ reportsBucketCard(title string, subtitle string, rows []UsageBucketData, total int64, chart BarChartData) {
+	<article class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+		<div class="flex items-start justify-between gap-3">
+			<div>
+				<h2 class="text-lg font-semibold text-foreground">{ title }</h2>
+				<p class="text-sm text-muted-foreground">{ subtitle }</p>
+			</div>
+			<span class="rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground">{ formatInt(int64(len(rows))) }</span>
+		</div>
+		<div class="mt-5">
+			if len(rows) == 0 {
+				<p class="rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No usage buckets yet.</p>
+			} else {
+				@MiniBarChart(chart)
+				<div class="mt-4 grid gap-3">
+					for _, row := range rows {
+						@reportsBucketRow(row, total)
+					}
+				</div>
+			}
+		</div>
+	</article>
+}
+
+templ reportsBucketRow(row UsageBucketData, total int64) {
+	<div class="grid gap-2 rounded-md border border-border bg-muted/60 p-3">
+		<div class="flex items-start justify-between gap-3">
+			<div class="min-w-0">
+				<div class="truncate font-medium text-foreground">{ reportBucketLabel(row) }</div>
+				<div class="mt-1 font-mono text-xs text-muted-foreground">{ reportInputOutputLabel(row) }</div>
+			</div>
+			<div class="shrink-0 text-right">
+				<div class="font-mono text-sm font-semibold text-foreground">{ formatInt(row.TotalTokens) }</div>
+				<div class="font-mono text-xs text-muted-foreground">{ formatUSD(row.SpendUSD) }</div>
+			</div>
+		</div>
+		<div class="h-2 overflow-hidden rounded-full bg-card">
+			<div class="h-full rounded-full bg-accent transition-all" style={ reportTokenShareStyle(row, total) }></div>
+		</div>
+		<div class="flex items-center justify-between gap-3 font-mono text-xs text-muted-foreground">
+			<span>{ reportTokenShareLabel(row, total) }</span>
+			<span>{ formatInt(row.Events) } events</span>
+		</div>
+	</div>
+}
