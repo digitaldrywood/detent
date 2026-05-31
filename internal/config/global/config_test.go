@@ -5,16 +5,140 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"runtime"
 	"strings"
 	"testing"
 )
 
+func TestResolvePathPrecedence(t *testing.T) {
+	t.Setenv("SYMPHONY_HOME", "")
+	t.Setenv("SYMPHONY_CONFIG", "")
+
+	root := t.TempDir()
+	home := configurePathTestHome(t, root)
+	nativeRoot, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("UserConfigDir() error = %v", err)
+	}
+
+	flagPath := filepath.Join(root, "flag.yaml")
+	envPath := filepath.Join(root, "env.yaml")
+	symphonyHome := filepath.Join(root, "symphony-home")
+	homePath := filepath.Join(symphonyHome, "global.yaml")
+	nativePath := filepath.Join(nativeRoot, "symphony", "global.yaml")
+	legacyPath := filepath.Join(home, ".symphony", "global.yaml")
+	for _, path := range []string{flagPath, envPath, homePath, nativePath, legacyPath} {
+		writeFile(t, path, "# config\n")
+	}
+	t.Setenv("SYMPHONY_CONFIG", envPath)
+	t.Setenv("SYMPHONY_HOME", symphonyHome)
+
+	tests := []struct {
+		name     string
+		flagPath string
+		setup    func()
+		wantPath string
+		wantRule PathRule
+	}{
+		{
+			name:     "flag wins",
+			flagPath: flagPath,
+			wantPath: flagPath,
+			wantRule: PathRuleFlag,
+		},
+		{
+			name: "symphony config wins after flag",
+			setup: func() {
+				t.Setenv("SYMPHONY_CONFIG", envPath)
+				t.Setenv("SYMPHONY_HOME", symphonyHome)
+			},
+			wantPath: envPath,
+			wantRule: PathRuleEnvConfig,
+		},
+		{
+			name: "symphony home wins after direct config env",
+			setup: func() {
+				t.Setenv("SYMPHONY_CONFIG", "")
+				t.Setenv("SYMPHONY_HOME", symphonyHome)
+			},
+			wantPath: homePath,
+			wantRule: PathRuleEnvHome,
+		},
+		{
+			name: "native config wins before legacy",
+			setup: func() {
+				t.Setenv("SYMPHONY_CONFIG", "")
+				t.Setenv("SYMPHONY_HOME", "")
+			},
+			wantPath: nativePath,
+			wantRule: PathRuleUserConfigDir,
+		},
+		{
+			name: "legacy config wins when native is missing",
+			setup: func() {
+				t.Setenv("SYMPHONY_CONFIG", "")
+				t.Setenv("SYMPHONY_HOME", "")
+				if err := os.Remove(nativePath); err != nil {
+					t.Fatalf("Remove() error = %v", err)
+				}
+			},
+			wantPath: legacyPath,
+			wantRule: PathRuleLegacyHome,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if tt.setup != nil {
+				tt.setup()
+			}
+
+			got, err := ResolvePath(tt.flagPath)
+			if err != nil {
+				t.Fatalf("ResolvePath() error = %v", err)
+			}
+			if got.Path != tt.wantPath {
+				t.Fatalf("Path = %q, want %q", got.Path, tt.wantPath)
+			}
+			if got.Rule != tt.wantRule {
+				t.Fatalf("Rule = %q, want %q", got.Rule, tt.wantRule)
+			}
+		})
+	}
+}
+
+func TestResolvePathUsesNativeConfigDirWhenNoConfigExists(t *testing.T) {
+	t.Setenv("SYMPHONY_HOME", "")
+	t.Setenv("SYMPHONY_CONFIG", "")
+	configurePathTestHome(t, t.TempDir())
+
+	nativeRoot, err := os.UserConfigDir()
+	if err != nil {
+		t.Fatalf("UserConfigDir() error = %v", err)
+	}
+
+	got, err := ResolvePath("")
+	if err != nil {
+		t.Fatalf("ResolvePath() error = %v", err)
+	}
+
+	want := filepath.Join(nativeRoot, "symphony", "global.yaml")
+	if got.Path != want {
+		t.Fatalf("Path = %q, want %q", got.Path, want)
+	}
+	if got.Rule != PathRuleUserConfigDir {
+		t.Fatalf("Rule = %q, want %q", got.Rule, PathRuleUserConfigDir)
+	}
+}
+
 func TestDefaultPath(t *testing.T) {
 	t.Setenv("SYMPHONY_HOME", "")
+	t.Setenv("SYMPHONY_CONFIG", "")
+	configurePathTestHome(t, t.TempDir())
 
-	home, err := os.UserHomeDir()
+	nativeRoot, err := os.UserConfigDir()
 	if err != nil {
-		t.Fatalf("UserHomeDir() error = %v", err)
+		t.Fatalf("UserConfigDir() error = %v", err)
 	}
 
 	got, err := DefaultPath()
@@ -22,22 +146,24 @@ func TestDefaultPath(t *testing.T) {
 		t.Fatalf("DefaultPath() error = %v", err)
 	}
 
-	want := filepath.Join(home, ".symphony", "global.yaml")
+	want := filepath.Join(nativeRoot, "symphony", "global.yaml")
 	if got != want {
 		t.Fatalf("DefaultPath() = %q, want %q", got, want)
 	}
 }
 
 func TestDefaultPathHonorsSymphonyHome(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("SYMPHONY_HOME", home)
+	root := t.TempDir()
+	home := configurePathTestHome(t, root)
+	t.Setenv("SYMPHONY_CONFIG", "")
+	t.Setenv("SYMPHONY_HOME", "~/custom")
 
 	got, err := DefaultPath()
 	if err != nil {
 		t.Fatalf("DefaultPath() error = %v", err)
 	}
 
-	want := filepath.Join(home, "global.yaml")
+	want := filepath.Join(home, "custom", "global.yaml")
 	if got != want {
 		t.Fatalf("DefaultPath() = %q, want %q", got, want)
 	}
@@ -45,6 +171,7 @@ func TestDefaultPathHonorsSymphonyHome(t *testing.T) {
 
 func TestDefaultConfig(t *testing.T) {
 	t.Setenv("SYMPHONY_HOME", "")
+	t.Setenv("SYMPHONY_CONFIG", "")
 
 	cfg, err := Default()
 	if err != nil {
@@ -512,6 +639,21 @@ func writeFile(t *testing.T, path string, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
+}
+
+func configurePathTestHome(t *testing.T, root string) string {
+	t.Helper()
+
+	home := filepath.Join(root, "home")
+	t.Setenv("HOME", home)
+	switch runtime.GOOS {
+	case "windows":
+		t.Setenv("USERPROFILE", home)
+		t.Setenv("APPDATA", filepath.Join(home, "AppData", "Roaming"))
+	default:
+		t.Setenv("XDG_CONFIG_HOME", "")
+	}
+	return home
 }
 
 func assertMap(t *testing.T, name string, got map[string]any, want map[string]any) {

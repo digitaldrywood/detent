@@ -64,6 +64,31 @@ func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
 	if got.Global.Path != path {
 		t.Fatalf("booted config path = %q, want %q", got.Global.Path, path)
 	}
+	if got.ConfigPathRule != globalconfig.PathRuleFlag {
+		t.Fatalf("config path rule = %q, want %q", got.ConfigPathRule, globalconfig.PathRuleFlag)
+	}
+}
+
+func TestConfigPathCommandPrintsResolvedPathAndRule(t *testing.T) {
+	t.Parallel()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	cmd := cli.NewRootCommand(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", path, "config", "path"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	output := stdout.String()
+	for _, want := range []string{path, string(globalconfig.PathRuleFlag)} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("config path output missing %q:\n%s", want, output)
+		}
+	}
 }
 
 func TestRootCommandPassesVersionToBoot(t *testing.T) {

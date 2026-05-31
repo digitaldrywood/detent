@@ -27,6 +27,21 @@ var schedulingModes = []string{
 	SchedulingFairShare,
 }
 
+type PathRule string
+
+const (
+	PathRuleFlag          PathRule = "--config"
+	PathRuleEnvConfig     PathRule = "SYMPHONY_CONFIG"
+	PathRuleEnvHome       PathRule = "SYMPHONY_HOME"
+	PathRuleUserConfigDir PathRule = "os.UserConfigDir()"
+	PathRuleLegacyHome    PathRule = "~/.symphony"
+)
+
+type PathResolution struct {
+	Path string
+	Rule PathRule
+}
+
 type Config struct {
 	Path       string    `yaml:"-"`
 	APIVersion string    `yaml:"apiVersion"`
@@ -75,6 +90,13 @@ type options struct {
 	projectPathLiterals bool
 }
 
+type pathOptions struct {
+	config        options
+	lookupEnv     func(string) string
+	userConfigDir func() (string, error)
+	stat          func(string) (os.FileInfo, error)
+}
+
 func WithHome(home string) Option {
 	return func(opts *options) {
 		opts.home = home
@@ -93,21 +115,16 @@ func WithProjectPathLiterals() Option {
 	}
 }
 
-func DefaultPath() (string, error) {
-	if symphonyHome := os.Getenv("SYMPHONY_HOME"); symphonyHome != "" {
-		opts := defaultOptions()
-		expanded, err := expandPath(symphonyHome, opts)
-		if err != nil {
-			return "", err
-		}
-		return filepath.Join(expanded, "global.yaml"), nil
-	}
+func ResolvePath(configPath string) (PathResolution, error) {
+	return resolvePath(configPath, defaultPathOptions())
+}
 
-	home, err := os.UserHomeDir()
+func DefaultPath() (string, error) {
+	resolution, err := ResolvePath("")
 	if err != nil {
-		return "", fmt.Errorf("resolve user home: %w", err)
+		return "", err
 	}
-	return filepath.Join(home, ".symphony", "global.yaml"), nil
+	return resolution.Path, nil
 }
 
 func Default() (Config, error) {
@@ -331,6 +348,92 @@ func defaultOptions() options {
 		home:       home,
 		relativeTo: cwd,
 	}
+}
+
+func defaultPathOptions() pathOptions {
+	return pathOptions{
+		config:        defaultOptions(),
+		lookupEnv:     os.Getenv,
+		userConfigDir: os.UserConfigDir,
+		stat:          os.Stat,
+	}
+}
+
+func resolvePath(configPath string, opts pathOptions) (PathResolution, error) {
+	opts = normalizePathOptions(opts)
+
+	if strings.TrimSpace(configPath) != "" {
+		return pathResolution(configPath, PathRuleFlag, opts.config)
+	}
+	if envPath := strings.TrimSpace(opts.lookupEnv("SYMPHONY_CONFIG")); envPath != "" {
+		return pathResolution(envPath, PathRuleEnvConfig, opts.config)
+	}
+	if symphonyHome := strings.TrimSpace(opts.lookupEnv("SYMPHONY_HOME")); symphonyHome != "" {
+		expanded, err := expandPath(symphonyHome, opts.config)
+		if err != nil {
+			return PathResolution{}, err
+		}
+		return PathResolution{Path: filepath.Join(expanded, "global.yaml"), Rule: PathRuleEnvHome}, nil
+	}
+
+	nativePath, nativeErr := userConfigPath(opts)
+	legacyPath, legacyErr := legacyConfigPath(opts.config)
+	switch {
+	case nativeErr == nil && existingConfigFile(nativePath, opts):
+		return PathResolution{Path: nativePath, Rule: PathRuleUserConfigDir}, nil
+	case legacyErr == nil && existingConfigFile(legacyPath, opts):
+		return PathResolution{Path: legacyPath, Rule: PathRuleLegacyHome}, nil
+	case nativeErr == nil:
+		return PathResolution{Path: nativePath, Rule: PathRuleUserConfigDir}, nil
+	case legacyErr == nil:
+		return PathResolution{Path: legacyPath, Rule: PathRuleLegacyHome}, nil
+	default:
+		return PathResolution{}, nativeErr
+	}
+}
+
+func normalizePathOptions(opts pathOptions) pathOptions {
+	if opts.config.home == "" && opts.config.relativeTo == "" {
+		opts.config = defaultOptions()
+	}
+	if opts.lookupEnv == nil {
+		opts.lookupEnv = os.Getenv
+	}
+	if opts.userConfigDir == nil {
+		opts.userConfigDir = os.UserConfigDir
+	}
+	if opts.stat == nil {
+		opts.stat = os.Stat
+	}
+	return opts
+}
+
+func pathResolution(path string, rule PathRule, opts options) (PathResolution, error) {
+	expanded, err := expandPath(strings.TrimSpace(path), opts)
+	if err != nil {
+		return PathResolution{}, err
+	}
+	return PathResolution{Path: expanded, Rule: rule}, nil
+}
+
+func userConfigPath(opts pathOptions) (string, error) {
+	dir, err := opts.userConfigDir()
+	if err != nil {
+		return "", fmt.Errorf("resolve user config dir: %w", err)
+	}
+	return filepath.Join(dir, "symphony", "global.yaml"), nil
+}
+
+func legacyConfigPath(opts options) (string, error) {
+	if opts.home == "" {
+		return "", errors.New("home directory is not available")
+	}
+	return filepath.Join(opts.home, ".symphony", "global.yaml"), nil
+}
+
+func existingConfigFile(path string, opts pathOptions) bool {
+	info, err := opts.stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 func defaultConfig(path string) Config {

@@ -40,6 +40,20 @@ Symphony logs with `log/slog`.
 - `SYMPHONY_LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
 - Text logs are written to stdout; JSON logs are written to stderr.
 
+## Global Config Discovery
+
+Symphony must resolve `global.yaml` consistently across supported operating systems. Keep this precedence intact when changing startup or config commands:
+
+1. `--config <path>` uses the direct CLI file path.
+2. `SYMPHONY_CONFIG=<file>` uses the direct environment file path.
+3. `SYMPHONY_HOME=<dir>` uses `<dir>/global.yaml`.
+4. `os.UserConfigDir()` uses `<config-dir>/symphony/global.yaml`.
+5. The legacy default uses `~/.symphony/global.yaml`.
+
+The OS-native config directory is `%AppData%\symphony\global.yaml` on Windows, `~/Library/Application Support/symphony/global.yaml` on macOS, and `~/.config/symphony/global.yaml` on Linux, with `XDG_CONFIG_HOME` honored by `os.UserConfigDir()`.
+
+After global config lookup fails, startup may fall back to a valid `WORKFLOW.md` in the current working directory for single-project mode. `symphony config path` should continue to report both the selected path and the matching rule.
+
 ## Validation
 
 Run the full local gate before every commit and pull request:
