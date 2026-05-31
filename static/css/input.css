@@ -174,6 +174,17 @@
     pointer-events: auto;
   }
 
+  .help-tooltip {
+    display: block;
+    width: min(16rem, calc(100vw - 2rem));
+    z-index: 80;
+  }
+
+  .help-tooltip[data-open="true"] {
+    visibility: visible;
+    opacity: 1;
+  }
+
   .help-tip-title {
     color: var(--color-foreground);
     display: block;
@@ -184,10 +195,6 @@
     color: var(--color-muted-foreground);
     display: block;
     margin-top: 0.25rem;
-  }
-
-  .help-tip[data-open="true"] .help-tip-panel {
-    pointer-events: none;
   }
 
   .issue-popover-panel {

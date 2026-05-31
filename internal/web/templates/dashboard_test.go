@@ -456,12 +456,13 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 
 	for _, want := range []string{
 		`data-help-tip`,
-		`data-popover`,
-		`data-popover-trigger`,
-		`data-popover-panel`,
+		`data-help-trigger`,
+		`data-help-term="running"`,
+		`data-help-title="Running"`,
+		`data-help-description="Issues currently assigned to Codex`,
+		`id="help-tooltip"`,
+		`data-help-tooltip`,
 		`aria-label="Help: Running"`,
-		`aria-describedby="help-dashboard-running"`,
-		`id="help-dashboard-running"`,
 		`role="tooltip"`,
 		`aria-label="Help: Token throughput"`,
 		`aria-label="Help: Runtime"`,

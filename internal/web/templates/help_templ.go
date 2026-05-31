@@ -29,7 +29,36 @@ func helpScript() templ.Component {
 			templ_7745c5c3_Var1 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<script>\n\t\t(() => {\n\t\t\tconst margin = 16\n\t\t\tconst offset = 10\n\t\t\tconst showDelay = 110\n\t\t\tconst hideDelay = 220\n\t\t\tconst states = new WeakMap()\n\t\t\tlet activePopover = null\n\t\t\tlet repositionFrame = 0\n\n\t\t\tfunction stateFor(root) {\n\t\t\t\tlet state = states.get(root)\n\t\t\t\tif (!state) {\n\t\t\t\t\tstate = { showTimer: 0, hideTimer: 0 }\n\t\t\t\t\tstates.set(root, state)\n\t\t\t\t}\n\t\t\t\treturn state\n\t\t\t}\n\n\t\t\tfunction targetRoot(target) {\n\t\t\t\tif (!(target instanceof Element)) return null\n\t\t\t\treturn target.closest(\"[data-popover]\")\n\t\t\t}\n\n\t\t\tfunction panelFor(root) {\n\t\t\t\treturn root.querySelector(\"[data-popover-panel]\")\n\t\t\t}\n\n\t\t\tfunction triggerFor(root) {\n\t\t\t\treturn root.querySelector(\"[data-popover-trigger]\")\n\t\t\t}\n\n\t\t\tfunction clearPopoverTimers(root) {\n\t\t\t\tconst state = stateFor(root)\n\t\t\t\tclearTimeout(state.showTimer)\n\t\t\t\tclearTimeout(state.hideTimer)\n\t\t\t}\n\n\t\t\tfunction closePopover(root, force) {\n\t\t\t\tif (!root) return\n\t\t\t\tif (!force && root.matches(\":focus-within\")) return\n\t\t\t\tclearPopoverTimers(root)\n\t\t\t\troot.dataset.open = \"false\"\n\t\t\t\tconst trigger = triggerFor(root)\n\t\t\t\tconst panel = panelFor(root)\n\t\t\t\tif (trigger) trigger.setAttribute(\"aria-expanded\", \"false\")\n\t\t\t\tif (panel) panel.setAttribute(\"aria-hidden\", \"true\")\n\t\t\t\tif (activePopover === root) activePopover = null\n\t\t\t}\n\n\t\t\tfunction closeOtherPopovers(root) {\n\t\t\t\tdocument.querySelectorAll(\"[data-popover][data-open='true']\").forEach((other) => {\n\t\t\t\t\tif (other !== root) closePopover(other, true)\n\t\t\t\t})\n\t\t\t}\n\n\t\t\tfunction positionPopover(root) {\n\t\t\t\tconst trigger = triggerFor(root)\n\t\t\t\tconst panel = panelFor(root)\n\t\t\t\tif (!trigger || !panel) return\n\n\t\t\t\tconst requestedWidth = Number(panel.dataset.popoverWidth || \"256\")\n\t\t\t\tconst width = Math.min(Math.max(160, requestedWidth), Math.max(160, window.innerWidth - margin * 2))\n\t\t\t\tpanel.style.width = width + \"px\"\n\n\t\t\t\tconst triggerRect = trigger.getBoundingClientRect()\n\t\t\t\tconst maxLeft = Math.max(margin, window.innerWidth - width - margin)\n\t\t\t\tconst left = Math.min(Math.max(margin, triggerRect.left + triggerRect.width / 2 - width / 2), maxLeft)\n\t\t\t\tconst availableBelow = Math.max(0, window.innerHeight - triggerRect.bottom - offset - margin)\n\t\t\t\tconst availableAbove = Math.max(0, triggerRect.top - offset - margin)\n\t\t\t\tconst desiredHeight = Math.min(panel.scrollHeight || panel.offsetHeight || 96, Math.max(48, window.innerHeight - margin * 2))\n\t\t\t\tconst useTop = desiredHeight > availableBelow && availableAbove > availableBelow\n\t\t\t\tconst available = useTop ? availableAbove : availableBelow\n\t\t\t\tconst maxHeight = Math.max(48, available)\n\t\t\t\tpanel.style.maxHeight = maxHeight + \"px\"\n\t\t\t\tconst height = Math.min(desiredHeight, maxHeight)\n\t\t\t\tlet top = triggerRect.bottom + offset\n\t\t\t\tlet placement = \"bottom\"\n\n\t\t\t\tif (useTop) {\n\t\t\t\t\ttop = triggerRect.top - height - offset\n\t\t\t\t\tplacement = \"top\"\n\t\t\t\t}\n\n\t\t\t\tpanel.style.left = left + \"px\"\n\t\t\t\tpanel.style.top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - height - margin)) + \"px\"\n\t\t\t\tpanel.dataset.placement = placement\n\t\t\t}\n\n\t\t\tfunction openPopover(root) {\n\t\t\t\tconst trigger = triggerFor(root)\n\t\t\t\tconst panel = panelFor(root)\n\t\t\t\tif (!trigger || !panel) return\n\n\t\t\t\tclearPopoverTimers(root)\n\t\t\t\tcloseOtherPopovers(root)\n\t\t\t\tpanel.style.left = \"-9999px\"\n\t\t\t\tpanel.style.top = \"-9999px\"\n\t\t\t\troot.dataset.open = \"true\"\n\t\t\t\ttrigger.setAttribute(\"aria-expanded\", \"true\")\n\t\t\t\tpanel.setAttribute(\"aria-hidden\", \"false\")\n\t\t\t\tpositionPopover(root)\n\t\t\t\tactivePopover = root\n\t\t\t}\n\n\t\t\tfunction scheduleOpen(root, delay) {\n\t\t\t\tclearPopoverTimers(root)\n\t\t\t\tconst state = stateFor(root)\n\t\t\t\tstate.showTimer = setTimeout(() => openPopover(root), delay)\n\t\t\t}\n\n\t\t\tfunction scheduleClose(root, delay) {\n\t\t\t\tconst state = stateFor(root)\n\t\t\t\tclearTimeout(state.showTimer)\n\t\t\t\tclearTimeout(state.hideTimer)\n\t\t\t\tstate.hideTimer = setTimeout(() => closePopover(root, false), delay)\n\t\t\t}\n\n\t\t\tfunction containsRelated(root, relatedTarget) {\n\t\t\t\treturn relatedTarget instanceof Node && root.contains(relatedTarget)\n\t\t\t}\n\n\t\t\tfunction repositionActivePopover() {\n\t\t\t\tif (!activePopover || repositionFrame) return\n\t\t\t\trepositionFrame = requestAnimationFrame(() => {\n\t\t\t\t\trepositionFrame = 0\n\t\t\t\t\tif (activePopover && activePopover.dataset.open === \"true\") positionPopover(activePopover)\n\t\t\t\t})\n\t\t\t}\n\n\t\t\tdocument.addEventListener(\"pointerover\", (event) => {\n\t\t\t\tconst root = targetRoot(event.target)\n\t\t\t\tif (!root || containsRelated(root, event.relatedTarget)) return\n\t\t\t\tscheduleOpen(root, showDelay)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"pointerout\", (event) => {\n\t\t\t\tconst root = targetRoot(event.target)\n\t\t\t\tif (!root || containsRelated(root, event.relatedTarget)) return\n\t\t\t\tscheduleClose(root, hideDelay)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"focusin\", (event) => {\n\t\t\t\tconst root = targetRoot(event.target)\n\t\t\t\tif (root) openPopover(root)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"focusout\", (event) => {\n\t\t\t\tconst root = targetRoot(event.target)\n\t\t\t\tif (!root || containsRelated(root, event.relatedTarget)) return\n\t\t\t\tscheduleClose(root, hideDelay)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"click\", (event) => {\n\t\t\t\tconst trigger = event.target instanceof Element ? event.target.closest(\"[data-popover-trigger]\") : null\n\t\t\t\tif (trigger) {\n\t\t\t\t\tconst root = trigger.closest(\"[data-popover]\")\n\t\t\t\t\tif (!root) return\n\t\t\t\t\topenPopover(root)\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\tdocument.querySelectorAll(\"[data-popover][data-open='true']\").forEach((root) => {\n\t\t\t\t\tif (!(event.target instanceof Node) || !root.contains(event.target)) closePopover(root, true)\n\t\t\t\t})\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"keydown\", (event) => {\n\t\t\t\tif (event.key !== \"Escape\") return\n\t\t\t\tdocument.querySelectorAll(\"[data-popover][data-open='true']\").forEach((root) => closePopover(root, true))\n\t\t\t})\n\n\t\t\twindow.addEventListener(\"resize\", repositionActivePopover)\n\t\t\twindow.addEventListener(\"scroll\", repositionActivePopover, true)\n\t\t})()\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 1, "<script>\n\t\t(() => {\n\t\t\tconst margin = 16\n\t\t\tconst offset = 10\n\t\t\tconst showDelay = 110\n\t\t\tconst hideDelay = 220\n\t\t\tconst states = new WeakMap()\n\t\t\tlet activePopover = null\n\t\t\tlet repositionFrame = 0\n\n\t\t\tfunction stateFor(root) {\n\t\t\t\tlet state = states.get(root)\n\t\t\t\tif (!state) {\n\t\t\t\t\tstate = { showTimer: 0, hideTimer: 0 }\n\t\t\t\t\tstates.set(root, state)\n\t\t\t\t}\n\t\t\t\treturn state\n\t\t\t}\n\n\t\t\tfunction targetRoot(target) {\n\t\t\t\tif (!(target instanceof Element)) return null\n\t\t\t\treturn target.closest(\"[data-popover]\")\n\t\t\t}\n\n\t\t\tfunction panelFor(root) {\n\t\t\t\treturn root.querySelector(\"[data-popover-panel]\")\n\t\t\t}\n\n\t\t\tfunction triggerFor(root) {\n\t\t\t\treturn root.querySelector(\"[data-popover-trigger]\")\n\t\t\t}\n\n\t\t\tfunction clearPopoverTimers(root) {\n\t\t\t\tconst state = stateFor(root)\n\t\t\t\tclearTimeout(state.showTimer)\n\t\t\t\tclearTimeout(state.hideTimer)\n\t\t\t}\n\n\t\t\tfunction closePopover(root, force) {\n\t\t\t\tif (!root) return\n\t\t\t\tif (!force && root.matches(\":focus-within\")) return\n\t\t\t\tclearPopoverTimers(root)\n\t\t\t\troot.dataset.open = \"false\"\n\t\t\t\tconst trigger = triggerFor(root)\n\t\t\t\tconst panel = panelFor(root)\n\t\t\t\tif (trigger) trigger.setAttribute(\"aria-expanded\", \"false\")\n\t\t\t\tif (panel) panel.setAttribute(\"aria-hidden\", \"true\")\n\t\t\t\tif (activePopover === root) activePopover = null\n\t\t\t}\n\n\t\t\tfunction closeOtherPopovers(root) {\n\t\t\t\tdocument.querySelectorAll(\"[data-popover][data-open='true']\").forEach((other) => {\n\t\t\t\t\tif (other !== root) closePopover(other, true)\n\t\t\t\t})\n\t\t\t}\n\n\t\t\tfunction positionPopover(root) {\n\t\t\t\tconst trigger = triggerFor(root)\n\t\t\t\tconst panel = panelFor(root)\n\t\t\t\tif (!trigger || !panel) return\n\n\t\t\t\tconst requestedWidth = Number(panel.dataset.popoverWidth || \"256\")\n\t\t\t\tconst width = Math.min(Math.max(160, requestedWidth), Math.max(160, window.innerWidth - margin * 2))\n\t\t\t\tpanel.style.width = width + \"px\"\n\n\t\t\t\tconst triggerRect = trigger.getBoundingClientRect()\n\t\t\t\tconst maxLeft = Math.max(margin, window.innerWidth - width - margin)\n\t\t\t\tconst left = Math.min(Math.max(margin, triggerRect.left + triggerRect.width / 2 - width / 2), maxLeft)\n\t\t\t\tconst availableBelow = Math.max(0, window.innerHeight - triggerRect.bottom - offset - margin)\n\t\t\t\tconst availableAbove = Math.max(0, triggerRect.top - offset - margin)\n\t\t\t\tconst desiredHeight = Math.min(panel.scrollHeight || panel.offsetHeight || 96, Math.max(48, window.innerHeight - margin * 2))\n\t\t\t\tconst useTop = desiredHeight > availableBelow && availableAbove > availableBelow\n\t\t\t\tconst available = useTop ? availableAbove : availableBelow\n\t\t\t\tconst maxHeight = Math.max(48, available)\n\t\t\t\tpanel.style.maxHeight = maxHeight + \"px\"\n\t\t\t\tconst height = Math.min(desiredHeight, maxHeight)\n\t\t\t\tlet top = triggerRect.bottom + offset\n\t\t\t\tlet placement = \"bottom\"\n\n\t\t\t\tif (useTop) {\n\t\t\t\t\ttop = triggerRect.top - height - offset\n\t\t\t\t\tplacement = \"top\"\n\t\t\t\t}\n\n\t\t\t\tpanel.style.left = left + \"px\"\n\t\t\t\tpanel.style.top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - height - margin)) + \"px\"\n\t\t\t\tpanel.dataset.placement = placement\n\t\t\t}\n\n\t\t\tfunction openPopover(root) {\n\t\t\t\tconst trigger = triggerFor(root)\n\t\t\t\tconst panel = panelFor(root)\n\t\t\t\tif (!trigger || !panel) return\n\n\t\t\t\tclearPopoverTimers(root)\n\t\t\t\tcloseOtherPopovers(root)\n\t\t\t\tpanel.style.left = \"-9999px\"\n\t\t\t\tpanel.style.top = \"-9999px\"\n\t\t\t\troot.dataset.open = \"true\"\n\t\t\t\ttrigger.setAttribute(\"aria-expanded\", \"true\")\n\t\t\t\tpanel.setAttribute(\"aria-hidden\", \"false\")\n\t\t\t\tpositionPopover(root)\n\t\t\t\tactivePopover = root\n\t\t\t}\n\n\t\t\tfunction scheduleOpen(root, delay) {\n\t\t\t\tclearPopoverTimers(root)\n\t\t\t\tconst state = stateFor(root)\n\t\t\t\tstate.showTimer = setTimeout(() => openPopover(root), delay)\n\t\t\t}\n\n\t\t\tfunction scheduleClose(root, delay) {\n\t\t\t\tconst state = stateFor(root)\n\t\t\t\tclearTimeout(state.showTimer)\n\t\t\t\tclearTimeout(state.hideTimer)\n\t\t\t\tstate.hideTimer = setTimeout(() => closePopover(root, false), delay)\n\t\t\t}\n\n\t\t\tfunction containsRelated(root, relatedTarget) {\n\t\t\t\treturn relatedTarget instanceof Node && root.contains(relatedTarget)\n\t\t\t}\n\n\t\t\tfunction repositionActivePopover() {\n\t\t\t\tif (!activePopover || repositionFrame) return\n\t\t\t\trepositionFrame = requestAnimationFrame(() => {\n\t\t\t\t\trepositionFrame = 0\n\t\t\t\t\tif (activePopover && activePopover.dataset.open === \"true\") positionPopover(activePopover)\n\t\t\t\t})\n\t\t\t}\n\n\t\t\tdocument.addEventListener(\"pointerover\", (event) => {\n\t\t\t\tconst root = targetRoot(event.target)\n\t\t\t\tif (!root || containsRelated(root, event.relatedTarget)) return\n\t\t\t\tscheduleOpen(root, showDelay)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"pointerout\", (event) => {\n\t\t\t\tconst root = targetRoot(event.target)\n\t\t\t\tif (!root || containsRelated(root, event.relatedTarget)) return\n\t\t\t\tscheduleClose(root, hideDelay)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"focusin\", (event) => {\n\t\t\t\tconst root = targetRoot(event.target)\n\t\t\t\tif (root) openPopover(root)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"focusout\", (event) => {\n\t\t\t\tconst root = targetRoot(event.target)\n\t\t\t\tif (!root || containsRelated(root, event.relatedTarget)) return\n\t\t\t\tscheduleClose(root, hideDelay)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"click\", (event) => {\n\t\t\t\tconst trigger = event.target instanceof Element ? event.target.closest(\"[data-popover-trigger]\") : null\n\t\t\t\tif (trigger) {\n\t\t\t\t\tconst root = trigger.closest(\"[data-popover]\")\n\t\t\t\t\tif (!root) return\n\t\t\t\t\topenPopover(root)\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\tdocument.querySelectorAll(\"[data-popover][data-open='true']\").forEach((root) => {\n\t\t\t\t\tif (!(event.target instanceof Node) || !root.contains(event.target)) closePopover(root, true)\n\t\t\t\t})\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"keydown\", (event) => {\n\t\t\t\tif (event.key !== \"Escape\") return\n\t\t\t\tdocument.querySelectorAll(\"[data-popover][data-open='true']\").forEach((root) => closePopover(root, true))\n\t\t\t})\n\n\t\t\twindow.addEventListener(\"resize\", repositionActivePopover)\n\t\t\twindow.addEventListener(\"scroll\", repositionActivePopover, true)\n\t\t})();\n\n\t\t(() => {\n\t\t\tconst tooltipID = \"help-tooltip\"\n\t\t\tconst margin = 16\n\t\t\tconst offset = 10\n\t\t\tconst showDelay = 110\n\t\t\tconst hideDelay = 160\n\t\t\tlet tooltip = null\n\t\t\tlet activeHelpTrigger = null\n\t\t\tlet currentHelpTerm = \"\"\n\t\t\tlet showTimer = 0\n\t\t\tlet hideTimer = 0\n\t\t\tlet positionFrame = 0\n\n\t\t\tfunction helpTooltip() {\n\t\t\t\tif (tooltip && document.documentElement.contains(tooltip)) return tooltip\n\t\t\t\ttooltip = document.getElementById(tooltipID)\n\t\t\t\treturn tooltip\n\t\t\t}\n\n\t\t\tfunction helpTriggerFor(target) {\n\t\t\t\tif (!(target instanceof Element)) return null\n\t\t\t\treturn target.closest(\"[data-help-trigger]\")\n\t\t\t}\n\n\t\t\tfunction helpTermFor(trigger) {\n\t\t\t\treturn trigger ? trigger.dataset.helpTerm || trigger.dataset.helpTitle || \"\" : \"\"\n\t\t\t}\n\n\t\t\tfunction sameHelpTerm(trigger, term) {\n\t\t\t\treturn helpTermFor(trigger) === term\n\t\t\t}\n\n\t\t\tfunction containsRelated(root, relatedTarget) {\n\t\t\t\treturn relatedTarget instanceof Node && root.contains(relatedTarget)\n\t\t\t}\n\n\t\t\tfunction cancelHelpHide() {\n\t\t\t\tclearTimeout(hideTimer)\n\t\t\t\thideTimer = 0\n\t\t\t}\n\n\t\t\tfunction clearHelpShow() {\n\t\t\t\tclearTimeout(showTimer)\n\t\t\t\tshowTimer = 0\n\t\t\t}\n\n\t\t\tfunction setActiveHelpTrigger(trigger) {\n\t\t\t\tif (activeHelpTrigger && activeHelpTrigger !== trigger) activeHelpTrigger.removeAttribute(\"aria-describedby\")\n\t\t\t\tactiveHelpTrigger = trigger\n\t\t\t\tif (activeHelpTrigger) activeHelpTrigger.setAttribute(\"aria-describedby\", tooltipID)\n\t\t\t}\n\n\t\t\tfunction setHelpContent(trigger) {\n\t\t\t\tconst tip = helpTooltip()\n\t\t\t\tif (!tip || !trigger) return\n\n\t\t\t\tconst title = tip.querySelector(\"[data-help-tooltip-title]\")\n\t\t\t\tconst description = tip.querySelector(\"[data-help-tooltip-description]\")\n\t\t\t\tif (title) title.textContent = trigger.dataset.helpTitle || \"\"\n\t\t\t\tif (description) description.textContent = trigger.dataset.helpDescription || \"\"\n\t\t\t}\n\n\t\t\tfunction positionHelpTooltip() {\n\t\t\t\tconst tip = helpTooltip()\n\t\t\t\tconst trigger = activeHelpTrigger\n\t\t\t\tif (!tip || !trigger || !trigger.isConnected) return\n\n\t\t\t\tconst requestedWidth = Number(tip.dataset.popoverWidth || \"256\")\n\t\t\t\tconst width = Math.min(Math.max(160, requestedWidth), Math.max(160, window.innerWidth - margin * 2))\n\t\t\t\ttip.style.width = width + \"px\"\n\n\t\t\t\tconst triggerRect = trigger.getBoundingClientRect()\n\t\t\t\tconst maxLeft = Math.max(margin, window.innerWidth - width - margin)\n\t\t\t\tconst left = Math.min(Math.max(margin, triggerRect.left + triggerRect.width / 2 - width / 2), maxLeft)\n\t\t\t\tconst availableBelow = Math.max(0, window.innerHeight - triggerRect.bottom - offset - margin)\n\t\t\t\tconst availableAbove = Math.max(0, triggerRect.top - offset - margin)\n\t\t\t\tconst desiredHeight = Math.min(tip.scrollHeight || tip.offsetHeight || 96, Math.max(48, window.innerHeight - margin * 2))\n\t\t\t\tconst useTop = desiredHeight > availableBelow && availableAbove > availableBelow\n\t\t\t\tconst available = useTop ? availableAbove : availableBelow\n\t\t\t\tconst maxHeight = Math.max(48, available)\n\t\t\t\tconst height = Math.min(desiredHeight, maxHeight)\n\t\t\t\tlet top = triggerRect.bottom + offset\n\t\t\t\tlet placement = \"bottom\"\n\n\t\t\t\tif (useTop) {\n\t\t\t\t\ttop = triggerRect.top - height - offset\n\t\t\t\t\tplacement = \"top\"\n\t\t\t\t}\n\n\t\t\t\ttip.style.left = left + \"px\"\n\t\t\t\ttip.style.top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - height - margin)) + \"px\"\n\t\t\t\ttip.style.maxHeight = maxHeight + \"px\"\n\t\t\t\ttip.dataset.placement = placement\n\t\t\t}\n\n\t\t\tfunction requestHelpPosition() {\n\t\t\t\tif (positionFrame) return\n\t\t\t\tpositionFrame = requestAnimationFrame(() => {\n\t\t\t\t\tpositionFrame = 0\n\t\t\t\t\tconst tip = helpTooltip()\n\t\t\t\t\tif (tip && tip.dataset.open === \"true\") positionHelpTooltip()\n\t\t\t\t})\n\t\t\t}\n\n\t\t\tfunction openHelpTooltip(trigger) {\n\t\t\t\tconst tip = helpTooltip()\n\t\t\t\tif (!tip || !trigger) return\n\n\t\t\t\tclearHelpShow()\n\t\t\t\tcancelHelpHide()\n\t\t\t\tcurrentHelpTerm = helpTermFor(trigger)\n\t\t\t\tsetHelpContent(trigger)\n\t\t\t\tsetActiveHelpTrigger(trigger)\n\t\t\t\ttip.style.left = \"-9999px\"\n\t\t\t\ttip.style.top = \"-9999px\"\n\t\t\t\ttip.dataset.open = \"true\"\n\t\t\t\ttip.setAttribute(\"aria-hidden\", \"false\")\n\t\t\t\tpositionHelpTooltip()\n\t\t\t}\n\n\t\t\tfunction hideHelpTooltip(term, force) {\n\t\t\t\tconst tip = helpTooltip()\n\t\t\t\tif (!tip) return\n\t\t\t\tif (!force && term && currentHelpTerm && term !== currentHelpTerm) return\n\t\t\t\tif (!force && activeHelpTrigger && document.activeElement === activeHelpTrigger) return\n\n\t\t\t\tclearHelpShow()\n\t\t\t\tcancelHelpHide()\n\t\t\t\tif (activeHelpTrigger) activeHelpTrigger.removeAttribute(\"aria-describedby\")\n\t\t\t\tactiveHelpTrigger = null\n\t\t\t\tcurrentHelpTerm = \"\"\n\t\t\t\ttip.removeAttribute(\"data-open\")\n\t\t\t\ttip.setAttribute(\"aria-hidden\", \"true\")\n\t\t\t}\n\n\t\t\tfunction scheduleHelpOpen(trigger, delay) {\n\t\t\t\tconst tip = helpTooltip()\n\t\t\t\tif (!tip || !trigger) return\n\n\t\t\t\tcancelHelpHide()\n\t\t\t\tif (tip.dataset.open === \"true\" && currentHelpTerm && sameHelpTerm(trigger, currentHelpTerm)) {\n\t\t\t\t\topenHelpTooltip(trigger)\n\t\t\t\t\treturn\n\t\t\t\t}\n\n\t\t\t\tclearHelpShow()\n\t\t\t\tshowTimer = setTimeout(() => openHelpTooltip(trigger), delay)\n\t\t\t}\n\n\t\t\tfunction scheduleHelpHide(trigger, delay) {\n\t\t\t\tconst term = helpTermFor(trigger) || currentHelpTerm\n\t\t\t\tclearHelpShow()\n\t\t\t\tclearTimeout(hideTimer)\n\t\t\t\thideTimer = setTimeout(() => hideHelpTooltip(term, false), delay)\n\t\t\t}\n\n\t\t\tdocument.addEventListener(\"pointerover\", (event) => {\n\t\t\t\tconst trigger = helpTriggerFor(event.target)\n\t\t\t\tif (!trigger || containsRelated(trigger, event.relatedTarget)) return\n\t\t\t\tscheduleHelpOpen(trigger, showDelay)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"pointerout\", (event) => {\n\t\t\t\tconst trigger = helpTriggerFor(event.target)\n\t\t\t\tif (!trigger || containsRelated(trigger, event.relatedTarget)) return\n\t\t\t\tscheduleHelpHide(trigger, hideDelay)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"focusin\", (event) => {\n\t\t\t\tconst trigger = helpTriggerFor(event.target)\n\t\t\t\tif (trigger) openHelpTooltip(trigger)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"focusout\", (event) => {\n\t\t\t\tconst trigger = helpTriggerFor(event.target)\n\t\t\t\tif (!trigger || containsRelated(trigger, event.relatedTarget)) return\n\t\t\t\tscheduleHelpHide(trigger, hideDelay)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"click\", (event) => {\n\t\t\t\tconst trigger = helpTriggerFor(event.target)\n\t\t\t\tif (trigger) {\n\t\t\t\t\topenHelpTooltip(trigger)\n\t\t\t\t\treturn\n\t\t\t\t}\n\t\t\t\thideHelpTooltip(\"\", true)\n\t\t\t})\n\n\t\t\tdocument.addEventListener(\"keydown\", (event) => {\n\t\t\t\tif (event.key === \"Escape\") hideHelpTooltip(\"\", true)\n\t\t\t})\n\n\t\t\twindow.addEventListener(\"resize\", requestHelpPosition)\n\t\t\twindow.addEventListener(\"scroll\", () => hideHelpTooltip(\"\", true), true)\n\t\t})();\n\t</script>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		return nil
+	})
+}
+
+func helpTooltipHost() templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
+		}
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
+				}
+			}()
+		}
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var2 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var2 == nil {
+			templ_7745c5c3_Var2 = templ.NopComponent
+		}
+		ctx = templ.ClearChildren(ctx)
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<div id=\"help-tooltip\" role=\"tooltip\" class=\"popover-panel help-tooltip\" aria-hidden=\"true\" data-help-tooltip data-popover-width=\"256\"><span class=\"help-tip-title\" data-help-tooltip-title></span> <span class=\"help-tip-description\" data-help-tooltip-description></span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -53,78 +82,78 @@ func helpIcon(term helpTerm, scope string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var2 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var2 == nil {
-			templ_7745c5c3_Var2 = templ.NopComponent
+		templ_7745c5c3_Var3 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var3 == nil {
+			templ_7745c5c3_Var3 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if hasHelp(term) {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "<span class=\"help-tip relative inline-flex shrink-0 align-middle\" data-popover data-help-tip><button type=\"button\" class=\"help-tip-button\" aria-label=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var3 string
-			templ_7745c5c3_Var3, templ_7745c5c3_Err = templ.JoinStringErrs("Help: " + helpLabel(term))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 187, Col: 43}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var3))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\" aria-describedby=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "<span class=\"help-tip inline-flex shrink-0 align-middle\" data-help-tip><button type=\"button\" class=\"help-tip-button\" aria-label=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var4 string
-			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs(helpID(term, scope))
+			templ_7745c5c3_Var4, templ_7745c5c3_Err = templ.JoinStringErrs("Help: " + helpLabel(term))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 188, Col: 42}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 397, Col: 43}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var4))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\" aria-expanded=\"false\" data-popover-trigger><span aria-hidden=\"true\">?</span></button> <span id=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 4, "\" data-help-trigger data-help-scope=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var5 string
-			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(helpID(term, scope))
+			templ_7745c5c3_Var5, templ_7745c5c3_Err = templ.JoinStringErrs(scope)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 195, Col: 28}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 399, Col: 27}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var5))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\" role=\"tooltip\" class=\"popover-panel help-tip-panel\" aria-hidden=\"true\" data-popover-panel data-popover-width=\"256\" data-help-panel><span class=\"help-tip-title\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "\" data-help-term=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var6 string
-			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(helpLabel(term))
+			templ_7745c5c3_Var6, templ_7745c5c3_Err = templ.JoinStringErrs(string(term))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 203, Col: 50}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 400, Col: 33}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var6))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "</span> <span class=\"help-tip-description\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 6, "\" data-help-title=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var7 string
-			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(helpDescription(term))
+			templ_7745c5c3_Var7, templ_7745c5c3_Err = templ.JoinStringErrs(helpLabel(term))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 204, Col: 62}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 401, Col: 37}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var7))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</span></span></span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "\" data-help-description=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var8 string
+			templ_7745c5c3_Var8, templ_7745c5c3_Err = templ.JoinStringErrs(helpDescription(term))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 402, Col: 49}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var8))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "\"><span aria-hidden=\"true\">?</span></button></span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -149,43 +178,43 @@ func helpInlineLabel(label string, term helpTerm, scope string, class string) te
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var8 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var8 == nil {
-			templ_7745c5c3_Var8 = templ.NopComponent
+		templ_7745c5c3_Var9 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var9 == nil {
+			templ_7745c5c3_Var9 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		var templ_7745c5c3_Var9 = []any{"inline-flex min-w-0 items-center gap-1.5 " + class}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var9...)
+		var templ_7745c5c3_Var10 = []any{"inline-flex min-w-0 items-center gap-1.5 " + class}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var10...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<span class=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var10 string
-		templ_7745c5c3_Var10, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var9).String())
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 1, Col: 0}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var10))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "\"><span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 9, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var11 string
-		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		templ_7745c5c3_Var11, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var10).String())
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 212, Col: 15}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 1, Col: 0}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var11))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "</span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 10, "\"><span>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var12 string
+		templ_7745c5c3_Var12, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 412, Col: 15}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var12))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -193,7 +222,7 @@ func helpInlineLabel(label string, term helpTerm, scope string, class string) te
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 11, "</span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "</span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -217,25 +246,25 @@ func helpHeading2(label string, term helpTerm, scope string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var12 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var12 == nil {
-			templ_7745c5c3_Var12 = templ.NopComponent
+		templ_7745c5c3_Var13 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var13 == nil {
+			templ_7745c5c3_Var13 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 12, "<h2 class=\"inline-flex min-w-0 items-center gap-2 text-lg font-semibold text-foreground\"><span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "<h2 class=\"inline-flex min-w-0 items-center gap-2 text-lg font-semibold text-foreground\"><span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var13 string
-		templ_7745c5c3_Var13, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		var templ_7745c5c3_Var14 string
+		templ_7745c5c3_Var14, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 219, Col: 15}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 419, Col: 15}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var13))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var14))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 13, "</span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "</span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -243,7 +272,7 @@ func helpHeading2(label string, term helpTerm, scope string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 14, "</h2>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "</h2>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -267,25 +296,25 @@ func helpHeading3(label string, term helpTerm, scope string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var14 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var14 == nil {
-			templ_7745c5c3_Var14 = templ.NopComponent
+		templ_7745c5c3_Var15 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var15 == nil {
+			templ_7745c5c3_Var15 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 15, "<h3 class=\"inline-flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground\"><span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "<h3 class=\"inline-flex min-w-0 items-center gap-2 text-sm font-semibold text-foreground\"><span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var15 string
-		templ_7745c5c3_Var15, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		var templ_7745c5c3_Var16 string
+		templ_7745c5c3_Var16, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 226, Col: 15}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/help.templ`, Line: 426, Col: 15}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var15))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var16))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 16, "</span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -293,7 +322,7 @@ func helpHeading3(label string, term helpTerm, scope string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 17, "</h3>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 18, "</h3>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
