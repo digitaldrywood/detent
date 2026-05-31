@@ -122,7 +122,6 @@ templ trackerStep(data OnboardingData) {
 		<h2 class="text-xl font-semibold">Choose tracker</h2>
 		<form class="mt-5 space-y-3" hx-post="/onboarding/tracker" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@trackerChoice(data, "github", "GitHub Projects", "ProjectV2-backed issues and pull requests")
-			@trackerChoice(data, "linear", "Linear", "Linear work queues with a dispatch repository")
 			@trackerChoice(data, "memory", "Memory", "Local sample issues for development")
 			<div class="pt-2">
 				<button class={ buttonClass() } type="submit">Continue</button>

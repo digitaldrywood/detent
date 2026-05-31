@@ -24,7 +24,6 @@ const (
 	onboardingStepWrite       = "write"
 
 	defaultGitHubAPIKey         = "$GITHUB_TOKEN"
-	defaultLinearAPIKey         = "$LINEAR_API_KEY"
 	defaultWorkspaceRoot        = "~/code/symphony-workspaces"
 	defaultMaxConcurrentAgents  = "5"
 	defaultMaxTurns             = "20"
@@ -208,10 +207,10 @@ func validateTracker(form templates.OnboardingForm) []string {
 	switch form.TrackerKind {
 	case "":
 		return []string{"tracker is required"}
-	case config.TrackerGitHub, config.TrackerLinear, config.TrackerMemory:
+	case config.TrackerGitHub, config.TrackerMemory:
 		return nil
 	default:
-		return []string{"tracker must be github, linear, or memory"}
+		return []string{"tracker must be github or memory"}
 	}
 }
 
@@ -306,13 +305,6 @@ func applyTrackerDefaults(form *templates.OnboardingForm) {
 		if form.APIKey == "" {
 			form.APIKey = defaultGitHubAPIKey
 		}
-	case config.TrackerLinear:
-		if form.Endpoint == "" {
-			form.Endpoint = "https://api.linear.app/graphql"
-		}
-		if form.APIKey == "" {
-			form.APIKey = defaultLinearAPIKey
-		}
 	case config.TrackerMemory:
 		form.Endpoint = ""
 		form.APIKey = ""
@@ -353,6 +345,18 @@ func renderWorkflow(form templates.OnboardingForm) string {
 	}
 	if form.ProjectSlug != "" {
 		writeScalar(&b, "  ", "project_slug", form.ProjectSlug)
+	}
+	if form.TrackerKind == config.TrackerMemory {
+		b.WriteString("  issues:\n")
+		b.WriteString("    - id: memory-onboarding-1\n")
+		b.WriteString("      identifier: MEM-1\n")
+		b.WriteString("      title: Verify Symphony onboarding\n")
+		b.WriteString("      description: Run the generated memory workflow through one local dispatch.\n")
+		b.WriteString("      priority: 3\n")
+		b.WriteString("      state: Todo\n")
+		b.WriteString("      labels:\n")
+		b.WriteString("        - onboarding\n")
+		b.WriteString("      assigned_to_worker: true\n")
 	}
 	writeList(&b, "  ", "active_states", []string{"Todo", "In Progress", "Rework", "Merging"})
 	writeList(&b, "  ", "observed_states", []string{"Backlog", "Human Review", "Blocked"})
@@ -407,8 +411,6 @@ func renderWorkflow(form templates.OnboardingForm) string {
 
 func renderWorkflowPrompt(form templates.OnboardingForm) string {
 	switch form.TrackerKind {
-	case config.TrackerLinear:
-		return "You are working on Linear issue `{{ issue.identifier }}`.\n\n" + commonWorkflowPrompt()
 	case config.TrackerMemory:
 		return "You are working on a memory tracker issue `{{ issue.identifier }}`.\n\n" + commonWorkflowPrompt()
 	default:

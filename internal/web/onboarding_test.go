@@ -175,6 +175,41 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 	}
 }
 
+func TestOnboardingWriteMemoryWorkflowSeedsSampleIssue(t *testing.T) {
+	t.Parallel()
+
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := onboardingRequest(http.MethodPost, "/onboarding/write", validMemoryOnboardingForm())
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	raw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(raw)
+	for _, want := range []string{
+		"tracker:\n  kind: memory",
+		"issues:\n    - id: memory-onboarding-1",
+		"identifier: MEM-1",
+		"state: Todo",
+		"You are working on a memory tracker issue `{{ issue.identifier }}`",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("workflow missing %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestOnboardingWriteDoesNotOverwriteWithoutReplace(t *testing.T) {
 	t.Parallel()
 
@@ -247,6 +282,13 @@ func TestOnboardingWriteValidatesInput(t *testing.T) {
 			want: "tracker is required",
 		},
 		{
+			name: "unsupported tracker",
+			edit: func(form url.Values) {
+				form.Set("tracker_kind", "linear")
+			},
+			want: "tracker must be github or memory",
+		},
+		{
 			name: "invalid repo",
 			edit: func(form url.Values) {
 				form.Set("repo", "bad repo")
@@ -301,6 +343,16 @@ func validOnboardingForm() url.Values {
 		"merging_concurrency":        {"1"},
 		"dispatch_priority_by_state": {"Merging\nRework"},
 	}
+}
+
+func validMemoryOnboardingForm() url.Values {
+	form := validOnboardingForm()
+	form.Set("tracker_kind", "memory")
+	form.Del("endpoint")
+	form.Del("api_key")
+	form.Del("project_slug")
+	form.Del("repo")
+	return form
 }
 
 func onboardingRequest(method string, path string, form url.Values) *http.Request {
