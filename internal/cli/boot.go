@@ -109,9 +109,14 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}()
 
 	events := hub.New[project.Event]()
-	manager, err := project.NewManager(project.ManagerConfigFromGlobal(cfg.Global), project.ManagerDependencies{
+	projectFactory := withRunnerFactory(project.Dependencies{
 		Events: events,
 		Logger: logger,
+	}, runtimeStore, nil)
+	manager, err := project.NewManager(project.ManagerConfigFromGlobal(cfg.Global), project.ManagerDependencies{
+		ProjectFactory: projectFactory,
+		Events:         events,
+		Logger:         logger,
 	})
 	if err != nil {
 		return err
@@ -121,6 +126,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
+	go publishSnapshots(ctx, manager.Registry(), snapshotHub, defaultSnapshotInterval, time.Now)
 	server, err := web.NewServer(web.Config{
 		Mode:         web.ModeRunning,
 		WorkflowPath: firstWorkflowPath(cfg),
