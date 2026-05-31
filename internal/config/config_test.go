@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -185,6 +186,35 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Budget.PricingPath != "priv/pricing/models.yaml" {
 		t.Fatalf("Budget.PricingPath = %q", cfg.Budget.PricingPath)
+	}
+}
+
+func TestLoadWorkflowResolvesRelativeSourceRootFromWorkflowDirectory(t *testing.T) {
+	t.Parallel()
+
+	sourceRoot := initConfigSourceRepo(t)
+	path := filepath.Join(sourceRoot, "WORKFLOW.md")
+	raw := []byte(`---
+tracker:
+  kind: memory
+workspace:
+  source_root: .
+---
+Prompt
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	workflow, err := LoadWorkflow(path)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if workflow.Config.Workspace.SourceRoot != sourceRoot {
+		t.Fatalf("Workspace.SourceRoot = %q, want %q", workflow.Config.Workspace.SourceRoot, sourceRoot)
 	}
 }
 

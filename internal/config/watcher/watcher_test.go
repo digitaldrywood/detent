@@ -143,11 +143,21 @@ tracker:
 polling:
   interval_ms: ` + strconv.Itoa(intervalMS) + `
 workspace:
-  source_root: .
+  source_root: ` + watcherSourceRoot(t) + `
 ---
 ` + prompt + `
 `)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
+}
+
+func watcherSourceRoot(t *testing.T) string {
+	t.Helper()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	return cwd
 }

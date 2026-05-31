@@ -145,7 +145,7 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	form := validOnboardingForm()
+	form := validOnboardingForm(t)
 	rec := httptest.NewRecorder()
 	req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
 
@@ -167,7 +167,7 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		"tracker:\n  kind: github",
 		"api_key: $GITHUB_TOKEN",
 		"project_slug: PVT_project",
-		"source_root: .",
+		"source_root: " + webTestSourceRoot(t),
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"You are working on GitHub issue `{{ issue.identifier }}`",
 	} {
@@ -187,7 +187,7 @@ func TestOnboardingWriteMemoryWorkflowSeedsSampleIssue(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := onboardingRequest(http.MethodPost, "/onboarding/write", validMemoryOnboardingForm())
+	req := onboardingRequest(http.MethodPost, "/onboarding/write", validMemoryOnboardingForm(t))
 
 	server.Handler().ServeHTTP(rec, req)
 
@@ -225,7 +225,7 @@ func TestOnboardingWriteDoesNotOverwriteWithoutReplace(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := onboardingRequest(http.MethodPost, "/onboarding/write", validOnboardingForm())
+	req := onboardingRequest(http.MethodPost, "/onboarding/write", validOnboardingForm(t))
 
 	server.Handler().ServeHTTP(rec, req)
 
@@ -243,7 +243,7 @@ func TestOnboardingWriteDoesNotOverwriteWithoutReplace(t *testing.T) {
 		t.Fatalf("workflow content = %q, want existing", raw)
 	}
 
-	form := validOnboardingForm()
+	form := validOnboardingForm(t)
 	form.Set("replace", "true")
 	rec = httptest.NewRecorder()
 	req = onboardingRequest(http.MethodPost, "/onboarding/write", form)
@@ -272,7 +272,7 @@ func TestOnboardingWriteDoesNotGenerateAfterCreateClone(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := onboardingRequest(http.MethodPost, "/onboarding/write", validOnboardingForm())
+	req := onboardingRequest(http.MethodPost, "/onboarding/write", validOnboardingForm(t))
 
 	server.Handler().ServeHTTP(rec, req)
 
@@ -339,7 +339,7 @@ func TestOnboardingWriteValidatesInput(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			form := validOnboardingForm()
+			form := validOnboardingForm(t)
 			tt.edit(form)
 
 			rec := httptest.NewRecorder()
@@ -360,7 +360,9 @@ func TestOnboardingWriteValidatesInput(t *testing.T) {
 	}
 }
 
-func validOnboardingForm() url.Values {
+func validOnboardingForm(t *testing.T) url.Values {
+	t.Helper()
+
 	return url.Values{
 		"tracker_kind":               {"github"},
 		"endpoint":                   {"https://api.github.com/graphql"},
@@ -368,7 +370,7 @@ func validOnboardingForm() url.Values {
 		"project_slug":               {"PVT_project"},
 		"repo":                       {"digitaldrywood/symphony"},
 		"workspace_root":             {"~/code/symphony-workspaces"},
-		"source_root":                {"."},
+		"source_root":                {webTestSourceRoot(t)},
 		"max_concurrent_agents":      {"5"},
 		"max_turns":                  {"20"},
 		"polling_interval_ms":        {"30000"},
@@ -377,14 +379,26 @@ func validOnboardingForm() url.Values {
 	}
 }
 
-func validMemoryOnboardingForm() url.Values {
-	form := validOnboardingForm()
+func validMemoryOnboardingForm(t *testing.T) url.Values {
+	t.Helper()
+
+	form := validOnboardingForm(t)
 	form.Set("tracker_kind", "memory")
 	form.Del("endpoint")
 	form.Del("api_key")
 	form.Del("project_slug")
 	form.Del("repo")
 	return form
+}
+
+func webTestSourceRoot(t *testing.T) string {
+	t.Helper()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	return cwd
 }
 
 func onboardingRequest(method string, path string, form url.Values) *http.Request {

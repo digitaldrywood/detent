@@ -166,7 +166,14 @@ func LoadWorkflow(path string) (Workflow, error) {
 		return Workflow{}, fmt.Errorf("read workflow file: %w", err)
 	}
 
-	return ParseWorkflow(raw)
+	workflow, err := ParseWorkflow(raw)
+	if err != nil {
+		return Workflow{}, err
+	}
+	if err := workflow.Config.resolveWorkflowPaths(filepath.Dir(path)); err != nil {
+		return Workflow{}, err
+	}
+	return workflow, nil
 }
 
 func ParseWorkflow(raw []byte) (Workflow, error) {
@@ -345,6 +352,25 @@ func (c *Config) normalize() {
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
 	c.Agent.AutoPromote.AllowedIssueLabels = normalizeLabels(c.Agent.AutoPromote.AllowedIssueLabels)
+}
+
+func (c *Config) resolveWorkflowPaths(baseDir string) error {
+	sourceRoot := strings.TrimSpace(c.Workspace.SourceRoot)
+	if sourceRoot == "" {
+		return nil
+	}
+
+	expanded, err := expandUserPath(sourceRoot)
+	if err != nil {
+		return err
+	}
+	if filepath.IsAbs(expanded) || windowsAbsPathPattern.MatchString(expanded) {
+		c.Workspace.SourceRoot = expanded
+		return nil
+	}
+
+	c.Workspace.SourceRoot = filepath.Join(baseDir, expanded)
+	return nil
 }
 
 func (c Config) validateTracker(problems *[]string) {

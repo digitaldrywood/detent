@@ -891,13 +891,23 @@ tracker:
 %spolling:
   interval_ms: %d
 workspace:
-  source_root: .
+  source_root: %s
 ---
 %s
-`, issues, intervalMS, prompt)
+`, issues, intervalMS, projectSourceRoot(t), prompt)
 	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
 		t.Fatalf("WriteFile(%s) error = %v", path, err)
 	}
+}
+
+func projectSourceRoot(t *testing.T) string {
+	t.Helper()
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	return cwd
 }
 
 func receiveOrchestratorConfig(t *testing.T, ch <-chan orchestrator.Config) orchestrator.Config {
