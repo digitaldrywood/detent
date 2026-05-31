@@ -27,6 +27,7 @@ type Config struct {
 	GitHubAppInstallationID string
 	ProjectSlug             string
 	ActiveStates            []string
+	ObservedStates          []string
 	TerminalStates          []string
 	StateMap                map[string]string
 	PriorityMap             map[string]*int
@@ -50,6 +51,7 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			GitHubAppInstallationID: cfg.GitHubAppInstallationID,
 			ProjectSlug:             cfg.ProjectSlug,
 			ActiveStates:            cfg.ActiveStates,
+			ObservedStates:          cfg.ObservedStates,
 			TerminalStates:          cfg.TerminalStates,
 			StateMap:                cfg.StateMap,
 			PriorityMap:             cfg.PriorityMap,

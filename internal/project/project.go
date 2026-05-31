@@ -260,6 +260,25 @@ func (p *Project) Start(ctx context.Context) error {
 		p.mu.Unlock()
 		return ErrProjectStopped
 	}
+	p.mu.Unlock()
+
+	if err := p.provision(ctx); err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	if p.cfg.Paused {
+		p.mu.Unlock()
+		return ErrProjectPaused
+	}
+	if p.done != nil {
+		p.mu.Unlock()
+		return ErrAlreadyRunning
+	}
+	if p.started {
+		p.mu.Unlock()
+		return ErrProjectStopped
+	}
 	if p.orchestrator == nil {
 		orch, err := p.orchFactory(p.orchConfig, p.orchDeps)
 		if err != nil {
@@ -272,7 +291,6 @@ func (p *Project) Start(ctx context.Context) error {
 		}
 		p.orchestrator = orch
 	}
-
 	runCtx, cancel := context.WithCancel(ctx)
 	done := make(chan struct{})
 	orch := p.orchestrator
@@ -362,6 +380,25 @@ func (p *Project) Unpause(ctx context.Context) error {
 		Kind:      EventUnpaused,
 		At:        time.Now(),
 	})
+	return nil
+}
+
+func (p *Project) provision(ctx context.Context) error {
+	p.mu.Lock()
+	autoProvision := p.workflow.Config.Tracker.AutoProvision
+	projectConnector := p.connector
+	p.mu.Unlock()
+
+	if !autoProvision {
+		return nil
+	}
+	provisioner, ok := projectConnector.(connector.Provisioner)
+	if !ok {
+		return nil
+	}
+	if err := provisioner.Provision(ctx); err != nil {
+		return fmt.Errorf("provision project connector: %w", err)
+	}
 	return nil
 }
 
@@ -635,40 +672,50 @@ func defaultConnectorFactory(cfg workflowconfig.Config) (connector.Connector, er
 		GitHubAppInstallationID: cfg.Tracker.GitHubAppInstallationID,
 		ProjectSlug:             cfg.Tracker.ProjectSlug,
 		ActiveStates:            cfg.Tracker.ActiveStates,
+		ObservedStates:          cfg.Tracker.ObservedStates,
 		TerminalStates:          cfg.Tracker.TerminalStates,
-		StateMap:                stateMapValue(cfg.Tracker.StateMap),
-		PriorityMap:             priorityMapValue(cfg.Tracker.PriorityMap),
+		StateMap:                trackerStateMap(cfg.Tracker.StateMap),
+		PriorityMap:             trackerPriorityMap(cfg.Tracker.PriorityMap),
 	})
 }
 
-func stateMapValue(value workflowconfig.StringOrMap) map[string]string {
+func trackerStateMap(value workflowconfig.StringOrMap) map[string]string {
 	if !value.IsMap {
 		return nil
 	}
 
 	out := make(map[string]string, len(value.Map))
 	for state, mapped := range value.Map {
-		if mappedState, ok := mapped.(string); ok {
+		mappedState, ok := mapped.(string)
+		if !ok {
+			continue
+		}
+		state = strings.TrimSpace(state)
+		mappedState = strings.TrimSpace(mappedState)
+		if state != "" && mappedState != "" {
 			out[state] = mappedState
 		}
 	}
 	return out
 }
 
-func priorityMapValue(value workflowconfig.StringOrMap) map[string]*int {
+func trackerPriorityMap(value workflowconfig.StringOrMap) map[string]*int {
 	if !value.IsMap {
 		return nil
 	}
 
 	out := make(map[string]*int, len(value.Map))
 	for name, rank := range value.Map {
-		if rank == nil {
-			out[name] = nil
+		name = strings.TrimSpace(name)
+		if name == "" {
 			continue
 		}
-		if intRank, ok := rank.(int); ok {
-			rankCopy := intRank
-			out[name] = &rankCopy
+		switch rank := rank.(type) {
+		case nil:
+			out[name] = nil
+		case int:
+			rankValue := rank
+			out[name] = &rankValue
 		}
 	}
 	return out
