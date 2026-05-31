@@ -452,6 +452,69 @@ func TestRunSkipsTodoBlockedByNonTerminalDependency(t *testing.T) {
 	}
 }
 
+func TestRunTracksBlockedStatusIssuesForDisplayOnly(t *testing.T) {
+	t.Parallel()
+
+	candidate := testIssue("issue-ready", "digitaldrywood/symphony#170", "Todo")
+	blocked := testIssue("issue-blocked-status", "digitaldrywood/symphony#98", "Blocked")
+	blocked.BlockerReason = "Create public repository digitaldrywood/homebrew-tap"
+	tracker := newFakeConnector(candidate)
+	tracker.setStateIssues(blocked)
+	runner := newBlockingRunner()
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:           5 * time.Millisecond,
+		MaxConcurrentAgents:    2,
+		MaxRetryBackoff:        time.Hour,
+		FailureRetryBaseDelay:  time.Hour,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay: time.Second,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+	defer close(runner.release)
+
+	request := receiveRunRequest(t, runner.started)
+	if request.Issue.ID != candidate.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, candidate.ID)
+	}
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		_, ok := state.Blocked[blocked.ID]
+		return ok
+	})
+
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected display-only blocked dispatch = %#v", request)
+	case <-time.After(25 * time.Millisecond):
+	}
+	if got := tracker.fetchByStatesCalls(); got == 0 {
+		t.Fatal("FetchIssuesByStates() calls = 0, want blocked status fetch")
+	}
+	if _, ok := state.Claimed[blocked.ID]; ok {
+		t.Fatalf("Claimed[%q] present for display-only blocked issue", blocked.ID)
+	}
+	entry := state.Blocked[blocked.ID]
+	if entry.Issue.ID != blocked.ID || entry.Issue.State != "Blocked" {
+		t.Fatalf("Blocked[%q].Issue = %#v, want Blocked issue", blocked.ID, entry.Issue)
+	}
+	if entry.Reason != blocked.BlockerReason {
+		t.Fatalf("Blocked[%q].Reason = %q, want %q", blocked.ID, entry.Reason, blocked.BlockerReason)
+	}
+	snapshot := state.Snapshot(time.Now())
+	if snapshot.Counts.Blocked != 1 || len(snapshot.Blocked) != 1 {
+		t.Fatalf("snapshot blocked count = %d len = %d, want 1", snapshot.Counts.Blocked, len(snapshot.Blocked))
+	}
+}
+
 func TestStateReturnsDefensiveCopies(t *testing.T) {
 	t.Parallel()
 
@@ -688,7 +751,9 @@ func rankedTestIssue(issue connector.Issue, priority int, createdAt time.Time) c
 type fakeConnector struct {
 	mu                  sync.Mutex
 	candidates          []connector.Issue
+	stateIssues         []connector.Issue
 	fetchCandidateCount int
+	fetchByStatesCount  int
 }
 
 func newFakeConnector(issues ...connector.Issue) *fakeConnector {
@@ -707,11 +772,22 @@ func (c *fakeConnector) FetchCandidateIssues(context.Context) ([]connector.Issue
 	return cloneIssues(c.candidates), nil
 }
 
-func (c *fakeConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+func (c *fakeConnector) FetchIssuesByStates(_ context.Context, states []string) ([]connector.Issue, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
-	return cloneIssues(c.candidates), nil
+	c.fetchByStatesCount++
+	wanted := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		wanted[strings.ToLower(strings.TrimSpace(state))] = struct{}{}
+	}
+	issues := make([]connector.Issue, 0, len(c.stateIssues))
+	for _, issue := range c.stateIssues {
+		if _, ok := wanted[strings.ToLower(strings.TrimSpace(issue.State))]; ok {
+			issues = append(issues, issue)
+		}
+	}
+	return cloneIssues(issues), nil
 }
 
 func (c *fakeConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
@@ -746,6 +822,20 @@ func (c *fakeConnector) fetchCandidateCalls() int {
 	defer c.mu.Unlock()
 
 	return c.fetchCandidateCount
+}
+
+func (c *fakeConnector) fetchByStatesCalls() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.fetchByStatesCount
+}
+
+func (c *fakeConnector) setStateIssues(issues ...connector.Issue) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.stateIssues = cloneIssues(issues)
 }
 
 type staticRunner struct {

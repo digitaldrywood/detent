@@ -134,6 +134,50 @@ func TestDispatchReadyIssuesRanksDueRetriesWithCandidates(t *testing.T) {
 	}
 }
 
+func TestDispatchReadyIssuesPreservesBlockedStatusForMissingDueRetry(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:   1,
+		ActiveStates:          []string{"Todo"},
+		TerminalStates:        []string{"Done"},
+		MaxRetryBackoff:       time.Minute,
+		FailureRetryBaseDelay: time.Second,
+	})
+	orch := Orchestrator{cfg: cfg}
+	state := newState(cfg)
+	now := time.Now()
+	retrying := retryTestIssue("retrying", "digitaldrywood/symphony#21")
+	blocked := retrying
+	blocked.State = "Blocked"
+
+	state.Claimed[retrying.ID] = Claimed{Issue: retrying, ClaimedAt: now.Add(-time.Minute)}
+	state.Retry[retrying.ID] = Retry{
+		Issue:   retrying,
+		Attempt: 2,
+		DueAt:   now.Add(-time.Millisecond),
+		Error:   "previous failure",
+	}
+	state.Blocked[retrying.ID] = Blocked{
+		Issue:     blocked,
+		Reason:    "human action needed",
+		BlockedAt: now,
+		Source:    BlockedSourceProjectStatus,
+	}
+
+	orch.dispatchReadyIssues(context.Background(), &state, nil, now)
+
+	if _, ok := state.Blocked[retrying.ID]; !ok {
+		t.Fatalf("Blocked[%q] missing after missing due retry cleanup", retrying.ID)
+	}
+	if _, ok := state.Claimed[retrying.ID]; ok {
+		t.Fatalf("Claimed[%q] present after missing due retry cleanup", retrying.ID)
+	}
+	if _, ok := state.Retry[retrying.ID]; ok {
+		t.Fatalf("Retry[%q] present after missing due retry cleanup", retrying.ID)
+	}
+}
+
 func TestDispatchReadyIssuesKeepsAttemptWhenWorkerCapacityIsFull(t *testing.T) {
 	t.Parallel()
 

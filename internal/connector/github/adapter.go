@@ -88,6 +88,18 @@ query SymphonyGitHubIssuesByID($issueIds: [ID!]!, $projectItemsFirst: Int!) {
   }
 }`
 
+const issueCommentsQuery = `
+query SymphonyGitHubIssueComments($issueIds: [ID!]!) {
+  nodes(ids: $issueIds) {
+    __typename
+    ... on Issue {
+      id
+      body
+      comments(first: 100) { nodes { body } }
+    }
+  }
+}`
+
 const addCommentMutation = `
 mutation SymphonyGitHubAddComment($subjectId: ID!, $body: String!) {
   addComment(input: {subjectId: $subjectId, body: $body}) {
@@ -146,6 +158,7 @@ var (
 	modelOverridePattern  = regexp.MustCompile(`(?i)<!--\s*model:\s*(\S+?)\s*-->`)
 	dependencyLinePattern = regexp.MustCompile("(?i)^\\s*(?:>\\s*)?(?:[-*+]\\s+)?(?:[*_`~]+)?\\s*(?:blocked\\s+by|depends[\\s-]+on)(?:[*_`~]+)?\\s*:\\s*(?:[*_`~]+)?\\s*(.+)\\s*$")
 	issueRefPattern       = regexp.MustCompile(`(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(\d+)`)
+	numberedListPattern   = regexp.MustCompile(`^\d+[.)]\s+`)
 )
 
 type pageInfo struct {
@@ -167,20 +180,21 @@ type projectItemNode struct {
 }
 
 type githubIssueNode struct {
-	TypeName                       string                      `json:"__typename"`
-	ID                             string                      `json:"id"`
-	Number                         int                         `json:"number"`
-	Title                          string                      `json:"title"`
-	Body                           string                      `json:"body"`
-	State                          string                      `json:"state"`
-	URL                            string                      `json:"url"`
-	CreatedAt                      *string                     `json:"createdAt"`
-	UpdatedAt                      *string                     `json:"updatedAt"`
-	Assignees                      nodeConnection[assignee]    `json:"assignees"`
-	Labels                         nodeConnection[label]       `json:"labels"`
-	Repository                     repository                  `json:"repository"`
-	ClosedByPullRequestsReferences nodeConnection[pullRequest] `json:"closedByPullRequestsReferences"`
-	ProjectItems                   *projectItemsConnection     `json:"projectItems"`
+	TypeName                       string                       `json:"__typename"`
+	ID                             string                       `json:"id"`
+	Number                         int                          `json:"number"`
+	Title                          string                       `json:"title"`
+	Body                           string                       `json:"body"`
+	State                          string                       `json:"state"`
+	URL                            string                       `json:"url"`
+	CreatedAt                      *string                      `json:"createdAt"`
+	UpdatedAt                      *string                      `json:"updatedAt"`
+	Assignees                      nodeConnection[assignee]     `json:"assignees"`
+	Labels                         nodeConnection[label]        `json:"labels"`
+	Comments                       nodeConnection[issueComment] `json:"comments"`
+	Repository                     repository                   `json:"repository"`
+	ClosedByPullRequestsReferences nodeConnection[pullRequest]  `json:"closedByPullRequestsReferences"`
+	ProjectItems                   *projectItemsConnection      `json:"projectItems"`
 }
 
 type nodeConnection[T any] struct {
@@ -193,6 +207,10 @@ type assignee struct {
 
 type label struct {
 	Name string `json:"name"`
+}
+
+type issueComment struct {
+	Body string `json:"body"`
 }
 
 type pullRequest struct {
@@ -231,10 +249,19 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 		return nil, ErrMissingProject
 	}
 
-	return c.fetchProjectItems(ctx, func(issue connector.Issue) bool {
+	issues, err := c.fetchProjectItems(ctx, func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
 	})
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
+		if err := c.populateBlockerReasons(ctx, issues); err != nil {
+			return nil, err
+		}
+	}
+	return issues, nil
 }
 
 func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string) ([]connector.Issue, error) {
@@ -268,6 +295,44 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 	}
 	sortIssuesByRequestedIDs(issues, ids)
 	return issues, nil
+}
+
+func (c *Connector) populateBlockerReasons(ctx context.Context, issues []connector.Issue) error {
+	ids := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		if normalizeStateName(issue.State) == normalizeStateName("Blocked") {
+			ids = append(ids, issue.ID)
+		}
+	}
+	ids = uniqueNonBlank(ids)
+	if len(ids) == 0 {
+		return nil
+	}
+
+	var response struct {
+		Nodes []githubIssueNode `json:"nodes"`
+	}
+	if err := c.client.GraphQL(ctx, issueCommentsQuery, map[string]any{
+		"issueIds": ids,
+	}, &response); err != nil {
+		return fmt.Errorf("fetch github issue comments: %w", err)
+	}
+
+	reasonsByID := make(map[string]string, len(response.Nodes))
+	for _, node := range response.Nodes {
+		if node.TypeName != "Issue" {
+			continue
+		}
+		if reason := parseBlockerReason(node); reason != "" {
+			reasonsByID[node.ID] = reason
+		}
+	}
+	for index := range issues {
+		if reason, ok := reasonsByID[issues[index].ID]; ok {
+			issues[index].BlockerReason = reason
+		}
+	}
+	return nil
 }
 
 func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {
@@ -491,6 +556,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		PRNumber:         firstPullRequestNumber(issue.ClosedByPullRequestsReferences),
 		AssigneeID:       firstAssigneeLogin(issue.Assignees),
 		BlockedBy:        parseBlockedBy(issue.Body, repo),
+		BlockerReason:    parseBlockerReason(issue),
 		Labels:           labelNames(issue.Labels),
 		AssignedToWorker: true,
 		CreatedAt:        parseGitHubTime(issue.CreatedAt),
@@ -741,6 +807,84 @@ func parseModelOverride(body string) string {
 		return ""
 	}
 	return strings.TrimSpace(matches[1])
+}
+
+func parseBlockerReason(issue githubIssueNode) string {
+	for index := len(issue.Comments.Nodes) - 1; index >= 0; index-- {
+		body := issue.Comments.Nodes[index].Body
+		if !strings.Contains(strings.ToLower(body), "codex workpad") {
+			continue
+		}
+		if reason := markdownSectionText(body, "Human Action Needed"); reason != "" {
+			return reason
+		}
+	}
+	return markdownSectionText(issue.Body, "Human Action Needed")
+}
+
+func markdownSectionText(body string, title string) string {
+	want := normalizeSectionTitle(title)
+	inSection := false
+	lines := []string{}
+	for _, line := range strings.Split(body, "\n") {
+		heading, ok := markdownHeadingTitle(line)
+		if ok {
+			if inSection {
+				break
+			}
+			inSection = normalizeSectionTitle(heading) == want
+			continue
+		}
+		if inSection {
+			lines = append(lines, line)
+		}
+	}
+	return normalizeSectionLines(lines)
+}
+
+func markdownHeadingTitle(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || line[0] != '#' {
+		return "", false
+	}
+	index := 0
+	for index < len(line) && line[index] == '#' {
+		index++
+	}
+	if index > 6 || index == len(line) {
+		return "", false
+	}
+	if line[index] != ' ' && line[index] != '\t' {
+		return "", false
+	}
+	return strings.Trim(strings.TrimSpace(line[index:]), "# \t"), true
+}
+
+func normalizeSectionTitle(title string) string {
+	return strings.ToLower(strings.Join(strings.Fields(title), " "))
+}
+
+func normalizeSectionLines(lines []string) string {
+	parts := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = normalizeSectionLine(line)
+		if line != "" {
+			parts = append(parts, line)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func normalizeSectionLine(line string) string {
+	line = strings.TrimSpace(line)
+	for _, marker := range []string{"- ", "* ", "+ "} {
+		if strings.HasPrefix(line, marker) {
+			line = strings.TrimSpace(strings.TrimPrefix(line, marker))
+			break
+		}
+	}
+	line = numberedListPattern.ReplaceAllString(line, "")
+	return strings.Join(strings.Fields(line), " ")
 }
 
 func parseBlockedBy(body string, repo string) []connector.BlockedRef {

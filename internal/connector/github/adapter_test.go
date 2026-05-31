@@ -144,6 +144,47 @@ func TestConnectorFetchIssuesByStatesFiltersMappedStates(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw98","number":98,"title":"Homebrew tap","body":"Depends on: #97","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/98","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Blocked"},"priorityValue":null}]}}}}`,
+		},
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw98","body":"Depends on: #97","comments":{"nodes":[{"body":"## Codex Workpad\n\n### Plan\n- Check prerequisites.\n\n### Human Action Needed\n- Create public repository ` + "`" + `digitaldrywood/homebrew-tap` + "`" + `.\n- Add repository Actions secret ` + "`" + `HOMEBREW_TAP_GITHUB_TOKEN` + "`" + `.\n\n### Validation Evidence\n- Not run."}]}}]}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+	})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Blocked"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+
+	want := "Create public repository `digitaldrywood/homebrew-tap`.; Add repository Actions secret `HOMEBREW_TAP_GITHUB_TOKEN`."
+	if got[0].BlockerReason != want {
+		t.Fatalf("BlockerReason = %q, want %q", got[0].BlockerReason, want)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if strings.Contains(requests[0]["query"].(string), "comments") {
+		t.Fatalf("project query = %q, want no comments", requests[0]["query"])
+	}
+	if !strings.Contains(requests[1]["query"].(string), "comments") {
+		t.Fatalf("comments query = %q, want comments", requests[1]["query"])
+	}
+}
+
 func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testing.T) {
 	t.Parallel()
 
