@@ -182,6 +182,28 @@ func TestFairShareUsesPersistedUsage(t *testing.T) {
 	}
 }
 
+func TestFairShareRequiresStore(t *testing.T) {
+	t.Parallel()
+
+	global := scheduler.NewFairShare(scheduler.Config{Capacity: 1})
+	_, err := global.SelectProject(context.Background(), scheduler.ProjectSelectionRequest{
+		Projects: []scheduler.ProjectCandidate{
+			{ID: "alpha"},
+			{ID: "beta"},
+		},
+	})
+	if !errors.Is(err, scheduler.ErrFairShareStoreRequired) {
+		t.Fatalf("SelectProject() error = %v, want ErrFairShareStoreRequired", err)
+	}
+
+	err = global.RecordProjectDispatch(context.Background(), scheduler.ProjectDispatch{
+		ProjectID: "alpha",
+	})
+	if !errors.Is(err, scheduler.ErrFairShareStoreRequired) {
+		t.Fatalf("RecordProjectDispatch() error = %v, want ErrFairShareStoreRequired", err)
+	}
+}
+
 func TestSelectProjectRejectsEmptyCandidateSet(t *testing.T) {
 	t.Parallel()
 

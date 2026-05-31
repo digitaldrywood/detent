@@ -20,11 +20,12 @@ const (
 )
 
 var (
-	ErrInvalidWeight         = errors.New("scheduler slot weight must be positive")
-	ErrNoSlots               = errors.New("scheduler slot unavailable")
-	ErrSlotNotHeld           = errors.New("scheduler slot is not held")
-	ErrUnsupportedBackend    = errors.New("unsupported scheduler backend")
-	ErrWeightExceedsCapacity = errors.New("scheduler slot weight exceeds capacity")
+	ErrInvalidWeight          = errors.New("scheduler slot weight must be positive")
+	ErrNoSlots                = errors.New("scheduler slot unavailable")
+	ErrSlotNotHeld            = errors.New("scheduler slot is not held")
+	ErrFairShareStoreRequired = errors.New("fair-share scheduler requires a store")
+	ErrUnsupportedBackend     = errors.New("unsupported scheduler backend")
+	ErrWeightExceedsCapacity  = errors.New("scheduler slot weight exceeds capacity")
 )
 
 type Mode string
@@ -86,6 +87,9 @@ func NewFromConfig(cfg Config) (Scheduler, error) {
 	case "round_robin", "roundrobin":
 		return NewRoundRobin(cfg), nil
 	case "fair_share", "fairshare":
+		if cfg.FairShareStore == nil {
+			return nil, ErrFairShareStoreRequired
+		}
 		return NewFairShare(cfg), nil
 	case "counting_semaphore", "semaphore":
 		return NewCountingSemaphore(cfg), nil

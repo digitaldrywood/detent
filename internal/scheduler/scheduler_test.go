@@ -35,8 +35,9 @@ func TestNewFromConfigSelectsMode(t *testing.T) {
 			t.Parallel()
 
 			got, err := scheduler.NewFromConfig(scheduler.Config{
-				Kind:     tt.kind,
-				Capacity: 2,
+				Kind:           tt.kind,
+				Capacity:       2,
+				FairShareStore: &fairShareStore{},
 			})
 			if err != nil {
 				t.Fatalf("NewFromConfig() error = %v", err)
@@ -45,6 +46,18 @@ func TestNewFromConfigSelectsMode(t *testing.T) {
 				t.Fatalf("Mode() = %q, want %q", got.Mode(), tt.want)
 			}
 		})
+	}
+}
+
+func TestNewFromConfigRejectsFairShareWithoutStore(t *testing.T) {
+	t.Parallel()
+
+	got, err := scheduler.NewFromConfig(scheduler.Config{Kind: "fair_share"})
+	if got != nil {
+		t.Fatalf("scheduler = %T, want nil", got)
+	}
+	if !errors.Is(err, scheduler.ErrFairShareStoreRequired) {
+		t.Fatalf("error = %v, want ErrFairShareStoreRequired", err)
 	}
 }
 

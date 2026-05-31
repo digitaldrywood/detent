@@ -138,8 +138,11 @@ func (s *globalScheduler) SelectProject(ctx context.Context, req ProjectSelectio
 }
 
 func (s *globalScheduler) RecordProjectDispatch(ctx context.Context, dispatch ProjectDispatch) error {
-	if s.mode != ModeFairShare || s.fairShareStore == nil {
+	if s.mode != ModeFairShare {
 		return nil
+	}
+	if s.fairShareStore == nil {
+		return ErrFairShareStoreRequired
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -277,19 +280,21 @@ func (s *globalScheduler) selectRoundRobin(candidates []ProjectCandidate) Projec
 }
 
 func (s *globalScheduler) selectFairShare(ctx context.Context, candidates []ProjectCandidate) (ProjectSelection, error) {
+	if s.fairShareStore == nil {
+		return ProjectSelection{}, ErrFairShareStoreRequired
+	}
+
 	usageByProject := map[string]store.FairShareUsage{}
-	if s.fairShareStore != nil {
-		usage, err := s.fairShareStore.ListFairShareUsage(ctx)
-		if err != nil {
-			return ProjectSelection{}, fmt.Errorf("read fair-share usage: %w", err)
+	usage, err := s.fairShareStore.ListFairShareUsage(ctx)
+	if err != nil {
+		return ProjectSelection{}, fmt.Errorf("read fair-share usage: %w", err)
+	}
+	for _, item := range usage {
+		projectID := normalizeProjectID(item.ProjectID)
+		if projectID == "" {
+			continue
 		}
-		for _, item := range usage {
-			projectID := normalizeProjectID(item.ProjectID)
-			if projectID == "" {
-				continue
-			}
-			usageByProject[projectID] = item
-		}
+		usageByProject[projectID] = item
 	}
 
 	selected := candidates[0]
