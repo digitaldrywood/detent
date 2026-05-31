@@ -8,7 +8,7 @@ import (
 	"github.com/digitaldrywood/symphony-go/internal/connector"
 )
 
-func TestDispatchDueRetriesKeepsAttemptWhenCapacityIsFull(t *testing.T) {
+func TestDispatchReadyIssuesKeepsRetryAttemptWhenCapacityIsFull(t *testing.T) {
 	t.Parallel()
 
 	cfg := normalizeConfig(Config{
@@ -33,7 +33,7 @@ func TestDispatchDueRetriesKeepsAttemptWhenCapacityIsFull(t *testing.T) {
 		Error:   "previous failure",
 	}
 
-	orch.dispatchDueRetries(context.Background(), &state, []connector.Issue{retrying}, now)
+	orch.dispatchReadyIssues(context.Background(), &state, []connector.Issue{retrying}, now)
 
 	retry, ok := state.Retry[retrying.ID]
 	if !ok {
@@ -47,6 +47,53 @@ func TestDispatchDueRetriesKeepsAttemptWhenCapacityIsFull(t *testing.T) {
 	}
 	if !retry.DueAt.After(now) {
 		t.Fatalf("Retry[%q].DueAt = %s, want after %s", retrying.ID, retry.DueAt, now)
+	}
+}
+
+func TestDispatchReadyIssuesRanksDueRetriesWithCandidates(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:     1,
+		DispatchPriorityByState: []string{"Merging"},
+		ActiveStates:            []string{"Todo", "Merging"},
+		TerminalStates:          []string{"Done"},
+	})
+	orch := Orchestrator{
+		cfg:        cfg,
+		runner:     FakeRunner{},
+		runResults: make(chan runResultEvent, 1),
+	}
+	state := newState(cfg)
+	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+	retrying := retryTestIssue("retrying", "digitaldrywood/symphony-go#21")
+	merging := retryTestIssue("merging", "digitaldrywood/symphony-go#22")
+	merging.State = "Merging"
+	priority := 4
+	merging.Priority = &priority
+
+	state.Claimed[retrying.ID] = Claimed{Issue: retrying, ClaimedAt: now.Add(-time.Minute)}
+	state.Retry[retrying.ID] = Retry{
+		Issue:   retrying,
+		Attempt: 2,
+		DueAt:   now.Add(-time.Millisecond),
+		Error:   "previous failure",
+	}
+
+	issues := []connector.Issue{retrying, merging}
+	sortIssuesForDispatch(issues, cfg.DispatchPriorityByState)
+	orch.dispatchReadyIssues(context.Background(), &state, issues, now)
+
+	if _, ok := state.Running[merging.ID]; !ok {
+		t.Fatalf("Running[%q] missing", merging.ID)
+	}
+	if _, ok := state.Running[retrying.ID]; ok {
+		t.Fatalf("Running[%q] present", retrying.ID)
+	}
+	if retry, ok := state.Retry[retrying.ID]; !ok {
+		t.Fatalf("Retry[%q] missing", retrying.ID)
+	} else if retry.Attempt != 2 {
+		t.Fatalf("Retry[%q].Attempt = %d, want 2", retrying.ID, retry.Attempt)
 	}
 }
 

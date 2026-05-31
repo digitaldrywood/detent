@@ -5,7 +5,6 @@ import (
 	"errors"
 	"log/slog"
 	"math"
-	"sort"
 	"strings"
 	"time"
 
@@ -30,6 +29,7 @@ type Config struct {
 	PollInterval               time.Duration
 	MaxConcurrentAgents        int
 	MaxConcurrentAgentsByState map[string]int
+	DispatchPriorityByState    []string
 	MaxRetryBackoff            time.Duration
 	ActiveStates               []string
 	TerminalStates             []string
@@ -69,6 +69,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		PollInterval:               durationFromMillis(cfg.Polling.IntervalMS),
 		MaxConcurrentAgents:        cfg.Agent.MaxConcurrentAgents,
 		MaxConcurrentAgentsByState: cloneStateLimits(cfg.Agent.MaxConcurrentAgentsByState),
+		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
 		ActiveStates:               append([]string(nil), cfg.Tracker.ActiveStates...),
 		TerminalStates:             append([]string(nil), cfg.Tracker.TerminalStates...),
@@ -160,10 +161,9 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	}
 
 	issues = cloneIssues(issues)
-	sortIssuesForDispatch(issues)
+	sortIssuesForDispatch(issues, o.cfg.DispatchPriorityByState)
 	o.trackBlockedCandidates(state, issues, now)
-	o.dispatchDueRetries(ctx, state, issues, now)
-	o.dispatchCandidates(ctx, state, issues, now)
+	o.dispatchReadyIssues(ctx, state, issues, now)
 }
 
 func (o *Orchestrator) trackBlockedCandidates(state *State, issues []connector.Issue, now time.Time) {
@@ -192,59 +192,15 @@ func (o *Orchestrator) trackBlockedCandidates(state *State, issues []connector.I
 	}
 }
 
-func (o *Orchestrator) dispatchDueRetries(
-	ctx context.Context,
-	state *State,
-	issues []connector.Issue,
-	now time.Time,
-) {
-	if len(state.Retry) == 0 {
-		return
-	}
+func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
+	dueRetries := dueRetriesByIssue(state, now)
+	o.releaseMissingDueRetries(state, issues, dueRetries)
 
-	byID := make(map[string]connector.Issue, len(issues))
 	for _, issue := range issues {
-		byID[issue.ID] = issue
-	}
-
-	retries := make([]Retry, 0, len(state.Retry))
-	for _, retry := range state.Retry {
-		if !retry.DueAt.After(now) {
-			retries = append(retries, retry)
-		}
-	}
-	sort.SliceStable(retries, func(i, j int) bool {
-		return retries[i].DueAt.Before(retries[j].DueAt)
-	})
-
-	for _, retry := range retries {
-		delete(state.Retry, retry.Issue.ID)
-
-		issue, ok := byID[retry.Issue.ID]
-		if !ok {
-			o.releaseIssue(state, retry.Issue.ID)
+		if retry, ok := dueRetries[issue.ID]; ok {
+			o.dispatchRetryIssue(ctx, state, issue, retry, now)
 			continue
 		}
-		if !o.dispatchableForRetry(issue, state) {
-			if availableSlots(state) == 0 {
-				o.scheduleRetry(state, issue, retry.Attempt, now, "no available orchestrator slots", false)
-				continue
-			}
-			if _, blocked := state.Blocked[issue.ID]; blocked {
-				o.releaseClaim(state, issue.ID)
-				continue
-			}
-
-			o.releaseIssue(state, issue.ID)
-			continue
-		}
-
-		o.dispatchIssue(ctx, state, issue, retry.Attempt, now)
-	}
-}
-
-func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
-	for _, issue := range issues {
 		if availableSlots(state) == 0 {
 			return
 		}
@@ -254,6 +210,63 @@ func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, iss
 
 		o.dispatchIssue(ctx, state, issue, 0, now)
 	}
+}
+
+func dueRetriesByIssue(state *State, now time.Time) map[string]Retry {
+	retries := make(map[string]Retry, len(state.Retry))
+	for _, retry := range state.Retry {
+		if !retry.DueAt.After(now) {
+			retries[retry.Issue.ID] = retry
+		}
+	}
+	return retries
+}
+
+func (o *Orchestrator) releaseMissingDueRetries(
+	state *State,
+	issues []connector.Issue,
+	dueRetries map[string]Retry,
+) {
+	if len(dueRetries) == 0 {
+		return
+	}
+
+	byID := make(map[string]struct{}, len(issues))
+	for _, issue := range issues {
+		byID[issue.ID] = struct{}{}
+	}
+
+	for issueID := range dueRetries {
+		if _, ok := byID[issueID]; !ok {
+			o.releaseIssue(state, issueID)
+		}
+	}
+}
+
+func (o *Orchestrator) dispatchRetryIssue(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	retry Retry,
+	now time.Time,
+) {
+	delete(state.Retry, retry.Issue.ID)
+
+	if !o.dispatchableForRetry(issue, state) {
+		if availableSlots(state) == 0 {
+			o.scheduleRetry(state, issue, retry.Attempt, now, "no available orchestrator slots", false)
+			return
+		}
+		if _, blocked := state.Blocked[issue.ID]; blocked {
+			o.releaseClaim(state, issue.ID)
+			return
+		}
+
+		o.releaseIssue(state, issue.ID)
+		return
+	}
+
+	o.dispatchIssue(ctx, state, issue, retry.Attempt, now)
 }
 
 func (o *Orchestrator) dispatchable(issue connector.Issue, state *State) bool {
@@ -480,6 +493,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.ActiveStates = normalizedStates(cfg.ActiveStates)
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
+	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
 
 	return cfg
 }
@@ -507,35 +521,6 @@ func cloneIssues(issues []connector.Issue) []connector.Issue {
 		cloned[i] = cloneIssue(issue)
 	}
 	return cloned
-}
-
-func sortIssuesForDispatch(issues []connector.Issue) {
-	sort.SliceStable(issues, func(i, j int) bool {
-		left := issues[i]
-		right := issues[j]
-
-		if leftRank, rightRank := priorityRank(left.Priority), priorityRank(right.Priority); leftRank != rightRank {
-			return leftRank < rightRank
-		}
-		if left.CreatedAt != nil && right.CreatedAt != nil && !left.CreatedAt.Equal(*right.CreatedAt) {
-			return left.CreatedAt.Before(*right.CreatedAt)
-		}
-		if left.CreatedAt != nil && right.CreatedAt == nil {
-			return true
-		}
-		if left.CreatedAt == nil && right.CreatedAt != nil {
-			return false
-		}
-
-		return left.Identifier < right.Identifier
-	})
-}
-
-func priorityRank(priority *int) int {
-	if priority == nil || *priority < 1 || *priority > 4 {
-		return 5
-	}
-	return *priority
 }
 
 func validCandidate(issue connector.Issue) bool {
