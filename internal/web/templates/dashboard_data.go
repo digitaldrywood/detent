@@ -3,6 +3,7 @@ package templates
 import (
 	"fmt"
 	"math"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -128,6 +129,32 @@ func issueTitle(issue telemetry.Issue) string {
 	return "Untitled issue"
 }
 
+func issueDescriptionPreview(issue telemetry.Issue) string {
+	description := strings.Join(strings.Fields(issue.Description), " ")
+	if description == "" {
+		return ""
+	}
+
+	const limit = 180
+	runes := []rune(description)
+	if len(runes) <= limit {
+		return description
+	}
+	return string(runes[:limit-3]) + "..."
+}
+
+func issueDetailURL(issue telemetry.Issue) string {
+	identifier := issueIdentifier(issue)
+	if identifier == "" || identifier == "unknown" {
+		return ""
+	}
+	return "/api/v1/" + url.PathEscape(identifier)
+}
+
+func issuePopoverID(prefix string, index int) string {
+	return prefix + "-issue-popover-" + strconv.Itoa(index)
+}
+
 func issueState(issue telemetry.Issue, fallback string) string {
 	if issue.State != "" {
 		return issue.State
@@ -175,6 +202,86 @@ func lastCodexMeta(row telemetry.Running) string {
 		parts = append(parts, row.LastEventAt.UTC().Format("15:04:05 UTC"))
 	}
 	return strings.Join(parts, " / ")
+}
+
+func queuedDueLabel(row telemetry.Queued) string {
+	if row.DueAt != nil {
+		return timeLabel(*row.DueAt)
+	}
+	if row.DueInMillis > 0 {
+		return "in " + formatDuration(float64(row.DueInMillis)/1000)
+	}
+	return "n/a"
+}
+
+func rowError(value string) string {
+	if strings.TrimSpace(value) == "" {
+		return "n/a"
+	}
+	return value
+}
+
+func blockedAtLabel(row telemetry.Blocked) string {
+	if row.BlockedAt == nil {
+		return "n/a"
+	}
+	return timeLabel(*row.BlockedAt)
+}
+
+func blockedLastUpdate(row telemetry.Blocked) string {
+	if row.LastMessage != "" {
+		return row.LastMessage
+	}
+	if row.LastEvent != "" {
+		return row.LastEvent
+	}
+	return "n/a"
+}
+
+func blockedLastUpdateMeta(row telemetry.Blocked) string {
+	if row.LastEvent == "" && row.LastEventAt == nil {
+		return "n/a"
+	}
+	parts := make([]string, 0, 2)
+	if row.LastEvent != "" {
+		parts = append(parts, row.LastEvent)
+	}
+	if row.LastEventAt != nil {
+		parts = append(parts, timeLabel(*row.LastEventAt))
+	}
+	return strings.Join(parts, " / ")
+}
+
+func completedAtLabel(row telemetry.Completed) string {
+	if row.CompletedAt.IsZero() {
+		return "n/a"
+	}
+	return timeLabel(row.CompletedAt)
+}
+
+func completedRuntime(row telemetry.Completed) string {
+	return formatDuration(row.RuntimeSeconds) + " / " + formatInt(int64(row.Turns)) + " turns"
+}
+
+func completedState(row telemetry.Completed) string {
+	if strings.TrimSpace(row.FinalState) == "" {
+		return "completed"
+	}
+	return row.FinalState
+}
+
+func completedModel(row telemetry.Completed) string {
+	if strings.TrimSpace(row.Model) == "" {
+		return "n/a"
+	}
+	return row.Model
+}
+
+func timeLabel(value time.Time) string {
+	if value.IsZero() {
+		return "n/a"
+	}
+	return value.UTC().Format("Jan 2 15:04:05 UTC")
 }
 
 func formatDiffStat(row telemetry.Running) string {

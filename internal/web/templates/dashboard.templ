@@ -1,6 +1,10 @@
 package templates
 
-import "time"
+import (
+	"time"
+
+	"github.com/digitaldrywood/symphony/internal/telemetry"
+)
 
 templ Dashboard(data DashboardData) {
 	<!DOCTYPE html>
@@ -101,53 +105,48 @@ templ SnapshotView(data DashboardData) {
 			} else {
 				<div class="mt-5 overflow-hidden rounded-md border border-border">
 					<div class="overflow-x-auto">
-					<table class="w-full min-w-[66rem] table-fixed border-collapse text-sm">
-						<thead class="bg-muted/70">
-							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
-								<th class="w-[18rem] px-3 py-3 font-medium">Issue</th>
-								<th class="w-[9rem] px-3 py-3 font-medium">State</th>
-								<th class="w-[10rem] px-3 py-3 font-medium">Runtime / turns</th>
-								<th class="px-3 py-3 font-medium">Codex update</th>
-								<th class="w-[8rem] px-3 py-3 font-medium">Diff</th>
-								<th class="w-[10rem] px-3 py-3 font-medium">Tokens</th>
-								<th class="w-[9rem] px-3 py-3 font-medium">Session</th>
-							</tr>
-						</thead>
-						<tbody>
-							for _, row := range data.Snapshot.Running {
-								<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
-									<td class="px-3 py-4 align-top">
-										<div class="grid gap-1">
-											if row.URL != "" {
-												<a class="font-medium text-foreground underline-offset-4 hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ row.URL } target="_blank" rel="noopener noreferrer">{ issueIdentifier(row.Issue) }</a>
-											} else {
-												<span class="font-medium text-foreground">{ issueIdentifier(row.Issue) }</span>
-											}
-											<span class="line-clamp-2 text-muted-foreground">{ issueTitle(row.Issue) }</span>
-										</div>
-									</td>
-									<td class="px-3 py-4 align-top">
-										<span class="inline-flex rounded-full bg-accent-soft px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
-									</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
-									<td class="px-3 py-4 align-top">
-										<div class="grid gap-1">
-											<span class="line-clamp-2 text-foreground">{ lastCodexUpdate(row) }</span>
-											<span class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
-										</div>
-									</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ formatDiffStat(row) }</td>
-									<td class="px-3 py-4 align-top">
-										<div class="grid gap-1 font-mono">
-											<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
-											<span class="text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
-										</div>
-									</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ sessionLabel(row.SessionID) }</td>
+						<table class="w-full min-w-[76rem] table-fixed border-collapse text-sm">
+							<thead class="bg-muted/70">
+								<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+									<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
+									<th class="w-[9rem] px-3 py-3 font-medium">State</th>
+									<th class="w-[10rem] px-3 py-3 font-medium">Runtime / turns</th>
+									<th class="px-3 py-3 font-medium">Codex update</th>
+									<th class="w-[8rem] px-3 py-3 font-medium">Diff</th>
+									<th class="w-[10rem] px-3 py-3 font-medium">Tokens</th>
+									<th class="w-[9rem] px-3 py-3 font-medium">Session</th>
 								</tr>
-							}
-						</tbody>
-					</table>
+							</thead>
+							<tbody>
+								for i, row := range data.Snapshot.Running {
+									<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
+										<td class="px-3 py-4 align-top">
+											@issueCell(row.Issue, "running", i, true)
+										</td>
+										<td class="px-3 py-4 align-top">
+											<span class="inline-flex rounded-full bg-accent-soft px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
+										</td>
+										<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
+										<td class="px-3 py-4 align-top">
+											<div class="grid gap-1">
+												<span class="line-clamp-2 text-foreground">{ lastCodexUpdate(row) }</span>
+												<span class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
+											</div>
+										</td>
+										<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ formatDiffStat(row) }</td>
+										<td class="px-3 py-4 align-top">
+											<div class="grid gap-1 font-mono">
+												<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
+												<span class="text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
+											</div>
+										</td>
+										<td class="px-3 py-4 align-top">
+											@sessionCopyButton(row.SessionID)
+										</td>
+									</tr>
+								}
+							</tbody>
+						</table>
 					</div>
 				</div>
 			}
@@ -159,6 +158,11 @@ templ SnapshotView(data DashboardData) {
 			@tokenCard(data)
 		</aside>
 	</section>
+	<section class="grid gap-5 xl:grid-cols-2">
+		@retryQueueSection(data.Snapshot)
+		@blockedSessionsSection(data.Snapshot)
+	</section>
+	@recentSessionsSection(data.Snapshot)
 }
 
 templ throughputCard(data DashboardData) {
@@ -209,6 +213,253 @@ templ metricCard(label string, value string, detail string, borderClass string, 
 		</div>
 		<div class="mt-4 font-mono text-3xl font-semibold text-foreground">{ value }</div>
 	</article>
+}
+
+templ retryQueueSection(snapshot telemetry.Snapshot) {
+	<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+		<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+			<div>
+				<h2 class="text-lg font-semibold text-foreground">Retry queue</h2>
+				<p class="text-sm text-muted-foreground">Issues waiting for the next retry window.</p>
+			</div>
+			<span class="inline-flex min-w-9 justify-center rounded-full bg-warning-soft px-2 py-1 text-sm font-medium text-warning">{ formatCount(queueCount(snapshot)) }</span>
+		</div>
+		if len(snapshot.Queue) == 0 {
+			if queueCount(snapshot) > 0 {
+				<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">Retry queue details are unavailable.</p>
+			} else {
+				<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No issues are currently backing off.</p>
+			}
+		} else {
+			<div class="mt-5 overflow-hidden rounded-md border border-border">
+				<div class="overflow-x-auto">
+					<table class="w-full min-w-[54rem] table-fixed border-collapse text-sm">
+						<thead class="bg-muted/70">
+							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
+								<th class="w-[7rem] px-3 py-3 font-medium">Attempt</th>
+								<th class="w-[13rem] px-3 py-3 font-medium">Due time</th>
+								<th class="px-3 py-3 font-medium">Error</th>
+							</tr>
+						</thead>
+						<tbody>
+							for i, row := range snapshot.Queue {
+								<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
+									<td class="px-3 py-4 align-top">
+										@issueCell(row.Issue, "retry", i, true)
+									</td>
+									<td class="px-3 py-4 align-top font-mono text-foreground">{ formatInt(int64(row.Attempt)) }</td>
+									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ queuedDueLabel(row) }</td>
+									<td class="px-3 py-4 align-top text-muted-foreground">
+										<span class="line-clamp-3">{ rowError(row.Error) }</span>
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			</div>
+		}
+	</section>
+}
+
+templ blockedSessionsSection(snapshot telemetry.Snapshot) {
+	<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+		<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+			<div>
+				<h2 class="text-lg font-semibold text-foreground">Blocked sessions</h2>
+				<p class="text-sm text-muted-foreground">Issues paused because Codex requested operator input or approval.</p>
+			</div>
+			<span class="inline-flex min-w-9 justify-center rounded-full bg-danger-soft px-2 py-1 text-sm font-medium text-danger">{ formatCount(blockedCount(snapshot)) }</span>
+		</div>
+		if len(snapshot.Blocked) == 0 {
+			if blockedCount(snapshot) > 0 {
+				<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">Blocked session details are unavailable.</p>
+			} else {
+				<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No blocked sessions.</p>
+			}
+		} else {
+			<div class="mt-5 overflow-hidden rounded-md border border-border">
+				<div class="overflow-x-auto">
+					<table class="w-full min-w-[68rem] table-fixed border-collapse text-sm">
+						<thead class="bg-muted/70">
+							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
+								<th class="w-[9rem] px-3 py-3 font-medium">State</th>
+								<th class="w-[11rem] px-3 py-3 font-medium">Session</th>
+								<th class="w-[13rem] px-3 py-3 font-medium">Blocked time</th>
+								<th class="px-3 py-3 font-medium">Last update</th>
+								<th class="w-[14rem] px-3 py-3 font-medium">Error</th>
+							</tr>
+						</thead>
+						<tbody>
+							for i, row := range snapshot.Blocked {
+								<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
+									<td class="px-3 py-4 align-top">
+										@issueCell(row.Issue, "blocked", i, true)
+									</td>
+									<td class="px-3 py-4 align-top">
+										<span class="inline-flex rounded-full bg-danger-soft px-2 py-1 font-medium text-danger">{ issueState(row.Issue, "Blocked") }</span>
+									</td>
+									<td class="px-3 py-4 align-top">
+										@sessionCopyButton(row.SessionID)
+									</td>
+									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ blockedAtLabel(row) }</td>
+									<td class="px-3 py-4 align-top">
+										<div class="grid gap-1">
+											<span class="line-clamp-2 text-foreground">{ blockedLastUpdate(row) }</span>
+											<span class="font-mono text-xs text-muted-foreground">{ blockedLastUpdateMeta(row) }</span>
+										</div>
+									</td>
+									<td class="px-3 py-4 align-top text-muted-foreground">
+										<span class="line-clamp-3">{ rowError(row.Error) }</span>
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			</div>
+		}
+	</section>
+}
+
+templ recentSessionsSection(snapshot telemetry.Snapshot) {
+	<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+		<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+			<div>
+				<h2 class="text-lg font-semibold text-foreground">Recent sessions</h2>
+				<p class="text-sm text-muted-foreground">Last completed Codex sessions across Symphony runs.</p>
+			</div>
+			<span class="inline-flex min-w-9 justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success">{ formatCount(completedCount(snapshot)) }</span>
+		</div>
+		if len(snapshot.Completed) == 0 {
+			if completedCount(snapshot) > 0 {
+				<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">Completed session details are unavailable.</p>
+			} else {
+				<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No completed sessions recorded.</p>
+			}
+		} else {
+			<div class="mt-5 overflow-hidden rounded-md border border-border">
+				<div class="overflow-x-auto">
+					<table class="w-full min-w-[74rem] table-fixed border-collapse text-sm">
+						<thead class="bg-muted/70">
+							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
+								<th class="w-[13rem] px-3 py-3 font-medium">Completed</th>
+								<th class="w-[11rem] px-3 py-3 font-medium">Runtime / turns</th>
+								<th class="w-[10rem] px-3 py-3 font-medium">Tokens</th>
+								<th class="w-[10rem] px-3 py-3 font-medium">Final state</th>
+								<th class="w-[11rem] px-3 py-3 font-medium">Model</th>
+								<th class="w-[11rem] px-3 py-3 font-medium">Session</th>
+							</tr>
+						</thead>
+						<tbody>
+							for i, row := range snapshot.Completed {
+								<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
+									<td class="px-3 py-4 align-top">
+										@issueCell(row.Issue, "recent", i, false)
+									</td>
+									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ completedAtLabel(row) }</td>
+									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ completedRuntime(row) }</td>
+									<td class="px-3 py-4 align-top">
+										<div class="grid gap-1 font-mono">
+											<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
+											<span class="text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
+										</div>
+									</td>
+									<td class="px-3 py-4 align-top">
+										<span class="inline-flex rounded-full bg-success-soft px-2 py-1 font-medium text-success">{ completedState(row) }</span>
+									</td>
+									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ completedModel(row) }</td>
+									<td class="px-3 py-4 align-top">
+										@sessionCopyButton(row.SessionID)
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			</div>
+		}
+	</section>
+}
+
+templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails bool) {
+	<div class="grid gap-2">
+		<div class="flex min-w-0 items-start gap-2">
+			<button
+				type="button"
+				class="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+				popovertarget={ issuePopoverID(prefix, rowIndex) }
+				aria-describedby={ issuePopoverID(prefix, rowIndex) }
+			>
+				<span class="block truncate font-medium text-foreground">{ issueIdentifier(issue) }</span>
+				<span class="line-clamp-1 text-muted-foreground">{ issueTitle(issue) }</span>
+			</button>
+			if issue.URL != "" {
+				@issueCopyButton(issue.URL)
+				<a class="issue-external inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ issue.URL } target="_blank" rel="noopener noreferrer" title={ "Open " + issue.URL }>
+					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+						<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+						<polyline points="15 3 21 3 21 9"></polyline>
+						<line x1="10" y1="14" x2="21" y2="3"></line>
+					</svg>
+					<span class="sr-only">Open issue in new tab</span>
+				</a>
+			}
+		</div>
+		if issueDescriptionPreview(issue) != "" {
+			<p class="line-clamp-2 text-xs text-muted-foreground">{ issueDescriptionPreview(issue) }</p>
+		}
+		if jsonDetails && issueDetailURL(issue) != "" {
+			<a class="w-fit text-xs font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ issueDetailURL(issue) }>JSON details</a>
+		}
+		<div id={ issuePopoverID(prefix, rowIndex) } class="max-w-sm rounded-md border border-border bg-card p-3 text-sm text-foreground shadow-lg" popover="auto" role="tooltip">
+			<p class="font-medium text-foreground">{ issueTitle(issue) }</p>
+			if issueDescriptionPreview(issue) != "" {
+				<p class="mt-1 text-muted-foreground">{ issueDescriptionPreview(issue) }</p>
+			}
+		</div>
+	</div>
+}
+
+templ issueCopyButton(value string) {
+	<button
+		type="button"
+		class="issue-copy issue-external inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+		data-label="Copy issue URL"
+		data-copy={ value }
+		title={ "Copy " + value }
+		onclick="navigator.clipboard.writeText(this.dataset.copy); const label = this.querySelector('[data-copy-label]'); label.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { label.textContent = this.dataset.label }, 1200);"
+	>
+		<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+			<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+			<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+		</svg>
+		<span class="sr-only" data-copy-label>Copy issue URL</span>
+	</button>
+}
+
+templ sessionCopyButton(sessionID string) {
+	if sessionID == "" {
+		<span class="font-mono text-muted-foreground">n/a</span>
+	} else {
+		<button
+			type="button"
+			class="inline-flex max-w-full items-center gap-1 rounded-md border border-border bg-muted px-2 py-1 font-mono text-xs text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+			data-label={ sessionLabel(sessionID) }
+			data-copy={ sessionID }
+			title={ "Copy " + sessionID }
+			onclick="navigator.clipboard.writeText(this.dataset.copy); const label = this.querySelector('[data-copy-label]'); label.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { label.textContent = this.dataset.label }, 1200);"
+		>
+			<span class="truncate" data-copy-label>{ sessionLabel(sessionID) }</span>
+			<svg class="shrink-0" width="13" height="13" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+				<rect x="9" y="9" width="13" height="13" rx="2" ry="2"></rect>
+				<path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"></path>
+			</svg>
+		</button>
+	}
 }
 
 templ budgetCard(budget Budget) {
