@@ -349,7 +349,7 @@ func (c Config) validateTracker(problems *[]string) {
 		validateRequired("tracker.api_key", c.Tracker.APIKey, " for linear", problems)
 		validateRequired("tracker.project_slug", c.Tracker.ProjectSlug, " for linear", problems)
 	case TrackerGitHub:
-		validateRequired("tracker.api_key", c.Tracker.APIKey, " for github", problems)
+		c.Tracker.validateGitHubAuth(problems)
 		validateRequired("tracker.project_slug", c.Tracker.ProjectSlug, " for github", problems)
 	case TrackerMemory:
 	default:
@@ -361,6 +361,32 @@ func (c Config) validateTracker(problems *[]string) {
 	validateStateList("tracker.terminal_states", c.Tracker.TerminalStates, problems)
 	validateStateMap("tracker.state_map", c.Tracker.StateMap, problems)
 	validatePriorityMap("tracker.priority_map", c.Tracker.PriorityMap, problems)
+}
+
+func (t Tracker) validateGitHubAuth(problems *[]string) {
+	if strings.TrimSpace(t.APIKey) != "" || t.hasGitHubAppCredentials() {
+		return
+	}
+
+	if strings.TrimSpace(t.GitHubAppID) == "" &&
+		strings.TrimSpace(t.GitHubAppInstallationID) == "" &&
+		strings.TrimSpace(t.GitHubAppPrivateKey) == "" &&
+		strings.TrimSpace(t.GitHubAppPrivateKeyPath) == "" {
+		*problems = append(*problems, "tracker.api_key or GitHub App credentials are required for github")
+		return
+	}
+
+	validateRequired("tracker.github_app_id", t.GitHubAppID, " for github app", problems)
+	validateRequired("tracker.github_app_installation_id", t.GitHubAppInstallationID, " for github app", problems)
+	if strings.TrimSpace(t.GitHubAppPrivateKey) == "" && strings.TrimSpace(t.GitHubAppPrivateKeyPath) == "" {
+		*problems = append(*problems, "tracker.github_app_private_key or tracker.github_app_private_key_path is required for github app")
+	}
+}
+
+func (t Tracker) hasGitHubAppCredentials() bool {
+	return strings.TrimSpace(t.GitHubAppID) != "" &&
+		strings.TrimSpace(t.GitHubAppInstallationID) != "" &&
+		(strings.TrimSpace(t.GitHubAppPrivateKey) != "" || strings.TrimSpace(t.GitHubAppPrivateKeyPath) != "")
 }
 
 func (a Agent) validate(prefix string, problems *[]string) {

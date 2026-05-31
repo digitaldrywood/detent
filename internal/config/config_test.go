@@ -204,6 +204,28 @@ Prompt
 	}
 }
 
+func TestConfigValidateAcceptsGitHubAppCredentials(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: github
+  project_slug: PVT_project
+  github_app_id: 12345
+  github_app_private_key_path: .symphony/github-app.pem
+  github_app_installation_id: 67890
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestStringOrMapFieldsAcceptScalarOrMapping(t *testing.T) {
 	t.Parallel()
 
@@ -265,7 +287,22 @@ func TestConfigValidateReportsInvalidSettings(t *testing.T) {
 		{
 			name: "github credentials",
 			raw:  "---\ntracker:\n  kind: github\n---\nPrompt\n",
-			want: []string{"tracker.api_key is required for github", "tracker.project_slug is required for github"},
+			want: []string{"tracker.api_key or GitHub App credentials are required for github", "tracker.project_slug is required for github"},
+		},
+		{
+			name: "partial github app credentials",
+			raw: `---
+tracker:
+  kind: github
+  project_slug: PVT_project
+  github_app_id: 12345
+---
+Prompt
+`,
+			want: []string{
+				"tracker.github_app_installation_id is required for github app",
+				"tracker.github_app_private_key or tracker.github_app_private_key_path is required for github app",
+			},
 		},
 		{
 			name: "positive numbers and states",
