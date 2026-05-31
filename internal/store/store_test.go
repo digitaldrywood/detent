@@ -40,8 +40,8 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	if got := queryInt(t, sqliteBackend.db, "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", got)
 	}
-	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('symphony_runs', 'codex_sessions')"); got != 2 {
-		t.Fatalf("migrated table count = %d, want 2", got)
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('symphony_runs', 'codex_sessions', 'fair_share_usage')"); got != 3 {
+		t.Fatalf("migrated table count = %d, want 3", got)
 	}
 }
 
@@ -257,6 +257,56 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				t.Fatalf("IssueTokenSpend(url).TotalTokens = %d, want 125", urlSpend.TotalTokens)
 			}
 		})
+	}
+}
+
+func TestFairShareStoreRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	dispatchedAt := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
+
+	if err := backend.RecordFairShareDispatch(ctx, FairShareDispatch{
+		ProjectID:      " alpha ",
+		Weight:         2,
+		RuntimeSeconds: 30,
+		DispatchedAt:   dispatchedAt,
+	}); err != nil {
+		t.Fatalf("RecordFairShareDispatch() first error = %v", err)
+	}
+	if err := backend.RecordFairShareDispatch(ctx, FairShareDispatch{
+		ProjectID:      "alpha",
+		Weight:         2,
+		RuntimeSeconds: 45,
+		DispatchedAt:   dispatchedAt.Add(time.Minute),
+	}); err != nil {
+		t.Fatalf("RecordFairShareDispatch() second error = %v", err)
+	}
+
+	usage, err := backend.ListFairShareUsage(ctx)
+	if err != nil {
+		t.Fatalf("ListFairShareUsage() error = %v", err)
+	}
+	if len(usage) != 1 {
+		t.Fatalf("usage len = %d, want 1: %#v", len(usage), usage)
+	}
+
+	got := usage[0]
+	if got.ProjectID != "alpha" {
+		t.Fatalf("ProjectID = %q, want alpha", got.ProjectID)
+	}
+	if got.Weight != 2 {
+		t.Fatalf("Weight = %d, want 2", got.Weight)
+	}
+	if got.Dispatches != 2 {
+		t.Fatalf("Dispatches = %d, want 2", got.Dispatches)
+	}
+	if got.RuntimeSeconds != 75 {
+		t.Fatalf("RuntimeSeconds = %d, want 75", got.RuntimeSeconds)
+	}
+	if !got.UpdatedAt.Equal(dispatchedAt.Add(time.Minute)) {
+		t.Fatalf("UpdatedAt = %s, want %s", got.UpdatedAt, dispatchedAt.Add(time.Minute))
 	}
 }
 

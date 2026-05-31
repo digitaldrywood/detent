@@ -25,6 +25,14 @@ type CodexSession struct {
 	Model          sql.NullString `json:"model"`
 }
 
+type FairShareUsage struct {
+	ProjectID      string `json:"project_id"`
+	Weight         int64  `json:"weight"`
+	Dispatches     int64  `json:"dispatches"`
+	RuntimeSeconds int64  `json:"runtime_seconds"`
+	UpdatedAt      string `json:"updated_at"`
+}
+
 type SymphonyRun struct {
 	ID                   int64          `json:"id"`
 	StartedAt            string         `json:"started_at"`

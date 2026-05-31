@@ -6,20 +6,26 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 )
 
 const defaultCapacity = 1
 
 const (
 	ModeCountingSemaphore Mode = "counting_semaphore"
+	ModeWeightedFair      Mode = "weighted_fair"
+	ModeStrictPriority    Mode = "strict_priority"
+	ModeRoundRobin        Mode = "round_robin"
+	ModeFairShare         Mode = "fair_share"
 )
 
 var (
-	ErrInvalidWeight         = errors.New("scheduler slot weight must be positive")
-	ErrNoSlots               = errors.New("scheduler slot unavailable")
-	ErrSlotNotHeld           = errors.New("scheduler slot is not held")
-	ErrUnsupportedBackend    = errors.New("unsupported scheduler backend")
-	ErrWeightExceedsCapacity = errors.New("scheduler slot weight exceeds capacity")
+	ErrInvalidWeight          = errors.New("scheduler slot weight must be positive")
+	ErrNoSlots                = errors.New("scheduler slot unavailable")
+	ErrSlotNotHeld            = errors.New("scheduler slot is not held")
+	ErrFairShareStoreRequired = errors.New("fair-share scheduler requires a store")
+	ErrUnsupportedBackend     = errors.New("unsupported scheduler backend")
+	ErrWeightExceedsCapacity  = errors.New("scheduler slot weight exceeds capacity")
 )
 
 type Mode string
@@ -35,6 +41,8 @@ type Config struct {
 	Capacity        int
 	CapacityByState map[string]int
 	CapacityPerHost int
+	DecayHalfLife   time.Duration
+	FairShareStore  FairShareStore
 }
 
 type SlotRequest struct {
@@ -72,7 +80,18 @@ var _ Scheduler = (*CountingSemaphore)(nil)
 
 func NewFromConfig(cfg Config) (Scheduler, error) {
 	switch normalizeKind(cfg.Kind) {
-	case "", "counting_semaphore", "semaphore":
+	case "", "weighted", "weighted_fair", "weightedfair":
+		return NewWeightedFair(cfg), nil
+	case "strict", "strict_priority", "strictpriority":
+		return NewStrictPriority(cfg), nil
+	case "round_robin", "roundrobin":
+		return NewRoundRobin(cfg), nil
+	case "fair_share", "fairshare":
+		if cfg.FairShareStore == nil {
+			return nil, ErrFairShareStoreRequired
+		}
+		return NewFairShare(cfg), nil
+	case "counting_semaphore", "semaphore":
 		return NewCountingSemaphore(cfg), nil
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedBackend, strings.TrimSpace(cfg.Kind))
@@ -266,7 +285,9 @@ func cloneIntMap(values map[string]int) map[string]int {
 }
 
 func normalizeKind(kind string) string {
-	return strings.ToLower(strings.TrimSpace(kind))
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	kind = strings.ReplaceAll(kind, "-", "_")
+	return kind
 }
 
 func normalizeState(state string) string {
