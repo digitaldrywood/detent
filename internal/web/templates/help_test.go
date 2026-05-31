@@ -1,6 +1,9 @@
 package templates
 
 import (
+	"bytes"
+	"context"
+	"os"
 	"strings"
 	"testing"
 )
@@ -66,6 +69,59 @@ func TestHelpIDIncludesScopeAndTerm(t *testing.T) {
 
 	if got := helpID(helpRateLimits, "Codex Rate Limits"); got != "help-codex-rate-limits-rate-limits" {
 		t.Fatalf("helpID() = %q, want %q", got, "help-codex-rate-limits-rate-limits")
+	}
+}
+
+func TestHelpScriptUsesStableSharedPopoverUtility(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := helpScript().Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	html := buf.String()
+
+	for _, want := range []string{
+		"data-popover-trigger",
+		"data-popover-panel",
+		"showDelay",
+		"hideDelay",
+		"pointerover",
+		"pointerout",
+		"positionPopover",
+		"availableBelow",
+		"maxHeight",
+		"Escape",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("help script missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "mousemove") {
+		t.Fatalf("help script should not reposition on mousemove:\n%s", html)
+	}
+}
+
+func TestHelpCSSKeepsPanelsPointerTransparent(t *testing.T) {
+	t.Parallel()
+
+	css, err := os.ReadFile("../../../static/css/input.css")
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(css)
+
+	for _, want := range []string{
+		".popover-panel",
+		"pointer-events: none;",
+		`.help-tip[data-open="true"] .help-tip-panel`,
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("CSS missing %q:\n%s", want, text)
+		}
+	}
+	if strings.Contains(text, ".help-tip:hover .help-tip-panel") {
+		t.Fatalf("CSS hover-open rule can fight JS placement:\n%s", text)
 	}
 }
 
