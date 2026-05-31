@@ -365,6 +365,124 @@ func TestDashboardRendersThroughputAndRuntimeTrend(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
+	t.Parallel()
+
+	perDay := 100.0
+	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Budget: telemetry.Budget{
+				Enabled:         true,
+				PerDayMaxUSD:    &perDay,
+				CurrentSpendUSD: 12.5,
+				Days: []telemetry.BudgetDay{
+					{Date: "2026-05-25", SpendUSD: 4},
+					{Date: "2026-05-26", SpendUSD: 6.5},
+					{Date: "2026-05-27", SpendUSD: 0},
+					{Date: "2026-05-28", SpendUSD: 10},
+					{Date: "2026-05-29", SpendUSD: 8.25},
+					{Date: "2026-05-30", SpendUSD: 15},
+					{Date: "2026-05-31", SpendUSD: 12.5},
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"Spend today",
+		"$12.50 / $100.00",
+		`aria-label="Daily budget usage"`,
+		`style="width: 13%;"`,
+		"Budget history",
+		`aria-label="Spend over the last seven days"`,
+		`title="2026-05-25: $4.00"`,
+		`title="2026-05-30: $15.00"`,
+		`style="height: 100%;"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardRendersHealthIndicators(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			LifetimeTotals: telemetry.LifetimeTotals{
+				DegradedReason: "read runtime store lifetime totals: disk unavailable",
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`aria-label="Runtime status"`,
+		"Live",
+		"Stats degraded",
+		`title="read runtime store lifetime totals: disk unavailable"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+	snapshotIndex := strings.Index(html, `id="snapshot"`)
+	healthIndex := strings.Index(html, `aria-label="Runtime status"`)
+	if snapshotIndex == -1 || healthIndex == -1 || healthIndex < snapshotIndex {
+		t.Fatalf("dashboard health indicators must render inside the SSE snapshot surface:\n%s", html)
+	}
+
+	offlineHTML := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+	})
+	if !strings.Contains(offlineHTML, "Offline") {
+		t.Fatalf("dashboard missing offline status:\n%s", offlineHTML)
+	}
+}
+
+func TestDashboardRendersDensityControls(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Symphony",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "density-issue",
+						Identifier: "DD-DENSE",
+						Title:      "Density controls",
+					},
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`aria-label="Dashboard density"`,
+		`data-density-choice="comfortable"`,
+		`data-density-choice="compact"`,
+		`aria-pressed="true"`,
+		`symphony.dashboard.density`,
+		`dashboard-table`,
+		`table-fixed`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 	t.Parallel()
 
