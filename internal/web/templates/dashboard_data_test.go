@@ -123,6 +123,144 @@ func TestCycleTimeSummaryLabels(t *testing.T) {
 	}
 }
 
+func TestProjectSmallMultipleCards(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name      string
+		projects  []ProjectSmallMultiple
+		wantOrder []string
+		wantFirst projectSmallMultipleCard
+	}{
+		{
+			name: "sorts by activity and builds compact charts",
+			projects: []ProjectSmallMultiple{
+				{
+					ID:         "quiet",
+					Name:       "Quiet",
+					QueueCount: 1,
+					Samples: []ProjectSmallMultipleSample{
+						{At: now.Add(-time.Minute), ThroughputTokensPerSecond: 0.5, SpendUSD: 1, QueueDepth: 1},
+					},
+				},
+				{
+					ID:                        "busy",
+					Name:                      "Busy",
+					URL:                       "https://github.com/digitaldrywood/detent",
+					Running:                   2,
+					QueueCount:                3,
+					Blocked:                   1,
+					Completed:                 4,
+					ThroughputTokensPerSecond: 7.25,
+					CurrentSpendUSD:           12.5,
+					Samples: []ProjectSmallMultipleSample{
+						{At: now.Add(-2 * time.Minute), ThroughputTokensPerSecond: 3.5, SpendUSD: 8, QueueDepth: 2},
+						{At: now.Add(-time.Minute), ThroughputTokensPerSecond: 7.25, SpendUSD: 12.5, QueueDepth: 3},
+					},
+				},
+				{
+					ID:         "queued",
+					Name:       "Queued",
+					QueueCount: 4,
+					Samples: []ProjectSmallMultipleSample{
+						{At: now.Add(-time.Minute), ThroughputTokensPerSecond: 1, SpendUSD: 2, QueueDepth: 4},
+					},
+				},
+			},
+			wantOrder: []string{"busy", "queued", "quiet"},
+			wantFirst: projectSmallMultipleCard{
+				ID:              "busy",
+				Name:            "Busy",
+				URL:             "https://github.com/digitaldrywood/detent",
+				ActivityLabel:   "2 running / 3 queued / 1 blocked",
+				ThroughputLabel: "7.3 tps",
+				SpendLabel:      "$12.50",
+				QueueLabel:      "3 queued",
+			},
+		},
+		{
+			name: "uses project id when display name is empty",
+			projects: []ProjectSmallMultiple{
+				{
+					ID:              "detent",
+					Running:         1,
+					Samples:         []ProjectSmallMultipleSample{{At: now, QueueDepth: 0}},
+					Completed:       1,
+					QueueCount:      0,
+					Blocked:         0,
+					CurrentSpendUSD: 0,
+				},
+			},
+			wantOrder: []string{"detent"},
+			wantFirst: projectSmallMultipleCard{
+				ID:              "detent",
+				Name:            "detent",
+				ActivityLabel:   "1 running / 0 queued / 0 blocked",
+				ThroughputLabel: "0 tps",
+				SpendLabel:      "$0.00",
+				QueueLabel:      "0 queued",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := projectSmallMultipleCards(DashboardData{Projects: tt.projects})
+			if len(got) != len(tt.wantOrder) {
+				t.Fatalf("projectSmallMultipleCards() len = %d, want %d", len(got), len(tt.wantOrder))
+			}
+			for i, wantID := range tt.wantOrder {
+				if got[i].ID != wantID {
+					t.Fatalf("card %d ID = %q, want %q; cards = %#v", i, got[i].ID, wantID, got)
+				}
+			}
+
+			first := got[0]
+			if first.ID != tt.wantFirst.ID ||
+				first.Name != tt.wantFirst.Name ||
+				first.URL != tt.wantFirst.URL ||
+				first.ActivityLabel != tt.wantFirst.ActivityLabel ||
+				first.ThroughputLabel != tt.wantFirst.ThroughputLabel ||
+				first.SpendLabel != tt.wantFirst.SpendLabel ||
+				first.QueueLabel != tt.wantFirst.QueueLabel {
+				t.Fatalf("first card = %#v, want %#v", first, tt.wantFirst)
+			}
+			if first.ThroughputChart.Title != "Busy throughput" && tt.wantFirst.ID == "busy" {
+				t.Fatalf("ThroughputChart.Title = %q, want Busy throughput", first.ThroughputChart.Title)
+			}
+			if len(first.ThroughputChart.Points) == 0 || len(first.SpendChart.Points) == 0 || len(first.QueueChart.Points) == 0 {
+				t.Fatalf("charts must include sparkline points: %#v", first)
+			}
+		})
+	}
+}
+
+func TestProjectSmallMultiplesGridClass(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		cards []projectSmallMultipleCard
+		want  string
+	}{
+		{name: "single card", cards: []projectSmallMultipleCard{{ID: "detent"}}, want: "mt-4 grid min-w-0 gap-3"},
+		{name: "multiple cards", cards: []projectSmallMultipleCard{{ID: "detent"}, {ID: "pyroapex"}}, want: "mt-4 grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := projectSmallMultiplesGridClass(tt.cards); got != tt.want {
+				t.Fatalf("projectSmallMultiplesGridClass() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestBudgetProjectedSpendUSD(t *testing.T) {
 	t.Parallel()
 

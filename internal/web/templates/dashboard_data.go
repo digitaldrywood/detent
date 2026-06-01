@@ -24,6 +24,7 @@ type DashboardData struct {
 	DashboardURL  string
 	ConnectorName string
 	Snapshot      telemetry.Snapshot
+	Projects      []ProjectSmallMultiple
 	Assets        AssetPaths
 }
 
@@ -67,6 +68,44 @@ type budgetBurnDownViewModel struct {
 	CapLabel        string
 	ProjectionLabel string
 	Chart           BudgetProjectionChartData
+}
+
+type ProjectSmallMultiple struct {
+	ID                        string
+	Name                      string
+	URL                       string
+	Running                   int
+	QueueCount                int
+	Blocked                   int
+	Completed                 int
+	TotalTokens               int64
+	ThroughputTokensPerSecond float64
+	CurrentSpendUSD           float64
+	Samples                   []ProjectSmallMultipleSample
+}
+
+type ProjectSmallMultipleSample struct {
+	At                        time.Time
+	TotalTokens               int64
+	ThroughputTokensPerSecond float64
+	SpendUSD                  float64
+	QueueDepth                int
+}
+
+type projectSmallMultipleCard struct {
+	ID              string
+	Name            string
+	URL             string
+	ActivityLabel   string
+	RunningLabel    string
+	QueueLabel      string
+	BlockedLabel    string
+	CompletedLabel  string
+	ThroughputLabel string
+	SpendLabel      string
+	ThroughputChart SeriesChartData
+	SpendChart      SeriesChartData
+	QueueChart      SeriesChartData
 }
 
 type agentTimelineRow struct {
@@ -191,6 +230,126 @@ func completedCount(snapshot telemetry.Snapshot) int {
 		return snapshot.Counts.Completed
 	}
 	return len(snapshot.Completed)
+}
+
+func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
+	if len(data.Projects) == 0 {
+		return nil
+	}
+
+	projects := append([]ProjectSmallMultiple(nil), data.Projects...)
+	sort.SliceStable(projects, func(i, j int) bool {
+		left := projectSmallMultipleActivity(projects[i])
+		right := projectSmallMultipleActivity(projects[j])
+		if left != right {
+			return left > right
+		}
+		return projectSmallMultipleName(projects[i]) < projectSmallMultipleName(projects[j])
+	})
+
+	cards := make([]projectSmallMultipleCard, 0, len(projects))
+	for _, project := range projects {
+		name := projectSmallMultipleName(project)
+		samples := projectSmallMultipleSamples(project)
+		cards = append(cards, projectSmallMultipleCard{
+			ID:              strings.TrimSpace(project.ID),
+			Name:            name,
+			URL:             strings.TrimSpace(project.URL),
+			ActivityLabel:   projectSmallMultipleActivityLabel(project),
+			RunningLabel:    formatCount(project.Running) + " running",
+			QueueLabel:      formatCount(project.QueueCount) + " queued",
+			BlockedLabel:    formatCount(project.Blocked) + " blocked",
+			CompletedLabel:  formatCount(project.Completed) + " done",
+			ThroughputLabel: formatDecimal(project.ThroughputTokensPerSecond) + " tps",
+			SpendLabel:      formatUSD(project.CurrentSpendUSD),
+			ThroughputChart: projectSmallMultipleChart(name+" throughput", samples, "tps", "text-accent", func(sample ProjectSmallMultipleSample) float64 {
+				return sample.ThroughputTokensPerSecond
+			}),
+			SpendChart: projectSmallMultipleChart(name+" spend", samples, "USD", "text-success", func(sample ProjectSmallMultipleSample) float64 {
+				return sample.SpendUSD
+			}),
+			QueueChart: projectSmallMultipleChart(name+" queue depth", samples, "queued", "text-warning", func(sample ProjectSmallMultipleSample) float64 {
+				return float64(sample.QueueDepth)
+			}),
+		})
+	}
+	return cards
+}
+
+func projectSmallMultiplesGridClass(cards []projectSmallMultipleCard) string {
+	if len(cards) <= 1 {
+		return "mt-4 grid min-w-0 gap-3"
+	}
+	return "mt-4 grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3"
+}
+
+func projectSmallMultipleActivity(project ProjectSmallMultiple) float64 {
+	active := project.Running*10000 + project.QueueCount*1000 + project.Blocked*100 + project.Completed
+	return float64(active) + project.ThroughputTokensPerSecond + project.CurrentSpendUSD
+}
+
+func projectSmallMultipleName(project ProjectSmallMultiple) string {
+	name := strings.TrimSpace(project.Name)
+	if name != "" {
+		return name
+	}
+	id := strings.TrimSpace(project.ID)
+	if id != "" {
+		return id
+	}
+	return "unknown project"
+}
+
+func projectSmallMultipleActivityLabel(project ProjectSmallMultiple) string {
+	return formatCount(project.Running) + " running / " +
+		formatCount(project.QueueCount) + " queued / " +
+		formatCount(project.Blocked) + " blocked"
+}
+
+func projectSmallMultipleSamples(project ProjectSmallMultiple) []ProjectSmallMultipleSample {
+	if len(project.Samples) > 0 {
+		return append([]ProjectSmallMultipleSample(nil), project.Samples...)
+	}
+	return []ProjectSmallMultipleSample{
+		{
+			TotalTokens:               project.TotalTokens,
+			ThroughputTokensPerSecond: project.ThroughputTokensPerSecond,
+			SpendUSD:                  project.CurrentSpendUSD,
+			QueueDepth:                project.QueueCount,
+		},
+	}
+}
+
+func projectSmallMultipleChart(
+	title string,
+	samples []ProjectSmallMultipleSample,
+	valueSuffix string,
+	colorClass string,
+	value func(ProjectSmallMultipleSample) float64,
+) SeriesChartData {
+	points := make([]webchart.Point, 0, len(samples))
+	for _, sample := range samples {
+		points = append(points, webchart.Point{
+			Label: projectSmallMultipleSampleLabel(sample.At),
+			Value: value(sample),
+		})
+	}
+	return SeriesChartData{
+		Title:       title,
+		AriaLabel:   title + " sparkline",
+		Points:      points,
+		ValueSuffix: valueSuffix,
+		Class:       "h-12",
+		ColorClass:  colorClass,
+		Height:      48,
+	}
+}
+
+func projectSmallMultipleSampleLabel(at time.Time) string {
+	if at.IsZero() {
+		return "latest"
+	}
+	return at.UTC().Format("15:04:05")
 }
 
 func generatedAtLabel(snapshot telemetry.Snapshot) string {

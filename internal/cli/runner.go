@@ -250,8 +250,10 @@ func projectSnapshotMetadata(trackedProject *project.Project) telemetry.Project 
 
 	cfg := trackedProject.Config()
 	workflow := trackedProject.Workflow()
+	id := strings.TrimSpace(cfg.ID)
 	return telemetry.Project{
-		DisplayName: strings.TrimSpace(cfg.ID),
+		ID:          id,
+		DisplayName: id,
 		URL:         projectURLFromWorkflow(workflow.Config),
 	}
 }
@@ -374,6 +376,9 @@ func lifetimeTotals(ctx context.Context, source lifetimeTotalsSource) telemetry.
 
 func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Project = mergeProject(current.Project, next.Project)
+	if project := projectSnapshot(next); project.Project != (telemetry.Project{}) {
+		current.Projects = append(current.Projects, project)
+	}
 	if strings.TrimSpace(current.DashboardURL) == "" {
 		current.DashboardURL = next.DashboardURL
 	}
@@ -400,6 +405,15 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 		current.RateLimits = next.RateLimits
 	}
 	return current
+}
+
+func projectSnapshot(snapshot telemetry.Snapshot) telemetry.ProjectSnapshot {
+	return telemetry.ProjectSnapshot{
+		Project:    snapshot.Project,
+		Counts:     snapshot.Counts,
+		Tokens:     snapshot.Tokens,
+		Throughput: snapshot.Throughput,
+	}
 }
 
 func mergeProject(current, next telemetry.Project) telemetry.Project {
