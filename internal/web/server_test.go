@@ -1219,6 +1219,66 @@ func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	}
 }
 
+func TestServerPreservesSnapshotBudgetWhenSpendQueryFails(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	capUSD := 44.0
+	snapshots := hub.New[telemetry.Snapshot]()
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: generatedAt,
+		Budget: telemetry.Budget{
+			Enabled:           true,
+			CurrentSpendUSD:   12.34,
+			ProjectedSpendUSD: 56.78,
+			PerDayMaxUSD:      &capUSD,
+			Days: []telemetry.BudgetDay{
+				{Date: "2026-06-01", SpendUSD: 12.34},
+			},
+			SpendPoints: []telemetry.BudgetSpendPoint{
+				{At: generatedAt, SpendUSD: 12.34},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	registry := project.NewRegistry()
+	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Registry = registry
+	deps.Store = storeProbe{
+		budgetCostEvents: func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+			return nil, errors.New("store is busy")
+		},
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	budget := state["budget"].(map[string]any)
+	if budget["today_spend_usd"] != float64(12.34) || budget["projected_spend_usd"] != float64(56.78) {
+		t.Fatalf("budget = %#v, want preserved snapshot spend", budget)
+	}
+	if budget["per_day_max_usd"] != float64(44) {
+		t.Fatalf("budget per_day_max_usd = %#v, want preserved snapshot cap", budget["per_day_max_usd"])
+	}
+	days := budget["days"].([]any)
+	if len(days) != 1 || days[0].(map[string]any)["spend_usd"] != float64(12.34) {
+		t.Fatalf("budget days = %#v, want preserved snapshot days", days)
+	}
+	points := budget["spend_points"].([]any)
+	if len(points) != 1 || points[0].(map[string]any)["spend_usd"] != float64(12.34) {
+		t.Fatalf("budget spend_points = %#v, want preserved snapshot points", points)
+	}
+}
+
 func TestServerAPIPreservesUnknownDiffStatus(t *testing.T) {
 	t.Parallel()
 
@@ -1710,6 +1770,8 @@ func boardStateCount(t *testing.T, payload map[string]any, stateName string) str
 
 type storeProbe struct {
 	store.Store
+
+	budgetCostEvents func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
 }
 
 func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) {
@@ -1720,7 +1782,10 @@ func (storeProbe) UsageReport(_ context.Context, query store.UsageReportQuery) (
 	return store.UsageReport{By: query.By}, nil
 }
 
-func (storeProbe) BudgetCostEvents(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+func (p storeProbe) BudgetCostEvents(ctx context.Context, query store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+	if p.budgetCostEvents != nil {
+		return p.budgetCostEvents(ctx, query)
+	}
 	return nil, nil
 }
 

@@ -50,6 +50,7 @@ func (s *Server) snapshotBudget(ctx context.Context, now time.Time) (telemetry.B
 	})
 	if err != nil {
 		s.logger.Warn("budget spend query failed", slog.Any("error", err))
+		return telemetry.Budget{}, false
 	}
 
 	points, currentSpend := currentBudgetSpendPoints(events, periodStart, periodEnd)
