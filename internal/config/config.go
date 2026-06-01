@@ -288,7 +288,7 @@ func StringValue(value string) StringOrMap {
 	}
 }
 
-func (c Config) Validate() error {
+func (c *Config) Validate() error {
 	var problems []string
 
 	c.validateTracker(&problems)
@@ -352,7 +352,7 @@ func (c *Config) normalize() {
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
 }
 
-func (c Config) validateTracker(problems *[]string) {
+func (c *Config) validateTracker(problems *[]string) {
 	switch c.Tracker.Kind {
 	case "":
 		*problems = append(*problems, "tracker.kind is required")
@@ -374,7 +374,7 @@ func (c Config) validateTracker(problems *[]string) {
 	validatePriorityMap("tracker.priority_map", c.Tracker.PriorityMap, problems)
 }
 
-func (t Tracker) validateGitHubAuth(problems *[]string) {
+func (t *Tracker) validateGitHubAuth(problems *[]string) {
 	if strings.TrimSpace(t.APIKey) != "" || t.hasGitHubAppCredentials() {
 		return
 	}
@@ -394,13 +394,13 @@ func (t Tracker) validateGitHubAuth(problems *[]string) {
 	}
 }
 
-func (t Tracker) hasGitHubAppCredentials() bool {
+func (t *Tracker) hasGitHubAppCredentials() bool {
 	return strings.TrimSpace(t.GitHubAppID) != "" &&
 		strings.TrimSpace(t.GitHubAppInstallationID) != "" &&
 		(strings.TrimSpace(t.GitHubAppPrivateKey) != "" || strings.TrimSpace(t.GitHubAppPrivateKeyPath) != "")
 }
 
-func (a Agent) validate(prefix string, problems *[]string) {
+func (a *Agent) validate(prefix string, problems *[]string) {
 	validatePositive(prefix+".max_concurrent_agents", a.MaxConcurrentAgents, problems)
 	validatePositive(prefix+".max_turns", a.MaxTurns, problems)
 	validatePositive(prefix+".max_retry_backoff_ms", a.MaxRetryBackoffMS, problems)
@@ -412,7 +412,7 @@ func (a Agent) validate(prefix string, problems *[]string) {
 	a.Skills.validate(prefix+".skills", problems)
 }
 
-func (a AutoPromote) validate(prefix string, problems *[]string) {
+func (a *AutoPromote) validate(prefix string, problems *[]string) {
 	if a.QuietSeconds < 0 {
 		*problems = append(*problems, prefix+".quiet_seconds must be greater than or equal to 0")
 	}
@@ -427,7 +427,7 @@ func (a AutoPromote) validate(prefix string, problems *[]string) {
 	}
 }
 
-func (l Lessons) validate(prefix string, problems *[]string) {
+func (l *Lessons) validate(prefix string, problems *[]string) {
 	validateWorkspaceRelativePath(prefix+".path", l.Path, problems)
 	validatePositive(prefix+".max_entries", l.MaxEntries, problems)
 	if l.RecallN < 0 {
@@ -436,12 +436,12 @@ func (l Lessons) validate(prefix string, problems *[]string) {
 	validatePositive(prefix+".postmortem_max_tokens", l.PostmortemMaxTokens, problems)
 }
 
-func (s Skills) validate(prefix string, problems *[]string) {
+func (s *Skills) validate(prefix string, problems *[]string) {
 	validateWorkspaceRelativePath(prefix+".path", s.Path, problems)
 	validatePositive(prefix+".max_skills_in_prompt", s.MaxSkillsInPrompt, problems)
 }
 
-func (b Budget) validate(prefix string, problems *[]string) {
+func (b *Budget) validate(prefix string, problems *[]string) {
 	validatePositiveFloat(prefix+".per_day_max_usd", b.PerDayMaxUSD, problems)
 	validatePositiveFloat(prefix+".per_issue_max_usd", b.PerIssueMaxUSD, problems)
 	if b.RefusalCooldownSeconds < 0 {
@@ -452,7 +452,7 @@ func (b Budget) validate(prefix string, problems *[]string) {
 	}
 }
 
-func (c Codex) validate(problems *[]string) {
+func (c *Codex) validate(problems *[]string) {
 	if strings.TrimSpace(c.Command) == "" {
 		*problems = append(*problems, "codex.command is required")
 	}
@@ -463,7 +463,7 @@ func (c Codex) validate(problems *[]string) {
 	}
 }
 
-func (s Server) validate(problems *[]string) {
+func (s *Server) validate(problems *[]string) {
 	if s.Port != nil && *s.Port < 0 {
 		*problems = append(*problems, "server.port must be greater than or equal to 0")
 	}
@@ -472,12 +472,12 @@ func (s Server) validate(problems *[]string) {
 	}
 }
 
-func (o Observability) validate(problems *[]string) {
+func (o *Observability) validate(problems *[]string) {
 	validatePositive("observability.refresh_ms", o.RefreshMS, problems)
 	validatePositive("observability.render_interval_ms", o.RenderIntervalMS, problems)
 }
 
-func (h Hooks) validate(problems *[]string) {
+func (h *Hooks) validate(problems *[]string) {
 	validatePositive("hooks.timeout_ms", h.TimeoutMS, problems)
 }
 
