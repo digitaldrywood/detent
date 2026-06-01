@@ -271,6 +271,74 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 	}
 }
 
+func TestBudgetCostEvents(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+
+	events := []UsageEvent{
+		{
+			ProjectID:      "detent",
+			Model:          "gpt-5",
+			CostUSD:        1.25,
+			StartedAt:      time.Date(2026, 6, 1, 5, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 6, 1, 5, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+			RuntimeSeconds: 60,
+		},
+		{
+			ProjectID:      "pyroapex",
+			Model:          "gpt-5",
+			CostUSD:        3.5,
+			StartedAt:      time.Date(2026, 6, 1, 6, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 6, 1, 6, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+			RuntimeSeconds: 60,
+		},
+		{
+			ProjectID:      "detent",
+			Model:          "gpt-5",
+			CostUSD:        2.75,
+			StartedAt:      time.Date(2026, 6, 1, 7, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 6, 1, 7, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+			RuntimeSeconds: 60,
+		},
+		{
+			ProjectID:      "detent",
+			Model:          "gpt-5",
+			CostUSD:        9,
+			StartedAt:      time.Date(2026, 6, 2, 1, 0, 0, 0, time.UTC),
+			FinishedAt:     time.Date(2026, 6, 2, 1, 1, 0, 0, time.UTC),
+			Outcome:        "completed",
+			RuntimeSeconds: 60,
+		},
+	}
+
+	for _, event := range events {
+		if _, err := backend.RecordUsageEvent(ctx, event); err != nil {
+			t.Fatalf("RecordUsageEvent() error = %v", err)
+		}
+	}
+
+	got, err := backend.BudgetCostEvents(ctx, BudgetCostQuery{
+		ProjectIDs: []string{"detent"},
+		From:       time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC),
+		To:         time.Date(2026, 6, 2, 0, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("BudgetCostEvents() error = %v", err)
+	}
+
+	if len(got) != 2 {
+		t.Fatalf("BudgetCostEvents() len = %d, want 2: %#v", len(got), got)
+	}
+	if got[0].ProjectID != "detent" || got[0].CostUSD != 1.25 || got[1].CostUSD != 2.75 {
+		t.Fatalf("BudgetCostEvents() = %#v, want detent costs in time order", got)
+	}
+}
+
 func TestFairShareStoreRoundTrip(t *testing.T) {
 	t.Parallel()
 

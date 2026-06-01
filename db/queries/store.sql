@@ -165,6 +165,16 @@ FROM usage_report_rows
 GROUP BY usage_report_rows.group_key, usage_report_rows.model
 ORDER BY usage_report_rows.group_key, usage_report_rows.model;
 
+-- name: BudgetCostEvents :many
+SELECT
+  project_id,
+  finished_at,
+  cost_usd
+FROM usage_events
+WHERE finished_at >= sqlc.arg(from_time)
+  AND finished_at < sqlc.arg(to_time)
+ORDER BY finished_at, id;
+
 -- name: ListFairShareUsage :many
 SELECT
   project_id,

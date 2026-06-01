@@ -77,6 +77,155 @@ func TestThroughputTrendPoints(t *testing.T) {
 	}
 }
 
+func TestBudgetProjectedSpendUSD(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+
+	tests := []struct {
+		name    string
+		now     time.Time
+		current float64
+		want    float64
+	}{
+		{
+			name:    "projects current run rate to period end",
+			now:     start.Add(6 * time.Hour),
+			current: 12,
+			want:    48,
+		},
+		{
+			name:    "keeps current spend at period start",
+			now:     start,
+			current: 12,
+			want:    12,
+		},
+		{
+			name:    "does not project below current after period end",
+			now:     end.Add(6 * time.Hour),
+			current: 30,
+			want:    30,
+		},
+		{
+			name:    "zero spend stays zero",
+			now:     start.Add(6 * time.Hour),
+			current: 0,
+			want:    0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := budgetProjectedSpendUSD(start, end, tt.now, tt.current)
+			if got != tt.want {
+				t.Fatalf("budgetProjectedSpendUSD() = %.2f, want %.2f", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestBudgetBurnDownView(t *testing.T) {
+	t.Parallel()
+
+	perDay := 100.0
+	start := time.Date(2026, 6, 1, 0, 0, 0, 0, time.UTC)
+	now := start.Add(12 * time.Hour)
+	end := start.Add(24 * time.Hour)
+
+	tests := []struct {
+		name           string
+		snapshot       telemetry.Snapshot
+		wantAvailable  bool
+		wantCurrent    string
+		wantCap        string
+		wantProjection string
+		wantPoints     int
+	}{
+		{
+			name: "disabled budget returns empty state",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+			},
+			wantAvailable: false,
+		},
+		{
+			name: "enabled budget projects spend and builds chart points",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Budget: telemetry.Budget{
+					Enabled:         true,
+					PerDayMaxUSD:    &perDay,
+					CurrentSpendUSD: 25,
+					PeriodStart:     start,
+					PeriodEnd:       end,
+					SpendPoints: []telemetry.BudgetSpendPoint{
+						{At: start.Add(6 * time.Hour), SpendUSD: 10},
+						{At: now, SpendUSD: 25},
+					},
+				},
+			},
+			wantAvailable:  true,
+			wantCurrent:    "$25.00",
+			wantCap:        "$100.00",
+			wantProjection: "$50.00",
+			wantPoints:     3,
+		},
+		{
+			name: "current spend appends latest point when store samples lag",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Budget: telemetry.Budget{
+					Enabled:         true,
+					PerDayMaxUSD:    &perDay,
+					CurrentSpendUSD: 25,
+					PeriodStart:     start,
+					PeriodEnd:       end,
+					SpendPoints: []telemetry.BudgetSpendPoint{
+						{At: start.Add(6 * time.Hour), SpendUSD: 10},
+					},
+				},
+			},
+			wantAvailable:  true,
+			wantCurrent:    "$25.00",
+			wantCap:        "$100.00",
+			wantProjection: "$50.00",
+			wantPoints:     3,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := budgetBurnDownView(tt.snapshot)
+			if got.Available != tt.wantAvailable {
+				t.Fatalf("Available = %v, want %v", got.Available, tt.wantAvailable)
+			}
+			if !tt.wantAvailable {
+				return
+			}
+			if got.CurrentLabel != tt.wantCurrent {
+				t.Fatalf("CurrentLabel = %q, want %q", got.CurrentLabel, tt.wantCurrent)
+			}
+			if got.CapLabel != tt.wantCap {
+				t.Fatalf("CapLabel = %q, want %q", got.CapLabel, tt.wantCap)
+			}
+			if got.ProjectionLabel != tt.wantProjection {
+				t.Fatalf("ProjectionLabel = %q, want %q", got.ProjectionLabel, tt.wantProjection)
+			}
+			if len(got.Chart.ActualPoints) != tt.wantPoints {
+				t.Fatalf("ActualPoints len = %d, want %d", len(got.Chart.ActualPoints), tt.wantPoints)
+			}
+			if len(got.Chart.ProjectionPoints) != 2 {
+				t.Fatalf("ProjectionPoints len = %d, want 2", len(got.Chart.ProjectionPoints))
+			}
+		})
+	}
+}
+
 func TestRunningActivityRowsUseRecentEventsNewestFirst(t *testing.T) {
 	t.Parallel()
 

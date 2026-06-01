@@ -306,6 +306,47 @@ func (s *sqliteStore) UsageReport(ctx context.Context, query UsageReportQuery) (
 	return report, nil
 }
 
+func (s *sqliteStore) BudgetCostEvents(ctx context.Context, query BudgetCostQuery) ([]BudgetCostEvent, error) {
+	from, err := requiredTimestamp("from", query.From)
+	if err != nil {
+		return nil, err
+	}
+	to, err := requiredTimestamp("to", query.To)
+	if err != nil {
+		return nil, err
+	}
+	if !query.To.After(query.From) {
+		return nil, errors.New("from must be before to")
+	}
+
+	rows, err := s.queries.BudgetCostEvents(ctx, sqlc.BudgetCostEventsParams{
+		FromTime: from,
+		ToTime:   to,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("reading budget cost events: %w", err)
+	}
+
+	projectFilter := budgetCostProjectFilter(query.ProjectIDs)
+	events := make([]BudgetCostEvent, 0, len(rows))
+	for _, row := range rows {
+		projectID := strings.TrimSpace(row.ProjectID)
+		if !projectFilter(projectID) {
+			continue
+		}
+		at, err := parseTimestamp("finished_at", row.FinishedAt)
+		if err != nil {
+			return nil, err
+		}
+		events = append(events, BudgetCostEvent{
+			ProjectID: projectID,
+			At:        at.UTC(),
+			CostUSD:   nonNegativeFloat(row.CostUsd),
+		})
+	}
+	return events, nil
+}
+
 func (s *sqliteStore) LifetimeTotals(ctx context.Context) (LifetimeTotals, error) {
 	row, err := s.queries.LifetimeTotals(ctx)
 	if err != nil {
@@ -439,6 +480,26 @@ func normalizeIssueIdentity(identity IssueIdentity) IssueIdentity {
 		IssueID:    strings.TrimSpace(identity.IssueID),
 		Identifier: strings.TrimSpace(identity.Identifier),
 		IssueURL:   strings.TrimSpace(identity.IssueURL),
+	}
+}
+
+func budgetCostProjectFilter(projectIDs []string) func(string) bool {
+	allowed := make(map[string]struct{}, len(projectIDs))
+	for _, projectID := range projectIDs {
+		projectID = strings.TrimSpace(projectID)
+		if projectID == "" {
+			continue
+		}
+		allowed[projectID] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return func(string) bool {
+			return true
+		}
+	}
+	return func(projectID string) bool {
+		_, ok := allowed[strings.TrimSpace(projectID)]
+		return ok
 	}
 }
 

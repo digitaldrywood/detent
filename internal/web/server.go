@@ -198,18 +198,18 @@ func (s *Server) dashboard(c echo.Context) error {
 func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
 	sub, err := s.hub.Subscribe(ctx)
 	if err != nil {
-		return telemetry.Snapshot{}
+		return s.enrichSnapshot(ctx, telemetry.Snapshot{})
 	}
 	defer sub.Close()
 
 	select {
 	case snapshot, ok := <-sub.C():
 		if ok {
-			return snapshot
+			return s.enrichSnapshot(ctx, snapshot)
 		}
 	default:
 	}
-	return telemetry.Snapshot{}
+	return s.enrichSnapshot(ctx, telemetry.Snapshot{})
 }
 
 func (s *Server) health(c echo.Context) error {

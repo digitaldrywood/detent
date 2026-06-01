@@ -10,6 +10,51 @@ import (
 	"database/sql"
 )
 
+const budgetCostEvents = `-- name: BudgetCostEvents :many
+SELECT
+  project_id,
+  finished_at,
+  cost_usd
+FROM usage_events
+WHERE finished_at >= ?1
+  AND finished_at < ?2
+ORDER BY finished_at, id
+`
+
+type BudgetCostEventsParams struct {
+	FromTime string `json:"from_time"`
+	ToTime   string `json:"to_time"`
+}
+
+type BudgetCostEventsRow struct {
+	ProjectID  string  `json:"project_id"`
+	FinishedAt string  `json:"finished_at"`
+	CostUsd    float64 `json:"cost_usd"`
+}
+
+func (q *Queries) BudgetCostEvents(ctx context.Context, arg BudgetCostEventsParams) ([]BudgetCostEventsRow, error) {
+	rows, err := q.db.QueryContext(ctx, budgetCostEvents, arg.FromTime, arg.ToTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []BudgetCostEventsRow{}
+	for rows.Next() {
+		var i BudgetCostEventsRow
+		if err := rows.Scan(&i.ProjectID, &i.FinishedAt, &i.CostUsd); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const createCodexSession = `-- name: CreateCodexSession :one
 INSERT INTO codex_sessions (
   run_id,

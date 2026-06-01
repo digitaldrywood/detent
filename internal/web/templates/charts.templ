@@ -12,6 +12,10 @@ templ SplitSeriesChart(data SplitSeriesChartData) {
 	@splitSeriesChart(newSplitSeriesChartView(data))
 }
 
+templ BudgetProjectionChart(data BudgetProjectionChartData) {
+	@budgetProjectionChart(newBudgetProjectionChartView(data))
+}
+
 templ MiniBarChart(data BarChartData) {
 	@barChart(newBarChartView(data))
 }
@@ -59,6 +63,36 @@ templ splitSeriesChart(view splitSeriesChartView) {
 		}
 		for _, point := range view.InputPoints {
 			<circle class={ view.InputClass } cx={ point.X } cy={ point.Y } r="2.25" fill="currentColor" opacity="0.8">
+				<title>{ point.Title }</title>
+			</circle>
+		}
+	</svg>
+}
+
+templ budgetProjectionChart(view budgetProjectionChartView) {
+	<svg class={ view.Class } viewBox={ view.ViewBox } role="img" aria-label={ view.AriaLabel } preserveAspectRatio="none" xmlns="http://www.w3.org/2000/svg">
+		<title>{ view.Title }</title>
+		if view.CapLineY != "" {
+			<line class={ view.CapClass } x1={ view.CapLineX1 } y1={ view.CapLineY } x2={ view.CapLineX2 } y2={ view.CapLineY } stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-dasharray="5 5" vector-effect="non-scaling-stroke">
+				<title>{ view.CapTitle }</title>
+			</line>
+		}
+		if view.ActualAreaPath != "" {
+			<path class={ view.ActualClass } d={ view.ActualAreaPath } fill="currentColor" opacity="0.16"></path>
+		}
+		if view.ActualLinePath != "" {
+			<path class={ view.ActualClass } d={ view.ActualLinePath } fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" vector-effect="non-scaling-stroke"></path>
+		}
+		if view.ProjectionLinePath != "" {
+			<path class={ view.ProjectionClass } d={ view.ProjectionLinePath } fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" stroke-dasharray="6 5" vector-effect="non-scaling-stroke"></path>
+		}
+		for _, point := range view.ActualPoints {
+			<circle class={ view.ActualClass } cx={ point.X } cy={ point.Y } r="2.5" fill="currentColor" opacity="0.85">
+				<title>{ point.Title }</title>
+			</circle>
+		}
+		for _, point := range view.ProjectionPoints {
+			<circle class={ view.ProjectionClass } cx={ point.X } cy={ point.Y } r="2.25" fill="currentColor" opacity="0.75">
 				<title>{ point.Title }</title>
 			</circle>
 		}
