@@ -16,6 +16,7 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	prNumber := 226
 	prior := connector.Issue{
 		ID:         "issue-running",
 		Identifier: "digitaldrywood/detent#225",
@@ -23,6 +24,15 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 		State:      "Todo",
 		URL:        "https://github.com/digitaldrywood/detent/issues/225",
 		Labels:     []string{"bug"},
+		PRNumber:   &prNumber,
+		PullRequest: &connector.PullRequest{
+			Number:           prNumber,
+			URL:              "https://github.com/digitaldrywood/detent/pull/226",
+			BranchName:       "detent/digitaldrywood_detent_225",
+			State:            "OPEN",
+			CIStatus:         "success",
+			CodexReviewState: "COMMENTED",
+		},
 	}
 
 	tests := []struct {
@@ -103,6 +113,15 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 			}
 			if !slices.Equal(got.Labels, tt.wantLabels) {
 				t.Fatalf("running snapshot labels = %#v, want %#v", got.Labels, tt.wantLabels)
+			}
+			if got.PullRequest == nil {
+				t.Fatal("running snapshot pull request = nil, want preserved metadata")
+			}
+			if got.PullRequest.URL != "https://github.com/digitaldrywood/detent/pull/226" {
+				t.Fatalf("running snapshot pull request URL = %q, want preserved metadata", got.PullRequest.URL)
+			}
+			if got.PullRequest.CIStatus != "success" || got.PullRequest.CodexReviewState != "COMMENTED" {
+				t.Fatalf("running snapshot pull request status = %#v, want preserved metadata", got.PullRequest)
 			}
 			if !slices.Equal(tracker.requestedIDs, []string{prior.ID}) {
 				t.Fatalf("FetchIssueStatesByIDs() ids = %#v, want [%s]", tracker.requestedIDs, prior.ID)

@@ -295,14 +295,73 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State)
 		}
 
 		running := state.Running[id]
-		running.Issue = cloneIssue(issue)
+		running.Issue = mergeIssueTrackerFields(running.Issue, issue)
 		state.Running[id] = running
 
 		if claimed, ok := state.Claimed[id]; ok {
-			claimed.Issue = cloneIssue(issue)
+			claimed.Issue = mergeIssueTrackerFields(claimed.Issue, issue)
 			state.Claimed[id] = claimed
 		}
 	}
+}
+
+func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue {
+	merged := cloneIssue(current)
+	refreshed = cloneIssue(refreshed)
+
+	if strings.TrimSpace(refreshed.ID) != "" {
+		merged.ID = refreshed.ID
+	}
+	if refreshed.Identifier != "" {
+		merged.Identifier = refreshed.Identifier
+	}
+	if refreshed.Title != "" {
+		merged.Title = refreshed.Title
+	}
+	if refreshed.Description != "" {
+		merged.Description = refreshed.Description
+	}
+	if refreshed.Priority != nil {
+		merged.Priority = refreshed.Priority
+	}
+	if refreshed.State != "" {
+		merged.State = refreshed.State
+	}
+	if refreshed.BranchName != "" {
+		merged.BranchName = refreshed.BranchName
+	}
+	if refreshed.URL != "" {
+		merged.URL = refreshed.URL
+	}
+	if refreshed.PRNumber != nil {
+		merged.PRNumber = refreshed.PRNumber
+	}
+	if refreshed.PullRequest != nil {
+		merged.PullRequest = refreshed.PullRequest
+	}
+	if refreshed.AssigneeID != "" {
+		merged.AssigneeID = refreshed.AssigneeID
+	}
+	if refreshed.BlockedBy != nil {
+		merged.BlockedBy = refreshed.BlockedBy
+	}
+	if refreshed.BlockerReason != "" {
+		merged.BlockerReason = refreshed.BlockerReason
+	}
+	if refreshed.Labels != nil {
+		merged.Labels = refreshed.Labels
+	}
+	if refreshed.CreatedAt != nil {
+		merged.CreatedAt = refreshed.CreatedAt
+	}
+	if refreshed.UpdatedAt != nil {
+		merged.UpdatedAt = refreshed.UpdatedAt
+	}
+	if refreshed.ModelOverride != "" {
+		merged.ModelOverride = refreshed.ModelOverride
+	}
+
+	return merged
 }
 
 func runningIssueIDs(running map[string]Running) []string {
