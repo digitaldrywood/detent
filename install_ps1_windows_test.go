@@ -75,12 +75,15 @@ func TestPowerShellInstallScriptMapsX86ProcessToOSArchitecture(t *testing.T) {
 		wow64Arch     string
 		processorArch string
 		cimArch       string
+		cimOSArch     string
+		runtimeSkip   string
 		assetArch     string
 		archiveOut    string
 	}{
 		{name: "amd64 os", osArch: "AMD64", processArch: "X86", wow64Arch: "AMD64", processorArch: "x86", assetArch: "amd64", archiveOut: "release-amd64"},
 		{name: "arm64 os", osArch: "ARM64", processArch: "X86", wow64Arch: "ARM64", processorArch: "x86", assetArch: "arm64", archiveOut: "release-arm64"},
 		{name: "generic 64 bit os defers to arm64 process", osArch: "64-bit", processArch: "ARM64", processorArch: "ARM64", cimArch: "0", assetArch: "arm64", archiveOut: "release-arm64"},
+		{name: "runtime unavailable arm64 env before generic cim os", processorArch: "ARM64", cimArch: "0", cimOSArch: "64-bit", runtimeSkip: "1", assetArch: "arm64", archiveOut: "release-arm64"},
 	}
 
 	for _, tt := range tests {
@@ -114,6 +117,8 @@ func TestPowerShellInstallScriptMapsX86ProcessToOSArchitecture(t *testing.T) {
 				"PROCESSOR_ARCHITECTURE="+tt.processorArch,
 				"PROCESSOR_ARCHITEW6432="+tt.wow64Arch,
 				"DETENT_INSTALL_TEST_CIM_PROCESSOR_ARCH="+tt.cimArch,
+				"DETENT_INSTALL_TEST_CIM_OS_ARCH="+tt.cimOSArch,
+				"DETENT_INSTALL_TEST_OS_ARCH_UNAVAILABLE="+tt.runtimeSkip,
 				"PATH="+fakeBin+";"+os.Getenv("PATH"),
 			)
 

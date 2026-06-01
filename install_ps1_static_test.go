@@ -51,7 +51,7 @@ func TestWindowsInstallDocsExposeOneStepPowerShellInstall(t *testing.T) {
 	}
 }
 
-func TestWindowsInstallScriptDoesNotMapGeneric64BitCIMOutputToAmd64(t *testing.T) {
+func TestWindowsInstallScriptKeepsGeneric64BitOutOfTargetArchConverter(t *testing.T) {
 	t.Parallel()
 
 	raw, err := os.ReadFile("install.ps1")
@@ -67,5 +67,28 @@ func TestWindowsInstallScriptDoesNotMapGeneric64BitCIMOutputToAmd64(t *testing.T
 		if strings.Contains(script, disallowed) {
 			t.Fatalf("install.ps1 maps generic CIM bitness %q to amd64", disallowed)
 		}
+	}
+}
+
+func TestWindowsInstallScriptChecksProcessorEnvBeforeGenericCIMBitness(t *testing.T) {
+	t.Parallel()
+
+	raw, err := os.ReadFile("install.ps1")
+	if err != nil {
+		t.Fatalf("ReadFile(install.ps1) error = %v", err)
+	}
+
+	script := string(raw)
+	envIndex := strings.Index(script, "$candidates += $env:PROCESSOR_ARCHITECTURE")
+	if envIndex == -1 {
+		t.Fatal("install.ps1 does not add PROCESSOR_ARCHITECTURE to OS fallback candidates")
+	}
+
+	cimOSIndex := strings.Index(script, "$candidates += Convert-CimOSArchitectureToTargetArch")
+	if cimOSIndex == -1 {
+		t.Fatal("install.ps1 does not normalize CIM OSArchitecture output")
+	}
+	if envIndex > cimOSIndex {
+		t.Fatal("install.ps1 checks generic CIM OSArchitecture before PROCESSOR_ARCHITECTURE")
 	}
 }
