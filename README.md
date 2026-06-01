@@ -93,7 +93,23 @@ disciplined as you would be, every time, in parallel.
 
 ## Install
 
-Install the latest released binary with Go:
+Install the latest Windows release with PowerShell:
+
+```powershell
+irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex
+```
+
+The PowerShell installer downloads the Windows release archive, verifies the
+SHA-256 checksum, installs `detent.exe` to `%LOCALAPPDATA%\detent\bin`, and
+adds that directory to the user PATH.
+
+Install with Homebrew on macOS or Linux:
+
+```sh
+brew install digitaldrywood/tap/detent
+```
+
+Install with Go on any platform:
 
 ```sh
 go install github.com/digitaldrywood/detent/cmd/detent@latest
@@ -101,18 +117,22 @@ go install github.com/digitaldrywood/detent/cmd/detent@latest
 
 Requirements:
 
-- Go 1.26 or newer.
+- Go 1.26 or newer when installing with `go install` or building from source.
 - A working `codex app-server` command on the host that runs agents.
 - A GitHub token with access to the target ProjectV2 board. For organization
   projects, `repo`, `read:org`, and `project` scopes are usually required.
 
-Source checkouts can also run the repository-local installer:
+macOS and Linux hosts can install the latest release with the shell installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh
+```
+
+Source checkouts can also run the repository-local shell installer:
 
 ```sh
 ./install.sh
 ```
-
-Homebrew support is tracked separately in #98.
 
 ## Release
 
