@@ -79,6 +79,47 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 	}
 }
 
+func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	info, err := backend.Create(context.Background(), Issue{Identifier: "DD-NATIVE"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if !info.Created {
+		t.Fatal("Create() Created = false, want true")
+	}
+	if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != "detent/dd-native" {
+		t.Fatalf("worktree branch = %q, want detent/dd-native", got)
+	}
+	if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "source repo\n" {
+		t.Fatalf("README.md = %q, want source repo", got)
+	}
+
+	if err := backend.Cleanup(context.Background(), "DD-NATIVE"); err != nil {
+		t.Fatalf("Cleanup() error = %v", err)
+	}
+	if _, err := os.Stat(info.Path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("workspace exists after cleanup, stat error = %v", err)
+	}
+	if got := runGit(t, source, "worktree", "list", "--porcelain"); strings.Contains(got, info.Path) {
+		t.Fatalf("git worktree list still contains removed path:\n%s", got)
+	}
+}
+
 func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
 	skipWindows(t)
 
@@ -451,6 +492,7 @@ func initSourceRepo(t *testing.T) string {
 
 	dir := t.TempDir()
 	runCommand(t, dir, "git", "init", "-b", "main")
+	runGit(t, dir, "config", "core.autocrlf", "false")
 	runGit(t, dir, "config", "user.name", "Test User")
 	runGit(t, dir, "config", "user.email", "test@example.com")
 	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {

@@ -287,7 +287,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 				Name:   "Project " + id + " source repo",
 				Status: doctorFail,
 				Detail: "source root is not configured",
-				Hint:   "Set workspace.source_root or workspace.root to an existing git checkout.",
+				Hint:   "Set workspace.source_root, project workdir, or workspace.root to an existing git checkout.",
 			})
 			continue
 		}
@@ -297,7 +297,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 				Name:   "Project " + id + " source repo",
 				Status: doctorFail,
 				Detail: fmt.Sprintf("%s: %v", sourceRoot, err),
-				Hint:   "Set workspace.source_root to an existing git checkout.",
+				Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
 			})
 			continue
 		}
@@ -306,7 +306,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 				Name:   "Project " + id + " source repo",
 				Status: doctorFail,
 				Detail: fmt.Sprintf("%s: %v", expandedSourceRoot, err),
-				Hint:   "Set workspace.source_root to an existing git checkout.",
+				Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
 			})
 			continue
 		}
@@ -324,10 +324,13 @@ func projectSourceRoot(project globalconfig.Project, cfg workflowconfig.Config) 
 	if sourceRoot := strings.TrimSpace(cfg.Workspace.SourceRoot); sourceRoot != "" {
 		return sourceRoot
 	}
+	if workdir := strings.TrimSpace(project.Workdir); workdir != "" {
+		return workdir
+	}
 	if root := strings.TrimSpace(cfg.Workspace.Root); root != "" {
 		return root
 	}
-	return strings.TrimSpace(project.Workdir)
+	return ""
 }
 
 func expandDoctorWorkspacePath(path string) (string, error) {
