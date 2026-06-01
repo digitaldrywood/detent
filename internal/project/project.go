@@ -64,6 +64,11 @@ type WorkflowWatcher interface {
 
 type WorkflowWatcherFactory func(string) (WorkflowWatcher, error)
 
+type startOptions struct {
+	provision     bool
+	publishEvents bool
+}
+
 type Dependencies struct {
 	Connector              connector.Connector
 	ConnectorFactory       ConnectorFactory
@@ -92,11 +97,12 @@ type Project struct {
 	logger           *slog.Logger
 	watcher          WorkflowWatcherFactory
 
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	done    chan struct{}
-	runErr  error
-	started bool
+	mu              sync.Mutex
+	cancel          context.CancelFunc
+	done            chan struct{}
+	runErr          error
+	started         bool
+	lifecycleEvents bool
 }
 
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
@@ -246,6 +252,10 @@ func (p *Project) Paused() bool {
 }
 
 func (p *Project) Start(ctx context.Context) error {
+	return p.start(ctx, startOptions{provision: true, publishEvents: true})
+}
+
+func (p *Project) start(ctx context.Context, opts startOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -265,8 +275,10 @@ func (p *Project) Start(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 
-	if err := p.provision(ctx); err != nil {
-		return err
+	if opts.provision {
+		if err := p.provision(ctx); err != nil {
+			return err
+		}
 	}
 
 	p.mu.Lock()
@@ -301,13 +313,12 @@ func (p *Project) Start(ctx context.Context) error {
 	p.done = done
 	p.runErr = nil
 	p.started = true
+	p.lifecycleEvents = opts.publishEvents
 	p.mu.Unlock()
 
-	p.publish(Event{
-		ProjectID: p.id,
-		Kind:      EventStarted,
-		At:        time.Now(),
-	})
+	if opts.publishEvents {
+		p.publishStarted()
+	}
 
 	go p.run(runCtx, done, orch)
 	return nil
@@ -406,6 +417,10 @@ func (p *Project) provision(ctx context.Context) error {
 }
 
 func (p *Project) Stop(ctx context.Context) error {
+	return p.stop(ctx, true)
+}
+
+func (p *Project) stop(ctx context.Context, publishEvents bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -417,10 +432,32 @@ func (p *Project) Stop(ctx context.Context) error {
 		p.mu.Unlock()
 		return ErrNotRunning
 	}
+	p.lifecycleEvents = publishEvents
 	cancel()
 	p.mu.Unlock()
 
 	return p.waitDone(ctx, done)
+}
+
+func (p *Project) restart(ctx context.Context, opts startOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	if p.cfg.Paused {
+		p.mu.Unlock()
+		return ErrProjectPaused
+	}
+	if p.done != nil {
+		p.mu.Unlock()
+		return ErrAlreadyRunning
+	}
+	p.started = false
+	p.orchestrator = nil
+	p.mu.Unlock()
+
+	return p.start(ctx, opts)
 }
 
 func (p *Project) Wait(ctx context.Context) error {
@@ -465,6 +502,7 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	}
 
 	p.mu.Lock()
+	publishEvents := p.lifecycleEvents
 	if p.done == done {
 		p.cancel = nil
 		p.done = nil
@@ -472,12 +510,14 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	}
 	p.mu.Unlock()
 
-	p.publish(Event{
-		ProjectID: p.id,
-		Kind:      EventStopped,
-		At:        time.Now(),
-		Error:     errorString(err),
-	})
+	if publishEvents {
+		p.publish(Event{
+			ProjectID: p.id,
+			Kind:      EventStopped,
+			At:        time.Now(),
+			Error:     errorString(err),
+		})
+	}
 
 	close(done)
 }
@@ -598,6 +638,33 @@ func (p *Project) publish(event Event) {
 			"error", err,
 		)
 	}
+}
+
+func (p *Project) publishStarted() {
+	p.mu.Lock()
+	p.lifecycleEvents = true
+	id := p.id
+	p.mu.Unlock()
+
+	p.publish(Event{
+		ProjectID: id,
+		Kind:      EventStarted,
+		At:        time.Now(),
+	})
+}
+
+func (p *Project) publishStopped(err error) {
+	p.mu.Lock()
+	p.lifecycleEvents = true
+	id := p.id
+	p.mu.Unlock()
+
+	p.publish(Event{
+		ProjectID: id,
+		Kind:      EventStopped,
+		At:        time.Now(),
+		Error:     errorString(err),
+	})
 }
 
 type workflowUpdater interface {

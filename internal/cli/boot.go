@@ -167,6 +167,11 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err := manager.Start(runCtx); err != nil {
 		return err
 	}
+	globalWatcherDone := startGlobalConfigWatcher(runCtx, cfg.Global, manager, logger)
+	defer func() {
+		stop()
+		waitGlobalConfigWatcher(globalWatcherDone)
+	}()
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, runtimeStore, displayURL, defaultSnapshotInterval, time.Now)
