@@ -79,7 +79,7 @@ func TestWindowsInstallScriptChecksProcessorEnvBeforeGenericCIMBitness(t *testin
 	}
 
 	script := string(raw)
-	envIndex := strings.Index(script, "$candidates += $env:PROCESSOR_ARCHITECTURE")
+	envIndex := strings.Index(script, "$candidates += Get-ProcessorArchitectureCandidate")
 	if envIndex == -1 {
 		t.Fatal("install.ps1 does not add PROCESSOR_ARCHITECTURE to OS fallback candidates")
 	}

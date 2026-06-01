@@ -114,6 +114,8 @@ func TestPowerShellInstallScriptMapsX86ProcessToOSArchitecture(t *testing.T) {
 				"DETENT_INSTALL_SKIP_PATH=1",
 				"DETENT_INSTALL_TEST_OS_ARCH="+tt.osArch,
 				"DETENT_INSTALL_TEST_PROCESS_ARCH="+tt.processArch,
+				"DETENT_INSTALL_TEST_PROCESSOR_ARCHITECTURE="+tt.processorArch,
+				"DETENT_INSTALL_TEST_PROCESSOR_ARCHITEW6432="+tt.wow64Arch,
 				"PROCESSOR_ARCHITECTURE="+tt.processorArch,
 				"PROCESSOR_ARCHITEW6432="+tt.wow64Arch,
 				"DETENT_INSTALL_TEST_CIM_PROCESSOR_ARCH="+tt.cimArch,

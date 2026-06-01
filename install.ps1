@@ -108,6 +108,22 @@ function Convert-CimOSArchitectureToTargetArch {
 	return Convert-ToTargetArch $Architecture
 }
 
+function Get-ProcessorArchitectureCandidate {
+	$testArch = [Environment]::GetEnvironmentVariable('DETENT_INSTALL_TEST_PROCESSOR_ARCHITECTURE', 'Process')
+	if ($null -ne $testArch) {
+		return $testArch
+	}
+	return $env:PROCESSOR_ARCHITECTURE
+}
+
+function Get-ProcessorArchitectureW6432Candidate {
+	$testArch = [Environment]::GetEnvironmentVariable('DETENT_INSTALL_TEST_PROCESSOR_ARCHITEW6432', 'Process')
+	if ($null -ne $testArch) {
+		return $testArch
+	}
+	return $env:PROCESSOR_ARCHITEW6432
+}
+
 function Get-OSArchitectureCandidates {
 	$candidates = @()
 	if ($env:DETENT_INSTALL_TEST_OS_ARCH) {
@@ -119,19 +135,19 @@ function Get-OSArchitectureCandidates {
 		}
 	}
 
-	$candidates += $env:PROCESSOR_ARCHITEW6432
+	$candidates += Get-ProcessorArchitectureW6432Candidate
 
 	try {
 		$testCimProcessorArch = [Environment]::GetEnvironmentVariable('DETENT_INSTALL_TEST_CIM_PROCESSOR_ARCH', 'Process')
 		$testCimOSArch = [Environment]::GetEnvironmentVariable('DETENT_INSTALL_TEST_CIM_OS_ARCH', 'Process')
 		if (-not [string]::IsNullOrEmpty($testCimProcessorArch) -or -not [string]::IsNullOrEmpty($testCimOSArch)) {
 			$candidates += Convert-CimProcessorArchitectureToTargetArch $testCimProcessorArch
-			$candidates += $env:PROCESSOR_ARCHITECTURE
+			$candidates += Get-ProcessorArchitectureCandidate
 			$candidates += Convert-CimOSArchitectureToTargetArch $testCimOSArch
 		} elseif (Test-Command 'Get-CimInstance') {
 			$processor = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
 			$candidates += Convert-CimProcessorArchitectureToTargetArch $processor.Architecture
-			$candidates += $env:PROCESSOR_ARCHITECTURE
+			$candidates += Get-ProcessorArchitectureCandidate
 
 			$os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
 			$candidates += Convert-CimOSArchitectureToTargetArch $os.OSArchitecture
@@ -152,7 +168,7 @@ function Get-ProcessArchitectureCandidates {
 		} catch {
 		}
 	}
-	$candidates += $env:PROCESSOR_ARCHITECTURE
+	$candidates += Get-ProcessorArchitectureCandidate
 
 	return $candidates
 }
