@@ -122,7 +122,7 @@ func (t *localTransport) Send(ctx context.Context, msg Message) error {
 		closeErr := t.closeStdin()
 		<-writeDone
 		if closeErr != nil {
-			return fmt.Errorf("%w: close stdin: %v", ctx.Err(), closeErr)
+			return transportContextError(ctx.Err(), "close stdin", closeErr)
 		}
 		return ctx.Err()
 	}
@@ -165,7 +165,7 @@ func (t *localTransport) Close(ctx context.Context) error {
 		}
 
 		if killErr != nil {
-			return fmt.Errorf("%w: kill process: %v", ctx.Err(), killErr)
+			return transportContextError(ctx.Err(), "kill process", killErr)
 		}
 		return ctx.Err()
 	}
@@ -176,6 +176,10 @@ func (t *localTransport) ProcessIdentity() string {
 		return ""
 	}
 	return strconv.Itoa(t.cmd.Process.Pid)
+}
+
+func transportContextError(ctxErr error, operation string, err error) error {
+	return fmt.Errorf("%w: %s: %w", ctxErr, operation, err)
 }
 
 func (t *localTransport) acquireSend(ctx context.Context) error {

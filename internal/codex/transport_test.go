@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -131,6 +132,46 @@ func TestLocalTransportSendHonorsContextDuringBlockedWrite(t *testing.T) {
 	}
 }
 
+func TestLocalTransportSendWrapsCloseErrorAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	closeErr := errors.New("close stdin failed")
+	stdin := newBlockingWriteCloser(closeErr)
+	transport := &localTransport{
+		stdin:    stdin,
+		codec:    NewCodec(nil, stdin),
+		sendLock: make(chan struct{}, 1),
+		done:     make(chan struct{}),
+	}
+	transport.sendLock <- struct{}{}
+
+	sendCtx, cancel := context.WithCancel(context.Background())
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- transport.Send(sendCtx, Message{Method: "blocked"})
+	}()
+
+	select {
+	case <-stdin.writeStarted:
+	case <-time.After(time.Second):
+		t.Fatal("Send() did not start writing")
+	}
+
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Send() error = %v, want context canceled", err)
+		}
+		if !errors.Is(err, closeErr) {
+			t.Fatalf("Send() error = %v, want close error in chain", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Send() did not return after context cancellation")
+	}
+}
+
 func TestLocalTransportCloseKillsUnresponsiveProcess(t *testing.T) {
 	t.Parallel()
 
@@ -152,6 +193,45 @@ func TestLocalTransportCloseKillsUnresponsiveProcess(t *testing.T) {
 	err = transport.Close(closeCtx)
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Close() error = %v, want context deadline exceeded", err)
+	}
+}
+
+func TestLocalTransportCloseWrapsKillErrorAfterContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	cmd := helperCommand(context.Background(), "exit")
+	if err := cmd.Start(); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("Wait() error = %v", err)
+	}
+	killErr := cmd.Process.Kill()
+	if killErr == nil {
+		t.Fatal("Kill() error = nil, want post-exit process error")
+	}
+
+	done := make(chan struct{})
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		close(done)
+	}()
+
+	closeCtx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	transport := &localTransport{
+		cmd:   cmd,
+		stdin: noopWriteCloser{},
+		done:  done,
+	}
+
+	err := transport.Close(closeCtx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Close() error = %v, want context canceled", err)
+	}
+	if !errors.Is(err, killErr) {
+		t.Fatalf("Close() error = %v, want kill error %v in chain", err, killErr)
 	}
 }
 
@@ -205,6 +285,8 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 		time.Sleep(time.Hour)
 	case "ignore-close":
 		time.Sleep(time.Hour)
+	case "exit":
+		return
 	default:
 		os.Exit(2)
 	}
@@ -253,4 +335,45 @@ func helperRoundTrip() {
 	if err := encoder.Encode(response); err != nil {
 		os.Exit(6)
 	}
+}
+
+type blockingWriteCloser struct {
+	closeErr     error
+	writeStarted chan struct{}
+	closed       chan struct{}
+	startOnce    sync.Once
+	closeOnce    sync.Once
+}
+
+func newBlockingWriteCloser(closeErr error) *blockingWriteCloser {
+	return &blockingWriteCloser{
+		closeErr:     closeErr,
+		writeStarted: make(chan struct{}),
+		closed:       make(chan struct{}),
+	}
+}
+
+func (w *blockingWriteCloser) Write([]byte) (int, error) {
+	w.startOnce.Do(func() {
+		close(w.writeStarted)
+	})
+	<-w.closed
+	return 0, io.ErrClosedPipe
+}
+
+func (w *blockingWriteCloser) Close() error {
+	w.closeOnce.Do(func() {
+		close(w.closed)
+	})
+	return w.closeErr
+}
+
+type noopWriteCloser struct{}
+
+func (noopWriteCloser) Write(p []byte) (int, error) {
+	return len(p), nil
+}
+
+func (noopWriteCloser) Close() error {
+	return nil
 }
