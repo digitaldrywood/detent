@@ -204,6 +204,15 @@ func TestFairShareRequiresStore(t *testing.T) {
 	}
 }
 
+func TestGlobalSchedulerDoesNotExposeCountingSemaphoreCounters(t *testing.T) {
+	t.Parallel()
+
+	global := scheduler.NewWeightedFair(scheduler.Config{Capacity: 1})
+	if _, ok := global.(interface{ Counters() scheduler.Counters }); ok {
+		t.Fatalf("global scheduler exposes counting semaphore Counters()")
+	}
+}
+
 func TestSelectProjectRejectsEmptyCandidateSet(t *testing.T) {
 	t.Parallel()
 

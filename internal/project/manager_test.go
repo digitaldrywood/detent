@@ -654,20 +654,16 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 	}
 
 	slots := requestProjectSlots(t, manager, []project.ProjectID{"alpha", "bravo"})
-	assertGlobalUsage(t, global, 2)
 	if _, err := requestProjectSlot(manager, "charlie"); !errors.Is(err, scheduler.ErrNoSlots) {
 		t.Fatalf("charlie RequestSlot() error = %v, want ErrNoSlots", err)
 	}
-	assertGlobalUsage(t, global, 2)
 	releaseProjectSlot(t, global, slots[0])
 	charlie, err := requestProjectSlot(manager, "charlie")
 	if err != nil {
 		t.Fatalf("charlie RequestSlot() after release error = %v", err)
 	}
-	assertGlobalUsage(t, global, 2)
 	releaseProjectSlot(t, global, slots[1])
 	releaseProjectSlot(t, global, charlie)
-	assertGlobalUsage(t, global, 0)
 
 	assertWeightedFairCounts(t, global, manager, 100, map[string]int{
 		"alpha":   50,
@@ -874,18 +870,6 @@ func releaseProjectSlot(t *testing.T, global scheduler.GlobalScheduler, slot sch
 
 	if err := global.ReleaseSlot(slot); err != nil {
 		t.Fatalf("ReleaseSlot() error = %v", err)
-	}
-}
-
-func assertGlobalUsage(t *testing.T, global scheduler.GlobalScheduler, want int) {
-	t.Helper()
-
-	countersProvider, ok := global.(interface{ Counters() scheduler.Counters })
-	if !ok {
-		t.Fatalf("global scheduler %T does not expose Counters()", global)
-	}
-	if got := countersProvider.Counters().Used; got != want {
-		t.Fatalf("global scheduler used slots = %d, want %d", got, want)
 	}
 }
 
