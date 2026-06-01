@@ -613,7 +613,8 @@ func formatUSDCap(value *float64) string {
 type align int
 
 const (
-	alignLeft align = iota
+	_ align = iota
+	alignLeft
 	alignRight
 )
 

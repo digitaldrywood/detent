@@ -166,9 +166,9 @@ func (w *FileWatcher[T]) reload(ctx context.Context) FileUpdate[T] {
 	value, err := w.load(ctx)
 	if err != nil {
 		update.Err = err
-	} else {
-		update.Value = value
+		return update
 	}
+	update.Value = value
 
 	return update
 }
