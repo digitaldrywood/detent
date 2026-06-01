@@ -231,11 +231,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		}
 	}
 	for _, id := range result.Changed {
-		if err := m.removeLocked(ctx, id); err != nil {
-			m.cfg = previous
-			return result, err
-		}
-		if err := m.registerProjectLocked(ctx, id, prepared[id]); err != nil {
+		if err := m.replaceProjectLocked(ctx, id, prepared[id]); err != nil {
 			m.cfg = previous
 			return result, err
 		}
@@ -262,6 +258,42 @@ func (m *Manager) removeLocked(ctx context.Context, id ProjectID) error {
 		}
 	}
 	m.registry.Delete(id)
+	return nil
+}
+
+func (m *Manager) replaceProjectLocked(ctx context.Context, id ProjectID, replacement *Project) error {
+	current, ok := m.registry.Get(id)
+	if !ok {
+		return ErrProjectNotFound
+	}
+
+	shouldStart := m.running && !replacement.Paused()
+	if shouldStart {
+		if err := m.waitBeforeSpawn(ctx); err != nil {
+			return err
+		}
+		if err := replacement.provision(ctx); err != nil {
+			return fmt.Errorf("provision replacement project %s: %w", id, err)
+		}
+	}
+
+	if current.Running() {
+		if err := current.Stop(ctx); err != nil {
+			return err
+		}
+	}
+	m.registry.Delete(id)
+	if err := m.registry.Set(replacement); err != nil {
+		return err
+	}
+	if !shouldStart {
+		return nil
+	}
+	if err := replacement.start(ctx, false); err != nil {
+		m.registry.Delete(id)
+		return err
+	}
+	m.spawned = true
 	return nil
 }
 

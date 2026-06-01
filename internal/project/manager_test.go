@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -321,6 +322,68 @@ func TestManagerReconcileKeepsRegistryWhenNewProjectCannotBeCreated(t *testing.T
 	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
 		"alpha": {ID: "alpha", Weight: 1},
 	})
+}
+
+func TestManagerReconcileKeepsChangedProjectWhenReplacementProvisionFails(t *testing.T) {
+	t.Parallel()
+
+	provisionErr := errors.New("provision failed")
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			var provision func(context.Context) error
+			if cfg.ID == "alpha" && cfg.Weight == 2 {
+				provision = func(context.Context) error {
+					return provisionErr
+				}
+			}
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+			}, project.Dependencies{
+				Connector: provisioningConnector{provision: provision},
+				Events:    events,
+				Runner:    blockingRunner{},
+			})
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	drainProjectEvents(t, sub.C(), 1)
+
+	_, err = manager.Reconcile(context.Background(), project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 2}},
+	})
+	if !errors.Is(err, provisionErr) {
+		t.Fatalf("Reconcile() error = %v, want %v", err, provisionErr)
+	}
+	assertNoProjectEvent(t, sub.C())
+	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+		"alpha": {ID: "alpha", Weight: 1},
+	})
+
+	got, ok := manager.Registry().Get("alpha")
+	if !ok {
+		t.Fatal("Registry().Get(alpha) ok = false, want true")
+	}
+	if !got.Running() {
+		t.Fatal("alpha Running() = false, want true")
+	}
 }
 
 func TestManagerSharedGlobalSchedulerGate(t *testing.T) {

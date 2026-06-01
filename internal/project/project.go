@@ -246,6 +246,10 @@ func (p *Project) Paused() bool {
 }
 
 func (p *Project) Start(ctx context.Context) error {
+	return p.start(ctx, true)
+}
+
+func (p *Project) start(ctx context.Context, provision bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -265,8 +269,10 @@ func (p *Project) Start(ctx context.Context) error {
 	}
 	p.mu.Unlock()
 
-	if err := p.provision(ctx); err != nil {
-		return err
+	if provision {
+		if err := p.provision(ctx); err != nil {
+			return err
+		}
 	}
 
 	p.mu.Lock()
