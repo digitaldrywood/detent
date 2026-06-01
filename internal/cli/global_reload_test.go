@@ -15,6 +15,10 @@ func TestGlobalConfigReloaderApply(t *testing.T) {
 	t.Parallel()
 
 	reloadErr := errors.New("invalid global config")
+	buildErr := globalconfig.ValidationError{
+		Path:     "global.yaml",
+		Problems: []string{"projects[0].workflow: expand path: home directory is not available"},
+	}
 	reconcileErr := errors.New("reconcile failed")
 	current := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
 	next := reloadTestConfig("global.yaml", 4, []globalconfig.Project{
@@ -29,6 +33,7 @@ func TestGlobalConfigReloaderApply(t *testing.T) {
 		wantCurrent globalconfig.Config
 		wantCalls   int
 		wantErr     error
+		wantErrText string
 	}{
 		{
 			name:        "valid update reconciles and retains next config",
@@ -41,6 +46,12 @@ func TestGlobalConfigReloaderApply(t *testing.T) {
 			update:      configwatcher.FileUpdate[globalconfig.Config]{Path: current.Path, Err: reloadErr},
 			wantCurrent: current,
 			wantErr:     reloadErr,
+		},
+		{
+			name:        "build error keeps current config",
+			update:      configwatcher.FileUpdate[globalconfig.Config]{Path: current.Path, Err: buildErr},
+			wantCurrent: current,
+			wantErrText: buildErr.Error(),
 		},
 		{
 			name:        "reconcile error keeps current config",
@@ -63,7 +74,11 @@ func TestGlobalConfigReloaderApply(t *testing.T) {
 			}
 
 			_, err := reloader.apply(context.Background(), tt.update)
-			if !errors.Is(err, tt.wantErr) {
+			if tt.wantErrText != "" {
+				if err == nil || err.Error() != tt.wantErrText {
+					t.Fatalf("apply() error = %v, want %v", err, tt.wantErrText)
+				}
+			} else if !errors.Is(err, tt.wantErr) {
 				t.Fatalf("apply() error = %v, want %v", err, tt.wantErr)
 			}
 			if manager.calls != tt.wantCalls {

@@ -598,6 +598,85 @@ projects: {}
 	}
 }
 
+func TestBuildReturnsErrorsForDecodedConfigMismatches(t *testing.T) {
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+
+	tests := []struct {
+		name   string
+		mutate func(map[string]any)
+		opts   options
+		want   string
+	}{
+		{
+			name: "api version type mismatch",
+			mutate: func(attrs map[string]any) {
+				attrs["apiVersion"] = 123
+			},
+			opts: options{home: paths.home, relativeTo: paths.root},
+			want: "apiVersion: must be a string",
+		},
+		{
+			name: "global type mismatch",
+			mutate: func(attrs map[string]any) {
+				attrs["global"] = []any{}
+			},
+			opts: options{home: paths.home, relativeTo: paths.root},
+			want: "global: must be a mapping",
+		},
+		{
+			name: "projects type mismatch",
+			mutate: func(attrs map[string]any) {
+				attrs["projects"] = map[string]any{}
+			},
+			opts: options{home: paths.home, relativeTo: paths.root},
+			want: "projects: must be a list",
+		},
+		{
+			name: "setting type mismatch",
+			mutate: func(attrs map[string]any) {
+				global := attrs["global"].(map[string]any)
+				global["max_concurrent_agents"] = "8"
+			},
+			opts: options{home: paths.home, relativeTo: paths.root},
+			want: "global.max_concurrent_agents: must be an integer",
+		},
+		{
+			name: "project optional bool mismatch",
+			mutate: func(attrs map[string]any) {
+				project := attrs["projects"].([]any)[0].(map[string]any)
+				project["paused"] = "false"
+			},
+			opts: options{home: paths.home, relativeTo: paths.root},
+			want: "projects[0].paused: must be a boolean",
+		},
+		{
+			name: "project path expansion mismatch",
+			mutate: func(attrs map[string]any) {
+				project := attrs["projects"].([]any)[0].(map[string]any)
+				project["workflow"] = "~/WORKFLOW.md"
+			},
+			opts: options{relativeTo: paths.root},
+			want: "projects[0].workflow: expand path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			attrs := validDecodedConfig(paths)
+			tt.mutate(attrs)
+
+			_, err := build(attrs, configPath, tt.opts)
+			if err == nil {
+				t.Fatal("build() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.want) {
+				t.Fatalf("build() error = %q, want substring %q", err, tt.want)
+			}
+		})
+	}
+}
+
 type projectPaths struct {
 	root         string
 	home         string
@@ -702,4 +781,32 @@ projects:
     priority: 50
     credential_ref: " github-default "
 `
+}
+
+func validDecodedConfig(paths projectPaths) map[string]any {
+	return map[string]any{
+		"apiVersion": APIVersion,
+		"kind":       Kind,
+		"global": map[string]any{
+			"max_concurrent_agents": 8,
+			"scheduling":            SchedulingWeighted,
+			"fair_share": map[string]any{
+				"half_life": "1h",
+			},
+			"startup": map[string]any{
+				"jitter_seconds":       10,
+				"max_spawn_per_second": 2,
+			},
+		},
+		"projects": []any{
+			map[string]any{
+				"id":             " detent ",
+				"workflow":       paths.workflow,
+				"workdir":        paths.workdir,
+				"weight":         5,
+				"priority":       50,
+				"credential_ref": " github-default ",
+			},
+		},
+	}
 }

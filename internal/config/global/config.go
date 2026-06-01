@@ -250,7 +250,10 @@ func Parse(raw []byte, path string, opts ...Option) (Config, error) {
 		return Config{}, ValidationError{Path: path, Problems: problems}
 	}
 
-	cfg := build(root, path, readOptions)
+	cfg, err := build(root, path, readOptions)
+	if err != nil {
+		return Config{}, err
+	}
 	if err := cfg.Validate(opts...); err != nil {
 		return Config{}, err
 	}
@@ -785,125 +788,205 @@ func duplicateProjectIDErrorsFromProjects(projects []Project) []string {
 	return problems
 }
 
-func build(attrs map[string]any, path string, opts options) Config {
-	global := mustMap(attrs["global"])
-	projects := mustList(attrs["projects"])
+func build(attrs map[string]any, path string, opts options) (Config, error) {
+	global, err := mapValue(attrs["global"], "global")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
+	projects, err := listValue(attrs["projects"], "projects")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
+	apiVersion, err := stringValue(attrs["apiVersion"], "apiVersion")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
+	kind, err := stringValue(attrs["kind"], "kind")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
+	settings, err := buildSettings(global)
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
+	builtProjects, err := buildProjects(projects, opts)
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 
 	return Config{
 		Path:       path,
-		APIVersion: mustString(attrs["apiVersion"]),
-		Kind:       mustString(attrs["kind"]),
-		Global:     buildSettings(global),
-		Projects:   buildProjects(projects, opts),
-	}
+		APIVersion: apiVersion,
+		Kind:       kind,
+		Global:     settings,
+		Projects:   builtProjects,
+	}, nil
 }
 
-func buildSettings(attrs map[string]any) Settings {
+func buildSettings(attrs map[string]any) (Settings, error) {
 	settings := defaultSettings()
-	settings.MaxConcurrentAgents = mustInt(attrs["max_concurrent_agents"])
-	settings.Scheduling = mustString(attrs["scheduling"])
-	settings.FairShare = mergeMap(settings.FairShare, attrs["fair_share"])
-	settings.Startup = mergeMap(settings.Startup, attrs["startup"])
-	return settings
+	maxConcurrentAgents, err := intValue(attrs["max_concurrent_agents"], "global.max_concurrent_agents")
+	if err != nil {
+		return Settings{}, err
+	}
+	scheduling, err := stringValue(attrs["scheduling"], "global.scheduling")
+	if err != nil {
+		return Settings{}, err
+	}
+	fairShare, err := mergeMap(settings.FairShare, attrs["fair_share"], "global.fair_share")
+	if err != nil {
+		return Settings{}, err
+	}
+	startup, err := mergeMap(settings.Startup, attrs["startup"], "global.startup")
+	if err != nil {
+		return Settings{}, err
+	}
+
+	settings.MaxConcurrentAgents = maxConcurrentAgents
+	settings.Scheduling = scheduling
+	settings.FairShare = fairShare
+	settings.Startup = startup
+	return settings, nil
 }
 
-func buildProjects(projects []any, opts options) []Project {
+func buildProjects(projects []any, opts options) ([]Project, error) {
 	out := make([]Project, 0, len(projects))
-	for _, item := range projects {
-		project := mustMap(item)
-		workflow := mustString(project["workflow"])
-		workdir := mustString(project["workdir"])
+	for index, item := range projects {
+		prefix := fmt.Sprintf("projects[%d]", index)
+		project, err := mapValue(item, prefix)
+		if err != nil {
+			return nil, err
+		}
+		workflow, err := stringValue(project["workflow"], prefix+".workflow")
+		if err != nil {
+			return nil, err
+		}
+		workdir, err := stringValue(project["workdir"], prefix+".workdir")
+		if err != nil {
+			return nil, err
+		}
 		if !opts.projectPathLiterals {
 			expandedWorkflow, err := expandPath(workflow, opts)
 			if err != nil {
-				panic("validated global config workflow path did not expand")
+				return nil, fmt.Errorf("%s.workflow: expand path: %w", prefix, err)
 			}
 			expandedWorkdir, err := expandPath(workdir, opts)
 			if err != nil {
-				panic("validated global config workdir path did not expand")
+				return nil, fmt.Errorf("%s.workdir: expand path: %w", prefix, err)
 			}
 			workflow = expandedWorkflow
 			workdir = expandedWorkdir
 		}
+		id, err := stringValue(project["id"], prefix+".id")
+		if err != nil {
+			return nil, err
+		}
+		weight, err := intValue(project["weight"], prefix+".weight")
+		if err != nil {
+			return nil, err
+		}
+		priority, err := intValue(project["priority"], prefix+".priority")
+		if err != nil {
+			return nil, err
+		}
+		paused, err := optionalBool(project["paused"], prefix+".paused")
+		if err != nil {
+			return nil, err
+		}
+		credentialRef, err := optionalString(project["credential_ref"], prefix+".credential_ref")
+		if err != nil {
+			return nil, err
+		}
 
 		out = append(out, Project{
-			ID:            strings.TrimSpace(mustString(project["id"])),
+			ID:            strings.TrimSpace(id),
 			Workflow:      workflow,
 			Workdir:       workdir,
-			Weight:        mustInt(project["weight"]),
-			Priority:      mustInt(project["priority"]),
-			Paused:        optionalBool(project["paused"]),
-			CredentialRef: optionalString(project["credential_ref"]),
+			Weight:        weight,
+			Priority:      priority,
+			Paused:        paused,
+			CredentialRef: credentialRef,
 		})
 	}
-	return out
+	return out, nil
 }
 
-func mergeMap(defaults map[string]any, value any) map[string]any {
+func mergeMap(defaults map[string]any, value any, field string) (map[string]any, error) {
 	out := make(map[string]any, len(defaults))
 	for key, nestedValue := range defaults {
 		out[key] = nestedValue
 	}
 
 	if value == nil {
-		return out
+		return out, nil
 	}
 
-	source := mustMap(value)
+	source, err := mapValue(value, field)
+	if err != nil {
+		return nil, err
+	}
 	for key, nestedValue := range source {
 		out[key] = nestedValue
 	}
-	return out
+	return out, nil
 }
 
-func optionalBool(value any) bool {
+func optionalBool(value any, field string) (bool, error) {
 	if value == nil {
-		return false
+		return false, nil
 	}
 	paused, ok := value.(bool)
 	if !ok {
-		panic("validated global config paused value was not a boolean")
+		return false, fmt.Errorf("%s: must be a boolean", field)
 	}
-	return paused
+	return paused, nil
 }
 
-func optionalString(value any) string {
+func optionalString(value any, field string) (string, error) {
 	if value == nil {
-		return ""
+		return "", nil
 	}
-	return strings.TrimSpace(mustString(value))
+	text, err := stringValue(value, field)
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(text), nil
 }
 
-func mustMap(value any) map[string]any {
+func mapValue(value any, field string) (map[string]any, error) {
 	typed, ok := value.(map[string]any)
 	if !ok {
-		panic("validated global config value was not a mapping")
+		return nil, fmt.Errorf("%s: must be a mapping", field)
 	}
-	return typed
+	return typed, nil
 }
 
-func mustList(value any) []any {
+func listValue(value any, field string) ([]any, error) {
 	typed, ok := value.([]any)
 	if !ok {
-		panic("validated global config value was not a list")
+		return nil, fmt.Errorf("%s: must be a list", field)
 	}
-	return typed
+	return typed, nil
 }
 
-func mustString(value any) string {
+func stringValue(value any, field string) (string, error) {
 	typed, ok := value.(string)
 	if !ok {
-		panic("validated global config value was not a string")
+		return "", fmt.Errorf("%s: must be a string", field)
 	}
-	return typed
+	return typed, nil
 }
 
-func mustInt(value any) int {
+func intValue(value any, field string) (int, error) {
 	typed, ok := value.(int)
 	if !ok {
-		panic("validated global config value was not an integer")
+		return 0, fmt.Errorf("%s: must be an integer", field)
 	}
-	return typed
+	return typed, nil
+}
+
+func buildValidationError(path string, err error) error {
+	return ValidationError{Path: path, Problems: []string{err.Error()}}
 }
 
 func expandPath(path string, opts options) (string, error) {
