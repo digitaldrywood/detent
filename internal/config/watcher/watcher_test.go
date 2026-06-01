@@ -213,7 +213,7 @@ func TestFileWatcherDebouncesGlobalConfigWrites(t *testing.T) {
 
 	w, err := NewFile(path, func(path string) (globalconfig.Config, error) {
 		return globalconfig.Read(path)
-	}, WithFileDebounce(10*time.Millisecond))
+	}, WithFileDebounce(150*time.Millisecond))
 	if err != nil {
 		t.Fatalf("NewFile() error = %v", err)
 	}
