@@ -144,7 +144,7 @@ type CreateCodexSessionParams struct {
 	RunID          sql.NullInt64  `json:"run_id"`
 	IssueID        sql.NullString `json:"issue_id"`
 	Identifier     sql.NullString `json:"identifier"`
-	IssueUrl       sql.NullString `json:"issue_url"`
+	IssueURL       sql.NullString `json:"issue_url"`
 	StartedAt      sql.NullString `json:"started_at"`
 	CompletedAt    sql.NullString `json:"completed_at"`
 	Turns          int64          `json:"turns"`
@@ -161,7 +161,7 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		arg.RunID,
 		arg.IssueID,
 		arg.Identifier,
-		arg.IssueUrl,
+		arg.IssueURL,
 		arg.StartedAt,
 		arg.CompletedAt,
 		arg.Turns,
@@ -178,7 +178,7 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		&i.RunID,
 		&i.IssueID,
 		&i.Identifier,
-		&i.IssueUrl,
+		&i.IssueURL,
 		&i.StartedAt,
 		&i.CompletedAt,
 		&i.Turns,
@@ -437,7 +437,7 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 		&i.RunID,
 		&i.IssueID,
 		&i.Identifier,
-		&i.IssueUrl,
+		&i.IssueURL,
 		&i.StartedAt,
 		&i.CompletedAt,
 		&i.Turns,
@@ -524,7 +524,7 @@ ORDER BY COALESCE(model, '')
 type IssueTokenSpendParams struct {
 	IssueID    sql.NullString `json:"issue_id"`
 	Identifier sql.NullString `json:"identifier"`
-	IssueUrl   sql.NullString `json:"issue_url"`
+	IssueURL   sql.NullString `json:"issue_url"`
 }
 
 type IssueTokenSpendRow struct {
@@ -536,7 +536,7 @@ type IssueTokenSpendRow struct {
 }
 
 func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams) ([]IssueTokenSpendRow, error) {
-	rows, err := q.db.QueryContext(ctx, issueTokenSpend, arg.IssueID, arg.Identifier, arg.IssueUrl)
+	rows, err := q.db.QueryContext(ctx, issueTokenSpend, arg.IssueID, arg.Identifier, arg.IssueURL)
 	if err != nil {
 		return nil, err
 	}
@@ -660,7 +660,7 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 			&i.RunID,
 			&i.IssueID,
 			&i.Identifier,
-			&i.IssueUrl,
+			&i.IssueURL,
 			&i.StartedAt,
 			&i.CompletedAt,
 			&i.Turns,

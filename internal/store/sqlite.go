@@ -131,7 +131,7 @@ func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int
 		RunID:       nullInt64(attrs.RunID),
 		IssueID:     nullString(attrs.IssueID),
 		Identifier:  nullString(attrs.Identifier),
-		IssueUrl:    nullString(attrs.IssueURL),
+		IssueURL:    nullString(attrs.IssueURL),
 		StartedAt:   sql.NullString{String: startedAt, Valid: true},
 		CompletedAt: sql.NullString{},
 		FinalState:  sql.NullString{},
@@ -403,7 +403,7 @@ func (s *sqliteStore) IssueTokenSpend(ctx context.Context, identity IssueIdentit
 	rows, err := s.queries.IssueTokenSpend(ctx, sqlc.IssueTokenSpendParams{
 		IssueID:    nullString(identity.IssueID),
 		Identifier: nullString(identity.Identifier),
-		IssueUrl:   nullString(identity.IssueURL),
+		IssueURL:   nullString(identity.IssueURL),
 	})
 	if err != nil {
 		return TokenSpend{}, fmt.Errorf("reading issue token spend: %w", err)

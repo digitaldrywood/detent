@@ -84,7 +84,7 @@ func TestSQLiteQueriesRoundTrip(t *testing.T) {
 		RunID:          sql.NullInt64{Int64: run.ID, Valid: true},
 		IssueID:        sql.NullString{String: "I_kwDOSskuwc8AAAABD42cNw", Valid: true},
 		Identifier:     sql.NullString{String: "digitaldrywood/detent#5", Valid: true},
-		IssueUrl:       sql.NullString{String: "https://github.com/digitaldrywood/detent/issues/5", Valid: true},
+		IssueURL:       sql.NullString{String: "https://github.com/digitaldrywood/detent/issues/5", Valid: true},
 		StartedAt:      sql.NullString{String: "2026-05-30T12:01:00Z", Valid: true},
 		CompletedAt:    sql.NullString{String: "2026-05-30T12:02:00Z", Valid: true},
 		Turns:          2,
