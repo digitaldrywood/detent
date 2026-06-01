@@ -236,6 +236,7 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 
 func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	o.markRefresh(state, now)
+	o.reconcileRunningIssues(ctx, state)
 
 	issues, err := o.connector.FetchCandidateIssues(ctx)
 	if err != nil {
@@ -263,6 +264,56 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		o.trackBlockedStatusIssues(state, blockedIssues, now)
 	}
 	o.dispatchReadyIssues(ctx, state, issues, now)
+}
+
+func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State) {
+	ids := runningIssueIDs(state.Running)
+	if len(ids) == 0 {
+		return
+	}
+
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, ids)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("fetch running issue states failed", "error", err)
+		}
+		return
+	}
+
+	byID := make(map[string]connector.Issue, len(issues))
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) == "" {
+			continue
+		}
+		byID[issue.ID] = issue
+	}
+
+	for _, id := range ids {
+		issue, ok := byID[id]
+		if !ok {
+			continue
+		}
+
+		running := state.Running[id]
+		running.Issue = cloneIssue(issue)
+		state.Running[id] = running
+
+		if claimed, ok := state.Claimed[id]; ok {
+			claimed.Issue = cloneIssue(issue)
+			state.Claimed[id] = claimed
+		}
+	}
+}
+
+func runningIssueIDs(running map[string]Running) []string {
+	ids := sortedKeys(running)
+	out := ids[:0]
+	for _, id := range ids {
+		if strings.TrimSpace(id) != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (o *Orchestrator) markRefresh(state *State, now time.Time) {
