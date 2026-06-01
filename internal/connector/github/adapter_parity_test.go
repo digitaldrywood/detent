@@ -21,7 +21,7 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_medium","name":"Medium","color":"YELLOW","description":"Normal."},{"name":"Urgent","color":"RED","description":"Needs immediate attention."},{"name":"High","color":"ORANGE","description":"Important work to prioritize soon."},{"name":"Low","color":"BLUE","description":"Can wait behind higher-priority work."},{"name":"No priority","color":"GRAY","description":"Priority has not been set."}]}}}}`,
 		},
 		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_28","content":{"__typename":"Issue","id":"I_kw28","number":28,"title":"Projects-v2 parity gate","body":"Depends on: #26 #27\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/28","createdAt":"2026-05-31T04:12:00Z","updatedAt":"2026-05-31T04:30:00Z","assignees":{"nodes":[{"login":"codex"}]},"labels":{"nodes":[{"name":"gate"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"Urgent"}},{"id":"PVTI_29","content":{"__typename":"Issue","id":"I_kw29","number":29,"title":"Human review","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/29","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"In Review"},"priorityValue":{"name":"No priority"}}]}}}}`,
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_28","content":{"__typename":"Issue","id":"I_kw28","number":28,"title":"Projects-v2 parity gate","body":"Depends on: #26 #27\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/28","createdAt":"2026-05-31T04:12:00Z","updatedAt":"2026-05-31T04:30:00Z","assignees":{"nodes":[{"login":"codex"}]},"labels":{"nodes":[{"name":"gate"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"Urgent"}},{"id":"PVTI_29","content":{"__typename":"Issue","id":"I_kw29","number":29,"title":"Human review","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/29","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"In Review"},"priorityValue":{"name":"No priority"}}]}}}}`,
 		},
 		{
 			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
@@ -70,7 +70,7 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 	if len(issues) != 1 {
 		t.Fatalf("FetchCandidateIssues() len = %d, want 1", len(issues))
 	}
-	if issues[0].ID != "I_kw28" || issues[0].State != "Todo" || issues[0].Identifier != "digitaldrywood/symphony#28" {
+	if issues[0].ID != "I_kw28" || issues[0].State != "Todo" || issues[0].Identifier != "digitaldrywood/detent#28" {
 		t.Fatalf("candidate = %#v, want issue 28 in Todo", issues[0])
 	}
 	if issues[0].Priority == nil || *issues[0].Priority != 1 {

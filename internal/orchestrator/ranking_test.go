@@ -4,8 +4,8 @@ import (
 	"testing"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
-	"github.com/digitaldrywood/symphony/internal/connector"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestSortIssuesForDispatch(t *testing.T) {

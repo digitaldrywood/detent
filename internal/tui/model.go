@@ -12,8 +12,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/digitaldrywood/symphony/internal/hub"
-	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 var ErrNilHub = errors.New("nil telemetry hub")
@@ -138,7 +138,7 @@ func waitForSnapshot(updates <-chan telemetry.Snapshot) tea.Cmd {
 
 func (m Model) renderWaiting() string {
 	lines := []string{
-		m.styles.title.Render("╭─ SYMPHONY STATUS"),
+		m.styles.title.Render("╭─ DETENT STATUS"),
 		"│ Dashboard: " + m.styles.info.Render(defaultDashboardURL),
 		"│ " + m.styles.muted.Render("Waiting for telemetry snapshot"),
 		closingBorder,
@@ -150,7 +150,7 @@ func (m Model) renderWaiting() string {
 func (m Model) renderSnapshot() string {
 	snapshot := m.snapshot
 	lines := []string{
-		m.styles.title.Render("╭─ SYMPHONY STATUS"),
+		m.styles.title.Render("╭─ DETENT STATUS"),
 		"│ Generated: " + m.styles.muted.Render(formatTimestamp(snapshot.GeneratedAt)),
 		"│ Agents: " + m.styles.ok.Render(fmt.Sprintf("%d running", countOrLen(snapshot.Counts.Running, len(snapshot.Running)))) +
 			m.styles.muted.Render(" | ") +

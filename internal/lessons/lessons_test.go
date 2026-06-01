@@ -11,7 +11,7 @@ import (
 func TestReadAllAndRecentTreatMissingFileAsEmpty(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), ".symphony", "lessons.md")
+	path := filepath.Join(t.TempDir(), ".detent", "lessons.md")
 
 	entries, err := ReadAll(path)
 	if err != nil {
@@ -33,7 +33,7 @@ func TestReadAllAndRecentTreatMissingFileAsEmpty(t *testing.T) {
 func TestAppendStoresNewestFirstAndCapsEntries(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), ".symphony", "lessons.md")
+	path := filepath.Join(t.TempDir(), ".detent", "lessons.md")
 
 	for index := 1; index <= 4; index++ {
 		err := Append(path, Entry{
@@ -78,7 +78,7 @@ func TestAppendStoresNewestFirstAndCapsEntries(t *testing.T) {
 func TestAppendRendersFallbacksAndEscapesTitleQuotes(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), ".symphony", "lessons.md")
+	path := filepath.Join(t.TempDir(), ".detent", "lessons.md")
 
 	err := Append(path, Entry{
 		IssueRef:    "issue MT-9",
@@ -101,7 +101,7 @@ func TestAppendRendersFallbacksAndEscapesTitleQuotes(t *testing.T) {
 		`## 2026-05-22 - issue MT-9 - "Needs \"quotes\" escaped"`,
 		"- **Failure kind:** <unknown>",
 		"- **Symptom:** command failed before diff",
-		"- **Hypothesis (Symphony):** <unavailable>",
+		"- **Hypothesis (Detent):** <unavailable>",
 		"- **Hint for next time:** <unavailable>",
 	} {
 		if !strings.Contains(entry, want) {

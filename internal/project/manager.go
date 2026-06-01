@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
-	"github.com/digitaldrywood/symphony/internal/hub"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/hub"
 )
 
 var (

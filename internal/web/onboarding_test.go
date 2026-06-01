@@ -10,7 +10,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/symphony/internal/web"
+	"github.com/digitaldrywood/detent/internal/web"
 )
 
 func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
@@ -36,7 +36,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 			path:       "/onboarding",
 			wantStatus: http.StatusOK,
 			wantContent: []string{
-				"Symphony onboarding",
+				"Detent onboarding",
 				"Choose tracker",
 				"hx-post=\"/onboarding/tracker\"",
 			},
@@ -78,7 +78,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"endpoint":     {"https://api.github.com/graphql"},
 				"api_key":      {"$GITHUB_TOKEN"},
 				"project_slug": {"PVT_project"},
-				"repo":         {"digitaldrywood/symphony"},
+				"repo":         {"digitaldrywood/detent"},
 			},
 			wantStatus: http.StatusOK,
 			wantContent: []string{
@@ -96,8 +96,8 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"endpoint":                   {"https://api.github.com/graphql"},
 				"api_key":                    {"$GITHUB_TOKEN"},
 				"project_slug":               {"PVT_project"},
-				"repo":                       {"digitaldrywood/symphony"},
-				"workspace_root":             {"~/code/symphony-workspaces"},
+				"repo":                       {"digitaldrywood/detent"},
+				"workspace_root":             {"~/code/detent-workspaces"},
 				"max_concurrent_agents":      {"5"},
 				"max_turns":                  {"20"},
 				"polling_interval_ms":        {"30000"},
@@ -165,7 +165,7 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		"tracker:\n  kind: github",
 		"api_key: $GITHUB_TOKEN",
 		"project_slug: PVT_project",
-		"git clone --depth 1 https://github.com/digitaldrywood/symphony .",
+		"git clone --depth 1 https://github.com/digitaldrywood/detent .",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"You are working on GitHub issue `{{ issue.identifier }}`",
 	} {
@@ -335,8 +335,8 @@ func validOnboardingForm() url.Values {
 		"endpoint":                   {"https://api.github.com/graphql"},
 		"api_key":                    {"$GITHUB_TOKEN"},
 		"project_slug":               {"PVT_project"},
-		"repo":                       {"digitaldrywood/symphony"},
-		"workspace_root":             {"~/code/symphony-workspaces"},
+		"repo":                       {"digitaldrywood/detent"},
+		"workspace_root":             {"~/code/detent-workspaces"},
 		"max_concurrent_agents":      {"5"},
 		"max_turns":                  {"20"},
 		"polling_interval_ms":        {"30000"},

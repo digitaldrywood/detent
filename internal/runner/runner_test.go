@@ -11,12 +11,12 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/budget"
-	"github.com/digitaldrywood/symphony/internal/codex"
-	"github.com/digitaldrywood/symphony/internal/config"
-	"github.com/digitaldrywood/symphony/internal/connector"
-	"github.com/digitaldrywood/symphony/internal/store"
-	"github.com/digitaldrywood/symphony/internal/workspace"
+	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/codex"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
@@ -30,8 +30,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	workspaceBackend := &fakeWorkspaceBackend{
 		info: workspace.Info{
 			Path:   workspacePath,
-			Key:    "digitaldrywood_symphony_22",
-			Branch: "symphony/digitaldrywood_symphony_22",
+			Key:    "digitaldrywood_detent_22",
+			Branch: "detent/digitaldrywood_detent_22",
 		},
 		diffStats: []workspace.DiffStat{
 			{Files: 1, Added: 2},
@@ -86,13 +86,13 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	prNumber := 133
 
 	runner, err := NewRunner(Dependencies{
-		ProjectID: "symphony",
+		ProjectID: "detent",
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Agent: config.Agent{
 					Skills: config.Skills{
 						Enabled:           true,
-						Path:              ".symphony/skills",
+						Path:              ".detent/skills",
 						MaxSkillsInPrompt: 10,
 					},
 				},
@@ -126,11 +126,11 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
 			ID:            "issue-22",
-			Identifier:    "digitaldrywood/symphony#22",
+			Identifier:    "digitaldrywood/detent#22",
 			Title:         "Add runner",
-			URL:           "https://github.com/digitaldrywood/symphony/issues/22",
+			URL:           "https://github.com/digitaldrywood/detent/issues/22",
 			PRNumber:      &prNumber,
-			BranchName:    "symphony/digitaldrywood_symphony_22",
+			BranchName:    "detent/digitaldrywood_detent_22",
 			ModelOverride: "gpt-5-codex-high",
 		},
 		Attempt:   2,
@@ -214,7 +214,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		t.Fatalf("codex model = %q, want issue override", codexClient.request.Model)
 	}
 	for _, want := range []string{
-		"Work on digitaldrywood/symphony#22 attempt 2",
+		"Work on digitaldrywood/detent#22 attempt 2",
 		"## Available skills",
 		"review — Issue needs code review.",
 	} {
@@ -222,17 +222,17 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			t.Fatalf("codex prompt missing %q:\n%s", want, codexClient.request.Prompt)
 		}
 	}
-	if sessionStore.started.Identifier != "digitaldrywood/symphony#22" || sessionStore.started.Model != "gpt-5-codex-high" {
+	if sessionStore.started.Identifier != "digitaldrywood/detent#22" || sessionStore.started.Model != "gpt-5-codex-high" {
 		t.Fatalf("SessionStart = %#v, want issue identity and model", sessionStore.started)
 	}
 	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 {
 		t.Fatalf("SessionFinish = %#v, want completed session with tokens", sessionStore.finished)
 	}
-	if sessionStore.usage.ProjectID != "symphony" || sessionStore.usage.SessionID != 42 {
-		t.Fatalf("UsageEvent identity = %#v, want project symphony and session 42", sessionStore.usage)
+	if sessionStore.usage.ProjectID != "detent" || sessionStore.usage.SessionID != 42 {
+		t.Fatalf("UsageEvent identity = %#v, want project detent and session 42", sessionStore.usage)
 	}
-	if sessionStore.usage.IssueID != "issue-22" || sessionStore.usage.Identifier != "digitaldrywood/symphony#22" {
-		t.Fatalf("UsageEvent issue = %#v, want issue-22/digitaldrywood/symphony#22", sessionStore.usage)
+	if sessionStore.usage.IssueID != "issue-22" || sessionStore.usage.Identifier != "digitaldrywood/detent#22" {
+		t.Fatalf("UsageEvent issue = %#v, want issue-22/digitaldrywood/detent#22", sessionStore.usage)
 	}
 	if sessionStore.usage.Model != "gpt-5-codex-high" || sessionStore.usage.TotalTokens != 125 {
 		t.Fatalf("UsageEvent totals = %#v, want model gpt-5-codex-high and total 125", sessionStore.usage)
@@ -273,7 +273,7 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	t.Parallel()
 
 	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: t.TempDir(), Key: "issue-41", Branch: "symphony/issue-41"},
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-41", Branch: "detent/issue-41"},
 	}
 	codexClient := &fakeCodexClient{}
 	runner, err := NewRunner(Dependencies{
@@ -300,7 +300,7 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	_, err = runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
 			ID:         "issue-41",
-			Identifier: "digitaldrywood/symphony#41",
+			Identifier: "digitaldrywood/detent#41",
 			Title:      "Reload workflow",
 		},
 	})
@@ -308,7 +308,7 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 		t.Fatalf("Run() error = %v", err)
 	}
 
-	if !strings.Contains(codexClient.request.Prompt, "reloaded digitaldrywood/symphony#41") {
+	if !strings.Contains(codexClient.request.Prompt, "reloaded digitaldrywood/detent#41") {
 		t.Fatalf("codex prompt = %q, want reloaded workflow prompt", codexClient.request.Prompt)
 	}
 	if codexClient.request.ThreadSandbox != "danger-full-access" {
@@ -320,7 +320,7 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	t.Parallel()
 
 	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: t.TempDir(), Key: "issue-22", Branch: "symphony/issue-22"},
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-22", Branch: "detent/issue-22"},
 	}
 	codexClient := &fakeCodexClient{err: errors.New("codex failed")}
 	sessionStore := &fakeSessionStore{sessionID: 7}
@@ -340,7 +340,7 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	_, err = runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
 			ID:         "issue-22",
-			Identifier: "digitaldrywood/symphony#22",
+			Identifier: "digitaldrywood/detent#22",
 			Title:      "Add runner",
 		},
 	})
@@ -365,7 +365,7 @@ func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
 	t.Parallel()
 
 	workspaceBackend := &fakeWorkspaceBackend{
-		info: workspace.Info{Path: t.TempDir(), Key: "issue-22", Branch: "symphony/issue-22"},
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-22", Branch: "detent/issue-22"},
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	codexClient := &cancelingCodexClient{cancel: cancel}
@@ -382,7 +382,7 @@ func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
 	_, err = runner.Run(ctx, RunRequest{
 		Issue: connector.Issue{
 			ID:         "issue-22",
-			Identifier: "digitaldrywood/symphony#22",
+			Identifier: "digitaldrywood/detent#22",
 			Title:      "Add runner",
 		},
 	})
@@ -510,7 +510,7 @@ func (c *fakeClock) Now() time.Time {
 func writeSkill(t *testing.T, workspacePath, name, skillName, description, whenToUse string) {
 	t.Helper()
 
-	skillsDir := filepath.Join(workspacePath, ".symphony", "skills")
+	skillsDir := filepath.Join(workspacePath, ".detent", "skills")
 	if err := os.MkdirAll(skillsDir, 0o755); err != nil {
 		t.Fatalf("mkdir skills: %v", err)
 	}

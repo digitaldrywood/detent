@@ -15,7 +15,7 @@ import (
 )
 
 const (
-	DefaultPath              = ".symphony/skills"
+	DefaultPath              = ".detent/skills"
 	DefaultMaxSkillsInPrompt = 50
 )
 

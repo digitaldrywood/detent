@@ -9,7 +9,7 @@ import (
 )
 
 const (
-	DefaultPath       = ".symphony/lessons.md"
+	DefaultPath       = ".detent/lessons.md"
 	DefaultMaxEntries = 50
 )
 
@@ -86,7 +86,7 @@ func renderEntry(entry Entry, date time.Time) string {
 		"## " + date.Format("2006-01-02") + " - " + issueRef(entry) + " - \"" + headingTitle(entry) + "\"",
 		"- **Failure kind:** " + field(entry.FailureKind, "<unknown>"),
 		"- **Symptom:** " + field(entry.Symptom, "<unavailable>"),
-		"- **Hypothesis (Symphony):** " + field(entry.Hypothesis, "<unavailable>"),
+		"- **Hypothesis (Detent):** " + field(entry.Hypothesis, "<unavailable>"),
 		"- **Hint for next time:** " + field(entry.Hint, "<unavailable>"),
 	}
 

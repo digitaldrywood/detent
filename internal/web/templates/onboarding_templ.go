@@ -120,7 +120,7 @@ func OnboardingPage(data OnboardingData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"><script src=\"https://unpkg.com/htmx.org@2.0.4\"></script></head><body class=\"min-h-screen bg-background text-foreground antialiased\"><main class=\"mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 px-5 py-6 sm:px-8\"><header class=\"border-b border-border pb-6\"><p class=\"text-sm font-medium text-muted-foreground\">Symphony</p><h1 class=\"mt-1 text-3xl font-semibold text-foreground sm:text-4xl\">Symphony onboarding</h1></header>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 3, "\"><script src=\"https://unpkg.com/htmx.org@2.0.4\"></script></head><body class=\"min-h-screen bg-background text-foreground antialiased\"><main class=\"mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 px-5 py-6 sm:px-8\"><header class=\"border-b border-border pb-6\"><p class=\"text-sm font-medium text-muted-foreground\">Detent</p><h1 class=\"mt-1 text-3xl font-semibold text-foreground sm:text-4xl\">Detent onboarding</h1></header>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

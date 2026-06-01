@@ -12,7 +12,7 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const (
@@ -219,7 +219,7 @@ func Default() Config {
 			IntervalMS: 30000,
 		},
 		Workspace: Workspace{
-			Root:       filepath.Join(os.TempDir(), "symphony_workspaces"),
+			Root:       filepath.Join(os.TempDir(), "detent_workspaces"),
 			AutoBranch: true,
 		},
 		Worker: Worker{
@@ -636,7 +636,7 @@ func defaultBudget() Budget {
 
 func defaultLessons() Lessons {
 	return Lessons{
-		Path:                ".symphony/lessons.md",
+		Path:                ".detent/lessons.md",
 		MaxEntries:          50,
 		RecallN:             10,
 		PostmortemMaxTokens: 1024,
@@ -646,7 +646,7 @@ func defaultLessons() Lessons {
 func defaultSkills() Skills {
 	return Skills{
 		Enabled:           true,
-		Path:              ".symphony/skills",
+		Path:              ".detent/skills",
 		MaxSkillsInPrompt: 50,
 	}
 }

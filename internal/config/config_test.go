@@ -4,7 +4,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestParseWorkflowFrontmatter(t *testing.T) {
@@ -26,7 +26,7 @@ tracker:
 polling:
   interval_ms: 15000
 workspace:
-  root: ~/code/symphony-workspaces
+  root: ~/code/detent-workspaces
   auto_branch: false
 worker:
   ssh_hosts:
@@ -47,13 +47,13 @@ agent:
       - enhancement
   lessons:
     enabled: true
-    path: ".symphony/lessons.md"
+    path: ".detent/lessons.md"
     max_entries: 5
     recall_n: 2
     postmortem_max_tokens: 256
   skills:
     enabled: true
-    path: ".symphony/skills"
+    path: ".detent/skills"
     max_skills_in_prompt: 20
 codex:
   command: codex app-server
@@ -161,10 +161,10 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Agent.MaxConcurrentAgents != 10 {
 		t.Fatalf("Agent.MaxConcurrentAgents = %d, want 10", cfg.Agent.MaxConcurrentAgents)
 	}
-	if cfg.Agent.Lessons.Path != ".symphony/lessons.md" {
+	if cfg.Agent.Lessons.Path != ".detent/lessons.md" {
 		t.Fatalf("Agent.Lessons.Path = %q", cfg.Agent.Lessons.Path)
 	}
-	if cfg.Agent.Skills.Path != ".symphony/skills" {
+	if cfg.Agent.Skills.Path != ".detent/skills" {
 		t.Fatalf("Agent.Skills.Path = %q", cfg.Agent.Skills.Path)
 	}
 	if !cfg.Codex.ApprovalPolicy.IsMap {
@@ -194,7 +194,7 @@ tracker:
       description: Load issues from config
       priority: 2
       state: Todo
-      branch_name: symphony/mt-1
+      branch_name: detent/mt-1
       url: https://example.com/issues/1
       assignee_id: worker-1
       blocked_by:
@@ -224,7 +224,7 @@ Prompt
 		Description:      "Load issues from config",
 		Priority:         &priority,
 		State:            "Todo",
-		BranchName:       "symphony/mt-1",
+		BranchName:       "detent/mt-1",
 		URL:              "https://example.com/issues/1",
 		AssigneeID:       "worker-1",
 		BlockedBy:        []connector.BlockedRef{{ID: "issue-0", Identifier: "MT-0", State: "Done"}},
@@ -312,7 +312,7 @@ tracker:
   kind: github
   project_slug: PVT_project
   github_app_id: 12345
-  github_app_private_key_path: .symphony/github-app.pem
+  github_app_private_key_path: .detent/github-app.pem
   github_app_installation_id: 67890
 ---
 Prompt

@@ -9,12 +9,12 @@ import (
 	"testing"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
-	"github.com/digitaldrywood/symphony/internal/hub"
-	projectpkg "github.com/digitaldrywood/symphony/internal/project"
-	runnerpkg "github.com/digitaldrywood/symphony/internal/runner"
-	"github.com/digitaldrywood/symphony/internal/telemetry"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/hub"
+	projectpkg "github.com/digitaldrywood/detent/internal/project"
+	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 var errProjectFactoryStub = errors.New("project factory stub")

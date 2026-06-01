@@ -11,8 +11,8 @@ import (
 )
 
 func TestResolvePathPrecedence(t *testing.T) {
-	t.Setenv("SYMPHONY_HOME", "")
-	t.Setenv("SYMPHONY_CONFIG", "")
+	t.Setenv("DETENT_HOME", "")
+	t.Setenv("DETENT_CONFIG", "")
 
 	root := t.TempDir()
 	home := configurePathTestHome(t, root)
@@ -23,15 +23,15 @@ func TestResolvePathPrecedence(t *testing.T) {
 
 	flagPath := filepath.Join(root, "flag.yaml")
 	envPath := filepath.Join(root, "env.yaml")
-	symphonyHome := filepath.Join(root, "symphony-home")
-	homePath := filepath.Join(symphonyHome, "global.yaml")
-	nativePath := filepath.Join(nativeRoot, "symphony", "global.yaml")
-	legacyPath := filepath.Join(home, ".symphony", "global.yaml")
+	detentHome := filepath.Join(root, "detent-home")
+	homePath := filepath.Join(detentHome, "global.yaml")
+	nativePath := filepath.Join(nativeRoot, "detent", "global.yaml")
+	legacyPath := filepath.Join(home, ".detent", "global.yaml")
 	for _, path := range []string{flagPath, envPath, homePath, nativePath, legacyPath} {
 		writeFile(t, path, "# config\n")
 	}
-	t.Setenv("SYMPHONY_CONFIG", envPath)
-	t.Setenv("SYMPHONY_HOME", symphonyHome)
+	t.Setenv("DETENT_CONFIG", envPath)
+	t.Setenv("DETENT_HOME", detentHome)
 
 	tests := []struct {
 		name     string
@@ -47,19 +47,19 @@ func TestResolvePathPrecedence(t *testing.T) {
 			wantRule: PathRuleFlag,
 		},
 		{
-			name: "symphony config wins after flag",
+			name: "detent config wins after flag",
 			setup: func() {
-				t.Setenv("SYMPHONY_CONFIG", envPath)
-				t.Setenv("SYMPHONY_HOME", symphonyHome)
+				t.Setenv("DETENT_CONFIG", envPath)
+				t.Setenv("DETENT_HOME", detentHome)
 			},
 			wantPath: envPath,
 			wantRule: PathRuleEnvConfig,
 		},
 		{
-			name: "symphony home wins after direct config env",
+			name: "detent home wins after direct config env",
 			setup: func() {
-				t.Setenv("SYMPHONY_CONFIG", "")
-				t.Setenv("SYMPHONY_HOME", symphonyHome)
+				t.Setenv("DETENT_CONFIG", "")
+				t.Setenv("DETENT_HOME", detentHome)
 			},
 			wantPath: homePath,
 			wantRule: PathRuleEnvHome,
@@ -67,8 +67,8 @@ func TestResolvePathPrecedence(t *testing.T) {
 		{
 			name: "native config wins before legacy",
 			setup: func() {
-				t.Setenv("SYMPHONY_CONFIG", "")
-				t.Setenv("SYMPHONY_HOME", "")
+				t.Setenv("DETENT_CONFIG", "")
+				t.Setenv("DETENT_HOME", "")
 			},
 			wantPath: nativePath,
 			wantRule: PathRuleUserConfigDir,
@@ -76,8 +76,8 @@ func TestResolvePathPrecedence(t *testing.T) {
 		{
 			name: "legacy config wins when native is missing",
 			setup: func() {
-				t.Setenv("SYMPHONY_CONFIG", "")
-				t.Setenv("SYMPHONY_HOME", "")
+				t.Setenv("DETENT_CONFIG", "")
+				t.Setenv("DETENT_HOME", "")
 				if err := os.Remove(nativePath); err != nil {
 					t.Fatalf("Remove() error = %v", err)
 				}
@@ -108,8 +108,8 @@ func TestResolvePathPrecedence(t *testing.T) {
 }
 
 func TestResolvePathUsesNativeConfigDirWhenNoConfigExists(t *testing.T) {
-	t.Setenv("SYMPHONY_HOME", "")
-	t.Setenv("SYMPHONY_CONFIG", "")
+	t.Setenv("DETENT_HOME", "")
+	t.Setenv("DETENT_CONFIG", "")
 	configurePathTestHome(t, t.TempDir())
 
 	nativeRoot, err := os.UserConfigDir()
@@ -122,7 +122,7 @@ func TestResolvePathUsesNativeConfigDirWhenNoConfigExists(t *testing.T) {
 		t.Fatalf("ResolvePath() error = %v", err)
 	}
 
-	want := filepath.Join(nativeRoot, "symphony", "global.yaml")
+	want := filepath.Join(nativeRoot, "detent", "global.yaml")
 	if got.Path != want {
 		t.Fatalf("Path = %q, want %q", got.Path, want)
 	}
@@ -132,8 +132,8 @@ func TestResolvePathUsesNativeConfigDirWhenNoConfigExists(t *testing.T) {
 }
 
 func TestDefaultPath(t *testing.T) {
-	t.Setenv("SYMPHONY_HOME", "")
-	t.Setenv("SYMPHONY_CONFIG", "")
+	t.Setenv("DETENT_HOME", "")
+	t.Setenv("DETENT_CONFIG", "")
 	configurePathTestHome(t, t.TempDir())
 
 	nativeRoot, err := os.UserConfigDir()
@@ -146,17 +146,17 @@ func TestDefaultPath(t *testing.T) {
 		t.Fatalf("DefaultPath() error = %v", err)
 	}
 
-	want := filepath.Join(nativeRoot, "symphony", "global.yaml")
+	want := filepath.Join(nativeRoot, "detent", "global.yaml")
 	if got != want {
 		t.Fatalf("DefaultPath() = %q, want %q", got, want)
 	}
 }
 
-func TestDefaultPathHonorsSymphonyHome(t *testing.T) {
+func TestDefaultPathHonorsDetentHome(t *testing.T) {
 	root := t.TempDir()
 	home := configurePathTestHome(t, root)
-	t.Setenv("SYMPHONY_CONFIG", "")
-	t.Setenv("SYMPHONY_HOME", "~/custom")
+	t.Setenv("DETENT_CONFIG", "")
+	t.Setenv("DETENT_HOME", "~/custom")
 
 	got, err := DefaultPath()
 	if err != nil {
@@ -170,8 +170,8 @@ func TestDefaultPathHonorsSymphonyHome(t *testing.T) {
 }
 
 func TestDefaultConfig(t *testing.T) {
-	t.Setenv("SYMPHONY_HOME", "")
-	t.Setenv("SYMPHONY_CONFIG", "")
+	t.Setenv("DETENT_HOME", "")
+	t.Setenv("DETENT_CONFIG", "")
 
 	cfg, err := Default()
 	if err != nil {
@@ -239,7 +239,7 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 		},
 		Projects: []Project{
 			{
-				ID:            "symphony",
+				ID:            "detent",
 				Workflow:      paths.workflowPath,
 				Workdir:       paths.workdirPath,
 				Weight:        5,
@@ -278,7 +278,7 @@ func TestWriteValidatesConfigBeforeWriting(t *testing.T) {
 			Scheduling:          SchedulingWeighted,
 		},
 		Projects: []Project{
-			{ID: "symphony", Weight: 0},
+			{ID: "detent", Weight: 0},
 		},
 	})
 	if err == nil {
@@ -337,8 +337,8 @@ func TestReadValidConfig(t *testing.T) {
 		t.Fatalf("Projects length = %d, want 1", len(cfg.Projects))
 	}
 	project := cfg.Projects[0]
-	if project.ID != "symphony" {
-		t.Fatalf("Project.ID = %q, want symphony", project.ID)
+	if project.ID != "detent" {
+		t.Fatalf("Project.ID = %q, want detent", project.ID)
 	}
 	if project.Workflow != paths.workflowPath {
 		t.Fatalf("Project.Workflow = %q, want %q", project.Workflow, paths.workflowPath)
@@ -488,7 +488,7 @@ func TestReadReportsInvalidConfig(t *testing.T) {
 		},
 		{
 			name: "invalid shapes",
-			raw: `apiVersion: symphony/v2
+			raw: `apiVersion: detent/v2
 kind: SomethingElse
 global:
   max_concurrent_agents: 0
@@ -507,7 +507,7 @@ projects:
     credential_ref: []
 `,
 			want: []string{
-				"apiVersion: must equal symphony/v1",
+				"apiVersion: must equal detent/v1",
 				"kind: must equal GlobalConfig",
 				"global.max_concurrent_agents: must be a positive integer",
 				"global.scheduling: must be one of weighted, strict, round_robin, fair_share",
@@ -525,7 +525,7 @@ projects:
 		},
 		{
 			name: "missing project fields",
-			raw: `apiVersion: symphony/v1
+			raw: `apiVersion: detent/v1
 kind: GlobalConfig
 global:
   max_concurrent_agents: 8
@@ -543,18 +543,18 @@ projects:
 		},
 		{
 			name: "missing paths and duplicate project ids",
-			raw: `apiVersion: symphony/v1
+			raw: `apiVersion: detent/v1
 kind: GlobalConfig
 global:
   max_concurrent_agents: 8
   scheduling: weighted
 projects:
-  - id: " symphony "
+  - id: " detent "
     workflow: ~/missing/WORKFLOW.md
     workdir: ~/missing
     weight: 5
     priority: 50
-  - id: symphony
+  - id: detent
     workflow: ~/missing/WORKFLOW.md
     workdir: ~/missing
     weight: 10
@@ -563,12 +563,12 @@ projects:
 			want: []string{
 				"projects[0].workflow: path does not exist",
 				"projects[0].workdir: path does not exist",
-				"projects.id: duplicate id symphony",
+				"projects.id: duplicate id detent",
 			},
 		},
 		{
 			name: "containers must have expected shapes",
-			raw: `apiVersion: symphony/v1
+			raw: `apiVersion: detent/v1
 kind: GlobalConfig
 global: []
 projects: {}
@@ -612,7 +612,7 @@ func createProjectFiles(t *testing.T) projectPaths {
 
 	root := t.TempDir()
 	home := filepath.Join(root, "home")
-	workdir := filepath.Join(home, "projects", "digitaldrywood", "symphony-orchestration")
+	workdir := filepath.Join(home, "projects", "digitaldrywood", "detent-orchestration")
 	workflow := filepath.Join(workdir, "WORKFLOW.md")
 
 	if err := os.MkdirAll(workdir, 0o755); err != nil {
@@ -623,8 +623,8 @@ func createProjectFiles(t *testing.T) projectPaths {
 	return projectPaths{
 		root:         root,
 		home:         home,
-		workflow:     "~/projects/digitaldrywood/symphony-orchestration/WORKFLOW.md",
-		workdir:      "~/projects/digitaldrywood/symphony-orchestration",
+		workflow:     "~/projects/digitaldrywood/detent-orchestration/WORKFLOW.md",
+		workdir:      "~/projects/digitaldrywood/detent-orchestration",
 		workflowPath: workflow,
 		workdirPath:  workdir,
 	}
@@ -665,11 +665,11 @@ func assertMap(t *testing.T, name string, got map[string]any, want map[string]an
 }
 
 func minimalYAML(paths projectPaths, global string) string {
-	return `apiVersion: symphony/v1
+	return `apiVersion: detent/v1
 kind: GlobalConfig
 global:
 ` + global + `projects:
-  - id: symphony
+  - id: detent
     workflow: ` + paths.workflow + `
     workdir: ` + paths.workdir + `
     weight: 5
@@ -683,7 +683,7 @@ func validYAML(paths projectPaths, overrides map[string]string) string {
 		scheduling = overrides["scheduling"]
 	}
 
-	return `apiVersion: symphony/v1
+	return `apiVersion: detent/v1
 kind: GlobalConfig
 global:
   max_concurrent_agents: 8
@@ -695,7 +695,7 @@ global:
     max_spawn_per_second: 2
     tags: [fast, slow]
 projects:
-  - id: " symphony "
+  - id: " detent "
     workflow: ` + paths.workflow + `
     workdir: ` + paths.workdir + `
     weight: 5

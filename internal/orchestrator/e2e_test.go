@@ -13,13 +13,13 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/codex"
-	"github.com/digitaldrywood/symphony/internal/config"
-	"github.com/digitaldrywood/symphony/internal/connector"
-	"github.com/digitaldrywood/symphony/internal/connector/memory"
-	runpkg "github.com/digitaldrywood/symphony/internal/runner"
-	"github.com/digitaldrywood/symphony/internal/store"
-	"github.com/digitaldrywood/symphony/internal/workspace"
+	"github.com/digitaldrywood/detent/internal/codex"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *testing.T) {
@@ -28,7 +28,7 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	ctx := context.Background()
 	sourceRoot := e2eInitSourceRepo(t)
 	workspacesRoot := filepath.Join(t.TempDir(), "workspaces")
-	dbPath := filepath.Join(t.TempDir(), "symphony.db")
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
 
 	storeBackend, err := store.Open(ctx, store.Config{
 		Backend: store.BackendSQLite,
@@ -53,7 +53,7 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	}
 
 	runnerBackend, err := runpkg.NewRunner(runpkg.Dependencies{
-		ProjectID: "symphony",
+		ProjectID: "detent",
 		Workflow: config.Workflow{
 			Config: config.Config{
 				Codex: config.Codex{
@@ -77,10 +77,10 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 
 	issue := connector.NewIssue()
 	issue.ID = "I_kwDOSskuwc8AAAABD42gFg"
-	issue.Identifier = "digitaldrywood/symphony#23"
+	issue.Identifier = "digitaldrywood/detent#23"
 	issue.Title = "transcript byte-parity + e2e gate"
 	issue.State = "Todo"
-	issue.URL = "https://github.com/digitaldrywood/symphony/issues/23"
+	issue.URL = "https://github.com/digitaldrywood/detent/issues/23"
 	issue.ModelOverride = "gpt-5-codex"
 
 	orch, err := New(Config{
@@ -119,7 +119,7 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	}
 
 	workspacePath := filepath.Join(workspacesRoot, workspace.SafeKey(issue.Identifier))
-	wantBranch := "symphony/" + strings.ToLower(workspace.SafeKey(issue.Identifier))
+	wantBranch := "detent/" + strings.ToLower(workspace.SafeKey(issue.Identifier))
 	if got := strings.TrimSpace(e2eRunGit(t, workspacePath, "branch", "--show-current")); got != wantBranch {
 		t.Fatalf("workspace branch = %q, want %q", got, wantBranch)
 	}

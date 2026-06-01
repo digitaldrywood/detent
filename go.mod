@@ -1,4 +1,4 @@
-module github.com/digitaldrywood/symphony
+module github.com/digitaldrywood/detent
 
 go 1.26
 

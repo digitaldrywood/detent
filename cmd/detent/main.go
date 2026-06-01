@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/digitaldrywood/symphony/internal/cli"
-	"github.com/digitaldrywood/symphony/internal/shadow"
+	"github.com/digitaldrywood/detent/internal/cli"
+	"github.com/digitaldrywood/detent/internal/shadow"
 )
 
 func main() {

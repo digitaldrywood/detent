@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func TestReportsRendersEveryProjectBreakdown(t *testing.T) {
@@ -28,7 +28,7 @@ func TestReportsRendersEveryProjectBreakdown(t *testing.T) {
 	}
 
 	html := renderComponent(t, templates.Reports(templates.ReportsData{
-		Title:       "Symphony reports",
+		Title:       "Detent reports",
 		GeneratedAt: time.Date(2026, 5, 31, 17, 0, 0, 0, time.UTC),
 		Day: templates.UsageReportData{
 			Totals: templates.UsageTotalsData{
@@ -57,7 +57,7 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 	t.Parallel()
 
 	html := renderComponent(t, templates.Reports(templates.ReportsData{
-		Title:       "Symphony reports",
+		Title:       "Detent reports",
 		GeneratedAt: time.Date(2026, 5, 31, 17, 0, 0, 0, time.UTC),
 		Day: templates.UsageReportData{
 			Totals: templates.UsageTotalsData{

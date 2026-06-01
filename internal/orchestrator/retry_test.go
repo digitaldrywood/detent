@@ -5,8 +5,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
-	runpkg "github.com/digitaldrywood/symphony/internal/runner"
+	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
 func TestDispatchReadyIssuesKeepsRetryAttemptWhenCapacityIsFull(t *testing.T) {
@@ -22,8 +22,8 @@ func TestDispatchReadyIssuesKeepsRetryAttemptWhenCapacityIsFull(t *testing.T) {
 	orch := Orchestrator{cfg: cfg}
 	state := newState(cfg)
 	now := time.Now()
-	running := retryTestIssue("running", "digitaldrywood/symphony#20")
-	retrying := retryTestIssue("retrying", "digitaldrywood/symphony#21")
+	running := retryTestIssue("running", "digitaldrywood/detent#20")
+	retrying := retryTestIssue("retrying", "digitaldrywood/detent#21")
 
 	state.Running[running.ID] = Running{Issue: running, StartedAt: now}
 	state.Claimed[retrying.ID] = Claimed{Issue: retrying, ClaimedAt: now.Add(-time.Minute)}
@@ -103,8 +103,8 @@ func TestDispatchReadyIssuesRanksDueRetriesWithCandidates(t *testing.T) {
 	}
 	state := newState(cfg)
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
-	retrying := retryTestIssue("retrying", "digitaldrywood/symphony#21")
-	merging := retryTestIssue("merging", "digitaldrywood/symphony#22")
+	retrying := retryTestIssue("retrying", "digitaldrywood/detent#21")
+	merging := retryTestIssue("merging", "digitaldrywood/detent#22")
 	merging.State = "Merging"
 	priority := 4
 	merging.Priority = &priority
@@ -147,7 +147,7 @@ func TestDispatchReadyIssuesPreservesBlockedStatusForMissingDueRetry(t *testing.
 	orch := Orchestrator{cfg: cfg}
 	state := newState(cfg)
 	now := time.Now()
-	retrying := retryTestIssue("retrying", "digitaldrywood/symphony#21")
+	retrying := retryTestIssue("retrying", "digitaldrywood/detent#21")
 	blocked := retrying
 	blocked.State = "Blocked"
 
@@ -193,8 +193,8 @@ func TestDispatchReadyIssuesKeepsAttemptWhenWorkerCapacityIsFull(t *testing.T) {
 	orch := Orchestrator{cfg: cfg}
 	state := newState(cfg)
 	now := time.Now()
-	running := retryTestIssue("running", "digitaldrywood/symphony#20")
-	retrying := retryTestIssue("retrying", "digitaldrywood/symphony#21")
+	running := retryTestIssue("running", "digitaldrywood/detent#20")
+	retrying := retryTestIssue("retrying", "digitaldrywood/detent#21")
 
 	state.Running[running.ID] = Running{Issue: running, StartedAt: now, WorkerHost: "worker-a"}
 	state.Claimed[retrying.ID] = Claimed{Issue: retrying, ClaimedAt: now.Add(-time.Minute)}

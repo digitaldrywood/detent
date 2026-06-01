@@ -12,8 +12,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/symphony/internal/config"
-	"github.com/digitaldrywood/symphony/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 const (
@@ -24,7 +24,7 @@ const (
 	onboardingStepWrite       = "write"
 
 	defaultGitHubAPIKey         = "$GITHUB_TOKEN"
-	defaultWorkspaceRoot        = "~/code/symphony-workspaces"
+	defaultWorkspaceRoot        = "~/code/detent-workspaces"
 	defaultMaxConcurrentAgents  = "5"
 	defaultMaxTurns             = "20"
 	defaultPollingIntervalMS    = "30000"
@@ -156,7 +156,7 @@ func (s *Server) renderOnboardingStep(c echo.Context, form templates.OnboardingF
 
 func (s *Server) onboardingData(form templates.OnboardingForm, problems []string, result templates.OnboardingResult) templates.OnboardingData {
 	return templates.OnboardingData{
-		Title:        "Symphony onboarding",
+		Title:        "Detent onboarding",
 		WorkflowPath: workflowDisplayPath(s.workflow),
 		Step:         form.Step,
 		Form:         form,
@@ -351,7 +351,7 @@ func renderWorkflow(form templates.OnboardingForm) string {
 		b.WriteString("  issues:\n")
 		b.WriteString("    - id: memory-onboarding-1\n")
 		b.WriteString("      identifier: MEM-1\n")
-		b.WriteString("      title: Verify Symphony onboarding\n")
+		b.WriteString("      title: Verify Detent onboarding\n")
 		b.WriteString("      description: Run the generated memory workflow through one local dispatch.\n")
 		b.WriteString("      priority: 3\n")
 		b.WriteString("      state: Todo\n")
@@ -388,7 +388,7 @@ func renderWorkflow(form templates.OnboardingForm) string {
 	b.WriteString("    allowed_issue_labels: []\n")
 	b.WriteString("  skills:\n")
 	b.WriteString("    enabled: true\n")
-	b.WriteString("    path: .symphony/skills\n")
+	b.WriteString("    path: .detent/skills\n")
 	b.WriteString("    max_skills_in_prompt: 50\n")
 	b.WriteString("codex:\n")
 	b.WriteString("  command: codex app-server\n")
@@ -424,7 +424,7 @@ func commonWorkflowPrompt() string {
 Identifier: {{ issue.identifier }}
 Issue node id: {{ issue.id }}
 Title: {{ issue.title }}
-Current Symphony status: {{ issue.state }}
+Current Detent status: {{ issue.state }}
 Priority: {{ issue.priority }}
 Labels: {{ issue.labels }}
 URL: {{ issue.url }}

@@ -38,7 +38,7 @@ func settingsPageTitle(data SettingsData) string {
 	if strings.TrimSpace(data.Title) != "" {
 		return data.Title
 	}
-	return "Symphony settings"
+	return "Detent settings"
 }
 
 func settingsVersionLabel(data SettingsData) string {

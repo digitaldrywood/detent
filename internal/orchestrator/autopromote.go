@@ -4,7 +4,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 type AutoPromoteConfig struct {

@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/telemetry"
-	"github.com/digitaldrywood/symphony/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
@@ -20,7 +20,7 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		Version:       "v1.2.3",
 		ConnectorName: "github",
 		DashboardURL:  "http://localhost:4101",
@@ -36,8 +36,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:          "issue-35",
-						Identifier:  "digitaldrywood/symphony#35",
-						URL:         "https://github.com/digitaldrywood/symphony/issues/35",
+						Identifier:  "digitaldrywood/detent#35",
+						URL:         "https://github.com/digitaldrywood/detent/issues/35",
 						Title:       "Dashboard templates",
 						Description: "Running dashboard template row with enough issue detail to preview.",
 						State:       "In Progress",
@@ -64,8 +64,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:          "issue-36",
-						Identifier:  "digitaldrywood/symphony#36",
-						URL:         "https://github.com/digitaldrywood/symphony/issues/36",
+						Identifier:  "digitaldrywood/detent#36",
+						URL:         "https://github.com/digitaldrywood/detent/issues/36",
 						Title:       "Retry dashboard",
 						Description: "Retry row issue detail preview.",
 						State:       "Todo",
@@ -82,8 +82,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:          "issue-37",
-						Identifier:  "digitaldrywood/symphony#37",
-						URL:         "https://github.com/digitaldrywood/symphony/issues/37",
+						Identifier:  "digitaldrywood/detent#37",
+						URL:         "https://github.com/digitaldrywood/detent/issues/37",
 						Title:       "Blocked dashboard",
 						Description: "Blocked row issue detail preview.",
 						State:       "Blocked",
@@ -100,8 +100,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:          "issue-38",
-						Identifier:  "digitaldrywood/symphony#38",
-						URL:         "https://github.com/digitaldrywood/symphony/issues/38",
+						Identifier:  "digitaldrywood/detent#38",
+						URL:         "https://github.com/digitaldrywood/detent/issues/38",
 						Title:       "Completed dashboard",
 						Description: "Recent completed session issue detail preview.",
 					},
@@ -183,7 +183,7 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Completed",
 		"v1.2.3",
 		"href=\"http://localhost:4101\"",
-		"digitaldrywood/symphony#35",
+		"digitaldrywood/detent#35",
 		"Dashboard templates",
 		"http://localhost:4101",
 		"Running dashboard template row with enough issue detail to preview.",
@@ -191,21 +191,21 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"+4 -2 (3 files)",
 		"162,000",
 		"Retry queue",
-		"digitaldrywood/symphony#36",
+		"digitaldrywood/detent#36",
 		"Retry dashboard",
 		"Retry row issue detail preview.",
 		"2",
 		"May 31 15:02:00 UTC",
 		"no available orchestrator slots",
 		"Blocked sessions",
-		"digitaldrywood/symphony#37",
+		"digitaldrywood/detent#37",
 		"Blocked dashboard",
 		"Blocked row issue detail preview.",
 		"May 31 14:57:00 UTC",
 		"waiting for operator input",
 		"dependency is not merged",
 		"Recent sessions",
-		"digitaldrywood/symphony#38",
+		"digitaldrywood/detent#38",
 		"Completed dashboard",
 		"May 31 14:59:30 UTC",
 		"11m 30s / 5 turns",
@@ -273,7 +273,7 @@ func TestDashboardRendersReadableAgentTimelineForConcurrentSessions(t *testing.T
 	}
 
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
@@ -303,7 +303,7 @@ func TestDashboardRendersThroughputAndRuntimeTrend(t *testing.T) {
 
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
@@ -372,7 +372,7 @@ func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 	perIssue := 25.0
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
@@ -421,7 +421,7 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 	t.Parallel()
 
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			Counts: telemetry.Counts{
@@ -496,7 +496,7 @@ func TestDashboardRendersHealthIndicators(t *testing.T) {
 
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
@@ -523,7 +523,7 @@ func TestDashboardRendersHealthIndicators(t *testing.T) {
 	}
 
 	offlineHTML := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 	})
 	if !strings.Contains(offlineHTML, "Offline") {
@@ -535,7 +535,7 @@ func TestDashboardRendersDensityControls(t *testing.T) {
 	t.Parallel()
 
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			Running: []telemetry.Running{
@@ -555,7 +555,7 @@ func TestDashboardRendersDensityControls(t *testing.T) {
 		`data-density-choice="comfortable"`,
 		`data-density-choice="compact"`,
 		`aria-pressed="true"`,
-		`symphony.dashboard.density`,
+		`detent.dashboard.density`,
 		`dashboard-table`,
 		`table-fixed`,
 	} {
@@ -570,7 +570,7 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
@@ -578,8 +578,8 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-running-url",
-						Identifier: "digitaldrywood/symphony#91",
-						URL:        "https://github.com/digitaldrywood/symphony/issues/91",
+						Identifier: "digitaldrywood/detent#91",
+						URL:        "https://github.com/digitaldrywood/detent/issues/91",
 						Title:      "Running URL controls",
 					},
 					SessionID: "thread-running-url",
@@ -589,8 +589,8 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-retry-url",
-						Identifier: "digitaldrywood/symphony#92",
-						URL:        "https://github.com/digitaldrywood/symphony/issues/92",
+						Identifier: "digitaldrywood/detent#92",
+						URL:        "https://github.com/digitaldrywood/detent/issues/92",
 						Title:      "Retry URL controls",
 					},
 					Attempt: 1,
@@ -600,8 +600,8 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-blocked-url",
-						Identifier: "digitaldrywood/symphony#93",
-						URL:        "https://github.com/digitaldrywood/symphony/issues/93",
+						Identifier: "digitaldrywood/detent#93",
+						URL:        "https://github.com/digitaldrywood/detent/issues/93",
 						Title:      "Blocked URL controls",
 					},
 					SessionID: "thread-blocked-url",
@@ -611,8 +611,8 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-recent-url",
-						Identifier: "digitaldrywood/symphony#94",
-						URL:        "https://github.com/digitaldrywood/symphony/issues/94",
+						Identifier: "digitaldrywood/detent#94",
+						URL:        "https://github.com/digitaldrywood/detent/issues/94",
 						Title:      "Recent URL controls",
 					},
 					SessionID:   "thread-recent-url",
@@ -623,17 +623,17 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		`data-copy="https://github.com/digitaldrywood/symphony/issues/91"`,
-		`data-copy="https://github.com/digitaldrywood/symphony/issues/92"`,
-		`data-copy="https://github.com/digitaldrywood/symphony/issues/93"`,
-		`data-copy="https://github.com/digitaldrywood/symphony/issues/94"`,
-		`href="https://github.com/digitaldrywood/symphony/issues/91"`,
-		`href="https://github.com/digitaldrywood/symphony/issues/92"`,
-		`href="https://github.com/digitaldrywood/symphony/issues/93"`,
-		`href="https://github.com/digitaldrywood/symphony/issues/94"`,
-		`href="/api/v1/digitaldrywood%2Fsymphony%2391"`,
-		`href="/api/v1/digitaldrywood%2Fsymphony%2392"`,
-		`href="/api/v1/digitaldrywood%2Fsymphony%2393"`,
+		`data-copy="https://github.com/digitaldrywood/detent/issues/91"`,
+		`data-copy="https://github.com/digitaldrywood/detent/issues/92"`,
+		`data-copy="https://github.com/digitaldrywood/detent/issues/93"`,
+		`data-copy="https://github.com/digitaldrywood/detent/issues/94"`,
+		`href="https://github.com/digitaldrywood/detent/issues/91"`,
+		`href="https://github.com/digitaldrywood/detent/issues/92"`,
+		`href="https://github.com/digitaldrywood/detent/issues/93"`,
+		`href="https://github.com/digitaldrywood/detent/issues/94"`,
+		`href="/api/v1/digitaldrywood%2Fdetent%2391"`,
+		`href="/api/v1/digitaldrywood%2Fdetent%2392"`,
+		`href="/api/v1/digitaldrywood%2Fdetent%2393"`,
 		`data-copy="thread-running-url"`,
 		`data-copy="thread-blocked-url"`,
 		`data-copy="thread-recent-url"`,
@@ -643,7 +643,7 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 		}
 	}
 
-	if strings.Contains(html, `href="/api/v1/digitaldrywood%2Fsymphony%2394"`) {
+	if strings.Contains(html, `href="/api/v1/digitaldrywood%2Fdetent%2394"`) {
 		t.Fatalf("dashboard rendered JSON details for completed session:\n%s", html)
 	}
 }
@@ -653,7 +653,7 @@ func TestDashboardRendersRunningActivityHoverCard(t *testing.T) {
 
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
@@ -661,7 +661,7 @@ func TestDashboardRendersRunningActivityHoverCard(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-running-activity",
-						Identifier: "digitaldrywood/symphony#182",
+						Identifier: "digitaldrywood/detent#182",
 						Title:      "Rich running activity hover card",
 						State:      "In Progress",
 					},
@@ -719,7 +719,7 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
@@ -727,8 +727,8 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "responsive-running",
-						Identifier: "digitaldrywood/symphony#170",
-						URL:        "https://github.com/digitaldrywood/symphony/issues/170",
+						Identifier: "digitaldrywood/detent#170",
+						URL:        "https://github.com/digitaldrywood/detent/issues/170",
 						Title:      "Responsive dashboard",
 						State:      "In Progress",
 					},
@@ -743,7 +743,7 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "responsive-retry",
-						Identifier: "digitaldrywood/symphony#171",
+						Identifier: "digitaldrywood/detent#171",
 						Title:      "Retry responsive dashboard",
 					},
 					Attempt: 1,
@@ -753,7 +753,7 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "responsive-blocked",
-						Identifier: "digitaldrywood/symphony#172",
+						Identifier: "digitaldrywood/detent#172",
 						Title:      "Blocked responsive dashboard",
 						State:      "Blocked",
 					},
@@ -764,7 +764,7 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 				{
 					Issue: telemetry.Issue{
 						ID:         "responsive-recent",
-						Identifier: "digitaldrywood/symphony#173",
+						Identifier: "digitaldrywood/detent#173",
 						Title:      "Recent responsive dashboard",
 					},
 					SessionID:   "thread-responsive-recent",
@@ -801,14 +801,14 @@ func TestDashboardRendersUnknownDiffStatusAsPending(t *testing.T) {
 	t.Parallel()
 
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			Running: []telemetry.Running{
 				{
 					Issue: telemetry.Issue{
 						ID:         "issue-35",
-						Identifier: "digitaldrywood/symphony#35",
+						Identifier: "digitaldrywood/detent#35",
 						State:      "In Progress",
 					},
 				},
@@ -828,7 +828,7 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 	t.Parallel()
 
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "memory",
 	})
 
@@ -865,7 +865,7 @@ func TestDashboardIncludesMotionAndThemeHooks(t *testing.T) {
 	t.Parallel()
 
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 	})
 
@@ -887,7 +887,7 @@ func TestDashboardDistinguishesMissingRunningDetails(t *testing.T) {
 	t.Parallel()
 
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			Counts: telemetry.Counts{
@@ -908,7 +908,7 @@ func TestDashboardDistinguishesMissingWorkQueueDetails(t *testing.T) {
 	t.Parallel()
 
 	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
 			Counts: telemetry.Counts{

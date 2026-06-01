@@ -9,8 +9,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/telemetry"
-	webchart "github.com/digitaldrywood/symphony/internal/web/chart"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 )
 
 const (
@@ -91,7 +91,7 @@ func pageTitle(data DashboardData) string {
 	if data.Title != "" {
 		return data.Title
 	}
-	return "Symphony"
+	return "Detent"
 }
 
 func versionLabel(data DashboardData) string {

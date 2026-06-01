@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/store"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestCheckerCheckDispatch(t *testing.T) {
@@ -225,7 +225,7 @@ func TestCheckerCheckDispatch(t *testing.T) {
 			}
 
 			comment := refusal.Comment()
-			if !strings.Contains(comment, "Symphony refused to dispatch this issue") {
+			if !strings.Contains(comment, "Detent refused to dispatch this issue") {
 				t.Fatalf("Refusal.Comment() = %q, want refusal explanation", comment)
 			}
 			if !strings.Contains(comment, FormatUSD(tt.wantSpend)) {

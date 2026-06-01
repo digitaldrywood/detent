@@ -10,7 +10,7 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const (
@@ -21,7 +21,7 @@ const (
 )
 
 const projectItemsQuery = `
-query SymphonyGitHubProjectItems($projectId: ID!, $first: Int!, $after: String) {
+query DetentGitHubProjectItems($projectId: ID!, $first: Int!, $after: String) {
   node(id: $projectId) {
     ... on ProjectV2 {
       items(first: $first, after: $after) {
@@ -58,7 +58,7 @@ query SymphonyGitHubProjectItems($projectId: ID!, $first: Int!, $after: String) 
 }`
 
 const issuesByIDQuery = `
-query SymphonyGitHubIssuesByID($issueIds: [ID!]!, $projectItemsFirst: Int!) {
+query DetentGitHubIssuesByID($issueIds: [ID!]!, $projectItemsFirst: Int!) {
   nodes(ids: $issueIds) {
     __typename
     ... on Issue {
@@ -92,7 +92,7 @@ query SymphonyGitHubIssuesByID($issueIds: [ID!]!, $projectItemsFirst: Int!) {
 }`
 
 const issueCommentsQuery = `
-query SymphonyGitHubIssueComments($issueIds: [ID!]!) {
+query DetentGitHubIssueComments($issueIds: [ID!]!) {
   nodes(ids: $issueIds) {
     __typename
     ... on Issue {
@@ -104,7 +104,7 @@ query SymphonyGitHubIssueComments($issueIds: [ID!]!) {
 }`
 
 const pullRequestsQuery = `
-query SymphonyGitHubPullRequests($owner: String!, $name: String!, $states: [PullRequestState!]!, $first: Int!, $after: String) {
+query DetentGitHubPullRequests($owner: String!, $name: String!, $states: [PullRequestState!]!, $first: Int!, $after: String) {
   repository(owner: $owner, name: $name) {
     pullRequests(first: $first, after: $after, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
       pageInfo { hasNextPage endCursor }
@@ -119,14 +119,14 @@ query SymphonyGitHubPullRequests($owner: String!, $name: String!, $states: [Pull
 }`
 
 const addCommentMutation = `
-mutation SymphonyGitHubAddComment($subjectId: ID!, $body: String!) {
+mutation DetentGitHubAddComment($subjectId: ID!, $body: String!) {
   addComment(input: {subjectId: $subjectId, body: $body}) {
     commentEdge { node { id } }
   }
 }`
 
 const statusFieldQuery = `
-query SymphonyGitHubStatusField($projectId: ID!) {
+query DetentGitHubStatusField($projectId: ID!) {
   node(id: $projectId) {
     ... on ProjectV2 {
       field(name: "Status") {
@@ -140,7 +140,7 @@ query SymphonyGitHubStatusField($projectId: ID!) {
 }`
 
 const projectItemForIssueQuery = `
-query SymphonyGitHubProjectItemForIssue($issueId: ID!, $projectItemsFirst: Int!, $after: String) {
+query DetentGitHubProjectItemForIssue($issueId: ID!, $projectItemsFirst: Int!, $after: String) {
   node(id: $issueId) {
     ... on Issue {
       projectItems(first: $projectItemsFirst, after: $after) {
@@ -161,7 +161,7 @@ query SymphonyGitHubProjectItemForIssue($issueId: ID!, $projectItemsFirst: Int!,
 }`
 
 const updateStatusMutation = `
-mutation SymphonyGitHubUpdateStatus($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+mutation DetentGitHubUpdateStatus($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
   updateProjectV2ItemFieldValue(input: {
     projectId: $projectId,
     itemId: $itemId,
@@ -412,7 +412,7 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 		return nil
 	}
 
-	githubState := c.symphonyToGitHubState(stateName)
+	githubState := c.detentToGitHubState(stateName)
 	fieldID, optionID, err := c.resolveStatusOption(ctx, githubState)
 	if err != nil {
 		if errors.Is(err, ErrStatusOptionNotFound) {
@@ -450,7 +450,7 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 		if !ok {
 			continue
 		}
-		branchPrefix := symphonyIssueBranchPrefix(issue.Identifier)
+		branchPrefix := detentIssueBranchPrefix(issue.Identifier)
 		if branchPrefix == "" {
 			continue
 		}
@@ -650,7 +650,7 @@ func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNod
 	if ok {
 		return c.buildIssue(issue, stateName, priorityName), true, nil
 	}
-	return c.buildIssue(issue, c.githubIssueStateToSymphonyState(issue.State), ""), true, nil
+	return c.buildIssue(issue, c.githubIssueStateToDetentState(issue.State), ""), true, nil
 }
 
 func (c *Connector) resolveIssueProjectFields(ctx context.Context, issueID string, items *projectItemsConnection) (string, string, bool, error) {
@@ -717,7 +717,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		Title:            issue.Title,
 		Description:      issue.Body,
 		Priority:         c.priorityRank(priorityName),
-		State:            c.githubToSymphonyState(statusName),
+		State:            c.githubToDetentState(statusName),
 		URL:              issue.URL,
 		PRNumber:         firstPullRequestNumber(issue.ClosedByPullRequestsReferences),
 		AssigneeID:       firstAssigneeLogin(issue.Assignees),
@@ -829,7 +829,7 @@ func (c *Connector) fetchProjectItemPage(ctx context.Context, issueID string, af
 }
 
 func (c *Connector) terminalStatusUpdateBlocked(currentStatus string, targetState string) bool {
-	currentState := c.githubToSymphonyState(currentStatus)
+	currentState := c.githubToDetentState(currentStatus)
 	if !stateInList(currentState, c.terminalStates) {
 		return false
 	}
@@ -860,7 +860,7 @@ func (c *Connector) updateStatusFieldValue(ctx context.Context, itemID string, f
 	return nil
 }
 
-func (c *Connector) symphonyToGitHubState(stateName string) string {
+func (c *Connector) detentToGitHubState(stateName string) string {
 	stateName = strings.TrimSpace(stateName)
 	if mapped, ok := c.stateMap[stateName]; ok {
 		return strings.TrimSpace(mapped)
@@ -868,20 +868,20 @@ func (c *Connector) symphonyToGitHubState(stateName string) string {
 	return stateName
 }
 
-func (c *Connector) githubToSymphonyState(githubState string) string {
+func (c *Connector) githubToDetentState(githubState string) string {
 	githubState = strings.TrimSpace(githubState)
 	if githubState == "" {
 		return ""
 	}
-	for symphonyState, mapped := range c.stateMap {
+	for detentState, mapped := range c.stateMap {
 		if mapped == githubState {
-			return symphonyState
+			return detentState
 		}
 	}
 	return githubState
 }
 
-func (c *Connector) githubIssueStateToSymphonyState(state string) string {
+func (c *Connector) githubIssueStateToDetentState(state string) string {
 	switch strings.ToUpper(strings.TrimSpace(state)) {
 	case "CLOSED":
 		return c.closedIssueState()
@@ -951,7 +951,7 @@ func pullRequestRepoFromIdentifier(identifier string) (pullRequestRepo, bool) {
 	return pullRequestRepo{Owner: strings.TrimSpace(parts[0]), Name: strings.TrimSpace(parts[1])}, true
 }
 
-func symphonyIssueBranchPrefix(identifier string) string {
+func detentIssueBranchPrefix(identifier string) string {
 	_, _, ok := splitIssueIdentifier(identifier)
 	if !ok {
 		return ""
@@ -962,7 +962,7 @@ func symphonyIssueBranchPrefix(identifier string) string {
 	if key == "" || key == "." || key == ".." {
 		return ""
 	}
-	return "symphony/" + strings.ToLower(key)
+	return "detent/" + strings.ToLower(key)
 }
 
 func splitIssueIdentifier(identifier string) (string, int, bool) {

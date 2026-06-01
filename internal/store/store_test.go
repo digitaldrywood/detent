@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/store/sqlc"
 )
 
 func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
@@ -84,7 +84,7 @@ func TestSQLiteQueriesRoundTrip(t *testing.T) {
 		RunID:          sql.NullInt64{Int64: run.ID, Valid: true},
 		IssueID:        sql.NullString{String: "I_kwDOSskuwc8AAAABD42cNw", Valid: true},
 		Identifier:     sql.NullString{String: "digitaldrywood/symphony#5", Valid: true},
-		IssueUrl:       sql.NullString{String: "https://github.com/digitaldrywood/symphony/issues/5", Valid: true},
+		IssueUrl:       sql.NullString{String: "https://github.com/digitaldrywood/detent/issues/5", Valid: true},
 		StartedAt:      sql.NullString{String: "2026-05-30T12:01:00Z", Valid: true},
 		CompletedAt:    sql.NullString{String: "2026-05-30T12:02:00Z", Valid: true},
 		Turns:          2,
@@ -155,7 +155,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				RunID:      runID,
 				IssueID:    "I_kwDOSskuwc8AAAABD42c3Q",
 				Identifier: "digitaldrywood/symphony#6",
-				IssueURL:   "https://github.com/digitaldrywood/symphony/issues/6",
+				IssueURL:   "https://github.com/digitaldrywood/detent/issues/6",
 				StartedAt:  time.Date(2026, 5, 30, 12, 1, 0, 0, time.UTC),
 				Model:      "gpt-5",
 			})
@@ -249,7 +249,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				t.Fatalf("IssueTokenSpend(identifier).TotalTokens = %d, want 125", identifierSpend.TotalTokens)
 			}
 
-			urlSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{IssueURL: "https://github.com/digitaldrywood/symphony/issues/6"})
+			urlSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{IssueURL: "https://github.com/digitaldrywood/detent/issues/6"})
 			if err != nil {
 				t.Fatalf("IssueTokenSpend(url) error = %v", err)
 			}

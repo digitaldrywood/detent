@@ -23,7 +23,7 @@ func TestRunComputesGoObservationAndReportsDiffs(t *testing.T) {
 			Candidates: []Issue{
 				{
 					ID:               "issue-go",
-					Identifier:       "digitaldrywood/symphony#46",
+					Identifier:       "digitaldrywood/detent#46",
 					Title:            "Go shadow issue",
 					State:            "Todo",
 					Priority:         &priority,

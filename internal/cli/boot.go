@@ -16,16 +16,16 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
-	"github.com/digitaldrywood/symphony/internal/connector"
-	"github.com/digitaldrywood/symphony/internal/connector/memory"
-	"github.com/digitaldrywood/symphony/internal/hub"
-	"github.com/digitaldrywood/symphony/internal/project"
-	"github.com/digitaldrywood/symphony/internal/store"
-	"github.com/digitaldrywood/symphony/internal/telemetry"
-	"github.com/digitaldrywood/symphony/internal/tui"
-	"github.com/digitaldrywood/symphony/internal/web"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/tui"
+	"github.com/digitaldrywood/detent/internal/web"
 )
 
 const (
@@ -34,7 +34,7 @@ const (
 	defaultWebHost      = "127.0.0.1"
 	defaultWebPort      = 4000
 	dashboardHost       = "localhost"
-	projectURL          = "https://github.com/digitaldrywood/symphony"
+	projectURL          = "https://github.com/digitaldrywood/detent"
 )
 
 func resolveBootConfig(configPath string, host string, port int, opts options) (BootConfig, error) {
@@ -394,19 +394,19 @@ func openRuntimeStore(ctx context.Context, cfg BootConfig) (store.Store, error) 
 }
 
 func runtimeStorePath(cfg BootConfig) string {
-	path := filepath.Join(filepath.Dir(cfg.Global.Path), "symphony.db")
+	path := filepath.Join(filepath.Dir(cfg.Global.Path), "detent.db")
 	if strings.TrimSpace(cfg.Global.Path) == "" {
-		path = filepath.Join(mustGetwd(), ".symphony", "symphony.db")
+		path = filepath.Join(mustGetwd(), ".detent", "detent.db")
 	}
 	return path
 }
 
 func runtimeLogPath(cfg BootConfig) string {
-	return filepath.Join(filepath.Dir(runtimeStorePath(cfg)), "symphony.log")
+	return filepath.Join(filepath.Dir(runtimeStorePath(cfg)), "detent.log")
 }
 
 func logLevelFromEnv() slog.Level {
-	for _, key := range []string{"SYMPHONY_LOG_LEVEL", "LOG_LEVEL"} {
+	for _, key := range []string{"DETENT_LOG_LEVEL", "LOG_LEVEL"} {
 		if level, ok := os.LookupEnv(key); ok {
 			return parseSlogLevel(level)
 		}
@@ -614,7 +614,7 @@ func bootBanner(version string, displayURL string) string {
 	}
 
 	var out strings.Builder
-	out.WriteString("Symphony ")
+	out.WriteString("Detent ")
 	out.WriteString(version)
 	out.WriteByte('\n')
 	out.WriteString("Project: ")

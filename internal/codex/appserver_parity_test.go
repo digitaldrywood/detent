@@ -27,7 +27,7 @@ func TestAppServerRunTurnMatchesElixirTranscriptBytes(t *testing.T) {
 
 	var updates []Update
 	result, err := server.RunTurn(context.Background(), RunTurnRequest{
-		Workspace:      "/tmp/symphony-transcript",
+		Workspace:      "/tmp/detent-transcript",
 		Prompt:         "Ship issue #23",
 		ApprovalPolicy: "never",
 		ThreadSandbox:  "workspace-write",

@@ -7,11 +7,11 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const authenticateQuery = `
-query SymphonyGitHubAuthenticate($projectId: ID!) {
+query DetentGitHubAuthenticate($projectId: ID!) {
   viewer { login }
   node(id: $projectId) {
     __typename

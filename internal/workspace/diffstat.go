@@ -85,7 +85,7 @@ func copyGitIndex(indexPath string) (string, func(), error) {
 	if err != nil {
 		return "", nil, fmt.Errorf("read git index: %w", err)
 	}
-	file, err := os.CreateTemp(filepath.Dir(indexPath), "symphony-index-*")
+	file, err := os.CreateTemp(filepath.Dir(indexPath), "detent-index-*")
 	if err != nil {
 		return "", nil, fmt.Errorf("create temporary git index: %w", err)
 	}

@@ -5,9 +5,9 @@ import (
 	"testing"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
-	"github.com/digitaldrywood/symphony/internal/connector"
-	runpkg "github.com/digitaldrywood/symphony/internal/runner"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
 func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
@@ -88,7 +88,7 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 			name: "todo blocked by non-terminal dependency",
 			issue: func() connector.Issue {
 				issue := dispatchTestIssue("issue-blocked-dependency", "Todo")
-				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/symphony#10", State: "In Progress"}}
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#10", State: "In Progress"}}
 				return issue
 			}(),
 			want: false,
@@ -97,7 +97,7 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 			name: "todo unblocked by terminal dependency",
 			issue: func() connector.Issue {
 				issue := dispatchTestIssue("issue-terminal-dependency", "Todo")
-				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/symphony#10", State: "Done"}}
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#10", State: "Done"}}
 				return issue
 			}(),
 			want: true,
@@ -106,7 +106,7 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 			name: "todo unblocked by unknown dependency state",
 			issue: func() connector.Issue {
 				issue := dispatchTestIssue("issue-unknown-dependency", "Todo")
-				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/symphony#10"}}
+				issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#10"}}
 				return issue
 			}(),
 			want: true,
@@ -457,7 +457,7 @@ func TestSelectWorkerHostKeepsPreferredHostWhenAvailable(t *testing.T) {
 func dispatchTestIssue(id, state string) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id
-	issue.Identifier = "digitaldrywood/symphony#" + id
+	issue.Identifier = "digitaldrywood/detent#" + id
 	issue.Title = "Dispatch test issue"
 	issue.State = state
 	return issue
@@ -467,8 +467,8 @@ func dispatchTestIssueWithPullRequest(id, state, prState string) connector.Issue
 	issue := dispatchTestIssue(id, state)
 	issue.PullRequest = &connector.PullRequest{
 		Number:     187,
-		URL:        "https://github.com/digitaldrywood/symphony/pull/187",
-		BranchName: "symphony/digitaldrywood_symphony_187",
+		URL:        "https://github.com/digitaldrywood/detent/pull/187",
+		BranchName: "detent/digitaldrywood_detent_187",
 		State:      prState,
 	}
 	return issue

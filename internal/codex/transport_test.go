@@ -190,11 +190,11 @@ func TestLocalTransportFactoryRejectsInvalidCommandFactories(t *testing.T) {
 }
 
 func TestLocalTransportHelperProcess(t *testing.T) {
-	if os.Getenv("SYMPHONY_CODEX_TRANSPORT_HELPER") != "1" {
+	if os.Getenv("DETENT_CODEX_TRANSPORT_HELPER") != "1" {
 		return
 	}
 
-	mode := os.Getenv("SYMPHONY_CODEX_TRANSPORT_MODE")
+	mode := os.Getenv("DETENT_CODEX_TRANSPORT_MODE")
 
 	switch mode {
 	case "roundtrip":
@@ -215,8 +215,8 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 func helperCommand(ctx context.Context, mode string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=^TestLocalTransportHelperProcess$")
 	cmd.Env = append(os.Environ(),
-		"SYMPHONY_CODEX_TRANSPORT_HELPER=1",
-		"SYMPHONY_CODEX_TRANSPORT_MODE="+mode,
+		"DETENT_CODEX_TRANSPORT_HELPER=1",
+		"DETENT_CODEX_TRANSPORT_MODE="+mode,
 	)
 	return cmd
 }

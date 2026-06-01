@@ -14,10 +14,10 @@ import (
 	"testing"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
-	projectpkg "github.com/digitaldrywood/symphony/internal/project"
-	"github.com/digitaldrywood/symphony/internal/web"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	projectpkg "github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/web"
 )
 
 func TestShouldLaunchTerminalDashboard(t *testing.T) {
@@ -67,7 +67,7 @@ func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
 		slog.SetDefault(previous)
 	})
 
-	path := filepath.Join(t.TempDir(), "runtime", "symphony.log")
+	path := filepath.Join(t.TempDir(), "runtime", "detent.log")
 	restore, err := redirectDefaultLogger(path)
 	if err != nil {
 		t.Fatalf("redirectDefaultLogger() error = %v", err)
@@ -171,8 +171,8 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 	}()
 
 	body := waitForDashboard(t, "http://"+net.JoinHostPort(host, strconv.Itoa(port))+"/", done)
-	if !strings.Contains(body, "Symphony") {
-		t.Fatalf("dashboard body missing Symphony:\n%s", body)
+	if !strings.Contains(body, "Detent") {
+		t.Fatalf("dashboard body missing Detent:\n%s", body)
 	}
 
 	cancel()

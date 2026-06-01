@@ -17,16 +17,16 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/budget"
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
-	"github.com/digitaldrywood/symphony/internal/connector"
-	"github.com/digitaldrywood/symphony/internal/hub"
-	"github.com/digitaldrywood/symphony/internal/project"
-	"github.com/digitaldrywood/symphony/internal/store"
-	"github.com/digitaldrywood/symphony/internal/store/sqlc"
-	"github.com/digitaldrywood/symphony/internal/telemetry"
-	"github.com/digitaldrywood/symphony/internal/web"
+	"github.com/digitaldrywood/detent/internal/budget"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web"
 )
 
 func TestNewServerValidatesDependencies(t *testing.T) {
@@ -114,7 +114,7 @@ func TestServerRoutes(t *testing.T) {
 			name:        "dashboard",
 			path:        "/",
 			wantStatus:  http.StatusOK,
-			wantContent: "Symphony",
+			wantContent: "Detent",
 		},
 		{
 			name:        "settings",
@@ -356,7 +356,7 @@ func TestOnboardingModeDoesNotRequireRuntimeDependencies(t *testing.T) {
 			name:        "onboarding page",
 			path:        "/onboarding",
 			wantStatus:  http.StatusOK,
-			wantContent: "Symphony onboarding",
+			wantContent: "Detent onboarding",
 		},
 		{
 			name:        "health",
@@ -404,7 +404,7 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:         "issue-35",
-					Identifier: "digitaldrywood/symphony#35",
+					Identifier: "digitaldrywood/detent#35",
 					Title:      "Dashboard templates",
 					State:      "In Progress",
 				},
@@ -433,7 +433,7 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	for _, want := range []string{
-		"digitaldrywood/symphony#35",
+		"digitaldrywood/detent#35",
 		"Dashboard templates",
 		"42,000",
 	} {
@@ -518,13 +518,13 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 	workflowPath := filepath.Join(root, "WORKFLOW.md")
 	workdir := filepath.Join(root, "repo")
 	worktreeRoot := filepath.Join(root, "worktrees")
-	dbPath := filepath.Join(root, "symphony.db")
-	logPath := filepath.Join(root, "symphony.log")
+	dbPath := filepath.Join(root, "detent.db")
+	logPath := filepath.Join(root, "detent.log")
 	projectURL := "https://github.com/orgs/digitaldrywood/projects/4"
 
 	registry := project.NewRegistry()
 	trackedProject := newSettingsTestProject(t, globalconfig.Project{
-		ID:       "symphony",
+		ID:       "detent",
 		Workflow: workflowPath,
 		Workdir:  workdir,
 		Weight:   3,
@@ -568,7 +568,7 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 		"Resolved global config path",
 		configPath,
 		string(globalconfig.PathRuleFlag),
-		"symphony",
+		"detent",
 		workflowPath,
 		workdir,
 		worktreeRoot,
@@ -838,8 +838,8 @@ func TestServerAPIRoutes(t *testing.T) {
 			{
 				Issue: telemetry.Issue{
 					ID:          "issue-running",
-					Identifier:  "digitaldrywood/symphony#37",
-					URL:         "https://github.com/digitaldrywood/symphony/issues/37",
+					Identifier:  "digitaldrywood/detent#37",
+					URL:         "https://github.com/digitaldrywood/detent/issues/37",
 					Title:       "REST API",
 					Description: strings.Repeat("api ", 90),
 					State:       "In Progress",
@@ -873,7 +873,7 @@ func TestServerAPIRoutes(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-retry",
 					Identifier: "DD-RETRY",
-					URL:        "https://github.com/digitaldrywood/symphony/issues/38",
+					URL:        "https://github.com/digitaldrywood/detent/issues/38",
 					Title:      "Retry API",
 					State:      "Todo",
 				},
@@ -888,7 +888,7 @@ func TestServerAPIRoutes(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-blocked",
 					Identifier: "DD-BLOCKED",
-					URL:        "https://github.com/digitaldrywood/symphony/issues/39",
+					URL:        "https://github.com/digitaldrywood/detent/issues/39",
 					Title:      "Blocked API",
 					State:      "Todo",
 				},
@@ -907,7 +907,7 @@ func TestServerAPIRoutes(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-completed",
 					Identifier: "DD-DONE",
-					URL:        "https://github.com/digitaldrywood/symphony/issues/40",
+					URL:        "https://github.com/digitaldrywood/detent/issues/40",
 				},
 				StartedAt:      startedAt,
 				CompletedAt:    completedAt,
@@ -1003,7 +1003,7 @@ func TestServerAPIRoutes(t *testing.T) {
 	}
 
 	running := state["running"].([]any)[0].(map[string]any)
-	if running["issue_identifier"] != "digitaldrywood/symphony#37" || running["issue_title"] != "REST API" {
+	if running["issue_identifier"] != "digitaldrywood/detent#37" || running["issue_title"] != "REST API" {
 		t.Fatalf("running row = %#v", running)
 	}
 	description := running["issue_description"].(string)
@@ -1066,7 +1066,7 @@ func TestServerAPIRoutes(t *testing.T) {
 		t.Fatalf("budget.days = %#v", days)
 	}
 
-	issue := requestJSON(t, server, http.MethodGet, "/api/v1/digitaldrywood/symphony%2337", http.StatusOK)
+	issue := requestJSON(t, server, http.MethodGet, "/api/v1/digitaldrywood/detent%2337", http.StatusOK)
 	if issue["status"] != "running" || issue["issue_id"] != "issue-running" {
 		t.Fatalf("issue payload = %#v", issue)
 	}
@@ -1229,7 +1229,7 @@ func TestServerUsageAPIReportsAggregates(t *testing.T) {
 	ctx := context.Background()
 	usageStore, err := store.Open(ctx, store.Config{
 		Backend: store.BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "symphony.db"),
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
 	})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -1283,9 +1283,9 @@ func TestServerUsageAPIReportsAggregates(t *testing.T) {
 	if len(breakdowns) != 2 {
 		t.Fatalf("breakdowns len = %d, want 2: %#v", len(breakdowns), breakdowns)
 	}
-	symphony := usageBucket(t, breakdowns, "symphony")
-	if symphony["total_tokens"] != float64(225) || symphony["spend_usd"] != 2.1 {
-		t.Fatalf("symphony breakdown = %#v", symphony)
+	detent := usageBucket(t, breakdowns, "detent")
+	if detent["total_tokens"] != float64(225) || detent["spend_usd"] != 2.1 {
+		t.Fatalf("detent breakdown = %#v", detent)
 	}
 
 	tests := []struct {
@@ -1293,8 +1293,8 @@ func TestServerUsageAPIReportsAggregates(t *testing.T) {
 		path       string
 		wantBucket string
 	}{
-		{name: "issue", path: "/api/v1/usage?by=issue", wantBucket: "digitaldrywood/symphony#119"},
-		{name: "pr", path: "/api/v1/usage?by=pr", wantBucket: "symphony#141"},
+		{name: "issue", path: "/api/v1/usage?by=issue", wantBucket: "digitaldrywood/detent#119"},
+		{name: "pr", path: "/api/v1/usage?by=pr", wantBucket: "detent#141"},
 		{name: "model", path: "/api/v1/usage?by=model", wantBucket: "gpt-report"},
 	}
 
@@ -1389,8 +1389,8 @@ func TestReportsPageRendersUsageCharts(t *testing.T) {
 		"Model split",
 		"$3.40",
 		"325",
-		"digitaldrywood/symphony#119",
-		"symphony#141",
+		"digitaldrywood/detent#119",
+		"detent#141",
 		"pyroapex",
 		"gpt-report",
 	} {
@@ -1442,7 +1442,7 @@ func openWebTestStore(t *testing.T) store.Store {
 
 	backend, err := store.Open(context.Background(), store.Config{
 		Backend: store.BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "symphony.db"),
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
 	})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -1460,9 +1460,9 @@ func seedUsageAPIEvents(t *testing.T, ctx context.Context, backend store.Store) 
 
 	events := []store.UsageEvent{
 		{
-			ProjectID:      "symphony",
+			ProjectID:      "detent",
 			IssueID:        "issue-119",
-			Identifier:     "digitaldrywood/symphony#119",
+			Identifier:     "digitaldrywood/detent#119",
 			PRNumber:       int64Ptr(141),
 			Model:          "gpt-report",
 			InputTokens:    100,
@@ -1474,9 +1474,9 @@ func seedUsageAPIEvents(t *testing.T, ctx context.Context, backend store.Store) 
 			Outcome:        "completed",
 		},
 		{
-			ProjectID:      "symphony",
+			ProjectID:      "detent",
 			IssueID:        "issue-120",
-			Identifier:     "digitaldrywood/symphony#120",
+			Identifier:     "digitaldrywood/detent#120",
 			PRNumber:       int64Ptr(142),
 			Model:          "gpt-report-mini",
 			InputTokens:    50,
@@ -1490,7 +1490,7 @@ func seedUsageAPIEvents(t *testing.T, ctx context.Context, backend store.Store) 
 		{
 			ProjectID:      "pyroapex",
 			IssueID:        "issue-119",
-			Identifier:     "digitaldrywood/symphony#119",
+			Identifier:     "digitaldrywood/detent#119",
 			PRNumber:       int64Ptr(141),
 			Model:          "gpt-report",
 			InputTokens:    70,

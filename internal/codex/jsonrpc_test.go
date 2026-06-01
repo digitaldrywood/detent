@@ -19,7 +19,7 @@ func TestCodecWriteMessageFramesJSONLine(t *testing.T) {
 		JSONRPC: JSONRPCVersion,
 		ID:      json.RawMessage(`1`),
 		Method:  "initialize",
-		Params:  json.RawMessage(`{"client":"symphony"}`),
+		Params:  json.RawMessage(`{"client":"detent"}`),
 	}
 
 	if err := codec.WriteMessage(msg); err != nil {
@@ -47,7 +47,7 @@ func TestCodecWriteMessageFramesJSONLine(t *testing.T) {
 	if decoded.Method != "initialize" {
 		t.Fatalf("Method = %q, want initialize", decoded.Method)
 	}
-	assertJSONEqual(t, decoded.Params, json.RawMessage(`{"client":"symphony"}`))
+	assertJSONEqual(t, decoded.Params, json.RawMessage(`{"client":"detent"}`))
 }
 
 func TestCodecReadMessage(t *testing.T) {

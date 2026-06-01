@@ -1,5 +1,5 @@
 version: 2
-project_name: symphony
+project_name: detent
 dist: tmp/goreleaser
 
 before:
@@ -10,9 +10,9 @@ before:
     - go test ./...
 
 builds:
-  - id: symphony
-    main: ./cmd/symphony
-    binary: symphony
+  - id: detent
+    main: ./cmd/detent
+    binary: detent
     env:
       - CGO_ENABLED=0
     flags:
@@ -28,9 +28,9 @@ builds:
       - arm64
 
 archives:
-  - id: symphony
+  - id: detent
     ids:
-      - symphony
+      - detent
     formats:
       - tar.gz
     format_overrides:
@@ -43,22 +43,22 @@ archives:
       - LICENSE
 
 brews:
-  - name: symphony
+  - name: detent
     ids:
-      - symphony
+      - detent
     repository:
       owner: digitaldrywood
       name: homebrew-tap
       token: "{{ .Env.HOMEBREW_TAP_GITHUB_TOKEN }}"
     directory: Formula
-    url_template: "https://github.com/digitaldrywood/symphony/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
-    homepage: https://github.com/digitaldrywood/symphony
+    url_template: "https://github.com/digitaldrywood/detent/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    homepage: https://github.com/digitaldrywood/detent
     description: Agent orchestrator for tracker-backed work queues
     license: MIT
     install: |
-      bin.install "symphony"
+      bin.install "detent"
     test: |
-      system "#{bin}/symphony", "--version"
+      system "#{bin}/detent", "--version"
 
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"

@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
-	configwatcher "github.com/digitaldrywood/symphony/internal/config/watcher"
-	"github.com/digitaldrywood/symphony/internal/connector"
-	"github.com/digitaldrywood/symphony/internal/hub"
-	"github.com/digitaldrywood/symphony/internal/orchestrator"
-	"github.com/digitaldrywood/symphony/internal/project"
-	"github.com/digitaldrywood/symphony/internal/scheduler"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
 func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
@@ -30,9 +30,9 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
-			ID:       "symphony",
+			ID:       "detent",
 			Workflow: "workflow.md",
-			Workdir:  "/workspace/symphony",
+			Workdir:  "/workspace/detent",
 			Weight:   2,
 			Priority: 10,
 		},
@@ -53,11 +53,11 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if got.ID() != project.ProjectID("symphony") {
-		t.Fatalf("ID() = %q, want symphony", got.ID())
+	if got.ID() != project.ProjectID("detent") {
+		t.Fatalf("ID() = %q, want detent", got.ID())
 	}
-	if got.Config().Workdir != "/workspace/symphony" {
-		t.Fatalf("Config().Workdir = %q, want /workspace/symphony", got.Config().Workdir)
+	if got.Config().Workdir != "/workspace/detent" {
+		t.Fatalf("Config().Workdir = %q, want /workspace/detent", got.Config().Workdir)
 	}
 	if got.Connector().Name() != connector.BackendMemory.String() {
 		t.Fatalf("Connector().Name() = %q, want memory", got.Connector().Name())
@@ -92,7 +92,7 @@ func TestProjectStartStopPublishesLifecycleEvents(t *testing.T) {
 	}
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
-			ID:     "symphony",
+			ID:     "detent",
 			Weight: 1,
 		},
 		Workflow: workflowconfig.Workflow{
@@ -144,7 +144,7 @@ func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
 
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
-			ID:       "symphony",
+			ID:       "detent",
 			Workflow: "workflow.md",
 			Weight:   1,
 		},
@@ -227,7 +227,7 @@ func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
 
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
-			ID:       "symphony",
+			ID:       "detent",
 			Workflow: "workflow.md",
 			Weight:   1,
 		},
@@ -327,7 +327,7 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 	var orchestratorCreates atomic.Int32
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
-			ID:       "symphony",
+			ID:       "detent",
 			Workflow: workflowPath,
 			Weight:   1,
 		},
@@ -397,7 +397,7 @@ func TestProjectStartRunsProvisionerWhenAutoProvisionEnabled(t *testing.T) {
 		},
 	}
 	got, err := project.New(project.Config{
-		Project: globalconfig.Project{ID: "symphony", Weight: 1},
+		Project: globalconfig.Project{ID: "detent", Weight: 1},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowConfig("memory"),
 		},
@@ -432,7 +432,7 @@ func TestProjectStartSkipsProvisionerWhenAutoProvisionDisabled(t *testing.T) {
 	cfg := workflowConfig("memory")
 	cfg.Tracker.AutoProvision = false
 	got, err := project.New(project.Config{
-		Project: globalconfig.Project{ID: "symphony", Weight: 1},
+		Project: globalconfig.Project{ID: "detent", Weight: 1},
 		Workflow: workflowconfig.Workflow{
 			Config: cfg,
 		},
@@ -462,7 +462,7 @@ func TestProjectStartReturnsProvisionerError(t *testing.T) {
 		},
 	}
 	got, err := project.New(project.Config{
-		Project: globalconfig.Project{ID: "symphony", Weight: 1},
+		Project: globalconfig.Project{ID: "detent", Weight: 1},
 		Workflow: workflowconfig.Workflow{
 			Config: workflowConfig("memory"),
 		},
@@ -531,7 +531,7 @@ func TestProjectWaitersReceiveRunError(t *testing.T) {
 
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
-			ID:     "symphony",
+			ID:     "detent",
 			Weight: 1,
 		},
 		Workflow: workflowconfig.Workflow{
@@ -591,7 +591,7 @@ func TestProjectPauseUnpauseRestartsProject(t *testing.T) {
 	}
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
-			ID:     "symphony",
+			ID:     "detent",
 			Weight: 1,
 		},
 	}, project.Dependencies{
@@ -640,7 +640,7 @@ func TestProjectPauseDoesNotMarkPausedWhenShutdownTimesOut(t *testing.T) {
 	blocker := newPauseBlockingConnector()
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
-			ID:     "symphony",
+			ID:     "detent",
 			Weight: 1,
 		},
 	}, project.Dependencies{
@@ -683,7 +683,7 @@ func TestProjectUnpauseKeepsProjectPausedWhenRestartFails(t *testing.T) {
 	calls := 0
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
-			ID:     "symphony",
+			ID:     "detent",
 			Weight: 1,
 		},
 	}, project.Dependencies{

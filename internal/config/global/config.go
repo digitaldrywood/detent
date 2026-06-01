@@ -11,7 +11,7 @@ import (
 )
 
 const (
-	APIVersion = "symphony/v1"
+	APIVersion = "detent/v1"
 	Kind       = "GlobalConfig"
 
 	SchedulingWeighted   = "weighted"
@@ -31,10 +31,10 @@ type PathRule string
 
 const (
 	PathRuleFlag          PathRule = "--config"
-	PathRuleEnvConfig     PathRule = "SYMPHONY_CONFIG"
-	PathRuleEnvHome       PathRule = "SYMPHONY_HOME"
+	PathRuleEnvConfig     PathRule = "DETENT_CONFIG"
+	PathRuleEnvHome       PathRule = "DETENT_HOME"
 	PathRuleUserConfigDir PathRule = "os.UserConfigDir()"
-	PathRuleLegacyHome    PathRule = "~/.symphony"
+	PathRuleLegacyHome    PathRule = "~/.detent"
 )
 
 type PathResolution struct {
@@ -365,11 +365,11 @@ func resolvePath(configPath string, opts pathOptions) (PathResolution, error) {
 	if strings.TrimSpace(configPath) != "" {
 		return pathResolution(configPath, PathRuleFlag, opts.config)
 	}
-	if envPath := strings.TrimSpace(opts.lookupEnv("SYMPHONY_CONFIG")); envPath != "" {
+	if envPath := strings.TrimSpace(opts.lookupEnv("DETENT_CONFIG")); envPath != "" {
 		return pathResolution(envPath, PathRuleEnvConfig, opts.config)
 	}
-	if symphonyHome := strings.TrimSpace(opts.lookupEnv("SYMPHONY_HOME")); symphonyHome != "" {
-		expanded, err := expandPath(symphonyHome, opts.config)
+	if detentHome := strings.TrimSpace(opts.lookupEnv("DETENT_HOME")); detentHome != "" {
+		expanded, err := expandPath(detentHome, opts.config)
 		if err != nil {
 			return PathResolution{}, err
 		}
@@ -421,14 +421,14 @@ func userConfigPath(opts pathOptions) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("resolve user config dir: %w", err)
 	}
-	return filepath.Join(dir, "symphony", "global.yaml"), nil
+	return filepath.Join(dir, "detent", "global.yaml"), nil
 }
 
 func legacyConfigPath(opts options) (string, error) {
 	if opts.home == "" {
 		return "", errors.New("home directory is not available")
 	}
-	return filepath.Join(opts.home, ".symphony", "global.yaml"), nil
+	return filepath.Join(opts.home, ".detent", "global.yaml"), nil
 }
 
 func existingConfigFile(path string, opts pathOptions) bool {

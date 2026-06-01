@@ -7,17 +7,17 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/config"
-	"github.com/digitaldrywood/symphony/internal/connector"
-	"github.com/digitaldrywood/symphony/internal/lessons"
-	"github.com/digitaldrywood/symphony/internal/skills"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/lessons"
+	"github.com/digitaldrywood/detent/internal/skills"
 )
 
 func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
-	lessonsPath := filepath.Join(workspace, ".symphony", "lessons.md")
+	lessonsPath := filepath.Join(workspace, ".detent", "lessons.md")
 	if err := lessons.Append(lessonsPath, lessons.Entry{
 		IssueNumber: "21",
 		Title:       "Previous failure",
@@ -42,7 +42,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 			Agent: config.Agent{
 				Lessons: config.Lessons{
 					Enabled: true,
-					Path:    ".symphony/lessons.md",
+					Path:    ".detent/lessons.md",
 					RecallN: 1,
 				},
 			},
@@ -50,7 +50,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		Prompt: "Prompt for {{ issue.identifier }} via {{ tracker.kind }} attempt={{ attempt }} auto={{ workspace.auto_branch }}",
 	}, connector.Issue{
 		ID:          "issue-21",
-		Identifier:  "digitaldrywood/symphony#21",
+		Identifier:  "digitaldrywood/detent#21",
 		Title:       "Build prompt",
 		Description: "Wire prompt builder",
 		Labels:      []string{"enhancement", "stage:s3"},
@@ -67,7 +67,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"Prompt for digitaldrywood/symphony#21 via memory attempt=2 auto=true",
+		"Prompt for digitaldrywood/detent#21 via memory attempt=2 auto=true",
 		"## Lessons from prior runs",
 		"Check generator aliases before editing.",
 		"## Available skills",
@@ -114,7 +114,7 @@ func TestBuildPromptAppendsGitHubClosingReferenceInstruction(t *testing.T) {
 	prompt, err := BuildPrompt(config.Workflow{
 		Prompt: "Base prompt",
 	}, connector.Issue{
-		Identifier: "digitaldrywood/symphony#193",
+		Identifier: "digitaldrywood/detent#193",
 		Title:      "Dedupe dispatch",
 	}, PromptOptions{})
 	if err != nil {
@@ -164,7 +164,7 @@ func TestBuildPromptIgnoresUnreadableLessons(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
-	if err := os.MkdirAll(filepath.Join(workspace, ".symphony", "lessons.md"), 0o755); err != nil {
+	if err := os.MkdirAll(filepath.Join(workspace, ".detent", "lessons.md"), 0o755); err != nil {
 		t.Fatalf("mkdir lessons path: %v", err)
 	}
 
@@ -173,7 +173,7 @@ func TestBuildPromptIgnoresUnreadableLessons(t *testing.T) {
 			Agent: config.Agent{
 				Lessons: config.Lessons{
 					Enabled: true,
-					Path:    ".symphony/lessons.md",
+					Path:    ".detent/lessons.md",
 					RecallN: 2,
 				},
 			},

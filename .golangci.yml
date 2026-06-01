@@ -84,6 +84,6 @@ formatters:
   settings:
     goimports:
       local-prefixes:
-        - github.com/digitaldrywood/symphony
+        - github.com/digitaldrywood/detent
   exclusions:
     generated: strict

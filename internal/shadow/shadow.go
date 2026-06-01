@@ -8,8 +8,8 @@ import (
 	"strings"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
-	"github.com/digitaldrywood/symphony/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
 
 var ErrDifferences = errors.New("shadow run differences found")

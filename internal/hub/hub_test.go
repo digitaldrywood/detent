@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/hub"
+	"github.com/digitaldrywood/detent/internal/hub"
 )
 
 func TestHubPublishFansOut(t *testing.T) {

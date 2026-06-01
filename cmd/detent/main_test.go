@@ -23,7 +23,7 @@ func TestRootCommandHelp(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, want := range []string{"symphony", "agent orchestrator", "Usage:"} {
+	for _, want := range []string{"detent", "agent orchestrator", "Usage:"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}

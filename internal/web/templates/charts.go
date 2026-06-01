@@ -6,7 +6,7 @@ import (
 	"strconv"
 	"strings"
 
-	webchart "github.com/digitaldrywood/symphony/internal/web/chart"
+	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 )
 
 type SeriesChartData struct {

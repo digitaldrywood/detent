@@ -1,6 +1,6 @@
 ---
 name: Feature request
-about: Propose a Symphony capability or improvement.
+about: Propose a Detent capability or improvement.
 title: "feat: "
 labels: ""
 assignees: ""

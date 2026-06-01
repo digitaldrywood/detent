@@ -7,7 +7,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestSupervisorConvertsPanicToRetryableCompletion(t *testing.T) {
@@ -24,7 +24,7 @@ func TestSupervisorConvertsPanicToRetryableCompletion(t *testing.T) {
 	}
 
 	completion := supervisor.Run(context.Background(), RunRequest{
-		Issue: connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/symphony#22"},
+		Issue: connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/detent#22"},
 	})
 
 	if completion.IssueID != "issue-22" {
@@ -60,7 +60,7 @@ func TestSupervisorAppliesCappedBackoffForRunnerErrors(t *testing.T) {
 	}
 
 	completion := supervisor.Run(context.Background(), RunRequest{
-		Issue:   connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/symphony#22"},
+		Issue:   connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/detent#22"},
 		Attempt: 2,
 	})
 
@@ -111,7 +111,7 @@ func TestSupervisorDispatchSendsCompletion(t *testing.T) {
 
 	completions := make(chan Completion, 1)
 	supervisor.Dispatch(context.Background(), RunRequest{
-		Issue: connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/symphony#22"},
+		Issue: connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/detent#22"},
 	}, completions)
 
 	select {

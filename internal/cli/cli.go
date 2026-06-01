@@ -11,8 +11,8 @@ import (
 
 	"github.com/spf13/cobra"
 
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
-	"github.com/digitaldrywood/symphony/internal/project"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/project"
 )
 
 var (
@@ -153,9 +153,9 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	var port int
 	var headless bool
 	cmd := &cobra.Command{
-		Use:          "symphony",
-		Short:        "Symphony agent orchestrator",
-		Long:         "Symphony is an agent orchestrator for tracker-backed work queues.",
+		Use:          "detent",
+		Short:        "Detent agent orchestrator",
+		Long:         "Detent is an agent orchestrator for tracker-backed work queues.",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
