@@ -47,10 +47,11 @@ templ Dashboard(data DashboardData) {
 			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
+			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
 		</head>
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
 			@helpTooltipHost()
-			<main class="mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-3 py-3 sm:gap-5 sm:px-6 sm:py-6 lg:px-8" hx-ext="sse" sse-connect="/events">
+			<main class="mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-3 py-3 sm:gap-5 sm:px-6 sm:py-6 lg:px-8" hx-ext="sse morph" sse-connect="/events">
 				<header class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 					<div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
 						<div class="min-w-0">
@@ -95,7 +96,7 @@ templ Dashboard(data DashboardData) {
 					</div>
 					@dashboardNav("dashboard")
 				</header>
-				<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="innerHTML settle:160ms">
+				<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
 					@SnapshotView(data)
 				</div>
 			</main>
@@ -116,8 +117,8 @@ templ SnapshotView(data DashboardData) {
 		@metricCard("Throughput", helpThroughput, throughputRate(data.Snapshot), "Rolling tokens/sec", "border-t-accent", "bg-accent")
 		@metricCard("Runtime", helpRuntime, runtimeLabel(data.Snapshot), "Aggregate agent uptime", "border-t-success", "bg-success")
 	</section>
-	@boardHealthSection(data.Snapshot)
 	@agentActivityTimeline(data.Snapshot)
+	@boardHealthSection(data.Snapshot)
 	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
 			<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">

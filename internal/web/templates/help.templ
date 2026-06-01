@@ -174,6 +174,20 @@ templ helpScript() {
 
 			window.addEventListener("resize", repositionActivePopover)
 			window.addEventListener("scroll", repositionActivePopover, true)
+
+			// The live region (#snapshot) is morphed in place on every SSE update, so
+			// popover roots persist instead of being destroyed. Morphing still reconciles
+			// attributes/inline styles back to the server markup, which would drop an open
+			// popover's open state and position. Re-assert the active popover after each
+			// settle so an open card stays put while telemetry streams underneath it.
+			document.body.addEventListener("htmx:afterSettle", () => {
+				if (!activePopover) return
+				if (!document.documentElement.contains(activePopover)) {
+					activePopover = null
+					return
+				}
+				openPopover(activePopover)
+			})
 		})();
 
 		(() => {
