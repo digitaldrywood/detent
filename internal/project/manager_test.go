@@ -386,6 +386,107 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementProvisionFails(t *tes
 	}
 }
 
+func TestManagerReconcileKeepsChangedProjectWhenReplacementStartFails(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			if cfg.ID == "alpha" && cfg.Weight == 2 {
+				return newStoppedManagerTestProject(t, cfg)
+			}
+			return newManagerTestProject(t, cfg, events)
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	drainProjectEvents(t, sub.C(), 1)
+
+	_, err = manager.Reconcile(context.Background(), project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 2}},
+	})
+	if !errors.Is(err, project.ErrProjectStopped) {
+		t.Fatalf("Reconcile() error = %v, want %v", err, project.ErrProjectStopped)
+	}
+	assertNoProjectEvent(t, sub.C())
+	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+		"alpha": {ID: "alpha", Weight: 1},
+	})
+
+	got, ok := manager.Registry().Get("alpha")
+	if !ok {
+		t.Fatal("Registry().Get(alpha) ok = false, want true")
+	}
+	if !got.Running() {
+		t.Fatal("alpha Running() = false, want true")
+	}
+}
+
+func TestManagerReconcileKeepsRegistryWhenAddedProjectStartFailsAfterRemoval(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "alpha", Weight: 1},
+			{ID: "charlie", Weight: 1},
+		},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			if cfg.ID == "bravo" {
+				return newStoppedManagerTestProject(t, cfg)
+			}
+			return newManagerTestProject(t, cfg, events)
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	drainProjectEvents(t, sub.C(), 2)
+
+	_, err = manager.Reconcile(context.Background(), project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "charlie", Weight: 1},
+			{ID: "bravo", Weight: 1},
+		},
+	})
+	if !errors.Is(err, project.ErrProjectStopped) {
+		t.Fatalf("Reconcile() error = %v, want %v", err, project.ErrProjectStopped)
+	}
+	assertNoProjectEvent(t, sub.C())
+	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+		"alpha":   {ID: "alpha", Weight: 1},
+		"charlie": {ID: "charlie", Weight: 1},
+	})
+}
+
 func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 	t.Parallel()
 
@@ -523,6 +624,31 @@ func newManagerTestProject(t *testing.T, cfg globalconfig.Project, events *hub.H
 		Events: events,
 		Runner: blockingRunner{},
 	})
+}
+
+func newStoppedManagerTestProject(t *testing.T, cfg globalconfig.Project) (*project.Project, error) {
+	t.Helper()
+
+	if cfg.Weight == 0 {
+		cfg.Weight = 1
+	}
+	got, err := project.New(project.Config{
+		Project:  cfg,
+		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+	}, project.Dependencies{
+		Events: hub.New[project.Event](hub.WithBuffer(4)),
+		Runner: blockingRunner{},
+	})
+	if err != nil {
+		return nil, err
+	}
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("replacement Start() error = %v", err)
+	}
+	if err := got.Stop(context.Background()); err != nil {
+		t.Fatalf("replacement Stop() error = %v", err)
+	}
+	return got, nil
 }
 
 func startedProjectCount(configs []globalconfig.Project) int {

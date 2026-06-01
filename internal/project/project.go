@@ -64,6 +64,11 @@ type WorkflowWatcher interface {
 
 type WorkflowWatcherFactory func(string) (WorkflowWatcher, error)
 
+type startOptions struct {
+	provision     bool
+	publishEvents bool
+}
+
 type Dependencies struct {
 	Connector              connector.Connector
 	ConnectorFactory       ConnectorFactory
@@ -92,11 +97,12 @@ type Project struct {
 	logger           *slog.Logger
 	watcher          WorkflowWatcherFactory
 
-	mu      sync.Mutex
-	cancel  context.CancelFunc
-	done    chan struct{}
-	runErr  error
-	started bool
+	mu              sync.Mutex
+	cancel          context.CancelFunc
+	done            chan struct{}
+	runErr          error
+	started         bool
+	lifecycleEvents bool
 }
 
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
@@ -246,10 +252,10 @@ func (p *Project) Paused() bool {
 }
 
 func (p *Project) Start(ctx context.Context) error {
-	return p.start(ctx, true)
+	return p.start(ctx, startOptions{provision: true, publishEvents: true})
 }
 
-func (p *Project) start(ctx context.Context, provision bool) error {
+func (p *Project) start(ctx context.Context, opts startOptions) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -269,7 +275,7 @@ func (p *Project) start(ctx context.Context, provision bool) error {
 	}
 	p.mu.Unlock()
 
-	if provision {
+	if opts.provision {
 		if err := p.provision(ctx); err != nil {
 			return err
 		}
@@ -307,13 +313,12 @@ func (p *Project) start(ctx context.Context, provision bool) error {
 	p.done = done
 	p.runErr = nil
 	p.started = true
+	p.lifecycleEvents = opts.publishEvents
 	p.mu.Unlock()
 
-	p.publish(Event{
-		ProjectID: p.id,
-		Kind:      EventStarted,
-		At:        time.Now(),
-	})
+	if opts.publishEvents {
+		p.publishStarted()
+	}
 
 	go p.run(runCtx, done, orch)
 	return nil
@@ -471,6 +476,7 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	}
 
 	p.mu.Lock()
+	publishEvents := p.lifecycleEvents
 	if p.done == done {
 		p.cancel = nil
 		p.done = nil
@@ -478,12 +484,14 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	}
 	p.mu.Unlock()
 
-	p.publish(Event{
-		ProjectID: p.id,
-		Kind:      EventStopped,
-		At:        time.Now(),
-		Error:     errorString(err),
-	})
+	if publishEvents {
+		p.publish(Event{
+			ProjectID: p.id,
+			Kind:      EventStopped,
+			At:        time.Now(),
+			Error:     errorString(err),
+		})
+	}
 
 	close(done)
 }
@@ -604,6 +612,19 @@ func (p *Project) publish(event Event) {
 			"error", err,
 		)
 	}
+}
+
+func (p *Project) publishStarted() {
+	p.mu.Lock()
+	p.lifecycleEvents = true
+	id := p.id
+	p.mu.Unlock()
+
+	p.publish(Event{
+		ProjectID: id,
+		Kind:      EventStarted,
+		At:        time.Now(),
+	})
 }
 
 type workflowUpdater interface {

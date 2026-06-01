@@ -40,6 +40,11 @@ type ReconcileResult struct {
 	Unchanged []ProjectID
 }
 
+type startedProject struct {
+	id      ProjectID
+	project *Project
+}
+
 type ManagerDependencies struct {
 	Registry            *Registry
 	ProjectFactory      ProjectFactory
@@ -223,24 +228,67 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	}
 
 	previous := m.cfg
+	previousSpawned := m.spawned
 	m.cfg.Startup = cfg.Startup
-	for _, id := range result.Removed {
-		if err := m.removeLocked(ctx, id); err != nil {
-			m.cfg = previous
-			return result, err
-		}
-	}
+	started := make([]startedProject, 0, len(prepared))
+	startedByID := map[ProjectID]*Project{}
 	for _, id := range result.Changed {
-		if err := m.replaceProjectLocked(ctx, id, prepared[id]); err != nil {
+		preparedProject := prepared[id]
+		if didStart, err := m.startPreparedProjectLocked(ctx, preparedProject); err != nil {
+			cleanupErr := m.stopUncommittedStartedProjects(ctx, started, nil)
 			m.cfg = previous
-			return result, err
+			m.spawned = previousSpawned
+			return result, errors.Join(err, cleanupErr)
+		} else if didStart {
+			started = append(started, startedProject{id: id, project: preparedProject})
+			startedByID[id] = preparedProject
 		}
 	}
 	for _, id := range result.Added {
-		if err := m.registerProjectLocked(ctx, id, prepared[id]); err != nil {
+		preparedProject := prepared[id]
+		if didStart, err := m.startPreparedProjectLocked(ctx, preparedProject); err != nil {
+			cleanupErr := m.stopUncommittedStartedProjects(ctx, started, nil)
 			m.cfg = previous
-			return result, err
+			m.spawned = previousSpawned
+			return result, errors.Join(err, cleanupErr)
+		} else if didStart {
+			started = append(started, startedProject{id: id, project: preparedProject})
+			startedByID[id] = preparedProject
 		}
+	}
+
+	committed := map[ProjectID]struct{}{}
+	for _, id := range result.Removed {
+		if err := m.removeLocked(ctx, id); err != nil {
+			cleanupErr := m.stopUncommittedStartedProjects(ctx, started, committed)
+			m.cfg = previous
+			m.spawned = previousSpawned
+			return result, errors.Join(err, cleanupErr)
+		}
+	}
+	for _, id := range result.Changed {
+		if err := m.replaceStartedProjectLocked(ctx, id, prepared[id]); err != nil {
+			cleanupErr := m.stopUncommittedStartedProjects(ctx, started, committed)
+			m.cfg = previous
+			m.spawned = previousSpawned
+			return result, errors.Join(err, cleanupErr)
+		}
+		if startedProject, ok := startedByID[id]; ok {
+			startedProject.publishStarted()
+		}
+		committed[id] = struct{}{}
+	}
+	for _, id := range result.Added {
+		if err := m.registry.Set(prepared[id]); err != nil {
+			cleanupErr := m.stopUncommittedStartedProjects(ctx, started, committed)
+			m.cfg = previous
+			m.spawned = previousSpawned
+			return result, errors.Join(err, cleanupErr)
+		}
+		if startedProject, ok := startedByID[id]; ok {
+			startedProject.publishStarted()
+		}
+		committed[id] = struct{}{}
 	}
 
 	m.cfg = cfg
@@ -261,40 +309,17 @@ func (m *Manager) removeLocked(ctx context.Context, id ProjectID) error {
 	return nil
 }
 
-func (m *Manager) replaceProjectLocked(ctx context.Context, id ProjectID, replacement *Project) error {
+func (m *Manager) replaceStartedProjectLocked(ctx context.Context, id ProjectID, replacement *Project) error {
 	current, ok := m.registry.Get(id)
 	if !ok {
 		return ErrProjectNotFound
 	}
-
-	shouldStart := m.running && !replacement.Paused()
-	if shouldStart {
-		if err := m.waitBeforeSpawn(ctx); err != nil {
-			return err
-		}
-		if err := replacement.provision(ctx); err != nil {
-			return fmt.Errorf("provision replacement project %s: %w", id, err)
-		}
-	}
-
 	if current.Running() {
 		if err := current.Stop(ctx); err != nil {
 			return err
 		}
 	}
-	m.registry.Delete(id)
-	if err := m.registry.Set(replacement); err != nil {
-		return err
-	}
-	if !shouldStart {
-		return nil
-	}
-	if err := replacement.start(ctx, false); err != nil {
-		m.registry.Delete(id)
-		return err
-	}
-	m.spawned = true
-	return nil
+	return m.registry.Set(replacement)
 }
 
 func (m *Manager) Pause(ctx context.Context, id ProjectID) error {
@@ -382,15 +407,47 @@ func (m *Manager) registerProjectLocked(ctx context.Context, id ProjectID, proje
 	return nil
 }
 
+func (m *Manager) startPreparedProjectLocked(ctx context.Context, project *Project) (bool, error) {
+	if !m.running || project.Paused() {
+		return false, nil
+	}
+	if err := m.startProjectLocked(ctx, project, false); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
 func (m *Manager) startLocked(ctx context.Context, project *Project) error {
+	return m.startProjectLocked(ctx, project, true)
+}
+
+func (m *Manager) startProjectLocked(ctx context.Context, project *Project, publishEvents bool) error {
 	if err := m.waitBeforeSpawn(ctx); err != nil {
 		return err
 	}
-	if err := project.Start(ctx); err != nil {
+	if err := project.start(ctx, startOptions{provision: true, publishEvents: publishEvents}); err != nil {
 		return err
 	}
 	m.spawned = true
 	return nil
+}
+
+func (m *Manager) stopUncommittedStartedProjects(
+	ctx context.Context,
+	started []startedProject,
+	committed map[ProjectID]struct{},
+) error {
+	var cleanupErr error
+	for i := len(started) - 1; i >= 0; i-- {
+		item := started[i]
+		if _, ok := committed[item.id]; ok {
+			continue
+		}
+		if item.project.Running() {
+			cleanupErr = errors.Join(cleanupErr, item.project.Stop(ctx))
+		}
+	}
+	return cleanupErr
 }
 
 func (m *Manager) waitBeforeSpawn(ctx context.Context) error {
