@@ -57,22 +57,27 @@ The full state table, connector model, and merge-train config are in
 
 ## How it's different
 
-### From Symphony
+### From OpenAI's Symphony
 
-Detent began as [Symphony](https://github.com/digitaldrywood/symphony), an
-Elixir/OTP orchestrator for a single engineering queue. Symphony set the shape
-Detent keeps — tracker-backed dispatch, a pluggable connector boundary, explicit
-workflow states, deterministic scheduling, and dashboard plus terminal
-visibility. Detent is a ground-up Go rewrite, not a port, and diverges where it
+Detent grew out of [OpenAI's Symphony](https://github.com/openai/symphony) — the
+open `SPEC.md` for orchestrating Codex coding agents from a project board instead
+of supervising them interactively ("manage work, not agents"). Symphony ships as
+a spec plus an Elixir reference implementation that polls a **Linear** board.
+Detent takes that idea from spec to a shipped system, and diverges where it
 counts:
 
-- **One static binary, no runtime.** CGO-free for macOS, Linux, and Windows —
-  `go install`, Homebrew, or copy a single file. No BEAM to deploy.
+- **A product, not a spec.** One CGO-free Go binary for macOS, Linux, and
+  Windows — `go install`, Homebrew, or copy a single file. No BEAM service to
+  adapt, nothing to stand up.
+- **GitHub Projects v2, not Linear.** Issues, status columns, priorities,
+  labels, blockers, comments, and pull requests are the state machine.
 - **Multi-project from one host.** `global.yaml` runs many repositories with
   weights, priority, pause, and fair scheduling.
-- **A real operator surface.** A richer dashboard (charts, trends, timelines,
-  hover detail, budget and rate-limit state), `detent doctor` preflight checks,
-  cross-platform config discovery, and a GoReleaser release pipeline.
+- **Explicit gates + a serialized merge train.** CI plus automated (Codex)
+  review plus a one-at-a-time `Merging` lane, so what lands is always green.
+- **A real operator surface.** A live dashboard (charts, trends, timelines,
+  hover detail, budget and rate-limit state) and terminal UI, `detent doctor`
+  preflight checks, cross-platform config discovery, and a GoReleaser pipeline.
 
 ### From autonomy-first agents (OpenClaw, Hermes, …)
 
@@ -417,6 +422,28 @@ The recommended GitHub Project board states are:
 | `Done` | Complete. |
 | `Cancelled` | Terminal state mapped to `Done` in the default release flow. |
 
+### Set up the board
+
+You bring the board; Detent fills in the rest.
+
+- **You create** a GitHub **Projects v2** board (org or user) and point
+  `tracker.project_slug` at its node id — the `PVT_…` id from
+  `gh project list --owner <org-or-user> --format json`. The board has a default
+  **`Status`** field; add a **`Priority`** single-select if you rank work.
+- **Detent auto-provisions** the *missing options* inside those fields on first
+  run — the `Todo` / `In Progress` / `Rework` / `Merging` / `Done` columns above
+  and the `Urgent`…`Low` priorities — so the option names always match your
+  `WORKFLOW.md`. It provisions the options, not the board or the fields
+  themselves, so create the board (and the `Priority` field if used) first.
+- **Detent reads** status, priority, labels, blockers, assignees, and linked
+  pull requests from each issue, and **writes back** status transitions and a
+  `## Codex Workpad` comment as the agent works.
+
+Before you dispatch anything, run **`detent doctor`** — it checks config
+resolution, the database, the `codex` binary, your GitHub token and scopes, git,
+and the server port. A clean `doctor` means you can move an issue to `Todo` and
+watch it run.
+
 ### Merge Train
 
 `Merging` is intentionally serialized. Keep this in every production workflow:
@@ -566,15 +593,13 @@ If no global config is found, Detent keeps the single-project fallback and looks
 
 ## History
 
-Detent is a ground-up Go rewrite of
-[Symphony](https://github.com/digitaldrywood/symphony), an Elixir/OTP agent
-orchestrator for a single tracker-backed engineering queue. Symphony established
-the architecture Detent still uses — tracker-backed dispatch, the connector seam
-(GitHub today; GitLab and Jira later), explicit workflow states, deterministic
-scheduling, and the dashboard and terminal surfaces. The rewrite trades the BEAM
-runtime for a single CGO-free binary and adds multi-project orchestration,
-Windows support, a richer operator dashboard, `detent doctor`, and a GoReleaser
-release pipeline. The original Elixir implementation is archived.
+Detent began as an Elixir/OTP implementation of
+[OpenAI's Symphony](https://github.com/openai/symphony) — the open spec for
+orchestrating Codex agents from a project board — adapted from Symphony's Linear
+target to GitHub Projects v2. It is now a ground-up Go rewrite: one CGO-free
+binary instead of a BEAM service, plus multi-project orchestration, the gated
+merge train, a richer operator dashboard, `detent doctor`, Windows support, and
+a GoReleaser pipeline. That earlier Elixir implementation is archived.
 
 ## License
 
