@@ -538,6 +538,7 @@ func prPipelineCIStatus(issue telemetry.Issue, laneID string) string {
 		if strings.EqualFold(issue.PullRequest.State, "MERGED") {
 			return "pass"
 		}
+		return "pending"
 	}
 	if laneID == "done-today" {
 		return "pass"

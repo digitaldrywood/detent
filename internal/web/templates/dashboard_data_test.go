@@ -465,6 +465,16 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 						},
 					},
 					{
+						ID:         "done-unverified",
+						Identifier: "digitaldrywood/detent#16",
+						Title:      "Done lane unverified PR",
+						State:      "Done",
+						UpdatedAt:  &doneAt,
+						PullRequest: &telemetry.PullRequest{
+							Number: 145,
+						},
+					},
+					{
 						ID:         "old-done",
 						Identifier: "digitaldrywood/detent#15",
 						Title:      "Old done PR",
@@ -477,6 +487,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m"},
 				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s"},
 				{Lane: "Done today", IssueNumber: "#144", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "P1", TimeInStage: "45m 0s"},
+				{Lane: "Done today", IssueNumber: "#145", Title: "Done lane unverified PR", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "45m 0s"},
 			},
 		},
 		{
