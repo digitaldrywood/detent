@@ -3,7 +3,7 @@ package orchestrator
 import (
 	"testing"
 
-	runpkg "github.com/digitaldrywood/symphony/internal/runner"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
 func newTestSupervisor(t *testing.T, backend Runner, cfg Config) *runpkg.Supervisor {

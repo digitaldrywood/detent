@@ -8,8 +8,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/symphony/internal/store"
-	"github.com/digitaldrywood/symphony/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func (s *Server) reports(c echo.Context) error {
@@ -66,7 +66,7 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time) 
 	}
 
 	return templates.ReportsData{
-		Title:         "Symphony reports",
+		Title:         "Detent reports",
 		ConnectorName: s.connector.Name(),
 		GeneratedAt:   time.Now().UTC().Truncate(time.Second),
 		Day:           day,

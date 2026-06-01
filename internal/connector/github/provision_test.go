@@ -7,7 +7,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestConnectorEnsureStateOptionsCreatesMissingStatusAndPriorityOptions(t *testing.T) {
@@ -21,7 +21,7 @@ func TestConnectorEnsureStateOptionsCreatesMissingStatusAndPriorityOptions(t *te
 			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_todo","name":"Todo","color":"GREEN","description":"Existing todo"},{"id":"OPT_rework","name":"Rework","color":"ORANGE","description":"Changes are requested before review can continue."}]}}}}`,
 		},
 		{
-			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_none","name":"No priority","color":"GRAY","description":"Existing none"},{"id":"OPT_p0","name":"P0","color":"RED","description":"Symphony priority rank 1."}]}}}}`,
+			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_none","name":"No priority","color":"GRAY","description":"Existing none"},{"id":"OPT_p0","name":"P0","color":"RED","description":"Detent priority rank 1."}]}}}}`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
@@ -121,7 +121,7 @@ func TestConnectorEnsureStateOptionsSkipsMissingPriorityField(t *testing.T) {
 			body: `{"data":{"node":{"__typename":"ProjectV2","statusField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_status","options":[]},"priorityField":null}}}`,
 		},
 		{
-			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_todo","name":"Todo","color":"GRAY","description":"Ready for Symphony dispatch."}]}}}}`,
+			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_todo","name":"Todo","color":"GRAY","description":"Ready for Detent dispatch."}]}}}}`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{

@@ -8,8 +8,8 @@ import (
 
 	"github.com/a-h/templ"
 
-	"github.com/digitaldrywood/symphony/internal/web/chart"
-	"github.com/digitaldrywood/symphony/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/web/chart"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func TestSparklineChartRendersAccessibleSVG(t *testing.T) {

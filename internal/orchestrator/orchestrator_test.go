@@ -9,15 +9,15 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
-	"github.com/digitaldrywood/symphony/internal/orchestrator"
-	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-1", "digitaldrywood/symphony#10", "Todo")
+	issue := testIssue("issue-1", "digitaldrywood/detent#10", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := &staticRunner{
 		result: orchestrator.RunResult{
@@ -79,7 +79,7 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-2", "digitaldrywood/symphony#11", "In Progress")
+	issue := testIssue("issue-2", "digitaldrywood/detent#11", "In Progress")
 	tracker := newFakeConnector(issue)
 	runner := newBlockingRunner()
 
@@ -115,7 +115,7 @@ func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 	t.Parallel()
 
 	lastEventAt := time.Date(2026, 5, 31, 14, 30, 0, 0, time.UTC)
-	issue := testIssue("issue-live-usage", "digitaldrywood/symphony#115", "In Progress")
+	issue := testIssue("issue-live-usage", "digitaldrywood/detent#115", "In Progress")
 	tracker := newFakeConnector(issue)
 	runner := newUsageStreamingRunner(orchestrator.UsageUpdate{
 		SessionID:   "thread-live-turn-live",
@@ -181,7 +181,7 @@ func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 func TestUpdateConfigAppliesBeforeNextTick(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-reload", "digitaldrywood/symphony#41", "Todo")
+	issue := testIssue("issue-reload", "digitaldrywood/detent#41", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := newBlockingRunner()
 
@@ -239,7 +239,7 @@ func TestUpdateConfigAppliesBeforeNextTick(t *testing.T) {
 func TestUpdateRuntimeSwapsConnectorBeforeNextTick(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-reload-connector", "digitaldrywood/symphony#41", "Todo")
+	issue := testIssue("issue-reload-connector", "digitaldrywood/detent#41", "Todo")
 	initialTracker := newFakeConnector()
 	reloadedTracker := newFakeConnector(issue)
 	runner := newBlockingRunner()
@@ -291,9 +291,9 @@ func TestRunDispatchesByStateRankBeforePriorityAndAge(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 12, 0, 0, 0, time.UTC)
-	todo := rankedTestIssue(testIssue("todo-old-urgent", "digitaldrywood/symphony#20", "Todo"), 1, now.Add(-4*time.Hour))
-	rework := rankedTestIssue(testIssue("rework-new-low", "digitaldrywood/symphony#21", "Rework"), 4, now.Add(-time.Hour))
-	merging := rankedTestIssue(testIssue("merging-new-low", "digitaldrywood/symphony#22", "Merging"), 4, now.Add(-30*time.Minute))
+	todo := rankedTestIssue(testIssue("todo-old-urgent", "digitaldrywood/detent#20", "Todo"), 1, now.Add(-4*time.Hour))
+	rework := rankedTestIssue(testIssue("rework-new-low", "digitaldrywood/detent#21", "Rework"), 4, now.Add(-time.Hour))
+	merging := rankedTestIssue(testIssue("merging-new-low", "digitaldrywood/detent#22", "Merging"), 4, now.Add(-30*time.Minute))
 	tracker := newFakeConnector(todo, rework, merging)
 	runner := newBlockingRunner()
 
@@ -324,7 +324,7 @@ func TestRunDispatchesByStateRankBeforePriorityAndAge(t *testing.T) {
 func TestRunSchedulesRetryAfterRunnerError(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-3", "digitaldrywood/symphony#12", "Todo")
+	issue := testIssue("issue-3", "digitaldrywood/detent#12", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := &staticRunner{err: errors.New("runner failed")}
 
@@ -354,7 +354,7 @@ func TestRunSchedulesRetryAfterRunnerError(t *testing.T) {
 func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-panic", "digitaldrywood/symphony#22", "Todo")
+	issue := testIssue("issue-panic", "digitaldrywood/detent#22", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := panicRunner{}
 
@@ -384,7 +384,7 @@ func TestRunSchedulesRetryAfterRunnerPanic(t *testing.T) {
 func TestRunRedispatchesDueRetryWithExistingClaim(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-retry", "digitaldrywood/symphony#16", "Todo")
+	issue := testIssue("issue-retry", "digitaldrywood/detent#16", "Todo")
 	tracker := newFakeConnector(issue)
 	runner := newRetryRunner()
 
@@ -431,9 +431,9 @@ func TestRunRedispatchesDueRetryWithExistingClaim(t *testing.T) {
 func TestRunSkipsTodoBlockedByNonTerminalDependency(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-4", "digitaldrywood/symphony#13", "Todo")
+	issue := testIssue("issue-4", "digitaldrywood/detent#13", "Todo")
 	issue.BlockedBy = []connector.BlockedRef{{
-		Identifier: "digitaldrywood/symphony#4",
+		Identifier: "digitaldrywood/detent#4",
 		State:      "In Progress",
 	}}
 	tracker := newFakeConnector(issue)
@@ -462,8 +462,8 @@ func TestRunSkipsTodoBlockedByNonTerminalDependency(t *testing.T) {
 func TestRunTracksBlockedStatusIssuesForDisplayOnly(t *testing.T) {
 	t.Parallel()
 
-	candidate := testIssue("issue-ready", "digitaldrywood/symphony#170", "Todo")
-	blocked := testIssue("issue-blocked-status", "digitaldrywood/symphony#98", "Blocked")
+	candidate := testIssue("issue-ready", "digitaldrywood/detent#170", "Todo")
+	blocked := testIssue("issue-blocked-status", "digitaldrywood/detent#98", "Blocked")
 	blocked.BlockerReason = "Create public repository digitaldrywood/homebrew-tap"
 	tracker := newFakeConnector(candidate)
 	tracker.setStateIssues(blocked)
@@ -525,7 +525,7 @@ func TestRunTracksBlockedStatusIssuesForDisplayOnly(t *testing.T) {
 func TestStateReturnsDefensiveCopies(t *testing.T) {
 	t.Parallel()
 
-	issue := testIssue("issue-5", "digitaldrywood/symphony#14", "In Progress")
+	issue := testIssue("issue-5", "digitaldrywood/detent#14", "In Progress")
 	tracker := newFakeConnector(issue)
 	runner := newBlockingRunner()
 
@@ -633,7 +633,7 @@ func TestFakeRunnerCompletes(t *testing.T) {
 	t.Parallel()
 
 	result, err := orchestrator.FakeRunner{}.Run(context.Background(), orchestrator.RunRequest{
-		Issue: testIssue("issue-6", "digitaldrywood/symphony#15", "Todo"),
+		Issue: testIssue("issue-6", "digitaldrywood/detent#15", "Todo"),
 	})
 	if err != nil {
 		t.Fatalf("Run() error = %v", err)
@@ -745,7 +745,7 @@ func testIssue(id, identifier, state string) connector.Issue {
 	issue.Identifier = identifier
 	issue.Title = "Port orchestrator"
 	issue.State = state
-	issue.URL = "https://github.com/digitaldrywood/symphony/issues/10"
+	issue.URL = "https://github.com/digitaldrywood/detent/issues/10"
 	return issue
 }
 

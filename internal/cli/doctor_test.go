@@ -10,8 +10,8 @@ import (
 	"strings"
 	"testing"
 
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
 func TestCheckDoctorBinary(t *testing.T) {
@@ -320,23 +320,23 @@ func TestCheckDoctorSQLite(t *testing.T) {
 		},
 		{
 			name:       "open fails",
-			path:       "/tmp/symphony/global.yaml",
+			path:       "/tmp/detent/global.yaml",
 			openErr:    errors.New("readonly"),
 			want:       doctorFail,
 			wantDetail: "readonly",
 		},
 		{
 			name:       "close fails",
-			path:       "/tmp/symphony/global.yaml",
+			path:       "/tmp/detent/global.yaml",
 			closeErr:   errors.New("close failed"),
 			want:       doctorFail,
 			wantDetail: "close failed",
 		},
 		{
 			name:       "database reachable",
-			path:       "/tmp/symphony/global.yaml",
+			path:       "/tmp/detent/global.yaml",
 			want:       doctorOK,
-			wantDetail: "symphony.db is reachable",
+			wantDetail: "detent.db is reachable",
 		},
 	}
 
@@ -349,8 +349,8 @@ func TestCheckDoctorSQLite(t *testing.T) {
 					if tt.openErr != nil {
 						return nil, tt.openErr
 					}
-					if got := filepath.Base(path); got != "symphony.db" {
-						t.Fatalf("store path base = %q, want symphony.db", got)
+					if got := filepath.Base(path); got != "detent.db" {
+						t.Fatalf("store path base = %q, want detent.db", got)
 					}
 					return fakeDoctorStore{closeErr: tt.closeErr}, nil
 				},

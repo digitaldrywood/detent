@@ -12,7 +12,7 @@ import (
 
 	"github.com/fsnotify/fsnotify"
 
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
 
 const (

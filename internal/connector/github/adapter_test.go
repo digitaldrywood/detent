@@ -11,14 +11,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","body":"Depends on: #24 digitaldrywood/symphony#25\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/26","createdAt":"2026-05-31T01:02:03Z","updatedAt":"2026-05-31T02:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[{"name":"Enhancement"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/symphony"},"closedByPullRequestsReferences":{"nodes":[{"number":42,"url":"https://github.com/digitaldrywood/symphony/pull/42"}]}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/27","createdAt":"2026-05-31T03:02:03Z","updatedAt":"2026-05-31T04:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","body":"Depends on: #24 digitaldrywood/detent#25\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/26","createdAt":"2026-05-31T01:02:03Z","updatedAt":"2026-05-31T02:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[{"name":"Enhancement"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":42,"url":"https://github.com/digitaldrywood/detent/pull/42"}]}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/27","createdAt":"2026-05-31T03:02:03Z","updatedAt":"2026-05-31T04:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
 	}, {
 		body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
 	}})
@@ -44,15 +44,15 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	prNumber := 42
 	want := connector.Issue{
 		ID:               "I_kw1",
-		Identifier:       "digitaldrywood/symphony#26",
+		Identifier:       "digitaldrywood/detent#26",
 		Title:            "GitHub adapter",
-		Description:      "Depends on: #24 digitaldrywood/symphony#25\n<!-- model: gpt-5-codex-high -->",
+		Description:      "Depends on: #24 digitaldrywood/detent#25\n<!-- model: gpt-5-codex-high -->",
 		Priority:         &priority,
 		State:            "Todo",
-		URL:              "https://github.com/digitaldrywood/symphony/issues/26",
+		URL:              "https://github.com/digitaldrywood/detent/issues/26",
 		PRNumber:         &prNumber,
 		AssigneeID:       "worker-1",
-		BlockedBy:        []connector.BlockedRef{{Identifier: "digitaldrywood/symphony#24"}, {Identifier: "digitaldrywood/symphony#25"}},
+		BlockedBy:        []connector.BlockedRef{{Identifier: "digitaldrywood/detent#24"}, {Identifier: "digitaldrywood/detent#25"}},
 		Labels:           []string{"enhancement", "stage:s4"},
 		AssignedToWorker: true,
 		CreatedAt:        &createdAt,
@@ -75,8 +75,8 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 		t.Fatalf("first = %v, want 50", variables["first"])
 	}
 	prVariables := requests[1]["variables"].(map[string]any)
-	if prVariables["owner"] != "digitaldrywood" || prVariables["name"] != "symphony" {
-		t.Fatalf("pull request repo variables = %#v, want digitaldrywood/symphony", prVariables)
+	if prVariables["owner"] != "digitaldrywood" || prVariables["name"] != "detent" {
+		t.Fatalf("pull request repo variables = %#v, want digitaldrywood/detent", prVariables)
 	}
 }
 
@@ -84,7 +84,7 @@ func TestConnectorFetchCandidateIssuesResolvesBlockedByProjectState(t *testing.T
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_candidate","number":26,"title":"Candidate","body":"Depends on: DigitalDryWood/Symphony#24 digitaldrywood/symphony#25 digitaldrywood/symphony#999","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/26","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Ready"},"priorityValue":null},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_done","number":24,"title":"Done blocker","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/24","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Done"},"priorityValue":null},{"id":"PVTI_3","content":{"__typename":"Issue","id":"I_progress","number":25,"title":"Active blocker","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/25","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Working"},"priorityValue":null}]}}}}`,
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_candidate","number":26,"title":"Candidate","body":"Depends on: DigitalDryWood/Detent#24 digitaldrywood/detent#25 digitaldrywood/detent#999","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/26","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Ready"},"priorityValue":null},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_done","number":24,"title":"Done blocker","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/24","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Done"},"priorityValue":null},{"id":"PVTI_3","content":{"__typename":"Issue","id":"I_progress","number":25,"title":"Active blocker","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/25","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Working"},"priorityValue":null}]}}}}`,
 	}, {
 		body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
 	}})
@@ -107,9 +107,9 @@ func TestConnectorFetchCandidateIssuesResolvesBlockedByProjectState(t *testing.T
 	}
 
 	want := []connector.BlockedRef{
-		{ID: "I_done", Identifier: "digitaldrywood/symphony#24", State: "Done"},
-		{ID: "I_progress", Identifier: "digitaldrywood/symphony#25", State: "In Progress"},
-		{Identifier: "digitaldrywood/symphony#999"},
+		{ID: "I_done", Identifier: "digitaldrywood/detent#24", State: "Done"},
+		{ID: "I_progress", Identifier: "digitaldrywood/detent#25", State: "In Progress"},
+		{Identifier: "digitaldrywood/detent#999"},
 	}
 	if !reflect.DeepEqual(got[0].BlockedBy, want) {
 		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
@@ -121,10 +121,10 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_182","content":{"__typename":"Issue","id":"I_182","number":182,"title":"First issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/182","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Todo"},"priorityValue":null},{"id":"PVTI_18","content":{"__typename":"Issue","id":"I_18","number":18,"title":"Prefix neighbor","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/18","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_182","content":{"__typename":"Issue","id":"I_182","number":182,"title":"First issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/182","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null},{"id":"PVTI_18","content":{"__typename":"Issue","id":"I_18","number":18,"title":"Prefix neighbor","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/18","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
 		},
 		{
-			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":187,"url":"https://github.com/digitaldrywood/symphony/pull/187","state":"OPEN","headRefName":"symphony/digitaldrywood_symphony_182_followup"},{"number":188,"url":"https://github.com/digitaldrywood/symphony/pull/188","state":"MERGED","headRefName":"symphony/digitaldrywood_symphony_181"}]}}}}`,
+			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":187,"url":"https://github.com/digitaldrywood/detent/pull/187","state":"OPEN","headRefName":"detent/digitaldrywood_detent_182_followup"},{"number":188,"url":"https://github.com/digitaldrywood/detent/pull/188","state":"MERGED","headRefName":"detent/digitaldrywood_detent_181"}]}}}}`,
 		},
 	})
 
@@ -149,7 +149,7 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 	if pr == nil {
 		t.Fatal("I_182 PullRequest = nil, want matching open PR")
 	}
-	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "symphony/digitaldrywood_symphony_182_followup" {
+	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "detent/digitaldrywood_detent_182_followup" {
 		t.Fatalf("I_182 PullRequest = %#v, want PR 187 open followup", pr)
 	}
 	if byID["I_18"].PullRequest != nil {
@@ -162,7 +162,7 @@ func TestConnectorFetchCandidateIssuesLimitsPullRequestPagination(t *testing.T) 
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_1","number":1,"title":"Candidate","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/1","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_1","number":1,"title":"Candidate","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/1","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
 		},
 		{
 			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":true,"endCursor":"cursor-1"},"nodes":[]}}}}`,
@@ -239,7 +239,7 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw98","number":98,"title":"Homebrew tap","body":"Depends on: #97","state":"OPEN","url":"https://github.com/digitaldrywood/symphony/issues/98","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/symphony"}},"statusValue":{"name":"Blocked"},"priorityValue":null}]}}}}`,
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw98","number":98,"title":"Homebrew tap","body":"Depends on: #97","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/98","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Blocked"},"priorityValue":null}]}}}}`,
 		},
 		{
 			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw98","body":"Depends on: #97","comments":{"nodes":[{"body":"## Codex Workpad\n\n### Plan\n- Check prerequisites.\n\n### Human Action Needed\n- Create public repository ` + "`" + `digitaldrywood/homebrew-tap` + "`" + `.\n- Add repository Actions secret ` + "`" + `HOMEBREW_TAP_GITHUB_TOKEN` + "`" + `.\n\n### Validation Evidence\n- Not run."}]}}]}}`,

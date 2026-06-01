@@ -11,7 +11,7 @@ import templruntime "github.com/a-h/templ/runtime"
 import (
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func Dashboard(data DashboardData) templ.Component {
@@ -48,7 +48,7 @@ func Dashboard(data DashboardData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</title><script>\n\t\t\t\tdocument.documentElement.classList.toggle(\"dark\", Boolean(window.matchMedia && window.matchMedia(\"(prefers-color-scheme: dark)\").matches))\n\t\t\t\tfunction applyDashboardDensity(density) {\n\t\t\t\t\tvar selected = density === \"compact\" ? \"compact\" : \"comfortable\"\n\t\t\t\t\tdocument.documentElement.dataset.density = selected\n\t\t\t\t\tdocument.querySelectorAll(\"[data-density-choice]\").forEach(function (button) {\n\t\t\t\t\t\tbutton.setAttribute(\"aria-pressed\", button.dataset.densityChoice === selected ? \"true\" : \"false\")\n\t\t\t\t\t})\n\t\t\t\t}\n\t\t\t\twindow.addEventListener(\"DOMContentLoaded\", function () {\n\t\t\t\t\tvar densityKey = \"symphony.dashboard.density\"\n\t\t\t\t\ttry {\n\t\t\t\t\t\tapplyDashboardDensity(window.localStorage.getItem(densityKey))\n\t\t\t\t\t} catch (_error) {\n\t\t\t\t\t\tapplyDashboardDensity(\"comfortable\")\n\t\t\t\t\t}\n\t\t\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\t\t\tif (!(event.target instanceof Element)) return\n\t\t\t\t\t\tvar button = event.target.closest(\"[data-density-choice]\")\n\t\t\t\t\t\tif (!button) return\n\t\t\t\t\t\tvar density = button.dataset.densityChoice\n\t\t\t\t\t\tapplyDashboardDensity(density)\n\t\t\t\t\t\ttry {\n\t\t\t\t\t\t\twindow.localStorage.setItem(densityKey, density)\n\t\t\t\t\t\t} catch (_error) {}\n\t\t\t\t\t})\n\t\t\t\t})\n\t\t\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 2, "</title><script>\n\t\t\t\tdocument.documentElement.classList.toggle(\"dark\", Boolean(window.matchMedia && window.matchMedia(\"(prefers-color-scheme: dark)\").matches))\n\t\t\t\tfunction applyDashboardDensity(density) {\n\t\t\t\t\tvar selected = density === \"compact\" ? \"compact\" : \"comfortable\"\n\t\t\t\t\tdocument.documentElement.dataset.density = selected\n\t\t\t\t\tdocument.querySelectorAll(\"[data-density-choice]\").forEach(function (button) {\n\t\t\t\t\t\tbutton.setAttribute(\"aria-pressed\", button.dataset.densityChoice === selected ? \"true\" : \"false\")\n\t\t\t\t\t})\n\t\t\t\t}\n\t\t\t\twindow.addEventListener(\"DOMContentLoaded\", function () {\n\t\t\t\t\tvar densityKey = \"detent.dashboard.density\"\n\t\t\t\t\ttry {\n\t\t\t\t\t\tapplyDashboardDensity(window.localStorage.getItem(densityKey))\n\t\t\t\t\t} catch (_error) {\n\t\t\t\t\t\tapplyDashboardDensity(\"comfortable\")\n\t\t\t\t\t}\n\t\t\t\t\tdocument.addEventListener(\"click\", function (event) {\n\t\t\t\t\t\tif (!(event.target instanceof Element)) return\n\t\t\t\t\t\tvar button = event.target.closest(\"[data-density-choice]\")\n\t\t\t\t\t\tif (!button) return\n\t\t\t\t\t\tvar density = button.dataset.densityChoice\n\t\t\t\t\t\tapplyDashboardDensity(density)\n\t\t\t\t\t\ttry {\n\t\t\t\t\t\t\twindow.localStorage.setItem(densityKey, density)\n\t\t\t\t\t\t} catch (_error) {}\n\t\t\t\t\t})\n\t\t\t\t})\n\t\t\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -77,7 +77,7 @@ func Dashboard(data DashboardData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<main class=\"mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-3 py-3 sm:gap-5 sm:px-6 sm:py-6 lg:px-8\" hx-ext=\"sse\" sse-connect=\"/events\"><header class=\"min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between\"><div class=\"min-w-0\"><div class=\"flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground\"><span class=\"inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent\"><span class=\"h-1.5 w-1.5 rounded-full bg-accent\"></span> <span>Symphony</span></span> <span>Observability</span></div><h1 class=\"mt-2 text-2xl font-semibold text-foreground sm:text-3xl\">Operations dashboard</h1><p class=\"mt-1 max-w-3xl text-sm text-muted-foreground\">Live dispatch, budget, rate-limit, and token telemetry for active work.</p></div><div class=\"grid w-full gap-3 text-sm text-muted-foreground lg:w-auto lg:justify-items-end\"><div class=\"grid w-full min-w-0 gap-2 sm:grid-cols-2 lg:w-auto\"><span class=\"inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Version</span> <span class=\"font-mono text-xs font-semibold text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<main class=\"mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-3 py-3 sm:gap-5 sm:px-6 sm:py-6 lg:px-8\" hx-ext=\"sse\" sse-connect=\"/events\"><header class=\"min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between\"><div class=\"min-w-0\"><div class=\"flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground\"><span class=\"inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent\"><span class=\"h-1.5 w-1.5 rounded-full bg-accent\"></span> <span>Detent</span></span> <span>Observability</span></div><h1 class=\"mt-2 text-2xl font-semibold text-foreground sm:text-3xl\">Operations dashboard</h1><p class=\"mt-1 max-w-3xl text-sm text-muted-foreground\">Live dispatch, budget, rate-limit, and token telemetry for active work.</p></div><div class=\"grid w-full gap-3 text-sm text-muted-foreground lg:w-auto lg:justify-items-end\"><div class=\"grid w-full min-w-0 gap-2 sm:grid-cols-2 lg:w-auto\"><span class=\"inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Version</span> <span class=\"font-mono text-xs font-semibold text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -281,7 +281,7 @@ func SnapshotView(data DashboardData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = dashboardEmptyState("No active issue sessions.", "New agent sessions will appear as Symphony dispatches work.", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = dashboardEmptyState("No active issue sessions.", "New agent sessions will appear as Detent dispatches work.", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -943,7 +943,7 @@ func snapshotLoading() templ.Component {
 			templ_7745c5c3_Var39 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "<section class=\"rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm\"><div class=\"flex items-start gap-3\"><span class=\"mt-1 h-2.5 w-2.5 rounded-full bg-warning\"></span><div><h2 class=\"text-sm font-semibold\">Waiting for first telemetry snapshot.</h2><p class=\"mt-1 text-sm text-warning\">Live updates will fill this dashboard when Symphony publishes the next snapshot.</p></div></div></section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 72, "<section class=\"rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm\"><div class=\"flex items-start gap-3\"><span class=\"mt-1 h-2.5 w-2.5 rounded-full bg-warning\"></span><div><h2 class=\"text-sm font-semibold\">Waiting for first telemetry snapshot.</h2><p class=\"mt-1 text-sm text-warning\">Live updates will fill this dashboard when Detent publishes the next snapshot.</p></div></div></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -2825,7 +2825,7 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 237, "<p class=\"text-sm text-muted-foreground\">Last completed Codex sessions across Symphony runs.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 237, "<p class=\"text-sm text-muted-foreground\">Last completed Codex sessions across Detent runs.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

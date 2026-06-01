@@ -12,14 +12,14 @@ import (
 	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/symphony/internal/budget"
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
-	"github.com/digitaldrywood/symphony/internal/connector"
-	"github.com/digitaldrywood/symphony/internal/hub"
-	"github.com/digitaldrywood/symphony/internal/project"
-	"github.com/digitaldrywood/symphony/internal/store"
-	"github.com/digitaldrywood/symphony/internal/telemetry"
-	"github.com/digitaldrywood/symphony/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/budget"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 var (
@@ -186,7 +186,7 @@ func (s *Server) registerRoutes() {
 
 func (s *Server) dashboard(c echo.Context) error {
 	return render(c, templates.Dashboard(templates.DashboardData{
-		Title:         "Symphony",
+		Title:         "Detent",
 		Version:       s.version,
 		ConnectorName: s.connector.Name(),
 		DashboardURL:  s.dashboardURL,

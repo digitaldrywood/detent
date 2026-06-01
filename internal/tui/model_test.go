@@ -9,8 +9,8 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/digitaldrywood/symphony/internal/hub"
-	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestModelRendersSnapshotFromHub(t *testing.T) {
@@ -37,8 +37,8 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 
 	view := stripANSI(next.(Model).View())
 	for _, want := range []string{
-		"SYMPHONY STATUS",
-		"Project: https://github.com/digitaldrywood/symphony",
+		"DETENT STATUS",
+		"Project: https://github.com/digitaldrywood/detent",
 		"Dashboard: http://localhost:4101",
 		"Next refresh: 2026-05-31T00:16:00Z",
 		"Agents: 1 running | 1 queued | 1 blocked | 1 completed",
@@ -82,7 +82,7 @@ func TestModelRendersWaitingStateBeforeSnapshot(t *testing.T) {
 	}
 
 	view := stripANSI(model.View())
-	for _, want := range []string{"SYMPHONY STATUS", "Dashboard: http://localhost:4000", "Waiting for telemetry snapshot"} {
+	for _, want := range []string{"DETENT STATUS", "Dashboard: http://localhost:4000", "Waiting for telemetry snapshot"} {
 		if !strings.Contains(view, want) {
 			t.Fatalf("View() missing %q:\n%s", want, view)
 		}
@@ -146,8 +146,8 @@ func testSnapshot() telemetry.Snapshot {
 	return telemetry.Snapshot{
 		GeneratedAt: generatedAt,
 		Project: telemetry.Project{
-			DisplayName: "Symphony",
-			URL:         "https://github.com/digitaldrywood/symphony",
+			DisplayName: "Detent",
+			URL:         "https://github.com/digitaldrywood/detent",
 		},
 		DashboardURL: "http://localhost:4101",
 		Refresh: telemetry.Refresh{
@@ -171,7 +171,7 @@ func testSnapshot() telemetry.Snapshot {
 				},
 				WorkerHost:      "worker-1",
 				ProcessIdentity: "4242",
-				WorkspacePath:   "/tmp/symphony/worktree",
+				WorkspacePath:   "/tmp/detent/worktree",
 				SessionID:       "session-1234567890",
 				TurnCount:       3,
 				StartedAt:       startedAt,

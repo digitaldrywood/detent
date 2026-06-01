@@ -1,6 +1,6 @@
 # Contributing
 
-Symphony is a Go agent orchestrator delivered as a single binary. Keep changes small, scoped to the issue or pull request, and aligned with the existing project conventions.
+Detent is a Go agent orchestrator delivered as a single binary. Keep changes small, scoped to the issue or pull request, and aligned with the existing project conventions.
 
 ## Prerequisites
 
@@ -20,39 +20,39 @@ make setup
 ## Clone And Start
 
 ```sh
-git clone https://github.com/digitaldrywood/symphony.git
-cd symphony
+git clone https://github.com/digitaldrywood/detent.git
+cd detent
 make setup
 make dev
 ```
 
-`make dev` runs Air with `SYMPHONY_ENV=dev` and `SYMPHONY_LOG_LEVEL=debug`, builds `./tmp/symphony`, rotates `tmp/air-combined.log`, and streams combined build and application output to `tmp/air-combined.log`.
+`make dev` runs Air with `DETENT_ENV=dev` and `DETENT_LOG_LEVEL=debug`, builds `./tmp/detent`, rotates `tmp/air-combined.log`, and streams combined build and application output to `tmp/air-combined.log`.
 
-The default web bind is `127.0.0.1:4000` when no config or port is supplied. If another Symphony process is already using that port, do not start a second server on it. Run a built binary with `./tmp/symphony --port 0` when you need an ephemeral port.
+The default web bind is `127.0.0.1:4000` when no config or port is supplied. If another Detent process is already using that port, do not start a second server on it. Run a built binary with `./tmp/detent --port 0` when you need an ephemeral port.
 
 ## Logging
 
-Symphony logs with `log/slog`.
+Detent logs with `log/slog`.
 
-- `SYMPHONY_ENV=dev`, `development`, or `local` enables tint text logs.
-- `SYMPHONY_ENV=prod` or any other non-development value keeps JSON logs.
-- When `SYMPHONY_ENV` is unset, interactive stdout TTY runs use tint text logs; non-TTY runs use JSON logs.
-- `SYMPHONY_LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
+- `DETENT_ENV=dev`, `development`, or `local` enables tint text logs.
+- `DETENT_ENV=prod` or any other non-development value keeps JSON logs.
+- When `DETENT_ENV` is unset, interactive stdout TTY runs use tint text logs; non-TTY runs use JSON logs.
+- `DETENT_LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
 - Text logs are written to stdout; JSON logs are written to stderr.
 
 ## Global Config Discovery
 
-Symphony must resolve `global.yaml` consistently across supported operating systems. Keep this precedence intact when changing startup or config commands:
+Detent must resolve `global.yaml` consistently across supported operating systems. Keep this precedence intact when changing startup or config commands:
 
 1. `--config <path>` uses the direct CLI file path.
-2. `SYMPHONY_CONFIG=<file>` uses the direct environment file path.
-3. `SYMPHONY_HOME=<dir>` uses `<dir>/global.yaml`.
-4. `os.UserConfigDir()` uses `<config-dir>/symphony/global.yaml`.
-5. The legacy default uses `~/.symphony/global.yaml`.
+2. `DETENT_CONFIG=<file>` uses the direct environment file path.
+3. `DETENT_HOME=<dir>` uses `<dir>/global.yaml`.
+4. `os.UserConfigDir()` uses `<config-dir>/detent/global.yaml`.
+5. The legacy default uses `~/.detent/global.yaml`.
 
-The OS-native config directory is `%AppData%\symphony\global.yaml` on Windows, `~/Library/Application Support/symphony/global.yaml` on macOS, and `~/.config/symphony/global.yaml` on Linux, with `XDG_CONFIG_HOME` honored by `os.UserConfigDir()`.
+The OS-native config directory is `%AppData%\detent\global.yaml` on Windows, `~/Library/Application Support/detent/global.yaml` on macOS, and `~/.config/detent/global.yaml` on Linux, with `XDG_CONFIG_HOME` honored by `os.UserConfigDir()`.
 
-After global config lookup fails, startup may fall back to a valid `WORKFLOW.md` in the current working directory for single-project mode. `symphony config path` should continue to report both the selected path and the matching rule.
+After global config lookup fails, startup may fall back to a valid `WORKFLOW.md` in the current working directory for single-project mode. `detent config path` should continue to report both the selected path and the matching rule.
 
 ## Validation
 
@@ -64,7 +64,7 @@ make check
 
 `make check` runs:
 
-- `make build`, which runs `make generate` before building `./tmp/symphony`.
+- `make build`, which runs `make generate` before building `./tmp/detent`.
 - `golangci-lint run --timeout=5m` with golangci-lint v2.
 - `go vet ./...`.
 - `go test -race ./...`.
@@ -108,7 +108,7 @@ New or changed observable behavior needs tests.
 - Do not add testify.
 - Keep tests close to the package they cover.
 - Use ephemeral ports in tests that start servers.
-- Do not rely on process state from a running Symphony orchestrator.
+- Do not rely on process state from a running Detent orchestrator.
 
 ## Commits
 

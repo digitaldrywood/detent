@@ -96,10 +96,10 @@ jobs:
           cache: true
 
       - name: Run non-agent core tests
-        run: go test ./cmd/symphony ./internal/config ./internal/config/global ./internal/store ./internal/web ./internal/tui ./internal/orchestrator ./internal/cli
+        run: go test ./cmd/detent ./internal/config ./internal/config/global ./internal/store ./internal/web ./internal/tui ./internal/orchestrator ./internal/cli
 
       - name: Build command
-        run: go build ./cmd/symphony
+        run: go build ./cmd/detent
 
   goreleaser-snapshot:
     name: GoReleaser Snapshot

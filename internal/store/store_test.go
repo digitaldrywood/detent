@@ -7,14 +7,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/store/sqlc"
+	"github.com/digitaldrywood/detent/internal/store/sqlc"
 )
 
 func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "symphony.db")
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
 
 	backend, err := Open(ctx, Config{
 		Backend: BackendSQLite,
@@ -40,7 +40,7 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	if got := queryInt(t, sqliteBackend.db, "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", got)
 	}
-	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('symphony_runs', 'codex_sessions', 'fair_share_usage', 'usage_events')"); got != 4 {
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events')"); got != 4 {
 		t.Fatalf("migrated table count = %d, want 4", got)
 	}
 }
@@ -49,7 +49,7 @@ func TestSQLiteQueriesRoundTrip(t *testing.T) {
 	t.Parallel()
 
 	ctx := context.Background()
-	dbPath := filepath.Join(t.TempDir(), "symphony.db")
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
 
 	backend, err := Open(ctx, Config{
 		Backend:     BackendSQLite,
@@ -65,7 +65,7 @@ func TestSQLiteQueriesRoundTrip(t *testing.T) {
 		}
 	})
 
-	run, err := backend.Queries().CreateSymphonyRun(ctx, sqlc.CreateSymphonyRunParams{
+	run, err := backend.Queries().CreateDetentRun(ctx, sqlc.CreateDetentRunParams{
 		StartedAt:            "2026-05-30T12:00:00Z",
 		StoppedAt:            sql.NullString{},
 		RestartReason:        sql.NullString{},
@@ -77,14 +77,14 @@ func TestSQLiteQueriesRoundTrip(t *testing.T) {
 		RuntimeSeconds:       90,
 	})
 	if err != nil {
-		t.Fatalf("CreateSymphonyRun() error = %v", err)
+		t.Fatalf("CreateDetentRun() error = %v", err)
 	}
 
 	session, err := backend.Queries().CreateCodexSession(ctx, sqlc.CreateCodexSessionParams{
 		RunID:          sql.NullInt64{Int64: run.ID, Valid: true},
 		IssueID:        sql.NullString{String: "I_kwDOSskuwc8AAAABD42cNw", Valid: true},
-		Identifier:     sql.NullString{String: "digitaldrywood/symphony#5", Valid: true},
-		IssueUrl:       sql.NullString{String: "https://github.com/digitaldrywood/symphony/issues/5", Valid: true},
+		Identifier:     sql.NullString{String: "digitaldrywood/detent#5", Valid: true},
+		IssueUrl:       sql.NullString{String: "https://github.com/digitaldrywood/detent/issues/5", Valid: true},
 		StartedAt:      sql.NullString{String: "2026-05-30T12:01:00Z", Valid: true},
 		CompletedAt:    sql.NullString{String: "2026-05-30T12:02:00Z", Valid: true},
 		Turns:          2,
@@ -107,8 +107,8 @@ func TestSQLiteQueriesRoundTrip(t *testing.T) {
 	if got.RunID.Int64 != run.ID {
 		t.Fatalf("session run_id = %d, want %d", got.RunID.Int64, run.ID)
 	}
-	if got.Identifier.String != "digitaldrywood/symphony#5" {
-		t.Fatalf("session identifier = %q, want digitaldrywood/symphony#5", got.Identifier.String)
+	if got.Identifier.String != "digitaldrywood/detent#5" {
+		t.Fatalf("session identifier = %q, want digitaldrywood/detent#5", got.Identifier.String)
 	}
 }
 
@@ -154,8 +154,8 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 			sessionID, err := backend.StartSession(ctx, SessionStart{
 				RunID:      runID,
 				IssueID:    "I_kwDOSskuwc8AAAABD42c3Q",
-				Identifier: "digitaldrywood/symphony#6",
-				IssueURL:   "https://github.com/digitaldrywood/symphony/issues/6",
+				Identifier: "digitaldrywood/detent#6",
+				IssueURL:   "https://github.com/digitaldrywood/detent/issues/6",
 				StartedAt:  time.Date(2026, 5, 30, 12, 1, 0, 0, time.UTC),
 				Model:      "gpt-5",
 			})
@@ -188,9 +188,9 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				t.Fatalf("StopRun() error = %v", err)
 			}
 
-			run, err := backend.Queries().GetSymphonyRun(ctx, runID)
+			run, err := backend.Queries().GetDetentRun(ctx, runID)
 			if err != nil {
-				t.Fatalf("GetSymphonyRun() error = %v", err)
+				t.Fatalf("GetDetentRun() error = %v", err)
 			}
 			if run.StartedAt != "2026-05-30T12:00:00Z" {
 				t.Fatalf("run started_at = %q, want 2026-05-30T12:00:00Z", run.StartedAt)
@@ -241,7 +241,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				t.Fatalf("IssueTokenSpend().ByModel = %#v", issueSpend.ByModel)
 			}
 
-			identifierSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{Identifier: "digitaldrywood/symphony#6"})
+			identifierSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{Identifier: "digitaldrywood/detent#6"})
 			if err != nil {
 				t.Fatalf("IssueTokenSpend(identifier) error = %v", err)
 			}
@@ -249,7 +249,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 				t.Fatalf("IssueTokenSpend(identifier).TotalTokens = %d, want 125", identifierSpend.TotalTokens)
 			}
 
-			urlSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{IssueURL: "https://github.com/digitaldrywood/symphony/issues/6"})
+			urlSpend, err := backend.IssueTokenSpend(ctx, IssueIdentity{IssueURL: "https://github.com/digitaldrywood/detent/issues/6"})
 			if err != nil {
 				t.Fatalf("IssueTokenSpend(url) error = %v", err)
 			}
@@ -331,11 +331,11 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 		{
 			name: "persists usage event across reopen",
 			event: UsageEvent{
-				ProjectID:      " symphony ",
+				ProjectID:      " detent ",
 				RunID:          11,
 				SessionID:      42,
 				IssueID:        " I_kwDOSskuwc8AAAABD6psJQ ",
-				Identifier:     " digitaldrywood/symphony#117 ",
+				Identifier:     " digitaldrywood/detent#117 ",
 				PRNumber:       int64Ptr(91),
 				Model:          " gpt-5-codex ",
 				InputTokens:    123,
@@ -355,7 +355,7 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 			t.Parallel()
 
 			ctx := context.Background()
-			dbPath := filepath.Join(t.TempDir(), "symphony.db")
+			dbPath := filepath.Join(t.TempDir(), "detent.db")
 
 			backend, err := Open(ctx, Config{
 				Backend: BackendSQLite,
@@ -374,13 +374,13 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("GetUsageEvent() error = %v", err)
 			}
-			if got.ProjectID != "symphony" {
-				t.Fatalf("ProjectID = %q, want symphony", got.ProjectID)
+			if got.ProjectID != "detent" {
+				t.Fatalf("ProjectID = %q, want detent", got.ProjectID)
 			}
 			if got.RunID.Int64 != 11 || got.SessionID.Int64 != 42 {
 				t.Fatalf("run/session = %d/%d, want 11/42", got.RunID.Int64, got.SessionID.Int64)
 			}
-			if got.IssueID.String != "I_kwDOSskuwc8AAAABD6psJQ" || got.Identifier.String != "digitaldrywood/symphony#117" {
+			if got.IssueID.String != "I_kwDOSskuwc8AAAABD6psJQ" || got.Identifier.String != "digitaldrywood/detent#117" {
 				t.Fatalf("issue identity = %q/%q", got.IssueID.String, got.Identifier.String)
 			}
 			if got.PrNumber.Int64 != 91 {
@@ -475,7 +475,7 @@ func TestUsageReportAggregates(t *testing.T) {
 			query: UsageReportQuery{By: UsageReportByProject, From: dateOnly(2026, 5, 31), To: dateOnly(2026, 6, 1)},
 			want: []UsageReportRow{
 				{
-					Key:            "symphony",
+					Key:            "detent",
 					InputTokens:    220,
 					OutputTokens:   105,
 					TotalTokens:    325,
@@ -489,7 +489,7 @@ func TestUsageReportAggregates(t *testing.T) {
 			query: UsageReportQuery{By: UsageReportByIssue},
 			want: []UsageReportRow{
 				{
-					Key:            "digitaldrywood/symphony#117",
+					Key:            "digitaldrywood/detent#117",
 					InputTokens:    100,
 					OutputTokens:   50,
 					TotalTokens:    150,
@@ -497,7 +497,7 @@ func TestUsageReportAggregates(t *testing.T) {
 					Events:         1,
 				},
 				{
-					Key:            "digitaldrywood/symphony#119",
+					Key:            "digitaldrywood/detent#119",
 					InputTokens:    120,
 					OutputTokens:   55,
 					TotalTokens:    175,
@@ -519,15 +519,7 @@ func TestUsageReportAggregates(t *testing.T) {
 			query: UsageReportQuery{By: UsageReportByPR},
 			want: []UsageReportRow{
 				{
-					Key:            "pyroapex#141",
-					InputTokens:    5,
-					OutputTokens:   2,
-					TotalTokens:    7,
-					RuntimeSeconds: 3,
-					Events:         1,
-				},
-				{
-					Key:            "symphony#133",
+					Key:            "detent#133",
 					InputTokens:    100,
 					OutputTokens:   50,
 					TotalTokens:    150,
@@ -535,12 +527,20 @@ func TestUsageReportAggregates(t *testing.T) {
 					Events:         1,
 				},
 				{
-					Key:            "symphony#141",
+					Key:            "detent#141",
 					InputTokens:    120,
 					OutputTokens:   55,
 					TotalTokens:    175,
 					RuntimeSeconds: 40,
 					Events:         2,
+				},
+				{
+					Key:            "pyroapex#141",
+					InputTokens:    5,
+					OutputTokens:   2,
+					TotalTokens:    7,
+					RuntimeSeconds: 3,
+					Events:         1,
 				},
 			},
 		},
@@ -602,7 +602,7 @@ func TestOpenRejectsUnsupportedBackend(t *testing.T) {
 
 	_, err := Open(context.Background(), Config{
 		Backend: Backend("postgres"),
-		Path:    filepath.Join(t.TempDir(), "symphony.db"),
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
 	})
 	if err == nil {
 		t.Fatal("Open() error = nil, want unsupported backend error")
@@ -614,7 +614,7 @@ func TestOpenUsesSQLiteBackendByDefault(t *testing.T) {
 
 	ctx := context.Background()
 	backend, err := Open(ctx, Config{
-		Path:        filepath.Join(t.TempDir(), "symphony.db"),
+		Path:        filepath.Join(t.TempDir(), "detent.db"),
 		BusyTimeout: 2500 * time.Millisecond,
 	})
 	if err != nil {
@@ -676,7 +676,7 @@ func openTestStore(t *testing.T, ctx context.Context) Store {
 
 	backend, err := Open(ctx, Config{
 		Backend: BackendSQLite,
-		Path:    filepath.Join(t.TempDir(), "symphony.db"),
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
 	})
 	if err != nil {
 		t.Fatalf("Open() error = %v", err)
@@ -694,9 +694,9 @@ func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {
 
 	events := []UsageEvent{
 		{
-			ProjectID:      "symphony",
+			ProjectID:      "detent",
 			IssueID:        "issue-117",
-			Identifier:     "digitaldrywood/symphony#117",
+			Identifier:     "digitaldrywood/detent#117",
 			PRNumber:       int64Ptr(133),
 			Model:          "gpt-5.4",
 			InputTokens:    100,
@@ -708,9 +708,9 @@ func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {
 			Outcome:        "completed",
 		},
 		{
-			ProjectID:      "symphony",
+			ProjectID:      "detent",
 			IssueID:        "issue-119",
-			Identifier:     "digitaldrywood/symphony#119",
+			Identifier:     "digitaldrywood/detent#119",
 			PRNumber:       int64Ptr(141),
 			Model:          "gpt-5.4",
 			InputTokens:    50,
@@ -722,9 +722,9 @@ func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {
 			Outcome:        "completed",
 		},
 		{
-			ProjectID:      "symphony",
+			ProjectID:      "detent",
 			IssueID:        "issue-119",
-			Identifier:     "digitaldrywood/symphony#119",
+			Identifier:     "digitaldrywood/detent#119",
 			PRNumber:       int64Ptr(141),
 			Model:          "gpt-5.4-mini",
 			InputTokens:    70,

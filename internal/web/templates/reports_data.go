@@ -5,7 +5,7 @@ import (
 	"strings"
 	"time"
 
-	webchart "github.com/digitaldrywood/symphony/internal/web/chart"
+	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 )
 
 const reportTopLimit = 5
@@ -68,7 +68,7 @@ func reportsPageTitle(data ReportsData) string {
 	if strings.TrimSpace(data.Title) != "" {
 		return data.Title
 	}
-	return "Symphony reports"
+	return "Detent reports"
 }
 
 func reportsConnectorName(data ReportsData) string {

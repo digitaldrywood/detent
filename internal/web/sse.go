@@ -13,7 +13,7 @@ import (
 	"github.com/a-h/templ"
 	"github.com/labstack/echo/v4"
 
-	"github.com/digitaldrywood/symphony/internal/web/templates"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 const (

@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestStatusDashboardParityWithElixirSnapshots(t *testing.T) {
@@ -456,7 +456,7 @@ const (
 	parityDashboardURL = "http://localhost:4000"
 )
 
-const elixirIdleStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
+const elixirIdleStatusSnapshot = `\e[1m╭─ DETENT STATUS\e[0m
 \e[1m│ Agents: \e[0m\e[32m0\e[0m\e[90m/\e[0m\e[90m10\e[0m
 \e[1m│ Throughput: \e[0m\e[36m0 tps\e[0m
 \e[1m│ Runtime: \e[0m\e[35m0m 0s\e[0m
@@ -477,7 +477,7 @@ const elixirIdleStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
 ╰─
 `
 
-const elixirSuperBusyStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
+const elixirSuperBusyStatusSnapshot = `\e[1m╭─ DETENT STATUS\e[0m
 \e[1m│ Agents: \e[0m\e[32m2\e[0m\e[90m/\e[0m\e[90m10\e[0m
 \e[1m│ Throughput: \e[0m\e[36m1,842 tps\e[0m
 \e[1m│ Runtime: \e[0m\e[35m72m 1s\e[0m
@@ -499,7 +499,7 @@ const elixirSuperBusyStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
 ╰─
 `
 
-const elixirBackoffQueueStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
+const elixirBackoffQueueStatusSnapshot = `\e[1m╭─ DETENT STATUS\e[0m
 \e[1m│ Agents: \e[0m\e[32m1\e[0m\e[90m/\e[0m\e[90m10\e[0m
 \e[1m│ Throughput: \e[0m\e[36m15 tps\e[0m
 \e[1m│ Runtime: \e[0m\e[35m45m 0s\e[0m
@@ -523,7 +523,7 @@ const elixirBackoffQueueStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
 ╰─
 `
 
-const elixirCreditsUnlimitedStatusSnapshot = `\e[1m╭─ SYMPHONY STATUS\e[0m
+const elixirCreditsUnlimitedStatusSnapshot = `\e[1m╭─ DETENT STATUS\e[0m
 \e[1m│ Agents: \e[0m\e[32m1\e[0m\e[90m/\e[0m\e[90m10\e[0m
 \e[1m│ Throughput: \e[0m\e[36m42 tps\e[0m
 \e[1m│ Runtime: \e[0m\e[35m1m 15s\e[0m

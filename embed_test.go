@@ -1,4 +1,4 @@
-package symphony
+package detent
 
 import (
 	"bytes"

@@ -13,8 +13,8 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	symphony "github.com/digitaldrywood/symphony"
-	"github.com/digitaldrywood/symphony/internal/web/templates"
+	detent "github.com/digitaldrywood/detent"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 const (
@@ -40,7 +40,7 @@ type staticAsset struct {
 }
 
 func newStaticAssets(staticDir string) staticAssets {
-	fsys := symphony.StaticFS()
+	fsys := detent.StaticFS()
 	if strings.TrimSpace(staticDir) != "" {
 		fsys = os.DirFS(staticDir)
 	}

@@ -8,7 +8,7 @@ import (
 )
 
 const projectOptionsQuery = `
-query SymphonyGitHubProjectOptions($projectId: ID!) {
+query DetentGitHubProjectOptions($projectId: ID!) {
   node(id: $projectId) {
     __typename
     ... on ProjectV2 {
@@ -31,7 +31,7 @@ query SymphonyGitHubProjectOptions($projectId: ID!) {
 }`
 
 const updateProjectFieldMutation = `
-mutation SymphonyGitHubUpdateProjectField($input: UpdateProjectV2FieldInput!) {
+mutation DetentGitHubUpdateProjectField($input: UpdateProjectV2FieldInput!) {
   updateProjectV2Field(input: $input) {
     projectV2Field {
       ... on ProjectV2SingleSelectField {
@@ -42,8 +42,8 @@ mutation SymphonyGitHubUpdateProjectField($input: UpdateProjectV2FieldInput!) {
 }`
 
 var statusOptionDefaultsByState = map[string]projectSingleSelectOption{
-	"Backlog":      {Color: "GRAY", Description: "Not ready for Symphony dispatch."},
-	"Todo":         {Color: "GRAY", Description: "Ready for Symphony dispatch."},
+	"Backlog":      {Color: "GRAY", Description: "Not ready for Detent dispatch."},
+	"Todo":         {Color: "GRAY", Description: "Ready for Detent dispatch."},
 	"In Progress":  {Color: "YELLOW", Description: "Work is currently active."},
 	"Merging":      {Color: "PURPLE", Description: "Approved work is being integrated."},
 	"Rework":       {Color: "ORANGE", Description: "Changes are requested before review can continue."},
@@ -301,7 +301,7 @@ func (c *Connector) requiredStatusOptions() []projectSingleSelectOption {
 		if state == "" {
 			continue
 		}
-		githubState := c.symphonyToGitHubState(state)
+		githubState := c.detentToGitHubState(state)
 		if githubState == "" {
 			continue
 		}
@@ -323,7 +323,7 @@ func statusOptionDefaults(state string) projectSingleSelectOption {
 	}
 	return projectSingleSelectOption{
 		Color:       "GRAY",
-		Description: "Symphony workflow state.",
+		Description: "Detent workflow state.",
 	}
 }
 
@@ -387,7 +387,7 @@ func priorityColor(rank *int) string {
 
 func priorityDescription(rank *int) string {
 	if rank == nil {
-		return "Unranked Symphony priority."
+		return "Unranked Detent priority."
 	}
-	return fmt.Sprintf("Symphony priority rank %d.", *rank)
+	return fmt.Sprintf("Detent priority rank %d.", *rank)
 }

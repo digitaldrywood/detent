@@ -1,17 +1,17 @@
-# Symphony Go/Elixir Parity Audit
+# Detent Go/Elixir Parity Audit
 
 This checklist tracks the standing parity audit against the archived Elixir
-Symphony. Revisit it each milestone and link gap issues instead of expanding
+Detent. Revisit it each milestone and link gap issues instead of expanding
 audit work into feature implementation.
 
 ## Baseline
 
-- Audit issue: digitaldrywood/symphony#145
+- Audit issue: digitaldrywood/detent#145
 - Audit date: 2026-05-31
 - Elixir dashboard reference:
-  `elixir/lib/symphony_elixir_web/live/dashboard_live.ex`
+  `elixir/lib/detent_elixir_web/live/dashboard_live.ex`
 - Elixir terminal reference:
-  `elixir/lib/symphony_elixir/status_dashboard.ex`
+  `elixir/lib/detent_elixir/status_dashboard.ex`
 - Go web dashboard: `internal/web/templates/dashboard.templ`
 - Go terminal dashboard: `internal/tui/model.go`
 - Go telemetry model: `internal/telemetry/snapshot.go`
@@ -20,20 +20,20 @@ audit work into feature implementation.
 
 | Area | Elixir parity target | Go status | Gap issue | Notes |
 | --- | --- | --- | --- | --- |
-| Web summary counts | Running, retry pressure, blocked, tokens, spend today, runtime | Partial | digitaldrywood/symphony#148, digitaldrywood/symphony#149 | Go shows running, queue, blocked, completed, budget, rate limits, and tokens. It does not yet expose rolling TPS, lifetime totals, spend-today sparkline, or degraded stats. |
-| Web running sessions | Issue identity, state, session, runtime/turns, Codex update, diff, tokens | Partial | digitaldrywood/symphony#147 | Go renders the core row data. Missing copy/open affordances, JSON detail links, and issue popovers from the Elixir dashboard. |
-| Web retry/backoff queue | Attempt, due time, and retry error | Gap | digitaldrywood/symphony#147 | Go telemetry has queued rows, and the TUI renders them, but the web dashboard only exposes the queue count. |
-| Web blocked sessions | Blocked issue, state, session, blocked time, last update, error | Gap | digitaldrywood/symphony#147 | Go telemetry has blocked rows, and the TUI renders them, but the web dashboard only exposes the blocked count. |
-| Web recent sessions | Completed time, runtime/turns, tokens, final state, model | Gap | digitaldrywood/symphony#147 | Go telemetry has completed rows, and the TUI renders them, but the web dashboard only exposes the completed count. |
-| Web budget history | Spend today against cap plus seven-day sparkline | Partial | digitaldrywood/symphony#149 | Go budget card shows current/projected spend and caps. Budget day history is present in telemetry but not rendered in the web template. |
-| Web health and density | Live/offline badges, stats degraded indicator, comfortable/compact density | Gap | digitaldrywood/symphony#149 | Go shows connector and update time. Health/degraded state and density controls are not represented. |
+| Web summary counts | Running, retry pressure, blocked, tokens, spend today, runtime | Partial | digitaldrywood/detent#148, digitaldrywood/detent#149 | Go shows running, queue, blocked, completed, budget, rate limits, and tokens. It does not yet expose rolling TPS, lifetime totals, spend-today sparkline, or degraded stats. |
+| Web running sessions | Issue identity, state, session, runtime/turns, Codex update, diff, tokens | Partial | digitaldrywood/detent#147 | Go renders the core row data. Missing copy/open affordances, JSON detail links, and issue popovers from the Elixir dashboard. |
+| Web retry/backoff queue | Attempt, due time, and retry error | Gap | digitaldrywood/detent#147 | Go telemetry has queued rows, and the TUI renders them, but the web dashboard only exposes the queue count. |
+| Web blocked sessions | Blocked issue, state, session, blocked time, last update, error | Gap | digitaldrywood/detent#147 | Go telemetry has blocked rows, and the TUI renders them, but the web dashboard only exposes the blocked count. |
+| Web recent sessions | Completed time, runtime/turns, tokens, final state, model | Gap | digitaldrywood/detent#147 | Go telemetry has completed rows, and the TUI renders them, but the web dashboard only exposes the completed count. |
+| Web budget history | Spend today against cap plus seven-day sparkline | Partial | digitaldrywood/detent#149 | Go budget card shows current/projected spend and caps. Budget day history is present in telemetry but not rendered in the web template. |
+| Web health and density | Live/offline badges, stats degraded indicator, comfortable/compact density | Gap | digitaldrywood/detent#149 | Go shows connector and update time. Health/degraded state and density controls are not represented. |
 | Rate limits | Primary, secondary, credits, reset details | Covered | None | Go web and TUI render Codex rate-limit snapshots, including credit availability. |
 | Token totals | Input, output, total tokens | Covered | None | Go web and TUI render token totals and running-session token totals. |
-| Throughput | Rolling tokens per second with throttled updates | Gap | digitaldrywood/symphony#148 | Go web has a derived tokens/minute card. Go TUI does not yet render the Elixir throughput line. |
-| Runtime totals | Current run runtime and all-time runtime/session totals | Partial | digitaldrywood/symphony#148 | Go has snapshot runtime seconds. Lifetime totals and degraded stats handling are missing from the telemetry contract. |
-| TUI running rows | ID, stage, PID, age/turn, tokens, session, event | Partial | digitaldrywood/symphony#150 | Go renders ID, stage, host, age/turn, tokens, session, and event. PID/process identity is not modeled separately. |
+| Throughput | Rolling tokens per second with throttled updates | Gap | digitaldrywood/detent#148 | Go web has a derived tokens/minute card. Go TUI does not yet render the Elixir throughput line. |
+| Runtime totals | Current run runtime and all-time runtime/session totals | Partial | digitaldrywood/detent#148 | Go has snapshot runtime seconds. Lifetime totals and degraded stats handling are missing from the telemetry contract. |
+| TUI running rows | ID, stage, PID, age/turn, tokens, session, event | Partial | digitaldrywood/detent#150 | Go renders ID, stage, host, age/turn, tokens, session, and event. PID/process identity is not modeled separately. |
 | TUI backoff queue | All queued retries sorted by due time | Covered | None | Covered by `internal/tui/status_dashboard_parity_test.go`. |
-| TUI project links | Project, dashboard URL, next refresh | Gap | digitaldrywood/symphony#150 | Go TUI renders generated time but not project/dashboard/refresh lines. |
+| TUI project links | Project, dashboard URL, next refresh | Gap | digitaldrywood/detent#150 | Go TUI renders generated time but not project/dashboard/refresh lines. |
 | Dispatch order | Elixir candidate filtering, priorities, state caps, blocked dependencies | Covered | None | Covered by `internal/orchestrator/dispatch_parity_test.go` and related orchestrator tests. |
 | Scheduler fairness | Weighted, strict priority, round-robin, fair-share project selection | Covered | None | Covered by `internal/scheduler/global_test.go` and project manager scheduler tests. |
 | Merge train serialization | `Merging` state intentionally capped to one active agent | Covered | None | Documented in `README.md` and generated onboarding workflow defaults. |
@@ -44,10 +44,10 @@ audit work into feature implementation.
 
 ## Gap Issues
 
-- digitaldrywood/symphony#147: Restore web dashboard work queues and session detail parity.
-- digitaldrywood/symphony#148: Add dashboard throughput and lifetime runtime parity.
-- digitaldrywood/symphony#149: Add budget history and dashboard health indicators.
-- digitaldrywood/symphony#150: Restore TUI project refresh and process identity parity.
+- digitaldrywood/detent#147: Restore web dashboard work queues and session detail parity.
+- digitaldrywood/detent#148: Add dashboard throughput and lifetime runtime parity.
+- digitaldrywood/detent#149: Add budget history and dashboard health indicators.
+- digitaldrywood/detent#150: Restore TUI project refresh and process identity parity.
 
 ## Milestone Audit Notes
 

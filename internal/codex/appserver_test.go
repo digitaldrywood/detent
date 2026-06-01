@@ -70,8 +70,8 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	transport.processIdentity = "4242"
 	server, err := NewAppServer(staticTransportFactory{transport: transport},
 		WithClientInfo(ClientInfo{
-			Name:    "symphony-test",
-			Title:   "Symphony Test",
+			Name:    "detent-test",
+			Title:   "Detent Test",
 			Version: "0.1.0",
 		}),
 		WithReadTimeout(time.Second),
@@ -83,7 +83,7 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 
 	var updates []Update
 	result, err := server.RunTurn(context.Background(), RunTurnRequest{
-		Workspace:         "/tmp/symphony-workspace",
+		Workspace:         "/tmp/detent-workspace",
 		Prompt:            "Ship issue #18",
 		ApprovalPolicy:    json.RawMessage(`"never"`),
 		ThreadSandbox:     "workspace-write",
@@ -106,7 +106,7 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	}
 
 	assertRequest(t, sent[0], 1, "initialize")
-	assertJSONContains(t, sent[0].Params, "clientInfo.name", "symphony-test")
+	assertJSONContains(t, sent[0].Params, "clientInfo.name", "detent-test")
 	assertJSONContains(t, sent[0].Params, "capabilities.experimentalApi", true)
 
 	if sent[1].Method != "initialized" || len(sent[1].ID) != 0 {
@@ -114,7 +114,7 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	}
 
 	assertRequest(t, sent[2], 2, "thread/start")
-	assertJSONContains(t, sent[2].Params, "cwd", "/tmp/symphony-workspace")
+	assertJSONContains(t, sent[2].Params, "cwd", "/tmp/detent-workspace")
 	assertJSONContains(t, sent[2].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[2].Params, "sandbox", "workspace-write")
 
@@ -122,7 +122,7 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	assertJSONContains(t, sent[3].Params, "threadId", "thread-1")
 	assertJSONContains(t, sent[3].Params, "input.0.type", "text")
 	assertJSONContains(t, sent[3].Params, "input.0.text", "Ship issue #18")
-	assertJSONContains(t, sent[3].Params, "cwd", "/tmp/symphony-workspace")
+	assertJSONContains(t, sent[3].Params, "cwd", "/tmp/detent-workspace")
 	assertJSONContains(t, sent[3].Params, "approvalPolicy", "never")
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.type", "workspaceWrite")
 
@@ -185,7 +185,7 @@ func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 	}
 
 	_, err = server.RunTurn(context.Background(), RunTurnRequest{
-		Workspace: "/tmp/symphony-workspace",
+		Workspace: "/tmp/detent-workspace",
 		Prompt:    "Ship issue #18",
 	}, nil)
 	if err != nil {
@@ -218,7 +218,7 @@ func TestAppServerRunTurnReportsResponseErrors(t *testing.T) {
 	}
 
 	_, err = server.RunTurn(context.Background(), RunTurnRequest{
-		Workspace: "/tmp/symphony-workspace",
+		Workspace: "/tmp/detent-workspace",
 		Prompt:    "Ship issue #18",
 	}, nil)
 	if err == nil {

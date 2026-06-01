@@ -5,9 +5,9 @@ import (
 
 	"github.com/labstack/echo/v4"
 
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
-	"github.com/digitaldrywood/symphony/internal/project"
-	"github.com/digitaldrywood/symphony/internal/web/templates"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func (s *Server) settings(c echo.Context) error {
@@ -16,7 +16,7 @@ func (s *Server) settings(c echo.Context) error {
 
 func (s *Server) settingsData() templates.SettingsData {
 	return templates.SettingsData{
-		Title:   "Symphony settings",
+		Title:   "Detent settings",
 		Version: s.version,
 		Global: templates.SettingsGlobal{
 			ConfigPath: s.globalConfig.Path,

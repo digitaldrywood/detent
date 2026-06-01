@@ -6,7 +6,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 func TestConnectorFetchesConfiguredIssues(t *testing.T) {
@@ -22,7 +22,7 @@ func TestConnectorFetchesConfiguredIssues(t *testing.T) {
 			Description:      "Load issues from config",
 			Priority:         &priority,
 			State:            "Todo",
-			BranchName:       "symphony/mt-1",
+			BranchName:       "detent/mt-1",
 			URL:              "https://example.com/issues/1",
 			AssigneeID:       "worker-1",
 			BlockedBy:        []connector.BlockedRef{{ID: "issue-0", Identifier: "MT-0", State: "Done"}},

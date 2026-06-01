@@ -6,9 +6,9 @@ import (
 	"reflect"
 	"testing"
 
-	"github.com/digitaldrywood/symphony/internal/connector"
-	githubconnector "github.com/digitaldrywood/symphony/internal/connector/github"
-	"github.com/digitaldrywood/symphony/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/connector"
+	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 )
 
 func TestNewFromConfigSupportedBackends(t *testing.T) {

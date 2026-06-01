@@ -19,8 +19,8 @@ import (
 	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
 
-	workflowconfig "github.com/digitaldrywood/symphony/internal/config"
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
 var ErrDoctorFailed = errors.New("doctor found failed checks")
@@ -119,7 +119,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 			Name:   "Project workflows",
 			Status: doctorWarn,
 			Detail: "skipped because global config could not be loaded",
-			Hint:   "Fix the global config, then rerun symphony doctor.",
+			Hint:   "Fix the global config, then rerun detent doctor.",
 		})
 	}
 
@@ -162,7 +162,7 @@ func writeDoctorReport(out io.Writer, report doctorReport) error {
 		out = io.Discard
 	}
 
-	if _, err := fmt.Fprintln(out, "Symphony Doctor"); err != nil {
+	if _, err := fmt.Fprintln(out, "Detent Doctor"); err != nil {
 		return err
 	}
 	if _, err := fmt.Fprintln(out); err != nil {
@@ -204,7 +204,7 @@ func checkDoctorConfig(configPath string, opts options) (globalconfig.PathResolu
 			Name:   "Config resolution",
 			Status: doctorFail,
 			Detail: err.Error(),
-			Hint:   "Pass --config or set SYMPHONY_CONFIG to a readable global.yaml.",
+			Hint:   "Pass --config or set DETENT_CONFIG to a readable global.yaml.",
 		}
 	}
 
@@ -214,7 +214,7 @@ func checkDoctorConfig(configPath string, opts options) (globalconfig.PathResolu
 			Name:   "Config resolution",
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s via %s; %v", resolution.Path, resolution.Rule, err),
-			Hint:   "Run symphony init or fix the global config file.",
+			Hint:   "Run detent init or fix the global config file.",
 		}
 	}
 
@@ -232,7 +232,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 				Name:   "Project workflows",
 				Status: doctorWarn,
 				Detail: "no projects configured",
-				Hint:   "Run symphony add-project to add a project.",
+				Hint:   "Run detent add-project to add a project.",
 			},
 		}
 	}
@@ -255,7 +255,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 				Name:   "Project " + id + " source repo",
 				Status: doctorWarn,
 				Detail: "skipped because WORKFLOW.md could not be loaded",
-				Hint:   "Fix the workflow file, then rerun symphony doctor.",
+				Hint:   "Fix the workflow file, then rerun detent doctor.",
 			})
 			continue
 		}
@@ -270,7 +270,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 				Name:   "Project " + id + " source repo",
 				Status: doctorWarn,
 				Detail: "skipped because WORKFLOW.md is invalid",
-				Hint:   "Fix the workflow file, then rerun symphony doctor.",
+				Hint:   "Fix the workflow file, then rerun detent doctor.",
 			})
 			continue
 		}
@@ -362,11 +362,11 @@ func checkDoctorSQLite(ctx context.Context, resolution globalconfig.PathResoluti
 			Name:   "SQLite database",
 			Status: doctorFail,
 			Detail: "global config path is unavailable",
-			Hint:   "Fix config resolution, then rerun symphony doctor.",
+			Hint:   "Fix config resolution, then rerun detent doctor.",
 		}
 	}
 
-	dbPath := filepath.Join(filepath.Dir(resolution.Path), "symphony.db")
+	dbPath := filepath.Join(filepath.Dir(resolution.Path), "detent.db")
 	db, err := deps.openSQLite(ctx, dbPath)
 	if err != nil {
 		return doctorCheck{
@@ -381,7 +381,7 @@ func checkDoctorSQLite(ctx context.Context, resolution globalconfig.PathResoluti
 			Name:   "SQLite database",
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s close failed: %v", dbPath, err),
-			Hint:   "Check for filesystem or SQLite errors, then rerun symphony doctor.",
+			Hint:   "Check for filesystem or SQLite errors, then rerun detent doctor.",
 		}
 	}
 
@@ -560,7 +560,7 @@ func checkDoctorServerPort(cfg BootConfig, deps doctorDeps) doctorCheck {
 			Name:   "Server port",
 			Status: doctorWarn,
 			Detail: fmt.Sprintf("%s was available, but close failed: %v", addr, err),
-			Hint:   "Rerun symphony doctor and check for local network errors.",
+			Hint:   "Rerun detent doctor and check for local network errors.",
 		}
 	}
 
@@ -703,7 +703,7 @@ func defaultGitHubScopes(ctx context.Context, token string) ([]string, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("User-Agent", "symphony-doctor")
+	req.Header.Set("User-Agent", "detent-doctor")
 
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {

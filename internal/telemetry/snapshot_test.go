@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestSnapshotJSONShape(t *testing.T) {
@@ -20,8 +20,8 @@ func TestSnapshotJSONShape(t *testing.T) {
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: generatedAt,
 		Project: telemetry.Project{
-			DisplayName: "Symphony",
-			URL:         "https://github.com/digitaldrywood/symphony",
+			DisplayName: "Detent",
+			URL:         "https://github.com/digitaldrywood/detent",
 		},
 		DashboardURL: "http://localhost:4101",
 		Refresh: telemetry.Refresh{
@@ -194,7 +194,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 	}
 
 	project := got["project"].(map[string]any)
-	if project["display_name"] != "Symphony" || project["url"] != "https://github.com/digitaldrywood/symphony" {
+	if project["display_name"] != "Detent" || project["url"] != "https://github.com/digitaldrywood/detent" {
 		t.Fatalf("project = %#v", project)
 	}
 	if got["dashboard_url"] != "http://localhost:4101" {

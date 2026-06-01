@@ -1,8 +1,8 @@
 SHELL := /bin/bash
 
-BINARY_NAME := symphony
+BINARY_NAME := detent
 BINARY_PATH := tmp/$(BINARY_NAME)
-CMD_PACKAGE := ./cmd/symphony
+CMD_PACKAGE := ./cmd/detent
 VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
@@ -16,7 +16,7 @@ TAILWIND_OUTPUT ?= static/css/output.css
 SQLC_CONFIG ?= sqlc/sqlc.yaml
 MIGRATIONS_DIR ?= internal/database/migrations
 GOOSE_DRIVER ?= sqlite3
-DATABASE_URL ?= tmp/symphony.db
+DATABASE_URL ?= tmp/detent.db
 
 .PHONY: dev generate css css-watch build test test-race test-cover lint vet check release-snapshot sqlc db-migrate setup clean help
 
@@ -26,7 +26,7 @@ dev:
 		mv tmp/air-combined.log tmp/air-combined-$$(date +%Y%m%d-%H%M%S).log; \
 	fi
 	@ls -t tmp/air-combined-*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
-	@SYMPHONY_ENV=dev SYMPHONY_LOG_LEVEL=debug air 2>&1 | tee tmp/air-combined.log
+	@DETENT_ENV=dev DETENT_LOG_LEVEL=debug air 2>&1 | tee tmp/air-combined.log
 
 generate:
 	@go generate ./...

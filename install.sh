@@ -1,15 +1,15 @@
 #!/bin/sh
 set -eu
 
-repo="digitaldrywood/symphony"
-project_name="symphony"
-module_package="github.com/digitaldrywood/symphony/cmd/symphony"
-api_base="${SYMPHONY_GITHUB_API_BASE:-https://api.github.com/repos/$repo}"
-download_base="${SYMPHONY_RELEASE_DOWNLOAD_BASE:-https://github.com/$repo/releases/download}"
-state_dir="${SYMPHONY_STATE_DIR:-"$HOME/.symphony"}"
-lock_path="${SYMPHONY_INSTALL_LOCK:-"$state_dir/install.lock"}"
-source_binary="${SYMPHONY_INSTALL_SOURCE:-}"
-install_mode="${SYMPHONY_INSTALL_MODE:-auto}"
+repo="digitaldrywood/detent"
+project_name="detent"
+module_package="github.com/digitaldrywood/detent/cmd/detent"
+api_base="${DETENT_GITHUB_API_BASE:-https://api.github.com/repos/$repo}"
+download_base="${DETENT_RELEASE_DOWNLOAD_BASE:-https://github.com/$repo/releases/download}"
+state_dir="${DETENT_STATE_DIR:-"$HOME/.detent"}"
+lock_path="${DETENT_INSTALL_LOCK:-"$state_dir/install.lock"}"
+source_binary="${DETENT_INSTALL_SOURCE:-}"
+install_mode="${DETENT_INSTALL_MODE:-auto}"
 
 abort() {
 	printf '%s\n' "$1" >&2
@@ -31,7 +31,7 @@ script_dir() {
 
 source_checkout_dir() {
 	dir="$(script_dir)"
-	if [ -n "$dir" ] && [ -f "$dir/go.mod" ] && [ -d "$dir/cmd/symphony" ]; then
+	if [ -n "$dir" ] && [ -f "$dir/go.mod" ] && [ -d "$dir/cmd/detent" ]; then
 		printf '%s\n' "$dir"
 		return 0
 	fi
@@ -39,8 +39,8 @@ source_checkout_dir() {
 }
 
 choose_install_dir() {
-	if [ -n "${SYMPHONY_INSTALL_DIR:-}" ]; then
-		printf '%s\n' "$SYMPHONY_INSTALL_DIR"
+	if [ -n "${DETENT_INSTALL_DIR:-}" ]; then
+		printf '%s\n' "$DETENT_INSTALL_DIR"
 		return
 	fi
 	if [ -n "${PREFIX:-}" ]; then
@@ -55,8 +55,8 @@ choose_install_dir() {
 }
 
 detect_target() {
-	uname_s="${SYMPHONY_INSTALL_TEST_UNAME_S:-$(uname -s)}"
-	uname_m="${SYMPHONY_INSTALL_TEST_UNAME_M:-$(uname -m)}"
+	uname_s="${DETENT_INSTALL_TEST_UNAME_S:-$(uname -s)}"
+	uname_m="${DETENT_INSTALL_TEST_UNAME_M:-$(uname -m)}"
 
 	case "$uname_s" in
 		Darwin|darwin) os=darwin ;;
@@ -82,8 +82,8 @@ download_optional_file() {
 }
 
 release_tag() {
-	if [ -n "${SYMPHONY_VERSION:-}" ]; then
-		printf '%s\n' "$SYMPHONY_VERSION"
+	if [ -n "${DETENT_VERSION:-}" ]; then
+		printf '%s\n' "$DETENT_VERSION"
 		return
 	fi
 
@@ -205,7 +205,7 @@ install_release() {
 	fi
 
 	tag="$(release_tag)" || {
-		printf '%s\n' "Could not resolve the latest Symphony release; falling back to go install" >&2
+		printf '%s\n' "Could not resolve the latest Detent release; falling back to go install" >&2
 		return 1
 	}
 	version="$tag"
@@ -213,7 +213,7 @@ install_release() {
 	checksums="$tmp_dir/checksums.txt"
 
 	asset_name="$(download_archive "$tag" "$version" "$os" "$arch" "$archive")" || {
-		printf '%s\n' "No Symphony release asset found for $tag $os/$arch; falling back to go install" >&2
+		printf '%s\n' "No Detent release asset found for $tag $os/$arch; falling back to go install" >&2
 		return 1
 	}
 	download_checksums "$tag" "$version" "$checksums" || abort "Could not download checksums for release $tag"
@@ -221,43 +221,43 @@ install_release() {
 
 	mkdir -p "$tmp_dir/release"
 	tar -xzf "$archive" -C "$tmp_dir/release"
-	if [ ! -f "$tmp_dir/release/symphony" ]; then
-		abort "Release archive $asset_name did not contain symphony"
+	if [ ! -f "$tmp_dir/release/detent" ]; then
+		abort "Release archive $asset_name did not contain detent"
 	fi
-	cp "$tmp_dir/release/symphony" "$tmp_dir/symphony"
+	cp "$tmp_dir/release/detent" "$tmp_dir/detent"
 }
 
 install_go() {
-	version="${SYMPHONY_VERSION:-latest}"
+	version="${DETENT_VERSION:-latest}"
 	go_bin="$tmp_dir/go-bin"
 
-	command -v go >/dev/null 2>&1 || abort "Cannot install Symphony: release asset unavailable and go is not installed"
+	command -v go >/dev/null 2>&1 || abort "Cannot install Detent: release asset unavailable and go is not installed"
 	mkdir -p "$go_bin"
 	GOBIN="$go_bin" go install "$module_package@$version"
-	cp "$go_bin/symphony" "$tmp_dir/symphony"
+	cp "$go_bin/detent" "$tmp_dir/detent"
 }
 
 install_local() {
 	dir="$(source_checkout_dir)" || {
-		abort "Cannot build Symphony locally: install.sh is not running from a checkout"
+		abort "Cannot build Detent locally: install.sh is not running from a checkout"
 	}
 
 	build_version="$(git -C "$dir" describe --tags --always 2>/dev/null || echo dev)"
 	build_commit="$(git -C "$dir" rev-parse --short HEAD 2>/dev/null || echo none)"
 	build_date="$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
 	ldflags="-X main.version=$build_version -X main.commit=$build_commit -X main.date=$build_date"
-	(cd "$dir" && go build -ldflags "$ldflags" -o "$tmp_dir/symphony" ./cmd/symphony)
+	(cd "$dir" && go build -ldflags "$ldflags" -o "$tmp_dir/detent" ./cmd/detent)
 }
 
 copy_source() {
-	cp "$source_binary" "$tmp_dir/symphony"
+	cp "$source_binary" "$tmp_dir/detent"
 }
 
 install_binary() {
 	if command -v install >/dev/null 2>&1; then
-		install -m 0755 "$tmp_dir/symphony" "$target"
+		install -m 0755 "$tmp_dir/detent" "$target"
 	else
-		cp "$tmp_dir/symphony" "$target"
+		cp "$tmp_dir/detent" "$target"
 		chmod 0755 "$target"
 	fi
 }
@@ -270,7 +270,7 @@ install_release_or_go() {
 }
 
 install_dir="$(choose_install_dir)"
-target="$install_dir/symphony"
+target="$install_dir/detent"
 
 target_info="$(detect_target || true)"
 if [ -n "$target_info" ]; then
@@ -289,7 +289,7 @@ if [ ! -w "$install_dir" ]; then
 fi
 
 if ! (set -C; : > "$lock_path") 2>/dev/null; then
-	abort "Symphony is already installed on this host: $lock_path"
+	abort "Detent is already installed on this host: $lock_path"
 fi
 
 cleanup_lock=true
@@ -300,7 +300,7 @@ cleanup_lock_file() {
 }
 trap cleanup_lock_file EXIT
 
-tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/symphony-install.XXXXXX")"
+tmp_dir="$(mktemp -d "${TMPDIR:-/tmp}/detent-install.XXXXXX")"
 cleanup_tmp() {
 	rm -rf "$tmp_dir"
 }
@@ -319,7 +319,7 @@ elif [ "$install_mode" = "auto" ]; then
 		install_release_or_go
 	fi
 else
-	abort "Unknown SYMPHONY_INSTALL_MODE: $install_mode"
+	abort "Unknown DETENT_INSTALL_MODE: $install_mode"
 fi
 
 install_binary
@@ -330,4 +330,4 @@ install_binary
 } > "$lock_path"
 
 cleanup_lock=false
-echo "Installed Symphony at $target"
+echo "Installed Detent at $target"

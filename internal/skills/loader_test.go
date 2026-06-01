@@ -11,7 +11,7 @@ func TestLoadReadsSkillsDeterministicallyDeduplicatesAndCaps(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
-	skillsDir := filepath.Join(workspace, ".symphony", "skills")
+	skillsDir := filepath.Join(workspace, ".detent", "skills")
 	writeSkill(t, skillsDir, "01-alpha.md", "deploy", "Deploy changes.", "Issue mentions deploys.")
 	writeSkill(t, skillsDir, "02-duplicate.md", "deploy", "Duplicate deploy.", "Issue mentions deploys again.")
 	writeSkill(t, skillsDir, "03-migrate.md", "migrate", "Add migrations.", "Issue mentions schema changes.")
@@ -31,7 +31,7 @@ func TestLoadReadsSkillsDeterministicallyDeduplicatesAndCaps(t *testing.T) {
 	if result.Skills[0].Description != "Deploy changes." {
 		t.Fatalf("Description = %q", result.Skills[0].Description)
 	}
-	if !strings.HasSuffix(result.Skills[0].BodyPath, filepath.Join(".symphony", "skills", "01-alpha.md")) {
+	if !strings.HasSuffix(result.Skills[0].BodyPath, filepath.Join(".detent", "skills", "01-alpha.md")) {
 		t.Fatalf("BodyPath = %q", result.Skills[0].BodyPath)
 	}
 	if len(result.Errors) != 1 {
@@ -46,7 +46,7 @@ func TestLoadReportsInvalidSkillsAndKeepsValidSkills(t *testing.T) {
 	t.Parallel()
 
 	workspace := t.TempDir()
-	skillsDir := filepath.Join(workspace, ".symphony", "skills")
+	skillsDir := filepath.Join(workspace, ".detent", "skills")
 	writeSkill(t, skillsDir, "good.md", "good", "Good skill.", "Issue mentions a good path.")
 	writeFile(t, filepath.Join(skillsDir, "missing-name.md"), `---
 description: Missing name.

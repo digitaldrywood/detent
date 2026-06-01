@@ -1,20 +1,20 @@
-# Symphony
+# Detent
 
-[![CI](https://github.com/digitaldrywood/symphony/actions/workflows/ci.yml/badge.svg)](https://github.com/digitaldrywood/symphony/actions/workflows/ci.yml)
-[![License](https://img.shields.io/github/license/digitaldrywood/symphony)](LICENSE)
-[![Release](https://img.shields.io/github/v/release/digitaldrywood/symphony?include_prereleases&sort=semver)](https://github.com/digitaldrywood/symphony/releases)
+[![CI](https://github.com/digitaldrywood/detent/actions/workflows/ci.yml/badge.svg)](https://github.com/digitaldrywood/detent/actions/workflows/ci.yml)
+[![License](https://img.shields.io/github/license/digitaldrywood/detent)](LICENSE)
+[![Release](https://img.shields.io/github/v/release/digitaldrywood/detent?include_prereleases&sort=semver)](https://github.com/digitaldrywood/detent/releases)
 
-Symphony is an agent orchestrator for tracker-backed work queues, delivered as
+Detent is an agent orchestrator for tracker-backed work queues, delivered as
 a single Go binary. It polls a project board, creates isolated Git worktrees,
 dispatches Codex agents, and exposes live status through a web dashboard and a
 terminal status model.
 
-Symphony is designed for self-hosted software work: the same queue that tracks
+Detent is designed for self-hosted software work: the same queue that tracks
 release-readiness issues can dispatch the agents that implement them.
 
 The previous Elixir implementation is retained only as a cutover reference and
 should remain archived after the Go repository is renamed to
-`digitaldrywood/symphony`.
+`digitaldrywood/detent`.
 
 ## Philosophy / Why
 
@@ -36,7 +36,7 @@ intentional. This project rewards the same habits that make engineering teams
 effective without agents: small scopes, explicit acceptance criteria, tests,
 reviewable diffs, green CI, and clean merges.
 
-The original Elixir Symphony was an OTP agent orchestrator for a single
+The original Elixir Detent was an OTP agent orchestrator for a single
 project-backed engineering queue. It established the important shape:
 tracker-backed dispatch, pluggable connector boundaries, explicit workflow
 states, deterministic scheduling, dashboard visibility, and a terminal status
@@ -52,7 +52,7 @@ controls, and fair scheduling. GitHub Projects v2 is the production board and
 state machine: issues, status columns, priorities, labels, blockers, comments,
 and pull requests drive dispatch. The live dashboard has grown into an
 operator surface with charts, trends, timelines, hover detail, rate-limit
-state, budget state, and session detail. The CLI includes `symphony doctor`
+state, budget state, and session detail. The CLI includes `detent doctor`
 for preflight checks, flexible config discovery across explicit flags,
 environment variables, OS config paths, and legacy locations, plus a GoReleaser
 pipeline for release archives and checksums.
@@ -96,7 +96,7 @@ disciplined as you would be, every time, in parallel.
 Install the latest released binary with Go:
 
 ```sh
-go install github.com/digitaldrywood/symphony/cmd/symphony@latest
+go install github.com/digitaldrywood/detent/cmd/detent@latest
 ```
 
 Requirements:
@@ -144,7 +144,7 @@ export GITHUB_TOKEN="$(gh auth token)"
 gh project list --owner <org-or-user> --format json --limit 20
 ```
 
-3. Create a `WORKFLOW.md` in the repository you want Symphony to work on:
+3. Create a `WORKFLOW.md` in the repository you want Detent to work on:
 
 ```markdown
 ---
@@ -195,7 +195,7 @@ agent:
     allowed_issue_labels: []
   skills:
     enabled: true
-    path: .symphony/skills
+    path: .detent/skills
     max_skills_in_prompt: 50
 codex:
   command: codex app-server
@@ -220,37 +220,37 @@ human review.
 4. Create the global config and add the project:
 
 ```sh
-symphony init
-symphony add-project \
+detent init
+detent add-project \
   --id <id> \
   --workflow /absolute/path/to/project-checkout/WORKFLOW.md \
   --workdir /absolute/path/to/project-checkout
 ```
 
-5. Start Symphony:
+5. Start Detent:
 
 ```sh
-symphony --config ~/.symphony/global.yaml
+detent --config ~/.detent/global.yaml
 ```
 
 Open the dashboard at <http://localhost:4000>. Use `--host` and `--port` to
 override the address:
 
 ```sh
-symphony --config ~/.symphony/global.yaml --host 127.0.0.1 --port 4001
+detent --config ~/.detent/global.yaml --host 127.0.0.1 --port 4001
 ```
 
 ## Concepts
 
 ### Connectors
 
-Symphony isolates tracker integration behind a connector interface. The current
+Detent isolates tracker integration behind a connector interface. The current
 production connector is GitHub Projects. A memory connector is available for
 local development, and the connector boundary is where GitLab and Jira support
 will land later.
 
 GitHub configuration lives in each project's `WORKFLOW.md` frontmatter. The
-`project_slug` value is the GitHub ProjectV2 node id. Symphony reads issue
+`project_slug` value is the GitHub ProjectV2 node id. Detent reads issue
 state, priority, labels, blockers, and assignment from the board, then writes
 comments and state transitions back through the connector.
 
@@ -261,9 +261,9 @@ The recommended GitHub Project board states are:
 | State | Meaning |
 | --- | --- |
 | `Backlog` | Not eligible for agents yet. |
-| `Todo` | Ready for Symphony to claim and dispatch. |
+| `Todo` | Ready for Detent to claim and dispatch. |
 | `In Progress` | An agent is actively working or continuing work. |
-| `Blocked` | Symphony cannot continue without human action. |
+| `Blocked` | Detent cannot continue without human action. |
 | `Human Review` | The PR is ready for approval. |
 | `Rework` | Human or bot feedback needs another agent pass. |
 | `Merging` | Final rebase, validation, CI watch, and merge. |
@@ -286,16 +286,16 @@ stay busy while merge candidates wait for CI or a clean base branch.
 
 ## Multi-Project Operation
 
-Symphony separates host-level orchestration from per-project workflow:
+Detent separates host-level orchestration from per-project workflow:
 
-- `~/.symphony/global.yaml` lists projects and host-level scheduling settings.
+- `~/.detent/global.yaml` lists projects and host-level scheduling settings.
 - Each project has its own `WORKFLOW.md` with tracker credentials, states,
   workspace rules, Codex settings, budgets, hooks, and agent instructions.
 
 A minimal global config looks like this:
 
 ```yaml
-apiVersion: symphony/v1
+apiVersion: detent/v1
 kind: GlobalConfig
 global:
   max_concurrent_agents: 8
@@ -306,9 +306,9 @@ global:
     jitter_seconds: 10
     max_spawn_per_second: 2
 projects:
-  - id: symphony
-    workflow: /absolute/path/to/symphony/WORKFLOW.md
-    workdir: /absolute/path/to/symphony
+  - id: detent
+    workflow: /absolute/path/to/detent/WORKFLOW.md
+    workdir: /absolute/path/to/detent
     weight: 2
     priority: 1
   - id: website
@@ -327,26 +327,26 @@ means no explicit priority.
 Use the project administration commands to edit `global.yaml`:
 
 ```sh
-symphony --config ~/.symphony/global.yaml add-project \
+detent --config ~/.detent/global.yaml add-project \
   --id <id> \
   --workflow <WORKFLOW.md> \
   --workdir <dir> \
   --weight 1 \
   --priority 3
 
-symphony --config ~/.symphony/global.yaml pause <id>
-symphony --config ~/.symphony/global.yaml unpause <id>
-symphony --config ~/.symphony/global.yaml promote <id> --priority 1
-symphony --config ~/.symphony/global.yaml remove-project <id>
+detent --config ~/.detent/global.yaml pause <id>
+detent --config ~/.detent/global.yaml unpause <id>
+detent --config ~/.detent/global.yaml promote <id> --priority 1
+detent --config ~/.detent/global.yaml remove-project <id>
 ```
 
-These commands persist the global config. Restart a foreground Symphony process
+These commands persist the global config. Restart a foreground Detent process
 after structural edits unless your deployment wires the live manager signal path
 into the same process.
 
 ## Dashboard And APIs
 
-The web dashboard starts with the main `symphony` command. In running mode it
+The web dashboard starts with the main `detent` command. In running mode it
 shows live counts, running issues, retry queue, blocked work, completed
 sessions, token totals, budget status, and Codex rate-limit snapshots.
 
@@ -378,8 +378,8 @@ make dev
 make check
 ```
 
-`make dev` runs Air with `SYMPHONY_ENV=dev` and
-`SYMPHONY_LOG_LEVEL=debug`, builds `./tmp/symphony`, rotates
+`make dev` runs Air with `DETENT_ENV=dev` and
+`DETENT_LOG_LEVEL=debug`, builds `./tmp/detent`, rotates
 `tmp/air-combined.log`, and streams combined build and application output to
 `tmp/air-combined.log`.
 
@@ -391,31 +391,31 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor workflow.
 
 ## Logging
 
-Symphony logs with `log/slog`.
+Detent logs with `log/slog`.
 
-- `SYMPHONY_ENV=dev`, `development`, or `local` enables tint text logs.
-- `SYMPHONY_ENV=prod` or any other non-development value keeps JSON logs.
-- When `SYMPHONY_ENV` is unset, interactive stdout TTY runs use tint text logs;
+- `DETENT_ENV=dev`, `development`, or `local` enables tint text logs.
+- `DETENT_ENV=prod` or any other non-development value keeps JSON logs.
+- When `DETENT_ENV` is unset, interactive stdout TTY runs use tint text logs;
   non-TTY runs use JSON logs.
-- `SYMPHONY_LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
+- `DETENT_LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
 - Text logs are written to stdout; JSON logs are written to stderr.
 
 ## Configuration
 
-At startup, Symphony resolves `global.yaml` in this order. The first matching rule wins.
+At startup, Detent resolves `global.yaml` in this order. The first matching rule wins.
 
 | Order | Rule | Path |
 | --- | --- | --- |
 | 1 | `--config <path>` | Direct file path from the CLI flag |
-| 2 | `SYMPHONY_CONFIG=<file>` | Direct file path from the environment |
-| 3 | `SYMPHONY_HOME=<dir>` | `<dir>/global.yaml` |
-| 4 | `os.UserConfigDir()` | `<config-dir>/symphony/global.yaml` |
-| 5 | Legacy home config | `~/.symphony/global.yaml` |
+| 2 | `DETENT_CONFIG=<file>` | Direct file path from the environment |
+| 3 | `DETENT_HOME=<dir>` | `<dir>/global.yaml` |
+| 4 | `os.UserConfigDir()` | `<config-dir>/detent/global.yaml` |
+| 5 | Legacy home config | `~/.detent/global.yaml` |
 
-`os.UserConfigDir()` maps to `%AppData%\symphony\global.yaml` on Windows, `~/Library/Application Support/symphony/global.yaml` on macOS, and `~/.config/symphony/global.yaml` on Linux while honoring `XDG_CONFIG_HOME`.
+`os.UserConfigDir()` maps to `%AppData%\detent\global.yaml` on Windows, `~/Library/Application Support/detent/global.yaml` on macOS, and `~/.config/detent/global.yaml` on Linux while honoring `XDG_CONFIG_HOME`.
 
-If no global config is found, Symphony keeps the single-project fallback and looks for `WORKFLOW.md` in the current working directory. Use `symphony config path` to print the resolved config path and the rule that selected it.
+If no global config is found, Detent keeps the single-project fallback and looks for `WORKFLOW.md` in the current working directory. Use `detent config path` to print the resolved config path and the rule that selected it.
 
 ## License
 
-Symphony is released under the MIT license. See [LICENSE](LICENSE).
+Detent is released under the MIT license. See [LICENSE](LICENSE).

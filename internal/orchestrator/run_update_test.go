@@ -5,7 +5,7 @@ import (
 	"testing"
 	"time"
 
-	runpkg "github.com/digitaldrywood/symphony/internal/runner"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
 func TestUsageUpdateHandlerDoesNotBlockWhenBufferIsFull(t *testing.T) {

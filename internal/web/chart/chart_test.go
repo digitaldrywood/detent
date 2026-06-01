@@ -4,7 +4,7 @@ import (
 	"math"
 	"testing"
 
-	"github.com/digitaldrywood/symphony/internal/web/chart"
+	"github.com/digitaldrywood/detent/internal/web/chart"
 )
 
 func TestScalePoints(t *testing.T) {

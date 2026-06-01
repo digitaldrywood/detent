@@ -3,7 +3,7 @@ package templates
 import (
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 templ Dashboard(data DashboardData) {
@@ -24,7 +24,7 @@ templ Dashboard(data DashboardData) {
 					})
 				}
 				window.addEventListener("DOMContentLoaded", function () {
-					var densityKey = "symphony.dashboard.density"
+					var densityKey = "detent.dashboard.density"
 					try {
 						applyDashboardDensity(window.localStorage.getItem(densityKey))
 					} catch (_error) {
@@ -57,7 +57,7 @@ templ Dashboard(data DashboardData) {
 							<div class="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
 								<span class="inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent">
 									<span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
-									<span>Symphony</span>
+									<span>Detent</span>
 								</span>
 								<span>Observability</span>
 							</div>
@@ -133,7 +133,7 @@ templ SnapshotView(data DashboardData) {
 						if runningCount(data.Snapshot) > 0 {
 							@dashboardEmptyState("Running session details are unavailable.", "The summary count is live, but detailed agent rows have not arrived in this snapshot.", "bg-accent")
 						} else {
-							@dashboardEmptyState("No active issue sessions.", "New agent sessions will appear as Symphony dispatches work.", "bg-accent")
+							@dashboardEmptyState("No active issue sessions.", "New agent sessions will appear as Detent dispatches work.", "bg-accent")
 						}
 					</div>
 				} else {
@@ -293,7 +293,7 @@ templ snapshotLoading() {
 			<span class="mt-1 h-2.5 w-2.5 rounded-full bg-warning"></span>
 			<div>
 				<h2 class="text-sm font-semibold">Waiting for first telemetry snapshot.</h2>
-				<p class="mt-1 text-sm text-warning">Live updates will fill this dashboard when Symphony publishes the next snapshot.</p>
+				<p class="mt-1 text-sm text-warning">Live updates will fill this dashboard when Detent publishes the next snapshot.</p>
 			</div>
 		</div>
 	</section>
@@ -757,7 +757,7 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Recent sessions", helpRecentSessions, "recent-sessions")
-				<p class="text-sm text-muted-foreground">Last completed Codex sessions across Symphony runs.</p>
+				<p class="text-sm text-muted-foreground">Last completed Codex sessions across Detent runs.</p>
 			</div>
 			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success">{ formatCount(completedCount(snapshot)) }</span>
 		</div>

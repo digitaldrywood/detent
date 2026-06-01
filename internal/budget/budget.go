@@ -9,7 +9,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/store"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 type ReasonCode string
@@ -264,7 +264,7 @@ func (r Refusal) Comment() string {
 			resetAt = r.ResetAt.UTC().Format(time.RFC3339)
 		}
 		return strings.TrimSpace(fmt.Sprintf(`
-Symphony refused to dispatch this issue because the projected dispatch would exceed the daily budget.
+Detent refused to dispatch this issue because the projected dispatch would exceed the daily budget.
 
 Current daily spend: %s
 Projected dispatch cost: %s
@@ -275,7 +275,7 @@ This issue will be reconsidered after: %s
 `, currentSpend, projectedCost, projectedSpend, max, model, resetAt, r.CooldownUntil.UTC().Format(time.RFC3339)))
 	case ReasonPerIssueMaxUSD:
 		return strings.TrimSpace(fmt.Sprintf(`
-Symphony refused to dispatch this issue because the projected dispatch would exceed the per-issue budget.
+Detent refused to dispatch this issue because the projected dispatch would exceed the per-issue budget.
 
 Current issue spend: %s
 Projected dispatch cost: %s
@@ -286,7 +286,7 @@ This issue will be reconsidered after: %s
 `, currentSpend, projectedCost, projectedSpend, max, model, r.CooldownUntil.UTC().Format(time.RFC3339)))
 	default:
 		return strings.TrimSpace(fmt.Sprintf(`
-Symphony refused to dispatch this issue because the budget check failed.
+Detent refused to dispatch this issue because the budget check failed.
 
 Current spend: %s
 Projected dispatch cost: %s

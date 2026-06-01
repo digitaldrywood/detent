@@ -1,5 +1,5 @@
--- name: CreateSymphonyRun :one
-INSERT INTO symphony_runs (
+-- name: CreateDetentRun :one
+INSERT INTO detent_runs (
   started_at,
   stopped_at,
   restart_reason,
@@ -12,13 +12,13 @@ INSERT INTO symphony_runs (
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
--- name: GetSymphonyRun :one
+-- name: GetDetentRun :one
 SELECT *
-FROM symphony_runs
+FROM detent_runs
 WHERE id = ?;
 
--- name: UpdateSymphonyRun :execrows
-UPDATE symphony_runs
+-- name: UpdateDetentRun :execrows
+UPDATE detent_runs
 SET stopped_at = COALESCE(?, stopped_at),
     restart_reason = COALESCE(?, restart_reason),
     peak_concurrent_agents = ?,
@@ -77,7 +77,7 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COALESCE(SUM(runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
   CAST(COUNT(*) AS INTEGER) AS sessions,
-  CAST((SELECT COUNT(*) FROM symphony_runs) AS INTEGER) AS runs
+  CAST((SELECT COUNT(*) FROM detent_runs) AS INTEGER) AS runs
 FROM codex_sessions
 WHERE completed_at IS NOT NULL;
 

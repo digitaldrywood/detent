@@ -7,8 +7,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/scheduler"
-	"github.com/digitaldrywood/symphony/internal/store"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestWeightedFairSelectProjectConvergesToWeights(t *testing.T) {

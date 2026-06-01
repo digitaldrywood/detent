@@ -81,8 +81,8 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 	return i, err
 }
 
-const createSymphonyRun = `-- name: CreateSymphonyRun :one
-INSERT INTO symphony_runs (
+const createDetentRun = `-- name: CreateDetentRun :one
+INSERT INTO detent_runs (
   started_at,
   stopped_at,
   restart_reason,
@@ -96,7 +96,7 @@ INSERT INTO symphony_runs (
 RETURNING id, started_at, stopped_at, restart_reason, peak_concurrent_agents, sessions_launched, input_tokens, output_tokens, total_tokens, runtime_seconds
 `
 
-type CreateSymphonyRunParams struct {
+type CreateDetentRunParams struct {
 	StartedAt            string         `json:"started_at"`
 	StoppedAt            sql.NullString `json:"stopped_at"`
 	RestartReason        sql.NullString `json:"restart_reason"`
@@ -108,8 +108,8 @@ type CreateSymphonyRunParams struct {
 	RuntimeSeconds       int64          `json:"runtime_seconds"`
 }
 
-func (q *Queries) CreateSymphonyRun(ctx context.Context, arg CreateSymphonyRunParams) (SymphonyRun, error) {
-	row := q.db.QueryRowContext(ctx, createSymphonyRun,
+func (q *Queries) CreateDetentRun(ctx context.Context, arg CreateDetentRunParams) (DetentRun, error) {
+	row := q.db.QueryRowContext(ctx, createDetentRun,
 		arg.StartedAt,
 		arg.StoppedAt,
 		arg.RestartReason,
@@ -120,7 +120,7 @@ func (q *Queries) CreateSymphonyRun(ctx context.Context, arg CreateSymphonyRunPa
 		arg.TotalTokens,
 		arg.RuntimeSeconds,
 	)
-	var i SymphonyRun
+	var i DetentRun
 	err := row.Scan(
 		&i.ID,
 		&i.StartedAt,
@@ -340,15 +340,15 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 	return i, err
 }
 
-const getSymphonyRun = `-- name: GetSymphonyRun :one
+const getDetentRun = `-- name: GetDetentRun :one
 SELECT id, started_at, stopped_at, restart_reason, peak_concurrent_agents, sessions_launched, input_tokens, output_tokens, total_tokens, runtime_seconds
-FROM symphony_runs
+FROM detent_runs
 WHERE id = ?
 `
 
-func (q *Queries) GetSymphonyRun(ctx context.Context, id int64) (SymphonyRun, error) {
-	row := q.db.QueryRowContext(ctx, getSymphonyRun, id)
-	var i SymphonyRun
+func (q *Queries) GetDetentRun(ctx context.Context, id int64) (DetentRun, error) {
+	row := q.db.QueryRowContext(ctx, getDetentRun, id)
+	var i DetentRun
 	err := row.Scan(
 		&i.ID,
 		&i.StartedAt,
@@ -460,7 +460,7 @@ SELECT
   CAST(COALESCE(SUM(total_tokens), 0) AS INTEGER) AS total_tokens,
   CAST(COALESCE(SUM(runtime_seconds), 0) AS INTEGER) AS runtime_seconds,
   CAST(COUNT(*) AS INTEGER) AS sessions,
-  CAST((SELECT COUNT(*) FROM symphony_runs) AS INTEGER) AS runs
+  CAST((SELECT COUNT(*) FROM detent_runs) AS INTEGER) AS runs
 FROM codex_sessions
 WHERE completed_at IS NOT NULL
 `
@@ -573,8 +573,8 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 	return items, nil
 }
 
-const updateSymphonyRun = `-- name: UpdateSymphonyRun :execrows
-UPDATE symphony_runs
+const updateDetentRun = `-- name: UpdateDetentRun :execrows
+UPDATE detent_runs
 SET stopped_at = COALESCE(?, stopped_at),
     restart_reason = COALESCE(?, restart_reason),
     peak_concurrent_agents = ?,
@@ -586,7 +586,7 @@ SET stopped_at = COALESCE(?, stopped_at),
 WHERE id = ?
 `
 
-type UpdateSymphonyRunParams struct {
+type UpdateDetentRunParams struct {
 	StoppedAt            sql.NullString `json:"stopped_at"`
 	RestartReason        sql.NullString `json:"restart_reason"`
 	PeakConcurrentAgents int64          `json:"peak_concurrent_agents"`
@@ -598,8 +598,8 @@ type UpdateSymphonyRunParams struct {
 	ID                   int64          `json:"id"`
 }
 
-func (q *Queries) UpdateSymphonyRun(ctx context.Context, arg UpdateSymphonyRunParams) (int64, error) {
-	result, err := q.db.ExecContext(ctx, updateSymphonyRun,
+func (q *Queries) UpdateDetentRun(ctx context.Context, arg UpdateDetentRunParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateDetentRun,
 		arg.StoppedAt,
 		arg.RestartReason,
 		arg.PeakConcurrentAgents,

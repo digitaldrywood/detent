@@ -25,7 +25,7 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 		SourceRoot: source,
 		AutoBranch: true,
 		Hooks: Hooks{
-			AfterCreate: "printf '%s|%s|%s|%s|%s\n' \"$PWD\" \"$(git branch --show-current)\" \"$SYMPHONY_ISSUE_IDENTIFIER\" \"$SYMPHONY_WORKSPACE_KEY\" \"$SYMPHONY_BRANCH\" >> " + shellQuote(tracePath),
+			AfterCreate: "printf '%s|%s|%s|%s|%s\n' \"$PWD\" \"$(git branch --show-current)\" \"$DETENT_ISSUE_IDENTIFIER\" \"$DETENT_WORKSPACE_KEY\" \"$DETENT_BRANCH\" >> " + shellQuote(tracePath),
 			Timeout:     time.Second,
 		},
 	})
@@ -47,11 +47,11 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 	if filepath.Base(info.Path) != "DD_19" {
 		t.Fatalf("Create() Path = %q, want basename DD_19", info.Path)
 	}
-	if info.Branch != "symphony/dd_19" {
-		t.Fatalf("Create() Branch = %q, want symphony/dd_19", info.Branch)
+	if info.Branch != "detent/dd_19" {
+		t.Fatalf("Create() Branch = %q, want detent/dd_19", info.Branch)
 	}
-	if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != "symphony/dd_19" {
-		t.Fatalf("worktree branch = %q, want symphony/dd_19", got)
+	if got := strings.TrimSpace(runGit(t, info.Path, "branch", "--show-current")); got != "detent/dd_19" {
+		t.Fatalf("worktree branch = %q, want detent/dd_19", got)
 	}
 	if got := readFile(t, filepath.Join(info.Path, "README.md")); got != "source repo\n" {
 		t.Fatalf("README.md = %q, want source repo", got)
@@ -65,17 +65,17 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 	if fields[0] != info.Path {
 		t.Fatalf("after_create cwd = %q, want %q", fields[0], info.Path)
 	}
-	if fields[1] != "symphony/dd_19" {
-		t.Fatalf("after_create branch = %q, want symphony/dd_19", fields[1])
+	if fields[1] != "detent/dd_19" {
+		t.Fatalf("after_create branch = %q, want detent/dd_19", fields[1])
 	}
 	if fields[2] != "DD/19" {
-		t.Fatalf("SYMPHONY_ISSUE_IDENTIFIER = %q, want DD/19", fields[2])
+		t.Fatalf("DETENT_ISSUE_IDENTIFIER = %q, want DD/19", fields[2])
 	}
 	if fields[3] != "DD_19" {
-		t.Fatalf("SYMPHONY_WORKSPACE_KEY = %q, want DD_19", fields[3])
+		t.Fatalf("DETENT_WORKSPACE_KEY = %q, want DD_19", fields[3])
 	}
-	if fields[4] != "symphony/dd_19" {
-		t.Fatalf("SYMPHONY_BRANCH = %q, want symphony/dd_19", fields[4])
+	if fields[4] != "detent/dd_19" {
+		t.Fatalf("DETENT_BRANCH = %q, want detent/dd_19", fields[4])
 	}
 }
 
@@ -183,8 +183,8 @@ func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 		SourceRoot: source,
 		AutoBranch: true,
 		Hooks: Hooks{
-			BeforeRun: "printf 'before:%s:%s\n' \"$PWD\" \"$SYMPHONY_WORKSPACE_KEY\" >> " + shellQuote(tracePath),
-			AfterRun:  "printf 'after:%s:%s\n' \"$PWD\" \"$SYMPHONY_WORKSPACE_KEY\" >> " + shellQuote(tracePath),
+			BeforeRun: "printf 'before:%s:%s\n' \"$PWD\" \"$DETENT_WORKSPACE_KEY\" >> " + shellQuote(tracePath),
+			AfterRun:  "printf 'after:%s:%s\n' \"$PWD\" \"$DETENT_WORKSPACE_KEY\" >> " + shellQuote(tracePath),
 			Timeout:   time.Second,
 		},
 	})
@@ -262,7 +262,7 @@ func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
 		SourceRoot: source,
 		AutoBranch: true,
 		Hooks: Hooks{
-			BeforeRemove: "printf '%s\n' \"$SYMPHONY_WORKSPACE_KEY\" >> " + shellQuote(tracePath),
+			BeforeRemove: "printf '%s\n' \"$DETENT_WORKSPACE_KEY\" >> " + shellQuote(tracePath),
 			Timeout:      time.Second,
 		},
 	})

@@ -1,6 +1,6 @@
 ---
 name: Bug report
-about: Report reproducible Symphony behavior that is broken or incorrect.
+about: Report reproducible Detent behavior that is broken or incorrect.
 title: "bug: "
 labels: ""
 assignees: ""
@@ -25,6 +25,6 @@ assignees: ""
 
 - OS:
 - Go version:
-- Symphony version or commit:
+- Detent version or commit:
 
 ## Logs Or Screenshots

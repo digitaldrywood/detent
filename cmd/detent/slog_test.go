@@ -51,20 +51,20 @@ func TestSetupLoggerSetsDefault(t *testing.T) {
 	}
 }
 
-func TestSetupLoggerFromEnvUsesSymphonyVariables(t *testing.T) {
+func TestSetupLoggerFromEnvUsesDetentVariables(t *testing.T) {
 	previous := slog.Default()
 	t.Cleanup(func() {
 		slog.SetDefault(previous)
 	})
-	t.Setenv("SYMPHONY_ENV", "development")
+	t.Setenv("DETENT_ENV", "development")
 	t.Setenv("ENV", "production")
-	t.Setenv("SYMPHONY_LOG_LEVEL", "debug")
+	t.Setenv("DETENT_LOG_LEVEL", "debug")
 	t.Setenv("LOG_LEVEL", "error")
 
 	logger := setupLoggerFromEnv(&bytes.Buffer{}, &bytes.Buffer{})
 
 	if !logger.Enabled(context.Background(), slog.LevelDebug) {
-		t.Fatal("expected SYMPHONY_LOG_LEVEL to enable debug records")
+		t.Fatal("expected DETENT_LOG_LEVEL to enable debug records")
 	}
 }
 
@@ -182,9 +182,9 @@ func TestNewLogHandlerAllowsNilWriter(t *testing.T) {
 }
 
 func TestEnvValueFallback(t *testing.T) {
-	t.Setenv("SYMPHONY_TEST_FALLBACK", "fallback")
+	t.Setenv("DETENT_TEST_FALLBACK", "fallback")
 
-	if got := envValue("SYMPHONY_TEST_PRIMARY", "SYMPHONY_TEST_FALLBACK"); got != "fallback" {
+	if got := envValue("DETENT_TEST_PRIMARY", "DETENT_TEST_FALLBACK"); got != "fallback" {
 		t.Fatalf("envValue fallback = %q, want fallback", got)
 	}
 }

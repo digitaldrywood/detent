@@ -12,9 +12,9 @@ import (
 
 	"gopkg.in/yaml.v3"
 
-	"github.com/digitaldrywood/symphony/internal/cli"
-	globalconfig "github.com/digitaldrywood/symphony/internal/config/global"
-	"github.com/digitaldrywood/symphony/internal/project"
+	"github.com/digitaldrywood/detent/internal/cli"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/project"
 )
 
 func TestRootCommandHelpListsAdminCommands(t *testing.T) {
@@ -31,7 +31,7 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, want := range []string{"symphony", "agent orchestrator", "doctor", "init", "add-project", "pause", "unpause", "promote", "remove-project"} {
+	for _, want := range []string{"detent", "agent orchestrator", "doctor", "init", "add-project", "pause", "unpause", "promote", "remove-project"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
@@ -152,7 +152,7 @@ func TestRootCommandCapturesHeadlessFlagAndTerminalState(t *testing.T) {
 
 func TestRootCommandPrintsBootBanner(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+	t.Setenv("DETENT_HOME", filepath.Join(root, ".detent"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -160,7 +160,7 @@ func TestRootCommandPrintsBootBanner(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--config", filepath.Join(root, ".symphony", "global.yaml"), "--host", "127.0.0.1", "--port", "0"})
+	cmd.SetArgs([]string{"--config", filepath.Join(root, ".detent", "global.yaml"), "--host", "127.0.0.1", "--port", "0"})
 
 	if err := cmd.Execute(); !errors.Is(err, context.Canceled) {
 		t.Fatalf("Execute() error = %v, want %v", err, context.Canceled)
@@ -168,8 +168,8 @@ func TestRootCommandPrintsBootBanner(t *testing.T) {
 
 	output := stdout.String()
 	for _, want := range []string{
-		"Symphony v1.2.3",
-		"Project: https://github.com/digitaldrywood/symphony",
+		"Detent v1.2.3",
+		"Project: https://github.com/digitaldrywood/detent",
 		"Dashboard: http://localhost:",
 	} {
 		if !strings.Contains(output, want) {
@@ -185,7 +185,7 @@ func TestRootCommandPrintsBootBanner(t *testing.T) {
 
 func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+	t.Setenv("DETENT_HOME", filepath.Join(root, ".detent"))
 	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), validWorkflowContent())
 	t.Chdir(root)
 
@@ -219,7 +219,7 @@ func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing
 
 func TestRootCommandUsesDefaultWorkflowServerAddress(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+	t.Setenv("DETENT_HOME", filepath.Join(root, ".detent"))
 	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer("0.0.0.0", 4101))
 	t.Chdir(root)
 
@@ -245,7 +245,7 @@ func TestRootCommandUsesConfiguredProjectWorkflowServerAddress(t *testing.T) {
 	paths := createProjectFilesWithWorkflow(t, workflowContentWithServer("127.0.0.2", 4102))
 	configPath := filepath.Join(paths.root, "global.yaml")
 	writeGlobalConfig(t, configPath, []globalconfig.Project{
-		{ID: "symphony", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+		{ID: "detent", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
 	})
 
 	booted := make(chan cli.BootConfig, 1)
@@ -266,7 +266,7 @@ func TestRootCommandUsesConfiguredProjectWorkflowServerAddress(t *testing.T) {
 
 func TestRootCommandCLIAddressOverridesWorkflowServerAddress(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+	t.Setenv("DETENT_HOME", filepath.Join(root, ".detent"))
 	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer("0.0.0.0", 4103))
 	t.Chdir(root)
 
@@ -298,7 +298,7 @@ func TestRootCommandUsesOnboardingModeWithoutValidWorkflow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
-			t.Setenv("SYMPHONY_HOME", filepath.Join(root, ".symphony"))
+			t.Setenv("DETENT_HOME", filepath.Join(root, ".detent"))
 			if tt.content != "" {
 				writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), tt.content)
 			}
@@ -331,7 +331,7 @@ func TestRootCommandUsesOnboardingModeWithoutValidWorkflow(t *testing.T) {
 func TestInitWritesDefaultGlobalConfig(t *testing.T) {
 	t.Parallel()
 
-	path := filepath.Join(t.TempDir(), ".symphony", "global.yaml")
+	path := filepath.Join(t.TempDir(), ".detent", "global.yaml")
 	cmd := cli.NewRootCommand(context.Background())
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
@@ -389,7 +389,7 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--config", configPath,
 		"add-project",
-		"--id", " symphony ",
+		"--id", " detent ",
 		"--workflow", paths.workflowPath,
 		"--workdir", paths.workdirPath,
 		"--weight", "5",
@@ -411,7 +411,7 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 	}
 	got := cfg.Projects[0]
 	want := globalconfig.Project{
-		ID:            "symphony",
+		ID:            "detent",
 		Workflow:      paths.workflowPath,
 		Workdir:       paths.workdirPath,
 		Weight:        5,
@@ -436,7 +436,7 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 	configPath := filepath.Join(paths.root, "global.yaml")
 	writeGlobalConfig(t, configPath, []globalconfig.Project{
 		{
-			ID:       "symphony",
+			ID:       "detent",
 			Workflow: paths.workflowPath,
 			Workdir:  paths.workdirPath,
 			Weight:   2,
@@ -462,31 +462,31 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 		}
 	}
 
-	runCommand("pause", "symphony")
-	assertProject(t, configPath, "symphony", func(project globalconfig.Project) {
+	runCommand("pause", "detent")
+	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
 		if !project.Paused {
 			t.Fatal("Paused = false, want true")
 		}
 	})
-	assertSignal(t, signals, cli.OperationPauseProject, "symphony")
+	assertSignal(t, signals, cli.OperationPauseProject, "detent")
 
-	runCommand("unpause", "symphony")
-	assertProject(t, configPath, "symphony", func(project globalconfig.Project) {
+	runCommand("unpause", "detent")
+	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
 		if project.Paused {
 			t.Fatal("Paused = true, want false")
 		}
 	})
-	assertSignal(t, signals, cli.OperationUnpauseProject, "symphony")
+	assertSignal(t, signals, cli.OperationUnpauseProject, "detent")
 
-	runCommand("promote", "symphony", "--priority", "1")
-	assertProject(t, configPath, "symphony", func(project globalconfig.Project) {
+	runCommand("promote", "detent", "--priority", "1")
+	assertProject(t, configPath, "detent", func(project globalconfig.Project) {
 		if project.Priority != 1 {
 			t.Fatalf("Priority = %d, want 1", project.Priority)
 		}
 	})
-	assertSignal(t, signals, cli.OperationPromoteProject, "symphony")
+	assertSignal(t, signals, cli.OperationPromoteProject, "detent")
 
-	runCommand("remove-project", "symphony")
+	runCommand("remove-project", "detent")
 	cfg, err := globalconfig.Read(configPath)
 	if err != nil {
 		t.Fatalf("Read() error = %v", err)
@@ -494,20 +494,20 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 	if len(cfg.Projects) != 0 {
 		t.Fatalf("Projects = %#v, want empty", cfg.Projects)
 	}
-	assertSignal(t, signals, cli.OperationRemoveProject, "symphony")
+	assertSignal(t, signals, cli.OperationRemoveProject, "detent")
 }
 
 func TestProjectAdminCommandsPreserveProjectPathLiterals(t *testing.T) {
 	t.Parallel()
 
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
-	if err := os.WriteFile(configPath, []byte(`apiVersion: symphony/v1
+	if err := os.WriteFile(configPath, []byte(`apiVersion: detent/v1
 kind: GlobalConfig
 global:
   max_concurrent_agents: 8
   scheduling: weighted
 projects:
-  - id: symphony
+  - id: detent
     workflow: cli.go
     workdir: .
     weight: 1
@@ -524,7 +524,7 @@ projects:
 	cmd := cli.NewRootCommand(context.Background())
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--config", configPath, "pause", "symphony"})
+	cmd.SetArgs([]string{"--config", configPath, "pause", "detent"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -558,7 +558,7 @@ projects:
 		}
 	}
 	if !written.Projects[0].Paused {
-		t.Fatal("symphony Paused = false, want true")
+		t.Fatal("detent Paused = false, want true")
 	}
 	if written.Projects[1].Paused {
 		t.Fatal("docs Paused = true, want false")
@@ -594,7 +594,7 @@ func TestAddProjectRejectsDuplicateID(t *testing.T) {
 	paths := createProjectFiles(t)
 	configPath := filepath.Join(paths.root, "global.yaml")
 	writeGlobalConfig(t, configPath, []globalconfig.Project{
-		{ID: "symphony", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+		{ID: "detent", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
 	})
 
 	cmd := cli.NewRootCommand(context.Background())
@@ -603,7 +603,7 @@ func TestAddProjectRejectsDuplicateID(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--config", configPath,
 		"add-project",
-		"--id", "symphony",
+		"--id", "detent",
 		"--workflow", paths.workflowPath,
 		"--workdir", paths.workdirPath,
 	})
@@ -629,7 +629,7 @@ func TestWithProjectManagerSignalsLiveManager(t *testing.T) {
 	cmd.SetArgs([]string{
 		"--config", configPath,
 		"add-project",
-		"--id", "symphony",
+		"--id", "detent",
 		"--workflow", paths.workflowPath,
 		"--workdir", paths.workdirPath,
 	})
@@ -638,8 +638,8 @@ func TestWithProjectManagerSignalsLiveManager(t *testing.T) {
 		t.Fatalf("Execute() error = %v", err)
 	}
 
-	if manager.added.ID != "symphony" {
-		t.Fatalf("added project = %#v, want symphony", manager.added)
+	if manager.added.ID != "detent" {
+		t.Fatalf("added project = %#v, want detent", manager.added)
 	}
 }
 

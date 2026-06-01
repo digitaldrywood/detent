@@ -4,7 +4,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func TestThroughputRateFormatsRollingTokenTPS(t *testing.T) {

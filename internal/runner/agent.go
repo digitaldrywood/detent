@@ -13,14 +13,14 @@ import (
 	"sync"
 	"time"
 
-	"github.com/digitaldrywood/symphony/internal/budget"
-	"github.com/digitaldrywood/symphony/internal/codex"
-	"github.com/digitaldrywood/symphony/internal/config"
-	"github.com/digitaldrywood/symphony/internal/connector"
-	"github.com/digitaldrywood/symphony/internal/skills"
-	"github.com/digitaldrywood/symphony/internal/store"
-	"github.com/digitaldrywood/symphony/internal/telemetry"
-	"github.com/digitaldrywood/symphony/internal/workspace"
+	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/codex"
+	"github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const (

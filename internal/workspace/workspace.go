@@ -302,7 +302,7 @@ func (l *LocalGit) branchName(issue Issue, key string) string {
 	if strings.TrimSpace(issue.BranchName) != "" {
 		return strings.TrimSpace(issue.BranchName)
 	}
-	return "symphony/" + strings.ToLower(key)
+	return "detent/" + strings.ToLower(key)
 }
 
 func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch string) (bool, error) {
@@ -513,11 +513,11 @@ func gitCommonDir(ctx context.Context, dir string) (string, error) {
 func hookEnv(info Info, issue Issue) []string {
 	env := append([]string{}, os.Environ()...)
 	values := map[string]string{
-		"SYMPHONY_WORKSPACE":        info.Path,
-		"SYMPHONY_WORKSPACE_KEY":    info.Key,
-		"SYMPHONY_BRANCH":           info.Branch,
-		"SYMPHONY_ISSUE_ID":         issue.ID,
-		"SYMPHONY_ISSUE_IDENTIFIER": issue.Identifier,
+		"DETENT_WORKSPACE":        info.Path,
+		"DETENT_WORKSPACE_KEY":    info.Key,
+		"DETENT_BRANCH":           info.Branch,
+		"DETENT_ISSUE_ID":         issue.ID,
+		"DETENT_ISSUE_IDENTIFIER": issue.Identifier,
 	}
 	for key, value := range values {
 		env = append(env, key+"="+value)

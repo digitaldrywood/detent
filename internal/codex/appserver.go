@@ -16,8 +16,8 @@ const (
 	turnStartRequestID   = 3
 	methodNotFoundCode   = -32601
 
-	defaultClientName    = "symphony-orchestrator"
-	defaultClientTitle   = "Symphony Orchestrator"
+	defaultClientName    = "detent-orchestrator"
+	defaultClientTitle   = "Detent Orchestrator"
 	defaultClientVersion = "0.1.0"
 
 	defaultReadTimeout = 5 * time.Second
