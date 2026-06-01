@@ -13,7 +13,7 @@ type CodexSession struct {
 	RunID          sql.NullInt64  `json:"run_id"`
 	IssueID        sql.NullString `json:"issue_id"`
 	Identifier     sql.NullString `json:"identifier"`
-	IssueUrl       sql.NullString `json:"issue_url"`
+	IssueURL       sql.NullString `json:"issue_url"`
 	StartedAt      sql.NullString `json:"started_at"`
 	CompletedAt    sql.NullString `json:"completed_at"`
 	Turns          int64          `json:"turns"`
