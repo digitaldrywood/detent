@@ -10,7 +10,6 @@ import (
 	"strings"
 	"testing"
 
-	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -162,18 +161,30 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	content := string(raw)
+	sourceRoot := filepath.Dir(workflowPath)
 	for _, want := range []string{
 		"tracker:\n  kind: github",
 		"api_key: $GITHUB_TOKEN",
 		"project_slug: PVT_project",
-		"codex:\n  command: codex app-server\n  shell: " + commandshell.Default(),
-		"hooks:\n  shell: " + commandshell.Default(),
-		"git clone --depth 1 https://github.com/digitaldrywood/detent .",
+		"source_root: " + sourceRoot,
+		"codex:\n  command: codex app-server",
+		"hooks:\n  timeout_ms: 60000",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"You are working on GitHub issue `{{ issue.identifier }}`",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("workflow missing %q:\n%s", want, content)
+		}
+	}
+	for _, unwanted := range []string{
+		"codex:\n  command: codex app-server\n  shell:",
+		"hooks:\n  shell:",
+		"after_create:",
+		"git clone",
+		"git worktree add",
+	} {
+		if strings.Contains(content, unwanted) {
+			t.Fatalf("workflow contains %q:\n%s", unwanted, content)
 		}
 	}
 }

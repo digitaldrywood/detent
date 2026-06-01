@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -15,6 +16,7 @@ import (
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 var errProjectFactoryStub = errors.New("project factory stub")
@@ -26,7 +28,7 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = t.TempDir()
 
-	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", nil, nil)
+	run, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", nil, nil)
 	if err != nil {
 		t.Fatalf("buildRunner() error = %v", err)
 	}
@@ -46,7 +48,7 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 	cfg.Workspace.Root = t.TempDir()
 	cfg.Budget.PricingPath = filepath.Join(t.TempDir(), "missing-models.yaml")
 
-	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", nil, nil)
+	_, err := buildRunner(workflowconfig.Workflow{Config: cfg}, "alpha", "", nil, nil)
 	if err == nil {
 		t.Fatal("buildRunner() error = nil, want pricing load error")
 	}
@@ -65,6 +67,33 @@ func TestBuildCodexCommandUsesConfiguredShell(t *testing.T) {
 	cmd := buildCodexCommand(context.Background(), cfg)
 	if got := strings.Join(cmd.Args, "\x00"); got != "bash\x00-c\x00codex app-server --experimental" {
 		t.Fatalf("Args = %#v, want bash -c configured command", cmd.Args)
+	}
+}
+
+func TestBuildWorkspaceBackendUsesProjectWorkdirAsSourceRoot(t *testing.T) {
+	t.Parallel()
+
+	source := initRunnerSourceRepo(t)
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Workspace.Root = filepath.Join(t.TempDir(), "workspaces")
+	cfg.Workspace.SourceRoot = ""
+
+	backend, err := buildWorkspaceBackend(cfg, source, nil)
+	if err != nil {
+		t.Fatalf("buildWorkspaceBackend() error = %v", err)
+	}
+
+	info, err := backend.Create(context.Background(), workspace.Issue{Identifier: "DD-129"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	if got := strings.TrimSpace(runRunnerGit(t, info.Path, "branch", "--show-current")); got != "detent/dd-129" {
+		t.Fatalf("worktree branch = %q, want detent/dd-129", got)
+	}
+	if got := readRunnerFile(t, filepath.Join(info.Path, "README.md")); got != "source repo\n" {
+		t.Fatalf("README.md = %q, want source repo", got)
 	}
 }
 
@@ -269,4 +298,48 @@ func writeWorkflowFile(t *testing.T) string {
 		t.Fatalf("write workflow file: %v", err)
 	}
 	return path
+}
+
+func initRunnerSourceRepo(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	runRunnerCommand(t, dir, "git", "init", "-b", "main")
+	runRunnerGit(t, dir, "config", "core.autocrlf", "false")
+	runRunnerGit(t, dir, "config", "user.name", "Test User")
+	runRunnerGit(t, dir, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runRunnerGit(t, dir, "add", "README.md")
+	runRunnerGit(t, dir, "commit", "-m", "initial")
+
+	return dir
+}
+
+func runRunnerGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+	return runRunnerCommand(t, dir, "git", args...)
+}
+
+func runRunnerCommand(t *testing.T, dir string, name string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command(name, args...)
+	cmd.Dir = dir
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s failed: %v\n%s", name, strings.Join(args, " "), err, output)
+	}
+	return string(output)
+}
+
+func readRunnerFile(t *testing.T, path string) string {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	return string(raw)
 }

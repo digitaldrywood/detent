@@ -195,7 +195,8 @@ tracker:
 polling:
   interval_ms: 30000
 workspace:
-  root: /absolute/path/to/project-checkout
+  root: /absolute/path/to/detent-workspaces
+  source_root: /absolute/path/to/project-checkout
   auto_branch: true
 agent:
   max_concurrent_agents: 5
@@ -219,7 +220,6 @@ agent:
     max_skills_in_prompt: 50
 codex:
   command: codex app-server
-  shell: sh
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -229,7 +229,6 @@ server:
   host: 127.0.0.1
   port: 4000
 hooks:
-  shell: sh
   timeout_ms: 60000
 ---
 You are working on {{ issue.identifier }}: {{ issue.title }}.
@@ -239,9 +238,20 @@ scoped to the issue, run the project validation gate, and prepare the work for
 human review.
 ```
 
+`workspace.source_root` is the checked-out repository Detent uses for
+`git worktree add`; `workspace.root` is where per-issue worktrees are created.
+If `workspace.source_root` is omitted, Detent falls back to the project
+`workdir` from global config, then to `workspace.root` for older single-root
+setups.
+
+Default workflows do not need worktree setup hooks. Detent creates and removes
+Git worktrees natively, so a fresh Windows project can dispatch without bash.
 Omit `codex.shell` and `hooks.shell` to use the per-OS defaults: `sh` on Unix
-and `cmd` on Windows. Set either field to `pwsh` or `powershell` when hooks or
-the Codex app-server command should run through PowerShell.
+and `cmd` on Windows. For portable hooks, prefer no hook when Detent already
+does the setup natively. When a hook is necessary, keep it to commands available
+on every target or set `hooks.shell: pwsh` and write PowerShell that reads
+Detent values from `$env:DETENT_WORKSPACE`, `$env:DETENT_WORKSPACE_KEY`,
+`$env:DETENT_BRANCH`, and `$env:DETENT_ISSUE_IDENTIFIER`.
 
 4. Create the global config and add the project:
 

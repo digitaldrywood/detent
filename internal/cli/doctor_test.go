@@ -160,6 +160,23 @@ func TestCheckDoctorProjects(t *testing.T) {
 	}
 }
 
+func TestProjectSourceRootPrefersProjectWorkdirBeforeWorkspaceRoot(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	cfg.Workspace.Root = "/worktrees"
+	project := globalconfig.Project{Workdir: "/source"}
+
+	if got := projectSourceRoot(project, cfg); got != "/source" {
+		t.Fatalf("projectSourceRoot() = %q, want /source", got)
+	}
+
+	cfg.Workspace.SourceRoot = "/configured-source"
+	if got := projectSourceRoot(project, cfg); got != "/configured-source" {
+		t.Fatalf("projectSourceRoot() with source_root = %q, want /configured-source", got)
+	}
+}
+
 func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	t.Parallel()
 

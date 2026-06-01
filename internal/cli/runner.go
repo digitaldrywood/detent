@@ -49,7 +49,7 @@ func withRunnerFactory(
 			return nil, fmt.Errorf("load project workflow %s: %w", cfg.ID, err)
 		}
 
-		run, err := buildRunner(workflow, cfg.ID, sessionStore, deps.Logger)
+		run, err := buildRunner(workflow, cfg.ID, cfg.Workdir, sessionStore, deps.Logger)
 		if err != nil {
 			return nil, fmt.Errorf("build project runner %s: %w", cfg.ID, err)
 		}
@@ -69,12 +69,13 @@ func withRunnerFactory(
 func buildRunner(
 	workflow workflowconfig.Workflow,
 	projectID string,
+	projectWorkdir string,
 	sessionStore runnerpkg.SessionStore,
 	logger *slog.Logger,
 ) (orchestrator.Runner, error) {
 	cfg := workflow.Config
 
-	backend, err := buildWorkspaceBackend(cfg, logger)
+	backend, err := buildWorkspaceBackend(cfg, projectWorkdir, logger)
 	if err != nil {
 		return nil, err
 	}
@@ -106,9 +107,12 @@ func buildRunner(
 	return run, nil
 }
 
-func buildWorkspaceBackend(cfg workflowconfig.Config, logger *slog.Logger) (workspace.Backend, error) {
+func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string, logger *slog.Logger) (workspace.Backend, error) {
 	root := strings.TrimSpace(cfg.Workspace.Root)
 	sourceRoot := strings.TrimSpace(cfg.Workspace.SourceRoot)
+	if sourceRoot == "" {
+		sourceRoot = strings.TrimSpace(sourceRootFallback)
+	}
 	if sourceRoot == "" {
 		sourceRoot = root
 	}

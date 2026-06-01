@@ -13,7 +13,6 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
-	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -115,7 +114,7 @@ func (s *Server) onboardingWrite(c echo.Context) error {
 		return s.renderOnboardingStep(c, form, problems, templates.OnboardingResult{})
 	}
 
-	content := renderWorkflow(form)
+	content := renderWorkflow(form, workflowSourceRoot(s.workflow))
 	workflow, err := config.ParseWorkflow([]byte(content))
 	if err == nil {
 		err = workflow.Config.Validate()
@@ -334,7 +333,7 @@ func applyAgentDefaults(form *templates.OnboardingForm) {
 	}
 }
 
-func renderWorkflow(form templates.OnboardingForm) string {
+func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	var b strings.Builder
 	b.WriteString("---\n")
 	b.WriteString("tracker:\n")
@@ -375,6 +374,7 @@ func renderWorkflow(form templates.OnboardingForm) string {
 	writeScalar(&b, "  ", "interval_ms", form.PollingIntervalMS)
 	b.WriteString("workspace:\n")
 	writeScalar(&b, "  ", "root", form.WorkspaceRoot)
+	writeScalar(&b, "  ", "source_root", sourceRoot)
 	b.WriteString("  auto_branch: true\n")
 	b.WriteString("agent:\n")
 	writeScalar(&b, "  ", "max_concurrent_agents", form.MaxConcurrentAgents)
@@ -393,24 +393,24 @@ func renderWorkflow(form templates.OnboardingForm) string {
 	b.WriteString("    max_skills_in_prompt: 50\n")
 	b.WriteString("codex:\n")
 	b.WriteString("  command: codex app-server\n")
-	writeScalar(&b, "  ", "shell", commandshell.Default())
 	b.WriteString("  approval_policy: never\n")
 	b.WriteString("  thread_sandbox: workspace-write\n")
 	b.WriteString("  turn_sandbox_policy:\n")
 	b.WriteString("    type: workspaceWrite\n")
 	b.WriteString("    networkAccess: true\n")
 	b.WriteString("hooks:\n")
-	writeScalar(&b, "  ", "shell", commandshell.Default())
-	if form.Repo != "" {
-		b.WriteString("  after_create: |\n")
-		b.WriteString("    git clone --depth 1 https://github.com/")
-		b.WriteString(form.Repo)
-		b.WriteString(" .\n")
-	}
 	b.WriteString("  timeout_ms: 60000\n")
 	b.WriteString("---\n\n")
 	b.WriteString(renderWorkflowPrompt(form))
 	return b.String()
+}
+
+func workflowSourceRoot(workflowPath string) string {
+	dir := filepath.Dir(strings.TrimSpace(workflowPath))
+	if dir == "" {
+		return "."
+	}
+	return filepath.Clean(dir)
 }
 
 func renderWorkflowPrompt(form templates.OnboardingForm) string {
