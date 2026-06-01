@@ -12,9 +12,13 @@ terminal status model.
 Detent is designed for self-hosted software work: the same queue that tracks
 release-readiness issues can dispatch the agents that implement them.
 
-The previous Elixir implementation is retained only as a cutover reference and
-should remain archived after the Go repository is renamed to
-`digitaldrywood/detent`.
+**See a complete, running setup:**
+[`digitaldrywood/detent-orchestration`](https://github.com/digitaldrywood/detent-orchestration)
+is Detent's own production configuration — the `WORKFLOW.md`, `global.yaml`, and
+`make` launcher it uses to dispatch the agents that build Detent itself. Copy it
+as the canonical template for your own board, and see
+[Bootstrap On A New Machine](#bootstrap-on-a-new-machine-humans-and-ai-agents)
+for an end-to-end runbook.
 
 ## Philosophy / Why
 
@@ -118,7 +122,11 @@ go install github.com/digitaldrywood/detent/cmd/detent@latest
 Requirements:
 
 - Go 1.26 or newer when installing with `go install` or building from source.
-- A working `codex app-server` command on the host that runs agents.
+- The [OpenAI Codex CLI](https://github.com/openai/codex) installed and signed
+  in, so `codex app-server` runs on the host that dispatches agents. Detent
+  drives every agent through this app-server. Verify with `codex --version`.
+- The [GitHub CLI](https://cli.github.com) (`gh`) for authentication and board
+  lookups (optional but assumed throughout this guide).
 - A GitHub token with access to the target ProjectV2 board. For organization
   projects, `repo`, `read:org`, and `project` scopes are usually required.
 
@@ -163,6 +171,10 @@ export GITHUB_TOKEN="$(gh auth token)"
 ```sh
 gh project list --owner <org-or-user> --format json --limit 20
 ```
+
+Detent auto-provisions any missing `Status` and `Priority` options on the board
+the first time it runs, so you do not have to hand-create every column — but the
+option names it creates and reads must match the states in your `WORKFLOW.md`.
 
 3. Create a `WORKFLOW.md` in the repository you want Detent to work on:
 
@@ -263,7 +275,18 @@ detent add-project \
   --workdir /absolute/path/to/project-checkout
 ```
 
-5. Start Detent:
+5. Verify the setup before dispatching:
+
+```sh
+detent --config ~/.detent/global.yaml doctor
+```
+
+`detent doctor` is a preflight check: config resolution, the SQLite database,
+the `codex` binary, the GitHub token and scopes, the git binary, and whether the
+server port is free. Fix any `FAIL` before starting (a missing `GITHUB_TOKEN` or
+an unauthenticated `codex` are the usual culprits).
+
+6. Start Detent:
 
 ```sh
 detent --config ~/.detent/global.yaml
@@ -275,6 +298,92 @@ override the address:
 ```sh
 detent --config ~/.detent/global.yaml --host 127.0.0.1 --port 4001
 ```
+
+## Bootstrap On A New Machine (Humans And AI Agents)
+
+A complete, ordered runbook to take a bare machine to a running Detent. Every
+step has a verification command — do not proceed until it passes. An AI agent
+can execute these steps top to bottom; replace each `<...>` placeholder. The
+[`detent-orchestration`](https://github.com/digitaldrywood/detent-orchestration)
+repo is a real, working instance of this setup to copy from.
+
+1. **Install Detent.** `brew install digitaldrywood/tap/detent` (macOS/Linux),
+   `go install github.com/digitaldrywood/detent/cmd/detent@latest`, or a
+   platform installer from [Install](#install). Verify: `detent version`.
+
+2. **Install and authenticate the GitHub CLI.** Install
+   [`gh`](https://cli.github.com), then:
+
+   ```sh
+   gh auth login --scopes "repo,read:org,project"
+   export GITHUB_TOKEN="$(gh auth token)"
+   ```
+
+   Verify: `gh auth status`.
+
+3. **Install and sign in to the Codex CLI.** Install the
+   [OpenAI Codex CLI](https://github.com/openai/codex) and sign in. Detent
+   dispatches every agent through `codex app-server`. Verify: `codex --version`.
+
+4. **Choose the GitHub ProjectV2 board** Detent will drive and get its node id
+   (starts with `PVT_`):
+
+   ```sh
+   gh project list --owner <org-or-user> --format json --limit 50
+   ```
+
+   The board only needs to exist — Detent auto-provisions missing `Status` and
+   `Priority` options on first run. The option names must match your
+   `WORKFLOW.md` states.
+
+5. **Clone the repository you want Detent to work on** (its checkout becomes
+   `workspace.source_root`):
+
+   ```sh
+   git clone <repo-url> <source-root>
+   ```
+
+6. **Author the project contract.** Copy the canonical example as a starting
+   point, then edit it:
+
+   ```sh
+   curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent-orchestration/main/WORKFLOW.md \
+     -o <source-root>/WORKFLOW.md
+   ```
+
+   Set `tracker.project_slug` (your `PVT_` id), `workspace.source_root`
+   (`<source-root>`), `workspace.root` (a worktrees directory), and the prompt
+   body. The full field reference is in [Quick Start](#quick-start).
+
+7. **Create global config and register the project:**
+
+   ```sh
+   detent init
+   detent add-project --id <id> \
+     --workflow <source-root>/WORKFLOW.md \
+     --workdir <source-root>
+   ```
+
+8. **Verify everything:**
+
+   ```sh
+   detent --config ~/.detent/global.yaml doctor
+   ```
+
+   Every check must pass (the server-port check may fail if Detent is already
+   running — that is expected).
+
+9. **Start Detent and confirm the dashboard:**
+
+   ```sh
+   detent --config ~/.detent/global.yaml
+   curl -fsS http://localhost:4000/api/v1/state    # returns JSON telemetry
+   ```
+
+10. **Dispatch work.** Move a board issue to `Todo`. Detent claims it, creates
+    an isolated worktree, dispatches an agent, and the issue appears under
+    Running on the dashboard. Drive the rest with the board (`Todo` →
+    `In Progress` → `Human Review` → `Merging` → `Done`).
 
 ## Concepts
 
