@@ -417,6 +417,10 @@ func (p *Project) provision(ctx context.Context) error {
 }
 
 func (p *Project) Stop(ctx context.Context) error {
+	return p.stop(ctx, true)
+}
+
+func (p *Project) stop(ctx context.Context, publishEvents bool) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -428,10 +432,32 @@ func (p *Project) Stop(ctx context.Context) error {
 		p.mu.Unlock()
 		return ErrNotRunning
 	}
+	p.lifecycleEvents = publishEvents
 	cancel()
 	p.mu.Unlock()
 
 	return p.waitDone(ctx, done)
+}
+
+func (p *Project) restart(ctx context.Context, opts startOptions) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	if p.cfg.Paused {
+		p.mu.Unlock()
+		return ErrProjectPaused
+	}
+	if p.done != nil {
+		p.mu.Unlock()
+		return ErrAlreadyRunning
+	}
+	p.started = false
+	p.orchestrator = nil
+	p.mu.Unlock()
+
+	return p.start(ctx, opts)
 }
 
 func (p *Project) Wait(ctx context.Context) error {
@@ -624,6 +650,20 @@ func (p *Project) publishStarted() {
 		ProjectID: id,
 		Kind:      EventStarted,
 		At:        time.Now(),
+	})
+}
+
+func (p *Project) publishStopped(err error) {
+	p.mu.Lock()
+	p.lifecycleEvents = true
+	id := p.id
+	p.mu.Unlock()
+
+	p.publish(Event{
+		ProjectID: id,
+		Kind:      EventStopped,
+		At:        time.Now(),
+		Error:     errorString(err),
 	})
 }
 

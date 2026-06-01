@@ -41,8 +41,12 @@ type ReconcileResult struct {
 }
 
 type startedProject struct {
-	id      ProjectID
 	project *Project
+}
+
+type rollbackProject struct {
+	project    *Project
+	wasRunning bool
 }
 
 type ManagerDependencies struct {
@@ -230,68 +234,98 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	previous := m.cfg
 	previousSpawned := m.spawned
 	m.cfg.Startup = cfg.Startup
+	stopped := make([]rollbackProject, 0, len(result.Removed)+len(result.Changed))
 	started := make([]startedProject, 0, len(prepared))
-	startedByID := map[ProjectID]*Project{}
-	for _, id := range result.Changed {
-		preparedProject := prepared[id]
-		if didStart, err := m.startPreparedProjectLocked(ctx, preparedProject); err != nil {
-			cleanupErr := m.stopUncommittedStartedProjects(ctx, started, nil)
-			m.cfg = previous
-			m.spawned = previousSpawned
-			return result, errors.Join(err, cleanupErr)
-		} else if didStart {
-			started = append(started, startedProject{id: id, project: preparedProject})
-			startedByID[id] = preparedProject
+	added := map[ProjectID]struct{}{}
+	rollback := func() error {
+		cleanupErr := m.stopUncommittedStartedProjects(ctx, started)
+		for id := range added {
+			m.registry.Delete(id)
 		}
-	}
-	for _, id := range result.Added {
-		preparedProject := prepared[id]
-		if didStart, err := m.startPreparedProjectLocked(ctx, preparedProject); err != nil {
-			cleanupErr := m.stopUncommittedStartedProjects(ctx, started, nil)
-			m.cfg = previous
-			m.spawned = previousSpawned
-			return result, errors.Join(err, cleanupErr)
-		} else if didStart {
-			started = append(started, startedProject{id: id, project: preparedProject})
-			startedByID[id] = preparedProject
+		for i := len(stopped) - 1; i >= 0; i-- {
+			item := stopped[i]
+			if err := m.registry.Set(item.project); err != nil {
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
 		}
+		m.cfg = previous
+		m.spawned = previousSpawned
+		for i := len(stopped) - 1; i >= 0; i-- {
+			item := stopped[i]
+			if !item.wasRunning || item.project.Running() {
+				continue
+			}
+			if err := m.restartProjectLocked(ctx, item.project, false); err != nil {
+				cleanupErr = errors.Join(cleanupErr, err)
+			}
+		}
+		return cleanupErr
 	}
 
-	committed := map[ProjectID]struct{}{}
 	for _, id := range result.Removed {
-		if err := m.removeLocked(ctx, id); err != nil {
-			cleanupErr := m.stopUncommittedStartedProjects(ctx, started, committed)
-			m.cfg = previous
-			m.spawned = previousSpawned
-			return result, errors.Join(err, cleanupErr)
+		current, ok := m.registry.Get(id)
+		if !ok {
+			return result, errors.Join(ErrProjectNotFound, rollback())
+		}
+		wasRunning := current.Running()
+		if wasRunning {
+			if err := current.stop(ctx, false); err != nil {
+				return result, errors.Join(err, rollback())
+			}
+		}
+		stopped = append(stopped, rollbackProject{project: current, wasRunning: wasRunning})
+		if !m.registry.Delete(id) {
+			return result, errors.Join(ErrProjectNotFound, rollback())
 		}
 	}
 	for _, id := range result.Changed {
-		if err := m.replaceStartedProjectLocked(ctx, id, prepared[id]); err != nil {
-			cleanupErr := m.stopUncommittedStartedProjects(ctx, started, committed)
-			m.cfg = previous
-			m.spawned = previousSpawned
-			return result, errors.Join(err, cleanupErr)
+		current, ok := m.registry.Get(id)
+		if !ok {
+			return result, errors.Join(ErrProjectNotFound, rollback())
 		}
-		if startedProject, ok := startedByID[id]; ok {
-			startedProject.publishStarted()
+		wasRunning := current.Running()
+		if wasRunning {
+			if err := current.stop(ctx, false); err != nil {
+				return result, errors.Join(err, rollback())
+			}
 		}
-		committed[id] = struct{}{}
+		stopped = append(stopped, rollbackProject{project: current, wasRunning: wasRunning})
+		preparedProject := prepared[id]
+		didStart, err := m.startPreparedProjectLocked(ctx, preparedProject)
+		if err != nil {
+			return result, errors.Join(err, rollback())
+		}
+		if didStart {
+			started = append(started, startedProject{project: preparedProject})
+		}
+		if err := m.registry.Set(preparedProject); err != nil {
+			return result, errors.Join(err, rollback())
+		}
 	}
 	for _, id := range result.Added {
-		if err := m.registry.Set(prepared[id]); err != nil {
-			cleanupErr := m.stopUncommittedStartedProjects(ctx, started, committed)
-			m.cfg = previous
-			m.spawned = previousSpawned
-			return result, errors.Join(err, cleanupErr)
+		preparedProject := prepared[id]
+		didStart, err := m.startPreparedProjectLocked(ctx, preparedProject)
+		if err != nil {
+			return result, errors.Join(err, rollback())
 		}
-		if startedProject, ok := startedByID[id]; ok {
-			startedProject.publishStarted()
+		if didStart {
+			started = append(started, startedProject{project: preparedProject})
 		}
-		committed[id] = struct{}{}
+		if err := m.registry.Set(preparedProject); err != nil {
+			return result, errors.Join(err, rollback())
+		}
+		added[id] = struct{}{}
 	}
 
 	m.cfg = cfg
+	for _, item := range stopped {
+		if item.wasRunning {
+			item.project.publishStopped(nil)
+		}
+	}
+	for _, item := range started {
+		item.project.publishStarted()
+	}
 	return result, nil
 }
 
@@ -307,19 +341,6 @@ func (m *Manager) removeLocked(ctx context.Context, id ProjectID) error {
 	}
 	m.registry.Delete(id)
 	return nil
-}
-
-func (m *Manager) replaceStartedProjectLocked(ctx context.Context, id ProjectID, replacement *Project) error {
-	current, ok := m.registry.Get(id)
-	if !ok {
-		return ErrProjectNotFound
-	}
-	if current.Running() {
-		if err := current.Stop(ctx); err != nil {
-			return err
-		}
-	}
-	return m.registry.Set(replacement)
 }
 
 func (m *Manager) Pause(ctx context.Context, id ProjectID) error {
@@ -432,19 +453,23 @@ func (m *Manager) startProjectLocked(ctx context.Context, project *Project, publ
 	return nil
 }
 
-func (m *Manager) stopUncommittedStartedProjects(
-	ctx context.Context,
-	started []startedProject,
-	committed map[ProjectID]struct{},
-) error {
+func (m *Manager) restartProjectLocked(ctx context.Context, project *Project, publishEvents bool) error {
+	if err := m.waitBeforeSpawn(ctx); err != nil {
+		return err
+	}
+	if err := project.restart(ctx, startOptions{provision: true, publishEvents: publishEvents}); err != nil {
+		return err
+	}
+	m.spawned = true
+	return nil
+}
+
+func (m *Manager) stopUncommittedStartedProjects(ctx context.Context, started []startedProject) error {
 	var cleanupErr error
 	for i := len(started) - 1; i >= 0; i-- {
 		item := started[i]
-		if _, ok := committed[item.id]; ok {
-			continue
-		}
 		if item.project.Running() {
-			cleanupErr = errors.Join(cleanupErr, item.project.Stop(ctx))
+			cleanupErr = errors.Join(cleanupErr, item.project.stop(ctx, false))
 		}
 	}
 	return cleanupErr

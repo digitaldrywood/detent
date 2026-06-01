@@ -324,6 +324,127 @@ func TestManagerReconcileKeepsRegistryWhenNewProjectCannotBeCreated(t *testing.T
 	})
 }
 
+func TestManagerReconcileKeepsChangedProjectWhenReplacementCannotBeCreated(t *testing.T) {
+	t.Parallel()
+
+	factoryErr := errors.New("invalid workflow")
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			if cfg.ID == "alpha" && cfg.Weight == 2 {
+				return nil, factoryErr
+			}
+			return newManagerTestProject(t, cfg, events)
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	drainProjectEvents(t, sub.C(), 1)
+
+	_, err = manager.Reconcile(context.Background(), project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 2}},
+	})
+	if !errors.Is(err, factoryErr) {
+		t.Fatalf("Reconcile() error = %v, want %v", err, factoryErr)
+	}
+	assertNoProjectEvent(t, sub.C())
+	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+		"alpha": {ID: "alpha", Weight: 1},
+	})
+
+	got, ok := manager.Registry().Get("alpha")
+	if !ok {
+		t.Fatal("Registry().Get(alpha) ok = false, want true")
+	}
+	if !got.Running() {
+		t.Fatal("alpha Running() = false, want true")
+	}
+}
+
+func TestManagerReconcileStopsChangedProjectBeforeStartingReplacement(t *testing.T) {
+	t.Parallel()
+
+	oldStillRunningErr := errors.New("old project still running")
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	var manager *project.Manager
+	manager, err = project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			if cfg.ID == "alpha" && cfg.Weight == 2 {
+				return project.New(project.Config{
+					Project:  cfg,
+					Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+				}, project.Dependencies{
+					Connector: provisioningConnector{provision: func(context.Context) error {
+						current, ok := manager.Registry().Get("alpha")
+						if !ok {
+							return project.ErrProjectNotFound
+						}
+						if current.Running() {
+							return oldStillRunningErr
+						}
+						return nil
+					}},
+					Events: events,
+					Runner: blockingRunner{},
+				})
+			}
+			return newManagerTestProject(t, cfg, events)
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	drainProjectEvents(t, sub.C(), 1)
+
+	got, err := manager.Reconcile(context.Background(), project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 2}},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	want := project.ReconcileResult{Changed: []project.ProjectID{"alpha"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reconcile() = %#v, want %#v", got, want)
+	}
+	assertProjectEvents(t, sub.C(), []project.Event{
+		{ProjectID: "alpha", Kind: project.EventStopped},
+		{ProjectID: "alpha", Kind: project.EventStarted},
+	})
+	assertNoProjectEvent(t, sub.C())
+	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+		"alpha": {ID: "alpha", Weight: 2},
+	})
+}
+
 func TestManagerReconcileKeepsChangedProjectWhenReplacementProvisionFails(t *testing.T) {
 	t.Parallel()
 
