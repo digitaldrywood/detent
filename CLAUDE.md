@@ -11,10 +11,11 @@
 - Use Echo for HTTP, sqlc with goose migrations for persistence, and `modernc.org/sqlite` for SQLite.
 - Use Templ, HTMX, and Tailwind v4 for server-rendered UI.
 - Use Air for local hot reload and golangci-lint v2 for linting.
+- The live dashboard region (`#snapshot`) is updated by **morphing in place** (idiomorph, `hx-swap="morph:innerHTML"`), never a destructive `innerHTML` swap — otherwise hover popovers/tooltips inside it are torn down and rebuilt on every SSE tick and flicker. Any new element added inside the live region must tolerate in-place morph; render hover tooltips/popovers through a single body-level host (see `helpTooltipHost`) outside the swapped region, and re-assert open state on `htmx:afterSettle`. Do not reintroduce an `innerHTML` swap on `#snapshot`.
 
 ## Workflow
 
-- Work from a Symphony-created worktree branch, never directly on `main`.
+- Work from a Detent-created worktree branch, never directly on `main`.
 - Keep generated files and runtime output inside the current worktree.
 - Do not bind development or tests to `127.0.0.1:4000`; use ephemeral ports in tests.
 - Before implementation, confirm dependencies listed in the issue are merged into `origin/main`.

@@ -498,11 +498,12 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 		`href="http://localhost:4101"`,
 		`src="https://unpkg.com/htmx.org@2.0.4"`,
 		`src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"`,
-		`hx-ext="sse"`,
+		`src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"`,
+		`hx-ext="sse morph"`,
 		`sse-connect="/events"`,
 		`sse-swap="snapshot"`,
 		`sse-swap="tick"`,
-		`hx-swap="innerHTML settle:160ms"`,
+		`hx-swap="morph:innerHTML"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())

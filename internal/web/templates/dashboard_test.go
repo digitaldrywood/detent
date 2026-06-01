@@ -873,7 +873,7 @@ func TestDashboardIncludesMotionAndThemeHooks(t *testing.T) {
 		`document.documentElement.classList.toggle("dark"`,
 		`id="snapshot"`,
 		`sse-swap="snapshot"`,
-		`hx-swap="innerHTML settle:160ms"`,
+		`hx-swap="morph:innerHTML"`,
 		`sse-surface`,
 		`sse-tick`,
 	} {
