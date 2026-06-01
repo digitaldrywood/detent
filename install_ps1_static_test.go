@@ -37,6 +37,7 @@ func TestWindowsInstallDocsExposeOneStepPowerShellInstall(t *testing.T) {
 		{name: "script installs exe", content: script, want: "detent.exe"},
 		{name: "script checks os architecture", content: script, want: "OSArchitecture"},
 		{name: "script checks 64-bit host from 32-bit powershell", content: script, want: "PROCESSOR_ARCHITEW6432"},
+		{name: "script queries cim os architecture", content: script, want: "Get-CimInstance"},
 		{name: "script updates user path", content: script, want: "SetEnvironmentVariable('Path'"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
