@@ -62,7 +62,6 @@ function Convert-ToTargetArch {
 		'x64*' { return 'amd64' }
 		'amd64*' { return 'amd64' }
 		'x86_64*' { return 'amd64' }
-		'64-bit' { return 'amd64' }
 		'arm64*' { return 'arm64' }
 		'aarch64*' { return 'arm64' }
 	}
@@ -83,6 +82,17 @@ function Select-TargetArch {
 	return $null
 }
 
+function Convert-CimProcessorArchitectureToTargetArch {
+	param($Architecture)
+
+	switch ([string]$Architecture) {
+		'9' { return 'amd64' }
+		'12' { return 'arm64' }
+	}
+
+	return $null
+}
+
 function Get-OSArchitectureCandidates {
 	$candidates = @()
 	if ($env:DETENT_INSTALL_TEST_OS_ARCH) {
@@ -98,6 +108,9 @@ function Get-OSArchitectureCandidates {
 
 	try {
 		if (Test-Command 'Get-CimInstance') {
+			$processor = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
+			$candidates += Convert-CimProcessorArchitectureToTargetArch $processor.Architecture
+
 			$os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
 			$candidates += $os.OSArchitecture
 		}
