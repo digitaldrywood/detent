@@ -165,6 +165,24 @@ function Get-ExpectedChecksum {
 	return $null
 }
 
+function Get-Sha256File {
+	param([string]$Path)
+
+	$stream = [IO.File]::OpenRead($Path)
+	try {
+		$sha = [Security.Cryptography.SHA256]::Create()
+		try {
+			$hash = $sha.ComputeHash($stream)
+		} finally {
+			$sha.Dispose()
+		}
+	} finally {
+		$stream.Dispose()
+	}
+
+	return -join ($hash | ForEach-Object { $_.ToString('x2') })
+}
+
 function Assert-Checksum {
 	param(
 		[string]$Archive,
@@ -177,7 +195,7 @@ function Assert-Checksum {
 		Abort "Checksum for $AssetName not found"
 	}
 
-	$actual = (Get-FileHash -Algorithm SHA256 -Path $Archive).Hash.ToLowerInvariant()
+	$actual = Get-Sha256File $Archive
 	if ($actual -ne $expected) {
 		Abort "Checksum mismatch for ${AssetName}: expected $expected, got $actual"
 	}

@@ -33,7 +33,7 @@ func TestWindowsInstallDocsExposeOneStepPowerShellInstall(t *testing.T) {
 		{name: "readme one-step command", content: readme, want: wantCommand},
 		{name: "readme windows path", content: readme, want: `%LOCALAPPDATA%\detent\bin`},
 		{name: "script downloads release archive", content: script, want: "releases/latest"},
-		{name: "script verifies checksum", content: script, want: "Get-FileHash -Algorithm SHA256"},
+		{name: "script verifies checksum", content: script, want: "Security.Cryptography.SHA256"},
 		{name: "script installs exe", content: script, want: "detent.exe"},
 		{name: "script updates user path", content: script, want: "SetEnvironmentVariable('Path'"},
 	} {
