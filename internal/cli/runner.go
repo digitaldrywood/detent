@@ -16,6 +16,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -116,6 +117,7 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, logger *slog.Logger) (work
 		SourceRoot: sourceRoot,
 		AutoBranch: cfg.Workspace.AutoBranch,
 		Hooks: workspace.Hooks{
+			Shell:        cfg.Hooks.Shell,
 			AfterCreate:  cfg.Hooks.AfterCreate,
 			BeforeRun:    cfg.Hooks.BeforeRun,
 			AfterRun:     cfg.Hooks.AfterRun,
@@ -137,8 +139,7 @@ func buildCodexClient(cfg workflowconfig.Config) (runnerpkg.CodexClient, error) 
 	}
 
 	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
-		// #nosec G204 -- codex command is operator-supplied trusted workflow config.
-		return exec.CommandContext(ctx, "sh", "-c", command)
+		return buildCodexCommand(ctx, cfg)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create codex transport factory: %w", err)
@@ -157,6 +158,10 @@ func buildCodexClient(cfg workflowconfig.Config) (runnerpkg.CodexClient, error) 
 		return nil, fmt.Errorf("create codex app-server: %w", err)
 	}
 	return client, nil
+}
+
+func buildCodexCommand(ctx context.Context, cfg workflowconfig.Config) *exec.Cmd {
+	return commandshell.Command(ctx, strings.TrimSpace(cfg.Codex.Command), cfg.Codex.Shell)
 }
 
 // publishSnapshots ticks at interval, building a merged telemetry snapshot
