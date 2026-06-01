@@ -383,6 +383,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Queue = append(current.Queue, next.Queue...)
 	current.Blocked = append(current.Blocked, next.Blocked...)
 	current.Completed = append(current.Completed, next.Completed...)
+	current.Pipeline = append(current.Pipeline, next.Pipeline...)
 	current.Budget.Refusals = append(current.Budget.Refusals, next.Budget.Refusals...)
 
 	current.Counts.Running += next.Counts.Running
