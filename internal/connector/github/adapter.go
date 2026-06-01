@@ -113,6 +113,20 @@ query DetentGitHubPullRequests($owner: String!, $name: String!, $states: [PullRe
         url
         state
         headRefName
+        commits(last: 1) {
+          nodes {
+            commit {
+              statusCheckRollup { state }
+            }
+          }
+        }
+        latestReviews(first: 20) {
+          nodes {
+            body
+            state
+            author { login }
+          }
+        }
       }
     }
   }
@@ -238,10 +252,34 @@ type pullRequest struct {
 }
 
 type pullRequestNode struct {
-	Number      int    `json:"number"`
-	URL         string `json:"url"`
-	State       string `json:"state"`
-	HeadRefName string `json:"headRefName"`
+	Number        int                               `json:"number"`
+	URL           string                            `json:"url"`
+	State         string                            `json:"state"`
+	HeadRefName   string                            `json:"headRefName"`
+	Commits       nodeConnection[pullRequestCommit] `json:"commits"`
+	LatestReviews nodeConnection[pullRequestReview] `json:"latestReviews"`
+}
+
+type pullRequestCommit struct {
+	Commit commitNode `json:"commit"`
+}
+
+type commitNode struct {
+	StatusCheckRollup *statusCheckRollup `json:"statusCheckRollup"`
+}
+
+type statusCheckRollup struct {
+	State string `json:"state"`
+}
+
+type pullRequestReview struct {
+	Body   string `json:"body"`
+	State  string `json:"state"`
+	Author *actor `json:"author"`
+}
+
+type actor struct {
+	Login string `json:"login"`
 }
 
 type pullRequestsConnection struct {
@@ -296,6 +334,11 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 	}
 	if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
 		if err := c.populateBlockerReasons(ctx, issues); err != nil {
+			return nil, err
+		}
+	}
+	if attachPullRequestsForStates(wantedStates) {
+		if err := c.attachPullRequests(ctx, issues); err != nil {
 			return nil, err
 		}
 	}
@@ -545,10 +588,12 @@ func attachMatchingPullRequests(
 			}
 
 			issues[candidate.Index].PullRequest = &connector.PullRequest{
-				Number:     pullRequest.Number,
-				URL:        strings.TrimSpace(pullRequest.URL),
-				BranchName: branchName,
-				State:      strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+				Number:           pullRequest.Number,
+				URL:              strings.TrimSpace(pullRequest.URL),
+				BranchName:       branchName,
+				State:            strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+				CIStatus:         normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
+				CodexReviewState: pullRequestCodexReviewState(pullRequest),
 			}
 			if issues[candidate.Index].PRNumber == nil && pullRequest.Number > 0 {
 				number := pullRequest.Number
@@ -1018,6 +1063,56 @@ func firstPullRequestNumber(pullRequests nodeConnection[pullRequest]) *int {
 	return nil
 }
 
+func pullRequestCIState(pullRequest pullRequestNode) string {
+	for _, commit := range pullRequest.Commits.Nodes {
+		if commit.Commit.StatusCheckRollup != nil {
+			return commit.Commit.StatusCheckRollup.State
+		}
+	}
+	return ""
+}
+
+func normalizePullRequestCIStatus(status string) string {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success", "green", "pass", "passed":
+		return "pass"
+	case "failure", "failed", "error", "red":
+		return "fail"
+	case "pending", "expected", "queued", "waiting", "in_progress", "in progress":
+		return "pending"
+	default:
+		return ""
+	}
+}
+
+func pullRequestCodexReviewState(pullRequest pullRequestNode) string {
+	hasP2 := false
+	for _, review := range pullRequest.LatestReviews.Nodes {
+		if containsReviewSeverity(review.Body, "P1") {
+			return "P1"
+		}
+		if containsReviewSeverity(review.Body, "P2") {
+			hasP2 = true
+		}
+	}
+	if hasP2 {
+		return "P2"
+	}
+	return ""
+}
+
+func containsReviewSeverity(body string, severity string) bool {
+	body = strings.ToUpper(body)
+	severity = strings.ToUpper(strings.TrimSpace(severity))
+	if body == "" || severity == "" {
+		return false
+	}
+	return strings.Contains(body, "["+severity+"]") ||
+		strings.Contains(body, severity+" BADGE") ||
+		strings.Contains(body, severity+":") ||
+		strings.Contains(body, severity+" ")
+}
+
 func labelNames(labels nodeConnection[label]) []string {
 	names := make([]string, 0, len(labels.Nodes))
 	for _, label := range labels.Nodes {
@@ -1223,6 +1318,15 @@ func stateInList(state string, states []string) bool {
 	}
 	for _, candidate := range states {
 		if normalized == normalizeStateName(candidate) {
+			return true
+		}
+	}
+	return false
+}
+
+func attachPullRequestsForStates(states map[string]struct{}) bool {
+	for _, state := range []string{"Human Review", "Merging", "Done"} {
+		if _, ok := states[normalizeStateName(state)]; ok {
 			return true
 		}
 	}

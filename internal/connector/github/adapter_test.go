@@ -124,7 +124,7 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_182","content":{"__typename":"Issue","id":"I_182","number":182,"title":"First issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/182","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null},{"id":"PVTI_18","content":{"__typename":"Issue","id":"I_18","number":18,"title":"Prefix neighbor","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/18","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
 		},
 		{
-			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":187,"url":"https://github.com/digitaldrywood/detent/pull/187","state":"OPEN","headRefName":"detent/digitaldrywood_detent_182_followup"},{"number":188,"url":"https://github.com/digitaldrywood/detent/pull/188","state":"MERGED","headRefName":"detent/digitaldrywood_detent_181"}]}}}}`,
+			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":187,"url":"https://github.com/digitaldrywood/detent/pull/187","state":"OPEN","headRefName":"detent/digitaldrywood_detent_182_followup","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]},"latestReviews":{"nodes":[{"body":"[P2] The fallback path needs cleanup.","state":"COMMENTED","author":{"login":"codex"}}]}},{"number":188,"url":"https://github.com/digitaldrywood/detent/pull/188","state":"MERGED","headRefName":"detent/digitaldrywood_detent_181"}]}}}}`,
 		},
 	})
 
@@ -149,11 +149,43 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 	if pr == nil {
 		t.Fatal("I_182 PullRequest = nil, want matching open PR")
 	}
-	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "detent/digitaldrywood_detent_182_followup" {
+	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "detent/digitaldrywood_detent_182_followup" || pr.CIStatus != "pass" || pr.CodexReviewState != "P2" {
 		t.Fatalf("I_182 PullRequest = %#v, want PR 187 open followup", pr)
 	}
 	if byID["I_18"].PullRequest != nil {
 		t.Fatalf("I_18 PullRequest = %#v, want nil", byID["I_18"].PullRequest)
+	}
+}
+
+func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_182","content":{"__typename":"Issue","id":"I_182","number":182,"title":"Review issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/182","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Reviewing"},"priorityValue":null}]}}}}`,
+		},
+		{
+			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"number":190,"url":"https://github.com/digitaldrywood/detent/pull/190","state":"OPEN","headRefName":"detent/digitaldrywood_detent_182","commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"FAILURE"}}}]},"latestReviews":{"nodes":[{"body":"[P1] Unsafe migration.","state":"COMMENTED","author":{"login":"codex"}}]}}]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+		StateMap: map[string]string{
+			"Human Review": "Reviewing",
+		},
+	})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+	pr := got[0].PullRequest
+	if pr == nil || pr.Number != 190 || pr.CIStatus != "fail" || pr.CodexReviewState != "P1" {
+		t.Fatalf("PullRequest = %#v, want PR 190 with failing CI and P1 review", pr)
 	}
 }
 

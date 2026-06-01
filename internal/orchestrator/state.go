@@ -12,6 +12,7 @@ type State struct {
 	MaxConcurrentAgents int
 	LastRefreshAt       time.Time
 	NextRefreshAt       time.Time
+	Pipeline            []connector.Issue
 	Running             map[string]Running
 	Claimed             map[string]Claimed
 	Blocked             map[string]Blocked
@@ -94,6 +95,7 @@ func (s State) clone() State {
 		MaxConcurrentAgents: s.MaxConcurrentAgents,
 		LastRefreshAt:       s.LastRefreshAt,
 		NextRefreshAt:       s.NextRefreshAt,
+		Pipeline:            cloneIssues(s.Pipeline),
 		Running:             make(map[string]Running, len(s.Running)),
 		Claimed:             make(map[string]Claimed, len(s.Claimed)),
 		Blocked:             make(map[string]Blocked, len(s.Blocked)),

@@ -12,6 +12,8 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
@@ -170,6 +172,65 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	}
 	if snapshot.Refresh.NextRefreshAt == nil {
 		t.Fatalf("snapshot.Refresh.NextRefreshAt = nil, want next refresh")
+	}
+}
+
+func TestPublishSnapshotOncePreservesPipeline(t *testing.T) {
+	t.Parallel()
+
+	registry := projectpkg.NewRegistry()
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	updatedAt := now.Add(-7 * time.Minute)
+	pipelineIssue := connector.Issue{
+		ID:         "i-212",
+		Identifier: "digitaldrywood/detent#212",
+		Title:      "Add PR pipeline lanes",
+		State:      "Human Review",
+		UpdatedAt:  &updatedAt,
+		PullRequest: &connector.PullRequest{
+			Number:           218,
+			URL:              "https://github.com/digitaldrywood/detent/pull/218",
+			State:            "OPEN",
+			CIStatus:         "pending",
+			CodexReviewState: "P1",
+		},
+	}
+	project := newRefreshProjectWithConnector(t, "alpha", memory.New(memory.Config{
+		Issues: []connector.Issue{pipelineIssue},
+	}))
+	if err := project.Start(context.Background()); err != nil {
+		t.Fatalf("Project.Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		if err := project.Stop(ctx); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
+			t.Fatalf("Project.Stop() error = %v", err)
+		}
+	})
+	mustSetProject(t, registry, project)
+
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, now, nil, nil, "http://localhost:4101"); err != nil {
+		t.Fatalf("publishSnapshotOnce() error = %v", err)
+	}
+
+	snapshot, ok := snapshotHub.Latest()
+	if !ok {
+		t.Fatal("snapshotHub.Latest() ok = false, want published snapshot")
+	}
+	if len(snapshot.Pipeline) != 1 {
+		t.Fatalf("Pipeline len = %d, want 1", len(snapshot.Pipeline))
+	}
+	got := snapshot.Pipeline[0]
+	if got.ID != "i-212" || got.State != "Human Review" || got.Title != "Add PR pipeline lanes" {
+		t.Fatalf("Pipeline[0] = %#v, want issue #212 in Human Review", got)
+	}
+	if got.UpdatedAt == nil || !got.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("Pipeline[0].UpdatedAt = %v, want %v", got.UpdatedAt, updatedAt)
+	}
+	if got.PullRequest == nil || got.PullRequest.Number != 218 || got.PullRequest.CIStatus != "pending" || got.PullRequest.CodexReviewState != "P1" {
+		t.Fatalf("Pipeline[0].PullRequest = %#v, want PR #218 pending with P1 review", got.PullRequest)
 	}
 }
 
@@ -342,4 +403,23 @@ func readRunnerFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(raw)
+}
+
+func newRefreshProjectWithConnector(t *testing.T, id string, projectConnector connector.Connector) *projectpkg.Project {
+	t.Helper()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	project, err := projectpkg.New(projectpkg.Config{
+		Project: globalconfig.Project{
+			ID:      id,
+			Workdir: t.TempDir(),
+			Weight:  1,
+		},
+		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
+	}, projectpkg.Dependencies{Connector: projectConnector})
+	if err != nil {
+		t.Fatalf("project.New() error = %v", err)
+	}
+	return project
 }

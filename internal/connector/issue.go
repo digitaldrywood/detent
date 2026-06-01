@@ -34,10 +34,12 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
-	Number     int    `json:"number,omitempty" yaml:"number,omitempty"`
-	URL        string `json:"url,omitempty" yaml:"url,omitempty"`
-	BranchName string `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
-	State      string `json:"state,omitempty" yaml:"state,omitempty"`
+	Number           int    `json:"number,omitempty" yaml:"number,omitempty"`
+	URL              string `json:"url,omitempty" yaml:"url,omitempty"`
+	BranchName       string `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
+	State            string `json:"state,omitempty" yaml:"state,omitempty"`
+	CIStatus         string `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
+	CodexReviewState string `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
 }
 
 func NewIssue() Issue {

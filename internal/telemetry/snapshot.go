@@ -8,6 +8,7 @@ type Snapshot struct {
 	DashboardURL   string            `json:"dashboard_url,omitempty"`
 	Refresh        Refresh           `json:"refresh"`
 	Counts         Counts            `json:"counts"`
+	Pipeline       []Issue           `json:"pipeline,omitempty"`
 	Running        []Running         `json:"running"`
 	Queue          []Queued          `json:"queue"`
 	Blocked        []Blocked         `json:"blocked"`
@@ -39,12 +40,25 @@ type Counts struct {
 }
 
 type Issue struct {
-	ID          string `json:"issue_id"`
-	Identifier  string `json:"identifier,omitempty"`
-	URL         string `json:"url,omitempty"`
-	Title       string `json:"title,omitempty"`
-	Description string `json:"description,omitempty"`
-	State       string `json:"state,omitempty"`
+	ID          string       `json:"issue_id"`
+	Identifier  string       `json:"identifier,omitempty"`
+	URL         string       `json:"url,omitempty"`
+	Title       string       `json:"title,omitempty"`
+	Description string       `json:"description,omitempty"`
+	State       string       `json:"state,omitempty"`
+	Labels      []string     `json:"labels,omitempty"`
+	PullRequest *PullRequest `json:"pull_request,omitempty"`
+	CreatedAt   *time.Time   `json:"created_at,omitempty"`
+	UpdatedAt   *time.Time   `json:"updated_at,omitempty"`
+}
+
+type PullRequest struct {
+	Number           int    `json:"number,omitempty"`
+	URL              string `json:"url,omitempty"`
+	BranchName       string `json:"branch_name,omitempty"`
+	State            string `json:"state,omitempty"`
+	CIStatus         string `json:"ci_status,omitempty"`
+	CodexReviewState string `json:"codex_review_state,omitempty"`
 }
 
 type ActivityEvent struct {

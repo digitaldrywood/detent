@@ -19,6 +19,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 			LastRefreshAt:       timePointer(s.LastRefreshAt),
 			NextRefreshAt:       timePointer(s.NextRefreshAt),
 		},
+		Pipeline:   pipelineSnapshots(s.Pipeline),
 		Running:    runningSnapshots(s.Running),
 		Queue:      queueSnapshots(s.Retry),
 		Blocked:    blockedSnapshots(s.Blocked),
@@ -36,6 +37,14 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed: len(snapshot.Completed),
 	}
 	return snapshot
+}
+
+func pipelineSnapshots(issues []connector.Issue) []telemetry.Issue {
+	out := make([]telemetry.Issue, 0, len(issues))
+	for _, issue := range issues {
+		out = append(out, telemetryIssue(issue))
+	}
+	return out
 }
 
 func runningSnapshots(running map[string]Running) []telemetry.Running {
@@ -159,6 +168,27 @@ func telemetryIssue(issue connector.Issue) telemetry.Issue {
 		Title:       issue.Title,
 		Description: issue.Description,
 		State:       issue.State,
+		Labels:      append([]string(nil), issue.Labels...),
+		PullRequest: telemetryPullRequest(issue.PullRequest, issue.PRNumber),
+		CreatedAt:   timePointerFromPtr(issue.CreatedAt),
+		UpdatedAt:   timePointerFromPtr(issue.UpdatedAt),
+	}
+}
+
+func telemetryPullRequest(pullRequest *connector.PullRequest, prNumber *int) *telemetry.PullRequest {
+	if pullRequest == nil && prNumber == nil {
+		return nil
+	}
+	if pullRequest == nil {
+		pullRequest = &connector.PullRequest{Number: *prNumber}
+	}
+	return &telemetry.PullRequest{
+		Number:           pullRequest.Number,
+		URL:              pullRequest.URL,
+		BranchName:       pullRequest.BranchName,
+		State:            pullRequest.State,
+		CIStatus:         pullRequest.CIStatus,
+		CodexReviewState: pullRequest.CodexReviewState,
 	}
 }
 
@@ -176,6 +206,14 @@ func timePointer(value time.Time) *time.Time {
 		return nil
 	}
 	return &value
+}
+
+func timePointerFromPtr(value *time.Time) *time.Time {
+	if value == nil || value.IsZero() {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func (s State) liveCodexTotals() CodexTotals {

@@ -25,6 +25,8 @@ const (
 	blockedReasonProjectStatus   = "blocked by project status"
 )
 
+var prPipelineStates = []string{"Human Review", "Merging", "Done"}
+
 var (
 	ErrMissingConnector = errors.New("orchestrator connector is required")
 	ErrStopped          = errors.New("orchestrator stopped")
@@ -244,9 +246,16 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	if blockedErr != nil {
 		o.logger.Warn("fetch blocked status issues failed", "error", blockedErr)
 	}
+	pipelineIssues, pipelineErr := o.connector.FetchIssuesByStates(ctx, prPipelineStates)
+	if pipelineErr != nil {
+		o.logger.Warn("fetch pr pipeline issues failed", "error", pipelineErr)
+	}
 
 	issues = cloneIssues(issues)
 	blockedIssues = cloneIssues(blockedIssues)
+	if pipelineErr == nil {
+		state.Pipeline = cloneIssues(pipelineIssues)
+	}
 	sortIssuesForDispatch(issues, o.cfg.DispatchPriorityByState)
 	o.pruneBudgetRefusals(state, now)
 	o.trackBlockedCandidates(state, issues, now)

@@ -44,10 +44,28 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	dueAt := now.Add(30 * time.Second)
 	completedAt := now.Add(-time.Minute)
 	blockedAt := now.Add(-3 * time.Minute)
+	pipelineUpdatedAt := now.Add(-4 * time.Minute)
 
 	state := newState(normalizeConfig(Config{}))
 	state.LastRefreshAt = now.Add(-30 * time.Second)
 	state.NextRefreshAt = now.Add(30 * time.Second)
+	state.Pipeline = []connector.Issue{
+		{
+			ID:         "i-pr",
+			Identifier: "ISS-PR",
+			Title:      "Pipeline PR",
+			State:      "Human Review",
+			Labels:     []string{"enhancement"},
+			UpdatedAt:  &pipelineUpdatedAt,
+			PullRequest: &connector.PullRequest{
+				Number:           142,
+				URL:              "https://github.com/digitaldrywood/detent/pull/142",
+				State:            "OPEN",
+				CIStatus:         "pending",
+				CodexReviewState: "P2",
+			},
+		},
+	}
 	state.Running["i-2"] = Running{
 		Issue:           connector.Issue{ID: "i-2", Identifier: "ISS-2", Title: "Two", State: "In Progress", URL: "u2"},
 		Attempt:         1,
@@ -100,6 +118,17 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	wantCounts := telemetry.Counts{Running: 2, Queue: 1, Blocked: 1, Completed: 1}
 	if snapshot.Counts != wantCounts {
 		t.Fatalf("Counts = %#v, want %#v", snapshot.Counts, wantCounts)
+	}
+
+	if len(snapshot.Pipeline) != 1 {
+		t.Fatalf("Pipeline len = %d, want 1", len(snapshot.Pipeline))
+	}
+	pipeline := snapshot.Pipeline[0]
+	if pipeline.ID != "i-pr" || pipeline.State != "Human Review" || pipeline.UpdatedAt == nil || !pipeline.UpdatedAt.Equal(pipelineUpdatedAt) {
+		t.Fatalf("Pipeline[0] = %#v", pipeline)
+	}
+	if pipeline.PullRequest == nil || pipeline.PullRequest.Number != 142 || pipeline.PullRequest.CIStatus != "pending" || pipeline.PullRequest.CodexReviewState != "P2" {
+		t.Fatalf("Pipeline[0].PullRequest = %#v", pipeline.PullRequest)
 	}
 
 	if len(snapshot.Running) != 2 {
