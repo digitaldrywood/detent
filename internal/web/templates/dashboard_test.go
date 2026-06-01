@@ -408,6 +408,54 @@ func TestDashboardRendersThroughputAndRuntimeTrend(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersProjectSmallMultiples(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Detent",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+		},
+		Projects: []templates.ProjectSmallMultiple{
+			{
+				ID:                        "detent",
+				Name:                      "Detent",
+				URL:                       "https://github.com/digitaldrywood/detent",
+				Running:                   1,
+				QueueCount:                2,
+				Completed:                 3,
+				ThroughputTokensPerSecond: 4.5,
+				CurrentSpendUSD:           6.75,
+				Samples: []templates.ProjectSmallMultipleSample{
+					{At: now.Add(-time.Minute), ThroughputTokensPerSecond: 2, SpendUSD: 5, QueueDepth: 1},
+					{At: now, ThroughputTokensPerSecond: 4.5, SpendUSD: 6.75, QueueDepth: 2},
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"Project small multiples",
+		"Detent project",
+		"Live throughput, spend, and queue depth across configured projects.",
+		"1 running / 2 queued / 0 blocked",
+		"4.5 tps",
+		"$6.75",
+		`aria-label="Detent throughput sparkline"`,
+		`aria-label="Detent spend sparkline"`,
+		`aria-label="Detent queue depth sparkline"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, "md:grid-cols-2 xl:grid-cols-3") {
+		t.Fatalf("single project small multiples should not render multi-column grid:\n%s", html)
+	}
+}
+
 func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 	t.Parallel()
 

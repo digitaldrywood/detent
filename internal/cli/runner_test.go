@@ -167,6 +167,12 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	if snapshot.Project.DisplayName != "alpha" {
 		t.Fatalf("snapshot.Project.DisplayName = %q, want alpha", snapshot.Project.DisplayName)
 	}
+	if len(snapshot.Projects) != 1 {
+		t.Fatalf("snapshot.Projects len = %d, want 1", len(snapshot.Projects))
+	}
+	if snapshot.Projects[0].Project.ID != "alpha" || snapshot.Projects[0].Project.DisplayName != "alpha" {
+		t.Fatalf("snapshot.Projects[0].Project = %#v, want alpha metadata", snapshot.Projects[0].Project)
+	}
 	if snapshot.DashboardURL != "http://localhost:4101" {
 		t.Fatalf("snapshot.DashboardURL = %q, want dashboard URL", snapshot.DashboardURL)
 	}

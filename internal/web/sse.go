@@ -57,7 +57,7 @@ func (s *Server) events(c echo.Context) error {
 				return nil
 			}
 			snapshot = s.enrichSnapshot(ctx, snapshot)
-			if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, templates.SnapshotView(templates.DashboardData{Snapshot: snapshot})); err != nil {
+			if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, templates.SnapshotView(s.dashboardData(ctx, snapshot))); err != nil {
 				return err
 			}
 			flusher.Flush()

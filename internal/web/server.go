@@ -80,6 +80,7 @@ type Server struct {
 	logPath      string
 	serverAddr   string
 	assets       staticAssets
+	projects     *projectSmallMultipleRecorder
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -123,6 +124,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		logPath:      strings.TrimSpace(cfg.RuntimeLogPath),
 		serverAddr:   strings.TrimSpace(cfg.ServerAddress),
 		assets:       newStaticAssets(cfg.staticDir()),
+		projects:     newProjectSmallMultipleRecorder(),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes()
@@ -185,14 +187,20 @@ func (s *Server) registerRoutes() {
 }
 
 func (s *Server) dashboard(c echo.Context) error {
-	return render(c, templates.Dashboard(templates.DashboardData{
+	ctx := c.Request().Context()
+	return render(c, templates.Dashboard(s.dashboardData(ctx, s.latestSnapshot(ctx))))
+}
+
+func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
+	return templates.DashboardData{
 		Title:         "Detent",
 		Version:       s.version,
 		ConnectorName: s.connector.Name(),
 		DashboardURL:  s.dashboardURL,
-		Snapshot:      s.latestSnapshot(c.Request().Context()),
+		Snapshot:      snapshot,
+		Projects:      s.projectSmallMultiples(ctx, snapshot),
 		Assets:        s.assets.templatePaths(),
-	}))
+	}
 }
 
 func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {

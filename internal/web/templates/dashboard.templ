@@ -117,6 +117,7 @@ templ SnapshotView(data DashboardData) {
 		@metricCard("Throughput", helpThroughput, throughputRate(data.Snapshot), "Rolling tokens/sec", "border-t-accent", "bg-accent")
 		@metricCard("Runtime", helpRuntime, runtimeLabel(data.Snapshot), "Aggregate agent uptime", "border-t-success", "bg-success")
 	</section>
+	@projectSmallMultiplesSection(data)
 	@prPipelineSection(data.Snapshot)
 	@agentActivityTimeline(data.Snapshot)
 	@boardHealthSection(data.Snapshot)
@@ -204,6 +205,82 @@ templ SnapshotView(data DashboardData) {
 			@lifetimeCard(data.Snapshot.LifetimeTotals)
 		</aside>
 	</section>
+}
+
+templ projectSmallMultiplesSection(data DashboardData) {
+	if len(projectSmallMultipleCards(data)) > 0 {
+		<section class="min-w-0" aria-label="Project small multiples">
+			<div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
+				<div class="min-w-0">
+					@helpHeading2("Projects", helpProjectMultiples, "project-small-multiples")
+					<p class="text-sm text-muted-foreground">Live throughput, spend, and queue depth across configured projects.</p>
+				</div>
+				<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-muted px-2 py-1 text-sm font-medium text-muted-foreground">{ formatCount(len(projectSmallMultipleCards(data))) }</span>
+			</div>
+			<div class={ projectSmallMultiplesGridClass(projectSmallMultipleCards(data)) }>
+				for _, card := range projectSmallMultipleCards(data) {
+					@projectSmallMultipleCardView(card)
+				}
+			</div>
+		</section>
+	}
+}
+
+templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
+	<article class="min-w-0 rounded-md border border-border bg-card p-3 shadow-sm" aria-label={ card.Name + " project" }>
+		<div class="flex min-w-0 items-start justify-between gap-3">
+			<div class="min-w-0">
+				if card.URL != "" {
+					<a class="block truncate text-sm font-semibold text-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer">{ card.Name }</a>
+				} else {
+					<h3 class="truncate text-sm font-semibold text-foreground">{ card.Name }</h3>
+				}
+				<p class="mt-1 truncate font-mono text-xs text-muted-foreground">{ card.ActivityLabel }</p>
+			</div>
+			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ card.ThroughputLabel }</span>
+		</div>
+		<div class="mt-3 grid grid-cols-4 gap-2 text-xs">
+			<span class="min-w-0 rounded-md bg-muted px-2 py-1.5">
+				<span class="block text-muted-foreground">Run</span>
+				<strong class="block truncate font-mono font-medium text-foreground">{ card.RunningLabel }</strong>
+			</span>
+			<span class="min-w-0 rounded-md bg-muted px-2 py-1.5">
+				<span class="block text-muted-foreground">Queue</span>
+				<strong class="block truncate font-mono font-medium text-foreground">{ card.QueueLabel }</strong>
+			</span>
+			<span class="min-w-0 rounded-md bg-muted px-2 py-1.5">
+				<span class="block text-muted-foreground">Blocked</span>
+				<strong class="block truncate font-mono font-medium text-foreground">{ card.BlockedLabel }</strong>
+			</span>
+			<span class="min-w-0 rounded-md bg-muted px-2 py-1.5">
+				<span class="block text-muted-foreground">Done</span>
+				<strong class="block truncate font-mono font-medium text-foreground">{ card.CompletedLabel }</strong>
+			</span>
+		</div>
+		<div class="mt-3 grid min-w-0 gap-3 sm:grid-cols-3">
+			<div class="grid min-w-0 gap-1">
+				<div class="flex items-center justify-between gap-2 text-xs">
+					<span class="text-muted-foreground">Throughput</span>
+					<span class="font-mono text-muted-foreground">{ card.ThroughputLabel }</span>
+				</div>
+				@SparklineChart(card.ThroughputChart)
+			</div>
+			<div class="grid min-w-0 gap-1">
+				<div class="flex items-center justify-between gap-2 text-xs">
+					<span class="text-muted-foreground">Spend</span>
+					<span class="font-mono text-muted-foreground">{ card.SpendLabel }</span>
+				</div>
+				@SparklineChart(card.SpendChart)
+			</div>
+			<div class="grid min-w-0 gap-1">
+				<div class="flex items-center justify-between gap-2 text-xs">
+					<span class="text-muted-foreground">Queue</span>
+					<span class="font-mono text-muted-foreground">{ card.QueueLabel }</span>
+				</div>
+				@SparklineChart(card.QueueChart)
+			</div>
+		</div>
+	</article>
 }
 
 templ throughputCard(data DashboardData) {

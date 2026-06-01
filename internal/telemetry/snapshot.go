@@ -5,6 +5,7 @@ import "time"
 type Snapshot struct {
 	GeneratedAt    time.Time         `json:"generated_at"`
 	Project        Project           `json:"project"`
+	Projects       []ProjectSnapshot `json:"projects,omitempty"`
 	DashboardURL   string            `json:"dashboard_url,omitempty"`
 	Refresh        Refresh           `json:"refresh"`
 	Counts         Counts            `json:"counts"`
@@ -23,8 +24,16 @@ type Snapshot struct {
 }
 
 type Project struct {
+	ID          string `json:"id,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
 	URL         string `json:"url,omitempty"`
+}
+
+type ProjectSnapshot struct {
+	Project    Project         `json:"project"`
+	Counts     Counts          `json:"counts"`
+	Tokens     Tokens          `json:"tokens"`
+	Throughput TokenThroughput `json:"throughput,omitempty"`
 }
 
 type Refresh struct {

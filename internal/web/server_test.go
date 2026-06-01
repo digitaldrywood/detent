@@ -1273,6 +1273,93 @@ func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
+	t.Parallel()
+
+	firstAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	secondAt := firstAt.Add(time.Minute)
+	snapshots := hub.New[telemetry.Snapshot]()
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: firstAt,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent", URL: "https://github.com/digitaldrywood/detent"},
+				Counts:  telemetry.Counts{Running: 1, Queue: 1},
+				Tokens:  telemetry.Tokens{Total: 100},
+			},
+			{
+				Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"},
+				Counts:  telemetry.Counts{Queue: 2},
+				Tokens:  telemetry.Tokens{Total: 40},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Store = storeProbe{
+		budgetCostEvents: func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+			return []store.BudgetCostEvent{
+				{ProjectID: "detent", At: secondAt.Add(-30 * time.Second), CostUSD: 2.5},
+				{ProjectID: "pyroapex", At: secondAt.Add(-20 * time.Second), CostUSD: 1},
+			}, nil
+		},
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: secondAt,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent", URL: "https://github.com/digitaldrywood/detent"},
+				Counts:  telemetry.Counts{Running: 1, Queue: 3},
+				Tokens:  telemetry.Tokens{Total: 220},
+			},
+			{
+				Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"},
+				Counts:  telemetry.Counts{Queue: 2},
+				Tokens:  telemetry.Tokens{Total: 70},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+
+	html := rec.Body.String()
+	for _, want := range []string{
+		"Project small multiples",
+		"Detent project",
+		"Pyro Apex project",
+		"1 running / 3 queued / 0 blocked",
+		"2 tps",
+		"$2.50",
+		`aria-label="Detent throughput sparkline"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestServerPreservesSnapshotBudgetWhenSpendQueryFails(t *testing.T) {
 	t.Parallel()
 
