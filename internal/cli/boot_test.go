@@ -149,8 +149,6 @@ func TestRegistryRefresherRequestsProjectOrchestrators(t *testing.T) {
 }
 
 func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
-	t.Parallel()
-
 	host, port := freeLoopbackPort(t)
 	globalPath := filepath.Join(t.TempDir(), "global.yaml")
 	global, err := globalconfig.DefaultAt(globalPath)
@@ -187,8 +185,6 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 }
 
 func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
-	t.Parallel()
-
 	host, port := freeLoopbackPort(t)
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
 	alpha := createBootProjectFiles(t)
