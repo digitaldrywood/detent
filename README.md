@@ -4,96 +4,98 @@
 [![License](https://img.shields.io/github/license/digitaldrywood/detent)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/digitaldrywood/detent?include_prereleases&sort=semver)](https://github.com/digitaldrywood/detent/releases)
 
-Detent is an agent orchestrator for tracker-backed work queues, delivered as
-a single Go binary. It polls a project board, creates isolated Git worktrees,
-dispatches Codex agents, and exposes live status through a web dashboard and a
-terminal status model.
+A **detent** is the catch that holds a moving part at a fixed position until it
+is deliberately released — the click-stop on a dial, the notch on a ratchet.
+Detent holds each piece of work at a defined stop on your board and only lets it
+advance when a gate is cleared.
 
-Detent is designed for self-hosted software work: the same queue that tracks
-release-readiness issues can dispatch the agents that implement them.
+## What is this
 
-**See a complete, running setup:**
+Detent is an agent orchestrator for tracker-backed software work, shipped as a
+single Go binary. It watches a GitHub Projects board, and for every issue you
+mark ready it creates an isolated Git worktree, dispatches a Codex coding agent
+against a workflow contract you wrote, runs your validation gate, opens a pull
+request, waits for review, and merges through a serialized train — with all of
+it live on a web dashboard and a terminal UI.
+
+It is a **system, not an agent.** You specify the work — the issues, acceptance
+criteria, review gates, and merge rules — and Detent runs that process with
+rigor, isolation, and parallelism across many issues at once. The intelligence
+stays in your spec; the runtime supplies the discipline.
+
+**See it for real:**
 [`digitaldrywood/detent-orchestration`](https://github.com/digitaldrywood/detent-orchestration)
-is Detent's own production configuration — the `WORKFLOW.md`, `global.yaml`, and
-`make` launcher it uses to dispatch the agents that build Detent itself. Copy it
-as the canonical template for your own board, and see
+is Detent's own production config — it dispatches the agents that build Detent
+itself. Copy it as a template, and use
 [Bootstrap On A New Machine](#bootstrap-on-a-new-machine-humans-and-ai-agents)
-for an end-to-end runbook.
+to go from a bare machine to a running board.
 
-## Philosophy / Why
+## How it works
 
-This project is a system, not an agent. Most agent tools are positioned around
-autonomy: give the model a goal, give it tools, and let it discover a path.
-This project takes the opposite bet. It is an execution system for engineers
-who already know how the work should be done and want that process run
-consistently across many issues at once.
+The board is the state machine; board status drives everything.
 
-The engineer authors the workflow: the `WORKFLOW.md` contract, the board
-states, the issue breakdown, the dependency rules, the review gates, and the
-merge discipline. The system executes that contract. The useful intelligence is
-in the spec and in the engineer's judgment. The runtime supplies rigor,
-parallelism, isolation, observability, and control.
+1. **You write the contract.** Each project has a `WORKFLOW.md`: the tracker
+   binding, board states, the agent prompt, the validation gate, and the review
+   policy.
+2. **You mark an issue `Todo`.** Detent claims it, creates an isolated Git
+   worktree from your source checkout, and dispatches a Codex agent with the
+   contract — moving the issue to `In Progress`.
+3. **The agent works** in its own branch, runs your validation gate, and opens
+   or updates a PR, then moves the issue to `Human Review`.
+4. **Gates decide.** Your approval plus automated review (e.g. Codex) clear it
+   to `Merging`; unresolved feedback sends it to `Rework` for another pass.
+5. **The merge train is serialized** — one rebase, CI-watch, and merge at a
+   time, so concurrent candidates never invalidate each other's CI — then the
+   issue is `Done`.
+6. **One host, many repos.** `global.yaml` runs multiple projects with weights,
+   priority, pause, and fair scheduling. The web dashboard and terminal UI show
+   live counts, running agents, token / budget / rate-limit state, and board
+   flow.
 
-That distinction matters because the unit of work is a well-specified issue,
-not a freeform prompt. If the spec is vague, the result will be vague. That is
-intentional. This project rewards the same habits that make engineering teams
-effective without agents: small scopes, explicit acceptance criteria, tests,
-reviewable diffs, green CI, and clean merges.
+The full state table, connector model, and merge-train config are in
+[Concepts](#concepts).
 
-The original Elixir Detent was an OTP agent orchestrator for a single
-project-backed engineering queue. It established the important shape:
-tracker-backed dispatch, pluggable connector boundaries, explicit workflow
-states, deterministic scheduling, dashboard visibility, and a terminal status
-surface. This codebase credits that lineage, but it is not a runtime port. It
-is a ground-up Go rewrite delivered as a single CGO-free binary for macOS,
-Linux, and Windows, so there is no BEAM runtime to deploy. Distribution is
-meant to stay simple: `go install`, Homebrew once the tap lands, or copying one
-binary to a host.
+## How it's different
 
-The Go version has also moved beyond the original scope. A single host can run
-many repositories from `global.yaml`, with project weights, priority, pause
-controls, and fair scheduling. GitHub Projects v2 is the production board and
-state machine: issues, status columns, priorities, labels, blockers, comments,
-and pull requests drive dispatch. The live dashboard has grown into an
-operator surface with charts, trends, timelines, hover detail, rate-limit
-state, budget state, and session detail. The CLI includes `detent doctor`
-for preflight checks, flexible config discovery across explicit flags,
-environment variables, OS config paths, and legacy locations, plus a GoReleaser
-pipeline for release archives and checksums.
+### From Symphony
 
-Compared with autonomy-first frameworks such as OpenClaw or Hermes, the
-difference is the interaction model. Those projects center a persistent
-assistant experience: a user talks to an agent through a CLI or messaging
-channel, the assistant keeps sessions or memory, selects tools or skills, and
-acts on behalf of the user. That is useful for exploration and personal
-automation. It is not the operating model here.
+Detent began as [Symphony](https://github.com/digitaldrywood/symphony), an
+Elixir/OTP orchestrator for a single engineering queue. Symphony set the shape
+Detent keeps — tracker-backed dispatch, a pluggable connector boundary, explicit
+workflow states, deterministic scheduling, and dashboard plus terminal
+visibility. Detent is a ground-up Go rewrite, not a port, and diverges where it
+counts:
 
-With an autonomy-first agent, you might say "add feature X", let the agent
-decide how to decompose the work, watch the run, interrupt when it drifts, and
-course-correct from whatever state it produced. You are steering an agent.
+- **One static binary, no runtime.** CGO-free for macOS, Linux, and Windows —
+  `go install`, Homebrew, or copy a single file. No BEAM to deploy.
+- **Multi-project from one host.** `global.yaml` runs many repositories with
+  weights, priority, pause, and fair scheduling.
+- **A real operator surface.** A richer dashboard (charts, trends, timelines,
+  hover detail, budget and rate-limit state), `detent doctor` preflight checks,
+  cross-platform config discovery, and a GoReleaser release pipeline.
 
-With this system, you write the issue first. You decide the scope, acceptance
-criteria, expected tests, dependency ordering, review policy, CI gate, and
-merge rule. The board state and priority determine when the work is eligible.
-The runtime creates an isolated Git worktree, dispatches the agent with the
-project contract, runs validation, opens or updates a PR, waits for human and
-automated review gates, and serializes the merge train. You are running your
-own engineering process at scale.
+### From autonomy-first agents (OpenClaw, Hermes, …)
 
-For the same task, the difference is concrete. In an autonomy-first workflow,
-"add OAuth token rotation" starts as a prompt and becomes an interactive
-supervision loop: review the plan, inspect partial edits, redirect when the
-agent misses migration or test requirements, and decide when the result is good
-enough. In this system, the task starts as an issue that names the storage
-change, CLI behavior, migration expectations, rollback concerns, and tests.
-The worker receives that issue, works in its own branch and worktree, produces
-a reviewable PR, and does not land until the gates you encoded pass.
+The difference is the interaction model. Autonomy-first tools center a
+persistent assistant: you talk to an agent, it keeps sessions and memory, picks
+its own tools, and acts on your behalf — you steer it and course-correct when it
+drifts. Detent inverts that. **You write the issue first** — scope, acceptance
+criteria, tests, dependency order, review policy, merge rule — and the board
+state decides when it is eligible. The runtime executes your contract in an
+isolated worktree and will not land the work until the gates you encoded pass.
+You are not steering an agent; you are running your own engineering process at
+scale.
 
-The goal is not to replace engineers or hide the work behind opaque agent
-behavior. The goal is to scale the judgment of engineers who already have a
-high bar. You stay in control of the workflow, the state, the review, and the
-merge. The system does not try to be smarter than you; it tries to be as
-disciplined as you would be, every time, in parallel.
+Concretely: "add OAuth token rotation" in an autonomy-first tool starts as a
+prompt and becomes a supervision loop — review the plan, inspect partial edits,
+redirect when it misses migrations or tests. In Detent it starts as an issue
+that names the storage change, CLI behavior, migration, rollback, and tests; the
+worker produces a reviewable PR and does not merge until your gates are green.
+
+The goal is not to replace engineers or hide work behind opaque behavior — it is
+to scale the judgment of engineers who already have a high bar. The system does
+not try to be smarter than you; it tries to be as disciplined as you would be,
+every time, in parallel.
 
 ## Install
 
@@ -561,6 +563,18 @@ At startup, Detent resolves `global.yaml` in this order. The first matching rule
 `os.UserConfigDir()` maps to `%AppData%\detent\global.yaml` on Windows, `~/Library/Application Support/detent/global.yaml` on macOS, and `~/.config/detent/global.yaml` on Linux while honoring `XDG_CONFIG_HOME`.
 
 If no global config is found, Detent keeps the single-project fallback and looks for `WORKFLOW.md` in the current working directory. Use `detent config path` to print the resolved config path and the rule that selected it.
+
+## History
+
+Detent is a ground-up Go rewrite of
+[Symphony](https://github.com/digitaldrywood/symphony), an Elixir/OTP agent
+orchestrator for a single tracker-backed engineering queue. Symphony established
+the architecture Detent still uses — tracker-backed dispatch, the connector seam
+(GitHub today; GitLab and Jira later), explicit workflow states, deterministic
+scheduling, and the dashboard and terminal surfaces. The rewrite trades the BEAM
+runtime for a single CGO-free binary and adds multi-project orchestration,
+Windows support, a richer operator dashboard, `detent doctor`, and a GoReleaser
+release pipeline. The original Elixir implementation is archived.
 
 ## License
 
