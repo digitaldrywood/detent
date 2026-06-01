@@ -236,6 +236,7 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 
 func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	o.markRefresh(state, now)
+	o.reconcileRunningIssues(ctx, state)
 
 	issues, err := o.connector.FetchCandidateIssues(ctx)
 	if err != nil {
@@ -263,6 +264,115 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		o.trackBlockedStatusIssues(state, blockedIssues, now)
 	}
 	o.dispatchReadyIssues(ctx, state, issues, now)
+}
+
+func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State) {
+	ids := runningIssueIDs(state.Running)
+	if len(ids) == 0 {
+		return
+	}
+
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, ids)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("fetch running issue states failed", "error", err)
+		}
+		return
+	}
+
+	byID := make(map[string]connector.Issue, len(issues))
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) == "" {
+			continue
+		}
+		byID[issue.ID] = issue
+	}
+
+	for _, id := range ids {
+		issue, ok := byID[id]
+		if !ok {
+			continue
+		}
+
+		running := state.Running[id]
+		running.Issue = mergeIssueTrackerFields(running.Issue, issue)
+		state.Running[id] = running
+
+		if claimed, ok := state.Claimed[id]; ok {
+			claimed.Issue = mergeIssueTrackerFields(claimed.Issue, issue)
+			state.Claimed[id] = claimed
+		}
+	}
+}
+
+func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue {
+	merged := cloneIssue(current)
+	refreshed = cloneIssue(refreshed)
+
+	if strings.TrimSpace(refreshed.ID) != "" {
+		merged.ID = refreshed.ID
+	}
+	if refreshed.Identifier != "" {
+		merged.Identifier = refreshed.Identifier
+	}
+	if refreshed.Title != "" {
+		merged.Title = refreshed.Title
+	}
+	if refreshed.Description != "" {
+		merged.Description = refreshed.Description
+	}
+	if refreshed.Priority != nil {
+		merged.Priority = refreshed.Priority
+	}
+	if refreshed.State != "" {
+		merged.State = refreshed.State
+	}
+	if refreshed.BranchName != "" {
+		merged.BranchName = refreshed.BranchName
+	}
+	if refreshed.URL != "" {
+		merged.URL = refreshed.URL
+	}
+	if refreshed.PRNumber != nil {
+		merged.PRNumber = refreshed.PRNumber
+	}
+	if refreshed.PullRequest != nil {
+		merged.PullRequest = refreshed.PullRequest
+	}
+	if refreshed.AssigneeID != "" {
+		merged.AssigneeID = refreshed.AssigneeID
+	}
+	if refreshed.BlockedBy != nil {
+		merged.BlockedBy = refreshed.BlockedBy
+	}
+	if refreshed.BlockerReason != "" {
+		merged.BlockerReason = refreshed.BlockerReason
+	}
+	if refreshed.Labels != nil {
+		merged.Labels = refreshed.Labels
+	}
+	if refreshed.CreatedAt != nil {
+		merged.CreatedAt = refreshed.CreatedAt
+	}
+	if refreshed.UpdatedAt != nil {
+		merged.UpdatedAt = refreshed.UpdatedAt
+	}
+	if refreshed.ModelOverride != "" {
+		merged.ModelOverride = refreshed.ModelOverride
+	}
+
+	return merged
+}
+
+func runningIssueIDs(running map[string]Running) []string {
+	ids := sortedKeys(running)
+	out := ids[:0]
+	for _, id := range ids {
+		if strings.TrimSpace(id) != "" {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 func (o *Orchestrator) markRefresh(state *State, now time.Time) {
