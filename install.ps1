@@ -93,29 +93,64 @@ function Convert-CimProcessorArchitectureToTargetArch {
 	return $null
 }
 
+function Convert-CimOSArchitectureToTargetArch {
+	param([string]$Architecture)
+
+	if ([string]::IsNullOrWhiteSpace($Architecture)) {
+		return $null
+	}
+
+	$normalized = $Architecture.Trim().ToLowerInvariant()
+	if ($normalized -eq '64-bit') {
+		return 'amd64'
+	}
+
+	return Convert-ToTargetArch $Architecture
+}
+
+function Get-ProcessorArchitectureCandidate {
+	$testArch = [Environment]::GetEnvironmentVariable('DETENT_INSTALL_TEST_PROCESSOR_ARCHITECTURE', 'Process')
+	if ($null -ne $testArch) {
+		return $testArch
+	}
+	return $env:PROCESSOR_ARCHITECTURE
+}
+
+function Get-ProcessorArchitectureW6432Candidate {
+	$testArch = [Environment]::GetEnvironmentVariable('DETENT_INSTALL_TEST_PROCESSOR_ARCHITEW6432', 'Process')
+	if ($null -ne $testArch) {
+		return $testArch
+	}
+	return $env:PROCESSOR_ARCHITEW6432
+}
+
 function Get-OSArchitectureCandidates {
 	$candidates = @()
 	if ($env:DETENT_INSTALL_TEST_OS_ARCH) {
 		$candidates += $env:DETENT_INSTALL_TEST_OS_ARCH
-	} else {
+	} elseif ($env:DETENT_INSTALL_TEST_OS_ARCH_UNAVAILABLE -ne '1') {
 		try {
 			$candidates += [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 		} catch {
 		}
 	}
 
-	$candidates += $env:PROCESSOR_ARCHITEW6432
+	$candidates += Get-ProcessorArchitectureW6432Candidate
 
 	try {
 		$testCimProcessorArch = [Environment]::GetEnvironmentVariable('DETENT_INSTALL_TEST_CIM_PROCESSOR_ARCH', 'Process')
-		if ($null -ne $testCimProcessorArch) {
+		$testCimOSArch = [Environment]::GetEnvironmentVariable('DETENT_INSTALL_TEST_CIM_OS_ARCH', 'Process')
+		if (-not [string]::IsNullOrEmpty($testCimProcessorArch) -or -not [string]::IsNullOrEmpty($testCimOSArch)) {
 			$candidates += Convert-CimProcessorArchitectureToTargetArch $testCimProcessorArch
+			$candidates += Get-ProcessorArchitectureCandidate
+			$candidates += Convert-CimOSArchitectureToTargetArch $testCimOSArch
 		} elseif (Test-Command 'Get-CimInstance') {
 			$processor = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
 			$candidates += Convert-CimProcessorArchitectureToTargetArch $processor.Architecture
+			$candidates += Get-ProcessorArchitectureCandidate
 
 			$os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
-			$candidates += $os.OSArchitecture
+			$candidates += Convert-CimOSArchitectureToTargetArch $os.OSArchitecture
 		}
 	} catch {
 	}
@@ -133,7 +168,7 @@ function Get-ProcessArchitectureCandidates {
 		} catch {
 		}
 	}
-	$candidates += $env:PROCESSOR_ARCHITECTURE
+	$candidates += Get-ProcessorArchitectureCandidate
 
 	return $candidates
 }
