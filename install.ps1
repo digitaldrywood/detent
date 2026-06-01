@@ -56,19 +56,33 @@ function Get-TargetArch {
 		return $env:DETENT_INSTALL_TEST_ARCH
 	}
 
-	$arch = $env:PROCESSOR_ARCHITECTURE
+	$candidates = @()
 	try {
-		$arch = [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+		$candidates += [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
 	} catch {
 	}
 
-	switch ($arch.ToLowerInvariant()) {
-		'x64' { return 'amd64' }
-		'amd64' { return 'amd64' }
-		'arm64' { return 'arm64' }
-		'aarch64' { return 'arm64' }
-		default { return $null }
+	$candidates += $env:PROCESSOR_ARCHITEW6432
+	try {
+		$candidates += [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+	} catch {
 	}
+	$candidates += $env:PROCESSOR_ARCHITECTURE
+
+	foreach ($arch in $candidates) {
+		if ([string]::IsNullOrWhiteSpace($arch)) {
+			continue
+		}
+
+		switch ($arch.ToLowerInvariant()) {
+			'x64' { return 'amd64' }
+			'amd64' { return 'amd64' }
+			'arm64' { return 'arm64' }
+			'aarch64' { return 'arm64' }
+		}
+	}
+
+	return $null
 }
 
 function Save-Url {

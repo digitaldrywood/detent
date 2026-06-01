@@ -35,6 +35,8 @@ func TestWindowsInstallDocsExposeOneStepPowerShellInstall(t *testing.T) {
 		{name: "script downloads release archive", content: script, want: "releases/latest"},
 		{name: "script verifies checksum", content: script, want: "Security.Cryptography.SHA256"},
 		{name: "script installs exe", content: script, want: "detent.exe"},
+		{name: "script checks os architecture", content: script, want: "OSArchitecture"},
+		{name: "script checks 64-bit host from 32-bit powershell", content: script, want: "PROCESSOR_ARCHITEW6432"},
 		{name: "script updates user path", content: script, want: "SetEnvironmentVariable('Path'"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
