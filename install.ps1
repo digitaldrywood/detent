@@ -51,38 +51,104 @@ function Get-InstallDir {
 	return Join-Path $HOME '.detent\bin'
 }
 
+function Convert-ToTargetArch {
+	param([string]$Arch)
+
+	if ([string]::IsNullOrWhiteSpace($Arch)) {
+		return $null
+	}
+
+	switch -Wildcard ($Arch.Trim().ToLowerInvariant()) {
+		'x64*' { return 'amd64' }
+		'amd64*' { return 'amd64' }
+		'x86_64*' { return 'amd64' }
+		'arm64*' { return 'arm64' }
+		'aarch64*' { return 'arm64' }
+	}
+
+	return $null
+}
+
+function Select-TargetArch {
+	param([object[]]$Candidates)
+
+	foreach ($arch in $Candidates) {
+		$targetArch = Convert-ToTargetArch $arch
+		if ($targetArch) {
+			return $targetArch
+		}
+	}
+
+	return $null
+}
+
+function Convert-CimProcessorArchitectureToTargetArch {
+	param($Architecture)
+
+	switch ([string]$Architecture) {
+		'9' { return 'amd64' }
+		'12' { return 'arm64' }
+	}
+
+	return $null
+}
+
+function Get-OSArchitectureCandidates {
+	$candidates = @()
+	if ($env:DETENT_INSTALL_TEST_OS_ARCH) {
+		$candidates += $env:DETENT_INSTALL_TEST_OS_ARCH
+	} else {
+		try {
+			$candidates += [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
+		} catch {
+		}
+	}
+
+	$candidates += $env:PROCESSOR_ARCHITEW6432
+
+	try {
+		$testCimProcessorArch = [Environment]::GetEnvironmentVariable('DETENT_INSTALL_TEST_CIM_PROCESSOR_ARCH', 'Process')
+		if ($null -ne $testCimProcessorArch) {
+			$candidates += Convert-CimProcessorArchitectureToTargetArch $testCimProcessorArch
+		} elseif (Test-Command 'Get-CimInstance') {
+			$processor = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
+			$candidates += Convert-CimProcessorArchitectureToTargetArch $processor.Architecture
+
+			$os = Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop
+			$candidates += $os.OSArchitecture
+		}
+	} catch {
+	}
+
+	return $candidates
+}
+
+function Get-ProcessArchitectureCandidates {
+	$candidates = @()
+	if ($env:DETENT_INSTALL_TEST_PROCESS_ARCH) {
+		$candidates += $env:DETENT_INSTALL_TEST_PROCESS_ARCH
+	} else {
+		try {
+			$candidates += [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
+		} catch {
+		}
+	}
+	$candidates += $env:PROCESSOR_ARCHITECTURE
+
+	return $candidates
+}
+
 function Get-TargetArch {
 	if ($env:DETENT_INSTALL_TEST_ARCH) {
 		return $env:DETENT_INSTALL_TEST_ARCH
 	}
 
-	$candidates = @()
-	try {
-		$candidates += [System.Runtime.InteropServices.RuntimeInformation]::OSArchitecture.ToString()
-	} catch {
+	$targetArch = Select-TargetArch (Get-OSArchitectureCandidates)
+	if ($targetArch) {
+		return $targetArch
 	}
 
-	$candidates += $env:PROCESSOR_ARCHITEW6432
-	try {
-		$candidates += [System.Runtime.InteropServices.RuntimeInformation]::ProcessArchitecture.ToString()
-	} catch {
-	}
-	$candidates += $env:PROCESSOR_ARCHITECTURE
-
-	foreach ($arch in $candidates) {
-		if ([string]::IsNullOrWhiteSpace($arch)) {
-			continue
-		}
-
-		switch ($arch.ToLowerInvariant()) {
-			'x64' { return 'amd64' }
-			'amd64' { return 'amd64' }
-			'arm64' { return 'arm64' }
-			'aarch64' { return 'arm64' }
-		}
-	}
-
-	return $null
+	return Select-TargetArch (Get-ProcessArchitectureCandidates)
 }
 
 function Save-Url {

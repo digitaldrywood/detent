@@ -60,6 +60,83 @@ func TestPowerShellInstallScriptInstallsReleaseArchive(t *testing.T) {
 	}
 }
 
+func TestPowerShellInstallScriptMapsX86ProcessToOSArchitecture(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	tests := []struct {
+		name          string
+		osArch        string
+		processArch   string
+		wow64Arch     string
+		processorArch string
+		cimArch       string
+		assetArch     string
+		archiveOut    string
+	}{
+		{name: "amd64 os", osArch: "AMD64", processArch: "X86", wow64Arch: "AMD64", processorArch: "x86", assetArch: "amd64", archiveOut: "release-amd64"},
+		{name: "arm64 os", osArch: "ARM64", processArch: "X86", wow64Arch: "ARM64", processorArch: "x86", assetArch: "arm64", archiveOut: "release-arm64"},
+		{name: "generic 64 bit os defers to arm64 process", osArch: "64-bit", processArch: "ARM64", processorArch: "ARM64", cimArch: "0", assetArch: "arm64", archiveOut: "release-arm64"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			archiveName := "detent_1.2.3_windows_" + tt.assetArch + ".zip"
+			archive := detentWindowsArchive(t, tt.archiveOut)
+			server := newPowerShellInstallReleaseServer("v1.2.3", archiveName, archive, windowsArchiveChecksum(archive))
+			t.Cleanup(server.Close)
+
+			tmp := t.TempDir()
+			installDir := filepath.Join(tmp, "bin")
+			fakeBin := filepath.Join(tmp, "fakebin")
+			if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+				t.Fatalf("MkdirAll(fakebin) error = %v", err)
+			}
+			fakeGo := filepath.Join(fakeBin, "go.cmd")
+			if err := os.WriteFile(fakeGo, []byte("@echo off\r\nexit /b 1\r\n"), 0o755); err != nil {
+				t.Fatalf("WriteFile(fake go) error = %v", err)
+			}
+
+			env := append(os.Environ(),
+				"DETENT_GITHUB_API_BASE="+server.URL,
+				"DETENT_RELEASE_DOWNLOAD_BASE="+server.URL,
+				"DETENT_INSTALL_DIR="+installDir,
+				"DETENT_INSTALL_MODE=release",
+				"DETENT_INSTALL_SKIP_PATH=1",
+				"DETENT_INSTALL_TEST_OS_ARCH="+tt.osArch,
+				"DETENT_INSTALL_TEST_PROCESS_ARCH="+tt.processArch,
+				"PROCESSOR_ARCHITECTURE="+tt.processorArch,
+				"PROCESSOR_ARCHITEW6432="+tt.wow64Arch,
+				"DETENT_INSTALL_TEST_CIM_PROCESSOR_ARCH="+tt.cimArch,
+				"PATH="+fakeBin+";"+os.Getenv("PATH"),
+			)
+
+			result := runPowerShellInstall(t, root, env)
+			if result.err != nil {
+				t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", result.err, result.stdout, result.stderr)
+			}
+			if !strings.Contains(result.stdout, "Detected target windows/"+tt.assetArch) {
+				t.Fatalf("install stdout = %q, want target windows/%s", result.stdout, tt.assetArch)
+			}
+
+			binary := filepath.Join(installDir, "detent.exe")
+			raw, err := os.ReadFile(binary)
+			if err != nil {
+				t.Fatalf("ReadFile(installed binary) error = %v", err)
+			}
+			if string(raw) != tt.archiveOut {
+				t.Fatalf("installed binary = %q, want %s", raw, tt.archiveOut)
+			}
+		})
+	}
+}
+
 func detentWindowsArchive(t *testing.T, content string) []byte {
 	t.Helper()
 
