@@ -57,7 +57,7 @@ type ProjectDispatch struct {
 }
 
 type globalScheduler struct {
-	*CountingSemaphore
+	sem *CountingSemaphore
 
 	mode           Mode
 	decayHalfLife  time.Duration
@@ -69,7 +69,10 @@ type globalScheduler struct {
 	roundRobinLastID   string
 }
 
-var _ GlobalScheduler = (*globalScheduler)(nil)
+var (
+	_ Scheduler       = (*globalScheduler)(nil)
+	_ GlobalScheduler = (*globalScheduler)(nil)
+)
 
 func NewWeightedFair(cfg Config) GlobalScheduler {
 	return newGlobalScheduler(ModeWeightedFair, cfg)
@@ -89,16 +92,24 @@ func NewFairShare(cfg Config) GlobalScheduler {
 
 func newGlobalScheduler(mode Mode, cfg Config) *globalScheduler {
 	return &globalScheduler{
-		CountingSemaphore: NewCountingSemaphore(cfg),
-		mode:              mode,
-		decayHalfLife:     cfg.DecayHalfLife,
-		fairShareStore:    cfg.FairShareStore,
-		weightedCurrent:   map[string]float64{},
+		sem:             NewCountingSemaphore(cfg),
+		mode:            mode,
+		decayHalfLife:   cfg.DecayHalfLife,
+		fairShareStore:  cfg.FairShareStore,
+		weightedCurrent: map[string]float64{},
 	}
 }
 
 func (s *globalScheduler) Mode() Mode {
 	return s.mode
+}
+
+func (s *globalScheduler) RequestSlot(ctx context.Context, req SlotRequest) (Slot, error) {
+	return s.sem.RequestSlot(ctx, req)
+}
+
+func (s *globalScheduler) ReleaseSlot(slot Slot) error {
+	return s.sem.ReleaseSlot(slot)
 }
 
 func (s *globalScheduler) SelectProject(ctx context.Context, req ProjectSelectionRequest) (ProjectSelection, error) {
@@ -167,7 +178,7 @@ func (s *globalScheduler) RecordProjectDispatch(ctx context.Context, dispatch Pr
 }
 
 func (s *globalScheduler) projectSlotAvailable(running []RunningProject) bool {
-	return len(running) < s.capacity
+	return len(running) < s.sem.capacity
 }
 
 func (s *globalScheduler) selectWeightedFair(candidates []ProjectCandidate, now time.Time) ProjectSelection {
