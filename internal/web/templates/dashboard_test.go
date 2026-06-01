@@ -176,6 +176,18 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 				Sessions:       12,
 				Runs:           3,
 			},
+			CycleTime: telemetry.CycleTimeReport{
+				Available:      true,
+				AverageSeconds: int64(90 * time.Minute / time.Second),
+				Issues: []telemetry.CycleTimeIssue{
+					{Key: "digitaldrywood/detent#139", DurationSeconds: int64(45 * time.Minute / time.Second)},
+					{Key: "digitaldrywood/detent#215", DurationSeconds: int64(2 * time.Hour / time.Second)},
+				},
+				Buckets: []telemetry.CycleTimeBucket{
+					{Label: "<1h", Count: 1},
+					{Label: "1-4h", Count: 1},
+				},
+			},
 			TokenTrend: []telemetry.TokenTrendPoint{
 				{
 					At:     now.Add(-5 * time.Minute),
@@ -243,6 +255,13 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"12",
 		"2h 0m",
 		"3",
+		"Cycle time",
+		"2 completed",
+		"1h 30m",
+		`aria-label="Cycle time histogram"`,
+		"<title>Cycle time histogram</title>",
+		"<title>&lt;1h: 1 issues</title>",
+		"<title>1-4h: 1 issues</title>",
 		`aria-label="Token trend"`,
 		"<title>Token trend</title>",
 		`stroke="currentColor"`,
@@ -862,6 +881,7 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 		"No issues are currently backing off.",
 		"No blocked sessions.",
 		"No completed sessions recorded.",
+		"No completed issues yet.",
 		"No board states recorded.",
 		"No board progress history yet.",
 		"Budget disabled",

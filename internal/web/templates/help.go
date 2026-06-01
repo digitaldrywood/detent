@@ -18,6 +18,7 @@ const (
 	helpCompleted           helpTerm = "completed"
 	helpCreditsRateBucket   helpTerm = "credits-rate-bucket"
 	helpCumulativeFlow      helpTerm = "cumulative-flow"
+	helpCycleTime           helpTerm = "cycle-time"
 	helpCurrentSpend        helpTerm = "current-spend"
 	helpDailyCap            helpTerm = "daily-cap"
 	helpDiff                helpTerm = "diff"
@@ -68,6 +69,7 @@ var helpDefinitions = map[helpTerm]helpEntry{
 	helpCompleted:           {Label: "Completed", Description: "Sessions that finished and reported a final state. Compare it with Running and Queue to see whether agents are actually shipping work."},
 	helpCreditsRateBucket:   {Label: "Credits rate bucket", Description: "How many Codex credits remain when the provider reports a credit balance. Watch it during heavy work because low credits can slow or stop agents."},
 	helpCumulativeFlow:      {Label: "Cumulative flow", Description: "How completed issue count changes over recent snapshots. A flat line means work is not reaching done, even if agents are busy."},
+	helpCycleTime:           {Label: "Cycle time", Description: "Completed issue duration from first recorded session start to latest successful completion in local run history."},
 	helpCurrentSpend:        {Label: "Current spend", Description: "USD already used in the current budget window. Check it before starting parallel work or raising concurrency."},
 	helpDailyCap:            {Label: "Daily cap", Description: "The maximum USD this project may spend today. When it is reached, Detent stops starting new sessions for the day."},
 	helpDiff:                {Label: "Diff", Description: "The current workspace change size in files and lines. Large or fast-growing diffs are a signal to review scope before the session drifts."},

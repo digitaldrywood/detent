@@ -20,6 +20,10 @@ type configuredBudget struct {
 }
 
 func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {
+	if cycleTime, ok := s.snapshotCycleTime(ctx); ok {
+		snapshot.CycleTime = cycleTime
+	}
+
 	budget, ok := s.snapshotBudget(ctx, snapshot.GeneratedAt)
 	if !ok {
 		return snapshot

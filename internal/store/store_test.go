@@ -339,6 +339,147 @@ func TestBudgetCostEvents(t *testing.T) {
 	}
 }
 
+func TestCycleTimeReportFromCompletedSessions(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	base := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+
+	seedCycleSession(t, ctx, backend, cycleSessionSeed{
+		IssueID:     "issue-215",
+		Identifier:  "digitaldrywood/detent#215",
+		StartedAt:   base.Add(-time.Hour),
+		CompletedAt: base.Add(-30 * time.Minute),
+		FinalState:  "failed",
+	})
+	seedCycleSession(t, ctx, backend, cycleSessionSeed{
+		IssueID:     "issue-215",
+		Identifier:  "digitaldrywood/detent#215",
+		StartedAt:   base,
+		CompletedAt: base.Add(90 * time.Minute),
+		FinalState:  "completed",
+	})
+	seedCycleSession(t, ctx, backend, cycleSessionSeed{
+		IssueID:     "issue-216",
+		Identifier:  "digitaldrywood/detent#216",
+		StartedAt:   base.Add(30 * time.Minute),
+		CompletedAt: base.Add(2 * time.Hour),
+		FinalState:  "failed",
+	})
+	seedCycleSession(t, ctx, backend, cycleSessionSeed{
+		IssueID:     "issue-215",
+		Identifier:  "digitaldrywood/detent#215",
+		StartedAt:   base.Add(2 * time.Hour),
+		CompletedAt: base.Add(3 * time.Hour),
+		FinalState:  "completed",
+	})
+	seedCycleSession(t, ctx, backend, cycleSessionSeed{
+		IssueID:     "issue-217",
+		Identifier:  "digitaldrywood/detent#217",
+		StartedAt:   base.Add(-24 * time.Hour),
+		CompletedAt: base.Add(24 * time.Hour),
+		FinalState:  "Human Review",
+	})
+
+	report, err := backend.CycleTimeReport(ctx)
+	if err != nil {
+		t.Fatalf("CycleTimeReport() error = %v", err)
+	}
+
+	if len(report.Issues) != 2 {
+		t.Fatalf("CycleTimeReport().Issues len = %d, want 2: %#v", len(report.Issues), report.Issues)
+	}
+	if report.Issues[0].Key != "digitaldrywood/detent#217" || report.Issues[0].DurationSeconds != int64(48*time.Hour/time.Second) {
+		t.Fatalf("first issue = %#v, want #217 at 48h", report.Issues[0])
+	}
+	if report.Issues[1].Key != "digitaldrywood/detent#215" || report.Issues[1].DurationSeconds != int64(4*time.Hour/time.Second) || report.Issues[1].Sessions != 3 {
+		t.Fatalf("second issue = %#v, want #215 at 4h across 3 sessions", report.Issues[1])
+	}
+	if report.AverageSeconds != int64((48*time.Hour+4*time.Hour)/2/time.Second) {
+		t.Fatalf("AverageSeconds = %d, want 93600", report.AverageSeconds)
+	}
+	if len(report.Buckets) != 5 || report.Buckets[2].Count != 1 || report.Buckets[4].Count != 1 {
+		t.Fatalf("Buckets = %#v, want counts in 4-8h and 1-3d", report.Buckets)
+	}
+}
+
+func TestCycleTimeSeconds(t *testing.T) {
+	t.Parallel()
+
+	base := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		start time.Time
+		end   time.Time
+		want  int64
+		ok    bool
+	}{
+		{name: "same instant is zero seconds", start: base, end: base, want: 0, ok: true},
+		{name: "whole seconds between timestamps", start: base, end: base.Add(90*time.Minute + 12*time.Second), want: 5412, ok: true},
+		{name: "missing start is invalid", end: base, ok: false},
+		{name: "missing end is invalid", start: base, ok: false},
+		{name: "end before start is invalid", start: base, end: base.Add(-time.Second), ok: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := cycleTimeSeconds(tt.start, tt.end)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("cycleTimeSeconds() = %d, %v; want %d, %v", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
+func TestCycleTimeBuckets(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		issues []CycleTimeIssue
+		want   []CycleTimeBucket
+	}{
+		{name: "no durations returns no buckets"},
+		{
+			name: "assigns fixed lead time ranges and trims trailing empties",
+			issues: []CycleTimeIssue{
+				{Key: "fast", DurationSeconds: int64(30 * time.Minute / time.Second)},
+				{Key: "medium", DurationSeconds: int64(2 * time.Hour / time.Second)},
+				{Key: "same range", DurationSeconds: int64(3 * time.Hour / time.Second)},
+				{Key: "slow", DurationSeconds: int64(9 * 24 * time.Hour / time.Second)},
+			},
+			want: []CycleTimeBucket{
+				{Label: "<1h", MinSeconds: 0, MaxSeconds: 3600, Count: 1},
+				{Label: "1-4h", MinSeconds: 3600, MaxSeconds: 14400, Count: 2},
+				{Label: "4-8h", MinSeconds: 14400, MaxSeconds: 28800},
+				{Label: "8-24h", MinSeconds: 28800, MaxSeconds: 86400},
+				{Label: "1-3d", MinSeconds: 86400, MaxSeconds: 259200},
+				{Label: "3-7d", MinSeconds: 259200, MaxSeconds: 604800},
+				{Label: "7d+", MinSeconds: 604800, Count: 1},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := cycleTimeBuckets(tt.issues)
+			if len(got) != len(tt.want) {
+				t.Fatalf("cycleTimeBuckets() len = %d, want %d: %#v", len(got), len(tt.want), got)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("bucket %d = %#v, want %#v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
 func TestFairShareStoreRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -755,6 +896,36 @@ func openTestStore(t *testing.T, ctx context.Context) Store {
 		}
 	})
 	return backend
+}
+
+type cycleSessionSeed struct {
+	IssueID     string
+	Identifier  string
+	StartedAt   time.Time
+	CompletedAt time.Time
+	FinalState  string
+}
+
+func seedCycleSession(t *testing.T, ctx context.Context, backend Store, seed cycleSessionSeed) {
+	t.Helper()
+
+	sessionID, err := backend.StartSession(ctx, SessionStart{
+		IssueID:    seed.IssueID,
+		Identifier: seed.Identifier,
+		StartedAt:  seed.StartedAt,
+		Model:      "gpt-5-codex",
+	})
+	if err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+		CompletedAt:    seed.CompletedAt,
+		RuntimeSeconds: int64(seed.CompletedAt.Sub(seed.StartedAt) / time.Second),
+		FinalState:     seed.FinalState,
+		Model:          "gpt-5-codex",
+	}); err != nil {
+		t.Fatalf("FinishSession() error = %v", err)
+	}
 }
 
 func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {

@@ -77,6 +77,52 @@ func TestThroughputTrendPoints(t *testing.T) {
 	}
 }
 
+func TestCycleTimeHistogramChart(t *testing.T) {
+	t.Parallel()
+
+	report := telemetry.CycleTimeReport{
+		Available: true,
+		Buckets: []telemetry.CycleTimeBucket{
+			{Label: "<1h", Count: 1},
+			{Label: "1-4h", Count: 2},
+		},
+	}
+
+	chart := cycleTimeHistogramChart(report)
+	if chart.Title != "Cycle time histogram" || chart.AriaLabel != "Cycle time histogram" {
+		t.Fatalf("chart titles = %q/%q", chart.Title, chart.AriaLabel)
+	}
+	if len(chart.Bars) != 2 {
+		t.Fatalf("chart bars len = %d, want 2: %#v", len(chart.Bars), chart.Bars)
+	}
+	if chart.Bars[1].Label != "1-4h" || chart.Bars[1].Value != 2 {
+		t.Fatalf("second bar = %#v, want 1-4h count 2", chart.Bars[1])
+	}
+	if chart.ValueSuffix != "issues" {
+		t.Fatalf("ValueSuffix = %q, want issues", chart.ValueSuffix)
+	}
+}
+
+func TestCycleTimeSummaryLabels(t *testing.T) {
+	t.Parallel()
+
+	report := telemetry.CycleTimeReport{
+		Available:      true,
+		AverageSeconds: int64(90 * time.Minute / time.Second),
+		Issues: []telemetry.CycleTimeIssue{
+			{Key: "digitaldrywood/detent#215"},
+			{Key: "digitaldrywood/detent#216"},
+		},
+	}
+
+	if got := cycleTimeAverageLabel(report); got != "1h 30m" {
+		t.Fatalf("cycleTimeAverageLabel() = %q, want 1h 30m", got)
+	}
+	if got := cycleTimeCountLabel(report); got != "2 completed" {
+		t.Fatalf("cycleTimeCountLabel() = %q, want 2 completed", got)
+	}
+}
+
 func TestBudgetProjectedSpendUSD(t *testing.T) {
 	t.Parallel()
 

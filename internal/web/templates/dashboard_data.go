@@ -48,6 +48,11 @@ type boardStateRow struct {
 	DotClass   string
 }
 
+type cycleTimeBucketRow struct {
+	Label string
+	Count string
+}
+
 type budgetHistoryBar struct {
 	Style string
 	Title string
@@ -768,6 +773,55 @@ func boardProgressCount(snapshot telemetry.Snapshot) string {
 		return "0"
 	}
 	return formatCount(points[len(points)-1].Count)
+}
+
+func cycleTimeHistogramChart(report telemetry.CycleTimeReport) BarChartData {
+	bars := make([]webchart.Point, 0, len(report.Buckets))
+	for _, bucket := range report.Buckets {
+		bars = append(bars, webchart.Point{
+			Label: bucket.Label,
+			Value: float64(bucket.Count),
+		})
+	}
+	return BarChartData{
+		Title:       "Cycle time histogram",
+		AriaLabel:   "Cycle time histogram",
+		Bars:        bars,
+		ValueSuffix: "issues",
+		ColorClass:  "text-success",
+		Class:       "h-28",
+		Height:      112,
+	}
+}
+
+func cycleTimeAverageLabel(report telemetry.CycleTimeReport) string {
+	return formatDuration(float64(report.AverageSeconds))
+}
+
+func cycleTimeCountLabel(report telemetry.CycleTimeReport) string {
+	count := len(report.Issues)
+	if count == 1 {
+		return "1 completed"
+	}
+	return formatInt(int64(count)) + " completed"
+}
+
+func cycleTimeBucketRows(report telemetry.CycleTimeReport) []cycleTimeBucketRow {
+	rows := make([]cycleTimeBucketRow, 0, len(report.Buckets))
+	for _, bucket := range report.Buckets {
+		rows = append(rows, cycleTimeBucketRow{
+			Label: bucket.Label,
+			Count: formatInt(int64(bucket.Count)),
+		})
+	}
+	return rows
+}
+
+func cycleTimeUnavailableDetail(report telemetry.CycleTimeReport) string {
+	if strings.TrimSpace(report.DegradedReason) != "" {
+		return report.DegradedReason
+	}
+	return "Runtime store unavailable."
 }
 
 func boardStateDotClass(state string) string {

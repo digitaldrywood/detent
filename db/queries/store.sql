@@ -70,6 +70,36 @@ FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?;
 
+-- name: CompletedIssueCycleRows :many
+WITH issue_sessions AS (
+  SELECT
+    COALESCE(NULLIF(identifier, ''), NULLIF(issue_id, ''), NULLIF(issue_url, ''), 'unassigned') AS issue_key,
+    started_at,
+    completed_at,
+    lower(trim(COALESCE(final_state, ''))) NOT IN ('failed', 'failure', 'cancelled', 'canceled') AS successful
+  FROM codex_sessions
+  WHERE started_at IS NOT NULL
+    AND completed_at IS NOT NULL
+),
+successful_issues AS (
+  SELECT
+    issue_key,
+    MAX(completed_at) AS completed_at
+  FROM issue_sessions
+  WHERE successful
+  GROUP BY issue_key
+)
+SELECT
+  CAST(issue_sessions.issue_key AS TEXT) AS issue_key,
+  CAST(MIN(issue_sessions.started_at) AS TEXT) AS started_at,
+  CAST(successful_issues.completed_at AS TEXT) AS completed_at,
+  CAST(COUNT(*) AS INTEGER) AS sessions
+FROM issue_sessions
+JOIN successful_issues ON successful_issues.issue_key = issue_sessions.issue_key
+WHERE issue_sessions.started_at <= successful_issues.completed_at
+GROUP BY issue_sessions.issue_key, successful_issues.completed_at
+ORDER BY completed_at DESC, issue_key;
+
 -- name: LifetimeTotals :one
 SELECT
   CAST(COALESCE(SUM(input_tokens), 0) AS INTEGER) AS input_tokens,
