@@ -33,7 +33,7 @@ func TestPowerShellInstallScriptInstallsReleaseArchive(t *testing.T) {
 
 	tmp := t.TempDir()
 	installDir := filepath.Join(tmp, "bin")
-	env := append(os.Environ(),
+	env := powerShellInstallEnv(
 		"DETENT_GITHUB_API_BASE="+server.URL,
 		"DETENT_RELEASE_DOWNLOAD_BASE="+server.URL,
 		"DETENT_INSTALL_DIR="+installDir,
@@ -106,7 +106,7 @@ func TestPowerShellInstallScriptMapsX86ProcessToOSArchitecture(t *testing.T) {
 				t.Fatalf("WriteFile(fake go) error = %v", err)
 			}
 
-			env := append(os.Environ(),
+			env := powerShellInstallEnv(
 				"DETENT_GITHUB_API_BASE="+server.URL,
 				"DETENT_RELEASE_DOWNLOAD_BASE="+server.URL,
 				"DETENT_INSTALL_DIR="+installDir,
@@ -140,6 +140,27 @@ func TestPowerShellInstallScriptMapsX86ProcessToOSArchitecture(t *testing.T) {
 			}
 		})
 	}
+}
+
+func powerShellInstallEnv(overrides ...string) []string {
+	env := os.Environ()
+	for _, override := range overrides {
+		key, _, ok := strings.Cut(override, "=")
+		if !ok {
+			continue
+		}
+
+		filtered := make([]string, 0, len(env)+1)
+		for _, entry := range env {
+			existingKey, _, ok := strings.Cut(entry, "=")
+			if ok && strings.EqualFold(existingKey, key) {
+				continue
+			}
+			filtered = append(filtered, entry)
+		}
+		env = append(filtered, override)
+	}
+	return env
 }
 
 func detentWindowsArchive(t *testing.T, content string) []byte {
