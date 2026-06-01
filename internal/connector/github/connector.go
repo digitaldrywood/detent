@@ -125,3 +125,4 @@ func (c *Connector) Authenticate(ctx context.Context) error {
 
 var _ connector.Connector = (*Connector)(nil)
 var _ connector.Authenticator = (*Connector)(nil)
+var _ connector.Provisioner = (*Connector)(nil)

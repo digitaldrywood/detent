@@ -20,6 +20,8 @@ type sqliteStore struct {
 	queries *sqlc.Queries
 }
 
+var _ Store = (*sqliteStore)(nil)
+
 func openSQLite(ctx context.Context, cfg Config) (*sqliteStore, error) {
 	if cfg.Path == "" {
 		return nil, errors.New("sqlite path is required")

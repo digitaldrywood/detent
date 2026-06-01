@@ -67,6 +67,8 @@ type unimplementedConnector struct {
 	name string
 }
 
+var _ connector.Connector = unimplementedConnector{}
+
 func (c unimplementedConnector) Name() string {
 	return c.name
 }
