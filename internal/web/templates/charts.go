@@ -5,6 +5,7 @@ import (
 	"math"
 	"strconv"
 	"strings"
+	"time"
 
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 )
@@ -73,6 +74,29 @@ type TimelineChartData struct {
 	Gap         float64
 }
 
+type BudgetProjectionPoint struct {
+	Label string
+	At    time.Time
+	Value float64
+}
+
+type BudgetProjectionChartData struct {
+	Title            string
+	AriaLabel        string
+	ActualPoints     []BudgetProjectionPoint
+	ProjectionPoints []BudgetProjectionPoint
+	PeriodStart      time.Time
+	PeriodEnd        time.Time
+	Cap              float64
+	Class            string
+	ActualClass      string
+	ProjectionClass  string
+	CapClass         string
+	Width            float64
+	Height           float64
+	Padding          float64
+}
+
 type seriesChartView struct {
 	Title     string
 	AriaLabel string
@@ -114,6 +138,25 @@ type timelineChartView struct {
 	Segments  []timelineSegmentView
 }
 
+type budgetProjectionChartView struct {
+	Title              string
+	AriaLabel          string
+	Class              string
+	ViewBox            string
+	ActualAreaPath     string
+	ActualLinePath     string
+	ProjectionLinePath string
+	ActualClass        string
+	ProjectionClass    string
+	CapClass           string
+	CapLineX1          string
+	CapLineX2          string
+	CapLineY           string
+	CapTitle           string
+	ActualPoints       []pointView
+	ProjectionPoints   []pointView
+}
+
 type pointView struct {
 	X     string
 	Y     string
@@ -145,6 +188,62 @@ func newSparklineChartView(data SeriesChartData) seriesChartView {
 func newLineAreaChartView(data SeriesChartData) seriesChartView {
 	data.Height = chartDimension(data.Height, 120)
 	return newSeriesChartView(data, true, "text-accent")
+}
+
+func newBudgetProjectionChartView(data BudgetProjectionChartData) budgetProjectionChartView {
+	width := chartDimension(data.Width, 300)
+	height := chartDimension(data.Height, 140)
+	padding := chartPadding(data.Padding, 10)
+	baseline := height - padding
+	start, end := budgetProjectionPeriod(data)
+	maxValue := budgetProjectionMax(data)
+
+	actualScaled := scaleBudgetProjectionPoints(data.ActualPoints, start, end, width, height, padding, maxValue)
+	projectionScaled := scaleBudgetProjectionPoints(data.ProjectionPoints, start, end, width, height, padding, maxValue)
+
+	actualPoints := make([]pointView, 0, len(actualScaled))
+	for _, point := range actualScaled {
+		actualPoints = append(actualPoints, pointView{
+			X:     webchart.FormatCoord(point.X),
+			Y:     webchart.FormatCoord(point.Y),
+			Title: budgetChartPointTitle(point.Label, point.Value),
+		})
+	}
+
+	projectionPoints := make([]pointView, 0, len(projectionScaled))
+	for _, point := range projectionScaled {
+		projectionPoints = append(projectionPoints, pointView{
+			X:     webchart.FormatCoord(point.X),
+			Y:     webchart.FormatCoord(point.Y),
+			Title: budgetChartPointTitle(point.Label, point.Value),
+		})
+	}
+
+	capLineY := ""
+	capTitle := ""
+	if data.Cap > 0 {
+		capLineY = webchart.FormatCoord(scaleBudgetProjectionY(data.Cap, height, padding, maxValue))
+		capTitle = "Budget cap: " + formatUSD(data.Cap)
+	}
+
+	return budgetProjectionChartView{
+		Title:              chartText(data.Title, "Cost burn-down"),
+		AriaLabel:          chartText(data.AriaLabel, chartText(data.Title, "Cost burn-down")),
+		Class:              chartClass("block h-36 w-full overflow-visible rounded-md border border-border bg-muted", data.Class),
+		ViewBox:            chartViewBox(width, height),
+		ActualAreaPath:     webchart.SmoothAreaPath(actualScaled, baseline),
+		ActualLinePath:     webchart.SmoothLinePath(actualScaled),
+		ProjectionLinePath: webchart.LinePath(projectionScaled),
+		ActualClass:        chartText(data.ActualClass, "text-accent"),
+		ProjectionClass:    chartText(data.ProjectionClass, "text-warning"),
+		CapClass:           chartText(data.CapClass, "text-danger"),
+		CapLineX1:          webchart.FormatCoord(padding),
+		CapLineX2:          webchart.FormatCoord(width - padding),
+		CapLineY:           capLineY,
+		CapTitle:           capTitle,
+		ActualPoints:       actualPoints,
+		ProjectionPoints:   projectionPoints,
+	}
 }
 
 func newSplitSeriesChartView(data SplitSeriesChartData) splitSeriesChartView {
@@ -230,6 +329,120 @@ func newSeriesChartView(data SeriesChartData, withArea bool, defaultColor string
 		AreaPath: areaPath,
 		Points:   points,
 	}
+}
+
+func budgetProjectionPeriod(data BudgetProjectionChartData) (time.Time, time.Time) {
+	start := data.PeriodStart.UTC()
+	end := data.PeriodEnd.UTC()
+	if !start.IsZero() && end.After(start) {
+		return start, end
+	}
+
+	for _, point := range data.ActualPoints {
+		at := point.At.UTC()
+		if at.IsZero() {
+			continue
+		}
+		if start.IsZero() || at.Before(start) {
+			start = at
+		}
+		if at.After(end) {
+			end = at
+		}
+	}
+	for _, point := range data.ProjectionPoints {
+		at := point.At.UTC()
+		if at.IsZero() {
+			continue
+		}
+		if start.IsZero() || at.Before(start) {
+			start = at
+		}
+		if at.After(end) {
+			end = at
+		}
+	}
+	if start.IsZero() {
+		start = time.Unix(0, 0).UTC()
+	}
+	if !end.After(start) {
+		end = start.Add(time.Hour)
+	}
+	return start, end
+}
+
+func budgetProjectionMax(data BudgetProjectionChartData) float64 {
+	maxValue := data.Cap
+	for _, point := range data.ActualPoints {
+		if point.Value > maxValue {
+			maxValue = point.Value
+		}
+	}
+	for _, point := range data.ProjectionPoints {
+		if point.Value > maxValue {
+			maxValue = point.Value
+		}
+	}
+	if maxValue <= 0 {
+		return 1
+	}
+	return maxValue
+}
+
+func scaleBudgetProjectionPoints(points []BudgetProjectionPoint, start time.Time, end time.Time, width float64, height float64, padding float64, maxValue float64) []webchart.ScaledPoint {
+	if len(points) == 0 {
+		return nil
+	}
+
+	totalSeconds := end.Sub(start).Seconds()
+	if totalSeconds <= 0 {
+		totalSeconds = 1
+	}
+	plotWidth := width - padding*2
+	if plotWidth < 0 {
+		plotWidth = 0
+	}
+
+	scaled := make([]webchart.ScaledPoint, 0, len(points))
+	for index, point := range points {
+		at := point.At.UTC()
+		xRatio := 0.0
+		if !at.IsZero() {
+			xRatio = at.Sub(start).Seconds() / totalSeconds
+		} else if len(points) > 1 {
+			xRatio = float64(index) / float64(len(points)-1)
+		}
+		xRatio = chartClamp(xRatio, 0, 1)
+		scaled = append(scaled, webchart.ScaledPoint{
+			Label: point.Label,
+			Value: point.Value,
+			X:     padding + plotWidth*xRatio,
+			Y:     scaleBudgetProjectionY(point.Value, height, padding, maxValue),
+		})
+	}
+	return scaled
+}
+
+func scaleBudgetProjectionY(value float64, height float64, padding float64, maxValue float64) float64 {
+	plotHeight := height - padding*2
+	if plotHeight < 0 {
+		plotHeight = 0
+	}
+	ratio := 0.0
+	if maxValue > 0 {
+		ratio = chartClamp(value/maxValue, 0, 1)
+	}
+	return padding + (1-ratio)*plotHeight
+}
+
+func chartClamp(value float64, minValue float64, maxValue float64) float64 {
+	if value < minValue {
+		return minValue
+	}
+	if value > maxValue {
+		return maxValue
+	}
+	return value
 }
 
 func splitSeriesMax(points []SplitSeriesPoint) float64 {
@@ -394,6 +607,14 @@ func chartPointTitle(label string, value float64, suffix string) string {
 		return valueLabel
 	}
 	return label + ": " + valueLabel
+}
+
+func budgetChartPointTitle(label string, value float64) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return formatUSD(value)
+	}
+	return label + ": " + formatUSD(value)
 }
 
 func chartValueLabel(value float64, suffix string) string {

@@ -109,13 +109,22 @@ type Completed struct {
 }
 
 type Budget struct {
-	Enabled          bool            `json:"enabled"`
-	PerDayMaxUSD     *float64        `json:"per_day_max_usd"`
-	PerIssueMaxUSD   *float64        `json:"per_issue_max_usd"`
-	CurrentSpendUSD  float64         `json:"current_spend_usd"`
-	ProjectedCostUSD float64         `json:"projected_cost_usd"`
-	Days             []BudgetDay     `json:"days,omitempty"`
-	Refusals         []BudgetRefusal `json:"refusals,omitempty"`
+	Enabled           bool               `json:"enabled"`
+	PerDayMaxUSD      *float64           `json:"per_day_max_usd"`
+	PerIssueMaxUSD    *float64           `json:"per_issue_max_usd"`
+	CurrentSpendUSD   float64            `json:"current_spend_usd"`
+	ProjectedCostUSD  float64            `json:"projected_cost_usd"`
+	ProjectedSpendUSD float64            `json:"projected_spend_usd,omitempty"`
+	PeriodStart       time.Time          `json:"period_start,omitempty"`
+	PeriodEnd         time.Time          `json:"period_end,omitempty"`
+	SpendPoints       []BudgetSpendPoint `json:"spend_points,omitempty"`
+	Days              []BudgetDay        `json:"days,omitempty"`
+	Refusals          []BudgetRefusal    `json:"refusals,omitempty"`
+}
+
+type BudgetSpendPoint struct {
+	At       time.Time `json:"at"`
+	SpendUSD float64   `json:"spend_usd"`
 }
 
 type BudgetDay struct {

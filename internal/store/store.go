@@ -26,6 +26,7 @@ type Config struct {
 type Store interface {
 	StatsStore
 	FairShareStore
+	BudgetCostStore
 	Queries() *sqlc.Queries
 	Close() error
 }
@@ -46,6 +47,10 @@ type StatsStore interface {
 type FairShareStore interface {
 	ListFairShareUsage(context.Context) ([]FairShareUsage, error)
 	RecordFairShareDispatch(context.Context, FairShareDispatch) error
+}
+
+type BudgetCostStore interface {
+	BudgetCostEvents(context.Context, BudgetCostQuery) ([]BudgetCostEvent, error)
 }
 
 type RunStart struct {
@@ -190,6 +195,18 @@ type LifetimeTotals struct {
 	RuntimeSeconds int64
 	Sessions       int64
 	Runs           int64
+}
+
+type BudgetCostQuery struct {
+	ProjectIDs []string
+	From       time.Time
+	To         time.Time
+}
+
+type BudgetCostEvent struct {
+	ProjectID string
+	At        time.Time
+	CostUSD   float64
 }
 
 type ModelTokenSpend struct {

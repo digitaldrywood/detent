@@ -53,6 +53,17 @@ type budgetHistoryBar struct {
 	Title string
 }
 
+type budgetBurnDownViewModel struct {
+	Available       bool
+	EmptyTitle      string
+	EmptyDetail     string
+	PeriodLabel     string
+	CurrentLabel    string
+	CapLabel        string
+	ProjectionLabel string
+	Chart           BudgetProjectionChartData
+}
+
 type agentTimelineRow struct {
 	Identifier   string
 	Title        string
@@ -776,6 +787,210 @@ func budgetDailyUsageStyle(budget telemetry.Budget) string {
 		return percentStyle(0)
 	}
 	return percentStyle(int(math.Round(budget.CurrentSpendUSD / *budget.PerDayMaxUSD * 100)))
+}
+
+func budgetBurnDownView(snapshot telemetry.Snapshot) budgetBurnDownViewModel {
+	budget := snapshot.Budget
+	if !budget.Enabled {
+		return budgetBurnDownViewModel{
+			EmptyTitle:      "Budget disabled.",
+			EmptyDetail:     "Enable a daily budget cap to show spend burn-down.",
+			CurrentLabel:    formatUSD(budget.CurrentSpendUSD),
+			CapLabel:        optionalUSD(budget.PerDayMaxUSD),
+			ProjectionLabel: formatUSD(budget.ProjectedCostUSD),
+		}
+	}
+
+	now := snapshot.GeneratedAt.UTC()
+	if now.IsZero() {
+		now = latestBudgetPointAt(budget.SpendPoints)
+	}
+	if now.IsZero() {
+		now = time.Now().UTC().Truncate(time.Second)
+	}
+
+	periodStart, periodEnd := budgetPeriod(budget, now)
+	currentSpend := budgetCurrentSpendUSD(budget)
+	projectedSpend := budget.ProjectedSpendUSD
+	if projectedSpend <= 0 {
+		projectedSpend = budgetProjectedSpendUSD(periodStart, periodEnd, now, currentSpend)
+	}
+
+	actualPoints := budgetActualPoints(budget.SpendPoints, periodStart, periodEnd, now, currentSpend)
+	if currentSpend <= 0 && len(actualPoints) <= 1 {
+		return budgetBurnDownViewModel{
+			EmptyTitle:      "No budget spend yet.",
+			EmptyDetail:     "Cumulative spend and projection will appear after usage is recorded.",
+			CurrentLabel:    formatUSD(currentSpend),
+			CapLabel:        optionalUSD(budget.PerDayMaxUSD),
+			ProjectionLabel: formatUSD(projectedSpend),
+		}
+	}
+
+	lastActual := actualPoints[len(actualPoints)-1]
+	return budgetBurnDownViewModel{
+		Available:       true,
+		PeriodLabel:     budgetPeriodLabel(periodStart, periodEnd),
+		CurrentLabel:    formatUSD(currentSpend),
+		CapLabel:        optionalUSD(budget.PerDayMaxUSD),
+		ProjectionLabel: formatUSD(projectedSpend),
+		Chart: BudgetProjectionChartData{
+			Title:        "Cost burn-down",
+			AriaLabel:    "Cumulative cost burn-down with budget cap and projected period-end spend",
+			ActualPoints: actualPoints,
+			ProjectionPoints: []BudgetProjectionPoint{
+				{
+					Label: "Current spend",
+					At:    lastActual.At,
+					Value: lastActual.Value,
+				},
+				{
+					Label: "Projected period end",
+					At:    periodEnd,
+					Value: projectedSpend,
+				},
+			},
+			PeriodStart: periodStart,
+			PeriodEnd:   periodEnd,
+			Cap:         budgetCapValue(budget.PerDayMaxUSD),
+		},
+	}
+}
+
+func budgetProjectedSpendUSD(periodStart time.Time, periodEnd time.Time, now time.Time, currentSpend float64) float64 {
+	if currentSpend <= 0 {
+		return 0
+	}
+	if periodStart.IsZero() || !periodEnd.After(periodStart) {
+		return currentSpend
+	}
+	elapsed := now.Sub(periodStart).Seconds()
+	if elapsed <= 0 {
+		return currentSpend
+	}
+	total := periodEnd.Sub(periodStart).Seconds()
+	if total <= 0 {
+		return currentSpend
+	}
+	projected := currentSpend * total / elapsed
+	if projected < currentSpend {
+		return currentSpend
+	}
+	return projected
+}
+
+func budgetPeriod(budget telemetry.Budget, now time.Time) (time.Time, time.Time) {
+	start := budget.PeriodStart.UTC()
+	end := budget.PeriodEnd.UTC()
+	if !start.IsZero() && end.After(start) {
+		return start, end
+	}
+	year, month, day := now.UTC().Date()
+	start = time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+	return start, start.AddDate(0, 0, 1)
+}
+
+func budgetCurrentSpendUSD(budget telemetry.Budget) float64 {
+	current := budget.CurrentSpendUSD
+	for _, point := range budget.SpendPoints {
+		if point.SpendUSD > current {
+			current = point.SpendUSD
+		}
+	}
+	if current < 0 {
+		return 0
+	}
+	return current
+}
+
+func budgetActualPoints(points []telemetry.BudgetSpendPoint, periodStart time.Time, periodEnd time.Time, now time.Time, currentSpend float64) []BudgetProjectionPoint {
+	filtered := make([]telemetry.BudgetSpendPoint, 0, len(points))
+	for _, point := range points {
+		at := point.At.UTC()
+		if at.IsZero() || at.Before(periodStart) || !at.Before(periodEnd) {
+			continue
+		}
+		if point.SpendUSD < 0 {
+			continue
+		}
+		filtered = append(filtered, telemetry.BudgetSpendPoint{At: at, SpendUSD: point.SpendUSD})
+	}
+	sort.SliceStable(filtered, func(i, j int) bool {
+		return filtered[i].At.Before(filtered[j].At)
+	})
+
+	out := []BudgetProjectionPoint{
+		{
+			Label: "Period start",
+			At:    periodStart,
+			Value: 0,
+		},
+	}
+	lastSpend := 0.0
+	for _, point := range filtered {
+		spend := point.SpendUSD
+		if spend < lastSpend {
+			spend = lastSpend
+		}
+		lastSpend = spend
+		out = append(out, BudgetProjectionPoint{
+			Label: budgetPointLabel(point.At),
+			At:    point.At,
+			Value: spend,
+		})
+	}
+
+	if currentSpend < lastSpend {
+		currentSpend = lastSpend
+	}
+	if currentSpend > lastSpend {
+		at := now.UTC()
+		if at.Before(periodStart) {
+			at = periodStart
+		}
+		if !at.Before(periodEnd) {
+			at = periodEnd
+		}
+		out = append(out, BudgetProjectionPoint{
+			Label: "Current spend",
+			At:    at,
+			Value: currentSpend,
+		})
+	}
+	return out
+}
+
+func latestBudgetPointAt(points []telemetry.BudgetSpendPoint) time.Time {
+	var latest time.Time
+	for _, point := range points {
+		at := point.At.UTC()
+		if at.After(latest) {
+			latest = at
+		}
+	}
+	return latest
+}
+
+func budgetPeriodLabel(periodStart time.Time, periodEnd time.Time) string {
+	return periodStart.UTC().Format("Jan 2 15:04") + " - " + periodEnd.UTC().Format("Jan 2 15:04 UTC")
+}
+
+func budgetPointLabel(at time.Time) string {
+	if at.IsZero() {
+		return "Spend"
+	}
+	at = at.UTC()
+	if at.Second() == 0 {
+		return at.Format("15:04")
+	}
+	return at.Format("15:04:05")
+}
+
+func budgetCapValue(cap *float64) float64 {
+	if cap == nil || *cap <= 0 {
+		return 0
+	}
+	return *cap
 }
 
 func budgetHistoryBars(budget telemetry.Budget) []budgetHistoryBar {

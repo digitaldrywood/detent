@@ -30,6 +30,7 @@ func (s *Server) apiState(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
+	snapshot = s.enrichSnapshot(c.Request().Context(), snapshot)
 
 	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now)))
 }
@@ -39,6 +40,7 @@ func (s *Server) apiIssue(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusNotFound, errorResponse("issue_not_found", "Issue not found"))
 	}
+	snapshot = s.enrichSnapshot(c.Request().Context(), snapshot)
 
 	payload, ok := issueResponse(issueIdentifier(c), snapshot)
 	if !ok {
@@ -461,14 +463,18 @@ func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
 	}
 
 	return budgetAPIResponse{
-		Enabled:          budget.Enabled,
-		TodaySpendUSD:    budget.CurrentSpendUSD,
-		CurrentSpendUSD:  budget.CurrentSpendUSD,
-		ProjectedCostUSD: budget.ProjectedCostUSD,
-		PerDayMaxUSD:     budget.PerDayMaxUSD,
-		PerIssueMaxUSD:   budget.PerIssueMaxUSD,
-		Days:             days,
-		Refusals:         budget.Refusals,
+		Enabled:           budget.Enabled,
+		TodaySpendUSD:     budget.CurrentSpendUSD,
+		CurrentSpendUSD:   budget.CurrentSpendUSD,
+		ProjectedCostUSD:  budget.ProjectedCostUSD,
+		ProjectedSpendUSD: budget.ProjectedSpendUSD,
+		PerDayMaxUSD:      budget.PerDayMaxUSD,
+		PerIssueMaxUSD:    budget.PerIssueMaxUSD,
+		PeriodStart:       optionalTime(budget.PeriodStart),
+		PeriodEnd:         optionalTime(budget.PeriodEnd),
+		SpendPoints:       budget.SpendPoints,
+		Days:              days,
+		Refusals:          budget.Refusals,
 	}
 }
 
@@ -674,6 +680,14 @@ func timestampString(value time.Time) *string {
 	return &formatted
 }
 
+func optionalTime(value time.Time) *time.Time {
+	if value.IsZero() {
+		return nil
+	}
+	value = value.UTC()
+	return &value
+}
+
 func timestampStringPtr(value *time.Time) *string {
 	if value == nil {
 		return nil
@@ -853,14 +867,18 @@ type recentSessionAPIResponse struct {
 }
 
 type budgetAPIResponse struct {
-	Enabled          bool                      `json:"enabled"`
-	TodaySpendUSD    float64                   `json:"today_spend_usd"`
-	CurrentSpendUSD  float64                   `json:"current_spend_usd"`
-	ProjectedCostUSD float64                   `json:"projected_cost_usd"`
-	PerDayMaxUSD     *float64                  `json:"per_day_max_usd"`
-	PerIssueMaxUSD   *float64                  `json:"per_issue_max_usd"`
-	Days             []telemetry.BudgetDay     `json:"days"`
-	Refusals         []telemetry.BudgetRefusal `json:"refusals,omitempty"`
+	Enabled           bool                         `json:"enabled"`
+	TodaySpendUSD     float64                      `json:"today_spend_usd"`
+	CurrentSpendUSD   float64                      `json:"current_spend_usd"`
+	ProjectedCostUSD  float64                      `json:"projected_cost_usd"`
+	ProjectedSpendUSD float64                      `json:"projected_spend_usd,omitempty"`
+	PerDayMaxUSD      *float64                     `json:"per_day_max_usd"`
+	PerIssueMaxUSD    *float64                     `json:"per_issue_max_usd"`
+	PeriodStart       *time.Time                   `json:"period_start,omitempty"`
+	PeriodEnd         *time.Time                   `json:"period_end,omitempty"`
+	SpendPoints       []telemetry.BudgetSpendPoint `json:"spend_points,omitempty"`
+	Days              []telemetry.BudgetDay        `json:"days"`
+	Refusals          []telemetry.BudgetRefusal    `json:"refusals,omitempty"`
 }
 
 type usageReportAPIResponse struct {

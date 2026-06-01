@@ -772,7 +772,8 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 		"Completed",
 		"2",
 		"$12.34",
-		"$20.00",
+		"$19.74",
+		"Cost burn-down",
 		"DD-LIVE",
 		"Live dashboard row",
 		"+4 -2 (3 files)",
@@ -1121,6 +1122,163 @@ func TestServerAPIRoutes(t *testing.T) {
 	}
 }
 
+func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	backend := openWebTestStore(t)
+	events := []store.UsageEvent{
+		{
+			ProjectID:  "detent",
+			CostUSD:    1.25,
+			StartedAt:  time.Date(2026, 5, 31, 8, 0, 0, 0, time.UTC),
+			FinishedAt: time.Date(2026, 5, 31, 8, 1, 0, 0, time.UTC),
+			Outcome:    "completed",
+		},
+		{
+			ProjectID:  "detent",
+			CostUSD:    1,
+			StartedAt:  time.Date(2026, 6, 1, 6, 0, 0, 0, time.UTC),
+			FinishedAt: time.Date(2026, 6, 1, 6, 1, 0, 0, time.UTC),
+			Outcome:    "completed",
+		},
+		{
+			ProjectID:  "pyroapex",
+			CostUSD:    9,
+			StartedAt:  time.Date(2026, 6, 1, 7, 0, 0, 0, time.UTC),
+			FinishedAt: time.Date(2026, 6, 1, 7, 1, 0, 0, time.UTC),
+			Outcome:    "completed",
+		},
+		{
+			ProjectID:  "detent",
+			CostUSD:    2.5,
+			StartedAt:  time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC),
+			FinishedAt: time.Date(2026, 6, 1, 11, 1, 0, 0, time.UTC),
+			Outcome:    "completed",
+		},
+	}
+	for _, event := range events {
+		if _, err := backend.RecordUsageEvent(ctx, event); err != nil {
+			t.Fatalf("RecordUsageEvent() error = %v", err)
+		}
+	}
+
+	registry := project.NewRegistry()
+	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+
+	snapshots := hub.New[telemetry.Snapshot]()
+	if err := snapshots.Publish(telemetry.Snapshot{GeneratedAt: generatedAt}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Store = backend
+	deps.Registry = registry
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	budget := state["budget"].(map[string]any)
+	if budget["enabled"] != true || budget["today_spend_usd"] != float64(3.5) || budget["projected_spend_usd"] != float64(7) {
+		t.Fatalf("budget = %#v, want enabled 3.5 today and 7 projected", budget)
+	}
+	if budget["per_day_max_usd"] != float64(100) || budget["per_issue_max_usd"] != float64(10) {
+		t.Fatalf("budget caps = %#v", budget)
+	}
+	points := budget["spend_points"].([]any)
+	if len(points) != 2 || points[1].(map[string]any)["spend_usd"] != float64(3.5) {
+		t.Fatalf("budget spend_points = %#v", points)
+	}
+	days := budget["days"].([]any)
+	if len(days) != 2 || days[0].(map[string]any)["date"] != "2026-05-31" || days[1].(map[string]any)["spend_usd"] != float64(3.5) {
+		t.Fatalf("budget days = %#v", days)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Cost burn-down",
+		"$3.50",
+		"$100.00",
+		"$7.00",
+		"Projected period end: $7.00",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestServerPreservesSnapshotBudgetWhenSpendQueryFails(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	capUSD := 44.0
+	snapshots := hub.New[telemetry.Snapshot]()
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: generatedAt,
+		Budget: telemetry.Budget{
+			Enabled:           true,
+			CurrentSpendUSD:   12.34,
+			ProjectedSpendUSD: 56.78,
+			PerDayMaxUSD:      &capUSD,
+			Days: []telemetry.BudgetDay{
+				{Date: "2026-06-01", SpendUSD: 12.34},
+			},
+			SpendPoints: []telemetry.BudgetSpendPoint{
+				{At: generatedAt, SpendUSD: 12.34},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	registry := project.NewRegistry()
+	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Registry = registry
+	deps.Store = storeProbe{
+		budgetCostEvents: func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+			return nil, errors.New("store is busy")
+		},
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	budget := state["budget"].(map[string]any)
+	if budget["today_spend_usd"] != float64(12.34) || budget["projected_spend_usd"] != float64(56.78) {
+		t.Fatalf("budget = %#v, want preserved snapshot spend", budget)
+	}
+	if budget["per_day_max_usd"] != float64(44) {
+		t.Fatalf("budget per_day_max_usd = %#v, want preserved snapshot cap", budget["per_day_max_usd"])
+	}
+	days := budget["days"].([]any)
+	if len(days) != 1 || days[0].(map[string]any)["spend_usd"] != float64(12.34) {
+		t.Fatalf("budget days = %#v, want preserved snapshot days", days)
+	}
+	points := budget["spend_points"].([]any)
+	if len(points) != 1 || points[0].(map[string]any)["spend_usd"] != float64(12.34) {
+		t.Fatalf("budget spend_points = %#v, want preserved snapshot points", points)
+	}
+}
+
 func TestServerAPIPreservesUnknownDiffStatus(t *testing.T) {
 	t.Parallel()
 
@@ -1438,6 +1596,33 @@ func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot
 	return trackedProject
 }
 
+func newBudgetTestProject(t *testing.T, id string, perDayMaxUSD float64, perIssueMaxUSD float64) *project.Project {
+	t.Helper()
+
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflowCfg.Tracker.Endpoint = "https://api.github.com/graphql"
+	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
+	workflowCfg.Tracker.ProjectSlug = "https://github.com/orgs/digitaldrywood/projects/4"
+	workflowCfg.Budget.Enabled = true
+	workflowCfg.Budget.PerDayMaxUSD = perDayMaxUSD
+	workflowCfg.Budget.PerIssueMaxUSD = perIssueMaxUSD
+
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: id},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "github"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	return trackedProject
+}
+
 func openWebTestStore(t *testing.T) store.Store {
 	t.Helper()
 
@@ -1585,6 +1770,8 @@ func boardStateCount(t *testing.T, payload map[string]any, stateName string) str
 
 type storeProbe struct {
 	store.Store
+
+	budgetCostEvents func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
 }
 
 func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) {
@@ -1593,6 +1780,13 @@ func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) 
 
 func (storeProbe) UsageReport(_ context.Context, query store.UsageReportQuery) (store.UsageReport, error) {
 	return store.UsageReport{By: query.By}, nil
+}
+
+func (p storeProbe) BudgetCostEvents(ctx context.Context, query store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+	if p.budgetCostEvents != nil {
+		return p.budgetCostEvents(ctx, query)
+	}
+	return nil, nil
 }
 
 func (storeProbe) Queries() *sqlc.Queries {
