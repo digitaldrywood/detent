@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"math/big"
+	"reflect"
 	"sync"
 	"time"
 
@@ -30,6 +31,13 @@ type StartupConfig struct {
 type ManagerConfig struct {
 	Projects []globalconfig.Project
 	Startup  StartupConfig
+}
+
+type ReconcileResult struct {
+	Added     []ProjectID
+	Removed   []ProjectID
+	Changed   []ProjectID
+	Unchanged []ProjectID
 }
 
 type ManagerDependencies struct {
@@ -150,6 +158,100 @@ func (m *Manager) Remove(ctx context.Context, id ProjectID) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	return m.removeLocked(ctx, id)
+}
+
+func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	cfg.Projects = append([]globalconfig.Project(nil), cfg.Projects...)
+	desired := make(map[ProjectID]globalconfig.Project, len(cfg.Projects))
+	for i, project := range cfg.Projects {
+		normalized := normalizeManagerProjectConfig(project)
+		id := ProjectID(normalized.ID)
+		if id == "" {
+			return ReconcileResult{}, ErrMissingProjectID
+		}
+		if _, ok := desired[id]; ok {
+			return ReconcileResult{}, ErrProjectExists
+		}
+		cfg.Projects[i] = normalized
+		desired[id] = normalized
+	}
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	result := ReconcileResult{}
+	for _, current := range m.registry.List() {
+		id := current.ID()
+		next, ok := desired[id]
+		if !ok {
+			result.Removed = append(result.Removed, id)
+			continue
+		}
+		if sameProjectConfig(current.Config(), next) {
+			result.Unchanged = append(result.Unchanged, id)
+			continue
+		}
+		result.Changed = append(result.Changed, id)
+	}
+
+	for _, next := range cfg.Projects {
+		id := ProjectID(next.ID)
+		if _, ok := m.registry.Get(id); !ok {
+			result.Added = append(result.Added, id)
+		}
+	}
+
+	prepared := make(map[ProjectID]*Project, len(result.Added)+len(result.Changed))
+	for _, id := range result.Changed {
+		_, preparedProject, err := m.createProjectLocked(desired[id])
+		if err != nil {
+			return result, err
+		}
+		prepared[id] = preparedProject
+	}
+	for _, id := range result.Added {
+		_, preparedProject, err := m.createProjectLocked(desired[id])
+		if err != nil {
+			return result, err
+		}
+		prepared[id] = preparedProject
+	}
+
+	previous := m.cfg
+	m.cfg.Startup = cfg.Startup
+	for _, id := range result.Removed {
+		if err := m.removeLocked(ctx, id); err != nil {
+			m.cfg = previous
+			return result, err
+		}
+	}
+	for _, id := range result.Changed {
+		if err := m.removeLocked(ctx, id); err != nil {
+			m.cfg = previous
+			return result, err
+		}
+		if err := m.registerProjectLocked(ctx, id, prepared[id]); err != nil {
+			m.cfg = previous
+			return result, err
+		}
+	}
+	for _, id := range result.Added {
+		if err := m.registerProjectLocked(ctx, id, prepared[id]); err != nil {
+			m.cfg = previous
+			return result, err
+		}
+	}
+
+	m.cfg = cfg
+	return result, nil
+}
+
+func (m *Manager) removeLocked(ctx context.Context, id ProjectID) error {
 	project, ok := m.registry.Get(id)
 	if !ok {
 		return ErrProjectNotFound
@@ -214,11 +316,27 @@ func (m *Manager) addLocked(ctx context.Context, cfg globalconfig.Project) error
 		return ErrProjectExists
 	}
 
+	_, project, err := m.createProjectLocked(cfg)
+	if err != nil {
+		return err
+	}
+	return m.registerProjectLocked(ctx, id, project)
+}
+
+func (m *Manager) createProjectLocked(cfg globalconfig.Project) (ProjectID, *Project, error) {
+	id := normalizeProjectID(ProjectID(cfg.ID))
+	if id == "" {
+		return "", nil, ErrMissingProjectID
+	}
 	cfg.ID = string(id)
 	project, err := m.factory(cfg)
 	if err != nil {
-		return fmt.Errorf("create project %s: %w", id, err)
+		return "", nil, fmt.Errorf("create project %s: %w", id, err)
 	}
+	return id, project, nil
+}
+
+func (m *Manager) registerProjectLocked(ctx context.Context, id ProjectID, project *Project) error {
 	if err := m.registry.Set(project); err != nil {
 		return err
 	}
@@ -267,6 +385,15 @@ func startupInt(values map[string]any, key string) int {
 		return 0
 	}
 	return number
+}
+
+func normalizeManagerProjectConfig(cfg globalconfig.Project) globalconfig.Project {
+	cfg.ID = string(normalizeProjectID(ProjectID(cfg.ID)))
+	return cfg
+}
+
+func sameProjectConfig(left globalconfig.Project, right globalconfig.Project) bool {
+	return reflect.DeepEqual(normalizeManagerProjectConfig(left), normalizeManagerProjectConfig(right))
 }
 
 func sleepContext(ctx context.Context, delay time.Duration) error {

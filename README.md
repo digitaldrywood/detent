@@ -376,9 +376,10 @@ detent --config ~/.detent/global.yaml promote <id> --priority 1
 detent --config ~/.detent/global.yaml remove-project <id>
 ```
 
-These commands persist the global config. Restart a foreground Detent process
-after structural edits unless your deployment wires the live manager signal path
-into the same process.
+These commands persist the global config. A running Detent process watches the
+active `global.yaml` and reconciles project additions, removals, and setting
+changes without a restart. Invalid edits are logged and ignored while the last
+valid config stays live.
 
 ## Dashboard And APIs
 

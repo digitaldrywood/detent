@@ -11,6 +11,7 @@ import (
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
 func TestWatchDebouncesWorkflowWrites(t *testing.T) {
@@ -203,6 +204,43 @@ func TestWatchReportsInvalidReload(t *testing.T) {
 	}
 }
 
+func TestFileWatcherDebouncesGlobalConfigWrites(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "global.yaml")
+	writeGlobalConfig(t, path, 2)
+
+	w, err := NewFile(path, func(path string) (globalconfig.Config, error) {
+		return globalconfig.Read(path)
+	}, WithFileDebounce(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewFile() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	updates, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+
+	writeGlobalConfig(t, path, 3)
+	writeGlobalConfig(t, path, 4)
+
+	update := receiveFileUpdate(t, updates)
+	if update.Err != nil {
+		t.Fatalf("update error = %v", update.Err)
+	}
+	if update.Value.Global.MaxConcurrentAgents != 4 {
+		t.Fatalf("MaxConcurrentAgents = %d, want 4", update.Value.Global.MaxConcurrentAgents)
+	}
+	if update.Value.Path != path {
+		t.Fatalf("Path = %q, want %q", update.Value.Path, path)
+	}
+}
+
 func receiveUpdate(t *testing.T, updates <-chan Update) Update {
 	t.Helper()
 
@@ -219,6 +257,22 @@ func receiveUpdate(t *testing.T, updates <-chan Update) Update {
 	return Update{}
 }
 
+func receiveFileUpdate[T any](t *testing.T, updates <-chan FileUpdate[T]) FileUpdate[T] {
+	t.Helper()
+
+	select {
+	case update, ok := <-updates:
+		if !ok {
+			t.Fatal("updates channel closed")
+		}
+		return update
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for watcher update")
+	}
+
+	return FileUpdate[T]{}
+}
+
 func writeWorkflow(t *testing.T, path string, intervalMS int, prompt string) {
 	t.Helper()
 
@@ -229,6 +283,21 @@ polling:
   interval_ms: ` + strconv.Itoa(intervalMS) + `
 ---
 ` + prompt + `
+`)
+	if err := os.WriteFile(path, raw, 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func writeGlobalConfig(t *testing.T, path string, maxConcurrentAgents int) {
+	t.Helper()
+
+	raw := []byte(`apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: ` + strconv.Itoa(maxConcurrentAgents) + `
+  scheduling: weighted
+projects: []
 `)
 	if err := os.WriteFile(path, raw, 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)

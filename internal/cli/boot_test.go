@@ -186,6 +186,71 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
+	t.Parallel()
+
+	host, port := freeLoopbackPort(t)
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	bravo := createBootProjectFiles(t)
+	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
+	})
+	global, err := globalconfig.Read(configPath)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- startRunning(ctx, BootConfig{
+			Mode:   BootModeRunning,
+			Global: global,
+			Host:   host,
+			Port:   &port,
+		})
+	}()
+
+	settingsURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/settings"
+	body := waitForDashboard(t, settingsURL, done)
+	if !strings.Contains(body, "alpha") {
+		t.Fatalf("settings body missing alpha:\n%s", body)
+	}
+
+	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
+		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
+	})
+	body = waitForDashboardCondition(t, settingsURL, done, "bravo added", func(body string) bool {
+		return strings.Contains(body, "bravo")
+	})
+	if !strings.Contains(body, "alpha") {
+		t.Fatalf("settings body missing alpha after reload:\n%s", body)
+	}
+
+	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
+	})
+	body = waitForDashboardCondition(t, settingsURL, done, "alpha removed", func(body string) bool {
+		return strings.Contains(body, "bravo") && !strings.Contains(body, "alpha")
+	})
+	if strings.Contains(body, "alpha") {
+		t.Fatalf("settings body still contains alpha after removal:\n%s", body)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for startRunning to stop")
+	}
+}
+
 func TestRegistryRefresherSkipsStoppedProjectOrchestrators(t *testing.T) {
 	t.Parallel()
 
@@ -262,6 +327,67 @@ func waitForDashboard(t *testing.T, url string, done <-chan error) string {
 	}
 	t.Fatalf("timed out waiting for dashboard at %s", url)
 	return ""
+}
+
+func waitForDashboardCondition(t *testing.T, url string, done <-chan error, name string, ok func(string) bool) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	for ctx.Err() == nil {
+		body := waitForDashboard(t, url, done)
+		if ok(body) {
+			return body
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for dashboard condition %q at %s", name, url)
+	return ""
+}
+
+type bootProjectFiles struct {
+	workflowPath string
+	workdirPath  string
+}
+
+func createBootProjectFiles(t *testing.T) bootProjectFiles {
+	t.Helper()
+
+	workdir := t.TempDir()
+	workflow := filepath.Join(workdir, "WORKFLOW.md")
+	if err := os.WriteFile(workflow, []byte(`---
+tracker:
+  kind: memory
+---
+Test workflow prompt.
+`), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	return bootProjectFiles{
+		workflowPath: workflow,
+		workdirPath:  workdir,
+	}
+}
+
+func writeBootGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {
+	t.Helper()
+
+	cfg := globalconfig.Config{
+		Path:       path,
+		APIVersion: globalconfig.APIVersion,
+		Kind:       globalconfig.Kind,
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 8,
+			Scheduling:          globalconfig.SchedulingWeighted,
+			FairShare:           map[string]any{"half_life": "1h"},
+			Startup:             map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
+		},
+		Projects: projects,
+	}
+	if err := globalconfig.Write(path, cfg); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
 }
 
 func newRefreshProject(t *testing.T, id string) *projectpkg.Project {
