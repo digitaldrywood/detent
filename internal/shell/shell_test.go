@@ -85,6 +85,13 @@ func TestCommandSpecUsesConfiguredShell(t *testing.T) {
 			wantName: "bash",
 			wantArgs: []string{"-c", "echo ok"},
 		},
+		{
+			name:     "windows posix shell exe path",
+			goos:     "windows",
+			shell:    `C:\Program Files\Git\bin\bash.exe`,
+			wantName: `C:\Program Files\Git\bin\bash.exe`,
+			wantArgs: []string{"-c", "echo ok"},
+		},
 	}
 
 	for _, tt := range tests {

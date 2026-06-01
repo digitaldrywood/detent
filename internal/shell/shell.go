@@ -66,7 +66,8 @@ func CommandSpecForOS(command string, shellName string, goos string) CommandSpec
 
 func shellBase(name string) string {
 	name = strings.ReplaceAll(name, "\\", "/")
-	return strings.ToLower(path.Base(name))
+	base := strings.ToLower(path.Base(name))
+	return strings.TrimSuffix(base, ".exe")
 }
 
 func isPOSIXShell(base string) bool {
