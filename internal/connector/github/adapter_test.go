@@ -51,7 +51,6 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 		State:            "Todo",
 		URL:              "https://github.com/digitaldrywood/detent/issues/26",
 		PRNumber:         &prNumber,
-		PullRequest:      &connector.PullRequest{Number: 42, URL: "https://github.com/digitaldrywood/detent/pull/42", State: "MERGED", CIStatus: "pass"},
 		AssigneeID:       "worker-1",
 		BlockedBy:        []connector.BlockedRef{{Identifier: "digitaldrywood/detent#24"}, {Identifier: "digitaldrywood/detent#25"}},
 		Labels:           []string{"enhancement", "stage:s4"},

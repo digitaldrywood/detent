@@ -756,7 +756,6 @@ func (c *Connector) fetchProjectFieldsPage(ctx context.Context, issueID string, 
 
 func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorityName string) connector.Issue {
 	repo := strings.TrimSpace(issue.Repository.NameWithOwner)
-	pullRequest := firstClosedPullRequest(issue.ClosedByPullRequestsReferences)
 	return connector.Issue{
 		ID:               issue.ID,
 		Identifier:       buildIdentifier(repo, issue.Number),
@@ -765,8 +764,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		Priority:         c.priorityRank(priorityName),
 		State:            c.githubToDetentState(statusName),
 		URL:              issue.URL,
-		PRNumber:         pullRequestNumber(pullRequest),
-		PullRequest:      pullRequest,
+		PRNumber:         firstPullRequestNumber(issue.ClosedByPullRequestsReferences),
 		AssigneeID:       firstAssigneeLogin(issue.Assignees),
 		BlockedBy:        parseBlockedBy(issue.Body, repo),
 		BlockerReason:    parseBlockerReason(issue),
@@ -1055,26 +1053,14 @@ func firstAssigneeLogin(assignees nodeConnection[assignee]) string {
 	return ""
 }
 
-func firstClosedPullRequest(pullRequests nodeConnection[pullRequest]) *connector.PullRequest {
+func firstPullRequestNumber(pullRequests nodeConnection[pullRequest]) *int {
 	for _, pullRequest := range pullRequests.Nodes {
 		if pullRequest.Number > 0 {
-			return &connector.PullRequest{
-				Number:   pullRequest.Number,
-				URL:      strings.TrimSpace(pullRequest.URL),
-				State:    "MERGED",
-				CIStatus: "pass",
-			}
+			number := pullRequest.Number
+			return &number
 		}
 	}
 	return nil
-}
-
-func pullRequestNumber(pullRequest *connector.PullRequest) *int {
-	if pullRequest == nil || pullRequest.Number <= 0 {
-		return nil
-	}
-	number := pullRequest.Number
-	return &number
 }
 
 func pullRequestCIState(pullRequest pullRequestNode) string {
