@@ -57,6 +57,7 @@ agent:
     max_skills_in_prompt: 20
 codex:
   command: codex app-server
+  shell: bash
   approval_policy: never
   thread_sandbox: danger-full-access
   turn_sandbox_policy:
@@ -79,6 +80,7 @@ budget:
   refusal_cooldown_seconds: 30
   pricing_path: priv/pricing/models.yaml
 hooks:
+  shell: bash
   after_create: git clone .
   before_run: echo before
   after_run: echo after
@@ -125,6 +127,9 @@ Ticket prompt {{ issue.title }}
 	if !cfg.Codex.ApprovalPolicy.IsString || cfg.Codex.ApprovalPolicy.String != "never" {
 		t.Fatalf("Codex.ApprovalPolicy = %#v, want string never", cfg.Codex.ApprovalPolicy)
 	}
+	if cfg.Codex.Shell != "bash" {
+		t.Fatalf("Codex.Shell = %q, want bash", cfg.Codex.Shell)
+	}
 	if got := cfg.Codex.TurnSandboxPolicy["networkAccess"]; got != true {
 		t.Fatalf("Codex.TurnSandboxPolicy[networkAccess] = %v, want true", got)
 	}
@@ -133,6 +138,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Hooks.AfterCreate != "git clone ." {
 		t.Fatalf("Hooks.AfterCreate = %q", cfg.Hooks.AfterCreate)
+	}
+	if cfg.Hooks.Shell != "bash" {
+		t.Fatalf("Hooks.Shell = %q, want bash", cfg.Hooks.Shell)
 	}
 }
 
@@ -169,6 +177,12 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if !cfg.Codex.ApprovalPolicy.IsMap {
 		t.Fatalf("Codex.ApprovalPolicy = %#v, want map default", cfg.Codex.ApprovalPolicy)
+	}
+	if strings.TrimSpace(cfg.Codex.Shell) == "" {
+		t.Fatal("Codex.Shell is blank, want per-OS default")
+	}
+	if strings.TrimSpace(cfg.Hooks.Shell) == "" {
+		t.Fatal("Hooks.Shell is blank, want per-OS default")
 	}
 	if cfg.Server.Host != "127.0.0.1" {
 		t.Fatalf("Server.Host = %q", cfg.Server.Host)

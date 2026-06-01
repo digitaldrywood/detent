@@ -55,6 +55,19 @@ func TestBuildRunnerUsesTopLevelPricingPath(t *testing.T) {
 	}
 }
 
+func TestBuildCodexCommandUsesConfiguredShell(t *testing.T) {
+	t.Parallel()
+
+	cfg := workflowconfig.Default()
+	cfg.Codex.Command = "codex app-server --experimental"
+	cfg.Codex.Shell = "bash"
+
+	cmd := buildCodexCommand(context.Background(), cfg)
+	if got := strings.Join(cmd.Args, "\x00"); got != "bash\x00-c\x00codex app-server --experimental" {
+		t.Fatalf("Args = %#v, want bash -c configured command", cmd.Args)
+	}
+}
+
 func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	t.Parallel()
 

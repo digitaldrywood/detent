@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 const (
@@ -121,6 +122,7 @@ type Budget struct {
 
 type Codex struct {
 	Command           string         `yaml:"command"`
+	Shell             string         `yaml:"shell"`
 	ApprovalPolicy    StringOrMap    `yaml:"approval_policy"`
 	ThreadSandbox     string         `yaml:"thread_sandbox"`
 	TurnSandboxPolicy map[string]any `yaml:"turn_sandbox_policy"`
@@ -141,6 +143,7 @@ type Observability struct {
 }
 
 type Hooks struct {
+	Shell        string `yaml:"shell"`
 	AfterCreate  string `yaml:"after_create"`
 	BeforeRun    string `yaml:"before_run"`
 	AfterRun     string `yaml:"after_run"`
@@ -242,6 +245,7 @@ func Default() Config {
 		},
 		Codex: Codex{
 			Command: "codex app-server",
+			Shell:   commandshell.Default(),
 			ApprovalPolicy: MapValue(map[string]any{
 				"reject": map[string]any{
 					"sandbox_approval": true,
@@ -264,6 +268,7 @@ func Default() Config {
 		},
 		Budget: budget,
 		Hooks: Hooks{
+			Shell:     commandshell.Default(),
 			TimeoutMS: 60000,
 		},
 	}
@@ -343,6 +348,8 @@ func (c *Config) normalize() {
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
 	c.Agent.AutoPromote.AllowedIssueLabels = normalizeLabels(c.Agent.AutoPromote.AllowedIssueLabels)
+	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
+	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
 }
 
 func (c Config) validateTracker(problems *[]string) {

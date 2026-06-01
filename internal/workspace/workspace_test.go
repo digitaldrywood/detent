@@ -122,6 +122,47 @@ func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
 	}
 }
 
+func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	tracePath := filepath.Join(t.TempDir(), "after-create.trace")
+	argsPath := filepath.Join(t.TempDir(), "shell-args.trace")
+	shellPath := filepath.Join(t.TempDir(), "custom-sh")
+	shellScript := "#!/bin/sh\nprintf '%s\\n' \"$0|$1|$2\" > " + shellQuote(argsPath) + "\nexec /bin/sh \"$@\"\n"
+	if err := os.WriteFile(shellPath, []byte(shellScript), 0o700); err != nil {
+		t.Fatalf("write shell wrapper: %v", err)
+	}
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+		Hooks: Hooks{
+			Shell:       shellPath,
+			AfterCreate: "printf 'ok\n' > " + shellQuote(tracePath),
+			Timeout:     5 * time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	if _, err := backend.Create(context.Background(), Issue{Identifier: "DD-SHELL-CFG"}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	gotArgs := strings.TrimSpace(readFile(t, argsPath))
+	wantArgs := shellPath + "|-c|" + "printf 'ok\n' > " + shellQuote(tracePath)
+	if gotArgs != wantArgs {
+		t.Fatalf("hook shell args = %q, want %q", gotArgs, wantArgs)
+	}
+	if got := readFile(t, tracePath); got != "ok\n" {
+		t.Fatalf("hook trace = %q, want ok", got)
+	}
+}
+
 func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 	t.Parallel()
 	skipWindows(t)

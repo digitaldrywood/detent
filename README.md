@@ -199,6 +199,7 @@ agent:
     max_skills_in_prompt: 50
 codex:
   command: codex app-server
+  shell: sh
   approval_policy: never
   thread_sandbox: workspace-write
   turn_sandbox_policy:
@@ -208,6 +209,7 @@ server:
   host: 127.0.0.1
   port: 4000
 hooks:
+  shell: sh
   timeout_ms: 60000
 ---
 You are working on {{ issue.identifier }}: {{ issue.title }}.
@@ -216,6 +218,10 @@ Read the issue description, follow repository instructions, keep changes
 scoped to the issue, run the project validation gate, and prepare the work for
 human review.
 ```
+
+Omit `codex.shell` and `hooks.shell` to use the per-OS defaults: `sh` on Unix
+and `cmd` on Windows. Set either field to `pwsh` or `powershell` when hooks or
+the Codex app-server command should run through PowerShell.
 
 4. Create the global config and add the project:
 

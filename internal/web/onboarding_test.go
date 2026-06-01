@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -165,6 +166,8 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		"tracker:\n  kind: github",
 		"api_key: $GITHUB_TOKEN",
 		"project_slug: PVT_project",
+		"codex:\n  command: codex app-server\n  shell: " + commandshell.Default(),
+		"hooks:\n  shell: " + commandshell.Default(),
 		"git clone --depth 1 https://github.com/digitaldrywood/detent .",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"You are working on GitHub issue `{{ issue.identifier }}`",

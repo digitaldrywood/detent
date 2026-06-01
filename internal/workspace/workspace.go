@@ -13,6 +13,8 @@ import (
 	"regexp"
 	"strings"
 	"time"
+
+	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
 const KindLocalGit = "local_git"
@@ -49,6 +51,7 @@ type Info struct {
 }
 
 type Hooks struct {
+	Shell        string
 	AfterCreate  string
 	BeforeRun    string
 	AfterRun     string
@@ -154,6 +157,7 @@ func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
 	if hooks.Timeout < 0 {
 		return nil, errors.New("hooks timeout must be greater than or equal to 0")
 	}
+	hooks.Shell = commandshell.Normalize(hooks.Shell)
 
 	logger := opts.Logger
 	if logger == nil {
@@ -429,7 +433,7 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 	}
 	defer cancel()
 
-	cmd := exec.CommandContext(hookCtx, "sh", "-c", command)
+	cmd := commandshell.Command(hookCtx, command, l.hooks.Shell)
 	cmd.Dir = info.Path
 	cmd.Env = hookEnv(info, issue)
 
