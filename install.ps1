@@ -107,7 +107,10 @@ function Get-OSArchitectureCandidates {
 	$candidates += $env:PROCESSOR_ARCHITEW6432
 
 	try {
-		if (Test-Command 'Get-CimInstance') {
+		$testCimProcessorArch = [Environment]::GetEnvironmentVariable('DETENT_INSTALL_TEST_CIM_PROCESSOR_ARCH', 'Process')
+		if ($null -ne $testCimProcessorArch) {
+			$candidates += Convert-CimProcessorArchitectureToTargetArch $testCimProcessorArch
+		} elseif (Test-Command 'Get-CimInstance') {
 			$processor = Get-CimInstance -ClassName Win32_Processor -ErrorAction Stop | Select-Object -First 1
 			$candidates += Convert-CimProcessorArchitectureToTargetArch $processor.Architecture
 
