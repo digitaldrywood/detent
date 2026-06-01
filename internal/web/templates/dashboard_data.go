@@ -98,6 +98,30 @@ type runningActivityRow struct {
 	Message string
 }
 
+type prPipelineLane struct {
+	ID          string
+	Title       string
+	CountLabel  string
+	DotClass    string
+	EmptyTitle  string
+	EmptyDetail string
+	Cards       []prPipelineCard
+}
+
+type prPipelineCard struct {
+	IssueNumber      string
+	Identifier       string
+	Title            string
+	URL              string
+	CIStatus         string
+	CIClass          string
+	CodexReviewState string
+	CodexReviewClass string
+	TimeInStage      string
+	TimeInStageTitle string
+	Stage            string
+}
+
 func pageTitle(data DashboardData) string {
 	if data.Title != "" {
 		return data.Title
@@ -326,6 +350,279 @@ func activityValue(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {
+	cardsByLane := map[string][]prPipelineCard{
+		"human-review": {},
+		"merging":      {},
+		"done-today":   {},
+	}
+	seen := map[string]struct{}{}
+	now := pipelineNow(snapshot)
+
+	for _, issue := range snapshot.Pipeline {
+		appendPRPipelineCard(cardsByLane, seen, issue, issue.State, pipelineIssueStageTime(issue), now)
+	}
+	for _, row := range snapshot.Running {
+		appendPRPipelineCard(cardsByLane, seen, row.Issue, issueState(row.Issue, "Running"), row.StartedAt, now)
+	}
+	for _, row := range snapshot.Queue {
+		stageAt := time.Time{}
+		if row.DueAt != nil {
+			stageAt = *row.DueAt
+		}
+		appendPRPipelineCard(cardsByLane, seen, row.Issue, issueState(row.Issue, "Todo"), stageAt, now)
+	}
+	for _, row := range snapshot.Blocked {
+		stageAt := time.Time{}
+		if row.BlockedAt != nil {
+			stageAt = *row.BlockedAt
+		}
+		appendPRPipelineCard(cardsByLane, seen, row.Issue, issueState(row.Issue, "Blocked"), stageAt, now)
+	}
+	for _, row := range snapshot.Completed {
+		appendPRPipelineCard(cardsByLane, seen, row.Issue, completedState(row), row.CompletedAt, now)
+	}
+
+	return []prPipelineLane{
+		{
+			ID:          "human-review",
+			Title:       "Human Review",
+			CountLabel:  formatCount(len(cardsByLane["human-review"])),
+			DotClass:    "bg-success",
+			EmptyTitle:  "No PRs waiting for review.",
+			EmptyDetail: "Ready pull requests will appear here after Detent hands them to reviewers.",
+			Cards:       cardsByLane["human-review"],
+		},
+		{
+			ID:          "merging",
+			Title:       "Merging",
+			CountLabel:  formatCount(len(cardsByLane["merging"])),
+			DotClass:    "bg-accent",
+			EmptyTitle:  "Nothing is merging.",
+			EmptyDetail: "Approved pull requests enter this lane while the final integration run is active.",
+			Cards:       cardsByLane["merging"],
+		},
+		{
+			ID:          "done-today",
+			Title:       "Done today",
+			CountLabel:  formatCount(len(cardsByLane["done-today"])),
+			DotClass:    "bg-muted-foreground",
+			EmptyTitle:  "No PRs finished today.",
+			EmptyDetail: "Merged pull requests land here for the current UTC day.",
+			Cards:       cardsByLane["done-today"],
+		},
+	}
+}
+
+func prPipelineTotalLabel(snapshot telemetry.Snapshot) string {
+	total := 0
+	for _, lane := range prPipelineLanes(snapshot) {
+		total += len(lane.Cards)
+	}
+	return formatCount(total)
+}
+
+func appendPRPipelineCard(
+	cardsByLane map[string][]prPipelineCard,
+	seen map[string]struct{},
+	issue telemetry.Issue,
+	state string,
+	stageAt time.Time,
+	now time.Time,
+) {
+	laneID := prPipelineLaneID(state)
+	if laneID == "" {
+		return
+	}
+	if laneID == "done-today" && !pipelineSameUTCDay(stageAt, now) {
+		return
+	}
+
+	key := laneID + ":" + issueIdentifier(issue)
+	if issue.ID != "" {
+		key = laneID + ":" + issue.ID
+	}
+	if _, ok := seen[key]; ok {
+		return
+	}
+	seen[key] = struct{}{}
+
+	cardsByLane[laneID] = append(cardsByLane[laneID], prPipelineCardForIssue(issue, state, laneID, stageAt, now))
+}
+
+func prPipelineLaneID(state string) string {
+	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(state), " ", "")) {
+	case "humanreview", "review", "inreview":
+		return "human-review"
+	case "merging":
+		return "merging"
+	case "done", "complete", "completed", "closed", "cancelled", "canceled":
+		return "done-today"
+	default:
+		return ""
+	}
+}
+
+func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, stageAt time.Time, now time.Time) prPipelineCard {
+	ciStatus := prPipelineCIStatus(issue, laneID)
+	codexReview := prPipelineCodexReviewState(issue)
+	return prPipelineCard{
+		IssueNumber:      issueNumber(issue),
+		Identifier:       issueIdentifier(issue),
+		Title:            issueTitle(issue),
+		URL:              prPipelineURL(issue),
+		CIStatus:         ciStatus,
+		CIClass:          prPipelineCIClass(ciStatus),
+		CodexReviewState: codexReview,
+		CodexReviewClass: prPipelineCodexReviewClass(codexReview),
+		TimeInStage:      prPipelineAge(stageAt, now),
+		TimeInStageTitle: prPipelineAgeTitle(state, stageAt, now),
+		Stage:            chartText(state, "n/a"),
+	}
+}
+
+func pipelineNow(snapshot telemetry.Snapshot) time.Time {
+	if !snapshot.GeneratedAt.IsZero() {
+		return snapshot.GeneratedAt.UTC()
+	}
+	latest := time.Time{}
+	for _, issue := range snapshot.Pipeline {
+		if issue.UpdatedAt != nil && issue.UpdatedAt.After(latest) {
+			latest = *issue.UpdatedAt
+		}
+	}
+	for _, row := range snapshot.Running {
+		if row.StartedAt.After(latest) {
+			latest = row.StartedAt
+		}
+	}
+	for _, row := range snapshot.Completed {
+		if row.CompletedAt.After(latest) {
+			latest = row.CompletedAt
+		}
+	}
+	return latest.UTC()
+}
+
+func pipelineIssueStageTime(issue telemetry.Issue) time.Time {
+	if issue.UpdatedAt != nil && !issue.UpdatedAt.IsZero() {
+		return issue.UpdatedAt.UTC()
+	}
+	if issue.CreatedAt != nil && !issue.CreatedAt.IsZero() {
+		return issue.CreatedAt.UTC()
+	}
+	return time.Time{}
+}
+
+func pipelineSameUTCDay(stageAt time.Time, now time.Time) bool {
+	if stageAt.IsZero() || now.IsZero() {
+		return true
+	}
+	stageAt = stageAt.UTC()
+	now = now.UTC()
+	return stageAt.Year() == now.Year() && stageAt.YearDay() == now.YearDay()
+}
+
+func prPipelineCIStatus(issue telemetry.Issue, laneID string) string {
+	if issue.PullRequest != nil {
+		switch strings.ToLower(strings.TrimSpace(issue.PullRequest.CIStatus)) {
+		case "pass", "passed", "success", "green":
+			return "pass"
+		case "fail", "failed", "failure", "error", "red":
+			return "fail"
+		case "pending", "expected", "queued", "waiting", "in_progress", "in progress":
+			return "pending"
+		}
+		if strings.EqualFold(issue.PullRequest.State, "MERGED") {
+			return "pass"
+		}
+	}
+	if laneID == "done-today" {
+		return "pass"
+	}
+	return "pending"
+}
+
+func prPipelineCodexReviewState(issue telemetry.Issue) string {
+	if issue.PullRequest != nil {
+		switch strings.ToUpper(strings.TrimSpace(issue.PullRequest.CodexReviewState)) {
+		case "P1":
+			return "P1"
+		case "P2":
+			return "P2"
+		case "CLEAN":
+			return "clean"
+		}
+	}
+	for _, label := range issue.Labels {
+		switch strings.ToUpper(strings.TrimSpace(label)) {
+		case "P1", "CODEX:P1", "CODEX-REVIEW:P1":
+			return "P1"
+		case "P2", "CODEX:P2", "CODEX-REVIEW:P2":
+			return "P2"
+		}
+	}
+	return "clean"
+}
+
+func prPipelineCIClass(status string) string {
+	switch status {
+	case "pass":
+		return "border-success-soft bg-success-soft text-success"
+	case "fail":
+		return "border-danger-soft bg-danger-soft text-danger"
+	default:
+		return "border-warning-soft bg-warning-soft text-warning"
+	}
+}
+
+func prPipelineCodexReviewClass(state string) string {
+	switch state {
+	case "P1":
+		return "border-danger-soft bg-danger-soft text-danger"
+	case "P2":
+		return "border-warning-soft bg-warning-soft text-warning"
+	default:
+		return "border-success-soft bg-success-soft text-success"
+	}
+}
+
+func prPipelineAge(stageAt time.Time, now time.Time) string {
+	if stageAt.IsZero() || now.IsZero() {
+		return "n/a"
+	}
+	if now.Before(stageAt) {
+		return "0s"
+	}
+	return formatDuration(now.Sub(stageAt).Seconds())
+}
+
+func prPipelineAgeTitle(state string, stageAt time.Time, now time.Time) string {
+	if stageAt.IsZero() {
+		return "Stage start is unavailable."
+	}
+	return chartText(state, "Stage") + " since " + timeLabel(stageAt) + " (" + prPipelineAge(stageAt, now) + ")"
+}
+
+func issueNumber(issue telemetry.Issue) string {
+	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
+		return "#" + strconv.Itoa(issue.PullRequest.Number)
+	}
+	identifier := issueIdentifier(issue)
+	index := strings.LastIndex(identifier, "#")
+	if index >= 0 && index < len(identifier)-1 {
+		return identifier[index:]
+	}
+	return identifier
+}
+
+func prPipelineURL(issue telemetry.Issue) string {
+	if issue.PullRequest != nil && strings.TrimSpace(issue.PullRequest.URL) != "" {
+		return strings.TrimSpace(issue.PullRequest.URL)
+	}
+	return issue.URL
 }
 
 func queuedDueLabel(row telemetry.Queued) string {

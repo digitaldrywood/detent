@@ -18,6 +18,7 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	perDay := 100.0
 	perIssue := 10.0
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	pipelineUpdatedAt := now.Add(-20 * time.Minute)
 
 	html := renderDashboard(t, templates.DashboardData{
 		Title:         "Detent",
@@ -31,6 +32,22 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 				Queue:     3,
 				Blocked:   1,
 				Completed: 4,
+			},
+			Pipeline: []telemetry.Issue{
+				{
+					ID:         "pipeline-39",
+					Identifier: "digitaldrywood/detent#39",
+					URL:        "https://github.com/digitaldrywood/detent/issues/39",
+					Title:      "Review pipeline lane",
+					State:      "Human Review",
+					UpdatedAt:  &pipelineUpdatedAt,
+					PullRequest: &telemetry.PullRequest{
+						Number:           142,
+						URL:              "https://github.com/digitaldrywood/detent/pull/142",
+						CIStatus:         "pass",
+						CodexReviewState: "P2",
+					},
+				},
 			},
 			Running: []telemetry.Running{
 				{
@@ -243,6 +260,13 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		`aria-label="Board cumulative flow"`,
 		"<title>Board cumulative flow</title>",
 		"14:59: 4 issues",
+		"PR pipeline",
+		"Live merge-train lanes",
+		"#142",
+		"Review pipeline lane",
+		"CI pass",
+		"Codex P2",
+		"20m 0s",
 		"Agent activity",
 		"Live timeline of running and recently completed Codex sessions.",
 		`aria-label="Agent activity timeline"`,

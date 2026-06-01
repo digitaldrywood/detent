@@ -26,6 +26,7 @@ const (
 	helpLifetimeTotals      helpTerm = "lifetime-totals"
 	helpModelBuckets        helpTerm = "model-buckets"
 	helpPrimaryRateBucket   helpTerm = "primary-rate-bucket"
+	helpPRPipeline          helpTerm = "pr-pipeline"
 	helpProjectedSpend      helpTerm = "projected-spend"
 	helpQueue               helpTerm = "queue"
 	helpRateLimits          helpTerm = "rate-limits"
@@ -75,6 +76,7 @@ var helpDefinitions = map[helpTerm]helpEntry{
 	helpLifetimeTotals:      {Label: "Lifetime totals", Description: "All-time local usage totals for tokens, sessions, runtime, and runs. Use them for capacity planning and sanity checks across restarts."},
 	helpModelBuckets:        {Label: "Model split", Description: "Token usage grouped by model. It shows which models drive cost and volume when a report window looks expensive."},
 	helpPrimaryRateBucket:   {Label: "Primary rate bucket", Description: "The main Codex API quota bucket for requests or tokens. When remaining capacity is low, agents may throttle until the reset."},
+	helpPRPipeline:          {Label: "PR pipeline", Description: "Pull requests currently waiting for human review, merging, or finished today. Watch this lane to see whether the merge train is moving."},
 	helpProjectedSpend:      {Label: "Projected spend", Description: "Estimated additional USD for active work if it continues at the current pace. Use it before letting a busy queue keep running."},
 	helpQueue:               {Label: "Queue", Description: "Issues waiting to start or retry. A growing queue means demand is higher than the available agent capacity or retry cooldowns."},
 	helpRateLimits:          {Label: "Rate limits", Description: "How much Codex API quota remains before requests get throttled. Watch it during heavy parallel work because low quota can slow or pause agents."},

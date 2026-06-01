@@ -407,3 +407,168 @@ func TestAgentTimelineRows(t *testing.T) {
 		})
 	}
 }
+
+func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	reviewAt := now.Add(-2 * time.Hour)
+	mergeAt := now.Add(-15 * time.Minute)
+	doneAt := now.Add(-45 * time.Minute)
+	oldDoneAt := now.Add(-25 * time.Hour)
+
+	tests := []struct {
+		name     string
+		snapshot telemetry.Snapshot
+		want     []pipelineCardSnapshot
+	}{
+		{
+			name: "tracker pipeline issues",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Pipeline: []telemetry.Issue{
+					{
+						ID:         "review",
+						Identifier: "digitaldrywood/detent#12",
+						Title:      "Review lane PR",
+						State:      "Human Review",
+						UpdatedAt:  &reviewAt,
+						PullRequest: &telemetry.PullRequest{
+							Number:           142,
+							URL:              "https://github.com/digitaldrywood/detent/pull/142",
+							CIStatus:         "success",
+							CodexReviewState: "clean",
+						},
+					},
+					{
+						ID:         "merge",
+						Identifier: "digitaldrywood/detent#13",
+						Title:      "Merge lane PR",
+						State:      "Merging",
+						UpdatedAt:  &mergeAt,
+						PullRequest: &telemetry.PullRequest{
+							Number:           143,
+							CIStatus:         "pending",
+							CodexReviewState: "P2",
+						},
+					},
+					{
+						ID:         "done",
+						Identifier: "digitaldrywood/detent#14",
+						Title:      "Done lane PR",
+						State:      "Done",
+						UpdatedAt:  &doneAt,
+						PullRequest: &telemetry.PullRequest{
+							Number:           144,
+							State:            "MERGED",
+							CodexReviewState: "P1",
+						},
+					},
+					{
+						ID:         "old-done",
+						Identifier: "digitaldrywood/detent#15",
+						Title:      "Old done PR",
+						State:      "Done",
+						UpdatedAt:  &oldDoneAt,
+					},
+				},
+			},
+			want: []pipelineCardSnapshot{
+				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m"},
+				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s"},
+				{Lane: "Done today", IssueNumber: "#144", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "P1", TimeInStage: "45m 0s"},
+			},
+		},
+		{
+			name: "session fallback rows",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Running: []telemetry.Running{
+					{
+						Issue: telemetry.Issue{
+							ID:         "merge-session",
+							Identifier: "digitaldrywood/detent#21",
+							Title:      "Merge session",
+							State:      "Merging",
+						},
+						StartedAt: now.Add(-5 * time.Minute),
+					},
+				},
+				Completed: []telemetry.Completed{
+					{
+						Issue: telemetry.Issue{
+							ID:         "review-session",
+							Identifier: "digitaldrywood/detent#22",
+							Title:      "Review session",
+						},
+						CompletedAt: now.Add(-30 * time.Minute),
+						FinalState:  "Human Review",
+					},
+					{
+						Issue: telemetry.Issue{
+							ID:         "done-session",
+							Identifier: "digitaldrywood/detent#23",
+							Title:      "Done session",
+						},
+						CompletedAt: now.Add(-10 * time.Minute),
+						FinalState:  "Done",
+					},
+				},
+			},
+			want: []pipelineCardSnapshot{
+				{Lane: "Human Review", IssueNumber: "#22", Title: "Review session", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "30m 0s"},
+				{Lane: "Merging", IssueNumber: "#21", Title: "Merge session", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "5m 0s"},
+				{Lane: "Done today", IssueNumber: "#23", Title: "Done session", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "10m 0s"},
+			},
+		},
+		{
+			name: "empty lanes",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+			},
+			want: []pipelineCardSnapshot{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := collectPipelineCards(prPipelineLanes(tt.snapshot))
+			if len(got) != len(tt.want) {
+				t.Fatalf("pipeline cards len = %d, want %d; got %#v", len(got), len(tt.want), got)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("pipeline card %d = %#v, want %#v", i, got[i], tt.want[i])
+				}
+			}
+		})
+	}
+}
+
+type pipelineCardSnapshot struct {
+	Lane             string
+	IssueNumber      string
+	Title            string
+	CIStatus         string
+	CodexReviewState string
+	TimeInStage      string
+}
+
+func collectPipelineCards(lanes []prPipelineLane) []pipelineCardSnapshot {
+	out := []pipelineCardSnapshot{}
+	for _, lane := range lanes {
+		for _, card := range lane.Cards {
+			out = append(out, pipelineCardSnapshot{
+				Lane:             lane.Title,
+				IssueNumber:      card.IssueNumber,
+				Title:            card.Title,
+				CIStatus:         card.CIStatus,
+				CodexReviewState: card.CodexReviewState,
+				TimeInStage:      card.TimeInStage,
+			})
+		}
+	}
+	return out
+}
