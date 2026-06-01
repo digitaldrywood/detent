@@ -429,6 +429,42 @@ func (s *sqliteStore) IssueTokenSpend(ctx context.Context, identity IssueIdentit
 	return spend, nil
 }
 
+func (s *sqliteStore) CycleTimeReport(ctx context.Context) (CycleTimeReport, error) {
+	rows, err := s.queries.CompletedIssueCycleRows(ctx)
+	if err != nil {
+		return CycleTimeReport{}, fmt.Errorf("reading cycle time report: %w", err)
+	}
+
+	issues := make([]CycleTimeIssue, 0, len(rows))
+	for _, row := range rows {
+		startedAt, err := parseTimestamp("started_at", row.StartedAt)
+		if err != nil {
+			return CycleTimeReport{}, err
+		}
+		completedAt, err := parseTimestamp("completed_at", row.CompletedAt)
+		if err != nil {
+			return CycleTimeReport{}, err
+		}
+		seconds, ok := cycleTimeSeconds(startedAt, completedAt)
+		if !ok {
+			continue
+		}
+		issues = append(issues, CycleTimeIssue{
+			Key:             row.IssueKey,
+			StartedAt:       startedAt,
+			CompletedAt:     completedAt,
+			DurationSeconds: seconds,
+			Sessions:        row.Sessions,
+		})
+	}
+
+	return CycleTimeReport{
+		Issues:         issues,
+		Buckets:        cycleTimeBuckets(issues),
+		AverageSeconds: averageCycleTimeSeconds(issues),
+	}, nil
+}
+
 func (s *sqliteStore) ListFairShareUsage(ctx context.Context) ([]FairShareUsage, error) {
 	rows, err := s.queries.ListFairShareUsage(ctx)
 	if err != nil {

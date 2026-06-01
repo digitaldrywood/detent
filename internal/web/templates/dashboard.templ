@@ -120,6 +120,7 @@ templ SnapshotView(data DashboardData) {
 	@prPipelineSection(data.Snapshot)
 	@agentActivityTimeline(data.Snapshot)
 	@boardHealthSection(data.Snapshot)
+	@cycleTimeSection(data.Snapshot.CycleTime)
 	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
 			<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
@@ -557,6 +558,53 @@ templ boardHealthSection(snapshot telemetry.Snapshot) {
 				}
 			</div>
 		</div>
+	</section>
+}
+
+templ cycleTimeSection(report telemetry.CycleTimeReport) {
+	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Cycle time">
+		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+			<div class="min-w-0">
+				@helpHeading2("Cycle time", helpCycleTime, "cycle-time")
+				<p class="text-sm text-muted-foreground">Completed issue durations from local run history.</p>
+			</div>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success">{ cycleTimeCountLabel(report) }</span>
+		</div>
+		if !report.Available && report.DegradedReason != "" {
+			<div class="mt-4">
+				@dashboardEmptyState("Cycle-time data unavailable.", cycleTimeUnavailableDetail(report), "bg-muted-foreground")
+			</div>
+		} else if len(report.Buckets) == 0 {
+			<div class="mt-4">
+				@dashboardEmptyState("No completed issues yet.", "Cycle-time histogram appears after completed issue history is recorded.", "bg-success")
+			</div>
+		} else {
+			<div class="mt-5 grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]">
+				<div class="min-w-0">
+					<div class="flex items-center justify-between gap-3">
+						@helpHeading3("Histogram", helpCycleTime, "cycle-time")
+						<span class="font-mono text-xs text-muted-foreground">{ cycleTimeCountLabel(report) }</span>
+					</div>
+					<div class="mt-3">
+						@MiniBarChart(cycleTimeHistogramChart(report))
+					</div>
+				</div>
+				<div class="grid min-w-0 content-start gap-3">
+					<div class="rounded-md bg-muted/60 px-3 py-2">
+						<span class="block text-xs font-medium uppercase text-muted-foreground">Average</span>
+						<strong class="font-mono text-lg font-semibold text-foreground">{ cycleTimeAverageLabel(report) }</strong>
+					</div>
+					<div class="grid gap-2">
+						for _, row := range cycleTimeBucketRows(report) {
+							<div class="flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/60 px-3 py-2 text-sm">
+								<span class="truncate font-medium text-foreground">{ row.Label }</span>
+								<span class="shrink-0 font-mono text-muted-foreground">{ row.Count }</span>
+							</div>
+						}
+					</div>
+				</div>
+			</div>
+		}
 	</section>
 }
 

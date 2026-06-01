@@ -443,6 +443,60 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 	}
 }
 
+func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	usageStore := openWebTestStore(t)
+	startedAt := time.Date(2026, 6, 1, 9, 0, 0, 0, time.UTC)
+	sessionID, err := usageStore.StartSession(ctx, store.SessionStart{
+		IssueID:    "issue-215",
+		Identifier: "digitaldrywood/detent#215",
+		StartedAt:  startedAt,
+		Model:      "gpt-5-codex",
+	})
+	if err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+	if err := usageStore.FinishSession(ctx, sessionID, store.SessionFinish{
+		CompletedAt:    startedAt.Add(90 * time.Minute),
+		RuntimeSeconds: int64(90 * time.Minute / time.Second),
+		FinalState:     "completed",
+		Model:          "gpt-5-codex",
+	}); err != nil {
+		t.Fatalf("FinishSession() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Store = usageStore
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: startedAt.Add(2 * time.Hour)}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Cycle time",
+		"1 completed",
+		"1h 30m",
+		"<title>1-4h: 1 issues</title>",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
 func TestDashboardRendersServerMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -1780,6 +1834,10 @@ func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) 
 
 func (storeProbe) UsageReport(_ context.Context, query store.UsageReportQuery) (store.UsageReport, error) {
 	return store.UsageReport{By: query.By}, nil
+}
+
+func (storeProbe) CycleTimeReport(context.Context) (store.CycleTimeReport, error) {
+	return store.CycleTimeReport{}, nil
 }
 
 func (p storeProbe) BudgetCostEvents(ctx context.Context, query store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {

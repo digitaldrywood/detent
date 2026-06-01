@@ -39,6 +39,7 @@ type StatsStore interface {
 	FinishSession(context.Context, int64, SessionFinish) error
 	RecordUsageEvent(context.Context, UsageEvent) (int64, error)
 	UsageReport(context.Context, UsageReportQuery) (UsageReport, error)
+	CycleTimeReport(context.Context) (CycleTimeReport, error)
 	LifetimeTotals(context.Context) (LifetimeTotals, error)
 	DailyTokenSpend(context.Context, time.Time) (TokenSpend, error)
 	IssueTokenSpend(context.Context, IssueIdentity) (TokenSpend, error)
@@ -171,6 +172,27 @@ type UsageReportModel struct {
 	TotalTokens    int64
 	RuntimeSeconds int64
 	Events         int64
+}
+
+type CycleTimeReport struct {
+	Issues         []CycleTimeIssue
+	Buckets        []CycleTimeBucket
+	AverageSeconds int64
+}
+
+type CycleTimeIssue struct {
+	Key             string
+	StartedAt       time.Time
+	CompletedAt     time.Time
+	DurationSeconds int64
+	Sessions        int64
+}
+
+type CycleTimeBucket struct {
+	Label      string
+	MinSeconds int64
+	MaxSeconds int64
+	Count      int
 }
 
 type IssueIdentity struct {

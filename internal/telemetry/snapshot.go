@@ -18,6 +18,7 @@ type Snapshot struct {
 	Tokens         Tokens            `json:"tokens"`
 	Throughput     TokenThroughput   `json:"throughput"`
 	LifetimeTotals LifetimeTotals    `json:"lifetime_totals"`
+	CycleTime      CycleTimeReport   `json:"cycle_time,omitempty"`
 	TokenTrend     []TokenTrendPoint `json:"token_trend,omitempty"`
 }
 
@@ -199,6 +200,29 @@ type LifetimeTotals struct {
 	RuntimeSeconds int64  `json:"runtime_seconds"`
 	Sessions       int64  `json:"sessions"`
 	Runs           int64  `json:"runs"`
+}
+
+type CycleTimeReport struct {
+	Available      bool              `json:"available"`
+	DegradedReason string            `json:"degraded_reason,omitempty"`
+	Issues         []CycleTimeIssue  `json:"issues,omitempty"`
+	Buckets        []CycleTimeBucket `json:"buckets,omitempty"`
+	AverageSeconds int64             `json:"average_seconds"`
+}
+
+type CycleTimeIssue struct {
+	Key             string    `json:"key"`
+	StartedAt       time.Time `json:"started_at"`
+	CompletedAt     time.Time `json:"completed_at"`
+	DurationSeconds int64     `json:"duration_seconds"`
+	Sessions        int64     `json:"sessions"`
+}
+
+type CycleTimeBucket struct {
+	Label      string `json:"label"`
+	MinSeconds int64  `json:"min_seconds"`
+	MaxSeconds int64  `json:"max_seconds,omitempty"`
+	Count      int    `json:"count"`
 }
 
 type TokenTrendPoint struct {
