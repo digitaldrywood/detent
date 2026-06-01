@@ -25,15 +25,7 @@ type CodexSession struct {
 	Model          sql.NullString `json:"model"`
 }
 
-type FairShareUsage struct {
-	ProjectID      string `json:"project_id"`
-	Weight         int64  `json:"weight"`
-	Dispatches     int64  `json:"dispatches"`
-	RuntimeSeconds int64  `json:"runtime_seconds"`
-	UpdatedAt      string `json:"updated_at"`
-}
-
-type SymphonyRun struct {
+type DetentRun struct {
 	ID                   int64          `json:"id"`
 	StartedAt            string         `json:"started_at"`
 	StoppedAt            sql.NullString `json:"stopped_at"`
@@ -44,6 +36,14 @@ type SymphonyRun struct {
 	OutputTokens         int64          `json:"output_tokens"`
 	TotalTokens          int64          `json:"total_tokens"`
 	RuntimeSeconds       int64          `json:"runtime_seconds"`
+}
+
+type FairShareUsage struct {
+	ProjectID      string `json:"project_id"`
+	Weight         int64  `json:"weight"`
+	Dispatches     int64  `json:"dispatches"`
+	RuntimeSeconds int64  `json:"runtime_seconds"`
+	UpdatedAt      string `json:"updated_at"`
 }
 
 type UsageEvent struct {

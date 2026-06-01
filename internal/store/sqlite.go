@@ -63,7 +63,7 @@ func (s *sqliteStore) StartRun(ctx context.Context, attrs RunStart) (int64, erro
 		return 0, err
 	}
 
-	run, err := s.queries.CreateSymphonyRun(ctx, sqlc.CreateSymphonyRunParams{
+	run, err := s.queries.CreateDetentRun(ctx, sqlc.CreateDetentRunParams{
 		StartedAt:            startedAt,
 		StoppedAt:            sql.NullString{},
 		RestartReason:        sql.NullString{},
@@ -81,7 +81,7 @@ func (s *sqliteStore) StartRun(ctx context.Context, attrs RunStart) (int64, erro
 }
 
 func (s *sqliteStore) UpdateRun(ctx context.Context, runID int64, attrs RunUpdate) error {
-	rows, err := s.queries.UpdateSymphonyRun(ctx, sqlc.UpdateSymphonyRunParams{
+	rows, err := s.queries.UpdateDetentRun(ctx, sqlc.UpdateDetentRunParams{
 		StoppedAt:            sql.NullString{},
 		RestartReason:        sql.NullString{},
 		PeakConcurrentAgents: nonNegative(attrs.PeakConcurrentAgents),
@@ -95,7 +95,7 @@ func (s *sqliteStore) UpdateRun(ctx context.Context, runID int64, attrs RunUpdat
 	if err != nil {
 		return fmt.Errorf("updating stats run: %w", err)
 	}
-	return requireAffected(rows, "symphony run", runID)
+	return requireAffected(rows, "detent run", runID)
 }
 
 func (s *sqliteStore) StopRun(ctx context.Context, runID int64, attrs RunStop) error {
@@ -104,7 +104,7 @@ func (s *sqliteStore) StopRun(ctx context.Context, runID int64, attrs RunStop) e
 		return err
 	}
 
-	rows, err := s.queries.UpdateSymphonyRun(ctx, sqlc.UpdateSymphonyRunParams{
+	rows, err := s.queries.UpdateDetentRun(ctx, sqlc.UpdateDetentRunParams{
 		StoppedAt:            sql.NullString{String: stoppedAt, Valid: true},
 		RestartReason:        nullString(attrs.RestartReason),
 		PeakConcurrentAgents: nonNegative(attrs.PeakConcurrentAgents),
@@ -118,7 +118,7 @@ func (s *sqliteStore) StopRun(ctx context.Context, runID int64, attrs RunStop) e
 	if err != nil {
 		return fmt.Errorf("stopping stats run: %w", err)
 	}
-	return requireAffected(rows, "symphony run", runID)
+	return requireAffected(rows, "detent run", runID)
 }
 
 func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int64, error) {

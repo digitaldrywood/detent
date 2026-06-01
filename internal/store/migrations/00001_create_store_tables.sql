@@ -1,5 +1,5 @@
 -- +goose Up
-CREATE TABLE symphony_runs (
+CREATE TABLE detent_runs (
   id INTEGER PRIMARY KEY,
   started_at TEXT NOT NULL,
   stopped_at TEXT,
@@ -27,7 +27,7 @@ CREATE TABLE codex_sessions (
   runtime_seconds INTEGER NOT NULL DEFAULT 0,
   final_state TEXT,
   model TEXT,
-  FOREIGN KEY(run_id) REFERENCES symphony_runs(id)
+  FOREIGN KEY(run_id) REFERENCES detent_runs(id)
 );
 
 CREATE INDEX codex_sessions_completed_at_idx
@@ -38,4 +38,4 @@ ON codex_sessions(identifier);
 
 -- +goose Down
 DROP TABLE IF EXISTS codex_sessions;
-DROP TABLE IF EXISTS symphony_runs;
+DROP TABLE IF EXISTS detent_runs;
