@@ -615,6 +615,8 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 	}
 	for _, want := range []string{
 		"Settings",
+		"Startup configuration, project paths, and runtime files.",
+		"Project membership and startup settings reload live; concurrency and scheduling settings require a restart.",
 		`href="/"`,
 		`href="/reports"`,
 		`href="/settings"`,

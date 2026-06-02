@@ -71,7 +71,7 @@ func Settings(data SettingsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<main class=\"mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6 lg:px-8\"><header class=\"min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between\"><div class=\"min-w-0\"><div class=\"flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground\"><span class=\"inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent\"><span class=\"h-1.5 w-1.5 rounded-full bg-accent\"></span> <span>Detent</span></span> <span>Configuration</span></div><h1 class=\"mt-2 text-2xl font-semibold text-foreground sm:text-3xl\">Settings</h1><p class=\"mt-1 max-w-3xl text-sm text-muted-foreground\">Running configuration, project paths, and runtime files.</p></div><span class=\"inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground lg:w-auto\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Version</span> <span class=\"font-mono text-xs font-semibold text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 5, "<main class=\"mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6 lg:px-8\"><header class=\"min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between\"><div class=\"min-w-0\"><div class=\"flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground\"><span class=\"inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent\"><span class=\"h-1.5 w-1.5 rounded-full bg-accent\"></span> <span>Detent</span></span> <span>Configuration</span></div><h1 class=\"mt-2 text-2xl font-semibold text-foreground sm:text-3xl\">Settings</h1><p class=\"mt-1 max-w-3xl text-sm text-muted-foreground\">Startup configuration, project paths, and runtime files.</p></div><span class=\"inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground lg:w-auto\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Version</span> <span class=\"font-mono text-xs font-semibold text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -100,7 +100,7 @@ func Settings(data SettingsData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<p class=\"text-sm text-muted-foreground\">Resolved startup configuration.</p></div><span class=\"rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 8, "<p class=\"text-sm text-muted-foreground\">Project membership and startup settings reload live; concurrency and scheduling settings require a restart.</p></div><span class=\"rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

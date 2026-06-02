@@ -515,9 +515,11 @@ detent --config ~/.detent/global.yaml remove-project <id>
 ```
 
 These commands persist the global config. A running Detent process watches the
-active `global.yaml` and reconciles project additions, removals, and setting
-changes without a restart. Invalid edits are logged and ignored while the last
-valid config stays live.
+active `global.yaml` and reconciles project additions, removals, and
+`global.startup` changes without a restart. Changes to
+`global.max_concurrent_agents`, `global.scheduling`, and `global.fair_share`
+require a restart before runtime concurrency and scheduling behavior changes.
+Invalid edits are logged and ignored while the last valid config stays live.
 
 ## Dashboard And APIs
 
