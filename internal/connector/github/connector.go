@@ -35,6 +35,7 @@ type Config struct {
 	PriorityMap             map[string]*int
 	TokenSource             TokenSource
 	HTTPClient              HTTPClient
+	HTTPTransport           HTTPTransportConfig
 	Logger                  *slog.Logger
 	Now                     func() time.Time
 	LookupEnv               func(string) string
@@ -55,6 +56,11 @@ type Connector struct {
 }
 
 func NewConnector(cfg Config) (*Connector, error) {
+	httpClient := cfg.HTTPClient
+	if httpClient == nil {
+		httpClient = NewPooledHTTPClient(cfg.HTTPTransport)
+	}
+
 	tokenSource := cfg.TokenSource
 	if tokenSource == nil {
 		tokenSource = NewTokenResolver(TokenResolverConfig{
@@ -64,7 +70,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 			GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
 			GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
 			GitHubAppInstallationID: cfg.GitHubAppInstallationID,
-			HTTPClient:              cfg.HTTPClient,
+			HTTPClient:              httpClient,
 			Now:                     cfg.Now,
 			LookupEnv:               cfg.LookupEnv,
 			GHToken:                 cfg.GHToken,
@@ -74,7 +80,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 	client, err := NewClient(ClientConfig{
 		Endpoint:    cfg.Endpoint,
 		TokenSource: tokenSource,
-		HTTPClient:  cfg.HTTPClient,
+		HTTPClient:  httpClient,
 		Logger:      cfg.Logger,
 	})
 	if err != nil {
@@ -100,6 +106,13 @@ func (c *Connector) Name() string {
 
 func (c *Connector) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
 	return c.client.GraphQLRateLimit()
+}
+
+func (c *Connector) LiveConnections() int {
+	if c == nil || c.client == nil {
+		return 0
+	}
+	return c.client.LiveConnections()
 }
 
 func (c *Connector) Authenticate(ctx context.Context) error {

@@ -49,6 +49,9 @@ type Tracker struct {
 	Kind                    string            `yaml:"kind"`
 	Endpoint                string            `yaml:"endpoint"`
 	APIKey                  string            `yaml:"api_key"`
+	HTTPMaxIdleConns        int               `yaml:"http_max_idle_conns"`
+	HTTPMaxIdleConnsPerHost int               `yaml:"http_max_idle_conns_per_host"`
+	HTTPIdleConnTimeoutMS   int               `yaml:"http_idle_conn_timeout_ms"`
 	GitHubAppID             string            `yaml:"github_app_id"`
 	GitHubAppPrivateKey     string            `yaml:"github_app_private_key"`
 	GitHubAppPrivateKeyPath string            `yaml:"github_app_private_key_path"`
@@ -210,13 +213,16 @@ func Default() Config {
 
 	return Config{
 		Tracker: Tracker{
-			Endpoint:       defaultLinearEndpoint,
-			ActiveStates:   []string{"Todo", "In Progress"},
-			ObservedStates: []string{"Backlog", "Human Review", "Blocked"},
-			TerminalStates: []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"},
-			StateMap:       MapValue(map[string]any{}),
-			PriorityMap:    MapValue(defaultPriorityMap()),
-			AutoProvision:  true,
+			Endpoint:                defaultLinearEndpoint,
+			HTTPMaxIdleConns:        100,
+			HTTPMaxIdleConnsPerHost: 32,
+			HTTPIdleConnTimeoutMS:   90000,
+			ActiveStates:            []string{"Todo", "In Progress"},
+			ObservedStates:          []string{"Backlog", "Human Review", "Blocked"},
+			TerminalStates:          []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"},
+			StateMap:                MapValue(map[string]any{}),
+			PriorityMap:             MapValue(defaultPriorityMap()),
+			AutoProvision:           true,
 		},
 		Polling: Polling{
 			IntervalMS: 30000,
@@ -372,6 +378,9 @@ func (c *Config) validateTracker(problems *[]string) {
 	validateStateList("tracker.terminal_states", c.Tracker.TerminalStates, problems)
 	validateStateMap("tracker.state_map", c.Tracker.StateMap, problems)
 	validatePriorityMap("tracker.priority_map", c.Tracker.PriorityMap, problems)
+	validatePositive("tracker.http_max_idle_conns", c.Tracker.HTTPMaxIdleConns, problems)
+	validatePositive("tracker.http_max_idle_conns_per_host", c.Tracker.HTTPMaxIdleConnsPerHost, problems)
+	validatePositive("tracker.http_idle_conn_timeout_ms", c.Tracker.HTTPIdleConnTimeoutMS, problems)
 }
 
 func (t *Tracker) validateGitHubAuth(problems *[]string) {

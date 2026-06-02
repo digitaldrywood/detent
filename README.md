@@ -196,6 +196,9 @@ tracker:
   kind: github
   api_key: $GITHUB_TOKEN
   project_slug: PVT_replace_with_project_id
+  http_max_idle_conns: 100
+  http_max_idle_conns_per_host: 32
+  http_idle_conn_timeout_ms: 90000
   active_states:
     - Todo
     - In Progress
@@ -419,6 +422,15 @@ GitHub configuration lives in each project's `WORKFLOW.md` frontmatter. The
 `project_slug` value is the GitHub ProjectV2 node id. Detent reads issue
 state, priority, labels, blockers, and assignment from the board, then writes
 comments and state transitions back through the connector.
+
+The GitHub connector uses one pooled keep-alive HTTP client for GraphQL and
+GitHub App REST token requests. Tune `tracker.http_max_idle_conns`,
+`tracker.http_max_idle_conns_per_host`, and
+`tracker.http_idle_conn_timeout_ms` when many Detent instances share one host.
+Keep host-level agent concurrency within the machine's shared outbound
+connection and ephemeral-port budget; the connector logs its live connection
+count on GitHub requests to help spot pressure. See the multi-instance rollout
+epic #258 for host-wide caps and coordination work.
 
 ### Board States
 
