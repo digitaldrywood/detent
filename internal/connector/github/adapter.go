@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -23,6 +24,8 @@ const (
 	pullRequestsPageSize                      = 100
 	pullRequestsPageLimit                     = 3
 	defaultProjectItemStatusState             = "Backlog"
+	defaultProjectItemStatusWriteParallelism  = 4
+	defaultProjectItemStatusWriteTimeout      = 2 * time.Minute
 )
 
 const projectItemsQuery = `
@@ -1317,6 +1320,7 @@ func attachMatchingPullRequests(
 func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
 	var after *string
 	allIssues := []connector.Issue{}
+	blankStatusItemIDs := []string{}
 
 	for {
 		var response struct {
@@ -1340,17 +1344,21 @@ func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connec
 		}
 
 		for _, item := range response.Node.Items.Nodes {
-			issue, ok, err := c.normalizeProjectItem(ctx, item)
+			issue, ok, blankStatusItemID, err := c.normalizeProjectItem(item)
 			if err != nil {
 				return nil, err
 			}
 			if !ok {
 				continue
 			}
+			if blankStatusItemID != "" {
+				blankStatusItemIDs = append(blankStatusItemIDs, blankStatusItemID)
+			}
 			allIssues = append(allIssues, issue)
 		}
 
 		if !response.Node.Items.PageInfo.HasNextPage {
+			c.defaultBlankProjectItemStatuses(ctx, blankStatusItemIDs)
 			resolveBlockedByProjectState(allIssues)
 			issues := make([]connector.Issue, 0, len(allIssues))
 			for _, issue := range allIssues {
@@ -1368,13 +1376,13 @@ func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connec
 	}
 }
 
-func (c *Connector) normalizeProjectItem(ctx context.Context, item projectItemNode) (connector.Issue, bool, error) {
+func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue, bool, string, error) {
 	if item.Content == nil || item.Content.TypeName != "Issue" {
-		return connector.Issue{}, false, nil
+		return connector.Issue{}, false, "", nil
 	}
-	statusName, statusUpdatedAt, err := c.projectItemStatusOrDefault(ctx, item)
+	statusName, statusUpdatedAt, blankStatusItemID, err := c.projectItemStatusOrDefault(item)
 	if err != nil {
-		return connector.Issue{}, false, err
+		return connector.Issue{}, false, "", err
 	}
 	return c.buildIssue(
 		*item.Content,
@@ -1382,28 +1390,99 @@ func (c *Connector) normalizeProjectItem(ctx context.Context, item projectItemNo
 		singleSelectName(item.PriorityValue),
 		statusUpdatedAt,
 		projectFieldValues(item.FieldValues),
-	), true, nil
+	), true, blankStatusItemID, nil
 }
 
-func (c *Connector) projectItemStatusOrDefault(ctx context.Context, item projectItemNode) (string, *time.Time, error) {
+func (c *Connector) projectItemStatusOrDefault(item projectItemNode) (string, *time.Time, string, error) {
 	statusName := singleSelectName(item.StatusValue)
 	if statusName != "" {
-		return statusName, singleSelectUpdatedAt(item.StatusValue), nil
+		return statusName, singleSelectUpdatedAt(item.StatusValue), "", nil
 	}
 
 	itemID := strings.TrimSpace(item.ID)
 	if itemID == "" {
-		return "", nil, ErrInvalidResponse
+		return "", nil, "", ErrInvalidResponse
 	}
 
 	statusName = c.detentToGitHubState(defaultProjectItemStatusState)
 	if statusName == "" {
-		return "", nil, nil
+		return "", nil, "", nil
 	}
-	if err := c.setProjectItemStatus(ctx, itemID, statusName); err != nil {
-		return "", nil, fmt.Errorf("default github status: %w", err)
+	return statusName, nil, itemID, nil
+}
+
+func (c *Connector) defaultBlankProjectItemStatuses(ctx context.Context, itemIDs []string) {
+	itemIDs = uniqueNonBlank(itemIDs)
+	if len(itemIDs) == 0 {
+		return
 	}
-	return statusName, nil, nil
+
+	statusName := c.detentToGitHubState(defaultProjectItemStatusState)
+	if statusName == "" {
+		return
+	}
+
+	go c.defaultBlankProjectItemStatusesAsync(ctx, itemIDs, statusName)
+}
+
+func (c *Connector) defaultBlankProjectItemStatusesAsync(parentCtx context.Context, itemIDs []string, statusName string) {
+	baseCtx := context.Background()
+	if parentCtx != nil {
+		baseCtx = context.WithoutCancel(parentCtx)
+	}
+	ctx, cancel := context.WithTimeout(baseCtx, defaultProjectItemStatusWriteTimeout)
+	defer cancel()
+
+	if err := c.writeDefaultProjectItemStatuses(ctx, itemIDs, statusName); err != nil {
+		c.client.logger.WarnContext(ctx, "default github project item statuses failed", "count", len(itemIDs), "error", err)
+	}
+}
+
+func (c *Connector) writeDefaultProjectItemStatuses(ctx context.Context, itemIDs []string, statusName string) error {
+	itemIDs = uniqueNonBlank(itemIDs)
+	if len(itemIDs) == 0 {
+		return nil
+	}
+
+	workerCount := min(defaultProjectItemStatusWriteParallelism, len(itemIDs))
+	jobs := make(chan string)
+	errs := make(chan error, len(itemIDs))
+	var wg sync.WaitGroup
+	wg.Add(workerCount)
+	for range workerCount {
+		go func() {
+			defer wg.Done()
+			for itemID := range jobs {
+				if err := c.setProjectItemStatus(ctx, itemID, statusName); err != nil {
+					errs <- fmt.Errorf("%s: %w", itemID, err)
+				}
+			}
+		}()
+	}
+
+	for _, itemID := range itemIDs {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			close(errs)
+			return errors.Join(ctx.Err(), joinErrors(errs))
+		case jobs <- itemID:
+		}
+	}
+
+	close(jobs)
+	wg.Wait()
+	close(errs)
+	return joinErrors(errs)
+}
+
+func joinErrors(errs <-chan error) error {
+	var joined error
+	for err := range errs {
+		joined = errors.Join(joined, err)
+	}
+	return joined
 }
 
 func resolveBlockedByProjectState(issues []connector.Issue) {
