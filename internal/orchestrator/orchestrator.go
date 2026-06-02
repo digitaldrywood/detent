@@ -11,6 +11,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -51,6 +52,7 @@ type Config struct {
 	BudgetRefusalCooldown      time.Duration
 	ContinuationRetryDelay     time.Duration
 	FailureRetryBaseDelay      time.Duration
+	SelectorPersona            string
 }
 
 type Dependencies struct {
@@ -109,6 +111,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		TerminalStates:        append([]string(nil), cfg.Tracker.TerminalStates...),
 		WorkerHosts:           append([]string(nil), cfg.Worker.SSHHosts...),
 		BudgetRefusalCooldown: durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
+		SelectorPersona:       cfg.Tracker.Assignee,
 	}
 }
 
@@ -880,13 +883,24 @@ func (o *Orchestrator) dispatchIssue(
 	delete(state.BudgetRefusals, issue.ID)
 
 	request := RunRequest{
-		Issue:         issue,
-		Attempt:       attempt,
-		StartedAt:     now,
-		WorkerHost:    workerHost,
-		OnUsageUpdate: o.usageUpdateHandler(ctx, issue.ID),
+		Issue:           issue,
+		Attempt:         attempt,
+		StartedAt:       now,
+		WorkerHost:      workerHost,
+		SelectorContext: o.selectorContext(),
+		OnUsageUpdate:   o.usageUpdateHandler(ctx, issue.ID),
 	}
 	o.supervisor.Dispatch(ctx, request, o.runResults)
+}
+
+func (o *Orchestrator) selectorContext() selector.Context {
+	ctx := selector.Context{
+		Persona: o.cfg.SelectorPersona,
+	}
+	if identifier, ok := o.connector.(connector.InstanceIdentifier); ok {
+		ctx.InstanceLogin = identifier.InstanceLogin()
+	}
+	return ctx
 }
 
 func (o *Orchestrator) usageUpdateHandler(ctx context.Context, issueID string) runpkg.UsageUpdateHandler {
@@ -1113,6 +1127,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
 	cfg.WorkerHosts = normalizeWorkerHosts(cfg.WorkerHosts)
+	cfg.SelectorPersona = strings.TrimSpace(cfg.SelectorPersona)
 	if cfg.MaxConcurrentAgentsPerHost < 0 {
 		cfg.MaxConcurrentAgentsPerHost = 0
 	}

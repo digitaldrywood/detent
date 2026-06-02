@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -74,11 +75,12 @@ type AgentTokenUsage struct {
 }
 
 type RunRequest struct {
-	Issue         connector.Issue
-	Attempt       int
-	StartedAt     time.Time
-	WorkerHost    string
-	OnUsageUpdate UsageUpdateHandler
+	Issue           connector.Issue
+	Attempt         int
+	StartedAt       time.Time
+	WorkerHost      string
+	SelectorContext selector.Context
+	OnUsageUpdate   UsageUpdateHandler
 }
 
 type RunResult struct {

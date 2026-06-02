@@ -226,8 +226,8 @@ func routesFromConfig(routes []config.AgentRoute) []Route {
 	return out
 }
 
-func (r agentRuntime) selectBackend(issue connector.Issue) (RouteSelection, AgentBackend, config.AgentBackend, error) {
-	selection, err := r.router.Route(issue, selectorContext())
+func (r agentRuntime) selectBackend(issue connector.Issue, ctx selector.Context) (RouteSelection, AgentBackend, config.AgentBackend, error) {
+	selection, err := r.router.Route(issue, ctx)
 	if err != nil {
 		return RouteSelection{}, nil, config.AgentBackend{}, err
 	}
@@ -242,10 +242,6 @@ func (r agentRuntime) selectBackend(issue connector.Issue) (RouteSelection, Agen
 	return selection, backend, backendConfig, nil
 }
 
-func selectorContext() selector.Context {
-	return selector.Context{}
-}
-
 func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
 	if len(in) == 0 {
 		return nil
@@ -255,6 +251,13 @@ func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
 		out[id] = backend
 	}
 	return out
+}
+
+func selectorContext(ctx selector.Context, workflow config.Workflow) selector.Context {
+	if strings.TrimSpace(ctx.Persona) == "" {
+		ctx.Persona = workflow.Config.Tracker.Assignee
+	}
+	return ctx
 }
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -294,7 +297,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
-	selection, backend, backendConfig, err := agentRuntime.selectBackend(req.Issue)
+	selection, backend, backendConfig, err := agentRuntime.selectBackend(req.Issue, selectorContext(req.SelectorContext, workflow))
 	if err != nil {
 		return RunResult{}, err
 	}

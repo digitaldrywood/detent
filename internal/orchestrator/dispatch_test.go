@@ -501,6 +501,39 @@ func TestDispatchCandidatesAssignsLeastLoadedWorkerHost(t *testing.T) {
 	}
 }
 
+func TestDispatchIssueIncludesSelectorContext(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		SelectorPersona:     " persona-reviewer ",
+	})
+	runner := newWorkerHostRunner()
+	orch := Orchestrator{
+		cfg:        cfg,
+		connector:  selectorContextConnector{login: "worker-1"},
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion),
+	}
+	state := newState(cfg)
+	now := time.Now()
+	issue := dispatchTestIssue("issue-selector-context", "Todo")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orch.dispatchIssue(ctx, &state, issue, 0, now, "")
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.SelectorContext.InstanceLogin != "worker-1" {
+		t.Fatalf("SelectorContext.InstanceLogin = %q, want worker-1", request.SelectorContext.InstanceLogin)
+	}
+	if request.SelectorContext.Persona != "persona-reviewer" {
+		t.Fatalf("SelectorContext.Persona = %q, want persona-reviewer", request.SelectorContext.Persona)
+	}
+}
+
 func TestSelectWorkerHostKeepsPreferredHostWhenAvailable(t *testing.T) {
 	t.Parallel()
 
@@ -547,6 +580,15 @@ func dispatchTestIssueWithPullRequest(id, state, prState string) connector.Issue
 
 type workerHostRunner struct {
 	started chan RunRequest
+}
+
+type selectorContextConnector struct {
+	connector.Connector
+	login string
+}
+
+func (c selectorContextConnector) InstanceLogin() string {
+	return c.login
 }
 
 func newWorkerHostRunner() *workerHostRunner {

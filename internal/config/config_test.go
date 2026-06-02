@@ -310,6 +310,33 @@ Prompt
 	}
 }
 
+func TestParseWorkflowAgentRoutesCanUseLegacyCodexBackend(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+codex:
+  command: codex app-server
+agents:
+  routes:
+    - name: project-model
+      backend: codex
+      model_field: Model
+    - name: default
+      backend: codex
+      default: true
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+}
+
 func TestParseWorkflowMemoryTrackerIssues(t *testing.T) {
 	t.Parallel()
 

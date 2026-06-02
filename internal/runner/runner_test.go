@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -365,6 +366,97 @@ func TestRunnerRunUsesSingleConfiguredBackendDefaultRoute(t *testing.T) {
 	}
 	if backend.request.Workspace != workspaceBackend.info.Path {
 		t.Fatalf("Workspace = %q, want %q", backend.request.Workspace, workspaceBackend.info.Path)
+	}
+}
+
+func TestRunnerRunRoutesAtMeSelectorsWithContext(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		issue   connector.Issue
+		route   config.AgentRoute
+		request RunRequest
+		cfg     config.Config
+	}{
+		{
+			name: "instance login",
+			issue: connector.Issue{
+				ID:         "issue-56",
+				Identifier: "digitaldrywood/detent#56",
+				Assignees:  []string{"worker-1"},
+			},
+			route: config.AgentRoute{
+				Backend: "codex",
+				Model:   "gpt-5-codex-high",
+				Selector: selector.Selector{
+					AssigneeIn: []string{"@me"},
+				},
+			},
+			request: RunRequest{
+				SelectorContext: selector.Context{InstanceLogin: "worker-1"},
+			},
+		},
+		{
+			name: "tracker assignee persona",
+			issue: connector.Issue{
+				ID:         "issue-57",
+				Identifier: "digitaldrywood/detent#57",
+				AuthorID:   "persona-reviewer",
+			},
+			route: config.AgentRoute{
+				Backend: "codex",
+				Model:   "gpt-5-codex-high",
+				Selector: selector.Selector{
+					AuthorIn: []string{"@me"},
+				},
+			},
+			cfg: config.Config{
+				Tracker: config.Tracker{Assignee: "persona-reviewer"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: t.TempDir(), Key: tt.issue.ID, Branch: "detent/" + tt.issue.ID},
+			}
+			backend := &fakeCodexClient{}
+			cfg := tt.cfg
+			cfg.Agents = config.Agents{
+				Backends: []config.AgentBackend{{
+					ID:       "codex",
+					Kind:     config.AgentBackendCodex,
+					Protocol: "app-server",
+					Command:  "codex app-server",
+				}},
+				Routes: []config.AgentRoute{
+					tt.route,
+					{Backend: "codex", Model: "gpt-5-codex-mini", Default: true},
+				},
+			}
+			runner, err := NewRunner(Dependencies{
+				Workflow:     config.Workflow{Config: cfg, Prompt: "work {{ issue.identifier }}"},
+				Workspace:    workspaceBackend,
+				AgentBackend: backend,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			req := tt.request
+			req.Issue = tt.issue
+			_, err = runner.Run(context.Background(), req)
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if backend.request.Model != "gpt-5-codex-high" {
+				t.Fatalf("Model = %q, want @me route model", backend.request.Model)
+			}
+		})
 	}
 }
 

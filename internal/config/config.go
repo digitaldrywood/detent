@@ -571,14 +571,10 @@ func normalizeAgentProtocol(protocol string) string {
 }
 
 func (a *Agents) validate(problems *[]string) {
-	if len(a.Backends) == 0 {
-		if len(a.Routes) > 0 {
-			*problems = append(*problems, "agents.backends is required when agents.routes are configured")
-		}
-		return
-	}
-
 	backendIDs := make(map[string]struct{}, len(a.Backends))
+	if len(a.Backends) == 0 {
+		backendIDs[DefaultAgentBackendID] = struct{}{}
+	}
 	for _, backend := range a.Backends {
 		if strings.TrimSpace(backend.ID) == "" {
 			*problems = append(*problems, "agents.backends.id is required")
