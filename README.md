@@ -710,8 +710,7 @@ For explicit backend profiles, configure `agents.backends` and route to those
 ids. Today the shipped backend kind is `codex` with `protocol: app-server`.
 Backend `options` use the same runtime fields as the top-level `codex` block,
 including `shell`, `approval_policy`, `thread_sandbox`,
-`turn_sandbox_policy`, `turn_timeout_ms`, `read_timeout_ms`, and
-`stall_timeout_ms`.
+`turn_sandbox_policy`, `turn_timeout_ms`, and `read_timeout_ms`.
 
 ```yaml
 agents:
