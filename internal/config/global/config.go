@@ -382,19 +382,23 @@ func resolvePath(configPath string, opts pathOptions) (PathResolution, error) {
 	}
 	if envPath, rule := lookupPathEnv(opts.lookupEnv, pathEnvCandidates{
 		{name: string(PathRuleEnvConfig), rule: PathRuleEnvConfig},
-		{name: string(PathRuleDeprecatedEnvConfig), rule: PathRuleDeprecatedEnvConfig},
 	}); envPath != "" {
 		return pathResolution(envPath, rule, opts.config)
 	}
 	if configHome, rule := lookupPathEnv(opts.lookupEnv, pathEnvCandidates{
 		{name: string(PathRuleEnvHome), rule: PathRuleEnvHome},
+	}); configHome != "" {
+		return configHomeResolution(configHome, rule, opts.config)
+	}
+	if envPath, rule := lookupPathEnv(opts.lookupEnv, pathEnvCandidates{
+		{name: string(PathRuleDeprecatedEnvConfig), rule: PathRuleDeprecatedEnvConfig},
+	}); envPath != "" {
+		return pathResolution(envPath, rule, opts.config)
+	}
+	if configHome, rule := lookupPathEnv(opts.lookupEnv, pathEnvCandidates{
 		{name: string(PathRuleDeprecatedEnvHome), rule: PathRuleDeprecatedEnvHome},
 	}); configHome != "" {
-		expanded, err := expandPath(configHome, opts.config)
-		if err != nil {
-			return PathResolution{}, err
-		}
-		return PathResolution{Path: filepath.Join(expanded, "global.yaml"), Rule: rule}, nil
+		return configHomeResolution(configHome, rule, opts.config)
 	}
 
 	nativePath, nativeErr := userConfigPath(opts)
@@ -451,6 +455,14 @@ func pathResolution(path string, rule PathRule, opts options) (PathResolution, e
 		return PathResolution{}, err
 	}
 	return PathResolution{Path: expanded, Rule: rule}, nil
+}
+
+func configHomeResolution(configHome string, rule PathRule, opts options) (PathResolution, error) {
+	expanded, err := expandPath(configHome, opts)
+	if err != nil {
+		return PathResolution{}, err
+	}
+	return PathResolution{Path: filepath.Join(expanded, "global.yaml"), Rule: rule}, nil
 }
 
 func userConfigPath(opts pathOptions) (string, error) {
