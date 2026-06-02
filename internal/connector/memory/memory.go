@@ -43,6 +43,7 @@ type Connector struct {
 
 var _ connector.Connector = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
+var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 
@@ -111,6 +112,15 @@ func (c *Connector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers
 	}
 
 	return issues, nil
+}
+
+func (c *Connector) FetchIssueChildren(_ context.Context, issueID string) ([]connector.BlockedRef, error) {
+	for _, issue := range c.issues {
+		if issue.ID == issueID {
+			return append([]connector.BlockedRef(nil), issue.ChildIssues...), nil
+		}
+	}
+	return []connector.BlockedRef{}, nil
 }
 
 func (c *Connector) CreateComment(_ context.Context, issueID string, body string) error {

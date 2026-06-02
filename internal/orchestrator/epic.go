@@ -17,8 +17,9 @@ var (
 )
 
 type completedEpicPlan struct {
-	issue    connector.Issue
-	children []connector.BlockedRef
+	issue      connector.Issue
+	children   []connector.BlockedRef
+	incomplete bool
 }
 
 type epicIssueIndex struct {
@@ -33,10 +34,14 @@ func (o *Orchestrator) closeCompletedEpics(ctx context.Context, issues []connect
 		return nil
 	}
 
+	o.refreshLinkedEpicChildren(ctx, plans)
 	o.resolveMissingEpicChildren(ctx, index, plans)
 
 	completed := map[string]struct{}{}
 	for _, plan := range plans {
+		if plan.incomplete {
+			continue
+		}
 		if !epicChildrenDone(plan.children, index, o.cfg.TerminalStates) {
 			continue
 		}
@@ -66,6 +71,28 @@ func completedEpicPlans(issues []connector.Issue) []completedEpicPlan {
 	return plans
 }
 
+func (o *Orchestrator) refreshLinkedEpicChildren(ctx context.Context, plans []completedEpicPlan) {
+	resolver, ok := o.connector.(connector.IssueChildrenResolver)
+	if !ok {
+		return
+	}
+	for index := range plans {
+		issueID := strings.TrimSpace(plans[index].issue.ID)
+		if issueID == "" {
+			continue
+		}
+		children, err := resolver.FetchIssueChildren(ctx, issueID)
+		if err != nil {
+			plans[index].incomplete = true
+			if o.logger != nil {
+				o.logger.Warn("fetch epic linked children failed", "issue_id", issueID, "error", err)
+			}
+			continue
+		}
+		plans[index].children = mergeEpicChildRefs(plans[index].issue, plans[index].children, children)
+	}
+}
+
 func (o *Orchestrator) resolveMissingEpicChildren(ctx context.Context, index *epicIssueIndex, plans []completedEpicPlan) {
 	resolver, ok := o.connector.(connector.IssueReferenceResolver)
 	if !ok {
@@ -75,6 +102,9 @@ func (o *Orchestrator) resolveMissingEpicChildren(ctx context.Context, index *ep
 	identifiers := make([]string, 0)
 	seen := map[string]struct{}{}
 	for _, plan := range plans {
+		if plan.incomplete {
+			continue
+		}
 		for _, child := range plan.children {
 			if _, ok := index.issueForRef(child); ok {
 				continue
@@ -227,7 +257,12 @@ func epicIssue(issue connector.Issue) bool {
 }
 
 func epicChildRefs(issue connector.Issue) []connector.BlockedRef {
-	repo := issueRepo(issue.Identifier)
+	linked := append([]connector.BlockedRef(nil), issue.BlockedBy...)
+	linked = append(linked, issue.ChildIssues...)
+	return mergeEpicChildRefs(issue, parseEpicBodyChildRefs(issue.Description, issueRepo(issue.Identifier)), linked)
+}
+
+func mergeEpicChildRefs(issue connector.Issue, groups ...[]connector.BlockedRef) []connector.BlockedRef {
 	children := []connector.BlockedRef{}
 	positions := map[string]int{}
 	selfID := strings.TrimSpace(issue.ID)
@@ -255,14 +290,13 @@ func epicChildRefs(issue connector.Issue) []connector.BlockedRef {
 		children = append(children, ref)
 	}
 
-	for _, ref := range parseEpicBodyChildRefs(issue.Description, repo) {
-		add(ref)
-	}
-	for _, ref := range issue.BlockedBy {
-		add(ref)
-	}
-	for _, ref := range issue.ChildIssues {
-		add(ref)
+	for _, group := range groups {
+		for _, ref := range group {
+			if strings.TrimSpace(ref.Identifier) == "" && strings.TrimSpace(ref.ID) == "" {
+				continue
+			}
+			add(ref)
+		}
 	}
 	return children
 }

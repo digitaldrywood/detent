@@ -680,6 +680,49 @@ func TestConnectorFetchIssueStatesByIdentifiersResolvesGitHubStateAndProjectStat
 	}
 }
 
+func TestConnectorFetchIssueChildrenPaginatesLinkedIssues(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"subIssues":{"pageInfo":{"hasNextPage":true,"endCursor":"sub-cursor-1"},"nodes":[{"id":"I_sub_1","number":251,"title":"Sub child","state":"CLOSED","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[]}}]}}}}`,
+		},
+		{
+			body: `{"data":{"node":{"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_sub_2","number":252,"title":"Sub child 2","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/252","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_sub_2","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]}}}}`,
+		},
+		{
+			body: `{"data":{"node":{"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_tracked","number":253,"title":"Tracked child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/253","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_tracked","project":{"id":"PVT_1"},"statusValue":{"name":"In Progress"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueChildren(context.Background(), "I_epic")
+	if err != nil {
+		t.Fatalf("FetchIssueChildren() error = %v", err)
+	}
+	want := []connector.BlockedRef{
+		{ID: "I_sub_1", Identifier: "digitaldrywood/detent#251", State: "Done"},
+		{ID: "I_sub_2", Identifier: "digitaldrywood/detent#252", State: "Done"},
+		{ID: "I_tracked", Identifier: "digitaldrywood/detent#253", State: "In Progress"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FetchIssueChildren() = %#v, want %#v", got, want)
+	}
+
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	secondVariables := requests[1]["variables"].(map[string]any)
+	if secondVariables["after"] != "sub-cursor-1" {
+		t.Fatalf("second after = %v, want sub-cursor-1", secondVariables["after"])
+	}
+	if !strings.Contains(requests[2]["query"].(string), "trackedIssues") {
+		t.Fatalf("third query = %q, want trackedIssues", requests[2]["query"])
+	}
+}
+
 func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	t.Parallel()
 

@@ -82,6 +82,7 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 		candidates   []connector.Issue
 		stateIssues  []connector.Issue
 		resolved     []connector.Issue
+		linked       map[string][]connector.BlockedRef
 		wantUpdates  []epicStateUpdate
 		wantClosed   []string
 		wantComments []string
@@ -109,6 +110,22 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 			},
 			stateIssues: []connector.Issue{
 				epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+			},
+		},
+		{
+			name: "paginated linked child keeps epic open",
+			candidates: []connector.Issue{
+				func() connector.Issue {
+					issue := epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "")
+					issue.ChildIssues = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#251", State: "Done"}}
+					return issue
+				}(),
+			},
+			linked: map[string][]connector.BlockedRef{
+				"epic-258": {
+					{Identifier: "digitaldrywood/detent#251", State: "Done"},
+					{Identifier: "digitaldrywood/detent#252", State: "In Progress"},
+				},
 			},
 		},
 		{
@@ -153,6 +170,7 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 				candidates:  tt.candidates,
 				stateIssues: tt.stateIssues,
 				resolved:    tt.resolved,
+				linked:      tt.linked,
 			}
 			orch := &Orchestrator{
 				cfg:       cfg,
@@ -180,6 +198,7 @@ type epicConnector struct {
 	candidates  []connector.Issue
 	stateIssues []connector.Issue
 	resolved    []connector.Issue
+	linked      map[string][]connector.BlockedRef
 	updates     []epicStateUpdate
 	closed      []string
 	comments    []string
@@ -233,6 +252,21 @@ func (c *epicConnector) FetchIssueStatesByIdentifiers(_ context.Context, identif
 		}
 	}
 	return issues, nil
+}
+
+func (c *epicConnector) FetchIssueChildren(_ context.Context, issueID string) ([]connector.BlockedRef, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.linked != nil {
+		return append([]connector.BlockedRef(nil), c.linked[issueID]...), nil
+	}
+	for _, issue := range append(append([]connector.Issue(nil), c.candidates...), c.stateIssues...) {
+		if issue.ID == issueID {
+			return append([]connector.BlockedRef(nil), issue.ChildIssues...), nil
+		}
+	}
+	return []connector.BlockedRef{}, nil
 }
 
 func (c *epicConnector) CreateComment(_ context.Context, _ string, body string) error {

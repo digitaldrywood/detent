@@ -37,3 +37,7 @@ type IssueCloser interface {
 type IssueReferenceResolver interface {
 	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
 }
+
+type IssueChildrenResolver interface {
+	FetchIssueChildren(context.Context, string) ([]BlockedRef, error)
+}
