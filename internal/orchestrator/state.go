@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -40,6 +41,7 @@ type Running struct {
 	RecentEvents    []telemetry.ActivityEvent
 	DiffStats       DiffStats
 	Tokens          CodexTotals
+	cancel          context.CancelFunc
 }
 
 type Claimed struct {
@@ -118,6 +120,7 @@ func (s State) clone() State {
 	for id, running := range s.Running {
 		running.Issue = cloneIssue(running.Issue)
 		running.RecentEvents = cloneActivityEvents(running.RecentEvents)
+		running.cancel = nil
 		cloned.Running[id] = running
 	}
 	for id, claimed := range s.Claimed {

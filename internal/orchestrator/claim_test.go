@@ -217,6 +217,7 @@ func TestClaimingHeartbeatReleasesLocalRunWhenOwnershipChanges(t *testing.T) {
 	if _, ok := alphaState.Claimed[issue.ID]; ok {
 		t.Fatalf("alpha Claimed[%q] present after ownership changed", issue.ID)
 	}
+	receiveClaimCancellation(t, alphaRunner.canceled)
 }
 
 func claimTestConfig(owner string, login string) Config {
@@ -381,11 +382,15 @@ func (c claimTestConnector) SetField(_ context.Context, issueID string, fieldNam
 }
 
 type claimBlockingRunner struct {
-	started chan RunRequest
+	started  chan RunRequest
+	canceled chan struct{}
 }
 
 func newClaimBlockingRunner() *claimBlockingRunner {
-	return &claimBlockingRunner{started: make(chan RunRequest, 1)}
+	return &claimBlockingRunner{
+		started:  make(chan RunRequest, 1),
+		canceled: make(chan struct{}, 1),
+	}
 }
 
 func (r *claimBlockingRunner) Run(ctx context.Context, request RunRequest) (RunResult, error) {
@@ -395,6 +400,10 @@ func (r *claimBlockingRunner) Run(ctx context.Context, request RunRequest) (RunR
 		return RunResult{}, ctx.Err()
 	}
 	<-ctx.Done()
+	select {
+	case r.canceled <- struct{}{}:
+	default:
+	}
 	return RunResult{}, ctx.Err()
 }
 
@@ -438,6 +447,16 @@ func receiveOptionalClaimRun(started <-chan RunRequest) (RunRequest, bool) {
 		return request, true
 	case <-time.After(50 * time.Millisecond):
 		return RunRequest{}, false
+	}
+}
+
+func receiveClaimCancellation(t *testing.T, canceled <-chan struct{}) {
+	t.Helper()
+
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runner cancellation")
 	}
 }
 

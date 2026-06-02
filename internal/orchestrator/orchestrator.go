@@ -919,11 +919,13 @@ func (o *Orchestrator) dispatchIssue(
 
 	issue = cloneIssue(claimedIssue)
 	claim.Issue = issue
+	runCtx, cancel := context.WithCancel(ctx)
 	state.Running[issue.ID] = Running{
 		Issue:      issue,
 		Attempt:    attempt,
 		StartedAt:  now,
 		WorkerHost: workerHost,
+		cancel:     cancel,
 	}
 	state.Claimed[issue.ID] = claim
 	delete(state.Retry, issue.ID)
@@ -936,9 +938,9 @@ func (o *Orchestrator) dispatchIssue(
 		StartedAt:       now,
 		WorkerHost:      workerHost,
 		SelectorContext: o.selectorContext(),
-		OnUsageUpdate:   o.usageUpdateHandler(ctx, issue.ID),
+		OnUsageUpdate:   o.usageUpdateHandler(runCtx, issue.ID),
 	}
-	o.supervisor.Dispatch(ctx, request, o.runResults)
+	o.supervisor.Dispatch(runCtx, request, o.runResults)
 	return true
 }
 
@@ -1010,6 +1012,9 @@ func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {
 	running, ok := state.Running[event.IssueID]
 	if !ok {
 		return
+	}
+	if running.cancel != nil {
+		running.cancel()
 	}
 	delete(state.Running, event.IssueID)
 
@@ -1130,6 +1135,7 @@ func (o *Orchestrator) retryDelay(attempt int, continuation bool) time.Duration 
 }
 
 func (o *Orchestrator) releaseIssue(state *State, issueID string) {
+	cancelRunning(state, issueID)
 	delete(state.Running, issueID)
 	delete(state.Claimed, issueID)
 	delete(state.Blocked, issueID)
@@ -1138,10 +1144,21 @@ func (o *Orchestrator) releaseIssue(state *State, issueID string) {
 }
 
 func (o *Orchestrator) releaseClaim(state *State, issueID string) {
+	cancelRunning(state, issueID)
 	delete(state.Running, issueID)
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+}
+
+func cancelRunning(state *State, issueID string) {
+	running, ok := state.Running[issueID]
+	if !ok || running.cancel == nil {
+		return
+	}
+	running.cancel()
+	running.cancel = nil
+	state.Running[issueID] = running
 }
 
 func normalizeConfig(cfg Config) Config {
