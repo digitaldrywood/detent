@@ -77,12 +77,21 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	if variables["first"] != float64(50) {
 		t.Fatalf("first = %v, want 50", variables["first"])
 	}
+	if variables["fieldValuesFirst"] != float64(projectItemFieldValuesPageSize) {
+		t.Fatalf("fieldValuesFirst = %v, want %d", variables["fieldValuesFirst"], projectItemFieldValuesPageSize)
+	}
+	if variables["linkedIssuesFirst"] != float64(linkedIssuePageSize) {
+		t.Fatalf("linkedIssuesFirst = %v, want %d", variables["linkedIssuesFirst"], linkedIssuePageSize)
+	}
+	if variables["linkedProjectItemsFirst"] != float64(linkedIssueProjectItemsPageSize) {
+		t.Fatalf("linkedProjectItemsFirst = %v, want %d", variables["linkedProjectItemsFirst"], linkedIssueProjectItemsPageSize)
+	}
 	prVariables := requests[1]["variables"].(map[string]any)
 	if prVariables["owner"] != "digitaldrywood" || prVariables["name"] != "detent" {
 		t.Fatalf("pull request repo variables = %#v, want digitaldrywood/detent", prVariables)
 	}
 	query := requests[0]["query"].(string)
-	for _, want := range []string{"author { login }", "assignees(first: 100)", "fieldValues(first: 100)"} {
+	for _, want := range []string{"author { login }", "assignees(first: 100)", "fieldValues(first: $fieldValuesFirst)"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("project query missing %q:\n%s", want, query)
 		}
@@ -293,7 +302,7 @@ func TestConnectorFetchCandidateIssuesCapturesLinkedChildIssues(t *testing.T) {
 	}
 
 	query := server.requests()[0]["query"].(string)
-	for _, want := range []string{"subIssues(first: 100)", "trackedIssues(first: 100)"} {
+	for _, want := range []string{"subIssues(first: $linkedIssuesFirst)", "trackedIssues(first: $linkedIssuesFirst)"} {
 		if !strings.Contains(query, want) {
 			t.Fatalf("project query missing %q:\n%s", want, query)
 		}
