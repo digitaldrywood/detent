@@ -20,6 +20,10 @@ type Authenticator interface {
 	Authenticate(context.Context) error
 }
 
+type InstanceIdentifier interface {
+	InstanceLogin() string
+}
+
 type Provisioner interface {
 	Provision(context.Context) error
 }

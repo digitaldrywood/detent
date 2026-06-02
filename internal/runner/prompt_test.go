@@ -47,13 +47,16 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 				},
 			},
 		},
-		Prompt: "Prompt for {{ issue.identifier }} via {{ tracker.kind }} attempt={{ attempt }} auto={{ workspace.auto_branch }}",
+		Prompt: "Prompt for {{ issue.identifier }} via {{ tracker.kind }} attempt={{ attempt }} auto={{ workspace.auto_branch }} metadata={{ issue.author_id }} {{ issue.assignees }} {{ issue.fields }}",
 	}, connector.Issue{
 		ID:          "issue-21",
 		Identifier:  "digitaldrywood/detent#21",
 		Title:       "Build prompt",
 		Description: "Wire prompt builder",
+		AuthorID:    "author-1",
+		Assignees:   []string{"reviewer-1", "reviewer-2"},
 		Labels:      []string{"enhancement", "stage:s3"},
+		Fields:      map[string]string{"Status": "Todo"},
 	}, PromptOptions{
 		Attempt:       &attempt,
 		WorkspacePath: workspace,
@@ -68,6 +71,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 
 	for _, want := range []string{
 		"Prompt for digitaldrywood/detent#21 via memory attempt=2 auto=true",
+		"metadata=author-1 reviewer-1, reviewer-2 map[Status:Todo]",
 		"## Lessons from prior runs",
 		"Check generator aliases before editing.",
 		"## Available skills",
