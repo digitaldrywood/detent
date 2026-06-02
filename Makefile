@@ -26,7 +26,7 @@ dev:
 		mv tmp/air-combined.log tmp/air-combined-$$(date +%Y%m%d-%H%M%S).log; \
 	fi
 	@ls -t tmp/air-combined-*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
-	@DETENT_ENV=dev DETENT_LOG_LEVEL=debug air 2>&1 | tee tmp/air-combined.log
+	@ENV=dev LOG_LEVEL=debug air 2>&1 | tee tmp/air-combined.log
 
 generate:
 	@go generate ./...

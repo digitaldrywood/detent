@@ -13,8 +13,7 @@ import (
 )
 
 func TestResolvePathPrecedence(t *testing.T) {
-	t.Setenv("DETENT_HOME", "")
-	t.Setenv("DETENT_CONFIG", "")
+	clearPathEnv(t)
 
 	root := t.TempDir()
 	home := configurePathTestHome(t, root)
@@ -32,8 +31,10 @@ func TestResolvePathPrecedence(t *testing.T) {
 	for _, path := range []string{flagPath, envPath, homePath, nativePath, legacyPath} {
 		writeFile(t, path, "# config\n")
 	}
-	t.Setenv("DETENT_CONFIG", envPath)
-	t.Setenv("DETENT_HOME", detentHome)
+	t.Setenv("CONFIG", envPath)
+	t.Setenv("CONFIG_HOME", detentHome)
+	t.Setenv("DETENT_CONFIG", filepath.Join(root, "deprecated-env.yaml"))
+	t.Setenv("DETENT_HOME", filepath.Join(root, "deprecated-home"))
 
 	tests := []struct {
 		name     string
@@ -49,19 +50,20 @@ func TestResolvePathPrecedence(t *testing.T) {
 			wantRule: PathRuleFlag,
 		},
 		{
-			name: "detent config wins after flag",
+			name: "config env wins after flag",
 			setup: func() {
-				t.Setenv("DETENT_CONFIG", envPath)
-				t.Setenv("DETENT_HOME", detentHome)
+				t.Setenv("CONFIG", envPath)
+				t.Setenv("CONFIG_HOME", detentHome)
 			},
 			wantPath: envPath,
 			wantRule: PathRuleEnvConfig,
 		},
 		{
-			name: "detent home wins after direct config env",
+			name: "config home wins after direct config env",
 			setup: func() {
+				t.Setenv("CONFIG", "")
 				t.Setenv("DETENT_CONFIG", "")
-				t.Setenv("DETENT_HOME", detentHome)
+				t.Setenv("CONFIG_HOME", detentHome)
 			},
 			wantPath: homePath,
 			wantRule: PathRuleEnvHome,
@@ -69,8 +71,7 @@ func TestResolvePathPrecedence(t *testing.T) {
 		{
 			name: "native config wins before legacy",
 			setup: func() {
-				t.Setenv("DETENT_CONFIG", "")
-				t.Setenv("DETENT_HOME", "")
+				clearPathEnv(t)
 			},
 			wantPath: nativePath,
 			wantRule: PathRuleUserConfigDir,
@@ -78,8 +79,7 @@ func TestResolvePathPrecedence(t *testing.T) {
 		{
 			name: "legacy config wins when native is missing",
 			setup: func() {
-				t.Setenv("DETENT_CONFIG", "")
-				t.Setenv("DETENT_HOME", "")
+				clearPathEnv(t)
 				if err := os.Remove(nativePath); err != nil {
 					t.Fatalf("Remove() error = %v", err)
 				}
@@ -110,8 +110,7 @@ func TestResolvePathPrecedence(t *testing.T) {
 }
 
 func TestResolvePathUsesNativeConfigDirWhenNoConfigExists(t *testing.T) {
-	t.Setenv("DETENT_HOME", "")
-	t.Setenv("DETENT_CONFIG", "")
+	clearPathEnv(t)
 	configurePathTestHome(t, t.TempDir())
 
 	nativeRoot, err := os.UserConfigDir()
@@ -134,8 +133,7 @@ func TestResolvePathUsesNativeConfigDirWhenNoConfigExists(t *testing.T) {
 }
 
 func TestDefaultPath(t *testing.T) {
-	t.Setenv("DETENT_HOME", "")
-	t.Setenv("DETENT_CONFIG", "")
+	clearPathEnv(t)
 	configurePathTestHome(t, t.TempDir())
 
 	nativeRoot, err := os.UserConfigDir()
@@ -154,10 +152,27 @@ func TestDefaultPath(t *testing.T) {
 	}
 }
 
-func TestDefaultPathHonorsDetentHome(t *testing.T) {
+func TestDefaultPathHonorsConfigHome(t *testing.T) {
 	root := t.TempDir()
 	home := configurePathTestHome(t, root)
-	t.Setenv("DETENT_CONFIG", "")
+	clearPathEnv(t)
+	t.Setenv("CONFIG_HOME", "~/custom")
+
+	got, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath() error = %v", err)
+	}
+
+	want := filepath.Join(home, "custom", "global.yaml")
+	if got != want {
+		t.Fatalf("DefaultPath() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultPathFallsBackToDeprecatedDetentHome(t *testing.T) {
+	root := t.TempDir()
+	home := configurePathTestHome(t, root)
+	clearPathEnv(t)
 	t.Setenv("DETENT_HOME", "~/custom")
 
 	got, err := DefaultPath()
@@ -172,8 +187,7 @@ func TestDefaultPathHonorsDetentHome(t *testing.T) {
 }
 
 func TestDefaultConfig(t *testing.T) {
-	t.Setenv("DETENT_HOME", "")
-	t.Setenv("DETENT_CONFIG", "")
+	clearPathEnv(t)
 
 	cfg, err := Default()
 	if err != nil {
@@ -838,6 +852,14 @@ func configurePathTestHome(t *testing.T, root string) string {
 		t.Setenv("XDG_CONFIG_HOME", "")
 	}
 	return home
+}
+
+func clearPathEnv(t *testing.T) {
+	t.Helper()
+
+	for _, key := range []string{"CONFIG", "CONFIG_HOME", "DETENT_CONFIG", "DETENT_HOME"} {
+		t.Setenv(key, "")
+	}
 }
 
 func assertMap(t *testing.T, name string, got map[string]any, want map[string]any) {

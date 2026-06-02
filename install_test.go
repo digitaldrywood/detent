@@ -321,7 +321,7 @@ func TestFreshInstallBootsOnboardingWizardAndRunsSubcommands(t *testing.T) {
 	}
 	serverEnv := append(os.Environ(),
 		"HOME="+home,
-		"DETENT_HOME="+filepath.Join(home, ".detent"),
+		"CONFIG_HOME="+filepath.Join(home, ".detent"),
 	)
 	port := reservePort(t)
 	stop := startDetentServer(t, binary, workdir, serverEnv, port)

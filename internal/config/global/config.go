@@ -33,11 +33,13 @@ var schedulingModes = []string{
 type PathRule string
 
 const (
-	PathRuleFlag          PathRule = "--config"
-	PathRuleEnvConfig     PathRule = "DETENT_CONFIG"
-	PathRuleEnvHome       PathRule = "DETENT_HOME"
-	PathRuleUserConfigDir PathRule = "os.UserConfigDir()"
-	PathRuleLegacyHome    PathRule = "~/.detent"
+	PathRuleFlag                PathRule = "--config"
+	PathRuleEnvConfig           PathRule = "CONFIG"
+	PathRuleDeprecatedEnvConfig PathRule = "DETENT_CONFIG"
+	PathRuleEnvHome             PathRule = "CONFIG_HOME"
+	PathRuleDeprecatedEnvHome   PathRule = "DETENT_HOME"
+	PathRuleUserConfigDir       PathRule = "os.UserConfigDir()"
+	PathRuleLegacyHome          PathRule = "~/.detent"
 )
 
 type PathResolution struct {
@@ -378,15 +380,21 @@ func resolvePath(configPath string, opts pathOptions) (PathResolution, error) {
 	if strings.TrimSpace(configPath) != "" {
 		return pathResolution(configPath, PathRuleFlag, opts.config)
 	}
-	if envPath := strings.TrimSpace(opts.lookupEnv("DETENT_CONFIG")); envPath != "" {
-		return pathResolution(envPath, PathRuleEnvConfig, opts.config)
+	if envPath, rule := lookupPathEnv(opts.lookupEnv, pathEnvCandidates{
+		{name: string(PathRuleEnvConfig), rule: PathRuleEnvConfig},
+		{name: string(PathRuleDeprecatedEnvConfig), rule: PathRuleDeprecatedEnvConfig},
+	}); envPath != "" {
+		return pathResolution(envPath, rule, opts.config)
 	}
-	if detentHome := strings.TrimSpace(opts.lookupEnv("DETENT_HOME")); detentHome != "" {
-		expanded, err := expandPath(detentHome, opts.config)
+	if configHome, rule := lookupPathEnv(opts.lookupEnv, pathEnvCandidates{
+		{name: string(PathRuleEnvHome), rule: PathRuleEnvHome},
+		{name: string(PathRuleDeprecatedEnvHome), rule: PathRuleDeprecatedEnvHome},
+	}); configHome != "" {
+		expanded, err := expandPath(configHome, opts.config)
 		if err != nil {
 			return PathResolution{}, err
 		}
-		return PathResolution{Path: filepath.Join(expanded, "global.yaml"), Rule: PathRuleEnvHome}, nil
+		return PathResolution{Path: filepath.Join(expanded, "global.yaml"), Rule: rule}, nil
 	}
 
 	nativePath, nativeErr := userConfigPath(opts)
@@ -403,6 +411,22 @@ func resolvePath(configPath string, opts pathOptions) (PathResolution, error) {
 	default:
 		return PathResolution{}, nativeErr
 	}
+}
+
+type pathEnvCandidate struct {
+	name string
+	rule PathRule
+}
+
+type pathEnvCandidates []pathEnvCandidate
+
+func lookupPathEnv(lookupEnv func(string) string, candidates pathEnvCandidates) (string, PathRule) {
+	for _, candidate := range candidates {
+		if value := strings.TrimSpace(lookupEnv(candidate.name)); value != "" {
+			return value, candidate.rule
+		}
+	}
+	return "", ""
 }
 
 func normalizePathOptions(opts pathOptions) pathOptions {
