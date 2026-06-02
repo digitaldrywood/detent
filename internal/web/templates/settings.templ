@@ -37,6 +37,7 @@ templ Settings(data SettingsData) {
 				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
 					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
 						@dashboardTopbarBrand()
+						@dashboardPageHeading("Settings")
 						@dashboardNav("settings")
 						<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
 							<span class="truncate font-mono">{ settingsVersionLabel(data) }</span>
@@ -117,6 +118,10 @@ templ dashboardTopbarBrand() {
 		<span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-accent-soft font-semibold text-accent">D</span>
 		<span class="text-sm font-semibold">Detent</span>
 	</a>
+}
+
+templ dashboardPageHeading(title string) {
+	<h1 class="sr-only">{ title }</h1>
 }
 
 templ dashboardTopbarDivider() {

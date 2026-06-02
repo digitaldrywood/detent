@@ -397,6 +397,7 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 		`aria-label="Detent dashboard"`,
 		`href="/"`,
 		">Detent</span>",
+		`<h1 class="sr-only">Dashboard</h1>`,
 		`href="/reports"`,
 		`href="/settings"`,
 	} {

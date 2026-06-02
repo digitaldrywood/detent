@@ -73,6 +73,7 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 		"px-3 py-3",
 		"dashboard-topbar",
 		"dashboard-nav flex min-w-0 items-center gap-4",
+		`<h1 class="sr-only">Reports</h1>`,
 		"underline decoration-2 underline-offset-4",
 		"grid min-w-0 gap-5 xl:grid-cols-2",
 		"grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]",

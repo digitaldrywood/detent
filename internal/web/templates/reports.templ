@@ -21,6 +21,7 @@ templ Reports(data ReportsData) {
 				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
 					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
 						@dashboardTopbarBrand()
+						@dashboardPageHeading("Reports")
 						@dashboardNav("reports")
 						<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
 							<span class="truncate">{ reportsWindowLabel(data) }</span>
