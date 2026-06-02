@@ -277,6 +277,16 @@ func TestDescribe(t *testing.T) {
 			},
 			want: "all (assignee in @me (worker-1, release-captain); labels include multi-instance)",
 		},
+		{
+			name: "selector describes empty or child as all issues",
+			selector: Selector{
+				Or: []Selector{
+					{Labels: Labels{Include: []string{"release"}}},
+					{},
+				},
+			},
+			want: "any (labels include release; All issues)",
+		},
 	}
 
 	for _, tt := range tests {

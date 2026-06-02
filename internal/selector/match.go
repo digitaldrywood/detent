@@ -187,6 +187,9 @@ func describeChildSelectors(label string, selectors []Selector, ctx Context) str
 	for _, child := range selectors {
 		parts := describeSelectorParts(child, ctx)
 		if len(parts) == 0 {
+			if label == "any" {
+				described = append(described, "All issues")
+			}
 			continue
 		}
 		described = append(described, strings.Join(parts, "; "))
