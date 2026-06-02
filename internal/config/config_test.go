@@ -214,6 +214,100 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Budget.PricingPath != "priv/pricing/models.yaml" {
 		t.Fatalf("Budget.PricingPath = %q", cfg.Budget.PricingPath)
 	}
+	if len(cfg.Agents.Backends) != 0 {
+		t.Fatalf("Agents.Backends len = %d, want legacy empty config", len(cfg.Agents.Backends))
+	}
+	if len(cfg.Agents.Routes) != 0 {
+		t.Fatalf("Agents.Routes len = %d, want legacy empty config", len(cfg.Agents.Routes))
+	}
+}
+
+func TestParseWorkflowAgentsConfig(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex-high
+      kind: codex
+      protocol: app-server
+      command: codex app-server --profile high
+      options:
+        shell: bash
+        approval_policy: never
+        thread_sandbox: danger-full-access
+        turn_sandbox_policy:
+          type: dangerFullAccess
+        turn_timeout_ms: 600000
+        read_timeout_ms: 1000
+        stall_timeout_ms: 0
+  routes:
+    - name: high-label
+      backend: codex-high
+      model: gpt-5-codex-high
+      selector:
+        labels:
+          include:
+            - tier:high
+    - name: project-model
+      backend: codex-high
+      model_field: Model
+    - name: urgent
+      backend: codex-high
+      model: gpt-5-codex
+      selector:
+        priority_in:
+          - 1
+    - name: default
+      backend: codex-high
+      default: true
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	agents := workflow.Config.Agents
+	if len(agents.Backends) != 1 {
+		t.Fatalf("Agents.Backends len = %d, want 1", len(agents.Backends))
+	}
+	backend := agents.Backends[0]
+	if backend.ID != "codex-high" || backend.Kind != "codex" || backend.Protocol != "app-server" {
+		t.Fatalf("backend identity = %#v, want codex-high codex app-server", backend)
+	}
+	if backend.Command != "codex app-server --profile high" {
+		t.Fatalf("backend Command = %q, want configured command", backend.Command)
+	}
+	if backend.Options.Shell != "bash" {
+		t.Fatalf("backend shell = %q, want bash", backend.Options.Shell)
+	}
+	if !backend.Options.ApprovalPolicy.IsString || backend.Options.ApprovalPolicy.String != "never" {
+		t.Fatalf("backend approval policy = %#v, want never", backend.Options.ApprovalPolicy)
+	}
+	if backend.Options.TurnSandboxPolicy["type"] != "dangerFullAccess" {
+		t.Fatalf("backend turn sandbox policy = %#v, want dangerFullAccess", backend.Options.TurnSandboxPolicy)
+	}
+	if len(agents.Routes) != 4 {
+		t.Fatalf("Agents.Routes len = %d, want 4", len(agents.Routes))
+	}
+	if got := agents.Routes[0].Selector.Labels.Include; len(got) != 1 || got[0] != "tier:high" {
+		t.Fatalf("route label selector = %#v, want tier:high", got)
+	}
+	if agents.Routes[1].ModelField != "Model" {
+		t.Fatalf("route ModelField = %q, want Model", agents.Routes[1].ModelField)
+	}
+	if got := agents.Routes[2].Selector.PriorityIn; len(got) != 1 || got[0] != 1 {
+		t.Fatalf("route priority selector = %#v, want priority 1", got)
+	}
+	if !agents.Routes[3].Default {
+		t.Fatal("default route Default = false, want true")
+	}
 }
 
 func TestParseWorkflowMemoryTrackerIssues(t *testing.T) {
@@ -508,6 +602,35 @@ Prompt
 				"tracker.priority_map ranks must be integers 1 through 4 or null",
 				"agent.lessons.path must be a relative path inside the workspace",
 				"agent.skills.path must be a relative path inside the workspace",
+			},
+		},
+		{
+			name: "invalid agents config",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex
+      kind: claude
+      protocol: stream
+      command: ""
+  routes:
+    - backend: missing
+      default: true
+    - backend: codex
+      default: true
+      selector:
+        priority_in: [0]
+---
+Prompt
+`,
+			want: []string{
+				"agents.backends.kind must be codex",
+				"agents.backends.command is required",
+				"agents.routes.backend must reference a configured backend",
+				"agents.routes.selector.priority_in values must be integers 1 through 4",
+				"agents.routes must not define multiple default routes",
 			},
 		},
 	}

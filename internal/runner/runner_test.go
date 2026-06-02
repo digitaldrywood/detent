@@ -12,10 +12,10 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
-	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/store"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
@@ -41,9 +41,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		},
 	}
 	codexClient := &fakeCodexClient{
-		updates: []codex.Update{
+		updates: []AgentUpdate{
 			{
-				Type:            codex.UpdateAgentMessageDelta,
+				Type:            AgentUpdateMessageDelta,
 				ProcessIdentity: "4242",
 				ThreadID:        "thread-1",
 				TurnID:          "turn-1",
@@ -51,28 +51,28 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 				Delta:           "hello",
 			},
 			{
-				Type:     codex.UpdateTokenUsage,
+				Type:     AgentUpdateTokenUsage,
 				ThreadID: "thread-1",
 				TurnID:   "turn-1",
-				Tokens: codex.TokenUsage{
+				Tokens: AgentTokenUsage{
 					InputTokens:  100,
 					OutputTokens: 25,
 					TotalTokens:  125,
 				},
 			},
 			{
-				Type: codex.UpdateRateLimits,
-				RateLimits: &codex.RateLimitSnapshot{
+				Type: AgentUpdateRateLimits,
+				RateLimits: &telemetry.RateLimits{
 					LimitID:   "codex-primary",
 					LimitName: "Codex primary",
-					Credits: &codex.CreditsSnapshot{
+					Credits: &telemetry.RateLimitBucket{
 						HasCredits: true,
 						Balance:    "7.25",
 					},
 				},
 			},
 		},
-		result: codex.RunTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "thread-1-turn-1"},
+		result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "thread-1-turn-1"},
 	}
 	sessionStore := &fakeSessionStore{sessionID: 42}
 	now := newFakeClock(
@@ -107,9 +107,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			},
 			Prompt: "Work on {{ issue.identifier }} attempt {{ attempt }}",
 		},
-		Workspace: workspaceBackend,
-		Codex:     codexClient,
-		Store:     sessionStore,
+		Workspace:    workspaceBackend,
+		AgentBackend: codexClient,
+		Store:        sessionStore,
 		Pricing: budget.PricingTable{
 			"gpt-5-codex-high": {
 				USDPerInputToken:  0.000004,
@@ -283,8 +283,8 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 			},
 			Prompt: "initial {{ issue.identifier }}",
 		},
-		Workspace: workspaceBackend,
-		Codex:     codexClient,
+		Workspace:    workspaceBackend,
+		AgentBackend: codexClient,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -316,6 +316,58 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	}
 }
 
+func TestRunnerRunUsesSingleConfiguredBackendDefaultRoute(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-55", Branch: "detent/issue-55"},
+	}
+	backend := &fakeCodexClient{}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Agents: config.Agents{
+					Backends: []config.AgentBackend{{
+						ID:       "codex-high",
+						Kind:     config.AgentBackendCodex,
+						Protocol: "app-server",
+						Command:  "codex app-server --profile high",
+					}},
+					Routes: []config.AgentRoute{{
+						Backend: "codex-high",
+						Default: true,
+					}},
+				},
+			},
+			Prompt: "work {{ issue.identifier }}",
+		},
+		Workspace: workspaceBackend,
+		AgentBackends: map[string]AgentBackend{
+			"codex-high": backend,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-55",
+			Identifier:    "digitaldrywood/detent#55",
+			ModelOverride: "gpt-5-codex-high",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if backend.request.Model != "gpt-5-codex-high" {
+		t.Fatalf("Model = %q, want issue override", backend.request.Model)
+	}
+	if backend.request.Workspace != workspaceBackend.info.Path {
+		t.Fatalf("Workspace = %q, want %q", backend.request.Workspace, workspaceBackend.info.Path)
+	}
+}
+
 func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	t.Parallel()
 
@@ -327,11 +379,11 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	now := newFakeClock(time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC))
 
 	runner, err := NewRunner(Dependencies{
-		Workflow:  config.Workflow{Config: config.Config{}},
-		Workspace: workspaceBackend,
-		Codex:     codexClient,
-		Store:     sessionStore,
-		Now:       now.Now,
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: codexClient,
+		Store:        sessionStore,
+		Now:          now.Now,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -371,9 +423,9 @@ func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
 	codexClient := &cancelingCodexClient{cancel: cancel}
 
 	runner, err := NewRunner(Dependencies{
-		Workflow:  config.Workflow{Config: config.Config{}},
-		Workspace: workspaceBackend,
-		Codex:     codexClient,
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: codexClient,
 	})
 	if err != nil {
 		t.Fatalf("NewRunner() error = %v", err)
@@ -443,17 +495,17 @@ func (b *fakeWorkspaceBackend) DiffStat(context.Context, workspace.Info, workspa
 }
 
 type fakeCodexClient struct {
-	request codex.RunTurnRequest
-	updates []codex.Update
-	result  codex.RunTurnResult
+	request AgentTurnRequest
+	updates []AgentUpdate
+	result  AgentTurnResult
 	err     error
 }
 
-func (c *fakeCodexClient) RunTurn(_ context.Context, req codex.RunTurnRequest, onUpdate codex.UpdateHandler) (codex.RunTurnResult, error) {
+func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
 	c.request = req
 	for _, update := range c.updates {
 		if err := onUpdate(update); err != nil {
-			return codex.RunTurnResult{}, err
+			return AgentTurnResult{}, err
 		}
 	}
 	return c.result, c.err
@@ -463,9 +515,9 @@ type cancelingCodexClient struct {
 	cancel context.CancelFunc
 }
 
-func (c *cancelingCodexClient) RunTurn(context.Context, codex.RunTurnRequest, codex.UpdateHandler) (codex.RunTurnResult, error) {
+func (c *cancelingCodexClient) RunTurn(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error) {
 	c.cancel()
-	return codex.RunTurnResult{}, context.Canceled
+	return AgentTurnResult{}, context.Canceled
 }
 
 type fakeSessionStore struct {
