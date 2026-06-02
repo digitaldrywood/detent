@@ -150,13 +150,13 @@ func evaluateCommand(summary Summary, now time.Time, opts EvaluationOptions) Dec
 		out.CIStatus = normalizedCIStatus(summary.CIStatus)
 		return out
 	}
-	if !automatedReviewSubmitted(summary.ReviewState) {
-		return decision(ActionWait, ReasonAutomatedReviewMissing)
-	}
-	if len(summary.P1Findings) > 0 {
+	if automatedReviewHasP1(summary.ReviewState) || len(summary.P1Findings) > 0 {
 		out := decision(ActionRework, ReasonP1Findings)
 		out.Findings = cloneFindings(summary.P1Findings)
 		return out
+	}
+	if !automatedReviewSubmitted(summary.ReviewState) {
+		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {
 		out := decision(ActionWait, ReasonAutomatedReviewNotQuiet)
@@ -202,11 +202,15 @@ func normalizedCIStatus(status string) string {
 
 func automatedReviewSubmitted(state string) bool {
 	switch strings.ToUpper(strings.TrimSpace(state)) {
-	case "APPROVED", "COMMENTED", "REQUESTED_CHANGES", "CHANGES_REQUESTED", "P1", "P2":
+	case "APPROVED", "COMMENTED", "REQUESTED_CHANGES", "CHANGES_REQUESTED", "P2":
 		return true
 	default:
 		return false
 	}
+}
+
+func automatedReviewHasP1(state string) bool {
+	return strings.ToUpper(strings.TrimSpace(state)) == "P1"
 }
 
 func quietRemaining(summary Summary, opts EvaluationOptions, now time.Time) time.Duration {

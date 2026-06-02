@@ -102,6 +102,16 @@ func TestEvaluate(t *testing.T) {
 			want: Decision{Action: ActionRework, Reason: ReasonP1Findings, Findings: []Finding{finding}},
 		},
 		{
+			name: "command gate requests rework for p1 review state",
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "P1",
+				LastActivityAt: &oldActivity,
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonP1Findings},
+		},
+		{
 			name:  "command gate waits for quiet window",
 			input: Summary{PullRequestURL: "https://github.test/pull/42", CIStatus: "green", ReviewState: "P2", LastActivityAt: &recentActivity},
 			opts:  EvaluationOptions{QuietDuration: 10 * time.Minute},
