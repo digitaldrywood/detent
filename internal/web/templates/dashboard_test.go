@@ -392,6 +392,9 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 	if strings.Contains(html, ">Operations dashboard</h1>") {
 		t.Fatalf("dashboard should use the slim navbar, not the oversized dashboard h1:\n%s", html)
 	}
+	if !strings.Contains(html, `<h1 class="truncate text-sm font-semibold text-foreground">Operations</h1>`) {
+		t.Fatalf("dashboard slim navbar should expose the page title as a semantic h1:\n%s", html)
+	}
 
 	healthIndex := strings.Index(html, `aria-label="Dashboard health"`)
 	metricsIndex := strings.Index(html, "Active issue sessions")
