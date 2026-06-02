@@ -1420,6 +1420,96 @@ func TestServerPreservesSnapshotBudgetWhenSpendQueryFails(t *testing.T) {
 	}
 }
 
+func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	capUSD := 100.0
+
+	tests := []struct {
+		name             string
+		budgetCostEvents func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
+		wantReason       string
+		wantHTML         string
+		forbiddenHTML    []string
+	}{
+		{
+			name: "successful empty query",
+			budgetCostEvents: func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+				return nil, nil
+			},
+			wantHTML:      "No budget spend yet.",
+			forbiddenHTML: []string{"Budget data unavailable."},
+		},
+		{
+			name: "failed query",
+			budgetCostEvents: func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+				return nil, errors.New("store is busy")
+			},
+			wantReason:    "budget spend query failed",
+			wantHTML:      "Budget data unavailable.",
+			forbiddenHTML: []string{"No budget spend yet.", "$0.00 / $100.00"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			snapshots := hub.New[telemetry.Snapshot]()
+			if err := snapshots.Publish(telemetry.Snapshot{
+				GeneratedAt: generatedAt,
+				Budget: telemetry.Budget{
+					Enabled:      true,
+					PerDayMaxUSD: &capUSD,
+				},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+
+			registry := project.NewRegistry()
+			if err := registry.Set(newBudgetTestProject(t, "detent", capUSD, 10)); err != nil {
+				t.Fatalf("Registry.Set() error = %v", err)
+			}
+
+			deps := testDeps(t)
+			deps.Hub = snapshots
+			deps.Registry = registry
+			deps.Store = storeProbe{budgetCostEvents: tt.budgetCostEvents}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+			budget := state["budget"].(map[string]any)
+			if tt.wantReason == "" {
+				if _, ok := budget["degraded_reason"]; ok {
+					t.Fatalf("budget degraded_reason = %#v, want omitted", budget["degraded_reason"])
+				}
+			} else if budget["degraded_reason"] != tt.wantReason {
+				t.Fatalf("budget degraded_reason = %#v, want %q", budget["degraded_reason"], tt.wantReason)
+			}
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+			}
+			html := rec.Body.String()
+			if !strings.Contains(html, tt.wantHTML) {
+				t.Fatalf("dashboard missing %q:\n%s", tt.wantHTML, html)
+			}
+			for _, forbidden := range tt.forbiddenHTML {
+				if strings.Contains(html, forbidden) {
+					t.Fatalf("dashboard rendered %q:\n%s", forbidden, html)
+				}
+			}
+		})
+	}
+}
+
 func TestServerAPIPreservesUnknownDiffStatus(t *testing.T) {
 	t.Parallel()
 

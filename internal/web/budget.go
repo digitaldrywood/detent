@@ -11,7 +11,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
-const budgetHistoryWindowDays = 7
+const (
+	budgetHistoryWindowDays      = 7
+	budgetSpendQueryFailedReason = "budget spend query failed"
+)
 
 type configuredBudget struct {
 	ProjectID      string
@@ -26,6 +29,10 @@ func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot
 
 	budget, ok := s.snapshotBudget(ctx, snapshot.GeneratedAt)
 	if !ok {
+		return snapshot
+	}
+	if budget.DegradedReason != "" {
+		snapshot.Budget = degradedSnapshotBudget(snapshot.Budget, budget)
 		return snapshot
 	}
 
@@ -54,7 +61,14 @@ func (s *Server) snapshotBudget(ctx context.Context, now time.Time) (telemetry.B
 	})
 	if err != nil {
 		s.logger.Warn("budget spend query failed", slog.Any("error", err))
-		return telemetry.Budget{}, false
+		return telemetry.Budget{
+			Enabled:        true,
+			DegradedReason: budgetSpendQueryFailedReason,
+			PerDayMaxUSD:   positiveFloatPtr(totalDailyBudgetCap(projects)),
+			PerIssueMaxUSD: issueBudgetCap(projects),
+			PeriodStart:    periodStart,
+			PeriodEnd:      periodEnd,
+		}, true
 	}
 
 	points, currentSpend := currentBudgetSpendPoints(events, periodStart, periodEnd)
@@ -70,6 +84,26 @@ func (s *Server) snapshotBudget(ctx context.Context, now time.Time) (telemetry.B
 		Days:              budgetSpendDays(events),
 	}
 	return budget, true
+}
+
+func degradedSnapshotBudget(snapshotBudget telemetry.Budget, degradedBudget telemetry.Budget) telemetry.Budget {
+	if !snapshotBudget.Enabled {
+		snapshotBudget.Enabled = degradedBudget.Enabled
+	}
+	if snapshotBudget.PerDayMaxUSD == nil {
+		snapshotBudget.PerDayMaxUSD = degradedBudget.PerDayMaxUSD
+	}
+	if snapshotBudget.PerIssueMaxUSD == nil {
+		snapshotBudget.PerIssueMaxUSD = degradedBudget.PerIssueMaxUSD
+	}
+	if snapshotBudget.PeriodStart.IsZero() {
+		snapshotBudget.PeriodStart = degradedBudget.PeriodStart
+	}
+	if snapshotBudget.PeriodEnd.IsZero() {
+		snapshotBudget.PeriodEnd = degradedBudget.PeriodEnd
+	}
+	snapshotBudget.DegradedReason = degradedBudget.DegradedReason
+	return snapshotBudget
 }
 
 func (s *Server) configuredBudgets() []configuredBudget {
