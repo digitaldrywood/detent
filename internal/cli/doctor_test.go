@@ -382,6 +382,21 @@ func TestCheckDoctorSQLite(t *testing.T) {
 	}
 }
 
+func TestDoctorSQLitePingErrorWrapsPingAndCloseErrors(t *testing.T) {
+	t.Parallel()
+
+	pingErr := errors.New("ping failed")
+	closeErr := errors.New("close failed")
+
+	err := doctorSQLitePingError(pingErr, closeErr)
+	if !errors.Is(err, pingErr) {
+		t.Fatalf("doctorSQLitePingError() error = %v, want ping error in chain", err)
+	}
+	if !errors.Is(err, closeErr) {
+		t.Fatalf("doctorSQLitePingError() error = %v, want close error in chain", err)
+	}
+}
+
 func TestCheckDoctorServerPort(t *testing.T) {
 	t.Parallel()
 

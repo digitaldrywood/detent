@@ -649,12 +649,16 @@ func openDoctorSQLite(ctx context.Context, path string) (doctorStore, error) {
 	db.SetMaxOpenConns(1)
 
 	if err := db.PingContext(ctx); err != nil {
-		if closeErr := db.Close(); closeErr != nil {
-			return nil, fmt.Errorf("ping sqlite database: %w; close sqlite database: %v", err, closeErr)
-		}
-		return nil, fmt.Errorf("ping sqlite database: %w", err)
+		return nil, doctorSQLitePingError(err, db.Close())
 	}
 	return db, nil
+}
+
+func doctorSQLitePingError(err, closeErr error) error {
+	if closeErr != nil {
+		return fmt.Errorf("ping sqlite database: %w; close sqlite database: %w", err, closeErr)
+	}
+	return fmt.Errorf("ping sqlite database: %w", err)
 }
 
 func runDoctorCommand(ctx context.Context, path string, args ...string) error {
