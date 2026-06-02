@@ -76,6 +76,43 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	}
 }
 
+func TestRunRedispatchesInProgressIssueWithOpenPullRequestAfterRestart(t *testing.T) {
+	t.Parallel()
+
+	prNumber := 245
+	issue := testIssue("issue-in-progress-pr", "digitaldrywood/detent#245", "In Progress")
+	issue.PRNumber = &prNumber
+	issue.PullRequest = &connector.PullRequest{
+		Number:     prNumber,
+		URL:        "https://github.com/digitaldrywood/detent/pull/245",
+		BranchName: "detent/digitaldrywood_detent_245",
+		State:      "OPEN",
+	}
+	tracker := newFakeConnector(issue)
+	runner := newBlockingRunner()
+
+	orch := newTestOrchestrator(t, tracker, runner)
+	stop := runOrchestrator(t, orch)
+	defer stop()
+	defer close(runner.release)
+
+	request := receiveRunRequest(t, runner.started)
+	if request.Issue.ID != issue.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
+	}
+	if request.Issue.PullRequest == nil || request.Issue.PullRequest.State != "OPEN" {
+		t.Fatalf("RunRequest.Issue.PullRequest = %#v, want open pull request", request.Issue.PullRequest)
+	}
+
+	state, err := orch.State(context.Background())
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+	if _, ok := state.Running[issue.ID]; !ok {
+		t.Fatalf("Running[%q] missing after startup redispatch", issue.ID)
+	}
+}
+
 func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 	t.Parallel()
 

@@ -311,9 +311,9 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 			want:  false,
 		},
 		{
-			name:  "in progress with open pull request skips",
+			name:  "in progress with open pull request dispatches",
 			issue: dispatchTestIssueWithPullRequest("issue-progress-open-pr", "In Progress", "OPEN"),
-			want:  false,
+			want:  true,
 		},
 		{
 			name:  "rework with open pull request dispatches",
@@ -391,6 +391,46 @@ func TestDispatchCandidatesClaimsDuplicateIssueWithinCycle(t *testing.T) {
 	}
 	if len(state.Claimed) != 1 {
 		t.Fatalf("Claimed len = %d, want 1", len(state.Claimed))
+	}
+}
+
+func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
+	})
+	runner := newWorkerHostRunner()
+	orch := Orchestrator{
+		cfg:        cfg,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion),
+	}
+	state := newState(cfg)
+	now := time.Now()
+	first := dispatchTestIssueWithPullRequest("issue-first", "In Progress", "OPEN")
+	second := dispatchTestIssueWithPullRequest("issue-second", "In Progress", "OPEN")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{first, second}, now)
+
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != first.ID {
+		t.Fatalf("first RunRequest.Issue.ID = %q, want %q", request.Issue.ID, first.ID)
+	}
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected unstaggered continuation dispatch = %#v", request)
+	default:
+	}
+
+	request = receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != second.ID {
+		t.Fatalf("second RunRequest.Issue.ID = %q, want %q", request.Issue.ID, second.ID)
 	}
 }
 

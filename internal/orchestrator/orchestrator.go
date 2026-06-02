@@ -19,6 +19,7 @@ const (
 	defaultMaxRetryBackoff       = 5 * time.Minute
 	defaultContinuationRetry     = time.Second
 	defaultFailureRetryBaseDelay = 10 * time.Second
+	continuationDispatchBackoff  = 100 * time.Millisecond
 	runUpdateBufferSize          = 128
 	blockedStatusState           = "Blocked"
 	blockedReasonDependency      = "blocked by non-terminal dependency"
@@ -490,6 +491,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	dueRetries := dueRetriesByIssue(state, now)
 	o.releaseMissingDueRetries(state, issues, dueRetries)
 
+	continuations := 0
 	for _, issue := range issues {
 		if retry, ok := dueRetries[issue.ID]; ok {
 			o.dispatchRetryIssue(ctx, state, issue, retry, now)
@@ -502,7 +504,12 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			continue
 		}
 
-		o.dispatchIssue(ctx, state, issue, 0, now, "")
+		delay := time.Duration(0)
+		if continuationDispatch(issue) {
+			delay = continuationDelay(continuations)
+			continuations++
+		}
+		o.dispatchIssueAfter(ctx, state, issue, 0, now, "", delay)
 	}
 }
 
@@ -663,6 +670,18 @@ func (o *Orchestrator) dispatchIssue(
 	now time.Time,
 	preferredWorkerHost string,
 ) {
+	o.dispatchIssueAfter(ctx, state, issue, attempt, now, preferredWorkerHost, 0)
+}
+
+func (o *Orchestrator) dispatchIssueAfter(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	preferredWorkerHost string,
+	delay time.Duration,
+) {
 	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
 	if !ok {
 		return
@@ -690,7 +709,26 @@ func (o *Orchestrator) dispatchIssue(
 		WorkerHost:    workerHost,
 		OnUsageUpdate: o.usageUpdateHandler(ctx, issue.ID),
 	}
-	o.supervisor.Dispatch(ctx, request, o.runResults)
+	o.dispatchRun(ctx, request, delay)
+}
+
+func (o *Orchestrator) dispatchRun(ctx context.Context, request RunRequest, delay time.Duration) {
+	if delay <= 0 {
+		o.supervisor.Dispatch(ctx, request, o.runResults)
+		return
+	}
+
+	go func() {
+		timer := time.NewTimer(delay)
+		defer timer.Stop()
+
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+			o.supervisor.Dispatch(ctx, request, o.runResults)
+		}
+	}()
 }
 
 func (o *Orchestrator) usageUpdateHandler(ctx context.Context, issueID string) runpkg.UsageUpdateHandler {
@@ -979,10 +1017,22 @@ func duplicatePullRequestWork(issue connector.Issue) bool {
 	case "merged":
 		return true
 	case "open":
-		return normalizeState(issue.State) == "todo" || normalizeState(issue.State) == "in progress"
+		return normalizeState(issue.State) == "todo"
 	default:
 		return false
 	}
+}
+
+func continuationDispatch(issue connector.Issue) bool {
+	state := normalizeState(issue.State)
+	return state != "" && state != "todo"
+}
+
+func continuationDelay(index int) time.Duration {
+	if index <= 0 {
+		return 0
+	}
+	return time.Duration(index) * continuationDispatchBackoff
 }
 
 func normalizePullRequestState(state string) string {
