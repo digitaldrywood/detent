@@ -171,17 +171,19 @@ type BudgetRefusal struct {
 }
 
 type RateLimits struct {
-	LimitID   string           `json:"limit_id,omitempty"`
-	LimitName string           `json:"limit_name,omitempty"`
-	Primary   *RateLimitBucket `json:"primary,omitempty"`
-	Secondary *RateLimitBucket `json:"secondary,omitempty"`
-	Credits   *RateLimitBucket `json:"credits,omitempty"`
+	LimitID       string           `json:"limit_id,omitempty"`
+	LimitName     string           `json:"limit_name,omitempty"`
+	Primary       *RateLimitBucket `json:"primary,omitempty"`
+	Secondary     *RateLimitBucket `json:"secondary,omitempty"`
+	Credits       *RateLimitBucket `json:"credits,omitempty"`
+	GitHubGraphQL *RateLimitBucket `json:"github_graphql,omitempty"`
 }
 
 type RateLimitBucket struct {
 	Remaining      int64      `json:"remaining,omitempty"`
 	Used           int64      `json:"used,omitempty"`
 	Limit          int64      `json:"limit,omitempty"`
+	Cost           int64      `json:"cost,omitempty"`
 	ResetAt        *time.Time `json:"reset_at,omitempty"`
 	ResetInSeconds int64      `json:"reset_in_seconds,omitempty"`
 	HasCredits     bool       `json:"has_credits,omitempty"`

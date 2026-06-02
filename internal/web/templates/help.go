@@ -83,7 +83,7 @@ var helpDefinitions = map[helpTerm]helpEntry{
 	helpPRPipeline:          {Label: "PR pipeline", Description: "Pull requests currently waiting for human review, merging, or finished today. Watch this lane to see whether the merge train is moving."},
 	helpProjectedSpend:      {Label: "Projected spend", Description: "Estimated additional USD for active work if it continues at the current pace. Use it before letting a busy queue keep running."},
 	helpQueue:               {Label: "Queue", Description: "Issues waiting to start or retry. A growing queue means demand is higher than the available agent capacity or retry cooldowns."},
-	helpRateLimits:          {Label: "Rate limits", Description: "How much Codex API quota remains before requests get throttled. Watch it during heavy parallel work because low quota can slow or pause agents."},
+	helpRateLimits:          {Label: "Rate limits", Description: "How much provider quota remains before requests get throttled. Watch it during heavy parallel work because low quota can slow or pause agents."},
 	helpRecentSessions:      {Label: "Recent sessions", Description: "The last completed Codex sessions Detent retained. Use it to audit what just happened without digging through logs."},
 	helpReportsEvents:       {Label: "Usage events", Description: "Completed ledger rows in the selected report window. Low counts can make spend and token trends look sparse or misleading."},
 	helpReportsModels:       {Label: "Models", Description: "How many model buckets appear in the report window. More buckets can explain mixed pricing or unexpected spend."},
@@ -153,6 +153,8 @@ func rateLimitHelpTerm(name string) helpTerm {
 		return helpSecondaryRateBucket
 	case "credits":
 		return helpCreditsRateBucket
+	case "github graphql":
+		return helpRateLimits
 	default:
 		return helpRateLimits
 	}

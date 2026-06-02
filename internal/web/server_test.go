@@ -834,7 +834,7 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 		"Live dashboard row",
 		"+4 -2 (3 files)",
 		"321",
-		"Codex rate limits",
+		"Rate limits",
 		"Primary",
 		"87",
 		"13",

@@ -1204,12 +1204,12 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 templ rateLimitsCard(limits *RateLimits) {
 	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
-			@helpHeading2("Codex rate limits", helpRateLimits, "rate-limits-card")
+			@helpHeading2("Rate limits", helpRateLimits, "rate-limits-card")
 			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 text-xs font-medium text-accent">{ rateLimitName(limits) }</span>
 		</div>
 		if len(rateLimitRows(limits)) == 0 {
 			<div class="mt-4">
-				@dashboardEmptyState("No Codex rate-limit snapshot.", "Limits will appear after the Codex connector reports quota data.", "bg-accent")
+				@dashboardEmptyState("No rate-limit snapshot.", "Limits will appear after Codex or the tracker reports quota data.", "bg-accent")
 			</div>
 		} else {
 			<div class="mt-5 grid gap-4">

@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"testing"
+	"time"
 )
 
 func TestClientGraphQLSendsBearerRequest(t *testing.T) {
@@ -98,6 +99,13 @@ func TestClientGraphQLClassifiesFailures(t *testing.T) {
 			want:       ErrRateLimited,
 		},
 		{
+			name:       "secondary rate limit",
+			statusCode: http.StatusForbidden,
+			headers:    map[string]string{"Retry-After": "120"},
+			body:       `{"message":"secondary rate limit"}`,
+			want:       ErrRateLimited,
+		},
+		{
 			name:       "not found",
 			statusCode: http.StatusNotFound,
 			body:       `{"message":"not found"}`,
@@ -150,6 +158,83 @@ func TestClientGraphQLClassifiesFailures(t *testing.T) {
 				t.Fatalf("GraphQL() error = %v, want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestClientGraphQLCapturesRateLimitSnapshot(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat"},"rateLimit":{"limit":5000,"used":120,"remaining":4880,"cost":2,"resetAt":"` + resetAt.Format(time.RFC3339) + `"}}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var got struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+	}
+	if err := client.GraphQL(context.Background(), "query { viewer { login } rateLimit { remaining resetAt cost } }", nil, &got); err != nil {
+		t.Fatalf("GraphQL() error = %v", err)
+	}
+
+	rateLimit, ok := client.GraphQLRateLimit()
+	if !ok {
+		t.Fatal("GraphQLRateLimit() ok = false, want true")
+	}
+	if rateLimit.Limit != 5000 || rateLimit.Used != 120 || rateLimit.Remaining != 4880 || rateLimit.Cost != 2 {
+		t.Fatalf("GraphQLRateLimit() = %#v, want limit 5000 used 120 remaining 4880 cost 2", rateLimit)
+	}
+	if !rateLimit.ResetAt.Equal(resetAt) {
+		t.Fatalf("GraphQLRateLimit().ResetAt = %v, want %v", rateLimit.ResetAt, resetAt)
+	}
+}
+
+func TestClientGraphQLCapturesRetryAfterRateLimit(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Retry-After", "120")
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Used", "5000")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"secondary rate limit"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.GraphQL(context.Background(), "query { viewer { login } }", nil, nil)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("GraphQL() error = %v, want ErrRateLimited", err)
+	}
+
+	rateLimit, ok := client.GraphQLRateLimit()
+	if !ok {
+		t.Fatal("GraphQLRateLimit() ok = false, want true")
+	}
+	if rateLimit.RetryAfter != 2*time.Minute || rateLimit.Remaining != 0 || rateLimit.Limit != 5000 {
+		t.Fatalf("GraphQLRateLimit() = %#v, want retry-after 2m and exhausted headers", rateLimit)
 	}
 }
 

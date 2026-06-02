@@ -8,20 +8,21 @@ import (
 )
 
 type State struct {
-	PollInterval        time.Duration
-	MaxConcurrentAgents int
-	LastRefreshAt       time.Time
-	NextRefreshAt       time.Time
-	Pipeline            []connector.Issue
-	Running             map[string]Running
-	Claimed             map[string]Claimed
-	Blocked             map[string]Blocked
-	Completed           map[string]Completed
-	Retry               map[string]Retry
-	BudgetRefusals      map[string]BudgetRefusal
-	DiffStats           map[string]DiffStats
-	CodexTotals         CodexTotals
-	RateLimits          *telemetry.RateLimits
+	PollInterval           time.Duration
+	MaxConcurrentAgents    int
+	LastRefreshAt          time.Time
+	NextRefreshAt          time.Time
+	LastRunningReconcileAt time.Time
+	Pipeline               []connector.Issue
+	Running                map[string]Running
+	Claimed                map[string]Claimed
+	Blocked                map[string]Blocked
+	Completed              map[string]Completed
+	Retry                  map[string]Retry
+	BudgetRefusals         map[string]BudgetRefusal
+	DiffStats              map[string]DiffStats
+	CodexTotals            CodexTotals
+	RateLimits             *telemetry.RateLimits
 }
 
 type Running struct {
@@ -91,20 +92,21 @@ func newState(cfg Config) State {
 
 func (s State) clone() State {
 	cloned := State{
-		PollInterval:        s.PollInterval,
-		MaxConcurrentAgents: s.MaxConcurrentAgents,
-		LastRefreshAt:       s.LastRefreshAt,
-		NextRefreshAt:       s.NextRefreshAt,
-		Pipeline:            cloneIssues(s.Pipeline),
-		Running:             make(map[string]Running, len(s.Running)),
-		Claimed:             make(map[string]Claimed, len(s.Claimed)),
-		Blocked:             make(map[string]Blocked, len(s.Blocked)),
-		Completed:           make(map[string]Completed, len(s.Completed)),
-		Retry:               make(map[string]Retry, len(s.Retry)),
-		BudgetRefusals:      make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
-		DiffStats:           make(map[string]DiffStats, len(s.DiffStats)),
-		CodexTotals:         s.CodexTotals,
-		RateLimits:          cloneRateLimits(s.RateLimits),
+		PollInterval:           s.PollInterval,
+		MaxConcurrentAgents:    s.MaxConcurrentAgents,
+		LastRefreshAt:          s.LastRefreshAt,
+		NextRefreshAt:          s.NextRefreshAt,
+		LastRunningReconcileAt: s.LastRunningReconcileAt,
+		Pipeline:               cloneIssues(s.Pipeline),
+		Running:                make(map[string]Running, len(s.Running)),
+		Claimed:                make(map[string]Claimed, len(s.Claimed)),
+		Blocked:                make(map[string]Blocked, len(s.Blocked)),
+		Completed:              make(map[string]Completed, len(s.Completed)),
+		Retry:                  make(map[string]Retry, len(s.Retry)),
+		BudgetRefusals:         make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
+		DiffStats:              make(map[string]DiffStats, len(s.DiffStats)),
+		CodexTotals:            s.CodexTotals,
+		RateLimits:             cloneRateLimits(s.RateLimits),
 	}
 
 	for id, running := range s.Running {
@@ -216,7 +218,19 @@ func cloneRateLimits(rateLimits *telemetry.RateLimits) *telemetry.RateLimits {
 	cloned.Primary = cloneRateLimitBucket(rateLimits.Primary)
 	cloned.Secondary = cloneRateLimitBucket(rateLimits.Secondary)
 	cloned.Credits = cloneRateLimitBucket(rateLimits.Credits)
+	cloned.GitHubGraphQL = cloneRateLimitBucket(rateLimits.GitHubGraphQL)
 	return &cloned
+}
+
+func mergeRateLimits(current *telemetry.RateLimits, incoming *telemetry.RateLimits) *telemetry.RateLimits {
+	merged := cloneRateLimits(incoming)
+	if merged == nil {
+		return cloneRateLimits(current)
+	}
+	if current != nil && current.GitHubGraphQL != nil && merged.GitHubGraphQL == nil {
+		merged.GitHubGraphQL = cloneRateLimitBucket(current.GitHubGraphQL)
+	}
+	return merged
 }
 
 func cloneRateLimitBucket(bucket *telemetry.RateLimitBucket) *telemetry.RateLimitBucket {

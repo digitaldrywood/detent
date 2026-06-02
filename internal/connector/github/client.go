@@ -9,8 +9,12 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/connector"
 )
 
 const (
@@ -31,10 +35,13 @@ type ClientConfig struct {
 }
 
 type Client struct {
-	endpoint    string
-	tokenSource TokenSource
-	httpClient  HTTPClient
-	logger      *slog.Logger
+	endpoint     string
+	tokenSource  TokenSource
+	httpClient   HTTPClient
+	logger       *slog.Logger
+	mu           sync.RWMutex
+	rateLimit    connector.GraphQLRateLimit
+	hasRateLimit bool
 }
 
 func NewClient(cfg ClientConfig) (*Client, error) {
@@ -113,6 +120,7 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	if err != nil {
 		return fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
+	c.recordRateLimitFromHeaders(resp.Header, time.Now())
 
 	if resp.StatusCode != http.StatusOK {
 		return classifyStatus(resp.StatusCode, resp.Header, raw)
@@ -125,6 +133,7 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
+	c.recordRateLimitFromData(envelope.Data, time.Now())
 	if len(envelope.Errors) > 0 {
 		return classifyGraphQLErrors(envelope.Errors)
 	}
@@ -139,6 +148,91 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	}
 
 	return nil
+}
+
+func (c *Client) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.rateLimit, c.hasRateLimit
+}
+
+func (c *Client) recordRateLimitFromData(data json.RawMessage, now time.Time) {
+	if len(data) == 0 {
+		return
+	}
+
+	var envelope struct {
+		RateLimit *struct {
+			Limit     int64  `json:"limit"`
+			Used      int64  `json:"used"`
+			Remaining int64  `json:"remaining"`
+			Cost      int64  `json:"cost"`
+			ResetAt   string `json:"resetAt"`
+		} `json:"rateLimit"`
+	}
+	if err := json.Unmarshal(data, &envelope); err != nil || envelope.RateLimit == nil {
+		return
+	}
+
+	var resetAt time.Time
+	if value := strings.TrimSpace(envelope.RateLimit.ResetAt); value != "" {
+		parsed, err := time.Parse(time.RFC3339, value)
+		if err == nil {
+			resetAt = parsed
+		}
+	}
+	c.setRateLimit(connector.GraphQLRateLimit{
+		Limit:     envelope.RateLimit.Limit,
+		Used:      envelope.RateLimit.Used,
+		Remaining: envelope.RateLimit.Remaining,
+		Cost:      envelope.RateLimit.Cost,
+		ResetAt:   resetAt,
+		UpdatedAt: now,
+	})
+}
+
+func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) {
+	var snapshot connector.GraphQLRateLimit
+	hasSnapshot := false
+	if current, ok := c.GraphQLRateLimit(); ok {
+		snapshot = current
+		hasSnapshot = true
+	}
+
+	if value, ok := int64Header(headers, "X-RateLimit-Limit"); ok {
+		snapshot.Limit = value
+		hasSnapshot = true
+	}
+	if value, ok := int64Header(headers, "X-RateLimit-Used"); ok {
+		snapshot.Used = value
+		hasSnapshot = true
+	}
+	if value, ok := int64Header(headers, "X-RateLimit-Remaining"); ok {
+		snapshot.Remaining = value
+		hasSnapshot = true
+	}
+	if value, ok := int64Header(headers, "X-RateLimit-Reset"); ok {
+		snapshot.ResetAt = time.Unix(value, 0).UTC()
+		hasSnapshot = true
+	}
+	if retryAfter, ok := parseRetryAfter(headers.Get("Retry-After"), now); ok {
+		snapshot.RetryAfter = retryAfter
+		hasSnapshot = true
+	}
+
+	if hasSnapshot {
+		snapshot.UpdatedAt = now
+		c.setRateLimit(snapshot)
+	}
+}
+
+func (c *Client) setRateLimit(snapshot connector.GraphQLRateLimit) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.rateLimit = snapshot
+	c.hasRateLimit = true
 }
 
 func validateEndpoint(endpoint string) error {
@@ -158,7 +252,7 @@ func classifyStatus(status int, headers http.Header, body []byte) error {
 	case status == http.StatusUnauthorized:
 		base = ErrAuthenticationFailed
 	case status == http.StatusForbidden:
-		if headers.Get("X-RateLimit-Remaining") == "0" {
+		if strings.TrimSpace(headers.Get("Retry-After")) != "" || headers.Get("X-RateLimit-Remaining") == "0" {
 			base = ErrRateLimited
 		} else {
 			base = ErrAuthenticationFailed
@@ -176,6 +270,41 @@ func classifyStatus(status int, headers http.Header, body []byte) error {
 		Body:       summarizeBody(body),
 		Err:        base,
 	}
+}
+
+func int64Header(headers http.Header, name string) (int64, bool) {
+	value := strings.TrimSpace(headers.Get(name))
+	if value == "" {
+		return 0, false
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0, false
+	}
+	return parsed, true
+}
+
+func parseRetryAfter(value string, now time.Time) (time.Duration, bool) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return 0, false
+	}
+
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil {
+		if seconds < 0 {
+			return 0, true
+		}
+		return time.Duration(seconds) * time.Second, true
+	}
+
+	resetAt, err := http.ParseTime(value)
+	if err != nil {
+		return 0, false
+	}
+	if resetAt.Before(now) {
+		return 0, true
+	}
+	return resetAt.Sub(now), true
 }
 
 func classifyGraphQLErrors(errors []GraphQLError) error {

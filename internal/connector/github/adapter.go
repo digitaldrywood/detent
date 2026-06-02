@@ -73,6 +73,7 @@ query DetentGitHubProjectItems($projectId: ID!, $first: Int!, $after: String) {
       }
     }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 const issuesByIDQuery = `
@@ -125,6 +126,7 @@ query DetentGitHubIssuesByID($issueIds: [ID!]!, $projectItemsFirst: Int!) {
       }
     }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 const issueCommentsQuery = `
@@ -137,6 +139,7 @@ query DetentGitHubIssueComments($issueIds: [ID!]!) {
       comments(first: 100) { nodes { body } }
     }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 const pullRequestsQuery = `
@@ -166,6 +169,7 @@ query DetentGitHubPullRequests($owner: String!, $name: String!, $states: [PullRe
       }
     }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 const addCommentMutation = `
@@ -173,6 +177,7 @@ mutation DetentGitHubAddComment($subjectId: ID!, $body: String!) {
   addComment(input: {subjectId: $subjectId, body: $body}) {
     commentEdge { node { id } }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 const statusFieldQuery = `
@@ -187,6 +192,7 @@ query DetentGitHubStatusField($projectId: ID!) {
       }
     }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 const projectItemForIssueQuery = `
@@ -225,6 +231,7 @@ query DetentGitHubProjectItemForIssue($issueId: ID!, $projectItemsFirst: Int!, $
       }
     }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 const updateStatusMutation = `
@@ -237,6 +244,7 @@ mutation DetentGitHubUpdateStatus($projectId: ID!, $itemId: ID!, $fieldId: ID!, 
   }) {
     projectV2Item { id }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 var (
