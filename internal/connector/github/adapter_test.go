@@ -228,7 +228,7 @@ func TestConnectorFetchIssuesByStatesDefaultsBlankProjectStatusesToBacklog(t *te
 		t.Fatalf("defaulted issue = %#v, want blank issue in Backlog", got[0])
 	}
 
-	requests := server.requests()
+	requests := waitForGraphQLRequests(t, server, 3)
 	if len(requests) != 3 {
 		t.Fatalf("request count = %d, want 3", len(requests))
 	}
@@ -238,6 +238,102 @@ func TestConnectorFetchIssuesByStatesDefaultsBlankProjectStatusesToBacklog(t *te
 		updateVariables["fieldId"] != "PVTSSF_status" ||
 		updateVariables["optionId"] != "OPT_backlog" {
 		t.Fatalf("update variables = %#v, want blank item moved to Backlog", updateVariables)
+	}
+}
+
+func TestConnectorFetchCandidateIssuesDoesNotBlockOnBlankProjectStatusDefaulting(t *testing.T) {
+	t.Parallel()
+
+	releaseDefaultWrite := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseDefaultWrite)
+		})
+	}
+	defer release()
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null}]}}}}`,
+		},
+		{
+			release: releaseDefaultWrite,
+			body:    `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`,
+		},
+		{
+			body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_blank"}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:  "PVT_1",
+		ActiveStates: []string{"Todo"},
+	})
+
+	type result struct {
+		issues []connector.Issue
+		err    error
+	}
+	results := make(chan result, 1)
+	go func() {
+		issues, err := c.FetchCandidateIssues(context.Background())
+		results <- result{issues: issues, err: err}
+	}()
+
+	select {
+	case result := <-results:
+		if result.err != nil {
+			t.Fatalf("FetchCandidateIssues() error = %v", result.err)
+		}
+		if len(result.issues) != 0 {
+			t.Fatalf("FetchCandidateIssues() len = %d, want 0", len(result.issues))
+		}
+	case <-time.After(200 * time.Millisecond):
+		release()
+		result := <-results
+		t.Fatalf("FetchCandidateIssues() blocked on default status write; issues = %#v error = %v", result.issues, result.err)
+	}
+
+	release()
+	requests := waitForGraphQLRequests(t, server, 3)
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	updateVariables := requestVariables(t, requests[2])
+	if updateVariables["itemId"] != "PVTI_blank" || updateVariables["optionId"] != "OPT_backlog" {
+		t.Fatalf("update variables = %#v, want blank item moved to Backlog", updateVariables)
+	}
+}
+
+func TestConnectorFetchIssuesByStatesIgnoresBlankStatusDefaultWriteFailure(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null}]}}}}`,
+		},
+		{
+			body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_todo","name":"Todo"}]}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:    "PVT_1",
+		ObservedStates: []string{"Backlog"},
+	})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Backlog"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+	if got[0].ID != "I_blank" || got[0].State != "Backlog" {
+		t.Fatalf("defaulted issue = %#v, want blank issue in Backlog", got[0])
+	}
+
+	requests := waitForGraphQLRequests(t, server, 2)
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
 	}
 }
 
@@ -1096,8 +1192,9 @@ type graphqlTestServer struct {
 }
 
 type graphqlTestResponse struct {
-	status int
-	body   string
+	status  int
+	body    string
+	release <-chan struct{}
 }
 
 func newGraphQLTestServer(t *testing.T, responses []graphqlTestResponse) *graphqlTestServer {
@@ -1125,6 +1222,10 @@ func (s *graphqlTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	s.responses = s.responses[1:]
 	s.mu.Unlock()
 
+	if response.release != nil {
+		<-response.release
+	}
+
 	status := response.status
 	if status == 0 {
 		status = http.StatusOK
@@ -1141,6 +1242,22 @@ func (s *graphqlTestServer) requests() []map[string]any {
 	out := make([]map[string]any, len(s.seen))
 	copy(out, s.seen)
 	return out
+}
+
+func waitForGraphQLRequests(t *testing.T, server *graphqlTestServer, want int) []map[string]any {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		requests := server.requests()
+		if len(requests) >= want {
+			return requests
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	requests := server.requests()
+	t.Fatalf("request count = %d, want at least %d", len(requests), want)
+	return nil
 }
 
 func newGitHubTestConnector(t *testing.T, server *graphqlTestServer, cfg Config) *Connector {
