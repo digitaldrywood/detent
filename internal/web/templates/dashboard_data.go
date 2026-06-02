@@ -1276,6 +1276,9 @@ func optionalUSD(value *float64) string {
 }
 
 func budgetStatus(budget telemetry.Budget) string {
+	if strings.TrimSpace(budget.DegradedReason) != "" {
+		return "Budget unavailable"
+	}
 	if budget.Enabled {
 		return "Budget enabled"
 	}
@@ -1283,6 +1286,9 @@ func budgetStatus(budget telemetry.Budget) string {
 }
 
 func budgetSpendTodayLabel(budget telemetry.Budget) string {
+	if strings.TrimSpace(budget.DegradedReason) != "" && budget.CurrentSpendUSD <= 0 && len(budget.SpendPoints) == 0 {
+		return "unavailable / " + budgetDailyCapLabel(budget)
+	}
 	return formatUSD(budget.CurrentSpendUSD) + " / " + budgetDailyCapLabel(budget)
 }
 
@@ -1302,6 +1308,15 @@ func budgetDailyUsageStyle(budget telemetry.Budget) string {
 
 func budgetBurnDownView(snapshot telemetry.Snapshot) budgetBurnDownViewModel {
 	budget := snapshot.Budget
+	if strings.TrimSpace(budget.DegradedReason) != "" {
+		return budgetBurnDownViewModel{
+			EmptyTitle:      "Budget data unavailable.",
+			EmptyDetail:     budgetUnavailableDetail(budget),
+			CurrentLabel:    formatUSD(budget.CurrentSpendUSD),
+			CapLabel:        optionalUSD(budget.PerDayMaxUSD),
+			ProjectionLabel: budgetProjectionLabel(budget),
+		}
+	}
 	if !budget.Enabled {
 		return budgetBurnDownViewModel{
 			EmptyTitle:      "Budget disabled.",
@@ -1366,6 +1381,23 @@ func budgetBurnDownView(snapshot telemetry.Snapshot) budgetBurnDownViewModel {
 			Cap:         budgetCapValue(budget.PerDayMaxUSD),
 		},
 	}
+}
+
+func budgetUnavailableDetail(budget telemetry.Budget) string {
+	if reason := strings.TrimSpace(budget.DegradedReason); reason != "" {
+		return reason
+	}
+	return "Budget spend data unavailable."
+}
+
+func budgetProjectionLabel(budget telemetry.Budget) string {
+	if budget.ProjectedCostUSD > 0 {
+		return formatUSD(budget.ProjectedCostUSD)
+	}
+	if budget.ProjectedSpendUSD > 0 {
+		return formatUSD(budget.ProjectedSpendUSD)
+	}
+	return "unavailable"
 }
 
 func budgetProjectedSpendUSD(periodStart time.Time, periodEnd time.Time, now time.Time, currentSpend float64) float64 {

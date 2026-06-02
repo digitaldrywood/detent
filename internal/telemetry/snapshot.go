@@ -134,6 +134,7 @@ type Completed struct {
 
 type Budget struct {
 	Enabled           bool               `json:"enabled"`
+	DegradedReason    string             `json:"degraded_reason,omitempty"`
 	PerDayMaxUSD      *float64           `json:"per_day_max_usd"`
 	PerIssueMaxUSD    *float64           `json:"per_issue_max_usd"`
 	CurrentSpendUSD   float64            `json:"current_spend_usd"`

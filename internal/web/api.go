@@ -464,6 +464,7 @@ func budgetResponse(budget telemetry.Budget) budgetAPIResponse {
 
 	return budgetAPIResponse{
 		Enabled:           budget.Enabled,
+		DegradedReason:    budget.DegradedReason,
 		TodaySpendUSD:     budget.CurrentSpendUSD,
 		CurrentSpendUSD:   budget.CurrentSpendUSD,
 		ProjectedCostUSD:  budget.ProjectedCostUSD,
@@ -868,6 +869,7 @@ type recentSessionAPIResponse struct {
 
 type budgetAPIResponse struct {
 	Enabled           bool                         `json:"enabled"`
+	DegradedReason    string                       `json:"degraded_reason,omitempty"`
 	TodaySpendUSD     float64                      `json:"today_spend_usd"`
 	CurrentSpendUSD   float64                      `json:"current_spend_usd"`
 	ProjectedCostUSD  float64                      `json:"projected_cost_usd"`
