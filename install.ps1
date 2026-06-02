@@ -8,6 +8,14 @@ $Headers = @{ 'User-Agent' = 'detent-installer' }
 $ApiBase = if ($env:DETENT_GITHUB_API_BASE) { $env:DETENT_GITHUB_API_BASE } else { "https://api.github.com/repos/$Repo" }
 $DownloadBase = if ($env:DETENT_RELEASE_DOWNLOAD_BASE) { $env:DETENT_RELEASE_DOWNLOAD_BASE } else { "https://github.com/$Repo/releases/download" }
 $InstallMode = if ($env:DETENT_INSTALL_MODE) { $env:DETENT_INSTALL_MODE } else { 'auto' }
+$StateDir = if ($env:DETENT_STATE_DIR) {
+	$env:DETENT_STATE_DIR
+} elseif ($env:LOCALAPPDATA) {
+	Join-Path $env:LOCALAPPDATA 'detent'
+} else {
+	Join-Path $HOME '.detent'
+}
+$InstallLock = if ($env:DETENT_INSTALL_LOCK) { $env:DETENT_INSTALL_LOCK } else { Join-Path $StateDir 'install.lock' }
 
 try {
 	[Net.ServicePointManager]::SecurityProtocol = [Net.ServicePointManager]::SecurityProtocol -bor [Net.SecurityProtocolType]::Tls12
@@ -464,7 +472,12 @@ try {
 	}
 
 	New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+	New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
 	Copy-Item -LiteralPath (Join-Path $TmpDir 'detent.exe') -Destination $Target -Force
+	@(
+		"binary=$Target"
+		"installed_at=$((Get-Date).ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ'))"
+	) | Set-Content -LiteralPath $InstallLock -Encoding utf8
 	$pathChanged = Add-ToUserPath $InstallDir
 
 	Write-Host "Installed Detent at $Target"

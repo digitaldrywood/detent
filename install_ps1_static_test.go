@@ -40,6 +40,7 @@ func TestWindowsInstallDocsExposeOneStepPowerShellInstall(t *testing.T) {
 		{name: "script queries cim processor architecture", content: script, want: "Win32_Processor"},
 		{name: "script queries cim os architecture", content: script, want: "Get-CimInstance"},
 		{name: "script updates user path", content: script, want: "SetEnvironmentVariable('Path'"},
+		{name: "script records installer metadata", content: script, want: "install.lock"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
