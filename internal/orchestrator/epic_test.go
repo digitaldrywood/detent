@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"reflect"
@@ -83,6 +84,7 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 		stateIssues  []connector.Issue
 		resolved     []connector.Issue
 		linked       map[string][]connector.BlockedRef
+		closeErr     error
 		wantUpdates  []epicStateUpdate
 		wantClosed   []string
 		wantComments []string
@@ -152,6 +154,18 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 			wantClosed:   []string{"epic-258"},
 			wantComments: []string{"Auto-closing completed epic: 1 child issue is Done."},
 		},
+		{
+			name: "open done epic close failure does not comment",
+			stateIssues: []connector.Issue{
+				func() connector.Issue {
+					issue := epicTestIssue("epic-258", "Done", false, "Epic: Release readiness", []string{"epic"}, "")
+					issue.ChildIssues = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#251"}}
+					return issue
+				}(),
+				epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+			},
+			closeErr: errors.New("close failed"),
+		},
 	}
 
 	for _, tt := range tests {
@@ -171,6 +185,7 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 				stateIssues: tt.stateIssues,
 				resolved:    tt.resolved,
 				linked:      tt.linked,
+				closeErr:    tt.closeErr,
 			}
 			orch := &Orchestrator{
 				cfg:       cfg,
@@ -199,6 +214,7 @@ type epicConnector struct {
 	stateIssues []connector.Issue
 	resolved    []connector.Issue
 	linked      map[string][]connector.BlockedRef
+	closeErr    error
 	updates     []epicStateUpdate
 	closed      []string
 	comments    []string
@@ -279,6 +295,9 @@ func (c *epicConnector) CreateComment(_ context.Context, _ string, body string) 
 func (c *epicConnector) CloseIssue(_ context.Context, issueID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if c.closeErr != nil {
+		return c.closeErr
+	}
 	c.closed = append(c.closed, issueID)
 	return nil
 }

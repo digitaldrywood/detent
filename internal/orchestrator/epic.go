@@ -145,13 +145,6 @@ func (o *Orchestrator) finalizeCompletedEpic(ctx context.Context, issue connecto
 		return
 	}
 
-	body := completedEpicComment(len(children))
-	if err := o.connector.CreateComment(ctx, issue.ID, body); err != nil {
-		if o.logger != nil {
-			o.logger.Warn("comment completed epic failed", "issue_id", issue.ID, "error", err)
-		}
-		return
-	}
 	closer, ok := o.connector.(connector.IssueCloser)
 	if !ok {
 		if o.logger != nil {
@@ -159,8 +152,16 @@ func (o *Orchestrator) finalizeCompletedEpic(ctx context.Context, issue connecto
 		}
 		return
 	}
-	if err := closer.CloseIssue(ctx, issue.ID); err != nil && o.logger != nil {
-		o.logger.Warn("close completed epic failed", "issue_id", issue.ID, "error", err)
+	if err := closer.CloseIssue(ctx, issue.ID); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("close completed epic failed", "issue_id", issue.ID, "error", err)
+		}
+		return
+	}
+
+	body := completedEpicComment(len(children))
+	if err := o.connector.CreateComment(ctx, issue.ID, body); err != nil && o.logger != nil {
+		o.logger.Warn("comment completed epic failed", "issue_id", issue.ID, "error", err)
 	}
 }
 
