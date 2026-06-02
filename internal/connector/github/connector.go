@@ -150,5 +150,8 @@ func (c *Connector) InstanceLogin() string {
 var _ connector.Connector = (*Connector)(nil)
 var _ connector.Authenticator = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
+var _ connector.IssueChildrenResolver = (*Connector)(nil)
+var _ connector.IssueCloser = (*Connector)(nil)
+var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)

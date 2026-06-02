@@ -13,6 +13,7 @@ const (
 	EventKindStateUpdate    EventKind = "memory_tracker_state_update"
 	EventKindAssigneeUpdate EventKind = "memory_tracker_assignee_update"
 	EventKindFieldUpdate    EventKind = "memory_tracker_field_update"
+	EventKindClose          EventKind = "memory_tracker_close"
 )
 
 type EventKind string
@@ -42,6 +43,9 @@ type Connector struct {
 
 var _ connector.Connector = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
+var _ connector.IssueChildrenResolver = (*Connector)(nil)
+var _ connector.IssueCloser = (*Connector)(nil)
+var _ connector.IssueReferenceResolver = (*Connector)(nil)
 
 func New(cfg Config) *Connector {
 	return &Connector{
@@ -94,8 +98,38 @@ func (c *Connector) FetchIssueStatesByIDs(_ context.Context, issueIDs []string) 
 	return issues, nil
 }
 
+func (c *Connector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {
+	wantedIdentifiers := make(map[string]struct{}, len(identifiers))
+	for _, identifier := range identifiers {
+		wantedIdentifiers[normalizeState(identifier)] = struct{}{}
+	}
+
+	issues := make([]connector.Issue, 0, len(c.issues))
+	for _, issue := range c.issues {
+		if _, ok := wantedIdentifiers[normalizeState(issue.Identifier)]; ok {
+			issues = append(issues, cloneIssue(issue))
+		}
+	}
+
+	return issues, nil
+}
+
+func (c *Connector) FetchIssueChildren(_ context.Context, issueID string) ([]connector.BlockedRef, error) {
+	for _, issue := range c.issues {
+		if issue.ID == issueID {
+			return append([]connector.BlockedRef(nil), issue.ChildIssues...), nil
+		}
+	}
+	return []connector.BlockedRef{}, nil
+}
+
 func (c *Connector) CreateComment(_ context.Context, issueID string, body string) error {
 	c.send(Event{Kind: EventKindComment, IssueID: issueID, Body: body})
+	return nil
+}
+
+func (c *Connector) CloseIssue(_ context.Context, issueID string) error {
+	c.send(Event{Kind: EventKindClose, IssueID: issueID})
 	return nil
 }
 
@@ -149,6 +183,9 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	if issue.BlockedBy != nil {
 		issue.BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
+	}
+	if issue.ChildIssues != nil {
+		issue.ChildIssues = append([]connector.BlockedRef(nil), issue.ChildIssues...)
 	}
 	if issue.Labels != nil {
 		issue.Labels = append([]string(nil), issue.Labels...)

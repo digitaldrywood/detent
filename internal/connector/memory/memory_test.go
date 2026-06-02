@@ -28,6 +28,7 @@ func TestConnectorFetchesConfiguredIssues(t *testing.T) {
 			AssigneeID:       "worker-1",
 			Assignees:        []string{"worker-1", "worker-2"},
 			BlockedBy:        []connector.BlockedRef{{ID: "issue-0", Identifier: "MT-0", State: "Done"}},
+			ChildIssues:      []connector.BlockedRef{{ID: "issue-10", Identifier: "MT-10", State: "Done"}},
 			Labels:           []string{"stage:s1"},
 			Fields:           map[string]string{"Status": "Todo", "Track": "foundation"},
 			AssignedToWorker: true,
@@ -59,6 +60,9 @@ func TestConnectorReturnsDefensiveIssueCopies(t *testing.T) {
 		State:     "Todo",
 		Assignees: []string{"worker-1"},
 		BlockedBy: []connector.BlockedRef{{Identifier: "MT-0"}},
+		ChildIssues: []connector.BlockedRef{{
+			Identifier: "MT-10",
+		}},
 		Labels:    []string{"stage:s1"},
 		Fields:    map[string]string{"Status": "Todo"},
 		CreatedAt: &createdAt,
@@ -74,6 +78,7 @@ func TestConnectorReturnsDefensiveIssueCopies(t *testing.T) {
 	*first[0].Priority = 3
 	first[0].Assignees[0] = "changed"
 	first[0].BlockedBy[0].Identifier = "changed"
+	first[0].ChildIssues[0].Identifier = "changed"
 	first[0].Labels[0] = "changed"
 	first[0].Fields["Status"] = "changed"
 	*first[0].CreatedAt = first[0].CreatedAt.Add(time.Hour)
@@ -92,6 +97,9 @@ func TestConnectorReturnsDefensiveIssueCopies(t *testing.T) {
 	}
 	if second[0].BlockedBy[0].Identifier != "MT-0" {
 		t.Fatalf("BlockedBy[0].Identifier = %q, want MT-0", second[0].BlockedBy[0].Identifier)
+	}
+	if second[0].ChildIssues[0].Identifier != "MT-10" {
+		t.Fatalf("ChildIssues[0].Identifier = %q, want MT-10", second[0].ChildIssues[0].Identifier)
 	}
 	if second[0].Labels[0] != "stage:s1" {
 		t.Fatalf("Labels[0] = %q, want stage:s1", second[0].Labels[0])
@@ -192,6 +200,9 @@ func TestConnectorMutationsMatchElixirMemoryAdapter(t *testing.T) {
 	if err := c.CreateComment(context.Background(), "issue-1", "comment"); err != nil {
 		t.Fatalf("CreateComment() error = %v", err)
 	}
+	if err := c.CloseIssue(context.Background(), "issue-1"); err != nil {
+		t.Fatalf("CloseIssue() error = %v", err)
+	}
 	if err := c.UpdateIssueState(context.Background(), "issue-1", "Done"); err != nil {
 		t.Fatalf("UpdateIssueState() error = %v", err)
 	}
@@ -208,6 +219,7 @@ func TestConnectorMutationsMatchElixirMemoryAdapter(t *testing.T) {
 
 	wantEvents := []Event{
 		{Kind: EventKindComment, IssueID: "issue-1", Body: "comment"},
+		{Kind: EventKindClose, IssueID: "issue-1"},
 		{Kind: EventKindStateUpdate, IssueID: "issue-1", State: "Done"},
 		{Kind: EventKindAssigneeUpdate, IssueID: "issue-1", Login: "worker-1"},
 		{Kind: EventKindFieldUpdate, IssueID: "issue-1", FieldName: "Owner", FieldValue: "worker-1"},
@@ -233,6 +245,9 @@ func TestConnectorMutationsNoopWithoutEventSink(t *testing.T) {
 
 	if err := c.CreateComment(context.Background(), "issue-1", "comment"); err != nil {
 		t.Fatalf("CreateComment() error = %v", err)
+	}
+	if err := c.CloseIssue(context.Background(), "issue-1"); err != nil {
+		t.Fatalf("CloseIssue() error = %v", err)
 	}
 	if err := c.UpdateIssueState(context.Background(), "issue-1", "Done"); err != nil {
 		t.Fatalf("UpdateIssueState() error = %v", err)

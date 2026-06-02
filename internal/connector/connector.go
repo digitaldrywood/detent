@@ -29,3 +29,15 @@ type InstanceIdentifier interface {
 type Provisioner interface {
 	Provision(context.Context) error
 }
+
+type IssueCloser interface {
+	CloseIssue(context.Context, string) error
+}
+
+type IssueReferenceResolver interface {
+	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
+}
+
+type IssueChildrenResolver interface {
+	FetchIssueChildren(context.Context, string) ([]BlockedRef, error)
+}
