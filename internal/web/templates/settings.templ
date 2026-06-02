@@ -45,7 +45,7 @@ templ Settings(data SettingsData) {
 								<span>Configuration</span>
 							</div>
 							<h1 class="mt-2 text-2xl font-semibold text-foreground sm:text-3xl">Settings</h1>
-							<p class="mt-1 max-w-3xl text-sm text-muted-foreground">Running configuration, project paths, and runtime files.</p>
+							<p class="mt-1 max-w-3xl text-sm text-muted-foreground">Startup configuration, project paths, and runtime files.</p>
 						</div>
 						<span class="inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground lg:w-auto">
 							<span class="text-xs font-medium uppercase text-muted-foreground">Version</span>
@@ -59,7 +59,7 @@ templ Settings(data SettingsData) {
 						<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
 							<div>
 								@helpHeading2("Global config", helpSettingsConfig, "settings-global-config")
-								<p class="text-sm text-muted-foreground">Resolved startup configuration.</p>
+								<p class="text-sm text-muted-foreground">Project membership and startup settings reload live; concurrency and scheduling settings require a restart.</p>
 							</div>
 							<span class="rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ settingsPathRule(data.Global.PathRule) }</span>
 						</div>
