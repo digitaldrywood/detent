@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/selector"
 )
 
 var (
@@ -121,6 +122,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}
 
 	workflow := normalizeWorkflow(cfg.Workflow)
+	workflow.Config = workflowConfigWithProjectIdentity(cfg.Project, workflow.Config)
 	if err := workflow.Config.Validate(); err != nil {
 		return nil, fmt.Errorf("validate project workflow: %w", err)
 	}
@@ -152,7 +154,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		orchestratorFactory = orchestrator.New
 	}
 
-	orchConfig := orchestrator.ConfigFromWorkflow(workflow.Config)
+	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
 	orchDeps := orchestrator.Dependencies{
 		Connector: projectConnector,
 		Runner:    deps.Runner,
@@ -569,7 +571,12 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		return
 	}
 
+	p.mu.Lock()
+	projectConfig := p.cfg
+	p.mu.Unlock()
+
 	workflow := normalizeWorkflow(update.Workflow)
+	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
 	if err := workflow.Config.Validate(); err != nil {
 		p.logger.Warn("workflow reload validation failed",
 			"project_id", p.id,
@@ -603,7 +610,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		updater.UpdateWorkflow(workflow)
 	}
 
-	runtimeConfig := orchestrator.ConfigFromWorkflow(workflow.Config)
+	runtimeConfig := projectOrchestratorConfig(projectConfig, workflow.Config)
 	if err := p.orchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
 		Config:    runtimeConfig,
 		Connector: projectConnector,
@@ -628,6 +635,44 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	p.mu.Unlock()
 
 	p.logger.Info("workflow reloaded", "project_id", p.id, "path", update.Path)
+}
+
+func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
+	workflow = workflowConfigWithProjectIdentity(project, workflow)
+	cfg := orchestrator.ConfigFromWorkflow(workflow)
+	cfg.Authorization = combineAuthorizationSelectors(cfg.Authorization, project.Authorization)
+	return cfg
+}
+
+func workflowConfigWithProjectIdentity(
+	project globalconfig.Project,
+	workflow workflowconfig.Config,
+) workflowconfig.Config {
+	if !project.Identity.Configured() {
+		return workflow
+	}
+	identity := project.Identity
+	identity.Normalize()
+	workflow.Identity = identity
+	return workflow
+}
+
+func combineAuthorizationSelectors(selectors ...selector.Selector) selector.Selector {
+	configured := make([]selector.Selector, 0, len(selectors))
+	for _, candidate := range selectors {
+		if candidate.Configured() {
+			configured = append(configured, candidate)
+		}
+	}
+
+	switch len(configured) {
+	case 0:
+		return selector.Selector{}
+	case 1:
+		return configured[0]
+	default:
+		return selector.Selector{And: configured}
+	}
 }
 
 func (p *Project) publish(event Event) {

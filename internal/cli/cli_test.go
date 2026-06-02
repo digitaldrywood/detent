@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -419,12 +420,12 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 		Paused:        true,
 		CredentialRef: "github-default",
 	}
-	if got != want {
+	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("project = %#v, want %#v", got, want)
 	}
 
 	signal := <-signals
-	if signal.Operation != cli.OperationAddProject || signal.Project != want {
+	if signal.Operation != cli.OperationAddProject || !reflect.DeepEqual(signal.Project, want) {
 		t.Fatalf("signal = %#v, want add project %#v", signal, want)
 	}
 }

@@ -8,6 +8,8 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+
+	"github.com/digitaldrywood/detent/internal/selector"
 )
 
 func TestResolvePathPrecedence(t *testing.T) {
@@ -199,6 +201,9 @@ func TestDefaultConfig(t *testing.T) {
 	if got := cfg.Global.Startup["max_spawn_per_second"]; got != 2 {
 		t.Fatalf("Global.Startup[max_spawn_per_second] = %v, want 2", got)
 	}
+	if cfg.Global.Identity.Configured() {
+		t.Fatalf("Global.Identity = %#v, want omitted default", cfg.Global.Identity)
+	}
 	if len(cfg.Projects) != 0 {
 		t.Fatalf("Projects = %#v, want empty", cfg.Projects)
 	}
@@ -236,6 +241,12 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 			Scheduling:          SchedulingStrict,
 			FairShare:           map[string]any{"half_life": "30m"},
 			Startup:             map[string]any{"jitter_seconds": 0, "max_spawn_per_second": 1},
+			Identity: Identity{
+				Name:          "release-captain",
+				GitHubLogin:   "detent-bot",
+				OwnershipMode: "field",
+				OwnerField:    "Owner",
+			},
 		},
 		Projects: []Project{
 			{
@@ -246,6 +257,10 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 				Priority:      2,
 				Paused:        true,
 				CredentialRef: "github-default",
+				Authorization: selector.Selector{
+					Labels: selector.Labels{Include: []string{"release"}},
+					Fields: []selector.FieldEquals{{Name: "Track", Value: "multi-instance"}},
+				},
 			},
 		},
 	}
@@ -357,6 +372,70 @@ func TestReadValidConfig(t *testing.T) {
 	}
 	if project.CredentialRef != "github-default" {
 		t.Fatalf("Project.CredentialRef = %q, want github-default", project.CredentialRef)
+	}
+	if project.Authorization.Configured() {
+		t.Fatalf("Project.Authorization = %#v, want authorize all default", project.Authorization)
+	}
+}
+
+func TestReadParsesIdentityAndAuthorization(t *testing.T) {
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeFile(t, configPath, `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+  identity:
+    name: release-captain
+    github_login: detent-bot
+    ownership_mode: field
+    owner_field: Owner
+projects:
+  - id: detent
+    workflow: `+paths.workflow+`
+    workdir: `+paths.workdir+`
+    weight: 5
+    priority: 50
+    authorization:
+      author_in:
+        - "@me"
+      labels:
+        exclude:
+          - blocked
+      and:
+        - fields:
+            - name: Track
+              value: multi-instance
+`)
+
+	cfg, err := Read(configPath, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	if cfg.Global.Identity.Name != "release-captain" {
+		t.Fatalf("Global.Identity.Name = %q, want release-captain", cfg.Global.Identity.Name)
+	}
+	if cfg.Global.Identity.GitHubLogin != "detent-bot" {
+		t.Fatalf("Global.Identity.GitHubLogin = %q, want detent-bot", cfg.Global.Identity.GitHubLogin)
+	}
+	if cfg.Global.Identity.OwnershipMode != "field" {
+		t.Fatalf("Global.Identity.OwnershipMode = %q, want field", cfg.Global.Identity.OwnershipMode)
+	}
+	if cfg.Global.Identity.OwnerField != "Owner" {
+		t.Fatalf("Global.Identity.OwnerField = %q, want Owner", cfg.Global.Identity.OwnerField)
+	}
+
+	wantAuthorization := selector.Selector{
+		AuthorIn: []string{"@me"},
+		Labels:   selector.Labels{Exclude: []string{"blocked"}},
+		And: []selector.Selector{
+			{Fields: []selector.FieldEquals{{Name: "Track", Value: "multi-instance"}}},
+		},
+	}
+	if got := cfg.Projects[0].Authorization; !reflect.DeepEqual(got, wantAuthorization) {
+		t.Fatalf("Project.Authorization = %#v, want %#v", got, wantAuthorization)
 	}
 }
 
@@ -539,6 +618,32 @@ projects:
 				"projects[0].workdir: is required",
 				"projects[0].weight: is required",
 				"projects[0].priority: is required",
+			},
+		},
+		{
+			name: "invalid identity and authorization",
+			raw: `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+  identity:
+    github_login: detent-bot
+    ownership_mode: field
+projects:
+  - id: detent
+    workflow: ` + paths.workflow + `
+    workdir: ` + paths.workdir + `
+    weight: 5
+    priority: 50
+    authorization:
+      fields:
+        - value: multi-instance
+`,
+			want: []string{
+				"global.identity.name must not be blank",
+				"global.identity.owner_field is required when global.identity.ownership_mode is field",
+				"projects[0].authorization.fields[0].name must not be blank",
 			},
 		},
 		{

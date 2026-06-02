@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/selector"
 )
 
 func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
@@ -27,6 +28,12 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 	events := hub.New[project.Event]()
 	sched := scheduler.NewCountingSemaphore(scheduler.Config{Capacity: 3})
 	created := make(chan orchestrator.Config, 1)
+	workflowCfg := workflowConfigWithMemoryIssue("issue-1")
+	workflowCfg.Identity.Name = "workflow-persona"
+	workflowCfg.Identity.GitHubLogin = "workflow-bot"
+	workflowCfg.Tracker.Authorization = selector.Selector{
+		AssigneeIn: []string{"@me"},
+	}
 
 	got, err := project.New(project.Config{
 		Project: globalconfig.Project{
@@ -35,9 +42,16 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 			Workdir:  "/workspace/detent",
 			Weight:   2,
 			Priority: 10,
+			Identity: globalconfig.Identity{
+				Name:        "release-captain",
+				GitHubLogin: "detent-bot",
+			},
+			Authorization: selector.Selector{
+				Labels: selector.Labels{Include: []string{"release"}},
+			},
 		},
 		Workflow: workflowconfig.Workflow{
-			Config: workflowConfigWithMemoryIssue("issue-1"),
+			Config: workflowCfg,
 			Prompt: "Run issue",
 		},
 	}, project.Dependencies{
@@ -71,11 +85,20 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 	if got.Orchestrator() == nil {
 		t.Fatal("Orchestrator() = nil, want configured orchestrator")
 	}
+	if got.Workflow().Config.Identity.Name != "release-captain" {
+		t.Fatalf("Workflow().Config.Identity.Name = %q, want release-captain", got.Workflow().Config.Identity.Name)
+	}
 
 	select {
 	case cfg := <-created:
 		if cfg.MaxConcurrentAgents != 4 {
 			t.Fatalf("orchestrator MaxConcurrentAgents = %d, want 4", cfg.MaxConcurrentAgents)
+		}
+		if cfg.SelectorContext.InstanceLogin != "detent-bot" {
+			t.Fatalf("SelectorContext.InstanceLogin = %q, want detent-bot", cfg.SelectorContext.InstanceLogin)
+		}
+		if len(cfg.Authorization.And) != 2 {
+			t.Fatalf("Authorization.And = %#v, want workflow and project selectors", cfg.Authorization.And)
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for orchestrator factory")
@@ -147,6 +170,10 @@ func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
 			ID:       "detent",
 			Workflow: "workflow.md",
 			Weight:   1,
+			Identity: globalconfig.Identity{
+				Name:        "release-captain",
+				GitHubLogin: "detent-bot",
+			},
 		},
 		Workflow: workflowconfig.Workflow{
 			Config: initial,
@@ -230,6 +257,10 @@ func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
 			ID:       "detent",
 			Workflow: "workflow.md",
 			Weight:   1,
+			Identity: globalconfig.Identity{
+				Name:        "release-captain",
+				GitHubLogin: "detent-bot",
+			},
 		},
 		Workflow: workflowconfig.Workflow{
 			Config: initial,
@@ -250,8 +281,12 @@ func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if cfg := receiveOrchestratorConfig(t, configs); cfg.PollInterval != time.Hour {
+	cfg := receiveOrchestratorConfig(t, configs)
+	if cfg.PollInterval != time.Hour {
 		t.Fatalf("initial PollInterval = %v, want %v", cfg.PollInterval, time.Hour)
+	}
+	if cfg.SelectorContext.InstanceLogin != "detent-bot" {
+		t.Fatalf("initial SelectorContext.InstanceLogin = %q, want detent-bot", cfg.SelectorContext.InstanceLogin)
 	}
 	_ = receiveConnector(t, connectors)
 
@@ -289,8 +324,12 @@ func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
 		t.Fatalf("Unpause() error = %v", err)
 	}
 
-	if cfg := receiveOrchestratorConfig(t, configs); cfg.PollInterval != 5*time.Millisecond {
+	cfg = receiveOrchestratorConfig(t, configs)
+	if cfg.PollInterval != 5*time.Millisecond {
 		t.Fatalf("restarted PollInterval = %v, want %v", cfg.PollInterval, 5*time.Millisecond)
+	}
+	if cfg.SelectorContext.InstanceLogin != "detent-bot" {
+		t.Fatalf("restarted SelectorContext.InstanceLogin = %q, want detent-bot", cfg.SelectorContext.InstanceLogin)
 	}
 	restartedConnector := receiveConnector(t, connectors)
 	issues, err := restartedConnector.FetchCandidateIssues(context.Background())

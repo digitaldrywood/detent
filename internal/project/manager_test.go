@@ -709,6 +709,10 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 
 	cfg := globalconfig.Config{
 		Global: globalconfig.Settings{
+			Identity: globalconfig.Identity{
+				Name:        "release-captain",
+				GitHubLogin: "detent-bot",
+			},
 			Startup: map[string]any{
 				"jitter_seconds":       3,
 				"max_spawn_per_second": 4,
@@ -724,8 +728,14 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 	if got.Startup.MaxSpawnPerSecond != 4 {
 		t.Fatalf("Startup.MaxSpawnPerSecond = %d, want 4", got.Startup.MaxSpawnPerSecond)
 	}
+	if got.Identity.Name != "release-captain" {
+		t.Fatalf("Identity.Name = %q, want release-captain", got.Identity.Name)
+	}
 	if len(got.Projects) != 1 || got.Projects[0].ID != "alpha" {
 		t.Fatalf("Projects = %#v, want alpha", got.Projects)
+	}
+	if got.Projects[0].Identity.GitHubLogin != "detent-bot" {
+		t.Fatalf("Projects[0].Identity.GitHubLogin = %q, want detent-bot", got.Projects[0].Identity.GitHubLogin)
 	}
 }
 

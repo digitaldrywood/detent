@@ -8,6 +8,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/selector"
 )
 
 func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
@@ -22,6 +23,11 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.AutoPromote.QuietSeconds = 30
 	cfg.Agent.AutoPromote.OptoutLabel = " Requires-Human-Review "
 	cfg.Agent.AutoPromote.AllowedIssueLabels = []string{" Docs ", "docs", "Chore"}
+	cfg.Identity.Name = "release-captain"
+	cfg.Identity.GitHubLogin = "detent-bot"
+	cfg.Tracker.Authorization = selector.Selector{
+		AssigneeIn: []string{"@me"},
+	}
 
 	got := ConfigFromWorkflow(cfg)
 
@@ -47,6 +53,15 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 		got.AutoPromote.AllowedIssueLabels[0] != "docs" ||
 		got.AutoPromote.AllowedIssueLabels[1] != "chore" {
 		t.Fatalf("AutoPromote.AllowedIssueLabels = %#v, want docs and chore", got.AutoPromote.AllowedIssueLabels)
+	}
+	if got.SelectorContext.InstanceLogin != "detent-bot" {
+		t.Fatalf("SelectorContext.InstanceLogin = %q, want detent-bot", got.SelectorContext.InstanceLogin)
+	}
+	if got.SelectorContext.Persona != "release-captain" {
+		t.Fatalf("SelectorContext.Persona = %q, want release-captain", got.SelectorContext.Persona)
+	}
+	if len(got.Authorization.AssigneeIn) != 1 || got.Authorization.AssigneeIn[0] != "@me" {
+		t.Fatalf("Authorization.AssigneeIn = %#v, want @me", got.Authorization.AssigneeIn)
 	}
 }
 
@@ -175,6 +190,61 @@ func TestDispatchableFiltersIneligibleCandidates(t *testing.T) {
 
 			got := orch.dispatchable(tt.issue, &state, now)
 			if got != tt.want {
+				t.Fatalf("dispatchable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestDispatchableFiltersUnauthorizedCandidates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Authorization: selector.Selector{
+			AssigneeIn: []string{"@me"},
+		},
+		SelectorContext: selector.Context{
+			InstanceLogin: "worker-1",
+			Persona:       "release-captain",
+		},
+	})
+	orch := Orchestrator{cfg: cfg}
+
+	tests := []struct {
+		name  string
+		issue connector.Issue
+		want  bool
+	}{
+		{
+			name: "matching assignee is dispatchable",
+			issue: func() connector.Issue {
+				issue := dispatchTestIssue("issue-authorized", "Todo")
+				issue.Assignees = []string{"worker-1"}
+				return issue
+			}(),
+			want: true,
+		},
+		{
+			name: "nonmatching assignee is skipped",
+			issue: func() connector.Issue {
+				issue := dispatchTestIssue("issue-unauthorized", "Todo")
+				issue.Assignees = []string{"worker-2"}
+				return issue
+			}(),
+			want: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			state := newState(cfg)
+			if got := orch.dispatchable(tt.issue, &state, now); got != tt.want {
 				t.Fatalf("dispatchable() = %v, want %v", got, tt.want)
 			}
 		})

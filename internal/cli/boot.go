@@ -377,7 +377,12 @@ func globalConfigFromWorkflow(globalPath string, workflowPath string) (globalcon
 	if err != nil {
 		return globalconfig.Config{}, err
 	}
+	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+	if err != nil {
+		return globalconfig.Config{}, err
+	}
 
+	cfg.Global.Identity = workflow.Config.Identity
 	workdir := filepath.Dir(workflowPath)
 	cfg.Projects = []globalconfig.Project{
 		{

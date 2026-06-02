@@ -8,6 +8,9 @@ import (
 	"strings"
 
 	"gopkg.in/yaml.v3"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/selector"
 )
 
 const (
@@ -53,19 +56,24 @@ type Config struct {
 type Settings struct {
 	MaxConcurrentAgents int            `yaml:"max_concurrent_agents"`
 	Scheduling          string         `yaml:"scheduling"`
+	Identity            Identity       `yaml:"identity,omitempty"`
 	FairShare           map[string]any `yaml:"fair_share,omitempty"`
 	Startup             map[string]any `yaml:"startup,omitempty"`
 }
 
 type Project struct {
-	ID            string `yaml:"id"`
-	Workflow      string `yaml:"workflow"`
-	Workdir       string `yaml:"workdir"`
-	Weight        int    `yaml:"weight"`
-	Priority      int    `yaml:"priority"`
-	Paused        bool   `yaml:"paused,omitempty"`
-	CredentialRef string `yaml:"credential_ref,omitempty"`
+	ID            string            `yaml:"id"`
+	Workflow      string            `yaml:"workflow"`
+	Workdir       string            `yaml:"workdir"`
+	Weight        int               `yaml:"weight"`
+	Priority      int               `yaml:"priority"`
+	Paused        bool              `yaml:"paused,omitempty"`
+	CredentialRef string            `yaml:"credential_ref,omitempty"`
+	Authorization selector.Selector `yaml:"authorization,omitempty"`
+	Identity      Identity          `yaml:"-"`
 }
+
+type Identity = workflowconfig.Identity
 
 type Option func(*options)
 
@@ -285,6 +293,7 @@ func (c Config) Validate(opts ...Option) error {
 	if !validSchedulingMode(c.Global.Scheduling) {
 		problems = append(problems, "global.scheduling: must be one of "+strings.Join(schedulingModes, ", "))
 	}
+	problems = append(problems, c.Global.Identity.Validate("global.identity")...)
 	problems = append(problems, startupErrors(c.Global.Startup, "global.startup")...)
 
 	if c.Projects == nil {
@@ -303,6 +312,7 @@ func (c Config) Validate(opts ...Option) error {
 		if project.CredentialRef != "" && strings.TrimSpace(project.CredentialRef) == "" {
 			problems = append(problems, prefix+".credential_ref: must not be blank")
 		}
+		problems = append(problems, project.Authorization.Validate(prefix+".authorization")...)
 	}
 	problems = append(problems, duplicateProjectIDErrorsFromProjects(c.Projects)...)
 
@@ -522,6 +532,8 @@ func globalErrors(value any) []string {
 	problems = append(problems, prefixErrors(requiredErrors(global, []string{"max_concurrent_agents", "scheduling"}), "global")...)
 	problems = append(problems, positiveIntegerError(global["max_concurrent_agents"], "global.max_concurrent_agents")...)
 	problems = append(problems, schedulingErrors(global["scheduling"])...)
+	problems = append(problems, optionalMapErrors(global, "identity")...)
+	problems = append(problems, identityErrors(global["identity"], "global.identity")...)
 	problems = append(problems, optionalMapErrors(global, "fair_share")...)
 	problems = append(problems, optionalMapErrors(global, "startup")...)
 
@@ -612,8 +624,41 @@ func projectErrors(value any, index int, opts options) []string {
 	problems = append(problems, integerError(project["priority"], prefix+".priority")...)
 	problems = append(problems, pausedErrors(project, prefix)...)
 	problems = append(problems, credentialRefErrors(project, prefix)...)
+	problems = append(problems, authorizationErrors(project["authorization"], prefix+".authorization")...)
 
 	return problems
+}
+
+func identityErrors(value any, prefix string) []string {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return nil
+	}
+
+	var identity Identity
+	if err := decodeYAMLValue(value, &identity); err != nil {
+		return []string{prefix + ": " + err.Error()}
+	}
+	identity.Normalize()
+	return identity.Validate(prefix)
+}
+
+func authorizationErrors(value any, prefix string) []string {
+	if value == nil {
+		return nil
+	}
+	if _, ok := value.(map[string]any); !ok {
+		return []string{prefix + ": must be a mapping"}
+	}
+
+	var authorization selector.Selector
+	if err := decodeYAMLValue(value, &authorization); err != nil {
+		return []string{prefix + ": " + err.Error()}
+	}
+	authorization.Normalize()
+	return authorization.Validate(prefix)
 }
 
 func prefixErrors(errors []string, prefix string) []string {
@@ -841,9 +886,14 @@ func buildSettings(attrs map[string]any) (Settings, error) {
 	if err != nil {
 		return Settings{}, err
 	}
+	identity, err := buildIdentity(attrs["identity"], "global.identity")
+	if err != nil {
+		return Settings{}, err
+	}
 
 	settings.MaxConcurrentAgents = maxConcurrentAgents
 	settings.Scheduling = scheduling
+	settings.Identity = identity
 	settings.FairShare = fairShare
 	settings.Startup = startup
 	return settings, nil
@@ -897,6 +947,10 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		if err != nil {
 			return nil, err
 		}
+		authorization, err := buildAuthorization(project["authorization"], prefix+".authorization")
+		if err != nil {
+			return nil, err
+		}
 
 		out = append(out, Project{
 			ID:            strings.TrimSpace(id),
@@ -906,9 +960,54 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 			Priority:      priority,
 			Paused:        paused,
 			CredentialRef: credentialRef,
+			Authorization: authorization,
 		})
 	}
 	return out, nil
+}
+
+func buildIdentity(value any, field string) (Identity, error) {
+	var identity Identity
+	if value == nil {
+		return identity, nil
+	}
+	if _, err := mapValue(value, field); err != nil {
+		return Identity{}, err
+	}
+	if err := decodeYAMLValue(value, &identity); err != nil {
+		return Identity{}, fmt.Errorf("%s: %w", field, err)
+	}
+	identity.Normalize()
+	if problems := identity.Validate(field); len(problems) > 0 {
+		return Identity{}, errors.New(strings.Join(problems, "; "))
+	}
+	return identity, nil
+}
+
+func buildAuthorization(value any, field string) (selector.Selector, error) {
+	var authorization selector.Selector
+	if value == nil {
+		return authorization, nil
+	}
+	if _, err := mapValue(value, field); err != nil {
+		return selector.Selector{}, err
+	}
+	if err := decodeYAMLValue(value, &authorization); err != nil {
+		return selector.Selector{}, fmt.Errorf("%s: %w", field, err)
+	}
+	authorization.Normalize()
+	if problems := authorization.Validate(field); len(problems) > 0 {
+		return selector.Selector{}, errors.New(strings.Join(problems, "; "))
+	}
+	return authorization, nil
+}
+
+func decodeYAMLValue(value any, out any) error {
+	raw, err := yaml.Marshal(value)
+	if err != nil {
+		return err
+	}
+	return yaml.Unmarshal(raw, out)
 }
 
 func mergeMap(defaults map[string]any, value any, field string) (map[string]any, error) {

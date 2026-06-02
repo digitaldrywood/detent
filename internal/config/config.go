@@ -29,6 +29,9 @@ const (
 	AgentBackendCodex     = "codex"
 
 	defaultCodexProtocol = "app-server"
+
+	IdentityOwnershipAssignee = "assignee"
+	IdentityOwnershipField    = "field"
 )
 
 var windowsAbsPathPattern = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
@@ -39,6 +42,7 @@ type Workflow struct {
 }
 
 type Config struct {
+	Identity      Identity      `yaml:"identity,omitempty"`
 	Tracker       Tracker       `yaml:"tracker"`
 	Polling       Polling       `yaml:"polling"`
 	Workspace     Workspace     `yaml:"workspace"`
@@ -71,7 +75,15 @@ type Tracker struct {
 	StateMap                StringOrMap       `yaml:"state_map"`
 	PriorityMap             StringOrMap       `yaml:"priority_map"`
 	AutoProvision           bool              `yaml:"auto_provision"`
+	Authorization           selector.Selector `yaml:"authorization,omitempty"`
 	Issues                  []connector.Issue `yaml:"issues"`
+}
+
+type Identity struct {
+	Name          string `yaml:"name"`
+	GitHubLogin   string `yaml:"github_login,omitempty"`
+	OwnershipMode string `yaml:"ownership_mode,omitempty"`
+	OwnerField    string `yaml:"owner_field,omitempty"`
 }
 
 type Polling struct {
@@ -267,6 +279,57 @@ type Hooks struct {
 	TimeoutMS    int    `yaml:"timeout_ms"`
 }
 
+func (i Identity) Configured() bool {
+	return strings.TrimSpace(i.Name) != "" ||
+		strings.TrimSpace(i.GitHubLogin) != "" ||
+		strings.TrimSpace(i.OwnershipMode) != "" ||
+		strings.TrimSpace(i.OwnerField) != ""
+}
+
+func (i Identity) IsZero() bool {
+	return !i.Configured()
+}
+
+func (i *Identity) Normalize() {
+	if i == nil {
+		return
+	}
+	i.Name = strings.TrimSpace(i.Name)
+	i.GitHubLogin = strings.TrimSpace(i.GitHubLogin)
+	i.OwnershipMode = strings.ToLower(strings.TrimSpace(i.OwnershipMode))
+	i.OwnerField = strings.TrimSpace(i.OwnerField)
+	if i.OwnershipMode == "" && i.Configured() {
+		i.OwnershipMode = IdentityOwnershipAssignee
+	}
+}
+
+func (i Identity) Validate(prefix string) []string {
+	if !i.Configured() {
+		return nil
+	}
+
+	identity := i
+	identity.Normalize()
+
+	var problems []string
+	if identity.Name == "" {
+		problems = append(problems, prefix+".name must not be blank")
+	}
+	switch identity.OwnershipMode {
+	case IdentityOwnershipAssignee:
+		if identity.OwnerField != "" {
+			problems = append(problems, prefix+".owner_field must be blank when "+prefix+".ownership_mode is assignee")
+		}
+	case IdentityOwnershipField:
+		if identity.OwnerField == "" {
+			problems = append(problems, prefix+".owner_field is required when "+prefix+".ownership_mode is field")
+		}
+	default:
+		problems = append(problems, prefix+".ownership_mode must be one of assignee, field")
+	}
+	return problems
+}
+
 type StringOrMap struct {
 	IsString bool
 	String   string
@@ -410,6 +473,7 @@ func StringValue(value string) StringOrMap {
 func (c *Config) Validate() error {
 	var problems []string
 
+	problems = append(problems, c.Identity.Validate("identity")...)
 	c.validateTracker(&problems)
 	validatePositive("polling.interval_ms", c.Polling.IntervalMS, &problems)
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
@@ -459,10 +523,12 @@ func (s *StringOrMap) UnmarshalYAML(value *yaml.Node) error {
 }
 
 func (c *Config) normalize() {
+	c.Identity.Normalize()
 	c.Tracker.Kind = strings.ToLower(strings.TrimSpace(c.Tracker.Kind))
 	if c.Tracker.Kind == TrackerGitHub && c.Tracker.Endpoint == defaultLinearEndpoint {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
+	c.Tracker.Authorization.Normalize()
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
@@ -496,6 +562,7 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.http_max_idle_conns", c.Tracker.HTTPMaxIdleConns, problems)
 	validatePositive("tracker.http_max_idle_conns_per_host", c.Tracker.HTTPMaxIdleConnsPerHost, problems)
 	validatePositive("tracker.http_idle_conn_timeout_ms", c.Tracker.HTTPIdleConnTimeoutMS, problems)
+	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
 }
 
 func (t *Tracker) validateGitHubAuth(problems *[]string) {

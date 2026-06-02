@@ -29,6 +29,7 @@ type StartupConfig struct {
 }
 
 type ManagerConfig struct {
+	Identity globalconfig.Identity
 	Projects []globalconfig.Project
 	Startup  StartupConfig
 }
@@ -72,13 +73,14 @@ type Manager struct {
 }
 
 func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
-	return ManagerConfig{
-		Projects: append([]globalconfig.Project(nil), cfg.Projects...),
+	return normalizeManagerConfig(ManagerConfig{
+		Identity: cfg.Global.Identity,
+		Projects: cfg.Projects,
 		Startup: StartupConfig{
 			Jitter:            time.Duration(startupInt(cfg.Global.Startup, "jitter_seconds")) * time.Second,
 			MaxSpawnPerSecond: startupInt(cfg.Global.Startup, "max_spawn_per_second"),
 		},
-	}
+	})
 }
 
 func NewManager(cfg ManagerConfig, deps ManagerDependencies) (*Manager, error) {
@@ -112,7 +114,7 @@ func NewManager(cfg ManagerConfig, deps ManagerDependencies) (*Manager, error) {
 		jitter = randomJitter
 	}
 
-	cfg.Projects = append([]globalconfig.Project(nil), cfg.Projects...)
+	cfg = normalizeManagerConfig(cfg)
 	return &Manager{
 		cfg:      cfg,
 		registry: registry,
@@ -175,10 +177,10 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		ctx = context.Background()
 	}
 
-	cfg.Projects = append([]globalconfig.Project(nil), cfg.Projects...)
+	cfg = normalizeManagerConfig(cfg)
 	desired := make(map[ProjectID]globalconfig.Project, len(cfg.Projects))
 	for i, project := range cfg.Projects {
-		normalized := normalizeManagerProjectConfig(project)
+		normalized := project
 		id := ProjectID(normalized.ID)
 		if id == "" {
 			return ReconcileResult{}, ErrMissingProjectID
@@ -386,7 +388,8 @@ func (m *Manager) Unpause(ctx context.Context, id ProjectID) error {
 }
 
 func (m *Manager) addLocked(ctx context.Context, cfg globalconfig.Project) error {
-	id := normalizeProjectID(ProjectID(cfg.ID))
+	cfg = normalizeManagerProjectConfigWithIdentity(cfg, m.cfg.Identity)
+	id := ProjectID(cfg.ID)
 	if id == "" {
 		return ErrMissingProjectID
 	}
@@ -503,6 +506,28 @@ func startupInt(values map[string]any, key string) int {
 
 func normalizeManagerProjectConfig(cfg globalconfig.Project) globalconfig.Project {
 	cfg.ID = string(normalizeProjectID(ProjectID(cfg.ID)))
+	cfg.Identity.Normalize()
+	return cfg
+}
+
+func normalizeManagerProjectConfigWithIdentity(
+	cfg globalconfig.Project,
+	identity globalconfig.Identity,
+) globalconfig.Project {
+	cfg = normalizeManagerProjectConfig(cfg)
+	identity.Normalize()
+	if identity.Configured() {
+		cfg.Identity = identity
+	}
+	return cfg
+}
+
+func normalizeManagerConfig(cfg ManagerConfig) ManagerConfig {
+	cfg.Identity.Normalize()
+	cfg.Projects = append([]globalconfig.Project(nil), cfg.Projects...)
+	for i := range cfg.Projects {
+		cfg.Projects[i] = normalizeManagerProjectConfigWithIdentity(cfg.Projects[i], cfg.Identity)
+	}
 	return cfg
 }
 
