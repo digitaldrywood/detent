@@ -158,6 +158,33 @@ func TestProjectFieldValues(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchCandidateIssuesRequestsRateLimitSnapshot(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+	})
+
+	if _, err := c.FetchCandidateIssues(context.Background()); err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	query := requests[0]["query"].(string)
+	for _, want := range []string{"rateLimit", "remaining", "resetAt", "cost"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("project items query missing %q:\n%s", want, query)
+		}
+	}
+}
+
 func TestConnectorFetchCandidateIssuesResolvesBlockedByProjectState(t *testing.T) {
 	t.Parallel()
 
@@ -556,6 +583,9 @@ func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	if !strings.Contains(query, "addComment") {
 		t.Fatalf("query = %q, want addComment", query)
 	}
+	if strings.Contains(query, "rateLimit") {
+		t.Fatalf("query = %q, want no rateLimit on mutation root", query)
+	}
 	variables := requests[0]["variables"].(map[string]any)
 	if variables["subjectId"] != "I_kw1" {
 		t.Fatalf("subjectId = %v, want I_kw1", variables["subjectId"])
@@ -589,6 +619,9 @@ func TestConnectorUpdateIssueStateWritesStatusOptionID(t *testing.T) {
 	updateQuery := requests[2]["query"].(string)
 	if !strings.Contains(updateQuery, "updateProjectV2ItemFieldValue") {
 		t.Fatalf("query = %q, want updateProjectV2ItemFieldValue", updateQuery)
+	}
+	if strings.Contains(updateQuery, "rateLimit") {
+		t.Fatalf("query = %q, want no rateLimit on mutation root", updateQuery)
 	}
 	variables := requests[2]["variables"].(map[string]any)
 	want := map[string]any{

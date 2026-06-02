@@ -567,12 +567,14 @@ func TestRunFetchesPipelineTerminalStates(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	waitForFetchByStatesCalls(t, tracker, 2)
+	waitForFetchByStatesCalls(t, tracker, 1)
 
 	got := tracker.fetchByStatesRequests()
-	want := []string{"Human Review", "Merging", "Done", "Cancelled", "Canceled", "Closed"}
-	if !stateRequestsContain(got, want) {
-		t.Fatalf("FetchIssuesByStates requests = %#v, want pipeline request containing %#v", got, want)
+	want := []string{"Blocked", "Human Review", "Merging", "Done", "Cancelled", "Canceled", "Closed"}
+	for _, request := range got {
+		if !stateRequestsContain([][]string{request}, want) {
+			t.Fatalf("FetchIssuesByStates request = %#v, want combined status request containing %#v; all requests = %#v", request, want, got)
+		}
 	}
 }
 

@@ -266,6 +266,15 @@ If `workspace.source_root` is omitted, Detent falls back to the project
 `workdir` from global config, then to `workspace.root` for older single-root
 setups.
 
+For production, self-hosted, or multi-instance GitHub Projects, prefer GitHub
+App installation authentication instead of a shared personal access token. App
+installation tokens have a dedicated GraphQL budget per installation and scale
+with larger installations, while a PAT shares one fixed user budget across
+Detent, agents, and operator `gh` calls. Configure the tracker with
+`github_app_id`, `github_app_installation_id`, and either
+`github_app_private_key` or `github_app_private_key_path`; keep `api_key` for
+small local setups or one-off evaluation.
+
 Default workflows do not need worktree setup hooks. Detent creates and removes
 Git worktrees natively, so a fresh Windows project can dispatch without bash.
 Omit `codex.shell` and `hooks.shell` to use the per-OS defaults: `sh` on Unix
@@ -528,7 +537,8 @@ Invalid edits are logged and ignored while the last valid config stays live.
 
 The web dashboard starts with the main `detent` command. In running mode it
 shows live counts, running issues, retry queue, blocked work, completed
-sessions, token totals, budget status, and Codex rate-limit snapshots.
+sessions, token totals, budget status, Codex rate-limit snapshots, and GitHub
+GraphQL rate-limit snapshots when the GitHub connector reports them.
 
 Useful endpoints:
 

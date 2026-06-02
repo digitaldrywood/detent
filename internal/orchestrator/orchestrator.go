@@ -11,19 +11,23 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 const (
-	defaultPollInterval          = 30 * time.Second
-	defaultMaxConcurrentAgents   = 1
-	defaultMaxRetryBackoff       = 5 * time.Minute
-	defaultContinuationRetry     = time.Second
-	defaultFailureRetryBaseDelay = 10 * time.Second
-	continuationDispatchBackoff  = 100 * time.Millisecond
-	runUpdateBufferSize          = 128
-	blockedStatusState           = "Blocked"
-	blockedReasonDependency      = "blocked by non-terminal dependency"
-	blockedReasonProjectStatus   = "blocked by project status"
+	defaultPollInterval             = 30 * time.Second
+	defaultRunningReconcileInterval = 2 * time.Minute
+	gitHubGraphQLPauseRemaining     = 100
+	gitHubGraphQLBackoffRemaining   = 500
+	defaultMaxConcurrentAgents      = 1
+	defaultMaxRetryBackoff          = 5 * time.Minute
+	defaultContinuationRetry        = time.Second
+	defaultFailureRetryBaseDelay    = 10 * time.Second
+	continuationDispatchBackoff     = 100 * time.Millisecond
+	runUpdateBufferSize             = 128
+	blockedStatusState              = "Blocked"
+	blockedReasonDependency         = "blocked by non-terminal dependency"
+	blockedReasonProjectStatus      = "blocked by project status"
 )
 
 var prPipelineStates = []string{"Human Review", "Merging", "Done"}
@@ -158,6 +162,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	state := newState(o.cfg)
 	o.tick(ctx, &state, time.Now())
+	resetTicker(ticker, state.PollInterval)
 
 	for {
 		select {
@@ -165,8 +170,10 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			return ctx.Err()
 		case now := <-ticker.C:
 			o.tick(ctx, &state, now)
+			resetTicker(ticker, state.PollInterval)
 		case now := <-o.refreshes:
 			o.tick(ctx, &state, now)
+			resetTicker(ticker, state.PollInterval)
 		case result := <-o.runResults:
 			o.handleRunResult(&state, result)
 		case update := <-o.runUpdates:
@@ -178,6 +185,13 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			request.reply <- state.clone()
 		}
 	}
+}
+
+func resetTicker(ticker *time.Ticker, interval time.Duration) {
+	if interval <= 0 {
+		return
+	}
+	ticker.Reset(interval)
 }
 
 func (o *Orchestrator) UpdateConfig(ctx context.Context, cfg Config) error {
@@ -237,34 +251,41 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 
 func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	o.markRefresh(state, now)
-	o.reconcileRunningIssues(ctx, state)
+	defer o.finishRefresh(state, now)
+
+	if pause := o.gitHubGraphQLPause(state, now); pause > 0 {
+		o.logger.Warn("github graphql polling paused", "remaining", gitHubGraphQLRemaining(state), "pause", pause)
+		return
+	}
+
+	o.reconcileRunningIssues(ctx, state, now)
 
 	issues, err := o.connector.FetchCandidateIssues(ctx)
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
 		return
 	}
-	blockedIssues, blockedErr := o.connector.FetchIssuesByStates(ctx, []string{blockedStatusState})
-	if blockedErr != nil {
-		o.logger.Warn("fetch blocked status issues failed", "error", blockedErr)
-	}
-	pipelineIssues, pipelineErr := o.connector.FetchIssuesByStates(ctx, prPipelineFetchStates(o.cfg.TerminalStates))
-	if pipelineErr != nil {
-		o.logger.Warn("fetch pr pipeline issues failed", "error", pipelineErr)
+	statusIssues, statusErr := o.connector.FetchIssuesByStates(ctx, observedStatusFetchStates(o.cfg.TerminalStates))
+	if statusErr != nil {
+		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
 	}
 
 	issues = cloneIssues(issues)
-	blockedIssues = cloneIssues(blockedIssues)
-	if pipelineErr == nil {
-		state.Pipeline = cloneIssues(pipelineIssues)
+	if statusErr == nil {
+		statusIssues = cloneIssues(statusIssues)
+		state.Pipeline = issuesInStates(statusIssues, prPipelineFetchStates(o.cfg.TerminalStates))
 	}
 	sortIssuesForDispatch(issues, o.cfg.DispatchPriorityByState)
 	o.pruneBudgetRefusals(state, now)
 	o.trackBlockedCandidates(state, issues, now)
-	if blockedErr == nil {
-		o.trackBlockedStatusIssues(state, blockedIssues, now)
+	if statusErr == nil {
+		o.trackBlockedStatusIssues(state, issuesInStates(statusIssues, []string{blockedStatusState}), now)
 	}
 	o.dispatchReadyIssues(ctx, state, issues, now)
+}
+
+func observedStatusFetchStates(terminalStates []string) []string {
+	return append([]string{blockedStatusState}, prPipelineFetchStates(terminalStates)...)
 }
 
 func prPipelineFetchStates(terminalStates []string) []string {
@@ -284,11 +305,41 @@ func prPipelineFetchStates(terminalStates []string) []string {
 	return states
 }
 
-func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State) {
+func issuesInStates(issues []connector.Issue, states []string) []connector.Issue {
+	wanted := stateNameSet(states)
+	if len(wanted) == 0 {
+		return nil
+	}
+
+	out := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if _, ok := wanted[normalizeState(issue.State)]; ok {
+			out = append(out, cloneIssue(issue))
+		}
+	}
+	return out
+}
+
+func stateNameSet(states []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		state = normalizeState(state)
+		if state != "" {
+			out[state] = struct{}{}
+		}
+	}
+	return out
+}
+
+func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State, now time.Time) {
 	ids := runningIssueIDs(state.Running)
 	if len(ids) == 0 {
 		return
 	}
+	if !o.shouldReconcileRunningIssues(state, now) {
+		return
+	}
+	state.LastRunningReconcileAt = now
 
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, ids)
 	if err != nil {
@@ -321,6 +372,20 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State)
 			state.Claimed[id] = claimed
 		}
 	}
+}
+
+func (o *Orchestrator) shouldReconcileRunningIssues(state *State, now time.Time) bool {
+	if len(state.Running) == 0 {
+		return false
+	}
+	if state.LastRunningReconcileAt.IsZero() {
+		return true
+	}
+	interval := defaultRunningReconcileInterval
+	if o.cfg.PollInterval > interval {
+		interval = o.cfg.PollInterval
+	}
+	return !now.Before(state.LastRunningReconcileAt.Add(interval))
 }
 
 func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue {
@@ -411,6 +476,118 @@ func (o *Orchestrator) markRefresh(state *State, now time.Time) {
 		return
 	}
 	state.NextRefreshAt = time.Time{}
+}
+
+func (o *Orchestrator) finishRefresh(state *State, now time.Time) {
+	o.captureConnectorRateLimits(state, now)
+
+	interval := o.adaptivePollInterval(state, now)
+	state.PollInterval = interval
+	if interval > 0 {
+		state.NextRefreshAt = now.Add(interval)
+		return
+	}
+	state.NextRefreshAt = time.Time{}
+}
+
+func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) {
+	reporter, ok := o.connector.(connector.RateLimitReporter)
+	if !ok {
+		return
+	}
+	rateLimit, ok := reporter.GraphQLRateLimit()
+	if !ok {
+		return
+	}
+	bucket := gitHubGraphQLBucket(rateLimit, now)
+	if state.RateLimits == nil {
+		state.RateLimits = &telemetry.RateLimits{}
+	}
+	state.RateLimits.GitHubGraphQL = bucket
+}
+
+func gitHubGraphQLBucket(rateLimit connector.GraphQLRateLimit, now time.Time) *telemetry.RateLimitBucket {
+	var resetAt *time.Time
+	var resetInSeconds int64
+	if !rateLimit.ResetAt.IsZero() {
+		value := rateLimit.ResetAt
+		resetAt = &value
+	}
+	if rateLimit.RetryAfter > 0 {
+		updatedAt := rateLimit.UpdatedAt
+		if updatedAt.IsZero() {
+			updatedAt = now
+		}
+		value := updatedAt.Add(rateLimit.RetryAfter)
+		resetAt = &value
+		resetInSeconds = int64(rateLimit.RetryAfter.Round(time.Second) / time.Second)
+	}
+
+	return &telemetry.RateLimitBucket{
+		Remaining:      rateLimit.Remaining,
+		Used:           rateLimit.Used,
+		Limit:          rateLimit.Limit,
+		Cost:           rateLimit.Cost,
+		ResetAt:        resetAt,
+		ResetInSeconds: resetInSeconds,
+	}
+}
+
+func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Duration {
+	base := o.cfg.PollInterval
+	if base <= 0 {
+		base = defaultPollInterval
+	}
+
+	if pause := o.gitHubGraphQLPause(state, now); pause > base {
+		return pause
+	}
+
+	bucket := gitHubGraphQLBucketFromState(state)
+	if bucket == nil || bucket.Remaining <= 0 || bucket.Remaining >= gitHubGraphQLBackoffRemaining {
+		return base
+	}
+
+	multiplier := int64(gitHubGraphQLBackoffRemaining) / bucket.Remaining
+	if int64(gitHubGraphQLBackoffRemaining)%bucket.Remaining != 0 {
+		multiplier++
+	}
+	if multiplier < 2 {
+		multiplier = 2
+	}
+	return base * time.Duration(multiplier)
+}
+
+func (o *Orchestrator) gitHubGraphQLPause(state *State, now time.Time) time.Duration {
+	bucket := gitHubGraphQLBucketFromState(state)
+	if bucket == nil || bucket.ResetAt == nil {
+		return 0
+	}
+	if bucket.ResetInSeconds > 0 && bucket.ResetAt.After(now) {
+		return bucket.ResetAt.Sub(now)
+	}
+	if bucket.Remaining >= gitHubGraphQLPauseRemaining {
+		return 0
+	}
+	if !bucket.ResetAt.After(now) {
+		return 0
+	}
+	return bucket.ResetAt.Sub(now)
+}
+
+func gitHubGraphQLBucketFromState(state *State) *telemetry.RateLimitBucket {
+	if state.RateLimits == nil {
+		return nil
+	}
+	return state.RateLimits.GitHubGraphQL
+}
+
+func gitHubGraphQLRemaining(state *State) int64 {
+	bucket := gitHubGraphQLBucketFromState(state)
+	if bucket == nil {
+		return 0
+	}
+	return bucket.Remaining
 }
 
 func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ticker *time.Ticker) {
@@ -762,7 +939,7 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	running.Tokens = event.usage.Tokens
 	state.Running[event.issueID] = running
 	if event.usage.RateLimits != nil {
-		state.RateLimits = cloneRateLimits(event.usage.RateLimits)
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.usage.RateLimits)
 	}
 }
 
@@ -808,7 +985,7 @@ func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {
 	}
 	state.CodexTotals = addCodexTotals(state.CodexTotals, event.Result.Tokens)
 	if event.Result.RateLimits != nil {
-		state.RateLimits = cloneRateLimits(event.Result.RateLimits)
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
 	if diffStatsPresent(event.Result.DiffStats) {
 		state.DiffStats[event.IssueID] = event.Result.DiffStats

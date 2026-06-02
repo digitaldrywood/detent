@@ -4737,7 +4737,7 @@ func rateLimitsCard(limits *RateLimits) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpHeading2("Codex rate limits", helpRateLimits, "rate-limits-card").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = helpHeading2("Rate limits", helpRateLimits, "rate-limits-card").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4763,7 +4763,7 @@ func rateLimitsCard(limits *RateLimits) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = dashboardEmptyState("No Codex rate-limit snapshot.", "Limits will appear after the Codex connector reports quota data.", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = dashboardEmptyState("No rate-limit snapshot.", "Limits will appear after Codex or the tracker reports quota data.", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

@@ -17,6 +17,7 @@ query DetentGitHubAuthenticate($projectId: ID!) {
     __typename
     ... on ProjectV2 { id }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 type Config struct {
@@ -97,6 +98,10 @@ func (c *Connector) Name() string {
 	return connector.BackendGitHub.String()
 }
 
+func (c *Connector) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
+	return c.client.GraphQLRateLimit()
+}
+
 func (c *Connector) Authenticate(ctx context.Context) error {
 	if c.projectID == "" {
 		return ErrMissingProject
@@ -133,3 +138,4 @@ var _ connector.Connector = (*Connector)(nil)
 var _ connector.Authenticator = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)
+var _ connector.RateLimitReporter = (*Connector)(nil)

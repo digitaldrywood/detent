@@ -1656,7 +1656,7 @@ func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 		return nil
 	}
 
-	rows := make([]rateLimitRow, 0, 3)
+	rows := make([]rateLimitRow, 0, 4)
 	appendBucket := func(name string, bucket *telemetry.RateLimitBucket) {
 		if bucket == nil {
 			return
@@ -1664,7 +1664,7 @@ func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 		rows = append(rows, rateLimitRow{
 			Name:        name,
 			Remaining:   formatInt(bucket.Remaining) + " left",
-			Used:        formatInt(bucket.Used) + " used",
+			Used:        rateLimitUsedLabel(bucket),
 			Limit:       formatLimit(bucket.Limit) + " limit",
 			Reset:       resetLabel(bucket),
 			UsedPercent: usedPercent(bucket),
@@ -1673,10 +1673,19 @@ func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 
 	appendBucket("Primary", limits.Primary)
 	appendBucket("Secondary", limits.Secondary)
+	appendBucket("GitHub GraphQL", limits.GitHubGraphQL)
 	if limits.Credits != nil {
 		rows = append(rows, creditRateLimitRow(limits.Credits))
 	}
 	return rows
+}
+
+func rateLimitUsedLabel(bucket *telemetry.RateLimitBucket) string {
+	label := formatInt(bucket.Used) + " used"
+	if bucket.Cost > 0 {
+		label += " / cost " + formatInt(bucket.Cost)
+	}
+	return label
 }
 
 func creditRateLimitRow(bucket *telemetry.RateLimitBucket) rateLimitRow {
@@ -1717,6 +1726,9 @@ func creditRateLimitRow(bucket *telemetry.RateLimitBucket) rateLimitRow {
 
 func rateLimitName(limits *telemetry.RateLimits) string {
 	if limits == nil || limits.LimitName == "" {
+		if limits != nil && limits.GitHubGraphQL != nil {
+			return "GitHub GraphQL"
+		}
 		return "Latest snapshot"
 	}
 	return limits.LimitName
