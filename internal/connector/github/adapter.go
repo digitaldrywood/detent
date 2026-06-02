@@ -1152,9 +1152,6 @@ func allAssigneeLogins(assignees nodeConnection[assignee]) []string {
 			logins = append(logins, login)
 		}
 	}
-	if len(logins) == 0 {
-		return nil
-	}
 	return logins
 }
 
@@ -1170,9 +1167,6 @@ func projectFieldValues(values nodeConnection[projectFieldValue]) map[string]str
 			continue
 		}
 		fields[fieldName] = fieldValue
-	}
-	if len(fields) == 0 {
-		return nil
 	}
 	return fields
 }

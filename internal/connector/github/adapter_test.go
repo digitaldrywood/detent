@@ -103,9 +103,9 @@ func TestAllAssigneeLogins(t *testing.T) {
 			want:      []string{"worker-1", "worker-2"},
 		},
 		{
-			name:      "empty connection returns nil",
+			name:      "empty connection returns empty slice",
 			assignees: nodeConnection[assignee]{},
-			want:      nil,
+			want:      []string{},
 		},
 	}
 
@@ -141,9 +141,9 @@ func TestProjectFieldValues(t *testing.T) {
 			want: map[string]string{"Notes": "owner notes", "Rank": "42.5", "Status": "In Progress"},
 		},
 		{
-			name:   "empty values return nil",
+			name:   "empty values return empty map",
 			values: nodeConnection[projectFieldValue]{},
-			want:   nil,
+			want:   map[string]string{},
 		},
 	}
 

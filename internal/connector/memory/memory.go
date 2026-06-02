@@ -138,7 +138,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		issue.Labels = append([]string(nil), issue.Labels...)
 	}
 	if issue.Assignees != nil {
-		issue.Assignees = append([]string(nil), issue.Assignees...)
+		issue.Assignees = cloneStringSlice(issue.Assignees)
 	}
 	if issue.Fields != nil {
 		issue.Fields = cloneStringMap(issue.Fields)
@@ -148,6 +148,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	issue.StageUpdatedAt = cloneTime(issue.StageUpdatedAt)
 
 	return issue
+}
+
+func cloneStringSlice(values []string) []string {
+	return append([]string{}, values...)
 }
 
 func cloneStringMap(values map[string]string) map[string]string {
