@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -53,6 +54,9 @@ type Connector struct {
 	statusCache    *statusCache
 	projectCache   *projectCache
 	instanceLogin  string
+
+	defaultStatusMu       sync.Mutex
+	defaultStatusInFlight map[string]struct{}
 }
 
 func NewConnector(cfg Config) (*Connector, error) {
@@ -97,6 +101,8 @@ func NewConnector(cfg Config) (*Connector, error) {
 		priorityMap:    clonePriorityMapWithDefault(cfg.PriorityMap),
 		statusCache:    newStatusCache(githubCacheTTL, cfg.Now),
 		projectCache:   newProjectCache(githubCacheTTL, cfg.Now),
+
+		defaultStatusInFlight: map[string]struct{}{},
 	}, nil
 }
 

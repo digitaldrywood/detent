@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -19,6 +20,8 @@ const (
 	pullRequestsPageSize          = 100
 	pullRequestsPageLimit         = 3
 	defaultProjectItemStatusState = "Backlog"
+	defaultProjectItemStatusJobs  = 4
+	defaultProjectItemStatusTTL   = 2 * time.Minute
 )
 
 const projectItemsQuery = `
@@ -1305,6 +1308,7 @@ func attachMatchingPullRequests(
 func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
 	var after *string
 	allIssues := []connector.Issue{}
+	statusDefaults := []projectItemStatusDefault{}
 
 	for {
 		var response struct {
@@ -1324,17 +1328,21 @@ func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connec
 		}
 
 		for _, item := range response.Node.Items.Nodes {
-			issue, ok, err := c.normalizeProjectItem(ctx, item)
+			issue, statusDefault, ok, err := c.normalizeProjectItem(item)
 			if err != nil {
 				return nil, err
 			}
 			if !ok {
 				continue
 			}
+			if statusDefault.ItemID != "" {
+				statusDefaults = append(statusDefaults, statusDefault)
+			}
 			allIssues = append(allIssues, issue)
 		}
 
 		if !response.Node.Items.PageInfo.HasNextPage {
+			c.defaultProjectItemStatusesAsync(ctx, statusDefaults)
 			resolveBlockedByProjectState(allIssues)
 			issues := make([]connector.Issue, 0, len(allIssues))
 			for _, issue := range allIssues {
@@ -1352,13 +1360,13 @@ func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connec
 	}
 }
 
-func (c *Connector) normalizeProjectItem(ctx context.Context, item projectItemNode) (connector.Issue, bool, error) {
+func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue, projectItemStatusDefault, bool, error) {
 	if item.Content == nil || item.Content.TypeName != "Issue" {
-		return connector.Issue{}, false, nil
+		return connector.Issue{}, projectItemStatusDefault{}, false, nil
 	}
-	statusName, statusUpdatedAt, err := c.projectItemStatusOrDefault(ctx, item)
+	statusName, statusUpdatedAt, statusDefault, err := c.projectItemStatusOrDefault(item)
 	if err != nil {
-		return connector.Issue{}, false, err
+		return connector.Issue{}, projectItemStatusDefault{}, false, err
 	}
 	return c.buildIssue(
 		*item.Content,
@@ -1366,28 +1374,166 @@ func (c *Connector) normalizeProjectItem(ctx context.Context, item projectItemNo
 		singleSelectName(item.PriorityValue),
 		statusUpdatedAt,
 		projectFieldValues(item.FieldValues),
-	), true, nil
+	), statusDefault, true, nil
 }
 
-func (c *Connector) projectItemStatusOrDefault(ctx context.Context, item projectItemNode) (string, *time.Time, error) {
+type projectItemStatusDefault struct {
+	ItemID      string
+	GitHubState string
+}
+
+func (c *Connector) projectItemStatusOrDefault(item projectItemNode) (string, *time.Time, projectItemStatusDefault, error) {
 	statusName := singleSelectName(item.StatusValue)
 	if statusName != "" {
-		return statusName, singleSelectUpdatedAt(item.StatusValue), nil
+		return statusName, singleSelectUpdatedAt(item.StatusValue), projectItemStatusDefault{}, nil
 	}
 
 	itemID := strings.TrimSpace(item.ID)
 	if itemID == "" {
-		return "", nil, ErrInvalidResponse
+		return "", nil, projectItemStatusDefault{}, ErrInvalidResponse
 	}
 
 	statusName = c.detentToGitHubState(defaultProjectItemStatusState)
 	if statusName == "" {
-		return "", nil, nil
+		return "", nil, projectItemStatusDefault{}, nil
 	}
-	if err := c.setProjectItemStatus(ctx, itemID, statusName); err != nil {
-		return "", nil, fmt.Errorf("default github status: %w", err)
+	return statusName, nil, projectItemStatusDefault{ItemID: itemID, GitHubState: statusName}, nil
+}
+
+func (c *Connector) defaultProjectItemStatusesAsync(ctx context.Context, statusDefaults []projectItemStatusDefault) {
+	statusDefaults = c.claimProjectItemStatusDefaults(statusDefaults)
+	if len(statusDefaults) == 0 {
+		return
 	}
-	return statusName, nil, nil
+
+	go func() {
+		defer c.releaseProjectItemStatusDefaults(statusDefaults)
+
+		ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), defaultProjectItemStatusTTL)
+		defer cancel()
+
+		if err := c.defaultProjectItemStatuses(ctx, statusDefaults); err != nil {
+			c.client.logger.WarnContext(ctx, "default github project item statuses failed", "error", err)
+		}
+	}()
+}
+
+func (c *Connector) defaultProjectItemStatuses(ctx context.Context, statusDefaults []projectItemStatusDefault) error {
+	statusDefaults = uniqueProjectItemStatusDefaults(statusDefaults)
+	if len(statusDefaults) == 0 {
+		return nil
+	}
+
+	for _, githubState := range uniqueProjectItemDefaultStates(statusDefaults) {
+		if _, _, err := c.resolveStatusOption(ctx, githubState); err != nil {
+			return fmt.Errorf("default github status option: %w", err)
+		}
+	}
+
+	errs := make(chan error, len(statusDefaults))
+	sem := make(chan struct{}, defaultProjectItemStatusJobs)
+	var wg sync.WaitGroup
+	for _, statusDefault := range statusDefaults {
+		statusDefault := statusDefault
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+
+			select {
+			case sem <- struct{}{}:
+				defer func() { <-sem }()
+			case <-ctx.Done():
+				errs <- ctx.Err()
+				return
+			}
+
+			if err := c.setProjectItemStatus(ctx, statusDefault.ItemID, statusDefault.GitHubState); err != nil {
+				errs <- fmt.Errorf("default github status %s: %w", statusDefault.ItemID, err)
+			}
+		}()
+	}
+	wg.Wait()
+	close(errs)
+
+	var joined error
+	for err := range errs {
+		joined = errors.Join(joined, err)
+	}
+	return joined
+}
+
+func (c *Connector) claimProjectItemStatusDefaults(statusDefaults []projectItemStatusDefault) []projectItemStatusDefault {
+	statusDefaults = uniqueProjectItemStatusDefaults(statusDefaults)
+	if len(statusDefaults) == 0 {
+		return nil
+	}
+
+	c.defaultStatusMu.Lock()
+	defer c.defaultStatusMu.Unlock()
+
+	claimed := make([]projectItemStatusDefault, 0, len(statusDefaults))
+	for _, statusDefault := range statusDefaults {
+		key := statusDefault.key()
+		if _, ok := c.defaultStatusInFlight[key]; ok {
+			continue
+		}
+		c.defaultStatusInFlight[key] = struct{}{}
+		claimed = append(claimed, statusDefault)
+	}
+	return claimed
+}
+
+func (c *Connector) releaseProjectItemStatusDefaults(statusDefaults []projectItemStatusDefault) {
+	if len(statusDefaults) == 0 {
+		return
+	}
+
+	c.defaultStatusMu.Lock()
+	defer c.defaultStatusMu.Unlock()
+
+	for _, statusDefault := range statusDefaults {
+		delete(c.defaultStatusInFlight, statusDefault.key())
+	}
+}
+
+func uniqueProjectItemStatusDefaults(statusDefaults []projectItemStatusDefault) []projectItemStatusDefault {
+	seen := make(map[string]struct{}, len(statusDefaults))
+	out := make([]projectItemStatusDefault, 0, len(statusDefaults))
+	for _, statusDefault := range statusDefaults {
+		itemID := strings.TrimSpace(statusDefault.ItemID)
+		githubState := strings.TrimSpace(statusDefault.GitHubState)
+		if itemID == "" || githubState == "" {
+			continue
+		}
+		statusDefault = projectItemStatusDefault{ItemID: itemID, GitHubState: githubState}
+		if _, ok := seen[statusDefault.key()]; ok {
+			continue
+		}
+		seen[statusDefault.key()] = struct{}{}
+		out = append(out, statusDefault)
+	}
+	return out
+}
+
+func (d projectItemStatusDefault) key() string {
+	return d.ItemID + "\x00" + d.GitHubState
+}
+
+func uniqueProjectItemDefaultStates(statusDefaults []projectItemStatusDefault) []string {
+	seen := make(map[string]struct{}, len(statusDefaults))
+	states := make([]string, 0, len(statusDefaults))
+	for _, statusDefault := range statusDefaults {
+		githubState := strings.TrimSpace(statusDefault.GitHubState)
+		if githubState == "" {
+			continue
+		}
+		if _, ok := seen[githubState]; ok {
+			continue
+		}
+		seen[githubState] = struct{}{}
+		states = append(states, githubState)
+	}
+	return states
 }
 
 func resolveBlockedByProjectState(issues []connector.Issue) {

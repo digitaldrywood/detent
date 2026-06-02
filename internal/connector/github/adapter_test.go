@@ -185,27 +185,75 @@ func TestConnectorFetchCandidateIssuesRequestsRateLimitSnapshot(t *testing.T) {
 	}
 }
 
-func TestConnectorFetchIssuesByStatesDefaultsBlankProjectStatusesToBacklog(t *testing.T) {
+func TestConnectorFetchIssuesByStatesDefaultsBlankProjectStatusesWithoutBlockingScan(t *testing.T) {
 	t.Parallel()
 
-	server := newGraphQLTestServer(t, []graphqlTestResponse{
-		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null},{"id":"PVTI_todo","content":{"__typename":"Issue","id":"I_todo","number":31,"title":"Ready status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/31","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
-		},
-		{
-			body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`,
-		},
-		{
-			body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_blank"}}}}`,
-		},
-	})
-	c := newGitHubTestConnector(t, server, Config{
+	var (
+		mu                   sync.Mutex
+		requests             []map[string]any
+		defaultWriteStarted  = make(chan struct{})
+		defaultWriteReleased = make(chan struct{})
+		defaultWriteFinished = make(chan struct{})
+		startedOnce          sync.Once
+		finishedOnce         sync.Once
+	)
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload map[string]any
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("Decode() error = %v", err)
+		}
+		mu.Lock()
+		requests = append(requests, payload)
+		mu.Unlock()
+
+		query, ok := payload["query"].(string)
+		if !ok {
+			t.Fatalf("query = %T, want string", payload["query"])
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case strings.Contains(query, "DetentGitHubProjectItems"):
+			_, _ = w.Write([]byte(`{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null},{"id":"PVTI_todo","content":{"__typename":"Issue","id":"I_todo","number":31,"title":"Ready status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/31","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`))
+		case strings.Contains(query, "DetentGitHubStatusField"):
+			startedOnce.Do(func() { close(defaultWriteStarted) })
+			select {
+			case <-defaultWriteReleased:
+			case <-r.Context().Done():
+				return
+			}
+			_, _ = w.Write([]byte(`{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`))
+		case strings.Contains(query, "DetentGitHubUpdateSingleSelectField"):
+			_, _ = w.Write([]byte(`{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_blank"}}}}`))
+			finishedOnce.Do(func() { close(defaultWriteFinished) })
+		default:
+			t.Fatalf("unexpected GraphQL query: %s", query)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	cfg := Config{
+		Endpoint:       server.URL,
+		APIKey:         "token",
+		HTTPClient:     server.Client(),
 		ProjectSlug:    "PVT_1",
 		ActiveStates:   []string{"Todo"},
 		ObservedStates: []string{"Backlog"},
-	})
+		GHToken: func(context.Context, string) (string, error) {
+			t.Fatal("gh token fallback should not run")
+			return "", nil
+		},
+	}
+	c, err := NewConnector(cfg)
+	if err != nil {
+		t.Fatalf("NewConnector() error = %v", err)
+	}
 
-	got, err := c.FetchIssuesByStates(context.Background(), []string{"Backlog"})
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	got, err := c.FetchIssuesByStates(ctx, []string{"Backlog"})
+	close(defaultWriteReleased)
 	if err != nil {
 		t.Fatalf("FetchIssuesByStates() error = %v", err)
 	}
@@ -216,11 +264,35 @@ func TestConnectorFetchIssuesByStatesDefaultsBlankProjectStatusesToBacklog(t *te
 		t.Fatalf("defaulted issue = %#v, want blank issue in Backlog", got[0])
 	}
 
-	requests := server.requests()
-	if len(requests) != 3 {
-		t.Fatalf("request count = %d, want 3", len(requests))
+	select {
+	case <-defaultWriteStarted:
+	case <-time.After(time.Second):
+		t.Fatal("blank status default write was not started")
 	}
-	updateVariables := requestVariables(t, requests[2])
+
+	select {
+	case <-defaultWriteFinished:
+	case <-time.After(time.Second):
+		t.Fatal("blank status default write did not finish")
+	}
+
+	mu.Lock()
+	seen := make([]map[string]any, len(requests))
+	copy(seen, requests)
+	mu.Unlock()
+
+	var updateRequest map[string]any
+	for _, request := range seen {
+		query, _ := request["query"].(string)
+		if strings.Contains(query, "updateProjectV2ItemFieldValue") {
+			updateRequest = request
+			break
+		}
+	}
+	if updateRequest == nil {
+		t.Fatalf("requests = %#v, want updateProjectV2ItemFieldValue request", seen)
+	}
+	updateVariables := requestVariables(t, updateRequest)
 	if updateVariables["projectId"] != "PVT_1" ||
 		updateVariables["itemId"] != "PVTI_blank" ||
 		updateVariables["fieldId"] != "PVTSSF_status" ||
