@@ -144,6 +144,52 @@ func TestBuildPromptRejectsUnknownTemplateVariables(t *testing.T) {
 	}
 }
 
+func TestBuildPromptRendersIssueFieldLookups(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name: "present field",
+			fields: map[string]string{
+				"Owner":  "team-a",
+				"Status": "Ready",
+			},
+			want: "owner=team-a status=Ready",
+		},
+		{
+			name: "empty field",
+			fields: map[string]string{
+				"Owner":  "team-b",
+				"Status": "",
+			},
+			want: "owner=team-b missing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{
+				Prompt: "owner={{ issue.fields.Owner }} {% if issue.fields.Status %}status={{ issue.fields.Status }}{% else %}missing{% endif %}",
+			}, connector.Issue{
+				Identifier: "MT-1",
+				Fields:     tt.fields,
+			}, PromptOptions{})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+			if prompt != tt.want {
+				t.Fatalf("prompt = %q, want %q", prompt, tt.want)
+			}
+		})
+	}
+}
+
 func TestBuildPromptRendersNestedConditionals(t *testing.T) {
 	t.Parallel()
 

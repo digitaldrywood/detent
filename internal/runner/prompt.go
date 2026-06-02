@@ -342,12 +342,20 @@ func lookupAssign(assigns map[string]any, name string) (any, bool) {
 	parts := strings.Split(name, ".")
 	var current any = assigns
 	for _, part := range parts {
-		values, ok := current.(map[string]any)
-		if !ok {
-			return nil, false
-		}
-		current, ok = values[part]
-		if !ok {
+		switch values := current.(type) {
+		case map[string]any:
+			var ok bool
+			current, ok = values[part]
+			if !ok {
+				return nil, false
+			}
+		case map[string]string:
+			value, ok := values[part]
+			if !ok {
+				return nil, false
+			}
+			current = value
+		default:
 			return nil, false
 		}
 	}
