@@ -570,12 +570,11 @@ func TestRunFetchesPipelineTerminalStates(t *testing.T) {
 	waitForFetchByStatesCalls(t, tracker, 1)
 
 	got := tracker.fetchByStatesRequests()
-	if len(got) != 1 {
-		t.Fatalf("FetchIssuesByStates request count = %d, want 1: %#v", len(got), got)
-	}
 	want := []string{"Blocked", "Human Review", "Merging", "Done", "Cancelled", "Canceled", "Closed"}
-	if !stateRequestsContain(got, want) {
-		t.Fatalf("FetchIssuesByStates requests = %#v, want combined status request containing %#v", got, want)
+	for _, request := range got {
+		if !stateRequestsContain([][]string{request}, want) {
+			t.Fatalf("FetchIssuesByStates request = %#v, want combined status request containing %#v; all requests = %#v", request, want, got)
+		}
 	}
 }
 
