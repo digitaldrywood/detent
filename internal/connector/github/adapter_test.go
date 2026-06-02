@@ -664,6 +664,182 @@ func TestConnectorUpdateIssueStateSkipsTerminalToActiveTransition(t *testing.T) 
 	}
 }
 
+func TestConnectorSetAssigneeAddsUserByLogin(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"user":{"id":"U_worker"}}}`},
+		{body: `{"data":{"node":{"assignees":{"nodes":[]}}}}`},
+		{body: `{"data":{"addAssigneesToAssignable":{"assignable":{"id":"I_kw1"}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.SetAssignee(context.Background(), " I_kw1 ", " worker-1 "); err != nil {
+		t.Fatalf("SetAssignee() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	userVariables := requests[0]["variables"].(map[string]any)
+	if userVariables["login"] != "worker-1" {
+		t.Fatalf("login = %v, want worker-1", userVariables["login"])
+	}
+	currentVariables := requests[1]["variables"].(map[string]any)
+	if currentVariables["issueId"] != "I_kw1" {
+		t.Fatalf("current issueId = %v, want I_kw1", currentVariables["issueId"])
+	}
+	assignVariables := requests[2]["variables"].(map[string]any)
+	if assignVariables["assignableId"] != "I_kw1" {
+		t.Fatalf("assignableId = %v, want I_kw1", assignVariables["assignableId"])
+	}
+	assigneeIDs, ok := assignVariables["assigneeIds"].([]any)
+	if !ok || len(assigneeIDs) != 1 || assigneeIDs[0] != "U_worker" {
+		t.Fatalf("assigneeIds = %#v, want [U_worker]", assignVariables["assigneeIds"])
+	}
+	if !strings.Contains(requests[2]["query"].(string), "addAssigneesToAssignable") {
+		t.Fatalf("assign query = %q, want addAssigneesToAssignable", requests[2]["query"])
+	}
+}
+
+func TestConnectorSetAssigneeReplacesExistingAssignees(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"user":{"id":"U_worker"}}}`},
+		{body: `{"data":{"node":{"assignees":{"nodes":[{"id":"U_old","login":"old-owner"},{"id":"U_worker","login":"worker-1"}]}}}}`},
+		{body: `{"data":{"removeAssigneesFromAssignable":{"assignable":{"id":"I_kw1"}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.SetAssignee(context.Background(), "I_kw1", "worker-1"); err != nil {
+		t.Fatalf("SetAssignee() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	removeVariables := requests[2]["variables"].(map[string]any)
+	if removeVariables["assignableId"] != "I_kw1" {
+		t.Fatalf("remove assignableId = %v, want I_kw1", removeVariables["assignableId"])
+	}
+	assigneeIDs, ok := removeVariables["assigneeIds"].([]any)
+	if !ok || len(assigneeIDs) != 1 || assigneeIDs[0] != "U_old" {
+		t.Fatalf("removed assigneeIds = %#v, want [U_old]", removeVariables["assigneeIds"])
+	}
+	if strings.Contains(requests[2]["query"].(string), "addAssigneesToAssignable") {
+		t.Fatalf("replace query added already assigned target: %q", requests[2]["query"])
+	}
+	if !strings.Contains(requests[2]["query"].(string), "removeAssigneesFromAssignable") {
+		t.Fatalf("replace query = %q, want removeAssigneesFromAssignable", requests[2]["query"])
+	}
+}
+
+func TestConnectorSetAssigneeAddsReplacementBeforeRemovingExistingAssignees(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"user":{"id":"U_worker"}}}`},
+		{body: `{"data":{"node":{"assignees":{"nodes":[{"id":"U_old","login":"old-owner"}]}}}}`},
+		{body: `{"data":{"addAssigneesToAssignable":{"assignable":{"id":"I_kw1"}}}}`},
+		{body: `{"data":{"removeAssigneesFromAssignable":{"assignable":{"id":"I_kw1"}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.SetAssignee(context.Background(), "I_kw1", "worker-1"); err != nil {
+		t.Fatalf("SetAssignee() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want 4", len(requests))
+	}
+	if !strings.Contains(requests[2]["query"].(string), "addAssigneesToAssignable") {
+		t.Fatalf("third query = %q, want addAssigneesToAssignable", requests[2]["query"])
+	}
+	if !strings.Contains(requests[3]["query"].(string), "removeAssigneesFromAssignable") {
+		t.Fatalf("fourth query = %q, want removeAssigneesFromAssignable", requests[3]["query"])
+	}
+}
+
+func TestConnectorSetAssigneeDoesNotRemoveExistingAssigneesWhenAddFails(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"user":{"id":"U_worker"}}}`},
+		{body: `{"data":{"node":{"assignees":{"nodes":[{"id":"U_old","login":"old-owner"}]}}}}`},
+		{body: `{"errors":[{"message":"not assignable"}]}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.SetAssignee(context.Background(), "I_kw1", "worker-1"); err == nil {
+		t.Fatal("SetAssignee() error = nil, want error")
+	}
+
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	if !strings.Contains(requests[2]["query"].(string), "addAssigneesToAssignable") {
+		t.Fatalf("third query = %q, want addAssigneesToAssignable", requests[2]["query"])
+	}
+}
+
+func TestConnectorSetFieldProvisionsOwnerOptionAndWritesProjectValue(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"}}]}}}}`},
+		{body: `{"data":{"node":{"__typename":"ProjectV2","field":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_owner","options":[{"id":"OPT_other","name":"worker-0","color":"BLUE","description":"Existing owner."}]}}}}`},
+		{body: `{"data":{"node":{"__typename":"ProjectV2","field":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_owner","options":[{"id":"OPT_other","name":"worker-0","color":"BLUE","description":"Existing owner."},{"id":"OPT_concurrent","name":"worker-2","color":"BLUE","description":"Concurrent owner."}]}}}}`},
+		{body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_other","name":"worker-0","color":"BLUE","description":"Existing owner."},{"id":"OPT_concurrent","name":"worker-2","color":"BLUE","description":"Concurrent owner."},{"id":"OPT_worker","name":"worker-1","color":"BLUE","description":"Detent ownership identity."}]}}}}`},
+		{body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_1"}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	if err := c.SetField(context.Background(), "I_kw1", " Owner ", " worker-1 "); err != nil {
+		t.Fatalf("SetField() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 5 {
+		t.Fatalf("request count = %d, want 5", len(requests))
+	}
+	fieldVariables := requests[1]["variables"].(map[string]any)
+	if fieldVariables["fieldName"] != "Owner" {
+		t.Fatalf("fieldName = %v, want Owner", fieldVariables["fieldName"])
+	}
+	refetchVariables := requests[2]["variables"].(map[string]any)
+	if refetchVariables["fieldName"] != "Owner" {
+		t.Fatalf("refetch fieldName = %v, want Owner", refetchVariables["fieldName"])
+	}
+	input := graphQLInput(t, requests[3])
+	if input["fieldId"] != "PVTSSF_owner" {
+		t.Fatalf("fieldId = %v, want PVTSSF_owner", input["fieldId"])
+	}
+	options := graphQLOptions(t, input)
+	if got := optionNames(options); !reflect.DeepEqual(got, []string{"worker-0", "worker-2", "worker-1"}) {
+		t.Fatalf("option names = %#v, want worker-0, worker-2, worker-1", got)
+	}
+	updateVariables := requests[4]["variables"].(map[string]any)
+	want := map[string]any{
+		"projectId": "PVT_1",
+		"itemId":    "PVTI_1",
+		"fieldId":   "PVTSSF_owner",
+		"optionId":  "OPT_worker",
+	}
+	for key, value := range want {
+		if updateVariables[key] != value {
+			t.Fatalf("%s = %v, want %v", key, updateVariables[key], value)
+		}
+	}
+	if !strings.Contains(requests[4]["query"].(string), "updateProjectV2ItemFieldValue") {
+		t.Fatalf("update query = %q, want updateProjectV2ItemFieldValue", requests[4]["query"])
+	}
+}
+
 type graphqlTestServer struct {
 	*httptest.Server
 	t         *testing.T

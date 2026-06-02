@@ -785,6 +785,14 @@ func (c *pauseBlockingConnector) UpdateIssueState(context.Context, string, strin
 	return connector.ErrNotImplemented
 }
 
+func (c *pauseBlockingConnector) SetAssignee(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (c *pauseBlockingConnector) SetField(context.Context, string, string, string) error {
+	return connector.ErrNotImplemented
+}
+
 func (c *pauseBlockingConnector) waitEntered(t *testing.T) {
 	t.Helper()
 
@@ -944,6 +952,14 @@ func (provisioningConnector) CreateComment(context.Context, string, string) erro
 }
 
 func (provisioningConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (provisioningConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (provisioningConnector) SetField(context.Context, string, string, string) error {
 	return nil
 }
 

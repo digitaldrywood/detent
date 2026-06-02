@@ -201,6 +201,14 @@ func (c *rateLimitConnector) UpdateIssueState(context.Context, string, string) e
 	return nil
 }
 
+func (c *rateLimitConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *rateLimitConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}
+
 func (c *rateLimitConnector) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
 	return c.rateLimit, c.hasRateLimit
 }

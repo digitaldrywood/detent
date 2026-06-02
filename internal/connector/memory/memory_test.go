@@ -195,6 +195,12 @@ func TestConnectorMutationsMatchElixirMemoryAdapter(t *testing.T) {
 	if err := c.UpdateIssueState(context.Background(), "issue-1", "Done"); err != nil {
 		t.Fatalf("UpdateIssueState() error = %v", err)
 	}
+	if err := c.SetAssignee(context.Background(), "issue-1", "worker-1"); err != nil {
+		t.Fatalf("SetAssignee() error = %v", err)
+	}
+	if err := c.SetField(context.Background(), "issue-1", "Owner", "worker-1"); err != nil {
+		t.Fatalf("SetField() error = %v", err)
+	}
 	issues, err := c.FetchCandidateIssues(context.Background())
 	if err != nil {
 		t.Fatalf("FetchCandidateIssues() error = %v", err)
@@ -203,12 +209,20 @@ func TestConnectorMutationsMatchElixirMemoryAdapter(t *testing.T) {
 	wantEvents := []Event{
 		{Kind: EventKindComment, IssueID: "issue-1", Body: "comment"},
 		{Kind: EventKindStateUpdate, IssueID: "issue-1", State: "Done"},
+		{Kind: EventKindAssigneeUpdate, IssueID: "issue-1", Login: "worker-1"},
+		{Kind: EventKindFieldUpdate, IssueID: "issue-1", FieldName: "Owner", FieldValue: "worker-1"},
 	}
 	if !reflect.DeepEqual(events, wantEvents) {
 		t.Fatalf("events = %#v, want %#v", events, wantEvents)
 	}
 	if issues[0].State != "Todo" {
 		t.Fatalf("State after UpdateIssueState() = %q, want Todo", issues[0].State)
+	}
+	if len(issues[0].Assignees) != 0 {
+		t.Fatalf("Assignees after SetAssignee() = %#v, want unchanged empty slice", issues[0].Assignees)
+	}
+	if len(issues[0].Fields) != 0 {
+		t.Fatalf("Fields after SetField() = %#v, want unchanged empty map", issues[0].Fields)
 	}
 }
 
@@ -222,6 +236,12 @@ func TestConnectorMutationsNoopWithoutEventSink(t *testing.T) {
 	}
 	if err := c.UpdateIssueState(context.Background(), "issue-1", "Done"); err != nil {
 		t.Fatalf("UpdateIssueState() error = %v", err)
+	}
+	if err := c.SetAssignee(context.Background(), "issue-1", "worker-1"); err != nil {
+		t.Fatalf("SetAssignee() error = %v", err)
+	}
+	if err := c.SetField(context.Background(), "issue-1", "Owner", "worker-1"); err != nil {
+		t.Fatalf("SetField() error = %v", err)
 	}
 }
 

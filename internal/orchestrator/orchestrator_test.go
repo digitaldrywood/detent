@@ -922,6 +922,14 @@ func (c *fakeConnector) UpdateIssueState(context.Context, string, string) error 
 	return nil
 }
 
+func (c *fakeConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *fakeConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}
+
 func (c *fakeConnector) fetchCandidateCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()

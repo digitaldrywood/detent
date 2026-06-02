@@ -9,8 +9,10 @@ import (
 )
 
 const (
-	EventKindComment     EventKind = "memory_tracker_comment"
-	EventKindStateUpdate EventKind = "memory_tracker_state_update"
+	EventKindComment        EventKind = "memory_tracker_comment"
+	EventKindStateUpdate    EventKind = "memory_tracker_state_update"
+	EventKindAssigneeUpdate EventKind = "memory_tracker_assignee_update"
+	EventKindFieldUpdate    EventKind = "memory_tracker_field_update"
 )
 
 type EventKind string
@@ -20,6 +22,10 @@ type Event struct {
 	IssueID string
 	Body    string
 	State   string
+	Login   string
+
+	FieldName  string
+	FieldValue string
 }
 
 type EventSink func(Event)
@@ -95,6 +101,16 @@ func (c *Connector) CreateComment(_ context.Context, issueID string, body string
 
 func (c *Connector) UpdateIssueState(_ context.Context, issueID string, stateName string) error {
 	c.send(Event{Kind: EventKindStateUpdate, IssueID: issueID, State: stateName})
+	return nil
+}
+
+func (c *Connector) SetAssignee(_ context.Context, issueID string, login string) error {
+	c.send(Event{Kind: EventKindAssigneeUpdate, IssueID: issueID, Login: login})
+	return nil
+}
+
+func (c *Connector) SetField(_ context.Context, issueID string, fieldName string, value string) error {
+	c.send(Event{Kind: EventKindFieldUpdate, IssueID: issueID, FieldName: fieldName, FieldValue: value})
 	return nil
 }
 

@@ -34,6 +34,14 @@ func (testConnector) UpdateIssueState(context.Context, string, string) error {
 	return ErrNotImplemented
 }
 
+func (testConnector) SetAssignee(context.Context, string, string) error {
+	return ErrNotImplemented
+}
+
+func (testConnector) SetField(context.Context, string, string, string) error {
+	return ErrNotImplemented
+}
+
 func TestConnectorInterface(t *testing.T) {
 	t.Parallel()
 
@@ -44,6 +52,12 @@ func TestConnectorInterface(t *testing.T) {
 	}
 	if _, err := c.FetchCandidateIssues(context.Background()); !errors.Is(err, ErrNotImplemented) {
 		t.Fatalf("FetchCandidateIssues() error = %v, want ErrNotImplemented", err)
+	}
+	if err := c.SetAssignee(context.Background(), "issue-1", "worker-1"); !errors.Is(err, ErrNotImplemented) {
+		t.Fatalf("SetAssignee() error = %v, want ErrNotImplemented", err)
+	}
+	if err := c.SetField(context.Background(), "issue-1", "Owner", "worker-1"); !errors.Is(err, ErrNotImplemented) {
+		t.Fatalf("SetField() error = %v, want ErrNotImplemented", err)
 	}
 }
 

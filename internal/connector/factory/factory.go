@@ -102,6 +102,14 @@ func (unimplementedConnector) UpdateIssueState(context.Context, string, string) 
 	return connector.ErrNotImplemented
 }
 
+func (unimplementedConnector) SetAssignee(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (unimplementedConnector) SetField(context.Context, string, string, string) error {
+	return connector.ErrNotImplemented
+}
+
 func normalizeKind(kind string) string {
 	normalized := strings.ToLower(strings.TrimSpace(kind))
 	if normalized == "" {
