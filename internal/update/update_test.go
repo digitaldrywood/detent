@@ -2,6 +2,7 @@ package update
 
 import (
 	"archive/tar"
+	"archive/zip"
 	"bytes"
 	"compress/gzip"
 	"context"
@@ -267,6 +268,86 @@ func TestServiceAppliesReleaseUpdateFromHTTPServer(t *testing.T) {
 	}
 }
 
+func TestReplaceBinaryStagesWindowsReplacement(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "detent.exe")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+
+	var startedCommand string
+	var startedArgs []string
+	err := ReplaceBinary(Replacement{
+		Target: target,
+		Binary: []byte("new"),
+		Mode:   0o755,
+		GOOS:   "windows",
+		StartProcess: func(command string, args []string) error {
+			startedCommand = command
+			startedArgs = append(startedArgs, args...)
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceBinary() error = %v", err)
+	}
+
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile(target) error = %v", err)
+	}
+	if string(raw) != "old" {
+		t.Fatalf("target = %q, want original binary to remain until handoff runs", raw)
+	}
+	if startedCommand != "cmd.exe" {
+		t.Fatalf("startedCommand = %q, want cmd.exe", startedCommand)
+	}
+	if len(startedArgs) == 0 {
+		t.Fatal("startedArgs is empty")
+	}
+
+	stagedBinary, script := stagedWindowsUpdateFiles(t, tmp)
+	stagedRaw, err := os.ReadFile(stagedBinary)
+	if err != nil {
+		t.Fatalf("ReadFile(staged binary) error = %v", err)
+	}
+	if string(stagedRaw) != "new" {
+		t.Fatalf("staged binary = %q, want new", stagedRaw)
+	}
+
+	scriptRaw, err := os.ReadFile(script)
+	if err != nil {
+		t.Fatalf("ReadFile(script) error = %v", err)
+	}
+	scriptText := string(scriptRaw)
+	if !strings.Contains(scriptText, `move /Y "%source%" "%target%"`) {
+		t.Fatalf("script does not move staged binary into place:\n%s", scriptText)
+	}
+	if !strings.Contains(scriptText, `timeout /t 1 /nobreak`) {
+		t.Fatalf("script does not wait for the running binary lock:\n%s", scriptText)
+	}
+
+	joinedArgs := strings.Join(startedArgs, "\n")
+	if !strings.Contains(joinedArgs, script) {
+		t.Fatalf("startedArgs = %q, want script path %q", startedArgs, script)
+	}
+}
+
+func TestExtractBinaryReadsWindowsArchive(t *testing.T) {
+	t.Parallel()
+
+	archive := detentWindowsUpdateArchive(t, "updated")
+	raw, _, err := ExtractBinary(archive, "windows")
+	if err != nil {
+		t.Fatalf("ExtractBinary() error = %v", err)
+	}
+	if string(raw) != "updated" {
+		t.Fatalf("binary = %q, want updated", raw)
+	}
+}
+
 func detentUpdateArchive(t *testing.T, content string) []byte {
 	t.Helper()
 
@@ -291,4 +372,49 @@ func detentUpdateArchive(t *testing.T, content string) []byte {
 		t.Fatalf("gzip Close() error = %v", err)
 	}
 	return buf.Bytes()
+}
+
+func detentWindowsUpdateArchive(t *testing.T, content string) []byte {
+	t.Helper()
+
+	var buf bytes.Buffer
+	zw := zip.NewWriter(&buf)
+	writer, err := zw.Create("detent.exe")
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	if _, err := writer.Write([]byte(content)); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	if err := zw.Close(); err != nil {
+		t.Fatalf("zip Close() error = %v", err)
+	}
+	return buf.Bytes()
+}
+
+func stagedWindowsUpdateFiles(t *testing.T, dir string) (string, string) {
+	t.Helper()
+
+	var stagedBinary string
+	var script string
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatalf("ReadDir() error = %v", err)
+	}
+	for _, entry := range entries {
+		name := entry.Name()
+		switch {
+		case strings.HasPrefix(name, ".detent.exe.update-"):
+			stagedBinary = filepath.Join(dir, name)
+		case strings.HasPrefix(name, ".detent-update-") && strings.HasSuffix(name, ".cmd"):
+			script = filepath.Join(dir, name)
+		}
+	}
+	if stagedBinary == "" {
+		t.Fatal("staged binary was not created")
+	}
+	if script == "" {
+		t.Fatal("update script was not created")
+	}
+	return stagedBinary, script
 }

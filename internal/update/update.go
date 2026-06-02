@@ -13,6 +13,7 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strconv"
@@ -78,6 +79,8 @@ type ReleaseClient interface {
 	ListReleases(context.Context) ([]Release, error)
 	Download(context.Context, string) ([]byte, error)
 }
+
+type ProcessStarter func(string, []string) error
 
 type GitHubClientConfig struct {
 	APIBase    string
@@ -238,6 +241,14 @@ type ApplyOptions struct {
 	Confirm   func(Status) (bool, error)
 }
 
+type Replacement struct {
+	Target       string
+	Binary       []byte
+	Mode         os.FileMode
+	GOOS         string
+	StartProcess ProcessStarter
+}
+
 type Status struct {
 	CurrentVersion  string        `json:"current_version"`
 	LatestVersion   string        `json:"latest_version,omitempty"`
@@ -351,7 +362,12 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 		status.Message = err.Error()
 		return status, err
 	}
-	if err := ReplaceBinary(s.cfg.ExecutablePath, binary, mode); err != nil {
+	if err := ReplaceBinary(Replacement{
+		Target: s.cfg.ExecutablePath,
+		Binary: binary,
+		Mode:   mode,
+		GOOS:   s.cfg.GOOS,
+	}); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
@@ -359,7 +375,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 
 	status.Action = ActionUpdated
 	status.Asset = assets.Archive.Name
-	status.Message = fmt.Sprintf("Updated Detent from %s to %s.", status.CurrentVersion, status.LatestVersion)
+	status.Message = updateAppliedMessage(status, s.cfg.GOOS)
 	return status, nil
 }
 
@@ -504,7 +520,15 @@ func ExtractBinary(archive []byte, goos string) ([]byte, os.FileMode, error) {
 	return extractTarGzipBinary(archive)
 }
 
-func ReplaceBinary(target string, binary []byte, mode os.FileMode) error {
+func ReplaceBinary(replacement Replacement) error {
+	goos := firstNonEmpty(replacement.GOOS, runtime.GOOS)
+	if goos == "windows" {
+		return stageWindowsReplacement(replacement)
+	}
+	return replaceBinaryNow(replacement.Target, replacement.Binary, replacement.Mode)
+}
+
+func replaceBinaryNow(target string, binary []byte, mode os.FileMode) error {
 	if strings.TrimSpace(target) == "" {
 		return errors.New("target binary path is required")
 	}
@@ -535,6 +559,129 @@ func ReplaceBinary(target string, binary []byte, mode os.FileMode) error {
 	}
 	cleanup = false
 	return nil
+}
+
+func stageWindowsReplacement(replacement Replacement) error {
+	if strings.TrimSpace(replacement.Target) == "" {
+		return errors.New("target binary path is required")
+	}
+	mode := replacement.Mode
+	if mode == 0 {
+		mode = 0o755
+	}
+
+	dir := filepath.Dir(replacement.Target)
+	base := filepath.Base(replacement.Target)
+	source, err := writeWindowsUpdateBinary(dir, base, replacement.Binary, mode)
+	if err != nil {
+		return err
+	}
+	cleanupSource := true
+	defer func() {
+		if cleanupSource {
+			removeFile(source)
+		}
+	}()
+
+	script, err := writeWindowsUpdateScript(dir, source, replacement.Target)
+	if err != nil {
+		return err
+	}
+	cleanupScript := true
+	defer func() {
+		if cleanupScript {
+			removeFile(script)
+		}
+	}()
+
+	starter := replacement.StartProcess
+	if starter == nil {
+		starter = startProcess
+	}
+	if err := starter("cmd.exe", []string{"/D", "/C", "start", "", "/B", "cmd.exe", "/D", "/C", script}); err != nil {
+		return fmt.Errorf("start windows updater: %w", err)
+	}
+
+	cleanupSource = false
+	cleanupScript = false
+	return nil
+}
+
+func writeWindowsUpdateBinary(dir string, base string, binary []byte, mode os.FileMode) (string, error) {
+	temp, err := os.CreateTemp(dir, "."+base+".update-*")
+	if err != nil {
+		return "", fmt.Errorf("create update temp file: %w", err)
+	}
+	tempPath := temp.Name()
+	if err := writeBinaryTemp(temp, binary, mode); err != nil {
+		removeFile(tempPath)
+		return "", err
+	}
+	return tempPath, nil
+}
+
+func writeWindowsUpdateScript(dir string, source string, target string) (string, error) {
+	script, err := os.CreateTemp(dir, ".detent-update-*.cmd")
+	if err != nil {
+		return "", fmt.Errorf("create windows update script: %w", err)
+	}
+	scriptPath := script.Name()
+	raw := windowsUpdateScript(source, target)
+	if _, err := script.WriteString(raw); err != nil {
+		closeErr := script.Close()
+		removeFile(scriptPath)
+		if closeErr != nil {
+			return "", fmt.Errorf("write windows update script: %w; close update script: %w", err, closeErr)
+		}
+		return "", fmt.Errorf("write windows update script: %w", err)
+	}
+	if err := script.Chmod(0o700); err != nil {
+		closeErr := script.Close()
+		removeFile(scriptPath)
+		if closeErr != nil {
+			return "", fmt.Errorf("chmod windows update script: %w; close update script: %w", err, closeErr)
+		}
+		return "", fmt.Errorf("chmod windows update script: %w", err)
+	}
+	if err := script.Close(); err != nil {
+		removeFile(scriptPath)
+		return "", fmt.Errorf("close windows update script: %w", err)
+	}
+	return scriptPath, nil
+}
+
+func windowsUpdateScript(source string, target string) string {
+	return fmt.Sprintf(`@echo off
+setlocal DisableDelayedExpansion
+set "source=%s"
+set "target=%s"
+set /a attempts=0
+:retry
+move /Y "%%source%%" "%%target%%" >nul 2>nul
+if not exist "%%source%%" goto done
+set /a attempts+=1
+if %%attempts%% GEQ 60 exit /b 1
+timeout /t 1 /nobreak >nul 2>nul
+goto retry
+:done
+del "%%~f0" >nul 2>nul
+exit /b 0
+`, escapeBatchValue(source), escapeBatchValue(target))
+}
+
+func escapeBatchValue(value string) string {
+	return strings.ReplaceAll(value, "%", "%%")
+}
+
+func startProcess(command string, args []string) error {
+	return exec.Command(command, args...).Start()
+}
+
+func updateAppliedMessage(status Status, goos string) string {
+	if goos == "windows" {
+		return fmt.Sprintf("Updated Detent from %s to %s. The replacement will finish after Detent exits.", status.CurrentVersion, status.LatestVersion)
+	}
+	return fmt.Sprintf("Updated Detent from %s to %s.", status.CurrentVersion, status.LatestVersion)
 }
 
 func writeBinaryTemp(file *os.File, binary []byte, mode os.FileMode) error {

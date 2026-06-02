@@ -168,7 +168,8 @@ detent update --check
 
 Release-installer installs can update with `detent update`; use
 `detent update --yes` for non-interactive automation and `detent update --json`
-for machine-readable status. Homebrew installs delegate to
+for machine-readable status. On Windows, replacement is staged and completes
+after the running `detent.exe` exits. Homebrew installs delegate to
 `brew upgrade digitaldrywood/tap/detent`, while Go and source builds print the
 recommended command instead of overwriting the binary.
 
