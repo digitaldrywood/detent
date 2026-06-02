@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 func TestEvaluateAutoPromote(t *testing.T) {
@@ -202,6 +203,38 @@ func TestEvaluateAutoPromote(t *testing.T) {
 				PullRequestURL: "https://github.test/pull/42",
 				CIStatus:       "green",
 				ReviewState:    "COMMENTED",
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name:  "human review gate waits for approval label",
+			issue: autoPromoteTestIssue("issue-human-wait", []string{"strategy"}),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindHumanReview, ApprovalLabel: "approved-by-human"},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "red",
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonHumanApprovalMissing,
+			},
+		},
+		{
+			name:  "human review gate promotes with approval label without ci",
+			issue: autoPromoteTestIssue("issue-human-ready", []string{"Approved-By-Human"}),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindHumanReview, ApprovalLabel: "approved-by-human"},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "red",
 			},
 			want: AutoPromoteDecision{
 				Action: AutoPromoteActionPromote,

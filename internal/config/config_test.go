@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -85,6 +86,9 @@ codex:
   turn_timeout_ms: 600000
   read_timeout_ms: 1000
   stall_timeout_ms: 0
+gate:
+  kind: human_review
+  approval_label: Approved-By-Human
 server:
   host: 0.0.0.0
   port: 4001
@@ -175,6 +179,9 @@ Ticket prompt {{ issue.title }}
 	if !cfg.Codex.ApprovalPolicy.IsString || cfg.Codex.ApprovalPolicy.String != "never" {
 		t.Fatalf("Codex.ApprovalPolicy = %#v, want string never", cfg.Codex.ApprovalPolicy)
 	}
+	if cfg.Gate.Kind != gate.KindHumanReview || cfg.Gate.ApprovalLabel != "approved-by-human" || cfg.Gate.Run != "" {
+		t.Fatalf("Gate = %#v, want human_review with approved-by-human label", cfg.Gate)
+	}
 	if cfg.Codex.Shell != "bash" {
 		t.Fatalf("Codex.Shell = %q, want bash", cfg.Codex.Shell)
 	}
@@ -261,6 +268,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if len(cfg.Agents.Routes) != 0 {
 		t.Fatalf("Agents.Routes len = %d, want legacy empty config", len(cfg.Agents.Routes))
+	}
+	if cfg.Gate.Kind != gate.KindCommand || cfg.Gate.Run != gate.DefaultCommand {
+		t.Fatalf("Gate = %#v, want default command gate", cfg.Gate)
 	}
 }
 
@@ -722,6 +732,20 @@ Prompt
 				"identity.owner_field is required when identity.ownership_mode is field",
 				"tracker.authorization.priority_in values must be integers 1 through 4",
 				"tracker.authorization.fields[0].name must not be blank",
+			},
+		},
+		{
+			name: "invalid gate config",
+			raw: `---
+tracker:
+  kind: memory
+gate:
+  kind: checklist
+---
+Prompt
+`,
+			want: []string{
+				"gate.kind must be one of command, human_review",
 			},
 		},
 	}

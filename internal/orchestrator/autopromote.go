@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 type AutoPromoteConfig struct {
@@ -12,6 +13,7 @@ type AutoPromoteConfig struct {
 	QuietDuration      time.Duration
 	OptoutLabel        string
 	AllowedIssueLabels []string
+	Gate               gate.Config
 }
 
 type AutoPromoteSummary struct {
@@ -42,15 +44,16 @@ const (
 type AutoPromoteReason string
 
 const (
-	AutoPromoteReasonReady               AutoPromoteReason = "ready"
-	AutoPromoteReasonDisabled            AutoPromoteReason = "disabled"
-	AutoPromoteReasonOptoutLabel         AutoPromoteReason = "optout_label"
-	AutoPromoteReasonLabelNotAllowed     AutoPromoteReason = "label_not_allowed"
-	AutoPromoteReasonMissingPullRequest  AutoPromoteReason = "missing_pull_request"
-	AutoPromoteReasonCINotGreen          AutoPromoteReason = "ci_not_green"
-	AutoPromoteReasonCodexReviewMissing  AutoPromoteReason = "codex_review_missing"
-	AutoPromoteReasonP1Findings          AutoPromoteReason = "p1_findings"
-	AutoPromoteReasonCodexReviewNotQuiet AutoPromoteReason = "codex_review_not_quiet"
+	AutoPromoteReasonReady                AutoPromoteReason = "ready"
+	AutoPromoteReasonDisabled             AutoPromoteReason = "disabled"
+	AutoPromoteReasonOptoutLabel          AutoPromoteReason = "optout_label"
+	AutoPromoteReasonLabelNotAllowed      AutoPromoteReason = "label_not_allowed"
+	AutoPromoteReasonMissingPullRequest   AutoPromoteReason = "missing_pull_request"
+	AutoPromoteReasonCINotGreen           AutoPromoteReason = "ci_not_green"
+	AutoPromoteReasonCodexReviewMissing   AutoPromoteReason = "codex_review_missing"
+	AutoPromoteReasonP1Findings           AutoPromoteReason = "p1_findings"
+	AutoPromoteReasonCodexReviewNotQuiet  AutoPromoteReason = "codex_review_not_quiet"
+	AutoPromoteReasonHumanApprovalMissing AutoPromoteReason = "human_approval_missing"
 )
 
 type AutoPromoteDecision struct {
@@ -78,29 +81,14 @@ func EvaluateAutoPromote(
 	if !autoPromoteAllowedIssueLabel(issue, cfg) {
 		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonLabelNotAllowed)
 	}
-	if autoPromoteMissingPullRequest(summary) {
-		return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonMissingPullRequest)
-	}
-	if normalizeAutoPromoteCIStatus(summary.CIStatus) != "green" {
-		decision := autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonCINotGreen)
-		decision.CIStatus = normalizeAutoPromoteCIStatus(summary.CIStatus)
-		return decision
-	}
-	if !autoPromoteCodexReviewSubmitted(summary) {
-		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonCodexReviewMissing)
-	}
-	if len(summary.P1Findings) > 0 {
-		decision := autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonP1Findings)
-		decision.Findings = cloneAutoPromoteFindings(summary.P1Findings)
-		return decision
-	}
-	if remaining := autoPromoteQuietRemaining(summary, cfg, now); remaining > 0 {
-		decision := autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonCodexReviewNotQuiet)
-		decision.QuietRemaining = remaining
-		return decision
-	}
-
-	return autoPromoteDecision(AutoPromoteActionPromote, AutoPromoteReasonReady)
+	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateSummary(summary), now, gate.EvaluationOptions{
+		QuietDuration: cfg.QuietDuration,
+	})
+	decision := autoPromoteDecision(autoPromoteActionFromGate(gateDecision.Action), autoPromoteReasonFromGate(gateDecision.Reason))
+	decision.CIStatus = gateDecision.CIStatus
+	decision.QuietRemaining = gateDecision.QuietRemaining
+	decision.Findings = autoPromoteFindingsFromGate(gateDecision.Findings)
+	return decision
 }
 
 func autoPromoteDecision(action AutoPromoteAction, reason AutoPromoteReason) AutoPromoteDecision {
@@ -116,6 +104,7 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 	}
 	cfg.OptoutLabel = normalizeLabel(cfg.OptoutLabel)
 	cfg.AllowedIssueLabels = normalizeLabels(cfg.AllowedIssueLabels)
+	cfg.Gate = gate.Effective(cfg.Gate)
 	return cfg
 }
 
@@ -149,42 +138,6 @@ func autoPromoteAllowedIssueLabel(issue connector.Issue, cfg AutoPromoteConfig) 
 	return false
 }
 
-func autoPromoteMissingPullRequest(summary AutoPromoteSummary) bool {
-	return !summary.PullRequestPresent && strings.TrimSpace(summary.PullRequestURL) == ""
-}
-
-func normalizeAutoPromoteCIStatus(status string) string {
-	return strings.ToLower(strings.TrimSpace(status))
-}
-
-func autoPromoteCodexReviewSubmitted(summary AutoPromoteSummary) bool {
-	switch strings.ToUpper(strings.TrimSpace(summary.ReviewState)) {
-	case "APPROVED", "COMMENTED", "REQUESTED_CHANGES", "CHANGES_REQUESTED":
-		return true
-	default:
-		return false
-	}
-}
-
-func autoPromoteQuietRemaining(summary AutoPromoteSummary, cfg AutoPromoteConfig, now time.Time) time.Duration {
-	if cfg.QuietDuration <= 0 {
-		return 0
-	}
-	if summary.LastActivityAt == nil {
-		return cfg.QuietDuration
-	}
-
-	remaining := cfg.QuietDuration - now.Sub(*summary.LastActivityAt)
-	if remaining < 0 {
-		return 0
-	}
-	return remaining
-}
-
-func cloneAutoPromoteFindings(findings []AutoPromoteFinding) []AutoPromoteFinding {
-	return append([]AutoPromoteFinding(nil), findings...)
-}
-
 func normalizeLabel(label string) string {
 	return strings.ToLower(strings.TrimSpace(label))
 }
@@ -204,4 +157,75 @@ func normalizeLabels(labels []string) []string {
 		normalized = append(normalized, label)
 	}
 	return normalized
+}
+
+func gateSummary(summary AutoPromoteSummary) gate.Summary {
+	return gate.Summary{
+		PullRequestPresent: summary.PullRequestPresent,
+		PullRequestURL:     summary.PullRequestURL,
+		CIStatus:           summary.CIStatus,
+		ReviewState:        summary.ReviewState,
+		P1Findings:         gateFindings(summary.P1Findings),
+		LastActivityAt:     summary.LastActivityAt,
+	}
+}
+
+func gateFindings(findings []AutoPromoteFinding) []gate.Finding {
+	out := make([]gate.Finding, 0, len(findings))
+	for _, finding := range findings {
+		out = append(out, gate.Finding{
+			Body: finding.Body,
+			URL:  finding.URL,
+			Path: finding.Path,
+			Line: finding.Line,
+		})
+	}
+	return out
+}
+
+func autoPromoteFindingsFromGate(findings []gate.Finding) []AutoPromoteFinding {
+	out := make([]AutoPromoteFinding, 0, len(findings))
+	for _, finding := range findings {
+		out = append(out, AutoPromoteFinding{
+			Body: finding.Body,
+			URL:  finding.URL,
+			Path: finding.Path,
+			Line: finding.Line,
+		})
+	}
+	return out
+}
+
+func autoPromoteActionFromGate(action gate.Action) AutoPromoteAction {
+	switch action {
+	case gate.ActionPass:
+		return AutoPromoteActionPromote
+	case gate.ActionRework:
+		return AutoPromoteActionRework
+	case gate.ActionWait:
+		return AutoPromoteActionAwaitReview
+	default:
+		return AutoPromoteActionSkip
+	}
+}
+
+func autoPromoteReasonFromGate(reason gate.Reason) AutoPromoteReason {
+	switch reason {
+	case gate.ReasonReady:
+		return AutoPromoteReasonReady
+	case gate.ReasonMissingPullRequest:
+		return AutoPromoteReasonMissingPullRequest
+	case gate.ReasonCINotGreen:
+		return AutoPromoteReasonCINotGreen
+	case gate.ReasonAutomatedReviewMissing:
+		return AutoPromoteReasonCodexReviewMissing
+	case gate.ReasonP1Findings:
+		return AutoPromoteReasonP1Findings
+	case gate.ReasonAutomatedReviewNotQuiet:
+		return AutoPromoteReasonCodexReviewNotQuiet
+	case gate.ReasonHumanApprovalMissing:
+		return AutoPromoteReasonHumanApprovalMissing
+	default:
+		return AutoPromoteReasonDisabled
+	}
 }

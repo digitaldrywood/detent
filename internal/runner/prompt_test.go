@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/skills"
 )
@@ -74,6 +75,8 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"metadata=author-1 reviewer-1, reviewer-2 map[Status:Todo]",
 		"## Lessons from prior runs",
 		"Check generator aliases before editing.",
+		"## Validation gate",
+		"Run `make check` from the workspace root",
 		"## Available skills",
 		"- migrate — Issue mentions schema changes.",
 	} {
@@ -83,6 +86,36 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Add migrations.") {
 		t.Fatalf("prompt included skill description, want only when_to_use:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
+	t.Parallel()
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Gate: gate.Config{
+				Kind:          gate.KindHumanReview,
+				ApprovalLabel: "Approved-By-Human",
+			},
+		},
+		Prompt: "Gate {{ gate.kind }} label={{ gate.approval_label }} run={{ gate.run }}",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#266",
+		Title:      "Gate prompt",
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"Gate human_review label=approved-by-human run=",
+		"## Validation gate",
+		"Keep the pull request in Human Review until a human applies label `approved-by-human`",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 
@@ -183,8 +216,8 @@ func TestBuildPromptRendersIssueFieldLookups(t *testing.T) {
 			if err != nil {
 				t.Fatalf("BuildPrompt() error = %v", err)
 			}
-			if prompt != tt.want {
-				t.Fatalf("prompt = %q, want %q", prompt, tt.want)
+			if !strings.HasPrefix(prompt, tt.want) {
+				t.Fatalf("prompt = %q, want prefix %q", prompt, tt.want)
 			}
 		})
 	}
@@ -202,8 +235,8 @@ func TestBuildPromptRendersNestedConditionals(t *testing.T) {
 	if err != nil {
 		t.Fatalf("BuildPrompt() error = %v", err)
 	}
-	if prompt != "No body" {
-		t.Fatalf("prompt = %q, want No body", prompt)
+	if !strings.HasPrefix(prompt, "No body") {
+		t.Fatalf("prompt = %q, want No body prefix", prompt)
 	}
 	if strings.Contains(prompt, "{% endif %}") {
 		t.Fatalf("prompt left template delimiter: %q", prompt)
