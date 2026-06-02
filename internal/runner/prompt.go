@@ -195,6 +195,8 @@ func issueAssigns(issue connector.Issue) map[string]any {
 		"state":              issue.State,
 		"branch_name":        issue.BranchName,
 		"url":                issue.URL,
+		"pr_number":          intPointerValue(issue.PRNumber),
+		"pull_request":       pullRequestAssigns(issue.PullRequest),
 		"author_id":          issue.AuthorID,
 		"assignee_id":        issue.AssigneeID,
 		"assignees":          issue.Assignees,
@@ -205,6 +207,23 @@ func issueAssigns(issue connector.Issue) map[string]any {
 		"created_at":         timePointerValue(issue.CreatedAt),
 		"updated_at":         timePointerValue(issue.UpdatedAt),
 		"model_override":     issue.ModelOverride,
+	}
+}
+
+func pullRequestAssigns(pullRequest *connector.PullRequest) map[string]any {
+	if pullRequest == nil {
+		return nil
+	}
+	return map[string]any{
+		"number":                pullRequest.Number,
+		"url":                   pullRequest.URL,
+		"branch_name":           pullRequest.BranchName,
+		"state":                 pullRequest.State,
+		"ci_status":             pullRequest.CIStatus,
+		"codex_review_state":    pullRequest.CodexReviewState,
+		"head_repository":       pullRequest.HeadRepository,
+		"base_repository":       pullRequest.BaseRepository,
+		"maintainer_can_modify": pullRequest.MaintainerCanModify,
 	}
 }
 

@@ -22,6 +22,22 @@ func TestProjectCacheReturnsFreshItemIDByProjectAndIssue(t *testing.T) {
 	}
 }
 
+func TestProjectCacheReturnsFreshItemStatus(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	cache := newProjectCache(5*time.Minute, func() time.Time { return now })
+	cache.SetItem("PVT_1", "PR_1", projectItemStatus{ID: "PVTI_1", StatusName: "Merging"})
+
+	got, ok := cache.GetItem("PVT_1", "PR_1")
+	if !ok {
+		t.Fatal("GetItem() ok = false, want true")
+	}
+	if got.ID != "PVTI_1" || got.StatusName != "Merging" {
+		t.Fatalf("GetItem() = %#v, want item id PVTI_1 with Merging status", got)
+	}
+}
+
 func TestProjectCacheExpiresItemID(t *testing.T) {
 	t.Parallel()
 

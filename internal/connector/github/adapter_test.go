@@ -294,6 +294,68 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssuesByStatesNormalizesPullRequestProjectItem(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_pr_268","content":{"__typename":"PullRequest","id":"PR_kw1","number":268,"title":"Contributor fix","body":"Ready to merge.","state":"OPEN","url":"https://github.com/digitaldrywood/detent/pull/268","createdAt":"2026-05-30T01:02:03Z","updatedAt":"2026-06-01T02:03:04Z","author":{"login":"external-contributor"},"repository":{"nameWithOwner":"digitaldrywood/detent"},"headRefName":"fix-from-fork","headRepository":{"nameWithOwner":"contributor/detent"},"baseRepository":{"nameWithOwner":"digitaldrywood/detent"},"maintainerCanModify":true,"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]},"latestReviews":{"nodes":[{"body":"Looks good.","state":"APPROVED","author":{"login":"maintainer"}},{"body":"[P2] Clean.","state":"COMMENTED","author":{"login":"codex"}}]}},"statusValue":{"name":"Merging","updatedAt":"2026-06-01T12:30:00Z"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[{"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"Merging","field":{"name":"Status"}},{"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"P1","field":{"name":"Priority"}}]}}]}}}}`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+		PriorityMap: map[string]*int{"P1": intPtr(2)},
+	})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Merging"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+
+	issue := got[0]
+	if issue.ID != "PR_kw1" || issue.Identifier != "digitaldrywood/detent!268" {
+		t.Fatalf("PR issue identity = %q/%q, want PR_kw1/digitaldrywood/detent!268", issue.ID, issue.Identifier)
+	}
+	if issue.Title != "Contributor fix" || issue.Description != "Ready to merge." || issue.URL != "https://github.com/digitaldrywood/detent/pull/268" {
+		t.Fatalf("PR issue metadata = %#v", issue)
+	}
+	if issue.Priority == nil || *issue.Priority != 2 {
+		t.Fatalf("Priority = %v, want 2", issue.Priority)
+	}
+	if issue.AuthorID != "external-contributor" {
+		t.Fatalf("AuthorID = %q, want external-contributor", issue.AuthorID)
+	}
+	if issue.PRNumber == nil || *issue.PRNumber != 268 {
+		t.Fatalf("PRNumber = %v, want 268", issue.PRNumber)
+	}
+	pr := issue.PullRequest
+	if pr == nil {
+		t.Fatal("PullRequest = nil, want normalized PR metadata")
+	}
+	if pr.Number != 268 || pr.State != "OPEN" || pr.BranchName != "fix-from-fork" || pr.CIStatus != "pass" || pr.CodexReviewState != "P2" {
+		t.Fatalf("PullRequest = %#v, want PR 268 pass/P2 fork metadata", pr)
+	}
+	if pr.HeadRepository != "contributor/detent" || pr.BaseRepository != "digitaldrywood/detent" || !pr.MaintainerCanModify {
+		t.Fatalf("PullRequest fork fields = %#v, want contributor fork with maintainer edit", pr)
+	}
+	if issue.StageUpdatedAt == nil || !issue.StageUpdatedAt.Equal(time.Date(2026, 6, 1, 12, 30, 0, 0, time.UTC)) {
+		t.Fatalf("StageUpdatedAt = %v, want project status update time", issue.StageUpdatedAt)
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want one project item query", len(requests))
+	}
+	query := requests[0]["query"].(string)
+	for _, want := range []string{"... on PullRequest", "headRepository", "baseRepository", "maintainerCanModify"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("project query missing %q:\n%s", want, query)
+		}
+	}
+}
+
 func TestConnectorFetchCandidateIssuesLimitsPullRequestPagination(t *testing.T) {
 	t.Parallel()
 
@@ -637,6 +699,87 @@ func TestConnectorUpdateIssueStateWritesStatusOptionID(t *testing.T) {
 	}
 	if variables["optionId"] == "Ready" {
 		t.Fatal("optionId used the option name, want option id")
+	}
+}
+
+func TestConnectorUpdateIssueStateUsesCachedProjectItemForPullRequest(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_pr_268","content":{"__typename":"PullRequest","id":"PR_kw1","number":268,"title":"Contributor fix","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/pull/268","createdAt":null,"updatedAt":null,"author":{"login":"external-contributor"},"repository":{"nameWithOwner":"digitaldrywood/detent"},"headRefName":"fix-from-fork","headRepository":{"nameWithOwner":"contributor/detent"},"baseRepository":{"nameWithOwner":"digitaldrywood/detent"},"maintainerCanModify":true,"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]},"latestReviews":{"nodes":[]}},"statusValue":{"name":"Merging"},"priorityValue":null}]}}}}`},
+		{body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_done","name":"Done"}]}}}}`},
+		{body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_pr_268"}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Merging"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+	if err := c.UpdateIssueState(context.Background(), got[0].ID, "Done"); err != nil {
+		t.Fatalf("UpdateIssueState() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want project query, status metadata, update", len(requests))
+	}
+	if strings.Contains(requests[1]["query"].(string), "projectItems") {
+		t.Fatalf("UpdateIssueState refetched project item instead of using cache:\n%s", requests[1]["query"])
+	}
+	variables := requests[2]["variables"].(map[string]any)
+	if variables["itemId"] != "PVTI_pr_268" {
+		t.Fatalf("itemId = %v, want cached PR project item", variables["itemId"])
+	}
+	if variables["optionId"] != "OPT_done" {
+		t.Fatalf("optionId = %v, want Done option id", variables["optionId"])
+	}
+}
+
+func TestConnectorUpdateIssueStateResolvesPullRequestProjectItemAfterCacheExpiry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_pr_268","content":{"__typename":"PullRequest","id":"PR_kw1","number":268,"title":"Contributor fix","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/pull/268","createdAt":null,"updatedAt":null,"author":{"login":"external-contributor"},"repository":{"nameWithOwner":"digitaldrywood/detent"},"headRefName":"fix-from-fork","headRepository":{"nameWithOwner":"contributor/detent"},"baseRepository":{"nameWithOwner":"digitaldrywood/detent"},"maintainerCanModify":true,"commits":{"nodes":[{"commit":{"statusCheckRollup":{"state":"SUCCESS"}}}]},"latestReviews":{"nodes":[]}},"statusValue":{"name":"Merging"},"priorityValue":null}]}}}}`},
+		{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_pr_268","project":{"id":"PVT_1"},"statusValue":{"name":"Merging"}}]}}}}`},
+		{body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_done","name":"Done"}]}}}}`},
+		{body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_pr_268"}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+		Now:         func() time.Time { return now },
+	})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Merging"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+	now = now.Add(githubCacheTTL)
+	if err := c.UpdateIssueState(context.Background(), got[0].ID, "Done"); err != nil {
+		t.Fatalf("UpdateIssueState() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want project query, PR item lookup, status metadata, update", len(requests))
+	}
+	if !strings.Contains(requests[1]["query"].(string), "... on PullRequest") {
+		t.Fatalf("project item lookup query missing PullRequest fragment:\n%s", requests[1]["query"])
+	}
+	lookupVariables := requests[1]["variables"].(map[string]any)
+	if lookupVariables["issueId"] != "PR_kw1" {
+		t.Fatalf("issueId = %v, want PR node id", lookupVariables["issueId"])
+	}
+	updateVariables := requests[3]["variables"].(map[string]any)
+	if updateVariables["itemId"] != "PVTI_pr_268" {
+		t.Fatalf("itemId = %v, want resolved PR project item", updateVariables["itemId"])
 	}
 }
 

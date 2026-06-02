@@ -163,6 +163,44 @@ func TestBuildPromptAppendsGitHubClosingReferenceInstruction(t *testing.T) {
 	}
 }
 
+func TestBuildPromptRendersPullRequestAssigns(t *testing.T) {
+	t.Parallel()
+
+	prNumber := 268
+	prompt, err := BuildPrompt(config.Workflow{
+		Prompt: "PR {{ issue.pr_number }} {{ issue.pull_request.url }} {{ issue.pull_request.branch_name }} {{ issue.pull_request.head_repository }} {{ issue.pull_request.base_repository }} maintainer={{ issue.pull_request.maintainer_can_modify }}",
+	}, connector.Issue{
+		ID:          "PR_kw1",
+		Identifier:  "digitaldrywood/detent!268",
+		Title:       "Contributor fix",
+		Description: "Ready to merge.",
+		URL:         "https://github.com/digitaldrywood/detent/pull/268",
+		PRNumber:    &prNumber,
+		PullRequest: &connector.PullRequest{
+			Number:              268,
+			URL:                 "https://github.com/digitaldrywood/detent/pull/268",
+			BranchName:          "fix-from-fork",
+			State:               "OPEN",
+			CIStatus:            "pass",
+			CodexReviewState:    "P2",
+			HeadRepository:      "contributor/detent",
+			BaseRepository:      "digitaldrywood/detent",
+			MaintainerCanModify: true,
+		},
+	}, PromptOptions{})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	want := "PR 268 https://github.com/digitaldrywood/detent/pull/268 fix-from-fork contributor/detent digitaldrywood/detent maintainer=true"
+	if !strings.HasPrefix(prompt, want) {
+		t.Fatalf("prompt = %q, want prefix %q", prompt, want)
+	}
+	if strings.Contains(prompt, "Fixes #268") {
+		t.Fatalf("PR-only identifier appended issue closing reference:\n%s", prompt)
+	}
+}
+
 func TestBuildPromptRejectsUnknownTemplateVariables(t *testing.T) {
 	t.Parallel()
 

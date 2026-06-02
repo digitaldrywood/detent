@@ -45,6 +45,38 @@ query DetentGitHubProjectItems($projectId: ID!, $first: Int!, $after: String) {
               repository { nameWithOwner }
               closedByPullRequestsReferences(first: 5) { nodes { number url } }
             }
+            ... on PullRequest {
+              id
+              number
+              title
+              body
+              state
+              url
+              createdAt
+              updatedAt
+              author { login }
+              assignees(first: 100) { nodes { id login } }
+              labels(first: 20) { nodes { name } }
+              repository { nameWithOwner }
+              headRefName
+              headRepository { nameWithOwner }
+              baseRepository { nameWithOwner }
+              maintainerCanModify
+              commits(last: 1) {
+                nodes {
+                  commit {
+                    statusCheckRollup { state }
+                  }
+                }
+              }
+              latestReviews(first: 20) {
+                nodes {
+                  body
+                  state
+                  author { login }
+                }
+              }
+            }
           }
           statusValue: fieldValueByName(name: "Status") {
             ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
@@ -152,6 +184,9 @@ query DetentGitHubPullRequests($owner: String!, $name: String!, $states: [PullRe
         url
         state
         headRefName
+        headRepository { nameWithOwner }
+        baseRepository { nameWithOwner }
+        maintainerCanModify
         commits(last: 1) {
           nodes {
             commit {
@@ -277,6 +312,38 @@ query DetentGitHubProjectItemForIssue($issueId: ID!, $projectItemsFirst: Int!, $
         }
       }
     }
+    ... on PullRequest {
+      projectItems(first: $projectItemsFirst, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          project { id }
+          statusValue: fieldValueByName(name: "Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
+          }
+          priorityValue: fieldValueByName(name: "Priority") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+          fieldValues(first: 100) {
+            nodes {
+              __typename
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                name
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+              ... on ProjectV2ItemFieldTextValue {
+                text
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+              ... on ProjectV2ItemFieldNumberValue {
+                number
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+            }
+          }
+        }
+      }
+    }
   }
   rateLimit { limit used remaining cost resetAt }
 }`
@@ -325,11 +392,34 @@ type projectItemsConnection struct {
 
 type projectItemNode struct {
 	ID            string                            `json:"id"`
-	Content       *githubIssueNode                  `json:"content"`
+	Content       *projectItemContentNode           `json:"content"`
 	Project       *projectRef                       `json:"project"`
 	StatusValue   *singleSelectValue                `json:"statusValue"`
 	PriorityValue *singleSelectValue                `json:"priorityValue"`
 	FieldValues   nodeConnection[projectFieldValue] `json:"fieldValues"`
+}
+
+type projectItemContentNode struct {
+	TypeName                       string                            `json:"__typename"`
+	ID                             string                            `json:"id"`
+	Number                         int                               `json:"number"`
+	Title                          string                            `json:"title"`
+	Body                           string                            `json:"body"`
+	State                          string                            `json:"state"`
+	URL                            string                            `json:"url"`
+	CreatedAt                      *string                           `json:"createdAt"`
+	UpdatedAt                      *string                           `json:"updatedAt"`
+	Author                         *actor                            `json:"author"`
+	Assignees                      nodeConnection[assignee]          `json:"assignees"`
+	Labels                         nodeConnection[label]             `json:"labels"`
+	Repository                     repository                        `json:"repository"`
+	ClosedByPullRequestsReferences nodeConnection[pullRequest]       `json:"closedByPullRequestsReferences"`
+	HeadRefName                    string                            `json:"headRefName"`
+	HeadRepository                 *repository                       `json:"headRepository"`
+	BaseRepository                 *repository                       `json:"baseRepository"`
+	MaintainerCanModify            bool                              `json:"maintainerCanModify"`
+	Commits                        nodeConnection[pullRequestCommit] `json:"commits"`
+	LatestReviews                  nodeConnection[pullRequestReview] `json:"latestReviews"`
 }
 
 type githubIssueNode struct {
@@ -374,12 +464,15 @@ type pullRequest struct {
 }
 
 type pullRequestNode struct {
-	Number        int                               `json:"number"`
-	URL           string                            `json:"url"`
-	State         string                            `json:"state"`
-	HeadRefName   string                            `json:"headRefName"`
-	Commits       nodeConnection[pullRequestCommit] `json:"commits"`
-	LatestReviews nodeConnection[pullRequestReview] `json:"latestReviews"`
+	Number              int                               `json:"number"`
+	URL                 string                            `json:"url"`
+	State               string                            `json:"state"`
+	HeadRefName         string                            `json:"headRefName"`
+	HeadRepository      *repository                       `json:"headRepository"`
+	BaseRepository      *repository                       `json:"baseRepository"`
+	MaintainerCanModify bool                              `json:"maintainerCanModify"`
+	Commits             nodeConnection[pullRequestCommit] `json:"commits"`
+	LatestReviews       nodeConnection[pullRequestReview] `json:"latestReviews"`
 }
 
 type pullRequestCommit struct {
@@ -770,12 +863,15 @@ func attachMatchingPullRequests(
 			}
 
 			issues[candidate.Index].PullRequest = &connector.PullRequest{
-				Number:           pullRequest.Number,
-				URL:              strings.TrimSpace(pullRequest.URL),
-				BranchName:       branchName,
-				State:            strings.ToUpper(strings.TrimSpace(pullRequest.State)),
-				CIStatus:         normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
-				CodexReviewState: pullRequestCodexReviewState(pullRequest),
+				Number:              pullRequest.Number,
+				URL:                 strings.TrimSpace(pullRequest.URL),
+				BranchName:          branchName,
+				State:               strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+				CIStatus:            normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
+				CodexReviewState:    pullRequestCodexReviewState(pullRequest),
+				HeadRepository:      repositoryName(pullRequest.HeadRepository),
+				BaseRepository:      repositoryName(pullRequest.BaseRepository),
+				MaintainerCanModify: pullRequest.MaintainerCanModify,
 			}
 			if issues[candidate.Index].PRNumber == nil && pullRequest.Number > 0 {
 				number := pullRequest.Number
@@ -833,16 +929,155 @@ func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connec
 }
 
 func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue, bool) {
-	if item.Content == nil || item.Content.TypeName != "Issue" {
+	if item.Content == nil {
 		return connector.Issue{}, false
 	}
-	return c.buildIssue(
-		*item.Content,
-		singleSelectName(item.StatusValue),
-		singleSelectName(item.PriorityValue),
-		singleSelectUpdatedAt(item.StatusValue),
-		projectFieldValues(item.FieldValues),
-	), true
+	switch item.Content.TypeName {
+	case "Issue":
+		issue := c.buildIssue(
+			item.Content.githubIssueNode(),
+			singleSelectName(item.StatusValue),
+			singleSelectName(item.PriorityValue),
+			singleSelectUpdatedAt(item.StatusValue),
+			projectFieldValues(item.FieldValues),
+		)
+		c.cacheProjectItem(issue.ID, item)
+		return issue, true
+	case "PullRequest":
+		issue := c.buildPullRequestIssue(*item.Content,
+			singleSelectName(item.StatusValue),
+			singleSelectName(item.PriorityValue),
+			singleSelectUpdatedAt(item.StatusValue),
+			projectFieldValues(item.FieldValues),
+		)
+		c.cacheProjectItem(issue.ID, item)
+		return issue, true
+	default:
+		return connector.Issue{}, false
+	}
+}
+
+func (c *Connector) cacheProjectItem(contentID string, item projectItemNode) {
+	c.projectCache.SetItem(c.projectID, contentID, projectItemStatus{
+		ID:         item.ID,
+		StatusName: singleSelectName(item.StatusValue),
+	})
+}
+
+func (n projectItemContentNode) githubIssueNode() githubIssueNode {
+	return githubIssueNode{
+		TypeName:                       n.TypeName,
+		ID:                             n.ID,
+		Number:                         n.Number,
+		Title:                          n.Title,
+		Body:                           n.Body,
+		State:                          n.State,
+		URL:                            n.URL,
+		CreatedAt:                      n.CreatedAt,
+		UpdatedAt:                      n.UpdatedAt,
+		Author:                         n.Author,
+		Assignees:                      n.Assignees,
+		Labels:                         n.Labels,
+		Repository:                     n.Repository,
+		ClosedByPullRequestsReferences: n.ClosedByPullRequestsReferences,
+	}
+}
+
+func (c *Connector) buildPullRequestIssue(pr projectItemContentNode, statusName string, priorityName string, statusUpdatedAt *time.Time, fields map[string]string) connector.Issue {
+	repo := strings.TrimSpace(pr.Repository.NameWithOwner)
+	prNumber := pr.Number
+	return connector.Issue{
+		ID:          pr.ID,
+		Identifier:  buildPullRequestIdentifier(repo, pr.Number),
+		Title:       pr.Title,
+		Description: pr.Body,
+		Priority:    c.priorityRank(priorityName),
+		State:       c.githubToDetentState(statusName),
+		URL:         pr.URL,
+		PRNumber:    positiveIntPointer(prNumber),
+		PullRequest: &connector.PullRequest{
+			Number:              pr.Number,
+			URL:                 strings.TrimSpace(pr.URL),
+			BranchName:          strings.TrimSpace(pr.HeadRefName),
+			State:               strings.ToUpper(strings.TrimSpace(pr.State)),
+			CIStatus:            normalizePullRequestCIStatus(pullRequestCIState(pr.pullRequestNode())),
+			CodexReviewState:    pullRequestCodexReviewState(pr.pullRequestNode()),
+			HeadRepository:      repositoryName(pr.HeadRepository),
+			BaseRepository:      repositoryName(pr.BaseRepository),
+			MaintainerCanModify: pr.MaintainerCanModify,
+		},
+		AuthorID:         actorLogin(pr.Author),
+		AssigneeID:       firstAssigneeLogin(pr.Assignees),
+		Assignees:        allAssigneeLogins(pr.Assignees),
+		Labels:           labelNames(pr.Labels),
+		Fields:           cloneStringMap(fields),
+		AssignedToWorker: true,
+		CreatedAt:        parseGitHubTime(pr.CreatedAt),
+		UpdatedAt:        parseGitHubTime(pr.UpdatedAt),
+		StageUpdatedAt:   statusUpdatedAt,
+	}
+}
+
+func (n projectItemContentNode) pullRequestNode() pullRequestNode {
+	return pullRequestNode{
+		Number:              n.Number,
+		URL:                 n.URL,
+		State:               n.State,
+		HeadRefName:         n.HeadRefName,
+		HeadRepository:      n.HeadRepository,
+		BaseRepository:      n.BaseRepository,
+		MaintainerCanModify: n.MaintainerCanModify,
+		Commits:             n.Commits,
+		LatestReviews:       n.LatestReviews,
+	}
+}
+
+func repositoryName(repo *repository) string {
+	if repo == nil {
+		return ""
+	}
+	return strings.TrimSpace(repo.NameWithOwner)
+}
+
+func positiveIntPointer(value int) *int {
+	if value <= 0 {
+		return nil
+	}
+	return &value
+}
+
+func buildPullRequestIdentifier(repo string, number int) string {
+	repo = strings.TrimSpace(repo)
+	if repo == "" || number <= 0 {
+		return ""
+	}
+	return repo + "!" + strconv.Itoa(number)
+}
+
+func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorityName string, statusUpdatedAt *time.Time, fields map[string]string) connector.Issue {
+	repo := strings.TrimSpace(issue.Repository.NameWithOwner)
+	return connector.Issue{
+		ID:               issue.ID,
+		Identifier:       buildIdentifier(repo, issue.Number),
+		Title:            issue.Title,
+		Description:      issue.Body,
+		Priority:         c.priorityRank(priorityName),
+		State:            c.githubToDetentState(statusName),
+		URL:              issue.URL,
+		PRNumber:         firstPullRequestNumber(issue.ClosedByPullRequestsReferences),
+		AuthorID:         actorLogin(issue.Author),
+		AssigneeID:       firstAssigneeLogin(issue.Assignees),
+		Assignees:        allAssigneeLogins(issue.Assignees),
+		BlockedBy:        parseBlockedBy(issue.Body, repo),
+		BlockerReason:    parseBlockerReason(issue),
+		Labels:           labelNames(issue.Labels),
+		Fields:           cloneStringMap(fields),
+		AssignedToWorker: true,
+		CreatedAt:        parseGitHubTime(issue.CreatedAt),
+		UpdatedAt:        parseGitHubTime(issue.UpdatedAt),
+		StageUpdatedAt:   statusUpdatedAt,
+		ModelOverride:    parseModelOverride(issue.Body),
+	}
 }
 
 func resolveBlockedByProjectState(issues []connector.Issue) {
@@ -906,7 +1141,7 @@ func (c *Connector) projectFields(issueID string, items *projectItemsConnection)
 	}
 	for _, item := range items.Nodes {
 		if item.Project != nil && item.Project.ID == c.projectID {
-			c.projectCache.SetItemID(c.projectID, issueID, item.ID)
+			c.cacheProjectItem(issueID, item)
 			return singleSelectName(item.StatusValue), singleSelectName(item.PriorityValue), singleSelectUpdatedAt(item.StatusValue), projectFieldValues(item.FieldValues), true
 		}
 	}
@@ -940,32 +1175,6 @@ func (c *Connector) fetchProjectFieldsPage(ctx context.Context, issueID string, 
 		return "", "", nil, nil, false, ErrInvalidResponse
 	}
 	return c.fetchProjectFieldsPage(ctx, issueID, &cursor)
-}
-
-func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorityName string, statusUpdatedAt *time.Time, fields map[string]string) connector.Issue {
-	repo := strings.TrimSpace(issue.Repository.NameWithOwner)
-	return connector.Issue{
-		ID:               issue.ID,
-		Identifier:       buildIdentifier(repo, issue.Number),
-		Title:            issue.Title,
-		Description:      issue.Body,
-		Priority:         c.priorityRank(priorityName),
-		State:            c.githubToDetentState(statusName),
-		URL:              issue.URL,
-		PRNumber:         firstPullRequestNumber(issue.ClosedByPullRequestsReferences),
-		AuthorID:         actorLogin(issue.Author),
-		AssigneeID:       firstAssigneeLogin(issue.Assignees),
-		Assignees:        allAssigneeLogins(issue.Assignees),
-		BlockedBy:        parseBlockedBy(issue.Body, repo),
-		BlockerReason:    parseBlockerReason(issue),
-		Labels:           labelNames(issue.Labels),
-		Fields:           cloneStringMap(fields),
-		AssignedToWorker: true,
-		CreatedAt:        parseGitHubTime(issue.CreatedAt),
-		UpdatedAt:        parseGitHubTime(issue.UpdatedAt),
-		StageUpdatedAt:   statusUpdatedAt,
-		ModelOverride:    parseModelOverride(issue.Body),
-	}
 }
 
 func (c *Connector) resolveStatusOption(ctx context.Context, githubState string) (string, string, error) {
@@ -1194,6 +1403,9 @@ type projectItemStatus struct {
 }
 
 func (c *Connector) resolveProjectItem(ctx context.Context, issueID string) (projectItemStatus, error) {
+	if item, ok := c.projectCache.GetItem(c.projectID, issueID); ok {
+		return item, nil
+	}
 	return c.fetchProjectItemPage(ctx, issueID, nil)
 }
 
@@ -1216,11 +1428,12 @@ func (c *Connector) fetchProjectItemPage(ctx context.Context, issueID string, af
 
 	for _, item := range response.Node.ProjectItems.Nodes {
 		if item.Project != nil && item.Project.ID == c.projectID && strings.TrimSpace(item.ID) != "" {
-			c.projectCache.SetItemID(c.projectID, issueID, item.ID)
-			return projectItemStatus{
+			status := projectItemStatus{
 				ID:         item.ID,
 				StatusName: singleSelectName(item.StatusValue),
-			}, nil
+			}
+			c.projectCache.SetItem(c.projectID, issueID, status)
+			return status, nil
 		}
 	}
 	if !response.Node.ProjectItems.PageInfo.HasNextPage {

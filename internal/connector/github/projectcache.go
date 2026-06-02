@@ -14,8 +14,9 @@ type projectCache struct {
 }
 
 type projectItemCacheEntry struct {
-	itemID   string
-	cachedAt time.Time
+	itemID     string
+	statusName string
+	cachedAt   time.Time
 }
 
 func newProjectCache(ttl time.Duration, now func() time.Time) *projectCache {
@@ -31,25 +32,30 @@ func newProjectCache(ttl time.Duration, now func() time.Time) *projectCache {
 }
 
 func (c *projectCache) GetItemID(projectID string, issueID string) (string, bool) {
+	status, ok := c.GetItem(projectID, issueID)
+	return status.ID, ok
+}
+
+func (c *projectCache) GetItem(projectID string, issueID string) (projectItemStatus, bool) {
 	projectID = strings.TrimSpace(projectID)
 	issueID = strings.TrimSpace(issueID)
 	if projectID == "" || issueID == "" {
-		return "", false
+		return projectItemStatus{}, false
 	}
 
 	c.mu.RLock()
 	projectEntries, ok := c.entries[projectID]
 	if !ok {
 		c.mu.RUnlock()
-		return "", false
+		return projectItemStatus{}, false
 	}
 	entry, ok := projectEntries[issueID]
 	c.mu.RUnlock()
 	if !ok {
-		return "", false
+		return projectItemStatus{}, false
 	}
 	if c.fresh(entry.cachedAt) {
-		return entry.itemID, true
+		return projectItemStatus{ID: entry.itemID, StatusName: entry.statusName}, true
 	}
 
 	c.mu.Lock()
@@ -65,16 +71,20 @@ func (c *projectCache) GetItemID(projectID string, issueID string) (string, bool
 	c.mu.Unlock()
 
 	if c.fresh(entry.cachedAt) {
-		return entry.itemID, true
+		return projectItemStatus{ID: entry.itemID, StatusName: entry.statusName}, true
 	}
 
-	return "", false
+	return projectItemStatus{}, false
 }
 
 func (c *projectCache) SetItemID(projectID string, issueID string, itemID string) {
+	c.SetItem(projectID, issueID, projectItemStatus{ID: itemID})
+}
+
+func (c *projectCache) SetItem(projectID string, issueID string, item projectItemStatus) {
 	projectID = strings.TrimSpace(projectID)
 	issueID = strings.TrimSpace(issueID)
-	itemID = strings.TrimSpace(itemID)
+	itemID := strings.TrimSpace(item.ID)
 	if projectID == "" || issueID == "" || itemID == "" {
 		return
 	}
@@ -86,8 +96,9 @@ func (c *projectCache) SetItemID(projectID string, issueID string, itemID string
 		c.entries[projectID] = projectEntries
 	}
 	projectEntries[issueID] = projectItemCacheEntry{
-		itemID:   itemID,
-		cachedAt: c.now(),
+		itemID:     itemID,
+		statusName: strings.TrimSpace(item.StatusName),
+		cachedAt:   c.now(),
 	}
 	c.mu.Unlock()
 }

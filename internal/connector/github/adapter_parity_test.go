@@ -27,9 +27,6 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
 		},
 		{
-			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_28","project":{"id":"PVT_throwaway"}}]}}}}`,
-		},
-		{
 			body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_ready","name":"Ready"},{"id":"OPT_progress","name":"In Progress"},{"id":"OPT_review","name":"In Review"},{"id":"OPT_merging","name":"Merging"},{"id":"OPT_rework","name":"Rework"},{"id":"OPT_blocked","name":"Blocked"},{"id":"OPT_done","name":"Done"}]}}}}`,
 		},
 		{
@@ -91,8 +88,8 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 9 {
-		t.Fatalf("request count = %d, want 9", len(requests))
+	if len(requests) != 8 {
+		t.Fatalf("request count = %d, want 8", len(requests))
 	}
 
 	statusInput := graphQLInput(t, requests[1])
@@ -121,26 +118,26 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 		t.Fatalf("fetch query = %q, want ProjectV2", requests[3]["query"])
 	}
 
-	updateVariables := requestVariables(t, requests[7])
+	updateVariables := requestVariables(t, requests[6])
 	if updateVariables["projectId"] != "PVT_throwaway" ||
 		updateVariables["itemId"] != "PVTI_28" ||
 		updateVariables["fieldId"] != "PVTSSF_status" ||
 		updateVariables["optionId"] != "OPT_review" {
 		t.Fatalf("update variables = %#v, want Status option OPT_review on PVTI_28", updateVariables)
 	}
-	if !strings.Contains(requests[7]["query"].(string), "updateProjectV2ItemFieldValue") {
-		t.Fatalf("update query = %q, want updateProjectV2ItemFieldValue", requests[7]["query"])
+	if !strings.Contains(requests[6]["query"].(string), "updateProjectV2ItemFieldValue") {
+		t.Fatalf("update query = %q, want updateProjectV2ItemFieldValue", requests[6]["query"])
 	}
 
-	commentVariables := requestVariables(t, requests[8])
+	commentVariables := requestVariables(t, requests[7])
 	if commentVariables["subjectId"] != "I_kw28" {
 		t.Fatalf("comment subjectId = %v, want I_kw28", commentVariables["subjectId"])
 	}
 	if commentVariables["body"] != "## Codex Workpad\n\nReady for review." {
 		t.Fatalf("comment body = %q", commentVariables["body"])
 	}
-	if !strings.Contains(requests[8]["query"].(string), "addComment") {
-		t.Fatalf("comment query = %q, want addComment", requests[8]["query"])
+	if !strings.Contains(requests[7]["query"].(string), "addComment") {
+		t.Fatalf("comment query = %q, want addComment", requests[7]["query"])
 	}
 }
 
