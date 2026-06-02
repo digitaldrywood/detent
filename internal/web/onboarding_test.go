@@ -168,6 +168,7 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		"project_slug: PVT_project",
 		"source_root: " + sourceRoot,
 		"codex:\n  command: codex app-server",
+		"gate:\n  kind: command\n  run: make check",
 		"hooks:\n  timeout_ms: 60000",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"You are working on GitHub issue `{{ issue.identifier }}`",

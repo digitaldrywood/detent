@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/skills"
 )
@@ -58,6 +59,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		return "", err
 	}
 
+	rendered = appendGateBlock(rendered, workflow.Config.Gate)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
 	return appendClosingReferenceInstruction(rendered, issue), nil
 }
@@ -81,6 +83,14 @@ func appendAvailableSkills(prompt string, skillsBlock string) string {
 	}
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + skillsBlock
+}
+
+func appendGateBlock(prompt string, cfg gate.Config) string {
+	instructions := gate.Instructions(cfg)
+	if strings.TrimSpace(instructions) == "" {
+		return prompt
+	}
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Validation gate\n\n" + instructions
 }
 
 func appendClosingReferenceInstruction(prompt string, issue connector.Issue) string {
@@ -162,6 +172,16 @@ func promptAssigns(cfg config.Config, issue connector.Issue, opts PromptOptions)
 		"workspace": map[string]any{
 			"auto_branch": autoBranch,
 		},
+		"gate": gateAssigns(cfg.Gate),
+	}
+}
+
+func gateAssigns(cfg gate.Config) map[string]any {
+	effective := gate.Effective(cfg)
+	return map[string]any{
+		"kind":           effective.Kind,
+		"run":            effective.Run,
+		"approval_label": effective.ApprovalLabel,
 	}
 }
 

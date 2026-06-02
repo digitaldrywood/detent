@@ -10,6 +10,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -108,6 +109,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			QuietDuration:      durationFromSeconds(cfg.Agent.AutoPromote.QuietSeconds),
 			OptoutLabel:        cfg.Agent.AutoPromote.OptoutLabel,
 			AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
+			Gate:               gate.Effective(cfg.Gate),
 		}),
 		ActiveStates:          append([]string(nil), cfg.Tracker.ActiveStates...),
 		TerminalStates:        append([]string(nil), cfg.Tracker.TerminalStates...),

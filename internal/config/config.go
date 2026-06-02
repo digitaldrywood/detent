@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
@@ -50,6 +51,7 @@ type Config struct {
 	Agent         Agent         `yaml:"agent"`
 	Agents        Agents        `yaml:"agents"`
 	Codex         Codex         `yaml:"codex"`
+	Gate          gate.Config   `yaml:"gate"`
 	Server        Server        `yaml:"server"`
 	Observability Observability `yaml:"observability"`
 	Budget        Budget        `yaml:"budget"`
@@ -440,6 +442,7 @@ func Default() Config {
 			ReadTimeoutMS:  5000,
 			StallTimeoutMS: 300000,
 		},
+		Gate: gate.DefaultConfig(),
 		Server: Server{
 			Host: "127.0.0.1",
 		},
@@ -482,6 +485,7 @@ func (c *Config) Validate() error {
 	c.Agent.validate("agent", &problems)
 	c.Agents.validate(&problems)
 	c.Codex.validate(&problems)
+	problems = append(problems, gate.Validate("gate", c.Gate)...)
 	c.Server.validate(&problems)
 	c.Observability.validate(&problems)
 	c.Budget.validate("budget", &problems)
@@ -536,6 +540,7 @@ func (c *Config) normalize() {
 	c.Agent.AutoPromote.AllowedIssueLabels = normalizeLabels(c.Agent.AutoPromote.AllowedIssueLabels)
 	c.Agents.normalize()
 	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
+	c.Gate = gate.Effective(c.Gate)
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
 }
 

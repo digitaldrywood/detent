@@ -82,6 +82,9 @@ counts:
   weights, priority, pause, and fair scheduling.
 - **Explicit gates + a serialized merge train.** CI plus automated (Codex)
   review plus a one-at-a-time `Merging` lane, so what lands is always green.
+- **Pluggable validation gates.** Code defaults use `make check`, CI, and
+  automated review, while workflow authors can select other review gates for
+  files-in-repo work.
 - **A real operator surface.** A live dashboard (charts, trends, timelines,
   hover detail, budget and rate-limit state) and terminal UI, `detent doctor`
   preflight checks, cross-platform config discovery, and a GoReleaser pipeline.
@@ -254,6 +257,9 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
+gate:
+  kind: command
+  run: make check
 server:
   host: 127.0.0.1
   port: 4000
@@ -272,6 +278,12 @@ human review.
 If `workspace.source_root` is omitted, Detent falls back to the project
 `workdir` from global config, then to `workspace.root` for older single-root
 setups.
+
+`gate` controls the validation contract the agent and operator flow follow.
+Omitting it preserves the code default: `kind: command` with `run: make check`,
+plus green CI and clean automated review before promotion. Use
+`kind: human_review` with `approval_label` when the gate is a human label rather
+than a command.
 
 For production, self-hosted, or multi-instance GitHub Projects, prefer GitHub
 App installation authentication instead of a shared personal access token. App
