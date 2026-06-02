@@ -10,8 +10,8 @@ The execution edge still carries these code/git/PR assumptions.
 
 - `internal/runner` owns `AgentBackend`, backend factories, and task routing.
 - `internal/config` exposes `agents.backends` and `agents.routes`.
-- Domain or label based model routing is handled by the existing selector and
-  router; this issue does not add another agent seam.
+- Domain, label, priority, assignee, author, or ProjectV2 field based routing
+  is handled by the existing selector and router.
 
 ### Validation Gate
 

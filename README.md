@@ -20,8 +20,9 @@ worktree, dispatches a Codex coding agent against a workflow contract you wrote,
 runs your validation gate, opens a pull request, waits for review, and merges
 through a serialized train — with all of it live on a web dashboard and a
 terminal UI. The same board-to-gated-review-to-done shape is the trajectory for
-non-code work, and [#266](https://github.com/digitaldrywood/detent/issues/266)
-tracks the domain-agnostic execution seams needed to unlock it.
+non-code work: validation gates are now pluggable, while non-git or non-PR
+deliverables remain follow-up work described in
+[Execution Seams](docs/execution-seams.md).
 
 It is a **system, not an agent.** You specify the work — the issues, acceptance
 criteria, review gates, and merge rules — and Detent runs that process with
@@ -83,8 +84,8 @@ counts:
 - **Explicit gates + a serialized merge train.** CI plus automated (Codex)
   review plus a one-at-a-time `Merging` lane, so what lands is always green.
 - **Pluggable validation gates.** Code defaults use `make check`, CI, and
-  automated review, while workflow authors can select other review gates for
-  files-in-repo work.
+  automated review, while workflow authors can choose a command gate or a human
+  approval-label gate for files-in-repo work.
 - **A real operator surface.** A live dashboard (charts, trends, timelines,
   hover detail, budget and rate-limit state) and terminal UI, `detent doctor`
   preflight checks, cross-platform config discovery, and a GoReleaser pipeline.
@@ -192,6 +193,9 @@ gh project list --owner <org-or-user> --format json --limit 20
 Detent auto-provisions any missing `Status` and `Priority` options on the board
 the first time it runs, so you do not have to hand-create every column — but the
 option names it creates and reads must match the states in your `WORKFLOW.md`.
+GitHub uses single-select option order as board column order; Detent keeps the
+known status options in canonical board order and leaves extra custom options
+after the required Detent states.
 
 3. Create a `WORKFLOW.md` in the repository you want Detent to work on:
 
@@ -372,7 +376,8 @@ repo is a real, working instance of this setup to copy from.
 
    The board only needs to exist — Detent auto-provisions missing `Status` and
    `Priority` options on first run. The option names must match your
-   `WORKFLOW.md` states.
+   `WORKFLOW.md` states, and Detent keeps known `Status` options in canonical
+   board order.
 
 5. **Clone the repository you want Detent to work on** (its checkout becomes
    `workspace.source_root`):
@@ -443,8 +448,8 @@ GitHub App REST token requests. Tune `tracker.http_max_idle_conns`,
 `tracker.http_idle_conn_timeout_ms` when many Detent instances share one host.
 Keep host-level agent concurrency within the machine's shared outbound
 connection and ephemeral-port budget; the connector logs its live connection
-count on GitHub requests to help spot pressure. See the multi-instance rollout
-epic #258 for host-wide caps and coordination work.
+count on GitHub requests to help spot pressure. For shared-board operation, see
+[Running Multiple Instances](#running-multiple-instances).
 
 ### Board States
 
@@ -473,8 +478,15 @@ You bring the board; Detent fills in the rest.
 - **Detent auto-provisions** the *missing options* inside those fields on first
   run — the `Todo` / `In Progress` / `Rework` / `Merging` / `Done` columns above
   and the `Urgent`…`Low` priorities — so the option names always match your
-  `WORKFLOW.md`. It provisions the options, not the board or the fields
-  themselves, so create the board (and the `Priority` field if used) first.
+  `WORKFLOW.md`. It also reorders the known `Status` options to Detent's
+  canonical column order: `Backlog`, `Todo`, `In Progress`, `Blocked`,
+  `Human Review`, `Rework`, `Merging`, then terminal states. Extra custom
+  status options are preserved after the configured Detent states. It provisions
+  the options, not the board or the fields themselves, so create the board (and
+  the `Priority` field if used) first.
+- **Blank `Status` values are not `Backlog`.** In the current release, an issue
+  with no Project `Status` value is not dispatchable through the board state
+  machine. Put unready work in the `Backlog` option explicitly.
 - **Detent reads** status, priority, labels, blockers, assignees, and linked
   pull requests from each issue, and **writes back** status transitions and a
   `## Codex Workpad` comment as the agent works.
@@ -664,9 +676,9 @@ only if the refreshed owner and lease still match the current instance. With
 must be omitted. With `ownership_mode: field`, ownership is written to
 `identity.owner_field`, which must exist on the board. While another owner has
 a fresh lease, the issue is skipped. When the lease timestamp is stale by
-`ttl_seconds` or missing, another matching instance may reclaim it. Running
-claims heartbeat every `heartbeat_seconds`; that value must be greater than
-zero and less than or equal to `ttl_seconds`.
+`ttl_seconds` or missing, another matching instance may reclaim it. Detent
+refreshes running claim leases every `heartbeat_seconds`; that value must be
+greater than zero and less than or equal to `ttl_seconds`.
 
 Task-to-model routing also lives in `WORKFLOW.md`. If `agents.backends` is
 omitted, routes can reference the legacy `codex` backend built from the top-level
@@ -696,6 +708,10 @@ agents:
 
 For explicit backend profiles, configure `agents.backends` and route to those
 ids. Today the shipped backend kind is `codex` with `protocol: app-server`.
+Backend `options` use the same runtime fields as the top-level `codex` block,
+including `shell`, `approval_policy`, `thread_sandbox`,
+`turn_sandbox_policy`, `turn_timeout_ms`, `read_timeout_ms`, and
+`stall_timeout_ms`.
 
 ```yaml
 agents:

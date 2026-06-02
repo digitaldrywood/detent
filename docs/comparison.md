@@ -24,9 +24,9 @@ These tools are adjacent, but they are not all the same category.
 | Primary interaction | GitHub Projects v2 board state | Linear board state in the reference implementation | Assign an issue to Copilot, or prompt from GitHub / VS Code | IDE chat, agent mode, cloud agents, Slack / web handoff | Chat / terminal / messaging gateway | Chat / messaging gateway / local assistant |
 | Execution locality | Detent runtime runs on your node; current default workflow uses local worktrees, GitHub Projects, and Codex CLI | Self-hosted Elixir / BEAM service that launches Codex in per-issue workspaces | GitHub Actions-powered ephemeral environment; can use larger or self-hosted Actions runners, including ARC scale sets | Cursor-hosted cloud sandbox, or self-hosted cloud-agent workers in your infrastructure | Self-host or hosted option; gateway and terminal backends can run on your infrastructure | Local-first gateway on your machine / infrastructure |
 | Control plane | No Detent SaaS control plane; sovereignty depends on the tracker and model backends you configure | No packaged SaaS product; you run the reference implementation, but Linear and Codex are external services | GitHub cloud and Copilot Agent Control Plane | Cursor cloud orchestrates inference / planning even when workers are self-hosted | Your hosted gateway when self-hosted | Your local gateway |
-| Models | Codex app-server today; model-agnostic and local-model paths are roadmap / in-progress work | Codex app-server | Copilot, Claude, and Codex agents through GitHub-managed access | Cursor-managed first-party and frontier models, including Composer and third-party frontier models | BYO provider or endpoint; docs mention many providers and self-hosted endpoints | Configurable model providers, including OpenAI and other providers; local/self-hosted options depend on configuration |
+| Models | Codex app-server today; workflow routes can select Codex backend profiles and models; non-Codex / local backends are roadmap work | Codex app-server | Copilot, Claude, and Codex agents through GitHub-managed access | Cursor-managed first-party and frontier models, including Composer and third-party frontier models | BYO provider or endpoint; docs mention many providers and self-hosted endpoints | Configurable model providers, including OpenAI and other providers; local/self-hosted options depend on configuration |
 | Tracker / board | GitHub Projects v2 | Linear in the reference implementation | GitHub Issues / PRs, plus integrations | Repository / IDE / cloud-agent task surfaces, not a board-native state machine | None for code orchestration | None for code orchestration |
-| Multi-agent / fleet | Multi-project from one host; worktree-per-issue dispatch; serialized `Merging` lane | Multiple concurrent issues within one service instance | Multiple agent sessions, but GitHub governs the platform | Parallel cloud agents and team-level agent runs | Assistant can delegate / parallelize, but it is not a PR merge train | Multi-agent routing exists, but the product remains assistant-centric |
+| Multi-agent / fleet | Multi-project and multi-instance from self-hosted nodes; authorized and claimed ProjectV2 work; worktree-per-issue dispatch; serialized `Merging` lane | Multiple concurrent issues within one service instance | Multiple agent sessions, but GitHub governs the platform | Parallel cloud agents and team-level agent runs | Assistant can delegate / parallelize, but it is not a PR merge train | Multi-agent routing exists, but the product remains assistant-centric |
 | Gating / merge discipline | Workflow-defined validation, Codex review, budget checks, and one-at-a-time merge train | Spec defines workflow gates and handoff states; the exact policy is implementation-defined | Draft PRs, branch protection, review, CI, and GitHub policies | PR review and generated artifacts; no board-native deterministic merge train | Not applicable | Not applicable |
 | Memory / skills | Repository-local workflow contract, skills, workpad, telemetry, budget history | `WORKFLOW.md`, skills, tracker comments, runtime observability | Repository instructions, Copilot Memory, MCP, skills, custom agents | Rules, MCP, skills, hooks, cloud-agent memory / automations | Persistent memory, self-improving skills, agentskills.io compatibility | Persistent memory, workspace skills, channel sessions |
 | License | MIT | Apache-2.0 | Proprietary SaaS | Proprietary SaaS | MIT | MIT |
@@ -56,8 +56,9 @@ The caveat is important: Detent does not currently make GitHub Projects or
 Codex disappear. The Detent process has no vendor SaaS control plane of its
 own, but a fully sovereign deployment depends on the tracker and model backends
 available in your environment. Today the product path is GitHub Projects plus
-Codex; broader model / local-model support is a roadmap direction, not a reason
-to claim parity with every BYO-model assistant.
+Codex; workflow routing can choose Codex backend profiles and models, but
+broader non-Codex / local-model support is a roadmap direction, not a reason to
+claim parity with every BYO-model assistant.
 
 Sources: [README](../README.md), [License](../LICENSE).
 
@@ -224,6 +225,8 @@ Detent's distinction is the combination, not any single checkbox:
 - A self-hosted orchestrator with no Detent SaaS control plane.
 - GitHub Projects v2 as the native state machine.
 - Worktree-per-issue execution owned by your node.
+- Multi-instance authorization selectors plus claim / lease ownership for
+  shared boards.
 - Explicit workflow contracts, validation gates, workpad comments, and
   acceptance-driven handoff.
 - Budget checks and operational telemetry in the same runtime that dispatches
@@ -235,8 +238,9 @@ Detent's distinction is the combination, not any single checkbox:
 
 Against Symphony specifically, Detent is the productized Go evolution: GitHub
 Projects instead of Linear, native Git worktrees instead of a reference
-workspace script, multi-project scheduling from one host, release-oriented
-operator surfaces, and the merge train built in.
+workspace script, multi-project scheduling and multi-instance ownership from
+self-hosted nodes, release-oriented operator surfaces, and the merge train
+built in.
 
 ### Ease Of Use
 
@@ -258,10 +262,12 @@ Copilot self-hosted Actions runners and Cursor self-hosted cloud-agent workers
 have closed much of the local-execution gap. Detent should not claim "local
 execution" as a unique advantage by itself.
 
-Detent also should not overclaim model sovereignty before the model backend
-surface exists in production. The current system is Codex-first. The long-term
-edge is the combination of local orchestration, board-native governance,
-pluggable tracker / model boundaries, and deterministic release gates.
+Detent also should not overclaim model sovereignty before non-Codex backends
+exist in production. The current system is Codex-first, even though workflow
+routes can choose among configured Codex backend profiles and model fields. The
+long-term edge is the combination of local orchestration, board-native
+governance, pluggable tracker / model boundaries, and deterministic release
+gates.
 
 For organizations that value vendor-managed UX, enterprise policy integration,
 and polished agent surfaces more than owning the orchestration loop, Copilot or
