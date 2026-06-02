@@ -561,6 +561,172 @@ active `global.yaml` and reconciles project additions, removals, and
 require a restart before runtime concurrency and scheduling behavior changes.
 Invalid edits are logged and ignored while the last valid config stays live.
 
+## Running Multiple Instances
+
+Run more than one Detent instance when a single GitHub ProjectV2 board should
+be split across independent workers. Each instance is a separate `detent`
+process with its own `global.yaml`, process identity, authorization selector,
+and claim lease. The instances may point at the same `tracker.project_slug`,
+but their authorization selectors should be disjoint so each issue belongs to
+one worker set before claiming begins.
+
+Use `global.identity` for the process identity in multi-instance operation.
+That identity is applied to every project in that `global.yaml` and overrides
+workflow-level identity while the project is loaded from global config. A
+workflow can still define top-level `identity` for single-project runs, but do
+not put identity under a `projects` entry in `global.yaml`; project entries only
+carry scheduling, paths, credentials, pause state, and authorization selectors.
+
+```yaml
+apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 4
+  scheduling: weighted
+  identity:
+    name: detent-alpha
+    github_login: detent-alpha
+    ownership_mode: field
+    owner_field: Detent Owner
+projects:
+  - id: detent-alpha
+    workflow: /absolute/path/to/detent/WORKFLOW.md
+    workdir: /absolute/path/to/detent
+    weight: 1
+    priority: 1
+    authorization:
+      labels:
+        include:
+          - scope:alpha
+```
+
+A second instance can use the same workflow and board with a different identity
+and a non-overlapping selector:
+
+```yaml
+apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 4
+  scheduling: weighted
+  identity:
+    name: detent-beta
+    github_login: detent-beta
+    ownership_mode: field
+    owner_field: Detent Owner
+projects:
+  - id: detent-beta
+    workflow: /absolute/path/to/detent/WORKFLOW.md
+    workdir: /absolute/path/to/detent
+    weight: 1
+    priority: 1
+    authorization:
+      labels:
+        include:
+          - scope:beta
+```
+
+The selector schema is the same in `projects[].authorization` and
+`tracker.authorization`: `assignee_in`, `author_in`, `priority_in`,
+`labels.include`, `labels.exclude`, `fields`, `and`, and `or`.
+`projects[].authorization` from `global.yaml` is combined with
+`tracker.authorization` from `WORKFLOW.md` as an `and`, so both selectors must
+match. Use `@me` inside `assignee_in`, `author_in`, or field selector values to
+match the current instance identity (`github_login` and `name`). For example,
+one common pattern is a global project selector for a broad lane label and a
+workflow selector for a board field:
+
+```yaml
+tracker:
+  authorization:
+    fields:
+      - name: Workstream
+        value: engineering
+```
+
+Authorization only decides which issues an instance is allowed to consider.
+Claiming is the final concurrent-dispatch guard. Enable it in the shared
+workflow so all instances use the same lease field and TTL:
+
+```yaml
+tracker:
+  claims:
+    enabled: true
+    lease_field: Detent Lease
+    ttl_seconds: 900
+    heartbeat_seconds: 120
+```
+
+When claims are enabled, Detent writes ownership first, then writes
+`lease_field` with a UTC RFC3339 timestamp, refetches the issue, and dispatches
+only if the refreshed owner and lease still match the current instance. With
+`ownership_mode: assignee`, ownership is the GitHub assignee and `owner_field`
+must be omitted. With `ownership_mode: field`, ownership is written to
+`identity.owner_field`, which must exist on the board. While another owner has
+a fresh lease, the issue is skipped. When the lease timestamp is stale by
+`ttl_seconds` or missing, another matching instance may reclaim it. Running
+claims heartbeat every `heartbeat_seconds`; that value must be greater than
+zero and less than or equal to `ttl_seconds`.
+
+Task-to-model routing also lives in `WORKFLOW.md`. If `agents.backends` is
+omitted, routes can reference the legacy `codex` backend built from the top-level
+`codex` block. Routes are evaluated in order, skipping defaults first; the first
+non-default selector match wins, then the single `default` route is used. A
+route can set a fixed `model`, read a model from a ProjectV2 field with
+`model_field`, or fall back to an issue model override when neither is set.
+
+```yaml
+agents:
+  routes:
+    - name: high-context
+      backend: codex
+      model: gpt-5-codex-high
+      selector:
+        labels:
+          include:
+            - model:high
+    - name: board-model
+      backend: codex
+      model_field: Model
+    - name: default
+      backend: codex
+      model: gpt-5-codex
+      default: true
+```
+
+For explicit backend profiles, configure `agents.backends` and route to those
+ids. Today the shipped backend kind is `codex` with `protocol: app-server`.
+
+```yaml
+agents:
+  backends:
+    - id: codex-standard
+      kind: codex
+      protocol: app-server
+      command: codex app-server
+    - id: codex-high
+      kind: codex
+      protocol: app-server
+      command: codex app-server --profile high
+  routes:
+    - name: high-label
+      backend: codex-high
+      model: gpt-5-codex-high
+      selector:
+        labels:
+          include:
+            - model:high
+    - name: default
+      backend: codex-standard
+      model: gpt-5-codex
+      default: true
+```
+
+The dashboard and `/api/v1/state` surface each instance identity, authorization
+scope, owner, lease renewal time, lease expiry, and selected model usage, which
+lets operators verify that scoped instances are not contending for the same
+work.
+
 ## Dashboard And APIs
 
 The web dashboard starts with the main `detent` command. In running mode it
