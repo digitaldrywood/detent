@@ -18,14 +18,17 @@ templ Reports(data ReportsData) {
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
 			@helpTooltipHost()
 			<main class="dashboard-shell mx-auto grid min-h-screen w-full max-w-7xl content-start gap-3 px-3 py-3 sm:gap-4 sm:px-6 lg:px-8">
-				<header class="dashboard-topbar min-w-0 rounded-md border border-border bg-card p-2 shadow-sm sm:p-2.5">
-					<div class="flex min-w-0 flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-						@dashboardTopbarBrand("Observability", "Usage reports")
+				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+						@dashboardTopbarBrand()
+						@dashboardPageHeading("Reports")
 						@dashboardNav("reports")
-						<div class="dashboard-topbar-actions flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
-							@dashboardTopbarMeta("Window", reportsWindowLabel(data))
-							@dashboardTopbarMeta("Connector", reportsConnectorName(data))
-							@dashboardTopbarMeta("Report", reportsGeneratedAtLabel(data))
+						<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+							<span class="truncate">{ reportsWindowLabel(data) }</span>
+							@dashboardTopbarDivider()
+							<span class="truncate">{ reportsConnectorName(data) }</span>
+							@dashboardTopbarDivider()
+							<span class="truncate font-mono">{ reportsGeneratedAtLabel(data) }</span>
 						</div>
 					</div>
 					<span class="sr-only">Spend, token, project, issue, PR, and model trends from the usage ledger.</span>

@@ -234,13 +234,14 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Blocked",
 		"Completed",
 		"v1.2.3",
-		"href=\"http://localhost:4101\"",
+		`href="/"`,
+		`href="/reports"`,
+		`href="/settings"`,
 		"release-captain",
 		"detent-bot",
 		"assignee in @me (detent-bot, release-captain)",
 		"digitaldrywood/detent#35",
 		"Dashboard templates",
-		"http://localhost:4101",
 		"Running dashboard template row with enough issue detail to preview.",
 		"Owner alpha",
 		"Lease expires May 31 15:01:30 UTC",
@@ -392,8 +393,27 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 	if strings.Contains(html, ">Operations dashboard</h1>") {
 		t.Fatalf("dashboard should use the slim navbar, not the oversized dashboard h1:\n%s", html)
 	}
-	if !strings.Contains(html, `<h1 class="truncate text-sm font-semibold text-foreground">Operations</h1>`) {
-		t.Fatalf("dashboard slim navbar should expose the page title as a semantic h1:\n%s", html)
+	for _, want := range []string{
+		`aria-label="Detent dashboard"`,
+		`href="/"`,
+		">Detent</span>",
+		`<h1 class="sr-only">Dashboard</h1>`,
+		`href="/reports"`,
+		`href="/settings"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard slim navbar missing %q:\n%s", want, html)
+		}
+	}
+	for _, forbidden := range []string{
+		`>Dashboard</a>`,
+		`aria-current="page">Dashboard</a>`,
+		`dashboard-topbar-chip`,
+		`href="http://localhost:4000"`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard slim navbar rendered forbidden marker %q:\n%s", forbidden, html)
+		}
 	}
 
 	healthIndex := strings.Index(html, `aria-label="Dashboard health"`)
@@ -1045,10 +1065,10 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 		"overflow-x-hidden",
 		"px-3 py-3",
 		"dashboard-topbar",
-		"dashboard-nav grid min-w-0 grid-cols-3 gap-1",
+		"dashboard-nav flex min-w-0 items-center gap-4",
 		"min-h-8",
 		"min-h-10",
-		"h-8 w-8",
+		"h-7 w-7",
 		"sm:hidden",
 		"hidden overflow-hidden rounded-md border border-border sm:block",
 		"running-mobile-issue-popover-0",

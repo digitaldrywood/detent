@@ -183,22 +183,6 @@ func versionLabel(data DashboardData) string {
 	return version
 }
 
-func dashboardURL(data DashboardData) string {
-	url := strings.TrimSpace(data.DashboardURL)
-	if url == "" {
-		return "http://localhost:4000"
-	}
-	return url
-}
-
-func dashboardURLLabel(data DashboardData) string {
-	url := strings.TrimSpace(data.DashboardURL)
-	if url == "" {
-		return "http://localhost:4000"
-	}
-	return url
-}
-
 func connectorName(data DashboardData) string {
 	if data.ConnectorName != "" {
 		return data.ConnectorName
