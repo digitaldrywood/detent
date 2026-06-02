@@ -30,6 +30,10 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Tracker.Authorization = selector.Selector{
 		AssigneeIn: []string{"@me"},
 	}
+	cfg.Tracker.Claims.Enabled = true
+	cfg.Tracker.Claims.LeaseField = "Detent Lease"
+	cfg.Tracker.Claims.TTLSeconds = 300
+	cfg.Tracker.Claims.HeartbeatSeconds = 45
 	cfg.Gate = gate.Config{Kind: gate.KindHumanReview, ApprovalLabel: " Approved-By-Human "}
 
 	got := ConfigFromWorkflow(cfg)
@@ -65,6 +69,27 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if len(got.Authorization.AssigneeIn) != 1 || got.Authorization.AssigneeIn[0] != "@me" {
 		t.Fatalf("Authorization.AssigneeIn = %#v, want @me", got.Authorization.AssigneeIn)
+	}
+	if !got.Claiming.Enabled {
+		t.Fatal("Claiming.Enabled = false, want true")
+	}
+	if got.Claiming.OwnershipMode != workflowconfig.IdentityOwnershipAssignee {
+		t.Fatalf("Claiming.OwnershipMode = %q, want assignee", got.Claiming.OwnershipMode)
+	}
+	if got.Claiming.Owner != "release-captain" {
+		t.Fatalf("Claiming.Owner = %q, want release-captain", got.Claiming.Owner)
+	}
+	if got.Claiming.AssigneeLogin != "detent-bot" {
+		t.Fatalf("Claiming.AssigneeLogin = %q, want detent-bot", got.Claiming.AssigneeLogin)
+	}
+	if got.Claiming.LeaseField != "Detent Lease" {
+		t.Fatalf("Claiming.LeaseField = %q, want Detent Lease", got.Claiming.LeaseField)
+	}
+	if got.Claiming.LeaseTTL != 300*time.Second {
+		t.Fatalf("Claiming.LeaseTTL = %s, want 5m0s", got.Claiming.LeaseTTL)
+	}
+	if got.Claiming.HeartbeatInterval != 45*time.Second {
+		t.Fatalf("Claiming.HeartbeatInterval = %s, want 45s", got.Claiming.HeartbeatInterval)
 	}
 	if got.AutoPromote.Gate.Kind != gate.KindHumanReview || got.AutoPromote.Gate.ApprovalLabel != "approved-by-human" {
 		t.Fatalf("AutoPromote.Gate = %#v, want human_review approved-by-human", got.AutoPromote.Gate)

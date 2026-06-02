@@ -390,6 +390,21 @@ func issueDescriptionPreview(issue telemetry.Issue) string {
 	return string(runes[:limit-3]) + "..."
 }
 
+func issueClaimSummary(issue telemetry.Issue) string {
+	parts := make([]string, 0, 2)
+	if strings.TrimSpace(issue.Owner) != "" {
+		parts = append(parts, "Owner "+strings.TrimSpace(issue.Owner))
+	}
+	if issue.LeaseExpiresAt != nil {
+		label := "Lease expires "
+		if issue.LeaseStale {
+			label = "Lease stale since "
+		}
+		parts = append(parts, label+timeLabel(*issue.LeaseExpiresAt))
+	}
+	return strings.Join(parts, " / ")
+}
+
 func issueDetailURL(issue telemetry.Issue) string {
 	identifier := issueIdentifier(issue)
 	if identifier == "" || identifier == "unknown" {

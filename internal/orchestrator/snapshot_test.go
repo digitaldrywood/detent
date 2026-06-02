@@ -71,6 +71,67 @@ func TestStateSnapshotIncludesInstanceIdentityAndScope(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotIncludesClaimLeaseState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 15, 0, 0, 0, time.UTC)
+	renewedAt := now.Add(-30 * time.Second)
+	expiresAt := renewedAt.Add(time.Minute)
+	state := newState(normalizeConfig(Config{}))
+	state.Running["issue-1"] = Running{
+		Issue:     connector.Issue{ID: "issue-1", Identifier: "digitaldrywood/detent#1", Title: "Claimed", State: "Todo"},
+		StartedAt: now.Add(-time.Minute),
+	}
+	state.Claimed["issue-1"] = Claimed{
+		Issue:          state.Running["issue-1"].Issue,
+		ClaimedAt:      now.Add(-time.Minute),
+		Owner:          "alpha",
+		LeaseRenewedAt: renewedAt,
+		LeaseExpiresAt: expiresAt,
+	}
+	state.Retry["issue-2"] = Retry{
+		Issue:   connector.Issue{ID: "issue-2", Identifier: "digitaldrywood/detent#2", Title: "Retry", State: "Todo"},
+		Attempt: 2,
+		DueAt:   now.Add(time.Minute),
+	}
+	state.Claimed["issue-2"] = Claimed{
+		Issue:          state.Retry["issue-2"].Issue,
+		ClaimedAt:      now.Add(-2 * time.Minute),
+		Owner:          "beta",
+		LeaseRenewedAt: now.Add(-2 * time.Minute),
+		LeaseExpiresAt: now.Add(-time.Minute),
+	}
+
+	snapshot := state.Snapshot(now)
+
+	if len(snapshot.Running) != 1 {
+		t.Fatalf("Running len = %d, want 1", len(snapshot.Running))
+	}
+	running := snapshot.Running[0]
+	if running.Owner != "alpha" {
+		t.Fatalf("Running owner = %q, want alpha", running.Owner)
+	}
+	if running.LeaseRenewedAt == nil || !running.LeaseRenewedAt.Equal(renewedAt) {
+		t.Fatalf("Running lease renewed = %v, want %v", running.LeaseRenewedAt, renewedAt)
+	}
+	if running.LeaseExpiresAt == nil || !running.LeaseExpiresAt.Equal(expiresAt) {
+		t.Fatalf("Running lease expires = %v, want %v", running.LeaseExpiresAt, expiresAt)
+	}
+	if running.LeaseStale {
+		t.Fatal("Running lease stale = true, want false")
+	}
+	if len(snapshot.Queue) != 1 {
+		t.Fatalf("Queue len = %d, want 1", len(snapshot.Queue))
+	}
+	queued := snapshot.Queue[0]
+	if queued.Owner != "beta" {
+		t.Fatalf("Queued owner = %q, want beta", queued.Owner)
+	}
+	if !queued.LeaseStale {
+		t.Fatal("Queued lease stale = false, want true")
+	}
+}
+
 func TestStateSnapshotPopulated(t *testing.T) {
 	t.Parallel()
 

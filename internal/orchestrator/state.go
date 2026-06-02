@@ -1,6 +1,7 @@
 package orchestrator
 
 import (
+	"context"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -40,11 +41,15 @@ type Running struct {
 	RecentEvents    []telemetry.ActivityEvent
 	DiffStats       DiffStats
 	Tokens          CodexTotals
+	cancel          context.CancelFunc
 }
 
 type Claimed struct {
-	Issue     connector.Issue
-	ClaimedAt time.Time
+	Issue          connector.Issue
+	ClaimedAt      time.Time
+	Owner          string
+	LeaseRenewedAt time.Time
+	LeaseExpiresAt time.Time
 }
 
 type BlockedSource string
@@ -115,6 +120,7 @@ func (s State) clone() State {
 	for id, running := range s.Running {
 		running.Issue = cloneIssue(running.Issue)
 		running.RecentEvents = cloneActivityEvents(running.RecentEvents)
+		running.cancel = nil
 		cloned.Running[id] = running
 	}
 	for id, claimed := range s.Claimed {

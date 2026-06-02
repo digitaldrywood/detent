@@ -22,10 +22,10 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 			NextRefreshAt:       timePointer(s.NextRefreshAt),
 		},
 		Pipeline:   pipelineSnapshots(s.Pipeline),
-		Running:    runningSnapshots(s.Running),
-		Queue:      queueSnapshots(s.Retry),
-		Blocked:    blockedSnapshots(s.Blocked),
-		Completed:  completedSnapshots(s.Completed),
+		Running:    runningSnapshots(s.Running, s.Claimed, now),
+		Queue:      queueSnapshots(s.Retry, s.Claimed, now),
+		Blocked:    blockedSnapshots(s.Blocked, s.Claimed, now),
+		Completed:  completedSnapshots(s.Completed, s.Claimed, now),
 		RateLimits: cloneRateLimits(s.RateLimits),
 		Tokens:     tokensFromCodexTotals(s.liveCodexTotals()),
 		Budget: telemetry.Budget{
@@ -58,14 +58,16 @@ func pipelineSnapshots(issues []connector.Issue) []telemetry.Issue {
 	return out
 }
 
-func runningSnapshots(running map[string]Running) []telemetry.Running {
+func runningSnapshots(running map[string]Running, claims map[string]Claimed, now time.Time) []telemetry.Running {
 	ids := sortedKeys(running)
 	out := make([]telemetry.Running, 0, len(ids))
 	for _, id := range ids {
 		entry := running[id]
 		lastEventAt := timePointer(entry.LastEventAt)
+		issue := telemetryIssue(entry.Issue)
+		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Running{
-			Issue:           telemetryIssue(entry.Issue),
+			Issue:           issue,
 			WorkerHost:      entry.WorkerHost,
 			ProcessIdentity: entry.ProcessIdentity,
 			SessionID:       entry.SessionID,
@@ -86,13 +88,15 @@ func runningSnapshots(running map[string]Running) []telemetry.Running {
 	return out
 }
 
-func queueSnapshots(retry map[string]Retry) []telemetry.Queued {
+func queueSnapshots(retry map[string]Retry, claims map[string]Claimed, now time.Time) []telemetry.Queued {
 	ids := sortedKeys(retry)
 	out := make([]telemetry.Queued, 0, len(ids))
 	for _, id := range ids {
 		entry := retry[id]
+		issue := telemetryIssue(entry.Issue)
+		applyClaimSnapshot(&issue, claims[id], now)
 		queued := telemetry.Queued{
-			Issue:      telemetryIssue(entry.Issue),
+			Issue:      issue,
 			Attempt:    entry.Attempt,
 			Error:      entry.Error,
 			WorkerHost: entry.WorkerHost,
@@ -106,13 +110,15 @@ func queueSnapshots(retry map[string]Retry) []telemetry.Queued {
 	return out
 }
 
-func blockedSnapshots(blocked map[string]Blocked) []telemetry.Blocked {
+func blockedSnapshots(blocked map[string]Blocked, claims map[string]Claimed, now time.Time) []telemetry.Blocked {
 	ids := sortedKeys(blocked)
 	out := make([]telemetry.Blocked, 0, len(ids))
 	for _, id := range ids {
 		entry := blocked[id]
+		issue := telemetryIssue(entry.Issue)
+		applyClaimSnapshot(&issue, claims[id], now)
 		item := telemetry.Blocked{
-			Issue: telemetryIssue(entry.Issue),
+			Issue: issue,
 			Error: entry.Reason,
 		}
 		if !entry.BlockedAt.IsZero() {
@@ -124,13 +130,15 @@ func blockedSnapshots(blocked map[string]Blocked) []telemetry.Blocked {
 	return out
 }
 
-func completedSnapshots(completed map[string]Completed) []telemetry.Completed {
+func completedSnapshots(completed map[string]Completed, claims map[string]Claimed, now time.Time) []telemetry.Completed {
 	ids := sortedKeys(completed)
 	out := make([]telemetry.Completed, 0, len(ids))
 	for _, id := range ids {
 		entry := completed[id]
+		issue := telemetryIssue(entry.Issue)
+		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Completed{
-			Issue:          telemetryIssue(entry.Issue),
+			Issue:          issue,
 			StartedAt:      entry.StartedAt,
 			CompletedAt:    entry.CompletedAt,
 			FinalState:     entry.FinalState,
@@ -169,6 +177,16 @@ func budgetRefusalSnapshots(refusals map[string]BudgetRefusal) []telemetry.Budge
 		out = append(out, refusal)
 	}
 	return out
+}
+
+func applyClaimSnapshot(issue *telemetry.Issue, claim Claimed, now time.Time) {
+	if issue == nil || claim.Owner == "" {
+		return
+	}
+	issue.Owner = claim.Owner
+	issue.LeaseRenewedAt = timePointer(claim.LeaseRenewedAt)
+	issue.LeaseExpiresAt = timePointer(claim.LeaseExpiresAt)
+	issue.LeaseStale = !claim.LeaseExpiresAt.IsZero() && !now.Before(claim.LeaseExpiresAt)
 }
 
 func telemetryIssue(issue connector.Issue) telemetry.Issue {
