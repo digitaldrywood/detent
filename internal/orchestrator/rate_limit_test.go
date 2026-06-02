@@ -91,6 +91,45 @@ func TestTickSkipsConnectorPollingDuringGitHubGraphQLPause(t *testing.T) {
 	}
 }
 
+func TestTickPausesForGitHubGraphQLRetryAfterWithPrimaryRemaining(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		hasRateLimit: true,
+		rateLimit: connector.GraphQLRateLimit{
+			Limit:      5000,
+			Used:       120,
+			Remaining:  4880,
+			RetryAfter: 2 * time.Minute,
+			UpdatedAt:  now,
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if state.PollInterval != 2*time.Minute {
+		t.Fatalf("PollInterval = %s, want retry-after pause 2m", state.PollInterval)
+	}
+	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil {
+		t.Fatalf("RateLimits = %#v, want GitHub GraphQL retry-after snapshot", state.RateLimits)
+	}
+	if state.RateLimits.GitHubGraphQL.Remaining != 4880 {
+		t.Fatalf("GitHubGraphQL.Remaining = %d, want preserved primary remaining", state.RateLimits.GitHubGraphQL.Remaining)
+	}
+	if state.RateLimits.GitHubGraphQL.ResetInSeconds != 120 {
+		t.Fatalf("GitHubGraphQL.ResetInSeconds = %d, want 120", state.RateLimits.GitHubGraphQL.ResetInSeconds)
+	}
+}
+
 func TestTickReconcilesRunningIssuesOnSlowerCadence(t *testing.T) {
 	t.Parallel()
 

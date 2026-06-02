@@ -508,6 +508,7 @@ func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) {
 
 func gitHubGraphQLBucket(rateLimit connector.GraphQLRateLimit, now time.Time) *telemetry.RateLimitBucket {
 	var resetAt *time.Time
+	var resetInSeconds int64
 	if !rateLimit.ResetAt.IsZero() {
 		value := rateLimit.ResetAt
 		resetAt = &value
@@ -519,14 +520,16 @@ func gitHubGraphQLBucket(rateLimit connector.GraphQLRateLimit, now time.Time) *t
 		}
 		value := updatedAt.Add(rateLimit.RetryAfter)
 		resetAt = &value
+		resetInSeconds = int64(rateLimit.RetryAfter.Round(time.Second) / time.Second)
 	}
 
 	return &telemetry.RateLimitBucket{
-		Remaining: rateLimit.Remaining,
-		Used:      rateLimit.Used,
-		Limit:     rateLimit.Limit,
-		Cost:      rateLimit.Cost,
-		ResetAt:   resetAt,
+		Remaining:      rateLimit.Remaining,
+		Used:           rateLimit.Used,
+		Limit:          rateLimit.Limit,
+		Cost:           rateLimit.Cost,
+		ResetAt:        resetAt,
+		ResetInSeconds: resetInSeconds,
 	}
 }
 
@@ -559,6 +562,9 @@ func (o *Orchestrator) gitHubGraphQLPause(state *State, now time.Time) time.Dura
 	bucket := gitHubGraphQLBucketFromState(state)
 	if bucket == nil || bucket.ResetAt == nil {
 		return 0
+	}
+	if bucket.ResetInSeconds > 0 && bucket.ResetAt.After(now) {
+		return bucket.ResetAt.Sub(now)
 	}
 	if bucket.Remaining >= gitHubGraphQLPauseRemaining {
 		return 0
