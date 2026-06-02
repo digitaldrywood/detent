@@ -472,7 +472,10 @@ try {
 	}
 
 	New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
-	New-Item -ItemType Directory -Force -Path $StateDir | Out-Null
+	$InstallLockDir = Split-Path -Parent $InstallLock
+	if ($InstallLockDir) {
+		New-Item -ItemType Directory -Force -Path $InstallLockDir | Out-Null
+	}
 	Copy-Item -LiteralPath (Join-Path $TmpDir 'detent.exe') -Destination $Target -Force
 	@(
 		"binary=$Target"

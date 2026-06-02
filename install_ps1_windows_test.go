@@ -33,10 +33,12 @@ func TestPowerShellInstallScriptInstallsReleaseArchive(t *testing.T) {
 
 	tmp := t.TempDir()
 	installDir := filepath.Join(tmp, "bin")
+	stateDir := filepath.Join(tmp, "state")
 	env := powerShellInstallEnv(
 		"DETENT_GITHUB_API_BASE="+server.URL,
 		"DETENT_RELEASE_DOWNLOAD_BASE="+server.URL,
 		"DETENT_INSTALL_DIR="+installDir,
+		"DETENT_STATE_DIR="+stateDir,
 		"DETENT_INSTALL_MODE=release",
 		"DETENT_INSTALL_SKIP_PATH=1",
 		"DETENT_INSTALL_TEST_ARCH=amd64",
@@ -57,6 +59,13 @@ func TestPowerShellInstallScriptInstallsReleaseArchive(t *testing.T) {
 	}
 	if !strings.Contains(result.stdout, "Verified checksum for "+archiveName) {
 		t.Fatalf("install stdout = %q, want checksum verification", result.stdout)
+	}
+	lock, err := os.ReadFile(filepath.Join(stateDir, "install.lock"))
+	if err != nil {
+		t.Fatalf("ReadFile(install lock) error = %v", err)
+	}
+	if !strings.Contains(string(lock), binary) {
+		t.Fatalf("install lock = %q, want binary path %q", lock, binary)
 	}
 }
 
@@ -97,6 +106,7 @@ func TestPowerShellInstallScriptMapsX86ProcessToOSArchitecture(t *testing.T) {
 
 			tmp := t.TempDir()
 			installDir := filepath.Join(tmp, "bin")
+			stateDir := filepath.Join(tmp, "state")
 			fakeBin := filepath.Join(tmp, "fakebin")
 			if err := os.MkdirAll(fakeBin, 0o755); err != nil {
 				t.Fatalf("MkdirAll(fakebin) error = %v", err)
@@ -110,6 +120,7 @@ func TestPowerShellInstallScriptMapsX86ProcessToOSArchitecture(t *testing.T) {
 				"DETENT_GITHUB_API_BASE="+server.URL,
 				"DETENT_RELEASE_DOWNLOAD_BASE="+server.URL,
 				"DETENT_INSTALL_DIR="+installDir,
+				"DETENT_STATE_DIR="+stateDir,
 				"DETENT_INSTALL_MODE=release",
 				"DETENT_INSTALL_SKIP_PATH=1",
 				"DETENT_INSTALL_TEST_OS_ARCH="+tt.osArch,
