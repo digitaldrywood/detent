@@ -28,7 +28,7 @@ templ Settings(data SettingsData) {
 				}
 			</script>
 			@helpScript()
-			<link rel="icon" href="data:,"/>
+			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
 			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
 		</head>
 		<body class="min-h-screen bg-background text-foreground antialiased">

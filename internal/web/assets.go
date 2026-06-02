@@ -19,6 +19,7 @@ import (
 
 const (
 	staticURLPrefix        = "/static/"
+	defaultFaviconPath     = "/static/img/detent-mark.svg"
 	defaultStylesheetPath  = "/static/css/output.css"
 	headerETag             = "ETag"
 	fingerprintHashLength  = 12
@@ -56,8 +57,16 @@ func newStaticAssets(staticDir string) staticAssets {
 
 func (a staticAssets) templatePaths() templates.AssetPaths {
 	return templates.AssetPaths{
+		Favicon:    a.optionalAssetPath(defaultFaviconPath),
 		Stylesheet: a.assetPath(defaultStylesheetPath),
 	}
+}
+
+func (a staticAssets) optionalAssetPath(original string) string {
+	if asset, ok := a.originals[cleanStaticPath(original)]; ok {
+		return asset.fingerprinted
+	}
+	return ""
 }
 
 func (a staticAssets) assetPath(original string) string {

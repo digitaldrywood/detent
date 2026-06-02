@@ -166,7 +166,9 @@ func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 
 	staticDir := t.TempDir()
 	css := "body{color:purple}"
+	favicon := `<svg xmlns="http://www.w3.org/2000/svg"><path fill="#3730A3" d="M0 0h1v1H0z"/></svg>`
 	writeTestCSS(t, staticDir, css)
+	writeTestStaticAsset(t, staticDir, "img/detent-mark.svg", favicon)
 
 	server, err := web.NewServer(web.Config{StaticDir: staticDir}, testDeps(t))
 	if err != nil {
@@ -181,8 +183,9 @@ func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 	}
 
 	fingerprintedPath := "/static/css/output." + shortTestHash(css) + ".css"
+	fingerprintedFaviconPath := "/static/img/detent-mark." + shortTestHash(favicon) + ".svg"
 
-	t.Run("html links fingerprinted stylesheet and revalidates", func(t *testing.T) {
+	t.Run("html links fingerprinted assets and revalidates", func(t *testing.T) {
 		t.Parallel()
 
 		tests := []struct {
@@ -218,6 +221,12 @@ func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 				if strings.Contains(rec.Body.String(), `href="/static/css/output.css"`) {
 					t.Fatalf("body still links non-fingerprinted stylesheet:\n%s", rec.Body.String())
 				}
+				if !strings.Contains(rec.Body.String(), `rel="icon" type="image/svg+xml" href="`+fingerprintedFaviconPath+`"`) {
+					t.Fatalf("body missing fingerprinted favicon %q:\n%s", fingerprintedFaviconPath, rec.Body.String())
+				}
+				if strings.Contains(rec.Body.String(), `href="/static/img/detent-mark.svg"`) {
+					t.Fatalf("body still links non-fingerprinted favicon:\n%s", rec.Body.String())
+				}
 			})
 		}
 	})
@@ -225,22 +234,38 @@ func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 	t.Run("fingerprinted asset is immutable", func(t *testing.T) {
 		t.Parallel()
 
-		rec := httptest.NewRecorder()
-		req := httptest.NewRequest(http.MethodGet, fingerprintedPath, nil)
+		tests := []struct {
+			name    string
+			path    string
+			content string
+		}{
+			{name: "stylesheet", path: fingerprintedPath, content: css},
+			{name: "favicon", path: fingerprintedFaviconPath, content: favicon},
+		}
 
-		server.Handler().ServeHTTP(rec, req)
+		for _, tt := range tests {
+			tt := tt
+			t.Run(tt.name, func(t *testing.T) {
+				t.Parallel()
 
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
-		}
-		if rec.Body.String() != css {
-			t.Fatalf("body = %q, want %q", rec.Body.String(), css)
-		}
-		if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
-			t.Fatalf("Cache-Control = %q, want immutable static caching", got)
-		}
-		if got := rec.Header().Get("ETag"); got == "" {
-			t.Fatal("ETag is empty")
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+
+				server.Handler().ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+				}
+				if rec.Body.String() != tt.content {
+					t.Fatalf("body = %q, want %q", rec.Body.String(), tt.content)
+				}
+				if got := rec.Header().Get("Cache-Control"); got != "public, max-age=31536000, immutable" {
+					t.Fatalf("Cache-Control = %q, want immutable static caching", got)
+				}
+				if got := rec.Header().Get("ETag"); got == "" {
+					t.Fatal("ETag is empty")
+				}
+			})
 		}
 	})
 }
@@ -314,11 +339,17 @@ func TestServerServesDefaultStaticAssetsFromArbitraryWorkingDirectory(t *testing
 func writeTestCSS(t *testing.T, staticDir string, css string) {
 	t.Helper()
 
-	cssDir := filepath.Join(staticDir, "css")
-	if err := os.MkdirAll(cssDir, 0o755); err != nil {
+	writeTestStaticAsset(t, staticDir, "css/output.css", css)
+}
+
+func writeTestStaticAsset(t *testing.T, staticDir string, name string, content string) {
+	t.Helper()
+
+	filePath := filepath.Join(staticDir, name)
+	if err := os.MkdirAll(filepath.Dir(filePath), 0o755); err != nil {
 		t.Fatalf("MkdirAll() error = %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(cssDir, "output.css"), []byte(css), 0o644); err != nil {
+	if err := os.WriteFile(filePath, []byte(content), 0o644); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 }
