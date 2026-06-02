@@ -235,6 +235,61 @@ func TestMatch(t *testing.T) {
 	}
 }
 
+func TestDescribe(t *testing.T) {
+	t.Parallel()
+
+	ctx := Context{
+		InstanceLogin: "worker-1",
+		Persona:       "release-captain",
+	}
+
+	tests := []struct {
+		name     string
+		selector Selector
+		want     string
+	}{
+		{
+			name: "empty selector describes all issues",
+			want: "All issues",
+		},
+		{
+			name: "selector describes configured filters",
+			selector: Selector{
+				AssigneeIn: []string{"@me", "backup"},
+				Labels: Labels{
+					Include: []string{"release"},
+					Exclude: []string{"blocked"},
+				},
+				Fields: []FieldEquals{
+					{Name: "Owner", Value: "@me"},
+				},
+				PriorityIn: []int{1, 3},
+			},
+			want: "assignee in @me (worker-1, release-captain), backup; labels include release; labels exclude blocked; field Owner = @me (worker-1, release-captain); priority in 1, 3",
+		},
+		{
+			name: "selector describes combined children",
+			selector: Selector{
+				And: []Selector{
+					{AssigneeIn: []string{"@me"}},
+					{Labels: Labels{Include: []string{"multi-instance"}}},
+				},
+			},
+			want: "all (assignee in @me (worker-1, release-captain); labels include multi-instance)",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := Describe(tt.selector, ctx); got != tt.want {
+				t.Fatalf("Describe() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func intPtr(value int) *int {
 	return &value
 }

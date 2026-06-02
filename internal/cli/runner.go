@@ -392,6 +392,7 @@ func lifetimeTotals(ctx context.Context, source lifetimeTotalsSource) telemetry.
 
 func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Project = mergeProject(current.Project, next.Project)
+	current.Instance = mergeInstance(current.Instance, next.Instance)
 	if project := projectSnapshot(next); project.Project != (telemetry.Project{}) {
 		current.Projects = append(current.Projects, project)
 	}
@@ -440,6 +441,34 @@ func mergeProject(current, next telemetry.Project) telemetry.Project {
 		return current
 	}
 	return telemetry.Project{DisplayName: "multiple projects"}
+}
+
+func mergeInstance(current, next telemetry.Instance) telemetry.Instance {
+	if current == (telemetry.Instance{}) {
+		return next
+	}
+	if next == (telemetry.Instance{}) || current == next {
+		return current
+	}
+	return telemetry.Instance{
+		Name:                    mergeInstanceValue(current.Name, next.Name, "multiple instances"),
+		GitHubLogin:             mergeInstanceValue(current.GitHubLogin, next.GitHubLogin, "multiple logins"),
+		AuthorizationScope:      mergeInstanceValue(current.AuthorizationScope, next.AuthorizationScope, "Multiple authorization scopes"),
+		AuthorizationConfigured: current.AuthorizationConfigured || next.AuthorizationConfigured,
+	}
+}
+
+func mergeInstanceValue(current, next string, mixed string) string {
+	current = strings.TrimSpace(current)
+	next = strings.TrimSpace(next)
+	switch {
+	case current == "":
+		return next
+	case next == "" || current == next:
+		return current
+	default:
+		return mixed
+	}
 }
 
 func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {

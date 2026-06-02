@@ -7,6 +7,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -251,6 +252,78 @@ func TestDispatchableFiltersUnauthorizedCandidates(t *testing.T) {
 			state := newState(cfg)
 			if got := orch.dispatchable(tt.issue, &state, now); got != tt.want {
 				t.Fatalf("dispatchable() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestMemoryConnectorOrchestratorsPartitionSharedIssuesByAuthorization(t *testing.T) {
+	t.Parallel()
+
+	alpha := dispatchTestIssue("issue-alpha", "Todo")
+	alpha.Fields = map[string]string{"Owner": "alpha"}
+	beta := dispatchTestIssue("issue-beta", "Todo")
+	beta.Fields = map[string]string{"Owner": "beta"}
+	sharedIssues := []connector.Issue{alpha, beta}
+
+	tests := []struct {
+		name      string
+		owner     string
+		wantIssue string
+	}{
+		{name: "alpha instance", owner: "alpha", wantIssue: alpha.ID},
+		{name: "beta instance", owner: "beta", wantIssue: beta.ID},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			runner := newWorkerHostRunner()
+			orch, err := New(Config{
+				PollInterval:        time.Hour,
+				MaxConcurrentAgents: 1,
+				ActiveStates:        []string{"Todo"},
+				TerminalStates:      []string{"Done"},
+				Authorization: selector.Selector{
+					Fields: []selector.FieldEquals{
+						{Name: "Owner", Value: tt.owner},
+					},
+				},
+			}, Dependencies{
+				Connector: memory.New(memory.Config{Issues: sharedIssues}),
+				Runner:    runner,
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			done := make(chan error, 1)
+			go func() {
+				done <- orch.Run(ctx)
+			}()
+
+			request := receiveWorkerHostRunRequest(t, runner.started)
+			if request.Issue.ID != tt.wantIssue {
+				t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, tt.wantIssue)
+			}
+
+			select {
+			case request := <-runner.started:
+				t.Fatalf("unexpected extra dispatch = %#v", request)
+			default:
+			}
+
+			cancel()
+			select {
+			case err := <-done:
+				if err != context.Canceled {
+					t.Fatalf("Run() error = %v, want context canceled", err)
+				}
+			case <-time.After(time.Second):
+				t.Fatal("timed out waiting for orchestrator shutdown")
 			}
 		})
 	}

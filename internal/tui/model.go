@@ -169,6 +169,8 @@ func (m Model) renderSnapshot() string {
 		"│ Budget: " + formatBudget(snapshot.Budget, m.styles),
 		"│ Rate Limits: " + formatRateLimits(snapshot.RateLimits, m.now, m.styles),
 		"│ Project: " + formatOptionalInfo(formatProject(snapshot.Project), m.styles),
+		"│ Instance: " + formatOptionalInfo(formatInstance(snapshot.Instance), m.styles),
+		"│ Scope: " + formatOptionalInfo(formatAuthorizationScope(snapshot.Instance), m.styles),
 		"│ Dashboard: " + m.styles.info.Render(formatDashboardURL(snapshot)),
 		"│ Next refresh: " + formatOptionalInfo(formatNextRefresh(snapshot.Refresh), m.styles),
 		m.styles.title.Render("├─ Running"),
@@ -521,6 +523,28 @@ func formatProject(project telemetry.Project) string {
 		return cleanInline(project.DisplayName)
 	}
 	return ""
+}
+
+func formatInstance(instance telemetry.Instance) string {
+	name := cleanInline(instance.Name)
+	login := cleanInline(instance.GitHubLogin)
+	switch {
+	case name != "" && login != "":
+		return name + " (" + login + ")"
+	case name != "":
+		return name
+	case login != "":
+		return login
+	default:
+		return ""
+	}
+}
+
+func formatAuthorizationScope(instance telemetry.Instance) string {
+	if strings.TrimSpace(instance.AuthorizationScope) != "" {
+		return cleanInline(instance.AuthorizationScope)
+	}
+	return "All issues"
 }
 
 func formatDashboardURL(snapshot telemetry.Snapshot) string {

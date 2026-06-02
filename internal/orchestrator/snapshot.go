@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -14,6 +15,7 @@ import (
 func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: now,
+		Instance:    s.Instance,
 		Refresh: telemetry.Refresh{
 			PollIntervalSeconds: int64(s.PollInterval / time.Second),
 			LastRefreshAt:       timePointer(s.LastRefreshAt),
@@ -37,6 +39,15 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed: len(snapshot.Completed),
 	}
 	return snapshot
+}
+
+func instanceSnapshot(cfg Config) telemetry.Instance {
+	return telemetry.Instance{
+		Name:                    cfg.SelectorContext.Persona,
+		GitHubLogin:             cfg.SelectorContext.InstanceLogin,
+		AuthorizationScope:      selector.Describe(cfg.Authorization, cfg.SelectorContext),
+		AuthorizationConfigured: cfg.Authorization.Configured(),
+	}
 }
 
 func pipelineSnapshots(issues []connector.Issue) []telemetry.Issue {

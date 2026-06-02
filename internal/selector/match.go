@@ -2,6 +2,7 @@ package selector
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -96,6 +97,126 @@ func (s Selector) Validate(prefix string) []string {
 		problems = append(problems, child.Validate(fmt.Sprintf("%s.or[%d]", prefix, index))...)
 	}
 	return problems
+}
+
+func Describe(selector Selector, ctx Context) string {
+	parts := describeSelectorParts(selector, ctx)
+	if len(parts) == 0 {
+		return "All issues"
+	}
+	return strings.Join(parts, "; ")
+}
+
+func describeSelectorParts(selector Selector, ctx Context) []string {
+	parts := []string{}
+	if part := describeIdentityRule("assignee in", selector.AssigneeIn, ctx); part != "" {
+		parts = append(parts, part)
+	}
+	if part := describeIdentityRule("author in", selector.AuthorIn, ctx); part != "" {
+		parts = append(parts, part)
+	}
+	if part := describeStringRule("labels include", selector.Labels.Include); part != "" {
+		parts = append(parts, part)
+	}
+	if part := describeStringRule("labels exclude", selector.Labels.Exclude); part != "" {
+		parts = append(parts, part)
+	}
+	if part := describeFieldRules(selector.Fields, ctx); part != "" {
+		parts = append(parts, part)
+	}
+	if part := describePriorityRule(selector.PriorityIn); part != "" {
+		parts = append(parts, part)
+	}
+	if part := describeChildSelectors("all", selector.And, ctx); part != "" {
+		parts = append(parts, part)
+	}
+	if part := describeChildSelectors("any", selector.Or, ctx); part != "" {
+		parts = append(parts, part)
+	}
+	return parts
+}
+
+func describeIdentityRule(label string, values []string, ctx Context) string {
+	described := describeSelectorValues(values, ctx)
+	if len(described) == 0 {
+		return ""
+	}
+	return label + " " + strings.Join(described, ", ")
+}
+
+func describeStringRule(label string, values []string) string {
+	values = nonBlankStrings(values)
+	if len(values) == 0 {
+		return ""
+	}
+	return label + " " + strings.Join(values, ", ")
+}
+
+func describeFieldRules(fields []FieldEquals, ctx Context) string {
+	described := []string{}
+	for _, field := range fields {
+		name := strings.TrimSpace(field.Name)
+		value := strings.TrimSpace(field.Value)
+		if name == "" || value == "" {
+			continue
+		}
+		described = append(described, name+" = "+describeSelectorValue(value, ctx))
+	}
+	if len(described) == 0 {
+		return ""
+	}
+	if len(described) == 1 {
+		return "field " + described[0]
+	}
+	return "fields " + strings.Join(described, ", ")
+}
+
+func describePriorityRule(priorities []int) string {
+	if len(priorities) == 0 {
+		return ""
+	}
+	described := make([]string, 0, len(priorities))
+	for _, priority := range priorities {
+		described = append(described, strconv.Itoa(priority))
+	}
+	return "priority in " + strings.Join(described, ", ")
+}
+
+func describeChildSelectors(label string, selectors []Selector, ctx Context) string {
+	described := []string{}
+	for _, child := range selectors {
+		parts := describeSelectorParts(child, ctx)
+		if len(parts) == 0 {
+			continue
+		}
+		described = append(described, strings.Join(parts, "; "))
+	}
+	if len(described) == 0 {
+		return ""
+	}
+	return label + " (" + strings.Join(described, "; ") + ")"
+}
+
+func describeSelectorValues(values []string, ctx Context) []string {
+	values = nonBlankStrings(values)
+	described := make([]string, 0, len(values))
+	for _, value := range values {
+		described = append(described, describeSelectorValue(value, ctx))
+	}
+	return described
+}
+
+func describeSelectorValue(value string, ctx Context) string {
+	value = strings.TrimSpace(value)
+	if !isMeToken(value) {
+		return value
+	}
+
+	resolved := nonBlankStrings(resolveMe(ctx))
+	if len(resolved) == 0 {
+		return meToken
+	}
+	return meToken + " (" + strings.Join(resolved, ", ") + ")"
 }
 
 func Match(issue connector.Issue, selector Selector, ctx Context) bool {
@@ -286,6 +407,17 @@ func anyNonBlank(values []string) bool {
 		}
 	}
 	return false
+}
+
+func nonBlankStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func trimStringSlice(values []string) []string {

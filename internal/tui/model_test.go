@@ -39,6 +39,8 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 	for _, want := range []string{
 		"DETENT STATUS",
 		"Project: https://github.com/digitaldrywood/detent",
+		"Instance: release-captain (detent-bot)",
+		"Scope: assignee in @me (detent-bot, release-captain)",
 		"Dashboard: http://localhost:4101",
 		"Next refresh: 2026-05-31T00:16:00Z",
 		"Agents: 1 running | 1 queued | 1 blocked | 1 completed",
@@ -148,6 +150,12 @@ func testSnapshot() telemetry.Snapshot {
 		Project: telemetry.Project{
 			DisplayName: "Detent",
 			URL:         "https://github.com/digitaldrywood/detent",
+		},
+		Instance: telemetry.Instance{
+			Name:                    "release-captain",
+			GitHubLogin:             "detent-bot",
+			AuthorizationScope:      "assignee in @me (detent-bot, release-captain)",
+			AuthorizationConfigured: true,
 		},
 		DashboardURL: "http://localhost:4101",
 		Refresh: telemetry.Refresh{
