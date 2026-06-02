@@ -223,12 +223,16 @@ query DetentGitHubStatusField($projectId: ID!) {
 }`
 
 const singleSelectFieldQuery = `
-query DetentGitHubSingleSelectField($projectId: ID!, $fieldName: String!) {
+query DetentGitHubProjectField($projectId: ID!, $fieldName: String!) {
   node(id: $projectId) {
     __typename
     ... on ProjectV2 {
       field(name: $fieldName) {
         __typename
+        ... on ProjectV2Field {
+          id
+          dataType
+        }
         ... on ProjectV2SingleSelectField {
           id
           options { id name color description }
@@ -284,6 +288,18 @@ mutation DetentGitHubUpdateSingleSelectField($projectId: ID!, $itemId: ID!, $fie
     itemId: $itemId,
     fieldId: $fieldId,
     value: { singleSelectOptionId: $optionId }
+  }) {
+    projectV2Item { id }
+  }
+}`
+
+const updateTextFieldValueMutation = `
+mutation DetentGitHubUpdateTextField($projectId: ID!, $itemId: ID!, $fieldId: ID!, $text: String!) {
+  updateProjectV2ItemFieldValue(input: {
+    projectId: $projectId,
+    itemId: $itemId,
+    fieldId: $fieldId,
+    value: { text: $text }
   }) {
     projectV2Item { id }
   }
@@ -628,7 +644,14 @@ func (c *Connector) SetField(ctx context.Context, issueID string, fieldName stri
 	if err != nil {
 		return err
 	}
-	fieldID, optionID, err := c.resolveSingleSelectFieldOption(ctx, fieldName, value)
+	field, err := c.fetchProjectField(ctx, fieldName)
+	if err != nil {
+		return err
+	}
+	if projectTextField(field) {
+		return c.updateProjectV2TextFieldValue(ctx, item.ID, field.ID, strings.TrimSpace(value), ErrProjectFieldUpdateFailed)
+	}
+	fieldID, optionID, err := c.resolveSingleSelectFieldOptionFromField(ctx, fieldName, value, field)
 	if err != nil {
 		return err
 	}
@@ -1054,42 +1077,51 @@ func (c *Connector) removeAssignees(ctx context.Context, issueID string, userIDs
 	return nil
 }
 
-func (c *Connector) resolveSingleSelectFieldOption(ctx context.Context, fieldName string, value string) (string, string, error) {
+func (c *Connector) resolveSingleSelectFieldOptionFromField(
+	ctx context.Context,
+	fieldName string,
+	value string,
+	field projectOptionsFieldResponse,
+) (string, string, error) {
 	fieldName = strings.TrimSpace(fieldName)
 	value = strings.TrimSpace(value)
 	if fieldName == "" || value == "" {
 		return "", "", ErrProjectFieldOptionNotFound
 	}
 
-	field, err := c.fetchSingleSelectField(ctx, fieldName)
+	decoded, err := decodeProjectSingleSelectField(fieldName, &field)
 	if err != nil {
 		return "", "", err
 	}
-	if optionID := singleSelectOptionID(field.Options, value); optionID != "" {
-		return field.ID, optionID, nil
+	if optionID := singleSelectOptionID(decoded.Options, value); optionID != "" {
+		return decoded.ID, optionID, nil
 	}
 
 	for range 3 {
-		field, err = c.fetchSingleSelectField(ctx, fieldName)
+		refetched, err := c.fetchProjectField(ctx, fieldName)
 		if err != nil {
 			return "", "", err
 		}
-		if optionID := singleSelectOptionID(field.Options, value); optionID != "" {
-			return field.ID, optionID, nil
+		decoded, err = decodeProjectSingleSelectField(fieldName, &refetched)
+		if err != nil {
+			return "", "", err
 		}
-		options := singleSelectOptionsWithRequiredAtEnd(field.Options, []projectSingleSelectOption{ownershipOption(value)})
-		updatedOptions, err := c.updateProjectFieldOptions(ctx, field.ID, options)
+		if optionID := singleSelectOptionID(decoded.Options, value); optionID != "" {
+			return decoded.ID, optionID, nil
+		}
+		options := singleSelectOptionsWithRequiredAtEnd(decoded.Options, []projectSingleSelectOption{ownershipOption(value)})
+		updatedOptions, err := c.updateProjectFieldOptions(ctx, decoded.ID, options)
 		if err != nil {
 			return "", "", fmt.Errorf("ensure github project field options: %w", err)
 		}
 		if optionID := singleSelectOptionID(updatedOptions, value); optionID != "" {
-			return field.ID, optionID, nil
+			return decoded.ID, optionID, nil
 		}
 	}
 	return "", "", fmt.Errorf("%w: %s=%s", ErrProjectFieldOptionNotFound, fieldName, value)
 }
 
-func (c *Connector) fetchSingleSelectField(ctx context.Context, fieldName string) (projectSingleSelectField, error) {
+func (c *Connector) fetchProjectField(ctx context.Context, fieldName string) (projectOptionsFieldResponse, error) {
 	var response struct {
 		Node *struct {
 			TypeName string                       `json:"__typename"`
@@ -1100,12 +1132,21 @@ func (c *Connector) fetchSingleSelectField(ctx context.Context, fieldName string
 		"projectId": c.projectID,
 		"fieldName": strings.TrimSpace(fieldName),
 	}, &response); err != nil {
-		return projectSingleSelectField{}, fmt.Errorf("fetch github project field: %w", err)
+		return projectOptionsFieldResponse{}, fmt.Errorf("fetch github project field: %w", err)
 	}
 	if response.Node == nil || response.Node.TypeName != "ProjectV2" {
-		return projectSingleSelectField{}, ErrProjectNotFound
+		return projectOptionsFieldResponse{}, ErrProjectNotFound
 	}
-	return decodeProjectSingleSelectField(fieldName, response.Node.Field)
+	if response.Node.Field == nil {
+		return projectOptionsFieldResponse{}, fmt.Errorf("%w: %s", ErrProjectFieldNotFound, strings.TrimSpace(fieldName))
+	}
+	return *response.Node.Field, nil
+}
+
+func projectTextField(field projectOptionsFieldResponse) bool {
+	return field.TypeName == "ProjectV2Field" &&
+		strings.EqualFold(strings.TrimSpace(field.DataType), "TEXT") &&
+		strings.TrimSpace(field.ID) != ""
 }
 
 func (c *Connector) resolveStatusMetadata(ctx context.Context) (statusMetadata, error) {
@@ -1223,6 +1264,36 @@ func (c *Connector) updateProjectV2SingleSelectFieldValue(
 		"itemId":    itemID,
 		"fieldId":   fieldID,
 		"optionId":  optionID,
+	}, &response); err != nil {
+		return fmt.Errorf("update github project field: %w", err)
+	}
+	if response.UpdateProjectV2ItemFieldValue == nil ||
+		response.UpdateProjectV2ItemFieldValue.ProjectV2Item == nil ||
+		strings.TrimSpace(response.UpdateProjectV2ItemFieldValue.ProjectV2Item.ID) == "" {
+		return emptyResponseError
+	}
+	return nil
+}
+
+func (c *Connector) updateProjectV2TextFieldValue(
+	ctx context.Context,
+	itemID string,
+	fieldID string,
+	text string,
+	emptyResponseError error,
+) error {
+	var response struct {
+		UpdateProjectV2ItemFieldValue *struct {
+			ProjectV2Item *struct {
+				ID string `json:"id"`
+			} `json:"projectV2Item"`
+		} `json:"updateProjectV2ItemFieldValue"`
+	}
+	if err := c.client.GraphQL(ctx, updateTextFieldValueMutation, map[string]any{
+		"projectId": c.projectID,
+		"itemId":    itemID,
+		"fieldId":   fieldID,
+		"text":      text,
 	}, &response); err != nil {
 		return fmt.Errorf("update github project field: %w", err)
 	}

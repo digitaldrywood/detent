@@ -840,6 +840,45 @@ func TestConnectorSetFieldProvisionsOwnerOptionAndWritesProjectValue(t *testing.
 	}
 }
 
+func TestConnectorSetFieldWritesTextProjectValue(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"}}]}}}}`},
+		{body: `{"data":{"node":{"__typename":"ProjectV2","field":{"__typename":"ProjectV2Field","id":"PVTF_lease","dataType":"TEXT"}}}}`},
+		{body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_1"}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	if err := c.SetField(context.Background(), "I_kw1", "Detent Lease", "2026-06-02T15:00:00Z"); err != nil {
+		t.Fatalf("SetField() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	fieldVariables := requests[1]["variables"].(map[string]any)
+	if fieldVariables["fieldName"] != "Detent Lease" {
+		t.Fatalf("fieldName = %v, want Detent Lease", fieldVariables["fieldName"])
+	}
+	updateVariables := requests[2]["variables"].(map[string]any)
+	want := map[string]any{
+		"projectId": "PVT_1",
+		"itemId":    "PVTI_1",
+		"fieldId":   "PVTF_lease",
+		"text":      "2026-06-02T15:00:00Z",
+	}
+	for key, value := range want {
+		if updateVariables[key] != value {
+			t.Fatalf("%s = %v, want %v", key, updateVariables[key], value)
+		}
+	}
+	if !strings.Contains(requests[2]["query"].(string), "text") {
+		t.Fatalf("update query = %q, want text field mutation", requests[2]["query"])
+	}
+}
+
 type graphqlTestServer struct {
 	*httptest.Server
 	t         *testing.T

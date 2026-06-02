@@ -1085,6 +1085,9 @@ templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails 
 		if issueDescriptionPreview(issue) != "" {
 			<p class="line-clamp-2 text-xs text-muted-foreground">{ issueDescriptionPreview(issue) }</p>
 		}
+		if issueClaimSummary(issue) != "" {
+			<p class="line-clamp-2 font-mono text-xs text-muted-foreground">{ issueClaimSummary(issue) }</p>
+		}
 		if jsonDetails && issueDetailURL(issue) != "" {
 			<a class="w-fit text-xs font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ issueDetailURL(issue) }>JSON details</a>
 		}

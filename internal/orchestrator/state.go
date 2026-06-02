@@ -43,8 +43,11 @@ type Running struct {
 }
 
 type Claimed struct {
-	Issue     connector.Issue
-	ClaimedAt time.Time
+	Issue          connector.Issue
+	ClaimedAt      time.Time
+	Owner          string
+	LeaseRenewedAt time.Time
+	LeaseExpiresAt time.Time
 }
 
 type BlockedSource string

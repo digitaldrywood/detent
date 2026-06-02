@@ -77,6 +77,7 @@ type Tracker struct {
 	StateMap                StringOrMap       `yaml:"state_map"`
 	PriorityMap             StringOrMap       `yaml:"priority_map"`
 	AutoProvision           bool              `yaml:"auto_provision"`
+	Claims                  Claims            `yaml:"claims,omitempty"`
 	Authorization           selector.Selector `yaml:"authorization,omitempty"`
 	Issues                  []connector.Issue `yaml:"issues"`
 }
@@ -90,6 +91,13 @@ type Identity struct {
 
 type Polling struct {
 	IntervalMS int `yaml:"interval_ms"`
+}
+
+type Claims struct {
+	Enabled          bool   `yaml:"enabled"`
+	LeaseField       string `yaml:"lease_field,omitempty"`
+	TTLSeconds       int    `yaml:"ttl_seconds,omitempty"`
+	HeartbeatSeconds int    `yaml:"heartbeat_seconds,omitempty"`
 }
 
 type Workspace struct {
@@ -332,6 +340,34 @@ func (i Identity) Validate(prefix string) []string {
 	return problems
 }
 
+func (c *Claims) Normalize() {
+	if c == nil {
+		return
+	}
+	c.LeaseField = strings.TrimSpace(c.LeaseField)
+}
+
+func (c Claims) Validate(prefix string) []string {
+	if !c.Enabled {
+		return nil
+	}
+
+	var problems []string
+	if strings.TrimSpace(c.LeaseField) == "" {
+		problems = append(problems, prefix+".lease_field must not be blank when "+prefix+".enabled is true")
+	}
+	if c.TTLSeconds <= 0 {
+		problems = append(problems, prefix+".ttl_seconds must be greater than 0 when "+prefix+".enabled is true")
+	}
+	if c.HeartbeatSeconds <= 0 {
+		problems = append(problems, prefix+".heartbeat_seconds must be greater than 0 when "+prefix+".enabled is true")
+	}
+	if c.TTLSeconds > 0 && c.HeartbeatSeconds > c.TTLSeconds {
+		problems = append(problems, prefix+".heartbeat_seconds must be less than or equal to "+prefix+".ttl_seconds")
+	}
+	return problems
+}
+
 type StringOrMap struct {
 	IsString bool
 	String   string
@@ -532,6 +568,7 @@ func (c *Config) normalize() {
 	if c.Tracker.Kind == TrackerGitHub && c.Tracker.Endpoint == defaultLinearEndpoint {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
+	c.Tracker.Claims.Normalize()
 	c.Tracker.Authorization.Normalize()
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
@@ -567,6 +604,7 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.http_max_idle_conns", c.Tracker.HTTPMaxIdleConns, problems)
 	validatePositive("tracker.http_max_idle_conns_per_host", c.Tracker.HTTPMaxIdleConnsPerHost, problems)
 	validatePositive("tracker.http_idle_conn_timeout_ms", c.Tracker.HTTPIdleConnTimeoutMS, problems)
+	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
 }
 

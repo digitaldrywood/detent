@@ -46,6 +46,7 @@ type Config struct {
 	DispatchPriorityByState    []string
 	MaxConcurrentAgentsPerHost int
 	MaxRetryBackoff            time.Duration
+	Claiming                   ClaimingConfig
 	AutoPromote                AutoPromoteConfig
 	ActiveStates               []string
 	TerminalStates             []string
@@ -56,6 +57,17 @@ type Config struct {
 	ContinuationRetryDelay     time.Duration
 	FailureRetryBaseDelay      time.Duration
 	SelectorPersona            string
+}
+
+type ClaimingConfig struct {
+	Enabled           bool
+	OwnershipMode     string
+	Owner             string
+	AssigneeLogin     string
+	OwnerField        string
+	LeaseField        string
+	LeaseTTL          time.Duration
+	HeartbeatInterval time.Duration
 }
 
 type Dependencies struct {
@@ -97,6 +109,9 @@ type runUpdate struct {
 }
 
 func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
+	identity := cfg.Identity
+	identity.Normalize()
+
 	return Config{
 		PollInterval:               durationFromMillis(cfg.Polling.IntervalMS),
 		MaxConcurrentAgents:        cfg.Agent.MaxConcurrentAgents,
@@ -104,6 +119,16 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
+		Claiming: ClaimingConfig{
+			Enabled:           cfg.Tracker.Claims.Enabled,
+			OwnershipMode:     identity.OwnershipMode,
+			Owner:             identity.Name,
+			AssigneeLogin:     identity.GitHubLogin,
+			OwnerField:        identity.OwnerField,
+			LeaseField:        cfg.Tracker.Claims.LeaseField,
+			LeaseTTL:          durationFromSeconds(cfg.Tracker.Claims.TTLSeconds),
+			HeartbeatInterval: durationFromSeconds(cfg.Tracker.Claims.HeartbeatSeconds),
+		},
 		AutoPromote: normalizeAutoPromoteConfig(AutoPromoteConfig{
 			Enabled:            cfg.Agent.AutoPromote.Enabled,
 			QuietDuration:      durationFromSeconds(cfg.Agent.AutoPromote.QuietSeconds),
@@ -114,7 +139,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		ActiveStates:          append([]string(nil), cfg.Tracker.ActiveStates...),
 		TerminalStates:        append([]string(nil), cfg.Tracker.TerminalStates...),
 		Authorization:         cfg.Tracker.Authorization,
-		SelectorContext:       selector.Context{InstanceLogin: cfg.Identity.GitHubLogin, Persona: cfg.Identity.Name},
+		SelectorContext:       selector.Context{InstanceLogin: identity.GitHubLogin, Persona: identity.Name},
 		WorkerHosts:           append([]string(nil), cfg.Worker.SSHHosts...),
 		BudgetRefusalCooldown: durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
 		SelectorPersona:       cfg.Tracker.Assignee,
@@ -268,6 +293,7 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	}
 
 	o.reconcileRunningIssues(ctx, state, now)
+	o.heartbeatRunningClaims(ctx, state, now)
 
 	issues, err := o.connector.FetchCandidateIssues(ctx)
 	if err != nil {
@@ -787,7 +813,9 @@ func (o *Orchestrator) dispatchRetryIssue(
 		return
 	}
 
-	o.dispatchIssue(ctx, state, issue, retry.Attempt, now, retry.WorkerHost)
+	if !o.dispatchIssue(ctx, state, issue, retry.Attempt, now, retry.WorkerHost) {
+		o.scheduleRetry(state, issue, retry.Attempt, now, "claim verification failed", false, retry.WorkerHost)
+	}
 }
 
 func (o *Orchestrator) dispatchable(issue connector.Issue, state *State, now time.Time) bool {
@@ -878,23 +906,26 @@ func (o *Orchestrator) dispatchIssue(
 	attempt int,
 	now time.Time,
 	preferredWorkerHost string,
-) {
+) bool {
 	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
 	if !ok {
-		return
+		return false
 	}
 
-	issue = cloneIssue(issue)
+	claimedIssue, claim, ok := o.claimIssue(ctx, issue, now)
+	if !ok {
+		return false
+	}
+
+	issue = cloneIssue(claimedIssue)
+	claim.Issue = issue
 	state.Running[issue.ID] = Running{
 		Issue:      issue,
 		Attempt:    attempt,
 		StartedAt:  now,
 		WorkerHost: workerHost,
 	}
-	state.Claimed[issue.ID] = Claimed{
-		Issue:     issue,
-		ClaimedAt: now,
-	}
+	state.Claimed[issue.ID] = claim
 	delete(state.Retry, issue.ID)
 	delete(state.Blocked, issue.ID)
 	delete(state.BudgetRefusals, issue.ID)
@@ -908,6 +939,7 @@ func (o *Orchestrator) dispatchIssue(
 		OnUsageUpdate:   o.usageUpdateHandler(ctx, issue.ID),
 	}
 	o.supervisor.Dispatch(ctx, request, o.runResults)
+	return true
 }
 
 func (o *Orchestrator) selectorContext() selector.Context {
@@ -1142,6 +1174,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
+	cfg.Claiming = normalizeClaimingConfig(cfg.Claiming)
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
 	cfg.Authorization.Normalize()
 	cfg.SelectorContext.InstanceLogin = strings.TrimSpace(cfg.SelectorContext.InstanceLogin)
@@ -1152,6 +1185,24 @@ func normalizeConfig(cfg Config) Config {
 		cfg.MaxConcurrentAgentsPerHost = 0
 	}
 
+	return cfg
+}
+
+func normalizeClaimingConfig(cfg ClaimingConfig) ClaimingConfig {
+	cfg.OwnershipMode = strings.ToLower(strings.TrimSpace(cfg.OwnershipMode))
+	if cfg.OwnershipMode == "" {
+		cfg.OwnershipMode = workflowconfig.IdentityOwnershipAssignee
+	}
+	cfg.Owner = strings.TrimSpace(cfg.Owner)
+	cfg.AssigneeLogin = strings.TrimSpace(cfg.AssigneeLogin)
+	cfg.OwnerField = strings.TrimSpace(cfg.OwnerField)
+	cfg.LeaseField = strings.TrimSpace(cfg.LeaseField)
+	if cfg.LeaseTTL < 0 {
+		cfg.LeaseTTL = 0
+	}
+	if cfg.HeartbeatInterval < 0 {
+		cfg.HeartbeatInterval = 0
+	}
 	return cfg
 }
 

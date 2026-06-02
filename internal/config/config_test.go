@@ -26,6 +26,11 @@ tracker:
   http_max_idle_conns: 120
   http_max_idle_conns_per_host: 40
   http_idle_conn_timeout_ms: 120000
+  claims:
+    enabled: true
+    lease_field: Detent Lease
+    ttl_seconds: 300
+    heartbeat_seconds: 45
   authorization:
     assignee_in:
       - "@me"
@@ -152,6 +157,18 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Tracker.HTTPIdleConnTimeoutMS != 120000 {
 		t.Fatalf("Tracker.HTTPIdleConnTimeoutMS = %d, want 120000", cfg.Tracker.HTTPIdleConnTimeoutMS)
+	}
+	if !cfg.Tracker.Claims.Enabled {
+		t.Fatal("Tracker.Claims.Enabled = false, want true")
+	}
+	if cfg.Tracker.Claims.LeaseField != "Detent Lease" {
+		t.Fatalf("Tracker.Claims.LeaseField = %q, want Detent Lease", cfg.Tracker.Claims.LeaseField)
+	}
+	if cfg.Tracker.Claims.TTLSeconds != 300 {
+		t.Fatalf("Tracker.Claims.TTLSeconds = %d, want 300", cfg.Tracker.Claims.TTLSeconds)
+	}
+	if cfg.Tracker.Claims.HeartbeatSeconds != 45 {
+		t.Fatalf("Tracker.Claims.HeartbeatSeconds = %d, want 45", cfg.Tracker.Claims.HeartbeatSeconds)
 	}
 	wantAuthorization := selector.Selector{
 		AssigneeIn: []string{"@me"},
@@ -732,6 +749,27 @@ Prompt
 				"identity.owner_field is required when identity.ownership_mode is field",
 				"tracker.authorization.priority_in values must be integers 1 through 4",
 				"tracker.authorization.fields[0].name must not be blank",
+			},
+		},
+		{
+			name: "invalid claim lease config",
+			raw: `---
+identity:
+  name: release-captain
+  github_login: detent-bot
+tracker:
+  kind: memory
+  claims:
+    enabled: true
+    lease_field: ""
+    ttl_seconds: 30
+    heartbeat_seconds: 60
+---
+Prompt
+`,
+			want: []string{
+				"tracker.claims.lease_field must not be blank when tracker.claims.enabled is true",
+				"tracker.claims.heartbeat_seconds must be less than or equal to tracker.claims.ttl_seconds",
 			},
 		},
 		{

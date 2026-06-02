@@ -19,6 +19,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	perIssue := 10.0
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 	pipelineUpdatedAt := now.Add(-20 * time.Minute)
+	leaseRenewedAt := now.Add(-30 * time.Second)
+	leaseExpiresAt := now.Add(90 * time.Second)
 
 	html := renderDashboard(t, templates.DashboardData{
 		Title:         "Detent",
@@ -64,6 +66,13 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 						Title:       "Dashboard templates",
 						Description: "Running dashboard template row with enough issue detail to preview.",
 						State:       "In Progress",
+						Owner:       "alpha",
+						LeaseRenewedAt: func() *time.Time {
+							return &leaseRenewedAt
+						}(),
+						LeaseExpiresAt: func() *time.Time {
+							return &leaseExpiresAt
+						}(),
 					},
 					SessionID:      "thread-abc123456789",
 					TurnCount:      4,
@@ -232,6 +241,8 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Dashboard templates",
 		"http://localhost:4101",
 		"Running dashboard template row with enough issue detail to preview.",
+		"Owner alpha",
+		"Lease expires May 31 15:01:30 UTC",
 		"turn completed successfully",
 		"+4 -2 (3 files)",
 		"162,000",

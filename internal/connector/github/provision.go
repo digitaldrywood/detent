@@ -111,6 +111,7 @@ type statusOptionRequirement struct {
 type projectOptionsFieldResponse struct {
 	TypeName string                  `json:"__typename"`
 	ID       string                  `json:"id"`
+	DataType string                  `json:"dataType"`
 	Options  []projectOptionResponse `json:"options"`
 }
 
