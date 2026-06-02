@@ -24,6 +24,7 @@ type Issue struct {
 	AssignedToWorker bool         `json:"assigned_to_worker" yaml:"assigned_to_worker"`
 	CreatedAt        *time.Time   `json:"created_at,omitempty" yaml:"created_at,omitempty"`
 	UpdatedAt        *time.Time   `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	StageUpdatedAt   *time.Time   `json:"stage_updated_at,omitempty" yaml:"stage_updated_at,omitempty"`
 	ModelOverride    string       `json:"model_override" yaml:"model_override"`
 }
 

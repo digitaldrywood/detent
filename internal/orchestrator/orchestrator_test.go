@@ -522,6 +522,23 @@ func TestRunTracksBlockedStatusIssuesForDisplayOnly(t *testing.T) {
 	}
 }
 
+func TestRunFetchesPipelineTerminalStates(t *testing.T) {
+	t.Parallel()
+
+	tracker := newFakeConnector()
+	orch := newTestOrchestrator(t, tracker, &staticRunner{})
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForFetchByStatesCalls(t, tracker, 2)
+
+	got := tracker.fetchByStatesRequests()
+	want := []string{"Human Review", "Merging", "Done", "Cancelled", "Canceled", "Closed"}
+	if !stateRequestsContain(got, want) {
+		t.Fatalf("FetchIssuesByStates requests = %#v, want pipeline request containing %#v", got, want)
+	}
+}
+
 func TestStateReturnsDefensiveCopies(t *testing.T) {
 	t.Parallel()
 
@@ -726,6 +743,46 @@ func waitForFetchCalls(t *testing.T, tracker *fakeConnector, want int) {
 	}
 }
 
+func waitForFetchByStatesCalls(t *testing.T, tracker *fakeConnector, want int) {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	for {
+		if tracker.fetchByStatesCalls() >= want {
+			return
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d FetchIssuesByStates() calls; got %d", want, tracker.fetchByStatesCalls())
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func stateRequestsContain(requests [][]string, want []string) bool {
+	wanted := make(map[string]struct{}, len(want))
+	for _, state := range want {
+		wanted[strings.ToLower(strings.TrimSpace(state))] = struct{}{}
+	}
+	for _, request := range requests {
+		if len(request) != len(wanted) {
+			continue
+		}
+		matched := 0
+		for _, state := range request {
+			if _, ok := wanted[strings.ToLower(strings.TrimSpace(state))]; ok {
+				matched++
+			}
+		}
+		if matched == len(wanted) {
+			return true
+		}
+	}
+	return false
+}
+
 func receiveRunRequest(t *testing.T, requests <-chan orchestrator.RunRequest) orchestrator.RunRequest {
 	t.Helper()
 
@@ -761,6 +818,7 @@ type fakeConnector struct {
 	stateIssues         []connector.Issue
 	fetchCandidateCount int
 	fetchByStatesCount  int
+	fetchByStatesLog    [][]string
 }
 
 func newFakeConnector(issues ...connector.Issue) *fakeConnector {
@@ -784,6 +842,7 @@ func (c *fakeConnector) FetchIssuesByStates(_ context.Context, states []string) 
 	defer c.mu.Unlock()
 
 	c.fetchByStatesCount++
+	c.fetchByStatesLog = append(c.fetchByStatesLog, append([]string(nil), states...))
 	wanted := make(map[string]struct{}, len(states))
 	for _, state := range states {
 		wanted[strings.ToLower(strings.TrimSpace(state))] = struct{}{}
@@ -836,6 +895,17 @@ func (c *fakeConnector) fetchByStatesCalls() int {
 	defer c.mu.Unlock()
 
 	return c.fetchByStatesCount
+}
+
+func (c *fakeConnector) fetchByStatesRequests() [][]string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	requests := make([][]string, len(c.fetchByStatesLog))
+	for index, request := range c.fetchByStatesLog {
+		requests[index] = append([]string(nil), request...)
+	}
+	return requests
 }
 
 func (c *fakeConnector) setStateIssues(issues ...connector.Issue) {

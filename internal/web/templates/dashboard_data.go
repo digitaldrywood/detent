@@ -653,6 +653,9 @@ func pipelineNow(snapshot telemetry.Snapshot) time.Time {
 	}
 	latest := time.Time{}
 	for _, issue := range snapshot.Pipeline {
+		if issue.StageUpdatedAt != nil && issue.StageUpdatedAt.After(latest) {
+			latest = *issue.StageUpdatedAt
+		}
 		if issue.UpdatedAt != nil && issue.UpdatedAt.After(latest) {
 			latest = *issue.UpdatedAt
 		}
@@ -671,6 +674,9 @@ func pipelineNow(snapshot telemetry.Snapshot) time.Time {
 }
 
 func pipelineIssueStageTime(issue telemetry.Issue) time.Time {
+	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return issue.StageUpdatedAt.UTC()
+	}
 	if issue.UpdatedAt != nil && !issue.UpdatedAt.IsZero() {
 		return issue.UpdatedAt.UTC()
 	}

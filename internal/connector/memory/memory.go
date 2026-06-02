@@ -134,6 +134,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	issue.CreatedAt = cloneTime(issue.CreatedAt)
 	issue.UpdatedAt = cloneTime(issue.UpdatedAt)
+	issue.StageUpdatedAt = cloneTime(issue.StageUpdatedAt)
 
 	return issue
 }
