@@ -228,6 +228,17 @@ func (c *Connector) ensureFieldOptions(ctx context.Context, field projectSingleS
 		return false, nil
 	}
 
+	if _, err := c.updateProjectFieldOptions(ctx, field.ID, options); err != nil {
+		return false, err
+	}
+	return true, nil
+}
+
+func (c *Connector) updateProjectFieldOptions(
+	ctx context.Context,
+	fieldID string,
+	options []projectSingleSelectOption,
+) ([]projectSingleSelectOption, error) {
 	var response struct {
 		UpdateProjectV2Field *struct {
 			ProjectV2Field *struct {
@@ -237,19 +248,19 @@ func (c *Connector) ensureFieldOptions(ctx context.Context, field projectSingleS
 	}
 	if err := c.client.GraphQL(ctx, updateProjectFieldMutation, map[string]any{
 		"input": map[string]any{
-			"fieldId":             field.ID,
+			"fieldId":             fieldID,
 			"singleSelectOptions": options,
 		},
 	}, &response); err != nil {
-		return false, err
+		return nil, err
 	}
 	if response.UpdateProjectV2Field == nil ||
 		response.UpdateProjectV2Field.ProjectV2Field == nil ||
 		response.UpdateProjectV2Field.ProjectV2Field.Options == nil {
-		return false, ErrProjectFieldUpdateFailed
+		return nil, ErrProjectFieldUpdateFailed
 	}
 
-	return true, nil
+	return response.UpdateProjectV2Field.ProjectV2Field.Options, nil
 }
 
 func singleSelectOptionsWithRequiredOrder(current []projectSingleSelectOption, required []projectSingleSelectOption) []projectSingleSelectOption {

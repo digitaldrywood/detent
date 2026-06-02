@@ -179,6 +179,18 @@ mutation DetentGitHubAddComment($subjectId: ID!, $body: String!) {
   }
 }`
 
+const userByLoginQuery = `
+query DetentGitHubUserByLogin($login: String!) {
+  user(login: $login) { id }
+}`
+
+const addAssigneesMutation = `
+mutation DetentGitHubAddAssignee($assignableId: ID!, $assigneeIds: [ID!]!) {
+  addAssigneesToAssignable(input: {assignableId: $assignableId, assigneeIds: $assigneeIds}) {
+    assignable { ... on Issue { id } }
+  }
+}`
+
 const statusFieldQuery = `
 query DetentGitHubStatusField($projectId: ID!) {
   node(id: $projectId) {
@@ -192,6 +204,22 @@ query DetentGitHubStatusField($projectId: ID!) {
     }
   }
   rateLimit { limit used remaining cost resetAt }
+}`
+
+const singleSelectFieldQuery = `
+query DetentGitHubSingleSelectField($projectId: ID!, $fieldName: String!) {
+  node(id: $projectId) {
+    __typename
+    ... on ProjectV2 {
+      field(name: $fieldName) {
+        __typename
+        ... on ProjectV2SingleSelectField {
+          id
+          options { id name color description }
+        }
+      }
+    }
+  }
 }`
 
 const projectItemForIssueQuery = `
@@ -233,8 +261,8 @@ query DetentGitHubProjectItemForIssue($issueId: ID!, $projectItemsFirst: Int!, $
   rateLimit { limit used remaining cost resetAt }
 }`
 
-const updateStatusMutation = `
-mutation DetentGitHubUpdateStatus($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
+const updateSingleSelectFieldValueMutation = `
+mutation DetentGitHubUpdateSingleSelectField($projectId: ID!, $itemId: ID!, $fieldId: ID!, $optionId: String!) {
   updateProjectV2ItemFieldValue(input: {
     projectId: $projectId,
     itemId: $itemId,
@@ -548,6 +576,30 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 		return err
 	}
 	return c.updateStatusFieldValue(ctx, item.ID, fieldID, optionID)
+}
+
+func (c *Connector) SetAssignee(ctx context.Context, issueID string, login string) error {
+	userID, err := c.resolveUserID(ctx, login)
+	if err != nil {
+		return err
+	}
+	return c.addAssignee(ctx, issueID, userID)
+}
+
+func (c *Connector) SetField(ctx context.Context, issueID string, fieldName string, value string) error {
+	if c.projectID == "" {
+		return ErrMissingProject
+	}
+
+	item, err := c.resolveProjectItem(ctx, strings.TrimSpace(issueID))
+	if err != nil {
+		return err
+	}
+	fieldID, optionID, err := c.resolveSingleSelectFieldOption(ctx, fieldName, value)
+	if err != nil {
+		return err
+	}
+	return c.updateProjectV2SingleSelectFieldValue(ctx, item.ID, fieldID, optionID, ErrProjectFieldUpdateFailed)
 }
 
 type issuePullRequestCandidate struct {
@@ -873,6 +925,107 @@ func (c *Connector) resolveStatusOption(ctx context.Context, githubState string)
 	return metadata.FieldID, optionID, nil
 }
 
+func (c *Connector) resolveUserID(ctx context.Context, login string) (string, error) {
+	login = strings.TrimSpace(login)
+	if login == "" {
+		return "", ErrAssigneeNotFound
+	}
+
+	var response struct {
+		User *struct {
+			ID string `json:"id"`
+		} `json:"user"`
+	}
+	if err := c.client.GraphQL(ctx, userByLoginQuery, map[string]any{"login": login}, &response); err != nil {
+		return "", fmt.Errorf("fetch github assignee: %w", err)
+	}
+	if response.User == nil || strings.TrimSpace(response.User.ID) == "" {
+		return "", fmt.Errorf("%w: %s", ErrAssigneeNotFound, login)
+	}
+	return strings.TrimSpace(response.User.ID), nil
+}
+
+func (c *Connector) addAssignee(ctx context.Context, issueID string, userID string) error {
+	issueID = strings.TrimSpace(issueID)
+	userID = strings.TrimSpace(userID)
+	if issueID == "" || userID == "" {
+		return ErrAssigneeNotFound
+	}
+
+	var response struct {
+		AddAssigneesToAssignable *struct {
+			Assignable *struct {
+				ID string `json:"id"`
+			} `json:"assignable"`
+		} `json:"addAssigneesToAssignable"`
+	}
+	if err := c.client.GraphQL(ctx, addAssigneesMutation, map[string]any{
+		"assignableId": issueID,
+		"assigneeIds":  []string{userID},
+	}, &response); err != nil {
+		return fmt.Errorf("set github assignee: %w", err)
+	}
+	if response.AddAssigneesToAssignable == nil ||
+		response.AddAssigneesToAssignable.Assignable == nil ||
+		strings.TrimSpace(response.AddAssigneesToAssignable.Assignable.ID) == "" {
+		return ErrAssigneeUpdateFailed
+	}
+	return nil
+}
+
+func (c *Connector) resolveSingleSelectFieldOption(ctx context.Context, fieldName string, value string) (string, string, error) {
+	fieldName = strings.TrimSpace(fieldName)
+	value = strings.TrimSpace(value)
+	if fieldName == "" || value == "" {
+		return "", "", ErrProjectFieldOptionNotFound
+	}
+
+	field, err := c.fetchSingleSelectField(ctx, fieldName)
+	if err != nil {
+		return "", "", err
+	}
+	if optionID := singleSelectOptionID(field.Options, value); optionID != "" {
+		return field.ID, optionID, nil
+	}
+
+	options := singleSelectOptionsWithRequiredAtEnd(field.Options, []projectSingleSelectOption{ownershipOption(value)})
+	updatedOptions, err := c.updateProjectFieldOptions(ctx, field.ID, options)
+	if err != nil {
+		return "", "", fmt.Errorf("ensure github project field options: %w", err)
+	}
+	if optionID := singleSelectOptionID(updatedOptions, value); optionID != "" {
+		return field.ID, optionID, nil
+	}
+
+	field, err = c.fetchSingleSelectField(ctx, fieldName)
+	if err != nil {
+		return "", "", err
+	}
+	if optionID := singleSelectOptionID(field.Options, value); optionID != "" {
+		return field.ID, optionID, nil
+	}
+	return "", "", fmt.Errorf("%w: %s=%s", ErrProjectFieldOptionNotFound, fieldName, value)
+}
+
+func (c *Connector) fetchSingleSelectField(ctx context.Context, fieldName string) (projectSingleSelectField, error) {
+	var response struct {
+		Node *struct {
+			TypeName string                       `json:"__typename"`
+			Field    *projectOptionsFieldResponse `json:"field"`
+		} `json:"node"`
+	}
+	if err := c.client.GraphQL(ctx, singleSelectFieldQuery, map[string]any{
+		"projectId": c.projectID,
+		"fieldName": strings.TrimSpace(fieldName),
+	}, &response); err != nil {
+		return projectSingleSelectField{}, fmt.Errorf("fetch github project field: %w", err)
+	}
+	if response.Node == nil || response.Node.TypeName != "ProjectV2" {
+		return projectSingleSelectField{}, ErrProjectNotFound
+	}
+	return decodeProjectSingleSelectField(fieldName, response.Node.Field)
+}
+
 func (c *Connector) resolveStatusMetadata(ctx context.Context) (statusMetadata, error) {
 	if metadata, ok := c.statusCache.Get(c.projectID); ok {
 		return metadata, nil
@@ -966,6 +1119,16 @@ func (c *Connector) terminalStatusUpdateBlocked(currentStatus string, targetStat
 }
 
 func (c *Connector) updateStatusFieldValue(ctx context.Context, itemID string, fieldID string, optionID string) error {
+	return c.updateProjectV2SingleSelectFieldValue(ctx, itemID, fieldID, optionID, ErrStatusUpdateFailed)
+}
+
+func (c *Connector) updateProjectV2SingleSelectFieldValue(
+	ctx context.Context,
+	itemID string,
+	fieldID string,
+	optionID string,
+	emptyResponseError error,
+) error {
 	var response struct {
 		UpdateProjectV2ItemFieldValue *struct {
 			ProjectV2Item *struct {
@@ -973,18 +1136,18 @@ func (c *Connector) updateStatusFieldValue(ctx context.Context, itemID string, f
 			} `json:"projectV2Item"`
 		} `json:"updateProjectV2ItemFieldValue"`
 	}
-	if err := c.client.GraphQL(ctx, updateStatusMutation, map[string]any{
+	if err := c.client.GraphQL(ctx, updateSingleSelectFieldValueMutation, map[string]any{
 		"projectId": c.projectID,
 		"itemId":    itemID,
 		"fieldId":   fieldID,
 		"optionId":  optionID,
 	}, &response); err != nil {
-		return fmt.Errorf("update github status: %w", err)
+		return fmt.Errorf("update github project field: %w", err)
 	}
 	if response.UpdateProjectV2ItemFieldValue == nil ||
 		response.UpdateProjectV2ItemFieldValue.ProjectV2Item == nil ||
 		strings.TrimSpace(response.UpdateProjectV2ItemFieldValue.ProjectV2Item.ID) == "" {
-		return ErrStatusUpdateFailed
+		return emptyResponseError
 	}
 	return nil
 }
@@ -1056,6 +1219,44 @@ func singleSelectName(value *singleSelectValue) string {
 		return ""
 	}
 	return strings.TrimSpace(value.Name)
+}
+
+func singleSelectOptionID(options []projectSingleSelectOption, name string) string {
+	name = strings.TrimSpace(name)
+	for _, option := range options {
+		if strings.TrimSpace(option.Name) == name {
+			return strings.TrimSpace(option.ID)
+		}
+	}
+	return ""
+}
+
+func ownershipOption(name string) projectSingleSelectOption {
+	return projectSingleSelectOption{
+		Name:        strings.TrimSpace(name),
+		Color:       "BLUE",
+		Description: "Detent ownership identity.",
+	}
+}
+
+func singleSelectOptionsWithRequiredAtEnd(current []projectSingleSelectOption, required []projectSingleSelectOption) []projectSingleSelectOption {
+	options := normalizedSingleSelectOptions(current)
+	seen := make(map[string]struct{}, len(options)+len(required))
+	for _, option := range options {
+		seen[option.Name] = struct{}{}
+	}
+	for _, option := range required {
+		input := singleSelectOptionInput(option)
+		if input.Name == "" {
+			continue
+		}
+		if _, ok := seen[input.Name]; ok {
+			continue
+		}
+		seen[input.Name] = struct{}{}
+		options = append(options, input)
+	}
+	return options
 }
 
 func singleSelectUpdatedAt(value *singleSelectValue) *time.Time {

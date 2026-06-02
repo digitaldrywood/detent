@@ -14,6 +14,8 @@ type Connector interface {
 	FetchIssueStatesByIDs(context.Context, []string) ([]Issue, error)
 	CreateComment(context.Context, string, string) error
 	UpdateIssueState(context.Context, string, string) error
+	SetAssignee(context.Context, string, string) error
+	SetField(context.Context, string, string, string) error
 }
 
 type Authenticator interface {

@@ -212,3 +212,11 @@ func (c *runningStateConnector) CreateComment(context.Context, string, string) e
 func (c *runningStateConnector) UpdateIssueState(context.Context, string, string) error {
 	return nil
 }
+
+func (c *runningStateConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *runningStateConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}

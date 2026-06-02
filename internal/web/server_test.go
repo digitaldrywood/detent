@@ -2093,6 +2093,14 @@ func (p connectorProbe) UpdateIssueState(context.Context, string, string) error 
 	return connector.ErrNotImplemented
 }
 
+func (p connectorProbe) SetAssignee(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (p connectorProbe) SetField(context.Context, string, string, string) error {
+	return connector.ErrNotImplemented
+}
+
 type sseEvent struct {
 	name string
 	data string
