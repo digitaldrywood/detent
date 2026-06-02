@@ -18,7 +18,7 @@ func TestConnectorEnsureStateOptionsCreatesMissingStatusAndPriorityOptions(t *te
 			body: `{"data":{"node":{"__typename":"ProjectV2","statusField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_status","options":[{"id":"OPT_todo","name":"Todo","color":"GREEN","description":"Existing todo"}]},"priorityField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_priority","options":[{"id":"OPT_none","name":"No priority","color":"GRAY","description":"Existing none"}]}}}}`,
 		},
 		{
-			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_todo","name":"Todo","color":"GREEN","description":"Existing todo"},{"name":"Blocked","color":"RED","description":"Cannot continue without human input."},{"name":"Reviewing","color":"PURPLE","description":"Waiting for human review."},{"name":"Rework","color":"ORANGE","description":"Changes are requested before review can continue."},{"name":"Done","color":"GREEN","description":"Work is complete."}]}}}}`,
+			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_todo","name":"Todo","color":"GREEN","description":"Existing todo"},{"name":"Blocked","color":"RED","description":"Cannot continue without human input."},{"name":"Reviewing","color":"PURPLE","description":"Waiting for human review."},{"name":"Rework","color":"ORANGE","description":"Changes are requested before review can continue."},{"name":"Done","color":"GREEN","description":"Work is complete."},{"name":"Backlog","color":"GRAY","description":"Not ready for Detent dispatch."}]}}}}`,
 		},
 		{
 			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_p0","name":"P0","color":"RED","description":"Detent priority rank 1."},{"id":"OPT_none","name":"No priority","color":"GRAY","description":"Existing none"}]}}}}`,
@@ -59,20 +59,20 @@ func TestConnectorEnsureStateOptionsCreatesMissingStatusAndPriorityOptions(t *te
 		t.Fatalf("status fieldId = %v, want PVTSSF_status", statusInput["fieldId"])
 	}
 	statusOptions := graphQLOptions(t, statusInput)
-	if got := optionNames(statusOptions); !reflect.DeepEqual(got, []string{"Todo", "Blocked", "Reviewing", "Rework", "Done"}) {
+	if got := optionNames(statusOptions); !reflect.DeepEqual(got, []string{"Backlog", "Todo", "Blocked", "Reviewing", "Rework", "Done"}) {
 		t.Fatalf("status option names = %#v", got)
 	}
-	if statusOptions[0]["id"] != "OPT_todo" {
-		t.Fatalf("existing status id = %v, want OPT_todo", statusOptions[0]["id"])
+	if statusOptions[1]["id"] != "OPT_todo" {
+		t.Fatalf("existing status id = %v, want OPT_todo", statusOptions[1]["id"])
 	}
-	if statusOptions[0]["color"] != "GREEN" {
-		t.Fatalf("existing status color = %v, want GREEN", statusOptions[0]["color"])
+	if statusOptions[1]["color"] != "GREEN" {
+		t.Fatalf("existing status color = %v, want GREEN", statusOptions[1]["color"])
 	}
-	if _, ok := statusOptions[1]["id"]; ok {
-		t.Fatalf("new status option has id = %v, want no id", statusOptions[1]["id"])
+	if _, ok := statusOptions[0]["id"]; ok {
+		t.Fatalf("new status option has id = %v, want no id", statusOptions[0]["id"])
 	}
-	if statusOptions[2]["description"] != "Waiting for human review." {
-		t.Fatalf("mapped human review description = %v, want Waiting for human review.", statusOptions[2]["description"])
+	if statusOptions[3]["description"] != "Waiting for human review." {
+		t.Fatalf("mapped human review description = %v, want Waiting for human review.", statusOptions[3]["description"])
 	}
 
 	priorityInput := graphQLInput(t, requests[2])
@@ -137,7 +137,7 @@ func TestConnectorEnsureStateOptionsNoopsWhenOptionsPresent(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"node":{"__typename":"ProjectV2","statusField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_status","options":[{"id":"OPT_todo","name":"Todo","color":"GRAY","description":""},{"id":"OPT_done","name":"Done","color":"GREEN","description":""}]},"priorityField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_priority","options":[{"id":"OPT_high","name":"High","color":"ORANGE","description":""},{"id":"OPT_none","name":"No priority","color":"GRAY","description":""}]}}}}`,
+		body: `{"data":{"node":{"__typename":"ProjectV2","statusField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog","color":"GRAY","description":""},{"id":"OPT_todo","name":"Todo","color":"GRAY","description":""},{"id":"OPT_done","name":"Done","color":"GREEN","description":""}]},"priorityField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_priority","options":[{"id":"OPT_high","name":"High","color":"ORANGE","description":""},{"id":"OPT_none","name":"No priority","color":"GRAY","description":""}]}}}}`,
 	}})
 	c := newGitHubTestConnector(t, server, Config{
 		ProjectSlug:    "PVT_1",
