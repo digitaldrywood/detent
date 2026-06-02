@@ -14,10 +14,11 @@ import (
 )
 
 const (
-	projectItemsPageSize  = 50
-	projectItemsPerIssue  = 100
-	pullRequestsPageSize  = 100
-	pullRequestsPageLimit = 3
+	projectItemsPageSize          = 50
+	projectItemsPerIssue          = 100
+	pullRequestsPageSize          = 100
+	pullRequestsPageLimit         = 3
+	defaultProjectItemStatusState = "Backlog"
 )
 
 const projectItemsQuery = `
@@ -591,6 +592,10 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 	}
 
 	githubState := c.detentToGitHubState(stateName)
+	return c.setProjectItemStatus(ctx, item.ID, githubState)
+}
+
+func (c *Connector) setProjectItemStatus(ctx context.Context, itemID string, githubState string) error {
 	fieldID, optionID, err := c.resolveStatusOption(ctx, githubState)
 	if err != nil {
 		if errors.Is(err, ErrStatusOptionNotFound) {
@@ -599,7 +604,7 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 		return err
 	}
 
-	if err := c.updateStatusFieldValue(ctx, item.ID, fieldID, optionID); err == nil {
+	if err := c.updateStatusFieldValue(ctx, itemID, fieldID, optionID); err == nil {
 		return nil
 	}
 
@@ -608,7 +613,7 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 	if err != nil {
 		return err
 	}
-	return c.updateStatusFieldValue(ctx, item.ID, fieldID, optionID)
+	return c.updateStatusFieldValue(ctx, itemID, fieldID, optionID)
 }
 
 func (c *Connector) SetAssignee(ctx context.Context, issueID string, login string) error {
@@ -807,7 +812,10 @@ func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connec
 		}
 
 		for _, item := range response.Node.Items.Nodes {
-			issue, ok := c.normalizeProjectItem(item)
+			issue, ok, err := c.normalizeProjectItem(ctx, item)
+			if err != nil {
+				return nil, err
+			}
 			if !ok {
 				continue
 			}
@@ -832,17 +840,42 @@ func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connec
 	}
 }
 
-func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue, bool) {
+func (c *Connector) normalizeProjectItem(ctx context.Context, item projectItemNode) (connector.Issue, bool, error) {
 	if item.Content == nil || item.Content.TypeName != "Issue" {
-		return connector.Issue{}, false
+		return connector.Issue{}, false, nil
+	}
+	statusName, statusUpdatedAt, err := c.projectItemStatusOrDefault(ctx, item)
+	if err != nil {
+		return connector.Issue{}, false, err
 	}
 	return c.buildIssue(
 		*item.Content,
-		singleSelectName(item.StatusValue),
+		statusName,
 		singleSelectName(item.PriorityValue),
-		singleSelectUpdatedAt(item.StatusValue),
+		statusUpdatedAt,
 		projectFieldValues(item.FieldValues),
-	), true
+	), true, nil
+}
+
+func (c *Connector) projectItemStatusOrDefault(ctx context.Context, item projectItemNode) (string, *time.Time, error) {
+	statusName := singleSelectName(item.StatusValue)
+	if statusName != "" {
+		return statusName, singleSelectUpdatedAt(item.StatusValue), nil
+	}
+
+	itemID := strings.TrimSpace(item.ID)
+	if itemID == "" {
+		return "", nil, ErrInvalidResponse
+	}
+
+	statusName = c.detentToGitHubState(defaultProjectItemStatusState)
+	if statusName == "" {
+		return "", nil, nil
+	}
+	if err := c.setProjectItemStatus(ctx, itemID, statusName); err != nil {
+		return "", nil, fmt.Errorf("default github status: %w", err)
+	}
+	return statusName, nil, nil
 }
 
 func resolveBlockedByProjectState(issues []connector.Issue) {

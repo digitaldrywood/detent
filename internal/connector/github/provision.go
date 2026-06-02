@@ -349,9 +349,9 @@ func singleSelectOptionInput(option projectSingleSelectOption) projectSingleSele
 }
 
 func (c *Connector) requiredStatusOptions() []projectSingleSelectOption {
-	requirements := make([]statusOptionRequirement, 0, len(c.activeStates)+len(c.observedStates)+len(c.terminalStates))
+	requirements := make([]statusOptionRequirement, 0, len(c.activeStates)+len(c.observedStates)+len(c.terminalStates)+1)
 	seen := map[string]struct{}{}
-	for index, state := range appendStatusStates(nil, c.activeStates, c.observedStates, c.terminalStates) {
+	for index, state := range appendStatusStates(nil, c.activeStates, c.observedStates, c.terminalStates, []string{defaultProjectItemStatusState}) {
 		state = strings.TrimSpace(state)
 		if state == "" {
 			continue

@@ -185,6 +185,50 @@ func TestConnectorFetchCandidateIssuesRequestsRateLimitSnapshot(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssuesByStatesDefaultsBlankProjectStatusesToBacklog(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null},{"id":"PVTI_todo","content":{"__typename":"Issue","id":"I_todo","number":31,"title":"Ready status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/31","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
+		},
+		{
+			body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`,
+		},
+		{
+			body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_blank"}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:    "PVT_1",
+		ActiveStates:   []string{"Todo"},
+		ObservedStates: []string{"Backlog"},
+	})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Backlog"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+	if got[0].ID != "I_blank" || got[0].State != "Backlog" {
+		t.Fatalf("defaulted issue = %#v, want blank issue in Backlog", got[0])
+	}
+
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	updateVariables := requestVariables(t, requests[2])
+	if updateVariables["projectId"] != "PVT_1" ||
+		updateVariables["itemId"] != "PVTI_blank" ||
+		updateVariables["fieldId"] != "PVTSSF_status" ||
+		updateVariables["optionId"] != "OPT_backlog" {
+		t.Fatalf("update variables = %#v, want blank item moved to Backlog", updateVariables)
+	}
+}
+
 func TestConnectorFetchCandidateIssuesResolvesBlockedByProjectState(t *testing.T) {
 	t.Parallel()
 
