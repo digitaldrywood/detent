@@ -52,18 +52,16 @@ templ Dashboard(data DashboardData) {
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
 			@helpTooltipHost()
 			<main class="dashboard-shell mx-auto grid min-h-screen w-full max-w-7xl content-start gap-3 px-3 py-3 sm:gap-4 sm:px-6 lg:px-8" hx-ext="sse morph" sse-connect="/events">
-				<header class="dashboard-topbar min-w-0 rounded-md border border-border bg-card p-2 shadow-sm sm:p-2.5">
-					<div class="flex min-w-0 flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
-						@dashboardTopbarBrand("Observability", "Operations")
-						@dashboardNav("dashboard")
-						<div class="dashboard-topbar-actions flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
-							@dashboardTopbarMeta("Version", versionLabel(data))
-							@dashboardTopbarLink("Dashboard", dashboardURLLabel(data), dashboardURL(data))
-							@dashboardTopbarMeta("Connector", connectorName(data))
-							<span id="live-tick" class="sse-tick dashboard-topbar-chip inline-flex min-h-8 max-w-full items-center justify-between gap-2 rounded-md border border-border bg-muted px-2.5 py-1" sse-swap="tick" hx-swap="innerHTML settle:120ms">
-								<span class="text-xs font-medium uppercase text-muted-foreground">Snapshot</span>
-								<span class="truncate font-mono text-xs text-foreground">{ generatedAtLabel(data.Snapshot) }</span>
-							</span>
+				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+						@dashboardTopbarBrand()
+						@dashboardNav("")
+						<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+							<span class="truncate font-mono">{ versionLabel(data) }</span>
+							@dashboardTopbarDivider()
+							<span class="truncate">{ connectorName(data) }</span>
+							@dashboardTopbarDivider()
+							<span id="live-tick" class="sse-tick min-w-0 truncate font-mono" sse-swap="tick" hx-swap="innerHTML settle:120ms">{ generatedAtLabel(data.Snapshot) }</span>
 							@dashboardDensityControls()
 						</div>
 					</div>
@@ -315,8 +313,7 @@ templ lifetimeCard(totals telemetry.LifetimeTotals) {
 }
 
 templ LiveTick(timestamp time.Time) {
-	<span class="text-xs font-medium uppercase text-muted-foreground">Snapshot</span>
-	<span class="truncate font-mono text-xs text-foreground">Updated { timestamp.UTC().Format("15:04:05 UTC") }</span>
+	<span class="font-mono">Updated { timestamp.UTC().Format("15:04:05 UTC") }</span>
 }
 
 templ dashboardHealth(snapshot telemetry.Snapshot) {
@@ -341,10 +338,22 @@ templ dashboardHealth(snapshot telemetry.Snapshot) {
 }
 
 templ dashboardDensityControls() {
-	<div class="flex flex-wrap items-center gap-2">
-		<div class="density-control inline-grid min-h-8 grid-cols-2 overflow-hidden rounded-md border border-border bg-muted" role="group" aria-label="Dashboard density">
-			<button type="button" class="density-button px-3 text-xs font-medium text-muted-foreground" data-density-choice="comfortable" aria-pressed="true">Comfortable</button>
-			<button type="button" class="density-button px-3 text-xs font-medium text-muted-foreground" data-density-choice="compact" aria-pressed="false">Compact</button>
+	<div class="flex shrink-0 items-center">
+		<div class="density-control inline-grid h-7 grid-cols-2 overflow-hidden rounded bg-muted" role="group" aria-label="Dashboard density">
+			<button type="button" class="density-button flex h-7 w-7 items-center justify-center text-muted-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-density-choice="comfortable" aria-pressed="true" title="Comfortable density" aria-label="Comfortable density">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+					<path d="M3 4h8"></path>
+					<path d="M3 7h8"></path>
+					<path d="M3 10h8"></path>
+				</svg>
+			</button>
+			<button type="button" class="density-button flex h-7 w-7 items-center justify-center text-muted-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-density-choice="compact" aria-pressed="false" title="Compact density" aria-label="Compact density">
+				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
+					<path d="M3 4.5h8"></path>
+					<path d="M3 7h8"></path>
+					<path d="M3 9.5h8"></path>
+				</svg>
+			</button>
 		</div>
 	</div>
 }

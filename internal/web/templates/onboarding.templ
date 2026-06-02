@@ -78,9 +78,9 @@ templ OnboardingPage(data OnboardingData) {
 		</head>
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
 			<main class="dashboard-shell mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-4 px-3 py-3 sm:px-6 lg:px-8">
-				<header class="dashboard-topbar min-w-0 rounded-md border border-border bg-card p-2 shadow-sm sm:p-2.5">
-					<div class="flex min-w-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
-						@dashboardTopbarBrand("Setup", "Detent onboarding")
+				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+						@dashboardTopbarBrand()
 						@dashboardNav("")
 					</div>
 				</header>
@@ -125,7 +125,7 @@ templ OnboardingStep(data OnboardingData) {
 }
 
 templ onboardingStepBadge(step string) {
-	<span class="dashboard-topbar-chip inline-flex min-h-8 max-w-full items-center justify-between gap-2 rounded-md border border-border bg-muted px-2.5 py-1" data-onboarding-step-badge="true">
+	<span class="onboarding-step-badge inline-flex min-h-8 max-w-full items-center justify-between gap-2 rounded-md border border-border bg-muted px-2.5 py-1" data-onboarding-step-badge="true">
 		<span class="text-xs font-medium uppercase text-muted-foreground">Step</span>
 		<span class="truncate font-mono text-xs font-semibold text-foreground">{ step }</span>
 	</span>

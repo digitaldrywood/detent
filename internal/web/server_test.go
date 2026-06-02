@@ -126,7 +126,7 @@ func TestServerRoutes(t *testing.T) {
 			name:        "reports",
 			path:        "/reports",
 			wantStatus:  http.StatusOK,
-			wantContent: "Usage reports",
+			wantContent: "Spend trend",
 		},
 		{
 			name:        "health",
@@ -550,12 +550,16 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 	}
 	for _, want := range []string{
 		"v9.8.7",
-		`href="http://localhost:4000"`,
+		`aria-label="Detent dashboard"`,
+		`href="/"`,
 		`href="/reports"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
 		}
+	}
+	if strings.Contains(rec.Body.String(), `href="http://localhost:4000"`) {
+		t.Fatalf("dashboard rendered the dashboard URL chip:\n%s", rec.Body.String())
 	}
 	if strings.Contains(rec.Body.String(), "http://dashboard.example.test:4100") {
 		t.Fatalf("dashboard link used request host:\n%s", rec.Body.String())
@@ -580,7 +584,7 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`href="http://localhost:4101"`,
+		`href="/"`,
 		`src="https://unpkg.com/htmx.org@2.0.4"`,
 		`src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"`,
 		`src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"`,
@@ -1800,9 +1804,8 @@ func TestReportsPageRendersUsageCharts(t *testing.T) {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
 	for _, want := range []string{
-		"Usage reports",
-		`href="/"`,
 		`href="/reports"`,
+		`href="/"`,
 		`href="/settings"`,
 		"Spend trend",
 		"Token trend",
