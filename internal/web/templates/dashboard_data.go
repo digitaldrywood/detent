@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	throughputTrendWindow   = 10 * time.Minute
-	defaultThroughputWindow = time.Minute
+	throughputTrendWindow    = 10 * time.Minute
+	defaultThroughputWindow  = time.Minute
+	prPipelineDoneTodayLimit = 10
 )
 
 type DashboardData struct {
@@ -164,6 +165,7 @@ type prPipelineCard struct {
 	TimeInStage      string
 	TimeInStageTitle string
 	Stage            string
+	StageAt          time.Time
 }
 
 func pageTitle(data DashboardData) string {
@@ -564,6 +566,8 @@ func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {
 		appendPRPipelineCard(cardsByLane, seen, row.Issue, completedState(row), row.CompletedAt, now)
 	}
 
+	prunePRPipelineCards(cardsByLane)
+
 	return []prPipelineLane{
 		{
 			ID:          "human-review",
@@ -631,6 +635,23 @@ func appendPRPipelineCard(
 	cardsByLane[laneID] = append(cardsByLane[laneID], prPipelineCardForIssue(issue, state, laneID, stageAt, now))
 }
 
+func prunePRPipelineCards(cardsByLane map[string][]prPipelineCard) {
+	for laneID, cards := range cardsByLane {
+		sort.SliceStable(cards, func(i, j int) bool {
+			left := cards[i].StageAt
+			right := cards[j].StageAt
+			if left.IsZero() || right.IsZero() {
+				return !left.IsZero() && right.IsZero()
+			}
+			return left.After(right)
+		})
+		if laneID == "done-today" && len(cards) > prPipelineDoneTodayLimit {
+			cards = cards[:prPipelineDoneTodayLimit]
+		}
+		cardsByLane[laneID] = cards
+	}
+}
+
 func prPipelineLaneID(state string) string {
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(state), " ", "")) {
 	case "humanreview", "review", "inreview":
@@ -659,6 +680,7 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 		TimeInStage:      prPipelineAge(stageAt, now),
 		TimeInStageTitle: prPipelineAgeTitle(state, stageAt, now),
 		Stage:            chartText(state, "n/a"),
+		StageAt:          stageAt.UTC(),
 	}
 }
 

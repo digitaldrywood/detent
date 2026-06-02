@@ -51,50 +51,22 @@ templ Dashboard(data DashboardData) {
 		</head>
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
 			@helpTooltipHost()
-			<main class="mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-3 py-3 sm:gap-5 sm:px-6 sm:py-6 lg:px-8" hx-ext="sse morph" sse-connect="/events">
-				<header class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
-					<div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-						<div class="min-w-0">
-							<div class="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
-								<span class="inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent">
-									<span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
-									<span>Detent</span>
-								</span>
-								<span>Observability</span>
-							</div>
-							<h1 class="mt-2 text-2xl font-semibold text-foreground sm:text-3xl">Operations dashboard</h1>
-							<p class="mt-1 max-w-3xl text-sm text-muted-foreground">Live dispatch, budget, rate-limit, and token telemetry for active work.</p>
-						</div>
-						<div class="grid w-full gap-3 text-sm text-muted-foreground lg:w-auto lg:justify-items-end">
-							<div class="grid w-full min-w-0 gap-2 sm:grid-cols-2 lg:w-auto">
-								<span class="inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2">
-									<span class="text-xs font-medium uppercase text-muted-foreground">Version</span>
-									<span class="font-mono text-xs font-semibold text-foreground">{ versionLabel(data) }</span>
-								</span>
-								<a class="inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ dashboardURL(data) }>
-									<span class="text-xs font-medium uppercase text-muted-foreground">Dashboard</span>
-									<span class="max-w-[16rem] truncate font-mono text-xs text-foreground">{ dashboardURLLabel(data) }</span>
-								</a>
-								<a class="inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/reports">
-									<span class="text-xs font-medium uppercase text-muted-foreground">Reports</span>
-									<span class="font-mono text-xs text-foreground">Usage charts</span>
-								</a>
-								<span class="inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2">
-									<span class="inline-flex items-center gap-2">
-										<span class="h-2 w-2 rounded-full bg-accent"></span>
-										<span class="text-xs font-medium uppercase text-muted-foreground">Connector</span>
-									</span>
-									<span class="truncate font-medium text-foreground">{ connectorName(data) }</span>
-								</span>
-								<span id="live-tick" class="sse-tick inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2" sse-swap="tick" hx-swap="innerHTML settle:120ms">
-									<span class="text-xs font-medium uppercase text-muted-foreground">Snapshot</span>
-									<span class="truncate font-mono text-xs text-foreground">{ generatedAtLabel(data.Snapshot) }</span>
-								</span>
-							</div>
+			<main class="dashboard-shell mx-auto grid min-h-screen w-full max-w-7xl content-start gap-3 px-3 py-3 sm:gap-4 sm:px-6 lg:px-8" hx-ext="sse morph" sse-connect="/events">
+				<header class="dashboard-topbar min-w-0 rounded-md border border-border bg-card p-2 shadow-sm sm:p-2.5">
+					<div class="flex min-w-0 flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+						@dashboardTopbarBrand("Observability", "Operations")
+						@dashboardNav("dashboard")
+						<div class="dashboard-topbar-actions flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
+							@dashboardTopbarMeta("Version", versionLabel(data))
+							@dashboardTopbarLink("Dashboard", dashboardURLLabel(data), dashboardURL(data))
+							@dashboardTopbarMeta("Connector", connectorName(data))
+							<span id="live-tick" class="sse-tick dashboard-topbar-chip inline-flex min-h-8 max-w-full items-center justify-between gap-2 rounded-md border border-border bg-muted px-2.5 py-1" sse-swap="tick" hx-swap="innerHTML settle:120ms">
+								<span class="text-xs font-medium uppercase text-muted-foreground">Snapshot</span>
+								<span class="truncate font-mono text-xs text-foreground">{ generatedAtLabel(data.Snapshot) }</span>
+							</span>
 							@dashboardDensityControls()
 						</div>
 					</div>
-					@dashboardNav("dashboard")
 				</header>
 				<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
 					@SnapshotView(data)
@@ -109,7 +81,7 @@ templ SnapshotView(data DashboardData) {
 	if data.Snapshot.GeneratedAt.IsZero() {
 		@snapshotLoading()
 	}
-	<section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
+	<section class="dashboard-section-grid grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
 		@metricCard("Running", helpRunning, formatCount(runningCount(data.Snapshot)), "Active issue sessions", "border-t-accent", "bg-accent")
 		@metricCard("Queue", helpQueue, formatCount(queueCount(data.Snapshot)), "Waiting or retrying", "border-t-warning", "bg-warning")
 		@metricCard("Blocked", helpBlocked, formatCount(blockedCount(data.Snapshot)), "Needs operator action", "border-t-danger", "bg-danger")
@@ -117,14 +89,11 @@ templ SnapshotView(data DashboardData) {
 		@metricCard("Throughput", helpThroughput, throughputRate(data.Snapshot), "Rolling tokens/sec", "border-t-accent", "bg-accent")
 		@metricCard("Runtime", helpRuntime, runtimeLabel(data.Snapshot), "Aggregate agent uptime", "border-t-success", "bg-success")
 	</section>
-	@projectSmallMultiplesSection(data)
-	@prPipelineSection(data.Snapshot)
 	@agentActivityTimeline(data.Snapshot)
-	@boardHealthSection(data.Snapshot)
-	@cycleTimeSection(data.Snapshot.CycleTime)
+	@prPipelineSection(data.Snapshot)
 	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
-			<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+			<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 				<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 					<div class="min-w-0">
 						@helpHeading2("Running issues", helpRunning, "running-issues")
@@ -191,7 +160,7 @@ templ SnapshotView(data DashboardData) {
 					</div>
 				}
 			</section>
-			<section class="grid min-w-0 gap-4 xl:grid-cols-2">
+			<section class="dashboard-section-grid grid min-w-0 gap-4 xl:grid-cols-2">
 				@retryQueueSection(data.Snapshot)
 				@blockedSessionsSection(data.Snapshot)
 			</section>
@@ -199,11 +168,16 @@ templ SnapshotView(data DashboardData) {
 		</div>
 		<aside class="dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5">
 			@throughputCard(data)
-			@budgetCard(data.Snapshot)
 			@rateLimitsCard(data.Snapshot.RateLimits)
 			@tokenCard(data)
 			@lifetimeCard(data.Snapshot.LifetimeTotals)
 		</aside>
+	</section>
+	<section class="dashboard-analytics grid min-w-0 gap-4 lg:gap-5" aria-label="Dashboard analytics">
+		@projectSmallMultiplesSection(data)
+		@boardHealthSection(data.Snapshot)
+		@cycleTimeSection(data.Snapshot.CycleTime)
+		@budgetCard(data.Snapshot)
 	</section>
 }
 
@@ -227,7 +201,7 @@ templ projectSmallMultiplesSection(data DashboardData) {
 }
 
 templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
-	<article class="min-w-0 rounded-md border border-border bg-card p-3 shadow-sm" aria-label={ card.Name + " project" }>
+	<article class="dashboard-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm" aria-label={ card.Name + " project" }>
 		<div class="flex min-w-0 items-start justify-between gap-3">
 			<div class="min-w-0">
 				if card.URL != "" {
@@ -284,7 +258,7 @@ templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
 }
 
 templ throughputCard(data DashboardData) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
 			@helpHeading2("Token throughput", helpThroughput, "throughput-card")
 			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ throughputRate(data.Snapshot) }</span>
@@ -304,7 +278,7 @@ templ throughputCard(data DashboardData) {
 }
 
 templ lifetimeCard(totals telemetry.LifetimeTotals) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
 			@helpHeading2("Lifetime totals", helpLifetimeTotals, "lifetime-card")
 			<span class="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ lifetimeStatus(totals) }</span>
@@ -367,7 +341,7 @@ templ dashboardHealth(snapshot telemetry.Snapshot) {
 }
 
 templ dashboardDensityControls() {
-	<div class="flex w-full flex-wrap items-center gap-2 lg:justify-end">
+	<div class="flex flex-wrap items-center gap-2">
 		<div class="density-control inline-grid min-h-8 grid-cols-2 overflow-hidden rounded-md border border-border bg-muted" role="group" aria-label="Dashboard density">
 			<button type="button" class="density-button px-3 text-xs font-medium text-muted-foreground" data-density-choice="comfortable" aria-pressed="true">Comfortable</button>
 			<button type="button" class="density-button px-3 text-xs font-medium text-muted-foreground" data-density-choice="compact" aria-pressed="false">Compact</button>
@@ -388,7 +362,7 @@ templ snapshotLoading() {
 }
 
 templ metricCard(label string, term helpTerm, value string, detail string, borderClass string, dotClass string) {
-	<article class={ "min-w-0 rounded-md border border-border border-t-2 bg-card p-4 shadow-sm transition-colors hover:bg-muted/40 " + borderClass }>
+	<article class={ "dashboard-metric-card min-w-0 rounded-md border border-border border-t-2 bg-card p-3 shadow-sm transition-colors hover:bg-muted/40 sm:p-4 " + borderClass }>
 		<div class="flex items-start justify-between gap-3">
 			<div class="grid min-w-0 gap-1">
 				@helpInlineLabel(label, term, "dashboard", "text-sm font-medium text-muted-foreground")
@@ -415,7 +389,7 @@ templ dashboardEmptyState(title string, detail string, dotClass string) {
 }
 
 templ prPipelineSection(snapshot telemetry.Snapshot) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Pull request pipeline">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Pull request pipeline">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("PR pipeline", helpPRPipeline, "pr-pipeline")
@@ -423,7 +397,7 @@ templ prPipelineSection(snapshot telemetry.Snapshot) {
 			</div>
 			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ prPipelineTotalLabel(snapshot) }</span>
 		</div>
-		<div class="mt-5 grid min-w-0 gap-3 lg:grid-cols-3">
+		<div class="dashboard-section-grid mt-4 grid min-w-0 gap-3 lg:grid-cols-3">
 			for _, lane := range prPipelineLanes(snapshot) {
 				@prPipelineLaneView(lane)
 			}
@@ -432,7 +406,7 @@ templ prPipelineSection(snapshot telemetry.Snapshot) {
 }
 
 templ prPipelineLaneView(lane prPipelineLane) {
-	<section class="min-w-0 rounded-md border border-border bg-muted/60 p-3" aria-label={ lane.Title + " lane" }>
+	<section class="pr-pipeline-lane min-w-0 rounded-md border border-border bg-muted/60 p-3" aria-label={ lane.Title + " lane" }>
 		<div class="flex min-h-9 items-center justify-between gap-3">
 			<div class="inline-flex min-w-0 items-center gap-2">
 				<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
@@ -445,7 +419,7 @@ templ prPipelineLaneView(lane prPipelineLane) {
 				@dashboardEmptyState(lane.EmptyTitle, lane.EmptyDetail, lane.DotClass)
 			</div>
 		} else {
-			<div class="mt-3 grid gap-3">
+			<div class="pr-pipeline-lane-scroll mt-3 grid max-h-[24rem] gap-2 overflow-y-auto pr-1">
 				for _, card := range lane.Cards {
 					@prPipelineCardView(card)
 				}
@@ -455,7 +429,7 @@ templ prPipelineLaneView(lane prPipelineLane) {
 }
 
 templ prPipelineCardView(card prPipelineCard) {
-	<article class="min-w-0 rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="pr-pipeline-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm">
 		<div class="flex min-w-0 items-start justify-between gap-3">
 			<div class="min-w-0">
 				if card.URL != "" {
@@ -484,7 +458,7 @@ templ prPipelineCardView(card prPipelineCard) {
 }
 
 templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt time.Time) {
-	<article class="rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card rounded-md border border-border bg-card p-3 shadow-sm">
 		@issueCell(row.Issue, "running-mobile", rowIndex, true)
 		<div class="mt-3 grid gap-2 text-sm">
 			<div class="flex min-h-10 items-center justify-between gap-3">
@@ -592,7 +566,7 @@ templ runningActivityPanel(row telemetry.Running, prefix string, rowIndex int, g
 }
 
 templ boardHealthSection(snapshot telemetry.Snapshot) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Board health">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Board health">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Board health", helpBoardHealth, "board-health")
@@ -647,7 +621,7 @@ templ boardHealthSection(snapshot telemetry.Snapshot) {
 }
 
 templ cycleTimeSection(report telemetry.CycleTimeReport) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Cycle time">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Cycle time">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Cycle time", helpCycleTime, "cycle-time")
@@ -694,7 +668,7 @@ templ cycleTimeSection(report telemetry.CycleTimeReport) {
 }
 
 templ agentActivityTimeline(snapshot telemetry.Snapshot) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Agent activity timeline">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Agent activity timeline">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Agent activity", helpAgentActivity, "agent-activity")
@@ -713,13 +687,13 @@ templ agentActivityTimeline(snapshot telemetry.Snapshot) {
 				</div>
 			}
 		} else {
-			<div class="mt-5 grid gap-3 sm:hidden">
+			<div class="mt-4 grid gap-3 sm:hidden">
 				for _, row := range agentTimelineRows(snapshot) {
 					@agentActivityMobileCard(row)
 				}
 			</div>
-			<div class="mt-5 hidden overflow-hidden rounded-md border border-border sm:block">
-				<div class="overflow-x-auto">
+			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
+				<div class="dashboard-agent-scroll max-h-[32rem] overflow-x-auto overflow-y-auto">
 					<div class="min-w-[68rem]">
 						<div class="grid grid-cols-[18rem_minmax(0,1fr)_12rem] gap-3 border-b border-border bg-muted/70 px-3 py-3 text-xs font-medium uppercase text-muted-foreground">
 							<span>Agent</span>
@@ -727,7 +701,7 @@ templ agentActivityTimeline(snapshot telemetry.Snapshot) {
 							<span class="text-right">State / runtime</span>
 						</div>
 						for _, row := range agentTimelineRows(snapshot) {
-							<div class="grid min-h-14 grid-cols-[18rem_minmax(0,1fr)_12rem] items-center gap-3 border-b border-border px-3 py-3 last:border-b-0">
+							<div class="agent-activity-table-row grid min-h-14 grid-cols-[18rem_minmax(0,1fr)_12rem] items-center gap-3 border-b border-border px-3 py-3 last:border-b-0">
 								<div class="min-w-0">
 									<span class="block truncate font-medium text-foreground">{ row.Identifier }</span>
 									<span class="line-clamp-1 text-sm text-muted-foreground">{ row.Title }</span>
@@ -759,7 +733,7 @@ templ agentActivityTimeline(snapshot telemetry.Snapshot) {
 }
 
 templ agentActivityMobileCard(row agentTimelineRow) {
-	<article class="rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card rounded-md border border-border bg-card p-3 shadow-sm">
 		<div class="flex items-start justify-between gap-3">
 			<div class="min-w-0">
 				<span class="block truncate font-medium text-foreground">{ row.Identifier }</span>
@@ -785,7 +759,7 @@ templ agentActivityMobileCard(row agentTimelineRow) {
 }
 
 templ retryQueueSection(snapshot telemetry.Snapshot) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Retry queue", helpBackoffQueue, "retry-queue")
@@ -842,7 +816,7 @@ templ retryQueueSection(snapshot telemetry.Snapshot) {
 }
 
 templ retryQueueMobileCard(row telemetry.Queued, rowIndex int) {
-	<article class="rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card rounded-md border border-border bg-card p-3 shadow-sm">
 		@issueCell(row.Issue, "retry-mobile", rowIndex, true)
 		<div class="mt-3 grid gap-2 text-sm">
 			<div class="flex min-h-10 items-center justify-between gap-3">
@@ -861,7 +835,7 @@ templ retryQueueMobileCard(row telemetry.Queued, rowIndex int) {
 }
 
 templ blockedSessionsSection(snapshot telemetry.Snapshot) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Blocked sessions", helpBlocked, "blocked-sessions")
@@ -931,7 +905,7 @@ templ blockedSessionsSection(snapshot telemetry.Snapshot) {
 }
 
 templ blockedSessionMobileCard(row telemetry.Blocked, rowIndex int) {
-	<article class="rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card rounded-md border border-border bg-card p-3 shadow-sm">
 		@issueCell(row.Issue, "blocked-mobile", rowIndex, true)
 		<div class="mt-3 grid gap-2 text-sm">
 			<div class="flex min-h-10 items-center justify-between gap-3">
@@ -957,7 +931,7 @@ templ blockedSessionMobileCard(row telemetry.Blocked, rowIndex int) {
 }
 
 templ recentSessionsSection(snapshot telemetry.Snapshot) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Recent sessions", helpRecentSessions, "recent-sessions")
@@ -1027,7 +1001,7 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 }
 
 templ recentSessionMobileCard(row telemetry.Completed, rowIndex int) {
-	<article class="rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card rounded-md border border-border bg-card p-3 shadow-sm">
 		@issueCell(row.Issue, "recent-mobile", rowIndex, false)
 		<div class="mt-3 grid gap-2 text-sm">
 			<div class="flex min-h-10 items-center justify-between gap-3">
@@ -1146,7 +1120,7 @@ templ sessionCopyButton(sessionID string) {
 }
 
 templ budgetCard(snapshot telemetry.Snapshot) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
 			@helpHeading2("Budget", helpBudget, "budget-card")
 			<span class="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ budgetStatus(snapshot.Budget) }</span>
@@ -1213,7 +1187,7 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 }
 
 templ rateLimitsCard(limits *RateLimits) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
 			@helpHeading2("Rate limits", helpRateLimits, "rate-limits-card")
 			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 text-xs font-medium text-accent">{ rateLimitName(limits) }</span>
@@ -1246,7 +1220,7 @@ templ rateLimitsCard(limits *RateLimits) {
 }
 
 templ tokenCard(data DashboardData) {
-	<section class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 		<div class="flex items-start justify-between gap-3">
 			@helpHeading2("Tokens", helpTokens, "tokens-card")
 			<span class="shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground">{ tokenRate(data.Snapshot) }</span>

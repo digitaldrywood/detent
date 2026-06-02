@@ -76,11 +76,16 @@ templ OnboardingPage(data OnboardingData) {
 			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 		</head>
-		<body class="min-h-screen bg-background text-foreground antialiased">
-			<main class="mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-6 px-5 py-6 sm:px-8">
-				<header class="border-b border-border pb-6">
-					<p class="text-sm font-medium text-muted-foreground">Detent</p>
-					<h1 class="mt-1 text-3xl font-semibold text-foreground sm:text-4xl">Detent onboarding</h1>
+		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
+			<main class="dashboard-shell mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-4 px-3 py-3 sm:px-6 lg:px-8">
+				<header class="dashboard-topbar min-w-0 rounded-md border border-border bg-card p-2 shadow-sm sm:p-2.5">
+					<div class="flex min-w-0 flex-col gap-2 lg:flex-row lg:items-center lg:justify-between">
+						@dashboardTopbarBrand("Setup", "Detent onboarding")
+						@dashboardNav("")
+						<div class="dashboard-topbar-actions flex min-w-0 flex-wrap items-center gap-2 lg:justify-end">
+							@dashboardTopbarMeta("Step", data.Step)
+						</div>
+					</div>
 				</header>
 				@OnboardingStep(data)
 			</main>

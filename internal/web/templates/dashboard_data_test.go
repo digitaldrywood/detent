@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"strconv"
 	"testing"
 	"time"
 
@@ -753,6 +754,47 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPRPipelineLanesCapDoneTodayToRecentCards(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	issues := make([]telemetry.Issue, 0, 12)
+	for i := 0; i < 12; i++ {
+		updatedAt := now.Add(-time.Duration(11-i) * time.Minute)
+		issues = append(issues, telemetry.Issue{
+			ID:         "done-" + strconv.Itoa(i),
+			Identifier: "digitaldrywood/detent#" + strconv.Itoa(200+i),
+			Title:      "Done PR " + strconv.Itoa(i),
+			State:      "Done",
+			UpdatedAt:  &updatedAt,
+			PullRequest: &telemetry.PullRequest{
+				Number: 200 + i,
+				State:  "MERGED",
+			},
+		})
+	}
+
+	lanes := prPipelineLanes(telemetry.Snapshot{
+		GeneratedAt: now,
+		Pipeline:    issues,
+	})
+	doneLane := lanes[2]
+	if doneLane.Title != "Done today" {
+		t.Fatalf("lane[2] = %q, want Done today", doneLane.Title)
+	}
+	if len(doneLane.Cards) != 10 {
+		t.Fatalf("Done today cards len = %d, want 10; cards = %#v", len(doneLane.Cards), doneLane.Cards)
+	}
+	if doneLane.Cards[0].IssueNumber != "#211" {
+		t.Fatalf("newest card = %q, want #211; cards = %#v", doneLane.Cards[0].IssueNumber, doneLane.Cards)
+	}
+	for _, card := range doneLane.Cards {
+		if card.IssueNumber == "#200" || card.IssueNumber == "#201" {
+			t.Fatalf("Done today should drop oldest cards, found %s in %#v", card.IssueNumber, doneLane.Cards)
+		}
 	}
 }
 
