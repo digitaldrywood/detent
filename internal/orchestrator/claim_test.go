@@ -181,6 +181,44 @@ func TestClaimingHeartbeatKeepsActiveLeaseFromReclaim(t *testing.T) {
 	}
 }
 
+func TestClaimingHeartbeatReleasesLocalRunWhenOwnershipChanges(t *testing.T) {
+	now := time.Date(2026, 6, 2, 15, 0, 0, 0, time.UTC)
+	issue := claimTestIssue("issue-1")
+	issue.AssigneeID = "alpha"
+	issue.Assignees = []string{"alpha"}
+	issue.Fields["Detent Lease"] = now.Format(time.RFC3339Nano)
+	store := newClaimTestStore([]connector.Issue{issue})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	alphaRunner := newClaimBlockingRunner()
+	alpha := newClaimTestOrchestrator(t, claimTestConfig("alpha", "alpha"), claimTestConnector{store: store, login: "alpha"}, alphaRunner)
+	alphaState := newState(alpha.cfg)
+	alpha.tick(ctx, &alphaState, now)
+	receiveClaimRun(t, alphaRunner.started)
+
+	reclaimedAt := now.Add(20 * time.Second)
+	store.setAssignee(issue.ID, "beta")
+	store.setField(issue.ID, "Detent Lease", reclaimedAt.Format(time.RFC3339Nano))
+
+	alpha.tick(ctx, &alphaState, now.Add(40*time.Second))
+
+	got := store.issue(issue.ID)
+	if got.AssigneeID != "beta" {
+		t.Fatalf("AssigneeID = %q, want beta", got.AssigneeID)
+	}
+	if got.Fields["Detent Lease"] != reclaimedAt.Format(time.RFC3339Nano) {
+		t.Fatalf("Detent Lease = %q, want %q", got.Fields["Detent Lease"], reclaimedAt.Format(time.RFC3339Nano))
+	}
+	if _, ok := alphaState.Running[issue.ID]; ok {
+		t.Fatalf("alpha Running[%q] present after ownership changed", issue.ID)
+	}
+	if _, ok := alphaState.Claimed[issue.ID]; ok {
+		t.Fatalf("alpha Claimed[%q] present after ownership changed", issue.ID)
+	}
+}
+
 func claimTestConfig(owner string, login string) Config {
 	return Config{
 		PollInterval:        time.Hour,

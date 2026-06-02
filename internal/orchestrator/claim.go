@@ -133,6 +133,18 @@ func (o *Orchestrator) heartbeatRunningClaims(ctx context.Context, state *State,
 		if !o.claimHeartbeatDue(claimed, now) {
 			continue
 		}
+		refreshed, ok := o.refetchClaimedIssue(ctx, claimed.Issue)
+		if !ok {
+			continue
+		}
+		winner := o.claimWinner(refreshed)
+		if !sameClaimOwner(winner, owner) {
+			if o.logger != nil {
+				o.logger.Warn("claim heartbeat owner changed", "issue_id", issueID, "owner", owner, "current_owner", winner)
+			}
+			o.releaseClaim(state, issueID)
+			continue
+		}
 		if err := o.connector.SetField(ctx, issueID, o.cfg.Claiming.LeaseField, formatClaimTime(now)); err != nil {
 			if o.logger != nil {
 				o.logger.Warn("claim heartbeat failed", "issue_id", issueID, "owner", owner, "error", err)
@@ -142,11 +154,11 @@ func (o *Orchestrator) heartbeatRunningClaims(ctx context.Context, state *State,
 		claimed.Owner = owner
 		claimed.LeaseRenewedAt = now
 		claimed.LeaseExpiresAt = o.leaseExpiresAt(now)
-		claimed.Issue = issueWithLeaseField(claimed.Issue, o.cfg.Claiming.LeaseField, now)
+		claimed.Issue = issueWithLeaseField(mergeIssueTrackerFields(claimed.Issue, refreshed), o.cfg.Claiming.LeaseField, now)
 		state.Claimed[issueID] = claimed
 
 		running := state.Running[issueID]
-		running.Issue = issueWithLeaseField(running.Issue, o.cfg.Claiming.LeaseField, now)
+		running.Issue = issueWithLeaseField(mergeIssueTrackerFields(running.Issue, refreshed), o.cfg.Claiming.LeaseField, now)
 		state.Running[issueID] = running
 	}
 }
