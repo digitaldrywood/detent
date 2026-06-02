@@ -16,31 +16,6 @@ templ Dashboard(data DashboardData) {
 			<title>{ pageTitle(data) }</title>
 			<script>
 				document.documentElement.classList.toggle("dark", Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches))
-				function applyDashboardDensity(density) {
-					var selected = density === "compact" ? "compact" : "comfortable"
-					document.documentElement.dataset.density = selected
-					document.querySelectorAll("[data-density-choice]").forEach(function (button) {
-						button.setAttribute("aria-pressed", button.dataset.densityChoice === selected ? "true" : "false")
-					})
-				}
-				window.addEventListener("DOMContentLoaded", function () {
-					var densityKey = "detent.dashboard.density"
-					try {
-						applyDashboardDensity(window.localStorage.getItem(densityKey))
-					} catch (_error) {
-						applyDashboardDensity("comfortable")
-					}
-					document.addEventListener("click", function (event) {
-						if (!(event.target instanceof Element)) return
-						var button = event.target.closest("[data-density-choice]")
-						if (!button) return
-						var density = button.dataset.densityChoice
-						applyDashboardDensity(density)
-						try {
-							window.localStorage.setItem(densityKey, density)
-						} catch (_error) {}
-					})
-				})
 			</script>
 			@helpScript()
 			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
@@ -63,7 +38,6 @@ templ Dashboard(data DashboardData) {
 							<span class="truncate">{ connectorName(data) }</span>
 							@dashboardTopbarDivider()
 							<span id="live-tick" class="sse-tick min-w-0 truncate font-mono" sse-swap="tick" hx-swap="innerHTML settle:120ms">{ generatedAtLabel(data.Snapshot) }</span>
-							@dashboardDensityControls()
 						</div>
 					</div>
 				</header>
@@ -338,26 +312,6 @@ templ dashboardHealth(snapshot telemetry.Snapshot) {
 	</section>
 }
 
-templ dashboardDensityControls() {
-	<div class="flex shrink-0 items-center">
-		<div class="density-control inline-grid h-7 grid-cols-2 overflow-hidden rounded bg-muted" role="group" aria-label="Dashboard density">
-			<button type="button" class="density-button flex h-7 w-7 items-center justify-center text-muted-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-density-choice="comfortable" aria-pressed="true" title="Comfortable density" aria-label="Comfortable density">
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-					<path d="M3 4h8"></path>
-					<path d="M3 7h8"></path>
-					<path d="M3 10h8"></path>
-				</svg>
-			</button>
-			<button type="button" class="density-button flex h-7 w-7 items-center justify-center text-muted-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-density-choice="compact" aria-pressed="false" title="Compact density" aria-label="Compact density">
-				<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" aria-hidden="true">
-					<path d="M3 4.5h8"></path>
-					<path d="M3 7h8"></path>
-					<path d="M3 9.5h8"></path>
-				</svg>
-			</button>
-		</div>
-	</div>
-}
 
 templ snapshotLoading() {
 	<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm">
