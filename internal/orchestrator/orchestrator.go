@@ -1004,7 +1004,7 @@ func continuationDelay(index int) time.Duration {
 	if index <= 0 {
 		return 0
 	}
-	return time.Duration(index) * continuationDispatchBackoff
+	return continuationDispatchBackoff
 }
 
 func waitForDispatchBackoff(ctx context.Context, delay time.Duration) bool {

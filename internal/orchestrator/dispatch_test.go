@@ -443,6 +443,28 @@ func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	}
 }
 
+func TestContinuationDelayUsesConstantGap(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		index int
+		want  time.Duration
+	}{
+		{index: -1, want: 0},
+		{index: 0, want: 0},
+		{index: 1, want: continuationDispatchBackoff},
+		{index: 2, want: continuationDispatchBackoff},
+		{index: 50, want: continuationDispatchBackoff},
+	}
+
+	for _, tt := range tests {
+		got := continuationDelay(tt.index)
+		if got != tt.want {
+			t.Fatalf("continuationDelay(%d) = %s, want %s", tt.index, got, tt.want)
+		}
+	}
+}
+
 func TestDispatchCandidatesAssignsLeastLoadedWorkerHost(t *testing.T) {
 	t.Parallel()
 
