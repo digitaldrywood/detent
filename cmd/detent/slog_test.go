@@ -51,20 +51,37 @@ func TestSetupLoggerSetsDefault(t *testing.T) {
 	}
 }
 
-func TestSetupLoggerFromEnvUsesDetentVariables(t *testing.T) {
+func TestSetupLoggerFromEnvUsesUnprefixedVariables(t *testing.T) {
 	previous := slog.Default()
 	t.Cleanup(func() {
 		slog.SetDefault(previous)
 	})
-	t.Setenv("DETENT_ENV", "development")
-	t.Setenv("ENV", "production")
-	t.Setenv("DETENT_LOG_LEVEL", "debug")
-	t.Setenv("LOG_LEVEL", "error")
+	t.Setenv("ENV", "development")
+	t.Setenv("DETENT_ENV", "production")
+	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("DETENT_LOG_LEVEL", "error")
 
 	logger := setupLoggerFromEnv(&bytes.Buffer{}, &bytes.Buffer{})
 
 	if !logger.Enabled(context.Background(), slog.LevelDebug) {
-		t.Fatal("expected DETENT_LOG_LEVEL to enable debug records")
+		t.Fatal("expected LOG_LEVEL to enable debug records")
+	}
+}
+
+func TestSetupLoggerFromEnvFallsBackToDeprecatedPrefixedVariables(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+	t.Setenv("ENV", "")
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("DETENT_ENV", "development")
+	t.Setenv("DETENT_LOG_LEVEL", "debug")
+
+	logger := setupLoggerFromEnv(&bytes.Buffer{}, &bytes.Buffer{})
+
+	if !logger.Enabled(context.Background(), slog.LevelDebug) {
+		t.Fatal("expected DETENT_LOG_LEVEL fallback to enable debug records")
 	}
 }
 
@@ -182,9 +199,9 @@ func TestNewLogHandlerAllowsNilWriter(t *testing.T) {
 }
 
 func TestEnvValueFallback(t *testing.T) {
-	t.Setenv("DETENT_TEST_FALLBACK", "fallback")
+	t.Setenv("TEST_FALLBACK", "fallback")
 
-	if got := envValue("DETENT_TEST_PRIMARY", "DETENT_TEST_FALLBACK"); got != "fallback" {
+	if got := envValue("TEST_PRIMARY", "TEST_FALLBACK"); got != "fallback" {
 		t.Fatalf("envValue fallback = %q, want fallback", got)
 	}
 }

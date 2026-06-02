@@ -205,7 +205,7 @@ func checkDoctorConfig(configPath string, opts options) (globalconfig.PathResolu
 			Name:   "Config resolution",
 			Status: doctorFail,
 			Detail: err.Error(),
-			Hint:   "Pass --config or set DETENT_CONFIG to a readable global.yaml.",
+			Hint:   "Pass --config or set CONFIG to a readable global.yaml.",
 		}
 	}
 

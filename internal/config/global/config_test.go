@@ -13,8 +13,7 @@ import (
 )
 
 func TestResolvePathPrecedence(t *testing.T) {
-	t.Setenv("DETENT_HOME", "")
-	t.Setenv("DETENT_CONFIG", "")
+	clearPathEnv(t)
 
 	root := t.TempDir()
 	home := configurePathTestHome(t, root)
@@ -26,19 +25,24 @@ func TestResolvePathPrecedence(t *testing.T) {
 	flagPath := filepath.Join(root, "flag.yaml")
 	envPath := filepath.Join(root, "env.yaml")
 	detentHome := filepath.Join(root, "detent-home")
+	deprecatedEnvPath := filepath.Join(root, "deprecated-env.yaml")
+	deprecatedHome := filepath.Join(root, "deprecated-home")
 	homePath := filepath.Join(detentHome, "global.yaml")
+	deprecatedHomePath := filepath.Join(deprecatedHome, "global.yaml")
 	nativePath := filepath.Join(nativeRoot, "detent", "global.yaml")
 	legacyPath := filepath.Join(home, ".detent", "global.yaml")
-	for _, path := range []string{flagPath, envPath, homePath, nativePath, legacyPath} {
+	for _, path := range []string{flagPath, envPath, homePath, deprecatedEnvPath, deprecatedHomePath, nativePath, legacyPath} {
 		writeFile(t, path, "# config\n")
 	}
-	t.Setenv("DETENT_CONFIG", envPath)
-	t.Setenv("DETENT_HOME", detentHome)
+	t.Setenv("CONFIG", envPath)
+	t.Setenv("CONFIG_HOME", detentHome)
+	t.Setenv("DETENT_CONFIG", deprecatedEnvPath)
+	t.Setenv("DETENT_HOME", deprecatedHome)
 
 	tests := []struct {
 		name     string
 		flagPath string
-		setup    func()
+		setup    func(*testing.T)
 		wantPath string
 		wantRule PathRule
 	}{
@@ -49,37 +53,44 @@ func TestResolvePathPrecedence(t *testing.T) {
 			wantRule: PathRuleFlag,
 		},
 		{
-			name: "detent config wins after flag",
-			setup: func() {
-				t.Setenv("DETENT_CONFIG", envPath)
-				t.Setenv("DETENT_HOME", detentHome)
+			name: "config env wins after flag",
+			setup: func(t *testing.T) {
+				t.Setenv("CONFIG", envPath)
+				t.Setenv("CONFIG_HOME", detentHome)
 			},
 			wantPath: envPath,
 			wantRule: PathRuleEnvConfig,
 		},
 		{
-			name: "detent home wins after direct config env",
-			setup: func() {
-				t.Setenv("DETENT_CONFIG", "")
-				t.Setenv("DETENT_HOME", detentHome)
+			name: "config home wins before deprecated direct config env",
+			setup: func(t *testing.T) {
+				t.Setenv("CONFIG", "")
+				t.Setenv("CONFIG_HOME", detentHome)
 			},
 			wantPath: homePath,
 			wantRule: PathRuleEnvHome,
 		},
 		{
+			name: "deprecated direct config env wins before deprecated home env",
+			setup: func(t *testing.T) {
+				t.Setenv("CONFIG", "")
+				t.Setenv("CONFIG_HOME", "")
+			},
+			wantPath: deprecatedEnvPath,
+			wantRule: PathRuleDeprecatedEnvConfig,
+		},
+		{
 			name: "native config wins before legacy",
-			setup: func() {
-				t.Setenv("DETENT_CONFIG", "")
-				t.Setenv("DETENT_HOME", "")
+			setup: func(t *testing.T) {
+				clearPathEnv(t)
 			},
 			wantPath: nativePath,
 			wantRule: PathRuleUserConfigDir,
 		},
 		{
 			name: "legacy config wins when native is missing",
-			setup: func() {
-				t.Setenv("DETENT_CONFIG", "")
-				t.Setenv("DETENT_HOME", "")
+			setup: func(t *testing.T) {
+				clearPathEnv(t)
 				if err := os.Remove(nativePath); err != nil {
 					t.Fatalf("Remove() error = %v", err)
 				}
@@ -92,7 +103,7 @@ func TestResolvePathPrecedence(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			if tt.setup != nil {
-				tt.setup()
+				tt.setup(t)
 			}
 
 			got, err := ResolvePath(tt.flagPath)
@@ -110,8 +121,7 @@ func TestResolvePathPrecedence(t *testing.T) {
 }
 
 func TestResolvePathUsesNativeConfigDirWhenNoConfigExists(t *testing.T) {
-	t.Setenv("DETENT_HOME", "")
-	t.Setenv("DETENT_CONFIG", "")
+	clearPathEnv(t)
 	configurePathTestHome(t, t.TempDir())
 
 	nativeRoot, err := os.UserConfigDir()
@@ -134,8 +144,7 @@ func TestResolvePathUsesNativeConfigDirWhenNoConfigExists(t *testing.T) {
 }
 
 func TestDefaultPath(t *testing.T) {
-	t.Setenv("DETENT_HOME", "")
-	t.Setenv("DETENT_CONFIG", "")
+	clearPathEnv(t)
 	configurePathTestHome(t, t.TempDir())
 
 	nativeRoot, err := os.UserConfigDir()
@@ -154,10 +163,27 @@ func TestDefaultPath(t *testing.T) {
 	}
 }
 
-func TestDefaultPathHonorsDetentHome(t *testing.T) {
+func TestDefaultPathHonorsConfigHome(t *testing.T) {
 	root := t.TempDir()
 	home := configurePathTestHome(t, root)
-	t.Setenv("DETENT_CONFIG", "")
+	clearPathEnv(t)
+	t.Setenv("CONFIG_HOME", "~/custom")
+
+	got, err := DefaultPath()
+	if err != nil {
+		t.Fatalf("DefaultPath() error = %v", err)
+	}
+
+	want := filepath.Join(home, "custom", "global.yaml")
+	if got != want {
+		t.Fatalf("DefaultPath() = %q, want %q", got, want)
+	}
+}
+
+func TestDefaultPathFallsBackToDeprecatedDetentHome(t *testing.T) {
+	root := t.TempDir()
+	home := configurePathTestHome(t, root)
+	clearPathEnv(t)
 	t.Setenv("DETENT_HOME", "~/custom")
 
 	got, err := DefaultPath()
@@ -172,8 +198,7 @@ func TestDefaultPathHonorsDetentHome(t *testing.T) {
 }
 
 func TestDefaultConfig(t *testing.T) {
-	t.Setenv("DETENT_HOME", "")
-	t.Setenv("DETENT_CONFIG", "")
+	clearPathEnv(t)
 
 	cfg, err := Default()
 	if err != nil {
@@ -838,6 +863,14 @@ func configurePathTestHome(t *testing.T, root string) string {
 		t.Setenv("XDG_CONFIG_HOME", "")
 	}
 	return home
+}
+
+func clearPathEnv(t *testing.T) {
+	t.Helper()
+
+	for _, key := range []string{"CONFIG", "CONFIG_HOME", "DETENT_CONFIG", "DETENT_HOME"} {
+		t.Setenv(key, "")
+	}
 }
 
 func assertMap(t *testing.T, name string, got map[string]any, want map[string]any) {

@@ -153,7 +153,7 @@ func TestRootCommandCapturesHeadlessFlagAndTerminalState(t *testing.T) {
 
 func TestRootCommandPrintsBootBanner(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("DETENT_HOME", filepath.Join(root, ".detent"))
+	t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 
@@ -186,7 +186,7 @@ func TestRootCommandPrintsBootBanner(t *testing.T) {
 
 func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("DETENT_HOME", filepath.Join(root, ".detent"))
+	t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
 	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), validWorkflowContent())
 	t.Chdir(root)
 
@@ -220,7 +220,7 @@ func TestRootCommandBootsFromDefaultWorkflowWhenGlobalConfigIsMissing(t *testing
 
 func TestRootCommandUsesDefaultWorkflowServerAddress(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("DETENT_HOME", filepath.Join(root, ".detent"))
+	t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
 	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer("0.0.0.0", 4101))
 	t.Chdir(root)
 
@@ -267,7 +267,7 @@ func TestRootCommandUsesConfiguredProjectWorkflowServerAddress(t *testing.T) {
 
 func TestRootCommandCLIAddressOverridesWorkflowServerAddress(t *testing.T) {
 	root := t.TempDir()
-	t.Setenv("DETENT_HOME", filepath.Join(root, ".detent"))
+	t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
 	writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), workflowContentWithServer("0.0.0.0", 4103))
 	t.Chdir(root)
 
@@ -299,7 +299,7 @@ func TestRootCommandUsesOnboardingModeWithoutValidWorkflow(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			root := t.TempDir()
-			t.Setenv("DETENT_HOME", filepath.Join(root, ".detent"))
+			t.Setenv("CONFIG_HOME", filepath.Join(root, ".detent"))
 			if tt.content != "" {
 				writeWorkflow(t, filepath.Join(root, "WORKFLOW.md"), tt.content)
 			}

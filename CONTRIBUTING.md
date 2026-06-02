@@ -26,7 +26,7 @@ make setup
 make dev
 ```
 
-`make dev` runs Air with `DETENT_ENV=dev` and `DETENT_LOG_LEVEL=debug`, builds `./tmp/detent`, rotates `tmp/air-combined.log`, and streams combined build and application output to `tmp/air-combined.log`.
+`make dev` runs Air with `ENV=dev` and `LOG_LEVEL=debug`, builds `./tmp/detent`, rotates `tmp/air-combined.log`, and streams combined build and application output to `tmp/air-combined.log`.
 
 The default web bind is `127.0.0.1:4000` when no config or port is supplied. If another Detent process is already using that port, do not start a second server on it. Run a built binary with `./tmp/detent --port 0` when you need an ephemeral port.
 
@@ -34,10 +34,11 @@ The default web bind is `127.0.0.1:4000` when no config or port is supplied. If 
 
 Detent logs with `log/slog`.
 
-- `DETENT_ENV=dev`, `development`, or `local` enables tint text logs.
-- `DETENT_ENV=prod` or any other non-development value keeps JSON logs.
-- When `DETENT_ENV` is unset, interactive stdout TTY runs use tint text logs; non-TTY runs use JSON logs.
-- `DETENT_LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
+- `ENV=dev`, `development`, or `local` enables tint text logs.
+- `ENV=prod` or any other non-development value keeps JSON logs.
+- When `ENV` is unset, interactive stdout TTY runs use tint text logs; non-TTY runs use JSON logs.
+- `LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
+- `DETENT_ENV` and `DETENT_LOG_LEVEL` remain deprecated fallbacks for one release. The unprefixed names win when both are set.
 - Text logs are written to stdout; JSON logs are written to stderr.
 
 ## Global Config Discovery
@@ -45,12 +46,14 @@ Detent logs with `log/slog`.
 Detent must resolve `global.yaml` consistently across supported operating systems. Keep this precedence intact when changing startup or config commands:
 
 1. `--config <path>` uses the direct CLI file path.
-2. `DETENT_CONFIG=<file>` uses the direct environment file path.
-3. `DETENT_HOME=<dir>` uses `<dir>/global.yaml`.
+2. `CONFIG=<file>` uses the direct environment file path.
+3. `CONFIG_HOME=<dir>` uses `<dir>/global.yaml`.
 4. `os.UserConfigDir()` uses `<config-dir>/detent/global.yaml`.
 5. The legacy default uses `~/.detent/global.yaml`.
 
 The OS-native config directory is `%AppData%\detent\global.yaml` on Windows, `~/Library/Application Support/detent/global.yaml` on macOS, and `~/.config/detent/global.yaml` on Linux, with `XDG_CONFIG_HOME` honored by `os.UserConfigDir()`.
+
+`DETENT_CONFIG` and `DETENT_HOME` remain deprecated fallbacks for one release. Detent uses `CONFIG_HOME` instead of `HOME` because `HOME` is standard process state, not Detent configuration.
 
 After global config lookup fails, startup may fall back to a valid `WORKFLOW.md` in the current working directory for single-project mode. `detent config path` should continue to report both the selected path and the matching rule.
 

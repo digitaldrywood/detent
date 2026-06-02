@@ -91,6 +91,24 @@ func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
 	}
 }
 
+func TestLogLevelFromEnvUsesUnprefixedBeforeDeprecatedPrefixed(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("DETENT_LOG_LEVEL", "error")
+
+	if got := logLevelFromEnv(); got != slog.LevelDebug {
+		t.Fatalf("logLevelFromEnv() = %v, want %v", got, slog.LevelDebug)
+	}
+}
+
+func TestLogLevelFromEnvFallsBackToDeprecatedPrefixed(t *testing.T) {
+	t.Setenv("LOG_LEVEL", "")
+	t.Setenv("DETENT_LOG_LEVEL", "warn")
+
+	if got := logLevelFromEnv(); got != slog.LevelWarn {
+		t.Fatalf("logLevelFromEnv() = %v, want %v", got, slog.LevelWarn)
+	}
+}
+
 func TestTerminalDashboardError(t *testing.T) {
 	t.Parallel()
 

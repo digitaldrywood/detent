@@ -25,7 +25,7 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 		SourceRoot: source,
 		AutoBranch: true,
 		Hooks: Hooks{
-			AfterCreate: "printf '%s|%s|%s|%s|%s\n' \"$PWD\" \"$(git branch --show-current)\" \"$DETENT_ISSUE_IDENTIFIER\" \"$DETENT_WORKSPACE_KEY\" \"$DETENT_BRANCH\" >> " + shellQuote(tracePath),
+			AfterCreate: "printf '%s|%s|%s|%s|%s|%s|%s|%s\n' \"$PWD\" \"$(git branch --show-current)\" \"$ISSUE_IDENTIFIER\" \"$WORKSPACE_KEY\" \"$BRANCH\" \"$DETENT_ISSUE_IDENTIFIER\" \"$DETENT_WORKSPACE_KEY\" \"$DETENT_BRANCH\" >> " + shellQuote(tracePath),
 			Timeout:     time.Second,
 		},
 	})
@@ -59,8 +59,8 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 
 	trace := strings.TrimSpace(readFile(t, tracePath))
 	fields := strings.Split(trace, "|")
-	if len(fields) != 5 {
-		t.Fatalf("after_create trace = %q, want five fields", trace)
+	if len(fields) != 8 {
+		t.Fatalf("after_create trace = %q, want eight fields", trace)
 	}
 	if fields[0] != info.Path {
 		t.Fatalf("after_create cwd = %q, want %q", fields[0], info.Path)
@@ -69,13 +69,22 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 		t.Fatalf("after_create branch = %q, want detent/dd_19", fields[1])
 	}
 	if fields[2] != "DD/19" {
-		t.Fatalf("DETENT_ISSUE_IDENTIFIER = %q, want DD/19", fields[2])
+		t.Fatalf("ISSUE_IDENTIFIER = %q, want DD/19", fields[2])
 	}
 	if fields[3] != "DD_19" {
-		t.Fatalf("DETENT_WORKSPACE_KEY = %q, want DD_19", fields[3])
+		t.Fatalf("WORKSPACE_KEY = %q, want DD_19", fields[3])
 	}
 	if fields[4] != "detent/dd_19" {
-		t.Fatalf("DETENT_BRANCH = %q, want detent/dd_19", fields[4])
+		t.Fatalf("BRANCH = %q, want detent/dd_19", fields[4])
+	}
+	if fields[5] != "DD/19" {
+		t.Fatalf("DETENT_ISSUE_IDENTIFIER = %q, want DD/19", fields[5])
+	}
+	if fields[6] != "DD_19" {
+		t.Fatalf("DETENT_WORKSPACE_KEY = %q, want DD_19", fields[6])
+	}
+	if fields[7] != "detent/dd_19" {
+		t.Fatalf("DETENT_BRANCH = %q, want detent/dd_19", fields[7])
 	}
 }
 
@@ -265,8 +274,8 @@ func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 		SourceRoot: source,
 		AutoBranch: true,
 		Hooks: Hooks{
-			BeforeRun: "printf 'before:%s:%s\n' \"$PWD\" \"$DETENT_WORKSPACE_KEY\" >> " + shellQuote(tracePath),
-			AfterRun:  "printf 'after:%s:%s\n' \"$PWD\" \"$DETENT_WORKSPACE_KEY\" >> " + shellQuote(tracePath),
+			BeforeRun: "printf 'before:%s:%s\n' \"$PWD\" \"$WORKSPACE_KEY\" >> " + shellQuote(tracePath),
+			AfterRun:  "printf 'after:%s:%s\n' \"$PWD\" \"$WORKSPACE_KEY\" >> " + shellQuote(tracePath),
 			Timeout:   time.Second,
 		},
 	})
@@ -344,7 +353,7 @@ func TestLocalGitCleanupRemovesOnlyTargetWorktree(t *testing.T) {
 		SourceRoot: source,
 		AutoBranch: true,
 		Hooks: Hooks{
-			BeforeRemove: "printf '%s\n' \"$DETENT_WORKSPACE_KEY\" >> " + shellQuote(tracePath),
+			BeforeRemove: "printf '%s\n' \"$WORKSPACE_KEY\" >> " + shellQuote(tracePath),
 			Timeout:      time.Second,
 		},
 	})

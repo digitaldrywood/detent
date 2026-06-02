@@ -11,8 +11,8 @@ import (
 )
 
 func setupLoggerFromEnv(stdout io.Writer, stderr io.Writer) *slog.Logger {
-	env, envSet := envValueWithPresence("DETENT_ENV", "ENV")
-	return setupLoggerWithOutputs(env, envSet, envValue("DETENT_LOG_LEVEL", "LOG_LEVEL"), stdout, stderr, writerIsTTY(stdout))
+	env, envSet := envValueWithPresence("ENV", "DETENT_ENV")
+	return setupLoggerWithOutputs(env, envSet, envValue("LOG_LEVEL", "DETENT_LOG_LEVEL"), stdout, stderr, writerIsTTY(stdout))
 }
 
 func setupLogger(env string, level string, w io.Writer) *slog.Logger {

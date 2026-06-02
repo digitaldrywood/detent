@@ -416,8 +416,8 @@ func runtimeLogPath(cfg BootConfig) string {
 }
 
 func logLevelFromEnv() slog.Level {
-	for _, key := range []string{"DETENT_LOG_LEVEL", "LOG_LEVEL"} {
-		if level, ok := os.LookupEnv(key); ok {
+	for _, key := range []string{"LOG_LEVEL", "DETENT_LOG_LEVEL"} {
+		if level, ok := os.LookupEnv(key); ok && strings.TrimSpace(level) != "" {
 			return parseSlogLevel(level)
 		}
 	}

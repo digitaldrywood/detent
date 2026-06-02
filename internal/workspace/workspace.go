@@ -516,15 +516,23 @@ func gitCommonDir(ctx context.Context, dir string) (string, error) {
 
 func hookEnv(info Info, issue Issue) []string {
 	env := append([]string{}, os.Environ()...)
-	values := map[string]string{
-		"DETENT_WORKSPACE":        info.Path,
-		"DETENT_WORKSPACE_KEY":    info.Key,
-		"DETENT_BRANCH":           info.Branch,
-		"DETENT_ISSUE_ID":         issue.ID,
-		"DETENT_ISSUE_IDENTIFIER": issue.Identifier,
+	values := []struct {
+		key   string
+		value string
+	}{
+		{"DETENT_WORKSPACE", info.Path},
+		{"DETENT_WORKSPACE_KEY", info.Key},
+		{"DETENT_BRANCH", info.Branch},
+		{"DETENT_ISSUE_ID", issue.ID},
+		{"DETENT_ISSUE_IDENTIFIER", issue.Identifier},
+		{"WORKSPACE", info.Path},
+		{"WORKSPACE_KEY", info.Key},
+		{"BRANCH", info.Branch},
+		{"ISSUE_ID", issue.ID},
+		{"ISSUE_IDENTIFIER", issue.Identifier},
 	}
-	for key, value := range values {
-		env = append(env, key+"="+value)
+	for _, value := range values {
+		env = append(env, value.key+"="+value.value)
 	}
 	return env
 }

@@ -304,8 +304,9 @@ Omit `codex.shell` and `hooks.shell` to use the per-OS defaults: `sh` on Unix
 and `cmd` on Windows. For portable hooks, prefer no hook when Detent already
 does the setup natively. When a hook is necessary, keep it to commands available
 on every target or set `hooks.shell: pwsh` and write PowerShell that reads
-Detent values from `$env:DETENT_WORKSPACE`, `$env:DETENT_WORKSPACE_KEY`,
-`$env:DETENT_BRANCH`, and `$env:DETENT_ISSUE_IDENTIFIER`.
+Detent values from `$env:WORKSPACE`, `$env:WORKSPACE_KEY`, `$env:BRANCH`,
+and `$env:ISSUE_IDENTIFIER`. The older `DETENT_*` hook variables remain
+available as deprecated aliases for one release.
 
 4. Create the global config and add the project:
 
@@ -319,9 +320,9 @@ detent add-project \
 
 5. Verify the setup before dispatching:
 
-```sh
-detent --config ~/.detent/global.yaml doctor
-```
+   ```sh
+   detent doctor
+   ```
 
 `detent doctor` is a preflight check: config resolution, the SQLite database,
 the `codex` binary, the GitHub token and scopes, the git binary, and whether the
@@ -331,14 +332,14 @@ an unauthenticated `codex` are the usual culprits).
 6. Start Detent:
 
 ```sh
-detent --config ~/.detent/global.yaml
+detent
 ```
 
 Open the dashboard at <http://localhost:4000>. Use `--host` and `--port` to
 override the address:
 
 ```sh
-detent --config ~/.detent/global.yaml --host 127.0.0.1 --port 4001
+detent --host 127.0.0.1 --port 4001
 ```
 
 ## Bootstrap On A New Machine (Humans And AI Agents)
@@ -410,7 +411,7 @@ repo is a real, working instance of this setup to copy from.
 8. **Verify everything:**
 
    ```sh
-   detent --config ~/.detent/global.yaml doctor
+   detent doctor
    ```
 
    Every check must pass (the server-port check may fail if Detent is already
@@ -419,7 +420,7 @@ repo is a real, working instance of this setup to copy from.
 9. **Start Detent and confirm the dashboard:**
 
    ```sh
-   detent --config ~/.detent/global.yaml
+   detent
    curl -fsS http://localhost:4000/api/v1/state    # returns JSON telemetry
    ```
 
@@ -514,7 +515,7 @@ stay busy while merge candidates wait for CI or a clean base branch.
 
 Detent separates host-level orchestration from per-project workflow:
 
-- `~/.detent/global.yaml` lists projects and host-level scheduling settings.
+- The resolved global config file lists projects and host-level scheduling settings.
 - Each project has its own `WORKFLOW.md` with tracker credentials, states,
   workspace rules, Codex settings, budgets, hooks, and agent instructions.
 
@@ -553,17 +554,17 @@ means no explicit priority.
 Use the project administration commands to edit `global.yaml`:
 
 ```sh
-detent --config ~/.detent/global.yaml add-project \
+detent add-project \
   --id <id> \
   --workflow <WORKFLOW.md> \
   --workdir <dir> \
   --weight 1 \
   --priority 3
 
-detent --config ~/.detent/global.yaml pause <id>
-detent --config ~/.detent/global.yaml unpause <id>
-detent --config ~/.detent/global.yaml promote <id> --priority 1
-detent --config ~/.detent/global.yaml remove-project <id>
+detent pause <id>
+detent unpause <id>
+detent promote <id> --priority 1
+detent remove-project <id>
 ```
 
 These commands persist the global config. A running Detent process watches the
@@ -777,8 +778,8 @@ make dev
 make check
 ```
 
-`make dev` runs Air with `DETENT_ENV=dev` and
-`DETENT_LOG_LEVEL=debug`, builds `./tmp/detent`, rotates
+`make dev` runs Air with `ENV=dev` and
+`LOG_LEVEL=debug`, builds `./tmp/detent`, rotates
 `tmp/air-combined.log`, and streams combined build and application output to
 `tmp/air-combined.log`.
 
@@ -792,11 +793,12 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor workflow.
 
 Detent logs with `log/slog`.
 
-- `DETENT_ENV=dev`, `development`, or `local` enables tint text logs.
-- `DETENT_ENV=prod` or any other non-development value keeps JSON logs.
-- When `DETENT_ENV` is unset, interactive stdout TTY runs use tint text logs;
+- `ENV=dev`, `development`, or `local` enables tint text logs.
+- `ENV=prod` or any other non-development value keeps JSON logs.
+- When `ENV` is unset, interactive stdout TTY runs use tint text logs;
   non-TTY runs use JSON logs.
-- `DETENT_LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
+- `LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
+- `DETENT_ENV` and `DETENT_LOG_LEVEL` remain deprecated fallbacks for one release. The unprefixed names win when both are set.
 - Text logs are written to stdout; JSON logs are written to stderr.
 
 ## Configuration
@@ -806,12 +808,14 @@ At startup, Detent resolves `global.yaml` in this order. The first matching rule
 | Order | Rule | Path |
 | --- | --- | --- |
 | 1 | `--config <path>` | Direct file path from the CLI flag |
-| 2 | `DETENT_CONFIG=<file>` | Direct file path from the environment |
-| 3 | `DETENT_HOME=<dir>` | `<dir>/global.yaml` |
+| 2 | `CONFIG=<file>` | Direct file path from the environment |
+| 3 | `CONFIG_HOME=<dir>` | `<dir>/global.yaml` |
 | 4 | `os.UserConfigDir()` | `<config-dir>/detent/global.yaml` |
 | 5 | Legacy home config | `~/.detent/global.yaml` |
 
 `os.UserConfigDir()` maps to `%AppData%\detent\global.yaml` on Windows, `~/Library/Application Support/detent/global.yaml` on macOS, and `~/.config/detent/global.yaml` on Linux while honoring `XDG_CONFIG_HOME`.
+
+`DETENT_CONFIG` and `DETENT_HOME` remain deprecated fallbacks for one release. Detent uses `CONFIG_HOME` instead of `HOME` because `HOME` is standard process state, not Detent configuration.
 
 If no global config is found, Detent keeps the single-project fallback and looks for `WORKFLOW.md` in the current working directory. Use `detent config path` to print the resolved config path and the rule that selected it.
 
