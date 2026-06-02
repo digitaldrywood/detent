@@ -19,6 +19,7 @@ const (
 	defaultMaxRetryBackoff       = 5 * time.Minute
 	defaultContinuationRetry     = time.Second
 	defaultFailureRetryBaseDelay = 10 * time.Second
+	continuationDispatchBackoff  = 100 * time.Millisecond
 	runUpdateBufferSize          = 128
 	blockedStatusState           = "Blocked"
 	blockedReasonDependency      = "blocked by non-terminal dependency"
@@ -490,6 +491,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	dueRetries := dueRetriesByIssue(state, now)
 	o.releaseMissingDueRetries(state, issues, dueRetries)
 
+	continuations := 0
 	for _, issue := range issues {
 		if retry, ok := dueRetries[issue.ID]; ok {
 			o.dispatchRetryIssue(ctx, state, issue, retry, now)
@@ -502,6 +504,14 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			continue
 		}
 
+		delay := time.Duration(0)
+		if continuationDispatch(issue) {
+			delay = continuationDelay(continuations)
+			continuations++
+		}
+		if !waitForDispatchBackoff(ctx, delay) {
+			return
+		}
 		o.dispatchIssue(ctx, state, issue, 0, now, "")
 	}
 }
@@ -979,9 +989,37 @@ func duplicatePullRequestWork(issue connector.Issue) bool {
 	case "merged":
 		return true
 	case "open":
-		return normalizeState(issue.State) == "todo" || normalizeState(issue.State) == "in progress"
+		return normalizeState(issue.State) == "todo"
 	default:
 		return false
+	}
+}
+
+func continuationDispatch(issue connector.Issue) bool {
+	state := normalizeState(issue.State)
+	return state != "" && state != "todo"
+}
+
+func continuationDelay(index int) time.Duration {
+	if index <= 0 {
+		return 0
+	}
+	return continuationDispatchBackoff
+}
+
+func waitForDispatchBackoff(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
 	}
 }
 
