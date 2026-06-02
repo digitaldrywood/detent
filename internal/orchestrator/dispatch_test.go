@@ -416,7 +416,11 @@ func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{first, second}, now)
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		orch.dispatchReadyIssues(ctx, &state, []connector.Issue{first, second}, now)
+	}()
 
 	request := receiveWorkerHostRunRequest(t, runner.started)
 	if request.Issue.ID != first.ID {
@@ -431,6 +435,11 @@ func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	request = receiveWorkerHostRunRequest(t, runner.started)
 	if request.Issue.ID != second.ID {
 		t.Fatalf("second RunRequest.Issue.ID = %q, want %q", request.Issue.ID, second.ID)
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for dispatchReadyIssues to finish")
 	}
 }
 

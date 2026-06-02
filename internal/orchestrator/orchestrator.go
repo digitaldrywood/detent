@@ -509,7 +509,10 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			delay = continuationDelay(continuations)
 			continuations++
 		}
-		o.dispatchIssueAfter(ctx, state, issue, 0, now, "", delay)
+		if !waitForDispatchBackoff(ctx, delay) {
+			return
+		}
+		o.dispatchIssue(ctx, state, issue, 0, now, "")
 	}
 }
 
@@ -670,18 +673,6 @@ func (o *Orchestrator) dispatchIssue(
 	now time.Time,
 	preferredWorkerHost string,
 ) {
-	o.dispatchIssueAfter(ctx, state, issue, attempt, now, preferredWorkerHost, 0)
-}
-
-func (o *Orchestrator) dispatchIssueAfter(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	attempt int,
-	now time.Time,
-	preferredWorkerHost string,
-	delay time.Duration,
-) {
 	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
 	if !ok {
 		return
@@ -709,26 +700,7 @@ func (o *Orchestrator) dispatchIssueAfter(
 		WorkerHost:    workerHost,
 		OnUsageUpdate: o.usageUpdateHandler(ctx, issue.ID),
 	}
-	o.dispatchRun(ctx, request, delay)
-}
-
-func (o *Orchestrator) dispatchRun(ctx context.Context, request RunRequest, delay time.Duration) {
-	if delay <= 0 {
-		o.supervisor.Dispatch(ctx, request, o.runResults)
-		return
-	}
-
-	go func() {
-		timer := time.NewTimer(delay)
-		defer timer.Stop()
-
-		select {
-		case <-ctx.Done():
-			return
-		case <-timer.C:
-			o.supervisor.Dispatch(ctx, request, o.runResults)
-		}
-	}()
+	o.supervisor.Dispatch(ctx, request, o.runResults)
 }
 
 func (o *Orchestrator) usageUpdateHandler(ctx context.Context, issueID string) runpkg.UsageUpdateHandler {
@@ -1033,6 +1005,22 @@ func continuationDelay(index int) time.Duration {
 		return 0
 	}
 	return time.Duration(index) * continuationDispatchBackoff
+}
+
+func waitForDispatchBackoff(ctx context.Context, delay time.Duration) bool {
+	if delay <= 0 {
+		return true
+	}
+
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+
+	select {
+	case <-ctx.Done():
+		return false
+	case <-timer.C:
+		return true
+	}
 }
 
 func normalizePullRequestState(state string) string {
