@@ -265,6 +265,41 @@ func TestConnectorFetchCandidateIssuesResolvesBlockedByProjectState(t *testing.T
 	}
 }
 
+func TestConnectorFetchCandidateIssuesCapturesLinkedChildIssues(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_epic","content":{"__typename":"Issue","id":"I_epic","number":258,"title":"Epic: release readiness","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/258","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"nodes":[{"id":"I_sub","number":251,"title":"Sub issue","state":"CLOSED","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[]}}]},"trackedIssues":{"nodes":[{"id":"I_tracked","number":252,"title":"Tracked issue","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/252","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_tracked","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]}},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
+	}, {
+		body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchCandidateIssues() len = %d, want 1", len(got))
+	}
+
+	want := []connector.BlockedRef{
+		{ID: "I_sub", Identifier: "digitaldrywood/detent#251", State: "Done"},
+		{ID: "I_tracked", Identifier: "digitaldrywood/detent#252", State: "Done"},
+	}
+	if !reflect.DeepEqual(got[0].ChildIssues, want) {
+		t.Fatalf("ChildIssues = %#v, want %#v", got[0].ChildIssues, want)
+	}
+
+	query := server.requests()[0]["query"].(string)
+	for _, want := range []string{"subIssues(first: 100)", "trackedIssues(first: 100)"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("project query missing %q:\n%s", want, query)
+		}
+	}
+}
+
 func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testing.T) {
 	t.Parallel()
 
@@ -607,6 +642,44 @@ func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssueStatesByIdentifiersResolvesGitHubStateAndProjectStatus(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"repository":{"issue":{"__typename":"Issue","id":"I_closed","number":251,"title":"Closed child","body":"","state":"CLOSED","url":"https://github.com/digitaldrywood/detent/issues/251","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[]}}}}}`,
+		},
+		{
+			body: `{"data":{"repository":{"issue":{"__typename":"Issue","id":"I_done","number":252,"title":"Done child","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/252","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_done","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueStatesByIdentifiers(context.Background(), []string{"digitaldrywood/detent#251", "digitaldrywood/detent#252"})
+	if err != nil {
+		t.Fatalf("FetchIssueStatesByIdentifiers() error = %v", err)
+	}
+	if ids := githubIssueIDs(got); !reflect.DeepEqual(ids, []string{"I_closed", "I_done"}) {
+		t.Fatalf("FetchIssueStatesByIdentifiers() ids = %#v, want [I_closed I_done]", ids)
+	}
+	if !got[0].Closed || got[0].State != "Done" {
+		t.Fatalf("closed child = %#v, want Closed true and State Done", got[0])
+	}
+	if got[1].Closed || got[1].State != "Done" {
+		t.Fatalf("project done child = %#v, want open issue with State Done", got[1])
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	firstVariables := requests[0]["variables"].(map[string]any)
+	if firstVariables["owner"] != "digitaldrywood" || firstVariables["name"] != "detent" || firstVariables["number"] != float64(251) {
+		t.Fatalf("first variables = %#v, want digitaldrywood/detent#251", firstVariables)
+	}
+}
+
 func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	t.Parallel()
 
@@ -636,6 +709,38 @@ func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	}
 	if variables["body"] != "hello" {
 		t.Fatalf("body = %v, want hello", variables["body"])
+	}
+}
+
+func TestConnectorCloseIssueCallsCloseIssue(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"closeIssue":{"issue":{"id":"I_kw1","state":"CLOSED"}}}}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.CloseIssue(context.Background(), " I_kw1 "); err != nil {
+		t.Fatalf("CloseIssue() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	query := requests[0]["query"].(string)
+	if !strings.Contains(query, "closeIssue") {
+		t.Fatalf("query = %q, want closeIssue", query)
+	}
+	if strings.Contains(query, "rateLimit") {
+		t.Fatalf("query = %q, want no rateLimit on mutation root", query)
+	}
+	variables := requests[0]["variables"].(map[string]any)
+	if variables["issueId"] != "I_kw1" {
+		t.Fatalf("issueId = %v, want I_kw1", variables["issueId"])
+	}
+	if variables["stateReason"] != "COMPLETED" {
+		t.Fatalf("stateReason = %v, want COMPLETED", variables["stateReason"])
 	}
 }
 

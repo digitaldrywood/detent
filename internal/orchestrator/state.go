@@ -185,6 +185,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		cloned.StageUpdatedAt = &stageUpdatedAt
 	}
 	cloned.BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
+	cloned.ChildIssues = append([]connector.BlockedRef(nil), issue.ChildIssues...)
 	cloned.Labels = cloneStringSlice(issue.Labels)
 	cloned.Assignees = cloneStringSlice(issue.Assignees)
 	cloned.Fields = cloneStringMap(issue.Fields)

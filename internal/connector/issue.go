@@ -15,12 +15,14 @@ type Issue struct {
 	State            string            `json:"state,omitempty" yaml:"state,omitempty"`
 	BranchName       string            `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	URL              string            `json:"url,omitempty" yaml:"url,omitempty"`
+	Closed           bool              `json:"closed,omitempty" yaml:"closed,omitempty"`
 	PRNumber         *int              `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
 	PullRequest      *PullRequest      `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
 	AuthorID         string            `json:"author_id,omitempty" yaml:"author_id,omitempty"`
 	AssigneeID       string            `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
 	Assignees        []string          `json:"assignees,omitempty" yaml:"assignees,omitempty"`
 	BlockedBy        []BlockedRef      `json:"blocked_by" yaml:"blocked_by"`
+	ChildIssues      []BlockedRef      `json:"child_issues,omitempty" yaml:"child_issues,omitempty"`
 	BlockerReason    string            `json:"blocker_reason,omitempty" yaml:"blocker_reason,omitempty"`
 	Labels           []string          `json:"labels" yaml:"labels"`
 	Fields           map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`

@@ -310,6 +310,11 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		statusIssues = cloneIssues(statusIssues)
 		state.Pipeline = issuesInStates(statusIssues, prPipelineFetchStates(o.cfg.TerminalStates))
 	}
+	observedIssues := cloneIssues(issues)
+	if statusErr == nil {
+		observedIssues = append(observedIssues, statusIssues...)
+	}
+	issues = filterCompletedEpicCandidates(issues, o.closeCompletedEpics(ctx, observedIssues))
 	sortIssuesForDispatch(issues, o.cfg.DispatchPriorityByState)
 	o.pruneBudgetRefusals(state, now)
 	o.trackBlockedCandidates(state, issues, now)
@@ -451,6 +456,7 @@ func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue
 	if refreshed.URL != "" {
 		merged.URL = refreshed.URL
 	}
+	merged.Closed = refreshed.Closed
 	if refreshed.PRNumber != nil {
 		merged.PRNumber = refreshed.PRNumber
 	}
