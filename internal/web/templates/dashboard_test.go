@@ -472,7 +472,6 @@ func TestDashboardRendersBoundedPRPipelineLanes(t *testing.T) {
 	}
 }
 
-
 func TestDashboardRendersReadableAgentTimelineForConcurrentSessions(t *testing.T) {
 	t.Parallel()
 
@@ -796,7 +795,6 @@ func TestDashboardRendersHealthIndicators(t *testing.T) {
 		t.Fatalf("dashboard missing offline status:\n%s", offlineHTML)
 	}
 }
-
 
 func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 	t.Parallel()
