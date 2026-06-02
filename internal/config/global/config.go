@@ -70,6 +70,7 @@ type Project struct {
 	Paused        bool              `yaml:"paused,omitempty"`
 	CredentialRef string            `yaml:"credential_ref,omitempty"`
 	Authorization selector.Selector `yaml:"authorization,omitempty"`
+	Identity      Identity          `yaml:"-"`
 }
 
 type Identity = workflowconfig.Identity

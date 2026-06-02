@@ -122,6 +122,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}
 
 	workflow := normalizeWorkflow(cfg.Workflow)
+	workflow.Config = workflowConfigWithProjectIdentity(cfg.Project, workflow.Config)
 	if err := workflow.Config.Validate(); err != nil {
 		return nil, fmt.Errorf("validate project workflow: %w", err)
 	}
@@ -570,7 +571,12 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		return
 	}
 
+	p.mu.Lock()
+	projectConfig := p.cfg
+	p.mu.Unlock()
+
 	workflow := normalizeWorkflow(update.Workflow)
+	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
 	if err := workflow.Config.Validate(); err != nil {
 		p.logger.Warn("workflow reload validation failed",
 			"project_id", p.id,
@@ -604,10 +610,6 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		updater.UpdateWorkflow(workflow)
 	}
 
-	p.mu.Lock()
-	projectConfig := p.cfg
-	p.mu.Unlock()
-
 	runtimeConfig := projectOrchestratorConfig(projectConfig, workflow.Config)
 	if err := p.orchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
 		Config:    runtimeConfig,
@@ -636,9 +638,23 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 }
 
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
+	workflow = workflowConfigWithProjectIdentity(project, workflow)
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
 	cfg.Authorization = combineAuthorizationSelectors(cfg.Authorization, project.Authorization)
 	return cfg
+}
+
+func workflowConfigWithProjectIdentity(
+	project globalconfig.Project,
+	workflow workflowconfig.Config,
+) workflowconfig.Config {
+	if !project.Identity.Configured() {
+		return workflow
+	}
+	identity := project.Identity
+	identity.Normalize()
+	workflow.Identity = identity
+	return workflow
 }
 
 func combineAuthorizationSelectors(selectors ...selector.Selector) selector.Selector {
