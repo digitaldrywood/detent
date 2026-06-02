@@ -14,14 +14,15 @@ import (
 )
 
 const (
-	projectItemsPageSize            = 50
-	projectItemsPerIssue            = 100
-	projectItemFieldValuesPageSize  = 20
-	linkedIssuePageSize             = 20
-	linkedIssueProjectItemsPageSize = 10
-	pullRequestsPageSize            = 100
-	pullRequestsPageLimit           = 3
-	defaultProjectItemStatusState   = "Backlog"
+	projectItemsPageSize                      = 50
+	projectItemsPerIssue                      = 100
+	projectItemFieldValuesPageSize            = 100
+	linkedIssuePageSize                       = 20
+	linkedIssueProjectItemsPageSize           = 10
+	linkedIssueProjectItemFieldValuesPageSize = 20
+	pullRequestsPageSize                      = 100
+	pullRequestsPageLimit                     = 3
+	defaultProjectItemStatusState             = "Backlog"
 )
 
 const projectItemsQuery = `
@@ -29,9 +30,10 @@ query DetentGitHubProjectItems(
   $projectId: ID!
   $first: Int!
   $after: String
-  $fieldValuesFirst: Int!
+  $projectItemFieldValuesFirst: Int!
   $linkedIssuesFirst: Int!
   $linkedProjectItemsFirst: Int!
+  $linkedProjectItemFieldValuesFirst: Int!
 ) {
   node(id: $projectId) {
     ... on ProjectV2 {
@@ -75,7 +77,7 @@ query DetentGitHubProjectItems(
                       priorityValue: fieldValueByName(name: "Priority") {
                         ... on ProjectV2ItemFieldSingleSelectValue { name }
                       }
-                      fieldValues(first: $fieldValuesFirst) {
+                      fieldValues(first: $linkedProjectItemFieldValuesFirst) {
                         nodes {
                           __typename
                           ... on ProjectV2ItemFieldSingleSelectValue {
@@ -116,7 +118,7 @@ query DetentGitHubProjectItems(
                       priorityValue: fieldValueByName(name: "Priority") {
                         ... on ProjectV2ItemFieldSingleSelectValue { name }
                       }
-                      fieldValues(first: $fieldValuesFirst) {
+                      fieldValues(first: $linkedProjectItemFieldValuesFirst) {
                         nodes {
                           __typename
                           ... on ProjectV2ItemFieldSingleSelectValue {
@@ -145,7 +147,7 @@ query DetentGitHubProjectItems(
           priorityValue: fieldValueByName(name: "Priority") {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
           }
-          fieldValues(first: $fieldValuesFirst) {
+          fieldValues(first: $projectItemFieldValuesFirst) {
             nodes {
               __typename
               ... on ProjectV2ItemFieldSingleSelectValue {
@@ -1323,12 +1325,13 @@ func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connec
 			} `json:"node"`
 		}
 		if err := c.client.GraphQL(ctx, projectItemsQuery, map[string]any{
-			"projectId":               c.projectID,
-			"first":                   projectItemsPageSize,
-			"after":                   after,
-			"fieldValuesFirst":        projectItemFieldValuesPageSize,
-			"linkedIssuesFirst":       linkedIssuePageSize,
-			"linkedProjectItemsFirst": linkedIssueProjectItemsPageSize,
+			"projectId":                         c.projectID,
+			"first":                             projectItemsPageSize,
+			"after":                             after,
+			"projectItemFieldValuesFirst":       projectItemFieldValuesPageSize,
+			"linkedIssuesFirst":                 linkedIssuePageSize,
+			"linkedProjectItemsFirst":           linkedIssueProjectItemsPageSize,
+			"linkedProjectItemFieldValuesFirst": linkedIssueProjectItemFieldValuesPageSize,
 		}, &response); err != nil {
 			return nil, fmt.Errorf("fetch github project items: %w", err)
 		}
