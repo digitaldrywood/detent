@@ -40,7 +40,7 @@ query DetentGitHubProjectItems($projectId: ID!, $first: Int!, $after: String) {
               createdAt
               updatedAt
               author { login }
-              assignees(first: 100) { nodes { login } }
+              assignees(first: 100) { nodes { id login } }
               labels(first: 20) { nodes { name } }
               repository { nameWithOwner }
               closedByPullRequestsReferences(first: 5) { nodes { number url } }
@@ -90,7 +90,7 @@ query DetentGitHubIssuesByID($issueIds: [ID!]!, $projectItemsFirst: Int!) {
       createdAt
       updatedAt
       author { login }
-      assignees(first: 100) { nodes { login } }
+      assignees(first: 100) { nodes { id login } }
       labels(first: 20) { nodes { name } }
       repository { nameWithOwner }
       closedByPullRequestsReferences(first: 5) { nodes { number url } }
@@ -187,6 +187,22 @@ query DetentGitHubUserByLogin($login: String!) {
 const addAssigneesMutation = `
 mutation DetentGitHubAddAssignee($assignableId: ID!, $assigneeIds: [ID!]!) {
   addAssigneesToAssignable(input: {assignableId: $assignableId, assigneeIds: $assigneeIds}) {
+    assignable { ... on Issue { id } }
+  }
+}`
+
+const issueAssigneesQuery = `
+query DetentGitHubIssueAssignees($issueId: ID!) {
+  node(id: $issueId) {
+    ... on Issue {
+      assignees(first: 100) { nodes { id login } }
+    }
+  }
+}`
+
+const removeAssigneesMutation = `
+mutation DetentGitHubRemoveAssignees($assignableId: ID!, $assigneeIds: [ID!]!) {
+  removeAssigneesFromAssignable(input: {assignableId: $assignableId, assigneeIds: $assigneeIds}) {
     assignable { ... on Issue { id } }
   }
 }`
@@ -324,6 +340,7 @@ type nodeConnection[T any] struct {
 }
 
 type assignee struct {
+	ID    string `json:"id"`
 	Login string `json:"login"`
 }
 
@@ -579,9 +596,23 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 }
 
 func (c *Connector) SetAssignee(ctx context.Context, issueID string, login string) error {
+	issueID = strings.TrimSpace(issueID)
 	userID, err := c.resolveUserID(ctx, login)
 	if err != nil {
 		return err
+	}
+	currentAssignees, err := c.fetchIssueAssignees(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	removeIDs, alreadyAssigned := assigneeReplacement(currentAssignees, userID)
+	if len(removeIDs) > 0 {
+		if err := c.removeAssignees(ctx, issueID, removeIDs); err != nil {
+			return err
+		}
+	}
+	if alreadyAssigned {
+		return nil
 	}
 	return c.addAssignee(ctx, issueID, userID)
 }
@@ -973,6 +1004,54 @@ func (c *Connector) addAssignee(ctx context.Context, issueID string, userID stri
 	return nil
 }
 
+func (c *Connector) fetchIssueAssignees(ctx context.Context, issueID string) ([]assignee, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return nil, ErrAssigneeNotFound
+	}
+
+	var response struct {
+		Node *struct {
+			Assignees nodeConnection[assignee] `json:"assignees"`
+		} `json:"node"`
+	}
+	if err := c.client.GraphQL(ctx, issueAssigneesQuery, map[string]any{"issueId": issueID}, &response); err != nil {
+		return nil, fmt.Errorf("fetch github issue assignees: %w", err)
+	}
+	if response.Node == nil {
+		return nil, ErrAssigneeNotFound
+	}
+	return response.Node.Assignees.Nodes, nil
+}
+
+func (c *Connector) removeAssignees(ctx context.Context, issueID string, userIDs []string) error {
+	issueID = strings.TrimSpace(issueID)
+	userIDs = uniqueNonBlank(userIDs)
+	if issueID == "" || len(userIDs) == 0 {
+		return ErrAssigneeUpdateFailed
+	}
+
+	var response struct {
+		RemoveAssigneesFromAssignable *struct {
+			Assignable *struct {
+				ID string `json:"id"`
+			} `json:"assignable"`
+		} `json:"removeAssigneesFromAssignable"`
+	}
+	if err := c.client.GraphQL(ctx, removeAssigneesMutation, map[string]any{
+		"assignableId": issueID,
+		"assigneeIds":  userIDs,
+	}, &response); err != nil {
+		return fmt.Errorf("replace github assignee: %w", err)
+	}
+	if response.RemoveAssigneesFromAssignable == nil ||
+		response.RemoveAssigneesFromAssignable.Assignable == nil ||
+		strings.TrimSpace(response.RemoveAssigneesFromAssignable.Assignable.ID) == "" {
+		return ErrAssigneeUpdateFailed
+	}
+	return nil
+}
+
 func (c *Connector) resolveSingleSelectFieldOption(ctx context.Context, fieldName string, value string) (string, string, error) {
 	fieldName = strings.TrimSpace(fieldName)
 	value = strings.TrimSpace(value)
@@ -988,21 +1067,22 @@ func (c *Connector) resolveSingleSelectFieldOption(ctx context.Context, fieldNam
 		return field.ID, optionID, nil
 	}
 
-	options := singleSelectOptionsWithRequiredAtEnd(field.Options, []projectSingleSelectOption{ownershipOption(value)})
-	updatedOptions, err := c.updateProjectFieldOptions(ctx, field.ID, options)
-	if err != nil {
-		return "", "", fmt.Errorf("ensure github project field options: %w", err)
-	}
-	if optionID := singleSelectOptionID(updatedOptions, value); optionID != "" {
-		return field.ID, optionID, nil
-	}
-
-	field, err = c.fetchSingleSelectField(ctx, fieldName)
-	if err != nil {
-		return "", "", err
-	}
-	if optionID := singleSelectOptionID(field.Options, value); optionID != "" {
-		return field.ID, optionID, nil
+	for range 3 {
+		field, err = c.fetchSingleSelectField(ctx, fieldName)
+		if err != nil {
+			return "", "", err
+		}
+		if optionID := singleSelectOptionID(field.Options, value); optionID != "" {
+			return field.ID, optionID, nil
+		}
+		options := singleSelectOptionsWithRequiredAtEnd(field.Options, []projectSingleSelectOption{ownershipOption(value)})
+		updatedOptions, err := c.updateProjectFieldOptions(ctx, field.ID, options)
+		if err != nil {
+			return "", "", fmt.Errorf("ensure github project field options: %w", err)
+		}
+		if optionID := singleSelectOptionID(updatedOptions, value); optionID != "" {
+			return field.ID, optionID, nil
+		}
 	}
 	return "", "", fmt.Errorf("%w: %s=%s", ErrProjectFieldOptionNotFound, fieldName, value)
 }
@@ -1360,6 +1440,24 @@ func allAssigneeLogins(assignees nodeConnection[assignee]) []string {
 		}
 	}
 	return logins
+}
+
+func assigneeReplacement(current []assignee, targetID string) ([]string, bool) {
+	targetID = strings.TrimSpace(targetID)
+	removeIDs := make([]string, 0, len(current))
+	alreadyAssigned := false
+	for _, candidate := range current {
+		id := strings.TrimSpace(candidate.ID)
+		if id == "" {
+			continue
+		}
+		if id == targetID {
+			alreadyAssigned = true
+			continue
+		}
+		removeIDs = append(removeIDs, id)
+	}
+	return removeIDs, alreadyAssigned
 }
 
 func projectFieldValues(values nodeConnection[projectFieldValue]) map[string]string {
