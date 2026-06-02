@@ -583,6 +583,9 @@ func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	if !strings.Contains(query, "addComment") {
 		t.Fatalf("query = %q, want addComment", query)
 	}
+	if strings.Contains(query, "rateLimit") {
+		t.Fatalf("query = %q, want no rateLimit on mutation root", query)
+	}
 	variables := requests[0]["variables"].(map[string]any)
 	if variables["subjectId"] != "I_kw1" {
 		t.Fatalf("subjectId = %v, want I_kw1", variables["subjectId"])
@@ -616,6 +619,9 @@ func TestConnectorUpdateIssueStateWritesStatusOptionID(t *testing.T) {
 	updateQuery := requests[2]["query"].(string)
 	if !strings.Contains(updateQuery, "updateProjectV2ItemFieldValue") {
 		t.Fatalf("query = %q, want updateProjectV2ItemFieldValue", updateQuery)
+	}
+	if strings.Contains(updateQuery, "rateLimit") {
+		t.Fatalf("query = %q, want no rateLimit on mutation root", updateQuery)
 	}
 	variables := requests[2]["variables"].(map[string]any)
 	want := map[string]any{

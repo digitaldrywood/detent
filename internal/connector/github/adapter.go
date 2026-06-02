@@ -177,7 +177,6 @@ mutation DetentGitHubAddComment($subjectId: ID!, $body: String!) {
   addComment(input: {subjectId: $subjectId, body: $body}) {
     commentEdge { node { id } }
   }
-  rateLimit { limit used remaining cost resetAt }
 }`
 
 const statusFieldQuery = `
@@ -244,7 +243,6 @@ mutation DetentGitHubUpdateStatus($projectId: ID!, $itemId: ID!, $fieldId: ID!, 
   }) {
     projectV2Item { id }
   }
-  rateLimit { limit used remaining cost resetAt }
 }`
 
 var (
