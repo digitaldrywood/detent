@@ -174,8 +174,28 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		cloned.StageUpdatedAt = &stageUpdatedAt
 	}
 	cloned.BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
-	cloned.Labels = append([]string(nil), issue.Labels...)
+	cloned.Labels = cloneStringSlice(issue.Labels)
+	cloned.Assignees = cloneStringSlice(issue.Assignees)
+	cloned.Fields = cloneStringMap(issue.Fields)
 	return cloned
+}
+
+func cloneStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	return append([]string{}, values...)
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	if values == nil {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func cloneActivityEvents(events []telemetry.ActivityEvent) []telemetry.ActivityEvent {

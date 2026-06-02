@@ -130,6 +130,55 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 	}
 }
 
+func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.T) {
+	t.Parallel()
+
+	current := connector.Issue{
+		ID:        "issue-running",
+		Assignees: []string{"worker-1"},
+		Fields:    map[string]string{"Status": "Todo"},
+	}
+
+	tests := []struct {
+		name          string
+		refreshed     connector.Issue
+		wantAssignees []string
+		wantFields    map[string]string
+	}{
+		{
+			name:          "missing metadata preserves current values",
+			refreshed:     connector.Issue{ID: current.ID},
+			wantAssignees: []string{"worker-1"},
+			wantFields:    map[string]string{"Status": "Todo"},
+		},
+		{
+			name:          "explicit empty metadata clears current values",
+			refreshed:     connector.Issue{ID: current.ID, Assignees: []string{}, Fields: map[string]string{}},
+			wantAssignees: []string{},
+			wantFields:    map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := mergeIssueTrackerFields(current, tt.refreshed)
+			if !slices.Equal(got.Assignees, tt.wantAssignees) {
+				t.Fatalf("Assignees = %#v, want %#v", got.Assignees, tt.wantAssignees)
+			}
+			if len(got.Fields) != len(tt.wantFields) {
+				t.Fatalf("Fields = %#v, want %#v", got.Fields, tt.wantFields)
+			}
+			for key, value := range tt.wantFields {
+				if got.Fields[key] != value {
+					t.Fatalf("Fields[%q] = %q, want %q", key, got.Fields[key], value)
+				}
+			}
+		})
+	}
+}
+
 type runningStateConnector struct {
 	issues       []connector.Issue
 	err          error

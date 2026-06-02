@@ -18,7 +18,7 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","body":"Depends on: #24 digitaldrywood/detent#25\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/26","createdAt":"2026-05-31T01:02:03Z","updatedAt":"2026-05-31T02:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[{"name":"Enhancement"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":42,"url":"https://github.com/digitaldrywood/detent/pull/42"}]}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/27","createdAt":"2026-05-31T03:02:03Z","updatedAt":"2026-05-31T04:03:04Z","assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","body":"Depends on: #24 digitaldrywood/detent#25\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/26","createdAt":"2026-05-31T01:02:03Z","updatedAt":"2026-05-31T02:03:04Z","author":{"login":"corylanou"},"assignees":{"nodes":[{"login":"worker-1"},{"login":"worker-2"}]},"labels":{"nodes":[{"name":"Enhancement"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":42,"url":"https://github.com/digitaldrywood/detent/pull/42"}]}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"},"fieldValues":{"nodes":[{"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"Ready","field":{"name":"Status"}},{"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"P0","field":{"name":"Priority"}},{"__typename":"ProjectV2ItemFieldTextValue","text":"release-ready","field":{"name":"Track"}},{"__typename":"ProjectV2ItemFieldNumberValue","number":7,"field":{"name":"Sort"}}]}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/27","createdAt":"2026-05-31T03:02:03Z","updatedAt":"2026-05-31T04:03:04Z","author":{"login":"octocat"},"assignees":{"nodes":[{"login":"worker-1"}]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"},"fieldValues":{"nodes":[]}}]}}}}`,
 	}, {
 		body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
 	}})
@@ -51,9 +51,12 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 		State:            "Todo",
 		URL:              "https://github.com/digitaldrywood/detent/issues/26",
 		PRNumber:         &prNumber,
+		AuthorID:         "corylanou",
 		AssigneeID:       "worker-1",
+		Assignees:        []string{"worker-1", "worker-2"},
 		BlockedBy:        []connector.BlockedRef{{Identifier: "digitaldrywood/detent#24"}, {Identifier: "digitaldrywood/detent#25"}},
 		Labels:           []string{"enhancement", "stage:s4"},
+		Fields:           map[string]string{"Priority": "P0", "Sort": "7", "Status": "Ready", "Track": "release-ready"},
 		AssignedToWorker: true,
 		CreatedAt:        &createdAt,
 		UpdatedAt:        &updatedAt,
@@ -77,6 +80,81 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	prVariables := requests[1]["variables"].(map[string]any)
 	if prVariables["owner"] != "digitaldrywood" || prVariables["name"] != "detent" {
 		t.Fatalf("pull request repo variables = %#v, want digitaldrywood/detent", prVariables)
+	}
+	query := requests[0]["query"].(string)
+	for _, want := range []string{"author { login }", "assignees(first: 100)", "fieldValues(first: 100)"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("project query missing %q:\n%s", want, query)
+		}
+	}
+}
+
+func TestAllAssigneeLogins(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		assignees nodeConnection[assignee]
+		want      []string
+	}{
+		{
+			name:      "returns all nonblank logins in order",
+			assignees: nodeConnection[assignee]{Nodes: []assignee{{Login: " worker-1 "}, {Login: ""}, {Login: "worker-2"}}},
+			want:      []string{"worker-1", "worker-2"},
+		},
+		{
+			name:      "empty connection returns empty slice",
+			assignees: nodeConnection[assignee]{},
+			want:      []string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := allAssigneeLogins(tt.assignees); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("allAssigneeLogins() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestProjectFieldValues(t *testing.T) {
+	t.Parallel()
+
+	number := 42.5
+	tests := []struct {
+		name   string
+		values nodeConnection[projectFieldValue]
+		want   map[string]string
+	}{
+		{
+			name: "captures supported field values",
+			values: nodeConnection[projectFieldValue]{Nodes: []projectFieldValue{
+				{TypeName: "ProjectV2ItemFieldSingleSelectValue", Name: "In Progress", Field: projectField{Name: "Status"}},
+				{TypeName: "ProjectV2ItemFieldTextValue", Text: "owner notes", Field: projectField{Name: "Notes"}},
+				{TypeName: "ProjectV2ItemFieldNumberValue", Number: &number, Field: projectField{Name: "Rank"}},
+				{TypeName: "ProjectV2ItemFieldDateValue", Field: projectField{Name: "Due"}},
+				{TypeName: "ProjectV2ItemFieldTextValue", Text: "missing field"},
+			}},
+			want: map[string]string{"Notes": "owner notes", "Rank": "42.5", "Status": "In Progress"},
+		},
+		{
+			name:   "empty values return empty map",
+			values: nodeConnection[projectFieldValue]{},
+			want:   map[string]string{},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := projectFieldValues(tt.values); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("projectFieldValues() = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 
@@ -372,6 +450,42 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 	}
 	if got[1].PRNumber == nil || *got[1].PRNumber != 81 {
 		t.Fatalf("second PRNumber = %v, want 81", got[1].PRNumber)
+	}
+}
+
+func TestConnectorFetchIssueStatesByIDsCapturesIssueMetadata(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw1","number":1,"title":"First","body":"","state":"OPEN","url":"https://github.com/example/repo/issues/1","createdAt":null,"updatedAt":null,"author":{"login":"author-1"},"assignees":{"nodes":[{"login":"worker-1"},{"login":"worker-2"}]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"example/repo"},"closedByPullRequestsReferences":{"nodes":[]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[{"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"Ready","field":{"name":"Status"}},{"__typename":"ProjectV2ItemFieldTextValue","text":"team-a","field":{"name":"Owner"}},{"__typename":"ProjectV2ItemFieldNumberValue","number":3,"field":{"name":"Weight"}}]}}]}}]}}`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+		StateMap:    map[string]string{"Todo": "Ready"},
+	})
+
+	got, err := c.FetchIssueStatesByIDs(context.Background(), []string{"I_kw1"})
+	if err != nil {
+		t.Fatalf("FetchIssueStatesByIDs() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() len = %d, want 1", len(got))
+	}
+
+	issue := got[0]
+	if issue.AuthorID != "author-1" {
+		t.Fatalf("AuthorID = %q, want author-1", issue.AuthorID)
+	}
+	if !reflect.DeepEqual(issue.Assignees, []string{"worker-1", "worker-2"}) {
+		t.Fatalf("Assignees = %#v, want worker-1 and worker-2", issue.Assignees)
+	}
+	wantFields := map[string]string{"Owner": "team-a", "Status": "Ready", "Weight": "3"}
+	if !reflect.DeepEqual(issue.Fields, wantFields) {
+		t.Fatalf("Fields = %#v, want %#v", issue.Fields, wantFields)
+	}
+	if issue.AssigneeID != "worker-1" {
+		t.Fatalf("AssigneeID = %q, want worker-1", issue.AssigneeID)
 	}
 }
 

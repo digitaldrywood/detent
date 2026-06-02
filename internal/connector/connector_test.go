@@ -72,6 +72,12 @@ func TestIssueDefaults(t *testing.T) {
 	if len(issue.Labels) != 0 {
 		t.Fatalf("Labels len = %d, want 0", len(issue.Labels))
 	}
+	if len(issue.Assignees) != 0 {
+		t.Fatalf("Assignees len = %d, want 0", len(issue.Assignees))
+	}
+	if len(issue.Fields) != 0 {
+		t.Fatalf("Fields len = %d, want 0", len(issue.Fields))
+	}
 }
 
 func TestIssueJSONUsesElixirFieldNames(t *testing.T) {
@@ -89,9 +95,12 @@ func TestIssueJSONUsesElixirFieldNames(t *testing.T) {
 		State:            "Todo",
 		BranchName:       "detent/dig-1",
 		URL:              "https://example.com/issues/1",
+		AuthorID:         "author-1",
 		AssigneeID:       "user-1",
+		Assignees:        []string{"user-1", "user-2"},
 		BlockedBy:        []BlockedRef{{ID: "issue-0", Identifier: "DIG-0", State: "Done"}},
 		Labels:           []string{"backend", "stage:s1"},
+		Fields:           map[string]string{"Status": "Todo"},
 		AssignedToWorker: true,
 		CreatedAt:        &createdAt,
 		UpdatedAt:        &updatedAt,
@@ -117,9 +126,12 @@ func TestIssueJSONUsesElixirFieldNames(t *testing.T) {
 		"state",
 		"branch_name",
 		"url",
+		"author_id",
 		"assignee_id",
+		"assignees",
 		"blocked_by",
 		"labels",
+		"fields",
 		"assigned_to_worker",
 		"created_at",
 		"updated_at",

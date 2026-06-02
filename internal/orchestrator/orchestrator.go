@@ -357,8 +357,14 @@ func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue
 	if refreshed.PullRequest != nil {
 		merged.PullRequest = refreshed.PullRequest
 	}
+	if refreshed.AuthorID != "" {
+		merged.AuthorID = refreshed.AuthorID
+	}
 	if refreshed.AssigneeID != "" {
 		merged.AssigneeID = refreshed.AssigneeID
+	}
+	if refreshed.Assignees != nil {
+		merged.Assignees = refreshed.Assignees
 	}
 	if refreshed.BlockedBy != nil {
 		merged.BlockedBy = refreshed.BlockedBy
@@ -368,6 +374,9 @@ func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue
 	}
 	if refreshed.Labels != nil {
 		merged.Labels = refreshed.Labels
+	}
+	if refreshed.Fields != nil {
+		merged.Fields = refreshed.Fields
 	}
 	if refreshed.CreatedAt != nil {
 		merged.CreatedAt = refreshed.CreatedAt

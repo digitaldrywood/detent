@@ -47,13 +47,16 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 				},
 			},
 		},
-		Prompt: "Prompt for {{ issue.identifier }} via {{ tracker.kind }} attempt={{ attempt }} auto={{ workspace.auto_branch }}",
+		Prompt: "Prompt for {{ issue.identifier }} via {{ tracker.kind }} attempt={{ attempt }} auto={{ workspace.auto_branch }} metadata={{ issue.author_id }} {{ issue.assignees }} {{ issue.fields }}",
 	}, connector.Issue{
 		ID:          "issue-21",
 		Identifier:  "digitaldrywood/detent#21",
 		Title:       "Build prompt",
 		Description: "Wire prompt builder",
+		AuthorID:    "author-1",
+		Assignees:   []string{"reviewer-1", "reviewer-2"},
 		Labels:      []string{"enhancement", "stage:s3"},
+		Fields:      map[string]string{"Status": "Todo"},
 	}, PromptOptions{
 		Attempt:       &attempt,
 		WorkspacePath: workspace,
@@ -68,6 +71,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 
 	for _, want := range []string{
 		"Prompt for digitaldrywood/detent#21 via memory attempt=2 auto=true",
+		"metadata=author-1 reviewer-1, reviewer-2 map[Status:Todo]",
 		"## Lessons from prior runs",
 		"Check generator aliases before editing.",
 		"## Available skills",
@@ -137,6 +141,52 @@ func TestBuildPromptRejectsUnknownTemplateVariables(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "unknown template variable") {
 		t.Fatalf("BuildPrompt() error = %v, want unknown variable", err)
+	}
+}
+
+func TestBuildPromptRendersIssueFieldLookups(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name   string
+		fields map[string]string
+		want   string
+	}{
+		{
+			name: "present field",
+			fields: map[string]string{
+				"Owner":  "team-a",
+				"Status": "Ready",
+			},
+			want: "owner=team-a status=Ready",
+		},
+		{
+			name: "empty field",
+			fields: map[string]string{
+				"Owner":  "team-b",
+				"Status": "",
+			},
+			want: "owner=team-b missing",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt, err := BuildPrompt(config.Workflow{
+				Prompt: "owner={{ issue.fields.Owner }} {% if issue.fields.Status %}status={{ issue.fields.Status }}{% else %}missing{% endif %}",
+			}, connector.Issue{
+				Identifier: "MT-1",
+				Fields:     tt.fields,
+			}, PromptOptions{})
+			if err != nil {
+				t.Fatalf("BuildPrompt() error = %v", err)
+			}
+			if prompt != tt.want {
+				t.Fatalf("prompt = %q, want %q", prompt, tt.want)
+			}
+		})
 	}
 }
 

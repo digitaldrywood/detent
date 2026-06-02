@@ -24,9 +24,12 @@ func TestConnectorFetchesConfiguredIssues(t *testing.T) {
 			State:            "Todo",
 			BranchName:       "detent/mt-1",
 			URL:              "https://example.com/issues/1",
+			AuthorID:         "author-1",
 			AssigneeID:       "worker-1",
+			Assignees:        []string{"worker-1", "worker-2"},
 			BlockedBy:        []connector.BlockedRef{{ID: "issue-0", Identifier: "MT-0", State: "Done"}},
 			Labels:           []string{"stage:s1"},
+			Fields:           map[string]string{"Status": "Todo", "Track": "foundation"},
 			AssignedToWorker: true,
 			CreatedAt:        &createdAt,
 			UpdatedAt:        &createdAt,
@@ -54,8 +57,10 @@ func TestConnectorReturnsDefensiveIssueCopies(t *testing.T) {
 		ID:        "issue-1",
 		Priority:  &priority,
 		State:     "Todo",
+		Assignees: []string{"worker-1"},
 		BlockedBy: []connector.BlockedRef{{Identifier: "MT-0"}},
 		Labels:    []string{"stage:s1"},
+		Fields:    map[string]string{"Status": "Todo"},
 		CreatedAt: &createdAt,
 		UpdatedAt: &createdAt,
 	}}})
@@ -67,8 +72,10 @@ func TestConnectorReturnsDefensiveIssueCopies(t *testing.T) {
 		t.Fatalf("FetchCandidateIssues() first error = %v", err)
 	}
 	*first[0].Priority = 3
+	first[0].Assignees[0] = "changed"
 	first[0].BlockedBy[0].Identifier = "changed"
 	first[0].Labels[0] = "changed"
+	first[0].Fields["Status"] = "changed"
 	*first[0].CreatedAt = first[0].CreatedAt.Add(time.Hour)
 	*first[0].UpdatedAt = first[0].UpdatedAt.Add(time.Hour)
 
@@ -80,11 +87,17 @@ func TestConnectorReturnsDefensiveIssueCopies(t *testing.T) {
 	if *second[0].Priority != 1 {
 		t.Fatalf("Priority = %d, want 1", *second[0].Priority)
 	}
+	if second[0].Assignees[0] != "worker-1" {
+		t.Fatalf("Assignees[0] = %q, want worker-1", second[0].Assignees[0])
+	}
 	if second[0].BlockedBy[0].Identifier != "MT-0" {
 		t.Fatalf("BlockedBy[0].Identifier = %q, want MT-0", second[0].BlockedBy[0].Identifier)
 	}
 	if second[0].Labels[0] != "stage:s1" {
 		t.Fatalf("Labels[0] = %q, want stage:s1", second[0].Labels[0])
+	}
+	if second[0].Fields["Status"] != "Todo" {
+		t.Fatalf("Fields[Status] = %q, want Todo", second[0].Fields["Status"])
 	}
 	if !second[0].CreatedAt.Equal(time.Date(2026, 5, 31, 11, 0, 0, 0, time.UTC)) {
 		t.Fatalf("CreatedAt = %v, want original time", second[0].CreatedAt)

@@ -35,6 +35,7 @@ type Connector struct {
 }
 
 var _ connector.Connector = (*Connector)(nil)
+var _ connector.InstanceIdentifier = (*Connector)(nil)
 
 func New(cfg Config) *Connector {
 	return &Connector{
@@ -45,6 +46,10 @@ func New(cfg Config) *Connector {
 
 func (c *Connector) Name() string {
 	return connector.BackendMemory.String()
+}
+
+func (c *Connector) InstanceLogin() string {
+	return ""
 }
 
 func (c *Connector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
@@ -132,11 +137,29 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	if issue.Labels != nil {
 		issue.Labels = append([]string(nil), issue.Labels...)
 	}
+	if issue.Assignees != nil {
+		issue.Assignees = cloneStringSlice(issue.Assignees)
+	}
+	if issue.Fields != nil {
+		issue.Fields = cloneStringMap(issue.Fields)
+	}
 	issue.CreatedAt = cloneTime(issue.CreatedAt)
 	issue.UpdatedAt = cloneTime(issue.UpdatedAt)
 	issue.StageUpdatedAt = cloneTime(issue.StageUpdatedAt)
 
 	return issue
+}
+
+func cloneStringSlice(values []string) []string {
+	return append([]string{}, values...)
+}
+
+func cloneStringMap(values map[string]string) map[string]string {
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func cloneTime(value *time.Time) *time.Time {

@@ -42,6 +42,9 @@ func TestConnectorAuthenticateValidatesViewerAndProject(t *testing.T) {
 	if err := c.Authenticate(context.Background()); err != nil {
 		t.Fatalf("Authenticate() error = %v", err)
 	}
+	if got := c.InstanceLogin(); got != "octocat" {
+		t.Fatalf("InstanceLogin() = %q, want octocat", got)
+	}
 
 	payload := <-requests
 	variables := payload["variables"].(map[string]any)

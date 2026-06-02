@@ -7,25 +7,28 @@ import (
 )
 
 type Issue struct {
-	ID               string       `json:"id,omitempty" yaml:"id,omitempty"`
-	Identifier       string       `json:"identifier,omitempty" yaml:"identifier,omitempty"`
-	Title            string       `json:"title,omitempty" yaml:"title,omitempty"`
-	Description      string       `json:"description,omitempty" yaml:"description,omitempty"`
-	Priority         *int         `json:"priority,omitempty" yaml:"priority,omitempty"`
-	State            string       `json:"state,omitempty" yaml:"state,omitempty"`
-	BranchName       string       `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
-	URL              string       `json:"url,omitempty" yaml:"url,omitempty"`
-	PRNumber         *int         `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
-	PullRequest      *PullRequest `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
-	AssigneeID       string       `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
-	BlockedBy        []BlockedRef `json:"blocked_by" yaml:"blocked_by"`
-	BlockerReason    string       `json:"blocker_reason,omitempty" yaml:"blocker_reason,omitempty"`
-	Labels           []string     `json:"labels" yaml:"labels"`
-	AssignedToWorker bool         `json:"assigned_to_worker" yaml:"assigned_to_worker"`
-	CreatedAt        *time.Time   `json:"created_at,omitempty" yaml:"created_at,omitempty"`
-	UpdatedAt        *time.Time   `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
-	StageUpdatedAt   *time.Time   `json:"stage_updated_at,omitempty" yaml:"stage_updated_at,omitempty"`
-	ModelOverride    string       `json:"model_override" yaml:"model_override"`
+	ID               string            `json:"id,omitempty" yaml:"id,omitempty"`
+	Identifier       string            `json:"identifier,omitempty" yaml:"identifier,omitempty"`
+	Title            string            `json:"title,omitempty" yaml:"title,omitempty"`
+	Description      string            `json:"description,omitempty" yaml:"description,omitempty"`
+	Priority         *int              `json:"priority,omitempty" yaml:"priority,omitempty"`
+	State            string            `json:"state,omitempty" yaml:"state,omitempty"`
+	BranchName       string            `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
+	URL              string            `json:"url,omitempty" yaml:"url,omitempty"`
+	PRNumber         *int              `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
+	PullRequest      *PullRequest      `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
+	AuthorID         string            `json:"author_id,omitempty" yaml:"author_id,omitempty"`
+	AssigneeID       string            `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
+	Assignees        []string          `json:"assignees,omitempty" yaml:"assignees,omitempty"`
+	BlockedBy        []BlockedRef      `json:"blocked_by" yaml:"blocked_by"`
+	BlockerReason    string            `json:"blocker_reason,omitempty" yaml:"blocker_reason,omitempty"`
+	Labels           []string          `json:"labels" yaml:"labels"`
+	Fields           map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`
+	AssignedToWorker bool              `json:"assigned_to_worker" yaml:"assigned_to_worker"`
+	CreatedAt        *time.Time        `json:"created_at,omitempty" yaml:"created_at,omitempty"`
+	UpdatedAt        *time.Time        `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
+	StageUpdatedAt   *time.Time        `json:"stage_updated_at,omitempty" yaml:"stage_updated_at,omitempty"`
+	ModelOverride    string            `json:"model_override" yaml:"model_override"`
 }
 
 type BlockedRef struct {
@@ -47,6 +50,8 @@ func NewIssue() Issue {
 	return Issue{
 		BlockedBy:        []BlockedRef{},
 		Labels:           []string{},
+		Assignees:        []string{},
+		Fields:           map[string]string{},
 		AssignedToWorker: true,
 	}
 }

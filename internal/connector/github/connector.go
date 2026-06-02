@@ -50,6 +50,7 @@ type Connector struct {
 	priorityMap    map[string]*int
 	statusCache    *statusCache
 	projectCache   *projectCache
+	instanceLogin  string
 }
 
 func NewConnector(cfg Config) (*Connector, error) {
@@ -119,10 +120,16 @@ func (c *Connector) Authenticate(ctx context.Context) error {
 	if response.Node == nil || response.Node.TypeName != "ProjectV2" || strings.TrimSpace(response.Node.ID) == "" {
 		return ErrProjectNotFound
 	}
+	c.instanceLogin = strings.TrimSpace(response.Viewer.Login)
 
 	return nil
 }
 
+func (c *Connector) InstanceLogin() string {
+	return c.instanceLogin
+}
+
 var _ connector.Connector = (*Connector)(nil)
 var _ connector.Authenticator = (*Connector)(nil)
+var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)
