@@ -58,7 +58,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		httpClient = NewPooledHTTPClient(HTTPTransportConfig{})
 	}
 
 	logger := cfg.Logger
@@ -103,7 +103,8 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
 
-	c.logger.DebugContext(ctx, "github graphql request", "operation", firstLine(query))
+	operation := firstLine(query)
+	c.logger.DebugContext(ctx, "github graphql request", "operation", operation, "live_connections", c.LiveConnections())
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -113,8 +114,12 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 		return fmt.Errorf("%w: %w", ErrTransient, err)
 	}
 	defer func() {
-		_ = resp.Body.Close()
+		if err := drainAndClose(resp.Body); err != nil {
+			c.logger.DebugContext(ctx, "github graphql response body drain failed", "operation", operation, "error", err)
+		}
 	}()
+
+	c.logger.DebugContext(ctx, "github graphql response", "operation", operation, "status", resp.StatusCode, "live_connections", c.LiveConnections())
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -226,6 +231,19 @@ func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) 
 		snapshot.UpdatedAt = now
 		c.setRateLimit(snapshot)
 	}
+}
+
+func (c *Client) LiveConnections() int {
+	if c == nil || c.httpClient == nil {
+		return 0
+	}
+	stats, ok := c.httpClient.(interface {
+		LiveConnections() int
+	})
+	if !ok {
+		return 0
+	}
+	return stats.LiveConnections()
 }
 
 func (c *Client) setRateLimit(snapshot connector.GraphQLRateLimit) {

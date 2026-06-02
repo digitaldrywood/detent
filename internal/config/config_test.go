@@ -15,6 +15,9 @@ tracker:
   kind: github
   api_key: $GITHUB_TOKEN
   project_slug: "PVT_project"
+  http_max_idle_conns: 120
+  http_max_idle_conns_per_host: 40
+  http_idle_conn_timeout_ms: 120000
   active_states:
     - Todo
     - In Progress
@@ -109,6 +112,15 @@ Ticket prompt {{ issue.title }}
 	if cfg.Tracker.Endpoint != "https://api.github.com/graphql" {
 		t.Fatalf("Tracker.Endpoint = %q", cfg.Tracker.Endpoint)
 	}
+	if cfg.Tracker.HTTPMaxIdleConns != 120 {
+		t.Fatalf("Tracker.HTTPMaxIdleConns = %d, want 120", cfg.Tracker.HTTPMaxIdleConns)
+	}
+	if cfg.Tracker.HTTPMaxIdleConnsPerHost != 40 {
+		t.Fatalf("Tracker.HTTPMaxIdleConnsPerHost = %d, want 40", cfg.Tracker.HTTPMaxIdleConnsPerHost)
+	}
+	if cfg.Tracker.HTTPIdleConnTimeoutMS != 120000 {
+		t.Fatalf("Tracker.HTTPIdleConnTimeoutMS = %d, want 120000", cfg.Tracker.HTTPIdleConnTimeoutMS)
+	}
 	if got := cfg.Tracker.StateMap.Map["Cancelled"]; got != "Done" {
 		t.Fatalf("Tracker.StateMap[Cancelled] = %v, want Done", got)
 	}
@@ -162,6 +174,15 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Polling.IntervalMS != 30000 {
 		t.Fatalf("Polling.IntervalMS = %d", cfg.Polling.IntervalMS)
+	}
+	if cfg.Tracker.HTTPMaxIdleConns != 100 {
+		t.Fatalf("Tracker.HTTPMaxIdleConns = %d, want 100", cfg.Tracker.HTTPMaxIdleConns)
+	}
+	if cfg.Tracker.HTTPMaxIdleConnsPerHost != 32 {
+		t.Fatalf("Tracker.HTTPMaxIdleConnsPerHost = %d, want 32", cfg.Tracker.HTTPMaxIdleConnsPerHost)
+	}
+	if cfg.Tracker.HTTPIdleConnTimeoutMS != 90000 {
+		t.Fatalf("Tracker.HTTPIdleConnTimeoutMS = %d, want 90000", cfg.Tracker.HTTPIdleConnTimeoutMS)
 	}
 	if cfg.Workspace.AutoBranch != true {
 		t.Fatal("Workspace.AutoBranch = false, want true")
@@ -423,6 +444,9 @@ Prompt
 			raw: `---
 tracker:
   kind: memory
+  http_max_idle_conns: 0
+  http_max_idle_conns_per_host: 0
+  http_idle_conn_timeout_ms: 0
   active_states: ["Todo", ""]
 polling:
   interval_ms: 0
@@ -448,6 +472,9 @@ Prompt
 `,
 			want: []string{
 				"tracker.active_states state names must not be blank",
+				"tracker.http_max_idle_conns must be greater than 0",
+				"tracker.http_max_idle_conns_per_host must be greater than 0",
+				"tracker.http_idle_conn_timeout_ms must be greater than 0",
 				"polling.interval_ms must be greater than 0",
 				"worker.max_concurrent_agents_per_host must be greater than 0",
 				"agent.max_concurrent_agents must be greater than 0",

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
@@ -21,6 +22,9 @@ type Config struct {
 	Memory                  memory.Config
 	Endpoint                string
 	APIKey                  string
+	HTTPMaxIdleConns        int
+	HTTPMaxIdleConnsPerHost int
+	HTTPIdleConnTimeoutMS   int
 	GitHubAppID             string
 	GitHubAppPrivateKey     string
 	GitHubAppPrivateKeyPath string
@@ -43,8 +47,13 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 		return unimplementedConnector{name: kind}, nil
 	case connector.BackendGitHub:
 		return githubconnector.NewConnector(githubconnector.Config{
-			Endpoint:                cfg.Endpoint,
-			APIKey:                  cfg.APIKey,
+			Endpoint: cfg.Endpoint,
+			APIKey:   cfg.APIKey,
+			HTTPTransport: githubconnector.HTTPTransportConfig{
+				MaxIdleConns:        cfg.HTTPMaxIdleConns,
+				MaxIdleConnsPerHost: cfg.HTTPMaxIdleConnsPerHost,
+				IdleConnTimeout:     time.Duration(cfg.HTTPIdleConnTimeoutMS) * time.Millisecond,
+			},
 			GitHubAppID:             cfg.GitHubAppID,
 			GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
 			GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,

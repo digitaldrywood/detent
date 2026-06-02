@@ -77,7 +77,7 @@ func NewInstallationTokenSource(cfg InstallationTokenConfig) (*InstallationToken
 
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+		httpClient = NewPooledHTTPClient(HTTPTransportConfig{})
 	}
 	now := cfg.Now
 	if now == nil {
@@ -168,7 +168,9 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 		return "", time.Time{}, fmt.Errorf("%w: %w", ErrTransient, err)
 	}
 	defer func() {
-		_ = resp.Body.Close()
+		if err := drainAndClose(resp.Body); err != nil {
+			return
+		}
 	}()
 
 	raw, err := io.ReadAll(resp.Body)
