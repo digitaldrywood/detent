@@ -1,3 +1,5 @@
+<p align="center"><img src="docs/brand/detent-mark.svg" width="88" height="88" alt="Detent"></p>
+
 # Detent
 
 [![CI](https://github.com/digitaldrywood/detent/actions/workflows/ci.yml/badge.svg)](https://github.com/digitaldrywood/detent/actions/workflows/ci.yml)

@@ -12,7 +12,7 @@ templ Reports(data ReportsData) {
 				document.documentElement.classList.toggle("dark", Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches))
 			</script>
 			@helpScript()
-			<link rel="icon" href="data:,"/>
+			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
 			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
 		</head>
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
