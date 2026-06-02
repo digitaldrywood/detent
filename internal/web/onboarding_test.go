@@ -38,6 +38,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 			wantContent: []string{
 				"Detent onboarding",
 				"Choose tracker",
+				onboardingStepBadge("tracker"),
 				"hx-post=\"/onboarding/tracker\"",
 			},
 		},
@@ -49,6 +50,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantContent: []string{
 				"Credentials",
+				onboardingStepBadge("credentials"),
 				"name=\"api_key\"",
 				"value=\"$GITHUB_TOKEN\"",
 			},
@@ -65,6 +67,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantContent: []string{
 				"Pick project",
+				onboardingStepBadge("project"),
 				"name=\"project_slug\"",
 				"name=\"repo\"",
 			},
@@ -83,6 +86,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantContent: []string{
 				"Agent config",
+				onboardingStepBadge("agent"),
 				"name=\"max_concurrent_agents\"",
 				"name=\"workspace_root\"",
 			},
@@ -107,6 +111,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 			wantStatus: http.StatusOK,
 			wantContent: []string{
 				"Write WORKFLOW.md",
+				onboardingStepBadge("write"),
 				"ProjectV2",
 				"hx-post=\"/onboarding/write\"",
 			},
@@ -132,6 +137,10 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 			}
 		})
 	}
+}
+
+func onboardingStepBadge(step string) string {
+	return `data-onboarding-step-badge="true"><span class="text-xs font-medium uppercase text-muted-foreground">Step</span> <span class="truncate font-mono text-xs font-semibold text-foreground">` + step + `</span>`
 }
 
 func TestOnboardingWriteWorkflow(t *testing.T) {

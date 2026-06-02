@@ -71,8 +71,9 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 	for _, want := range []string{
 		"overflow-x-hidden",
 		"px-3 py-3",
-		"grid grid-cols-3 gap-2",
-		"min-h-11",
+		"dashboard-topbar",
+		"dashboard-nav grid min-w-0 grid-cols-3 gap-1",
+		"min-h-8",
 		"grid min-w-0 gap-5 xl:grid-cols-2",
 		"grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]",
 		"break-all font-mono text-2xl",

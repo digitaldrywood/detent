@@ -31,28 +31,18 @@ templ Settings(data SettingsData) {
 			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
 			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
 		</head>
-		<body class="min-h-screen bg-background text-foreground antialiased">
+		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
 			@helpTooltipHost()
-			<main class="mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-4 py-4 sm:gap-5 sm:px-6 sm:py-6 lg:px-8">
-				<header class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
-					<div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-						<div class="min-w-0">
-							<div class="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
-								<span class="inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent">
-									<span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
-									<span>Detent</span>
-								</span>
-								<span>Configuration</span>
-							</div>
-							<h1 class="mt-2 text-2xl font-semibold text-foreground sm:text-3xl">Settings</h1>
-							<p class="mt-1 max-w-3xl text-sm text-muted-foreground">Startup configuration, project paths, and runtime files.</p>
+			<main class="dashboard-shell mx-auto grid min-h-screen w-full max-w-7xl content-start gap-3 px-3 py-3 sm:gap-4 sm:px-6 lg:px-8">
+				<header class="dashboard-topbar min-w-0 rounded-md border border-border bg-card p-2 shadow-sm sm:p-2.5">
+					<div class="flex min-w-0 flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+						@dashboardTopbarBrand("Configuration", "Settings")
+						@dashboardNav("settings")
+						<div class="dashboard-topbar-actions flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
+							@dashboardTopbarMeta("Version", settingsVersionLabel(data))
 						</div>
-						<span class="inline-flex min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground lg:w-auto">
-							<span class="text-xs font-medium uppercase text-muted-foreground">Version</span>
-							<span class="font-mono text-xs font-semibold text-foreground">{ settingsVersionLabel(data) }</span>
-						</span>
 					</div>
-					@dashboardNav("settings")
+					<span class="sr-only">Startup configuration, project paths, and runtime files.</span>
 				</header>
 				<section class="grid gap-5">
 					<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
@@ -122,8 +112,32 @@ templ Settings(data SettingsData) {
 	</html>
 }
 
+templ dashboardTopbarBrand(section string, title string) {
+	<div class="flex min-w-0 items-center gap-3">
+		<span class="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-md bg-accent-soft font-semibold text-accent">D</span>
+		<div class="grid min-w-0 gap-0.5">
+			<span class="text-xs font-medium uppercase text-muted-foreground">{ section }</span>
+			<h1 class="truncate text-sm font-semibold text-foreground">{ title }</h1>
+		</div>
+	</div>
+}
+
+templ dashboardTopbarMeta(label string, value string) {
+	<span class="dashboard-topbar-chip inline-flex min-h-8 max-w-full items-center justify-between gap-2 rounded-md border border-border bg-muted px-2.5 py-1">
+		<span class="text-xs font-medium uppercase text-muted-foreground">{ label }</span>
+		<span class="truncate font-mono text-xs font-semibold text-foreground">{ value }</span>
+	</span>
+}
+
+templ dashboardTopbarLink(label string, value string, href string) {
+	<a class="dashboard-topbar-chip inline-flex min-h-8 max-w-full items-center justify-between gap-2 rounded-md border border-border bg-card px-2.5 py-1 hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>
+		<span class="text-xs font-medium uppercase text-muted-foreground">{ label }</span>
+		<span class="max-w-[16rem] truncate font-mono text-xs text-foreground">{ value }</span>
+	</a>
+}
+
 templ dashboardNav(active string) {
-	<nav class="mt-4 grid grid-cols-3 gap-2 border-t border-border pt-4 sm:flex sm:flex-wrap" aria-label="Dashboard sections">
+	<nav class="dashboard-nav grid min-w-0 grid-cols-3 gap-1 sm:flex sm:flex-wrap sm:justify-center" aria-label="Dashboard sections">
 		@dashboardNavItem(active, "dashboard", "/", "Dashboard")
 		@dashboardNavItem(active, "reports", "/reports", "Reports")
 		@dashboardNavItem(active, "settings", "/settings", "Settings")
@@ -132,9 +146,9 @@ templ dashboardNav(active string) {
 
 templ dashboardNavItem(active string, id string, href string, label string) {
 	if active == id {
-		<a class="inline-flex min-h-11 items-center justify-center rounded-md border border-accent bg-accent-soft px-3 py-2 text-sm font-medium text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href } aria-current="page">{ label }</a>
+		<a class="dashboard-nav-link inline-flex min-h-8 items-center justify-center rounded-md border border-accent bg-accent-soft px-3 py-1 text-sm font-medium text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href } aria-current="page">{ label }</a>
 	} else {
-		<a class="inline-flex min-h-11 items-center justify-center rounded-md border border-border bg-card px-3 py-2 text-sm font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>{ label }</a>
+		<a class="dashboard-nav-link inline-flex min-h-8 items-center justify-center rounded-md border border-border bg-card px-3 py-1 text-sm font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>{ label }</a>
 	}
 }
 

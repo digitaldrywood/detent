@@ -17,40 +17,18 @@ templ Reports(data ReportsData) {
 		</head>
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
 			@helpTooltipHost()
-			<main class="mx-auto grid min-h-screen w-full max-w-7xl content-start gap-4 px-3 py-3 sm:gap-5 sm:px-6 sm:py-6 lg:px-8">
-				<header class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
-					<div class="flex flex-col gap-4 lg:flex-row lg:items-end lg:justify-between">
-						<div class="min-w-0">
-							<div class="flex flex-wrap items-center gap-2 text-xs font-medium text-muted-foreground">
-								<span class="inline-flex items-center gap-2 rounded-full bg-accent-soft px-2.5 py-1 text-accent">
-									<span class="h-1.5 w-1.5 rounded-full bg-accent"></span>
-									<span>Detent</span>
-								</span>
-								<span>Observability</span>
-							</div>
-							<h1 class="mt-2 text-2xl font-semibold text-foreground sm:text-3xl">Usage reports</h1>
-							<p class="mt-1 max-w-3xl text-sm text-muted-foreground">Spend, token, project, issue, PR, and model trends from the usage ledger.</p>
-						</div>
-						<div class="grid w-full min-w-0 gap-2 text-sm text-muted-foreground sm:grid-cols-2 lg:w-auto">
-							<a class="inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2 hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/">
-								<span class="text-xs font-medium uppercase text-muted-foreground">Dashboard</span>
-								<span class="font-mono text-xs text-foreground">Live status</span>
-							</a>
-							<span class="inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2">
-								<span class="text-xs font-medium uppercase text-muted-foreground">Window</span>
-								<span class="truncate font-mono text-xs text-foreground">{ reportsWindowLabel(data) }</span>
-							</span>
-							<span class="inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-card px-3 py-2">
-								<span class="text-xs font-medium uppercase text-muted-foreground">Connector</span>
-								<span class="truncate font-medium text-foreground">{ reportsConnectorName(data) }</span>
-							</span>
-							<span class="inline-flex min-h-11 min-w-0 items-center justify-between gap-3 rounded-md border border-border bg-muted px-3 py-2">
-								<span class="text-xs font-medium uppercase text-muted-foreground">Report</span>
-								<span class="truncate font-mono text-xs text-foreground">{ reportsGeneratedAtLabel(data) }</span>
-							</span>
+			<main class="dashboard-shell mx-auto grid min-h-screen w-full max-w-7xl content-start gap-3 px-3 py-3 sm:gap-4 sm:px-6 lg:px-8">
+				<header class="dashboard-topbar min-w-0 rounded-md border border-border bg-card p-2 shadow-sm sm:p-2.5">
+					<div class="flex min-w-0 flex-col gap-2 xl:flex-row xl:items-center xl:justify-between">
+						@dashboardTopbarBrand("Observability", "Usage reports")
+						@dashboardNav("reports")
+						<div class="dashboard-topbar-actions flex min-w-0 flex-wrap items-center gap-2 xl:justify-end">
+							@dashboardTopbarMeta("Window", reportsWindowLabel(data))
+							@dashboardTopbarMeta("Connector", reportsConnectorName(data))
+							@dashboardTopbarMeta("Report", reportsGeneratedAtLabel(data))
 						</div>
 					</div>
-					@dashboardNav("reports")
+					<span class="sr-only">Spend, token, project, issue, PR, and model trends from the usage ledger.</span>
 				</header>
 				if !reportsHasUsage(data) {
 					<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm">

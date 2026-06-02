@@ -3,6 +3,7 @@ package templates_test
 import (
 	"bytes"
 	"context"
+	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -324,6 +325,151 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardPrioritizesOperationalSections(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(-time.Minute)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Detent",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Pipeline: []telemetry.Issue{
+				{
+					ID:         "review",
+					Identifier: "digitaldrywood/detent#284",
+					Title:      "Review dashboard order",
+					State:      "Human Review",
+					UpdatedAt:  &updatedAt,
+					PullRequest: &telemetry.PullRequest{
+						Number:   284,
+						CIStatus: "success",
+					},
+				},
+			},
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "running",
+						Identifier: "digitaldrywood/detent#285",
+						Title:      "Active dashboard work",
+						State:      "In Progress",
+					},
+					StartedAt: now.Add(-5 * time.Minute),
+				},
+			},
+		},
+		Projects: []templates.ProjectSmallMultiple{
+			{
+				ID:                        "detent",
+				Name:                      "Detent",
+				ThroughputTokensPerSecond: 1.5,
+				Samples: []templates.ProjectSmallMultipleSample{
+					{At: now, ThroughputTokensPerSecond: 1.5},
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"dashboard-topbar",
+		`aria-label="Dashboard health"`,
+		`aria-label="Agent activity timeline"`,
+		`aria-label="Pull request pipeline"`,
+		`aria-label="Project small multiples"`,
+		`aria-label="Board health"`,
+		`aria-label="Cycle time"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+	if strings.Contains(html, ">Operations dashboard</h1>") {
+		t.Fatalf("dashboard should use the slim navbar, not the oversized dashboard h1:\n%s", html)
+	}
+	if !strings.Contains(html, `<h1 class="truncate text-sm font-semibold text-foreground">Operations</h1>`) {
+		t.Fatalf("dashboard slim navbar should expose the page title as a semantic h1:\n%s", html)
+	}
+
+	healthIndex := strings.Index(html, `aria-label="Dashboard health"`)
+	metricsIndex := strings.Index(html, "Active issue sessions")
+	activityIndex := strings.Index(html, `aria-label="Agent activity timeline"`)
+	pipelineIndex := strings.Index(html, `aria-label="Pull request pipeline"`)
+	projectsIndex := strings.Index(html, `aria-label="Project small multiples"`)
+	boardIndex := strings.Index(html, `aria-label="Board health"`)
+	cycleIndex := strings.Index(html, `aria-label="Cycle time"`)
+	if healthIndex < 0 || metricsIndex < 0 || activityIndex < 0 || pipelineIndex < 0 || projectsIndex < 0 || boardIndex < 0 || cycleIndex < 0 {
+		t.Fatalf("dashboard section indexes missing: health=%d metrics=%d activity=%d pipeline=%d projects=%d board=%d cycle=%d\n%s", healthIndex, metricsIndex, activityIndex, pipelineIndex, projectsIndex, boardIndex, cycleIndex, html)
+	}
+	if healthIndex >= metricsIndex || metricsIndex >= activityIndex || activityIndex >= pipelineIndex || pipelineIndex >= projectsIndex || projectsIndex >= boardIndex || boardIndex >= cycleIndex {
+		t.Fatalf("dashboard sections are not ordered as health, metrics, activity, pipeline, analytics: health=%d metrics=%d activity=%d pipeline=%d projects=%d board=%d cycle=%d\n%s", healthIndex, metricsIndex, activityIndex, pipelineIndex, projectsIndex, boardIndex, cycleIndex, html)
+	}
+}
+
+func TestDashboardRendersBoundedPRPipelineLanes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(-10 * time.Minute)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Detent",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Pipeline: []telemetry.Issue{
+				{
+					ID:         "review",
+					Identifier: "digitaldrywood/detent#284",
+					Title:      "Bounded pipeline lane",
+					State:      "Human Review",
+					UpdatedAt:  &updatedAt,
+					PullRequest: &telemetry.PullRequest{
+						Number:   284,
+						CIStatus: "success",
+					},
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`aria-label="Human Review lane"`,
+		`aria-label="Merging lane"`,
+		`aria-label="Done today lane"`,
+		"pr-pipeline-lane-scroll",
+		"max-h-[24rem]",
+		"overflow-y-auto",
+		"Nothing is merging.",
+		"No PRs finished today.",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardDensityStylesUseRootAttribute(t *testing.T) {
+	t.Parallel()
+
+	css, err := os.ReadFile("../../../static/css/input.css")
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	source := string(css)
+	for _, want := range []string{
+		`html[data-density="compact"] .dashboard-shell`,
+		`html[data-density="compact"] .dashboard-topbar`,
+		`html[data-density="compact"] .dashboard-panel`,
+		`html[data-density="compact"] .pr-pipeline-card`,
+		`--dashboard-table-cell-y: 0.5rem`,
+	} {
+		if !strings.Contains(source, want) {
+			t.Fatalf("compact density CSS missing %q:\n%s", want, source)
 		}
 	}
 }
@@ -898,10 +1044,11 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 	for _, want := range []string{
 		"overflow-x-hidden",
 		"px-3 py-3",
-		"grid grid-cols-3 gap-2",
-		"min-h-11",
+		"dashboard-topbar",
+		"dashboard-nav grid min-w-0 grid-cols-3 gap-1",
+		"min-h-8",
 		"min-h-10",
-		"h-10 w-10",
+		"h-8 w-8",
 		"sm:hidden",
 		"hidden overflow-hidden rounded-md border border-border sm:block",
 		"running-mobile-issue-popover-0",
