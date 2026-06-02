@@ -60,6 +60,8 @@ The full state table, connector model, and merge-train config are in
 
 ## How it's different
 
+See [How Detent compares to Symphony, Copilot, Cursor, Hermes, and OpenClaw](docs/comparison.md).
+
 ### From OpenAI's Symphony
 
 Detent grew out of [OpenAI's Symphony](https://github.com/openai/symphony) — the
