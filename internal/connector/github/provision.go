@@ -56,6 +56,22 @@ var statusOptionDefaultsByState = map[string]projectSingleSelectOption{
 	"Duplicate":    {Color: "GRAY", Description: "Work is tracked elsewhere."},
 }
 
+// GitHub Projects uses single-select option order as kanban column order.
+var defaultStatusOptionOrder = []string{
+	"Backlog",
+	"Todo",
+	"In Progress",
+	"Blocked",
+	"Human Review",
+	"Rework",
+	"Merging",
+	"Done",
+	"Closed",
+	"Cancelled",
+	"Canceled",
+	"Duplicate",
+}
+
 var defaultPriorityOptionsByName = map[string]projectSingleSelectOption{
 	"Urgent":      {Name: "Urgent", Color: "RED", Description: "Needs immediate attention."},
 	"High":        {Name: "High", Color: "ORANGE", Description: "Important work to prioritize soon."},
@@ -84,6 +100,12 @@ type projectSingleSelectOption struct {
 type priorityOptionRequirement struct {
 	Name string
 	Rank *int
+}
+
+type statusOptionRequirement struct {
+	State       string
+	Option      projectSingleSelectOption
+	InputOffset int
 }
 
 type projectOptionsFieldResponse struct {
@@ -201,12 +223,11 @@ func decodeOptionalProjectSingleSelectField(fieldName string, field *projectOpti
 }
 
 func (c *Connector) ensureFieldOptions(ctx context.Context, field projectSingleSelectField, required []projectSingleSelectOption) (bool, error) {
-	missing := missingProjectOptions(field.Options, required)
-	if len(missing) == 0 {
+	options := singleSelectOptionsWithRequiredOrder(field.Options, required)
+	if singleSelectOptionsEqual(field.Options, options) {
 		return false, nil
 	}
 
-	options := singleSelectOptionsWithAppended(field.Options, missing)
 	var response struct {
 		UpdateProjectV2Field *struct {
 			ProjectV2Field *struct {
@@ -231,50 +252,77 @@ func (c *Connector) ensureFieldOptions(ctx context.Context, field projectSingleS
 	return true, nil
 }
 
-func missingProjectOptions(current []projectSingleSelectOption, required []projectSingleSelectOption) []projectSingleSelectOption {
-	currentNames := make(map[string]struct{}, len(current))
-	for _, option := range current {
-		name := strings.TrimSpace(option.Name)
-		if name != "" {
-			currentNames[name] = struct{}{}
-		}
-	}
-
-	missing := make([]projectSingleSelectOption, 0, len(required))
-	for _, option := range required {
-		name := strings.TrimSpace(option.Name)
-		if name == "" {
-			continue
-		}
-		if _, ok := currentNames[name]; ok {
-			continue
-		}
-		currentNames[name] = struct{}{}
-		option.Name = name
-		missing = append(missing, option)
-	}
-	return missing
-}
-
-func singleSelectOptionsWithAppended(current []projectSingleSelectOption, newOptions []projectSingleSelectOption) []projectSingleSelectOption {
-	options := make([]projectSingleSelectOption, 0, len(current)+len(newOptions))
-	currentNames := make(map[string]struct{}, len(current))
+func singleSelectOptionsWithRequiredOrder(current []projectSingleSelectOption, required []projectSingleSelectOption) []projectSingleSelectOption {
+	options := make([]projectSingleSelectOption, 0, len(current)+len(required))
+	currentByName := make(map[string]projectSingleSelectOption, len(current))
+	currentNames := make([]string, 0, len(current))
 	for _, option := range current {
 		input := singleSelectOptionInput(option)
 		if strings.TrimSpace(input.Name) == "" {
 			continue
 		}
-		currentNames[input.Name] = struct{}{}
-		options = append(options, input)
+		if _, ok := currentByName[input.Name]; ok {
+			continue
+		}
+		currentByName[input.Name] = input
+		currentNames = append(currentNames, input.Name)
 	}
-	for _, option := range newOptions {
+
+	seen := make(map[string]struct{}, len(required))
+	for _, option := range required {
 		input := singleSelectOptionInput(option)
-		if _, ok := currentNames[input.Name]; ok {
+		if input.Name == "" {
+			continue
+		}
+		if _, ok := seen[input.Name]; ok {
+			continue
+		}
+		seen[input.Name] = struct{}{}
+		if existing, ok := currentByName[input.Name]; ok {
+			options = append(options, existing)
 			continue
 		}
 		options = append(options, input)
 	}
+
+	for _, name := range currentNames {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		options = append(options, currentByName[name])
+	}
 	return options
+}
+
+func singleSelectOptionsEqual(current []projectSingleSelectOption, want []projectSingleSelectOption) bool {
+	current = normalizedSingleSelectOptions(current)
+	want = normalizedSingleSelectOptions(want)
+	if len(current) != len(want) {
+		return false
+	}
+	for i := range current {
+		if current[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func normalizedSingleSelectOptions(options []projectSingleSelectOption) []projectSingleSelectOption {
+	normalized := make([]projectSingleSelectOption, 0, len(options))
+	seen := make(map[string]struct{}, len(options))
+	for _, option := range options {
+		input := singleSelectOptionInput(option)
+		if input.Name == "" {
+			continue
+		}
+		if _, ok := seen[input.Name]; ok {
+			continue
+		}
+		seen[input.Name] = struct{}{}
+		normalized = append(normalized, input)
+	}
+	return normalized
 }
 
 func singleSelectOptionInput(option projectSingleSelectOption) projectSingleSelectOption {
@@ -289,14 +337,9 @@ func singleSelectOptionInput(option projectSingleSelectOption) projectSingleSele
 }
 
 func (c *Connector) requiredStatusOptions() []projectSingleSelectOption {
-	states := make([]string, 0, len(c.activeStates)+len(c.observedStates)+len(c.terminalStates))
-	states = append(states, c.activeStates...)
-	states = append(states, c.observedStates...)
-	states = append(states, c.terminalStates...)
-
-	options := make([]projectSingleSelectOption, 0, len(states))
+	requirements := make([]statusOptionRequirement, 0, len(c.activeStates)+len(c.observedStates)+len(c.terminalStates))
 	seen := map[string]struct{}{}
-	for _, state := range states {
+	for index, state := range appendStatusStates(nil, c.activeStates, c.observedStates, c.terminalStates) {
 		state = strings.TrimSpace(state)
 		if state == "" {
 			continue
@@ -312,9 +355,50 @@ func (c *Connector) requiredStatusOptions() []projectSingleSelectOption {
 
 		option := statusOptionDefaults(state)
 		option.Name = githubState
-		options = append(options, option)
+		requirements = append(requirements, statusOptionRequirement{
+			State:       state,
+			Option:      option,
+			InputOffset: index,
+		})
+	}
+	sort.SliceStable(requirements, func(i, j int) bool {
+		leftRank := statusOptionSortRank(requirements[i])
+		rightRank := statusOptionSortRank(requirements[j])
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		return requirements[i].InputOffset < requirements[j].InputOffset
+	})
+
+	options := make([]projectSingleSelectOption, 0, len(requirements))
+	for _, requirement := range requirements {
+		options = append(options, requirement.Option)
 	}
 	return options
+}
+
+func appendStatusStates(out []string, groups ...[]string) []string {
+	for _, group := range groups {
+		out = append(out, group...)
+	}
+	return out
+}
+
+func statusOptionSortRank(requirement statusOptionRequirement) int {
+	if rank, ok := statusOptionOrderRank(requirement.State); ok {
+		return rank
+	}
+	return len(defaultStatusOptionOrder) + requirement.InputOffset
+}
+
+func statusOptionOrderRank(state string) (int, bool) {
+	state = normalizeStateName(state)
+	for rank, orderedState := range defaultStatusOptionOrder {
+		if normalizeStateName(orderedState) == state {
+			return rank, true
+		}
+	}
+	return 0, false
 }
 
 func statusOptionDefaults(state string) projectSingleSelectOption {

@@ -18,10 +18,10 @@ func TestConnectorEnsureStateOptionsCreatesMissingStatusAndPriorityOptions(t *te
 			body: `{"data":{"node":{"__typename":"ProjectV2","statusField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_status","options":[{"id":"OPT_todo","name":"Todo","color":"GREEN","description":"Existing todo"}]},"priorityField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_priority","options":[{"id":"OPT_none","name":"No priority","color":"GRAY","description":"Existing none"}]}}}}`,
 		},
 		{
-			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_todo","name":"Todo","color":"GREEN","description":"Existing todo"},{"id":"OPT_rework","name":"Rework","color":"ORANGE","description":"Changes are requested before review can continue."}]}}}}`,
+			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_todo","name":"Todo","color":"GREEN","description":"Existing todo"},{"name":"Blocked","color":"RED","description":"Cannot continue without human input."},{"name":"Reviewing","color":"PURPLE","description":"Waiting for human review."},{"name":"Rework","color":"ORANGE","description":"Changes are requested before review can continue."},{"name":"Done","color":"GREEN","description":"Work is complete."}]}}}}`,
 		},
 		{
-			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_none","name":"No priority","color":"GRAY","description":"Existing none"},{"id":"OPT_p0","name":"P0","color":"RED","description":"Detent priority rank 1."}]}}}}`,
+			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_p0","name":"P0","color":"RED","description":"Detent priority rank 1."},{"id":"OPT_none","name":"No priority","color":"GRAY","description":"Existing none"}]}}}}`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
@@ -59,7 +59,7 @@ func TestConnectorEnsureStateOptionsCreatesMissingStatusAndPriorityOptions(t *te
 		t.Fatalf("status fieldId = %v, want PVTSSF_status", statusInput["fieldId"])
 	}
 	statusOptions := graphQLOptions(t, statusInput)
-	if got := optionNames(statusOptions); !reflect.DeepEqual(got, []string{"Todo", "Rework", "Reviewing", "Blocked", "Done"}) {
+	if got := optionNames(statusOptions); !reflect.DeepEqual(got, []string{"Todo", "Blocked", "Reviewing", "Rework", "Done"}) {
 		t.Fatalf("status option names = %#v", got)
 	}
 	if statusOptions[0]["id"] != "OPT_todo" {
@@ -71,20 +71,65 @@ func TestConnectorEnsureStateOptionsCreatesMissingStatusAndPriorityOptions(t *te
 	if _, ok := statusOptions[1]["id"]; ok {
 		t.Fatalf("new status option has id = %v, want no id", statusOptions[1]["id"])
 	}
+	if statusOptions[2]["description"] != "Waiting for human review." {
+		t.Fatalf("mapped human review description = %v, want Waiting for human review.", statusOptions[2]["description"])
+	}
 
 	priorityInput := graphQLInput(t, requests[2])
 	if priorityInput["fieldId"] != "PVTSSF_priority" {
 		t.Fatalf("priority fieldId = %v, want PVTSSF_priority", priorityInput["fieldId"])
 	}
 	priorityOptions := graphQLOptions(t, priorityInput)
-	if got := optionNames(priorityOptions); !reflect.DeepEqual(got, []string{"No priority", "P0"}) {
+	if got := optionNames(priorityOptions); !reflect.DeepEqual(got, []string{"P0", "No priority"}) {
 		t.Fatalf("priority option names = %#v", got)
 	}
-	if priorityOptions[0]["id"] != "OPT_none" {
-		t.Fatalf("existing priority id = %v, want OPT_none", priorityOptions[0]["id"])
+	if _, ok := priorityOptions[0]["id"]; ok {
+		t.Fatalf("new priority option has id = %v, want no id", priorityOptions[0]["id"])
 	}
-	if priorityOptions[1]["color"] != "RED" {
-		t.Fatalf("P0 color = %v, want RED", priorityOptions[1]["color"])
+	if priorityOptions[0]["color"] != "RED" {
+		t.Fatalf("P0 color = %v, want RED", priorityOptions[0]["color"])
+	}
+	if priorityOptions[1]["id"] != "OPT_none" {
+		t.Fatalf("existing priority id = %v, want OPT_none", priorityOptions[1]["id"])
+	}
+}
+
+func TestConnectorEnsureStateOptionsReordersExistingOptions(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"__typename":"ProjectV2","statusField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_status","options":[{"id":"OPT_todo","name":"Todo","color":"GREEN","description":"Existing todo"},{"id":"OPT_progress","name":"In Progress","color":"YELLOW","description":"Existing progress"},{"id":"OPT_backlog","name":"Backlog","color":"GRAY","description":"Existing backlog"},{"id":"OPT_done","name":"Done","color":"GREEN","description":"Existing done"},{"id":"OPT_custom","name":"Parked","color":"BLUE","description":"Custom lane"}]},"priorityField":null}}}`,
+		},
+		{
+			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_backlog","name":"Backlog","color":"GRAY","description":"Existing backlog"},{"id":"OPT_todo","name":"Todo","color":"GREEN","description":"Existing todo"},{"id":"OPT_progress","name":"In Progress","color":"YELLOW","description":"Existing progress"},{"id":"OPT_done","name":"Done","color":"GREEN","description":"Existing done"},{"id":"OPT_custom","name":"Parked","color":"BLUE","description":"Custom lane"}]}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:    "PVT_1",
+		ActiveStates:   []string{"Todo", "In Progress"},
+		ObservedStates: []string{"Backlog"},
+		TerminalStates: []string{"Done"},
+	})
+
+	if err := c.EnsureStateOptions(context.Background()); err != nil {
+		t.Fatalf("EnsureStateOptions() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	input := graphQLInput(t, requests[1])
+	statusOptions := graphQLOptions(t, input)
+	if got := optionNames(statusOptions); !reflect.DeepEqual(got, []string{"Backlog", "Todo", "In Progress", "Done", "Parked"}) {
+		t.Fatalf("status option names = %#v", got)
+	}
+	if statusOptions[0]["id"] != "OPT_backlog" || statusOptions[1]["id"] != "OPT_todo" || statusOptions[2]["id"] != "OPT_progress" {
+		t.Fatalf("existing status ids were not preserved: %#v", statusOptions)
+	}
+	if statusOptions[4]["id"] != "OPT_custom" {
+		t.Fatalf("extra status id = %v, want OPT_custom", statusOptions[4]["id"])
 	}
 }
 

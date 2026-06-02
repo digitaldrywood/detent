@@ -15,10 +15,10 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 			body: `{"data":{"node":{"__typename":"ProjectV2","statusField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog","color":"GRAY","description":"Backlog."},{"id":"OPT_ready","name":"Ready","color":"GREEN","description":"Ready."},{"id":"OPT_progress","name":"In Progress","color":"YELLOW","description":"Active."},{"id":"OPT_review","name":"In Review","color":"PURPLE","description":"Review."}]},"priorityField":{"__typename":"ProjectV2SingleSelectField","id":"PVTSSF_priority","options":[{"id":"OPT_medium","name":"Medium","color":"YELLOW","description":"Normal."}]}}}}`,
 		},
 		{
-			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_backlog","name":"Backlog","color":"GRAY","description":"Backlog."},{"id":"OPT_ready","name":"Ready","color":"GREEN","description":"Ready."},{"id":"OPT_progress","name":"In Progress","color":"YELLOW","description":"Active."},{"id":"OPT_review","name":"In Review","color":"PURPLE","description":"Review."},{"name":"Merging","color":"PURPLE","description":"Approved work is being integrated."},{"name":"Rework","color":"ORANGE","description":"Changes are requested before review can continue."},{"name":"Blocked","color":"RED","description":"Cannot continue without human input."},{"name":"Done","color":"GREEN","description":"Work is complete."}]}}}}`,
+			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_backlog","name":"Backlog","color":"GRAY","description":"Backlog."},{"id":"OPT_ready","name":"Ready","color":"GREEN","description":"Ready."},{"id":"OPT_progress","name":"In Progress","color":"YELLOW","description":"Active."},{"name":"Blocked","color":"RED","description":"Cannot continue without human input."},{"id":"OPT_review","name":"In Review","color":"PURPLE","description":"Review."},{"name":"Rework","color":"ORANGE","description":"Changes are requested before review can continue."},{"name":"Merging","color":"PURPLE","description":"Approved work is being integrated."},{"name":"Done","color":"GREEN","description":"Work is complete."}]}}}}`,
 		},
 		{
-			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"id":"OPT_medium","name":"Medium","color":"YELLOW","description":"Normal."},{"name":"Urgent","color":"RED","description":"Needs immediate attention."},{"name":"High","color":"ORANGE","description":"Important work to prioritize soon."},{"name":"Low","color":"BLUE","description":"Can wait behind higher-priority work."},{"name":"No priority","color":"GRAY","description":"Priority has not been set."}]}}}}`,
+			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"name":"Urgent","color":"RED","description":"Needs immediate attention."},{"name":"High","color":"ORANGE","description":"Important work to prioritize soon."},{"id":"OPT_medium","name":"Medium","color":"YELLOW","description":"Normal."},{"name":"Low","color":"BLUE","description":"Can wait behind higher-priority work."},{"name":"No priority","color":"GRAY","description":"Priority has not been set."}]}}}}`,
 		},
 		{
 			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_28","content":{"__typename":"Issue","id":"I_kw28","number":28,"title":"Projects-v2 parity gate","body":"Depends on: #26 #27\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/28","createdAt":"2026-05-31T04:12:00Z","updatedAt":"2026-05-31T04:30:00Z","assignees":{"nodes":[{"login":"codex"}]},"labels":{"nodes":[{"name":"gate"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"Urgent"}},{"id":"PVTI_29","content":{"__typename":"Issue","id":"I_kw29","number":29,"title":"Human review","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/29","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"In Review"},"priorityValue":{"name":"No priority"}}]}}}}`,
@@ -100,7 +100,7 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 		t.Fatalf("status fieldId = %v, want PVTSSF_status", statusInput["fieldId"])
 	}
 	statusOptions := graphQLOptions(t, statusInput)
-	if got := optionNames(statusOptions); !reflect.DeepEqual(got, []string{"Backlog", "Ready", "In Progress", "In Review", "Merging", "Rework", "Blocked", "Done"}) {
+	if got := optionNames(statusOptions); !reflect.DeepEqual(got, []string{"Backlog", "Ready", "In Progress", "Blocked", "In Review", "Rework", "Merging", "Done"}) {
 		t.Fatalf("status option names = %#v", got)
 	}
 
@@ -109,7 +109,7 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 		t.Fatalf("priority fieldId = %v, want PVTSSF_priority", priorityInput["fieldId"])
 	}
 	priorityOptions := graphQLOptions(t, priorityInput)
-	if got := optionNames(priorityOptions); !reflect.DeepEqual(got, []string{"Medium", "Urgent", "High", "Low", "No priority"}) {
+	if got := optionNames(priorityOptions); !reflect.DeepEqual(got, []string{"Urgent", "High", "Medium", "Low", "No priority"}) {
 		t.Fatalf("priority option names = %#v", got)
 	}
 
