@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -33,6 +34,40 @@ func TestStateSnapshotEmpty(t *testing.T) {
 	}
 	if len(snapshot.Completed) != 0 {
 		t.Fatalf("Completed = %#v, want empty", snapshot.Completed)
+	}
+}
+
+func TestStateSnapshotIncludesInstanceIdentityAndScope(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	state := newState(normalizeConfig(Config{
+		Authorization: selector.Selector{
+			AssigneeIn: []string{"@me"},
+			Labels: selector.Labels{
+				Include: []string{"release"},
+			},
+		},
+		SelectorContext: selector.Context{
+			InstanceLogin: "detent-bot",
+			Persona:       "release-captain",
+		},
+	}))
+
+	snapshot := state.Snapshot(now)
+
+	if snapshot.Instance.Name != "release-captain" {
+		t.Fatalf("Instance.Name = %q, want release-captain", snapshot.Instance.Name)
+	}
+	if snapshot.Instance.GitHubLogin != "detent-bot" {
+		t.Fatalf("Instance.GitHubLogin = %q, want detent-bot", snapshot.Instance.GitHubLogin)
+	}
+	if !snapshot.Instance.AuthorizationConfigured {
+		t.Fatal("Instance.AuthorizationConfigured = false, want true")
+	}
+	wantScope := "assignee in @me (detent-bot, release-captain); labels include release"
+	if snapshot.Instance.AuthorizationScope != wantScope {
+		t.Fatalf("Instance.AuthorizationScope = %q, want %q", snapshot.Instance.AuthorizationScope, wantScope)
 	}
 }
 

@@ -611,6 +611,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 	})
 	state.PollInterval = cfg.PollInterval
 	state.MaxConcurrentAgents = cfg.MaxConcurrentAgents
+	state.Instance = instanceSnapshot(cfg)
 	if !state.LastRefreshAt.IsZero() && cfg.PollInterval > 0 {
 		state.NextRefreshAt = state.LastRefreshAt.Add(cfg.PollInterval)
 	}

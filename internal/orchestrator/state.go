@@ -10,6 +10,7 @@ import (
 type State struct {
 	PollInterval           time.Duration
 	MaxConcurrentAgents    int
+	Instance               telemetry.Instance
 	LastRefreshAt          time.Time
 	NextRefreshAt          time.Time
 	LastRunningReconcileAt time.Time
@@ -80,6 +81,7 @@ func newState(cfg Config) State {
 	return State{
 		PollInterval:        cfg.PollInterval,
 		MaxConcurrentAgents: cfg.MaxConcurrentAgents,
+		Instance:            instanceSnapshot(cfg),
 		Running:             map[string]Running{},
 		Claimed:             map[string]Claimed{},
 		Blocked:             map[string]Blocked{},
@@ -94,6 +96,7 @@ func (s State) clone() State {
 	cloned := State{
 		PollInterval:           s.PollInterval,
 		MaxConcurrentAgents:    s.MaxConcurrentAgents,
+		Instance:               s.Instance,
 		LastRefreshAt:          s.LastRefreshAt,
 		NextRefreshAt:          s.NextRefreshAt,
 		LastRunningReconcileAt: s.LastRunningReconcileAt,

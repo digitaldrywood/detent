@@ -23,6 +23,12 @@ func TestSnapshotJSONShape(t *testing.T) {
 			DisplayName: "Detent",
 			URL:         "https://github.com/digitaldrywood/detent",
 		},
+		Instance: telemetry.Instance{
+			Name:                    "release-captain",
+			GitHubLogin:             "detent-bot",
+			AuthorizationScope:      "assignee in @me (detent-bot, release-captain)",
+			AuthorizationConfigured: true,
+		},
 		DashboardURL: "http://localhost:4101",
 		Refresh: telemetry.Refresh{
 			PollIntervalSeconds: 30,
@@ -174,6 +180,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 	for _, key := range []string{
 		"generated_at",
 		"project",
+		"instance",
 		"dashboard_url",
 		"refresh",
 		"counts",
@@ -196,6 +203,16 @@ func TestSnapshotJSONShape(t *testing.T) {
 	project := got["project"].(map[string]any)
 	if project["display_name"] != "Detent" || project["url"] != "https://github.com/digitaldrywood/detent" {
 		t.Fatalf("project = %#v", project)
+	}
+	instance := got["instance"].(map[string]any)
+	if instance["name"] != "release-captain" || instance["github_login"] != "detent-bot" {
+		t.Fatalf("instance identity = %#v", instance)
+	}
+	if instance["authorization_scope"] != "assignee in @me (detent-bot, release-captain)" {
+		t.Fatalf("instance authorization_scope = %#v", instance)
+	}
+	if instance["authorization_configured"] != true {
+		t.Fatalf("instance authorization_configured = %#v", instance)
 	}
 	if got["dashboard_url"] != "http://localhost:4101" {
 		t.Fatalf("dashboard_url = %#v", got["dashboard_url"])

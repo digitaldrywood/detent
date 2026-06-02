@@ -5,6 +5,7 @@ import "time"
 type Snapshot struct {
 	GeneratedAt    time.Time         `json:"generated_at"`
 	Project        Project           `json:"project"`
+	Instance       Instance          `json:"instance"`
 	Projects       []ProjectSnapshot `json:"projects,omitempty"`
 	DashboardURL   string            `json:"dashboard_url,omitempty"`
 	Refresh        Refresh           `json:"refresh"`
@@ -27,6 +28,13 @@ type Project struct {
 	ID          string `json:"id,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
 	URL         string `json:"url,omitempty"`
+}
+
+type Instance struct {
+	Name                    string `json:"name,omitempty"`
+	GitHubLogin             string `json:"github_login,omitempty"`
+	AuthorizationScope      string `json:"authorization_scope,omitempty"`
+	AuthorizationConfigured bool   `json:"authorization_configured"`
 }
 
 type ProjectSnapshot struct {

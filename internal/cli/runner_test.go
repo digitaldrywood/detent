@@ -240,6 +240,40 @@ func TestPublishSnapshotOncePreservesPipeline(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotMergesInstanceScope(t *testing.T) {
+	t.Parallel()
+
+	base := telemetry.Snapshot{
+		Instance: telemetry.Instance{
+			Name:               "release-captain",
+			GitHubLogin:        "detent-bot",
+			AuthorizationScope: "All issues",
+		},
+	}
+	got := mergeSnapshot(telemetry.Snapshot{}, base)
+	if got.Instance != base.Instance {
+		t.Fatalf("first merge Instance = %#v, want %#v", got.Instance, base.Instance)
+	}
+
+	got = mergeSnapshot(got, telemetry.Snapshot{
+		Instance: telemetry.Instance{
+			Name:                    "release-captain",
+			GitHubLogin:             "detent-bot",
+			AuthorizationScope:      "labels include release",
+			AuthorizationConfigured: true,
+		},
+	})
+	want := telemetry.Instance{
+		Name:                    "release-captain",
+		GitHubLogin:             "detent-bot",
+		AuthorizationScope:      "Multiple authorization scopes",
+		AuthorizationConfigured: true,
+	}
+	if got.Instance != want {
+		t.Fatalf("merged Instance = %#v, want %#v", got.Instance, want)
+	}
+}
+
 func TestTokenTrendRecorderAppliesRollingWindow(t *testing.T) {
 	t.Parallel()
 

@@ -27,6 +27,12 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		DashboardURL:  "http://localhost:4101",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
+			Instance: telemetry.Instance{
+				Name:                    "release-captain",
+				GitHubLogin:             "detent-bot",
+				AuthorizationScope:      "assignee in @me (detent-bot, release-captain)",
+				AuthorizationConfigured: true,
+			},
 			Counts: telemetry.Counts{
 				Running:   2,
 				Queue:     3,
@@ -219,6 +225,9 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Completed",
 		"v1.2.3",
 		"href=\"http://localhost:4101\"",
+		"release-captain",
+		"detent-bot",
+		"assignee in @me (detent-bot, release-captain)",
 		"digitaldrywood/detent#35",
 		"Dashboard templates",
 		"http://localhost:4101",

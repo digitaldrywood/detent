@@ -1651,6 +1651,36 @@ func statsStatusTitle(snapshot telemetry.Snapshot) string {
 	return lifetimeDegradedReason(snapshot.LifetimeTotals)
 }
 
+func instanceLabel(snapshot telemetry.Snapshot) string {
+	name := strings.TrimSpace(snapshot.Instance.Name)
+	login := strings.TrimSpace(snapshot.Instance.GitHubLogin)
+	switch {
+	case name != "" && login != "":
+		return name + " (" + login + ")"
+	case name != "":
+		return name
+	case login != "":
+		return login
+	default:
+		return "not configured"
+	}
+}
+
+func authorizationScopeLabel(snapshot telemetry.Snapshot) string {
+	scope := strings.TrimSpace(snapshot.Instance.AuthorizationScope)
+	if scope != "" {
+		return scope
+	}
+	return "All issues"
+}
+
+func authorizationScopeClass(snapshot telemetry.Snapshot) string {
+	if snapshot.Instance.AuthorizationConfigured {
+		return "border-accent-soft bg-accent-soft text-accent"
+	}
+	return "border-border bg-muted text-muted-foreground"
+}
+
 func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 	if limits == nil {
 		return nil
