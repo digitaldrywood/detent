@@ -11,12 +11,15 @@ advance when a gate is cleared.
 
 ## What is this
 
-Detent is an agent orchestrator for tracker-backed software work, shipped as a
-single Go binary. It watches a GitHub Projects board, and for every issue you
-mark ready it creates an isolated Git worktree, dispatches a Codex coding agent
-against a workflow contract you wrote, runs your validation gate, opens a pull
-request, waits for review, and merges through a serialized train — with all of
-it live on a web dashboard and a terminal UI.
+Detent is board-driven agentic work orchestration, shipped as a single Go
+binary, with code as its first proven domain. Today it watches a GitHub Projects
+board, and for every code issue you mark ready it creates an isolated Git
+worktree, dispatches a Codex coding agent against a workflow contract you wrote,
+runs your validation gate, opens a pull request, waits for review, and merges
+through a serialized train — with all of it live on a web dashboard and a
+terminal UI. The same board-to-gated-review-to-done shape is the trajectory for
+non-code work, and [#266](https://github.com/digitaldrywood/detent/issues/266)
+tracks the domain-agnostic execution seams needed to unlock it.
 
 It is a **system, not an agent.** You specify the work — the issues, acceptance
 criteria, review gates, and merge rules — and Detent runs that process with
