@@ -113,6 +113,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	if global != nil {
 		boot.Global = *global
 		boot.Host, boot.Port = bootServer(cfg.Host, cfg.Port, firstGlobalWorkflowPath(*global))
+		report.Add(checkDoctorInstanceIdentity(*global))
 		report.Checks = append(report.Checks, checkDoctorProjects(ctx, *global, deps)...)
 	} else {
 		report.Add(doctorCheck{
@@ -278,7 +279,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 		checks = append(checks, doctorCheck{
 			Name:   "Project " + id + " workflow",
 			Status: doctorOK,
-			Detail: project.Workflow + " is valid",
+			Detail: doctorWorkflowDetail(project.Workflow, project, workflow.Config),
 		})
 
 		sourceRoot := projectSourceRoot(project, workflow.Config)
@@ -318,6 +319,57 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 	}
 
 	return checks
+}
+
+func checkDoctorInstanceIdentity(cfg globalconfig.Config) doctorCheck {
+	return doctorCheck{
+		Name:   "Instance identity",
+		Status: doctorOK,
+		Detail: doctorIdentityDetail(cfg.Global.Identity),
+	}
+}
+
+func doctorWorkflowDetail(path string, project globalconfig.Project, cfg workflowconfig.Config) string {
+	details := []string{path + " is valid"}
+	if cfg.Identity.Configured() {
+		details = append(details, "identity "+doctorIdentityDetail(cfg.Identity))
+	}
+	details = append(details, doctorAuthorizationDetail(project, cfg))
+	return strings.Join(details, "; ")
+}
+
+func doctorIdentityDetail(identity workflowconfig.Identity) string {
+	identity.Normalize()
+	if !identity.Configured() {
+		return "not configured; ownership defaults to assignee"
+	}
+
+	details := []string{identity.Name}
+	if identity.GitHubLogin != "" {
+		details = append(details, "github_login "+identity.GitHubLogin)
+	}
+	switch identity.OwnershipMode {
+	case workflowconfig.IdentityOwnershipField:
+		details = append(details, "owner field "+identity.OwnerField)
+	default:
+		details = append(details, "owner "+identity.OwnershipMode)
+	}
+	return strings.Join(details, ", ")
+}
+
+func doctorAuthorizationDetail(project globalconfig.Project, cfg workflowconfig.Config) string {
+	projectAuthorization := project.Authorization.Configured()
+	workflowAuthorization := cfg.Tracker.Authorization.Configured()
+	switch {
+	case projectAuthorization && workflowAuthorization:
+		return "authorization selectors from global.yaml and WORKFLOW.md"
+	case projectAuthorization:
+		return "authorization selector from global.yaml"
+	case workflowAuthorization:
+		return "authorization selector from WORKFLOW.md"
+	default:
+		return "authorization allows all issues"
+	}
 }
 
 func projectSourceRoot(project globalconfig.Project, cfg workflowconfig.Config) string {

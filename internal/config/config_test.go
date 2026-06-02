@@ -1,16 +1,23 @@
 package config
 
 import (
+	"reflect"
 	"strings"
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 )
 
 func TestParseWorkflowFrontmatter(t *testing.T) {
 	t.Parallel()
 
 	raw := []byte(`---
+identity:
+  name: release-captain
+  github_login: detent-bot
+  ownership_mode: field
+  owner_field: Owner
 tracker:
   kind: github
   api_key: $GITHUB_TOKEN
@@ -18,6 +25,15 @@ tracker:
   http_max_idle_conns: 120
   http_max_idle_conns_per_host: 40
   http_idle_conn_timeout_ms: 120000
+  authorization:
+    assignee_in:
+      - "@me"
+    labels:
+      include:
+        - release
+    fields:
+      - name: Track
+        value: multi-instance
   active_states:
     - Todo
     - In Progress
@@ -109,6 +125,18 @@ Ticket prompt {{ issue.title }}
 	if cfg.Tracker.Kind != TrackerGitHub {
 		t.Fatalf("Tracker.Kind = %q, want %q", cfg.Tracker.Kind, TrackerGitHub)
 	}
+	if cfg.Identity.Name != "release-captain" {
+		t.Fatalf("Identity.Name = %q, want release-captain", cfg.Identity.Name)
+	}
+	if cfg.Identity.GitHubLogin != "detent-bot" {
+		t.Fatalf("Identity.GitHubLogin = %q, want detent-bot", cfg.Identity.GitHubLogin)
+	}
+	if cfg.Identity.OwnershipMode != IdentityOwnershipField {
+		t.Fatalf("Identity.OwnershipMode = %q, want %q", cfg.Identity.OwnershipMode, IdentityOwnershipField)
+	}
+	if cfg.Identity.OwnerField != "Owner" {
+		t.Fatalf("Identity.OwnerField = %q, want Owner", cfg.Identity.OwnerField)
+	}
 	if cfg.Tracker.Endpoint != "https://api.github.com/graphql" {
 		t.Fatalf("Tracker.Endpoint = %q", cfg.Tracker.Endpoint)
 	}
@@ -120,6 +148,14 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Tracker.HTTPIdleConnTimeoutMS != 120000 {
 		t.Fatalf("Tracker.HTTPIdleConnTimeoutMS = %d, want 120000", cfg.Tracker.HTTPIdleConnTimeoutMS)
+	}
+	wantAuthorization := selector.Selector{
+		AssigneeIn: []string{"@me"},
+		Labels:     selector.Labels{Include: []string{"release"}},
+		Fields:     []selector.FieldEquals{{Name: "Track", Value: "multi-instance"}},
+	}
+	if got := cfg.Tracker.Authorization; !reflect.DeepEqual(got, wantAuthorization) {
+		t.Fatalf("Tracker.Authorization = %#v, want %#v", got, wantAuthorization)
 	}
 	if got := cfg.Tracker.StateMap.Map["Cancelled"]; got != "Done" {
 		t.Fatalf("Tracker.StateMap[Cancelled] = %v, want Done", got)
@@ -171,6 +207,12 @@ func TestParseWorkflowDefaults(t *testing.T) {
 
 	if cfg.Tracker.Endpoint != "https://api.linear.app/graphql" {
 		t.Fatalf("Tracker.Endpoint = %q", cfg.Tracker.Endpoint)
+	}
+	if cfg.Identity.Configured() {
+		t.Fatalf("Identity = %#v, want omitted default", cfg.Identity)
+	}
+	if cfg.Tracker.Authorization.Configured() {
+		t.Fatalf("Tracker.Authorization = %#v, want authorize all default", cfg.Tracker.Authorization)
 	}
 	if cfg.Polling.IntervalMS != 30000 {
 		t.Fatalf("Polling.IntervalMS = %d", cfg.Polling.IntervalMS)
@@ -658,6 +700,28 @@ Prompt
 				"agents.routes.backend must reference a configured backend",
 				"agents.routes.selector.priority_in values must be integers 1 through 4",
 				"agents.routes must not define multiple default routes",
+			},
+		},
+		{
+			name: "invalid identity and authorization",
+			raw: `---
+identity:
+  github_login: detent-bot
+  ownership_mode: field
+tracker:
+  kind: memory
+  authorization:
+    priority_in: [0]
+    fields:
+      - value: multi-instance
+---
+Prompt
+`,
+			want: []string{
+				"identity.name must not be blank",
+				"identity.owner_field is required when identity.ownership_mode is field",
+				"tracker.authorization.priority_in values must be integers 1 through 4",
+				"tracker.authorization.fields[0].name must not be blank",
 			},
 		},
 	}

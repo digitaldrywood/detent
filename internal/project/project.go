@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/selector"
 )
 
 var (
@@ -152,7 +153,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		orchestratorFactory = orchestrator.New
 	}
 
-	orchConfig := orchestrator.ConfigFromWorkflow(workflow.Config)
+	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
 	orchDeps := orchestrator.Dependencies{
 		Connector: projectConnector,
 		Runner:    deps.Runner,
@@ -603,7 +604,11 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		updater.UpdateWorkflow(workflow)
 	}
 
-	runtimeConfig := orchestrator.ConfigFromWorkflow(workflow.Config)
+	p.mu.Lock()
+	projectConfig := p.cfg
+	p.mu.Unlock()
+
+	runtimeConfig := projectOrchestratorConfig(projectConfig, workflow.Config)
 	if err := p.orchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
 		Config:    runtimeConfig,
 		Connector: projectConnector,
@@ -628,6 +633,30 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	p.mu.Unlock()
 
 	p.logger.Info("workflow reloaded", "project_id", p.id, "path", update.Path)
+}
+
+func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
+	cfg := orchestrator.ConfigFromWorkflow(workflow)
+	cfg.Authorization = combineAuthorizationSelectors(cfg.Authorization, project.Authorization)
+	return cfg
+}
+
+func combineAuthorizationSelectors(selectors ...selector.Selector) selector.Selector {
+	configured := make([]selector.Selector, 0, len(selectors))
+	for _, candidate := range selectors {
+		if candidate.Configured() {
+			configured = append(configured, candidate)
+		}
+	}
+
+	switch len(configured) {
+	case 0:
+		return selector.Selector{}
+	case 1:
+		return configured[0]
+	default:
+		return selector.Selector{And: configured}
+	}
 }
 
 func (p *Project) publish(event Event) {

@@ -48,6 +48,8 @@ type Config struct {
 	AutoPromote                AutoPromoteConfig
 	ActiveStates               []string
 	TerminalStates             []string
+	Authorization              selector.Selector
+	SelectorContext            selector.Context
 	WorkerHosts                []string
 	BudgetRefusalCooldown      time.Duration
 	ContinuationRetryDelay     time.Duration
@@ -109,6 +111,8 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		}),
 		ActiveStates:          append([]string(nil), cfg.Tracker.ActiveStates...),
 		TerminalStates:        append([]string(nil), cfg.Tracker.TerminalStates...),
+		Authorization:         cfg.Tracker.Authorization,
+		SelectorContext:       selector.Context{InstanceLogin: cfg.Identity.GitHubLogin, Persona: cfg.Identity.Name},
 		WorkerHosts:           append([]string(nil), cfg.Worker.SSHHosts...),
 		BudgetRefusalCooldown: durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
 		SelectorPersona:       cfg.Tracker.Assignee,
@@ -812,6 +816,9 @@ func (o *Orchestrator) dispatchableIssue(
 	if duplicatePullRequestWork(issue) {
 		return false
 	}
+	if !o.authorized(issue) {
+		return false
+	}
 	if todoBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
 		return false
 	}
@@ -829,6 +836,13 @@ func (o *Orchestrator) dispatchableIssue(
 	}
 
 	return o.slotsAvailable(issue, state, preferredWorkerHost)
+}
+
+func (o *Orchestrator) authorized(issue connector.Issue) bool {
+	if !o.cfg.Authorization.Configured() {
+		return true
+	}
+	return selector.Match(issue, o.cfg.Authorization, o.cfg.SelectorContext)
 }
 
 func (o *Orchestrator) slotsAvailable(issue connector.Issue, state *State, preferredWorkerHost string) bool {
@@ -1126,6 +1140,9 @@ func normalizeConfig(cfg Config) Config {
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
+	cfg.Authorization.Normalize()
+	cfg.SelectorContext.InstanceLogin = strings.TrimSpace(cfg.SelectorContext.InstanceLogin)
+	cfg.SelectorContext.Persona = strings.TrimSpace(cfg.SelectorContext.Persona)
 	cfg.WorkerHosts = normalizeWorkerHosts(cfg.WorkerHosts)
 	cfg.SelectorPersona = strings.TrimSpace(cfg.SelectorPersona)
 	if cfg.MaxConcurrentAgentsPerHost < 0 {

@@ -149,6 +149,9 @@ func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Set
 	if previous.Scheduling != next.Scheduling {
 		fields = append(fields, "global.scheduling")
 	}
+	if !reflect.DeepEqual(previous.Identity, next.Identity) {
+		fields = append(fields, "global.identity")
+	}
 	if !reflect.DeepEqual(previous.FairShare, next.FairShare) {
 		fields = append(fields, "global.fair_share")
 	}

@@ -12,6 +12,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/selector"
 )
 
 func TestCheckDoctorBinary(t *testing.T) {
@@ -174,6 +175,81 @@ func TestProjectSourceRootPrefersProjectWorkdirBeforeWorkspaceRoot(t *testing.T)
 	cfg.Workspace.SourceRoot = "/configured-source"
 	if got := projectSourceRoot(project, cfg); got != "/configured-source" {
 		t.Fatalf("projectSourceRoot() with source_root = %q, want /configured-source", got)
+	}
+}
+
+func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
+	t.Parallel()
+
+	cfg := validDoctorWorkflow("/repo")
+	cfg.Identity = workflowconfig.Identity{
+		Name:          "release-captain",
+		GitHubLogin:   "detent-bot",
+		OwnershipMode: workflowconfig.IdentityOwnershipField,
+		OwnerField:    "Owner",
+	}
+	cfg.Tracker.Authorization = selector.Selector{
+		AssigneeIn: []string{"@me"},
+	}
+	project := globalconfig.Project{
+		Authorization: selector.Selector{
+			Labels: selector.Labels{Include: []string{"release"}},
+		},
+	}
+
+	got := doctorWorkflowDetail("WORKFLOW.md", project, cfg)
+	for _, want := range []string{
+		"WORKFLOW.md is valid",
+		"identity release-captain",
+		"authorization selectors from global.yaml and WORKFLOW.md",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("doctorWorkflowDetail() = %q, want substring %q", got, want)
+		}
+	}
+}
+
+func TestCheckDoctorInstanceIdentity(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		identity   globalconfig.Identity
+		want       doctorStatus
+		wantDetail string
+	}{
+		{
+			name:       "omitted identity is valid",
+			want:       doctorOK,
+			wantDetail: "not configured",
+		},
+		{
+			name: "configured identity",
+			identity: globalconfig.Identity{
+				Name:          "release-captain",
+				GitHubLogin:   "detent-bot",
+				OwnershipMode: "field",
+				OwnerField:    "Owner",
+			},
+			want:       doctorOK,
+			wantDetail: "release-captain",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := checkDoctorInstanceIdentity(globalconfig.Config{
+				Global: globalconfig.Settings{Identity: tt.identity},
+			})
+			if got.Status != tt.want {
+				t.Fatalf("Status = %s, want %s", got.Status, tt.want)
+			}
+			if !strings.Contains(got.Detail, tt.wantDetail) {
+				t.Fatalf("Detail = %q, want containing %q", got.Detail, tt.wantDetail)
+			}
+		})
 	}
 }
 

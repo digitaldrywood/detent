@@ -1,6 +1,7 @@
 package selector
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -14,23 +15,87 @@ type Context struct {
 }
 
 type Selector struct {
-	AssigneeIn []string      `yaml:"assignee_in"`
-	AuthorIn   []string      `yaml:"author_in"`
-	PriorityIn []int         `yaml:"priority_in"`
-	Labels     Labels        `yaml:"labels"`
-	Fields     []FieldEquals `yaml:"fields"`
-	And        []Selector    `yaml:"and"`
-	Or         []Selector    `yaml:"or"`
+	AssigneeIn []string      `yaml:"assignee_in,omitempty"`
+	AuthorIn   []string      `yaml:"author_in,omitempty"`
+	PriorityIn []int         `yaml:"priority_in,omitempty"`
+	Labels     Labels        `yaml:"labels,omitempty"`
+	Fields     []FieldEquals `yaml:"fields,omitempty"`
+	And        []Selector    `yaml:"and,omitempty"`
+	Or         []Selector    `yaml:"or,omitempty"`
 }
 
 type Labels struct {
-	Include []string `yaml:"include"`
-	Exclude []string `yaml:"exclude"`
+	Include []string `yaml:"include,omitempty"`
+	Exclude []string `yaml:"exclude,omitempty"`
 }
 
 type FieldEquals struct {
 	Name  string `yaml:"name"`
 	Value string `yaml:"value"`
+}
+
+func (s Selector) Configured() bool {
+	if anyNonBlank(s.AssigneeIn) || anyNonBlank(s.AuthorIn) ||
+		len(s.PriorityIn) > 0 || anyNonBlank(s.Labels.Include) ||
+		anyNonBlank(s.Labels.Exclude) {
+		return true
+	}
+	for _, field := range s.Fields {
+		if strings.TrimSpace(field.Name) != "" || strings.TrimSpace(field.Value) != "" {
+			return true
+		}
+	}
+	return len(s.And) > 0 || len(s.Or) > 0
+}
+
+func (s Selector) IsZero() bool {
+	return !s.Configured()
+}
+
+func (s *Selector) Normalize() {
+	if s == nil {
+		return
+	}
+	s.AssigneeIn = trimStringSlice(s.AssigneeIn)
+	s.AuthorIn = trimStringSlice(s.AuthorIn)
+	s.Labels.Include = trimStringSlice(s.Labels.Include)
+	s.Labels.Exclude = trimStringSlice(s.Labels.Exclude)
+	for index := range s.Fields {
+		s.Fields[index].Name = strings.TrimSpace(s.Fields[index].Name)
+		s.Fields[index].Value = strings.TrimSpace(s.Fields[index].Value)
+	}
+	for index := range s.And {
+		s.And[index].Normalize()
+	}
+	for index := range s.Or {
+		s.Or[index].Normalize()
+	}
+}
+
+func (s Selector) Validate(prefix string) []string {
+	var problems []string
+	problems = append(problems, stringListProblems(prefix+".assignee_in", s.AssigneeIn)...)
+	problems = append(problems, stringListProblems(prefix+".author_in", s.AuthorIn)...)
+	problems = append(problems, priorityProblems(prefix+".priority_in", s.PriorityIn)...)
+	problems = append(problems, stringListProblems(prefix+".labels.include", s.Labels.Include)...)
+	problems = append(problems, stringListProblems(prefix+".labels.exclude", s.Labels.Exclude)...)
+
+	for index, field := range s.Fields {
+		fieldPrefix := fmt.Sprintf("%s.fields[%d]", prefix, index)
+		if strings.TrimSpace(field.Name) == "" {
+			problems = append(problems, fieldPrefix+".name must not be blank")
+		}
+		if strings.TrimSpace(field.Value) == "" {
+			problems = append(problems, fieldPrefix+".value must not be blank")
+		}
+	}
+	for index, child := range s.And {
+		problems = append(problems, child.Validate(fmt.Sprintf("%s.and[%d]", prefix, index))...)
+	}
+	for index, child := range s.Or {
+		problems = append(problems, child.Validate(fmt.Sprintf("%s.or[%d]", prefix, index))...)
+	}
+	return problems
 }
 
 func Match(issue connector.Issue, selector Selector, ctx Context) bool {
@@ -212,4 +277,43 @@ func normalizeIdentity(value string) string {
 
 func normalizeLabel(label string) string {
 	return strings.ToLower(strings.TrimSpace(label))
+}
+
+func anyNonBlank(values []string) bool {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func trimStringSlice(values []string) []string {
+	if values == nil {
+		return nil
+	}
+	out := make([]string, len(values))
+	for index, value := range values {
+		out[index] = strings.TrimSpace(value)
+	}
+	return out
+}
+
+func stringListProblems(field string, values []string) []string {
+	var problems []string
+	for index, value := range values {
+		if strings.TrimSpace(value) == "" {
+			problems = append(problems, fmt.Sprintf("%s[%d] must not be blank", field, index))
+		}
+	}
+	return problems
+}
+
+func priorityProblems(field string, priorities []int) []string {
+	for _, priority := range priorities {
+		if priority < 1 || priority > 4 {
+			return []string{field + " values must be integers 1 through 4"}
+		}
+	}
+	return nil
 }
