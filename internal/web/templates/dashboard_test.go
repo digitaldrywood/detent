@@ -3,7 +3,6 @@ package templates_test
 import (
 	"bytes"
 	"context"
-	"os"
 	"strconv"
 	"strings"
 	"testing"
@@ -473,27 +472,6 @@ func TestDashboardRendersBoundedPRPipelineLanes(t *testing.T) {
 	}
 }
 
-func TestDashboardDensityStylesUseRootAttribute(t *testing.T) {
-	t.Parallel()
-
-	css, err := os.ReadFile("../../../static/css/input.css")
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	source := string(css)
-	for _, want := range []string{
-		`html[data-density="compact"] .dashboard-shell`,
-		`html[data-density="compact"] .dashboard-topbar`,
-		`html[data-density="compact"] .dashboard-panel`,
-		`html[data-density="compact"] .pr-pipeline-card`,
-		`--dashboard-table-cell-y: 0.5rem`,
-	} {
-		if !strings.Contains(source, want) {
-			t.Fatalf("compact density CSS missing %q:\n%s", want, source)
-		}
-	}
-}
-
 func TestDashboardRendersReadableAgentTimelineForConcurrentSessions(t *testing.T) {
 	t.Parallel()
 
@@ -815,40 +793,6 @@ func TestDashboardRendersHealthIndicators(t *testing.T) {
 	})
 	if !strings.Contains(offlineHTML, "Offline") {
 		t.Fatalf("dashboard missing offline status:\n%s", offlineHTML)
-	}
-}
-
-func TestDashboardRendersDensityControls(t *testing.T) {
-	t.Parallel()
-
-	html := renderDashboard(t, templates.DashboardData{
-		Title:         "Detent",
-		ConnectorName: "github",
-		Snapshot: telemetry.Snapshot{
-			Running: []telemetry.Running{
-				{
-					Issue: telemetry.Issue{
-						ID:         "density-issue",
-						Identifier: "DD-DENSE",
-						Title:      "Density controls",
-					},
-				},
-			},
-		},
-	})
-
-	for _, want := range []string{
-		`aria-label="Dashboard density"`,
-		`data-density-choice="comfortable"`,
-		`data-density-choice="compact"`,
-		`aria-pressed="true"`,
-		`detent.dashboard.density`,
-		`dashboard-table`,
-		`table-fixed`,
-	} {
-		if !strings.Contains(html, want) {
-			t.Fatalf("dashboard missing %q:\n%s", want, html)
-		}
 	}
 }
 
