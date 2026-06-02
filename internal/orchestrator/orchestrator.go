@@ -247,7 +247,7 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	if blockedErr != nil {
 		o.logger.Warn("fetch blocked status issues failed", "error", blockedErr)
 	}
-	pipelineIssues, pipelineErr := o.connector.FetchIssuesByStates(ctx, prPipelineStates)
+	pipelineIssues, pipelineErr := o.connector.FetchIssuesByStates(ctx, prPipelineFetchStates(o.cfg.TerminalStates))
 	if pipelineErr != nil {
 		o.logger.Warn("fetch pr pipeline issues failed", "error", pipelineErr)
 	}
@@ -264,6 +264,23 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		o.trackBlockedStatusIssues(state, blockedIssues, now)
 	}
 	o.dispatchReadyIssues(ctx, state, issues, now)
+}
+
+func prPipelineFetchStates(terminalStates []string) []string {
+	states := make([]string, 0, len(prPipelineStates)+len(terminalStates))
+	seen := make(map[string]struct{}, len(prPipelineStates)+len(terminalStates))
+	for _, state := range append(append([]string(nil), prPipelineStates...), terminalStates...) {
+		key := normalizeState(state)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		states = append(states, state)
+	}
+	return states
 }
 
 func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State) {

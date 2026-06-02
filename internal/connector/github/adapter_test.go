@@ -266,6 +266,40 @@ func TestConnectorFetchIssuesByStatesFiltersMappedStates(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssuesByStatesUsesStatusUpdatedAtForStage(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":1,"title":"Done issue","body":"","state":"OPEN","url":"https://github.com/example/repo/issues/1","createdAt":"2026-05-31T01:02:03Z","updatedAt":"2026-05-31T02:03:04Z","assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"example/repo"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Done","updatedAt":"2026-06-01T12:30:00Z"},"priorityValue":null}]}}}}`,
+		},
+		{
+			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+	})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Done"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+
+	issueUpdatedAt := time.Date(2026, 5, 31, 2, 3, 4, 0, time.UTC)
+	stageUpdatedAt := time.Date(2026, 6, 1, 12, 30, 0, 0, time.UTC)
+	if got[0].UpdatedAt == nil || !got[0].UpdatedAt.Equal(issueUpdatedAt) {
+		t.Fatalf("UpdatedAt = %v, want issue updatedAt %v", got[0].UpdatedAt, issueUpdatedAt)
+	}
+	if got[0].StageUpdatedAt == nil || !got[0].StageUpdatedAt.Equal(stageUpdatedAt) {
+		t.Fatalf("StageUpdatedAt = %v, want status updatedAt %v", got[0].StageUpdatedAt, stageUpdatedAt)
+	}
+}
+
 func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing.T) {
 	t.Parallel()
 

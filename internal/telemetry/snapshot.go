@@ -50,16 +50,17 @@ type Counts struct {
 }
 
 type Issue struct {
-	ID          string       `json:"issue_id"`
-	Identifier  string       `json:"identifier,omitempty"`
-	URL         string       `json:"url,omitempty"`
-	Title       string       `json:"title,omitempty"`
-	Description string       `json:"description,omitempty"`
-	State       string       `json:"state,omitempty"`
-	Labels      []string     `json:"labels,omitempty"`
-	PullRequest *PullRequest `json:"pull_request,omitempty"`
-	CreatedAt   *time.Time   `json:"created_at,omitempty"`
-	UpdatedAt   *time.Time   `json:"updated_at,omitempty"`
+	ID             string       `json:"issue_id"`
+	Identifier     string       `json:"identifier,omitempty"`
+	URL            string       `json:"url,omitempty"`
+	Title          string       `json:"title,omitempty"`
+	Description    string       `json:"description,omitempty"`
+	State          string       `json:"state,omitempty"`
+	Labels         []string     `json:"labels,omitempty"`
+	PullRequest    *PullRequest `json:"pull_request,omitempty"`
+	CreatedAt      *time.Time   `json:"created_at,omitempty"`
+	UpdatedAt      *time.Time   `json:"updated_at,omitempty"`
+	StageUpdatedAt *time.Time   `json:"stage_updated_at,omitempty"`
 }
 
 type PullRequest struct {

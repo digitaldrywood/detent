@@ -169,6 +169,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		updatedAt := *issue.UpdatedAt
 		cloned.UpdatedAt = &updatedAt
 	}
+	if issue.StageUpdatedAt != nil {
+		stageUpdatedAt := *issue.StageUpdatedAt
+		cloned.StageUpdatedAt = &stageUpdatedAt
+	}
 	cloned.BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
 	cloned.Labels = append([]string(nil), issue.Labels...)
 	return cloned

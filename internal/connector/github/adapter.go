@@ -46,7 +46,7 @@ query DetentGitHubProjectItems($projectId: ID!, $first: Int!, $after: String) {
             }
           }
           statusValue: fieldValueByName(name: "Status") {
-            ... on ProjectV2ItemFieldSingleSelectValue { name }
+            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
           }
           priorityValue: fieldValueByName(name: "Priority") {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
@@ -80,7 +80,7 @@ query DetentGitHubIssuesByID($issueIds: [ID!]!, $projectItemsFirst: Int!) {
           id
           project { id }
           statusValue: fieldValueByName(name: "Status") {
-            ... on ProjectV2ItemFieldSingleSelectValue { name }
+            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
           }
           priorityValue: fieldValueByName(name: "Priority") {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
@@ -163,7 +163,7 @@ query DetentGitHubProjectItemForIssue($issueId: ID!, $projectItemsFirst: Int!, $
           id
           project { id }
           statusValue: fieldValueByName(name: "Status") {
-            ... on ProjectV2ItemFieldSingleSelectValue { name }
+            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
           }
           priorityValue: fieldValueByName(name: "Priority") {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
@@ -296,7 +296,8 @@ type projectRef struct {
 }
 
 type singleSelectValue struct {
-	Name string `json:"name"`
+	Name      string  `json:"name"`
+	UpdatedAt *string `json:"updatedAt"`
 }
 
 func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
@@ -654,7 +655,12 @@ func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue,
 	if item.Content == nil || item.Content.TypeName != "Issue" {
 		return connector.Issue{}, false
 	}
-	return c.buildIssue(*item.Content, singleSelectName(item.StatusValue), singleSelectName(item.PriorityValue)), true
+	return c.buildIssue(
+		*item.Content,
+		singleSelectName(item.StatusValue),
+		singleSelectName(item.PriorityValue),
+		singleSelectUpdatedAt(item.StatusValue),
+	), true
 }
 
 func resolveBlockedByProjectState(issues []connector.Issue) {
@@ -688,44 +694,44 @@ func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNod
 	if issue.TypeName != "Issue" {
 		return connector.Issue{}, false, nil
 	}
-	stateName, priorityName, ok, err := c.resolveIssueProjectFields(ctx, issue.ID, issue.ProjectItems)
+	stateName, priorityName, statusUpdatedAt, ok, err := c.resolveIssueProjectFields(ctx, issue.ID, issue.ProjectItems)
 	if err != nil {
 		return connector.Issue{}, false, err
 	}
 	if ok {
-		return c.buildIssue(issue, stateName, priorityName), true, nil
+		return c.buildIssue(issue, stateName, priorityName, statusUpdatedAt), true, nil
 	}
-	return c.buildIssue(issue, c.githubIssueStateToDetentState(issue.State), ""), true, nil
+	return c.buildIssue(issue, c.githubIssueStateToDetentState(issue.State), "", nil), true, nil
 }
 
-func (c *Connector) resolveIssueProjectFields(ctx context.Context, issueID string, items *projectItemsConnection) (string, string, bool, error) {
-	if stateName, priorityName, ok := c.projectFields(issueID, items); ok {
-		return stateName, priorityName, true, nil
+func (c *Connector) resolveIssueProjectFields(ctx context.Context, issueID string, items *projectItemsConnection) (string, string, *time.Time, bool, error) {
+	if stateName, priorityName, statusUpdatedAt, ok := c.projectFields(issueID, items); ok {
+		return stateName, priorityName, statusUpdatedAt, true, nil
 	}
 	if items == nil || !items.PageInfo.HasNextPage {
-		return "", "", false, nil
+		return "", "", nil, false, nil
 	}
 	cursor := strings.TrimSpace(items.PageInfo.EndCursor)
 	if cursor == "" {
-		return "", "", false, ErrInvalidResponse
+		return "", "", nil, false, ErrInvalidResponse
 	}
 	return c.fetchProjectFieldsPage(ctx, issueID, &cursor)
 }
 
-func (c *Connector) projectFields(issueID string, items *projectItemsConnection) (string, string, bool) {
+func (c *Connector) projectFields(issueID string, items *projectItemsConnection) (string, string, *time.Time, bool) {
 	if items == nil {
-		return "", "", false
+		return "", "", nil, false
 	}
 	for _, item := range items.Nodes {
 		if item.Project != nil && item.Project.ID == c.projectID {
 			c.projectCache.SetItemID(c.projectID, issueID, item.ID)
-			return singleSelectName(item.StatusValue), singleSelectName(item.PriorityValue), true
+			return singleSelectName(item.StatusValue), singleSelectName(item.PriorityValue), singleSelectUpdatedAt(item.StatusValue), true
 		}
 	}
-	return "", "", false
+	return "", "", nil, false
 }
 
-func (c *Connector) fetchProjectFieldsPage(ctx context.Context, issueID string, after *string) (string, string, bool, error) {
+func (c *Connector) fetchProjectFieldsPage(ctx context.Context, issueID string, after *string) (string, string, *time.Time, bool, error) {
 	var response struct {
 		Node *struct {
 			ProjectItems projectItemsConnection `json:"projectItems"`
@@ -736,25 +742,25 @@ func (c *Connector) fetchProjectFieldsPage(ctx context.Context, issueID string, 
 		"projectItemsFirst": projectItemsPerIssue,
 		"after":             after,
 	}, &response); err != nil {
-		return "", "", false, fmt.Errorf("fetch github project item fields: %w", err)
+		return "", "", nil, false, fmt.Errorf("fetch github project item fields: %w", err)
 	}
 	if response.Node == nil {
-		return "", "", false, ErrProjectItemNotFound
+		return "", "", nil, false, ErrProjectItemNotFound
 	}
-	if stateName, priorityName, ok := c.projectFields(issueID, &response.Node.ProjectItems); ok {
-		return stateName, priorityName, true, nil
+	if stateName, priorityName, statusUpdatedAt, ok := c.projectFields(issueID, &response.Node.ProjectItems); ok {
+		return stateName, priorityName, statusUpdatedAt, true, nil
 	}
 	if !response.Node.ProjectItems.PageInfo.HasNextPage {
-		return "", "", false, nil
+		return "", "", nil, false, nil
 	}
 	cursor := strings.TrimSpace(response.Node.ProjectItems.PageInfo.EndCursor)
 	if cursor == "" {
-		return "", "", false, ErrInvalidResponse
+		return "", "", nil, false, ErrInvalidResponse
 	}
 	return c.fetchProjectFieldsPage(ctx, issueID, &cursor)
 }
 
-func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorityName string) connector.Issue {
+func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorityName string, statusUpdatedAt *time.Time) connector.Issue {
 	repo := strings.TrimSpace(issue.Repository.NameWithOwner)
 	return connector.Issue{
 		ID:               issue.ID,
@@ -772,6 +778,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		AssignedToWorker: true,
 		CreatedAt:        parseGitHubTime(issue.CreatedAt),
 		UpdatedAt:        parseGitHubTime(issue.UpdatedAt),
+		StageUpdatedAt:   statusUpdatedAt,
 		ModelOverride:    parseModelOverride(issue.Body),
 	}
 }
@@ -972,6 +979,13 @@ func singleSelectName(value *singleSelectValue) string {
 		return ""
 	}
 	return strings.TrimSpace(value.Name)
+}
+
+func singleSelectUpdatedAt(value *singleSelectValue) *time.Time {
+	if value == nil {
+		return nil
+	}
+	return parseGitHubTime(value.UpdatedAt)
 }
 
 func buildIdentifier(repo string, number int) string {

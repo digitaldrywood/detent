@@ -665,6 +665,19 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 						State:      "Done",
 						UpdatedAt:  &oldDoneAt,
 					},
+					{
+						ID:             "cancelled-today",
+						Identifier:     "digitaldrywood/detent#17",
+						Title:          "Cancelled today PR",
+						State:          "Cancelled",
+						UpdatedAt:      &oldDoneAt,
+						StageUpdatedAt: &doneAt,
+						PullRequest: &telemetry.PullRequest{
+							Number:           146,
+							State:            "MERGED",
+							CodexReviewState: "clean",
+						},
+					},
 				},
 			},
 			want: []pipelineCardSnapshot{
@@ -672,6 +685,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s"},
 				{Lane: "Done today", IssueNumber: "#144", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "P1", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#145", Title: "Done lane unverified PR", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "45m 0s"},
+				{Lane: "Done today", IssueNumber: "#146", Title: "Cancelled today PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "45m 0s"},
 			},
 		},
 		{
@@ -739,6 +753,23 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPipelineNowUsesStageUpdatedAt(t *testing.T) {
+	t.Parallel()
+
+	issueUpdatedAt := time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC)
+	stageUpdatedAt := time.Date(2026, 6, 1, 12, 30, 0, 0, time.UTC)
+	got := pipelineNow(telemetry.Snapshot{
+		Pipeline: []telemetry.Issue{{
+			ID:             "done",
+			UpdatedAt:      &issueUpdatedAt,
+			StageUpdatedAt: &stageUpdatedAt,
+		}},
+	})
+	if !got.Equal(stageUpdatedAt) {
+		t.Fatalf("pipelineNow() = %v, want %v", got, stageUpdatedAt)
 	}
 }
 

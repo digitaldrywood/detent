@@ -162,16 +162,17 @@ func budgetRefusalSnapshots(refusals map[string]BudgetRefusal) []telemetry.Budge
 
 func telemetryIssue(issue connector.Issue) telemetry.Issue {
 	return telemetry.Issue{
-		ID:          issue.ID,
-		Identifier:  issue.Identifier,
-		URL:         issue.URL,
-		Title:       issue.Title,
-		Description: issue.Description,
-		State:       issue.State,
-		Labels:      append([]string(nil), issue.Labels...),
-		PullRequest: telemetryPullRequest(issue.PullRequest, issue.PRNumber),
-		CreatedAt:   timePointerFromPtr(issue.CreatedAt),
-		UpdatedAt:   timePointerFromPtr(issue.UpdatedAt),
+		ID:             issue.ID,
+		Identifier:     issue.Identifier,
+		URL:            issue.URL,
+		Title:          issue.Title,
+		Description:    issue.Description,
+		State:          issue.State,
+		Labels:         append([]string(nil), issue.Labels...),
+		PullRequest:    telemetryPullRequest(issue.PullRequest, issue.PRNumber),
+		CreatedAt:      timePointerFromPtr(issue.CreatedAt),
+		UpdatedAt:      timePointerFromPtr(issue.UpdatedAt),
+		StageUpdatedAt: timePointerFromPtr(issue.StageUpdatedAt),
 	}
 }
 
