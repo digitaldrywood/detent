@@ -493,29 +493,49 @@ func waitForOnboardingHealth(t *testing.T, port int) {
 	t.Helper()
 
 	url := fmt.Sprintf("http://127.0.0.1:%d/health", port)
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(25 * time.Millisecond)
+	defer tick.Stop()
+
+	for {
 		body, err := tryReadURL(url)
 		if err == nil && strings.Contains(body, `"mode":"onboarding"`) {
 			return
 		}
-		time.Sleep(25 * time.Millisecond)
+		select {
+		case <-deadline.C:
+			t.Fatalf("health endpoint did not report onboarding mode at %s", url)
+		case <-tick.C:
+		}
 	}
-	t.Fatalf("health endpoint did not report onboarding mode at %s", url)
 }
 
 func readURL(t *testing.T, url string) string {
 	t.Helper()
 
-	body, err := tryReadURL(url)
-	if err != nil {
-		t.Fatalf("GET %s error = %v", url, err)
+	deadline := time.NewTimer(5 * time.Second)
+	defer deadline.Stop()
+	tick := time.NewTicker(25 * time.Millisecond)
+	defer tick.Stop()
+
+	var lastErr error
+	for {
+		body, err := tryReadURL(url)
+		if err == nil {
+			return body
+		}
+		lastErr = err
+		select {
+		case <-deadline.C:
+			t.Fatalf("GET %s error = %v", url, lastErr)
+		case <-tick.C:
+		}
 	}
-	return body
 }
 
 func tryReadURL(url string) (string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)

@@ -119,6 +119,30 @@ func TestMatch(t *testing.T) {
 			want: false,
 		},
 		{
+			name: "priority in matches configured rank",
+			issue: &connector.Issue{
+				Priority: intPtr(2),
+				Labels:   []string{},
+				Fields:   map[string]string{},
+			},
+			selector: Selector{
+				PriorityIn: []int{1, 2},
+			},
+			want: true,
+		},
+		{
+			name: "priority in rejects different rank",
+			issue: &connector.Issue{
+				Priority: intPtr(3),
+				Labels:   []string{},
+				Fields:   map[string]string{},
+			},
+			selector: Selector{
+				PriorityIn: []int{1, 2},
+			},
+			want: false,
+		},
+		{
 			name: "and group requires every child selector",
 			selector: Selector{
 				And: []Selector{
@@ -209,4 +233,8 @@ func TestMatch(t *testing.T) {
 			}
 		})
 	}
+}
+
+func intPtr(value int) *int {
+	return &value
 }

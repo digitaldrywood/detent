@@ -13,7 +13,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
@@ -63,7 +62,7 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 			Prompt: "Work on {{ issue.identifier }}",
 		},
 		Workspace: workspaceBackend,
-		Codex: &e2eCodexClient{
+		AgentBackend: &e2eAgentBackend{
 			inputTokens:  321,
 			outputTokens: 45,
 			totalTokens:  366,
@@ -139,32 +138,32 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 	}
 }
 
-type e2eCodexClient struct {
+type e2eAgentBackend struct {
 	inputTokens  int64
 	outputTokens int64
 	totalTokens  int64
 }
 
-func (c *e2eCodexClient) RunTurn(_ context.Context, req codex.RunTurnRequest, onUpdate codex.UpdateHandler) (codex.RunTurnResult, error) {
+func (c *e2eAgentBackend) RunTurn(_ context.Context, req runpkg.AgentTurnRequest, onUpdate runpkg.AgentUpdateHandler) (runpkg.AgentTurnResult, error) {
 	if strings.TrimSpace(req.Workspace) == "" {
-		return codex.RunTurnResult{}, errors.New("workspace is required")
+		return runpkg.AgentTurnResult{}, errors.New("workspace is required")
 	}
 	if err := os.WriteFile(filepath.Join(req.Workspace, "agent-output.txt"), []byte("done\n"), 0o600); err != nil {
-		return codex.RunTurnResult{}, fmt.Errorf("write agent output: %w", err)
+		return runpkg.AgentTurnResult{}, fmt.Errorf("write agent output: %w", err)
 	}
 	if onUpdate != nil {
-		if err := onUpdate(codex.Update{
-			Type: codex.UpdateTokenUsage,
-			Tokens: codex.TokenUsage{
+		if err := onUpdate(runpkg.AgentUpdate{
+			Type: runpkg.AgentUpdateTokenUsage,
+			Tokens: runpkg.AgentTokenUsage{
 				InputTokens:  c.inputTokens,
 				OutputTokens: c.outputTokens,
 				TotalTokens:  c.totalTokens,
 			},
 		}); err != nil {
-			return codex.RunTurnResult{}, err
+			return runpkg.AgentTurnResult{}, err
 		}
 	}
-	return codex.RunTurnResult{ThreadID: "thread-e2e", TurnID: "turn-e2e", SessionID: "thread-e2e-turn-e2e"}, nil
+	return runpkg.AgentTurnResult{ThreadID: "thread-e2e", TurnID: "turn-e2e", SessionID: "thread-e2e-turn-e2e"}, nil
 }
 
 func waitForCompletedIssue(t *testing.T, orch *Orchestrator, issueID string) State {

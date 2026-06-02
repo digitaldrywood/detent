@@ -14,22 +14,23 @@ type Context struct {
 }
 
 type Selector struct {
-	AssigneeIn []string
-	AuthorIn   []string
-	Labels     Labels
-	Fields     []FieldEquals
-	And        []Selector
-	Or         []Selector
+	AssigneeIn []string      `yaml:"assignee_in"`
+	AuthorIn   []string      `yaml:"author_in"`
+	PriorityIn []int         `yaml:"priority_in"`
+	Labels     Labels        `yaml:"labels"`
+	Fields     []FieldEquals `yaml:"fields"`
+	And        []Selector    `yaml:"and"`
+	Or         []Selector    `yaml:"or"`
 }
 
 type Labels struct {
-	Include []string
-	Exclude []string
+	Include []string `yaml:"include"`
+	Exclude []string `yaml:"exclude"`
 }
 
 type FieldEquals struct {
-	Name  string
-	Value string
+	Name  string `yaml:"name"`
+	Value string `yaml:"value"`
 }
 
 func Match(issue connector.Issue, selector Selector, ctx Context) bool {
@@ -43,6 +44,9 @@ func Match(issue connector.Issue, selector Selector, ctx Context) bool {
 		return false
 	}
 	if !matchFields(issue.Fields, selector.Fields, ctx) {
+		return false
+	}
+	if !matchPriority(issue.Priority, selector.PriorityIn) {
 		return false
 	}
 	for _, child := range selector.And {
@@ -59,6 +63,21 @@ func Match(issue connector.Issue, selector Selector, ctx Context) bool {
 		return false
 	}
 	return true
+}
+
+func matchPriority(priority *int, allowed []int) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	if priority == nil {
+		return false
+	}
+	for _, allowedPriority := range allowed {
+		if *priority == allowedPriority {
+			return true
+		}
+	}
+	return false
 }
 
 func issueAssignees(issue connector.Issue) []string {

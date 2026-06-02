@@ -13,6 +13,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
@@ -23,6 +24,11 @@ const (
 
 	defaultLinearEndpoint = "https://api.linear.app/graphql"
 	defaultGitHubEndpoint = "https://api.github.com/graphql"
+
+	DefaultAgentBackendID = "codex"
+	AgentBackendCodex     = "codex"
+
+	defaultCodexProtocol = "app-server"
 )
 
 var windowsAbsPathPattern = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
@@ -38,6 +44,7 @@ type Config struct {
 	Workspace     Workspace     `yaml:"workspace"`
 	Worker        Worker        `yaml:"worker"`
 	Agent         Agent         `yaml:"agent"`
+	Agents        Agents        `yaml:"agents"`
 	Codex         Codex         `yaml:"codex"`
 	Server        Server        `yaml:"server"`
 	Observability Observability `yaml:"observability"`
@@ -94,6 +101,38 @@ type Agent struct {
 	Skills                     Skills         `yaml:"skills"`
 }
 
+type Agents struct {
+	Backends []AgentBackend `yaml:"backends"`
+	Routes   []AgentRoute   `yaml:"routes"`
+}
+
+type AgentBackend struct {
+	ID       string              `yaml:"id"`
+	Kind     string              `yaml:"kind"`
+	Protocol string              `yaml:"protocol"`
+	Command  string              `yaml:"command"`
+	Options  AgentBackendOptions `yaml:"options"`
+}
+
+type AgentBackendOptions struct {
+	Shell             string         `yaml:"shell"`
+	ApprovalPolicy    StringOrMap    `yaml:"approval_policy"`
+	ThreadSandbox     string         `yaml:"thread_sandbox"`
+	TurnSandboxPolicy map[string]any `yaml:"turn_sandbox_policy"`
+	TurnTimeoutMS     int            `yaml:"turn_timeout_ms"`
+	ReadTimeoutMS     int            `yaml:"read_timeout_ms"`
+	StallTimeoutMS    int            `yaml:"stall_timeout_ms"`
+}
+
+type AgentRoute struct {
+	Name       string            `yaml:"name"`
+	Backend    string            `yaml:"backend"`
+	Model      string            `yaml:"model"`
+	ModelField string            `yaml:"model_field"`
+	Default    bool              `yaml:"default"`
+	Selector   selector.Selector `yaml:"selector"`
+}
+
 type AutoPromote struct {
 	Enabled            bool     `yaml:"enabled"`
 	QuietSeconds       int      `yaml:"quiet_seconds"`
@@ -132,6 +171,80 @@ type Codex struct {
 	TurnTimeoutMS     int            `yaml:"turn_timeout_ms"`
 	ReadTimeoutMS     int            `yaml:"read_timeout_ms"`
 	StallTimeoutMS    int            `yaml:"stall_timeout_ms"`
+}
+
+func (c Config) AgentBackendConfigs() []AgentBackend {
+	if len(c.Agents.Backends) > 0 {
+		backends := make([]AgentBackend, len(c.Agents.Backends))
+		copy(backends, c.Agents.Backends)
+		return backends
+	}
+	return []AgentBackend{CodexAgentBackend(c.Codex)}
+}
+
+func (c Config) AgentRouteConfigs() []AgentRoute {
+	if len(c.Agents.Routes) > 0 {
+		routes := make([]AgentRoute, len(c.Agents.Routes))
+		copy(routes, c.Agents.Routes)
+		return routes
+	}
+
+	backendID := DefaultAgentBackendID
+	if backends := c.AgentBackendConfigs(); len(backends) > 0 {
+		backendID = backends[0].ID
+	}
+	return []AgentRoute{{
+		Name:    "default",
+		Backend: backendID,
+		Default: true,
+	}}
+}
+
+func CodexAgentBackend(codex Codex) AgentBackend {
+	return AgentBackend{
+		ID:       DefaultAgentBackendID,
+		Kind:     AgentBackendCodex,
+		Protocol: defaultCodexProtocol,
+		Command:  strings.TrimSpace(codex.Command),
+		Options: AgentBackendOptions{
+			Shell:             codex.Shell,
+			ApprovalPolicy:    codex.ApprovalPolicy,
+			ThreadSandbox:     codex.ThreadSandbox,
+			TurnSandboxPolicy: codex.TurnSandboxPolicy,
+			TurnTimeoutMS:     codex.TurnTimeoutMS,
+			ReadTimeoutMS:     codex.ReadTimeoutMS,
+			StallTimeoutMS:    codex.StallTimeoutMS,
+		},
+	}
+}
+
+func (b AgentBackend) CodexConfig(fallback Codex) Codex {
+	cfg := fallback
+	if strings.TrimSpace(b.Command) != "" {
+		cfg.Command = strings.TrimSpace(b.Command)
+	}
+	if strings.TrimSpace(b.Options.Shell) != "" {
+		cfg.Shell = b.Options.Shell
+	}
+	if b.Options.ApprovalPolicy.IsString || b.Options.ApprovalPolicy.IsMap {
+		cfg.ApprovalPolicy = b.Options.ApprovalPolicy
+	}
+	if strings.TrimSpace(b.Options.ThreadSandbox) != "" {
+		cfg.ThreadSandbox = strings.TrimSpace(b.Options.ThreadSandbox)
+	}
+	if b.Options.TurnSandboxPolicy != nil {
+		cfg.TurnSandboxPolicy = b.Options.TurnSandboxPolicy
+	}
+	if b.Options.TurnTimeoutMS > 0 {
+		cfg.TurnTimeoutMS = b.Options.TurnTimeoutMS
+	}
+	if b.Options.ReadTimeoutMS > 0 {
+		cfg.ReadTimeoutMS = b.Options.ReadTimeoutMS
+	}
+	if b.Options.StallTimeoutMS > 0 {
+		cfg.StallTimeoutMS = b.Options.StallTimeoutMS
+	}
+	return cfg
 }
 
 type Server struct {
@@ -303,6 +416,7 @@ func (c *Config) Validate() error {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
 	c.Agent.validate("agent", &problems)
+	c.Agents.validate(&problems)
 	c.Codex.validate(&problems)
 	c.Server.validate(&problems)
 	c.Observability.validate(&problems)
@@ -354,6 +468,7 @@ func (c *Config) normalize() {
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
 	c.Agent.AutoPromote.AllowedIssueLabels = normalizeLabels(c.Agent.AutoPromote.AllowedIssueLabels)
+	c.Agents.normalize()
 	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
 }
@@ -419,6 +534,107 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	a.Budget.validate(prefix+".budget", problems)
 	a.Lessons.validate(prefix+".lessons", problems)
 	a.Skills.validate(prefix+".skills", problems)
+}
+
+func (a *Agents) normalize() {
+	for index := range a.Backends {
+		backend := &a.Backends[index]
+		backend.ID = strings.TrimSpace(backend.ID)
+		backend.Kind = strings.ToLower(strings.TrimSpace(backend.Kind))
+		backend.Protocol = normalizeAgentProtocol(backend.Protocol)
+		if backend.Protocol == "" && backend.Kind == AgentBackendCodex {
+			backend.Protocol = defaultCodexProtocol
+		}
+		backend.Command = strings.TrimSpace(backend.Command)
+		backend.Options.Shell = strings.TrimSpace(backend.Options.Shell)
+		if backend.Options.Shell != "" {
+			backend.Options.Shell = commandshell.Normalize(backend.Options.Shell)
+		}
+		backend.Options.ThreadSandbox = strings.TrimSpace(backend.Options.ThreadSandbox)
+	}
+	for index := range a.Routes {
+		route := &a.Routes[index]
+		route.Name = strings.TrimSpace(route.Name)
+		route.Backend = strings.TrimSpace(route.Backend)
+		route.Model = strings.TrimSpace(route.Model)
+		route.ModelField = strings.TrimSpace(route.ModelField)
+	}
+}
+
+func normalizeAgentProtocol(protocol string) string {
+	switch strings.ToLower(strings.TrimSpace(protocol)) {
+	case "app_server", "appserver":
+		return defaultCodexProtocol
+	default:
+		return strings.ToLower(strings.TrimSpace(protocol))
+	}
+}
+
+func (a *Agents) validate(problems *[]string) {
+	backendIDs := make(map[string]struct{}, len(a.Backends))
+	if len(a.Backends) == 0 {
+		backendIDs[DefaultAgentBackendID] = struct{}{}
+	}
+	for _, backend := range a.Backends {
+		if strings.TrimSpace(backend.ID) == "" {
+			*problems = append(*problems, "agents.backends.id is required")
+			continue
+		}
+		if _, ok := backendIDs[backend.ID]; ok {
+			*problems = append(*problems, "agents.backends ids must be unique")
+		}
+		backendIDs[backend.ID] = struct{}{}
+
+		switch backend.Kind {
+		case "":
+			*problems = append(*problems, "agents.backends.kind is required")
+		case AgentBackendCodex:
+		default:
+			*problems = append(*problems, "agents.backends.kind must be codex")
+		}
+		if backend.Kind == AgentBackendCodex && backend.Protocol != defaultCodexProtocol {
+			*problems = append(*problems, "agents.backends.protocol must be app-server for codex")
+		}
+		validateRequired("agents.backends.command", backend.Command, "", problems)
+		backend.Options.validate("agents.backends.options", problems)
+	}
+
+	defaultRoutes := 0
+	for _, route := range a.Routes {
+		if strings.TrimSpace(route.Backend) == "" {
+			*problems = append(*problems, "agents.routes.backend is required")
+		} else if _, ok := backendIDs[route.Backend]; !ok {
+			*problems = append(*problems, "agents.routes.backend must reference a configured backend")
+		}
+		if route.Default {
+			defaultRoutes++
+		}
+		validatePriorityValues("agents.routes.selector.priority_in", route.Selector.PriorityIn, problems)
+	}
+	if defaultRoutes > 1 {
+		*problems = append(*problems, "agents.routes must not define multiple default routes")
+	}
+}
+
+func (o *AgentBackendOptions) validate(prefix string, problems *[]string) {
+	if o.TurnTimeoutMS < 0 {
+		*problems = append(*problems, prefix+".turn_timeout_ms must be greater than or equal to 0")
+	}
+	if o.ReadTimeoutMS < 0 {
+		*problems = append(*problems, prefix+".read_timeout_ms must be greater than or equal to 0")
+	}
+	if o.StallTimeoutMS < 0 {
+		*problems = append(*problems, prefix+".stall_timeout_ms must be greater than or equal to 0")
+	}
+}
+
+func validatePriorityValues(field string, priorities []int, problems *[]string) {
+	for _, priority := range priorities {
+		if priority < 1 || priority > 4 {
+			*problems = append(*problems, field+" values must be integers 1 through 4")
+			return
+		}
+	}
 }
 
 func (a *AutoPromote) validate(prefix string, problems *[]string) {

@@ -14,9 +14,9 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
-	"github.com/digitaldrywood/detent/internal/codex"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -31,13 +31,9 @@ const (
 )
 
 var (
-	ErrMissingWorkspace = errors.New("runner workspace backend is required")
-	ErrMissingCodex     = errors.New("runner codex client is required")
+	ErrMissingWorkspace    = errors.New("runner workspace backend is required")
+	ErrMissingAgentBackend = errors.New("runner agent backend is required")
 )
-
-type CodexClient interface {
-	RunTurn(context.Context, codex.RunTurnRequest, codex.UpdateHandler) (codex.RunTurnResult, error)
-}
 
 type SessionStore interface {
 	StartSession(context.Context, store.SessionStart) (int64, error)
@@ -45,37 +41,47 @@ type SessionStore interface {
 	RecordUsageEvent(context.Context, store.UsageEvent) (int64, error)
 }
 
+type AgentBackendFactory interface {
+	NewAgentBackend(config.AgentBackend) (AgentBackend, error)
+}
+
+type AgentBackendFactoryFunc func(config.AgentBackend) (AgentBackend, error)
+
+func (f AgentBackendFactoryFunc) NewAgentBackend(cfg config.AgentBackend) (AgentBackend, error) {
+	return f(cfg)
+}
+
 type Dependencies struct {
-	ProjectID       string
-	Workflow        config.Workflow
-	Workspace       workspace.Backend
-	Codex           CodexClient
-	Store           SessionStore
-	Pricing         budget.PricingTable
-	Now             func() time.Time
-	Logger          *slog.Logger
-	AfterRunTimeout time.Duration
+	ProjectID           string
+	Workflow            config.Workflow
+	Workspace           workspace.Backend
+	AgentBackend        AgentBackend
+	AgentBackends       map[string]AgentBackend
+	AgentBackendFactory AgentBackendFactory
+	Store               SessionStore
+	Pricing             budget.PricingTable
+	Now                 func() time.Time
+	Logger              *slog.Logger
+	AfterRunTimeout     time.Duration
 }
 
 type Runner struct {
-	mu              sync.RWMutex
-	projectID       string
-	workflow        config.Workflow
-	workspace       workspace.Backend
-	codex           CodexClient
-	store           SessionStore
-	pricing         budget.PricingTable
-	now             func() time.Time
-	logger          *slog.Logger
-	afterRunTimeout time.Duration
+	mu                  sync.RWMutex
+	projectID           string
+	workflow            config.Workflow
+	workspace           workspace.Backend
+	agentRuntime        agentRuntime
+	agentBackendFactory AgentBackendFactory
+	store               SessionStore
+	pricing             budget.PricingTable
+	now                 func() time.Time
+	logger              *slog.Logger
+	afterRunTimeout     time.Duration
 }
 
 func NewRunner(deps Dependencies) (*Runner, error) {
 	if deps.Workspace == nil {
 		return nil, ErrMissingWorkspace
-	}
-	if deps.Codex == nil {
-		return nil, ErrMissingCodex
 	}
 	if deps.Now == nil {
 		deps.Now = time.Now
@@ -90,32 +96,175 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 	if projectID == "" {
 		projectID = defaultProjectID
 	}
+	agentBackends := cloneAgentBackends(deps.AgentBackends)
+	if deps.AgentBackend != nil {
+		if agentBackends == nil {
+			agentBackends = map[string]AgentBackend{}
+		}
+		agentBackends[config.DefaultAgentBackendID] = deps.AgentBackend
+	}
+	runtime, err := newAgentRuntime(deps.Workflow, agentBackends, deps.AgentBackendFactory)
+	if err != nil {
+		return nil, err
+	}
 
 	return &Runner{
-		projectID:       projectID,
-		workflow:        deps.Workflow,
-		workspace:       deps.Workspace,
-		codex:           deps.Codex,
-		store:           deps.Store,
-		pricing:         deps.Pricing,
-		now:             deps.Now,
-		logger:          deps.Logger,
-		afterRunTimeout: deps.AfterRunTimeout,
+		projectID:           projectID,
+		workflow:            deps.Workflow,
+		workspace:           deps.Workspace,
+		agentRuntime:        runtime,
+		agentBackendFactory: deps.AgentBackendFactory,
+		store:               deps.Store,
+		pricing:             deps.Pricing,
+		now:                 deps.Now,
+		logger:              deps.Logger,
+		afterRunTimeout:     deps.AfterRunTimeout,
 	}, nil
 }
 
 func (r *Runner) UpdateWorkflow(workflow config.Workflow) {
+	r.mu.RLock()
+	currentBackends := cloneAgentBackends(r.agentRuntime.backends)
+	factory := r.agentBackendFactory
+	r.mu.RUnlock()
+
+	runtime, err := newAgentRuntime(workflow, currentBackends, factory)
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	r.workflow = workflow
+	if err != nil {
+		r.logger.Warn("reload agent runtime failed", "error", err)
+		return
+	}
+	r.agentRuntime = runtime
+}
+
+type agentRuntime struct {
+	backends       map[string]AgentBackend
+	backendConfigs map[string]config.AgentBackend
+	router         *Router
+}
+
+func newAgentRuntime(
+	workflow config.Workflow,
+	staticBackends map[string]AgentBackend,
+	factory AgentBackendFactory,
+) (agentRuntime, error) {
+	backendConfigs := effectiveAgentBackendConfigs(workflow.Config)
+	backends := make(map[string]AgentBackend, len(backendConfigs))
+	configsByID := make(map[string]config.AgentBackend, len(backendConfigs))
+	for _, backendConfig := range backendConfigs {
+		if strings.TrimSpace(backendConfig.ID) == "" {
+			continue
+		}
+		configsByID[backendConfig.ID] = backendConfig
+		if factory != nil {
+			backend, err := factory.NewAgentBackend(backendConfig)
+			if err != nil {
+				return agentRuntime{}, fmt.Errorf("create agent backend %s: %w", backendConfig.ID, err)
+			}
+			backends[backendConfig.ID] = backend
+			continue
+		}
+		backend, ok := staticBackends[backendConfig.ID]
+		if !ok {
+			return agentRuntime{}, fmt.Errorf("%w: %s", ErrMissingAgentBackend, backendConfig.ID)
+		}
+		backends[backendConfig.ID] = backend
+	}
+	if len(backends) == 0 {
+		return agentRuntime{}, ErrMissingAgentBackend
+	}
+
+	router, err := NewRouter(routesFromConfig(workflow.Config.AgentRouteConfigs()))
+	if err != nil {
+		return agentRuntime{}, err
+	}
+	for _, route := range router.routes {
+		if _, ok := backends[route.BackendID]; !ok {
+			return agentRuntime{}, fmt.Errorf("%w: %s", ErrMissingAgentBackend, route.BackendID)
+		}
+	}
+
+	return agentRuntime{
+		backends:       backends,
+		backendConfigs: configsByID,
+		router:         router,
+	}, nil
+}
+
+func effectiveAgentBackendConfigs(cfg config.Config) []config.AgentBackend {
+	configs := cfg.AgentBackendConfigs()
+	for index, backend := range configs {
+		if backend.Kind != config.AgentBackendCodex {
+			continue
+		}
+		effectiveCodex := backend.CodexConfig(cfg.Codex)
+		effective := config.CodexAgentBackend(effectiveCodex)
+		effective.ID = backend.ID
+		effective.Kind = backend.Kind
+		effective.Protocol = backend.Protocol
+		configs[index] = effective
+	}
+	return configs
+}
+
+func routesFromConfig(routes []config.AgentRoute) []Route {
+	out := make([]Route, 0, len(routes))
+	for _, route := range routes {
+		out = append(out, Route{
+			Name:       route.Name,
+			BackendID:  route.Backend,
+			Model:      route.Model,
+			ModelField: route.ModelField,
+			Default:    route.Default,
+			Selector:   route.Selector,
+		})
+	}
+	return out
+}
+
+func (r agentRuntime) selectBackend(issue connector.Issue, ctx selector.Context) (RouteSelection, AgentBackend, config.AgentBackend, error) {
+	selection, err := r.router.Route(issue, ctx)
+	if err != nil {
+		return RouteSelection{}, nil, config.AgentBackend{}, err
+	}
+	backend, ok := r.backends[selection.BackendID]
+	if !ok {
+		return RouteSelection{}, nil, config.AgentBackend{}, fmt.Errorf("%w: %s", ErrMissingAgentBackend, selection.BackendID)
+	}
+	backendConfig, ok := r.backendConfigs[selection.BackendID]
+	if !ok {
+		return RouteSelection{}, nil, config.AgentBackend{}, fmt.Errorf("agent backend config not found: %s", selection.BackendID)
+	}
+	return selection, backend, backendConfig, nil
+}
+
+func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]AgentBackend, len(in))
+	for id, backend := range in {
+		out[id] = backend
+	}
+	return out
+}
+
+func selectorContext(ctx selector.Context, workflow config.Workflow) selector.Context {
+	if strings.TrimSpace(ctx.Persona) == "" {
+		ctx.Persona = workflow.Config.Tracker.Assignee
+	}
+	return ctx
 }
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	workflow := r.workflowSnapshot()
+	workflow, agentRuntime := r.runtimeSnapshot()
 
 	workspaceIssue := workspaceIssue(req.Issue)
 	info, err := r.workspace.Create(ctx, workspaceIssue)
@@ -148,29 +297,33 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
+	selection, backend, backendConfig, err := agentRuntime.selectBackend(req.Issue, selectorContext(req.SelectorContext, workflow))
+	if err != nil {
+		return RunResult{}, err
+	}
 
 	startedAt := req.StartedAt
 	if startedAt.IsZero() {
 		startedAt = r.now().UTC()
 	}
 	runStartedAt := r.now()
-	model := strings.TrimSpace(req.Issue.ModelOverride)
+	model := selection.Model
 	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, model)
 	if err != nil {
 		return RunResult{}, err
 	}
 
 	result := RunResult{FinalState: FinalStateCompleted}
-	progress := newCodexRunProgress()
-	turnResult, turnErr := r.codex.RunTurn(ctx, codex.RunTurnRequest{
+	progress := newAgentRunProgress()
+	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
 		Workspace:         info.Path,
 		Prompt:            prompt,
-		ApprovalPolicy:    stringOrMapValue(workflow.Config.Codex.ApprovalPolicy),
-		ThreadSandbox:     workflow.Config.Codex.ThreadSandbox,
-		TurnSandboxPolicy: workflow.Config.Codex.TurnSandboxPolicy,
+		ApprovalPolicy:    stringOrMapValue(backendConfig.Options.ApprovalPolicy),
+		ThreadSandbox:     backendConfig.Options.ThreadSandbox,
+		TurnSandboxPolicy: backendConfig.Options.TurnSandboxPolicy,
 		Model:             model,
-	}, func(update codex.Update) error {
-		applyCodexUpdate(&result, update)
+	}, func(update AgentUpdate) error {
+		applyAgentUpdate(&result, update)
 		if err := r.publishRunUpdate(ctx, req, info, workspaceIssue, progress, result, update, runStartedAt); err != nil {
 			return err
 		}
@@ -186,7 +339,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
-			fmt.Errorf("run codex turn: %w", turnErr),
+			fmt.Errorf("run agent turn: %w", turnErr),
 			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, 1),
 		)
 	}
@@ -211,11 +364,11 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	return result, nil
 }
 
-func (r *Runner) workflowSnapshot() config.Workflow {
+func (r *Runner) runtimeSnapshot() (config.Workflow, agentRuntime) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	return r.workflow
+	return r.workflow, r.agentRuntime
 }
 
 func (r *Runner) availableSkills(workflow config.Workflow, workspacePath string) ([]skills.Skill, error) {
@@ -340,18 +493,18 @@ func workspaceIssue(issue connector.Issue) workspace.Issue {
 	}
 }
 
-func applyCodexUpdate(result *RunResult, update codex.Update) {
+func applyAgentUpdate(result *RunResult, update AgentUpdate) {
 	switch update.Type {
-	case codex.UpdateTokenUsage:
+	case AgentUpdateTokenUsage:
 		result.Tokens.InputTokens = update.Tokens.InputTokens
 		result.Tokens.OutputTokens = update.Tokens.OutputTokens
 		result.Tokens.TotalTokens = update.Tokens.TotalTokens
-	case codex.UpdateRateLimits:
-		result.RateLimits = rateLimitsFromCodex(update.RateLimits)
+	case AgentUpdateRateLimits:
+		result.RateLimits = update.RateLimits
 	}
 }
 
-type codexRunProgress struct {
+type agentRunProgress struct {
 	sessionID          string
 	processIdentity    string
 	turnIDs            map[string]struct{}
@@ -365,14 +518,14 @@ type codexRunProgress struct {
 	diffStatsCheckedAt time.Time
 }
 
-func newCodexRunProgress() *codexRunProgress {
-	return &codexRunProgress{
+func newAgentRunProgress() *agentRunProgress {
+	return &agentRunProgress{
 		turnIDs:  map[string]struct{}{},
 		messages: map[string]string{},
 	}
 }
 
-func (p *codexRunProgress) apply(update codex.Update, eventAt time.Time) {
+func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 	if update.ProcessIdentity != "" {
 		p.processIdentity = update.ProcessIdentity
 	}
@@ -389,7 +542,7 @@ func (p *codexRunProgress) apply(update codex.Update, eventAt time.Time) {
 
 	eventMessage := ""
 	switch update.Type {
-	case codex.UpdateAgentMessageDelta:
+	case AgentUpdateMessageDelta:
 		key := update.ItemID
 		if key == "" {
 			key = update.TurnID
@@ -397,21 +550,21 @@ func (p *codexRunProgress) apply(update codex.Update, eventAt time.Time) {
 		p.messages[key] += update.Delta
 		p.lastMessage = strings.TrimSpace(p.messages[key])
 		eventMessage = p.lastMessage
-	case codex.UpdateTurnStarted:
+	case AgentUpdateTurnStarted:
 		p.lastMessage = "turn started"
 		eventMessage = p.lastMessage
-	case codex.UpdateTurnCompleted:
+	case AgentUpdateTurnCompleted:
 		status := update.Status
 		if status == "" {
 			status = "completed"
 		}
 		p.lastMessage = "turn " + status
 		eventMessage = p.lastMessage
-	case codex.UpdateTokenUsage:
+	case AgentUpdateTokenUsage:
 		eventMessage = tokenUsageActivityMessage(update.Tokens)
-	case codex.UpdateRateLimits:
+	case AgentUpdateRateLimits:
 		eventMessage = rateLimitsActivityMessage(update.RateLimits)
-	case codex.UpdateProcessStarted:
+	case AgentUpdateProcessStarted:
 		if p.processIdentity != "" {
 			eventMessage = "process " + p.processIdentity + " started"
 		} else {
@@ -426,7 +579,7 @@ func (p *codexRunProgress) apply(update codex.Update, eventAt time.Time) {
 	})
 }
 
-func tokenUsageActivityMessage(tokens codex.TokenUsage) string {
+func tokenUsageActivityMessage(tokens AgentTokenUsage) string {
 	if tokens.TotalTokens > 0 && (tokens.InputTokens > 0 || tokens.OutputTokens > 0) {
 		return fmt.Sprintf("%d total tokens (%d in, %d out)", tokens.TotalTokens, tokens.InputTokens, tokens.OutputTokens)
 	}
@@ -436,7 +589,7 @@ func tokenUsageActivityMessage(tokens codex.TokenUsage) string {
 	return "tokens updated"
 }
 
-func rateLimitsActivityMessage(snapshot *codex.RateLimitSnapshot) string {
+func rateLimitsActivityMessage(snapshot *telemetry.RateLimits) string {
 	if snapshot == nil {
 		return "rate limits updated"
 	}
@@ -450,11 +603,11 @@ func rateLimitsActivityMessage(snapshot *codex.RateLimitSnapshot) string {
 	return name + " rate limits updated"
 }
 
-func (p *codexRunProgress) turnCount() int {
+func (p *agentRunProgress) turnCount() int {
 	return len(p.turnIDs)
 }
 
-func (p *codexRunProgress) addRecentEvent(event telemetry.ActivityEvent) {
+func (p *agentRunProgress) addRecentEvent(event telemetry.ActivityEvent) {
 	if event.Event == "" && event.Message == "" {
 		return
 	}
@@ -464,7 +617,7 @@ func (p *codexRunProgress) addRecentEvent(event telemetry.ActivityEvent) {
 	}
 }
 
-func (p *codexRunProgress) recentActivity() []telemetry.ActivityEvent {
+func (p *agentRunProgress) recentActivity() []telemetry.ActivityEvent {
 	if len(p.recentEvents) == 0 {
 		return nil
 	}
@@ -478,9 +631,9 @@ func (r *Runner) publishRunUpdate(
 	req RunRequest,
 	info workspace.Info,
 	issue workspace.Issue,
-	progress *codexRunProgress,
+	progress *agentRunProgress,
 	result RunResult,
-	update codex.Update,
+	update AgentUpdate,
 	runStartedAt time.Time,
 ) error {
 	if req.OnUsageUpdate == nil {
@@ -512,7 +665,7 @@ func (r *Runner) liveDiffStats(
 	ctx context.Context,
 	info workspace.Info,
 	issue workspace.Issue,
-	progress *codexRunProgress,
+	progress *agentRunProgress,
 	eventAt time.Time,
 ) (DiffStats, bool) {
 	if !progress.shouldRefreshDiffStats(eventAt) {
@@ -538,14 +691,14 @@ func (r *Runner) liveDiffStats(
 	return diffStats, true
 }
 
-func (p *codexRunProgress) shouldRefreshDiffStats(eventAt time.Time) bool {
+func (p *agentRunProgress) shouldRefreshDiffStats(eventAt time.Time) bool {
 	if p.diffStatsCheckedAt.IsZero() {
 		return true
 	}
 	return eventAt.Sub(p.diffStatsCheckedAt) >= liveDiffStatsInterval
 }
 
-func (p *codexRunProgress) cachedDiffStats() (DiffStats, bool) {
+func (p *agentRunProgress) cachedDiffStats() (DiffStats, bool) {
 	if !p.diffStatsCollected {
 		return DiffStats{}, false
 	}
@@ -578,55 +731,6 @@ func pullRequestNumber(issue connector.Issue) *int64 {
 		return nil
 	}
 	return &number
-}
-
-func rateLimitsFromCodex(snapshot *codex.RateLimitSnapshot) *telemetry.RateLimits {
-	if snapshot == nil {
-		return nil
-	}
-	return &telemetry.RateLimits{
-		LimitID:   snapshot.LimitID,
-		LimitName: snapshot.LimitName,
-		Primary:   rateLimitBucketFromCodex(snapshot.Primary),
-		Secondary: rateLimitBucketFromCodex(snapshot.Secondary),
-		Credits:   creditsBucketFromCodex(snapshot.Credits),
-	}
-}
-
-func rateLimitBucketFromCodex(window *codex.RateLimitWindow) *telemetry.RateLimitBucket {
-	if window == nil {
-		return nil
-	}
-
-	used := int64(math.Round(window.UsedPercent))
-	if used < 0 {
-		used = 0
-	}
-	if used > 100 {
-		used = 100
-	}
-
-	bucket := &telemetry.RateLimitBucket{
-		Limit:     100,
-		Used:      used,
-		Remaining: 100 - used,
-	}
-	if window.ResetsAt != nil {
-		resetAt := time.Unix(*window.ResetsAt, 0).UTC()
-		bucket.ResetAt = &resetAt
-	}
-	return bucket
-}
-
-func creditsBucketFromCodex(credits *codex.CreditsSnapshot) *telemetry.RateLimitBucket {
-	if credits == nil {
-		return nil
-	}
-	return &telemetry.RateLimitBucket{
-		HasCredits: credits.HasCredits,
-		Unlimited:  credits.Unlimited,
-		Balance:    credits.Balance,
-	}
 }
 
 func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {

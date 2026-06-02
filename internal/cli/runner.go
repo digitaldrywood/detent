@@ -80,11 +80,6 @@ func buildRunner(
 		return nil, err
 	}
 
-	codexClient, err := buildCodexClient(cfg)
-	if err != nil {
-		return nil, err
-	}
-
 	pricing, err := budget.PricingForConfig(budget.Config{
 		PricingPath: cfg.Budget.PricingPath,
 	})
@@ -93,13 +88,13 @@ func buildRunner(
 	}
 
 	run, err := runnerpkg.NewRunner(runnerpkg.Dependencies{
-		ProjectID: projectID,
-		Workflow:  workflow,
-		Workspace: backend,
-		Codex:     codexClient,
-		Store:     sessionStore,
-		Pricing:   pricing,
-		Logger:    logger,
+		ProjectID:           projectID,
+		Workflow:            workflow,
+		Workspace:           backend,
+		AgentBackendFactory: runnerpkg.AgentBackendFactoryFunc(buildAgentBackend),
+		Store:               sessionStore,
+		Pricing:             pricing,
+		Logger:              logger,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create runner: %w", err)
@@ -136,24 +131,33 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 	return backend, nil
 }
 
-func buildCodexClient(cfg workflowconfig.Config) (runnerpkg.CodexClient, error) {
-	command := strings.TrimSpace(cfg.Codex.Command)
+func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBackend, error) {
+	switch backend.Kind {
+	case workflowconfig.AgentBackendCodex:
+		return buildCodexAgentBackend(backend.CodexConfig(workflowconfig.Codex{}))
+	default:
+		return nil, fmt.Errorf("unsupported agent backend kind %q", backend.Kind)
+	}
+}
+
+func buildCodexAgentBackend(cfg workflowconfig.Codex) (runnerpkg.AgentBackend, error) {
+	command := strings.TrimSpace(cfg.Command)
 	if command == "" {
 		return nil, fmt.Errorf("codex command is required")
 	}
 
 	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
-		return buildCodexCommand(ctx, cfg)
+		return buildCodexCommandFromConfig(ctx, cfg)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create codex transport factory: %w", err)
 	}
 
 	opts := []codex.AppServerOption{}
-	if timeout := durationFromMillis(cfg.Codex.ReadTimeoutMS); timeout > 0 {
+	if timeout := durationFromMillis(cfg.ReadTimeoutMS); timeout > 0 {
 		opts = append(opts, codex.WithReadTimeout(timeout))
 	}
-	if timeout := durationFromMillis(cfg.Codex.TurnTimeoutMS); timeout > 0 {
+	if timeout := durationFromMillis(cfg.TurnTimeoutMS); timeout > 0 {
 		opts = append(opts, codex.WithTurnTimeout(timeout))
 	}
 
@@ -161,11 +165,19 @@ func buildCodexClient(cfg workflowconfig.Config) (runnerpkg.CodexClient, error) 
 	if err != nil {
 		return nil, fmt.Errorf("create codex app-server: %w", err)
 	}
-	return client, nil
+	backend, err := codex.NewAgentBackend(client)
+	if err != nil {
+		return nil, fmt.Errorf("create codex backend: %w", err)
+	}
+	return backend, nil
 }
 
 func buildCodexCommand(ctx context.Context, cfg workflowconfig.Config) *exec.Cmd {
-	return commandshell.Command(ctx, strings.TrimSpace(cfg.Codex.Command), cfg.Codex.Shell)
+	return buildCodexCommandFromConfig(ctx, cfg.Codex)
+}
+
+func buildCodexCommandFromConfig(ctx context.Context, cfg workflowconfig.Codex) *exec.Cmd {
+	return commandshell.Command(ctx, strings.TrimSpace(cfg.Command), cfg.Shell)
 }
 
 // publishSnapshots ticks at interval, building a merged telemetry snapshot
