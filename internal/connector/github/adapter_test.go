@@ -737,6 +737,56 @@ func TestConnectorSetAssigneeReplacesExistingAssignees(t *testing.T) {
 	}
 }
 
+func TestConnectorSetAssigneeAddsReplacementBeforeRemovingExistingAssignees(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"user":{"id":"U_worker"}}}`},
+		{body: `{"data":{"node":{"assignees":{"nodes":[{"id":"U_old","login":"old-owner"}]}}}}`},
+		{body: `{"data":{"addAssigneesToAssignable":{"assignable":{"id":"I_kw1"}}}}`},
+		{body: `{"data":{"removeAssigneesFromAssignable":{"assignable":{"id":"I_kw1"}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.SetAssignee(context.Background(), "I_kw1", "worker-1"); err != nil {
+		t.Fatalf("SetAssignee() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want 4", len(requests))
+	}
+	if !strings.Contains(requests[2]["query"].(string), "addAssigneesToAssignable") {
+		t.Fatalf("third query = %q, want addAssigneesToAssignable", requests[2]["query"])
+	}
+	if !strings.Contains(requests[3]["query"].(string), "removeAssigneesFromAssignable") {
+		t.Fatalf("fourth query = %q, want removeAssigneesFromAssignable", requests[3]["query"])
+	}
+}
+
+func TestConnectorSetAssigneeDoesNotRemoveExistingAssigneesWhenAddFails(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"user":{"id":"U_worker"}}}`},
+		{body: `{"data":{"node":{"assignees":{"nodes":[{"id":"U_old","login":"old-owner"}]}}}}`},
+		{body: `{"errors":[{"message":"not assignable"}]}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.SetAssignee(context.Background(), "I_kw1", "worker-1"); err == nil {
+		t.Fatal("SetAssignee() error = nil, want error")
+	}
+
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	if !strings.Contains(requests[2]["query"].(string), "addAssigneesToAssignable") {
+		t.Fatalf("third query = %q, want addAssigneesToAssignable", requests[2]["query"])
+	}
+}
+
 func TestConnectorSetFieldProvisionsOwnerOptionAndWritesProjectValue(t *testing.T) {
 	t.Parallel()
 

@@ -606,15 +606,17 @@ func (c *Connector) SetAssignee(ctx context.Context, issueID string, login strin
 		return err
 	}
 	removeIDs, alreadyAssigned := assigneeReplacement(currentAssignees, userID)
+	if !alreadyAssigned {
+		if err := c.addAssignee(ctx, issueID, userID); err != nil {
+			return err
+		}
+	}
 	if len(removeIDs) > 0 {
 		if err := c.removeAssignees(ctx, issueID, removeIDs); err != nil {
 			return err
 		}
 	}
-	if alreadyAssigned {
-		return nil
-	}
-	return c.addAssignee(ctx, issueID, userID)
+	return nil
 }
 
 func (c *Connector) SetField(ctx context.Context, issueID string, fieldName string, value string) error {
