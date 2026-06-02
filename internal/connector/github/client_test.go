@@ -238,6 +238,70 @@ func TestClientGraphQLCapturesRetryAfterRateLimit(t *testing.T) {
 	}
 }
 
+func TestClientGraphQLClearsRetryAfterOnHeaderRefresh(t *testing.T) {
+	t.Parallel()
+
+	responses := make(chan func(http.ResponseWriter), 2)
+	responses <- func(w http.ResponseWriter) {
+		w.Header().Set("Retry-After", "120")
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Used", "120")
+		w.Header().Set("X-RateLimit-Remaining", "4880")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"secondary rate limit"}`))
+	}
+	responses <- func(w http.ResponseWriter) {
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Used", "121")
+		w.Header().Set("X-RateLimit-Remaining", "4879")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat"}}}`))
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		handle := <-responses
+		handle(w)
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.GraphQL(context.Background(), "query { viewer { login } }", nil, nil)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("GraphQL() error = %v, want ErrRateLimited", err)
+	}
+	rateLimit, ok := client.GraphQLRateLimit()
+	if !ok {
+		t.Fatal("GraphQLRateLimit() ok = false, want true")
+	}
+	if rateLimit.RetryAfter != 2*time.Minute {
+		t.Fatalf("GraphQLRateLimit().RetryAfter = %s, want 2m", rateLimit.RetryAfter)
+	}
+
+	err = client.GraphQL(context.Background(), "query { viewer { login } }", nil, nil)
+	if err != nil {
+		t.Fatalf("GraphQL() error = %v", err)
+	}
+
+	rateLimit, ok = client.GraphQLRateLimit()
+	if !ok {
+		t.Fatal("GraphQLRateLimit() ok = false, want true")
+	}
+	if rateLimit.RetryAfter != 0 {
+		t.Fatalf("GraphQLRateLimit().RetryAfter = %s, want cleared", rateLimit.RetryAfter)
+	}
+	if rateLimit.Remaining != 4879 || rateLimit.Used != 121 || rateLimit.Limit != 5000 {
+		t.Fatalf("GraphQLRateLimit() = %#v, want refreshed primary headers", rateLimit)
+	}
+}
+
 func TestClientGraphQLRejectsInvalidPayloads(t *testing.T) {
 	t.Parallel()
 

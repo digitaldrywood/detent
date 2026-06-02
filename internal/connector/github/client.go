@@ -194,12 +194,11 @@ func (c *Client) recordRateLimitFromData(data json.RawMessage, now time.Time) {
 
 func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) {
 	var snapshot connector.GraphQLRateLimit
-	hasSnapshot := false
 	if current, ok := c.GraphQLRateLimit(); ok {
 		snapshot = current
-		hasSnapshot = true
 	}
 
+	hasSnapshot := false
 	if value, ok := int64Header(headers, "X-RateLimit-Limit"); ok {
 		snapshot.Limit = value
 		hasSnapshot = true
@@ -219,6 +218,8 @@ func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) 
 	if retryAfter, ok := parseRetryAfter(headers.Get("Retry-After"), now); ok {
 		snapshot.RetryAfter = retryAfter
 		hasSnapshot = true
+	} else if hasSnapshot {
+		snapshot.RetryAfter = 0
 	}
 
 	if hasSnapshot {
