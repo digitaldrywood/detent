@@ -26,6 +26,7 @@ tracker:
   http_max_idle_conns: 120
   http_max_idle_conns_per_host: 40
   http_idle_conn_timeout_ms: 120000
+  github_graphql_warn_remaining: 750
   claims:
     enabled: true
     lease_field: Detent Lease
@@ -165,6 +166,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Workspace.CleanupSweepIntervalMS != 120000 {
 		t.Fatalf("Workspace.CleanupSweepIntervalMS = %d, want 120000", cfg.Workspace.CleanupSweepIntervalMS)
+	}
+	if cfg.Tracker.GitHubGraphQLWarnRemaining != 750 {
+		t.Fatalf("Tracker.GitHubGraphQLWarnRemaining = %d, want 750", cfg.Tracker.GitHubGraphQLWarnRemaining)
 	}
 	if !cfg.Tracker.Claims.Enabled {
 		t.Fatal("Tracker.Claims.Enabled = false, want true")

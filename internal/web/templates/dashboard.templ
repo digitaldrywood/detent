@@ -142,6 +142,7 @@ templ SnapshotView(data DashboardData) {
 		<aside class="dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5">
 			@throughputCard(data)
 			@rateLimitsCard(data.Snapshot.RateLimits)
+			@graphQLBudgetCard(data)
 			@tokenCard(data)
 			@lifetimeCard(data.Snapshot.LifetimeTotals)
 		</aside>
@@ -1181,6 +1182,48 @@ templ rateLimitsCard(limits *RateLimits) {
 			</div>
 		}
 	</section>
+}
+
+templ graphQLBudgetCard(data DashboardData) {
+	if hasGraphQLBudget(data.Snapshot.RateLimits) {
+		<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="GraphQL budget">
+			<div class="flex items-start justify-between gap-3">
+				@helpHeading2("GraphQL budget", helpRateLimits, "graphql-budget-card")
+				<span class="shrink-0 rounded-full bg-warning-soft px-2 py-1 font-mono text-xs font-medium text-warning">{ graphQLBudgetCycleCost(data.Snapshot.RateLimits) }</span>
+			</div>
+			<div class="mt-5 grid gap-3">
+				<div class="grid grid-cols-2 gap-3 text-sm">
+					<div class="grid gap-1">
+						<span class="text-muted-foreground">Remaining</span>
+						<strong class="break-all font-mono text-base font-semibold text-foreground">{ graphQLBudgetRemaining(data.Snapshot.RateLimits) }</strong>
+					</div>
+					<div class="grid gap-1">
+						<span class="text-muted-foreground">Reset</span>
+						<strong class="font-mono text-base font-semibold text-foreground">{ graphQLBudgetReset(data.Snapshot.RateLimits, data.Snapshot.GeneratedAt) }</strong>
+						<span class="font-mono text-xs text-muted-foreground">{ graphQLBudgetResetAt(data.Snapshot.RateLimits) }</span>
+					</div>
+				</div>
+				<div class="flex items-center justify-between gap-3 border-t border-border pt-3 text-sm">
+					<span class="text-muted-foreground">Cycle queries</span>
+					<strong class="font-mono font-medium text-foreground">{ graphQLBudgetQueryCount(data.Snapshot.RateLimits) }</strong>
+				</div>
+				if len(graphQLBudgetContributorRows(data.Snapshot.RateLimits)) == 0 {
+					@dashboardEmptyState("No GraphQL query costs this cycle.", "Query contributors will appear after the GitHub connector reports rateLimit cost.", "bg-warning")
+				} else {
+					<div class="grid gap-2 border-t border-border pt-3">
+						for _, row := range graphQLBudgetContributorRows(data.Snapshot.RateLimits) {
+							<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-sm">
+								<span class="truncate font-mono font-medium text-foreground">{ row.QueryType }</span>
+								<span class="font-mono text-muted-foreground">{ row.Cost }</span>
+								<span class="font-mono text-xs text-muted-foreground">{ row.Count }</span>
+								<span class="text-right font-mono text-xs text-muted-foreground">{ row.Percent }</span>
+							</div>
+						}
+					</div>
+				}
+			</div>
+		</section>
+	}
 }
 
 templ tokenCard(data DashboardData) {

@@ -209,6 +209,7 @@ query DetentGitHubProjectField($projectId: ID!, $fieldName: String!) {
       }
     }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 const projectItemForIssueQuery = `
@@ -482,7 +483,7 @@ func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue
 		return nil, ErrMissingProject
 	}
 
-	issues, err := c.fetchProjectItems(ctx, c.projectStatusQuery(c.activeStates), func(issue connector.Issue) bool {
+	issues, err := c.fetchProjectItems(ctx, graphQLQueryCandidateIssues, c.projectStatusQuery(c.activeStates), func(issue connector.Issue) bool {
 		return stateInList(issue.State, c.activeStates)
 	})
 	if err != nil {
@@ -503,7 +504,7 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 		return nil, ErrMissingProject
 	}
 
-	issues, err := c.fetchProjectItems(ctx, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+	issues, err := c.fetchProjectItems(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
 	})
@@ -532,7 +533,7 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 		return nil, ErrMissingProject
 	}
 
-	refs, err := c.issueRefsForIDs(ctx, ids)
+	refs, err := c.issueRefsForIDs(ctx, ids, graphQLQueryRunningStates)
 	if err != nil {
 		return nil, err
 	}
@@ -653,7 +654,7 @@ func (c *Connector) fetchLinkedIssuePage(
 			TrackedIssues linkedIssuesConnection `json:"trackedIssues"`
 		} `json:"node"`
 	}
-	if err := c.client.GraphQL(ctx, query, map[string]any{
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryEpicChildren, query, map[string]any{
 		"issueId": issueID,
 		"after":   after,
 	}, &response); err != nil {
@@ -680,7 +681,7 @@ func (c *Connector) fetchIssueByIdentifier(ctx context.Context, identifier strin
 	return c.fetchIssueByRef(ctx, ref)
 }
 
-func (c *Connector) issueRefsForIDs(ctx context.Context, ids []string) (map[string]issueRef, error) {
+func (c *Connector) issueRefsForIDs(ctx context.Context, ids []string, queryType string) (map[string]issueRef, error) {
 	refs := make(map[string]issueRef, len(ids))
 	missing := make([]string, 0, len(ids))
 	for _, id := range ids {
@@ -694,7 +695,7 @@ func (c *Connector) issueRefsForIDs(ctx context.Context, ids []string) (map[stri
 		return refs, nil
 	}
 
-	fetched, err := c.fetchIssueRefsByID(ctx, missing)
+	fetched, err := c.fetchIssueRefsByID(ctx, missing, queryType)
 	if err != nil {
 		return nil, err
 	}
@@ -704,7 +705,7 @@ func (c *Connector) issueRefsForIDs(ctx context.Context, ids []string) (map[stri
 	return refs, nil
 }
 
-func (c *Connector) issueRefForID(ctx context.Context, issueID string) (issueRef, bool, error) {
+func (c *Connector) issueRefForID(ctx context.Context, issueID string, queryType string) (issueRef, bool, error) {
 	issueID = strings.TrimSpace(issueID)
 	if issueID == "" {
 		return issueRef{}, false, nil
@@ -712,7 +713,7 @@ func (c *Connector) issueRefForID(ctx context.Context, issueID string) (issueRef
 	if ref, ok := c.projectCache.GetIssueRef(issueID); ok {
 		return ref, true, nil
 	}
-	refs, err := c.fetchIssueRefsByID(ctx, []string{issueID})
+	refs, err := c.fetchIssueRefsByID(ctx, []string{issueID}, queryType)
 	if err != nil {
 		return issueRef{}, false, err
 	}
@@ -720,11 +721,11 @@ func (c *Connector) issueRefForID(ctx context.Context, issueID string) (issueRef
 	return ref, ok, nil
 }
 
-func (c *Connector) fetchIssueRefsByID(ctx context.Context, ids []string) (map[string]issueRef, error) {
+func (c *Connector) fetchIssueRefsByID(ctx context.Context, ids []string, queryType string) (map[string]issueRef, error) {
 	var response struct {
 		Nodes []githubIssueNode `json:"nodes"`
 	}
-	if err := c.client.GraphQL(ctx, issueIdentitiesByIDQuery, map[string]any{"issueIds": ids}, &response); err != nil {
+	if err := c.client.GraphQLWithType(ctx, queryType, issueIdentitiesByIDQuery, map[string]any{"issueIds": ids}, &response); err != nil {
 		return nil, fmt.Errorf("fetch github issue identities by ids: %w", err)
 	}
 
@@ -812,7 +813,7 @@ func (c *Connector) fetchIssueComments(ctx context.Context, ref issueRef) ([]iss
 }
 
 func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {
-	ref, ok, err := c.issueRefForID(ctx, issueID)
+	ref, ok, err := c.issueRefForID(ctx, issueID, graphQLQueryIssueLookup)
 	if err != nil {
 		return err
 	}
@@ -834,7 +835,7 @@ func (c *Connector) CreateComment(ctx context.Context, issueID string, body stri
 }
 
 func (c *Connector) CloseIssue(ctx context.Context, issueID string) error {
-	ref, ok, err := c.issueRefForID(ctx, issueID)
+	ref, ok, err := c.issueRefForID(ctx, issueID, graphQLQueryIssueLookup)
 	if err != nil {
 		return err
 	}
@@ -900,7 +901,7 @@ func (c *Connector) SetAssignee(ctx context.Context, issueID string, login strin
 	if issueID == "" || login == "" {
 		return ErrAssigneeNotFound
 	}
-	ref, ok, err := c.issueRefForID(ctx, issueID)
+	ref, ok, err := c.issueRefForID(ctx, issueID, graphQLQueryIssueLookup)
 	if err != nil {
 		return err
 	}
@@ -1119,7 +1120,7 @@ func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullReques
 	return []pullRequestReview{review}, nil
 }
 
-func (c *Connector) fetchProjectItems(ctx context.Context, query string, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
+func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, query string, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
 	var after *string
 	allIssues := []connector.Issue{}
 	blankStatusItemIDs := []string{}
@@ -1134,7 +1135,7 @@ func (c *Connector) fetchProjectItems(ctx context.Context, query string, keepIss
 				Items projectItemsConnection `json:"items"`
 			} `json:"node"`
 		}
-		if err := c.client.GraphQL(ctx, projectItemsQuery, map[string]any{
+		if err := c.client.GraphQLWithType(ctx, queryType, projectItemsQuery, map[string]any{
 			"projectId": c.projectID,
 			"first":     projectItemsPageSize,
 			"after":     after,
@@ -1335,7 +1336,7 @@ func (c *Connector) fetchProjectFieldsPage(ctx context.Context, issueID string, 
 			ProjectItems projectItemsConnection `json:"projectItems"`
 		} `json:"node"`
 	}
-	if err := c.client.GraphQL(ctx, projectItemForIssueQuery, map[string]any{
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryProjectItem, projectItemForIssueQuery, map[string]any{
 		"issueId":           issueID,
 		"projectItemsFirst": projectItemsPerIssue,
 		"after":             after,
@@ -1546,7 +1547,7 @@ func (c *Connector) fetchProjectField(ctx context.Context, fieldName string) (pr
 			Field    *projectOptionsFieldResponse `json:"field"`
 		} `json:"node"`
 	}
-	if err := c.client.GraphQL(ctx, singleSelectFieldQuery, map[string]any{
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryProjectMetadata, singleSelectFieldQuery, map[string]any{
 		"projectId": c.projectID,
 		"fieldName": strings.TrimSpace(fieldName),
 	}, &response); err != nil {
@@ -1583,7 +1584,7 @@ func (c *Connector) resolveStatusMetadata(ctx context.Context) (statusMetadata, 
 			} `json:"field"`
 		} `json:"node"`
 	}
-	if err := c.client.GraphQL(ctx, statusFieldQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryProjectMetadata, statusFieldQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
 		return statusMetadata{}, fmt.Errorf("fetch github status field: %w", err)
 	}
 	if response.Node == nil || response.Node.Field == nil || strings.TrimSpace(response.Node.Field.ID) == "" {
@@ -1621,7 +1622,7 @@ func (c *Connector) fetchProjectItemPage(ctx context.Context, issueID string, af
 			ProjectItems projectItemsConnection `json:"projectItems"`
 		} `json:"node"`
 	}
-	if err := c.client.GraphQL(ctx, projectItemForIssueQuery, map[string]any{
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryProjectItem, projectItemForIssueQuery, map[string]any{
 		"issueId":           issueID,
 		"projectItemsFirst": projectItemsPerIssue,
 		"after":             after,
@@ -1677,7 +1678,7 @@ func (c *Connector) updateProjectV2SingleSelectFieldValue(
 			} `json:"projectV2Item"`
 		} `json:"updateProjectV2ItemFieldValue"`
 	}
-	if err := c.client.GraphQL(ctx, updateSingleSelectFieldValueMutation, map[string]any{
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryUpdateField, updateSingleSelectFieldValueMutation, map[string]any{
 		"projectId": c.projectID,
 		"itemId":    itemID,
 		"fieldId":   fieldID,
@@ -1707,7 +1708,7 @@ func (c *Connector) updateProjectV2TextFieldValue(
 			} `json:"projectV2Item"`
 		} `json:"updateProjectV2ItemFieldValue"`
 	}
-	if err := c.client.GraphQL(ctx, updateTextFieldValueMutation, map[string]any{
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryUpdateField, updateTextFieldValueMutation, map[string]any{
 		"projectId": c.projectID,
 		"itemId":    itemID,
 		"fieldId":   fieldID,

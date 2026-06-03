@@ -189,6 +189,7 @@ type RateLimits struct {
 	Secondary     *RateLimitBucket `json:"secondary,omitempty"`
 	Credits       *RateLimitBucket `json:"credits,omitempty"`
 	GitHubGraphQL *RateLimitBucket `json:"github_graphql,omitempty"`
+	GraphQLCost   *GraphQLCost     `json:"graphql_cost,omitempty"`
 }
 
 type RateLimitBucket struct {
@@ -201,6 +202,18 @@ type RateLimitBucket struct {
 	HasCredits     bool       `json:"has_credits,omitempty"`
 	Unlimited      bool       `json:"unlimited,omitempty"`
 	Balance        string     `json:"balance,omitempty"`
+}
+
+type GraphQLCost struct {
+	TotalQueries int64                    `json:"total_queries,omitempty"`
+	TotalCost    int64                    `json:"total_cost,omitempty"`
+	Contributors []GraphQLCostContributor `json:"contributors,omitempty"`
+}
+
+type GraphQLCostContributor struct {
+	QueryType string `json:"query_type"`
+	Count     int64  `json:"count"`
+	Cost      int64  `json:"cost"`
 }
 
 type Tokens struct {

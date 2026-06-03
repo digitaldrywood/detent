@@ -9,6 +9,7 @@ import (
 	"log/slog"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -42,6 +43,7 @@ type Client struct {
 	logger       *slog.Logger
 	mu           sync.RWMutex
 	rateLimit    connector.GraphQLRateLimit
+	queryCosts   map[string]connector.GraphQLQueryCost
 	hasRateLimit bool
 }
 
@@ -81,6 +83,10 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 }
 
 func (c *Client) GraphQL(ctx context.Context, query string, variables map[string]any, out any) error {
+	return c.GraphQLWithType(ctx, "", query, variables, out)
+}
+
+func (c *Client) GraphQLWithType(ctx context.Context, queryType string, query string, variables map[string]any, out any) error {
 	token, err := c.tokenSource.Token(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve github token: %w", err)
@@ -100,6 +106,7 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 		return fmt.Errorf("encode github graphql request: %w", err)
 	}
 
+	queryType = graphQLQueryType(queryType, query)
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.endpoint, &body)
 	if err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
@@ -131,7 +138,8 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	if err != nil {
 		return fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
-	c.recordRateLimitFromHeaders(resp.Header, time.Now())
+	receivedAt := time.Now()
+	headerRateLimit := c.recordRateLimitFromHeaders(resp.Header, receivedAt)
 
 	if resp.StatusCode != http.StatusOK {
 		return classifyStatus(resp.StatusCode, resp.Header, raw)
@@ -144,7 +152,9 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 	if err := json.Unmarshal(raw, &envelope); err != nil {
 		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
-	c.recordRateLimitFromData(envelope.Data, time.Now())
+	if !c.recordRateLimitFromData(envelope.Data, queryType, receivedAt) {
+		c.recordGraphQLQueryCostFromHeaders(queryType, headerRateLimit)
+	}
 	if len(envelope.Errors) > 0 {
 		return classifyGraphQLErrors(envelope.Errors)
 	}
@@ -236,9 +246,33 @@ func (c *Client) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
 	return c.rateLimit, c.hasRateLimit
 }
 
-func (c *Client) recordRateLimitFromData(data json.RawMessage, now time.Time) {
+func (c *Client) ResetGraphQLRateLimitUsage() {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.queryCosts = nil
+}
+
+func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	usage := connector.GraphQLRateLimitUsage{
+		RateLimit:    c.rateLimit,
+		HasRateLimit: c.hasRateLimit,
+		QueryCosts:   sortedGraphQLQueryCosts(c.queryCosts),
+	}
+	for _, cost := range usage.QueryCosts {
+		usage.TotalQueries += cost.Count
+		usage.TotalCost += cost.Cost
+	}
+	c.queryCosts = nil
+	return usage
+}
+
+func (c *Client) recordRateLimitFromData(data json.RawMessage, queryType string, now time.Time) bool {
 	if len(data) == 0 {
-		return
+		return false
 	}
 
 	var envelope struct {
@@ -251,7 +285,7 @@ func (c *Client) recordRateLimitFromData(data json.RawMessage, now time.Time) {
 		} `json:"rateLimit"`
 	}
 	if err := json.Unmarshal(data, &envelope); err != nil || envelope.RateLimit == nil {
-		return
+		return false
 	}
 
 	var resetAt time.Time
@@ -269,30 +303,52 @@ func (c *Client) recordRateLimitFromData(data json.RawMessage, now time.Time) {
 		ResetAt:   resetAt,
 		UpdatedAt: now,
 	})
+	c.addGraphQLQueryCost(queryType, envelope.RateLimit.Cost)
+	return true
 }
 
-func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) {
+type graphQLHeaderRateLimit struct {
+	Previous           connector.GraphQLRateLimit
+	Current            connector.GraphQLRateLimit
+	HasPrevious        bool
+	HasCurrent         bool
+	HasPrimarySnapshot bool
+}
+
+func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) graphQLHeaderRateLimit {
 	var snapshot connector.GraphQLRateLimit
+	var previous connector.GraphQLRateLimit
+	hasPrevious := false
 	if current, ok := c.GraphQLRateLimit(); ok {
+		previous = current
+		hasPrevious = true
 		snapshot = current
 	}
 
 	hasSnapshot := false
+	hasPrimarySnapshot := false
 	if value, ok := int64Header(headers, "X-RateLimit-Limit"); ok {
 		snapshot.Limit = value
 		hasSnapshot = true
+		hasPrimarySnapshot = true
 	}
 	if value, ok := int64Header(headers, "X-RateLimit-Used"); ok {
 		snapshot.Used = value
 		hasSnapshot = true
+		hasPrimarySnapshot = true
 	}
 	if value, ok := int64Header(headers, "X-RateLimit-Remaining"); ok {
 		snapshot.Remaining = value
 		hasSnapshot = true
+		hasPrimarySnapshot = true
 	}
 	if value, ok := int64Header(headers, "X-RateLimit-Reset"); ok {
 		snapshot.ResetAt = time.Unix(value, 0).UTC()
 		hasSnapshot = true
+		hasPrimarySnapshot = true
+	}
+	if hasPrimarySnapshot {
+		snapshot.Cost = 0
 	}
 	if retryAfter, ok := parseRetryAfter(headers.Get("Retry-After"), now); ok {
 		snapshot.RetryAfter = retryAfter
@@ -304,6 +360,13 @@ func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) 
 	if hasSnapshot {
 		snapshot.UpdatedAt = now
 		c.setRateLimit(snapshot)
+	}
+	return graphQLHeaderRateLimit{
+		Previous:           previous,
+		Current:            snapshot,
+		HasPrevious:        hasPrevious,
+		HasCurrent:         hasSnapshot,
+		HasPrimarySnapshot: hasPrimarySnapshot,
 	}
 }
 
@@ -326,6 +389,46 @@ func (c *Client) setRateLimit(snapshot connector.GraphQLRateLimit) {
 
 	c.rateLimit = snapshot
 	c.hasRateLimit = true
+}
+
+func (c *Client) addGraphQLQueryCost(queryType string, cost int64) {
+	queryType = strings.TrimSpace(queryType)
+	if queryType == "" || cost < 0 {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.queryCosts == nil {
+		c.queryCosts = make(map[string]connector.GraphQLQueryCost)
+	}
+	current := c.queryCosts[queryType]
+	current.QueryType = queryType
+	current.Count++
+	current.Cost += cost
+	c.queryCosts[queryType] = current
+}
+
+func (c *Client) recordGraphQLQueryCostFromHeaders(queryType string, snapshot graphQLHeaderRateLimit) {
+	if !snapshot.HasCurrent || !snapshot.HasPrevious || !snapshot.HasPrimarySnapshot {
+		return
+	}
+	if snapshot.Current.Limit <= 0 || snapshot.Previous.Limit <= 0 {
+		return
+	}
+	if !snapshot.Current.ResetAt.IsZero() && !snapshot.Previous.ResetAt.IsZero() && !snapshot.Current.ResetAt.Equal(snapshot.Previous.ResetAt) {
+		return
+	}
+
+	cost := snapshot.Current.Used - snapshot.Previous.Used
+	if cost < 0 {
+		cost = snapshot.Previous.Remaining - snapshot.Current.Remaining
+	}
+	if cost < 0 {
+		return
+	}
+	c.addGraphQLQueryCost(queryType, cost)
 }
 
 func validateEndpoint(endpoint string) error {
@@ -479,4 +582,46 @@ func firstLine(text string) string {
 		}
 	}
 	return ""
+}
+
+func graphQLQueryType(queryType string, query string) string {
+	queryType = strings.TrimSpace(queryType)
+	if queryType != "" {
+		return queryType
+	}
+
+	operation := firstLine(query)
+	parts := strings.Fields(operation)
+	if len(parts) >= 2 {
+		name := strings.TrimSpace(parts[1])
+		if index := strings.Index(name, "("); index >= 0 {
+			name = name[:index]
+		}
+		name = strings.Trim(name, "{}")
+		if name != "" {
+			return name
+		}
+	}
+	return "graphql"
+}
+
+func sortedGraphQLQueryCosts(costs map[string]connector.GraphQLQueryCost) []connector.GraphQLQueryCost {
+	if len(costs) == 0 {
+		return nil
+	}
+
+	out := make([]connector.GraphQLQueryCost, 0, len(costs))
+	for _, cost := range costs {
+		out = append(out, cost)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Cost != out[j].Cost {
+			return out[i].Cost > out[j].Cost
+		}
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		return out[i].QueryType < out[j].QueryType
+	})
+	return out
 }

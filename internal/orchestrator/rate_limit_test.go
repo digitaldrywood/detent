@@ -1,9 +1,11 @@
 package orchestrator
 
 import (
+	"bytes"
 	"context"
 	"io"
 	"log/slog"
+	"strings"
 	"testing"
 	"time"
 
@@ -130,6 +132,78 @@ func TestTickPausesForGitHubGraphQLRetryAfterWithPrimaryRemaining(t *testing.T) 
 	}
 }
 
+func TestTickPublishesAndLogsGitHubGraphQLCostSummary(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		PollInterval:               30 * time.Second,
+		MaxConcurrentAgents:        1,
+		ActiveStates:               []string{"Todo", "In Progress"},
+		TerminalStates:             []string{"Done", "Cancelled"},
+		GitHubGraphQLWarnRemaining: 500,
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		usage: connector.GraphQLRateLimitUsage{
+			HasRateLimit: true,
+			RateLimit: connector.GraphQLRateLimit{
+				Limit:     5000,
+				Used:      4501,
+				Remaining: 499,
+				Cost:      3,
+				ResetAt:   resetAt,
+				UpdatedAt: now,
+			},
+			QueryCosts: []connector.GraphQLQueryCost{
+				{QueryType: "candidate_issues", Count: 1, Cost: 5},
+				{QueryType: "running_states", Count: 1, Cost: 3},
+			},
+			TotalQueries: 2,
+			TotalCost:    8,
+		},
+	}
+	var logs bytes.Buffer
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.resetUsageCalls != 1 || tracker.flushUsageCalls != 1 {
+		t.Fatalf("usage calls = reset %d flush %d, want 1 each", tracker.resetUsageCalls, tracker.flushUsageCalls)
+	}
+	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil || state.RateLimits.GraphQLCost == nil {
+		t.Fatalf("RateLimits = %#v, want GitHub GraphQL bucket and cost summary", state.RateLimits)
+	}
+	if state.RateLimits.GitHubGraphQL.Cost != 8 {
+		t.Fatalf("GitHubGraphQL.Cost = %d, want cycle cost 8", state.RateLimits.GitHubGraphQL.Cost)
+	}
+	if state.RateLimits.GraphQLCost.TotalCost != 8 || state.RateLimits.GraphQLCost.TotalQueries != 2 {
+		t.Fatalf("GraphQLCost = %#v, want cost 8 queries 2", state.RateLimits.GraphQLCost)
+	}
+	if len(state.RateLimits.GraphQLCost.Contributors) != 2 {
+		t.Fatalf("GraphQLCost.Contributors = %#v, want 2 contributors", state.RateLimits.GraphQLCost.Contributors)
+	}
+
+	logOutput := logs.String()
+	for _, want := range []string{
+		"github graphql budget summary",
+		"cycle_cost=8",
+		"query_count=2",
+		"candidate_issues",
+		"github graphql budget below warning floor",
+		"warning_floor=500",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("log output missing %q:\n%s", want, logOutput)
+		}
+	}
+}
+
 func TestTickReconcilesRunningIssuesOnSlowerCadence(t *testing.T) {
 	t.Parallel()
 
@@ -169,6 +243,9 @@ type rateLimitConnector struct {
 	issuesByID          []connector.Issue
 	rateLimit           connector.GraphQLRateLimit
 	hasRateLimit        bool
+	usage               connector.GraphQLRateLimitUsage
+	resetUsageCalls     int
+	flushUsageCalls     int
 	fetchCandidateCalls int
 	fetchByStatesCalls  int
 	fetchByIDCalls      int
@@ -211,4 +288,13 @@ func (c *rateLimitConnector) SetField(context.Context, string, string, string) e
 
 func (c *rateLimitConnector) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
 	return c.rateLimit, c.hasRateLimit
+}
+
+func (c *rateLimitConnector) ResetGraphQLRateLimitUsage() {
+	c.resetUsageCalls++
+}
+
+func (c *rateLimitConnector) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
+	c.flushUsageCalls++
+	return c.usage
 }

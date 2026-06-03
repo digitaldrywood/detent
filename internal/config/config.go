@@ -62,27 +62,28 @@ type Config struct {
 }
 
 type Tracker struct {
-	Kind                    string            `yaml:"kind"`
-	Endpoint                string            `yaml:"endpoint"`
-	APIKey                  string            `yaml:"api_key"`
-	HTTPMaxIdleConns        int               `yaml:"http_max_idle_conns"`
-	HTTPMaxIdleConnsPerHost int               `yaml:"http_max_idle_conns_per_host"`
-	HTTPIdleConnTimeoutMS   int               `yaml:"http_idle_conn_timeout_ms"`
-	GitHubAppID             string            `yaml:"github_app_id"`
-	GitHubAppPrivateKey     string            `yaml:"github_app_private_key"`
-	GitHubAppPrivateKeyPath string            `yaml:"github_app_private_key_path"`
-	GitHubAppInstallationID string            `yaml:"github_app_installation_id"`
-	ProjectSlug             string            `yaml:"project_slug"`
-	Assignee                string            `yaml:"assignee"`
-	ActiveStates            []string          `yaml:"active_states"`
-	ObservedStates          []string          `yaml:"observed_states"`
-	TerminalStates          []string          `yaml:"terminal_states"`
-	StateMap                StringOrMap       `yaml:"state_map"`
-	PriorityMap             StringOrMap       `yaml:"priority_map"`
-	AutoProvision           bool              `yaml:"auto_provision"`
-	Claims                  Claims            `yaml:"claims,omitempty"`
-	Authorization           selector.Selector `yaml:"authorization,omitempty"`
-	Issues                  []connector.Issue `yaml:"issues"`
+	Kind                       string            `yaml:"kind"`
+	Endpoint                   string            `yaml:"endpoint"`
+	APIKey                     string            `yaml:"api_key"`
+	HTTPMaxIdleConns           int               `yaml:"http_max_idle_conns"`
+	HTTPMaxIdleConnsPerHost    int               `yaml:"http_max_idle_conns_per_host"`
+	HTTPIdleConnTimeoutMS      int               `yaml:"http_idle_conn_timeout_ms"`
+	GitHubGraphQLWarnRemaining int               `yaml:"github_graphql_warn_remaining"`
+	GitHubAppID                string            `yaml:"github_app_id"`
+	GitHubAppPrivateKey        string            `yaml:"github_app_private_key"`
+	GitHubAppPrivateKeyPath    string            `yaml:"github_app_private_key_path"`
+	GitHubAppInstallationID    string            `yaml:"github_app_installation_id"`
+	ProjectSlug                string            `yaml:"project_slug"`
+	Assignee                   string            `yaml:"assignee"`
+	ActiveStates               []string          `yaml:"active_states"`
+	ObservedStates             []string          `yaml:"observed_states"`
+	TerminalStates             []string          `yaml:"terminal_states"`
+	StateMap                   StringOrMap       `yaml:"state_map"`
+	PriorityMap                StringOrMap       `yaml:"priority_map"`
+	AutoProvision              bool              `yaml:"auto_provision"`
+	Claims                     Claims            `yaml:"claims,omitempty"`
+	Authorization              selector.Selector `yaml:"authorization,omitempty"`
+	Issues                     []connector.Issue `yaml:"issues"`
 }
 
 type Identity struct {
@@ -432,16 +433,17 @@ func Default() Config {
 
 	return Config{
 		Tracker: Tracker{
-			Endpoint:                defaultLinearEndpoint,
-			HTTPMaxIdleConns:        100,
-			HTTPMaxIdleConnsPerHost: 32,
-			HTTPIdleConnTimeoutMS:   90000,
-			ActiveStates:            []string{"Todo", "In Progress"},
-			ObservedStates:          []string{"Backlog", "Human Review", "Blocked"},
-			TerminalStates:          []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"},
-			StateMap:                MapValue(map[string]any{}),
-			PriorityMap:             MapValue(defaultPriorityMap()),
-			AutoProvision:           true,
+			Endpoint:                   defaultLinearEndpoint,
+			HTTPMaxIdleConns:           100,
+			HTTPMaxIdleConnsPerHost:    32,
+			HTTPIdleConnTimeoutMS:      90000,
+			GitHubGraphQLWarnRemaining: 500,
+			ActiveStates:               []string{"Todo", "In Progress"},
+			ObservedStates:             []string{"Backlog", "Human Review", "Blocked"},
+			TerminalStates:             []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"},
+			StateMap:                   MapValue(map[string]any{}),
+			PriorityMap:                MapValue(defaultPriorityMap()),
+			AutoProvision:              true,
 		},
 		Polling: Polling{
 			IntervalMS: DefaultPollingIntervalMS,
@@ -612,6 +614,7 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.http_max_idle_conns", c.Tracker.HTTPMaxIdleConns, problems)
 	validatePositive("tracker.http_max_idle_conns_per_host", c.Tracker.HTTPMaxIdleConnsPerHost, problems)
 	validatePositive("tracker.http_idle_conn_timeout_ms", c.Tracker.HTTPIdleConnTimeoutMS, problems)
+	validatePositive("tracker.github_graphql_warn_remaining", c.Tracker.GitHubGraphQLWarnRemaining, problems)
 	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
 }
