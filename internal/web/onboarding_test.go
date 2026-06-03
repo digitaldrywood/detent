@@ -104,7 +104,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"workspace_root":             {"~/code/detent-workspaces"},
 				"max_concurrent_agents":      {"5"},
 				"max_turns":                  {"20"},
-				"polling_interval_ms":        {"30000"},
+				"polling_interval_ms":        {"120000"},
 				"merging_concurrency":        {"1"},
 				"dispatch_priority_by_state": {"Merging\nRework"},
 			},
@@ -326,6 +326,13 @@ func TestOnboardingWriteValidatesInput(t *testing.T) {
 			},
 			want: "max concurrent agents must be positive",
 		},
+		{
+			name: "polling interval below floor",
+			edit: func(form url.Values) {
+				form.Set("polling_interval_ms", "59999")
+			},
+			want: "polling interval must be at least 60000",
+		},
 	}
 
 	for _, tt := range tests {
@@ -363,7 +370,7 @@ func validOnboardingForm() url.Values {
 		"workspace_root":             {"~/code/detent-workspaces"},
 		"max_concurrent_agents":      {"5"},
 		"max_turns":                  {"20"},
-		"polling_interval_ms":        {"30000"},
+		"polling_interval_ms":        {"120000"},
 		"merging_concurrency":        {"1"},
 		"dispatch_priority_by_state": {"Merging\nRework"},
 	}

@@ -8,6 +8,11 @@ type OnboardingData struct {
 	Errors       []string
 	Result       OnboardingResult
 	Assets       AssetPaths
+	Polling      PollingData
+}
+
+type PollingData struct {
+	MinIntervalMS string
 }
 
 type OnboardingForm struct {
@@ -224,7 +229,7 @@ templ agentStep(data OnboardingData) {
 			</label>
 			<label class="block">
 				<span class="text-sm font-medium">Polling interval</span>
-				<input class={ fieldClass() } type="number" min="1" name="polling_interval_ms" value={ data.Form.PollingIntervalMS }/>
+				<input class={ fieldClass() } type="number" min={ data.Polling.MinIntervalMS } name="polling_interval_ms" value={ data.Form.PollingIntervalMS }/>
 			</label>
 			<label class="block">
 				<span class="text-sm font-medium">Merging concurrency</span>

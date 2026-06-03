@@ -29,6 +29,9 @@ const (
 	DefaultAgentBackendID = "codex"
 	AgentBackendCodex     = "codex"
 
+	DefaultPollingIntervalMS = 120000
+	MinPollingIntervalMS     = 60000
+
 	defaultCodexProtocol = "app-server"
 
 	IdentityOwnershipAssignee = "assignee"
@@ -439,7 +442,7 @@ func Default() Config {
 			AutoProvision:           true,
 		},
 		Polling: Polling{
-			IntervalMS: 30000,
+			IntervalMS: DefaultPollingIntervalMS,
 		},
 		Workspace: Workspace{
 			Root:       filepath.Join(os.TempDir(), "detent_workspaces"),
@@ -514,7 +517,7 @@ func (c *Config) Validate() error {
 
 	problems = append(problems, c.Identity.Validate("identity")...)
 	c.validateTracker(&problems)
-	validatePositive("polling.interval_ms", c.Polling.IntervalMS, &problems)
+	validatePollingInterval(c.Polling.IntervalMS, &problems)
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
@@ -1062,6 +1065,16 @@ func validateRequired(field string, value string, suffix string, problems *[]str
 func validatePositive(field string, value int, problems *[]string) {
 	if value <= 0 {
 		*problems = append(*problems, field+" must be greater than 0")
+	}
+}
+
+func validatePollingInterval(value int, problems *[]string) {
+	if value <= 0 {
+		*problems = append(*problems, "polling.interval_ms must be greater than 0")
+		return
+	}
+	if value < MinPollingIntervalMS {
+		*problems = append(*problems, fmt.Sprintf("polling.interval_ms must be at least %d", MinPollingIntervalMS))
 	}
 }
 
