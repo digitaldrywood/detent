@@ -74,10 +74,9 @@ func TestEpicChildRefs(t *testing.T) {
 	}
 }
 
-func TestTickFinalizesCompletedEpics(t *testing.T) {
+func TestCloseCompletedEpics(t *testing.T) {
 	t.Parallel()
 
-	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
 	tests := []struct {
 		name         string
 		candidates   []connector.Issue
@@ -140,7 +139,7 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 			},
 		},
 		{
-			name: "open done epic is not fetched by recurring scan",
+			name: "open done epic is closed without status update",
 			stateIssues: []connector.Issue{
 				func() connector.Issue {
 					issue := epicTestIssue("epic-258", "Done", false, "Epic: Release readiness", []string{"epic"}, "")
@@ -149,9 +148,11 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 				}(),
 				epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
 			},
+			wantClosed:   []string{"epic-258"},
+			wantComments: []string{"Auto-closing completed epic: 1 child issue is Done."},
 		},
 		{
-			name: "open done epic close failure is not reached by recurring scan",
+			name: "open done epic close failure does not comment",
 			stateIssues: []connector.Issue{
 				func() connector.Issue {
 					issue := epicTestIssue("epic-258", "Done", false, "Epic: Release readiness", []string{"epic"}, "")
@@ -189,7 +190,8 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 				logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
 			}
 
-			orch.tick(context.Background(), &state, now)
+			issues := append(cloneIssues(tt.candidates), tt.stateIssues...)
+			orch.closeCompletedEpics(context.Background(), issues)
 
 			if got := tracker.stateUpdates(); !reflect.DeepEqual(got, tt.wantUpdates) {
 				t.Fatalf("state updates = %#v, want %#v", got, tt.wantUpdates)
@@ -204,16 +206,279 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 	}
 }
 
+func TestTickDoesNotScanEpicsEveryPoll(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled", "Closed"},
+	})
+	state := newState(cfg)
+	state.Running["occupied"] = Running{Issue: connector.Issue{ID: "occupied", Identifier: "occupied", Title: "Occupied", State: "Todo"}}
+	tracker := &epicConnector{
+		candidates: []connector.Issue{
+			epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "- [ ] #251"),
+		},
+		stateIssues: []connector.Issue{
+			epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+		},
+		linked: map[string][]connector.BlockedRef{
+			"epic-258": {
+				{Identifier: "digitaldrywood/detent#251", State: "Done"},
+			},
+		},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got := tracker.childFetches(); len(got) != 0 {
+		t.Fatalf("child fetches = %#v, want none", got)
+	}
+	if got := tracker.closedIssues(); len(got) != 0 {
+		t.Fatalf("closed issues = %#v, want none", got)
+	}
+}
+
+func TestTickFinalizesAffectedEpicWhenChildTransitionsToDone(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled", "Closed"},
+	})
+	state := newState(cfg)
+	state.LastRefreshAt = now.Add(-time.Minute)
+	state.Pipeline = []connector.Issue{
+		epicTestIssue("child-251", "Merging", false, "Child 251", nil, ""),
+	}
+	state.Running["occupied"] = Running{Issue: connector.Issue{ID: "occupied", Identifier: "occupied", Title: "Occupied", State: "Todo"}}
+	tracker := &epicConnector{
+		stateIssues: []connector.Issue{
+			epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+		},
+		parents: map[string][]connector.Issue{
+			"child-251": {
+				func() connector.Issue {
+					issue := epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "")
+					issue.ChildIssues = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#251"}}
+					return issue
+				}(),
+			},
+		},
+		linked: map[string][]connector.BlockedRef{
+			"epic-258": {
+				{Identifier: "digitaldrywood/detent#251", State: "Done"},
+				{Identifier: "digitaldrywood/detent#252", State: "Done"},
+			},
+		},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.parentFetches(), []string{"child-251"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parent fetches = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.childFetches(), []string{"epic-258"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("child fetches = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.stateUpdates(), []epicStateUpdate{{issueID: "epic-258", state: "Done"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("state updates = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.closedIssues(), []string{"epic-258"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("closed issues = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.commentBodies(), []string{"Auto-closing completed epic: 2 child issues are Done."}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("comments = %#v, want %#v", got, want)
+	}
+}
+
+func TestTickFinalizesAffectedEpicWhenActiveChildCloses(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
+	updatedAt := now.Add(-time.Second)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled", "Closed"},
+	})
+	state := newState(cfg)
+	state.LastRefreshAt = now.Add(-time.Minute)
+	state.Running["occupied"] = Running{Issue: connector.Issue{ID: "occupied", Identifier: "occupied", Title: "Occupied", State: "Todo"}}
+	child := epicTestIssue("child-251", "Todo", true, "Child 251", nil, "")
+	child.UpdatedAt = &updatedAt
+	tracker := &epicConnector{
+		candidates: []connector.Issue{child},
+		parents: map[string][]connector.Issue{
+			"child-251": {
+				func() connector.Issue {
+					issue := epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "")
+					issue.ChildIssues = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#251"}}
+					return issue
+				}(),
+			},
+		},
+		linked: map[string][]connector.BlockedRef{
+			"epic-258": {
+				{Identifier: "digitaldrywood/detent#251", State: "Done"},
+			},
+		},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.parentFetches(), []string{"child-251"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parent fetches = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.closedIssues(), []string{"epic-258"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("closed issues = %#v, want %#v", got, want)
+	}
+}
+
+func TestTickRetriesParentLookupFailureForTerminalChild(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled", "Closed"},
+	})
+	state := newState(cfg)
+	state.LastRefreshAt = now.Add(-time.Minute)
+	state.Pipeline = []connector.Issue{
+		epicTestIssue("child-251", "Merging", false, "Child 251", nil, ""),
+	}
+	state.Running["occupied"] = Running{Issue: connector.Issue{ID: "occupied", Identifier: "occupied", Title: "Occupied", State: "Todo"}}
+	tracker := &epicConnector{
+		stateIssues: []connector.Issue{
+			epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+		},
+		parents: map[string][]connector.Issue{
+			"child-251": {
+				func() connector.Issue {
+					issue := epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "")
+					issue.ChildIssues = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#251"}}
+					return issue
+				}(),
+			},
+		},
+		linked: map[string][]connector.BlockedRef{
+			"epic-258": {
+				{Identifier: "digitaldrywood/detent#251", State: "Done"},
+			},
+		},
+		parentErrors: map[string][]error{
+			"child-251": {errors.New("temporary parent lookup failure")},
+		},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.parentFetches(), []string{"child-251"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parent fetches after first tick = %#v, want %#v", got, want)
+	}
+	if got := tracker.closedIssues(); len(got) != 0 {
+		t.Fatalf("closed issues after first tick = %#v, want none", got)
+	}
+	if got := len(state.pendingEpicParentLookups); got != 1 {
+		t.Fatalf("pending parent lookups = %d, want 1", got)
+	}
+
+	orch.tick(context.Background(), &state, now.Add(time.Minute))
+
+	if got, want := tracker.parentFetches(), []string{"child-251", "child-251"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parent fetches after retry = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.closedIssues(), []string{"epic-258"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("closed issues after retry = %#v, want %#v", got, want)
+	}
+	if got := len(state.pendingEpicParentLookups); got != 0 {
+		t.Fatalf("pending parent lookups after retry = %d, want 0", got)
+	}
+}
+
+func TestTickSkipsAffectedEpicWhenChildAlreadyTerminal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled", "Closed"},
+	})
+	state := newState(cfg)
+	state.LastRefreshAt = now.Add(-time.Minute)
+	state.Pipeline = []connector.Issue{
+		epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+	}
+	state.Running["occupied"] = Running{Issue: connector.Issue{ID: "occupied", Identifier: "occupied", Title: "Occupied", State: "Todo"}}
+	tracker := &epicConnector{
+		stateIssues: []connector.Issue{
+			epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+		},
+		parents: map[string][]connector.Issue{
+			"child-251": {
+				epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "- [ ] #251"),
+			},
+		},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got := tracker.parentFetches(); len(got) != 0 {
+		t.Fatalf("parent fetches = %#v, want none", got)
+	}
+}
+
 type epicConnector struct {
-	mu          sync.Mutex
-	candidates  []connector.Issue
-	stateIssues []connector.Issue
-	resolved    []connector.Issue
-	linked      map[string][]connector.BlockedRef
-	closeErr    error
-	updates     []epicStateUpdate
-	closed      []string
-	comments    []string
+	mu           sync.Mutex
+	candidates   []connector.Issue
+	stateIssues  []connector.Issue
+	resolved     []connector.Issue
+	parents      map[string][]connector.Issue
+	linked       map[string][]connector.BlockedRef
+	closeErr     error
+	parentErrors map[string][]error
+	updates      []epicStateUpdate
+	closed       []string
+	comments     []string
+	parentReads  []string
+	childReads   []string
 }
 
 type epicStateUpdate struct {
@@ -245,8 +510,25 @@ func (c *epicConnector) FetchIssuesByStates(_ context.Context, states []string) 
 	return issues, nil
 }
 
-func (c *epicConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
-	return []connector.Issue{}, nil
+func (c *epicConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	issues := make([]connector.Issue, 0, len(ids))
+	allIssues := append(append(cloneIssues(c.candidates), c.stateIssues...), c.resolved...)
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		for _, issue := range allIssues {
+			if strings.TrimSpace(issue.ID) == id {
+				issues = append(issues, cloneIssue(issue))
+				break
+			}
+		}
+	}
+	return issues, nil
 }
 
 func (c *epicConnector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {
@@ -266,10 +548,26 @@ func (c *epicConnector) FetchIssueStatesByIdentifiers(_ context.Context, identif
 	return issues, nil
 }
 
+func (c *epicConnector) FetchIssueParents(_ context.Context, issueID string) ([]connector.Issue, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.parentReads = append(c.parentReads, issueID)
+	if errors := c.parentErrors[issueID]; len(errors) > 0 {
+		err := errors[0]
+		c.parentErrors[issueID] = errors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
+	return cloneIssues(c.parents[issueID]), nil
+}
+
 func (c *epicConnector) FetchIssueChildren(_ context.Context, issueID string) ([]connector.BlockedRef, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	c.childReads = append(c.childReads, issueID)
 	if c.linked != nil {
 		return append([]connector.BlockedRef(nil), c.linked[issueID]...), nil
 	}
@@ -329,6 +627,18 @@ func (c *epicConnector) commentBodies() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.comments...)
+}
+
+func (c *epicConnector) parentFetches() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.parentReads...)
+}
+
+func (c *epicConnector) childFetches() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.childReads...)
 }
 
 func epicTestIssue(id string, state string, closed bool, title string, labels []string, description string) connector.Issue {

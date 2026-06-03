@@ -925,6 +925,51 @@ func TestConnectorFetchIssueChildrenPaginatesLinkedIssues(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssueParentsReturnsParentAndTrackedInIssues(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"node":{"parent":{"__typename":"Issue","id":"I_parent","number":258,"title":"Epic: Parent","body":"- [ ] #251","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/258","createdAt":null,"updatedAt":null,"author":{"login":"corylanou"},"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_child","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo","updatedAt":"2026-06-02T16:00:00Z"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}},"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"__typename":"Issue","id":"I_tracked_parent","number":259,"title":"Epic: Tracked parent","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/259","createdAt":null,"updatedAt":null,"author":{"login":"corylanou"},"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_child","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_tracked_parent","project":{"id":"PVT_1"},"statusValue":{"name":"In Progress","updatedAt":"2026-06-02T16:01:00Z"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]}}}}`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("FetchIssueParents() len = %d, want 2", len(got))
+	}
+	if got[0].ID != "I_parent" || got[0].Identifier != "digitaldrywood/detent#258" || got[0].State != "Todo" {
+		t.Fatalf("first parent = %#v", got[0])
+	}
+	if got[1].ID != "I_tracked_parent" || got[1].Identifier != "digitaldrywood/detent#259" || got[1].State != "In Progress" {
+		t.Fatalf("second parent = %#v", got[1])
+	}
+	if got[0].ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
+		t.Fatalf("first parent child issues = %#v", got[0].ChildIssues)
+	}
+	if got[1].ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
+		t.Fatalf("second parent child issues = %#v", got[1].ChildIssues)
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	variables := requests[0]["variables"].(map[string]any)
+	if variables["issueId"] != "I_child" {
+		t.Fatalf("issueId = %v, want I_child", variables["issueId"])
+	}
+	query := requests[0]["query"].(string)
+	for _, want := range []string{"parent", "trackedInIssues", "subIssues(first: $linkedIssuesFirst)", "trackedIssues(first: $linkedIssuesFirst)"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("query missing %q:\n%s", want, query)
+		}
+	}
+}
+
 func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	t.Parallel()
 

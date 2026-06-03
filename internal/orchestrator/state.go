@@ -9,24 +9,25 @@ import (
 )
 
 type State struct {
-	PollInterval           time.Duration
-	MaxConcurrentAgents    int
-	Instance               telemetry.Instance
-	LastRefreshAt          time.Time
-	NextRefreshAt          time.Time
-	LastRunningReconcileAt time.Time
-	LastWorkspaceCleanupAt time.Time
-	Pipeline               []connector.Issue
-	Running                map[string]Running
-	Claimed                map[string]Claimed
-	Blocked                map[string]Blocked
-	Completed              map[string]Completed
-	Retry                  map[string]Retry
-	BudgetRefusals         map[string]BudgetRefusal
-	DiffStats              map[string]DiffStats
-	ReapedWorkspaces       map[string]time.Time
-	CodexTotals            CodexTotals
-	RateLimits             *telemetry.RateLimits
+	PollInterval             time.Duration
+	MaxConcurrentAgents      int
+	Instance                 telemetry.Instance
+	LastRefreshAt            time.Time
+	NextRefreshAt            time.Time
+	LastRunningReconcileAt   time.Time
+	LastWorkspaceCleanupAt   time.Time
+	Pipeline                 []connector.Issue
+	Running                  map[string]Running
+	Claimed                  map[string]Claimed
+	Blocked                  map[string]Blocked
+	Completed                map[string]Completed
+	Retry                    map[string]Retry
+	BudgetRefusals           map[string]BudgetRefusal
+	DiffStats                map[string]DiffStats
+	ReapedWorkspaces         map[string]time.Time
+	CodexTotals              CodexTotals
+	RateLimits               *telemetry.RateLimits
+	pendingEpicParentLookups map[string]connector.Issue
 }
 
 type Running struct {
@@ -86,40 +87,42 @@ type Retry struct {
 
 func newState(cfg Config) State {
 	return State{
-		PollInterval:        cfg.PollInterval,
-		MaxConcurrentAgents: cfg.MaxConcurrentAgents,
-		Instance:            instanceSnapshot(cfg),
-		Running:             map[string]Running{},
-		Claimed:             map[string]Claimed{},
-		Blocked:             map[string]Blocked{},
-		Completed:           map[string]Completed{},
-		Retry:               map[string]Retry{},
-		BudgetRefusals:      map[string]BudgetRefusal{},
-		DiffStats:           map[string]DiffStats{},
-		ReapedWorkspaces:    map[string]time.Time{},
+		PollInterval:             cfg.PollInterval,
+		MaxConcurrentAgents:      cfg.MaxConcurrentAgents,
+		Instance:                 instanceSnapshot(cfg),
+		Running:                  map[string]Running{},
+		Claimed:                  map[string]Claimed{},
+		Blocked:                  map[string]Blocked{},
+		Completed:                map[string]Completed{},
+		Retry:                    map[string]Retry{},
+		BudgetRefusals:           map[string]BudgetRefusal{},
+		DiffStats:                map[string]DiffStats{},
+		ReapedWorkspaces:         map[string]time.Time{},
+		pendingEpicParentLookups: map[string]connector.Issue{},
 	}
 }
 
 func (s State) clone() State {
 	cloned := State{
-		PollInterval:           s.PollInterval,
-		MaxConcurrentAgents:    s.MaxConcurrentAgents,
-		Instance:               s.Instance,
-		LastRefreshAt:          s.LastRefreshAt,
-		NextRefreshAt:          s.NextRefreshAt,
-		LastRunningReconcileAt: s.LastRunningReconcileAt,
-		LastWorkspaceCleanupAt: s.LastWorkspaceCleanupAt,
-		Pipeline:               cloneIssues(s.Pipeline),
-		Running:                make(map[string]Running, len(s.Running)),
-		Claimed:                make(map[string]Claimed, len(s.Claimed)),
-		Blocked:                make(map[string]Blocked, len(s.Blocked)),
-		Completed:              make(map[string]Completed, len(s.Completed)),
-		Retry:                  make(map[string]Retry, len(s.Retry)),
-		BudgetRefusals:         make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
-		DiffStats:              make(map[string]DiffStats, len(s.DiffStats)),
-		ReapedWorkspaces:       make(map[string]time.Time, len(s.ReapedWorkspaces)),
-		CodexTotals:            s.CodexTotals,
-		RateLimits:             cloneRateLimits(s.RateLimits),
+		PollInterval:             s.PollInterval,
+		MaxConcurrentAgents:      s.MaxConcurrentAgents,
+		Instance:                 s.Instance,
+		LastRefreshAt:            s.LastRefreshAt,
+		NextRefreshAt:            s.NextRefreshAt,
+		LastRunningReconcileAt:   s.LastRunningReconcileAt,
+		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
+		Pipeline:                 cloneIssues(s.Pipeline),
+		Running:                  make(map[string]Running, len(s.Running)),
+		Claimed:                  make(map[string]Claimed, len(s.Claimed)),
+		Blocked:                  make(map[string]Blocked, len(s.Blocked)),
+		Completed:                make(map[string]Completed, len(s.Completed)),
+		Retry:                    make(map[string]Retry, len(s.Retry)),
+		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
+		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
+		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
+		CodexTotals:              s.CodexTotals,
+		RateLimits:               cloneRateLimits(s.RateLimits),
+		pendingEpicParentLookups: cloneIssueMap(s.pendingEpicParentLookups),
 	}
 
 	for id, running := range s.Running {
@@ -198,6 +201,17 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	cloned.Assignees = cloneStringSlice(issue.Assignees)
 	cloned.Fields = cloneStringMap(issue.Fields)
 	return cloned
+}
+
+func cloneIssueMap(issues map[string]connector.Issue) map[string]connector.Issue {
+	if len(issues) == 0 {
+		return nil
+	}
+	out := make(map[string]connector.Issue, len(issues))
+	for key, issue := range issues {
+		out[key] = cloneIssue(issue)
+	}
+	return out
 }
 
 func cloneStringSlice(values []string) []string {

@@ -17,13 +17,17 @@ import (
 )
 
 const (
-	projectItemsPageSize                     = 50
-	projectItemsPerIssue                     = 100
-	pullRequestsPageSize                     = 100
-	pullRequestsPageLimit                    = 3
-	defaultProjectItemStatusState            = "Backlog"
-	defaultProjectItemStatusWriteParallelism = 4
-	defaultProjectItemStatusWriteTimeout     = 2 * time.Minute
+	projectItemsPageSize                      = 50
+	projectItemsPerIssue                      = 100
+	projectItemFieldValuesPageSize            = 100
+	linkedIssuePageSize                       = 20
+	linkedIssueProjectItemsPageSize           = 10
+	linkedIssueProjectItemFieldValuesPageSize = 20
+	pullRequestsPageSize                      = 100
+	pullRequestsPageLimit                     = 3
+	defaultProjectItemStatusState             = "Backlog"
+	defaultProjectItemStatusWriteParallelism  = 4
+	defaultProjectItemStatusWriteTimeout      = 2 * time.Minute
 )
 
 const projectItemsQuery = `
@@ -176,6 +180,161 @@ query DetentGitHubIssueTrackedIssues($issueId: ID!, $after: String) {
   rateLimit { limit used remaining cost resetAt }
 }`
 
+const issueParentsQuery = `
+query DetentGitHubIssueParents(
+  $issueId: ID!
+  $trackedInAfter: String
+  $projectItemsFirst: Int!
+  $projectItemFieldValuesFirst: Int!
+  $linkedIssuesFirst: Int!
+  $linkedProjectItemsFirst: Int!
+  $linkedProjectItemFieldValuesFirst: Int!
+) {
+  node(id: $issueId) {
+    ... on Issue {
+      parent {
+        ...DetentGitHubIssueParent
+      }
+      trackedInIssues(first: 100, after: $trackedInAfter) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          ...DetentGitHubIssueParent
+        }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}
+
+fragment DetentGitHubIssueParent on Issue {
+  __typename
+  id
+  number
+  title
+  body
+  state
+  url
+  createdAt
+  updatedAt
+  author { login }
+  assignees(first: 100) { nodes { id login } }
+  labels(first: 20) { nodes { name } }
+  repository { nameWithOwner }
+  closedByPullRequestsReferences(first: 5) { nodes { number url } }
+  subIssues(first: $linkedIssuesFirst) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      number
+      title
+      state
+      url
+      repository { nameWithOwner }
+      projectItems(first: $linkedProjectItemsFirst) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          project { id }
+          statusValue: fieldValueByName(name: "Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
+          }
+          priorityValue: fieldValueByName(name: "Priority") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+          fieldValues(first: $linkedProjectItemFieldValuesFirst) {
+            nodes {
+              __typename
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                name
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+              ... on ProjectV2ItemFieldTextValue {
+                text
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+              ... on ProjectV2ItemFieldNumberValue {
+                number
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  trackedIssues(first: $linkedIssuesFirst) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      number
+      title
+      state
+      url
+      repository { nameWithOwner }
+      projectItems(first: $linkedProjectItemsFirst) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          project { id }
+          statusValue: fieldValueByName(name: "Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
+          }
+          priorityValue: fieldValueByName(name: "Priority") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+          fieldValues(first: $linkedProjectItemFieldValuesFirst) {
+            nodes {
+              __typename
+              ... on ProjectV2ItemFieldSingleSelectValue {
+                name
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+              ... on ProjectV2ItemFieldTextValue {
+                text
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+              ... on ProjectV2ItemFieldNumberValue {
+                number
+                field { ... on ProjectV2FieldCommon { name } }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  projectItems(first: $projectItemsFirst) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      project { id }
+      statusValue: fieldValueByName(name: "Status") {
+        ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
+      }
+      priorityValue: fieldValueByName(name: "Priority") {
+        ... on ProjectV2ItemFieldSingleSelectValue { name }
+      }
+      fieldValues(first: $projectItemFieldValuesFirst) {
+        nodes {
+          __typename
+          ... on ProjectV2ItemFieldSingleSelectValue {
+            name
+            field { ... on ProjectV2FieldCommon { name } }
+          }
+          ... on ProjectV2ItemFieldTextValue {
+            text
+            field { ... on ProjectV2FieldCommon { name } }
+          }
+          ... on ProjectV2ItemFieldNumberValue {
+            number
+            field { ... on ProjectV2FieldCommon { name } }
+          }
+        }
+      }
+    }
+  }
+}`
+
 const statusFieldQuery = `
 query DetentGitHubStatusField($projectId: ID!) {
   node(id: $projectId) {
@@ -326,6 +485,16 @@ type githubIssueNode struct {
 type linkedIssuesConnection struct {
 	PageInfo pageInfo      `json:"pageInfo"`
 	Nodes    []linkedIssue `json:"nodes"`
+}
+
+type issueNodesConnection struct {
+	PageInfo pageInfo          `json:"pageInfo"`
+	Nodes    []githubIssueNode `json:"nodes"`
+}
+
+type issueParentsNode struct {
+	Parent          *githubIssueNode     `json:"parent"`
+	TrackedInIssues issueNodesConnection `json:"trackedInIssues"`
 }
 
 type linkedIssue struct {
@@ -574,6 +743,83 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 	}
 	sortIssuesByRequestedIdentifiers(issues, identifiers)
 	return issues, nil
+}
+
+func (c *Connector) FetchIssueParents(ctx context.Context, issueID string) ([]connector.Issue, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return []connector.Issue{}, nil
+	}
+
+	var after *string
+	parents := []connector.Issue{}
+	seen := map[string]struct{}{}
+	for {
+		var response struct {
+			Node *issueParentsNode `json:"node"`
+		}
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryIssueParents, issueParentsQuery, map[string]any{
+			"issueId":                           issueID,
+			"trackedInAfter":                    after,
+			"projectItemsFirst":                 projectItemsPerIssue,
+			"projectItemFieldValuesFirst":       projectItemFieldValuesPageSize,
+			"linkedIssuesFirst":                 linkedIssuePageSize,
+			"linkedProjectItemsFirst":           linkedIssueProjectItemsPageSize,
+			"linkedProjectItemFieldValuesFirst": linkedIssueProjectItemFieldValuesPageSize,
+		}, &response); err != nil {
+			return nil, fmt.Errorf("fetch github issue parents: %w", err)
+		}
+		if response.Node == nil {
+			return nil, ErrInvalidResponse
+		}
+
+		if response.Node.Parent != nil {
+			var err error
+			parents, err = c.appendIssueParent(ctx, parents, seen, *response.Node.Parent)
+			if err != nil {
+				return nil, err
+			}
+		}
+		for _, node := range response.Node.TrackedInIssues.Nodes {
+			var err error
+			parents, err = c.appendIssueParent(ctx, parents, seen, node)
+			if err != nil {
+				return nil, err
+			}
+		}
+		if !response.Node.TrackedInIssues.PageInfo.HasNextPage {
+			return parents, nil
+		}
+		cursor := strings.TrimSpace(response.Node.TrackedInIssues.PageInfo.EndCursor)
+		if cursor == "" {
+			return nil, ErrInvalidResponse
+		}
+		after = &cursor
+	}
+}
+
+func (c *Connector) appendIssueParent(
+	ctx context.Context,
+	parents []connector.Issue,
+	seen map[string]struct{},
+	node githubIssueNode,
+) ([]connector.Issue, error) {
+	issue, ok, err := c.normalizeIssueNode(ctx, node)
+	if err != nil {
+		return nil, err
+	}
+	if !ok {
+		return parents, nil
+	}
+	key := connectorIssueKey(issue)
+	if key == "" {
+		return parents, nil
+	}
+	if _, ok := seen[key]; ok {
+		return parents, nil
+	}
+	seen[key] = struct{}{}
+	return append(parents, issue), nil
 }
 
 func (c *Connector) FetchIssueChildren(ctx context.Context, issueID string) ([]connector.BlockedRef, error) {
@@ -1315,6 +1561,44 @@ func resolveBlockedByProjectState(issues []connector.Issue) {
 
 func normalizedIssueIdentifier(identifier string) string {
 	return strings.ToLower(strings.TrimSpace(identifier))
+}
+
+func connectorIssueKey(issue connector.Issue) string {
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		return "id:" + id
+	}
+	if identifier := normalizedIssueIdentifier(issue.Identifier); identifier != "" {
+		return "identifier:" + identifier
+	}
+	return ""
+}
+
+func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNode) (connector.Issue, bool, error) {
+	if issue.TypeName != "Issue" {
+		return connector.Issue{}, false, nil
+	}
+	stateName, priorityName, statusUpdatedAt, fields, ok, err := c.resolveIssueProjectFields(ctx, issue.ID, issue.ProjectItems)
+	if err != nil {
+		return connector.Issue{}, false, err
+	}
+	if ok {
+		return c.buildIssue(issue, stateName, priorityName, statusUpdatedAt, fields), true, nil
+	}
+	return c.buildIssue(issue, c.githubIssueStateToDetentState(issue.State), "", nil, nil), true, nil
+}
+
+func (c *Connector) resolveIssueProjectFields(ctx context.Context, issueID string, items *projectItemsConnection) (string, string, *time.Time, map[string]string, bool, error) {
+	if stateName, priorityName, statusUpdatedAt, fields, ok := c.projectFields(issueID, items); ok {
+		return stateName, priorityName, statusUpdatedAt, fields, true, nil
+	}
+	if items == nil || !items.PageInfo.HasNextPage {
+		return "", "", nil, nil, false, nil
+	}
+	cursor := strings.TrimSpace(items.PageInfo.EndCursor)
+	if cursor == "" {
+		return "", "", nil, nil, false, ErrInvalidResponse
+	}
+	return c.fetchProjectFieldsPage(ctx, issueID, &cursor)
 }
 
 func (c *Connector) projectFields(issueID string, items *projectItemsConnection) (string, string, *time.Time, map[string]string, bool) {

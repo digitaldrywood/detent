@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"regexp"
 	"strings"
+	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
@@ -51,6 +52,212 @@ func (o *Orchestrator) closeCompletedEpics(ctx context.Context, issues []connect
 		o.finalizeCompletedEpic(ctx, plan.issue, plan.children)
 	}
 	return completed
+}
+
+func (o *Orchestrator) closeCompletedEpicsForTerminalTransitions(
+	ctx context.Context,
+	issues []connector.Issue,
+	previous []connector.Issue,
+	lastRefreshAt time.Time,
+	retryIssues []connector.Issue,
+) (map[string]struct{}, map[string]connector.Issue) {
+	transitions := terminalTransitionIssues(issues, previous, lastRefreshAt, o.cfg.TerminalStates)
+	transitions = mergeIssueSlices(transitions, terminalIssues(retryIssues, o.cfg.TerminalStates))
+	if len(transitions) == 0 {
+		return nil, nil
+	}
+	resolver, ok := o.connector.(connector.IssueParentResolver)
+	if !ok {
+		return nil, nil
+	}
+
+	parents := make([]connector.Issue, 0, len(transitions))
+	failedTransitions := map[string]connector.Issue{}
+	seenParents := map[string]struct{}{}
+	for _, issue := range transitions {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		linkedParents, err := resolver.FetchIssueParents(ctx, issueID)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn("fetch completed child epic parents failed", "issue_id", issueID, "error", err)
+			}
+			key := issueIdentityKey(issue)
+			if key != "" {
+				failedTransitions[key] = cloneIssue(issue)
+			}
+			continue
+		}
+		for _, parent := range linkedParents {
+			key := issueIdentityKey(parent)
+			if key == "" {
+				continue
+			}
+			if _, ok := seenParents[key]; ok {
+				continue
+			}
+			seenParents[key] = struct{}{}
+			parents = append(parents, cloneIssue(parent))
+		}
+	}
+	if len(parents) == 0 {
+		return nil, failedTransitions
+	}
+	return o.closeCompletedEpics(ctx, parents), failedTransitions
+}
+
+func (o *Orchestrator) fetchEpicTransitionIssueStates(ctx context.Context, issues []connector.Issue) ([]connector.Issue, bool) {
+	ids := issueIDs(issues)
+	if len(ids) == 0 {
+		return nil, true
+	}
+	refreshed, err := o.connector.FetchIssueStatesByIDs(ctx, ids)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("fetch epic transition issue states failed", "error", err)
+		}
+		return nil, false
+	}
+	return cloneIssues(refreshed), true
+}
+
+func (o *Orchestrator) refreshPendingEpicParentLookups(
+	ctx context.Context,
+	pending map[string]connector.Issue,
+) ([]connector.Issue, map[string]connector.Issue) {
+	if len(pending) == 0 {
+		return nil, nil
+	}
+
+	issues := make([]connector.Issue, 0, len(pending))
+	for _, key := range sortedKeys(pending) {
+		issues = append(issues, pending[key])
+	}
+	refreshed, ok := o.fetchEpicTransitionIssueStates(ctx, issues)
+	if !ok {
+		return nil, pending
+	}
+	return terminalIssues(refreshed, o.cfg.TerminalStates), nil
+}
+
+func issueIDs(issues []connector.Issue) []string {
+	ids := make([]string, 0, len(issues))
+	seen := map[string]struct{}{}
+	for _, issue := range issues {
+		id := strings.TrimSpace(issue.ID)
+		if id == "" {
+			continue
+		}
+		if _, ok := seen[id]; ok {
+			continue
+		}
+		seen[id] = struct{}{}
+		ids = append(ids, id)
+	}
+	return ids
+}
+
+func terminalIssues(issues []connector.Issue, terminalStates []string) []connector.Issue {
+	out := make([]connector.Issue, 0, len(issues))
+	for _, issue := range issues {
+		if terminalIssue(issue, terminalStates) {
+			out = append(out, cloneIssue(issue))
+		}
+	}
+	return out
+}
+
+func mergeIssueSlices(left []connector.Issue, right []connector.Issue) []connector.Issue {
+	out := make([]connector.Issue, 0, len(left)+len(right))
+	seen := map[string]struct{}{}
+	for _, issue := range append(cloneIssues(left), right...) {
+		key := issueIdentityKey(issue)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, cloneIssue(issue))
+	}
+	return out
+}
+
+func mergeIssueMaps(maps ...map[string]connector.Issue) map[string]connector.Issue {
+	out := map[string]connector.Issue{}
+	for _, issues := range maps {
+		for key, issue := range issues {
+			key = strings.TrimSpace(key)
+			if key == "" {
+				key = issueIdentityKey(issue)
+			}
+			if key == "" {
+				continue
+			}
+			out[key] = cloneIssue(issue)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func terminalTransitionIssues(
+	issues []connector.Issue,
+	previous []connector.Issue,
+	lastRefreshAt time.Time,
+	terminalStates []string,
+) []connector.Issue {
+	index := newEpicIssueIndex(previous)
+	transitions := make([]connector.Issue, 0, len(issues))
+	seen := map[string]struct{}{}
+	for _, issue := range issues {
+		if !terminalIssue(issue, terminalStates) {
+			continue
+		}
+		key := issueIdentityKey(issue)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		if !issueBecameTerminal(issue, index, lastRefreshAt, terminalStates) {
+			continue
+		}
+		seen[key] = struct{}{}
+		transitions = append(transitions, cloneIssue(issue))
+	}
+	return transitions
+}
+
+func issueBecameTerminal(
+	issue connector.Issue,
+	previous *epicIssueIndex,
+	lastRefreshAt time.Time,
+	terminalStates []string,
+) bool {
+	if previousIssue, ok := previous.issueForRef(connector.BlockedRef{ID: issue.ID, Identifier: issue.Identifier}); ok {
+		return !terminalIssue(previousIssue, terminalStates)
+	}
+	if lastRefreshAt.IsZero() {
+		return false
+	}
+	if issue.StageUpdatedAt != nil {
+		return issue.StageUpdatedAt.After(lastRefreshAt)
+	}
+	if issue.UpdatedAt != nil {
+		return issue.UpdatedAt.After(lastRefreshAt)
+	}
+	return false
+}
+
+func terminalIssue(issue connector.Issue, terminalStates []string) bool {
+	return issue.Closed || stateIn(issue.State, terminalStates)
 }
 
 func completedEpicPlans(issues []connector.Issue) []completedEpicPlan {
@@ -392,6 +599,16 @@ func blockerIdentifier(refRepo string, number string, repo string) string {
 
 func normalizedIssueIdentifier(identifier string) string {
 	return strings.ToLower(strings.TrimSpace(identifier))
+}
+
+func issueIdentityKey(issue connector.Issue) string {
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		return "id:" + id
+	}
+	if identifier := normalizedIssueIdentifier(issue.Identifier); identifier != "" {
+		return "identifier:" + identifier
+	}
+	return ""
 }
 
 func doneStateName(terminalStates []string) string {

@@ -308,6 +308,9 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 }
 
 func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
+	lastRefreshAt := state.LastRefreshAt
+	previousPipeline := cloneIssues(state.Pipeline)
+	pendingEpicParentLookups := cloneIssueMap(state.pendingEpicParentLookups)
 	o.markRefresh(state, now)
 	defer o.finishRefresh(state, now)
 
@@ -331,15 +334,28 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	}
 
 	issues = cloneIssues(issues)
+	transitionIssues := cloneIssues(issues)
+	pipelineIssues, pipelineRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previousPipeline)
+	transitionIssues = append(transitionIssues, pipelineIssues...)
+	pendingTransitions, pendingParentLookups := o.refreshPendingEpicParentLookups(ctx, pendingEpicParentLookups)
+	transitionIssues = append(transitionIssues, pendingTransitions...)
 	if statusErr == nil {
 		statusIssues = cloneIssues(statusIssues)
+		transitionIssues = append(transitionIssues, statusIssues...)
 		state.Pipeline = issuesInStates(statusIssues, prPipelineFetchStates())
+		if !pipelineRefreshOK {
+			state.Pipeline = mergeIssueSlices(state.Pipeline, previousPipeline)
+		}
 	}
-	observedIssues := cloneIssues(issues)
-	if statusErr == nil {
-		observedIssues = append(observedIssues, statusIssues...)
-	}
-	issues = filterCompletedEpicCandidates(issues, o.closeCompletedEpics(ctx, observedIssues))
+	completedEpics, failedParentLookups := o.closeCompletedEpicsForTerminalTransitions(
+		ctx,
+		transitionIssues,
+		previousPipeline,
+		lastRefreshAt,
+		pendingTransitions,
+	)
+	state.pendingEpicParentLookups = mergeIssueMaps(pendingParentLookups, failedParentLookups)
+	issues = filterCompletedEpicCandidates(issues, completedEpics)
 	sortIssuesForDispatch(issues, o.cfg.DispatchPriorityByState)
 	o.pruneBudgetRefusals(state, now)
 	o.trackBlockedCandidates(state, issues, now)
