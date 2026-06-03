@@ -1,0 +1,116 @@
+package main
+
+import (
+	"bufio"
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"runtime"
+	"strings"
+
+	"github.com/spf13/cobra"
+
+	detentupdate "github.com/digitaldrywood/detent/internal/update"
+)
+
+type updateRunner interface {
+	Check(context.Context) (detentupdate.Status, error)
+	Apply(context.Context, detentupdate.ApplyOptions) (detentupdate.Status, error)
+}
+
+type updateFactory func() (updateRunner, error)
+
+func newUpdateCommand(factory updateFactory) *cobra.Command {
+	var checkOnly bool
+	var assumeYes bool
+	var jsonOutput bool
+
+	cmd := &cobra.Command{
+		Use:          "update",
+		Short:        "Check for and apply Detent updates",
+		Args:         cobra.NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			runner, err := factory()
+			if err != nil {
+				return err
+			}
+
+			var status detentupdate.Status
+			if checkOnly {
+				status, err = runner.Check(cmd.Context())
+			} else {
+				opts := detentupdate.ApplyOptions{AssumeYes: assumeYes}
+				if !assumeYes && !jsonOutput {
+					opts.Confirm = confirmUpdate(cmd)
+				}
+				status, err = runner.Apply(cmd.Context(), opts)
+			}
+
+			var writeErr error
+			if jsonOutput {
+				writeErr = writeUpdateJSON(cmd.OutOrStdout(), status)
+			} else {
+				writeErr = writeUpdateText(cmd.OutOrStdout(), status)
+			}
+			if writeErr != nil {
+				return writeErr
+			}
+			return err
+		},
+	}
+	cmd.Flags().BoolVar(&checkOnly, "check", false, "check for updates without changing the binary")
+	cmd.Flags().BoolVar(&assumeYes, "yes", false, "apply the update without prompting")
+	cmd.Flags().BoolVar(&jsonOutput, "json", false, "write machine-readable update status")
+	return cmd
+}
+
+func newDefaultUpdateRunner() (updateRunner, error) {
+	executable, err := os.Executable()
+	if err != nil {
+		return nil, fmt.Errorf("resolve current executable: %w", err)
+	}
+	return detentupdate.NewService(detentupdate.Config{
+		CurrentVersion: version,
+		ExecutablePath: executable,
+		GOOS:           runtime.GOOS,
+		GOARCH:         runtime.GOARCH,
+	}), nil
+}
+
+func confirmUpdate(cmd *cobra.Command) func(detentupdate.Status) (bool, error) {
+	return func(status detentupdate.Status) (bool, error) {
+		if _, err := fmt.Fprintf(cmd.OutOrStdout(), "Update Detent from %s to %s? [y/N] ", status.CurrentVersion, status.LatestVersion); err != nil {
+			return false, err
+		}
+		line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return false, fmt.Errorf("read update confirmation: %w", err)
+		}
+		answer := strings.ToLower(strings.TrimSpace(line))
+		return answer == "y" || answer == "yes", nil
+	}
+}
+
+func writeUpdateJSON(out io.Writer, status detentupdate.Status) error {
+	encoder := json.NewEncoder(out)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(status)
+}
+
+func writeUpdateText(out io.Writer, status detentupdate.Status) error {
+	if strings.TrimSpace(status.Message) != "" {
+		if _, err := fmt.Fprintln(out, status.Message); err != nil {
+			return err
+		}
+	}
+	if strings.TrimSpace(status.Command) != "" && (status.Action == detentupdate.ActionDelegate || status.Action == detentupdate.ActionRefused) {
+		if _, err := fmt.Fprintf(out, "Run: %s\n", status.Command); err != nil {
+			return err
+		}
+	}
+	return nil
+}
