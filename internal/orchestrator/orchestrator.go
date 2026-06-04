@@ -308,7 +308,6 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 }
 
 func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
-	o.resetConnectorGraphQLRateLimitUsage()
 	o.markRefresh(state, now)
 	defer o.finishRefresh(state, now)
 
@@ -565,14 +564,6 @@ type graphQLRateLimitCycle struct {
 	Bucket     *telemetry.RateLimitBucket
 	Cost       *telemetry.GraphQLCost
 	HasSummary bool
-}
-
-func (o *Orchestrator) resetConnectorGraphQLRateLimitUsage() {
-	reporter, ok := o.connector.(connector.GraphQLRateLimitUsageReporter)
-	if !ok {
-		return
-	}
-	reporter.ResetGraphQLRateLimitUsage()
 }
 
 func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) graphQLRateLimitCycle {

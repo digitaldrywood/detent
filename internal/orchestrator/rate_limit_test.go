@@ -173,8 +173,8 @@ func TestTickPublishesAndLogsGitHubGraphQLCostSummary(t *testing.T) {
 
 	orch.tick(context.Background(), &state, now)
 
-	if tracker.resetUsageCalls != 1 || tracker.flushUsageCalls != 1 {
-		t.Fatalf("usage calls = reset %d flush %d, want 1 each", tracker.resetUsageCalls, tracker.flushUsageCalls)
+	if tracker.resetUsageCalls != 0 || tracker.flushUsageCalls != 1 {
+		t.Fatalf("usage calls = reset %d flush %d, want reset 0 flush 1", tracker.resetUsageCalls, tracker.flushUsageCalls)
 	}
 	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil || state.RateLimits.GraphQLCost == nil {
 		t.Fatalf("RateLimits = %#v, want GitHub GraphQL bucket and cost summary", state.RateLimits)
@@ -201,6 +201,54 @@ func TestTickPublishesAndLogsGitHubGraphQLCostSummary(t *testing.T) {
 		if !strings.Contains(logOutput, want) {
 			t.Fatalf("log output missing %q:\n%s", want, logOutput)
 		}
+	}
+}
+
+func TestTickCarriesGitHubGraphQLCostRecordedBetweenRefreshes(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		usage: connector.GraphQLRateLimitUsage{
+			HasRateLimit: true,
+			RateLimit: connector.GraphQLRateLimit{
+				Limit:     5000,
+				Used:      142,
+				Remaining: 4858,
+				Cost:      1,
+				ResetAt:   resetAt,
+				UpdatedAt: now,
+			},
+			QueryCosts: []connector.GraphQLQueryCost{
+				{QueryType: "default_blank_status", Count: 1, Cost: 1},
+			},
+			TotalQueries: 1,
+			TotalCost:    1,
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.resetUsageCalls != 0 {
+		t.Fatalf("ResetGraphQLRateLimitUsage() calls = %d, want 0", tracker.resetUsageCalls)
+	}
+	if state.RateLimits == nil || state.RateLimits.GraphQLCost == nil {
+		t.Fatalf("RateLimits = %#v, want carried GraphQL cost summary", state.RateLimits)
+	}
+	if state.RateLimits.GraphQLCost.TotalCost != 1 || state.RateLimits.GraphQLCost.TotalQueries != 1 {
+		t.Fatalf("GraphQLCost = %#v, want carried cost 1 query 1", state.RateLimits.GraphQLCost)
+	}
+	if got := state.RateLimits.GraphQLCost.Contributors; len(got) != 1 || got[0].QueryType != "default_blank_status" {
+		t.Fatalf("GraphQLCost.Contributors = %#v, want default_blank_status", got)
 	}
 }
 
@@ -292,6 +340,7 @@ func (c *rateLimitConnector) GraphQLRateLimit() (connector.GraphQLRateLimit, boo
 
 func (c *rateLimitConnector) ResetGraphQLRateLimitUsage() {
 	c.resetUsageCalls++
+	c.usage = connector.GraphQLRateLimitUsage{}
 }
 
 func (c *rateLimitConnector) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
