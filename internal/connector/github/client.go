@@ -316,50 +316,54 @@ type graphQLHeaderRateLimit struct {
 }
 
 func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) graphQLHeaderRateLimit {
-	var snapshot connector.GraphQLRateLimit
-	var previous connector.GraphQLRateLimit
-	hasPrevious := false
-	if current, ok := c.GraphQLRateLimit(); ok {
-		previous = current
-		hasPrevious = true
-		snapshot = current
-	}
+	limit, hasLimit := int64Header(headers, "X-RateLimit-Limit")
+	used, hasUsed := int64Header(headers, "X-RateLimit-Used")
+	remaining, hasRemaining := int64Header(headers, "X-RateLimit-Remaining")
+	reset, hasReset := int64Header(headers, "X-RateLimit-Reset")
+	retryAfter, hasRetryAfter := parseRetryAfter(headers.Get("Retry-After"), now)
 
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	previous := c.rateLimit
+	hasPrevious := c.hasRateLimit
+	snapshot := previous
 	hasSnapshot := false
 	hasPrimarySnapshot := false
-	if value, ok := int64Header(headers, "X-RateLimit-Limit"); ok {
-		snapshot.Limit = value
+	if hasLimit {
+		snapshot.Limit = limit
 		hasSnapshot = true
 		hasPrimarySnapshot = true
 	}
-	if value, ok := int64Header(headers, "X-RateLimit-Used"); ok {
-		snapshot.Used = value
+	if hasUsed {
+		snapshot.Used = used
 		hasSnapshot = true
 		hasPrimarySnapshot = true
 	}
-	if value, ok := int64Header(headers, "X-RateLimit-Remaining"); ok {
-		snapshot.Remaining = value
+	if hasRemaining {
+		snapshot.Remaining = remaining
 		hasSnapshot = true
 		hasPrimarySnapshot = true
 	}
-	if value, ok := int64Header(headers, "X-RateLimit-Reset"); ok {
-		snapshot.ResetAt = time.Unix(value, 0).UTC()
+	if hasReset {
+		snapshot.ResetAt = time.Unix(reset, 0).UTC()
 		hasSnapshot = true
 		hasPrimarySnapshot = true
 	}
 	if hasPrimarySnapshot {
 		snapshot.Cost = 0
 	}
-	if retryAfter, ok := parseRetryAfter(headers.Get("Retry-After"), now); ok {
+	if hasRetryAfter {
 		snapshot.RetryAfter = retryAfter
 		hasSnapshot = true
 	} else if hasSnapshot {
 		snapshot.RetryAfter = 0
 	}
 
-	if hasSnapshot {
+	if hasSnapshot && !stalePrimaryRateLimitSnapshot(previous, snapshot, hasPrevious, hasPrimarySnapshot) {
 		snapshot.UpdatedAt = now
-		c.setRateLimit(snapshot)
+		c.rateLimit = snapshot
+		c.hasRateLimit = true
 	}
 	return graphQLHeaderRateLimit{
 		Previous:           previous,
@@ -368,6 +372,24 @@ func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) 
 		HasCurrent:         hasSnapshot,
 		HasPrimarySnapshot: hasPrimarySnapshot,
 	}
+}
+
+func stalePrimaryRateLimitSnapshot(
+	previous connector.GraphQLRateLimit,
+	snapshot connector.GraphQLRateLimit,
+	hasPrevious bool,
+	hasPrimarySnapshot bool,
+) bool {
+	if !hasPrevious || !hasPrimarySnapshot {
+		return false
+	}
+	if previous.Limit <= 0 || snapshot.Limit <= 0 {
+		return false
+	}
+	if !previous.ResetAt.IsZero() && !snapshot.ResetAt.IsZero() && !previous.ResetAt.Equal(snapshot.ResetAt) {
+		return false
+	}
+	return snapshot.Used < previous.Used
 }
 
 func (c *Client) LiveConnections() int {

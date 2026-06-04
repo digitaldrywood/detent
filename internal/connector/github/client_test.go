@@ -6,7 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"runtime"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
@@ -349,6 +351,59 @@ func TestClientGraphQLInfersMutationCostsFromHeaders(t *testing.T) {
 		if usage.QueryCosts[index] != wantCost {
 			t.Fatalf("QueryCosts[%d] = %#v, want %#v", index, usage.QueryCosts[index], wantCost)
 		}
+	}
+}
+
+func TestClientGraphQLSerializesHeaderInferredMutationCosts(t *testing.T) {
+	oldProcs := runtime.GOMAXPROCS(16)
+	defer runtime.GOMAXPROCS(oldProcs)
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	client := &Client{}
+	client.setRateLimit(connector.GraphQLRateLimit{
+		Limit:     5000,
+		Used:      10,
+		Remaining: 4990,
+		ResetAt:   resetAt,
+		UpdatedAt: now,
+	})
+
+	const mutations = 100
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 1; i <= mutations; i++ {
+		used := int64(10 + i)
+		remaining := int64(5000) - used
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			headers := http.Header{}
+			headers.Set("X-RateLimit-Limit", "5000")
+			headers.Set("X-RateLimit-Used", strconv.FormatInt(used, 10))
+			headers.Set("X-RateLimit-Remaining", strconv.FormatInt(remaining, 10))
+			headers.Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+
+			snapshot := client.recordRateLimitFromHeaders(headers, now)
+			client.recordGraphQLQueryCostFromHeaders("mutation", snapshot)
+		}()
+	}
+	close(start)
+	wg.Wait()
+
+	usage := client.FlushGraphQLRateLimitUsage()
+	if usage.TotalCost != mutations {
+		t.Fatalf("FlushGraphQLRateLimitUsage().TotalCost = %d, want %d", usage.TotalCost, mutations)
+	}
+	if len(usage.QueryCosts) != 1 {
+		t.Fatalf("QueryCosts len = %d, want 1: %#v", len(usage.QueryCosts), usage.QueryCosts)
+	}
+	if usage.QueryCosts[0].QueryType != "mutation" || usage.QueryCosts[0].Cost != mutations {
+		t.Fatalf("QueryCosts[0] = %#v, want mutation cost %d", usage.QueryCosts[0], mutations)
+	}
+	if usage.RateLimit.Used != 10+mutations || usage.RateLimit.Remaining != 5000-10-mutations {
+		t.Fatalf("RateLimit = %#v, want latest used %d remaining %d", usage.RateLimit, 10+mutations, 5000-10-mutations)
 	}
 }
 
