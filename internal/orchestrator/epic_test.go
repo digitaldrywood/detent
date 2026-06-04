@@ -94,10 +94,8 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 			candidates: []connector.Issue{
 				epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "- [ ] #251\n- [ ] #252"),
 			},
-			stateIssues: []connector.Issue{
-				epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
-			},
 			resolved: []connector.Issue{
+				epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
 				epicTestIssue("child-252", "Open", true, "Child 252", nil, ""),
 			},
 			wantUpdates:  []epicStateUpdate{{issueID: "epic-258", state: "Done"}},
@@ -110,7 +108,7 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 				epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "- [ ] #251\n- [ ] #252"),
 				epicTestIssue("child-252", "In Progress", false, "Child 252", nil, ""),
 			},
-			stateIssues: []connector.Issue{
+			resolved: []connector.Issue{
 				epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
 			},
 		},
@@ -142,7 +140,7 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 			},
 		},
 		{
-			name: "open done epic is closed without status update",
+			name: "open done epic is not fetched by recurring scan",
 			stateIssues: []connector.Issue{
 				func() connector.Issue {
 					issue := epicTestIssue("epic-258", "Done", false, "Epic: Release readiness", []string{"epic"}, "")
@@ -151,11 +149,9 @@ func TestTickFinalizesCompletedEpics(t *testing.T) {
 				}(),
 				epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
 			},
-			wantClosed:   []string{"epic-258"},
-			wantComments: []string{"Auto-closing completed epic: 1 child issue is Done."},
 		},
 		{
-			name: "open done epic close failure does not comment",
+			name: "open done epic close failure is not reached by recurring scan",
 			stateIssues: []connector.Issue{
 				func() connector.Issue {
 					issue := epicTestIssue("epic-258", "Done", false, "Epic: Release readiness", []string{"epic"}, "")

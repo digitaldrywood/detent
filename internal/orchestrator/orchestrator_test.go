@@ -559,7 +559,7 @@ func TestRunTracksBlockedStatusIssuesForDisplayOnly(t *testing.T) {
 	}
 }
 
-func TestRunFetchesPipelineTerminalStates(t *testing.T) {
+func TestRunFetchesOnlyActionableObservedStates(t *testing.T) {
 	t.Parallel()
 
 	tracker := newFakeConnector()
@@ -570,10 +570,17 @@ func TestRunFetchesPipelineTerminalStates(t *testing.T) {
 	waitForFetchByStatesCalls(t, tracker, 1)
 
 	got := tracker.fetchByStatesRequests()
-	want := []string{"Blocked", "Human Review", "Merging", "Done", "Cancelled", "Canceled", "Closed"}
+	want := []string{"Blocked", "Human Review", "Merging"}
 	for _, request := range got {
 		if !stateRequestsContain([][]string{request}, want) {
 			t.Fatalf("FetchIssuesByStates request = %#v, want combined status request containing %#v; all requests = %#v", request, want, got)
+		}
+		for _, forbidden := range []string{"Backlog", "Done", "Cancelled", "Canceled", "Closed"} {
+			for _, state := range request {
+				if strings.EqualFold(strings.TrimSpace(state), forbidden) {
+					t.Fatalf("FetchIssuesByStates request = %#v, want no non-actionable state %q", request, forbidden)
+				}
+			}
 		}
 	}
 }
