@@ -117,6 +117,9 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 	if fetchVariables["projectId"] != "PVT_throwaway" {
 		t.Fatalf("fetch projectId = %v, want PVT_throwaway", fetchVariables["projectId"])
 	}
+	if fetchVariables["query"] != `status:Ready,"In Progress",Merging,Rework` {
+		t.Fatalf("fetch query = %v, want actionable statuses", fetchVariables["query"])
+	}
 	if !strings.Contains(requests[3]["query"].(string), "ProjectV2") {
 		t.Fatalf("fetch query = %q, want ProjectV2", requests[3]["query"])
 	}

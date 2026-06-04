@@ -33,6 +33,7 @@ query DetentGitHubProjectItems(
   $projectId: ID!
   $first: Int!
   $after: String
+  $query: String
   $projectItemFieldValuesFirst: Int!
   $linkedIssuesFirst: Int!
   $linkedProjectItemsFirst: Int!
@@ -40,7 +41,7 @@ query DetentGitHubProjectItems(
 ) {
   node(id: $projectId) {
     ... on ProjectV2 {
-      items(first: $first, after: $after) {
+      items(first: $first, after: $after, query: $query) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -796,7 +797,7 @@ func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue
 		return nil, ErrMissingProject
 	}
 
-	issues, err := c.fetchProjectItems(ctx, func(issue connector.Issue) bool {
+	issues, err := c.fetchProjectItems(ctx, c.projectStatusQuery(c.activeStates), func(issue connector.Issue) bool {
 		return stateInList(issue.State, c.activeStates)
 	})
 	if err != nil {
@@ -817,7 +818,7 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 		return nil, ErrMissingProject
 	}
 
-	issues, err := c.fetchProjectItems(ctx, func(issue connector.Issue) bool {
+	issues, err := c.fetchProjectItems(ctx, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
 		_, ok := wantedStates[normalizeStateName(issue.State)]
 		return ok
 	})
@@ -1317,10 +1318,14 @@ func attachMatchingPullRequests(
 	}
 }
 
-func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
+func (c *Connector) fetchProjectItems(ctx context.Context, query string, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
 	var after *string
 	allIssues := []connector.Issue{}
 	blankStatusItemIDs := []string{}
+	var projectQuery *string
+	if query != "" {
+		projectQuery = &query
+	}
 
 	for {
 		var response struct {
@@ -1332,6 +1337,7 @@ func (c *Connector) fetchProjectItems(ctx context.Context, keepIssue func(connec
 			"projectId":                         c.projectID,
 			"first":                             projectItemsPageSize,
 			"after":                             after,
+			"query":                             projectQuery,
 			"projectItemFieldValuesFirst":       projectItemFieldValuesPageSize,
 			"linkedIssuesFirst":                 linkedIssuePageSize,
 			"linkedProjectItemsFirst":           linkedIssueProjectItemsPageSize,
@@ -2001,7 +2007,70 @@ func (c *Connector) detentToGitHubState(stateName string) string {
 	if mapped, ok := c.stateMap[stateName]; ok {
 		return strings.TrimSpace(mapped)
 	}
+	normalized := normalizeStateName(stateName)
+	for detentState, mapped := range c.stateMap {
+		if normalizeStateName(detentState) == normalized {
+			return strings.TrimSpace(mapped)
+		}
+	}
 	return stateName
+}
+
+func (c *Connector) detentToGitHubStates(stateNames []string) []string {
+	states := make([]string, 0, len(stateNames))
+	seen := make(map[string]struct{}, len(stateNames))
+	for _, stateName := range stateNames {
+		state := c.detentToGitHubState(stateName)
+		key := normalizeStateName(state)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		states = append(states, state)
+	}
+	return states
+}
+
+func (c *Connector) projectStatusQuery(stateNames []string) string {
+	if stateInList(defaultProjectItemStatusState, stateNames) {
+		return ""
+	}
+	states := c.detentToGitHubStates(stateNames)
+	if len(states) == 0 {
+		return ""
+	}
+
+	values := make([]string, 0, len(states))
+	for _, state := range states {
+		values = append(values, projectFilterValue(state))
+	}
+	return "status:" + strings.Join(values, ",")
+}
+
+func projectFilterValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	for _, r := range value {
+		if r >= 'a' && r <= 'z' {
+			continue
+		}
+		if r >= 'A' && r <= 'Z' {
+			continue
+		}
+		if r >= '0' && r <= '9' {
+			continue
+		}
+		if r == '_' || r == '-' || r == '.' {
+			continue
+		}
+		return strconv.Quote(value)
+	}
+	return value
 }
 
 func (c *Connector) githubToDetentState(githubState string) string {

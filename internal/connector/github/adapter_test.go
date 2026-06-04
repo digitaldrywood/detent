@@ -77,6 +77,9 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	if variables["first"] != float64(50) {
 		t.Fatalf("first = %v, want 50", variables["first"])
 	}
+	if variables["query"] != "status:Ready" {
+		t.Fatalf("query = %v, want status:Ready", variables["query"])
+	}
 	if variables["projectItemFieldValuesFirst"] != float64(projectItemFieldValuesPageSize) {
 		t.Fatalf("projectItemFieldValuesFirst = %v, want %d", variables["projectItemFieldValuesFirst"], projectItemFieldValuesPageSize)
 	}
@@ -167,6 +170,30 @@ func TestProjectFieldValues(t *testing.T) {
 				t.Fatalf("projectFieldValues() = %#v, want %#v", got, tt.want)
 			}
 		})
+	}
+}
+
+func TestProjectStatusQueryFormatsMappedStatuses(t *testing.T) {
+	t.Parallel()
+
+	c := &Connector{stateMap: map[string]string{
+		"Todo":         "Ready",
+		"Human Review": "In Review",
+	}}
+
+	got := c.projectStatusQuery([]string{"Todo", "In Progress", "Human Review", "Rework", "Blocked", "Merging"})
+	want := `status:Ready,"In Progress","In Review",Rework,Blocked,Merging`
+	if got != want {
+		t.Fatalf("projectStatusQuery() = %q, want %q", got, want)
+	}
+	for _, forbidden := range []string{"Backlog", "Done"} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("projectStatusQuery() = %q, want no %s", got, forbidden)
+		}
+	}
+
+	if got := c.projectStatusQuery([]string{"Backlog"}); got != "" {
+		t.Fatalf("projectStatusQuery(Backlog) = %q, want empty query", got)
 	}
 }
 
@@ -547,6 +574,11 @@ func TestConnectorFetchIssuesByStatesFiltersMappedStates(t *testing.T) {
 	}
 	if ids := githubIssueIDs(got); !reflect.DeepEqual(ids, []string{"I_kw1"}) {
 		t.Fatalf("FetchIssuesByStates() ids = %#v, want [I_kw1]", ids)
+	}
+	requests := server.requests()
+	queryVariables := requests[0]["variables"].(map[string]any)
+	if queryVariables["query"] != "status:Ready" {
+		t.Fatalf("query = %v, want status:Ready", queryVariables["query"])
 	}
 
 	requestsBeforeEmpty := len(server.requests())

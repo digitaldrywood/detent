@@ -32,7 +32,7 @@ const (
 	blockedReasonProjectStatus      = "blocked by project status"
 )
 
-var prPipelineStates = []string{"Human Review", "Merging", "Done"}
+var prPipelineStates = []string{"Human Review", "Merging"}
 
 var (
 	ErrMissingConnector = errors.New("orchestrator connector is required")
@@ -300,7 +300,7 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
 		return
 	}
-	statusIssues, statusErr := o.connector.FetchIssuesByStates(ctx, observedStatusFetchStates(o.cfg.TerminalStates))
+	statusIssues, statusErr := o.connector.FetchIssuesByStates(ctx, observedStatusFetchStates())
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
 	}
@@ -308,7 +308,7 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	issues = cloneIssues(issues)
 	if statusErr == nil {
 		statusIssues = cloneIssues(statusIssues)
-		state.Pipeline = issuesInStates(statusIssues, prPipelineFetchStates(o.cfg.TerminalStates))
+		state.Pipeline = issuesInStates(statusIssues, prPipelineFetchStates())
 	}
 	observedIssues := cloneIssues(issues)
 	if statusErr == nil {
@@ -324,14 +324,14 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	o.dispatchReadyIssues(ctx, state, issues, now)
 }
 
-func observedStatusFetchStates(terminalStates []string) []string {
-	return append([]string{blockedStatusState}, prPipelineFetchStates(terminalStates)...)
+func observedStatusFetchStates() []string {
+	return append([]string{blockedStatusState}, prPipelineFetchStates()...)
 }
 
-func prPipelineFetchStates(terminalStates []string) []string {
-	states := make([]string, 0, len(prPipelineStates)+len(terminalStates))
-	seen := make(map[string]struct{}, len(prPipelineStates)+len(terminalStates))
-	for _, state := range append(append([]string(nil), prPipelineStates...), terminalStates...) {
+func prPipelineFetchStates() []string {
+	states := make([]string, 0, len(prPipelineStates))
+	seen := make(map[string]struct{}, len(prPipelineStates))
+	for _, state := range prPipelineStates {
 		key := normalizeState(state)
 		if key == "" {
 			continue
