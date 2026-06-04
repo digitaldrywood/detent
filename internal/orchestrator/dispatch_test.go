@@ -715,6 +715,32 @@ func TestDispatchIssueIncludesSelectorContext(t *testing.T) {
 	}
 }
 
+func TestDispatchIssueClearsReapedWorkspaceMarker(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+	})
+	orch := Orchestrator{
+		cfg:        cfg,
+		supervisor: newTestSupervisor(t, FakeRunner{}, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+	}
+	state := newState(cfg)
+	now := time.Now()
+	issue := dispatchTestIssue("issue-reopened", "Todo")
+	state.ReapedWorkspaces[issue.ID] = now.Add(-time.Hour)
+
+	if !orch.dispatchIssue(context.Background(), &state, issue, 0, now, "") {
+		t.Fatal("dispatchIssue() = false, want true")
+	}
+	if _, ok := state.ReapedWorkspaces[issue.ID]; ok {
+		t.Fatalf("ReapedWorkspaces[%q] present after dispatch", issue.ID)
+	}
+}
+
 func TestSelectWorkerHostKeepsPreferredHostWhenAvailable(t *testing.T) {
 	t.Parallel()
 
