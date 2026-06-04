@@ -242,7 +242,7 @@ tracker:
     Low: 4
     No priority: null
 polling:
-  interval_ms: 30000
+  interval_ms: 120000
 workspace:
   root: /absolute/path/to/detent-workspaces
   source_root: /absolute/path/to/project-checkout
@@ -295,6 +295,13 @@ human review.
 If `workspace.source_root` is omitted, Detent falls back to the project
 `workdir` from global config, then to `workspace.root` for older single-root
 setups.
+
+`polling.interval_ms` defaults to `120000` and must be at least `60000`.
+Detent work is async, so it does not need sub-minute board scans. Detent polls
+GitHub GraphQL, where board scans consume a shared rate-limit budget used by
+Detent, spawned agents, and operator `gh` calls. Faster polling risks exhausting
+that budget. This is an intentional divergence from Symphony's `30000` ms
+default because Symphony polls Linear, which has a different rate model.
 
 `gate` controls the validation contract the agent and operator flow follow.
 Omitting it preserves the code default: `kind: command` with `run: make check`,

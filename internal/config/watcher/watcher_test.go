@@ -20,7 +20,7 @@ func TestWatchDebouncesWorkflowWrites(t *testing.T) {
 	debounce := 150 * time.Millisecond
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")
-	writeWorkflow(t, path, 100, "initial")
+	writeWorkflow(t, path, 60000, "initial")
 
 	w, err := New(path, WithDebounce(debounce))
 	if err != nil {
@@ -35,15 +35,15 @@ func TestWatchDebouncesWorkflowWrites(t *testing.T) {
 		t.Fatalf("Watch() error = %v", err)
 	}
 
-	writeWorkflow(t, path, 200, "first")
-	writeWorkflow(t, path, 300, "second")
+	writeWorkflow(t, path, 61000, "first")
+	writeWorkflow(t, path, 62000, "second")
 
 	update := receiveUpdate(t, updates)
 	if update.Err != nil {
 		t.Fatalf("update error = %v", update.Err)
 	}
-	if update.Workflow.Config.Polling.IntervalMS != 300 {
-		t.Fatalf("Polling.IntervalMS = %d, want 300", update.Workflow.Config.Polling.IntervalMS)
+	if update.Workflow.Config.Polling.IntervalMS != 62000 {
+		t.Fatalf("Polling.IntervalMS = %d, want 62000", update.Workflow.Config.Polling.IntervalMS)
 	}
 	if update.Workflow.Prompt != "second\n" {
 		t.Fatalf("Prompt = %q, want second", update.Workflow.Prompt)
@@ -61,7 +61,7 @@ func TestWatchSuppressesDuplicateWorkflowUpdates(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")
-	writeWorkflow(t, path, 100, "initial")
+	writeWorkflow(t, path, 60000, "initial")
 
 	w, err := New(path, WithDebounce(10*time.Millisecond))
 	if err != nil {
@@ -76,7 +76,7 @@ func TestWatchSuppressesDuplicateWorkflowUpdates(t *testing.T) {
 		t.Fatalf("Watch() error = %v", err)
 	}
 
-	writeWorkflow(t, path, 300, "second")
+	writeWorkflow(t, path, 61000, "second")
 	update := receiveUpdate(t, updates)
 	if update.Err != nil {
 		t.Fatalf("update error = %v", update.Err)
@@ -85,7 +85,7 @@ func TestWatchSuppressesDuplicateWorkflowUpdates(t *testing.T) {
 		t.Fatalf("Prompt = %q, want second", update.Workflow.Prompt)
 	}
 
-	writeWorkflow(t, path, 300, "second")
+	writeWorkflow(t, path, 61000, "second")
 	select {
 	case extra := <-updates:
 		t.Fatalf("duplicate update = %#v", extra)
@@ -98,7 +98,7 @@ func TestWatchHandlesAtomicSaveRename(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")
-	writeWorkflow(t, path, 100, "initial")
+	writeWorkflow(t, path, 60000, "initial")
 
 	w, err := New(path, WithDebounce(10*time.Millisecond))
 	if err != nil {
@@ -114,7 +114,7 @@ func TestWatchHandlesAtomicSaveRename(t *testing.T) {
 	}
 
 	tmp := filepath.Join(dir, ".WORKFLOW.md.tmp")
-	writeWorkflow(t, tmp, 450, "renamed")
+	writeWorkflow(t, tmp, 63000, "renamed")
 	if err := os.Rename(tmp, path); err != nil {
 		t.Fatalf("Rename() error = %v", err)
 	}
@@ -123,8 +123,8 @@ func TestWatchHandlesAtomicSaveRename(t *testing.T) {
 	if update.Err != nil {
 		t.Fatalf("update error = %v", update.Err)
 	}
-	if update.Workflow.Config.Polling.IntervalMS != 450 {
-		t.Fatalf("Polling.IntervalMS = %d, want 450", update.Workflow.Config.Polling.IntervalMS)
+	if update.Workflow.Config.Polling.IntervalMS != 63000 {
+		t.Fatalf("Polling.IntervalMS = %d, want 63000", update.Workflow.Config.Polling.IntervalMS)
 	}
 	if update.Workflow.Prompt != "renamed\n" {
 		t.Fatalf("Prompt = %q, want renamed", update.Workflow.Prompt)
@@ -136,7 +136,7 @@ func TestWatchRetriesTransientReloadErrors(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")
-	writeWorkflow(t, path, 100, "initial")
+	writeWorkflow(t, path, 60000, "initial")
 
 	var attempts atomic.Int32
 	w, err := New(path,
@@ -160,14 +160,14 @@ func TestWatchRetriesTransientReloadErrors(t *testing.T) {
 		t.Fatalf("Watch() error = %v", err)
 	}
 
-	writeWorkflow(t, path, 300, "second")
+	writeWorkflow(t, path, 62000, "second")
 
 	update := receiveUpdate(t, updates)
 	if update.Err != nil {
 		t.Fatalf("update error = %v", update.Err)
 	}
-	if update.Workflow.Config.Polling.IntervalMS != 300 {
-		t.Fatalf("Polling.IntervalMS = %d, want 300", update.Workflow.Config.Polling.IntervalMS)
+	if update.Workflow.Config.Polling.IntervalMS != 62000 {
+		t.Fatalf("Polling.IntervalMS = %d, want 62000", update.Workflow.Config.Polling.IntervalMS)
 	}
 	if got := attempts.Load(); got < 2 {
 		t.Fatalf("loader attempts = %d, want at least 2", got)
@@ -179,7 +179,7 @@ func TestWatchReportsInvalidReload(t *testing.T) {
 
 	dir := t.TempDir()
 	path := filepath.Join(dir, "WORKFLOW.md")
-	writeWorkflow(t, path, 100, "initial")
+	writeWorkflow(t, path, 60000, "initial")
 
 	w, err := New(path, WithDebounce(10*time.Millisecond))
 	if err != nil {

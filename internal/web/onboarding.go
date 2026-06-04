@@ -27,14 +27,15 @@ const (
 	defaultWorkspaceRoot        = "~/code/detent-workspaces"
 	defaultMaxConcurrentAgents  = "5"
 	defaultMaxTurns             = "20"
-	defaultPollingIntervalMS    = "30000"
 	defaultMergingConcurrency   = "1"
 	defaultDispatchPriorityText = "Merging\nRework"
 )
 
 var (
-	errWorkflowExists = errors.New("workflow file already exists")
-	repoPattern       = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+	errWorkflowExists        = errors.New("workflow file already exists")
+	repoPattern              = regexp.MustCompile(`^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$`)
+	defaultPollingIntervalMS = strconv.Itoa(config.DefaultPollingIntervalMS)
+	minPollingIntervalMS     = strconv.Itoa(config.MinPollingIntervalMS)
 )
 
 func (s *Server) onboarding(c echo.Context) error {
@@ -163,6 +164,7 @@ func (s *Server) onboardingData(form templates.OnboardingForm, problems []string
 		Errors:       problems,
 		Result:       result,
 		Assets:       s.assets.templatePaths(),
+		Polling:      templates.PollingData{MinIntervalMS: minPollingIntervalMS},
 	}
 }
 
@@ -258,6 +260,7 @@ func validateAgent(form templates.OnboardingForm) []string {
 	problems = append(problems, positiveIntegerProblem("max concurrent agents", form.MaxConcurrentAgents)...)
 	problems = append(problems, positiveIntegerProblem("max turns", form.MaxTurns)...)
 	problems = append(problems, positiveIntegerProblem("polling interval", form.PollingIntervalMS)...)
+	problems = append(problems, minimumIntegerProblem("polling interval", form.PollingIntervalMS, config.MinPollingIntervalMS)...)
 	problems = append(problems, positiveIntegerProblem("merging concurrency", form.MergingConcurrency)...)
 	for _, state := range dispatchPriorityStates(form) {
 		problems = append(problems, rejectNewlines("dispatch priority state", state)...)
@@ -272,6 +275,17 @@ func positiveIntegerProblem(field string, value string) []string {
 	parsed, err := strconv.Atoi(value)
 	if err != nil || parsed <= 0 {
 		return []string{field + " must be positive"}
+	}
+	return nil
+}
+
+func minimumIntegerProblem(field string, value string, minimum int) []string {
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return nil
+	}
+	if parsed < minimum {
+		return []string{fmt.Sprintf("%s must be at least %d", field, minimum)}
 	}
 	return nil
 }

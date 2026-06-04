@@ -214,7 +214,7 @@ func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
 	issue.State = "Todo"
 
 	reloaded := initial
-	reloaded.Polling.IntervalMS = 5
+	reloaded.Polling.IntervalMS = 60000
 	reloaded.Tracker.Issues = []connector.Issue{issue}
 	updates <- configwatcher.Update{
 		Workflow: workflowconfig.Workflow{
@@ -223,10 +223,7 @@ func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
 		},
 	}
 
-	request := receiveRunRequest(t, runner.started)
-	if request.Issue.ID != "issue-1" {
-		t.Fatalf("RunRequest.Issue.ID = %q, want issue-1", request.Issue.ID)
-	}
+	waitForWorkflowPrompt(t, got, "reloaded")
 	if got.Workflow().Prompt != "reloaded" {
 		t.Fatalf("Workflow().Prompt = %q, want reloaded", got.Workflow().Prompt)
 	}
@@ -307,7 +304,7 @@ func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
 	issue.State = "Todo"
 
 	reloaded := initial
-	reloaded.Polling.IntervalMS = 5
+	reloaded.Polling.IntervalMS = 60000
 	reloaded.Tracker.Issues = []connector.Issue{issue}
 	updates <- configwatcher.Update{
 		Workflow: workflowconfig.Workflow{
@@ -315,7 +312,7 @@ func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
 			Prompt: "reloaded",
 		},
 	}
-	_ = receiveRunRequest(t, runner.started)
+	waitForWorkflowPrompt(t, got, "reloaded")
 
 	if err := got.Pause(context.Background()); err != nil {
 		t.Fatalf("Pause() error = %v", err)
@@ -325,8 +322,8 @@ func TestProjectWorkflowReloadRefreshesRestartDependencies(t *testing.T) {
 	}
 
 	cfg = receiveOrchestratorConfig(t, configs)
-	if cfg.PollInterval != 5*time.Millisecond {
-		t.Fatalf("restarted PollInterval = %v, want %v", cfg.PollInterval, 5*time.Millisecond)
+	if cfg.PollInterval != time.Minute {
+		t.Fatalf("restarted PollInterval = %v, want %v", cfg.PollInterval, time.Minute)
 	}
 	if cfg.SelectorContext.InstanceLogin != "detent-bot" {
 		t.Fatalf("restarted SelectorContext.InstanceLogin = %q, want detent-bot", cfg.SelectorContext.InstanceLogin)
@@ -400,14 +397,17 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 	case <-time.After(25 * time.Millisecond):
 	}
 
-	request := receiveHotReloadRun(t, runner.started, func() {
-		writeProjectGateWorkflow(t, workflowPath, 5, "issue-43", "reloaded")
-	})
-	if request.Issue.ID != "issue-43" {
-		t.Fatalf("RunRequest.Issue.ID = %q, want issue-43", request.Issue.ID)
-	}
+	writeProjectGateWorkflow(t, workflowPath, 60000, "issue-43", "reloaded")
+	waitForWorkflowPrompt(t, got, "reloaded\n")
 	if got.Workflow().Prompt != "reloaded\n" {
 		t.Fatalf("Workflow().Prompt = %q, want reloaded", got.Workflow().Prompt)
+	}
+	issues, err := got.Connector().FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("Connector().FetchCandidateIssues() error = %v", err)
+	}
+	if len(issues) != 1 || issues[0].ID != "issue-43" {
+		t.Fatalf("reloaded connector issues = %#v, want issue-43", issues)
 	}
 	if orchestratorCreates.Load() != 1 {
 		t.Fatalf("orchestrator creations after reload = %d, want no restart", orchestratorCreates.Load())
@@ -761,7 +761,7 @@ func TestProjectUnpauseKeepsProjectPausedWhenRestartFails(t *testing.T) {
 func workflowConfigWithMemoryIssue(id string) workflowconfig.Config {
 	cfg := workflowConfig("memory")
 	cfg.Agent.MaxConcurrentAgents = 4
-	cfg.Polling.IntervalMS = 10
+	cfg.Polling.IntervalMS = 60000
 	cfg.Tracker.Issues = []connector.Issue{{
 		ID:         id,
 		Identifier: id,
@@ -881,34 +881,21 @@ func (w fakeWorkflowWatcher) Watch(context.Context) (<-chan configwatcher.Update
 	return w.updates, nil
 }
 
-func receiveRunRequest(t *testing.T, ch <-chan orchestrator.RunRequest) orchestrator.RunRequest {
+func waitForWorkflowPrompt(t *testing.T, got *project.Project, want string) {
 	t.Helper()
 
-	select {
-	case request := <-ch:
-		return request
-	case <-time.After(time.Second):
-		t.Fatal("timed out waiting for runner request")
-	}
-
-	return orchestrator.RunRequest{}
-}
-
-func receiveHotReloadRun(t *testing.T, ch <-chan orchestrator.RunRequest, reload func()) orchestrator.RunRequest {
-	t.Helper()
-
-	ticker := time.NewTicker(250 * time.Millisecond)
+	ticker := time.NewTicker(10 * time.Millisecond)
 	defer ticker.Stop()
-	deadline := time.After(3 * time.Second)
+	deadline := time.After(time.Second)
 
 	for {
-		reload()
+		if got.Workflow().Prompt == want {
+			return
+		}
 		select {
-		case request := <-ch:
-			return request
 		case <-ticker.C:
 		case <-deadline:
-			t.Fatal("timed out waiting for hot-reload runner request")
+			t.Fatalf("timed out waiting for workflow prompt %q, got %q", want, got.Workflow().Prompt)
 		}
 	}
 }

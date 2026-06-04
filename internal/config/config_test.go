@@ -49,7 +49,7 @@ tracker:
     Urgent: 1
     No priority: null
 polling:
-  interval_ms: 15000
+  interval_ms: 60000
 workspace:
   root: ~/code/detent-workspaces
   auto_branch: false
@@ -238,7 +238,7 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Tracker.Authorization.Configured() {
 		t.Fatalf("Tracker.Authorization = %#v, want authorize all default", cfg.Tracker.Authorization)
 	}
-	if cfg.Polling.IntervalMS != 30000 {
+	if cfg.Polling.IntervalMS != 120000 {
 		t.Fatalf("Polling.IntervalMS = %d", cfg.Polling.IntervalMS)
 	}
 	if cfg.Tracker.HTTPMaxIdleConns != 100 {
@@ -676,6 +676,18 @@ Prompt
 				"budget.per_day_max_usd must be greater than 0",
 				"server.port must be greater than or equal to 0",
 			},
+		},
+		{
+			name: "polling interval floor",
+			raw: `---
+tracker:
+  kind: memory
+polling:
+  interval_ms: 59999
+---
+Prompt
+`,
+			want: []string{"polling.interval_ms must be at least 60000"},
 		},
 		{
 			name: "invalid paths and priority map",
