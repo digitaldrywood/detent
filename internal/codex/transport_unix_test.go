@@ -69,10 +69,12 @@ func waitForPIDFile(t *testing.T, path string) int {
 
 	deadline := time.After(time.Second)
 	var lastErr error
+	lastRaw := ""
 	for {
 		raw, err := os.ReadFile(path)
 		if err == nil {
-			pidText := strings.TrimSpace(string(raw))
+			lastRaw = string(raw)
+			pidText := strings.TrimSpace(lastRaw)
 			pid, parseErr := strconv.Atoi(pidText)
 			if parseErr == nil && pid > 0 {
 				return pid
@@ -88,6 +90,9 @@ func waitForPIDFile(t *testing.T, path string) int {
 
 		select {
 		case <-deadline:
+			if lastRaw != "" {
+				t.Fatalf("timed out waiting for parseable pid file, last value %q: %v", lastRaw, lastErr)
+			}
 			t.Fatalf("timed out waiting for pid file: %v", lastErr)
 		default:
 			time.Sleep(time.Millisecond)
