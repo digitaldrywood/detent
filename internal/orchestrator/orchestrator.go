@@ -782,7 +782,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 }
 
 func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, issue connector.Issue) (connector.Issue, bool) {
-	if strings.TrimSpace(issue.ID) == "" || issue.Fields != nil {
+	if strings.TrimSpace(issue.ID) == "" || len(issue.Fields) > 0 || o.connector == nil {
 		return issue, true
 	}
 	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issue.ID})

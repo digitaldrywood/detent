@@ -585,7 +585,7 @@ func TestDispatchReadyIssuesHydratesLightweightCandidateBeforeDependencyGate(t *
 	})
 	runner := newWorkerHostRunner()
 	candidate := dispatchTestIssue("issue-lightweight", "Todo")
-	candidate.Fields = nil
+	candidate.Fields = map[string]string{}
 	candidate.BlockedBy = nil
 	hydrated := candidate
 	hydrated.Fields = map[string]string{}
