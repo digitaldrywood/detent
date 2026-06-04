@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/url"
 	"regexp"
 	"sort"
 	"strconv"
@@ -15,17 +17,13 @@ import (
 )
 
 const (
-	projectItemsPageSize                      = 50
-	projectItemsPerIssue                      = 100
-	projectItemFieldValuesPageSize            = 100
-	linkedIssuePageSize                       = 20
-	linkedIssueProjectItemsPageSize           = 10
-	linkedIssueProjectItemFieldValuesPageSize = 20
-	pullRequestsPageSize                      = 100
-	pullRequestsPageLimit                     = 3
-	defaultProjectItemStatusState             = "Backlog"
-	defaultProjectItemStatusWriteParallelism  = 4
-	defaultProjectItemStatusWriteTimeout      = 2 * time.Minute
+	projectItemsPageSize                     = 50
+	projectItemsPerIssue                     = 100
+	pullRequestsPageSize                     = 100
+	pullRequestsPageLimit                    = 3
+	defaultProjectItemStatusState            = "Backlog"
+	defaultProjectItemStatusWriteParallelism = 4
+	defaultProjectItemStatusWriteTimeout     = 2 * time.Minute
 )
 
 const projectItemsQuery = `
@@ -34,10 +32,6 @@ query DetentGitHubProjectItems(
   $first: Int!
   $after: String
   $query: String
-  $projectItemFieldValuesFirst: Int!
-  $linkedIssuesFirst: Int!
-  $linkedProjectItemsFirst: Int!
-  $linkedProjectItemFieldValuesFirst: Int!
 ) {
   node(id: $projectId) {
     ... on ProjectV2 {
@@ -51,98 +45,9 @@ query DetentGitHubProjectItems(
               id
               number
               title
-              body
               state
               url
-              createdAt
-              updatedAt
-              author { login }
-              assignees(first: 100) { nodes { id login } }
-              labels(first: 20) { nodes { name } }
               repository { nameWithOwner }
-              closedByPullRequestsReferences(first: 5) { nodes { number url } }
-              subIssues(first: $linkedIssuesFirst) {
-                pageInfo { hasNextPage endCursor }
-                nodes {
-                  id
-                  number
-                  title
-                  state
-                  url
-                  repository { nameWithOwner }
-                  projectItems(first: $linkedProjectItemsFirst) {
-                    pageInfo { hasNextPage endCursor }
-                    nodes {
-                      id
-                      project { id }
-                      statusValue: fieldValueByName(name: "Status") {
-                        ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
-                      }
-                      priorityValue: fieldValueByName(name: "Priority") {
-                        ... on ProjectV2ItemFieldSingleSelectValue { name }
-                      }
-                      fieldValues(first: $linkedProjectItemFieldValuesFirst) {
-                        nodes {
-                          __typename
-                          ... on ProjectV2ItemFieldSingleSelectValue {
-                            name
-                            field { ... on ProjectV2FieldCommon { name } }
-                          }
-                          ... on ProjectV2ItemFieldTextValue {
-                            text
-                            field { ... on ProjectV2FieldCommon { name } }
-                          }
-                          ... on ProjectV2ItemFieldNumberValue {
-                            number
-                            field { ... on ProjectV2FieldCommon { name } }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
-              trackedIssues(first: $linkedIssuesFirst) {
-                pageInfo { hasNextPage endCursor }
-                nodes {
-                  id
-                  number
-                  title
-                  state
-                  url
-                  repository { nameWithOwner }
-                  projectItems(first: $linkedProjectItemsFirst) {
-                    pageInfo { hasNextPage endCursor }
-                    nodes {
-                      id
-                      project { id }
-                      statusValue: fieldValueByName(name: "Status") {
-                        ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
-                      }
-                      priorityValue: fieldValueByName(name: "Priority") {
-                        ... on ProjectV2ItemFieldSingleSelectValue { name }
-                      }
-                      fieldValues(first: $linkedProjectItemFieldValuesFirst) {
-                        nodes {
-                          __typename
-                          ... on ProjectV2ItemFieldSingleSelectValue {
-                            name
-                            field { ... on ProjectV2FieldCommon { name } }
-                          }
-                          ... on ProjectV2ItemFieldTextValue {
-                            text
-                            field { ... on ProjectV2FieldCommon { name } }
-                          }
-                          ... on ProjectV2ItemFieldNumberValue {
-                            number
-                            field { ... on ProjectV2FieldCommon { name } }
-                          }
-                        }
-                      }
-                    }
-                  }
-                }
-              }
             }
           }
           statusValue: fieldValueByName(name: "Status") {
@@ -151,23 +56,6 @@ query DetentGitHubProjectItems(
           priorityValue: fieldValueByName(name: "Priority") {
             ... on ProjectV2ItemFieldSingleSelectValue { name }
           }
-          fieldValues(first: $projectItemFieldValuesFirst) {
-            nodes {
-              __typename
-              ... on ProjectV2ItemFieldSingleSelectValue {
-                name
-                field { ... on ProjectV2FieldCommon { name } }
-              }
-              ... on ProjectV2ItemFieldTextValue {
-                text
-                field { ... on ProjectV2FieldCommon { name } }
-              }
-              ... on ProjectV2ItemFieldNumberValue {
-                number
-                field { ... on ProjectV2FieldCommon { name } }
-              }
-            }
-          }
         }
       }
     }
@@ -175,189 +63,14 @@ query DetentGitHubProjectItems(
   rateLimit { limit used remaining cost resetAt }
 }`
 
-const issuesByIDQuery = `
-query DetentGitHubIssuesByID($issueIds: [ID!]!, $projectItemsFirst: Int!) {
+const issueIdentitiesByIDQuery = `
+query DetentGitHubIssueIdentitiesByID($issueIds: [ID!]!) {
   nodes(ids: $issueIds) {
     __typename
     ... on Issue {
       id
       number
-      title
-      body
-      state
-      url
-      createdAt
-      updatedAt
-      author { login }
-      assignees(first: 100) { nodes { id login } }
-      labels(first: 20) { nodes { name } }
       repository { nameWithOwner }
-      closedByPullRequestsReferences(first: 5) { nodes { number url } }
-      subIssues(first: 100) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          number
-          title
-          state
-          url
-          repository { nameWithOwner }
-          projectItems(first: 100) {
-            pageInfo { hasNextPage endCursor }
-            nodes {
-              id
-              project { id }
-              statusValue: fieldValueByName(name: "Status") {
-                ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
-              }
-              priorityValue: fieldValueByName(name: "Priority") {
-                ... on ProjectV2ItemFieldSingleSelectValue { name }
-              }
-              fieldValues(first: 100) {
-                nodes {
-                  __typename
-                  ... on ProjectV2ItemFieldSingleSelectValue {
-                    name
-                    field { ... on ProjectV2FieldCommon { name } }
-                  }
-                  ... on ProjectV2ItemFieldTextValue {
-                    text
-                    field { ... on ProjectV2FieldCommon { name } }
-                  }
-                  ... on ProjectV2ItemFieldNumberValue {
-                    number
-                    field { ... on ProjectV2FieldCommon { name } }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-      trackedIssues(first: 100) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          number
-          title
-          state
-          url
-          repository { nameWithOwner }
-          projectItems(first: 100) {
-            pageInfo { hasNextPage endCursor }
-            nodes {
-              id
-              project { id }
-              statusValue: fieldValueByName(name: "Status") {
-                ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
-              }
-              priorityValue: fieldValueByName(name: "Priority") {
-                ... on ProjectV2ItemFieldSingleSelectValue { name }
-              }
-              fieldValues(first: 100) {
-                nodes {
-                  __typename
-                  ... on ProjectV2ItemFieldSingleSelectValue {
-                    name
-                    field { ... on ProjectV2FieldCommon { name } }
-                  }
-                  ... on ProjectV2ItemFieldTextValue {
-                    text
-                    field { ... on ProjectV2FieldCommon { name } }
-                  }
-                  ... on ProjectV2ItemFieldNumberValue {
-                    number
-                    field { ... on ProjectV2FieldCommon { name } }
-                  }
-                }
-              }
-            }
-          }
-        }
-      }
-      projectItems(first: $projectItemsFirst) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          project { id }
-          statusValue: fieldValueByName(name: "Status") {
-            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
-          }
-          priorityValue: fieldValueByName(name: "Priority") {
-            ... on ProjectV2ItemFieldSingleSelectValue { name }
-          }
-          fieldValues(first: 100) {
-            nodes {
-              __typename
-              ... on ProjectV2ItemFieldSingleSelectValue {
-                name
-                field { ... on ProjectV2FieldCommon { name } }
-              }
-              ... on ProjectV2ItemFieldTextValue {
-                text
-                field { ... on ProjectV2FieldCommon { name } }
-              }
-              ... on ProjectV2ItemFieldNumberValue {
-                number
-                field { ... on ProjectV2FieldCommon { name } }
-              }
-            }
-          }
-        }
-      }
-    }
-  }
-  rateLimit { limit used remaining cost resetAt }
-}`
-
-const issueByNumberQuery = `
-query DetentGitHubIssueByNumber($owner: String!, $name: String!, $number: Int!, $projectItemsFirst: Int!) {
-  repository(owner: $owner, name: $name) {
-    issue(number: $number) {
-      __typename
-      id
-      number
-      title
-      body
-      state
-      url
-      createdAt
-      updatedAt
-      author { login }
-      assignees(first: 100) { nodes { id login } }
-      labels(first: 20) { nodes { name } }
-      repository { nameWithOwner }
-      closedByPullRequestsReferences(first: 5) { nodes { number url } }
-      projectItems(first: $projectItemsFirst) {
-        pageInfo { hasNextPage endCursor }
-        nodes {
-          id
-          project { id }
-          statusValue: fieldValueByName(name: "Status") {
-            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
-          }
-          priorityValue: fieldValueByName(name: "Priority") {
-            ... on ProjectV2ItemFieldSingleSelectValue { name }
-          }
-          fieldValues(first: 100) {
-            nodes {
-              __typename
-              ... on ProjectV2ItemFieldSingleSelectValue {
-                name
-                field { ... on ProjectV2FieldCommon { name } }
-              }
-              ... on ProjectV2ItemFieldTextValue {
-                text
-                field { ... on ProjectV2FieldCommon { name } }
-              }
-              ... on ProjectV2ItemFieldNumberValue {
-                number
-                field { ... on ProjectV2FieldCommon { name } }
-              }
-            }
-          }
-        }
-      }
     }
   }
   rateLimit { limit used remaining cost resetAt }
@@ -461,91 +174,6 @@ query DetentGitHubIssueTrackedIssues($issueId: ID!, $after: String) {
     }
   }
   rateLimit { limit used remaining cost resetAt }
-}`
-
-const issueCommentsQuery = `
-query DetentGitHubIssueComments($issueIds: [ID!]!) {
-  nodes(ids: $issueIds) {
-    __typename
-    ... on Issue {
-      id
-      body
-      comments(first: 100) { nodes { body } }
-    }
-  }
-  rateLimit { limit used remaining cost resetAt }
-}`
-
-const pullRequestsQuery = `
-query DetentGitHubPullRequests($owner: String!, $name: String!, $states: [PullRequestState!]!, $first: Int!, $after: String) {
-  repository(owner: $owner, name: $name) {
-    pullRequests(first: $first, after: $after, states: $states, orderBy: {field: UPDATED_AT, direction: DESC}) {
-      pageInfo { hasNextPage endCursor }
-      nodes {
-        number
-        url
-        state
-        headRefName
-        commits(last: 1) {
-          nodes {
-            commit {
-              statusCheckRollup { state }
-            }
-          }
-        }
-        latestReviews(first: 20) {
-          nodes {
-            body
-            state
-            author { login }
-          }
-        }
-      }
-    }
-  }
-  rateLimit { limit used remaining cost resetAt }
-}`
-
-const addCommentMutation = `
-mutation DetentGitHubAddComment($subjectId: ID!, $body: String!) {
-  addComment(input: {subjectId: $subjectId, body: $body}) {
-    commentEdge { node { id } }
-  }
-}`
-
-const closeIssueMutation = `
-mutation DetentGitHubCloseIssue($issueId: ID!, $stateReason: IssueClosedStateReason!) {
-  closeIssue(input: {issueId: $issueId, stateReason: $stateReason}) {
-    issue { id state }
-  }
-}`
-
-const userByLoginQuery = `
-query DetentGitHubUserByLogin($login: String!) {
-  user(login: $login) { id }
-}`
-
-const addAssigneesMutation = `
-mutation DetentGitHubAddAssignee($assignableId: ID!, $assigneeIds: [ID!]!) {
-  addAssigneesToAssignable(input: {assignableId: $assignableId, assigneeIds: $assigneeIds}) {
-    assignable { ... on Issue { id } }
-  }
-}`
-
-const issueAssigneesQuery = `
-query DetentGitHubIssueAssignees($issueId: ID!) {
-  node(id: $issueId) {
-    ... on Issue {
-      assignees(first: 100) { nodes { id login } }
-    }
-  }
-}`
-
-const removeAssigneesMutation = `
-mutation DetentGitHubRemoveAssignees($assignableId: ID!, $assigneeIds: [ID!]!) {
-  removeAssigneesFromAssignable(input: {assignableId: $assignableId, assigneeIds: $assigneeIds}) {
-    assignable { ... on Issue { id } }
-  }
 }`
 
 const statusFieldQuery = `
@@ -736,6 +364,7 @@ type pullRequestNode struct {
 	URL           string                            `json:"url"`
 	State         string                            `json:"state"`
 	HeadRefName   string                            `json:"headRefName"`
+	HeadSHA       string                            `json:"headSHA"`
 	Commits       nodeConnection[pullRequestCommit] `json:"commits"`
 	LatestReviews nodeConnection[pullRequestReview] `json:"latestReviews"`
 }
@@ -762,9 +391,55 @@ type actor struct {
 	Login string `json:"login"`
 }
 
-type pullRequestsConnection struct {
-	PageInfo pageInfo          `json:"pageInfo"`
-	Nodes    []pullRequestNode `json:"nodes"`
+type restIssue struct {
+	NodeID    string         `json:"node_id"`
+	Number    int            `json:"number"`
+	Title     string         `json:"title"`
+	Body      *string        `json:"body"`
+	State     string         `json:"state"`
+	HTMLURL   string         `json:"html_url"`
+	CreatedAt *time.Time     `json:"created_at"`
+	UpdatedAt *time.Time     `json:"updated_at"`
+	User      *actor         `json:"user"`
+	Assignees []restAssignee `json:"assignees"`
+	Labels    []label        `json:"labels"`
+}
+
+type restAssignee struct {
+	NodeID string `json:"node_id"`
+	Login  string `json:"login"`
+}
+
+type restPullRequest struct {
+	Number   int      `json:"number"`
+	HTMLURL  string   `json:"html_url"`
+	State    string   `json:"state"`
+	Head     restHead `json:"head"`
+	MergedAt *string  `json:"merged_at"`
+}
+
+type restHead struct {
+	Ref string `json:"ref"`
+	SHA string `json:"sha"`
+}
+
+type restReview struct {
+	Body  string `json:"body"`
+	State string `json:"state"`
+	User  *actor `json:"user"`
+}
+
+type restCheckRuns struct {
+	CheckRuns []restCheckRun `json:"check_runs"`
+}
+
+type restCheckRun struct {
+	Status     string `json:"status"`
+	Conclusion string `json:"conclusion"`
+}
+
+type restComment struct {
+	Body string `json:"body"`
 }
 
 type repository struct {
@@ -847,21 +522,20 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 		return nil, ErrMissingProject
 	}
 
-	var response struct {
-		Nodes []githubIssueNode `json:"nodes"`
-	}
-	if err := c.client.GraphQL(ctx, issuesByIDQuery, map[string]any{
-		"issueIds":          ids,
-		"projectItemsFirst": projectItemsPerIssue,
-	}, &response); err != nil {
-		return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
+	refs, err := c.issueRefsForIDs(ctx, ids)
+	if err != nil {
+		return nil, err
 	}
 
-	issues := make([]connector.Issue, 0, len(response.Nodes))
-	for _, node := range response.Nodes {
-		issue, ok, err := c.normalizeIssueNode(ctx, node)
+	issues := make([]connector.Issue, 0, len(ids))
+	for _, id := range ids {
+		ref, ok := refs[id]
+		if !ok {
+			continue
+		}
+		issue, ok, err := c.fetchIssueByRef(ctx, ref)
 		if err != nil {
-			return nil, err
+			return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
 		}
 		if ok {
 			issues = append(issues, issue)
@@ -989,93 +663,160 @@ func (c *Connector) fetchLinkedIssuePage(
 }
 
 func (c *Connector) fetchIssueByIdentifier(ctx context.Context, identifier string) (connector.Issue, bool, error) {
-	repo, number, ok := splitIssueIdentifier(identifier)
+	ref, ok := issueRefFromIdentifier(identifier)
 	if !ok {
 		return connector.Issue{}, false, nil
 	}
-	parts := strings.Split(repo, "/")
-	if len(parts) != 2 {
-		return connector.Issue{}, false, nil
-	}
-
-	var response struct {
-		Repository *struct {
-			Issue *githubIssueNode `json:"issue"`
-		} `json:"repository"`
-	}
-	if err := c.client.GraphQL(ctx, issueByNumberQuery, map[string]any{
-		"owner":             strings.TrimSpace(parts[0]),
-		"name":              strings.TrimSpace(parts[1]),
-		"number":            number,
-		"projectItemsFirst": projectItemsPerIssue,
-	}, &response); err != nil {
-		return connector.Issue{}, false, fmt.Errorf("fetch github issue by identifier: %w", err)
-	}
-	if response.Repository == nil || response.Repository.Issue == nil {
-		return connector.Issue{}, false, nil
-	}
-
-	return c.normalizeIssueNode(ctx, *response.Repository.Issue)
+	return c.fetchIssueByRef(ctx, ref)
 }
 
-func (c *Connector) populateBlockerReasons(ctx context.Context, issues []connector.Issue) error {
-	ids := make([]string, 0, len(issues))
-	for _, issue := range issues {
-		if normalizeStateName(issue.State) == normalizeStateName("Blocked") {
-			ids = append(ids, issue.ID)
+func (c *Connector) issueRefsForIDs(ctx context.Context, ids []string) (map[string]issueRef, error) {
+	refs := make(map[string]issueRef, len(ids))
+	missing := make([]string, 0, len(ids))
+	for _, id := range ids {
+		if ref, ok := c.projectCache.GetIssueRef(id); ok {
+			refs[id] = ref
+			continue
 		}
+		missing = append(missing, id)
 	}
-	ids = uniqueNonBlank(ids)
-	if len(ids) == 0 {
-		return nil
+	if len(missing) == 0 {
+		return refs, nil
 	}
 
+	fetched, err := c.fetchIssueRefsByID(ctx, missing)
+	if err != nil {
+		return nil, err
+	}
+	for id, ref := range fetched {
+		refs[id] = ref
+	}
+	return refs, nil
+}
+
+func (c *Connector) issueRefForID(ctx context.Context, issueID string) (issueRef, bool, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return issueRef{}, false, nil
+	}
+	if ref, ok := c.projectCache.GetIssueRef(issueID); ok {
+		return ref, true, nil
+	}
+	refs, err := c.fetchIssueRefsByID(ctx, []string{issueID})
+	if err != nil {
+		return issueRef{}, false, err
+	}
+	ref, ok := refs[issueID]
+	return ref, ok, nil
+}
+
+func (c *Connector) fetchIssueRefsByID(ctx context.Context, ids []string) (map[string]issueRef, error) {
 	var response struct {
 		Nodes []githubIssueNode `json:"nodes"`
 	}
-	if err := c.client.GraphQL(ctx, issueCommentsQuery, map[string]any{
-		"issueIds": ids,
-	}, &response); err != nil {
-		return fmt.Errorf("fetch github issue comments: %w", err)
+	if err := c.client.GraphQL(ctx, issueIdentitiesByIDQuery, map[string]any{"issueIds": ids}, &response); err != nil {
+		return nil, fmt.Errorf("fetch github issue identities by ids: %w", err)
 	}
 
-	reasonsByID := make(map[string]string, len(response.Nodes))
+	refs := make(map[string]issueRef, len(response.Nodes))
 	for _, node := range response.Nodes {
 		if node.TypeName != "Issue" {
 			continue
 		}
-		if reason := parseBlockerReason(node); reason != "" {
-			reasonsByID[node.ID] = reason
+		ref, ok := issueRefFromNode(node)
+		if !ok {
+			continue
 		}
+		refs[node.ID] = ref
+		c.projectCache.SetIssueRef(node.ID, ref)
 	}
+	return refs, nil
+}
+
+func (c *Connector) fetchIssueByRef(ctx context.Context, ref issueRef) (connector.Issue, bool, error) {
+	issue, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return connector.Issue{}, false, err
+	}
+	if strings.TrimSpace(issue.ID) == "" {
+		return connector.Issue{}, false, nil
+	}
+	c.cacheIssueRef(issue)
+
+	stateName, priorityName, statusUpdatedAt, fields, ok, err := c.fetchProjectFieldsPage(ctx, issue.ID, nil)
+	if err != nil {
+		return connector.Issue{}, false, err
+	}
+	if ok {
+		return c.buildIssue(issue, stateName, priorityName, statusUpdatedAt, fields), true, nil
+	}
+	return c.buildIssue(issue, c.githubIssueStateToDetentState(issue.State), "", nil, nil), true, nil
+}
+
+func (c *Connector) fetchRESTIssue(ctx context.Context, ref issueRef) (githubIssueNode, error) {
+	var response restIssue
+	if err := c.client.REST(ctx, http.MethodGet, restIssuePath(ref), nil, &response); err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return githubIssueNode{}, nil
+		}
+		return githubIssueNode{}, fmt.Errorf("fetch github issue: %w", err)
+	}
+	return githubIssueNodeFromREST(ref, response), nil
+}
+
+func (c *Connector) populateBlockerReasons(ctx context.Context, issues []connector.Issue) error {
 	for index := range issues {
-		if reason, ok := reasonsByID[issues[index].ID]; ok {
+		if normalizeStateName(issues[index].State) != normalizeStateName("Blocked") {
+			continue
+		}
+		ref, ok := issueRefFromIdentifier(issues[index].Identifier)
+		if !ok {
+			continue
+		}
+		comments, err := c.fetchIssueComments(ctx, ref)
+		if err != nil {
+			return fmt.Errorf("fetch github issue comments: %w", err)
+		}
+		node := githubIssueNode{
+			ID:       issues[index].ID,
+			Body:     issues[index].Description,
+			Comments: nodeConnection[issueComment]{Nodes: comments},
+		}
+		if reason := parseBlockerReason(node); reason != "" {
 			issues[index].BlockerReason = reason
 		}
 	}
 	return nil
 }
 
-func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {
-	var response struct {
-		AddComment *struct {
-			CommentEdge *struct {
-				Node *struct {
-					ID string `json:"id"`
-				} `json:"node"`
-			} `json:"commentEdge"`
-		} `json:"addComment"`
+func (c *Connector) fetchIssueComments(ctx context.Context, ref issueRef) ([]issueComment, error) {
+	var response []restComment
+	if err := c.client.REST(ctx, http.MethodGet, restIssueCommentsListPath(ref), nil, &response); err != nil {
+		return nil, err
 	}
-	if err := c.client.GraphQL(ctx, addCommentMutation, map[string]any{
-		"subjectId": strings.TrimSpace(issueID),
-		"body":      body,
-	}, &response); err != nil {
+	comments := make([]issueComment, 0, len(response))
+	for _, comment := range response {
+		comments = append(comments, issueComment(comment))
+	}
+	return comments, nil
+}
+
+func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {
+	ref, ok, err := c.issueRefForID(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrCommentCreateFailed
+	}
+
+	var response struct {
+		NodeID string `json:"node_id"`
+	}
+	if err := c.client.REST(ctx, http.MethodPost, restIssueCommentsPath(ref), map[string]any{"body": body}, &response); err != nil {
 		return fmt.Errorf("create github comment: %w", err)
 	}
-	if response.AddComment == nil ||
-		response.AddComment.CommentEdge == nil ||
-		response.AddComment.CommentEdge.Node == nil ||
-		strings.TrimSpace(response.AddComment.CommentEdge.Node.ID) == "" {
+	if strings.TrimSpace(response.NodeID) == "" {
 		return ErrCommentCreateFailed
 	}
 
@@ -1083,23 +824,22 @@ func (c *Connector) CreateComment(ctx context.Context, issueID string, body stri
 }
 
 func (c *Connector) CloseIssue(ctx context.Context, issueID string) error {
-	var response struct {
-		CloseIssue *struct {
-			Issue *struct {
-				ID    string `json:"id"`
-				State string `json:"state"`
-			} `json:"issue"`
-		} `json:"closeIssue"`
+	ref, ok, err := c.issueRefForID(ctx, issueID)
+	if err != nil {
+		return err
 	}
-	if err := c.client.GraphQL(ctx, closeIssueMutation, map[string]any{
-		"issueId":     strings.TrimSpace(issueID),
-		"stateReason": "COMPLETED",
+	if !ok {
+		return ErrIssueCloseFailed
+	}
+
+	var response restIssue
+	if err := c.client.REST(ctx, http.MethodPatch, restIssuePath(ref), map[string]any{
+		"state":        "closed",
+		"state_reason": "completed",
 	}, &response); err != nil {
 		return fmt.Errorf("close github issue: %w", err)
 	}
-	if response.CloseIssue == nil ||
-		response.CloseIssue.Issue == nil ||
-		strings.TrimSpace(response.CloseIssue.Issue.ID) == "" {
+	if strings.TrimSpace(response.NodeID) == "" || !strings.EqualFold(response.State, "closed") {
 		return ErrIssueCloseFailed
 	}
 
@@ -1146,22 +886,29 @@ func (c *Connector) setProjectItemStatus(ctx context.Context, itemID string, git
 
 func (c *Connector) SetAssignee(ctx context.Context, issueID string, login string) error {
 	issueID = strings.TrimSpace(issueID)
-	userID, err := c.resolveUserID(ctx, login)
+	login = strings.TrimSpace(login)
+	if issueID == "" || login == "" {
+		return ErrAssigneeNotFound
+	}
+	ref, ok, err := c.issueRefForID(ctx, issueID)
 	if err != nil {
 		return err
 	}
-	currentAssignees, err := c.fetchIssueAssignees(ctx, issueID)
+	if !ok {
+		return ErrAssigneeNotFound
+	}
+	currentAssignees, err := c.fetchIssueAssignees(ctx, ref)
 	if err != nil {
 		return err
 	}
-	removeIDs, alreadyAssigned := assigneeReplacement(currentAssignees, userID)
+	removeLogins, alreadyAssigned := assigneeLoginReplacement(currentAssignees, login)
 	if !alreadyAssigned {
-		if err := c.addAssignee(ctx, issueID, userID); err != nil {
+		if err := c.addAssignee(ctx, ref, login); err != nil {
 			return err
 		}
 	}
-	if len(removeIDs) > 0 {
-		if err := c.removeAssignees(ctx, issueID, removeIDs); err != nil {
+	if len(removeLogins) > 0 {
+		if err := c.removeAssignees(ctx, ref, removeLogins); err != nil {
 			return err
 		}
 	}
@@ -1236,59 +983,57 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 		if err != nil {
 			return err
 		}
-		attachMatchingPullRequests(issues, byRepo[repo], pullRequests)
+		if err := c.attachMatchingPullRequests(ctx, repo, issues, byRepo[repo], pullRequests); err != nil {
+			return err
+		}
 	}
 	return nil
 }
 
 func (c *Connector) fetchRepositoryPullRequests(ctx context.Context, repo pullRequestRepo) ([]pullRequestNode, error) {
-	return c.fetchRepositoryPullRequestsPage(ctx, repo, nil, 1)
+	pullRequests := []pullRequestNode{}
+	for page := 1; page <= pullRequestsPageLimit; page++ {
+		pagePullRequests, err := c.fetchRepositoryPullRequestsPage(ctx, repo, page)
+		if err != nil {
+			return nil, err
+		}
+		pullRequests = append(pullRequests, pagePullRequests...)
+		if len(pagePullRequests) < pullRequestsPageSize {
+			break
+		}
+	}
+	return pullRequests, nil
 }
 
 func (c *Connector) fetchRepositoryPullRequestsPage(
 	ctx context.Context,
 	repo pullRequestRepo,
-	after *string,
 	page int,
 ) ([]pullRequestNode, error) {
-	var response struct {
-		Repository *struct {
-			PullRequests pullRequestsConnection `json:"pullRequests"`
-		} `json:"repository"`
-	}
-	if err := c.client.GraphQL(ctx, pullRequestsQuery, map[string]any{
-		"owner":  repo.Owner,
-		"name":   repo.Name,
-		"states": []string{"OPEN", "MERGED"},
-		"first":  pullRequestsPageSize,
-		"after":  after,
-	}, &response); err != nil {
+	var response []restPullRequest
+	if err := c.client.REST(ctx, http.MethodGet, restPullRequestsPath(repo, page), nil, &response); err != nil {
 		return nil, fmt.Errorf("fetch github pull requests: %w", err)
 	}
-	if response.Repository == nil {
-		return nil, ErrInvalidResponse
+	pullRequests := make([]pullRequestNode, 0, len(response))
+	for _, pullRequest := range response {
+		pullRequests = append(pullRequests, pullRequestNode{
+			Number:      pullRequest.Number,
+			URL:         pullRequest.HTMLURL,
+			State:       restPullRequestState(pullRequest),
+			HeadRefName: pullRequest.Head.Ref,
+			HeadSHA:     pullRequest.Head.SHA,
+		})
 	}
-
-	pullRequests := append([]pullRequestNode(nil), response.Repository.PullRequests.Nodes...)
-	if !response.Repository.PullRequests.PageInfo.HasNextPage || page >= pullRequestsPageLimit {
-		return pullRequests, nil
-	}
-	cursor := strings.TrimSpace(response.Repository.PullRequests.PageInfo.EndCursor)
-	if cursor == "" {
-		return nil, ErrInvalidResponse
-	}
-	next, err := c.fetchRepositoryPullRequestsPage(ctx, repo, &cursor, page+1)
-	if err != nil {
-		return nil, err
-	}
-	return append(pullRequests, next...), nil
+	return pullRequests, nil
 }
 
-func attachMatchingPullRequests(
+func (c *Connector) attachMatchingPullRequests(
+	ctx context.Context,
+	repo pullRequestRepo,
 	issues []connector.Issue,
 	candidates []issuePullRequestCandidate,
 	pullRequests []pullRequestNode,
-) {
+) error {
 	for _, pullRequest := range pullRequests {
 		branchName := strings.TrimSpace(pullRequest.HeadRefName)
 		if branchName == "" {
@@ -1302,6 +1047,9 @@ func attachMatchingPullRequests(
 				continue
 			}
 
+			if err := c.populatePullRequestStatus(ctx, repo, &pullRequest); err != nil {
+				return err
+			}
 			issues[candidate.Index].PullRequest = &connector.PullRequest{
 				Number:           pullRequest.Number,
 				URL:              strings.TrimSpace(pullRequest.URL),
@@ -1316,6 +1064,49 @@ func attachMatchingPullRequests(
 			}
 		}
 	}
+	return nil
+}
+
+func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode) error {
+	if strings.TrimSpace(pullRequest.HeadSHA) != "" {
+		ciState, err := c.fetchPullRequestCIState(ctx, repo, pullRequest.HeadSHA)
+		if err != nil {
+			return err
+		}
+		pullRequest.Commits = nodeConnection[pullRequestCommit]{Nodes: []pullRequestCommit{{
+			Commit: commitNode{StatusCheckRollup: &statusCheckRollup{State: ciState}},
+		}}}
+	}
+	reviews, err := c.fetchPullRequestReviews(ctx, repo, pullRequest.Number)
+	if err != nil {
+		return err
+	}
+	pullRequest.LatestReviews = nodeConnection[pullRequestReview]{Nodes: reviews}
+	return nil
+}
+
+func (c *Connector) fetchPullRequestCIState(ctx context.Context, repo pullRequestRepo, sha string) (string, error) {
+	var response restCheckRuns
+	if err := c.client.REST(ctx, http.MethodGet, restCommitCheckRunsPath(repo, sha), nil, &response); err != nil {
+		return "", fmt.Errorf("fetch github check runs: %w", err)
+	}
+	return checkRunsState(response.CheckRuns), nil
+}
+
+func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullRequestRepo, number int) ([]pullRequestReview, error) {
+	var response []restReview
+	if err := c.client.REST(ctx, http.MethodGet, restPullRequestReviewsPath(repo, number), nil, &response); err != nil {
+		return nil, fmt.Errorf("fetch github pull request reviews: %w", err)
+	}
+	reviews := make([]pullRequestReview, 0, len(response))
+	for _, review := range response {
+		reviews = append(reviews, pullRequestReview{
+			Body:   review.Body,
+			State:  review.State,
+			Author: review.User,
+		})
+	}
+	return reviews, nil
 }
 
 func (c *Connector) fetchProjectItems(ctx context.Context, query string, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
@@ -1334,14 +1125,10 @@ func (c *Connector) fetchProjectItems(ctx context.Context, query string, keepIss
 			} `json:"node"`
 		}
 		if err := c.client.GraphQL(ctx, projectItemsQuery, map[string]any{
-			"projectId":                         c.projectID,
-			"first":                             projectItemsPageSize,
-			"after":                             after,
-			"query":                             projectQuery,
-			"projectItemFieldValuesFirst":       projectItemFieldValuesPageSize,
-			"linkedIssuesFirst":                 linkedIssuePageSize,
-			"linkedProjectItemsFirst":           linkedIssueProjectItemsPageSize,
-			"linkedProjectItemFieldValuesFirst": linkedIssueProjectItemFieldValuesPageSize,
+			"projectId": c.projectID,
+			"first":     projectItemsPageSize,
+			"after":     after,
+			"query":     projectQuery,
 		}, &response); err != nil {
 			return nil, fmt.Errorf("fetch github project items: %w", err)
 		}
@@ -1386,6 +1173,7 @@ func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue,
 	if item.Content == nil || item.Content.TypeName != "Issue" {
 		return connector.Issue{}, false, "", nil
 	}
+	c.cacheIssueRef(*item.Content)
 	statusName, statusUpdatedAt, blankStatusItemID, err := c.projectItemStatusOrDefault(item)
 	if err != nil {
 		return connector.Issue{}, false, "", err
@@ -1516,34 +1304,6 @@ func resolveBlockedByProjectState(issues []connector.Issue) {
 
 func normalizedIssueIdentifier(identifier string) string {
 	return strings.ToLower(strings.TrimSpace(identifier))
-}
-
-func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNode) (connector.Issue, bool, error) {
-	if issue.TypeName != "Issue" {
-		return connector.Issue{}, false, nil
-	}
-	stateName, priorityName, statusUpdatedAt, fields, ok, err := c.resolveIssueProjectFields(ctx, issue.ID, issue.ProjectItems)
-	if err != nil {
-		return connector.Issue{}, false, err
-	}
-	if ok {
-		return c.buildIssue(issue, stateName, priorityName, statusUpdatedAt, fields), true, nil
-	}
-	return c.buildIssue(issue, c.githubIssueStateToDetentState(issue.State), "", nil, nil), true, nil
-}
-
-func (c *Connector) resolveIssueProjectFields(ctx context.Context, issueID string, items *projectItemsConnection) (string, string, *time.Time, map[string]string, bool, error) {
-	if stateName, priorityName, statusUpdatedAt, fields, ok := c.projectFields(issueID, items); ok {
-		return stateName, priorityName, statusUpdatedAt, fields, true, nil
-	}
-	if items == nil || !items.PageInfo.HasNextPage {
-		return "", "", nil, nil, false, nil
-	}
-	cursor := strings.TrimSpace(items.PageInfo.EndCursor)
-	if cursor == "" {
-		return "", "", nil, nil, false, ErrInvalidResponse
-	}
-	return c.fetchProjectFieldsPage(ctx, issueID, &cursor)
 }
 
 func (c *Connector) projectFields(issueID string, items *projectItemsConnection) (string, string, *time.Time, map[string]string, bool) {
@@ -1678,97 +1438,48 @@ func (c *Connector) resolveStatusOption(ctx context.Context, githubState string)
 	return metadata.FieldID, optionID, nil
 }
 
-func (c *Connector) resolveUserID(ctx context.Context, login string) (string, error) {
+func (c *Connector) addAssignee(ctx context.Context, ref issueRef, login string) error {
 	login = strings.TrimSpace(login)
 	if login == "" {
-		return "", ErrAssigneeNotFound
-	}
-
-	var response struct {
-		User *struct {
-			ID string `json:"id"`
-		} `json:"user"`
-	}
-	if err := c.client.GraphQL(ctx, userByLoginQuery, map[string]any{"login": login}, &response); err != nil {
-		return "", fmt.Errorf("fetch github assignee: %w", err)
-	}
-	if response.User == nil || strings.TrimSpace(response.User.ID) == "" {
-		return "", fmt.Errorf("%w: %s", ErrAssigneeNotFound, login)
-	}
-	return strings.TrimSpace(response.User.ID), nil
-}
-
-func (c *Connector) addAssignee(ctx context.Context, issueID string, userID string) error {
-	issueID = strings.TrimSpace(issueID)
-	userID = strings.TrimSpace(userID)
-	if issueID == "" || userID == "" {
 		return ErrAssigneeNotFound
 	}
 
-	var response struct {
-		AddAssigneesToAssignable *struct {
-			Assignable *struct {
-				ID string `json:"id"`
-			} `json:"assignable"`
-		} `json:"addAssigneesToAssignable"`
-	}
-	if err := c.client.GraphQL(ctx, addAssigneesMutation, map[string]any{
-		"assignableId": issueID,
-		"assigneeIds":  []string{userID},
+	var response restIssue
+	if err := c.client.REST(ctx, http.MethodPost, restIssueAssigneesPath(ref), map[string]any{
+		"assignees": []string{login},
 	}, &response); err != nil {
 		return fmt.Errorf("set github assignee: %w", err)
 	}
-	if response.AddAssigneesToAssignable == nil ||
-		response.AddAssigneesToAssignable.Assignable == nil ||
-		strings.TrimSpace(response.AddAssigneesToAssignable.Assignable.ID) == "" {
+	if strings.TrimSpace(response.NodeID) == "" {
 		return ErrAssigneeUpdateFailed
 	}
 	return nil
 }
 
-func (c *Connector) fetchIssueAssignees(ctx context.Context, issueID string) ([]assignee, error) {
-	issueID = strings.TrimSpace(issueID)
-	if issueID == "" {
-		return nil, ErrAssigneeNotFound
-	}
-
-	var response struct {
-		Node *struct {
-			Assignees nodeConnection[assignee] `json:"assignees"`
-		} `json:"node"`
-	}
-	if err := c.client.GraphQL(ctx, issueAssigneesQuery, map[string]any{"issueId": issueID}, &response); err != nil {
+func (c *Connector) fetchIssueAssignees(ctx context.Context, ref issueRef) ([]assignee, error) {
+	issue, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
 		return nil, fmt.Errorf("fetch github issue assignees: %w", err)
 	}
-	if response.Node == nil {
+	if strings.TrimSpace(issue.ID) == "" {
 		return nil, ErrAssigneeNotFound
 	}
-	return response.Node.Assignees.Nodes, nil
+	return issue.Assignees.Nodes, nil
 }
 
-func (c *Connector) removeAssignees(ctx context.Context, issueID string, userIDs []string) error {
-	issueID = strings.TrimSpace(issueID)
-	userIDs = uniqueNonBlank(userIDs)
-	if issueID == "" || len(userIDs) == 0 {
+func (c *Connector) removeAssignees(ctx context.Context, ref issueRef, logins []string) error {
+	logins = uniqueNonBlank(logins)
+	if len(logins) == 0 {
 		return ErrAssigneeUpdateFailed
 	}
 
-	var response struct {
-		RemoveAssigneesFromAssignable *struct {
-			Assignable *struct {
-				ID string `json:"id"`
-			} `json:"assignable"`
-		} `json:"removeAssigneesFromAssignable"`
-	}
-	if err := c.client.GraphQL(ctx, removeAssigneesMutation, map[string]any{
-		"assignableId": issueID,
-		"assigneeIds":  userIDs,
+	var response restIssue
+	if err := c.client.REST(ctx, http.MethodDelete, restIssueAssigneesPath(ref), map[string]any{
+		"assignees": logins,
 	}, &response); err != nil {
 		return fmt.Errorf("replace github assignee: %w", err)
 	}
-	if response.RemoveAssigneesFromAssignable == nil ||
-		response.RemoveAssigneesFromAssignable.Assignable == nil ||
-		strings.TrimSpace(response.RemoveAssigneesFromAssignable.Assignable.ID) == "" {
+	if strings.TrimSpace(response.NodeID) == "" {
 		return ErrAssigneeUpdateFailed
 	}
 	return nil
@@ -2193,16 +1904,140 @@ func buildIdentifier(repo string, number int) string {
 	return fmt.Sprintf("%s#%d", repo, number)
 }
 
+func issueRefFromIdentifier(identifier string) (issueRef, bool) {
+	repo, number, ok := splitIssueIdentifier(identifier)
+	if !ok {
+		return issueRef{}, false
+	}
+	owner, name, ok := splitRepositoryName(repo)
+	if !ok {
+		return issueRef{}, false
+	}
+	return issueRef{Owner: owner, Name: name, Number: number}, true
+}
+
+func issueRefFromNode(issue githubIssueNode) (issueRef, bool) {
+	owner, name, ok := splitRepositoryName(issue.Repository.NameWithOwner)
+	if !ok || issue.Number <= 0 {
+		return issueRef{}, false
+	}
+	return issueRef{Owner: owner, Name: name, Number: issue.Number}, true
+}
+
+func splitRepositoryName(repo string) (string, string, bool) {
+	parts := strings.Split(strings.TrimSpace(repo), "/")
+	if len(parts) != 2 {
+		return "", "", false
+	}
+	owner := strings.TrimSpace(parts[0])
+	name := strings.TrimSpace(parts[1])
+	if owner == "" || name == "" {
+		return "", "", false
+	}
+	return owner, name, true
+}
+
+func (c *Connector) cacheIssueRef(issue githubIssueNode) {
+	ref, ok := issueRefFromNode(issue)
+	if !ok {
+		return
+	}
+	c.projectCache.SetIssueRef(issue.ID, ref)
+}
+
+func restIssuePath(ref issueRef) string {
+	return "/repos/" + url.PathEscape(ref.Owner) + "/" + url.PathEscape(ref.Name) + "/issues/" + strconv.Itoa(ref.Number)
+}
+
+func restIssueCommentsPath(ref issueRef) string {
+	return restIssuePath(ref) + "/comments"
+}
+
+func restIssueCommentsListPath(ref issueRef) string {
+	return restIssueCommentsPath(ref) + "?per_page=100"
+}
+
+func restIssueAssigneesPath(ref issueRef) string {
+	return restIssuePath(ref) + "/assignees"
+}
+
+func restPullRequestsPath(repo pullRequestRepo, page int) string {
+	values := url.Values{}
+	values.Set("state", "all")
+	values.Set("sort", "updated")
+	values.Set("direction", "desc")
+	values.Set("per_page", strconv.Itoa(pullRequestsPageSize))
+	values.Set("page", strconv.Itoa(page))
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls?" + values.Encode()
+}
+
+func restPullRequestReviewsPath(repo pullRequestRepo, number int) string {
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls/" + strconv.Itoa(number) + "/reviews?per_page=100"
+}
+
+func restCommitCheckRunsPath(repo pullRequestRepo, sha string) string {
+	values := url.Values{}
+	values.Set("per_page", "100")
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/commits/" + url.PathEscape(sha) + "/check-runs?" + values.Encode()
+}
+
+func githubIssueNodeFromREST(ref issueRef, issue restIssue) githubIssueNode {
+	repo := ref.Owner + "/" + ref.Name
+	return githubIssueNode{
+		TypeName:  "Issue",
+		ID:        strings.TrimSpace(issue.NodeID),
+		Number:    issue.Number,
+		Title:     issue.Title,
+		Body:      restStringValue(issue.Body),
+		State:     issue.State,
+		URL:       issue.HTMLURL,
+		CreatedAt: restTimeString(issue.CreatedAt),
+		UpdatedAt: restTimeString(issue.UpdatedAt),
+		Author:    issue.User,
+		Assignees: restAssigneesConnection(issue.Assignees),
+		Labels:    nodeConnection[label]{Nodes: issue.Labels},
+		Repository: repository{
+			NameWithOwner: repo,
+		},
+	}
+}
+
+func restStringValue(value *string) string {
+	if value == nil {
+		return ""
+	}
+	return *value
+}
+
+func restTimeString(value *time.Time) *string {
+	if value == nil {
+		return nil
+	}
+	formatted := value.UTC().Format(time.RFC3339)
+	return &formatted
+}
+
+func restAssigneesConnection(values []restAssignee) nodeConnection[assignee] {
+	out := make([]assignee, 0, len(values))
+	for _, value := range values {
+		out = append(out, assignee{
+			ID:    strings.TrimSpace(value.NodeID),
+			Login: strings.TrimSpace(value.Login),
+		})
+	}
+	return nodeConnection[assignee]{Nodes: out}
+}
+
 func pullRequestRepoFromIdentifier(identifier string) (pullRequestRepo, bool) {
 	repo, _, ok := splitIssueIdentifier(identifier)
 	if !ok {
 		return pullRequestRepo{}, false
 	}
-	parts := strings.Split(repo, "/")
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+	owner, name, ok := splitRepositoryName(repo)
+	if !ok {
 		return pullRequestRepo{}, false
 	}
-	return pullRequestRepo{Owner: strings.TrimSpace(parts[0]), Name: strings.TrimSpace(parts[1])}, true
+	return pullRequestRepo{Owner: owner, Name: name}, true
 }
 
 func detentIssueBranchPrefix(identifier string) string {
@@ -2279,22 +2114,22 @@ func allAssigneeLogins(assignees nodeConnection[assignee]) []string {
 	return logins
 }
 
-func assigneeReplacement(current []assignee, targetID string) ([]string, bool) {
-	targetID = strings.TrimSpace(targetID)
-	removeIDs := make([]string, 0, len(current))
+func assigneeLoginReplacement(current []assignee, targetLogin string) ([]string, bool) {
+	targetLogin = strings.TrimSpace(targetLogin)
+	removeLogins := make([]string, 0, len(current))
 	alreadyAssigned := false
 	for _, candidate := range current {
-		id := strings.TrimSpace(candidate.ID)
-		if id == "" {
+		login := strings.TrimSpace(candidate.Login)
+		if login == "" {
 			continue
 		}
-		if id == targetID {
+		if strings.EqualFold(login, targetLogin) {
 			alreadyAssigned = true
 			continue
 		}
-		removeIDs = append(removeIDs, id)
+		removeLogins = append(removeLogins, login)
 	}
-	return removeIDs, alreadyAssigned
+	return removeLogins, alreadyAssigned
 }
 
 func projectFieldValues(values nodeConnection[projectFieldValue]) map[string]string {
@@ -2346,6 +2181,39 @@ func pullRequestCIState(pullRequest pullRequestNode) string {
 		}
 	}
 	return ""
+}
+
+func restPullRequestState(pullRequest restPullRequest) string {
+	if pullRequest.MergedAt != nil && strings.TrimSpace(*pullRequest.MergedAt) != "" {
+		return "MERGED"
+	}
+	return strings.ToUpper(strings.TrimSpace(pullRequest.State))
+}
+
+func checkRunsState(checkRuns []restCheckRun) string {
+	if len(checkRuns) == 0 {
+		return ""
+	}
+	pending := false
+	for _, checkRun := range checkRuns {
+		status := strings.ToLower(strings.TrimSpace(checkRun.Status))
+		conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
+		if status != "" && status != "completed" {
+			pending = true
+			continue
+		}
+		switch conclusion {
+		case "success", "skipped", "neutral":
+		case "":
+			pending = true
+		default:
+			return "failure"
+		}
+	}
+	if pending {
+		return "pending"
+	}
+	return "success"
 }
 
 func normalizePullRequestCIStatus(status string) string {

@@ -62,6 +62,40 @@ func TestProjectCacheClearsEntries(t *testing.T) {
 	}
 }
 
+func TestProjectCacheReturnsFreshIssueRef(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	cache := newProjectCache(5*time.Minute, func() time.Time { return now })
+	cache.SetIssueRef("I_1", issueRef{Owner: "digitaldrywood", Name: "detent", Number: 313})
+
+	got, ok := cache.GetIssueRef("I_1")
+	if !ok {
+		t.Fatal("GetIssueRef() ok = false, want true")
+	}
+	if got.Owner != "digitaldrywood" || got.Name != "detent" || got.Number != 313 {
+		t.Fatalf("issue ref = %#v, want digitaldrywood/detent#313", got)
+	}
+}
+
+func TestProjectCacheExpiresIssueRef(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	cache := newProjectCache(5*time.Minute, func() time.Time { return now })
+	cache.SetIssueRef("I_1", issueRef{Owner: "digitaldrywood", Name: "detent", Number: 313})
+
+	now = now.Add(5*time.Minute - time.Nanosecond)
+	if _, ok := cache.GetIssueRef("I_1"); !ok {
+		t.Fatal("GetIssueRef() ok = false before TTL, want true")
+	}
+
+	now = now.Add(time.Nanosecond)
+	if _, ok := cache.GetIssueRef("I_1"); ok {
+		t.Fatal("GetIssueRef() ok = true after TTL, want false")
+	}
+}
+
 func TestProjectCacheIgnoresBlankKeys(t *testing.T) {
 	t.Parallel()
 
@@ -79,5 +113,13 @@ func TestProjectCacheIgnoresBlankKeys(t *testing.T) {
 	}
 	if _, ok := cache.GetItemID("PVT_1", "I_1"); ok {
 		t.Fatal("GetItemID() ok = true for blank item, want false")
+	}
+
+	cache.SetIssueRef("", issueRef{Owner: "digitaldrywood", Name: "detent", Number: 313})
+	cache.SetIssueRef("I_1", issueRef{Owner: "", Name: "detent", Number: 313})
+	cache.SetIssueRef("I_1", issueRef{Owner: "digitaldrywood", Name: "", Number: 313})
+	cache.SetIssueRef("I_1", issueRef{Owner: "digitaldrywood", Name: "detent"})
+	if _, ok := cache.GetIssueRef("I_1"); ok {
+		t.Fatal("GetIssueRef() ok = true for blank issue ref, want false")
 	}
 }

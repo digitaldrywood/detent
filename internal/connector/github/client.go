@@ -36,6 +36,7 @@ type ClientConfig struct {
 
 type Client struct {
 	endpoint     string
+	restEndpoint string
 	tokenSource  TokenSource
 	httpClient   HTTPClient
 	logger       *slog.Logger
@@ -50,6 +51,10 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		endpoint = DefaultGraphQLEndpoint
 	}
 	if err := validateEndpoint(endpoint); err != nil {
+		return nil, err
+	}
+	restEndpoint, err := restEndpointFromGraphQLEndpoint(endpoint)
+	if err != nil {
 		return nil, err
 	}
 	if cfg.TokenSource == nil {
@@ -67,10 +72,11 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 
 	return &Client{
-		endpoint:    endpoint,
-		tokenSource: cfg.TokenSource,
-		httpClient:  httpClient,
-		logger:      logger,
+		endpoint:     endpoint,
+		restEndpoint: restEndpoint,
+		tokenSource:  cfg.TokenSource,
+		httpClient:   httpClient,
+		logger:       logger,
 	}, nil
 }
 
@@ -152,6 +158,74 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 
+	return nil
+}
+
+func (c *Client) REST(ctx context.Context, method string, path string, body any, out any) error {
+	token, err := c.tokenSource.Token(ctx)
+	if err != nil {
+		return fmt.Errorf("resolve github token: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ErrMissingToken
+	}
+
+	var requestBody io.Reader
+	if body != nil {
+		var encoded bytes.Buffer
+		if err := json.NewEncoder(&encoded).Encode(body); err != nil {
+			return fmt.Errorf("encode github rest request: %w", err)
+		}
+		requestBody = &encoded
+	}
+
+	url, err := c.restURL(path)
+	if err != nil {
+		return err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, requestBody)
+	if err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	c.logger.DebugContext(ctx, "github rest request", "method", method, "path", path, "live_connections", c.LiveConnections())
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return ctxErr
+		}
+		return fmt.Errorf("%w: %w", ErrTransient, err)
+	}
+	defer func() {
+		if err := drainAndClose(resp.Body); err != nil {
+			c.logger.DebugContext(ctx, "github rest response body drain failed", "method", method, "path", path, "error", err)
+		}
+	}()
+
+	c.logger.DebugContext(ctx, "github rest response", "method", method, "path", path, "status", resp.StatusCode, "live_connections", c.LiveConnections())
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("%w: read response: %w", ErrTransient, err)
+	}
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		return classifyStatus(resp.StatusCode, resp.Header, raw)
+	}
+	if out == nil || resp.StatusCode == http.StatusNoContent {
+		return nil
+	}
+	if len(raw) == 0 {
+		return ErrInvalidResponse
+	}
+	if err := json.Unmarshal(raw, out); err != nil {
+		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+	}
 	return nil
 }
 
@@ -263,6 +337,48 @@ func validateEndpoint(endpoint string) error {
 		return fmt.Errorf("%w: %s", ErrInvalidEndpoint, endpoint)
 	}
 	return nil
+}
+
+func restEndpointFromGraphQLEndpoint(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+
+	basePath := strings.TrimRight(parsed.Path, "/")
+	if parsed.Host == "api.github.com" {
+		basePath = ""
+	} else if strings.HasSuffix(basePath, "/api/graphql") {
+		basePath = strings.TrimSuffix(basePath, "/api/graphql") + "/api/v3"
+	} else if strings.HasSuffix(basePath, "/graphql") {
+		basePath = strings.TrimSuffix(basePath, "/graphql")
+	}
+
+	parsed.Path = strings.TrimRight(basePath, "/")
+	parsed.RawQuery = ""
+	parsed.Fragment = ""
+	return strings.TrimRight(parsed.String(), "/"), nil
+}
+
+func (c *Client) restURL(path string) (string, error) {
+	parsed, err := url.Parse(c.restEndpoint)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", ErrInvalidEndpoint
+	}
+	if !strings.HasPrefix(path, "/") {
+		path = "/" + path
+	}
+	relative, err := url.Parse(path)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	parsed.Path = strings.TrimRight(parsed.Path, "/") + relative.Path
+	parsed.RawQuery = relative.RawQuery
+	return parsed.String(), nil
 }
 
 func classifyStatus(status int, headers http.Header, body []byte) error {

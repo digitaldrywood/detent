@@ -575,6 +575,51 @@ func TestDispatchCandidatesClaimsDuplicateIssueWithinCycle(t *testing.T) {
 	}
 }
 
+func TestDispatchReadyIssuesHydratesLightweightCandidateBeforeDependencyGate(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+	})
+	runner := newWorkerHostRunner()
+	candidate := dispatchTestIssue("issue-lightweight", "Todo")
+	candidate.Fields = nil
+	candidate.BlockedBy = nil
+	hydrated := candidate
+	hydrated.Fields = map[string]string{}
+	hydrated.BlockedBy = []connector.BlockedRef{{
+		Identifier: "digitaldrywood/detent#issue-blocker",
+		State:      "In Progress",
+	}}
+	orch := Orchestrator{
+		cfg:        cfg,
+		connector:  hydratingDispatchConnector{issue: hydrated},
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion),
+	}
+	state := newState(cfg)
+	now := time.Now()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{candidate}, now)
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected dispatch for hydrated blocked candidate = %#v", request)
+	default:
+	}
+	blocked, ok := state.Blocked[candidate.ID]
+	if !ok {
+		t.Fatalf("Blocked[%q] missing after hydrated dependency gate", candidate.ID)
+	}
+	if blocked.Issue.BlockedBy[0].State != "In Progress" {
+		t.Fatalf("blocked dependency state = %q, want In Progress", blocked.Issue.BlockedBy[0].State)
+	}
+}
+
 func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	t.Parallel()
 
@@ -783,6 +828,47 @@ func dispatchTestIssueWithPullRequest(id, state, prState string) connector.Issue
 		State:      prState,
 	}
 	return issue
+}
+
+type hydratingDispatchConnector struct {
+	issue connector.Issue
+}
+
+func (c hydratingDispatchConnector) Name() string {
+	return "hydrating"
+}
+
+func (c hydratingDispatchConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return []connector.Issue{c.issue}, nil
+}
+
+func (c hydratingDispatchConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c hydratingDispatchConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	for _, id := range ids {
+		if id == c.issue.ID {
+			return []connector.Issue{c.issue}, nil
+		}
+	}
+	return nil, nil
+}
+
+func (c hydratingDispatchConnector) CreateComment(context.Context, string, string) error {
+	return nil
+}
+
+func (c hydratingDispatchConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (c hydratingDispatchConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c hydratingDispatchConnector) SetField(context.Context, string, string, string) error {
+	return nil
 }
 
 type workerHostRunner struct {
