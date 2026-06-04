@@ -559,6 +559,89 @@ func TestRunTracksBlockedStatusIssuesForDisplayOnly(t *testing.T) {
 	}
 }
 
+func TestRunReapsTerminalWorkspacesOnStartupSweep(t *testing.T) {
+	t.Parallel()
+
+	done := testIssue("issue-done", "digitaldrywood/detent#80", "Done")
+	reaper := &fakeWorkspaceReaper{result: orchestrator.WorkspaceReapResult{Worktrees: 1, Branches: 1}}
+	tracker := newFakeConnector()
+	tracker.setStateIssues(done)
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:                  time.Hour,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress", "Rework"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		ObservedStates:                []string{"Human Review"},
+		WorkspaceCleanupIdleTTL:       time.Hour,
+		WorkspaceCleanupSweepInterval: time.Hour,
+	}, orchestrator.Dependencies{
+		Connector:       tracker,
+		Runner:          &staticRunner{},
+		WorkspaceReaper: reaper,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	reaped := waitForWorkspaceReaps(t, reaper, 1)
+	if reaped[0].ID != done.ID {
+		t.Fatalf("reaped issue ID = %q, want %q", reaped[0].ID, done.ID)
+	}
+	if !stateRequestsContain(tracker.fetchByStatesRequests(), []string{"Done", "Cancelled", "Human Review"}) {
+		t.Fatalf("FetchIssuesByStates requests = %#v, want cleanup request", tracker.fetchByStatesRequests())
+	}
+}
+
+func TestRunReapsIdleObservedWorkspacesWithoutTouchingActiveIssues(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now()
+	staleAt := now.Add(-2 * time.Hour)
+	recentAt := now.Add(-5 * time.Minute)
+	idle := testIssue("issue-review", "digitaldrywood/detent#81", "Human Review")
+	idle.StageUpdatedAt = &staleAt
+	recent := testIssue("issue-blocked", "digitaldrywood/detent#82", "Blocked")
+	recent.StageUpdatedAt = &recentAt
+	active := testIssue("issue-active", "digitaldrywood/detent#83", "In Progress")
+	active.StageUpdatedAt = &staleAt
+
+	reaper := &fakeWorkspaceReaper{result: orchestrator.WorkspaceReapResult{Worktrees: 1}}
+	tracker := newFakeConnector()
+	tracker.setStateIssues(idle, recent, active)
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:                  time.Hour,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress", "Rework"},
+		TerminalStates:                []string{"Done"},
+		ObservedStates:                []string{"Human Review", "Blocked", "In Progress"},
+		WorkspaceCleanupIdleTTL:       time.Hour,
+		WorkspaceCleanupSweepInterval: time.Hour,
+	}, orchestrator.Dependencies{
+		Connector:       tracker,
+		Runner:          &staticRunner{},
+		WorkspaceReaper: reaper,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	reaped := waitForWorkspaceReaps(t, reaper, 1)
+	if reaped[0].ID != idle.ID {
+		t.Fatalf("reaped issue ID = %q, want %q", reaped[0].ID, idle.ID)
+	}
+
+	time.Sleep(25 * time.Millisecond)
+	if got := reaper.reapedIssues(); len(got) != 1 {
+		t.Fatalf("reaped issues = %#v, want only idle issue", got)
+	}
+}
+
 func TestRunFetchesOnlyActionableObservedStates(t *testing.T) {
 	t.Parallel()
 
@@ -978,6 +1061,56 @@ type staticRunner struct {
 func (r *staticRunner) Run(context.Context, orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	r.calls.Add(1)
 	return r.result, r.err
+}
+
+type fakeWorkspaceReaper struct {
+	mu      sync.Mutex
+	result  orchestrator.WorkspaceReapResult
+	issues  []connector.Issue
+	changed chan struct{}
+}
+
+func (r *fakeWorkspaceReaper) ReapWorkspace(_ context.Context, issue connector.Issue) (orchestrator.WorkspaceReapResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.changed == nil {
+		r.changed = make(chan struct{}, 8)
+	}
+	r.issues = append(r.issues, issue)
+	r.changed <- struct{}{}
+	return r.result, nil
+}
+
+func (r *fakeWorkspaceReaper) reapedIssues() []connector.Issue {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return cloneIssues(r.issues)
+}
+
+func waitForWorkspaceReaps(t *testing.T, reaper *fakeWorkspaceReaper, want int) []connector.Issue {
+	t.Helper()
+
+	reaper.mu.Lock()
+	if reaper.changed == nil {
+		reaper.changed = make(chan struct{}, 8)
+	}
+	changed := reaper.changed
+	reaper.mu.Unlock()
+
+	deadline := time.After(time.Second)
+	for {
+		if got := reaper.reapedIssues(); len(got) >= want {
+			return got
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d workspace reaps; got %#v", want, reaper.reapedIssues())
+		case <-changed:
+		}
+	}
 }
 
 type blockingRunner struct {

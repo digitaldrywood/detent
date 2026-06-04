@@ -364,6 +364,26 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	return result, nil
 }
 
+func (r *Runner) ReapWorkspace(ctx context.Context, issue connector.Issue) (WorkspaceReapResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	workspaceIssue := workspaceIssue(issue)
+	if cleaner, ok := r.workspace.(workspace.IssueCleaner); ok {
+		result, err := cleaner.CleanupIssue(ctx, workspaceIssue)
+		return WorkspaceReapResult{
+			Worktrees: result.Worktrees,
+			Branches:  result.Branches,
+			Processes: result.Processes,
+		}, err
+	}
+	if err := r.workspace.Cleanup(ctx, issue.Identifier); err != nil {
+		return WorkspaceReapResult{}, err
+	}
+	return WorkspaceReapResult{}, nil
+}
+
 func (r *Runner) runtimeSnapshot() (config.Workflow, agentRuntime) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()

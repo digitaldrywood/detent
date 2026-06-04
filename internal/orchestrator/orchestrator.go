@@ -19,6 +19,8 @@ import (
 const (
 	defaultPollInterval             = 30 * time.Second
 	defaultRunningReconcileInterval = 2 * time.Minute
+	defaultWorkspaceCleanupIdleTTL  = 24 * time.Hour
+	defaultWorkspaceCleanupSweep    = 10 * time.Minute
 	gitHubGraphQLPauseRemaining     = 100
 	gitHubGraphQLBackoffRemaining   = 500
 	defaultMaxConcurrentAgents      = 1
@@ -40,23 +42,26 @@ var (
 )
 
 type Config struct {
-	PollInterval               time.Duration
-	MaxConcurrentAgents        int
-	MaxConcurrentAgentsByState map[string]int
-	DispatchPriorityByState    []string
-	MaxConcurrentAgentsPerHost int
-	MaxRetryBackoff            time.Duration
-	Claiming                   ClaimingConfig
-	AutoPromote                AutoPromoteConfig
-	ActiveStates               []string
-	TerminalStates             []string
-	Authorization              selector.Selector
-	SelectorContext            selector.Context
-	WorkerHosts                []string
-	BudgetRefusalCooldown      time.Duration
-	ContinuationRetryDelay     time.Duration
-	FailureRetryBaseDelay      time.Duration
-	SelectorPersona            string
+	PollInterval                  time.Duration
+	MaxConcurrentAgents           int
+	MaxConcurrentAgentsByState    map[string]int
+	DispatchPriorityByState       []string
+	MaxConcurrentAgentsPerHost    int
+	MaxRetryBackoff               time.Duration
+	Claiming                      ClaimingConfig
+	AutoPromote                   AutoPromoteConfig
+	ActiveStates                  []string
+	ObservedStates                []string
+	TerminalStates                []string
+	Authorization                 selector.Selector
+	SelectorContext               selector.Context
+	WorkerHosts                   []string
+	BudgetRefusalCooldown         time.Duration
+	WorkspaceCleanupIdleTTL       time.Duration
+	WorkspaceCleanupSweepInterval time.Duration
+	ContinuationRetryDelay        time.Duration
+	FailureRetryBaseDelay         time.Duration
+	SelectorPersona               string
 }
 
 type ClaimingConfig struct {
@@ -71,10 +76,15 @@ type ClaimingConfig struct {
 }
 
 type Dependencies struct {
-	Connector connector.Connector
-	Runner    Runner
-	Logger    *slog.Logger
+	Connector       connector.Connector
+	Runner          Runner
+	WorkspaceReaper WorkspaceReaper
+	Logger          *slog.Logger
 }
+
+type WorkspaceReapResult = runpkg.WorkspaceReapResult
+
+type WorkspaceReaper = runpkg.WorkspaceReaper
 
 type RuntimeUpdate struct {
 	Config    Config
@@ -85,6 +95,7 @@ type Orchestrator struct {
 	cfg           Config
 	connector     connector.Connector
 	supervisor    *runpkg.Supervisor
+	reaper        WorkspaceReaper
 	logger        *slog.Logger
 	stateRequests chan stateRequest
 	configUpdates chan configUpdateRequest
@@ -136,13 +147,16 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
 			Gate:               gate.Effective(cfg.Gate),
 		}),
-		ActiveStates:          append([]string(nil), cfg.Tracker.ActiveStates...),
-		TerminalStates:        append([]string(nil), cfg.Tracker.TerminalStates...),
-		Authorization:         cfg.Tracker.Authorization,
-		SelectorContext:       selector.Context{InstanceLogin: identity.GitHubLogin, Persona: identity.Name},
-		WorkerHosts:           append([]string(nil), cfg.Worker.SSHHosts...),
-		BudgetRefusalCooldown: durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
-		SelectorPersona:       cfg.Tracker.Assignee,
+		ActiveStates:                  append([]string(nil), cfg.Tracker.ActiveStates...),
+		ObservedStates:                append([]string(nil), cfg.Tracker.ObservedStates...),
+		TerminalStates:                append([]string(nil), cfg.Tracker.TerminalStates...),
+		Authorization:                 cfg.Tracker.Authorization,
+		SelectorContext:               selector.Context{InstanceLogin: identity.GitHubLogin, Persona: identity.Name},
+		WorkerHosts:                   append([]string(nil), cfg.Worker.SSHHosts...),
+		BudgetRefusalCooldown:         durationFromSeconds(cfg.Budget.RefusalCooldownSeconds),
+		WorkspaceCleanupIdleTTL:       durationFromMillis(cfg.Workspace.CleanupIdleTTLMS),
+		WorkspaceCleanupSweepInterval: durationFromMillis(cfg.Workspace.CleanupSweepIntervalMS),
+		SelectorPersona:               cfg.Tracker.Assignee,
 	}
 }
 
@@ -155,6 +169,12 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	runner := deps.Runner
 	if runner == nil {
 		runner = FakeRunner{}
+	}
+	reaper := deps.WorkspaceReaper
+	if reaper == nil {
+		if candidate, ok := runner.(WorkspaceReaper); ok {
+			reaper = candidate
+		}
 	}
 
 	logger := deps.Logger
@@ -175,6 +195,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		cfg:           cfg,
 		connector:     deps.Connector,
 		supervisor:    supervisor,
+		reaper:        reaper,
 		logger:        logger,
 		stateRequests: make(chan stateRequest),
 		configUpdates: make(chan configUpdateRequest),
@@ -292,6 +313,7 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		return
 	}
 
+	o.reapWorkspacesIfDue(ctx, state, now)
 	o.reconcileRunningIssues(ctx, state, now)
 	o.heartbeatRunningClaims(ctx, state, now)
 
@@ -406,6 +428,9 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 		running := state.Running[id]
 		running.Issue = mergeIssueTrackerFields(running.Issue, issue)
 		state.Running[id] = running
+		if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
+			cancelRunning(state, id)
+		}
 
 		if claimed, ok := state.Claimed[id]; ok {
 			claimed.Issue = mergeIssueTrackerFields(claimed.Issue, issue)
@@ -1024,6 +1049,14 @@ func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {
 	}
 	delete(state.Running, event.IssueID)
 
+	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
+		delete(state.Claimed, event.IssueID)
+		delete(state.Retry, event.IssueID)
+		delete(state.BudgetRefusals, event.IssueID)
+		o.reapWorkspace(context.Background(), state, running.Issue, workspaceReapReason(running.Issue, o.cfg.TerminalStates))
+		return
+	}
+
 	if event.Err != nil {
 		attempt := event.RetryAttempt
 		if attempt < 1 {
@@ -1192,8 +1225,15 @@ func normalizeConfig(cfg Config) Config {
 	if len(cfg.TerminalStates) == 0 {
 		cfg.TerminalStates = []string{"Done", "Cancelled", "Canceled", "Closed"}
 	}
+	if cfg.WorkspaceCleanupIdleTTL <= 0 {
+		cfg.WorkspaceCleanupIdleTTL = defaultWorkspaceCleanupIdleTTL
+	}
+	if cfg.WorkspaceCleanupSweepInterval <= 0 {
+		cfg.WorkspaceCleanupSweepInterval = defaultWorkspaceCleanupSweep
+	}
 
 	cfg.ActiveStates = normalizedStates(cfg.ActiveStates)
+	cfg.ObservedStates = normalizedStates(cfg.ObservedStates)
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)

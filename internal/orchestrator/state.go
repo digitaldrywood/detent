@@ -15,6 +15,7 @@ type State struct {
 	LastRefreshAt          time.Time
 	NextRefreshAt          time.Time
 	LastRunningReconcileAt time.Time
+	LastWorkspaceCleanupAt time.Time
 	Pipeline               []connector.Issue
 	Running                map[string]Running
 	Claimed                map[string]Claimed
@@ -23,6 +24,7 @@ type State struct {
 	Retry                  map[string]Retry
 	BudgetRefusals         map[string]BudgetRefusal
 	DiffStats              map[string]DiffStats
+	ReapedWorkspaces       map[string]time.Time
 	CodexTotals            CodexTotals
 	RateLimits             *telemetry.RateLimits
 }
@@ -94,6 +96,7 @@ func newState(cfg Config) State {
 		Retry:               map[string]Retry{},
 		BudgetRefusals:      map[string]BudgetRefusal{},
 		DiffStats:           map[string]DiffStats{},
+		ReapedWorkspaces:    map[string]time.Time{},
 	}
 }
 
@@ -105,6 +108,7 @@ func (s State) clone() State {
 		LastRefreshAt:          s.LastRefreshAt,
 		NextRefreshAt:          s.NextRefreshAt,
 		LastRunningReconcileAt: s.LastRunningReconcileAt,
+		LastWorkspaceCleanupAt: s.LastWorkspaceCleanupAt,
 		Pipeline:               cloneIssues(s.Pipeline),
 		Running:                make(map[string]Running, len(s.Running)),
 		Claimed:                make(map[string]Claimed, len(s.Claimed)),
@@ -113,6 +117,7 @@ func (s State) clone() State {
 		Retry:                  make(map[string]Retry, len(s.Retry)),
 		BudgetRefusals:         make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		DiffStats:              make(map[string]DiffStats, len(s.DiffStats)),
+		ReapedWorkspaces:       make(map[string]time.Time, len(s.ReapedWorkspaces)),
 		CodexTotals:            s.CodexTotals,
 		RateLimits:             cloneRateLimits(s.RateLimits),
 	}
@@ -153,6 +158,9 @@ func (s State) clone() State {
 	}
 	for id, diffStats := range s.DiffStats {
 		cloned.DiffStats[id] = diffStats
+	}
+	for id, reapedAt := range s.ReapedWorkspaces {
+		cloned.ReapedWorkspaces[id] = reapedAt
 	}
 
 	return cloned

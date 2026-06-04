@@ -104,9 +104,11 @@ type Claims struct {
 }
 
 type Workspace struct {
-	Root       string `yaml:"root"`
-	SourceRoot string `yaml:"source_root"`
-	AutoBranch bool   `yaml:"auto_branch"`
+	Root                   string `yaml:"root"`
+	SourceRoot             string `yaml:"source_root"`
+	AutoBranch             bool   `yaml:"auto_branch"`
+	CleanupIdleTTLMS       int    `yaml:"cleanup_idle_ttl_ms"`
+	CleanupSweepIntervalMS int    `yaml:"cleanup_sweep_interval_ms"`
 }
 
 type Worker struct {
@@ -445,8 +447,10 @@ func Default() Config {
 			IntervalMS: DefaultPollingIntervalMS,
 		},
 		Workspace: Workspace{
-			Root:       filepath.Join(os.TempDir(), "detent_workspaces"),
-			AutoBranch: true,
+			Root:                   filepath.Join(os.TempDir(), "detent_workspaces"),
+			AutoBranch:             true,
+			CleanupIdleTTLMS:       86400000,
+			CleanupSweepIntervalMS: 600000,
 		},
 		Worker: Worker{
 			SSHHosts: []string{},
@@ -518,6 +522,7 @@ func (c *Config) Validate() error {
 	problems = append(problems, c.Identity.Validate("identity")...)
 	c.validateTracker(&problems)
 	validatePollingInterval(c.Polling.IntervalMS, &problems)
+	c.Workspace.validate(&problems)
 	if c.Worker.MaxConcurrentAgentsPerHost != nil {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
@@ -635,6 +640,11 @@ func (t *Tracker) hasGitHubAppCredentials() bool {
 	return strings.TrimSpace(t.GitHubAppID) != "" &&
 		strings.TrimSpace(t.GitHubAppInstallationID) != "" &&
 		(strings.TrimSpace(t.GitHubAppPrivateKey) != "" || strings.TrimSpace(t.GitHubAppPrivateKeyPath) != "")
+}
+
+func (w *Workspace) validate(problems *[]string) {
+	validatePositive("workspace.cleanup_idle_ttl_ms", w.CleanupIdleTTLMS, problems)
+	validatePositive("workspace.cleanup_sweep_interval_ms", w.CleanupSweepIntervalMS, problems)
 }
 
 func (a *Agent) validate(prefix string, problems *[]string) {

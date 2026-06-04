@@ -18,6 +18,16 @@ type Backend interface {
 	Run(context.Context, RunRequest) (RunResult, error)
 }
 
+type WorkspaceReaper interface {
+	ReapWorkspace(context.Context, connector.Issue) (WorkspaceReapResult, error)
+}
+
+type WorkspaceReapResult struct {
+	Worktrees int
+	Branches  int
+	Processes int
+}
+
 type AgentBackend interface {
 	RunTurn(context.Context, AgentTurnRequest, AgentUpdateHandler) (AgentTurnResult, error)
 }

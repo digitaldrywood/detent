@@ -20,6 +20,8 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg := workflowconfig.Default()
 	cfg.Worker.SSHHosts = []string{"worker-a", "worker-b"}
 	cfg.Worker.MaxConcurrentAgentsPerHost = &perHost
+	cfg.Workspace.CleanupIdleTTLMS = 7200000
+	cfg.Workspace.CleanupSweepIntervalMS = 120000
 	cfg.Budget.RefusalCooldownSeconds = 45
 	cfg.Agent.AutoPromote.Enabled = true
 	cfg.Agent.AutoPromote.QuietSeconds = 30
@@ -46,6 +48,12 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.BudgetRefusalCooldown != 45*time.Second {
 		t.Fatalf("BudgetRefusalCooldown = %s, want 45s", got.BudgetRefusalCooldown)
+	}
+	if got.WorkspaceCleanupIdleTTL != 2*time.Hour {
+		t.Fatalf("WorkspaceCleanupIdleTTL = %s, want 2h0m0s", got.WorkspaceCleanupIdleTTL)
+	}
+	if got.WorkspaceCleanupSweepInterval != 2*time.Minute {
+		t.Fatalf("WorkspaceCleanupSweepInterval = %s, want 2m0s", got.WorkspaceCleanupSweepInterval)
 	}
 	if !got.AutoPromote.Enabled {
 		t.Fatal("AutoPromote.Enabled = false, want true")
