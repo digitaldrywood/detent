@@ -20,6 +20,8 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg := workflowconfig.Default()
 	cfg.Worker.SSHHosts = []string{"worker-a", "worker-b"}
 	cfg.Worker.MaxConcurrentAgentsPerHost = &perHost
+	cfg.Workspace.CleanupIdleTTLMS = 7200000
+	cfg.Workspace.CleanupSweepIntervalMS = 120000
 	cfg.Budget.RefusalCooldownSeconds = 45
 	cfg.Agent.AutoPromote.Enabled = true
 	cfg.Agent.AutoPromote.QuietSeconds = 30
@@ -46,6 +48,12 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	}
 	if got.BudgetRefusalCooldown != 45*time.Second {
 		t.Fatalf("BudgetRefusalCooldown = %s, want 45s", got.BudgetRefusalCooldown)
+	}
+	if got.WorkspaceCleanupIdleTTL != 2*time.Hour {
+		t.Fatalf("WorkspaceCleanupIdleTTL = %s, want 2h0m0s", got.WorkspaceCleanupIdleTTL)
+	}
+	if got.WorkspaceCleanupSweepInterval != 2*time.Minute {
+		t.Fatalf("WorkspaceCleanupSweepInterval = %s, want 2m0s", got.WorkspaceCleanupSweepInterval)
 	}
 	if !got.AutoPromote.Enabled {
 		t.Fatal("AutoPromote.Enabled = false, want true")
@@ -704,6 +712,32 @@ func TestDispatchIssueIncludesSelectorContext(t *testing.T) {
 	}
 	if request.SelectorContext.Persona != "persona-reviewer" {
 		t.Fatalf("SelectorContext.Persona = %q, want persona-reviewer", request.SelectorContext.Persona)
+	}
+}
+
+func TestDispatchIssueClearsReapedWorkspaceMarker(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+	})
+	orch := Orchestrator{
+		cfg:        cfg,
+		supervisor: newTestSupervisor(t, FakeRunner{}, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+	}
+	state := newState(cfg)
+	now := time.Now()
+	issue := dispatchTestIssue("issue-reopened", "Todo")
+	state.ReapedWorkspaces[issue.ID] = now.Add(-time.Hour)
+
+	if !orch.dispatchIssue(context.Background(), &state, issue, 0, now, "") {
+		t.Fatal("dispatchIssue() = false, want true")
+	}
+	if _, ok := state.ReapedWorkspaces[issue.ID]; ok {
+		t.Fatalf("ReapedWorkspaces[%q] present after dispatch", issue.ID)
 	}
 }
 

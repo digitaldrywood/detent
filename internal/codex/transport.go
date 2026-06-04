@@ -29,17 +29,18 @@ type LocalTransportFactory struct {
 }
 
 type localTransport struct {
-	cmd       *exec.Cmd
-	stdin     io.WriteCloser
-	codec     *Codec
-	received  chan transportResult
-	readDone  chan struct{}
-	done      chan struct{}
-	sendLock  chan struct{}
-	waitErr   error
-	waitMu    sync.Mutex
-	closeOnce sync.Once
-	closeErr  error
+	cmd            *exec.Cmd
+	processGroupID int
+	stdin          io.WriteCloser
+	codec          *Codec
+	received       chan transportResult
+	readDone       chan struct{}
+	done           chan struct{}
+	sendLock       chan struct{}
+	waitErr        error
+	waitMu         sync.Mutex
+	closeOnce      sync.Once
+	closeErr       error
 }
 
 type transportResult struct {
@@ -74,19 +75,21 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 		return nil, fmt.Errorf("create stdout pipe: %w", err)
 	}
 
+	configureCommandProcessGroup(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("start command: %w", err)
 	}
 
 	transport := &localTransport{
-		cmd:      cmd,
-		stdin:    stdin,
-		codec:    NewCodec(stdout, stdin),
-		received: make(chan transportResult, 64),
-		readDone: make(chan struct{}),
-		done:     make(chan struct{}),
-		sendLock: make(chan struct{}, 1),
+		cmd:            cmd,
+		processGroupID: commandProcessGroupID(cmd),
+		stdin:          stdin,
+		codec:          NewCodec(stdout, stdin),
+		received:       make(chan transportResult, 64),
+		readDone:       make(chan struct{}),
+		done:           make(chan struct{}),
+		sendLock:       make(chan struct{}, 1),
 	}
 	transport.sendLock <- struct{}{}
 
@@ -155,9 +158,7 @@ func (t *localTransport) Close(ctx context.Context) error {
 		return t.waitError()
 	case <-ctx.Done():
 		var killErr error
-		if t.cmd.Process != nil {
-			killErr = t.cmd.Process.Kill()
-		}
+		killErr = terminateCommandProcessTree(t.cmd, t.processGroupID)
 
 		select {
 		case <-t.done:
@@ -238,6 +239,9 @@ func (t *localTransport) readLoop() {
 func (t *localTransport) wait() {
 	<-t.readDone
 	err := t.cmd.Wait()
+	if cleanupErr := cleanupCommandProcessGroup(t.processGroupID); cleanupErr != nil {
+		err = errors.Join(err, cleanupErr)
+	}
 	t.waitMu.Lock()
 	t.waitErr = err
 	t.waitMu.Unlock()

@@ -127,6 +127,9 @@ func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
 	if got := runGit(t, source, "worktree", "list", "--porcelain"); strings.Contains(got, info.Path) {
 		t.Fatalf("git worktree list still contains removed path:\n%s", got)
 	}
+	if branchExists(t, source, "detent/dd-native") {
+		t.Fatal("detent/dd-native branch still exists after cleanup")
+	}
 }
 
 func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
@@ -516,6 +519,22 @@ func initSourceRepo(t *testing.T) string {
 func runGit(t *testing.T, dir string, args ...string) string {
 	t.Helper()
 	return runCommand(t, dir, "git", args...)
+}
+
+func branchExists(t *testing.T, dir string, branch string) bool {
+	t.Helper()
+
+	cmd := exec.Command("git", "-C", dir, "show-ref", "--verify", "--quiet", "refs/heads/"+branch)
+	err := cmd.Run()
+	if err == nil {
+		return true
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) && exitErr.ExitCode() == 1 {
+		return false
+	}
+	t.Fatalf("git show-ref failed: %v", err)
+	return false
 }
 
 func runCommand(t *testing.T, dir string, name string, args ...string) string {

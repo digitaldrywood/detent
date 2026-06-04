@@ -541,16 +541,52 @@ func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
 	}
 }
 
+func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeWorkspaceBackend{
+		cleanupResult: workspace.CleanupResult{Worktrees: 1, Branches: 1, Processes: 2},
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: &fakeCodexClient{},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.ReapWorkspace(context.Background(), connector.Issue{
+		ID:         "issue-311",
+		Identifier: "digitaldrywood/detent#311",
+		BranchName: "detent/digitaldrywood_detent_311",
+	})
+	if err != nil {
+		t.Fatalf("ReapWorkspace() error = %v", err)
+	}
+
+	if result.Worktrees != 1 || result.Branches != 1 || result.Processes != 2 {
+		t.Fatalf("ReapWorkspace() result = %#v, want 1 worktree, 1 branch, 2 processes", result)
+	}
+	if workspaceBackend.cleanupIssue.ID != "issue-311" ||
+		workspaceBackend.cleanupIssue.Identifier != "digitaldrywood/detent#311" ||
+		workspaceBackend.cleanupIssue.BranchName != "detent/digitaldrywood_detent_311" {
+		t.Fatalf("CleanupIssue() issue = %#v", workspaceBackend.cleanupIssue)
+	}
+}
+
 type fakeWorkspaceBackend struct {
-	info        workspace.Info
-	diffStat    workspace.DiffStat
-	diffStats   []workspace.DiffStat
-	created     bool
-	beforeRun   bool
-	afterRun    bool
-	afterRunErr error
-	diffed      bool
-	diffCalls   int
+	info          workspace.Info
+	diffStat      workspace.DiffStat
+	diffStats     []workspace.DiffStat
+	created       bool
+	beforeRun     bool
+	afterRun      bool
+	afterRunErr   error
+	diffed        bool
+	diffCalls     int
+	cleanupIssue  workspace.Issue
+	cleanupResult workspace.CleanupResult
 }
 
 func (b *fakeWorkspaceBackend) Create(_ context.Context, issue workspace.Issue) (workspace.Info, error) {
@@ -561,6 +597,11 @@ func (b *fakeWorkspaceBackend) Create(_ context.Context, issue workspace.Issue) 
 
 func (b *fakeWorkspaceBackend) Cleanup(context.Context, string) error {
 	return nil
+}
+
+func (b *fakeWorkspaceBackend) CleanupIssue(_ context.Context, issue workspace.Issue) (workspace.CleanupResult, error) {
+	b.cleanupIssue = issue
+	return b.cleanupResult, nil
 }
 
 func (b *fakeWorkspaceBackend) BeforeRun(context.Context, workspace.Info, workspace.Issue) error {

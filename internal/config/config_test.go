@@ -53,6 +53,8 @@ polling:
 workspace:
   root: ~/code/detent-workspaces
   auto_branch: false
+  cleanup_idle_ttl_ms: 7200000
+  cleanup_sweep_interval_ms: 120000
 worker:
   ssh_hosts:
     - worker-1
@@ -158,6 +160,12 @@ Ticket prompt {{ issue.title }}
 	if cfg.Tracker.HTTPIdleConnTimeoutMS != 120000 {
 		t.Fatalf("Tracker.HTTPIdleConnTimeoutMS = %d, want 120000", cfg.Tracker.HTTPIdleConnTimeoutMS)
 	}
+	if cfg.Workspace.CleanupIdleTTLMS != 7200000 {
+		t.Fatalf("Workspace.CleanupIdleTTLMS = %d, want 7200000", cfg.Workspace.CleanupIdleTTLMS)
+	}
+	if cfg.Workspace.CleanupSweepIntervalMS != 120000 {
+		t.Fatalf("Workspace.CleanupSweepIntervalMS = %d, want 120000", cfg.Workspace.CleanupSweepIntervalMS)
+	}
 	if !cfg.Tracker.Claims.Enabled {
 		t.Fatal("Tracker.Claims.Enabled = false, want true")
 	}
@@ -252,6 +260,12 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Workspace.AutoBranch != true {
 		t.Fatal("Workspace.AutoBranch = false, want true")
+	}
+	if cfg.Workspace.CleanupIdleTTLMS != 86400000 {
+		t.Fatalf("Workspace.CleanupIdleTTLMS = %d, want 86400000", cfg.Workspace.CleanupIdleTTLMS)
+	}
+	if cfg.Workspace.CleanupSweepIntervalMS != 600000 {
+		t.Fatalf("Workspace.CleanupSweepIntervalMS = %d, want 600000", cfg.Workspace.CleanupSweepIntervalMS)
 	}
 	if cfg.Agent.MaxConcurrentAgents != 10 {
 		t.Fatalf("Agent.MaxConcurrentAgents = %d, want 10", cfg.Agent.MaxConcurrentAgents)
@@ -642,6 +656,9 @@ polling:
   interval_ms: 0
 worker:
   max_concurrent_agents_per_host: 0
+workspace:
+  cleanup_idle_ttl_ms: 0
+  cleanup_sweep_interval_ms: 0
 agent:
   max_concurrent_agents: 0
   max_concurrent_agents_by_state:
@@ -667,6 +684,8 @@ Prompt
 				"tracker.http_idle_conn_timeout_ms must be greater than 0",
 				"polling.interval_ms must be greater than 0",
 				"worker.max_concurrent_agents_per_host must be greater than 0",
+				"workspace.cleanup_idle_ttl_ms must be greater than 0",
+				"workspace.cleanup_sweep_interval_ms must be greater than 0",
 				"agent.max_concurrent_agents must be greater than 0",
 				"agent.max_concurrent_agents_by_state limits must be positive integers",
 				"agent.dispatch_priority_by_state state names must be unique",

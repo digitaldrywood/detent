@@ -247,6 +247,8 @@ workspace:
   root: /absolute/path/to/detent-workspaces
   source_root: /absolute/path/to/project-checkout
   auto_branch: true
+  cleanup_idle_ttl_ms: 86400000
+  cleanup_sweep_interval_ms: 600000
 agent:
   max_concurrent_agents: 5
   max_turns: 20
@@ -295,6 +297,11 @@ human review.
 If `workspace.source_root` is omitted, Detent falls back to the project
 `workdir` from global config, then to `workspace.root` for older single-root
 setups.
+
+`workspace.cleanup_idle_ttl_ms` controls how long non-active observed
+workspaces can sit idle before cleanup. Terminal issues are cleaned immediately
+when observed. `workspace.cleanup_sweep_interval_ms` controls the startup and
+periodic cleanup cadence.
 
 `polling.interval_ms` defaults to `120000` and must be at least `60000`.
 Detent work is async, so it does not need sub-minute board scans. Detent polls

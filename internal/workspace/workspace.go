@@ -37,6 +37,16 @@ type Backend interface {
 	DiffStat(context.Context, Info, Issue) (DiffStat, error)
 }
 
+type CleanupResult struct {
+	Worktrees int
+	Branches  int
+	Processes int
+}
+
+type IssueCleaner interface {
+	CleanupIssue(context.Context, Issue) (CleanupResult, error)
+}
+
 type Issue struct {
 	ID         string
 	Identifier string
@@ -206,30 +216,57 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 }
 
 func (l *LocalGit) Cleanup(ctx context.Context, identifier string) error {
-	info, err := l.infoForIssue(Issue{Identifier: identifier})
+	_, err := l.CleanupIssue(ctx, Issue{Identifier: identifier})
+	return err
+}
+
+func (l *LocalGit) CleanupIssue(ctx context.Context, issue Issue) (CleanupResult, error) {
+	info, err := l.infoForIssue(issue)
 	if err != nil {
-		return err
+		return CleanupResult{}, err
 	}
 
+	result := CleanupResult{}
 	exists, isDir, err := pathExists(info.Path)
 	if err != nil {
-		return err
+		return CleanupResult{}, err
 	}
 	if !exists {
 		_, pruneErr := l.runGit(ctx, "worktree", "prune")
-		return pruneErr
+		if pruneErr != nil {
+			return CleanupResult{}, pruneErr
+		}
+		branchRemoved, branchErr := l.deleteBranch(ctx, info.Branch)
+		if branchErr != nil {
+			return CleanupResult{}, branchErr
+		}
+		if branchRemoved {
+			result.Branches = 1
+		}
+		return result, nil
 	}
+	result.Processes = reapWorkspaceProcesses(ctx, info.Path, l.logger)
 	if isDir && l.isSourceWorktree(ctx, info.Path) {
-		if err := l.runHook(ctx, "before_remove", l.hooks.BeforeRemove, info, Issue{Identifier: identifier}); err != nil {
+		if err := l.runHook(ctx, "before_remove", l.hooks.BeforeRemove, info, issue); err != nil {
 			l.logger.Warn("workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
 		}
 	}
 
 	if err := l.removePath(ctx, info.Path); err != nil {
-		return err
+		return CleanupResult{}, err
 	}
-	_, err = l.runGit(ctx, "worktree", "prune")
-	return err
+	result.Worktrees = 1
+	if _, err := l.runGit(ctx, "worktree", "prune"); err != nil {
+		return CleanupResult{}, err
+	}
+	branchRemoved, err := l.deleteBranch(ctx, info.Branch)
+	if err != nil {
+		return CleanupResult{}, err
+	}
+	if branchRemoved {
+		result.Branches = 1
+	}
+	return result, nil
 }
 
 func (l *LocalGit) BeforeRun(ctx context.Context, info Info, issue Issue) error {
@@ -374,6 +411,22 @@ func (l *LocalGit) branchExists(ctx context.Context, branch string) (bool, error
 		return false, nil
 	}
 	return false, err
+}
+
+func (l *LocalGit) deleteBranch(ctx context.Context, branch string) (bool, error) {
+	branch = strings.TrimSpace(branch)
+	if !l.autoBranch || branch == "" || !strings.HasPrefix(branch, "detent/") {
+		return false, nil
+	}
+	exists, err := l.branchExists(ctx, branch)
+	if err != nil {
+		return false, err
+	}
+	if !exists {
+		return false, nil
+	}
+	_, err = l.runGit(ctx, "branch", "-D", branch)
+	return err == nil, err
 }
 
 func (l *LocalGit) isGitWorkspace(ctx context.Context, path string) bool {
