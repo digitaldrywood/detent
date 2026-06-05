@@ -448,7 +448,7 @@ func (c *Client) recordGraphQLQueryCostFromHeaders(queryType string, snapshot gr
 		cost = snapshot.Previous.Remaining - snapshot.Current.Remaining
 	}
 	if cost < 0 {
-		return
+		cost = 0
 	}
 	c.addGraphQLQueryCost(queryType, cost)
 }

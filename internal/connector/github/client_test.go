@@ -402,8 +402,47 @@ func TestClientGraphQLSerializesHeaderInferredMutationCosts(t *testing.T) {
 	if usage.QueryCosts[0].QueryType != "mutation" || usage.QueryCosts[0].Cost != mutations {
 		t.Fatalf("QueryCosts[0] = %#v, want mutation cost %d", usage.QueryCosts[0], mutations)
 	}
+	if usage.QueryCosts[0].Count != mutations {
+		t.Fatalf("QueryCosts[0].Count = %d, want %d", usage.QueryCosts[0].Count, mutations)
+	}
 	if usage.RateLimit.Used != 10+mutations || usage.RateLimit.Remaining != 5000-10-mutations {
 		t.Fatalf("RateLimit = %#v, want latest used %d remaining %d", usage.RateLimit, 10+mutations, 5000-10-mutations)
+	}
+}
+
+func TestClientGraphQLCountsStaleHeaderInferredMutation(t *testing.T) {
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	client := &Client{}
+	client.setRateLimit(connector.GraphQLRateLimit{
+		Limit:     5000,
+		Used:      15,
+		Remaining: 4985,
+		ResetAt:   resetAt,
+		UpdatedAt: now,
+	})
+
+	headers := http.Header{}
+	headers.Set("X-RateLimit-Limit", "5000")
+	headers.Set("X-RateLimit-Used", "13")
+	headers.Set("X-RateLimit-Remaining", "4987")
+	headers.Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+
+	snapshot := client.recordRateLimitFromHeaders(headers, now.Add(time.Second))
+	client.recordGraphQLQueryCostFromHeaders("mutation", snapshot)
+
+	usage := client.FlushGraphQLRateLimitUsage()
+	if usage.TotalQueries != 1 || usage.TotalCost != 0 {
+		t.Fatalf("FlushGraphQLRateLimitUsage() totals = queries %d cost %d, want queries 1 cost 0", usage.TotalQueries, usage.TotalCost)
+	}
+	if len(usage.QueryCosts) != 1 {
+		t.Fatalf("QueryCosts len = %d, want 1: %#v", len(usage.QueryCosts), usage.QueryCosts)
+	}
+	if usage.QueryCosts[0] != (connector.GraphQLQueryCost{QueryType: "mutation", Count: 1, Cost: 0}) {
+		t.Fatalf("QueryCosts[0] = %#v, want mutation count 1 cost 0", usage.QueryCosts[0])
+	}
+	if usage.RateLimit.Used != 15 || usage.RateLimit.Remaining != 4985 {
+		t.Fatalf("RateLimit = %#v, want previous snapshot preserved", usage.RateLimit)
 	}
 }
 
