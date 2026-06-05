@@ -970,6 +970,24 @@ func TestConnectorFetchIssueParentsReturnsParentAndTrackedInIssues(t *testing.T)
 	}
 }
 
+func TestConnectorFetchIssueParentsSkipsParentsOutsideProject(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"node":{"parent":{"__typename":"Issue","id":"I_outside_parent","number":260,"title":"Outside epic","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/260","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_other","project":{"id":"PVT_other"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}},"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("FetchIssueParents() = %#v, want no out-of-project parents", got)
+	}
+}
+
 func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	t.Parallel()
 

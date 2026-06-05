@@ -1584,7 +1584,7 @@ func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNod
 	if ok {
 		return c.buildIssue(issue, stateName, priorityName, statusUpdatedAt, fields), true, nil
 	}
-	return c.buildIssue(issue, c.githubIssueStateToDetentState(issue.State), "", nil, nil), true, nil
+	return connector.Issue{}, false, nil
 }
 
 func (c *Connector) resolveIssueProjectFields(ctx context.Context, issueID string, items *projectItemsConnection) (string, string, *time.Time, map[string]string, bool, error) {
