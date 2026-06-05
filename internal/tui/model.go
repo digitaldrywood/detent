@@ -12,6 +12,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -23,7 +24,8 @@ const defaultDashboardURL = "http://localhost:4000"
 type Option func(*options)
 
 type options struct {
-	now func() time.Time
+	now   func() time.Time
+	build buildinfo.Info
 }
 
 type Model struct {
@@ -34,6 +36,7 @@ type Model struct {
 	width        int
 	height       int
 	now          func() time.Time
+	build        buildinfo.Info
 	styles       styles
 }
 
@@ -66,6 +69,7 @@ func NewModel(ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot], opts 
 		updates:      subscription.C(),
 		width:        defaultTerminalColumns,
 		now:          cfg.now,
+		build:        cfg.build,
 		styles:       newStyles(),
 	}, nil
 }
@@ -75,6 +79,12 @@ func WithNow(now func() time.Time) Option {
 		if now != nil {
 			cfg.now = now
 		}
+	}
+}
+
+func WithBuild(build buildinfo.Info) Option {
+	return func(cfg *options) {
+		cfg.build = build
 	}
 }
 
@@ -152,6 +162,11 @@ func (m Model) renderSnapshot() string {
 	lines := []string{
 		m.styles.title.Render("╭─ DETENT STATUS"),
 		"│ Generated: " + m.styles.muted.Render(formatTimestamp(snapshot.GeneratedAt)),
+	}
+	if !buildinfo.IsZero(m.build) {
+		lines = append(lines, "│ Build: "+m.styles.muted.Render(buildinfo.DisplayLabel(m.build)))
+	}
+	lines = append(lines, []string{
 		"│ Agents: " + m.styles.ok.Render(fmt.Sprintf("%d running", countOrLen(snapshot.Counts.Running, len(snapshot.Running)))) +
 			m.styles.muted.Render(" | ") +
 			m.styles.warn.Render(fmt.Sprintf("%d queued", countOrLen(snapshot.Counts.Queue, len(snapshot.Queue)))) +
@@ -175,7 +190,7 @@ func (m Model) renderSnapshot() string {
 		"│ Next refresh: " + formatOptionalInfo(formatNextRefresh(snapshot.Refresh), m.styles),
 		m.styles.title.Render("├─ Running"),
 		"│",
-	}
+	}...)
 
 	runningWidth := runningEventWidth(m.width)
 	lines = append(lines, runningTableHeader(runningWidth, m.styles), runningTableSeparator(runningWidth, m.styles))

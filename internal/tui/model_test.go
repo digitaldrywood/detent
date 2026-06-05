@@ -9,6 +9,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -19,6 +20,11 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 	snapshots := hub.New[telemetry.Snapshot]()
 	model, err := NewModel(context.Background(), snapshots, WithNow(func() time.Time {
 		return time.Date(2026, 5, 31, 0, 0, 0, 0, time.UTC)
+	}), WithBuild(buildinfo.Info{
+		Version: "dev",
+		Commit:  "abcdef1234567890",
+		Date:    "2026-06-05T21:00:00Z",
+		Dirty:   true,
 	}))
 	if err != nil {
 		t.Fatalf("NewModel() error = %v", err)
@@ -38,6 +44,7 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 	view := stripANSI(next.(Model).View())
 	for _, want := range []string{
 		"DETENT STATUS",
+		"Build: dev (abcdef1, dirty) 2026-06-05T21:00:00Z",
 		"Project: https://github.com/digitaldrywood/detent",
 		"Instance: release-captain (detent-bot)",
 		"Scope: assignee in @me (detent-bot, release-captain)",

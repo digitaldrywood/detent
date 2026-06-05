@@ -16,6 +16,7 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -58,6 +59,7 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 			Host:           host,
 			Port:           port,
 			Version:        opts.version,
+			Build:          opts.build,
 		}, nil
 	}
 	if !missingGlobalConfig(err) {
@@ -79,6 +81,7 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 			Host:           host,
 			Port:           port,
 			Version:        opts.version,
+			Build:          opts.build,
 		}, nil
 	}
 
@@ -94,6 +97,7 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 		Host:           strings.TrimSpace(host),
 		Port:           bootPort(port),
 		Version:        opts.version,
+		Build:          opts.build,
 	}, nil
 }
 
@@ -179,6 +183,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		Mode:           web.ModeRunning,
 		WorkflowPath:   firstWorkflowPath(cfg),
 		Version:        cfg.Version,
+		Build:          cfg.Build,
 		DashboardURL:   displayURL,
 		GlobalConfig:   cfg.Global,
 		ConfigPathRule: cfg.ConfigPathRule,
@@ -201,7 +206,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			return err
 		}
 		listenerOwned = false
-		return serveWithTerminalDashboard(runCtx, server, listener, snapshotHub)
+		return serveWithTerminalDashboard(runCtx, server, listener, snapshotHub, cfg.Build)
 	}
 	if err := printBootBanner(cfg, displayURL); err != nil {
 		return err
@@ -229,6 +234,7 @@ func startOnboarding(ctx context.Context, cfg BootConfig) error {
 		Mode:         web.ModeOnboarding,
 		WorkflowPath: firstWorkflowPath(cfg),
 		Version:      cfg.Version,
+		Build:        cfg.Build,
 		DashboardURL: displayURL,
 	}, web.Dependencies{})
 	if err != nil {
@@ -268,7 +274,7 @@ func serve(ctx context.Context, server *web.Server, listener net.Listener) error
 	}
 }
 
-func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listener net.Listener, snapshots *hub.Hub[telemetry.Snapshot]) error {
+func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listener net.Listener, snapshots *hub.Hub[telemetry.Snapshot], build buildinfo.Info) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -284,7 +290,7 @@ func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listene
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	model, err := tui.NewModel(runCtx, snapshots)
+	model, err := tui.NewModel(runCtx, snapshots, tui.WithBuild(build))
 	if err != nil {
 		return err
 	}

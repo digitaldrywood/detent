@@ -7,6 +7,7 @@ VERSION ?= $(shell git describe --tags --always 2>/dev/null || echo dev)
 COMMIT ?= $(shell git rev-parse --short HEAD 2>/dev/null || echo none)
 DATE ?= $(shell date -u +"%Y-%m-%dT%H:%M:%SZ")
 LDFLAGS ?= -X main.version=$(VERSION) -X main.commit=$(COMMIT) -X main.date=$(DATE)
+DEV_VERSION ?= dev
 COVERPROFILE := tmp/coverage.out
 COVERPROFILE_RAW := tmp/coverage.raw.out
 COVERAGE_THRESHOLD := 70.0
@@ -26,7 +27,7 @@ dev:
 		mv tmp/air-combined.log tmp/air-combined-$$(date +%Y%m%d-%H%M%S).log; \
 	fi
 	@ls -t tmp/air-combined-*.log 2>/dev/null | tail -n +6 | xargs rm -f 2>/dev/null || true
-	@ENV=dev LOG_LEVEL=debug air 2>&1 | tee tmp/air-combined.log
+	@ENV=dev LOG_LEVEL=debug DETENT_AIR_VERSION=$(DEV_VERSION) air 2>&1 | tee tmp/air-combined.log
 
 generate:
 	@go generate ./...

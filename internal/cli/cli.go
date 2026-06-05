@@ -11,6 +11,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/project"
 )
@@ -53,6 +54,7 @@ type BootConfig struct {
 	Host           string
 	Port           *int
 	Version        string
+	Build          buildinfo.Info
 	Headless       bool
 	StdoutTTY      bool
 	Output         io.Writer
@@ -79,6 +81,7 @@ type options struct {
 	boot          BootFunc
 	signal        SignalFunc
 	version       string
+	build         buildinfo.Info
 	stdoutTTY     func() bool
 }
 
@@ -101,6 +104,12 @@ func WithSignalFunc(signal SignalFunc) Option {
 func WithVersion(version string) Option {
 	return func(opts *options) {
 		opts.version = strings.TrimSpace(version)
+	}
+}
+
+func WithBuild(build buildinfo.Info) Option {
+	return func(opts *options) {
+		opts.build = build
 	}
 }
 

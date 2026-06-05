@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -534,6 +535,11 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 	server, err := web.NewServer(web.Config{
 		StaticDir: t.TempDir(),
 		Version:   "v9.8.7",
+		Build: buildinfo.Info{
+			Version: "v9.8.7",
+			Commit:  "abcdef1234567890",
+			Date:    "2026-06-05T21:00:00Z",
+		},
 	}, testDeps(t))
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
@@ -550,6 +556,7 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 	}
 	for _, want := range []string{
 		"v9.8.7",
+		"Build v9.8.7 (abcdef1) 2026-06-05T21:00:00Z",
 		`aria-label="Detent dashboard"`,
 		`href="/"`,
 		`href="/reports"`,
