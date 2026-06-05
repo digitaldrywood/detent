@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 )
@@ -22,6 +23,7 @@ const (
 type DashboardData struct {
 	Title         string
 	Version       string
+	Build         buildinfo.Info
 	DashboardURL  string
 	ConnectorName string
 	Snapshot      telemetry.Snapshot
@@ -188,6 +190,20 @@ func versionLabel(data DashboardData) string {
 		return "dev"
 	}
 	return version
+}
+
+func buildLabel(data DashboardData) string {
+	if buildinfo.IsZero(data.Build) {
+		return ""
+	}
+	return "Build " + buildinfo.DisplayLabel(data.Build)
+}
+
+func dashboardBuildVersionLabel(data DashboardData) string {
+	if build := buildLabel(data); build != "" {
+		return build
+	}
+	return versionLabel(data)
 }
 
 func connectorName(data DashboardData) string {

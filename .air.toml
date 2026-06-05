@@ -6,15 +6,15 @@ tmp_dir = "tmp"
 
 [build]
   args_bin = []
-  bin = "./tmp/symphony"
-  cmd = "go build -o ./tmp/symphony ./cmd/symphony"
+  bin = "./tmp/detent"
+  cmd = "make build VERSION=${DETENT_AIR_VERSION:-dev}"
   delay = 1000
   exclude_dir = ["tmp", "vendor", "testdata", "node_modules", "internal/database/sqlc"]
   exclude_file = ["go.sum"]
   exclude_regex = ["_test\\.go", "_templ\\.go$"]
   exclude_unchanged = false
   follow_symlink = false
-  full_bin = "./tmp/symphony"
+  full_bin = "./tmp/detent"
   include_dir = []
   include_ext = ["go", "templ", "sql", "css", "js", "html", "yaml", "yml", "toml"]
   include_file = []
@@ -23,7 +23,7 @@ tmp_dir = "tmp"
   poll = false
   poll_interval = 0
   post_cmd = []
-  pre_cmd = ["mkdir -p tmp; lsof -ti:${PORT:-8080} | xargs kill -9 2>/dev/null || true; sleep 0.5", "go generate ./...", "go mod tidy"]
+  pre_cmd = ["mkdir -p tmp; lsof -ti:${PORT:-8080} | xargs kill -9 2>/dev/null || true; sleep 0.5", "go mod tidy"]
   rerun = false
   rerun_delay = 500
   send_interrupt = true

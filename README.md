@@ -808,7 +808,8 @@ make check
 ```
 
 `make dev` runs Air with `ENV=dev` and
-`LOG_LEVEL=debug`, builds `./tmp/detent`, rotates
+`LOG_LEVEL=debug`, builds a `dev`-versioned `./tmp/detent` with the current
+commit SHA and build date, rotates
 `tmp/air-combined.log`, and streams combined build and application output to
 `tmp/air-combined.log`.
 

@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hub"
@@ -51,6 +52,7 @@ type Config struct {
 	SSETickInterval time.Duration
 	WorkflowPath    string
 	Version         string
+	Build           buildinfo.Info
 	DashboardURL    string
 	Pricing         budget.PricingTable
 	GlobalConfig    globalconfig.Config
@@ -72,6 +74,7 @@ type Server struct {
 	tickEvery    time.Duration
 	workflow     string
 	version      string
+	build        buildinfo.Info
 	dashboardURL string
 	pricing      budget.PricingTable
 	globalConfig globalconfig.Config
@@ -116,6 +119,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		tickEvery:    cfg.sseTickInterval(),
 		workflow:     cfg.workflowPath(),
 		version:      strings.TrimSpace(cfg.Version),
+		build:        cfg.Build,
 		dashboardURL: cfg.dashboardURL(),
 		pricing:      cfg.pricing(),
 		globalConfig: cfg.GlobalConfig,
@@ -195,6 +199,7 @@ func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot)
 	return templates.DashboardData{
 		Title:         "Detent",
 		Version:       s.version,
+		Build:         s.build,
 		ConnectorName: s.connector.Name(),
 		DashboardURL:  s.dashboardURL,
 		Snapshot:      snapshot,

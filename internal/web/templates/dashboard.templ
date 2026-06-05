@@ -33,7 +33,7 @@ templ Dashboard(data DashboardData) {
 						@dashboardPageHeading("Dashboard")
 						@dashboardNav("")
 						<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
-							<span class="truncate font-mono">{ versionLabel(data) }</span>
+							<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
 							@dashboardTopbarDivider()
 							<span class="truncate">{ connectorName(data) }</span>
 							@dashboardTopbarDivider()

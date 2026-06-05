@@ -6,6 +6,8 @@ import (
 	"runtime"
 
 	"github.com/spf13/cobra"
+
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 )
 
 var version, commit, date = "dev", "none", "unknown"
@@ -32,14 +34,19 @@ func newVersionCommand() *cobra.Command {
 }
 
 func currentVersionInfo() versionInfo {
+	build := currentBuildInfo()
 	return versionInfo{
-		Version:   version,
-		Commit:    commit,
-		Date:      date,
+		Version:   build.Version,
+		Commit:    build.Commit,
+		Date:      build.Date,
 		GoVersion: runtime.Version(),
 		OS:        runtime.GOOS,
 		Arch:      runtime.GOARCH,
 	}
+}
+
+func currentBuildInfo() buildinfo.Info {
+	return buildinfo.Resolve(version, commit, date)
 }
 
 func formatVersionInfo(info versionInfo) string {
