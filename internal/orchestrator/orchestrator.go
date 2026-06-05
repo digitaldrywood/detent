@@ -753,7 +753,19 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		if availableSlots(state) == 0 {
 			return
 		}
+		issue, ok := o.hydrateDispatchIssue(ctx, issue)
+		if !ok {
+			continue
+		}
 		if !o.dispatchable(issue, state, now) {
+			if todoBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
+				state.Blocked[issue.ID] = Blocked{
+					Issue:     cloneIssue(issue),
+					Reason:    blockedReasonDependency,
+					BlockedAt: now,
+					Source:    BlockedSourceDependency,
+				}
+			}
 			continue
 		}
 
@@ -769,10 +781,33 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	}
 }
 
+func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, issue connector.Issue) (connector.Issue, bool) {
+	if strings.TrimSpace(issue.ID) == "" || len(issue.Fields) > 0 || o.connector == nil {
+		return issue, true
+	}
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issue.ID})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("hydrate dispatch issue failed", "issue_id", issue.ID, "error", err)
+		}
+		return connector.Issue{}, false
+	}
+	for _, hydrated := range issues {
+		if hydrated.ID == issue.ID {
+			return mergeIssueTrackerFields(issue, hydrated), true
+		}
+	}
+	return connector.Issue{}, false
+}
+
 func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
 	for _, issue := range issues {
 		if availableSlots(state) == 0 {
 			return
+		}
+		issue, ok := o.hydrateDispatchIssue(ctx, issue)
+		if !ok {
+			continue
 		}
 		if !o.dispatchable(issue, state, now) {
 			continue

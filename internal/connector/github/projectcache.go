@@ -11,11 +11,23 @@ type projectCache struct {
 	ttl     time.Duration
 	now     func() time.Time
 	entries map[string]map[string]projectItemCacheEntry
+	refs    map[string]issueRefCacheEntry
 }
 
 type projectItemCacheEntry struct {
 	itemID   string
 	cachedAt time.Time
+}
+
+type issueRefCacheEntry struct {
+	ref      issueRef
+	cachedAt time.Time
+}
+
+type issueRef struct {
+	Owner  string
+	Name   string
+	Number int
 }
 
 func newProjectCache(ttl time.Duration, now func() time.Time) *projectCache {
@@ -27,6 +39,7 @@ func newProjectCache(ttl time.Duration, now func() time.Time) *projectCache {
 		ttl:     ttl,
 		now:     now,
 		entries: map[string]map[string]projectItemCacheEntry{},
+		refs:    map[string]issueRefCacheEntry{},
 	}
 }
 
@@ -87,6 +100,52 @@ func (c *projectCache) SetItemID(projectID string, issueID string, itemID string
 	}
 	projectEntries[issueID] = projectItemCacheEntry{
 		itemID:   itemID,
+		cachedAt: c.now(),
+	}
+	c.mu.Unlock()
+}
+
+func (c *projectCache) GetIssueRef(issueID string) (issueRef, bool) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return issueRef{}, false
+	}
+
+	c.mu.RLock()
+	entry, ok := c.refs[issueID]
+	c.mu.RUnlock()
+	if !ok {
+		return issueRef{}, false
+	}
+	if c.fresh(entry.cachedAt) {
+		return entry.ref, true
+	}
+
+	c.mu.Lock()
+	if current, ok := c.refs[issueID]; ok && c.fresh(current.cachedAt) {
+		entry = current
+	} else if ok {
+		delete(c.refs, issueID)
+	}
+	c.mu.Unlock()
+
+	if c.fresh(entry.cachedAt) {
+		return entry.ref, true
+	}
+	return issueRef{}, false
+}
+
+func (c *projectCache) SetIssueRef(issueID string, ref issueRef) {
+	issueID = strings.TrimSpace(issueID)
+	ref.Owner = strings.TrimSpace(ref.Owner)
+	ref.Name = strings.TrimSpace(ref.Name)
+	if issueID == "" || ref.Owner == "" || ref.Name == "" || ref.Number <= 0 {
+		return
+	}
+
+	c.mu.Lock()
+	c.refs[issueID] = issueRefCacheEntry{
+		ref:      ref,
 		cachedAt: c.now(),
 	}
 	c.mu.Unlock()

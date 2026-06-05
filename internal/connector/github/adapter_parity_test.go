@@ -21,10 +21,12 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 			body: `{"data":{"updateProjectV2Field":{"projectV2Field":{"options":[{"name":"Urgent","color":"RED","description":"Needs immediate attention."},{"name":"High","color":"ORANGE","description":"Important work to prioritize soon."},{"id":"OPT_medium","name":"Medium","color":"YELLOW","description":"Normal."},{"name":"Low","color":"BLUE","description":"Can wait behind higher-priority work."},{"name":"No priority","color":"GRAY","description":"Priority has not been set."}]}}}}`,
 		},
 		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_28","content":{"__typename":"Issue","id":"I_kw28","number":28,"title":"Projects-v2 parity gate","body":"Depends on: #26 #27\n<!-- model: gpt-5-codex-high -->","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/28","createdAt":"2026-05-31T04:12:00Z","updatedAt":"2026-05-31T04:30:00Z","assignees":{"nodes":[{"login":"codex"}]},"labels":{"nodes":[{"name":"gate"},{"name":"stage:S4"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"Urgent"}},{"id":"PVTI_29","content":{"__typename":"Issue","id":"I_kw29","number":29,"title":"Human review","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/29","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"In Review"},"priorityValue":{"name":"No priority"}}]}}}}`,
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_28","content":{"__typename":"Issue","id":"I_kw28","number":28,"title":"Projects-v2 parity gate","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/28","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"Urgent"}},{"id":"PVTI_29","content":{"__typename":"Issue","id":"I_kw29","number":29,"title":"Human review","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/29","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"In Review"},"priorityValue":{"name":"No priority"}}]}}}}`,
 		},
 		{
-			body: `{"data":{"repository":{"pullRequests":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+			method: "GET",
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[]`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_28","project":{"id":"PVT_throwaway"}}]}}}}`,
@@ -36,7 +38,9 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 			body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_28"}}}}`,
 		},
 		{
-			body: `{"data":{"addComment":{"commentEdge":{"node":{"id":"IC_workpad"}}}}}`,
+			method: "POST",
+			path:   "/repos/digitaldrywood/detent/issues/28/comments",
+			body:   `{"node_id":"IC_workpad"}`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
@@ -75,12 +79,6 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 	}
 	if issues[0].Priority == nil || *issues[0].Priority != 1 {
 		t.Fatalf("candidate priority = %v, want rank 1", issues[0].Priority)
-	}
-	if issues[0].ModelOverride != "gpt-5-codex-high" {
-		t.Fatalf("candidate ModelOverride = %q, want gpt-5-codex-high", issues[0].ModelOverride)
-	}
-	if got := len(issues[0].BlockedBy); got != 2 {
-		t.Fatalf("candidate BlockedBy len = %d, want 2", got)
 	}
 
 	if err := c.UpdateIssueState(ctx, "I_kw28", "Human Review"); err != nil {
@@ -135,15 +133,12 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 		t.Fatalf("update query = %q, want updateProjectV2ItemFieldValue", requests[7]["query"])
 	}
 
-	commentVariables := requestVariables(t, requests[8])
-	if commentVariables["subjectId"] != "I_kw28" {
-		t.Fatalf("comment subjectId = %v, want I_kw28", commentVariables["subjectId"])
+	if requests[8]["method"] != "POST" || requests[8]["path"] != "/repos/digitaldrywood/detent/issues/28/comments" {
+		t.Fatalf("comment request = %#v, want REST issue comment", requests[8])
 	}
-	if commentVariables["body"] != "## Codex Workpad\n\nReady for review." {
-		t.Fatalf("comment body = %q", commentVariables["body"])
-	}
-	if !strings.Contains(requests[8]["query"].(string), "addComment") {
-		t.Fatalf("comment query = %q, want addComment", requests[8]["query"])
+	commentBody := requests[8]["body"].(map[string]any)
+	if commentBody["body"] != "## Codex Workpad\n\nReady for review." {
+		t.Fatalf("comment body = %q", commentBody["body"])
 	}
 }
 
