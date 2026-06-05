@@ -68,22 +68,27 @@ func waitForPIDFile(t *testing.T, path string) int {
 	t.Helper()
 
 	deadline := time.After(time.Second)
+	var lastErr error
 	for {
 		raw, err := os.ReadFile(path)
 		if err == nil {
-			pid, parseErr := strconv.Atoi(strings.TrimSpace(string(raw)))
+			pidText := strings.TrimSpace(string(raw))
+			pid, parseErr := strconv.Atoi(pidText)
+			if parseErr == nil && pid > 0 {
+				return pid
+			}
 			if parseErr != nil {
-				t.Fatalf("parse pid file: %v", parseErr)
+				lastErr = parseErr
+			} else {
+				lastErr = errors.New("pid is not positive")
 			}
-			if pid <= 0 {
-				t.Fatalf("pid = %d, want positive", pid)
-			}
-			return pid
+		} else {
+			lastErr = err
 		}
 
 		select {
 		case <-deadline:
-			t.Fatalf("timed out waiting for pid file: %v", err)
+			t.Fatalf("timed out waiting for pid file: %v", lastErr)
 		default:
 			time.Sleep(time.Millisecond)
 		}
