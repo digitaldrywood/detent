@@ -747,6 +747,11 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 	continuations := 0
 	for _, issue := range issues {
 		if retry, ok := dueRetries[issue.ID]; ok {
+			var hydrated bool
+			issue, hydrated = o.hydrateDispatchIssue(ctx, issue)
+			if !hydrated {
+				continue
+			}
 			o.dispatchRetryIssue(ctx, state, issue, retry, now)
 			continue
 		}

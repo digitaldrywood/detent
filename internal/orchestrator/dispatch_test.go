@@ -620,6 +620,57 @@ func TestDispatchReadyIssuesHydratesLightweightCandidateBeforeDependencyGate(t *
 	}
 }
 
+func TestDispatchReadyIssuesHydratesDueRetryBeforeDispatch(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+	})
+	runner := newWorkerHostRunner()
+	candidate := dispatchTestIssue("issue-retry-lightweight", "Todo")
+	candidate.Fields = map[string]string{}
+	candidate.BlockedBy = nil
+	hydrated := candidate
+	hydrated.Fields = map[string]string{}
+	hydrated.BlockedBy = []connector.BlockedRef{{
+		Identifier: "digitaldrywood/detent#issue-blocker",
+		State:      "In Progress",
+	}}
+	orch := Orchestrator{
+		cfg:        cfg,
+		connector:  hydratingDispatchConnector{issue: hydrated},
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion),
+	}
+	state := newState(cfg)
+	now := time.Now()
+	state.Claimed[candidate.ID] = Claimed{Issue: candidate, ClaimedAt: now.Add(-time.Minute)}
+	state.Retry[candidate.ID] = Retry{
+		Issue:   candidate,
+		Attempt: 2,
+		DueAt:   now.Add(-time.Millisecond),
+		Error:   "previous failure",
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{candidate}, now)
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected dispatch for hydrated blocked retry = %#v", request)
+	default:
+	}
+	if _, ok := state.Retry[candidate.ID]; ok {
+		t.Fatalf("Retry[%q] present after hydrated blocked retry", candidate.ID)
+	}
+	if _, ok := state.Claimed[candidate.ID]; ok {
+		t.Fatalf("Claimed[%q] present after hydrated blocked retry", candidate.ID)
+	}
+}
+
 func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	t.Parallel()
 
