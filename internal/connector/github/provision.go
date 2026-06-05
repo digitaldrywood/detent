@@ -28,6 +28,7 @@ query DetentGitHubProjectOptions($projectId: ID!) {
       }
     }
   }
+  rateLimit { limit used remaining cost resetAt }
 }`
 
 const updateProjectFieldMutation = `
@@ -162,7 +163,7 @@ func (c *Connector) fetchProjectOptionsMetadata(ctx context.Context) (projectOpt
 			PriorityField *projectOptionsFieldResponse `json:"priorityField"`
 		} `json:"node"`
 	}
-	if err := c.client.GraphQL(ctx, projectOptionsQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryProjectMetadata, projectOptionsQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
 		return projectOptionsMetadata{}, fmt.Errorf("fetch github project options: %w", err)
 	}
 	if response.Node == nil || response.Node.TypeName != "ProjectV2" {
@@ -247,7 +248,7 @@ func (c *Connector) updateProjectFieldOptions(
 			} `json:"projectV2Field"`
 		} `json:"updateProjectV2Field"`
 	}
-	if err := c.client.GraphQL(ctx, updateProjectFieldMutation, map[string]any{
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryUpdateField, updateProjectFieldMutation, map[string]any{
 		"input": map[string]any{
 			"fieldId":             fieldID,
 			"singleSelectOptions": options,

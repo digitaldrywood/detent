@@ -20,6 +20,25 @@ query DetentGitHubAuthenticate($projectId: ID!) {
   rateLimit { limit used remaining cost resetAt }
 }`
 
+const (
+	graphQLQueryAuthenticate    = "authenticate"
+	graphQLQueryCandidateIssues = "candidate_issues"
+	graphQLQueryObservedStatus  = "observed_status"
+	graphQLQueryRunningStates   = "running_states"
+	graphQLQueryEpicChildren    = "epic_children"
+	graphQLQueryPullRequests    = "pull_requests"
+	graphQLQueryBlockedReasons  = "blocked_reasons"
+	graphQLQueryIssueLookup     = "issue_lookup"
+	graphQLQueryProjectItem     = "project_item"
+	graphQLQueryProjectMetadata = "project_metadata"
+	graphQLQueryAssignees       = "assignees"
+	graphQLQueryCreateComment   = "create_comment"
+	graphQLQueryCloseIssue      = "close_issue"
+	graphQLQuerySetAssignee     = "set_assignee"
+	graphQLQueryRemoveAssignees = "remove_assignees"
+	graphQLQueryUpdateField     = "update_project_field"
+)
+
 type Config struct {
 	Endpoint                string
 	APIKey                  string
@@ -108,6 +127,14 @@ func (c *Connector) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
 	return c.client.GraphQLRateLimit()
 }
 
+func (c *Connector) ResetGraphQLRateLimitUsage() {
+	c.client.ResetGraphQLRateLimitUsage()
+}
+
+func (c *Connector) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
+	return c.client.FlushGraphQLRateLimitUsage()
+}
+
 func (c *Connector) LiveConnections() int {
 	if c == nil || c.client == nil {
 		return 0
@@ -129,7 +156,7 @@ func (c *Connector) Authenticate(ctx context.Context) error {
 			ID       string `json:"id"`
 		} `json:"node"`
 	}
-	if err := c.client.GraphQL(ctx, authenticateQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryAuthenticate, authenticateQuery, map[string]any{"projectId": c.projectID}, &response); err != nil {
 		return fmt.Errorf("authenticate github connector: %w", err)
 	}
 	if response.Viewer == nil || strings.TrimSpace(response.Viewer.Login) == "" {
@@ -155,3 +182,4 @@ var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)
+var _ connector.GraphQLRateLimitUsageReporter = (*Connector)(nil)

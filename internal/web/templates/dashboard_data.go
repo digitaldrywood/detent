@@ -42,6 +42,13 @@ type rateLimitRow struct {
 	UsedPercent int
 }
 
+type graphQLBudgetContributorRow struct {
+	QueryType string
+	Count     string
+	Cost      string
+	Percent   string
+}
+
 type boardStateRow struct {
 	State      string
 	Count      int
@@ -1783,6 +1790,94 @@ func rateLimitName(limits *telemetry.RateLimits) string {
 		return "Latest snapshot"
 	}
 	return limits.LimitName
+}
+
+func hasGraphQLBudget(limits *telemetry.RateLimits) bool {
+	return limits != nil && (limits.GitHubGraphQL != nil || limits.GraphQLCost != nil)
+}
+
+func graphQLBudgetRemaining(limits *telemetry.RateLimits) string {
+	if limits == nil || limits.GitHubGraphQL == nil {
+		return "n/a"
+	}
+	bucket := limits.GitHubGraphQL
+	if bucket.Limit > 0 {
+		return formatInt(bucket.Remaining) + " / " + formatInt(bucket.Limit)
+	}
+	return formatInt(bucket.Remaining) + " left"
+}
+
+func graphQLBudgetReset(limits *telemetry.RateLimits, now time.Time) string {
+	if limits == nil || limits.GitHubGraphQL == nil {
+		return "n/a"
+	}
+	bucket := limits.GitHubGraphQL
+	if bucket.ResetInSeconds > 0 {
+		return formatDuration(float64(bucket.ResetInSeconds)) + " to reset"
+	}
+	if bucket.ResetAt != nil {
+		if !now.IsZero() && bucket.ResetAt.After(now) {
+			return formatDuration(bucket.ResetAt.Sub(now).Seconds()) + " to reset"
+		}
+		return bucket.ResetAt.UTC().Format("15:04 UTC")
+	}
+	return "n/a"
+}
+
+func graphQLBudgetResetAt(limits *telemetry.RateLimits) string {
+	if limits == nil || limits.GitHubGraphQL == nil || limits.GitHubGraphQL.ResetAt == nil {
+		return "reset time n/a"
+	}
+	return "resets " + limits.GitHubGraphQL.ResetAt.UTC().Format("15:04 UTC")
+}
+
+func graphQLBudgetCycleCost(limits *telemetry.RateLimits) string {
+	if limits == nil || limits.GraphQLCost == nil {
+		return "0 points"
+	}
+	return formatInt(limits.GraphQLCost.TotalCost) + " points"
+}
+
+func graphQLBudgetQueryCount(limits *telemetry.RateLimits) string {
+	if limits == nil || limits.GraphQLCost == nil {
+		return "0 queries"
+	}
+	return formatInt(limits.GraphQLCost.TotalQueries) + " " + pluralize("query", limits.GraphQLCost.TotalQueries)
+}
+
+func graphQLBudgetContributorRows(limits *telemetry.RateLimits) []graphQLBudgetContributorRow {
+	if limits == nil || limits.GraphQLCost == nil || len(limits.GraphQLCost.Contributors) == 0 {
+		return nil
+	}
+
+	total := limits.GraphQLCost.TotalCost
+	rows := make([]graphQLBudgetContributorRow, 0, len(limits.GraphQLCost.Contributors))
+	for _, contributor := range limits.GraphQLCost.Contributors {
+		rows = append(rows, graphQLBudgetContributorRow{
+			QueryType: strings.TrimSpace(contributor.QueryType),
+			Count:     formatInt(contributor.Count) + " " + pluralize("query", contributor.Count),
+			Cost:      formatInt(contributor.Cost) + " " + pluralize("point", contributor.Cost),
+			Percent:   graphQLCostPercent(contributor.Cost, total),
+		})
+	}
+	return rows
+}
+
+func graphQLCostPercent(cost int64, total int64) string {
+	if cost <= 0 || total <= 0 {
+		return "0%"
+	}
+	return formatInt(int64(math.Round(float64(cost)/float64(total)*100))) + "%"
+}
+
+func pluralize(word string, count int64) string {
+	if count == 1 {
+		return word
+	}
+	if strings.HasSuffix(word, "y") {
+		return strings.TrimSuffix(word, "y") + "ies"
+	}
+	return word + "s"
 }
 
 func percentStyle(percent int) string {

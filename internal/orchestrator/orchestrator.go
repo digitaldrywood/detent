@@ -17,21 +17,22 @@ import (
 )
 
 const (
-	defaultPollInterval             = 30 * time.Second
-	defaultRunningReconcileInterval = 2 * time.Minute
-	defaultWorkspaceCleanupIdleTTL  = 24 * time.Hour
-	defaultWorkspaceCleanupSweep    = 10 * time.Minute
-	gitHubGraphQLPauseRemaining     = 100
-	gitHubGraphQLBackoffRemaining   = 500
-	defaultMaxConcurrentAgents      = 1
-	defaultMaxRetryBackoff          = 5 * time.Minute
-	defaultContinuationRetry        = time.Second
-	defaultFailureRetryBaseDelay    = 10 * time.Second
-	continuationDispatchBackoff     = 100 * time.Millisecond
-	runUpdateBufferSize             = 128
-	blockedStatusState              = "Blocked"
-	blockedReasonDependency         = "blocked by non-terminal dependency"
-	blockedReasonProjectStatus      = "blocked by project status"
+	defaultPollInterval               = 30 * time.Second
+	defaultRunningReconcileInterval   = 2 * time.Minute
+	defaultWorkspaceCleanupIdleTTL    = 24 * time.Hour
+	defaultWorkspaceCleanupSweep      = 10 * time.Minute
+	gitHubGraphQLPauseRemaining       = 100
+	gitHubGraphQLBackoffRemaining     = 500
+	defaultGitHubGraphQLWarnRemaining = 500
+	defaultMaxConcurrentAgents        = 1
+	defaultMaxRetryBackoff            = 5 * time.Minute
+	defaultContinuationRetry          = time.Second
+	defaultFailureRetryBaseDelay      = 10 * time.Second
+	continuationDispatchBackoff       = 100 * time.Millisecond
+	runUpdateBufferSize               = 128
+	blockedStatusState                = "Blocked"
+	blockedReasonDependency           = "blocked by non-terminal dependency"
+	blockedReasonProjectStatus        = "blocked by project status"
 )
 
 var prPipelineStates = []string{"Human Review", "Merging"}
@@ -62,6 +63,7 @@ type Config struct {
 	ContinuationRetryDelay        time.Duration
 	FailureRetryBaseDelay         time.Duration
 	SelectorPersona               string
+	GitHubGraphQLWarnRemaining    int64
 }
 
 type ClaimingConfig struct {
@@ -157,6 +159,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		WorkspaceCleanupIdleTTL:       durationFromMillis(cfg.Workspace.CleanupIdleTTLMS),
 		WorkspaceCleanupSweepInterval: durationFromMillis(cfg.Workspace.CleanupSweepIntervalMS),
 		SelectorPersona:               cfg.Tracker.Assignee,
+		GitHubGraphQLWarnRemaining:    int64(cfg.Tracker.GitHubGraphQLWarnRemaining),
 	}
 }
 
@@ -545,7 +548,8 @@ func (o *Orchestrator) markRefresh(state *State, now time.Time) {
 }
 
 func (o *Orchestrator) finishRefresh(state *State, now time.Time) {
-	o.captureConnectorRateLimits(state, now)
+	cycle := o.captureConnectorRateLimits(state, now)
+	o.logGraphQLRateLimitCycle(cycle)
 
 	interval := o.adaptivePollInterval(state, now)
 	state.PollInterval = interval
@@ -556,20 +560,109 @@ func (o *Orchestrator) finishRefresh(state *State, now time.Time) {
 	state.NextRefreshAt = time.Time{}
 }
 
-func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) {
-	reporter, ok := o.connector.(connector.RateLimitReporter)
-	if !ok {
-		return
+type graphQLRateLimitCycle struct {
+	Bucket     *telemetry.RateLimitBucket
+	Cost       *telemetry.GraphQLCost
+	HasSummary bool
+}
+
+func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) graphQLRateLimitCycle {
+	var usage connector.GraphQLRateLimitUsage
+	if reporter, ok := o.connector.(connector.GraphQLRateLimitUsageReporter); ok {
+		usage = reporter.FlushGraphQLRateLimitUsage()
 	}
-	rateLimit, ok := reporter.GraphQLRateLimit()
-	if !ok {
-		return
+
+	var rateLimit connector.GraphQLRateLimit
+	hasRateLimit := usage.HasRateLimit
+	if hasRateLimit {
+		rateLimit = usage.RateLimit
+	} else {
+		reporter, ok := o.connector.(connector.RateLimitReporter)
+		if !ok {
+			return graphQLRateLimitCycle{}
+		}
+		var okRateLimit bool
+		rateLimit, okRateLimit = reporter.GraphQLRateLimit()
+		if !okRateLimit {
+			return graphQLRateLimitCycle{}
+		}
+		hasRateLimit = true
 	}
+
+	cost := graphQLCostSummary(usage)
 	bucket := gitHubGraphQLBucket(rateLimit, now)
+	if cost != nil {
+		bucket.Cost = cost.TotalCost
+	}
 	if state.RateLimits == nil {
 		state.RateLimits = &telemetry.RateLimits{}
 	}
 	state.RateLimits.GitHubGraphQL = bucket
+	state.RateLimits.GraphQLCost = cost
+	return graphQLRateLimitCycle{
+		Bucket:     bucket,
+		Cost:       cost,
+		HasSummary: hasRateLimit,
+	}
+}
+
+func graphQLCostSummary(usage connector.GraphQLRateLimitUsage) *telemetry.GraphQLCost {
+	if usage.TotalQueries == 0 && usage.TotalCost == 0 && len(usage.QueryCosts) == 0 {
+		return nil
+	}
+
+	cost := &telemetry.GraphQLCost{
+		TotalQueries: usage.TotalQueries,
+		TotalCost:    usage.TotalCost,
+		Contributors: make([]telemetry.GraphQLCostContributor, 0, len(usage.QueryCosts)),
+	}
+	for _, contributor := range usage.QueryCosts {
+		cost.Contributors = append(cost.Contributors, telemetry.GraphQLCostContributor{
+			QueryType: contributor.QueryType,
+			Count:     contributor.Count,
+			Cost:      contributor.Cost,
+		})
+	}
+	return cost
+}
+
+func (o *Orchestrator) logGraphQLRateLimitCycle(cycle graphQLRateLimitCycle) {
+	if !cycle.HasSummary || cycle.Bucket == nil {
+		return
+	}
+
+	var resetAt time.Time
+	if cycle.Bucket.ResetAt != nil {
+		resetAt = *cycle.Bucket.ResetAt
+	}
+	cycleCost := int64(0)
+	queryCount := int64(0)
+	var contributors []telemetry.GraphQLCostContributor
+	if cycle.Cost != nil {
+		cycleCost = cycle.Cost.TotalCost
+		queryCount = cycle.Cost.TotalQueries
+		contributors = cycle.Cost.Contributors
+	}
+
+	o.logger.Info(
+		"github graphql budget summary",
+		"cycle_cost", cycleCost,
+		"query_count", queryCount,
+		"remaining", cycle.Bucket.Remaining,
+		"limit", cycle.Bucket.Limit,
+		"reset_at", resetAt,
+		"contributors", contributors,
+	)
+
+	if cycle.Bucket.Remaining < o.cfg.GitHubGraphQLWarnRemaining {
+		o.logger.Warn(
+			"github graphql budget below warning floor",
+			"remaining", cycle.Bucket.Remaining,
+			"warning_floor", o.cfg.GitHubGraphQLWarnRemaining,
+			"limit", cycle.Bucket.Limit,
+			"reset_at", resetAt,
+		)
+	}
 }
 
 func gitHubGraphQLBucket(rateLimit connector.GraphQLRateLimit, now time.Time) *telemetry.RateLimitBucket {
@@ -1254,6 +1347,9 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.FailureRetryBaseDelay <= 0 {
 		cfg.FailureRetryBaseDelay = defaultFailureRetryBaseDelay
+	}
+	if cfg.GitHubGraphQLWarnRemaining <= 0 {
+		cfg.GitHubGraphQLWarnRemaining = defaultGitHubGraphQLWarnRemaining
 	}
 	if len(cfg.ActiveStates) == 0 {
 		cfg.ActiveStates = []string{"Todo", "In Progress"}

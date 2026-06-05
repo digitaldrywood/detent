@@ -12,6 +12,25 @@ type GraphQLRateLimit struct {
 	UpdatedAt  time.Time
 }
 
+type GraphQLQueryCost struct {
+	QueryType string
+	Count     int64
+	Cost      int64
+}
+
+type GraphQLRateLimitUsage struct {
+	RateLimit    GraphQLRateLimit
+	HasRateLimit bool
+	QueryCosts   []GraphQLQueryCost
+	TotalQueries int64
+	TotalCost    int64
+}
+
 type RateLimitReporter interface {
 	GraphQLRateLimit() (GraphQLRateLimit, bool)
+}
+
+type GraphQLRateLimitUsageReporter interface {
+	ResetGraphQLRateLimitUsage()
+	FlushGraphQLRateLimitUsage() GraphQLRateLimitUsage
 }

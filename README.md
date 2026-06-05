@@ -221,6 +221,7 @@ tracker:
   http_max_idle_conns: 100
   http_max_idle_conns_per_host: 32
   http_idle_conn_timeout_ms: 90000
+  github_graphql_warn_remaining: 500
   active_states:
     - Todo
     - In Progress
@@ -775,7 +776,8 @@ work.
 The web dashboard starts with the main `detent` command. In running mode it
 shows live counts, running issues, retry queue, blocked work, completed
 sessions, token totals, budget status, Codex rate-limit snapshots, and GitHub
-GraphQL rate-limit snapshots when the GitHub connector reports them.
+GraphQL rate-limit snapshots with per-cycle query cost contributors when the
+GitHub connector reports them.
 
 Useful endpoints:
 

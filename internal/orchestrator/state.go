@@ -237,6 +237,7 @@ func cloneRateLimits(rateLimits *telemetry.RateLimits) *telemetry.RateLimits {
 	cloned.Secondary = cloneRateLimitBucket(rateLimits.Secondary)
 	cloned.Credits = cloneRateLimitBucket(rateLimits.Credits)
 	cloned.GitHubGraphQL = cloneRateLimitBucket(rateLimits.GitHubGraphQL)
+	cloned.GraphQLCost = cloneGraphQLCost(rateLimits.GraphQLCost)
 	return &cloned
 }
 
@@ -247,6 +248,9 @@ func mergeRateLimits(current *telemetry.RateLimits, incoming *telemetry.RateLimi
 	}
 	if current != nil && current.GitHubGraphQL != nil && merged.GitHubGraphQL == nil {
 		merged.GitHubGraphQL = cloneRateLimitBucket(current.GitHubGraphQL)
+	}
+	if current != nil && current.GraphQLCost != nil && merged.GraphQLCost == nil {
+		merged.GraphQLCost = cloneGraphQLCost(current.GraphQLCost)
 	}
 	return merged
 }
@@ -260,6 +264,18 @@ func cloneRateLimitBucket(bucket *telemetry.RateLimitBucket) *telemetry.RateLimi
 	if bucket.ResetAt != nil {
 		resetAt := *bucket.ResetAt
 		cloned.ResetAt = &resetAt
+	}
+	return &cloned
+}
+
+func cloneGraphQLCost(cost *telemetry.GraphQLCost) *telemetry.GraphQLCost {
+	if cost == nil {
+		return nil
+	}
+
+	cloned := *cost
+	if len(cost.Contributors) > 0 {
+		cloned.Contributors = append([]telemetry.GraphQLCostContributor(nil), cost.Contributors...)
 	}
 	return &cloned
 }
