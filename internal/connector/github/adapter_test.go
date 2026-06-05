@@ -438,12 +438,17 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/commits/sha-187/check-runs?per_page=100",
-			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+			body:   `{"check_runs":[]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-187/statuses?per_page=100",
+			body:   `[{"context":"ci/build","state":"success","created_at":"2026-06-05T11:00:00Z"}]`,
 		},
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/pulls/187/reviews?per_page=100",
-			body:   `[{"body":"[P2] The fallback path needs cleanup.","state":"COMMENTED","user":{"login":"codex"}}]`,
+			body:   `[{"body":"[P1] Stale finding on the previous review.","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"sha-187","submitted_at":"2026-06-05T10:00:00Z"},{"body":"No blocking findings on the current head.","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"sha-187","submitted_at":"2026-06-05T11:00:00Z"}]`,
 		},
 	})
 
@@ -468,7 +473,7 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 	if pr == nil {
 		t.Fatal("I_182 PullRequest = nil, want matching open PR")
 	}
-	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "detent/digitaldrywood_detent_182_followup" || pr.CIStatus != "pass" || pr.CodexReviewState != "P2" {
+	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "detent/digitaldrywood_detent_182_followup" || pr.CIStatus != "pass" || pr.CodexReviewState != "COMMENTED" {
 		t.Fatalf("I_182 PullRequest = %#v, want PR 187 open followup", pr)
 	}
 	if byID["I_18"].PullRequest != nil {
@@ -495,8 +500,13 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 		},
 		{
 			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-190/statuses?per_page=100",
+			body:   `[{"context":"ci/build","state":"success","created_at":"2026-06-05T11:00:00Z"}]`,
+		},
+		{
+			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/pulls/190/reviews?per_page=100",
-			body:   `[{"body":"[P1] Unsafe migration.","state":"COMMENTED","user":{"login":"codex"}}]`,
+			body:   `[{"body":"[P1] Unsafe migration.","state":"COMMENTED","user":{"login":"codex"},"commit_id":"sha-190","submitted_at":"2026-06-05T11:00:00Z"}]`,
 		},
 	})
 

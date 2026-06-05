@@ -382,9 +382,11 @@ type statusCheckRollup struct {
 }
 
 type pullRequestReview struct {
-	Body   string `json:"body"`
-	State  string `json:"state"`
-	Author *actor `json:"author"`
+	Body        string     `json:"body"`
+	State       string     `json:"state"`
+	Author      *actor     `json:"author"`
+	CommitID    string     `json:"commitId"`
+	SubmittedAt *time.Time `json:"submittedAt"`
 }
 
 type actor struct {
@@ -424,9 +426,11 @@ type restHead struct {
 }
 
 type restReview struct {
-	Body  string `json:"body"`
-	State string `json:"state"`
-	User  *actor `json:"user"`
+	Body        string     `json:"body"`
+	State       string     `json:"state"`
+	User        *actor     `json:"user"`
+	CommitID    string     `json:"commit_id"`
+	SubmittedAt *time.Time `json:"submitted_at"`
 }
 
 type restCheckRuns struct {
@@ -436,6 +440,12 @@ type restCheckRuns struct {
 type restCheckRun struct {
 	Status     string `json:"status"`
 	Conclusion string `json:"conclusion"`
+}
+
+type restCommitStatus struct {
+	Context   string     `json:"context"`
+	State     string     `json:"state"`
+	CreatedAt *time.Time `json:"created_at"`
 }
 
 type restComment struct {
@@ -1077,7 +1087,7 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 			Commit: commitNode{StatusCheckRollup: &statusCheckRollup{State: ciState}},
 		}}}
 	}
-	reviews, err := c.fetchPullRequestReviews(ctx, repo, pullRequest.Number)
+	reviews, err := c.fetchPullRequestReviews(ctx, repo, pullRequest.Number, pullRequest.HeadSHA)
 	if err != nil {
 		return err
 	}
@@ -1086,27 +1096,27 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 }
 
 func (c *Connector) fetchPullRequestCIState(ctx context.Context, repo pullRequestRepo, sha string) (string, error) {
-	var response restCheckRuns
-	if err := c.client.REST(ctx, http.MethodGet, restCommitCheckRunsPath(repo, sha), nil, &response); err != nil {
+	var checkRuns restCheckRuns
+	if err := c.client.REST(ctx, http.MethodGet, restCommitCheckRunsPath(repo, sha), nil, &checkRuns); err != nil {
 		return "", fmt.Errorf("fetch github check runs: %w", err)
 	}
-	return checkRunsState(response.CheckRuns), nil
+	var statuses []restCommitStatus
+	if err := c.client.REST(ctx, http.MethodGet, restCommitStatusesPath(repo, sha), nil, &statuses); err != nil {
+		return "", fmt.Errorf("fetch github commit statuses: %w", err)
+	}
+	return combinedCIState(checkRunsState(checkRuns.CheckRuns), commitStatusesState(statuses)), nil
 }
 
-func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullRequestRepo, number int) ([]pullRequestReview, error) {
+func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullRequestRepo, number int, headSHA string) ([]pullRequestReview, error) {
 	var response []restReview
 	if err := c.client.REST(ctx, http.MethodGet, restPullRequestReviewsPath(repo, number), nil, &response); err != nil {
 		return nil, fmt.Errorf("fetch github pull request reviews: %w", err)
 	}
-	reviews := make([]pullRequestReview, 0, len(response))
-	for _, review := range response {
-		reviews = append(reviews, pullRequestReview{
-			Body:   review.Body,
-			State:  review.State,
-			Author: review.User,
-		})
+	review, ok := latestCodexReview(response, headSHA)
+	if !ok {
+		return nil, nil
 	}
-	return reviews, nil
+	return []pullRequestReview{review}, nil
 }
 
 func (c *Connector) fetchProjectItems(ctx context.Context, query string, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
@@ -1981,6 +1991,12 @@ func restCommitCheckRunsPath(repo pullRequestRepo, sha string) string {
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/commits/" + url.PathEscape(sha) + "/check-runs?" + values.Encode()
 }
 
+func restCommitStatusesPath(repo pullRequestRepo, sha string) string {
+	values := url.Values{}
+	values.Set("per_page", "100")
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/commits/" + url.PathEscape(sha) + "/statuses?" + values.Encode()
+}
+
 func githubIssueNodeFromREST(ref issueRef, issue restIssue) githubIssueNode {
 	repo := ref.Owner + "/" + ref.Name
 	return githubIssueNode{
@@ -2216,6 +2232,72 @@ func checkRunsState(checkRuns []restCheckRun) string {
 	return "success"
 }
 
+func commitStatusesState(statuses []restCommitStatus) string {
+	if len(statuses) == 0 {
+		return ""
+	}
+	latestByContext := map[string]restCommitStatus{}
+	for index, status := range statuses {
+		context := strings.TrimSpace(status.Context)
+		if context == "" {
+			context = strconv.Itoa(index)
+		}
+		previous, ok := latestByContext[context]
+		if !ok || restCommitStatusAfter(status, previous) {
+			latestByContext[context] = status
+		}
+	}
+	pending := false
+	for _, status := range latestByContext {
+		switch strings.ToLower(strings.TrimSpace(status.State)) {
+		case "success":
+		case "pending":
+			pending = true
+		case "":
+			pending = true
+		default:
+			return "failure"
+		}
+	}
+	if pending {
+		return "pending"
+	}
+	return "success"
+}
+
+func restCommitStatusAfter(left restCommitStatus, right restCommitStatus) bool {
+	if left.CreatedAt == nil {
+		return false
+	}
+	if right.CreatedAt == nil {
+		return true
+	}
+	return left.CreatedAt.After(*right.CreatedAt)
+}
+
+func combinedCIState(checkRuns string, statuses string) string {
+	states := []string{checkRuns, statuses}
+	hasSuccess := false
+	hasPending := false
+	for _, state := range states {
+		switch strings.ToLower(strings.TrimSpace(state)) {
+		case "failure", "failed", "error":
+			return "failure"
+		case "pending", "expected", "queued", "waiting", "in_progress", "in progress":
+			hasPending = true
+		case "success", "green", "pass", "passed":
+			hasSuccess = true
+		}
+	}
+	if hasPending {
+		return "pending"
+	}
+	if hasSuccess {
+		return "success"
+	}
+	return ""
+}
+
 func normalizePullRequestCIStatus(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "success", "green", "pass", "passed":
@@ -2229,8 +2311,52 @@ func normalizePullRequestCIStatus(status string) string {
 	}
 }
 
+func latestCodexReview(reviews []restReview, headSHA string) (pullRequestReview, bool) {
+	headSHA = strings.TrimSpace(headSHA)
+	var latest pullRequestReview
+	found := false
+	for _, review := range reviews {
+		if !codexReviewAuthor(review.User) || strings.EqualFold(strings.TrimSpace(review.State), "DISMISSED") {
+			continue
+		}
+		if headSHA != "" && strings.TrimSpace(review.CommitID) != "" && review.CommitID != headSHA {
+			continue
+		}
+		candidate := pullRequestReview{
+			Body:        review.Body,
+			State:       review.State,
+			Author:      review.User,
+			CommitID:    review.CommitID,
+			SubmittedAt: review.SubmittedAt,
+		}
+		if !found || pullRequestReviewAfter(candidate, latest) {
+			latest = candidate
+			found = true
+		}
+	}
+	return latest, found
+}
+
+func codexReviewAuthor(author *actor) bool {
+	if author == nil {
+		return false
+	}
+	return strings.Contains(strings.ToLower(strings.TrimSpace(author.Login)), "codex")
+}
+
+func pullRequestReviewAfter(left pullRequestReview, right pullRequestReview) bool {
+	if left.SubmittedAt == nil {
+		return right.SubmittedAt == nil
+	}
+	if right.SubmittedAt == nil {
+		return true
+	}
+	return left.SubmittedAt.After(*right.SubmittedAt)
+}
+
 func pullRequestCodexReviewState(pullRequest pullRequestNode) string {
 	hasP2 := false
+	reviewState := ""
 	for _, review := range pullRequest.LatestReviews.Nodes {
 		if containsReviewSeverity(review.Body, "P1") {
 			return "P1"
@@ -2238,11 +2364,14 @@ func pullRequestCodexReviewState(pullRequest pullRequestNode) string {
 		if containsReviewSeverity(review.Body, "P2") {
 			hasP2 = true
 		}
+		if state := strings.ToUpper(strings.TrimSpace(review.State)); state != "" {
+			reviewState = state
+		}
 	}
 	if hasP2 {
 		return "P2"
 	}
-	return ""
+	return reviewState
 }
 
 func containsReviewSeverity(body string, severity string) bool {
