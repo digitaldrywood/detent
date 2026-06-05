@@ -61,6 +61,34 @@ func TestResolveWithReadersFallsBackToGitWhenVCSBuildSettingsAreMissing(t *testi
 	}
 }
 
+func TestResolveWithReadersDoesNotReadGitWhenBuildSettingsAreComplete(t *testing.T) {
+	t.Parallel()
+
+	info := ResolveWithReaders("dev", "none", "unknown", func() (*debug.BuildInfo, bool) {
+		return &debug.BuildInfo{
+			Main: debug.Module{Path: "github.com/digitaldrywood/detent"},
+			Settings: []debug.BuildSetting{
+				{Key: "vcs.revision", Value: "abcdef1234567890"},
+				{Key: "vcs.time", Value: "2026-06-05T21:00:00Z"},
+				{Key: "vcs.modified", Value: "false"},
+			},
+		}, true
+	}, func(modulePath string) (Info, bool) {
+		t.Fatalf("gitReader called with modulePath %q", modulePath)
+		return Info{}, false
+	})
+
+	if info.Commit != "abcdef1234567890" {
+		t.Fatalf("Commit = %q, want abcdef1234567890", info.Commit)
+	}
+	if info.Date != "2026-06-05T21:00:00Z" {
+		t.Fatalf("Date = %q, want 2026-06-05T21:00:00Z", info.Date)
+	}
+	if info.Dirty {
+		t.Fatal("Dirty = true, want false")
+	}
+}
+
 func TestDisplayLabelFormatsShortCommitAndDirtyMarker(t *testing.T) {
 	t.Parallel()
 

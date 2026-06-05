@@ -142,7 +142,7 @@ func buildSettings(settings []debug.BuildSetting) map[string]string {
 }
 
 func shouldReadGit(info Info) bool {
-	return placeholderCommit(info.Commit) || placeholderDate(info.Date) || !info.Dirty
+	return placeholderCommit(info.Commit) || placeholderDate(info.Date)
 }
 
 func readGitInfo(modulePath string) (Info, bool) {
