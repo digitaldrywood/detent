@@ -14,6 +14,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -494,12 +495,14 @@ func TestReplaceBinaryPreservesPermissionsAndVerifies(t *testing.T) {
 	if string(raw) != "new" {
 		t.Fatalf("target = %q, want new", raw)
 	}
-	info, err := os.Stat(target)
-	if err != nil {
-		t.Fatalf("Stat(target) error = %v", err)
-	}
-	if got := info.Mode().Perm(); got != 0o750 {
-		t.Fatalf("mode = %v, want 0750", got)
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatalf("Stat(target) error = %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o750 {
+			t.Fatalf("mode = %v, want 0750", got)
+		}
 	}
 }
 
