@@ -7,11 +7,14 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -247,6 +250,9 @@ func TestServiceAppliesReleaseUpdateFromHTTPServer(t *testing.T) {
 			HTTPClient: server.Client(),
 		}),
 		Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+		BinaryVerifier: func(context.Context, string) (string, error) {
+			return "version: v1.2.4\n", nil
+		},
 	})
 
 	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
@@ -265,6 +271,451 @@ func TestServiceAppliesReleaseUpdateFromHTTPServer(t *testing.T) {
 	}
 	if strings.TrimSpace(string(raw)) != "updated" {
 		t.Fatalf("updated binary = %q, want updated", raw)
+	}
+}
+
+func TestServiceGoInstallYesRunsCommandAndReportsVersion(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	goBin := filepath.Join(tmp, "gobin")
+	binary := filepath.Join(goBin, "detent")
+	if err := os.MkdirAll(goBin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(goBin) error = %v", err)
+	}
+	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(binary) error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	var gotCommand string
+	var gotArgs []string
+	service := NewService(Config{
+		CurrentVersion: "1.2.3",
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		Client: staticReleaseClient{
+			releases: []Release{{TagName: "v1.2.4"}},
+		},
+		Env: map[string]string{"GOBIN": goBin},
+		CommandRunner: func(_ context.Context, command string, args []string, out io.Writer, errOut io.Writer) error {
+			gotCommand = command
+			gotArgs = append(gotArgs, args...)
+			_, _ = fmt.Fprintln(out, "go install output")
+			return nil
+		},
+		BinaryVerifier: func(context.Context, string) (string, error) {
+			return "version: v1.2.4\ncommit: abc1234\n", nil
+		},
+	})
+
+	status, err := service.Apply(context.Background(), ApplyOptions{
+		AssumeYes: true,
+		Stdout:    &stdout,
+		Stderr:    &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if status.Action != ActionUpdated {
+		t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
+	}
+	if gotCommand != "go" {
+		t.Fatalf("command = %q, want go", gotCommand)
+	}
+	if strings.Join(gotArgs, " ") != "install github.com/digitaldrywood/detent/cmd/detent@latest" {
+		t.Fatalf("args = %q, want go install module", gotArgs)
+	}
+	if !strings.Contains(stdout.String(), "go install output") {
+		t.Fatalf("stdout = %q, want streamed go install output", stdout.String())
+	}
+	if !strings.Contains(status.Message, "Installed Detent version: v1.2.4") {
+		t.Fatalf("Message = %q, want installed version", status.Message)
+	}
+	if !strings.Contains(status.Message, "Restart Detent") {
+		t.Fatalf("Message = %q, want restart note", status.Message)
+	}
+	if status.Command != moduleInstallCommand {
+		t.Fatalf("Command = %q, want %q", status.Command, moduleInstallCommand)
+	}
+}
+
+func TestServiceGoInstallPrereleasePinsSelectedTag(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	goBin := filepath.Join(tmp, "gobin")
+	binary := filepath.Join(goBin, "detent")
+	if err := os.MkdirAll(goBin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(goBin) error = %v", err)
+	}
+	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(binary) error = %v", err)
+	}
+
+	var gotArgs []string
+	service := NewService(Config{
+		CurrentVersion: "1.3.0-rc.1",
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		Client: staticReleaseClient{
+			releases: []Release{
+				{TagName: "v1.2.4"},
+				{TagName: "v1.3.0-rc.2", Prerelease: true},
+			},
+		},
+		Env: map[string]string{"GOBIN": goBin},
+		CommandRunner: func(_ context.Context, _ string, args []string, _ io.Writer, _ io.Writer) error {
+			gotArgs = append(gotArgs, args...)
+			return nil
+		},
+		BinaryVerifier: func(context.Context, string) (string, error) {
+			return "version: v1.3.0-rc.2\n", nil
+		},
+	})
+
+	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if strings.Join(gotArgs, " ") != "install github.com/digitaldrywood/detent/cmd/detent@v1.3.0-rc.2" {
+		t.Fatalf("args = %q, want go install pinned prerelease", gotArgs)
+	}
+	if status.Command != "go install github.com/digitaldrywood/detent/cmd/detent@v1.3.0-rc.2" {
+		t.Fatalf("Command = %q, want pinned prerelease command", status.Command)
+	}
+}
+
+func TestServiceGoInstallRefusesVersionMismatch(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	goBin := filepath.Join(tmp, "gobin")
+	binary := filepath.Join(goBin, "detent")
+	if err := os.MkdirAll(goBin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(goBin) error = %v", err)
+	}
+	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(binary) error = %v", err)
+	}
+
+	service := NewService(Config{
+		CurrentVersion: "1.3.0-rc.1",
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		Client: staticReleaseClient{
+			releases: []Release{
+				{TagName: "v1.2.4"},
+				{TagName: "v1.3.0-rc.2", Prerelease: true},
+			},
+		},
+		Env: map[string]string{"GOBIN": goBin},
+		CommandRunner: func(context.Context, string, []string, io.Writer, io.Writer) error {
+			return nil
+		},
+		BinaryVerifier: func(context.Context, string) (string, error) {
+			return "version: v1.2.4\n", nil
+		},
+	})
+
+	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
+	if err == nil {
+		t.Fatal("Apply() error = nil, want version mismatch")
+	}
+	if status.Action != ActionRefused {
+		t.Fatalf("Action = %q, want %q", status.Action, ActionRefused)
+	}
+	if !strings.Contains(status.Message, "does not match expected") {
+		t.Fatalf("Message = %q, want version mismatch", status.Message)
+	}
+}
+
+func TestServiceGoInstallInteractiveAbortReturnsCommand(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	goBin := filepath.Join(tmp, "gobin")
+	binary := filepath.Join(goBin, "detent")
+	if err := os.MkdirAll(goBin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(goBin) error = %v", err)
+	}
+	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(binary) error = %v", err)
+	}
+
+	service := NewService(Config{
+		CurrentVersion: "1.2.3",
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		Client: staticReleaseClient{
+			releases: []Release{{TagName: "v1.2.4"}},
+		},
+		Env: map[string]string{"GOBIN": goBin},
+	})
+
+	status, err := service.Apply(context.Background(), ApplyOptions{
+		SelectGoInstallAction: func(Status) (GoInstallAction, error) {
+			return GoInstallActionAbort, nil
+		},
+	})
+	if !errors.Is(err, ErrRefused) {
+		t.Fatalf("Apply() error = %v, want %v", err, ErrRefused)
+	}
+	if status.Action != ActionRefused {
+		t.Fatalf("Action = %q, want %q", status.Action, ActionRefused)
+	}
+	if status.Command != moduleInstallCommand {
+		t.Fatalf("Command = %q, want %q", status.Command, moduleInstallCommand)
+	}
+	if !strings.Contains(status.Message, "Update aborted") {
+		t.Fatalf("Message = %q, want abort message", status.Message)
+	}
+}
+
+func TestServiceGoInstallFromReleaseUsesReleaseAsset(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	goBin := filepath.Join(tmp, "gobin")
+	binary := filepath.Join(goBin, "detent")
+	if err := os.MkdirAll(goBin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(goBin) error = %v", err)
+	}
+	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(binary) error = %v", err)
+	}
+
+	archiveName := "detent_1.2.4_linux_amd64.tar.gz"
+	checksumName := "detent_1.2.4_checksums.txt"
+	archive := detentUpdateArchive(t, "updated")
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%x  %s\n", sum, archiveName)
+	downloads := map[string][]byte{
+		"https://example.invalid/archive":   archive,
+		"https://example.invalid/checksums": []byte(checksums),
+	}
+	var stderr bytes.Buffer
+	var verifiedPath string
+	service := NewService(Config{
+		CurrentVersion: "1.2.3",
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		Client: staticReleaseClient{
+			releases: []Release{{
+				TagName: "v1.2.4",
+				Assets: []Asset{
+					{Name: archiveName, BrowserDownloadURL: "https://example.invalid/archive"},
+					{Name: checksumName, BrowserDownloadURL: "https://example.invalid/checksums"},
+				},
+			}},
+			downloads: downloads,
+		},
+		Env:     map[string]string{"GOBIN": goBin},
+		HomeDir: tmp,
+		BinaryVerifier: func(_ context.Context, path string) (string, error) {
+			verifiedPath = path
+			return "version: v1.2.4\n", nil
+		},
+	})
+
+	status, err := service.Apply(context.Background(), ApplyOptions{
+		FromRelease: true,
+		Stderr:      &stderr,
+	})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if status.Action != ActionUpdated {
+		t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
+	}
+	if status.Asset != archiveName {
+		t.Fatalf("Asset = %q, want %q", status.Asset, archiveName)
+	}
+	if verifiedPath != binary {
+		t.Fatalf("verifiedPath = %q, want %q", verifiedPath, binary)
+	}
+	raw, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatalf("ReadFile(binary) error = %v", err)
+	}
+	if strings.TrimSpace(string(raw)) != "updated" {
+		t.Fatalf("updated binary = %q, want updated", raw)
+	}
+	if !strings.Contains(stderr.String(), "WARNING:") {
+		t.Fatalf("stderr = %q, want release-swap warning", stderr.String())
+	}
+	if !strings.Contains(status.Message, "Restart Detent") {
+		t.Fatalf("Message = %q, want restart note", status.Message)
+	}
+
+	lockPath := filepath.Join(tmp, ".detent", "install.lock")
+	lockRaw, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("ReadFile(lock) error = %v", err)
+	}
+	lockText := string(lockRaw)
+	if !strings.Contains(lockText, "binary="+binary+"\n") {
+		t.Fatalf("install lock = %q, want binary path", lockText)
+	}
+	if !strings.Contains(lockText, "installed_at=") {
+		t.Fatalf("install lock = %q, want installed_at", lockText)
+	}
+
+	detected := DetectInstallSource(DetectionOptions{
+		CurrentVersion: "1.2.4",
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		HomeDir:        tmp,
+		Env:            map[string]string{"GOBIN": goBin},
+	})
+	if detected.Source != InstallSourceRelease {
+		t.Fatalf("Source after release swap = %q, want %q", detected.Source, InstallSourceRelease)
+	}
+}
+
+func TestReplaceBinaryPreservesPermissionsAndVerifies(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "detent")
+	if err := os.WriteFile(target, []byte("old"), 0o750); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+
+	var verifiedPath string
+	err := ReplaceBinary(Replacement{
+		Target: target,
+		Binary: []byte("new"),
+		Mode:   0o600,
+		GOOS:   "linux",
+		Verify: func(_ context.Context, path string) (string, error) {
+			verifiedPath = path
+			return "version: v1.2.4\n", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceBinary() error = %v", err)
+	}
+	if verifiedPath != target {
+		t.Fatalf("verifiedPath = %q, want %q", verifiedPath, target)
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile(target) error = %v", err)
+	}
+	if string(raw) != "new" {
+		t.Fatalf("target = %q, want new", raw)
+	}
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(target)
+		if err != nil {
+			t.Fatalf("Stat(target) error = %v", err)
+		}
+		if got := info.Mode().Perm(); got != 0o750 {
+			t.Fatalf("mode = %v, want 0750", got)
+		}
+	}
+}
+
+func TestReplaceBinaryRollsBackWhenVerificationFails(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "detent")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+
+	err := ReplaceBinary(Replacement{
+		Target: target,
+		Binary: []byte("new"),
+		Mode:   0o755,
+		GOOS:   "linux",
+		Verify: func(context.Context, string) (string, error) {
+			return "", errors.New("verification failed")
+		},
+	})
+	if err == nil {
+		t.Fatal("ReplaceBinary() error = nil, want verification failure")
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile(target) error = %v", err)
+	}
+	if string(raw) != "old" {
+		t.Fatalf("target = %q, want rollback to old", raw)
+	}
+}
+
+func TestReplaceBinaryRollsBackWhenAfterReplaceFails(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "detent")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+
+	err := ReplaceBinary(Replacement{
+		Target: target,
+		Binary: []byte("new"),
+		Mode:   0o755,
+		GOOS:   "linux",
+		Verify: func(context.Context, string) (string, error) {
+			return "version: v1.2.4\n", nil
+		},
+		AfterReplace: func(context.Context, string) error {
+			return errors.New("metadata failed")
+		},
+	})
+	if err == nil {
+		t.Fatal("ReplaceBinary() error = nil, want metadata failure")
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile(target) error = %v", err)
+	}
+	if string(raw) != "old" {
+		t.Fatalf("target = %q, want rollback to old", raw)
+	}
+}
+
+func TestReplaceBinarySignsDarwinBeforeVerify(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "detent")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+
+	var calls []string
+	err := ReplaceBinary(Replacement{
+		Target: target,
+		Binary: []byte("new"),
+		Mode:   0o755,
+		GOOS:   "darwin",
+		Sign: func(_ context.Context, path string) error {
+			calls = append(calls, "sign:"+path)
+			return nil
+		},
+		Verify: func(_ context.Context, path string) (string, error) {
+			calls = append(calls, "verify:"+path)
+			return "version: v1.2.4\n", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceBinary() error = %v", err)
+	}
+	want := []string{"sign:" + target, "verify:" + target}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %q, want %q", calls, want)
 	}
 }
 
@@ -390,6 +841,23 @@ func detentWindowsUpdateArchive(t *testing.T, content string) []byte {
 		t.Fatalf("zip Close() error = %v", err)
 	}
 	return buf.Bytes()
+}
+
+type staticReleaseClient struct {
+	releases  []Release
+	downloads map[string][]byte
+}
+
+func (c staticReleaseClient) ListReleases(context.Context) ([]Release, error) {
+	return c.releases, nil
+}
+
+func (c staticReleaseClient) Download(_ context.Context, url string) ([]byte, error) {
+	raw, ok := c.downloads[url]
+	if !ok {
+		return nil, fmt.Errorf("download not found: %s", url)
+	}
+	return raw, nil
 }
 
 func stagedWindowsUpdateFiles(t *testing.T, dir string) (string, string) {

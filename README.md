@@ -170,8 +170,14 @@ Release-installer installs can update with `detent update`; use
 `detent update --yes` for non-interactive automation and `detent update --json`
 for machine-readable status. On Windows, replacement is staged and completes
 after the running `detent.exe` exits. Homebrew installs delegate to
-`brew upgrade digitaldrywood/tap/detent`, while Go and source builds print the
-recommended command instead of overwriting the binary.
+`brew upgrade digitaldrywood/tap/detent`. Go-installed binaries offer an
+interactive choice: run
+`go install github.com/digitaldrywood/detent/cmd/detent@latest`, switch to the
+checksum-verified release binary, or abort. `detent update --yes` runs the Go
+install command for go-installed binaries; `detent update --from-release`
+switches the detected Go-installed binary to the release asset and pins future
+updates to release-binary management. Source builds still print the recommended
+command instead of overwriting the binary.
 
 ## Release
 

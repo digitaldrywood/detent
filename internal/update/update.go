@@ -18,12 +18,15 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
 const (
 	defaultAPIBase          = "https://api.github.com/repos/digitaldrywood/detent"
-	moduleInstallCommand    = "go install github.com/digitaldrywood/detent/cmd/detent@latest"
+	moduleInstallPackage    = "github.com/digitaldrywood/detent/cmd/detent"
+	moduleInstallTarget     = moduleInstallPackage + "@latest"
+	moduleInstallCommand    = "go install " + moduleInstallTarget
 	homebrewUpdateCommand   = "brew upgrade digitaldrywood/tap/detent"
 	defaultChecksumName     = "checksums.txt"
 	projectName             = "detent"
@@ -81,6 +84,9 @@ type ReleaseClient interface {
 }
 
 type ProcessStarter func(string, []string) error
+type CommandRunner func(context.Context, string, []string, io.Writer, io.Writer) error
+type BinaryVerifier func(context.Context, string) (string, error)
+type BinarySigner func(context.Context, string) error
 
 type GitHubClientConfig struct {
 	APIBase    string
@@ -227,6 +233,9 @@ type Config struct {
 	GOOS           string
 	GOARCH         string
 	Client         ReleaseClient
+	CommandRunner  CommandRunner
+	BinaryVerifier BinaryVerifier
+	BinarySigner   BinarySigner
 	HomeDir        string
 	Env            map[string]string
 	EvalSymlinks   func(string) (string, error)
@@ -237,16 +246,32 @@ type Service struct {
 }
 
 type ApplyOptions struct {
-	AssumeYes bool
-	Confirm   func(Status) (bool, error)
+	AssumeYes             bool
+	FromRelease           bool
+	Confirm               func(Status) (bool, error)
+	SelectGoInstallAction func(Status) (GoInstallAction, error)
+	Stdout                io.Writer
+	Stderr                io.Writer
 }
+
+type GoInstallAction string
+
+const (
+	GoInstallActionRun     GoInstallAction = "run_go_install"
+	GoInstallActionRelease GoInstallAction = "switch_to_release"
+	GoInstallActionAbort   GoInstallAction = "abort"
+)
 
 type Replacement struct {
 	Target       string
 	Binary       []byte
 	Mode         os.FileMode
 	GOOS         string
+	Context      context.Context
 	StartProcess ProcessStarter
+	Verify       BinaryVerifier
+	Sign         BinarySigner
+	AfterReplace func(context.Context, string) error
 }
 
 type Status struct {
@@ -271,6 +296,15 @@ func NewService(cfg Config) *Service {
 	}
 	if cfg.Client == nil {
 		cfg.Client = NewGitHubClient(GitHubClientConfig{})
+	}
+	if cfg.CommandRunner == nil {
+		cfg.CommandRunner = runCommand
+	}
+	if cfg.BinaryVerifier == nil {
+		cfg.BinaryVerifier = verifyBinaryVersion
+	}
+	if cfg.BinarySigner == nil {
+		cfg.BinarySigner = signBinary
 	}
 	return &Service{cfg: cfg}
 }
@@ -299,10 +333,8 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 		return status, nil
 	case InstallSourceRelease:
 	case InstallSourceGoInstall:
-		status.Action = ActionRefused
 		status.Command = moduleInstallCommand
-		status.Message = "This Detent binary appears to be managed by go install. Run the Go install command instead."
-		return status, ErrRefused
+		return s.applyGoInstallUpdate(ctx, status, release, opts)
 	case InstallSourceDevelopment:
 		status.Action = ActionRefused
 		status.Message = "This Detent binary does not include release version metadata. Install a published release before using self-update."
@@ -313,7 +345,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 		return status, ErrRefused
 	}
 
-	if !opts.AssumeYes {
+	if !opts.AssumeYes && !opts.FromRelease {
 		if opts.Confirm == nil {
 			status.Action = ActionRefused
 			status.Message = "Update requires confirmation. Rerun with --yes to update non-interactively."
@@ -329,6 +361,83 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 			status.Action = ActionRefused
 			status.Message = "Update cancelled."
 			return status, ErrConfirmationRequired
+		}
+	}
+
+	return s.applyReleaseUpdate(ctx, status, release, opts, false, false)
+}
+
+func (s *Service) applyGoInstallUpdate(ctx context.Context, status Status, release Release, opts ApplyOptions) (Status, error) {
+	status.Command = goInstallCommand(status)
+	action, err := goInstallAction(status, opts)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, err
+	}
+
+	switch action {
+	case GoInstallActionRun:
+		return s.runGoInstallUpdate(ctx, status, opts)
+	case GoInstallActionRelease:
+		return s.applyReleaseUpdate(ctx, status, release, opts, true, opts.FromRelease)
+	case GoInstallActionAbort:
+		status.Action = ActionRefused
+		status.Message = "Update aborted."
+		return status, ErrRefused
+	default:
+		status.Action = ActionRefused
+		status.Message = fmt.Sprintf("unsupported go install update action: %s", action)
+		return status, ErrRefused
+	}
+}
+
+func goInstallAction(status Status, opts ApplyOptions) (GoInstallAction, error) {
+	if opts.FromRelease {
+		return GoInstallActionRelease, nil
+	}
+	if opts.AssumeYes {
+		return GoInstallActionRun, nil
+	}
+	if opts.SelectGoInstallAction == nil {
+		return GoInstallActionAbort, fmt.Errorf("%w: this Detent binary appears to be managed by go install. Rerun with --yes to run go install, or --from-release to switch to the release binary", ErrConfirmationRequired)
+	}
+	return opts.SelectGoInstallAction(status)
+}
+
+func (s *Service) runGoInstallUpdate(ctx context.Context, status Status, opts ApplyOptions) (Status, error) {
+	target := goInstallTarget(status)
+	status.Command = "go install " + target
+	if err := s.cfg.CommandRunner(ctx, "go", []string{"install", target}, outputWriter(opts.Stdout), outputWriter(opts.Stderr)); err != nil {
+		status.Action = ActionRefused
+		status.Message = fmt.Sprintf("go install failed: %v", err)
+		return status, err
+	}
+
+	versionOutput, err := s.cfg.BinaryVerifier(ctx, s.cfg.ExecutablePath)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = fmt.Sprintf("go install completed, but verifying Detent failed: %v", err)
+		return status, err
+	}
+	installed := installedVersion(status, versionOutput)
+	if err := verifyInstalledVersion(status, installed); err != nil {
+		status.Action = ActionRefused
+		status.Message = fmt.Sprintf("go install completed, but installed Detent version is not the planned update: %v", err)
+		return status, err
+	}
+
+	status.Action = ActionUpdated
+	status.Message = goInstallAppliedMessage(status, installed)
+	return status, nil
+}
+
+func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release Release, opts ApplyOptions, releaseSwap bool, emitWarning bool) (Status, error) {
+	if emitWarning {
+		if err := writeReleaseSwapWarning(outputWriter(opts.Stderr), status); err != nil {
+			status.Action = ActionRefused
+			status.Message = err.Error()
+			return status, err
 		}
 	}
 
@@ -362,12 +471,24 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 		status.Message = err.Error()
 		return status, err
 	}
-	if err := ReplaceBinary(Replacement{
-		Target: s.cfg.ExecutablePath,
-		Binary: binary,
-		Mode:   mode,
-		GOOS:   s.cfg.GOOS,
-	}); err != nil {
+	replacement := Replacement{
+		Target:  s.cfg.ExecutablePath,
+		Binary:  binary,
+		Mode:    mode,
+		GOOS:    s.cfg.GOOS,
+		Context: ctx,
+		Verify:  s.cfg.BinaryVerifier,
+		Sign:    s.cfg.BinarySigner,
+	}
+	if releaseSwap {
+		replacement.AfterReplace = func(_ context.Context, target string) error {
+			return writeReleaseInstallLock(s.cfg.GOOS, DetectionOptions{
+				HomeDir: s.cfg.HomeDir,
+				Env:     s.cfg.Env,
+			}, target)
+		}
+	}
+	if err := ReplaceBinary(replacement); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
@@ -375,7 +496,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 
 	status.Action = ActionUpdated
 	status.Asset = assets.Archive.Name
-	status.Message = updateAppliedMessage(status, s.cfg.GOOS)
+	status.Message = updateAppliedMessage(status, s.cfg.GOOS, releaseSwap)
 	return status, nil
 }
 
@@ -525,16 +646,16 @@ func ReplaceBinary(replacement Replacement) error {
 	if goos == "windows" {
 		return stageWindowsReplacement(replacement)
 	}
-	return replaceBinaryNow(replacement.Target, replacement.Binary, replacement.Mode)
+	replacement.GOOS = goos
+	return replaceBinaryNow(replacement)
 }
 
-func replaceBinaryNow(target string, binary []byte, mode os.FileMode) error {
+func replaceBinaryNow(replacement Replacement) error {
+	target := replacement.Target
 	if strings.TrimSpace(target) == "" {
 		return errors.New("target binary path is required")
 	}
-	if mode == 0 {
-		mode = 0o755
-	}
+	mode := replacementMode(target, replacement.Mode)
 
 	dir := filepath.Dir(target)
 	base := filepath.Base(target)
@@ -550,14 +671,127 @@ func replaceBinaryNow(target string, binary []byte, mode os.FileMode) error {
 		}
 	}()
 
-	writeErr := writeBinaryTemp(temp, binary, mode)
+	writeErr := writeBinaryTemp(temp, replacement.Binary, mode)
 	if writeErr != nil {
 		return writeErr
 	}
+
+	backupPath, err := backupBinary(target)
+	if err != nil {
+		return err
+	}
+	cleanupBackup := backupPath != ""
+	defer func() {
+		if cleanupBackup {
+			removeFile(backupPath)
+		}
+	}()
+
 	if err := os.Rename(tempPath, target); err != nil {
 		return fmt.Errorf("replace binary %s: %w", target, err)
 	}
 	cleanup = false
+	if err := finalizeReplacement(replacement); err != nil {
+		if rollbackErr := rollbackBinary(target, backupPath); rollbackErr != nil {
+			return fmt.Errorf("%w; rollback failed: %w", err, rollbackErr)
+		}
+		cleanupBackup = false
+		return err
+	}
+	return nil
+}
+
+func replacementMode(target string, fallback os.FileMode) os.FileMode {
+	info, err := os.Stat(target)
+	if err == nil {
+		if mode := info.Mode().Perm(); mode != 0 {
+			return mode
+		}
+	}
+	if fallback != 0 {
+		return fallback.Perm()
+	}
+	return 0o755
+}
+
+func backupBinary(target string) (string, error) {
+	source, err := os.Open(target)
+	if errors.Is(err, os.ErrNotExist) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("open current binary for backup: %w", err)
+	}
+	defer source.Close()
+
+	info, err := source.Stat()
+	if err != nil {
+		return "", fmt.Errorf("stat current binary for backup: %w", err)
+	}
+	dir := filepath.Dir(target)
+	base := filepath.Base(target)
+	backup, err := os.CreateTemp(dir, "."+base+".rollback-*")
+	if err != nil {
+		return "", fmt.Errorf("create rollback binary: %w", err)
+	}
+	backupPath := backup.Name()
+	if _, err := io.Copy(backup, source); err != nil {
+		closeErr := backup.Close()
+		removeFile(backupPath)
+		if closeErr != nil {
+			return "", fmt.Errorf("write rollback binary: %w; close rollback binary: %w", err, closeErr)
+		}
+		return "", fmt.Errorf("write rollback binary: %w", err)
+	}
+	if err := backup.Chmod(info.Mode().Perm()); err != nil {
+		closeErr := backup.Close()
+		removeFile(backupPath)
+		if closeErr != nil {
+			return "", fmt.Errorf("chmod rollback binary: %w; close rollback binary: %w", err, closeErr)
+		}
+		return "", fmt.Errorf("chmod rollback binary: %w", err)
+	}
+	if err := backup.Close(); err != nil {
+		removeFile(backupPath)
+		return "", fmt.Errorf("close rollback binary: %w", err)
+	}
+	return backupPath, nil
+}
+
+func finalizeReplacement(replacement Replacement) error {
+	ctx := replacement.Context
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if replacement.GOOS == "darwin" {
+		signer := replacement.Sign
+		if signer == nil {
+			signer = signBinary
+		}
+		if err := signer(ctx, replacement.Target); err != nil {
+			return err
+		}
+	}
+	if replacement.Verify != nil {
+		if _, err := replacement.Verify(ctx, replacement.Target); err != nil {
+			return err
+		}
+	}
+	if replacement.AfterReplace != nil {
+		if err := replacement.AfterReplace(ctx, replacement.Target); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func rollbackBinary(target string, backupPath string) error {
+	if backupPath == "" {
+		return nil
+	}
+	if err := os.Rename(backupPath, target); err != nil {
+		return fmt.Errorf("restore previous binary %s: %w", target, err)
+	}
 	return nil
 }
 
@@ -600,6 +834,15 @@ func stageWindowsReplacement(replacement Replacement) error {
 	}
 	if err := starter("cmd.exe", []string{"/D", "/C", "start", "", "/B", "cmd.exe", "/D", "/C", script}); err != nil {
 		return fmt.Errorf("start windows updater: %w", err)
+	}
+	if replacement.AfterReplace != nil {
+		ctx := replacement.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := replacement.AfterReplace(ctx, replacement.Target); err != nil {
+			return err
+		}
 	}
 
 	cleanupSource = false
@@ -677,11 +920,120 @@ func startProcess(command string, args []string) error {
 	return exec.Command(command, args...).Start()
 }
 
-func updateAppliedMessage(status Status, goos string) string {
+func runCommand(ctx context.Context, command string, args []string, stdout io.Writer, stderr io.Writer) error {
+	cmd := exec.CommandContext(ctx, command, args...)
+	cmd.Stdout = outputWriter(stdout)
+	cmd.Stderr = outputWriter(stderr)
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("run %s: %w", strings.Join(append([]string{command}, args...), " "), err)
+	}
+	return nil
+}
+
+func verifyBinaryVersion(ctx context.Context, path string) (string, error) {
+	cmd := exec.CommandContext(ctx, path, "version")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return string(output), fmt.Errorf("verify %s version: %w: %s", path, err, strings.TrimSpace(string(output)))
+	}
+	return string(output), nil
+}
+
+func signBinary(ctx context.Context, path string) error {
+	cmd := exec.CommandContext(ctx, "codesign", "-s", "-", path)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("codesign %s: %w: %s", path, err, strings.TrimSpace(string(output)))
+	}
+	return nil
+}
+
+func outputWriter(writer io.Writer) io.Writer {
+	if writer == nil {
+		return io.Discard
+	}
+	return writer
+}
+
+func updateAppliedMessage(status Status, goos string, releaseSwap bool) string {
 	if goos == "windows" {
 		return fmt.Sprintf("Updated Detent from %s to %s. The replacement will finish after Detent exits.", status.CurrentVersion, status.LatestVersion)
 	}
-	return fmt.Sprintf("Updated Detent from %s to %s.", status.CurrentVersion, status.LatestVersion)
+	if releaseSwap {
+		return fmt.Sprintf(
+			"Updated Detent from %s to %s from the release binary. This binary is now release-pinned instead of go-install-managed. %s",
+			status.CurrentVersion,
+			status.LatestVersion,
+			restartNote(),
+		)
+	}
+	return fmt.Sprintf("Updated Detent from %s to %s. %s", status.CurrentVersion, status.LatestVersion, restartNote())
+}
+
+func goInstallAppliedMessage(status Status, installed string) string {
+	return fmt.Sprintf("Ran %s. Installed Detent version: %s. %s", status.Command, installed, restartNote())
+}
+
+func goInstallCommand(status Status) string {
+	return "go install " + goInstallTarget(status)
+}
+
+func goInstallTarget(status Status) string {
+	tag := strings.TrimSpace(status.LatestTag)
+	if tag == "" {
+		return moduleInstallTarget
+	}
+	version, err := parseVersion(tag)
+	if err != nil || len(version.prerelease) == 0 {
+		return moduleInstallTarget
+	}
+	return moduleInstallPackage + "@" + tag
+}
+
+func verifyInstalledVersion(status Status, installed string) error {
+	expected := firstNonEmpty(status.LatestTag, status.LatestVersion)
+	if expected == "" {
+		return nil
+	}
+	cmp, err := CompareVersions(installed, expected)
+	if err != nil {
+		return fmt.Errorf("parse installed version %s: %w", installed, err)
+	}
+	if cmp != 0 {
+		return fmt.Errorf("installed version %s does not match expected %s", installed, expected)
+	}
+	return nil
+}
+
+func installedVersion(status Status, versionOutput string) string {
+	for _, line := range strings.Split(versionOutput, "\n") {
+		key, value, ok := strings.Cut(line, ":")
+		if ok && strings.EqualFold(strings.TrimSpace(key), "version") {
+			if version := strings.TrimSpace(value); version != "" {
+				return version
+			}
+		}
+	}
+	for _, line := range strings.Split(versionOutput, "\n") {
+		if value := strings.TrimSpace(line); value != "" {
+			return value
+		}
+	}
+	return firstNonEmpty(status.LatestVersion, status.LatestTag, "unknown")
+}
+
+func restartNote() string {
+	return "Restart Detent to use the new binary; any running orchestrator process keeps the old version until restarted."
+}
+
+func writeReleaseSwapWarning(out io.Writer, status Status) error {
+	_, err := fmt.Fprintf(
+		out,
+		"WARNING: Switching to the release binary replaces %s and changes how Detent is managed. Future go install or go.mod upgrades will not track this binary; it will be pinned to GitHub release %s.\n",
+		status.Binary,
+		firstNonEmpty(status.LatestTag, status.LatestVersion),
+	)
+	return err
 }
 
 func writeBinaryTemp(file *os.File, binary []byte, mode os.FileMode) error {
@@ -1021,6 +1373,80 @@ func readInstallLockBinary(path string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string) error {
+	lockPath, ok := installLockPath(goos, opts)
+	if !ok {
+		return errors.New("resolve release install lock path: home directory is unavailable")
+	}
+	return writeInstallLock(lockPath, binary, time.Now().UTC())
+}
+
+func installLockPath(goos string, opts DetectionOptions) (string, bool) {
+	if lockPath := envValue(opts.Env, "DETENT_INSTALL_LOCK"); lockPath != "" {
+		return lockPath, true
+	}
+	if stateDir := envValue(opts.Env, "DETENT_STATE_DIR"); stateDir != "" {
+		return filepath.Join(stateDir, "install.lock"), true
+	}
+	if goos == "windows" {
+		if localAppData := envValue(opts.Env, "LOCALAPPDATA"); localAppData != "" {
+			return filepath.Join(localAppData, "detent", "install.lock"), true
+		}
+	}
+	if home := homeDir(opts.HomeDir, opts.Env); home != "" {
+		return filepath.Join(home, ".detent", "install.lock"), true
+	}
+	return "", false
+}
+
+func writeInstallLock(path string, binary string, installedAt time.Time) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("install lock path is required")
+	}
+	if strings.TrimSpace(binary) == "" {
+		return errors.New("install lock binary path is required")
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create install lock dir: %w", err)
+	}
+	base := filepath.Base(path)
+	temp, err := os.CreateTemp(dir, "."+base+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create install lock temp file: %w", err)
+	}
+	tempPath := temp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			removeFile(tempPath)
+		}
+	}()
+	raw := fmt.Sprintf("binary=%s\ninstalled_at=%s\n", binary, installedAt.UTC().Format(time.RFC3339))
+	if _, err := temp.WriteString(raw); err != nil {
+		closeErr := temp.Close()
+		if closeErr != nil {
+			return fmt.Errorf("write install lock: %w; close install lock: %w", err, closeErr)
+		}
+		return fmt.Errorf("write install lock: %w", err)
+	}
+	if err := temp.Chmod(0o600); err != nil {
+		closeErr := temp.Close()
+		if closeErr != nil {
+			return fmt.Errorf("chmod install lock: %w; close install lock: %w", err, closeErr)
+		}
+		return fmt.Errorf("chmod install lock: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close install lock: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace install lock: %w", err)
+	}
+	cleanup = false
+	return nil
 }
 
 func windowsInstallerPathMatches(executable string, goos string, opts DetectionOptions) bool {
