@@ -543,12 +543,21 @@ func checkDoctorBinary(ctx context.Context, deps doctorDeps, binary string, name
 
 func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token RuntimeSecret, deps doctorDeps) doctorCheck {
 	hasGitHubProject := doctorHasGitHubProject(cfg, deps)
+	requiresRuntimeToken := doctorRequiresRuntimeGitHubToken(cfg, deps)
 	if cfg != nil && !hasGitHubProject {
 		return doctorCheck{
 			Name:   "GitHub token",
 			Status: doctorWarn,
 			Detail: "no GitHub tracker projects configured; token scope check skipped",
 			Hint:   "Add a GitHub project before relying on GitHub token preflight checks.",
+		}
+	}
+	if token.Value == "" && !requiresRuntimeToken && hasGitHubProject {
+		return doctorCheck{
+			Name:   "GitHub token",
+			Status: doctorWarn,
+			Detail: "GitHub App credentials configured; token scope check skipped",
+			Hint:   "Use GitHub App installation authentication or configure github_token for PAT-based projects.",
 		}
 	}
 	if token.Value == "" {
@@ -596,6 +605,23 @@ func doctorHasGitHubProject(cfg *globalconfig.Config, deps doctorDeps) bool {
 			}
 			return true
 		}
+	}
+	return false
+}
+
+func doctorRequiresRuntimeGitHubToken(cfg *globalconfig.Config, deps doctorDeps) bool {
+	if cfg == nil {
+		return true
+	}
+	for _, project := range cfg.Projects {
+		workflow, err := deps.loadWorkflow(project.Workflow)
+		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
+			continue
+		}
+		if trackerHasGitHubAppCredentials(workflow.Config.Tracker) {
+			continue
+		}
+		return true
 	}
 	return false
 }

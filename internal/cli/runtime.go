@@ -203,12 +203,12 @@ func resolveRuntimeGitHubToken(ctx context.Context, cfg *globalconfig.Config, de
 		}
 	}
 
-	token, hasGitHubProject := trackerGitHubToken(cfg, deps)
+	token, requiresRuntimeToken := trackerGitHubToken(cfg, deps)
 	if token.Value != "" {
 		token.Required = true
 		return token, nil, nil
 	}
-	if hasGitHubProject {
+	if requiresRuntimeToken {
 		return RuntimeSecret{}, nil, fmt.Errorf("GITHUB_TOKEN is not set, github_token is not configured, and no usable tracker.api_key was found. %s", githubAuthHint)
 	}
 	return RuntimeSecret{Required: false}, nil, nil
@@ -234,21 +234,30 @@ func trackerGitHubToken(cfg *globalconfig.Config, deps runtimeDeps) (RuntimeSecr
 		return RuntimeSecret{}, false
 	}
 
-	hasGitHubProject := false
+	requiresRuntimeToken := false
 	for _, project := range cfg.Projects {
 		workflow, err := deps.loadWorkflow(project.Workflow)
 		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 			continue
 		}
-		hasGitHubProject = true
+		if trackerHasGitHubAppCredentials(workflow.Config.Tracker) {
+			continue
+		}
 		if token, source := resolveRuntimeSecret(workflow.Config.Tracker.APIKey, deps.lookupEnv); token != "" {
 			if source == "" {
 				source = "tracker.api_key"
 			}
 			return RuntimeSecret{Value: token, Source: source}, true
 		}
+		requiresRuntimeToken = true
 	}
-	return RuntimeSecret{}, hasGitHubProject
+	return RuntimeSecret{}, requiresRuntimeToken
+}
+
+func trackerHasGitHubAppCredentials(tracker workflowconfig.Tracker) bool {
+	return strings.TrimSpace(tracker.GitHubAppID) != "" &&
+		strings.TrimSpace(tracker.GitHubAppInstallationID) != "" &&
+		(strings.TrimSpace(tracker.GitHubAppPrivateKey) != "" || strings.TrimSpace(tracker.GitHubAppPrivateKeyPath) != "")
 }
 
 func resolveRuntimeSecret(value string, lookupEnv func(string) string) (string, string) {

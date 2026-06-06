@@ -246,6 +246,28 @@ func TestResolveRuntimeSettingsGitHubTokenErrors(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeSettingsDoesNotRequireTokenForGitHubApp(t *testing.T) {
+	t.Parallel()
+
+	got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+		Config: ptrGlobalConfig(githubRuntimeConfig("")),
+	}, runtimeDeps{
+		lookupEnv: mapLookup(nil),
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: githubAppWorkflow()}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveRuntimeSettings() error = %v", err)
+	}
+	if got.GitHubToken.Required {
+		t.Fatalf("GitHubToken.Required = true, want false")
+	}
+	if got.GitHubToken.Value != "" {
+		t.Fatalf("GitHubToken.Value = %q, want empty", got.GitHubToken.Value)
+	}
+}
+
 func TestRuntimeSettingsDetailRedactsGitHubToken(t *testing.T) {
 	t.Parallel()
 
@@ -294,6 +316,18 @@ func githubWorkflow(apiKey string) workflowconfig.Config {
 	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
 	cfg.Tracker.APIKey = apiKey
 	return cfg
+}
+
+func githubAppWorkflow() workflowconfig.Config {
+	cfg := githubWorkflow("")
+	cfg.Tracker.GitHubAppID = "$APP_ID"
+	cfg.Tracker.GitHubAppInstallationID = "$INSTALLATION_ID"
+	cfg.Tracker.GitHubAppPrivateKeyPath = ".detent/github-app.pem"
+	return cfg
+}
+
+func ptrGlobalConfig(cfg globalconfig.Config) *globalconfig.Config {
+	return &cfg
 }
 
 func mapLookup(values map[string]string) func(string) string {

@@ -360,6 +360,15 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			wantDetail: "token scope check skipped",
 		},
 		{
+			name: "github app projects skip token scopes",
+			cfg: &globalconfig.Config{Projects: []globalconfig.Project{
+				{ID: "alpha", Workflow: "WORKFLOW.md"},
+			}},
+			workflow:   githubAppWorkflow(),
+			want:       doctorWarn,
+			wantDetail: "GitHub App credentials configured",
+		},
+		{
 			name: "workflow token has required scopes",
 			cfg: &globalconfig.Config{Projects: []globalconfig.Project{
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
