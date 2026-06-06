@@ -199,7 +199,6 @@ local repository checkout.
 
 ```sh
 gh auth login --scopes "repo,read:org,project"
-export GITHUB_TOKEN="$(gh auth token)"
 ```
 
 2. Find the GitHub ProjectV2 node id. Use the `id` field, which starts with
@@ -222,7 +221,6 @@ after the required Detent states.
 ---
 tracker:
   kind: github
-  api_key: $GITHUB_TOKEN
   project_slug: PVT_replace_with_project_id
   http_max_idle_conns: 100
   http_max_idle_conns_per_host: 32
@@ -352,6 +350,15 @@ detent add-project \
   --workdir /absolute/path/to/project-checkout
 ```
 
+Edit the resolved `global.yaml` and set the top-level runtime keys:
+
+```yaml
+env: prod
+log_level: info
+github_token: gh
+port: 4000
+```
+
 5. Verify the setup before dispatching:
 
    ```sh
@@ -360,8 +367,8 @@ detent add-project \
 
 `detent doctor` is a preflight check: config resolution, the SQLite database,
 the `codex` binary, the GitHub token and scopes, the git binary, and whether the
-server port is free. Fix any `FAIL` before starting (a missing `GITHUB_TOKEN` or
-an unauthenticated `codex` are the usual culprits).
+server port is free. Fix any `FAIL` before starting (missing `github_token: gh`
+or an unauthenticated `codex` are the usual culprits).
 
 6. Start Detent:
 
@@ -393,10 +400,10 @@ repo is a real, working instance of this setup to copy from.
 
    ```sh
    gh auth login --scopes "repo,read:org,project"
-   export GITHUB_TOKEN="$(gh auth token)"
    ```
 
-   Verify: `gh auth status`.
+   Verify: `gh auth status`. Use `github_token: gh` in `global.yaml` so
+   Detent resolves this token at startup.
 
 3. **Install and sign in to the Codex CLI.** Install the
    [OpenAI Codex CLI](https://github.com/openai/codex) and sign in. Detent
@@ -441,6 +448,9 @@ repo is a real, working instance of this setup to copy from.
      --workflow <source-root>/WORKFLOW.md \
      --workdir <source-root>
    ```
+
+   Edit the resolved `global.yaml` and set `github_token: gh` with any desired
+   `env`, `log_level`, and `port` overrides.
 
 8. **Verify everything:**
 
@@ -558,6 +568,10 @@ A minimal global config looks like this:
 ```yaml
 apiVersion: detent/v1
 kind: GlobalConfig
+env: prod
+log_level: info
+github_token: gh
+port: 4000
 global:
   max_concurrent_agents: 8
   scheduling: weighted
@@ -831,9 +845,9 @@ Detent logs with `log/slog`.
 
 - `ENV=dev`, `development`, or `local` enables tint text logs.
 - `ENV=prod` or any other non-development value keeps JSON logs.
-- When `ENV` is unset, interactive stdout TTY runs use tint text logs;
-  non-TTY runs use JSON logs.
+- When no environment is configured, Detent defaults to `prod`.
 - `LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
+- `--env` and `--log-level` override environment variables for one run.
 - `DETENT_ENV` and `DETENT_LOG_LEVEL` remain deprecated fallbacks for one release. The unprefixed names win when both are set.
 - Text logs are written to stdout; JSON logs are written to stderr.
 
@@ -854,6 +868,26 @@ At startup, Detent resolves `global.yaml` in this order. The first matching rule
 `DETENT_CONFIG` and `DETENT_HOME` remain deprecated fallbacks for one release. Detent uses `CONFIG_HOME` instead of `HOME` because `HOME` is standard process state, not Detent configuration.
 
 If no global config is found, Detent keeps the single-project fallback and looks for `WORKFLOW.md` in the current working directory. Use `detent config path` to print the resolved config path and the rule that selected it.
+
+Runtime settings resolve in this order: explicit flag, environment variable,
+`global.yaml`, then built-in default.
+
+| Setting | Flag | Environment | `global.yaml` key | Default |
+| --- | --- | --- | --- | --- |
+| Environment | `--env` | `ENV`, then `DETENT_ENV` | `env` | `prod` |
+| Log level | `--log-level` | `LOG_LEVEL`, then `DETENT_LOG_LEVEL` | `log_level` | `info` |
+| GitHub token | | `GITHUB_TOKEN` | `github_token` | required for GitHub projects |
+| Web port | `--port` | `PORT` | `port` | `4000` |
+
+Use `github_token: gh` in `global.yaml` to resolve the token from
+`gh auth token` at startup. Literal token values also work but should not be
+committed. `github_token: gh-auth`, `${gh auth token}`, and
+`$(gh auth token)` are accepted aliases. If neither `GITHUB_TOKEN` nor
+`github_token` is set, Detent falls back to existing per-workflow
+`tracker.api_key` handling.
+
+`detent doctor` prints the resolved runtime values and their sources, with the
+GitHub token redacted.
 
 ## History
 

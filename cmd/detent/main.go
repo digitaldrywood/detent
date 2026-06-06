@@ -34,7 +34,11 @@ func main() {
 
 func newRootCommand(ctx context.Context) *cobra.Command {
 	build := currentBuildInfo()
-	cmd := cli.NewRootCommand(ctx, cli.WithVersion(build.Version), cli.WithBuild(build))
+	cmd := cli.NewRootCommand(ctx,
+		cli.WithVersion(build.Version),
+		cli.WithBuild(build),
+		cli.WithLoggerFunc(setupLoggerFromRuntime),
+	)
 	cmd.Version = build.Version
 	cmd.SetVersionTemplate("{{.Version}}\n")
 	cmd.AddCommand(

@@ -79,12 +79,14 @@ type Dependencies struct {
 	Scheduler              scheduler.Scheduler
 	Events                 *hub.Hub[Event]
 	Logger                 *slog.Logger
+	GitHubToken            string
 }
 
 type Project struct {
 	id               ProjectID
 	cfg              globalconfig.Project
 	workflow         workflowconfig.Workflow
+	githubToken      string
 	connector        connector.Connector
 	connectorFactory ConnectorFactory
 	orchestrator     *orchestrator.Orchestrator
@@ -123,6 +125,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 
 	workflow := normalizeWorkflow(cfg.Workflow)
 	workflow.Config = workflowConfigWithProjectIdentity(cfg.Project, workflow.Config)
+	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, deps.GitHubToken)
 	if err := workflow.Config.Validate(); err != nil {
 		return nil, fmt.Errorf("validate project workflow: %w", err)
 	}
@@ -178,6 +181,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		id:               id,
 		cfg:              cfg.Project,
 		workflow:         workflow,
+		githubToken:      strings.TrimSpace(deps.GitHubToken),
 		connector:        projectConnector,
 		connectorFactory: connectorFactory,
 		orchestrator:     orch,
@@ -577,6 +581,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
+	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, p.githubToken)
 	if err := workflow.Config.Validate(); err != nil {
 		p.logger.Warn("workflow reload validation failed",
 			"project_id", p.id,
@@ -654,6 +659,14 @@ func workflowConfigWithProjectIdentity(
 	identity := project.Identity
 	identity.Normalize()
 	workflow.Identity = identity
+	return workflow
+}
+
+func workflowConfigWithGitHubToken(workflow workflowconfig.Config, token string) workflowconfig.Config {
+	token = strings.TrimSpace(token)
+	if token != "" && workflow.Tracker.Kind == workflowconfig.TrackerGitHub {
+		workflow.Tracker.APIKey = token
+	}
 	return workflow
 }
 

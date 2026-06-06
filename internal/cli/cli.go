@@ -50,6 +50,7 @@ type BootConfig struct {
 	Mode           BootMode
 	Global         globalconfig.Config
 	ConfigPathRule globalconfig.PathRule
+	Runtime        RuntimeSettings
 	WorkflowPath   string
 	Host           string
 	Port           *int
@@ -63,6 +64,8 @@ type BootConfig struct {
 type BootFunc func(context.Context, BootConfig) error
 
 type SignalFunc func(context.Context, Signal) error
+
+type LoggerFunc func(RuntimeSettings, io.Writer, io.Writer, bool)
 
 type ProjectManager interface {
 	Add(context.Context, globalconfig.Project) error
@@ -80,6 +83,9 @@ type options struct {
 	write         func(string, globalconfig.Config) error
 	boot          BootFunc
 	signal        SignalFunc
+	lookupEnv     func(string) string
+	ghAuthToken   func(context.Context) (string, error)
+	configureLog  LoggerFunc
 	version       string
 	build         buildinfo.Info
 	stdoutTTY     func() bool
@@ -127,6 +133,12 @@ func WithStdoutTTY(stdoutTTY func() bool) Option {
 	}
 }
 
+func WithLoggerFunc(configure LoggerFunc) Option {
+	return func(opts *options) {
+		opts.configureLog = configure
+	}
+}
+
 func ProjectManagerSignalFunc(manager ProjectManager) SignalFunc {
 	if manager == nil {
 		return noSignal
@@ -158,6 +170,8 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	}
 
 	var configPath string
+	var env string
+	var logLevel string
 	var host string
 	var port int
 	var headless bool
@@ -168,24 +182,38 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			boot, err := resolveBootConfig(configPath, host, port, opts)
+			flags := runtimeFlags{
+				Env:      runtimeStringFlag{Value: env, Set: flagChanged(cmd, "env")},
+				LogLevel: runtimeStringFlag{Value: logLevel, Set: flagChanged(cmd, "log-level")},
+				Port:     runtimeIntFlag{Value: port, Set: flagChanged(cmd, "port")},
+			}
+			boot, err := resolveBootConfig(cmd.Context(), configPath, host, flags, opts)
 			if err != nil {
 				return err
 			}
+			stdoutTTY := opts.stdoutTTY()
+			if opts.configureLog != nil {
+				opts.configureLog(boot.Runtime, cmd.OutOrStdout(), cmd.ErrOrStderr(), stdoutTTY)
+			}
 			boot.Headless = headless
-			boot.StdoutTTY = opts.stdoutTTY()
+			boot.StdoutTTY = stdoutTTY
 			boot.Output = cmd.OutOrStdout()
 			slog.Info("resolved global config", "path", boot.Global.Path, "rule", boot.ConfigPathRule)
+			for _, warning := range boot.Runtime.Warnings {
+				slog.Warn(warning.Detail, "check", warning.Name, "hint", warning.Hint)
+			}
 			return opts.boot(cmd.Context(), boot)
 		},
 	}
 	cmd.SetContext(ctx)
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "path to global.yaml")
+	cmd.PersistentFlags().StringVar(&env, "env", "", "runtime environment")
+	cmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level")
 	cmd.PersistentFlags().StringVar(&host, "host", "", "web server host")
 	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
 	cmd.PersistentFlags().BoolVar(&headless, "headless", false, "stream logs instead of launching the terminal dashboard")
 	cmd.AddCommand(
-		newDoctorCommand(&configPath, &host, &port, opts),
+		newDoctorCommand(&configPath, &env, &logLevel, &host, &port, opts),
 		newInitCommand(&configPath, opts),
 		newAddProjectCommand(&configPath, opts),
 		newEditProjectCommand(&configPath, opts, OperationPauseProject, "pause", "Pause a project", func(project *globalconfig.Project) error {
@@ -216,10 +244,20 @@ func defaultOptions() options {
 		write: func(path string, cfg globalconfig.Config) error {
 			return globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals())
 		},
-		boot:      defaultBoot,
-		signal:    noSignal,
-		stdoutTTY: stdoutIsTTY,
+		boot:        defaultBoot,
+		signal:      noSignal,
+		lookupEnv:   os.Getenv,
+		ghAuthToken: defaultGHAuthToken,
+		stdoutTTY:   stdoutIsTTY,
 	}
+}
+
+func flagChanged(cmd *cobra.Command, name string) bool {
+	flag := cmd.Flags().Lookup(name)
+	if flag == nil {
+		flag = cmd.InheritedFlags().Lookup(name)
+	}
+	return flag != nil && flag.Changed
 }
 
 func noSignal(context.Context, Signal) error {

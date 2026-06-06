@@ -29,9 +29,10 @@ type StartupConfig struct {
 }
 
 type ManagerConfig struct {
-	Identity globalconfig.Identity
-	Projects []globalconfig.Project
-	Startup  StartupConfig
+	Identity                 globalconfig.Identity
+	Projects                 []globalconfig.Project
+	Startup                  StartupConfig
+	RuntimeCredentialVersion string
 }
 
 type ReconcileResult struct {
@@ -195,6 +196,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
+	runtimeCredentialChanged := m.cfg.RuntimeCredentialVersion != cfg.RuntimeCredentialVersion
 	result := ReconcileResult{}
 	for _, current := range m.registry.List() {
 		id := current.ID()
@@ -203,7 +205,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 			result.Removed = append(result.Removed, id)
 			continue
 		}
-		if sameProjectConfig(current.Config(), next) {
+		if !runtimeCredentialChanged && sameProjectConfig(current.Config(), next) {
 			result.Unchanged = append(result.Unchanged, id)
 			continue
 		}

@@ -97,6 +97,67 @@ func TestGlobalConfigReloaderApply(t *testing.T) {
 	}
 }
 
+func TestGlobalConfigReloaderUpdatesRuntimeGitHubToken(t *testing.T) {
+	t.Parallel()
+
+	current := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next.GitHubToken = "next-token"
+	token := newRuntimeGitHubTokenState("current-token")
+	manager := &globalReloadManager{}
+	reloader := &globalConfigReloader{
+		current:     current,
+		manager:     manager,
+		githubToken: token,
+		resolveGitHubToken: func(_ context.Context, cfg globalconfig.Config) (string, error) {
+			return cfg.GitHubToken, nil
+		},
+	}
+
+	_, err := reloader.apply(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  next.Path,
+		Value: next,
+	})
+	if err != nil {
+		t.Fatalf("apply() error = %v", err)
+	}
+	if got := token.get(); got != "next-token" {
+		t.Fatalf("runtime GitHub token = %q, want next-token", got)
+	}
+	if got, want := manager.config.RuntimeCredentialVersion, runtimeGitHubTokenVersion("next-token"); got != want {
+		t.Fatalf("RuntimeCredentialVersion = %q, want %q", got, want)
+	}
+}
+
+func TestGlobalConfigReloaderRestoresRuntimeGitHubTokenOnError(t *testing.T) {
+	t.Parallel()
+
+	reconcileErr := errors.New("reconcile failed")
+	current := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next.GitHubToken = "next-token"
+	token := newRuntimeGitHubTokenState("current-token")
+	reloader := &globalConfigReloader{
+		current:     current,
+		manager:     &globalReloadManager{err: reconcileErr},
+		githubToken: token,
+		resolveGitHubToken: func(_ context.Context, cfg globalconfig.Config) (string, error) {
+			return cfg.GitHubToken, nil
+		},
+	}
+
+	_, err := reloader.apply(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  next.Path,
+		Value: next,
+	})
+	if !errors.Is(err, reconcileErr) {
+		t.Fatalf("apply() error = %v, want %v", err, reconcileErr)
+	}
+	if got := token.get(); got != "current-token" {
+		t.Fatalf("runtime GitHub token = %q, want current-token", got)
+	}
+}
+
 type globalReloadManager struct {
 	calls  int
 	config project.ManagerConfig

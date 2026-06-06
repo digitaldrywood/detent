@@ -42,6 +42,7 @@ func withRunnerFactory(
 	deps project.Dependencies,
 	sessionStore runnerpkg.SessionStore,
 	load func(project.Dependencies) (*project.Project, error),
+	githubTokenSource ...func() string,
 ) project.ProjectFactory {
 	return func(cfg globalconfig.Project) (*project.Project, error) {
 		workflow, err := workflowconfig.LoadWorkflow(cfg.Workflow)
@@ -60,6 +61,9 @@ func withRunnerFactory(
 
 		projectDeps := deps
 		projectDeps.Runner = run
+		if len(githubTokenSource) > 0 && githubTokenSource[0] != nil {
+			projectDeps.GitHubToken = githubTokenSource[0]()
+		}
 
 		if load != nil {
 			return load(projectDeps)

@@ -8,11 +8,17 @@ import (
 	"time"
 
 	"github.com/lmittmann/tint"
+
+	"github.com/digitaldrywood/detent/internal/cli"
 )
 
 func setupLoggerFromEnv(stdout io.Writer, stderr io.Writer) *slog.Logger {
 	env, envSet := envValueWithPresence("ENV", "DETENT_ENV")
 	return setupLoggerWithOutputs(env, envSet, envValue("LOG_LEVEL", "DETENT_LOG_LEVEL"), stdout, stderr, writerIsTTY(stdout))
+}
+
+func setupLoggerFromRuntime(settings cli.RuntimeSettings, stdout io.Writer, stderr io.Writer, stdoutTTY bool) {
+	setupLoggerWithOutputs(settings.Env.Value, strings.TrimSpace(settings.Env.Value) != "", settings.LogLevel.Value, stdout, stderr, stdoutTTY)
 }
 
 func setupLogger(env string, level string, w io.Writer) *slog.Logger {

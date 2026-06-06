@@ -36,8 +36,9 @@ Detent logs with `log/slog`.
 
 - `ENV=dev`, `development`, or `local` enables tint text logs.
 - `ENV=prod` or any other non-development value keeps JSON logs.
-- When `ENV` is unset, interactive stdout TTY runs use tint text logs; non-TTY runs use JSON logs.
+- When no environment is configured, Detent defaults to `prod`.
 - `LOG_LEVEL` accepts `debug`, `info`, `warn`, `warning`, and `error`.
+- `--env` and `--log-level` override environment variables for one run.
 - `DETENT_ENV` and `DETENT_LOG_LEVEL` remain deprecated fallbacks for one release. The unprefixed names win when both are set.
 - Text logs are written to stdout; JSON logs are written to stderr.
 

@@ -234,6 +234,45 @@ func TestDefaultConfig(t *testing.T) {
 	}
 }
 
+func TestReadParsesRuntimeSettings(t *testing.T) {
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeFile(t, configPath, `apiVersion: detent/v1
+kind: GlobalConfig
+env: dev
+log_level: debug
+github_token: gh
+port: 4100
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+projects:
+  - id: detent
+    workflow: `+paths.workflow+`
+    workdir: `+paths.workdir+`
+    weight: 1
+    priority: 0
+`)
+
+	cfg, err := Read(configPath, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	if cfg.Env != "dev" {
+		t.Fatalf("Env = %q, want dev", cfg.Env)
+	}
+	if cfg.LogLevel != "debug" {
+		t.Fatalf("LogLevel = %q, want debug", cfg.LogLevel)
+	}
+	if cfg.GitHubToken != "gh" {
+		t.Fatalf("GitHubToken = %q, want gh", cfg.GitHubToken)
+	}
+	if cfg.Port == nil || *cfg.Port != 4100 {
+		t.Fatalf("Port = %v, want 4100", cfg.Port)
+	}
+}
+
 func TestReadOrDefaultUsesDefaultForMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing", "global.yaml")
 
@@ -256,11 +295,16 @@ func TestReadOrDefaultUsesDefaultForMissingFile(t *testing.T) {
 func TestWriteRoundTripsConfig(t *testing.T) {
 	paths := createProjectFiles(t)
 	configPath := filepath.Join(paths.root, "written", "global.yaml")
+	port := 4100
 
 	cfg := Config{
-		Path:       configPath,
-		APIVersion: APIVersion,
-		Kind:       Kind,
+		Path:        configPath,
+		APIVersion:  APIVersion,
+		Kind:        Kind,
+		Env:         "dev",
+		LogLevel:    "debug",
+		GitHubToken: "gh",
+		Port:        &port,
 		Global: Settings{
 			MaxConcurrentAgents: 3,
 			Scheduling:          SchedulingStrict,
@@ -302,8 +346,57 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 	if !reflect.DeepEqual(got.Global, cfg.Global) {
 		t.Fatalf("Global = %#v, want %#v", got.Global, cfg.Global)
 	}
+	if got.Env != cfg.Env {
+		t.Fatalf("Env = %q, want %q", got.Env, cfg.Env)
+	}
+	if got.LogLevel != cfg.LogLevel {
+		t.Fatalf("LogLevel = %q, want %q", got.LogLevel, cfg.LogLevel)
+	}
+	if got.GitHubToken != cfg.GitHubToken {
+		t.Fatalf("GitHubToken = %q, want %q", got.GitHubToken, cfg.GitHubToken)
+	}
+	if got.Port == nil || *got.Port != *cfg.Port {
+		t.Fatalf("Port = %v, want %d", got.Port, *cfg.Port)
+	}
 	if !reflect.DeepEqual(got.Projects, cfg.Projects) {
 		t.Fatalf("Projects = %#v, want %#v", got.Projects, cfg.Projects)
+	}
+}
+
+func TestWriteRestrictsExistingConfigFilePermissions(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows does not expose POSIX file modes")
+	}
+
+	paths := createProjectFiles(t)
+	path := filepath.Join(paths.root, "global.yaml")
+	writeFile(t, path, "old")
+	if err := os.Chmod(path, 0o644); err != nil {
+		t.Fatalf("Chmod() error = %v", err)
+	}
+
+	err := Write(path, Config{
+		APIVersion:  APIVersion,
+		Kind:        Kind,
+		GitHubToken: "ghp_secret",
+		Global: Settings{
+			MaxConcurrentAgents: 8,
+			Scheduling:          SchedulingWeighted,
+		},
+		Projects: []Project{
+			{ID: "detent", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("Stat() error = %v", err)
+	}
+	if got := info.Mode().Perm(); got != configFileMode {
+		t.Fatalf("mode = %o, want %o", got, configFileMode)
 	}
 }
 

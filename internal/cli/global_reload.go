@@ -19,9 +19,11 @@ type globalConfigManager interface {
 }
 
 type globalConfigReloader struct {
-	current globalconfig.Config
-	manager globalConfigManager
-	logger  *slog.Logger
+	current            globalconfig.Config
+	manager            globalConfigManager
+	logger             *slog.Logger
+	githubToken        *runtimeGitHubTokenState
+	resolveGitHubToken func(context.Context, globalconfig.Config) (string, error)
 }
 
 func startGlobalConfigWatcher(
@@ -29,6 +31,7 @@ func startGlobalConfigWatcher(
 	current globalconfig.Config,
 	manager globalConfigManager,
 	logger *slog.Logger,
+	githubToken *runtimeGitHubTokenState,
 ) <-chan struct{} {
 	if ctx == nil {
 		ctx = context.Background()
@@ -56,9 +59,10 @@ func startGlobalConfigWatcher(
 
 	done := make(chan struct{})
 	reloader := &globalConfigReloader{
-		current: current,
-		manager: manager,
-		logger:  logger,
+		current:     current,
+		manager:     manager,
+		logger:      logger,
+		githubToken: githubToken,
 	}
 	go func() {
 		defer close(done)
@@ -121,13 +125,51 @@ func (r *globalConfigReloader) apply(
 		return project.ReconcileResult{}, errMissingGlobalConfigManager
 	}
 
-	result, err := r.manager.Reconcile(ctx, project.ManagerConfigFromGlobal(update.Value))
+	previousGitHubToken := ""
+	nextGitHubToken := ""
+	if r.githubToken != nil {
+		resolvedGitHubToken, err := r.runtimeGitHubToken(ctx, update.Value)
+		if err != nil {
+			return project.ReconcileResult{}, err
+		}
+		nextGitHubToken = resolvedGitHubToken
+		previousGitHubToken = r.githubToken.get()
+		r.githubToken.set(nextGitHubToken)
+	}
+
+	managerConfig := managerConfigWithRuntimeGitHubToken(update.Value, nextGitHubToken)
+	result, err := r.manager.Reconcile(ctx, managerConfig)
 	if err != nil {
+		if r.githubToken != nil {
+			r.githubToken.set(previousGitHubToken)
+		}
 		return result, err
 	}
 
 	r.current = update.Value
 	return result, nil
+}
+
+func (r *globalConfigReloader) runtimeGitHubToken(ctx context.Context, cfg globalconfig.Config) (string, error) {
+	if r.resolveGitHubToken != nil {
+		return r.resolveGitHubToken(ctx, cfg)
+	}
+	return resolveGlobalRuntimeGitHubToken(ctx, cfg)
+}
+
+func resolveGlobalRuntimeGitHubToken(ctx context.Context, cfg globalconfig.Config) (string, error) {
+	deps := runtimeDeps{}.withDefaults()
+	token, _, err := resolveRuntimeGitHubToken(ctx, &cfg, deps)
+	if err != nil {
+		return "", err
+	}
+	return runtimeGlobalGitHubToken(token), nil
+}
+
+func managerConfigWithRuntimeGitHubToken(cfg globalconfig.Config, token string) project.ManagerConfig {
+	managerConfig := project.ManagerConfigFromGlobal(cfg)
+	managerConfig.RuntimeCredentialVersion = runtimeGitHubTokenVersion(token)
+	return managerConfig
 }
 
 func logGlobalSettingChanges(logger *slog.Logger, previous globalconfig.Settings, next globalconfig.Settings) {
