@@ -1716,6 +1716,10 @@ func (c *Connector) linkedChildIssueState(child linkedIssue) string {
 		if stateName = strings.TrimSpace(stateName); stateName != "" {
 			state = c.githubToDetentState(stateName)
 		}
+		return state
+	}
+	if child.ProjectItems != nil && child.ProjectItems.PageInfo.HasNextPage {
+		return ""
 	}
 	return state
 }
