@@ -357,6 +357,60 @@ func TestTickFinalizesAffectedEpicWhenActiveChildCloses(t *testing.T) {
 	}
 }
 
+func TestTickFinalizesAffectedEpicWhenActiveChildMovesToDone(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled", "Closed"},
+	})
+	state := newState(cfg)
+	state.LastRefreshAt = now.Add(-time.Minute)
+	state.epicTransitionWatch = []connector.Issue{
+		epicTestIssue("child-251", "Todo", false, "Child 251", nil, ""),
+	}
+	state.Running["occupied"] = Running{Issue: connector.Issue{ID: "occupied", Identifier: "occupied", Title: "Occupied", State: "Todo"}}
+	tracker := &epicConnector{
+		stateIssues: []connector.Issue{
+			epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+		},
+		parents: map[string][]connector.Issue{
+			"child-251": {
+				func() connector.Issue {
+					issue := epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "")
+					issue.ChildIssues = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#251"}}
+					return issue
+				}(),
+			},
+		},
+		linked: map[string][]connector.BlockedRef{
+			"epic-258": {
+				{Identifier: "digitaldrywood/detent#251", State: "Done"},
+			},
+		},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.parentFetches(), []string{"child-251"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parent fetches = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.closedIssues(), []string{"epic-258"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("closed issues = %#v, want %#v", got, want)
+	}
+	if got := len(state.epicTransitionWatch); got != 0 {
+		t.Fatalf("epic transition watch len = %d, want 0", got)
+	}
+}
+
 func TestTickRetriesParentLookupFailureForTerminalChild(t *testing.T) {
 	t.Parallel()
 

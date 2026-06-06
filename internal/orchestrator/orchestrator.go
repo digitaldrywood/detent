@@ -310,6 +310,7 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	lastRefreshAt := state.LastRefreshAt
 	previousPipeline := cloneIssues(state.Pipeline)
+	previousEpicTransitionWatch := cloneIssues(state.epicTransitionWatch)
 	pendingEpicParentLookups := cloneIssueMap(state.pendingEpicParentLookups)
 	o.markRefresh(state, now)
 	defer o.finishRefresh(state, now)
@@ -337,8 +338,14 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	transitionIssues := cloneIssues(issues)
 	pipelineIssues, pipelineRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previousPipeline)
 	transitionIssues = append(transitionIssues, pipelineIssues...)
+	watchedIssues, watchRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previousEpicTransitionWatch)
+	transitionIssues = append(transitionIssues, watchedIssues...)
 	pendingTransitions, pendingParentLookups := o.refreshPendingEpicParentLookups(ctx, pendingEpicParentLookups)
 	transitionIssues = append(transitionIssues, pendingTransitions...)
+	state.epicTransitionWatch = issuesInStates(issues, o.cfg.ActiveStates)
+	if !watchRefreshOK {
+		state.epicTransitionWatch = mergeIssueSlices(state.epicTransitionWatch, previousEpicTransitionWatch)
+	}
 	if statusErr == nil {
 		statusIssues = cloneIssues(statusIssues)
 		transitionIssues = append(transitionIssues, statusIssues...)
@@ -350,7 +357,7 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	completedEpics, failedParentLookups := o.closeCompletedEpicsForTerminalTransitions(
 		ctx,
 		transitionIssues,
-		previousPipeline,
+		mergeIssueSlices(previousPipeline, previousEpicTransitionWatch),
 		lastRefreshAt,
 		pendingTransitions,
 	)

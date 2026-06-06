@@ -27,6 +27,7 @@ type State struct {
 	ReapedWorkspaces         map[string]time.Time
 	CodexTotals              CodexTotals
 	RateLimits               *telemetry.RateLimits
+	epicTransitionWatch      []connector.Issue
 	pendingEpicParentLookups map[string]connector.Issue
 }
 
@@ -122,6 +123,7 @@ func (s State) clone() State {
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
 		CodexTotals:              s.CodexTotals,
 		RateLimits:               cloneRateLimits(s.RateLimits),
+		epicTransitionWatch:      cloneIssues(s.epicTransitionWatch),
 		pendingEpicParentLookups: cloneIssueMap(s.pendingEpicParentLookups),
 	}
 
