@@ -124,6 +124,9 @@ func TestGlobalConfigReloaderUpdatesRuntimeGitHubToken(t *testing.T) {
 	if got := token.get(); got != "next-token" {
 		t.Fatalf("runtime GitHub token = %q, want next-token", got)
 	}
+	if got, want := manager.config.RuntimeCredentialVersion, runtimeGitHubTokenVersion("next-token"); got != want {
+		t.Fatalf("RuntimeCredentialVersion = %q, want %q", got, want)
+	}
 }
 
 func TestGlobalConfigReloaderRestoresRuntimeGitHubTokenOnError(t *testing.T) {

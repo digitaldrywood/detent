@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"crypto/sha256"
 	"errors"
 	"fmt"
 	"os"
@@ -383,6 +384,14 @@ func runtimeGlobalGitHubToken(token RuntimeSecret) string {
 	default:
 		return ""
 	}
+}
+
+func runtimeGitHubTokenVersion(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	return fmt.Sprintf("%x", sha256.Sum256([]byte(token)))
 }
 
 func sourceDetail(source string) string {

@@ -277,6 +277,52 @@ func TestManagerReconcileProjects(t *testing.T) {
 	}
 }
 
+func TestManagerReconcileChangesProjectsWhenRuntimeCredentialVersionChanges(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects:                 []globalconfig.Project{{ID: "alpha", Weight: 1}},
+		RuntimeCredentialVersion: "old",
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			return newManagerTestProject(t, cfg, events)
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	drainProjectEvents(t, sub.C(), 1)
+
+	got, err := manager.Reconcile(context.Background(), project.ManagerConfig{
+		Projects:                 []globalconfig.Project{{ID: "alpha", Weight: 1}},
+		RuntimeCredentialVersion: "new",
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	want := project.ReconcileResult{Changed: []project.ProjectID{"alpha"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reconcile() = %#v, want %#v", got, want)
+	}
+	assertProjectEvents(t, sub.C(), []project.Event{
+		{ProjectID: "alpha", Kind: project.EventStopped},
+		{ProjectID: "alpha", Kind: project.EventStarted},
+	})
+}
+
 func TestManagerReconcileKeepsRegistryWhenNewProjectCannotBeCreated(t *testing.T) {
 	t.Parallel()
 

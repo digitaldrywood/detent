@@ -126,16 +126,19 @@ func (r *globalConfigReloader) apply(
 	}
 
 	previousGitHubToken := ""
+	nextGitHubToken := ""
 	if r.githubToken != nil {
-		nextGitHubToken, err := r.runtimeGitHubToken(ctx, update.Value)
+		resolvedGitHubToken, err := r.runtimeGitHubToken(ctx, update.Value)
 		if err != nil {
 			return project.ReconcileResult{}, err
 		}
+		nextGitHubToken = resolvedGitHubToken
 		previousGitHubToken = r.githubToken.get()
 		r.githubToken.set(nextGitHubToken)
 	}
 
-	result, err := r.manager.Reconcile(ctx, project.ManagerConfigFromGlobal(update.Value))
+	managerConfig := managerConfigWithRuntimeGitHubToken(update.Value, nextGitHubToken)
+	result, err := r.manager.Reconcile(ctx, managerConfig)
 	if err != nil {
 		if r.githubToken != nil {
 			r.githubToken.set(previousGitHubToken)
@@ -161,6 +164,12 @@ func resolveGlobalRuntimeGitHubToken(ctx context.Context, cfg globalconfig.Confi
 		return "", err
 	}
 	return runtimeGlobalGitHubToken(token), nil
+}
+
+func managerConfigWithRuntimeGitHubToken(cfg globalconfig.Config, token string) project.ManagerConfig {
+	managerConfig := project.ManagerConfigFromGlobal(cfg)
+	managerConfig.RuntimeCredentialVersion = runtimeGitHubTokenVersion(token)
+	return managerConfig
 }
 
 func logGlobalSettingChanges(logger *slog.Logger, previous globalconfig.Settings, next globalconfig.Settings) {
