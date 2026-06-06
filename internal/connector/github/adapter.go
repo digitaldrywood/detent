@@ -844,10 +844,10 @@ func (c *Connector) appendBodyReferencedIssueParents(
 			return nil, fmt.Errorf("search github body referenced issue parents: %w", err)
 		}
 		for _, item := range response.Items {
-			if item.Number <= 0 || item.Number == childRef.Number {
+			ref, ok := issueRefFromRESTSearchItem(item, childRef)
+			if !ok || sameIssueRef(ref, childRef) {
 				continue
 			}
-			ref := issueRef{Owner: childRef.Owner, Name: childRef.Name, Number: item.Number}
 			issue, ok, err := c.fetchProjectIssueByRef(ctx, ref)
 			if err != nil {
 				return nil, err
@@ -2319,6 +2319,38 @@ func issueRefFromNode(issue githubIssueNode) (issueRef, bool) {
 	return issueRef{Owner: owner, Name: name, Number: issue.Number}, true
 }
 
+func issueRefFromRESTSearchItem(issue restIssue, fallback issueRef) (issueRef, bool) {
+	if ref, ok := issueRefFromURL(issue.HTMLURL); ok {
+		return ref, true
+	}
+	if issue.Number <= 0 || fallback.Owner == "" || fallback.Name == "" {
+		return issueRef{}, false
+	}
+	return issueRef{Owner: fallback.Owner, Name: fallback.Name, Number: issue.Number}, true
+}
+
+func issueRefFromURL(value string) (issueRef, bool) {
+	matches := issueURLPattern.FindStringSubmatch(value)
+	if len(matches) != 3 {
+		return issueRef{}, false
+	}
+	owner, name, ok := splitRepositoryName(matches[1])
+	if !ok {
+		return issueRef{}, false
+	}
+	number, err := strconv.Atoi(matches[2])
+	if err != nil || number <= 0 {
+		return issueRef{}, false
+	}
+	return issueRef{Owner: owner, Name: name, Number: number}, true
+}
+
+func sameIssueRef(left issueRef, right issueRef) bool {
+	return strings.EqualFold(left.Owner, right.Owner) &&
+		strings.EqualFold(left.Name, right.Name) &&
+		left.Number == right.Number
+}
+
 func splitRepositoryName(repo string) (string, string, bool) {
 	parts := strings.Split(strings.TrimSpace(repo), "/")
 	if len(parts) != 2 {
@@ -2346,7 +2378,7 @@ func restIssuePath(ref issueRef) string {
 
 func restIssueSearchPath(ref issueRef, page int) string {
 	values := url.Values{}
-	values.Set("q", "repo:"+ref.Owner+"/"+ref.Name+" is:issue is:open "+strconv.Itoa(ref.Number))
+	values.Set("q", "user:"+ref.Owner+" is:issue is:open "+strconv.Itoa(ref.Number))
 	values.Set("per_page", strconv.Itoa(bodyParentSearchPageSize))
 	values.Set("page", strconv.Itoa(page))
 	return "/search/issues?" + values.Encode()

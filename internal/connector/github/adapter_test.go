@@ -1020,6 +1020,54 @@ func TestConnectorFetchIssueParentsReturnsBodyReferencedEpic(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssueParentsReturnsCrossRepoBodyReferencedEpic(t *testing.T) {
+	t.Parallel()
+
+	body := "Depends on: digitaldrywood/agent-runtime#251"
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/agent-runtime"},"parent":null,"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":1,"items":[{"number":258,"html_url":"https://github.com/digitaldrywood/detent/issues/258"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/258",
+			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}`,
+		},
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueParents() len = %d, want 1", len(got))
+	}
+	if got[0].ID != "I_epic" || got[0].Identifier != "digitaldrywood/detent#258" || got[0].Description != body {
+		t.Fatalf("cross-repo body parent = %#v", got[0])
+	}
+
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want parent lookup, search, REST issue, project item", len(requests))
+	}
+	searchPath := requests[1]["path"].(string)
+	if !strings.Contains(searchPath, "user%3Adigitaldrywood") || strings.Contains(searchPath, "repo%3A") {
+		t.Fatalf("search path = %q, want owner-scoped search", searchPath)
+	}
+	if requests[2]["path"] != "/repos/digitaldrywood/detent/issues/258" {
+		t.Fatalf("REST issue path = %#v, want cross-repo epic issue", requests[2])
+	}
+}
+
 func TestConnectorFetchIssueParentsPaginatesBodyReferencedEpicSearch(t *testing.T) {
 	t.Parallel()
 
