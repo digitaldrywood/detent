@@ -26,6 +26,7 @@ type updateFactory func() (updateRunner, error)
 func newUpdateCommand(factory updateFactory) *cobra.Command {
 	var checkOnly bool
 	var assumeYes bool
+	var fromRelease bool
 	var jsonOutput bool
 
 	cmd := &cobra.Command{
@@ -43,9 +44,19 @@ func newUpdateCommand(factory updateFactory) *cobra.Command {
 			if checkOnly {
 				status, err = runner.Check(cmd.Context())
 			} else {
-				opts := detentupdate.ApplyOptions{AssumeYes: assumeYes}
-				if !assumeYes && !jsonOutput {
+				streamOut := cmd.OutOrStdout()
+				if jsonOutput {
+					streamOut = cmd.ErrOrStderr()
+				}
+				opts := detentupdate.ApplyOptions{
+					AssumeYes:   assumeYes,
+					FromRelease: fromRelease,
+					Stdout:      streamOut,
+					Stderr:      cmd.ErrOrStderr(),
+				}
+				if !assumeYes && !fromRelease && !jsonOutput {
 					opts.Confirm = confirmUpdate(cmd)
+					opts.SelectGoInstallAction = selectGoInstallAction(cmd)
 				}
 				status, err = runner.Apply(cmd.Context(), opts)
 			}
@@ -64,6 +75,7 @@ func newUpdateCommand(factory updateFactory) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&checkOnly, "check", false, "check for updates without changing the binary")
 	cmd.Flags().BoolVar(&assumeYes, "yes", false, "apply the update without prompting")
+	cmd.Flags().BoolVar(&fromRelease, "from-release", false, "replace a go-install-managed binary with the latest release asset")
 	cmd.Flags().BoolVar(&jsonOutput, "json", false, "write machine-readable update status")
 	return cmd
 }
@@ -92,6 +104,48 @@ func confirmUpdate(cmd *cobra.Command) func(detentupdate.Status) (bool, error) {
 		}
 		answer := strings.ToLower(strings.TrimSpace(line))
 		return answer == "y" || answer == "yes", nil
+	}
+}
+
+func selectGoInstallAction(cmd *cobra.Command) func(detentupdate.Status) (detentupdate.GoInstallAction, error) {
+	return func(status detentupdate.Status) (detentupdate.GoInstallAction, error) {
+		out := cmd.OutOrStdout()
+		if _, err := fmt.Fprintf(out, "This Detent binary appears to be managed by go install.\n"); err != nil {
+			return "", err
+		}
+		if _, err := fmt.Fprintf(out, "Update Detent from %s to %s?\n", status.CurrentVersion, status.LatestVersion); err != nil {
+			return "", err
+		}
+		if _, err := fmt.Fprintf(out, "  1) Run the Go install for me: %s\n", status.Command); err != nil {
+			return "", err
+		}
+		if _, err := fmt.Fprintln(out, "  2) Switch to the release binary"); err != nil {
+			return "", err
+		}
+		if _, err := fmt.Fprintf(out, "     WARNING: This replaces %s and changes how Detent is managed. Future go install or go.mod upgrades will not track it.\n", status.Binary); err != nil {
+			return "", err
+		}
+		if _, err := fmt.Fprintln(out, "  3) Abort"); err != nil {
+			return "", err
+		}
+		if _, err := fmt.Fprint(out, "Choose 1, 2, or 3 [3]: "); err != nil {
+			return "", err
+		}
+
+		line, err := bufio.NewReader(cmd.InOrStdin()).ReadString('\n')
+		if err != nil && !errors.Is(err, io.EOF) {
+			return "", fmt.Errorf("read update choice: %w", err)
+		}
+		switch strings.ToLower(strings.TrimSpace(line)) {
+		case "1", "g", "go", "go install", "run", "run go install":
+			return detentupdate.GoInstallActionRun, nil
+		case "2", "r", "release", "switch", "switch to release", "from release":
+			return detentupdate.GoInstallActionRelease, nil
+		case "", "3", "a", "abort", "n", "no":
+			return detentupdate.GoInstallActionAbort, nil
+		default:
+			return "", fmt.Errorf("invalid update choice: %s", strings.TrimSpace(line))
+		}
 	}
 }
 
