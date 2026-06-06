@@ -311,6 +311,7 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	lastRefreshAt := state.LastRefreshAt
 	previousPipeline := cloneIssues(state.Pipeline)
 	previousEpicTransitionWatch := cloneIssues(state.epicTransitionWatch)
+	previousBlockedStatusIssues := blockedStatusTransitionIssues(state.Blocked)
 	pendingEpicParentLookups := cloneIssueMap(state.pendingEpicParentLookups)
 	o.markRefresh(state, now)
 	defer o.finishRefresh(state, now)
@@ -340,6 +341,8 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	transitionIssues = append(transitionIssues, pipelineIssues...)
 	watchedIssues, watchRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previousEpicTransitionWatch)
 	transitionIssues = append(transitionIssues, watchedIssues...)
+	blockedIssues, blockedRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previousBlockedStatusIssues)
+	transitionIssues = append(transitionIssues, blockedIssues...)
 	pendingTransitions, pendingParentLookups := o.refreshPendingEpicParentLookups(ctx, pendingEpicParentLookups)
 	transitionIssues = append(transitionIssues, pendingTransitions...)
 	state.epicTransitionWatch = issuesInStates(issues, o.cfg.ActiveStates)
@@ -354,10 +357,12 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 			state.Pipeline = mergeIssueSlices(state.Pipeline, previousPipeline)
 		}
 	}
+	previousTransitions := mergeIssueSlices(previousPipeline, previousEpicTransitionWatch)
+	previousTransitions = mergeIssueSlices(previousTransitions, previousBlockedStatusIssues)
 	completedEpics, failedParentLookups := o.closeCompletedEpicsForTerminalTransitions(
 		ctx,
 		transitionIssues,
-		mergeIssueSlices(previousPipeline, previousEpicTransitionWatch),
+		previousTransitions,
 		lastRefreshAt,
 		pendingTransitions,
 	)
@@ -367,7 +372,11 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	o.pruneBudgetRefusals(state, now)
 	o.trackBlockedCandidates(state, issues, now)
 	if statusErr == nil {
-		o.trackBlockedStatusIssues(state, issuesInStates(statusIssues, []string{blockedStatusState}), now)
+		currentBlockedStatusIssues := issuesInStates(statusIssues, []string{blockedStatusState})
+		if !blockedRefreshOK {
+			currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, previousBlockedStatusIssues)
+		}
+		o.trackBlockedStatusIssues(state, currentBlockedStatusIssues, now)
 	}
 	o.dispatchReadyIssues(ctx, state, issues, now)
 }
@@ -404,6 +413,21 @@ func issuesInStates(issues []connector.Issue, states []string) []connector.Issue
 		if _, ok := wanted[normalizeState(issue.State)]; ok {
 			out = append(out, cloneIssue(issue))
 		}
+	}
+	return out
+}
+
+func blockedStatusTransitionIssues(blocked map[string]Blocked) []connector.Issue {
+	out := make([]connector.Issue, 0, len(blocked))
+	for _, entry := range blocked {
+		legacyStatusIssue := entry.Source == "" && normalizeState(entry.Issue.State) == normalizeState(blockedStatusState)
+		if entry.Source != BlockedSourceProjectStatus && !legacyStatusIssue {
+			continue
+		}
+		if strings.TrimSpace(entry.Issue.ID) == "" {
+			continue
+		}
+		out = append(out, cloneIssue(entry.Issue))
 	}
 	return out
 }
