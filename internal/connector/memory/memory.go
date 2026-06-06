@@ -45,6 +45,7 @@ var _ connector.Connector = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
+var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 
 func New(cfg Config) *Connector {
@@ -114,6 +115,43 @@ func (c *Connector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers
 	return issues, nil
 }
 
+func (c *Connector) FetchIssueParents(_ context.Context, issueID string) ([]connector.Issue, error) {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return []connector.Issue{}, nil
+	}
+
+	childIdentifier := ""
+	for _, issue := range c.issues {
+		if strings.TrimSpace(issue.ID) == issueID {
+			childIdentifier = normalizeState(issue.Identifier)
+			break
+		}
+	}
+
+	parents := []connector.Issue{}
+	seen := map[string]struct{}{}
+	for _, issue := range c.issues {
+		if strings.TrimSpace(issue.ID) == issueID {
+			continue
+		}
+		if !issueReferencesChild(issue, issueID, childIdentifier) {
+			continue
+		}
+		key := memoryIssueKey(issue)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		parents = append(parents, cloneIssue(issue))
+	}
+
+	return parents, nil
+}
+
 func (c *Connector) FetchIssueChildren(_ context.Context, issueID string) ([]connector.BlockedRef, error) {
 	for _, issue := range c.issues {
 		if issue.ID == issueID {
@@ -158,6 +196,40 @@ func (c *Connector) send(event Event) {
 
 func normalizeState(state string) string {
 	return strings.ToLower(strings.TrimSpace(state))
+}
+
+func issueReferencesChild(issue connector.Issue, childID string, childIdentifier string) bool {
+	for _, ref := range issue.ChildIssues {
+		if refReferencesIssue(ref, childID, childIdentifier) {
+			return true
+		}
+	}
+	for _, ref := range issue.BlockedBy {
+		if refReferencesIssue(ref, childID, childIdentifier) {
+			return true
+		}
+	}
+	return false
+}
+
+func refReferencesIssue(ref connector.BlockedRef, issueID string, issueIdentifier string) bool {
+	if strings.TrimSpace(ref.ID) == issueID {
+		return true
+	}
+	if issueIdentifier != "" && normalizeState(ref.Identifier) == issueIdentifier {
+		return true
+	}
+	return false
+}
+
+func memoryIssueKey(issue connector.Issue) string {
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		return "id:" + id
+	}
+	if identifier := normalizeState(issue.Identifier); identifier != "" {
+		return "identifier:" + identifier
+	}
+	return ""
 }
 
 func cloneIssues(issues []connector.Issue) []connector.Issue {

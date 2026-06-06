@@ -26,6 +26,7 @@ const (
 	graphQLQueryObservedStatus  = "observed_status"
 	graphQLQueryRunningStates   = "running_states"
 	graphQLQueryEpicChildren    = "epic_children"
+	graphQLQueryIssueParents    = "issue_parents"
 	graphQLQueryPullRequests    = "pull_requests"
 	graphQLQueryBlockedReasons  = "blocked_reasons"
 	graphQLQueryIssueLookup     = "issue_lookup"
@@ -179,6 +180,7 @@ var _ connector.Authenticator = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
+var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)

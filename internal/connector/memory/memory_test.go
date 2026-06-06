@@ -186,6 +186,47 @@ func TestConnectorFetchIssueStatesByIDsMatchesElixirMemoryAdapter(t *testing.T) 
 	}
 }
 
+func TestConnectorFetchIssueParents(t *testing.T) {
+	t.Parallel()
+
+	c := New(Config{Issues: []connector.Issue{
+		{
+			ID:         "epic-1",
+			Identifier: "MT-1",
+			ChildIssues: []connector.BlockedRef{{
+				ID:         "child-1",
+				Identifier: "MT-10",
+			}},
+		},
+		{
+			ID:         "epic-2",
+			Identifier: "MT-2",
+			BlockedBy:  []connector.BlockedRef{{Identifier: "MT-10"}},
+		},
+		{
+			ID:         "child-1",
+			Identifier: "MT-10",
+			State:      "Done",
+		},
+		{
+			ID:         "unrelated",
+			Identifier: "MT-3",
+			ChildIssues: []connector.BlockedRef{{
+				ID:         "child-2",
+				Identifier: "MT-11",
+			}},
+		},
+	}})
+
+	got, err := c.FetchIssueParents(context.Background(), "child-1")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if ids := issueIDs(got); !reflect.DeepEqual(ids, []string{"epic-1", "epic-2"}) {
+		t.Fatalf("FetchIssueParents() ids = %#v, want [epic-1 epic-2]", ids)
+	}
+}
+
 func TestConnectorMutationsMatchElixirMemoryAdapter(t *testing.T) {
 	t.Parallel()
 

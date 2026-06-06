@@ -925,6 +925,235 @@ func TestConnectorFetchIssueChildrenPaginatesLinkedIssues(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssueParentsReturnsParentAndTrackedInIssues(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"node":{"parent":{"__typename":"Issue","id":"I_parent","number":258,"title":"Epic: Parent","body":"- [ ] #251","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/258","createdAt":null,"updatedAt":null,"author":{"login":"corylanou"},"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_child","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo","updatedAt":"2026-06-02T16:00:00Z"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}},"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"__typename":"Issue","id":"I_tracked_parent","number":259,"title":"Epic: Tracked parent","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/259","createdAt":null,"updatedAt":null,"author":{"login":"corylanou"},"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"epic"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_child","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_tracked_parent","project":{"id":"PVT_1"},"statusValue":{"name":"In Progress","updatedAt":"2026-06-02T16:01:00Z"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]}}}}`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("FetchIssueParents() len = %d, want 2", len(got))
+	}
+	if got[0].ID != "I_parent" || got[0].Identifier != "digitaldrywood/detent#258" || got[0].State != "Todo" {
+		t.Fatalf("first parent = %#v", got[0])
+	}
+	if got[1].ID != "I_tracked_parent" || got[1].Identifier != "digitaldrywood/detent#259" || got[1].State != "In Progress" {
+		t.Fatalf("second parent = %#v", got[1])
+	}
+	if got[0].ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
+		t.Fatalf("first parent child issues = %#v", got[0].ChildIssues)
+	}
+	if got[1].ChildIssues[0] != (connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251", State: "Done"}) {
+		t.Fatalf("second parent child issues = %#v", got[1].ChildIssues)
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	variables := requests[0]["variables"].(map[string]any)
+	if variables["issueId"] != "I_child" {
+		t.Fatalf("issueId = %v, want I_child", variables["issueId"])
+	}
+	query := requests[0]["query"].(string)
+	for _, want := range []string{"parent", "trackedInIssues", "subIssues(first: $linkedIssuesFirst)", "trackedIssues(first: $linkedIssuesFirst)"} {
+		if !strings.Contains(query, want) {
+			t.Fatalf("query missing %q:\n%s", want, query)
+		}
+	}
+}
+
+func TestConnectorFetchIssueParentsReturnsBodyReferencedEpic(t *testing.T) {
+	t.Parallel()
+
+	body := "- [ ] #251"
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/detent"},"parent":null,"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"items":[{"number":258}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/258",
+			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}`,
+		},
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueParents() len = %d, want 1", len(got))
+	}
+	if got[0].ID != "I_epic" || got[0].Identifier != "digitaldrywood/detent#258" || got[0].State != "Todo" {
+		t.Fatalf("body parent = %#v", got[0])
+	}
+	if got[0].Description != body {
+		t.Fatalf("body parent description = %q, want %q", got[0].Description, body)
+	}
+
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want parent lookup, search, REST issue, project item", len(requests))
+	}
+	if requests[1]["method"] != http.MethodGet || !strings.HasPrefix(requests[1]["path"].(string), "/search/issues?") {
+		t.Fatalf("search request = %#v, want REST issue search", requests[1])
+	}
+	if !strings.Contains(requests[1]["path"].(string), "251") {
+		t.Fatalf("search path = %q, want child issue number", requests[1]["path"])
+	}
+}
+
+func TestConnectorFetchIssueParentsReturnsCrossRepoBodyReferencedEpic(t *testing.T) {
+	t.Parallel()
+
+	body := "Depends on: digitaldrywood/agent-runtime#251"
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/agent-runtime"},"parent":null,"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":1,"items":[{"number":258,"html_url":"https://github.com/digitaldrywood/detent/issues/258"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/258",
+			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}`,
+		},
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueParents() len = %d, want 1", len(got))
+	}
+	if got[0].ID != "I_epic" || got[0].Identifier != "digitaldrywood/detent#258" || got[0].Description != body {
+		t.Fatalf("cross-repo body parent = %#v", got[0])
+	}
+
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want parent lookup, search, REST issue, project item", len(requests))
+	}
+	searchPath := requests[1]["path"].(string)
+	if !strings.Contains(searchPath, "user%3Adigitaldrywood") || strings.Contains(searchPath, "repo%3A") {
+		t.Fatalf("search path = %q, want owner-scoped search", searchPath)
+	}
+	if requests[2]["path"] != "/repos/digitaldrywood/detent/issues/258" {
+		t.Fatalf("REST issue path = %#v, want cross-repo epic issue", requests[2])
+	}
+}
+
+func TestConnectorFetchIssueParentsPaginatesBodyReferencedEpicSearch(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/detent"},"parent":null,"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":101,"items":[{"number":251}]}`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":101,"items":[{"number":258}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/258",
+			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"Depends on: #251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[]}`,
+		},
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "I_epic" {
+		t.Fatalf("FetchIssueParents() = %#v, want body referenced epic", got)
+	}
+
+	requests := server.requests()
+	if len(requests) != 5 {
+		t.Fatalf("request count = %d, want parent lookup, 2 search pages, REST issue, project item", len(requests))
+	}
+	firstSearch := requests[1]["path"].(string)
+	secondSearch := requests[2]["path"].(string)
+	if !strings.Contains(firstSearch, "page=1") || !strings.Contains(secondSearch, "page=2") {
+		t.Fatalf("search paths = %q, %q; want page 1 then page 2", firstSearch, secondSearch)
+	}
+}
+
+func TestConnectorFetchIssueParentsLeavesPagedLinkedChildStateUnresolved(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"node":{"parent":{"__typename":"Issue","id":"I_parent","number":258,"title":"Epic: Parent","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/258","repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]},"subIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"I_child","number":251,"title":"Child","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/251","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":true,"endCursor":"project-cursor-1"},"nodes":[{"id":"PVTI_other","project":{"id":"PVT_other"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}]},"trackedIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}},"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueParents() len = %d, want 1", len(got))
+	}
+	want := connector.BlockedRef{ID: "I_child", Identifier: "digitaldrywood/detent#251"}
+	if got[0].ChildIssues[0] != want {
+		t.Fatalf("parent child issue = %#v, want %#v", got[0].ChildIssues[0], want)
+	}
+}
+
+func TestConnectorFetchIssueParentsSkipsParentsOutsideProject(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		body: `{"data":{"node":{"parent":{"__typename":"Issue","id":"I_outside_parent","number":260,"title":"Outside epic","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/260","repository":{"nameWithOwner":"digitaldrywood/detent"},"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_other","project":{"id":"PVT_other"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}},"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+	}})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("FetchIssueParents() = %#v, want no out-of-project parents", got)
+	}
+}
+
 func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	t.Parallel()
 

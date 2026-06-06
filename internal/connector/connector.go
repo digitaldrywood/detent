@@ -38,6 +38,10 @@ type IssueReferenceResolver interface {
 	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
 }
 
+type IssueParentResolver interface {
+	FetchIssueParents(context.Context, string) ([]Issue, error)
+}
+
 type IssueChildrenResolver interface {
 	FetchIssueChildren(context.Context, string) ([]BlockedRef, error)
 }
