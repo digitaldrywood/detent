@@ -192,6 +192,9 @@ query DetentGitHubIssueParents(
 ) {
   node(id: $issueId) {
     ... on Issue {
+      id
+      number
+      repository { nameWithOwner }
       parent {
         ...DetentGitHubIssueParent
       }
@@ -438,6 +441,7 @@ var (
 	modelOverridePattern  = regexp.MustCompile(`(?i)<!--\s*model:\s*(\S+?)\s*-->`)
 	dependencyLinePattern = regexp.MustCompile("(?i)^\\s*(?:>\\s*)?(?:[-*+]\\s+)?(?:[*_`~]+)?\\s*(?:blocked\\s+by|depends[\\s-]+on)(?:[*_`~]+)?\\s*:\\s*(?:[*_`~]+)?\\s*(.+)\\s*$")
 	issueRefPattern       = regexp.MustCompile(`(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(\d+)`)
+	issueURLPattern       = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)`)
 	numberedListPattern   = regexp.MustCompile(`^\d+[.)]\s+`)
 	branchKeyPattern      = regexp.MustCompile(`[^A-Za-z0-9._-]`)
 )
@@ -493,6 +497,9 @@ type issueNodesConnection struct {
 }
 
 type issueParentsNode struct {
+	ID              string               `json:"id"`
+	Number          int                  `json:"number"`
+	Repository      repository           `json:"repository"`
 	Parent          *githubIssueNode     `json:"parent"`
 	TrackedInIssues issueNodesConnection `json:"trackedInIssues"`
 }
@@ -575,6 +582,10 @@ type restIssue struct {
 	User      *actor         `json:"user"`
 	Assignees []restAssignee `json:"assignees"`
 	Labels    []label        `json:"labels"`
+}
+
+type restIssueSearchResponse struct {
+	Items []restIssue `json:"items"`
 }
 
 type restAssignee struct {
@@ -754,6 +765,8 @@ func (c *Connector) FetchIssueParents(ctx context.Context, issueID string) ([]co
 	var after *string
 	parents := []connector.Issue{}
 	seen := map[string]struct{}{}
+	var childRef issueRef
+	var childRefOK bool
 	for {
 		var response struct {
 			Node *issueParentsNode `json:"node"`
@@ -772,6 +785,16 @@ func (c *Connector) FetchIssueParents(ctx context.Context, issueID string) ([]co
 		if response.Node == nil {
 			return nil, ErrInvalidResponse
 		}
+		if !childRefOK {
+			childRef, childRefOK = issueRefFromNode(githubIssueNode{
+				ID:         response.Node.ID,
+				Number:     response.Node.Number,
+				Repository: response.Node.Repository,
+			})
+			if childRefOK {
+				c.projectCache.SetIssueRef(issueID, childRef)
+			}
+		}
 
 		if response.Node.Parent != nil {
 			var err error
@@ -788,6 +811,13 @@ func (c *Connector) FetchIssueParents(ctx context.Context, issueID string) ([]co
 			}
 		}
 		if !response.Node.TrackedInIssues.PageInfo.HasNextPage {
+			if childRefOK {
+				var err error
+				parents, err = c.appendBodyReferencedIssueParents(ctx, parents, seen, childRef)
+				if err != nil {
+					return nil, err
+				}
+			}
 			return parents, nil
 		}
 		cursor := strings.TrimSpace(response.Node.TrackedInIssues.PageInfo.EndCursor)
@@ -796,6 +826,47 @@ func (c *Connector) FetchIssueParents(ctx context.Context, issueID string) ([]co
 		}
 		after = &cursor
 	}
+}
+
+func (c *Connector) appendBodyReferencedIssueParents(
+	ctx context.Context,
+	parents []connector.Issue,
+	seen map[string]struct{},
+	childRef issueRef,
+) ([]connector.Issue, error) {
+	var response restIssueSearchResponse
+	if err := c.client.REST(ctx, http.MethodGet, restIssueSearchPath(childRef), nil, &response); err != nil {
+		return nil, fmt.Errorf("search github body referenced issue parents: %w", err)
+	}
+
+	childRepo := childRef.Owner + "/" + childRef.Name
+	childIdentifier := buildIdentifier(childRepo, childRef.Number)
+	for _, item := range response.Items {
+		if item.Number <= 0 || item.Number == childRef.Number {
+			continue
+		}
+		ref := issueRef{Owner: childRef.Owner, Name: childRef.Name, Number: item.Number}
+		issue, ok, err := c.fetchProjectIssueByRef(ctx, ref)
+		if err != nil {
+			return nil, err
+		}
+		if !ok || !githubEpicIssue(issue) {
+			continue
+		}
+		if !bodyReferencesIssue(issue.Description, issueRepo(issue.Identifier), childIdentifier) {
+			continue
+		}
+		key := connectorIssueKey(issue)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		parents = append(parents, issue)
+	}
+	return parents, nil
 }
 
 func (c *Connector) appendIssueParent(
@@ -1008,6 +1079,26 @@ func (c *Connector) fetchIssueByRef(ctx context.Context, ref issueRef) (connecto
 		return c.buildIssue(issue, stateName, priorityName, statusUpdatedAt, fields), true, nil
 	}
 	return c.buildIssue(issue, c.githubIssueStateToDetentState(issue.State), "", nil, nil), true, nil
+}
+
+func (c *Connector) fetchProjectIssueByRef(ctx context.Context, ref issueRef) (connector.Issue, bool, error) {
+	issue, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return connector.Issue{}, false, err
+	}
+	if strings.TrimSpace(issue.ID) == "" {
+		return connector.Issue{}, false, nil
+	}
+	c.cacheIssueRef(issue)
+
+	stateName, priorityName, statusUpdatedAt, fields, ok, err := c.fetchProjectFieldsPage(ctx, issue.ID, nil)
+	if err != nil {
+		return connector.Issue{}, false, err
+	}
+	if !ok {
+		return connector.Issue{}, false, nil
+	}
+	return c.buildIssue(issue, stateName, priorityName, statusUpdatedAt, fields), true, nil
 }
 
 func (c *Connector) fetchRESTIssue(ctx context.Context, ref issueRef) (githubIssueNode, error) {
@@ -2248,6 +2339,13 @@ func restIssuePath(ref issueRef) string {
 	return "/repos/" + url.PathEscape(ref.Owner) + "/" + url.PathEscape(ref.Name) + "/issues/" + strconv.Itoa(ref.Number)
 }
 
+func restIssueSearchPath(ref issueRef) string {
+	values := url.Values{}
+	values.Set("q", "repo:"+ref.Owner+"/"+ref.Name+" is:issue is:open "+strconv.Itoa(ref.Number))
+	values.Set("per_page", "30")
+	return "/search/issues?" + values.Encode()
+}
+
 func restIssueCommentsPath(ref issueRef) string {
 	return restIssuePath(ref) + "/comments"
 }
@@ -2811,6 +2909,65 @@ func parseBlockedBy(body string, repo string) []connector.BlockedRef {
 		}
 	}
 	return blockers
+}
+
+func bodyReferencesIssue(body string, repo string, identifier string) bool {
+	want := normalizedIssueIdentifier(identifier)
+	if want == "" {
+		return false
+	}
+	for _, candidate := range issueReferencesInText(body, repo) {
+		if normalizedIssueIdentifier(candidate) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func issueReferencesInText(text string, repo string) []string {
+	refs := []string{}
+	seen := map[string]struct{}{}
+	add := func(refRepo string, number string) {
+		identifier := blockerIdentifier(refRepo, number, repo)
+		if identifier == "" {
+			return
+		}
+		key := normalizedIssueIdentifier(identifier)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, identifier)
+	}
+	for _, matches := range issueURLPattern.FindAllStringSubmatch(text, -1) {
+		if len(matches) == 3 {
+			add(matches[1], matches[2])
+		}
+	}
+	for _, matches := range issueRefPattern.FindAllStringSubmatch(text, -1) {
+		if len(matches) == 3 {
+			add(matches[1], matches[2])
+		}
+	}
+	return refs
+}
+
+func githubEpicIssue(issue connector.Issue) bool {
+	for _, label := range issue.Labels {
+		if strings.EqualFold(strings.TrimSpace(label), "epic") {
+			return true
+		}
+	}
+	return strings.HasPrefix(strings.ToLower(strings.TrimSpace(issue.Title)), "epic:")
+}
+
+func issueRepo(identifier string) string {
+	identifier = strings.TrimSpace(identifier)
+	index := strings.LastIndex(identifier, "#")
+	if index <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(identifier[:index])
 }
 
 func blockerIdentifier(refRepo string, number string, repo string) string {

@@ -970,6 +970,56 @@ func TestConnectorFetchIssueParentsReturnsParentAndTrackedInIssues(t *testing.T)
 	}
 }
 
+func TestConnectorFetchIssueParentsReturnsBodyReferencedEpic(t *testing.T) {
+	t.Parallel()
+
+	body := "- [ ] #251"
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/detent"},"parent":null,"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"items":[{"number":258}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/258",
+			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"` + body + `","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[{"name":"epic"}]}`,
+		},
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueParents() len = %d, want 1", len(got))
+	}
+	if got[0].ID != "I_epic" || got[0].Identifier != "digitaldrywood/detent#258" || got[0].State != "Todo" {
+		t.Fatalf("body parent = %#v", got[0])
+	}
+	if got[0].Description != body {
+		t.Fatalf("body parent description = %q, want %q", got[0].Description, body)
+	}
+
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want parent lookup, search, REST issue, project item", len(requests))
+	}
+	if requests[1]["method"] != http.MethodGet || !strings.HasPrefix(requests[1]["path"].(string), "/search/issues?") {
+		t.Fatalf("search request = %#v, want REST issue search", requests[1])
+	}
+	if !strings.Contains(requests[1]["path"].(string), "251") {
+		t.Fatalf("search path = %q, want child issue number", requests[1]["path"])
+	}
+}
+
 func TestConnectorFetchIssueParentsLeavesPagedLinkedChildStateUnresolved(t *testing.T) {
 	t.Parallel()
 
