@@ -23,6 +23,7 @@ const (
 	linkedIssuePageSize                       = 20
 	linkedIssueProjectItemsPageSize           = 10
 	linkedIssueProjectItemFieldValuesPageSize = 20
+	bodyParentSearchPageSize                  = 100
 	pullRequestsPageSize                      = 100
 	pullRequestsPageLimit                     = 3
 	defaultProjectItemStatusState             = "Backlog"
@@ -585,7 +586,8 @@ type restIssue struct {
 }
 
 type restIssueSearchResponse struct {
-	Items []restIssue `json:"items"`
+	TotalCount int         `json:"total_count"`
+	Items      []restIssue `json:"items"`
 }
 
 type restAssignee struct {
@@ -834,39 +836,42 @@ func (c *Connector) appendBodyReferencedIssueParents(
 	seen map[string]struct{},
 	childRef issueRef,
 ) ([]connector.Issue, error) {
-	var response restIssueSearchResponse
-	if err := c.client.REST(ctx, http.MethodGet, restIssueSearchPath(childRef), nil, &response); err != nil {
-		return nil, fmt.Errorf("search github body referenced issue parents: %w", err)
-	}
-
 	childRepo := childRef.Owner + "/" + childRef.Name
 	childIdentifier := buildIdentifier(childRepo, childRef.Number)
-	for _, item := range response.Items {
-		if item.Number <= 0 || item.Number == childRef.Number {
-			continue
+	for page := 1; ; page++ {
+		var response restIssueSearchResponse
+		if err := c.client.REST(ctx, http.MethodGet, restIssueSearchPath(childRef, page), nil, &response); err != nil {
+			return nil, fmt.Errorf("search github body referenced issue parents: %w", err)
 		}
-		ref := issueRef{Owner: childRef.Owner, Name: childRef.Name, Number: item.Number}
-		issue, ok, err := c.fetchProjectIssueByRef(ctx, ref)
-		if err != nil {
-			return nil, err
+		for _, item := range response.Items {
+			if item.Number <= 0 || item.Number == childRef.Number {
+				continue
+			}
+			ref := issueRef{Owner: childRef.Owner, Name: childRef.Name, Number: item.Number}
+			issue, ok, err := c.fetchProjectIssueByRef(ctx, ref)
+			if err != nil {
+				return nil, err
+			}
+			if !ok || !githubEpicIssue(issue) {
+				continue
+			}
+			if !bodyReferencesIssue(issue.Description, issueRepo(issue.Identifier), childIdentifier) {
+				continue
+			}
+			key := connectorIssueKey(issue)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			parents = append(parents, issue)
 		}
-		if !ok || !githubEpicIssue(issue) {
-			continue
+		if len(response.Items) == 0 || page*bodyParentSearchPageSize >= response.TotalCount {
+			return parents, nil
 		}
-		if !bodyReferencesIssue(issue.Description, issueRepo(issue.Identifier), childIdentifier) {
-			continue
-		}
-		key := connectorIssueKey(issue)
-		if key == "" {
-			continue
-		}
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		parents = append(parents, issue)
 	}
-	return parents, nil
 }
 
 func (c *Connector) appendIssueParent(
@@ -2339,10 +2344,11 @@ func restIssuePath(ref issueRef) string {
 	return "/repos/" + url.PathEscape(ref.Owner) + "/" + url.PathEscape(ref.Name) + "/issues/" + strconv.Itoa(ref.Number)
 }
 
-func restIssueSearchPath(ref issueRef) string {
+func restIssueSearchPath(ref issueRef, page int) string {
 	values := url.Values{}
 	values.Set("q", "repo:"+ref.Owner+"/"+ref.Name+" is:issue is:open "+strconv.Itoa(ref.Number))
-	values.Set("per_page", "30")
+	values.Set("per_page", strconv.Itoa(bodyParentSearchPageSize))
+	values.Set("page", strconv.Itoa(page))
 	return "/search/issues?" + values.Encode()
 }
 

@@ -1020,6 +1020,52 @@ func TestConnectorFetchIssueParentsReturnsBodyReferencedEpic(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssueParentsPaginatesBodyReferencedEpicSearch(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"id":"I_child","number":251,"repository":{"nameWithOwner":"digitaldrywood/detent"},"parent":null,"trackedInIssues":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":101,"items":[{"number":251}]}`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":101,"items":[{"number":258}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/258",
+			body:   `{"node_id":"I_epic","number":258,"title":"Epic: Parent","body":"Depends on: #251","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/258","assignees":[],"labels":[]}`,
+		},
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_parent","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssueParents(context.Background(), "I_child")
+	if err != nil {
+		t.Fatalf("FetchIssueParents() error = %v", err)
+	}
+	if len(got) != 1 || got[0].ID != "I_epic" {
+		t.Fatalf("FetchIssueParents() = %#v, want body referenced epic", got)
+	}
+
+	requests := server.requests()
+	if len(requests) != 5 {
+		t.Fatalf("request count = %d, want parent lookup, 2 search pages, REST issue, project item", len(requests))
+	}
+	firstSearch := requests[1]["path"].(string)
+	secondSearch := requests[2]["path"].(string)
+	if !strings.Contains(firstSearch, "page=1") || !strings.Contains(secondSearch, "page=2") {
+		t.Fatalf("search paths = %q, %q; want page 1 then page 2", firstSearch, secondSearch)
+	}
+}
+
 func TestConnectorFetchIssueParentsLeavesPagedLinkedChildStateUnresolved(t *testing.T) {
 	t.Parallel()
 
