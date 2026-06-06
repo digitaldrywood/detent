@@ -516,7 +516,8 @@ func TestServiceGoInstallFromReleaseUsesReleaseAsset(t *testing.T) {
 			}},
 			downloads: downloads,
 		},
-		Env: map[string]string{"GOBIN": goBin},
+		Env:     map[string]string{"GOBIN": goBin},
+		HomeDir: tmp,
 		BinaryVerifier: func(_ context.Context, path string) (string, error) {
 			verifiedPath = path
 			return "version: v1.2.4\n", nil
@@ -551,6 +552,30 @@ func TestServiceGoInstallFromReleaseUsesReleaseAsset(t *testing.T) {
 	}
 	if !strings.Contains(status.Message, "Restart Detent") {
 		t.Fatalf("Message = %q, want restart note", status.Message)
+	}
+
+	lockPath := filepath.Join(tmp, ".detent", "install.lock")
+	lockRaw, err := os.ReadFile(lockPath)
+	if err != nil {
+		t.Fatalf("ReadFile(lock) error = %v", err)
+	}
+	lockText := string(lockRaw)
+	if !strings.Contains(lockText, "binary="+binary+"\n") {
+		t.Fatalf("install lock = %q, want binary path", lockText)
+	}
+	if !strings.Contains(lockText, "installed_at=") {
+		t.Fatalf("install lock = %q, want installed_at", lockText)
+	}
+
+	detected := DetectInstallSource(DetectionOptions{
+		CurrentVersion: "1.2.4",
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		HomeDir:        tmp,
+		Env:            map[string]string{"GOBIN": goBin},
+	})
+	if detected.Source != InstallSourceRelease {
+		t.Fatalf("Source after release swap = %q, want %q", detected.Source, InstallSourceRelease)
 	}
 }
 
@@ -618,6 +643,39 @@ func TestReplaceBinaryRollsBackWhenVerificationFails(t *testing.T) {
 	})
 	if err == nil {
 		t.Fatal("ReplaceBinary() error = nil, want verification failure")
+	}
+	raw, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("ReadFile(target) error = %v", err)
+	}
+	if string(raw) != "old" {
+		t.Fatalf("target = %q, want rollback to old", raw)
+	}
+}
+
+func TestReplaceBinaryRollsBackWhenAfterReplaceFails(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "detent")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+
+	err := ReplaceBinary(Replacement{
+		Target: target,
+		Binary: []byte("new"),
+		Mode:   0o755,
+		GOOS:   "linux",
+		Verify: func(context.Context, string) (string, error) {
+			return "version: v1.2.4\n", nil
+		},
+		AfterReplace: func(context.Context, string) error {
+			return errors.New("metadata failed")
+		},
+	})
+	if err == nil {
+		t.Fatal("ReplaceBinary() error = nil, want metadata failure")
 	}
 	raw, err := os.ReadFile(target)
 	if err != nil {

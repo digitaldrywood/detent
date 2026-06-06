@@ -18,6 +18,7 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 )
 
@@ -270,6 +271,7 @@ type Replacement struct {
 	StartProcess ProcessStarter
 	Verify       BinaryVerifier
 	Sign         BinarySigner
+	AfterReplace func(context.Context, string) error
 }
 
 type Status struct {
@@ -469,7 +471,7 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		status.Message = err.Error()
 		return status, err
 	}
-	if err := ReplaceBinary(Replacement{
+	replacement := Replacement{
 		Target:  s.cfg.ExecutablePath,
 		Binary:  binary,
 		Mode:    mode,
@@ -477,7 +479,16 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		Context: ctx,
 		Verify:  s.cfg.BinaryVerifier,
 		Sign:    s.cfg.BinarySigner,
-	}); err != nil {
+	}
+	if releaseSwap {
+		replacement.AfterReplace = func(_ context.Context, target string) error {
+			return writeReleaseInstallLock(s.cfg.GOOS, DetectionOptions{
+				HomeDir: s.cfg.HomeDir,
+				Env:     s.cfg.Env,
+			}, target)
+		}
+	}
+	if err := ReplaceBinary(replacement); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
@@ -766,6 +777,11 @@ func finalizeReplacement(replacement Replacement) error {
 			return err
 		}
 	}
+	if replacement.AfterReplace != nil {
+		if err := replacement.AfterReplace(ctx, replacement.Target); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -818,6 +834,15 @@ func stageWindowsReplacement(replacement Replacement) error {
 	}
 	if err := starter("cmd.exe", []string{"/D", "/C", "start", "", "/B", "cmd.exe", "/D", "/C", script}); err != nil {
 		return fmt.Errorf("start windows updater: %w", err)
+	}
+	if replacement.AfterReplace != nil {
+		ctx := replacement.Context
+		if ctx == nil {
+			ctx = context.Background()
+		}
+		if err := replacement.AfterReplace(ctx, replacement.Target); err != nil {
+			return err
+		}
 	}
 
 	cleanupSource = false
@@ -1348,6 +1373,80 @@ func readInstallLockBinary(path string) (string, bool) {
 		}
 	}
 	return "", false
+}
+
+func writeReleaseInstallLock(goos string, opts DetectionOptions, binary string) error {
+	lockPath, ok := installLockPath(goos, opts)
+	if !ok {
+		return errors.New("resolve release install lock path: home directory is unavailable")
+	}
+	return writeInstallLock(lockPath, binary, time.Now().UTC())
+}
+
+func installLockPath(goos string, opts DetectionOptions) (string, bool) {
+	if lockPath := envValue(opts.Env, "DETENT_INSTALL_LOCK"); lockPath != "" {
+		return lockPath, true
+	}
+	if stateDir := envValue(opts.Env, "DETENT_STATE_DIR"); stateDir != "" {
+		return filepath.Join(stateDir, "install.lock"), true
+	}
+	if goos == "windows" {
+		if localAppData := envValue(opts.Env, "LOCALAPPDATA"); localAppData != "" {
+			return filepath.Join(localAppData, "detent", "install.lock"), true
+		}
+	}
+	if home := homeDir(opts.HomeDir, opts.Env); home != "" {
+		return filepath.Join(home, ".detent", "install.lock"), true
+	}
+	return "", false
+}
+
+func writeInstallLock(path string, binary string, installedAt time.Time) error {
+	if strings.TrimSpace(path) == "" {
+		return errors.New("install lock path is required")
+	}
+	if strings.TrimSpace(binary) == "" {
+		return errors.New("install lock binary path is required")
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return fmt.Errorf("create install lock dir: %w", err)
+	}
+	base := filepath.Base(path)
+	temp, err := os.CreateTemp(dir, "."+base+".tmp-*")
+	if err != nil {
+		return fmt.Errorf("create install lock temp file: %w", err)
+	}
+	tempPath := temp.Name()
+	cleanup := true
+	defer func() {
+		if cleanup {
+			removeFile(tempPath)
+		}
+	}()
+	raw := fmt.Sprintf("binary=%s\ninstalled_at=%s\n", binary, installedAt.UTC().Format(time.RFC3339))
+	if _, err := temp.WriteString(raw); err != nil {
+		closeErr := temp.Close()
+		if closeErr != nil {
+			return fmt.Errorf("write install lock: %w; close install lock: %w", err, closeErr)
+		}
+		return fmt.Errorf("write install lock: %w", err)
+	}
+	if err := temp.Chmod(0o600); err != nil {
+		closeErr := temp.Close()
+		if closeErr != nil {
+			return fmt.Errorf("chmod install lock: %w; close install lock: %w", err, closeErr)
+		}
+		return fmt.Errorf("chmod install lock: %w", err)
+	}
+	if err := temp.Close(); err != nil {
+		return fmt.Errorf("close install lock: %w", err)
+	}
+	if err := os.Rename(tempPath, path); err != nil {
+		return fmt.Errorf("replace install lock: %w", err)
+	}
+	cleanup = false
+	return nil
 }
 
 func windowsInstallerPathMatches(executable string, goos string, opts DetectionOptions) bool {
