@@ -51,7 +51,7 @@ type doctorReport struct {
 type doctorConfig struct {
 	ConfigPath string
 	Host       string
-	Port       int
+	Flags      runtimeFlags
 }
 
 type doctorStore interface {
@@ -64,16 +64,17 @@ type doctorDeps struct {
 	lookPath     func(string) (string, error)
 	runCommand   func(context.Context, string, ...string) error
 	githubScopes func(context.Context, string) ([]string, error)
+	ghAuthToken  func(context.Context) (string, error)
 	listen       func(string, string) (net.Listener, error)
 	openSQLite   func(context.Context, string) (doctorStore, error)
 	gitWorkTree  func(context.Context, string) error
 }
 
-func newDoctorCommand(configPath *string, host *string, port *int, opts options) *cobra.Command {
-	return newDoctorCommandWithDeps(configPath, host, port, opts, doctorDeps{})
+func newDoctorCommand(configPath *string, env *string, logLevel *string, host *string, port *int, opts options) *cobra.Command {
+	return newDoctorCommandWithDeps(configPath, env, logLevel, host, port, opts, doctorDeps{})
 }
 
-func newDoctorCommandWithDeps(configPath *string, host *string, port *int, opts options, deps doctorDeps) *cobra.Command {
+func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string, host *string, port *int, opts options, deps doctorDeps) *cobra.Command {
 	return &cobra.Command{
 		Use:   "doctor",
 		Short: "Run preflight health checks",
@@ -82,7 +83,11 @@ func newDoctorCommandWithDeps(configPath *string, host *string, port *int, opts 
 			report := runDoctor(cmd.Context(), doctorConfig{
 				ConfigPath: derefString(configPath),
 				Host:       derefString(host),
-				Port:       derefInt(port, -1),
+				Flags: runtimeFlags{
+					Env:      runtimeStringFlag{Value: derefString(env), Set: flagChanged(cmd, "env")},
+					LogLevel: runtimeStringFlag{Value: derefString(logLevel), Set: flagChanged(cmd, "log-level")},
+					Port:     runtimeIntFlag{Value: derefInt(port, -1), Set: flagChanged(cmd, "port")},
+				},
 			}, opts, deps)
 			if err := writeDoctorReport(cmd.OutOrStdout(), report); err != nil {
 				return err
@@ -106,15 +111,44 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	resolution, global, configCheck := checkDoctorConfig(cfg.ConfigPath, opts)
 	report.Add(configCheck)
 
+	workflowPath := ""
+	if global != nil {
+		workflowPath = firstGlobalWorkflowPath(*global)
+	}
+	runtime, runtimeErr := resolveRuntimeSettings(ctx, runtimeInput{
+		Config:     global,
+		ConfigPath: resolution,
+		Workflow:   workflowPath,
+		Flags:      cfg.Flags,
+	}, runtimeDeps{
+		lookupEnv:    deps.lookupEnv,
+		ghAuthToken:  deps.ghAuthToken,
+		loadWorkflow: deps.loadWorkflow,
+	})
+	if runtimeErr != nil {
+		report.Add(doctorCheck{
+			Name:   "Runtime settings",
+			Status: doctorFail,
+			Detail: runtimeErr.Error(),
+			Hint:   "Fix runtime flags, environment variables, or global.yaml.",
+		})
+	} else {
+		report.Add(checkDoctorRuntimeSettings(runtime))
+	}
+
 	boot := BootConfig{
 		Host: strings.TrimSpace(cfg.Host),
-		Port: bootPort(cfg.Port),
+		Port: bootPort(cfg.Flags.Port.Value),
+	}
+	if runtimeErr == nil {
+		port := runtime.Port.Value
+		boot.Port = &port
 	}
 	if global != nil {
 		boot.Global = *global
-		boot.Host, boot.Port = bootServer(cfg.Host, cfg.Port, firstGlobalWorkflowPath(*global))
+		boot.Host = bootHost(cfg.Host, firstGlobalWorkflowPath(*global))
 		report.Add(checkDoctorInstanceIdentity(*global))
-		report.Checks = append(report.Checks, checkDoctorProjects(ctx, *global, deps)...)
+		report.Checks = append(report.Checks, checkDoctorProjects(ctx, *global, deps, runtime.GitHubToken.Value)...)
 	} else {
 		report.Add(doctorCheck{
 			Name:   "Project workflows",
@@ -126,7 +160,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 
 	report.Add(checkDoctorSQLite(ctx, resolution, deps))
 	report.Add(checkDoctorCodex(ctx, deps))
-	report.Add(checkDoctorGitHub(ctx, global, deps))
+	report.Add(checkDoctorGitHub(ctx, global, runtime.GitHubToken, deps))
 	report.Add(checkDoctorServerPort(boot, deps))
 	report.Add(checkDoctorGit(ctx, deps))
 
@@ -226,7 +260,24 @@ func checkDoctorConfig(configPath string, opts options) (globalconfig.PathResolu
 	}
 }
 
-func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doctorDeps) []doctorCheck {
+func checkDoctorRuntimeSettings(settings RuntimeSettings) doctorCheck {
+	check := doctorCheck{
+		Name:   "Runtime settings",
+		Status: doctorOK,
+		Detail: runtimeSettingsDetail(settings),
+	}
+	if len(settings.Warnings) == 0 {
+		return check
+	}
+
+	check.Status = doctorWarn
+	warning := settings.Warnings[0]
+	check.Detail = check.Detail + "; " + warning.Detail
+	check.Hint = warning.Hint
+	return check
+}
+
+func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, githubToken string) []doctorCheck {
 	if len(cfg.Projects) == 0 {
 		return []doctorCheck{
 			{
@@ -260,6 +311,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 			})
 			continue
 		}
+		workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, githubToken)
 		if err := workflow.Config.Validate(); err != nil {
 			checks = append(checks, doctorCheck{
 				Name:   "Project " + id + " workflow",
@@ -319,6 +371,14 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 	}
 
 	return checks
+}
+
+func doctorWorkflowConfigWithRuntimeGitHubToken(cfg workflowconfig.Config, token string) workflowconfig.Config {
+	token = strings.TrimSpace(token)
+	if token != "" && cfg.Tracker.Kind == workflowconfig.TrackerGitHub {
+		cfg.Tracker.APIKey = token
+	}
+	return cfg
 }
 
 func checkDoctorInstanceIdentity(cfg globalconfig.Config) doctorCheck {
@@ -481,8 +541,8 @@ func checkDoctorBinary(ctx context.Context, deps doctorDeps, binary string, name
 	}
 }
 
-func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps) doctorCheck {
-	token, source, hasGitHubProject := doctorGitHubToken(cfg, deps)
+func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token RuntimeSecret, deps doctorDeps) doctorCheck {
+	hasGitHubProject := doctorHasGitHubProject(cfg, deps)
 	if cfg != nil && !hasGitHubProject {
 		return doctorCheck{
 			Name:   "GitHub token",
@@ -491,16 +551,17 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps docto
 			Hint:   "Add a GitHub project before relying on GitHub token preflight checks.",
 		}
 	}
-	if token == "" {
+	if token.Value == "" {
 		return doctorCheck{
 			Name:   "GitHub token",
 			Status: doctorFail,
-			Detail: "GITHUB_TOKEN is not set and no usable tracker.api_key was found",
-			Hint:   `Run gh auth login --scopes "repo,read:org,project" and export GITHUB_TOKEN="$(gh auth token)".`,
+			Detail: "GITHUB_TOKEN is not set, github_token is not configured, and no usable tracker.api_key was found",
+			Hint:   githubAuthHint,
 		}
 	}
 
-	scopes, err := deps.githubScopes(ctx, token)
+	source := doctorGitHubTokenSource(token)
+	scopes, err := deps.githubScopes(ctx, token.Value)
 	if err != nil {
 		return doctorCheck{
 			Name:   "GitHub token",
@@ -515,7 +576,7 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps docto
 			Name:   "GitHub token",
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s missing scope(s): %s", source, strings.Join(missing, ", ")),
-			Hint:   `Run gh auth login --scopes "repo,read:org,project" and export GITHUB_TOKEN="$(gh auth token)".`,
+			Hint:   githubAuthHint,
 		}
 	}
 
@@ -526,43 +587,27 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, deps docto
 	}
 }
 
-func doctorGitHubToken(cfg *globalconfig.Config, deps doctorDeps) (string, string, bool) {
-	hasGitHubProject := false
+func doctorHasGitHubProject(cfg *globalconfig.Config, deps doctorDeps) bool {
 	if cfg != nil {
 		for _, project := range cfg.Projects {
 			workflow, err := deps.loadWorkflow(project.Workflow)
 			if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 				continue
 			}
-			hasGitHubProject = true
-			if token, source := resolveDoctorSecret(workflow.Config.Tracker.APIKey, deps.lookupEnv); token != "" {
-				if source == "" {
-					source = "tracker.api_key"
-				}
-				return token, source, true
-			}
+			return true
 		}
 	}
-	if cfg == nil || hasGitHubProject {
-		if token := strings.TrimSpace(deps.lookupEnv("GITHUB_TOKEN")); token != "" {
-			return token, "GITHUB_TOKEN", hasGitHubProject
-		}
-	}
-	return "", "", hasGitHubProject
+	return false
 }
 
-func resolveDoctorSecret(value string, lookupEnv func(string) string) (string, string) {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return "", ""
+func doctorGitHubTokenSource(token RuntimeSecret) string {
+	if token.ResolvedVia == "gh" {
+		return "github_token resolved via gh"
 	}
-	if strings.HasPrefix(value, "$") {
-		name := strings.TrimPrefix(value, "$")
-		if validEnvName(name) {
-			return strings.TrimSpace(lookupEnv(name)), name
-		}
+	if source := strings.TrimSpace(token.Source); source != "" {
+		return source
 	}
-	return value, "tracker.api_key"
+	return "github_token"
 }
 
 func validEnvName(name string) bool {
@@ -661,6 +706,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.githubScopes == nil {
 		d.githubScopes = defaults.githubScopes
 	}
+	if d.ghAuthToken == nil {
+		d.ghAuthToken = defaults.ghAuthToken
+	}
 	if d.listen == nil {
 		d.listen = defaults.listen
 	}
@@ -680,6 +728,7 @@ func defaultDoctorDeps() doctorDeps {
 		lookPath:     exec.LookPath,
 		runCommand:   runDoctorCommand,
 		githubScopes: defaultGitHubScopes,
+		ghAuthToken:  defaultGHAuthToken,
 		listen:       net.Listen,
 		openSQLite:   openDoctorSQLite,
 		gitWorkTree:  defaultGitWorkTree,

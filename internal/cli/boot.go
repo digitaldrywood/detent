@@ -38,11 +38,7 @@ const (
 	projectURL          = "https://github.com/digitaldrywood/detent"
 )
 
-func resolveBootConfig(configPath string, host string, port int, opts options) (BootConfig, error) {
-	if port < -1 {
-		return BootConfig{}, errors.New("port must be greater than or equal to 0")
-	}
-
+func resolveBootConfig(ctx context.Context, configPath string, host string, flags runtimeFlags, opts options) (BootConfig, error) {
 	resolution, err := resolveConfigPathResolution(configPath, opts)
 	if err != nil {
 		return BootConfig{}, err
@@ -51,13 +47,24 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 
 	cfg, err := opts.read(path)
 	if err == nil {
-		host, port := bootServer(host, port, firstGlobalWorkflowPath(cfg))
+		workflowPath := firstGlobalWorkflowPath(cfg)
+		runtime, err := resolveRuntimeSettings(ctx, runtimeInput{
+			Config:     &cfg,
+			ConfigPath: resolution,
+			Workflow:   workflowPath,
+			Flags:      flags,
+		}, runtimeDepsFromOptions(opts))
+		if err != nil {
+			return BootConfig{}, err
+		}
+		resolvedPort := runtime.Port.Value
 		return BootConfig{
 			Mode:           BootModeRunning,
 			Global:         cfg,
 			ConfigPathRule: resolution.Rule,
-			Host:           host,
-			Port:           port,
+			Runtime:        runtime,
+			Host:           bootHost(host, workflowPath),
+			Port:           &resolvedPort,
 			Version:        opts.version,
 			Build:          opts.build,
 		}, nil
@@ -72,14 +79,24 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 		if err != nil {
 			return BootConfig{}, err
 		}
-		host, port := bootServer(host, port, workflowPath)
+		runtime, err := resolveRuntimeSettings(ctx, runtimeInput{
+			Config:     &cfg,
+			ConfigPath: resolution,
+			Workflow:   workflowPath,
+			Flags:      flags,
+		}, runtimeDepsFromOptions(opts))
+		if err != nil {
+			return BootConfig{}, err
+		}
+		resolvedPort := runtime.Port.Value
 		return BootConfig{
 			Mode:           BootModeRunning,
 			Global:         cfg,
 			ConfigPathRule: resolution.Rule,
+			Runtime:        runtime,
 			WorkflowPath:   workflowPath,
-			Host:           host,
-			Port:           port,
+			Host:           bootHost(host, workflowPath),
+			Port:           &resolvedPort,
 			Version:        opts.version,
 			Build:          opts.build,
 		}, nil
@@ -89,13 +106,24 @@ func resolveBootConfig(configPath string, host string, port int, opts options) (
 	if err != nil {
 		return BootConfig{}, err
 	}
+	runtime, err := resolveRuntimeSettings(ctx, runtimeInput{
+		Config:     &cfg,
+		ConfigPath: resolution,
+		Workflow:   workflowPath,
+		Flags:      flags,
+	}, runtimeDepsFromOptions(opts))
+	if err != nil {
+		return BootConfig{}, err
+	}
+	resolvedPort := runtime.Port.Value
 	return BootConfig{
 		Mode:           BootModeOnboarding,
 		Global:         cfg,
 		ConfigPathRule: resolution.Rule,
+		Runtime:        runtime,
 		WorkflowPath:   workflowPath,
 		Host:           strings.TrimSpace(host),
-		Port:           bootPort(port),
+		Port:           &resolvedPort,
 		Version:        opts.version,
 		Build:          opts.build,
 	}, nil
@@ -123,7 +151,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 
 	useDashboard := shouldLaunchTerminalDashboard(cfg)
 	if useDashboard {
-		restoreLogger, err := redirectDefaultLogger(runtimeLogPath(cfg))
+		restoreLogger, err := redirectDefaultLogger(runtimeLogPath(cfg), cfg.Runtime.LogLevel.Value)
 		if err != nil {
 			return err
 		}
@@ -157,8 +185,9 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 
 	events := hub.New[project.Event]()
 	projectFactory := withRunnerFactory(project.Dependencies{
-		Events: events,
-		Logger: logger,
+		Events:      events,
+		Logger:      logger,
+		GitHubToken: cfg.Runtime.GitHubToken.Value,
 	}, runtimeStore, nil)
 	manager, err := project.NewManager(project.ManagerConfigFromGlobal(cfg.Global), project.ManagerDependencies{
 		ProjectFactory: projectFactory,
@@ -339,7 +368,7 @@ func shouldLaunchTerminalDashboard(cfg BootConfig) bool {
 	return cfg.Mode == BootModeRunning && cfg.StdoutTTY && !cfg.Headless
 }
 
-func redirectDefaultLogger(path string) (func(), error) {
+func redirectDefaultLogger(path string, level string) (func(), error) {
 	if strings.TrimSpace(path) == "" {
 		return nil, errors.New("log path is required")
 	}
@@ -354,7 +383,7 @@ func redirectDefaultLogger(path string) (func(), error) {
 
 	previous := slog.Default()
 	slog.SetDefault(slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{
-		Level: logLevelFromEnv(),
+		Level: parseSlogLevel(level),
 	})))
 
 	return func() {
@@ -419,15 +448,6 @@ func runtimeStorePath(cfg BootConfig) string {
 
 func runtimeLogPath(cfg BootConfig) string {
 	return filepath.Join(filepath.Dir(runtimeStorePath(cfg)), "detent.log")
-}
-
-func logLevelFromEnv() slog.Level {
-	for _, key := range []string{"LOG_LEVEL", "DETENT_LOG_LEVEL"} {
-		if level, ok := os.LookupEnv(key); ok && strings.TrimSpace(level) != "" {
-			return parseSlogLevel(level)
-		}
-	}
-	return slog.LevelInfo
 }
 
 func parseSlogLevel(level string) slog.Level {
@@ -537,26 +557,21 @@ func firstGlobalWorkflowPath(cfg globalconfig.Config) string {
 	return cfg.Projects[0].Workflow
 }
 
-func bootServer(host string, port int, workflowPath string) (string, *int) {
+func bootHost(host string, workflowPath string) string {
 	resolvedHost := strings.TrimSpace(host)
-	resolvedPort := bootPort(port)
+	if resolvedHost != "" {
+		return resolvedHost
+	}
 
 	workflowPath = strings.TrimSpace(workflowPath)
-	if workflowPath == "" || (resolvedHost != "" && resolvedPort != nil) {
-		return resolvedHost, resolvedPort
+	if workflowPath == "" {
+		return ""
 	}
-
 	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
-	if err != nil || workflow.Config.Validate() != nil {
-		return resolvedHost, resolvedPort
+	if err != nil {
+		return ""
 	}
-	if resolvedHost == "" {
-		resolvedHost = strings.TrimSpace(workflow.Config.Server.Host)
-	}
-	if resolvedPort == nil {
-		resolvedPort = workflow.Config.Server.Port
-	}
-	return resolvedHost, resolvedPort
+	return strings.TrimSpace(workflow.Config.Server.Host)
 }
 
 func bootPort(port int) *int {

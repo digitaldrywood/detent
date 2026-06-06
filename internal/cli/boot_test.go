@@ -68,7 +68,7 @@ func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
 	})
 
 	path := filepath.Join(t.TempDir(), "runtime", "detent.log")
-	restore, err := redirectDefaultLogger(path)
+	restore, err := redirectDefaultLogger(path, "info")
 	if err != nil {
 		t.Fatalf("redirectDefaultLogger() error = %v", err)
 	}
@@ -88,24 +88,6 @@ func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
 	}
 	if slog.Default() != previous {
 		t.Fatal("default logger was not restored")
-	}
-}
-
-func TestLogLevelFromEnvUsesUnprefixedBeforeDeprecatedPrefixed(t *testing.T) {
-	t.Setenv("LOG_LEVEL", "debug")
-	t.Setenv("DETENT_LOG_LEVEL", "error")
-
-	if got := logLevelFromEnv(); got != slog.LevelDebug {
-		t.Fatalf("logLevelFromEnv() = %v, want %v", got, slog.LevelDebug)
-	}
-}
-
-func TestLogLevelFromEnvFallsBackToDeprecatedPrefixed(t *testing.T) {
-	t.Setenv("LOG_LEVEL", "")
-	t.Setenv("DETENT_LOG_LEVEL", "warn")
-
-	if got := logLevelFromEnv(); got != slog.LevelWarn {
-		t.Fatalf("logLevelFromEnv() = %v, want %v", got, slog.LevelWarn)
 	}
 }
 

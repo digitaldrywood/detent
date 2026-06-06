@@ -48,11 +48,15 @@ type PathResolution struct {
 }
 
 type Config struct {
-	Path       string    `yaml:"-"`
-	APIVersion string    `yaml:"apiVersion"`
-	Kind       string    `yaml:"kind"`
-	Global     Settings  `yaml:"global"`
-	Projects   []Project `yaml:"projects"`
+	Path        string    `yaml:"-"`
+	APIVersion  string    `yaml:"apiVersion"`
+	Kind        string    `yaml:"kind"`
+	Env         string    `yaml:"env,omitempty"`
+	LogLevel    string    `yaml:"log_level,omitempty"`
+	GitHubToken string    `yaml:"github_token,omitempty"`
+	Port        *int      `yaml:"port,omitempty"`
+	Global      Settings  `yaml:"global"`
+	Projects    []Project `yaml:"projects"`
 }
 
 type Settings struct {
@@ -288,6 +292,9 @@ func (c Config) Validate(opts ...Option) error {
 	} else if c.Kind != Kind {
 		problems = append(problems, "kind: must equal "+Kind)
 	}
+	if c.Port != nil && *c.Port < 0 {
+		problems = append(problems, "port: must be greater than or equal to 0")
+	}
 
 	if c.Global.MaxConcurrentAgents <= 0 {
 		problems = append(problems, "global.max_concurrent_agents: must be a positive integer")
@@ -515,6 +522,10 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, requiredErrors(attrs, []string{"apiVersion", "kind", "global", "projects"})...)
 	problems = append(problems, versionErrors(attrs["apiVersion"])...)
 	problems = append(problems, kindErrors(attrs["kind"])...)
+	problems = append(problems, optionalStringTypeError(attrs, "env")...)
+	problems = append(problems, optionalStringTypeError(attrs, "log_level")...)
+	problems = append(problems, optionalStringTypeError(attrs, "github_token")...)
+	problems = append(problems, optionalNonNegativeIntegerError(attrs["port"], "port")...)
 	problems = append(problems, globalErrors(attrs["global"])...)
 	problems = append(problems, projectsErrors(attrs["projects"], opts)...)
 
@@ -794,6 +805,27 @@ func nonNegativeInteger(value any) bool {
 	return ok && number >= 0
 }
 
+func optionalStringTypeError(attrs map[string]any, field string) []string {
+	value, ok := attrs[field]
+	if !ok || value == nil {
+		return nil
+	}
+	if _, ok := value.(string); ok {
+		return nil
+	}
+	return []string{field + ": must be a string"}
+}
+
+func optionalNonNegativeIntegerError(value any, field string) []string {
+	if value == nil {
+		return nil
+	}
+	if nonNegativeInteger(value) {
+		return nil
+	}
+	return []string{field + ": must be an integer greater than or equal to 0"}
+}
+
 func pausedErrors(attrs map[string]any, prefix string) []string {
 	value, ok := attrs["paused"]
 	if !ok {
@@ -886,6 +918,22 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	env, err := optionalString(attrs["env"], "env")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
+	logLevel, err := optionalString(attrs["log_level"], "log_level")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
+	githubToken, err := optionalString(attrs["github_token"], "github_token")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
+	port, err := optionalIntPointer(attrs["port"], "port")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	settings, err := buildSettings(global)
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -896,11 +944,15 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	}
 
 	return Config{
-		Path:       path,
-		APIVersion: apiVersion,
-		Kind:       kind,
-		Global:     settings,
-		Projects:   builtProjects,
+		Path:        path,
+		APIVersion:  apiVersion,
+		Kind:        kind,
+		Env:         env,
+		LogLevel:    logLevel,
+		GitHubToken: githubToken,
+		Port:        port,
+		Global:      settings,
+		Projects:    builtProjects,
 	}, nil
 }
 
@@ -1086,6 +1138,17 @@ func optionalString(value any, field string) (string, error) {
 		return "", err
 	}
 	return strings.TrimSpace(text), nil
+}
+
+func optionalIntPointer(value any, field string) (*int, error) {
+	if value == nil {
+		return nil, nil
+	}
+	number, err := intValue(value, field)
+	if err != nil {
+		return nil, err
+	}
+	return &number, nil
 }
 
 func mapValue(value any, field string) (map[string]any, error) {

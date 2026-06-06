@@ -145,7 +145,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 				gitWorkTree: func(context.Context, string) error {
 					return tt.gitErr
 				},
-			})
+			}, "")
 			if len(got) != len(tt.wantStatus) {
 				t.Fatalf("len(checks) = %d, want %d: %#v", len(got), len(tt.wantStatus), got)
 			}
@@ -273,7 +273,7 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 			gotPath = path
 			return nil
 		},
-	})
+	}, "")
 
 	wantPath := filepath.Join(home, "repo")
 	if gotPath != wantPath {
@@ -281,6 +281,36 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	}
 	if len(checks) != 2 || checks[1].Status != doctorOK {
 		t.Fatalf("checks = %#v, want source repo OK", checks)
+	}
+}
+
+func TestCheckDoctorRuntimeSettingsReportsSources(t *testing.T) {
+	t.Parallel()
+
+	got := checkDoctorRuntimeSettings(RuntimeSettings{
+		ConfigPath:  RuntimeValue{Value: "/tmp/global.yaml", Source: string(globalconfig.PathRuleFlag)},
+		Env:         RuntimeValue{Value: "prod", Source: runtimeSourceDefault},
+		LogLevel:    RuntimeValue{Value: "debug", Source: "LOG_LEVEL"},
+		Port:        RuntimeIntValue{Value: 4000, Source: runtimeSourceConfig},
+		GitHubToken: RuntimeSecret{Value: "secret-token", Source: "github_token", ResolvedVia: "gh"},
+	})
+
+	if got.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s", got.Status, doctorOK)
+	}
+	for _, want := range []string{
+		"config_path=/tmp/global.yaml (--config)",
+		"env=prod (default)",
+		"log_level=debug (LOG_LEVEL)",
+		"port=4000 (config)",
+		"github_token=resolved via gh",
+	} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail missing %q:\n%s", want, got.Detail)
+		}
+	}
+	if strings.Contains(got.Detail, "secret-token") {
+		t.Fatalf("Detail leaked token: %s", got.Detail)
 	}
 }
 
@@ -294,7 +324,7 @@ func TestCheckDoctorGitHub(t *testing.T) {
 	tests := []struct {
 		name       string
 		cfg        *globalconfig.Config
-		env        map[string]string
+		token      RuntimeSecret
 		scopes     []string
 		scopeErr   error
 		workflow   workflowconfig.Config
@@ -308,14 +338,14 @@ func TestCheckDoctorGitHub(t *testing.T) {
 		},
 		{
 			name:       "scope check fails",
-			env:        map[string]string{"GITHUB_TOKEN": "token"},
+			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
 			scopeErr:   errors.New("unauthorized"),
 			want:       doctorFail,
 			wantDetail: "scope check failed",
 		},
 		{
 			name:       "missing required scope",
-			env:        map[string]string{"GITHUB_TOKEN": "token"},
+			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
 			scopes:     []string{"repo"},
 			want:       doctorFail,
 			wantDetail: "read:org",
@@ -334,17 +364,24 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			cfg: &globalconfig.Config{Projects: []globalconfig.Project{
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			}},
-			env:        map[string]string{"PROJECT_TOKEN": "token"},
+			token:      RuntimeSecret{Value: "token", Source: "PROJECT_TOKEN"},
 			scopes:     []string{"project", "read:org", "repo"},
 			want:       doctorOK,
 			wantDetail: "PROJECT_TOKEN has required scopes",
 		},
 		{
 			name:       "environment token has required scopes",
-			env:        map[string]string{"GITHUB_TOKEN": "token"},
+			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
 			scopes:     []string{"workflow", "project", "read:org", "repo"},
 			want:       doctorOK,
 			wantDetail: "GITHUB_TOKEN has required scopes",
+		},
+		{
+			name:       "gh sentinel token has required scopes",
+			token:      RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"},
+			scopes:     []string{"project", "read:org", "repo"},
+			want:       doctorOK,
+			wantDetail: "github_token resolved via gh has required scopes",
 		},
 	}
 
@@ -356,12 +393,9 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			if tt.workflow.Tracker.Kind != "" {
 				workflow = tt.workflow
 			}
-			got := checkDoctorGitHub(context.Background(), tt.cfg, doctorDeps{
+			got := checkDoctorGitHub(context.Background(), tt.cfg, tt.token, doctorDeps{
 				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
 					return workflowconfig.Workflow{Config: workflow}, nil
-				},
-				lookupEnv: func(key string) string {
-					return tt.env[key]
 				},
 				githubScopes: func(context.Context, string) ([]string, error) {
 					return tt.scopes, tt.scopeErr
@@ -562,6 +596,8 @@ func TestDoctorCommandExitStatus(t *testing.T) {
 			t.Parallel()
 
 			configPath := filepath.Join(t.TempDir(), "global.yaml")
+			env := ""
+			logLevel := ""
 			host := "127.0.0.1"
 			port := 0
 			opts := successfulDoctorOptions(configPath)
@@ -573,7 +609,7 @@ func TestDoctorCommandExitStatus(t *testing.T) {
 				deps.lookPath = tt.deps.lookPath
 			}
 
-			cmd := newDoctorCommandWithDeps(&configPath, &host, &port, opts, deps)
+			cmd := newDoctorCommandWithDeps(&configPath, &env, &logLevel, &host, &port, opts, deps)
 			var stdout bytes.Buffer
 			cmd.SetOut(&stdout)
 			cmd.SetErr(&bytes.Buffer{})
