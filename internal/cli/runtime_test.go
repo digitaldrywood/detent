@@ -252,7 +252,11 @@ func TestResolveRuntimeSettingsDoesNotRequireTokenForGitHubApp(t *testing.T) {
 	got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
 		Config: ptrGlobalConfig(githubRuntimeConfig("")),
 	}, runtimeDeps{
-		lookupEnv: mapLookup(nil),
+		lookupEnv: mapLookup(map[string]string{
+			"APP_ID":           "12345",
+			"INSTALLATION_ID":  "67890",
+			"PRIVATE_KEY_PATH": ".detent/github-app.pem",
+		}),
 		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
 			return workflowconfig.Workflow{Config: githubAppWorkflow()}, nil
 		},
@@ -265,6 +269,25 @@ func TestResolveRuntimeSettingsDoesNotRequireTokenForGitHubApp(t *testing.T) {
 	}
 	if got.GitHubToken.Value != "" {
 		t.Fatalf("GitHubToken.Value = %q, want empty", got.GitHubToken.Value)
+	}
+}
+
+func TestResolveRuntimeSettingsRequiresTokenForMissingGitHubAppEnvRefs(t *testing.T) {
+	t.Parallel()
+
+	_, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+		Config: ptrGlobalConfig(githubRuntimeConfig("")),
+	}, runtimeDeps{
+		lookupEnv: mapLookup(nil),
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: githubAppWorkflow()}, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("resolveRuntimeSettings() error = nil, want error")
+	}
+	if !strings.Contains(err.Error(), "GITHUB_TOKEN") {
+		t.Fatalf("error = %v, want containing GITHUB_TOKEN", err)
 	}
 }
 
@@ -322,7 +345,7 @@ func githubAppWorkflow() workflowconfig.Config {
 	cfg := githubWorkflow("")
 	cfg.Tracker.GitHubAppID = "$APP_ID"
 	cfg.Tracker.GitHubAppInstallationID = "$INSTALLATION_ID"
-	cfg.Tracker.GitHubAppPrivateKeyPath = ".detent/github-app.pem"
+	cfg.Tracker.GitHubAppPrivateKeyPath = "$PRIVATE_KEY_PATH"
 	return cfg
 }
 

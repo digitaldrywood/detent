@@ -618,7 +618,7 @@ func doctorRequiresRuntimeGitHubToken(cfg *globalconfig.Config, deps doctorDeps)
 		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 			continue
 		}
-		if trackerHasGitHubAppCredentials(workflow.Config.Tracker) {
+		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
 			continue
 		}
 		return true

@@ -240,7 +240,7 @@ func trackerGitHubToken(cfg *globalconfig.Config, deps runtimeDeps) (RuntimeSecr
 		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 			continue
 		}
-		if trackerHasGitHubAppCredentials(workflow.Config.Tracker) {
+		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
 			continue
 		}
 		if token, source := resolveRuntimeSecret(workflow.Config.Tracker.APIKey, deps.lookupEnv); token != "" {
@@ -254,10 +254,11 @@ func trackerGitHubToken(cfg *globalconfig.Config, deps runtimeDeps) (RuntimeSecr
 	return RuntimeSecret{}, requiresRuntimeToken
 }
 
-func trackerHasGitHubAppCredentials(tracker workflowconfig.Tracker) bool {
-	return strings.TrimSpace(tracker.GitHubAppID) != "" &&
-		strings.TrimSpace(tracker.GitHubAppInstallationID) != "" &&
-		(strings.TrimSpace(tracker.GitHubAppPrivateKey) != "" || strings.TrimSpace(tracker.GitHubAppPrivateKeyPath) != "")
+func trackerHasGitHubAppCredentials(tracker workflowconfig.Tracker, lookupEnv func(string) string) bool {
+	return resolveRuntimeSecretValue(tracker.GitHubAppID, lookupEnv) != "" &&
+		resolveRuntimeSecretValue(tracker.GitHubAppInstallationID, lookupEnv) != "" &&
+		(resolveRuntimeSecretValue(tracker.GitHubAppPrivateKey, lookupEnv) != "" ||
+			resolveRuntimeSecretValue(tracker.GitHubAppPrivateKeyPath, lookupEnv) != "")
 }
 
 func resolveRuntimeSecret(value string, lookupEnv func(string) string) (string, string) {
@@ -272,6 +273,11 @@ func resolveRuntimeSecret(value string, lookupEnv func(string) string) (string, 
 		}
 	}
 	return value, "tracker.api_key"
+}
+
+func resolveRuntimeSecretValue(value string, lookupEnv func(string) string) string {
+	resolved, _ := resolveRuntimeSecret(value, lookupEnv)
+	return resolved
 }
 
 func githubTokenSentinel(value string) bool {

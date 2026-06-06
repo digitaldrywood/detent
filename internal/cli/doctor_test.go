@@ -328,6 +328,7 @@ func TestCheckDoctorGitHub(t *testing.T) {
 		scopes     []string
 		scopeErr   error
 		workflow   workflowconfig.Config
+		env        map[string]string
 		want       doctorStatus
 		wantDetail string
 	}{
@@ -364,9 +365,23 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			cfg: &globalconfig.Config{Projects: []globalconfig.Project{
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			}},
-			workflow:   githubAppWorkflow(),
+			workflow: githubAppWorkflow(),
+			env: map[string]string{
+				"APP_ID":           "12345",
+				"INSTALLATION_ID":  "67890",
+				"PRIVATE_KEY_PATH": ".detent/github-app.pem",
+			},
 			want:       doctorWarn,
 			wantDetail: "GitHub App credentials configured",
+		},
+		{
+			name: "github app env refs missing require token",
+			cfg: &globalconfig.Config{Projects: []globalconfig.Project{
+				{ID: "alpha", Workflow: "WORKFLOW.md"},
+			}},
+			workflow:   githubAppWorkflow(),
+			want:       doctorFail,
+			wantDetail: "GITHUB_TOKEN is not set",
 		},
 		{
 			name: "workflow token has required scopes",
@@ -403,6 +418,7 @@ func TestCheckDoctorGitHub(t *testing.T) {
 				workflow = tt.workflow
 			}
 			got := checkDoctorGitHub(context.Background(), tt.cfg, tt.token, doctorDeps{
+				lookupEnv: mapLookup(tt.env),
 				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
 					return workflowconfig.Workflow{Config: workflow}, nil
 				},
