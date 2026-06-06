@@ -23,7 +23,8 @@ import (
 
 const (
 	defaultAPIBase          = "https://api.github.com/repos/digitaldrywood/detent"
-	moduleInstallTarget     = "github.com/digitaldrywood/detent/cmd/detent@latest"
+	moduleInstallPackage    = "github.com/digitaldrywood/detent/cmd/detent"
+	moduleInstallTarget     = moduleInstallPackage + "@latest"
 	moduleInstallCommand    = "go install " + moduleInstallTarget
 	homebrewUpdateCommand   = "brew upgrade digitaldrywood/tap/detent"
 	defaultChecksumName     = "checksums.txt"
@@ -365,6 +366,7 @@ func (s *Service) Apply(ctx context.Context, opts ApplyOptions) (Status, error) 
 }
 
 func (s *Service) applyGoInstallUpdate(ctx context.Context, status Status, release Release, opts ApplyOptions) (Status, error) {
+	status.Command = goInstallCommand(status)
 	action, err := goInstallAction(status, opts)
 	if err != nil {
 		status.Action = ActionRefused
@@ -402,7 +404,9 @@ func goInstallAction(status Status, opts ApplyOptions) (GoInstallAction, error) 
 }
 
 func (s *Service) runGoInstallUpdate(ctx context.Context, status Status, opts ApplyOptions) (Status, error) {
-	if err := s.cfg.CommandRunner(ctx, "go", []string{"install", moduleInstallTarget}, outputWriter(opts.Stdout), outputWriter(opts.Stderr)); err != nil {
+	target := goInstallTarget(status)
+	status.Command = "go install " + target
+	if err := s.cfg.CommandRunner(ctx, "go", []string{"install", target}, outputWriter(opts.Stdout), outputWriter(opts.Stderr)); err != nil {
 		status.Action = ActionRefused
 		status.Message = fmt.Sprintf("go install failed: %v", err)
 		return status, err
@@ -414,9 +418,15 @@ func (s *Service) runGoInstallUpdate(ctx context.Context, status Status, opts Ap
 		status.Message = fmt.Sprintf("go install completed, but verifying Detent failed: %v", err)
 		return status, err
 	}
+	installed := installedVersion(status, versionOutput)
+	if err := verifyInstalledVersion(status, installed); err != nil {
+		status.Action = ActionRefused
+		status.Message = fmt.Sprintf("go install completed, but installed Detent version is not the planned update: %v", err)
+		return status, err
+	}
 
 	status.Action = ActionUpdated
-	status.Message = goInstallAppliedMessage(status, versionOutput)
+	status.Message = goInstallAppliedMessage(status, installed)
 	return status, nil
 }
 
@@ -935,9 +945,39 @@ func updateAppliedMessage(status Status, goos string, releaseSwap bool) string {
 	return fmt.Sprintf("Updated Detent from %s to %s. %s", status.CurrentVersion, status.LatestVersion, restartNote())
 }
 
-func goInstallAppliedMessage(status Status, versionOutput string) string {
-	version := installedVersion(status, versionOutput)
-	return fmt.Sprintf("Ran %s. Installed Detent version: %s. %s", moduleInstallCommand, version, restartNote())
+func goInstallAppliedMessage(status Status, installed string) string {
+	return fmt.Sprintf("Ran %s. Installed Detent version: %s. %s", status.Command, installed, restartNote())
+}
+
+func goInstallCommand(status Status) string {
+	return "go install " + goInstallTarget(status)
+}
+
+func goInstallTarget(status Status) string {
+	tag := strings.TrimSpace(status.LatestTag)
+	if tag == "" {
+		return moduleInstallTarget
+	}
+	version, err := parseVersion(tag)
+	if err != nil || len(version.prerelease) == 0 {
+		return moduleInstallTarget
+	}
+	return moduleInstallPackage + "@" + tag
+}
+
+func verifyInstalledVersion(status Status, installed string) error {
+	expected := firstNonEmpty(status.LatestTag, status.LatestVersion)
+	if expected == "" {
+		return nil
+	}
+	cmp, err := CompareVersions(installed, expected)
+	if err != nil {
+		return fmt.Errorf("parse installed version %s: %w", installed, err)
+	}
+	if cmp != 0 {
+		return fmt.Errorf("installed version %s does not match expected %s", installed, expected)
+	}
+	return nil
 }
 
 func installedVersion(status Status, versionOutput string) string {
