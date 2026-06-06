@@ -272,6 +272,62 @@ func TestResolveRuntimeSettingsDoesNotRequireTokenForGitHubApp(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeSettingsSkipsConfigTokenWhenNoProjectNeedsRuntimeToken(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		workflow workflowconfig.Config
+		env      map[string]string
+	}{
+		{
+			name:     "non github tracker",
+			workflow: nonGitHubWorkflow(),
+		},
+		{
+			name:     "github app tracker",
+			workflow: githubAppWorkflow(),
+			env: map[string]string{
+				"APP_ID":           "12345",
+				"INSTALLATION_ID":  "67890",
+				"PRIVATE_KEY_PATH": ".detent/github-app.pem",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ghCalls := 0
+			got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+				Config: ptrGlobalConfig(githubRuntimeConfig("gh")),
+			}, runtimeDeps{
+				lookupEnv: mapLookup(tt.env),
+				ghAuthToken: func(context.Context) (string, error) {
+					ghCalls++
+					return "", errors.New("gh should not be called")
+				},
+				loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+					return workflowconfig.Workflow{Config: tt.workflow}, nil
+				},
+			})
+			if err != nil {
+				t.Fatalf("resolveRuntimeSettings() error = %v", err)
+			}
+			if ghCalls != 0 {
+				t.Fatalf("gh calls = %d, want 0", ghCalls)
+			}
+			if got.GitHubToken.Required {
+				t.Fatalf("GitHubToken.Required = true, want false")
+			}
+			if got.GitHubToken.Value != "" {
+				t.Fatalf("GitHubToken.Value = %q, want empty", got.GitHubToken.Value)
+			}
+		})
+	}
+}
+
 func TestResolveRuntimeSettingsRequiresTokenForMissingGitHubAppEnvRefs(t *testing.T) {
 	t.Parallel()
 
@@ -338,6 +394,12 @@ func githubWorkflow(apiKey string) workflowconfig.Config {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
 	cfg.Tracker.APIKey = apiKey
+	return cfg
+}
+
+func nonGitHubWorkflow() workflowconfig.Config {
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	return cfg
 }
 

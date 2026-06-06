@@ -192,18 +192,22 @@ func resolveRuntimeGitHubToken(ctx context.Context, cfg *globalconfig.Config, de
 		return RuntimeSecret{Value: token, Source: "GITHUB_TOKEN", Required: true}, nil, nil
 	}
 
+	token, requiresRuntimeToken := trackerGitHubToken(cfg, deps)
+	if token.Value == "" && !requiresRuntimeToken {
+		return RuntimeSecret{Required: false}, nil, nil
+	}
+
 	if cfg != nil {
-		if token := strings.TrimSpace(cfg.GitHubToken); token != "" {
-			resolved, err := resolveConfiguredGitHubToken(ctx, token, deps)
+		if configuredToken := strings.TrimSpace(cfg.GitHubToken); configuredToken != "" {
+			resolved, err := resolveConfiguredGitHubToken(ctx, configuredToken, deps)
 			if err != nil {
 				return RuntimeSecret{}, nil, err
 			}
-			warnings := literalTokenWarnings(token)
+			warnings := literalTokenWarnings(configuredToken)
 			return resolved, warnings, nil
 		}
 	}
 
-	token, requiresRuntimeToken := trackerGitHubToken(cfg, deps)
 	if token.Value != "" {
 		token.Required = true
 		return token, nil, nil
