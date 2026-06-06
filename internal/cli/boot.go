@@ -187,7 +187,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	projectFactory := withRunnerFactory(project.Dependencies{
 		Events:      events,
 		Logger:      logger,
-		GitHubToken: cfg.Runtime.GitHubToken.Value,
+		GitHubToken: runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken),
 	}, runtimeStore, nil)
 	manager, err := project.NewManager(project.ManagerConfigFromGlobal(cfg.Global), project.ManagerDependencies{
 		ProjectFactory: projectFactory,

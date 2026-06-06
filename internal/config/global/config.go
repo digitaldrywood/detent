@@ -21,6 +21,8 @@ const (
 	SchedulingStrict     = "strict"
 	SchedulingRoundRobin = "round_robin"
 	SchedulingFairShare  = "fair_share"
+
+	configFileMode = 0o600
 )
 
 var schedulingModes = []string{
@@ -213,8 +215,11 @@ func Write(path string, cfg Config, opts ...Option) error {
 	if err := os.MkdirAll(filepath.Dir(expandedPath), 0o755); err != nil {
 		return fmt.Errorf("create global config directory %s: %w", filepath.Dir(expandedPath), err)
 	}
-	if err := os.WriteFile(expandedPath, raw, 0o644); err != nil {
+	if err := os.WriteFile(expandedPath, raw, configFileMode); err != nil {
 		return fmt.Errorf("write global config %s: %w", expandedPath, err)
+	}
+	if err := os.Chmod(expandedPath, configFileMode); err != nil {
+		return fmt.Errorf("restrict global config permissions %s: %w", expandedPath, err)
 	}
 
 	return nil

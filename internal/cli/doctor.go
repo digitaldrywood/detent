@@ -148,7 +148,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		boot.Global = *global
 		boot.Host = bootHost(cfg.Host, firstGlobalWorkflowPath(*global))
 		report.Add(checkDoctorInstanceIdentity(*global))
-		report.Checks = append(report.Checks, checkDoctorProjects(ctx, *global, deps, runtime.GitHubToken.Value)...)
+		report.Checks = append(report.Checks, checkDoctorProjects(ctx, *global, deps, runtimeGlobalGitHubToken(runtime.GitHubToken))...)
 	} else {
 		report.Add(doctorCheck{
 			Name:   "Project workflows",

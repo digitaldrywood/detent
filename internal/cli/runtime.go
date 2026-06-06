@@ -346,6 +346,15 @@ func runtimeGitHubTokenDetail(token RuntimeSecret) string {
 	return fmt.Sprintf("github_token=redacted (%s)", sourceDetail(token.Source))
 }
 
+func runtimeGlobalGitHubToken(token RuntimeSecret) string {
+	switch strings.TrimSpace(token.Source) {
+	case "GITHUB_TOKEN", "github_token":
+		return strings.TrimSpace(token.Value)
+	default:
+		return ""
+	}
+}
+
 func sourceDetail(source string) string {
 	source = strings.TrimSpace(source)
 	if source == "" {

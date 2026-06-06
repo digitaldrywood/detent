@@ -381,6 +381,52 @@ func TestRuntimeSettingsDetailRedactsGitHubToken(t *testing.T) {
 	}
 }
 
+func TestRuntimeGlobalGitHubTokenSources(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		token RuntimeSecret
+		want  string
+	}{
+		{
+			name:  "environment token is global",
+			token: RuntimeSecret{Value: "env-token", Source: "GITHUB_TOKEN"},
+			want:  "env-token",
+		},
+		{
+			name:  "config token is global",
+			token: RuntimeSecret{Value: "config-token", Source: "github_token"},
+			want:  "config-token",
+		},
+		{
+			name:  "literal tracker token stays workflow local",
+			token: RuntimeSecret{Value: "tracker-token", Source: "tracker.api_key"},
+			want:  "",
+		},
+		{
+			name:  "tracker env token stays workflow local",
+			token: RuntimeSecret{Value: "tracker-token", Source: "PROJECT_TOKEN"},
+			want:  "",
+		},
+		{
+			name:  "empty token",
+			token: RuntimeSecret{},
+			want:  "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := runtimeGlobalGitHubToken(tt.token); got != tt.want {
+				t.Fatalf("runtimeGlobalGitHubToken() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func githubRuntimeConfig(token string) globalconfig.Config {
 	return globalconfig.Config{
 		GitHubToken: token,
