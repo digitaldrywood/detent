@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -82,10 +83,39 @@ type runtimeIntFlag struct {
 	Set   bool
 }
 
+type runtimeGitHubTokenState struct {
+	mu    sync.RWMutex
+	value string
+}
+
 type runtimeDeps struct {
 	lookupEnv    func(string) string
 	ghAuthToken  func(context.Context) (string, error)
 	loadWorkflow func(string) (workflowconfig.Workflow, error)
+}
+
+func newRuntimeGitHubTokenState(value string) *runtimeGitHubTokenState {
+	state := &runtimeGitHubTokenState{}
+	state.set(value)
+	return state
+}
+
+func (s *runtimeGitHubTokenState) get() string {
+	if s == nil {
+		return ""
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.value
+}
+
+func (s *runtimeGitHubTokenState) set(value string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.value = strings.TrimSpace(value)
 }
 
 func resolveRuntimeSettings(ctx context.Context, input runtimeInput, deps runtimeDeps) (RuntimeSettings, error) {

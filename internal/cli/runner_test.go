@@ -127,6 +127,47 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 	}
 }
 
+func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
+	t.Parallel()
+
+	var captured projectpkg.Dependencies
+	token := "first-token"
+	factory := withRunnerFactory(projectpkg.Dependencies{}, nil, func(d projectpkg.Dependencies) (*projectpkg.Project, error) {
+		captured = d
+		return nil, errProjectFactoryStub
+	}, func() string {
+		return token
+	})
+
+	workflowPath := writeWorkflowFile(t)
+	_, err := factory(globalconfig.Project{
+		ID:       "alpha",
+		Workflow: workflowPath,
+		Workdir:  filepath.Dir(workflowPath),
+		Weight:   1,
+	})
+	if err != errProjectFactoryStub {
+		t.Fatalf("ProjectFactory() error = %v, want %v", err, errProjectFactoryStub)
+	}
+	if captured.GitHubToken != "first-token" {
+		t.Fatalf("GitHubToken = %q, want first-token", captured.GitHubToken)
+	}
+
+	token = "second-token"
+	_, err = factory(globalconfig.Project{
+		ID:       "bravo",
+		Workflow: workflowPath,
+		Workdir:  filepath.Dir(workflowPath),
+		Weight:   1,
+	})
+	if err != errProjectFactoryStub {
+		t.Fatalf("ProjectFactory() error = %v, want %v", err, errProjectFactoryStub)
+	}
+	if captured.GitHubToken != "second-token" {
+		t.Fatalf("GitHubToken = %q, want second-token", captured.GitHubToken)
+	}
+}
+
 func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	t.Parallel()
 

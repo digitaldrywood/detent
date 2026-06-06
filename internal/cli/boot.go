@@ -184,11 +184,12 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}()
 
 	events := hub.New[project.Event]()
+	runtimeGitHubToken := newRuntimeGitHubTokenState(runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken))
 	projectFactory := withRunnerFactory(project.Dependencies{
 		Events:      events,
 		Logger:      logger,
-		GitHubToken: runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken),
-	}, runtimeStore, nil)
+		GitHubToken: runtimeGitHubToken.get(),
+	}, runtimeStore, nil, runtimeGitHubToken.get)
 	manager, err := project.NewManager(project.ManagerConfigFromGlobal(cfg.Global), project.ManagerDependencies{
 		ProjectFactory: projectFactory,
 		Events:         events,
@@ -200,7 +201,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err := manager.Start(runCtx); err != nil {
 		return err
 	}
-	globalWatcherDone := startGlobalConfigWatcher(runCtx, cfg.Global, manager, logger)
+	globalWatcherDone := startGlobalConfigWatcher(runCtx, cfg.Global, manager, logger, runtimeGitHubToken)
 	defer func() {
 		stop()
 		waitGlobalConfigWatcher(globalWatcherDone)
