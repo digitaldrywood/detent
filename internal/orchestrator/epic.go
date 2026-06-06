@@ -338,7 +338,8 @@ func (o *Orchestrator) resolveMissingEpicChildren(ctx context.Context, index *ep
 
 	identifiers := make([]string, 0)
 	seen := map[string]struct{}{}
-	for _, plan := range plans {
+	planIndexesByIdentifier := map[string][]int{}
+	for planIndex, plan := range plans {
 		if plan.incomplete {
 			continue
 		}
@@ -351,6 +352,7 @@ func (o *Orchestrator) resolveMissingEpicChildren(ctx context.Context, index *ep
 				continue
 			}
 			key := strings.ToLower(identifier)
+			planIndexesByIdentifier[key] = append(planIndexesByIdentifier[key], planIndex)
 			if _, ok := seen[key]; ok {
 				continue
 			}
@@ -364,6 +366,11 @@ func (o *Orchestrator) resolveMissingEpicChildren(ctx context.Context, index *ep
 
 	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, identifiers)
 	if err != nil {
+		for _, indexes := range planIndexesByIdentifier {
+			for _, index := range indexes {
+				plans[index].incomplete = true
+			}
+		}
 		if o.logger != nil {
 			o.logger.Warn("resolve epic child issues failed", "error", err)
 		}

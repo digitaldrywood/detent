@@ -555,6 +555,67 @@ func TestTickRetriesAffectedEpicChildRefreshFailure(t *testing.T) {
 	}
 }
 
+func TestTickRetriesAffectedEpicChildStateResolutionFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled", "Closed"},
+	})
+	state := newState(cfg)
+	state.LastRefreshAt = now.Add(-time.Minute)
+	state.Pipeline = []connector.Issue{
+		epicTestIssue("child-251", "Merging", false, "Child 251", nil, ""),
+	}
+	state.Running["occupied"] = Running{Issue: connector.Issue{ID: "occupied", Identifier: "occupied", Title: "Occupied", State: "Todo"}}
+	tracker := &epicConnector{
+		stateIssues: []connector.Issue{
+			epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+		},
+		resolved: []connector.Issue{
+			epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+		},
+		parents: map[string][]connector.Issue{
+			"child-251": {
+				epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "- [ ] #251"),
+			},
+		},
+		identifierErrors: []error{errors.New("temporary child state resolution failure")},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.parentFetches(), []string{"child-251"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parent fetches after first tick = %#v, want %#v", got, want)
+	}
+	if got := tracker.closedIssues(); len(got) != 0 {
+		t.Fatalf("closed issues after first tick = %#v, want none", got)
+	}
+	if got := len(state.pendingEpicParentLookups); got != 1 {
+		t.Fatalf("pending parent lookups = %d, want 1", got)
+	}
+
+	orch.tick(context.Background(), &state, now.Add(time.Minute))
+
+	if got, want := tracker.parentFetches(), []string{"child-251", "child-251"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parent fetches after retry = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.closedIssues(), []string{"epic-258"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("closed issues after retry = %#v, want %#v", got, want)
+	}
+	if got := len(state.pendingEpicParentLookups); got != 0 {
+		t.Fatalf("pending parent lookups after retry = %d, want 0", got)
+	}
+}
+
 func TestTickSkipsAffectedEpicWhenChildAlreadyTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -595,20 +656,21 @@ func TestTickSkipsAffectedEpicWhenChildAlreadyTerminal(t *testing.T) {
 }
 
 type epicConnector struct {
-	mu           sync.Mutex
-	candidates   []connector.Issue
-	stateIssues  []connector.Issue
-	resolved     []connector.Issue
-	parents      map[string][]connector.Issue
-	linked       map[string][]connector.BlockedRef
-	closeErr     error
-	parentErrors map[string][]error
-	childErrors  map[string][]error
-	updates      []epicStateUpdate
-	closed       []string
-	comments     []string
-	parentReads  []string
-	childReads   []string
+	mu               sync.Mutex
+	candidates       []connector.Issue
+	stateIssues      []connector.Issue
+	resolved         []connector.Issue
+	parents          map[string][]connector.Issue
+	linked           map[string][]connector.BlockedRef
+	closeErr         error
+	parentErrors     map[string][]error
+	childErrors      map[string][]error
+	identifierErrors []error
+	updates          []epicStateUpdate
+	closed           []string
+	comments         []string
+	parentReads      []string
+	childReads       []string
 }
 
 type epicStateUpdate struct {
@@ -665,6 +727,13 @@ func (c *epicConnector) FetchIssueStatesByIdentifiers(_ context.Context, identif
 	c.mu.Lock()
 	defer c.mu.Unlock()
 
+	if len(c.identifierErrors) > 0 {
+		err := c.identifierErrors[0]
+		c.identifierErrors = c.identifierErrors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	wanted := make(map[string]struct{}, len(identifiers))
 	for _, identifier := range identifiers {
 		wanted[strings.ToLower(strings.TrimSpace(identifier))] = struct{}{}
