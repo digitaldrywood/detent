@@ -18,9 +18,10 @@ var (
 )
 
 type completedEpicPlan struct {
-	issue      connector.Issue
-	children   []connector.BlockedRef
-	incomplete bool
+	issue       connector.Issue
+	children    []connector.BlockedRef
+	retryIssues []connector.Issue
+	incomplete  bool
 }
 
 type epicIssueIndex struct {
@@ -29,18 +30,36 @@ type epicIssueIndex struct {
 }
 
 func (o *Orchestrator) closeCompletedEpics(ctx context.Context, issues []connector.Issue) map[string]struct{} {
-	index := newEpicIssueIndex(issues)
 	plans := completedEpicPlans(issues)
 	if len(plans) == 0 {
 		return nil
 	}
+	completed, _ := o.closeCompletedEpicPlans(ctx, issues, plans)
+	return completed
+}
 
+func (o *Orchestrator) closeCompletedEpicPlans(
+	ctx context.Context,
+	issues []connector.Issue,
+	plans []completedEpicPlan,
+) (map[string]struct{}, map[string]connector.Issue) {
+	if len(plans) == 0 {
+		return nil, nil
+	}
+	index := newEpicIssueIndex(issues)
 	o.refreshLinkedEpicChildren(ctx, plans)
 	o.resolveMissingEpicChildren(ctx, index, plans)
 
 	completed := map[string]struct{}{}
+	failedRefreshes := map[string]connector.Issue{}
 	for _, plan := range plans {
 		if plan.incomplete {
+			for _, issue := range plan.retryIssues {
+				key := issueIdentityKey(issue)
+				if key != "" {
+					failedRefreshes[key] = cloneIssue(issue)
+				}
+			}
 			continue
 		}
 		if !epicChildrenDone(plan.children, index, o.cfg.TerminalStates) {
@@ -51,7 +70,10 @@ func (o *Orchestrator) closeCompletedEpics(ctx context.Context, issues []connect
 		}
 		o.finalizeCompletedEpic(ctx, plan.issue, plan.children)
 	}
-	return completed
+	if len(failedRefreshes) == 0 {
+		failedRefreshes = nil
+	}
+	return completed, failedRefreshes
 }
 
 func (o *Orchestrator) closeCompletedEpicsForTerminalTransitions(
@@ -73,6 +95,7 @@ func (o *Orchestrator) closeCompletedEpicsForTerminalTransitions(
 
 	parents := make([]connector.Issue, 0, len(transitions))
 	failedTransitions := map[string]connector.Issue{}
+	parentTransitions := map[string][]connector.Issue{}
 	seenParents := map[string]struct{}{}
 	for _, issue := range transitions {
 		issueID := strings.TrimSpace(issue.ID)
@@ -95,6 +118,7 @@ func (o *Orchestrator) closeCompletedEpicsForTerminalTransitions(
 			if key == "" {
 				continue
 			}
+			parentTransitions[key] = append(parentTransitions[key], cloneIssue(issue))
 			if _, ok := seenParents[key]; ok {
 				continue
 			}
@@ -105,7 +129,13 @@ func (o *Orchestrator) closeCompletedEpicsForTerminalTransitions(
 	if len(parents) == 0 {
 		return nil, failedTransitions
 	}
-	return o.closeCompletedEpics(ctx, parents), failedTransitions
+	plans := completedEpicPlans(parents)
+	for index := range plans {
+		key := issueIdentityKey(plans[index].issue)
+		plans[index].retryIssues = cloneIssues(parentTransitions[key])
+	}
+	completed, failedRefreshes := o.closeCompletedEpicPlans(ctx, parents, plans)
+	return completed, mergeIssueMaps(failedTransitions, failedRefreshes)
 }
 
 func (o *Orchestrator) fetchEpicTransitionIssueStates(ctx context.Context, issues []connector.Issue) ([]connector.Issue, bool) {

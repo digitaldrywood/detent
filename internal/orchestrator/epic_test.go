@@ -426,6 +426,81 @@ func TestTickRetriesParentLookupFailureForTerminalChild(t *testing.T) {
 	}
 }
 
+func TestTickRetriesAffectedEpicChildRefreshFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 2, 16, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled", "Closed"},
+	})
+	state := newState(cfg)
+	state.LastRefreshAt = now.Add(-time.Minute)
+	state.Pipeline = []connector.Issue{
+		epicTestIssue("child-251", "Merging", false, "Child 251", nil, ""),
+	}
+	state.Running["occupied"] = Running{Issue: connector.Issue{ID: "occupied", Identifier: "occupied", Title: "Occupied", State: "Todo"}}
+	tracker := &epicConnector{
+		stateIssues: []connector.Issue{
+			epicTestIssue("child-251", "Done", false, "Child 251", nil, ""),
+		},
+		parents: map[string][]connector.Issue{
+			"child-251": {
+				func() connector.Issue {
+					issue := epicTestIssue("epic-258", "Todo", false, "Epic: Release readiness", []string{"epic"}, "")
+					issue.ChildIssues = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#251"}}
+					return issue
+				}(),
+			},
+		},
+		linked: map[string][]connector.BlockedRef{
+			"epic-258": {
+				{Identifier: "digitaldrywood/detent#251", State: "Done"},
+			},
+		},
+		childErrors: map[string][]error{
+			"epic-258": {errors.New("temporary child refresh failure")},
+		},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.parentFetches(), []string{"child-251"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parent fetches after first tick = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.childFetches(), []string{"epic-258"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("child fetches after first tick = %#v, want %#v", got, want)
+	}
+	if got := tracker.closedIssues(); len(got) != 0 {
+		t.Fatalf("closed issues after first tick = %#v, want none", got)
+	}
+	if got := len(state.pendingEpicParentLookups); got != 1 {
+		t.Fatalf("pending parent lookups = %d, want 1", got)
+	}
+
+	orch.tick(context.Background(), &state, now.Add(time.Minute))
+
+	if got, want := tracker.parentFetches(), []string{"child-251", "child-251"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("parent fetches after retry = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.childFetches(), []string{"epic-258", "epic-258"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("child fetches after retry = %#v, want %#v", got, want)
+	}
+	if got, want := tracker.closedIssues(), []string{"epic-258"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("closed issues after retry = %#v, want %#v", got, want)
+	}
+	if got := len(state.pendingEpicParentLookups); got != 0 {
+		t.Fatalf("pending parent lookups after retry = %d, want 0", got)
+	}
+}
+
 func TestTickSkipsAffectedEpicWhenChildAlreadyTerminal(t *testing.T) {
 	t.Parallel()
 
@@ -474,6 +549,7 @@ type epicConnector struct {
 	linked       map[string][]connector.BlockedRef
 	closeErr     error
 	parentErrors map[string][]error
+	childErrors  map[string][]error
 	updates      []epicStateUpdate
 	closed       []string
 	comments     []string
@@ -568,6 +644,13 @@ func (c *epicConnector) FetchIssueChildren(_ context.Context, issueID string) ([
 	defer c.mu.Unlock()
 
 	c.childReads = append(c.childReads, issueID)
+	if errors := c.childErrors[issueID]; len(errors) > 0 {
+		err := errors[0]
+		c.childErrors[issueID] = errors[1:]
+		if err != nil {
+			return nil, err
+		}
+	}
 	if c.linked != nil {
 		return append([]connector.BlockedRef(nil), c.linked[issueID]...), nil
 	}
