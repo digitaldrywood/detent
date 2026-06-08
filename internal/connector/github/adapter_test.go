@@ -19,7 +19,7 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/26","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/27","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/digitaldrywood/detent/issues/26","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/27","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
 	}, {
 		method: http.MethodGet,
 		path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
@@ -49,6 +49,8 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 		Priority:         &priority,
 		State:            "Todo",
 		URL:              "https://github.com/digitaldrywood/detent/issues/26",
+		Closed:           true,
+		ClosedReason:     "COMPLETED",
 		BlockedBy:        []connector.BlockedRef{},
 		Labels:           []string{},
 		Assignees:        []string{},
@@ -744,7 +746,7 @@ func TestConnectorFetchIssueStatesByIDsCapturesIssueMetadata(t *testing.T) {
 		{
 			method: http.MethodGet,
 			path:   "/repos/example/repo/issues/1",
-			body:   `{"node_id":"I_kw1","number":1,"title":"First","body":"","state":"open","html_url":"https://github.com/example/repo/issues/1","user":{"login":"author-1"},"assignees":[{"node_id":"U_1","login":"worker-1"},{"node_id":"U_2","login":"worker-2"}],"labels":[]}`,
+			body:   `{"node_id":"I_kw1","number":1,"title":"First","body":"","state":"closed","state_reason":"not_planned","html_url":"https://github.com/example/repo/issues/1","user":{"login":"author-1"},"assignees":[{"node_id":"U_1","login":"worker-1"},{"node_id":"U_2","login":"worker-2"}],"labels":[]}`,
 		},
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P1"},"fieldValues":{"nodes":[{"__typename":"ProjectV2ItemFieldSingleSelectValue","name":"Ready","field":{"name":"Status"}},{"__typename":"ProjectV2ItemFieldTextValue","text":"team-a","field":{"name":"Owner"}},{"__typename":"ProjectV2ItemFieldNumberValue","number":3,"field":{"name":"Weight"}}]}}]}}}}`,
@@ -767,6 +769,9 @@ func TestConnectorFetchIssueStatesByIDsCapturesIssueMetadata(t *testing.T) {
 	issue := got[0]
 	if issue.AuthorID != "author-1" {
 		t.Fatalf("AuthorID = %q, want author-1", issue.AuthorID)
+	}
+	if !issue.Closed || issue.ClosedReason != "not_planned" {
+		t.Fatalf("closed metadata = (%v, %q), want closed not_planned", issue.Closed, issue.ClosedReason)
 	}
 	if !reflect.DeepEqual(issue.Assignees, []string{"worker-1", "worker-2"}) {
 		t.Fatalf("Assignees = %#v, want worker-1 and worker-2", issue.Assignees)
