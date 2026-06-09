@@ -34,6 +34,7 @@ func IsWorkspaceRelative(relativePath string) bool {
 	return path != "" &&
 		!strings.HasPrefix(path, "~") &&
 		!filepath.IsAbs(path) &&
+		!strings.HasPrefix(path, "/") &&
 		!strings.HasPrefix(path, `\`) &&
 		!windowsAbsPathPattern.MatchString(path) &&
 		!escapesWorkspace(path)
