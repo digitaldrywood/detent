@@ -2,6 +2,8 @@ module github.com/digitaldrywood/detent
 
 go 1.26
 
+toolchain go1.26.4
+
 require (
 	github.com/a-h/templ v0.3.1001
 	github.com/charmbracelet/bubbletea v1.3.10
