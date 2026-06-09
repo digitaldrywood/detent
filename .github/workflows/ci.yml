@@ -21,7 +21,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.4'
           cache: true
 
       - name: Download modules
@@ -51,7 +51,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.4'
           cache: true
 
       - name: Download modules
@@ -78,7 +78,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.4'
           cache: true
 
       - name: Check coverage
@@ -92,7 +92,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.4'
           cache: true
 
       - name: Run non-agent core tests
@@ -112,7 +112,7 @@ jobs:
 
       - uses: actions/setup-go@v6
         with:
-          go-version-file: go.mod
+          go-version: '1.26.4'
           cache: true
 
       - name: Run GoReleaser snapshot
