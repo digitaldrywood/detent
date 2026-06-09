@@ -67,7 +67,7 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 		t.Fatalf("New() error = %v", err)
 	}
 
-	if got.ID() != project.ProjectID("detent") {
+	if got.ID() != project.ID("detent") {
 		t.Fatalf("ID() = %q, want detent", got.ID())
 	}
 	if got.Config().Workdir != "/workspace/detent" {

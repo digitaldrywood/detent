@@ -180,7 +180,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		return RunTurnResult{}, fmt.Errorf("start codex app-server transport: %w", err)
 	}
 	defer func() {
-		closeErr := closeTransport(transport, s.readTimeout)
+		closeErr := closeTransport(ctx, transport, s.readTimeout)
 		if err == nil && closeErr != nil {
 			err = closeErr
 		}
@@ -713,8 +713,9 @@ func rawPayload(msg Message) json.RawMessage {
 	return data
 }
 
-func closeTransport(transport Transport, timeout time.Duration) error {
-	ctx := context.Background()
+func closeTransport(ctx context.Context, transport Transport, timeout time.Duration) error {
+	ctx = contextOrBackground(ctx)
+	ctx = context.WithoutCancel(ctx)
 	if timeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, timeout)

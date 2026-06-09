@@ -130,7 +130,7 @@ func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int
 	}
 
 	session, err := s.queries.CreateCodexSession(ctx, sqlc.CreateCodexSessionParams{
-		RunID:       nullInt64(attrs.RunID),
+		RunID:       nullPositiveInt64(attrs.RunID),
 		IssueID:     nullString(attrs.IssueID),
 		Identifier:  nullString(attrs.Identifier),
 		IssueURL:    nullString(attrs.IssueURL),
@@ -190,8 +190,8 @@ func (s *sqliteStore) RecordUsageEvent(ctx context.Context, attrs UsageEvent) (i
 
 	event, err := s.queries.CreateUsageEvent(ctx, sqlc.CreateUsageEventParams{
 		ProjectID:      projectID,
-		RunID:          nullInt64(attrs.RunID),
-		SessionID:      nullInt64(attrs.SessionID),
+		RunID:          nullPositiveInt64(attrs.RunID),
+		SessionID:      nullPositiveInt64(attrs.SessionID),
 		IssueID:        nullString(attrs.IssueID),
 		Identifier:     nullString(attrs.Identifier),
 		PrNumber:       nullOptionalInt64(attrs.PRNumber),
@@ -609,7 +609,7 @@ func nullString(value string) sql.NullString {
 	return sql.NullString{String: trimmed, Valid: true}
 }
 
-func nullInt64(value int64) sql.NullInt64 {
+func nullPositiveInt64(value int64) sql.NullInt64 {
 	if value <= 0 {
 		return sql.NullInt64{}
 	}

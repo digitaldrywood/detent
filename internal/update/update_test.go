@@ -589,7 +589,7 @@ func TestReplaceBinaryPreservesPermissionsAndVerifies(t *testing.T) {
 	}
 
 	var verifiedPath string
-	err := ReplaceBinary(Replacement{
+	err := ReplaceBinary(context.Background(), Replacement{
 		Target: target,
 		Binary: []byte("new"),
 		Mode:   0o600,
@@ -632,7 +632,7 @@ func TestReplaceBinaryRollsBackWhenVerificationFails(t *testing.T) {
 		t.Fatalf("WriteFile(target) error = %v", err)
 	}
 
-	err := ReplaceBinary(Replacement{
+	err := ReplaceBinary(context.Background(), Replacement{
 		Target: target,
 		Binary: []byte("new"),
 		Mode:   0o755,
@@ -662,7 +662,7 @@ func TestReplaceBinaryRollsBackWhenAfterReplaceFails(t *testing.T) {
 		t.Fatalf("WriteFile(target) error = %v", err)
 	}
 
-	err := ReplaceBinary(Replacement{
+	err := ReplaceBinary(context.Background(), Replacement{
 		Target: target,
 		Binary: []byte("new"),
 		Mode:   0o755,
@@ -696,7 +696,7 @@ func TestReplaceBinarySignsDarwinBeforeVerify(t *testing.T) {
 	}
 
 	var calls []string
-	err := ReplaceBinary(Replacement{
+	err := ReplaceBinary(context.Background(), Replacement{
 		Target: target,
 		Binary: []byte("new"),
 		Mode:   0o755,
@@ -730,7 +730,7 @@ func TestReplaceBinaryStagesWindowsReplacement(t *testing.T) {
 
 	var startedCommand string
 	var startedArgs []string
-	err := ReplaceBinary(Replacement{
+	err := ReplaceBinary(context.Background(), Replacement{
 		Target: target,
 		Binary: []byte("new"),
 		Mode:   0o755,

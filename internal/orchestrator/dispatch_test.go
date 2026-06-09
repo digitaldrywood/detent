@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -352,7 +353,7 @@ func TestMemoryConnectorOrchestratorsPartitionSharedIssuesByAuthorization(t *tes
 			cancel()
 			select {
 			case err := <-done:
-				if err != context.Canceled {
+				if !errors.Is(err, context.Canceled) {
 					t.Fatalf("Run() error = %v, want context canceled", err)
 				}
 			case <-time.After(time.Second):

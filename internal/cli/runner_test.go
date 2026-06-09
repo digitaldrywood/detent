@@ -116,7 +116,7 @@ func TestProjectDependenciesInjectsNonNilRunner(t *testing.T) {
 		Workdir:  filepath.Dir(workflowPath),
 		Weight:   1,
 	})
-	if err != errProjectFactoryStub {
+	if !errors.Is(err, errProjectFactoryStub) {
 		t.Fatalf("ProjectFactory() error = %v, want stub", err)
 	}
 	if captured.Runner == nil {
@@ -146,7 +146,7 @@ func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
 		Workdir:  filepath.Dir(workflowPath),
 		Weight:   1,
 	})
-	if err != errProjectFactoryStub {
+	if !errors.Is(err, errProjectFactoryStub) {
 		t.Fatalf("ProjectFactory() error = %v, want %v", err, errProjectFactoryStub)
 	}
 	if captured.GitHubToken != "first-token" {
@@ -160,7 +160,7 @@ func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
 		Workdir:  filepath.Dir(workflowPath),
 		Weight:   1,
 	})
-	if err != errProjectFactoryStub {
+	if !errors.Is(err, errProjectFactoryStub) {
 		t.Fatalf("ProjectFactory() error = %v, want %v", err, errProjectFactoryStub)
 	}
 	if captured.GitHubToken != "second-token" {

@@ -39,12 +39,12 @@ const (
 	EventUnpaused EventKind = "project_unpaused"
 )
 
-type ProjectID string
+type ID string
 
 type EventKind string
 
 type Event struct {
-	ProjectID ProjectID
+	ProjectID ID
 	Kind      EventKind
 	At        time.Time
 	Error     string
@@ -83,7 +83,7 @@ type Dependencies struct {
 }
 
 type Project struct {
-	id               ProjectID
+	id               ID
 	cfg              globalconfig.Project
 	workflow         workflowconfig.Workflow
 	githubToken      string
@@ -118,7 +118,7 @@ func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
 }
 
 func New(cfg Config, deps Dependencies) (*Project, error) {
-	id := normalizeProjectID(ProjectID(cfg.Project.ID))
+	id := normalizeProjectID(ID(cfg.Project.ID))
 	if id == "" {
 		return nil, ErrMissingProjectID
 	}
@@ -197,7 +197,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 	}, nil
 }
 
-func (p *Project) ID() ProjectID {
+func (p *Project) ID() ID {
 	if p == nil {
 		return ""
 	}
@@ -880,8 +880,8 @@ func maxConcurrentAgentsPerHost(cfg workflowconfig.Config) int {
 	return *cfg.Worker.MaxConcurrentAgentsPerHost
 }
 
-func normalizeProjectID(id ProjectID) ProjectID {
-	return ProjectID(strings.TrimSpace(string(id)))
+func normalizeProjectID(id ID) ID {
+	return ID(strings.TrimSpace(string(id)))
 }
 
 func errorString(err error) string {

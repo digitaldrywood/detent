@@ -76,7 +76,7 @@ func TestNewServerValidatesDependencies(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if tt.want == web.ErrMissingHub {
+			if errors.Is(tt.want, web.ErrMissingHub) {
 				tt.deps.Hub = nil
 			}
 

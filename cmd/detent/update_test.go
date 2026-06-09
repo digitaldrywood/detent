@@ -25,7 +25,7 @@ func TestUpdateCommandCheckJSON(t *testing.T) {
 			Message:         "Detent 1.2.3 can be updated to 1.2.4.",
 		},
 	}
-	cmd := newUpdateCommand(func() (updateRunner, error) {
+	cmd := newUpdateCommand(context.Background(), func(context.Context) (updateRunner, error) {
 		return fake, nil
 	})
 	var stdout bytes.Buffer
@@ -68,7 +68,7 @@ func TestUpdateCommandYesAppliesWithoutPrompt(t *testing.T) {
 			Message:         "Updated Detent from 1.2.3 to 1.2.4.",
 		},
 	}
-	cmd := newUpdateCommand(func() (updateRunner, error) {
+	cmd := newUpdateCommand(context.Background(), func(context.Context) (updateRunner, error) {
 		return fake, nil
 	})
 	var stdout bytes.Buffer
@@ -109,7 +109,7 @@ func TestUpdateCommandFromReleasePassesOptionWithoutPrompt(t *testing.T) {
 			Message:         "Updated Detent from 1.2.3 to 1.2.4.",
 		},
 	}
-	cmd := newUpdateCommand(func() (updateRunner, error) {
+	cmd := newUpdateCommand(context.Background(), func(context.Context) (updateRunner, error) {
 		return fake, nil
 	})
 	var stdout bytes.Buffer
@@ -137,7 +137,7 @@ func TestUpdateCommandFromReleasePassesOptionWithoutPrompt(t *testing.T) {
 func TestSelectGoInstallActionParsesReleaseChoice(t *testing.T) {
 	t.Parallel()
 
-	cmd := newUpdateCommand(func() (updateRunner, error) {
+	cmd := newUpdateCommand(context.Background(), func(context.Context) (updateRunner, error) {
 		return &fakeUpdater{}, nil
 	})
 	var stdout bytes.Buffer
@@ -182,7 +182,7 @@ func TestUpdateCommandJSONWritesRefusalStatus(t *testing.T) {
 		},
 		applyErr: update.ErrRefused,
 	}
-	cmd := newUpdateCommand(func() (updateRunner, error) {
+	cmd := newUpdateCommand(context.Background(), func(context.Context) (updateRunner, error) {
 		return fake, nil
 	})
 	var stdout bytes.Buffer

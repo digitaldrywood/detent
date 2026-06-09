@@ -69,9 +69,9 @@ type LoggerFunc func(RuntimeSettings, io.Writer, io.Writer, bool)
 
 type ProjectManager interface {
 	Add(context.Context, globalconfig.Project) error
-	Remove(context.Context, project.ProjectID) error
-	Pause(context.Context, project.ProjectID) error
-	Unpause(context.Context, project.ProjectID) error
+	Remove(context.Context, project.ID) error
+	Pause(context.Context, project.ID) error
+	Unpause(context.Context, project.ID) error
 }
 
 type Option func(*options)
@@ -149,11 +149,11 @@ func ProjectManagerSignalFunc(manager ProjectManager) SignalFunc {
 		case OperationAddProject:
 			return manager.Add(ctx, signal.Project)
 		case OperationRemoveProject:
-			return manager.Remove(ctx, project.ProjectID(signal.ProjectID))
+			return manager.Remove(ctx, project.ID(signal.ProjectID))
 		case OperationPauseProject:
-			return manager.Pause(ctx, project.ProjectID(signal.ProjectID))
+			return manager.Pause(ctx, project.ID(signal.ProjectID))
 		case OperationUnpauseProject:
-			return manager.Unpause(ctx, project.ProjectID(signal.ProjectID))
+			return manager.Unpause(ctx, project.ID(signal.ProjectID))
 		default:
 			return nil
 		}

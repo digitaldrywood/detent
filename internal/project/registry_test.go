@@ -1,6 +1,7 @@
 package project_test
 
 import (
+	"errors"
 	"testing"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -21,7 +22,7 @@ func TestRegistryStoresAndListsProjectsByID(t *testing.T) {
 		t.Fatalf("Set(first) error = %v", err)
 	}
 
-	got, ok := registry.Get(project.ProjectID("alpha"))
+	got, ok := registry.Get(project.ID("alpha"))
 	if !ok {
 		t.Fatal("Get(alpha) ok = false, want true")
 	}
@@ -66,12 +67,12 @@ func TestRegistryRejectsInvalidProject(t *testing.T) {
 
 	registry := project.NewRegistry()
 
-	if err := registry.Set(nil); err != project.ErrMissingProject {
+	if err := registry.Set(nil); !errors.Is(err, project.ErrMissingProject) {
 		t.Fatalf("Set(nil) error = %v, want %v", err, project.ErrMissingProject)
 	}
 
 	invalid := &project.Project{}
-	if err := registry.Set(invalid); err != project.ErrMissingProjectID {
+	if err := registry.Set(invalid); !errors.Is(err, project.ErrMissingProjectID) {
 		t.Fatalf("Set(invalid) error = %v, want %v", err, project.ErrMissingProjectID)
 	}
 }

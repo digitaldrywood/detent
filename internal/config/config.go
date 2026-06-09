@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 
@@ -14,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/selector"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
@@ -37,8 +37,6 @@ const (
 	IdentityOwnershipAssignee = "assignee"
 	IdentityOwnershipField    = "field"
 )
-
-var windowsAbsPathPattern = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
 
 type Workflow struct {
 	Config Config
@@ -1172,22 +1170,7 @@ func validPriorityRank(value any) bool {
 }
 
 func validateWorkspaceRelativePath(field string, path string, problems *[]string) {
-	trimmed := strings.TrimSpace(path)
-	if trimmed == "" || strings.HasPrefix(trimmed, "~") || filepath.IsAbs(trimmed) ||
-		strings.HasPrefix(trimmed, `/`) || strings.HasPrefix(trimmed, `\`) ||
-		windowsAbsPathPattern.MatchString(trimmed) ||
-		pathEscapesWorkspace(trimmed) {
+	if !pathsafe.IsWorkspaceRelative(path) {
 		*problems = append(*problems, field+" must be a relative path inside the workspace")
 	}
-}
-
-func pathEscapesWorkspace(path string) bool {
-	for _, part := range strings.FieldsFunc(path, func(r rune) bool {
-		return r == '/' || r == '\\'
-	}) {
-		if part == ".." {
-			return true
-		}
-	}
-	return false
 }
