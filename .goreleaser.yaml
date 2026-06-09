@@ -64,5 +64,21 @@ checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
   algorithm: sha256
 
+signs:
+  - artifacts: checksum
+    cmd: minisign
+    signature: "${artifact}.minisig"
+    args:
+      - -S
+      - -s
+      - "{{ .Env.MINISIGN_KEY_FILE }}"
+      - -m
+      - "${artifact}"
+      - -x
+      - "${signature}"
+      - -t
+      - "detent checksums {{ .Version }}"
+    stdin: "{{ .Env.MINISIGN_PASSWORD }}"
+
 snapshot:
   version_template: "{{ incpatch .Version }}-snapshot"

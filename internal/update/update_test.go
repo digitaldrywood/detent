@@ -284,6 +284,16 @@ func TestVerifyChecksumSignatureFailsClosedWithoutPinnedKey(t *testing.T) {
 	}
 }
 
+func TestNewServiceRequiresChecksumSignatureWithPinnedKey(t *testing.T) {
+	service := NewService(Config{})
+	if !service.cfg.RequireChecksumSignature {
+		t.Fatal("RequireChecksumSignature = false, want true with a pinned key")
+	}
+	if _, _, err := parseMinisignPublicKey(defaultChecksumMinisignPublicKey); err != nil {
+		t.Fatalf("parseMinisignPublicKey(defaultChecksumMinisignPublicKey) error = %v", err)
+	}
+}
+
 func TestNewServiceGatesChecksumSignatureUntilConfigured(t *testing.T) {
 	previous := defaultChecksumMinisignPublicKey
 	defaultChecksumMinisignPublicKey = ""
@@ -363,9 +373,7 @@ func TestGitHubClientDownloadHonorsHTTPTimeout(t *testing.T) {
 	}
 }
 
-func TestServiceAppliesReleaseUpdateFromHTTPServer(t *testing.T) {
-	t.Parallel()
-
+func TestServiceAppliesReleaseUpdateWithMinisignSignatureFromHTTPServer(t *testing.T) {
 	tmp := t.TempDir()
 	binary := filepath.Join(tmp, "bin", "detent")
 	lockPath := filepath.Join(tmp, "state", "install.lock")
@@ -388,7 +396,18 @@ func TestServiceAppliesReleaseUpdateFromHTTPServer(t *testing.T) {
 	archive := detentUpdateArchive(t, "updated")
 	sum := sha256.Sum256(archive)
 	checksums := fmt.Sprintf("%x  %s\n", sum, archiveName)
-	signature := []byte("valid signature")
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	keyID := []byte("12345678")
+	signature := testMinisignSignature(t, privateKey, keyID, []byte(checksums), "detent checksums v1.2.4")
+
+	previous := defaultChecksumMinisignPublicKey
+	defaultChecksumMinisignPublicKey = testMinisignPublicKey(publicKey, keyID)
+	t.Cleanup(func() {
+		defaultChecksumMinisignPublicKey = previous
+	})
 
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -421,7 +440,6 @@ func TestServiceAppliesReleaseUpdateFromHTTPServer(t *testing.T) {
 		BinaryVerifier: func(context.Context, string) (string, error) {
 			return "version: v1.2.4\n", nil
 		},
-		ChecksumSignatureVerifier: acceptChecksumSignature,
 	})
 
 	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})

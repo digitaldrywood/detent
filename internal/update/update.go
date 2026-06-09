@@ -48,7 +48,7 @@ var (
 	ErrConfirmationRequired = errors.New("update confirmation required")
 	ErrRefused              = errors.New("update refused")
 
-	defaultChecksumMinisignPublicKey = ""
+	defaultChecksumMinisignPublicKey = "RWR9LKG/4dIAmbeS4Ow7XOSjxOE7GKiwQ0OPHNoViW5V0FSo4WU0vucx"
 )
 
 type InstallSource string
