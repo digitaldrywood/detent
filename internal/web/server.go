@@ -84,6 +84,7 @@ type Server struct {
 	serverAddr   string
 	assets       staticAssets
 	projects     *projectSmallMultipleRecorder
+	snapshots    *snapshotEnrichmentCache
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -129,6 +130,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		serverAddr:   strings.TrimSpace(cfg.ServerAddress),
 		assets:       newStaticAssets(cfg.staticDir()),
 		projects:     newProjectSmallMultipleRecorder(),
+		snapshots:    newSnapshotEnrichmentCache(),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes()
@@ -209,20 +211,11 @@ func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot)
 }
 
 func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
-	sub, err := s.hub.Subscribe(ctx)
-	if err != nil {
+	snapshot, ok := s.hub.Latest()
+	if !ok {
 		return s.enrichSnapshot(ctx, telemetry.Snapshot{})
 	}
-	defer sub.Close()
-
-	select {
-	case snapshot, ok := <-sub.C():
-		if ok {
-			return s.enrichSnapshot(ctx, snapshot)
-		}
-	default:
-	}
-	return s.enrichSnapshot(ctx, telemetry.Snapshot{})
+	return s.cachedEnrichedSnapshot(ctx, snapshot)
 }
 
 func (s *Server) health(c echo.Context) error {

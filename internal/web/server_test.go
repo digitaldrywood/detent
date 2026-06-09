@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -475,6 +476,45 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 	}
 }
 
+func TestDashboardReadsLatestSnapshotWithoutSubscribing(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC),
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-latest",
+					Identifier: "digitaldrywood/detent#329",
+					Title:      "Use latest snapshot",
+					State:      "In Progress",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	deps.Hub.Close()
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Use latest snapshot") {
+		t.Fatalf("body missing latest snapshot:\n%s", rec.Body.String())
+	}
+}
+
 func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 	t.Parallel()
 
@@ -745,6 +785,112 @@ func TestServerEventsStreamsPublishedSnapshots(t *testing.T) {
 	}
 	if !strings.Contains(event.data, "4") {
 		t.Fatalf("snapshot event missing running count:\n%s", event.data)
+	}
+}
+
+func TestServerEventsEnrichesSnapshotOncePerPublish(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	year, month, day := generatedAt.UTC().Date()
+	budgetPeriodStart := time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+	budgetQueryFrom := budgetPeriodStart.AddDate(0, 0, -6)
+
+	var cycleTimeCalls atomic.Int64
+	var budgetCalls atomic.Int64
+
+	registry := project.NewRegistry()
+	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Registry = registry
+	deps.Store = storeProbe{
+		cycleTimeReport: func(context.Context) (store.CycleTimeReport, error) {
+			cycleTimeCalls.Add(1)
+			return store.CycleTimeReport{}, nil
+		},
+		budgetCostEvents: func(_ context.Context, query store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+			if query.From.Equal(budgetQueryFrom) {
+				budgetCalls.Add(1)
+			}
+			return nil, nil
+		},
+	}
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	first := openEventStream(t, server)
+	defer first.Close()
+	second := openEventStream(t, server)
+	defer second.Close()
+
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: generatedAt}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	for _, body := range []io.Reader{first, second} {
+		event := readSSEEvent(t, body)
+		if event.name != "snapshot" {
+			t.Fatalf("event name = %q, want snapshot", event.name)
+		}
+	}
+
+	if got := cycleTimeCalls.Load(); got != 1 {
+		t.Fatalf("CycleTimeReport calls = %d, want 1", got)
+	}
+	if got := budgetCalls.Load(); got != 1 {
+		t.Fatalf("BudgetCostEvents calls = %d, want 1", got)
+	}
+}
+
+func TestSnapshotEnrichmentDoesNotCacheCanceledContext(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	var budgetCalls atomic.Int64
+
+	registry := project.NewRegistry()
+	if err := registry.Set(newBudgetTestProject(t, "detent", 100, 10)); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Registry = registry
+	deps.Store = storeProbe{
+		budgetCostEvents: func(ctx context.Context, _ store.BudgetCostQuery) ([]store.BudgetCostEvent, error) {
+			budgetCalls.Add(1)
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			return nil, nil
+		},
+	}
+	if err := deps.Hub.Publish(telemetry.Snapshot{GeneratedAt: generatedAt}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil).WithContext(ctx)
+	server.Handler().ServeHTTP(rec, req)
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	budget := state["budget"].(map[string]any)
+	if reason, ok := budget["degraded_reason"]; ok {
+		t.Fatalf("budget degraded_reason = %#v, want omitted", reason)
+	}
+	if got := budgetCalls.Load(); got < 2 {
+		t.Fatalf("BudgetCostEvents calls = %d, want canceled and healthy calls", got)
 	}
 }
 
@@ -2045,6 +2191,7 @@ func boardStateCount(t *testing.T, payload map[string]any, stateName string) str
 type storeProbe struct {
 	store.Store
 
+	cycleTimeReport  func(context.Context) (store.CycleTimeReport, error)
 	budgetCostEvents func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
 }
 
@@ -2056,7 +2203,10 @@ func (storeProbe) UsageReport(_ context.Context, query store.UsageReportQuery) (
 	return store.UsageReport{By: query.By}, nil
 }
 
-func (storeProbe) CycleTimeReport(context.Context) (store.CycleTimeReport, error) {
+func (p storeProbe) CycleTimeReport(ctx context.Context) (store.CycleTimeReport, error) {
+	if p.cycleTimeReport != nil {
+		return p.cycleTimeReport(ctx)
+	}
 	return store.CycleTimeReport{}, nil
 }
 
