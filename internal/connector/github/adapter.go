@@ -51,6 +51,7 @@ query DetentGitHubProjectItems(
               number
               title
               state
+              stateReason
               url
               repository { nameWithOwner }
             }
@@ -217,6 +218,7 @@ fragment DetentGitHubIssueParent on Issue {
   title
   body
   state
+  stateReason
   url
   createdAt
   updatedAt
@@ -473,6 +475,7 @@ type githubIssueNode struct {
 	Title                          string                       `json:"title"`
 	Body                           string                       `json:"body"`
 	State                          string                       `json:"state"`
+	StateReason                    string                       `json:"stateReason"`
 	URL                            string                       `json:"url"`
 	CreatedAt                      *string                      `json:"createdAt"`
 	UpdatedAt                      *string                      `json:"updatedAt"`
@@ -572,17 +575,18 @@ type actor struct {
 }
 
 type restIssue struct {
-	NodeID    string         `json:"node_id"`
-	Number    int            `json:"number"`
-	Title     string         `json:"title"`
-	Body      *string        `json:"body"`
-	State     string         `json:"state"`
-	HTMLURL   string         `json:"html_url"`
-	CreatedAt *time.Time     `json:"created_at"`
-	UpdatedAt *time.Time     `json:"updated_at"`
-	User      *actor         `json:"user"`
-	Assignees []restAssignee `json:"assignees"`
-	Labels    []label        `json:"labels"`
+	NodeID      string         `json:"node_id"`
+	Number      int            `json:"number"`
+	Title       string         `json:"title"`
+	Body        *string        `json:"body"`
+	State       string         `json:"state"`
+	StateReason string         `json:"state_reason"`
+	HTMLURL     string         `json:"html_url"`
+	CreatedAt   *time.Time     `json:"created_at"`
+	UpdatedAt   *time.Time     `json:"updated_at"`
+	User        *actor         `json:"user"`
+	Assignees   []restAssignee `json:"assignees"`
+	Labels      []label        `json:"labels"`
 }
 
 type restIssueSearchResponse struct {
@@ -1750,6 +1754,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		State:            c.githubToDetentState(statusName),
 		URL:              issue.URL,
 		Closed:           githubIssueClosed(issue.State),
+		ClosedReason:     issue.StateReason,
 		PRNumber:         firstPullRequestNumber(issue.ClosedByPullRequestsReferences),
 		AuthorID:         actorLogin(issue.Author),
 		AssigneeID:       firstAssigneeLogin(issue.Assignees),
@@ -2425,18 +2430,19 @@ func restCommitStatusesPath(repo pullRequestRepo, sha string) string {
 func githubIssueNodeFromREST(ref issueRef, issue restIssue) githubIssueNode {
 	repo := ref.Owner + "/" + ref.Name
 	return githubIssueNode{
-		TypeName:  "Issue",
-		ID:        strings.TrimSpace(issue.NodeID),
-		Number:    issue.Number,
-		Title:     issue.Title,
-		Body:      restStringValue(issue.Body),
-		State:     issue.State,
-		URL:       issue.HTMLURL,
-		CreatedAt: restTimeString(issue.CreatedAt),
-		UpdatedAt: restTimeString(issue.UpdatedAt),
-		Author:    issue.User,
-		Assignees: restAssigneesConnection(issue.Assignees),
-		Labels:    nodeConnection[label]{Nodes: issue.Labels},
+		TypeName:    "Issue",
+		ID:          strings.TrimSpace(issue.NodeID),
+		Number:      issue.Number,
+		Title:       issue.Title,
+		Body:        restStringValue(issue.Body),
+		State:       issue.State,
+		StateReason: issue.StateReason,
+		URL:         issue.HTMLURL,
+		CreatedAt:   restTimeString(issue.CreatedAt),
+		UpdatedAt:   restTimeString(issue.UpdatedAt),
+		Author:      issue.User,
+		Assignees:   restAssigneesConnection(issue.Assignees),
+		Labels:      nodeConnection[label]{Nodes: issue.Labels},
 		Repository: repository{
 			NameWithOwner: repo,
 		},

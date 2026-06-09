@@ -9,6 +9,7 @@ type Snapshot struct {
 	Projects       []ProjectSnapshot `json:"projects,omitempty"`
 	DashboardURL   string            `json:"dashboard_url,omitempty"`
 	Refresh        Refresh           `json:"refresh"`
+	Events         []ActivityEvent   `json:"events,omitempty"`
 	Counts         Counts            `json:"counts"`
 	Pipeline       []Issue           `json:"pipeline,omitempty"`
 	Running        []Running         `json:"running"`

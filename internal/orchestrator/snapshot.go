@@ -16,6 +16,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: now,
 		Instance:    s.Instance,
+		Events:      cloneActivityEvents(s.RecentEvents),
 		Refresh: telemetry.Refresh{
 			PollIntervalSeconds: int64(s.PollInterval / time.Second),
 			LastRefreshAt:       timePointer(s.LastRefreshAt),

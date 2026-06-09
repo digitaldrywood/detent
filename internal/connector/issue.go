@@ -16,6 +16,7 @@ type Issue struct {
 	BranchName       string            `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	URL              string            `json:"url,omitempty" yaml:"url,omitempty"`
 	Closed           bool              `json:"closed,omitempty" yaml:"closed,omitempty"`
+	ClosedReason     string            `json:"closed_reason,omitempty" yaml:"closed_reason,omitempty"`
 	PRNumber         *int              `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
 	PullRequest      *PullRequest      `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
 	AuthorID         string            `json:"author_id,omitempty" yaml:"author_id,omitempty"`

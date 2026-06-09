@@ -30,6 +30,7 @@ const (
 	defaultFailureRetryBaseDelay      = 10 * time.Second
 	continuationDispatchBackoff       = 100 * time.Millisecond
 	runUpdateBufferSize               = 128
+	maxRecentEvents                   = 50
 	blockedStatusState                = "Blocked"
 	blockedReasonDependency           = "blocked by non-terminal dependency"
 	blockedReasonProjectStatus        = "blocked by project status"
@@ -367,6 +368,11 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		pendingTransitions,
 	)
 	state.pendingEpicParentLookups = mergeIssueMaps(pendingParentLookups, failedParentLookups)
+	reconciledClosedIssues := o.reconcileClosedCompletedIssueStatuses(ctx, state, transitionIssues, now)
+	issues = filterReconciledIssues(issues, reconciledClosedIssues)
+	statusIssues = filterReconciledIssues(statusIssues, reconciledClosedIssues)
+	state.epicTransitionWatch = filterReconciledIssues(state.epicTransitionWatch, reconciledClosedIssues)
+	state.Pipeline = filterReconciledIssues(state.Pipeline, reconciledClosedIssues)
 	issues = filterCompletedEpicCandidates(issues, completedEpics)
 	sortIssuesForDispatch(issues, o.cfg.DispatchPriorityByState)
 	o.pruneBudgetRefusals(state, now)
@@ -441,6 +447,86 @@ func stateNameSet(states []string) map[string]struct{} {
 		}
 	}
 	return out
+}
+
+func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context, state *State, issues []connector.Issue, now time.Time) map[string]struct{} {
+	targetState := doneStateName(o.cfg.TerminalStates)
+	reconciled := map[string]struct{}{}
+	for _, issue := range issues {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if _, ok := reconciled[issueID]; ok {
+			continue
+		}
+		if !closedCompletedIssueNeedsStatusReconciliation(issue, o.cfg.TerminalStates) {
+			continue
+		}
+		if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+			if o.logger != nil {
+				o.logger.Warn("reconcile closed completed issue status failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
+			}
+			continue
+		}
+		reconciled[issueID] = struct{}{}
+		if o.logger != nil {
+			o.logger.Info("reconciled closed completed issue status", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState)
+		}
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "closed_completed_status_reconciled",
+			Message: "reconciled " + issueLabel(issue) + " from " + strings.TrimSpace(issue.State) + " to " + targetState,
+		})
+	}
+	if len(reconciled) == 0 {
+		return nil
+	}
+	return reconciled
+}
+
+func closedCompletedIssueNeedsStatusReconciliation(issue connector.Issue, terminalStates []string) bool {
+	return issue.Closed &&
+		closedReasonCompleted(issue.ClosedReason) &&
+		strings.TrimSpace(issue.State) != "" &&
+		!stateIn(issue.State, terminalStates)
+}
+
+func closedReasonCompleted(reason string) bool {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	reason = strings.ReplaceAll(reason, "-", "_")
+	return reason == "completed"
+}
+
+func filterReconciledIssues(issues []connector.Issue, reconciled map[string]struct{}) []connector.Issue {
+	if len(reconciled) == 0 || len(issues) == 0 {
+		return issues
+	}
+	out := issues[:0]
+	for _, issue := range issues {
+		if _, ok := reconciled[strings.TrimSpace(issue.ID)]; ok {
+			continue
+		}
+		out = append(out, issue)
+	}
+	return out
+}
+
+func recordStateEvent(state *State, event telemetry.ActivityEvent) {
+	if state == nil {
+		return
+	}
+	state.RecentEvents = append(state.RecentEvents, event)
+	if len(state.RecentEvents) > maxRecentEvents {
+		state.RecentEvents = append([]telemetry.ActivityEvent(nil), state.RecentEvents[len(state.RecentEvents)-maxRecentEvents:]...)
+	}
+}
+
+func issueLabel(issue connector.Issue) string {
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		return identifier
+	}
+	return strings.TrimSpace(issue.ID)
 }
 
 func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State, now time.Time) {
@@ -1492,6 +1578,7 @@ func validCandidate(issue connector.Issue) bool {
 		issue.Identifier != "" &&
 		issue.Title != "" &&
 		issue.State != "" &&
+		!issue.Closed &&
 		issue.AssignedToWorker
 }
 
