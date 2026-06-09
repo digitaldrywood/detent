@@ -15,7 +15,7 @@ TEMPL ?= go run github.com/a-h/templ/cmd/templ@v0.3.1001
 TAILWIND_INPUT ?= static/css/input.css
 TAILWIND_OUTPUT ?= static/css/output.css
 SQLC_CONFIG ?= sqlc/sqlc.yaml
-MIGRATIONS_DIR ?= internal/database/migrations
+MIGRATIONS_DIR ?= internal/store/migrations
 GOOSE_DRIVER ?= sqlite3
 DATABASE_URL ?= tmp/detent.db
 
