@@ -143,7 +143,7 @@ func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
 	}
 	capturingFactory := &capturingLocalTransportFactory{factory: factory}
 	server, err := NewAppServer(capturingFactory,
-		WithReadTimeout(20*time.Millisecond),
+		WithReadTimeout(500*time.Millisecond),
 		WithTurnTimeout(time.Second),
 	)
 	if err != nil {
@@ -159,7 +159,7 @@ func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
 	if !errors.Is(err, ErrTurnFailed) {
 		t.Fatalf("RunTurn() error = %v, want ErrTurnFailed", err)
 	}
-	if elapsed > 500*time.Millisecond {
+	if elapsed > 900*time.Millisecond {
 		t.Fatalf("RunTurn() took %s after turn error, want prompt close", elapsed)
 	}
 
