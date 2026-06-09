@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -20,25 +22,33 @@ import (
 	"strings"
 	"time"
 	"unicode"
+
+	"golang.org/x/crypto/blake2b"
 )
 
 const (
-	defaultAPIBase          = "https://api.github.com/repos/digitaldrywood/detent"
-	moduleInstallPackage    = "github.com/digitaldrywood/detent/cmd/detent"
-	moduleInstallTarget     = moduleInstallPackage + "@latest"
-	moduleInstallCommand    = "go install " + moduleInstallTarget
-	homebrewUpdateCommand   = "brew upgrade digitaldrywood/tap/detent"
-	defaultChecksumName     = "checksums.txt"
-	projectName             = "detent"
-	windowsExecutableName   = "detent.exe"
-	nonWindowsArchiveExt    = ".tar.gz"
-	windowsArchiveExt       = ".zip"
-	defaultRequestUserAgent = "detent-updater"
+	defaultAPIBase           = "https://api.github.com/repos/digitaldrywood/detent"
+	moduleInstallPackage     = "github.com/digitaldrywood/detent/cmd/detent"
+	moduleInstallTarget      = moduleInstallPackage + "@latest"
+	moduleInstallCommand     = "go install " + moduleInstallTarget
+	homebrewUpdateCommand    = "brew upgrade digitaldrywood/tap/detent"
+	defaultChecksumName      = "checksums.txt"
+	projectName              = "detent"
+	windowsExecutableName    = "detent.exe"
+	nonWindowsArchiveExt     = ".tar.gz"
+	windowsArchiveExt        = ".zip"
+	defaultRequestUserAgent  = "detent-updater"
+	defaultHTTPClientTimeout = 2 * time.Minute
+	defaultMaxDownloadBytes  = 256 * 1024 * 1024
+	minisignPublicKeySize    = 42
+	minisignSignatureSize    = 74
 )
 
 var (
 	ErrConfirmationRequired = errors.New("update confirmation required")
 	ErrRefused              = errors.New("update refused")
+
+	defaultChecksumMinisignPublicKey = ""
 )
 
 type InstallSource string
@@ -74,8 +84,9 @@ type Release struct {
 }
 
 type ReleaseAssets struct {
-	Archive  Asset
-	Checksum Asset
+	Archive           Asset
+	Checksum          Asset
+	ChecksumSignature Asset
 }
 
 type ReleaseClient interface {
@@ -87,15 +98,19 @@ type ProcessStarter func(string, []string) error
 type CommandRunner func(context.Context, string, []string, io.Writer, io.Writer) error
 type BinaryVerifier func(context.Context, string) (string, error)
 type BinarySigner func(context.Context, string) error
+type CodeSignatureVerifier func(context.Context, string) (bool, error)
+type ChecksumSignatureVerifier func(context.Context, []byte, []byte) error
 
 type GitHubClientConfig struct {
-	APIBase    string
-	HTTPClient *http.Client
+	APIBase          string
+	HTTPClient       *http.Client
+	MaxDownloadBytes int64
 }
 
 type GitHubClient struct {
-	apiBase string
-	http    *http.Client
+	apiBase          string
+	http             *http.Client
+	maxDownloadBytes int64
 }
 
 func NewGitHubClient(cfg GitHubClientConfig) *GitHubClient {
@@ -105,9 +120,13 @@ func NewGitHubClient(cfg GitHubClientConfig) *GitHubClient {
 	}
 	httpClient := cfg.HTTPClient
 	if httpClient == nil {
-		httpClient = http.DefaultClient
+		httpClient = &http.Client{Timeout: defaultHTTPClientTimeout}
 	}
-	return &GitHubClient{apiBase: apiBase, http: httpClient}
+	maxDownloadBytes := cfg.MaxDownloadBytes
+	if maxDownloadBytes <= 0 {
+		maxDownloadBytes = defaultMaxDownloadBytes
+	}
+	return &GitHubClient{apiBase: apiBase, http: httpClient, maxDownloadBytes: maxDownloadBytes}
 }
 
 func (c *GitHubClient) ListReleases(ctx context.Context) ([]Release, error) {
@@ -150,9 +169,15 @@ func (c *GitHubClient) Download(ctx context.Context, url string) ([]byte, error)
 		return nil, fmt.Errorf("download %s: server returned %s", url, resp.Status)
 	}
 
-	raw, err := io.ReadAll(resp.Body)
+	if resp.ContentLength > c.maxDownloadBytes {
+		return nil, fmt.Errorf("download %s exceeds maximum download size of %d bytes", url, c.maxDownloadBytes)
+	}
+	raw, err := io.ReadAll(io.LimitReader(resp.Body, c.maxDownloadBytes+1))
 	if err != nil {
 		return nil, fmt.Errorf("read download %s: %w", url, err)
+	}
+	if int64(len(raw)) > c.maxDownloadBytes {
+		return nil, fmt.Errorf("download %s exceeds maximum download size of %d bytes", url, c.maxDownloadBytes)
 	}
 	return raw, nil
 }
@@ -228,17 +253,19 @@ func IsDevelopmentVersion(version string) bool {
 }
 
 type Config struct {
-	CurrentVersion string
-	ExecutablePath string
-	GOOS           string
-	GOARCH         string
-	Client         ReleaseClient
-	CommandRunner  CommandRunner
-	BinaryVerifier BinaryVerifier
-	BinarySigner   BinarySigner
-	HomeDir        string
-	Env            map[string]string
-	EvalSymlinks   func(string) (string, error)
+	CurrentVersion            string
+	ExecutablePath            string
+	GOOS                      string
+	GOARCH                    string
+	Client                    ReleaseClient
+	CommandRunner             CommandRunner
+	BinaryVerifier            BinaryVerifier
+	BinarySigner              BinarySigner
+	ChecksumSignatureVerifier ChecksumSignatureVerifier
+	RequireChecksumSignature  bool
+	HomeDir                   string
+	Env                       map[string]string
+	EvalSymlinks              func(string) (string, error)
 }
 
 type Service struct {
@@ -263,15 +290,16 @@ const (
 )
 
 type Replacement struct {
-	Target       string
-	Binary       []byte
-	Mode         os.FileMode
-	GOOS         string
-	Context      context.Context
-	StartProcess ProcessStarter
-	Verify       BinaryVerifier
-	Sign         BinarySigner
-	AfterReplace func(context.Context, string) error
+	Target                string
+	Binary                []byte
+	Mode                  os.FileMode
+	GOOS                  string
+	Context               context.Context
+	StartProcess          ProcessStarter
+	Verify                BinaryVerifier
+	Sign                  BinarySigner
+	CodeSignatureVerifier CodeSignatureVerifier
+	AfterReplace          func(context.Context, string) error
 }
 
 type Status struct {
@@ -288,6 +316,7 @@ type Status struct {
 }
 
 func NewService(cfg Config) *Service {
+	checksumSignatureVerifierConfigured := cfg.ChecksumSignatureVerifier != nil
 	if cfg.GOOS == "" {
 		cfg.GOOS = runtime.GOOS
 	}
@@ -305,6 +334,12 @@ func NewService(cfg Config) *Service {
 	}
 	if cfg.BinarySigner == nil {
 		cfg.BinarySigner = signBinary
+	}
+	if cfg.ChecksumSignatureVerifier == nil {
+		cfg.ChecksumSignatureVerifier = VerifyChecksumSignature
+	}
+	if !cfg.RequireChecksumSignature {
+		cfg.RequireChecksumSignature = checksumSignatureVerifierConfigured || checksumSignaturePublicKeyConfigured()
 	}
 	return &Service{cfg: cfg}
 }
@@ -441,19 +476,32 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 		}
 	}
 
-	assets, err := SelectReleaseAssets(release, s.cfg.GOOS, s.cfg.GOARCH)
-	if err != nil {
-		status.Action = ActionRefused
-		status.Message = err.Error()
-		return status, err
-	}
-	archive, err := s.cfg.Client.Download(ctx, assets.Archive.BrowserDownloadURL)
+	assets, err := selectReleaseAssets(release, s.cfg.GOOS, s.cfg.GOARCH, s.cfg.RequireChecksumSignature)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
 	}
 	checksums, err := s.cfg.Client.Download(ctx, assets.Checksum.BrowserDownloadURL)
+	if err != nil {
+		status.Action = ActionRefused
+		status.Message = err.Error()
+		return status, err
+	}
+	if s.cfg.RequireChecksumSignature {
+		checksumSignature, err := s.cfg.Client.Download(ctx, assets.ChecksumSignature.BrowserDownloadURL)
+		if err != nil {
+			status.Action = ActionRefused
+			status.Message = err.Error()
+			return status, err
+		}
+		if err := s.cfg.ChecksumSignatureVerifier(ctx, checksums, checksumSignature); err != nil {
+			status.Action = ActionRefused
+			status.Message = err.Error()
+			return status, err
+		}
+	}
+	archive, err := s.cfg.Client.Download(ctx, assets.Archive.BrowserDownloadURL)
 	if err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
@@ -607,6 +655,10 @@ func CompareVersions(a string, b string) (int, error) {
 }
 
 func SelectReleaseAssets(release Release, goos string, goarch string) (ReleaseAssets, error) {
+	return selectReleaseAssets(release, goos, goarch, true)
+}
+
+func selectReleaseAssets(release Release, goos string, goarch string, requireChecksumSignature bool) (ReleaseAssets, error) {
 	archiveNames := archiveAssetNames(release.TagName, goos, goarch)
 	checksumNames := checksumAssetNames(release.TagName)
 
@@ -614,11 +666,14 @@ func SelectReleaseAssets(release Release, goos string, goarch string) (ReleaseAs
 	if !ok {
 		return ReleaseAssets{}, fmt.Errorf("release %s does not include an archive for %s/%s", release.TagName, goos, goarch)
 	}
-	checksum, ok := assetByName(release.Assets, checksumNames)
-	if !ok {
+	checksum, checksumSignature, checksumFound, signatureFound := checksumAssetPair(release.Assets, checksumNames)
+	if !checksumFound {
 		return ReleaseAssets{}, fmt.Errorf("release %s does not include a checksum asset", release.TagName)
 	}
-	return ReleaseAssets{Archive: archive, Checksum: checksum}, nil
+	if requireChecksumSignature && !signatureFound {
+		return ReleaseAssets{}, fmt.Errorf("release %s does not include a minisign signature for checksum asset %s", release.TagName, checksum.Name)
+	}
+	return ReleaseAssets{Archive: archive, Checksum: checksum, ChecksumSignature: checksumSignature}, nil
 }
 
 func VerifyChecksum(checksums []byte, assetName string, archive []byte) error {
@@ -630,6 +685,43 @@ func VerifyChecksum(checksums []byte, assetName string, archive []byte) error {
 	actual := fmt.Sprintf("%x", sum)
 	if !strings.EqualFold(actual, expected) {
 		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", assetName, expected, actual)
+	}
+	return nil
+}
+
+func VerifyChecksumSignature(ctx context.Context, checksums []byte, signature []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if err := VerifyMinisignSignature(defaultChecksumMinisignPublicKey, checksums, signature); err != nil {
+		return fmt.Errorf("verify checksum signature: %w", err)
+	}
+	return nil
+}
+
+func checksumSignaturePublicKeyConfigured() bool {
+	return strings.TrimSpace(defaultChecksumMinisignPublicKey) != ""
+}
+
+func VerifyMinisignSignature(publicKey string, message []byte, signature []byte) error {
+	keyID, ed25519PublicKey, err := parseMinisignPublicKey(publicKey)
+	if err != nil {
+		return fmt.Errorf("parse minisign public key: %w", err)
+	}
+	signatureKeyID, messageSignature, trustedComment, globalSignature, err := parseMinisignSignature(signature)
+	if err != nil {
+		return fmt.Errorf("parse minisign signature: %w", err)
+	}
+	if !bytes.Equal(signatureKeyID, keyID) {
+		return errors.New("minisign signature key id does not match pinned public key")
+	}
+
+	digest := blake2b.Sum512(message)
+	if !ed25519.Verify(ed25519PublicKey, digest[:], messageSignature) {
+		return errors.New("invalid minisign signature")
+	}
+	if !ed25519.Verify(ed25519PublicKey, minisignTrustedCommentMessage(messageSignature, trustedComment), globalSignature) {
+		return errors.New("invalid minisign trusted comment signature")
 	}
 	return nil
 }
@@ -764,12 +856,18 @@ func finalizeReplacement(replacement Replacement) error {
 		ctx = context.Background()
 	}
 	if replacement.GOOS == "darwin" {
-		signer := replacement.Sign
-		if signer == nil {
-			signer = signBinary
-		}
-		if err := signer(ctx, replacement.Target); err != nil {
+		signed, err := hasValidCodeSignature(ctx, replacement.Target, replacement.CodeSignatureVerifier)
+		if err != nil {
 			return err
+		}
+		if !signed {
+			signer := replacement.Sign
+			if signer == nil {
+				signer = signBinary
+			}
+			if err := signer(ctx, replacement.Target); err != nil {
+				return err
+			}
 		}
 	}
 	if replacement.Verify != nil {
@@ -946,6 +1044,23 @@ func signBinary(ctx context.Context, path string) error {
 		return fmt.Errorf("codesign %s: %w: %s", path, err, strings.TrimSpace(string(output)))
 	}
 	return nil
+}
+
+func hasValidCodeSignature(ctx context.Context, path string, verifier CodeSignatureVerifier) (bool, error) {
+	if verifier != nil {
+		return verifier(ctx, path)
+	}
+	cmd := exec.CommandContext(ctx, "codesign", "--verify", "--strict", path)
+	output, err := cmd.CombinedOutput()
+	if err == nil {
+		return true, nil
+	}
+	text := strings.TrimSpace(string(output))
+	lower := strings.ToLower(text)
+	if strings.Contains(lower, "code object is not signed") || strings.Contains(lower, "not signed at all") {
+		return false, nil
+	}
+	return false, fmt.Errorf("verify codesign %s: %w: %s", path, err, text)
 }
 
 func outputWriter(writer io.Writer) io.Writer {
@@ -1142,6 +1257,78 @@ func expectedChecksum(checksums []byte, assetName string) (string, bool) {
 	return "", false
 }
 
+func parseMinisignPublicKey(raw string) ([]byte, ed25519.PublicKey, error) {
+	encoded := firstMinisignPayloadLine(raw)
+	if encoded == "" {
+		return nil, nil, errors.New("public key is not configured")
+	}
+	packet, err := base64.StdEncoding.DecodeString(encoded)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(packet) != minisignPublicKeySize {
+		return nil, nil, fmt.Errorf("public key packet has %d bytes, want %d", len(packet), minisignPublicKeySize)
+	}
+	if string(packet[:2]) != "Ed" {
+		return nil, nil, fmt.Errorf("unsupported public key algorithm %q", packet[:2])
+	}
+	keyID := append([]byte(nil), packet[2:10]...)
+	publicKey := append(ed25519.PublicKey(nil), packet[10:]...)
+	return keyID, publicKey, nil
+}
+
+func parseMinisignSignature(raw []byte) ([]byte, []byte, string, []byte, error) {
+	lines := strings.Split(strings.ReplaceAll(string(raw), "\r\n", "\n"), "\n")
+	if len(lines) < 4 {
+		return nil, nil, "", nil, errors.New("signature file has fewer than 4 lines")
+	}
+	if !strings.HasPrefix(lines[0], "untrusted comment:") {
+		return nil, nil, "", nil, errors.New("missing untrusted comment")
+	}
+	signaturePacket, err := base64.StdEncoding.DecodeString(strings.TrimSpace(lines[1]))
+	if err != nil {
+		return nil, nil, "", nil, fmt.Errorf("decode signature packet: %w", err)
+	}
+	if len(signaturePacket) != minisignSignatureSize {
+		return nil, nil, "", nil, fmt.Errorf("signature packet has %d bytes, want %d", len(signaturePacket), minisignSignatureSize)
+	}
+	if string(signaturePacket[:2]) != "ED" {
+		return nil, nil, "", nil, fmt.Errorf("unsupported signature algorithm %q", signaturePacket[:2])
+	}
+	trustedComment, ok := strings.CutPrefix(lines[2], "trusted comment: ")
+	if !ok {
+		return nil, nil, "", nil, errors.New("missing trusted comment")
+	}
+	globalSignature, err := base64.StdEncoding.DecodeString(strings.TrimSpace(lines[3]))
+	if err != nil {
+		return nil, nil, "", nil, fmt.Errorf("decode trusted comment signature: %w", err)
+	}
+	if len(globalSignature) != ed25519.SignatureSize {
+		return nil, nil, "", nil, fmt.Errorf("trusted comment signature has %d bytes, want %d", len(globalSignature), ed25519.SignatureSize)
+	}
+	keyID := append([]byte(nil), signaturePacket[2:10]...)
+	messageSignature := append([]byte(nil), signaturePacket[10:]...)
+	return keyID, messageSignature, trustedComment, globalSignature, nil
+}
+
+func firstMinisignPayloadLine(raw string) string {
+	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || strings.HasPrefix(line, "untrusted comment:") {
+			continue
+		}
+		return line
+	}
+	return ""
+}
+
+func minisignTrustedCommentMessage(signature []byte, trustedComment string) []byte {
+	message := make([]byte, 0, len(signature)+len(trustedComment))
+	message = append(message, signature...)
+	message = append(message, trustedComment...)
+	return message
+}
+
 func archiveAssetNames(tag string, goos string, goarch string) []string {
 	version := displayVersion(tag)
 	extension := nonWindowsArchiveExt
@@ -1167,6 +1354,28 @@ func checksumAssetNames(tag string) []string {
 		names = append([]string{fmt.Sprintf("%s_%s_checksums.txt", projectName, tag)}, names...)
 	}
 	return names
+}
+
+func checksumAssetPair(assets []Asset, checksumNames []string) (Asset, Asset, bool, bool) {
+	var firstChecksum Asset
+	for _, name := range checksumNames {
+		checksum, ok := assetByName(assets, []string{name})
+		if !ok {
+			continue
+		}
+		if firstChecksum.Name == "" {
+			firstChecksum = checksum
+		}
+		signature, ok := assetByName(assets, checksumSignatureAssetNames(checksum.Name))
+		if ok {
+			return checksum, signature, true, true
+		}
+	}
+	return firstChecksum, Asset{}, firstChecksum.Name != "", false
+}
+
+func checksumSignatureAssetNames(checksumName string) []string {
+	return []string{checksumName + ".minisig"}
 }
 
 func assetByName(assets []Asset, names []string) (Asset, bool) {

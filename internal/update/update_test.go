@@ -6,7 +6,9 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"crypto/ed25519"
 	"crypto/sha256"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +19,9 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
+
+	"golang.org/x/crypto/blake2b"
 )
 
 func TestCompareVersions(t *testing.T) {
@@ -174,6 +179,7 @@ func TestSelectReleaseAssetsAndVerifyChecksum(t *testing.T) {
 	t.Parallel()
 
 	archiveName := "detent_1.2.4_linux_amd64.tar.gz"
+	signatureName := "detent_1.2.4_checksums.txt.minisig"
 	archive := []byte("archive")
 	sum := sha256.Sum256(archive)
 	checksums := []byte(fmt.Sprintf("%x  %s\n", sum, archiveName))
@@ -183,6 +189,7 @@ func TestSelectReleaseAssetsAndVerifyChecksum(t *testing.T) {
 		Assets: []Asset{
 			{Name: archiveName, BrowserDownloadURL: "https://example.invalid/archive"},
 			{Name: "detent_1.2.4_checksums.txt", BrowserDownloadURL: "https://example.invalid/checksums"},
+			{Name: signatureName, BrowserDownloadURL: "https://example.invalid/checksums.minisig"},
 		},
 	}, "linux", "amd64")
 	if err != nil {
@@ -191,11 +198,168 @@ func TestSelectReleaseAssetsAndVerifyChecksum(t *testing.T) {
 	if assets.Archive.Name != archiveName {
 		t.Fatalf("Archive.Name = %q, want %q", assets.Archive.Name, archiveName)
 	}
+	if assets.ChecksumSignature.Name != signatureName {
+		t.Fatalf("ChecksumSignature.Name = %q, want %q", assets.ChecksumSignature.Name, signatureName)
+	}
 	if err := VerifyChecksum(checksums, archiveName, archive); err != nil {
 		t.Fatalf("VerifyChecksum() error = %v", err)
 	}
 	if err := VerifyChecksum(checksums, archiveName, []byte("different")); err == nil {
 		t.Fatal("VerifyChecksum() error = nil, want checksum mismatch")
+	}
+}
+
+func TestVerifyMinisignSignatureRejectsTamper(t *testing.T) {
+	t.Parallel()
+
+	publicKey, privateKey, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatalf("GenerateKey() error = %v", err)
+	}
+	keyID := []byte("12345678")
+	trustedComment := "detent checksums v1.2.4"
+	checksums := []byte("abc123  detent_1.2.4_linux_amd64.tar.gz\n")
+	minisignPublicKey := testMinisignPublicKey(publicKey, keyID)
+	signature := testMinisignSignature(t, privateKey, keyID, checksums, trustedComment)
+
+	tests := []struct {
+		name      string
+		checksums []byte
+		signature []byte
+		wantErr   string
+	}{
+		{
+			name:      "valid",
+			checksums: checksums,
+			signature: signature,
+		},
+		{
+			name:      "tampered checksums",
+			checksums: []byte("abc123  detent_1.2.4_darwin_amd64.tar.gz\n"),
+			signature: signature,
+			wantErr:   "invalid minisign signature",
+		},
+		{
+			name:      "tampered signature",
+			checksums: checksums,
+			signature: append([]byte("x"), signature[1:]...),
+			wantErr:   "parse minisign signature",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			err := VerifyMinisignSignature(minisignPublicKey, tt.checksums, tt.signature)
+			if tt.wantErr == "" {
+				if err != nil {
+					t.Fatalf("VerifyMinisignSignature() error = %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("VerifyMinisignSignature() error = nil, want error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("VerifyMinisignSignature() error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestVerifyChecksumSignatureFailsClosedWithoutPinnedKey(t *testing.T) {
+	previous := defaultChecksumMinisignPublicKey
+	defaultChecksumMinisignPublicKey = ""
+	t.Cleanup(func() {
+		defaultChecksumMinisignPublicKey = previous
+	})
+
+	err := VerifyChecksumSignature(context.Background(), []byte("checksums"), []byte("signature"))
+	if err == nil {
+		t.Fatal("VerifyChecksumSignature() error = nil, want missing public key")
+	}
+	if !strings.Contains(err.Error(), "public key is not configured") {
+		t.Fatalf("VerifyChecksumSignature() error = %v, want missing public key", err)
+	}
+}
+
+func TestNewServiceGatesChecksumSignatureUntilConfigured(t *testing.T) {
+	previous := defaultChecksumMinisignPublicKey
+	defaultChecksumMinisignPublicKey = ""
+	t.Cleanup(func() {
+		defaultChecksumMinisignPublicKey = previous
+	})
+
+	defaultService := NewService(Config{})
+	if defaultService.cfg.RequireChecksumSignature {
+		t.Fatal("RequireChecksumSignature = true, want false without a pinned key")
+	}
+
+	injectedVerifier := NewService(Config{ChecksumSignatureVerifier: acceptChecksumSignature})
+	if !injectedVerifier.cfg.RequireChecksumSignature {
+		t.Fatal("RequireChecksumSignature = false, want true with injected verifier")
+	}
+}
+
+func TestNewGitHubClientDefaultsTransportBounds(t *testing.T) {
+	t.Parallel()
+
+	client := NewGitHubClient(GitHubClientConfig{})
+	if client.http == http.DefaultClient {
+		t.Fatal("http client = http.DefaultClient, want bounded default client")
+	}
+	if client.http.Timeout != defaultHTTPClientTimeout {
+		t.Fatalf("http Timeout = %v, want %v", client.http.Timeout, defaultHTTPClientTimeout)
+	}
+	if client.maxDownloadBytes != defaultMaxDownloadBytes {
+		t.Fatalf("maxDownloadBytes = %d, want %d", client.maxDownloadBytes, defaultMaxDownloadBytes)
+	}
+}
+
+func TestGitHubClientDownloadRejectsOversize(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		_, _ = w.Write([]byte("abcd"))
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewGitHubClient(GitHubClientConfig{
+		HTTPClient:       server.Client(),
+		MaxDownloadBytes: 3,
+	})
+	_, err := client.Download(context.Background(), server.URL)
+	if err == nil {
+		t.Fatal("Download() error = nil, want oversize error")
+	}
+	if !strings.Contains(err.Error(), "exceeds maximum download size") {
+		t.Fatalf("Download() error = %v, want maximum download size", err)
+	}
+}
+
+func TestGitHubClientDownloadHonorsHTTPTimeout(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusOK)
+		if flusher, ok := w.(http.Flusher); ok {
+			flusher.Flush()
+		}
+		time.Sleep(100 * time.Millisecond)
+		_, _ = w.Write([]byte("late"))
+	}))
+	t.Cleanup(server.Close)
+
+	httpClient := server.Client()
+	httpClient.Timeout = 10 * time.Millisecond
+	client := NewGitHubClient(GitHubClientConfig{HTTPClient: httpClient})
+	_, err := client.Download(context.Background(), server.URL)
+	if err == nil {
+		t.Fatal("Download() error = nil, want timeout")
+	}
+	if !strings.Contains(err.Error(), "timeout") && !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("Download() error = %v, want timeout", err)
 	}
 }
 
@@ -220,20 +384,24 @@ func TestServiceAppliesReleaseUpdateFromHTTPServer(t *testing.T) {
 
 	archiveName := "detent_1.2.4_linux_amd64.tar.gz"
 	checksumName := "detent_1.2.4_checksums.txt"
+	signatureName := checksumName + ".minisig"
 	archive := detentUpdateArchive(t, "updated")
 	sum := sha256.Sum256(archive)
 	checksums := fmt.Sprintf("%x  %s\n", sum, archiveName)
+	signature := []byte("valid signature")
 
 	var server *httptest.Server
 	server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/releases":
 			w.Header().Set("Content-Type", "application/json")
-			fmt.Fprintf(w, `[{"tag_name":"v1.2.4","draft":false,"prerelease":false,"assets":[{"name":"%s","browser_download_url":"%s/archive"},{"name":"%s","browser_download_url":"%s/checksums"}]}]`, archiveName, server.URL, checksumName, server.URL)
+			fmt.Fprintf(w, `[{"tag_name":"v1.2.4","draft":false,"prerelease":false,"assets":[{"name":"%s","browser_download_url":"%s/archive"},{"name":"%s","browser_download_url":"%s/checksums"},{"name":"%s","browser_download_url":"%s/checksums.minisig"}]}]`, archiveName, server.URL, checksumName, server.URL, signatureName, server.URL)
 		case "/archive":
 			_, _ = w.Write(archive)
 		case "/checksums":
 			fmt.Fprint(w, checksums)
+		case "/checksums.minisig":
+			_, _ = w.Write(signature)
 		default:
 			http.NotFound(w, r)
 		}
@@ -253,6 +421,7 @@ func TestServiceAppliesReleaseUpdateFromHTTPServer(t *testing.T) {
 		BinaryVerifier: func(context.Context, string) (string, error) {
 			return "version: v1.2.4\n", nil
 		},
+		ChecksumSignatureVerifier: acceptChecksumSignature,
 	})
 
 	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
@@ -271,6 +440,148 @@ func TestServiceAppliesReleaseUpdateFromHTTPServer(t *testing.T) {
 	}
 	if strings.TrimSpace(string(raw)) != "updated" {
 		t.Fatalf("updated binary = %q, want updated", raw)
+	}
+}
+
+func TestServiceAppliesReleaseUpdateWithoutChecksumSignatureWhenKeyMissing(t *testing.T) {
+	previous := defaultChecksumMinisignPublicKey
+	defaultChecksumMinisignPublicKey = ""
+	t.Cleanup(func() {
+		defaultChecksumMinisignPublicKey = previous
+	})
+
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "bin", "detent")
+	lockPath := filepath.Join(tmp, "state", "install.lock")
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		t.Fatalf("MkdirAll(binary dir) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(lock dir) error = %v", err)
+	}
+	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(binary) error = %v", err)
+	}
+	if err := os.WriteFile(lockPath, []byte("binary="+binary+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(lock) error = %v", err)
+	}
+
+	archiveName := "detent_1.2.4_linux_amd64.tar.gz"
+	checksumName := "detent_1.2.4_checksums.txt"
+	archive := detentUpdateArchive(t, "updated")
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%x  %s\n", sum, archiveName)
+	service := NewService(Config{
+		CurrentVersion: "1.2.3",
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		Client: staticReleaseClient{
+			releases: []Release{{
+				TagName: "v1.2.4",
+				Assets: []Asset{
+					{Name: archiveName, BrowserDownloadURL: "https://example.invalid/archive"},
+					{Name: checksumName, BrowserDownloadURL: "https://example.invalid/checksums"},
+				},
+			}},
+			downloads: map[string][]byte{
+				"https://example.invalid/archive":   archive,
+				"https://example.invalid/checksums": []byte(checksums),
+			},
+		},
+		Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+		BinaryVerifier: func(context.Context, string) (string, error) {
+			return "version: v1.2.4\n", nil
+		},
+	})
+
+	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
+	if err != nil {
+		t.Fatalf("Apply() error = %v", err)
+	}
+	if status.Action != ActionUpdated {
+		t.Fatalf("Action = %q, want %q", status.Action, ActionUpdated)
+	}
+	raw, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatalf("ReadFile(binary) error = %v", err)
+	}
+	if strings.TrimSpace(string(raw)) != "updated" {
+		t.Fatalf("updated binary = %q, want updated", raw)
+	}
+}
+
+func TestServiceRejectsBadChecksumSignatureBeforeReplacement(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	binary := filepath.Join(tmp, "bin", "detent")
+	lockPath := filepath.Join(tmp, "state", "install.lock")
+	if err := os.MkdirAll(filepath.Dir(binary), 0o755); err != nil {
+		t.Fatalf("MkdirAll(binary dir) error = %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(lockPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll(lock dir) error = %v", err)
+	}
+	if err := os.WriteFile(binary, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(binary) error = %v", err)
+	}
+	if err := os.WriteFile(lockPath, []byte("binary="+binary+"\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(lock) error = %v", err)
+	}
+
+	archiveName := "detent_1.2.4_linux_amd64.tar.gz"
+	checksumName := "detent_1.2.4_checksums.txt"
+	signatureName := checksumName + ".minisig"
+	archive := detentUpdateArchive(t, "updated")
+	sum := sha256.Sum256(archive)
+	checksums := fmt.Sprintf("%x  %s\n", sum, archiveName)
+
+	service := NewService(Config{
+		CurrentVersion: "1.2.3",
+		ExecutablePath: binary,
+		GOOS:           "linux",
+		GOARCH:         "amd64",
+		Client: staticReleaseClient{
+			releases: []Release{{
+				TagName: "v1.2.4",
+				Assets: []Asset{
+					{Name: archiveName, BrowserDownloadURL: "https://example.invalid/archive"},
+					{Name: checksumName, BrowserDownloadURL: "https://example.invalid/checksums"},
+					{Name: signatureName, BrowserDownloadURL: "https://example.invalid/checksums.minisig"},
+				},
+			}},
+			downloads: map[string][]byte{
+				"https://example.invalid/archive":           archive,
+				"https://example.invalid/checksums":         []byte(checksums),
+				"https://example.invalid/checksums.minisig": []byte("bad signature"),
+			},
+		},
+		Env: map[string]string{"DETENT_INSTALL_LOCK": lockPath},
+		BinaryVerifier: func(context.Context, string) (string, error) {
+			return "version: v1.2.4\n", nil
+		},
+		ChecksumSignatureVerifier: func(context.Context, []byte, []byte) error {
+			return errors.New("bad checksum signature")
+		},
+	})
+
+	status, err := service.Apply(context.Background(), ApplyOptions{AssumeYes: true})
+	if err == nil {
+		t.Fatal("Apply() error = nil, want bad checksum signature")
+	}
+	if status.Action != ActionRefused {
+		t.Fatalf("Action = %q, want %q", status.Action, ActionRefused)
+	}
+	if !strings.Contains(status.Message, "bad checksum signature") {
+		t.Fatalf("Message = %q, want bad checksum signature", status.Message)
+	}
+	raw, err := os.ReadFile(binary)
+	if err != nil {
+		t.Fatalf("ReadFile(binary) error = %v", err)
+	}
+	if string(raw) != "old" {
+		t.Fatalf("binary = %q, want original binary", raw)
 	}
 }
 
@@ -492,12 +803,14 @@ func TestServiceGoInstallFromReleaseUsesReleaseAsset(t *testing.T) {
 
 	archiveName := "detent_1.2.4_linux_amd64.tar.gz"
 	checksumName := "detent_1.2.4_checksums.txt"
+	signatureName := checksumName + ".minisig"
 	archive := detentUpdateArchive(t, "updated")
 	sum := sha256.Sum256(archive)
 	checksums := fmt.Sprintf("%x  %s\n", sum, archiveName)
 	downloads := map[string][]byte{
-		"https://example.invalid/archive":   archive,
-		"https://example.invalid/checksums": []byte(checksums),
+		"https://example.invalid/archive":           archive,
+		"https://example.invalid/checksums":         []byte(checksums),
+		"https://example.invalid/checksums.minisig": []byte("valid signature"),
 	}
 	var stderr bytes.Buffer
 	var verifiedPath string
@@ -512,6 +825,7 @@ func TestServiceGoInstallFromReleaseUsesReleaseAsset(t *testing.T) {
 				Assets: []Asset{
 					{Name: archiveName, BrowserDownloadURL: "https://example.invalid/archive"},
 					{Name: checksumName, BrowserDownloadURL: "https://example.invalid/checksums"},
+					{Name: signatureName, BrowserDownloadURL: "https://example.invalid/checksums.minisig"},
 				},
 			}},
 			downloads: downloads,
@@ -522,6 +836,7 @@ func TestServiceGoInstallFromReleaseUsesReleaseAsset(t *testing.T) {
 			verifiedPath = path
 			return "version: v1.2.4\n", nil
 		},
+		ChecksumSignatureVerifier: acceptChecksumSignature,
 	})
 
 	status, err := service.Apply(context.Background(), ApplyOptions{
@@ -686,7 +1001,7 @@ func TestReplaceBinaryRollsBackWhenAfterReplaceFails(t *testing.T) {
 	}
 }
 
-func TestReplaceBinarySignsDarwinBeforeVerify(t *testing.T) {
+func TestReplaceBinarySignsUnsignedDarwinBeforeVerify(t *testing.T) {
 	t.Parallel()
 
 	tmp := t.TempDir()
@@ -701,6 +1016,10 @@ func TestReplaceBinarySignsDarwinBeforeVerify(t *testing.T) {
 		Binary: []byte("new"),
 		Mode:   0o755,
 		GOOS:   "darwin",
+		CodeSignatureVerifier: func(_ context.Context, path string) (bool, error) {
+			calls = append(calls, "signature:"+path)
+			return false, nil
+		},
 		Sign: func(_ context.Context, path string) error {
 			calls = append(calls, "sign:"+path)
 			return nil
@@ -713,7 +1032,44 @@ func TestReplaceBinarySignsDarwinBeforeVerify(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReplaceBinary() error = %v", err)
 	}
-	want := []string{"sign:" + target, "verify:" + target}
+	want := []string{"signature:" + target, "sign:" + target, "verify:" + target}
+	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
+		t.Fatalf("calls = %q, want %q", calls, want)
+	}
+}
+
+func TestReplaceBinaryPreservesValidDarwinSignature(t *testing.T) {
+	t.Parallel()
+
+	tmp := t.TempDir()
+	target := filepath.Join(tmp, "detent")
+	if err := os.WriteFile(target, []byte("old"), 0o755); err != nil {
+		t.Fatalf("WriteFile(target) error = %v", err)
+	}
+
+	var calls []string
+	err := ReplaceBinary(Replacement{
+		Target: target,
+		Binary: []byte("new"),
+		Mode:   0o755,
+		GOOS:   "darwin",
+		CodeSignatureVerifier: func(_ context.Context, path string) (bool, error) {
+			calls = append(calls, "signature:"+path)
+			return true, nil
+		},
+		Sign: func(context.Context, string) error {
+			t.Fatal("Sign called for a binary with a valid code signature")
+			return nil
+		},
+		Verify: func(_ context.Context, path string) (string, error) {
+			calls = append(calls, "verify:"+path)
+			return "version: v1.2.4\n", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("ReplaceBinary() error = %v", err)
+	}
+	want := []string{"signature:" + target, "verify:" + target}
 	if strings.Join(calls, "\n") != strings.Join(want, "\n") {
 		t.Fatalf("calls = %q, want %q", calls, want)
 	}
@@ -841,6 +1197,32 @@ func detentWindowsUpdateArchive(t *testing.T, content string) []byte {
 		t.Fatalf("zip Close() error = %v", err)
 	}
 	return buf.Bytes()
+}
+
+func testMinisignPublicKey(publicKey ed25519.PublicKey, keyID []byte) string {
+	packet := append([]byte("Ed"), keyID...)
+	packet = append(packet, publicKey...)
+	return base64.StdEncoding.EncodeToString(packet)
+}
+
+func testMinisignSignature(t *testing.T, privateKey ed25519.PrivateKey, keyID []byte, message []byte, trustedComment string) []byte {
+	t.Helper()
+
+	digest := blake2b.Sum512(message)
+	signature := ed25519.Sign(privateKey, digest[:])
+	packet := append([]byte("ED"), keyID...)
+	packet = append(packet, signature...)
+	globalSignature := ed25519.Sign(privateKey, append(signature, []byte(trustedComment)...))
+	return []byte(fmt.Sprintf(
+		"untrusted comment: signature from minisign secret key\n%s\ntrusted comment: %s\n%s\n",
+		base64.StdEncoding.EncodeToString(packet),
+		trustedComment,
+		base64.StdEncoding.EncodeToString(globalSignature),
+	))
+}
+
+func acceptChecksumSignature(context.Context, []byte, []byte) error {
+	return nil
 }
 
 type staticReleaseClient struct {
