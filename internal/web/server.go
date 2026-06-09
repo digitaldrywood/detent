@@ -45,21 +45,28 @@ const (
 	ModeOnboarding Mode = "onboarding"
 )
 
+const (
+	defaultHTTPReadHeaderTimeout = 5 * time.Second
+	defaultHTTPIdleTimeout       = 2 * time.Minute
+)
+
 type Config struct {
-	Logger          *slog.Logger
-	Mode            Mode
-	StaticDir       string
-	SSETickInterval time.Duration
-	WorkflowPath    string
-	Version         string
-	Build           buildinfo.Info
-	DashboardURL    string
-	Pricing         budget.PricingTable
-	GlobalConfig    globalconfig.Config
-	ConfigPathRule  globalconfig.PathRule
-	RuntimeDBPath   string
-	RuntimeLogPath  string
-	ServerAddress   string
+	Logger                *slog.Logger
+	Mode                  Mode
+	StaticDir             string
+	SSETickInterval       time.Duration
+	HTTPReadHeaderTimeout time.Duration
+	HTTPIdleTimeout       time.Duration
+	WorkflowPath          string
+	Version               string
+	Build                 buildinfo.Info
+	DashboardURL          string
+	Pricing               budget.PricingTable
+	GlobalConfig          globalconfig.Config
+	ConfigPathRule        globalconfig.PathRule
+	RuntimeDBPath         string
+	RuntimeLogPath        string
+	ServerAddress         string
 }
 
 type Server struct {
@@ -106,6 +113,8 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	e := echo.New()
 	e.HideBanner = true
 	e.HidePort = true
+	e.Server.ReadHeaderTimeout = cfg.httpReadHeaderTimeout()
+	e.Server.IdleTimeout = cfg.httpIdleTimeout()
 
 	server := &Server{
 		echo:         e,
@@ -276,6 +285,20 @@ func (cfg Config) sseTickInterval() time.Duration {
 		return cfg.SSETickInterval
 	}
 	return time.Second
+}
+
+func (cfg Config) httpReadHeaderTimeout() time.Duration {
+	if cfg.HTTPReadHeaderTimeout > 0 {
+		return cfg.HTTPReadHeaderTimeout
+	}
+	return defaultHTTPReadHeaderTimeout
+}
+
+func (cfg Config) httpIdleTimeout() time.Duration {
+	if cfg.HTTPIdleTimeout > 0 {
+		return cfg.HTTPIdleTimeout
+	}
+	return defaultHTTPIdleTimeout
 }
 
 func (cfg Config) workflowPath() string {
