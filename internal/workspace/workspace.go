@@ -498,6 +498,9 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 	if err == nil {
 		return nil
 	}
+	if errors.Is(err, exec.ErrWaitDelay) && hookCtx.Err() == nil {
+		return nil
+	}
 
 	exitCode := -1
 	var exitErr *exec.ExitError

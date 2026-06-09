@@ -288,6 +288,33 @@ func TestLocalGitHookCancellationReturnsPromptly(t *testing.T) {
 	}
 }
 
+func TestLocalGitHookAllowsDaemonizedSuccess(t *testing.T) {
+	skipWindows(t)
+
+	workspacePath := t.TempDir()
+	backend := &LocalGit{
+		hooks:  Hooks{Timeout: 3 * time.Second},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	started := time.Now()
+	err := backend.runHook(
+		context.Background(),
+		"before_run",
+		"sleep 4 &",
+		Info{Path: workspacePath, Key: "DD-HOOK", Branch: "detent/dd-hook"},
+		Issue{Identifier: "DD-HOOK"},
+	)
+	elapsed := time.Since(started)
+
+	if err != nil {
+		t.Fatalf("runHook() error = %v, want nil", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("runHook() elapsed = %s, want daemonized hook within wait delay", elapsed)
+	}
+}
+
 func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 	t.Parallel()
 	skipWindows(t)
