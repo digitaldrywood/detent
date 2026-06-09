@@ -6,6 +6,9 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -51,6 +54,58 @@ func TestConnectorAuthenticateValidatesViewerAndProject(t *testing.T) {
 	if variables["projectId"] != "PVT_1" {
 		t.Fatalf("projectId = %v, want PVT_1", variables["projectId"])
 	}
+}
+
+func TestConnectorInstanceLoginConcurrentAuthenticateAndRead(t *testing.T) {
+	t.Parallel()
+
+	var count atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		login := "octocat-" + strconv.FormatInt(count.Add(1), 10)
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"` + login + `"},"node":{"__typename":"ProjectV2","id":"PVT_1"}}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewConnector(Config{
+		Endpoint:    server.URL,
+		APIKey:      "token",
+		ProjectSlug: "PVT_1",
+		HTTPClient:  server.Client(),
+		GHToken: func(context.Context, string) (string, error) {
+			t.Fatal("gh token fallback should not run")
+			return "", nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewConnector() error = %v", err)
+	}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			for range 25 {
+				if err := c.Authenticate(context.Background()); err != nil {
+					t.Errorf("Authenticate() error = %v", err)
+				}
+			}
+		}()
+	}
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		<-start
+		for range 200 {
+			_ = c.InstanceLogin()
+		}
+	}()
+
+	close(start)
+	wg.Wait()
 }
 
 func TestConnectorAuthenticateReportsProjectProblems(t *testing.T) {

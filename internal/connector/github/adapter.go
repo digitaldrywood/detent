@@ -1147,8 +1147,8 @@ func (c *Connector) populateBlockerReasons(ctx context.Context, issues []connect
 }
 
 func (c *Connector) fetchIssueComments(ctx context.Context, ref issueRef) ([]issueComment, error) {
-	var response []restComment
-	if err := c.client.REST(ctx, http.MethodGet, restIssueCommentsListPath(ref), nil, &response); err != nil {
+	response, err := fetchRESTList[restComment](ctx, c.client, restIssueCommentsListPath(ref))
+	if err != nil {
 		return nil, err
 	}
 	comments := make([]issueComment, 0, len(response))
@@ -1443,20 +1443,20 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 }
 
 func (c *Connector) fetchPullRequestCIState(ctx context.Context, repo pullRequestRepo, sha string) (string, error) {
-	var checkRuns restCheckRuns
-	if err := c.client.REST(ctx, http.MethodGet, restCommitCheckRunsPath(repo, sha), nil, &checkRuns); err != nil {
+	checkRuns, err := fetchRESTCheckRuns(ctx, c.client, restCommitCheckRunsPath(repo, sha))
+	if err != nil {
 		return "", fmt.Errorf("fetch github check runs: %w", err)
 	}
-	var statuses []restCommitStatus
-	if err := c.client.REST(ctx, http.MethodGet, restCommitStatusesPath(repo, sha), nil, &statuses); err != nil {
+	statuses, err := fetchRESTList[restCommitStatus](ctx, c.client, restCommitStatusesPath(repo, sha))
+	if err != nil {
 		return "", fmt.Errorf("fetch github commit statuses: %w", err)
 	}
-	return combinedCIState(checkRunsState(checkRuns.CheckRuns), commitStatusesState(statuses)), nil
+	return combinedCIState(checkRunsState(checkRuns), commitStatusesState(statuses)), nil
 }
 
 func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullRequestRepo, number int, headSHA string) ([]pullRequestReview, error) {
-	var response []restReview
-	if err := c.client.REST(ctx, http.MethodGet, restPullRequestReviewsPath(repo, number), nil, &response); err != nil {
+	response, err := fetchRESTList[restReview](ctx, c.client, restPullRequestReviewsPath(repo, number))
+	if err != nil {
 		return nil, fmt.Errorf("fetch github pull request reviews: %w", err)
 	}
 	review, ok := latestCodexReview(response, headSHA)
@@ -2425,6 +2425,40 @@ func restCommitStatusesPath(repo pullRequestRepo, sha string) string {
 	values := url.Values{}
 	values.Set("per_page", "100")
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/commits/" + url.PathEscape(sha) + "/statuses?" + values.Encode()
+}
+
+func fetchRESTList[T any](ctx context.Context, client *Client, path string) ([]T, error) {
+	values := []T{}
+	for path != "" {
+		var page []T
+		headers, err := client.rest(ctx, http.MethodGet, path, nil, &page)
+		if err != nil {
+			return nil, err
+		}
+		values = append(values, page...)
+		path, err = client.nextRESTPage(headers)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return values, nil
+}
+
+func fetchRESTCheckRuns(ctx context.Context, client *Client, path string) ([]restCheckRun, error) {
+	checkRuns := []restCheckRun{}
+	for path != "" {
+		var page restCheckRuns
+		headers, err := client.rest(ctx, http.MethodGet, path, nil, &page)
+		if err != nil {
+			return nil, err
+		}
+		checkRuns = append(checkRuns, page.CheckRuns...)
+		path, err = client.nextRESTPage(headers)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return checkRuns, nil
 }
 
 func githubIssueNodeFromREST(ref issueRef, issue restIssue) githubIssueNode {

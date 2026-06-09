@@ -483,6 +483,80 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 	}
 }
 
+func TestConnectorFetchCandidateIssuesPaginatesPullRequestStatusRESTEndpoints(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_182","content":{"__typename":"Issue","id":"I_182","number":182,"title":"First issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/182","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}}]`,
+		},
+		{
+			method:  http.MethodGet,
+			path:    "/repos/digitaldrywood/detent/commits/sha-187/check-runs?per_page=100",
+			headers: map[string]string{"Link": `</repos/digitaldrywood/detent/commits/sha-187/check-runs?per_page=100&page=2>; rel="next"`},
+			body:    `{"check_runs":[]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-187/check-runs?per_page=100&page=2",
+			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method:  http.MethodGet,
+			path:    "/repos/digitaldrywood/detent/commits/sha-187/statuses?per_page=100",
+			headers: map[string]string{"Link": `</repos/digitaldrywood/detent/commits/sha-187/statuses?per_page=100&page=2>; rel="next"`},
+			body:    `[{"context":"ci/build","state":"success","created_at":"2026-06-05T11:00:00Z"}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-187/statuses?per_page=100&page=2",
+			body:   `[{"context":"ci/build","state":"failure","created_at":"2026-06-05T12:00:00Z"}]`,
+		},
+		{
+			method:  http.MethodGet,
+			path:    "/repos/digitaldrywood/detent/pulls/187/reviews?per_page=100",
+			headers: map[string]string{"Link": `</repos/digitaldrywood/detent/pulls/187/reviews?per_page=100&page=2>; rel="next"`},
+			body:    `[{"body":"No blocking findings.","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"sha-187","submitted_at":"2026-06-05T10:00:00Z"}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/187/reviews?per_page=100&page=2",
+			body:   `[{"body":"[P1] Later paged finding.","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"sha-187","submitted_at":"2026-06-05T12:00:00Z"}]`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:  "PVT_1",
+		ActiveStates: []string{"Todo"},
+	})
+
+	got, err := c.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchCandidateIssues() len = %d, want 1", len(got))
+	}
+
+	pr := got[0].PullRequest
+	if pr == nil {
+		t.Fatal("PullRequest = nil, want matching PR")
+	}
+	if pr.CIStatus != "fail" || pr.CodexReviewState != "P1" {
+		t.Fatalf("PullRequest status = CI %q review %q, want fail/P1", pr.CIStatus, pr.CodexReviewState)
+	}
+
+	requests := server.requests()
+	if len(requests) != 8 {
+		t.Fatalf("request count = %d, want project query plus paged PR REST requests", len(requests))
+	}
+}
+
 func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	t.Parallel()
 
@@ -652,8 +726,14 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing
 			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw98","number":98,"title":"Homebrew tap","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/98","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Blocked"},"priorityValue":null}]}}}}`,
 		},
 		{
+			method:  http.MethodGet,
+			path:    "/repos/digitaldrywood/detent/issues/98/comments?per_page=100",
+			headers: map[string]string{"Link": `</repos/digitaldrywood/detent/issues/98/comments?per_page=100&page=2>; rel="next"`},
+			body:    `[]`,
+		},
+		{
 			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues/98/comments?per_page=100",
+			path:   "/repos/digitaldrywood/detent/issues/98/comments?per_page=100&page=2",
 			body:   `[{"body":"## Codex Workpad\n\n### Plan\n- Check prerequisites.\n\n### Human Action Needed\n- Create public repository ` + "`" + `digitaldrywood/homebrew-tap` + "`" + `.\n- Add repository Actions secret ` + "`" + `HOMEBREW_TAP_GITHUB_TOKEN` + "`" + `.\n\n### Validation Evidence\n- Not run."}]`,
 		},
 	})
@@ -676,8 +756,8 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing
 	}
 
 	requests := server.requests()
-	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want 2", len(requests))
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
 	}
 	if strings.Contains(requests[0]["query"].(string), "comments") {
 		t.Fatalf("project query = %q, want no comments", requests[0]["query"])
@@ -1488,6 +1568,7 @@ type graphqlTestResponse struct {
 	status  int
 	method  string
 	path    string
+	headers map[string]string
 	body    string
 	release <-chan struct{}
 }
@@ -1551,6 +1632,9 @@ func (s *graphqlTestServer) serveHTTP(w http.ResponseWriter, r *http.Request) {
 		status = http.StatusOK
 	}
 	w.Header().Set("Content-Type", "application/json")
+	for key, value := range response.headers {
+		w.Header().Set(key, value)
+	}
 	w.WriteHeader(status)
 	_, _ = w.Write([]byte(response.body))
 }
