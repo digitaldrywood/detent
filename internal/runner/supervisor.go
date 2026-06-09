@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
-	"math"
 	"sync"
 	"time"
 )
@@ -136,12 +135,14 @@ func (s *Supervisor) RetryDelay(attempt int) time.Duration {
 	if attempt < 1 {
 		attempt = 1
 	}
-	exponent := attempt - 1
-	if exponent > 30 {
-		exponent = 30
-	}
 
-	delay := failureRetryBaseDelay * time.Duration(math.Pow(2, float64(exponent)))
+	delay := failureRetryBaseDelay
+	for range attempt - 1 {
+		if delay >= maxRetryBackoff || delay > maxRetryBackoff/2 {
+			return maxRetryBackoff
+		}
+		delay *= 2
+	}
 	if delay > maxRetryBackoff {
 		return maxRetryBackoff
 	}

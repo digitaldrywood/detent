@@ -75,6 +75,76 @@ func TestSupervisorAppliesCappedBackoffForRunnerErrors(t *testing.T) {
 	}
 }
 
+func TestSupervisorRetryDelayNeverOverflows(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		baseDelay time.Duration
+		maxDelay  time.Duration
+		attempt   int
+		want      time.Duration
+	}{
+		{
+			name:      "first attempt uses base delay",
+			baseDelay: 10 * time.Second,
+			maxDelay:  5 * time.Minute,
+			attempt:   1,
+			want:      10 * time.Second,
+		},
+		{
+			name:      "negative attempt uses first attempt",
+			baseDelay: 10 * time.Second,
+			maxDelay:  5 * time.Minute,
+			attempt:   -10,
+			want:      10 * time.Second,
+		},
+		{
+			name:      "caps before default backoff can overflow",
+			baseDelay: 10 * time.Second,
+			maxDelay:  5 * time.Minute,
+			attempt:   31,
+			want:      5 * time.Minute,
+		},
+		{
+			name:      "large attempt stays capped",
+			baseDelay: time.Nanosecond,
+			maxDelay:  time.Duration(1<<63 - 1),
+			attempt:   int(^uint(0) >> 1),
+			want:      time.Duration(1<<63 - 1),
+		},
+		{
+			name:      "near max duration multiplication caps",
+			baseDelay: time.Duration(1<<62 + 1),
+			maxDelay:  time.Duration(1<<63 - 1),
+			attempt:   2,
+			want:      time.Duration(1<<63 - 1),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			supervisor, err := NewSupervisor(errorBackend{}, SupervisorConfig{
+				FailureRetryBaseDelay: tt.baseDelay,
+				MaxRetryBackoff:       tt.maxDelay,
+			})
+			if err != nil {
+				t.Fatalf("NewSupervisor() error = %v", err)
+			}
+
+			got := supervisor.RetryDelay(tt.attempt)
+			if got != tt.want {
+				t.Fatalf("RetryDelay(%d) = %s, want %s", tt.attempt, got, tt.want)
+			}
+			if got < 0 {
+				t.Fatalf("RetryDelay(%d) = %s, want non-negative duration", tt.attempt, got)
+			}
+		})
+	}
+}
+
 func TestSupervisorUpdateConfigChangesRetryDelay(t *testing.T) {
 	t.Parallel()
 
