@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"log/slog"
-	"math"
 	"strings"
 	"time"
 
@@ -306,85 +305,6 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 	case state := <-request.reply:
 		return state, nil
 	}
-}
-
-func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
-	lastRefreshAt := state.LastRefreshAt
-	previousPipeline := cloneIssues(state.Pipeline)
-	previousEpicTransitionWatch := cloneIssues(state.epicTransitionWatch)
-	previousBlockedStatusIssues := blockedStatusTransitionIssues(state.Blocked)
-	pendingEpicParentLookups := cloneIssueMap(state.pendingEpicParentLookups)
-	o.markRefresh(state, now)
-	defer o.finishRefresh(state, now)
-
-	if pause := o.gitHubGraphQLPause(state, now); pause > 0 {
-		o.logger.Warn("github graphql polling paused", "remaining", gitHubGraphQLRemaining(state), "pause", pause)
-		return
-	}
-
-	o.reapWorkspacesIfDue(ctx, state, now)
-	o.reconcileRunningIssues(ctx, state, now)
-	o.heartbeatRunningClaims(ctx, state, now)
-
-	issues, err := o.connector.FetchCandidateIssues(ctx)
-	if err != nil {
-		o.logger.Warn("fetch candidate issues failed", "error", err)
-		return
-	}
-	statusIssues, statusErr := o.connector.FetchIssuesByStates(ctx, observedStatusFetchStates())
-	if statusErr != nil {
-		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
-	}
-
-	issues = cloneIssues(issues)
-	transitionIssues := cloneIssues(issues)
-	pipelineIssues, pipelineRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previousPipeline)
-	transitionIssues = append(transitionIssues, pipelineIssues...)
-	watchedIssues, watchRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previousEpicTransitionWatch)
-	transitionIssues = append(transitionIssues, watchedIssues...)
-	blockedIssues, blockedRefreshOK := o.fetchEpicTransitionIssueStates(ctx, previousBlockedStatusIssues)
-	transitionIssues = append(transitionIssues, blockedIssues...)
-	pendingTransitions, pendingParentLookups := o.refreshPendingEpicParentLookups(ctx, pendingEpicParentLookups)
-	transitionIssues = append(transitionIssues, pendingTransitions...)
-	state.epicTransitionWatch = issuesInStates(issues, o.cfg.ActiveStates)
-	if !watchRefreshOK {
-		state.epicTransitionWatch = mergeIssueSlices(state.epicTransitionWatch, previousEpicTransitionWatch)
-	}
-	if statusErr == nil {
-		statusIssues = cloneIssues(statusIssues)
-		transitionIssues = append(transitionIssues, statusIssues...)
-		state.Pipeline = issuesInStates(statusIssues, prPipelineFetchStates())
-		if !pipelineRefreshOK {
-			state.Pipeline = mergeIssueSlices(state.Pipeline, previousPipeline)
-		}
-	}
-	previousTransitions := mergeIssueSlices(previousPipeline, previousEpicTransitionWatch)
-	previousTransitions = mergeIssueSlices(previousTransitions, previousBlockedStatusIssues)
-	completedEpics, failedParentLookups := o.closeCompletedEpicsForTerminalTransitions(
-		ctx,
-		transitionIssues,
-		previousTransitions,
-		lastRefreshAt,
-		pendingTransitions,
-	)
-	state.pendingEpicParentLookups = mergeIssueMaps(pendingParentLookups, failedParentLookups)
-	reconciledClosedIssues := o.reconcileClosedCompletedIssueStatuses(ctx, state, transitionIssues, now)
-	issues = filterReconciledIssues(issues, reconciledClosedIssues)
-	statusIssues = filterReconciledIssues(statusIssues, reconciledClosedIssues)
-	state.epicTransitionWatch = filterReconciledIssues(state.epicTransitionWatch, reconciledClosedIssues)
-	state.Pipeline = filterReconciledIssues(state.Pipeline, reconciledClosedIssues)
-	issues = filterCompletedEpicCandidates(issues, completedEpics)
-	sortIssuesForDispatch(issues, o.cfg.DispatchPriorityByState)
-	o.pruneBudgetRefusals(state, now)
-	o.trackBlockedCandidates(state, issues, now)
-	if statusErr == nil {
-		currentBlockedStatusIssues := issuesInStates(statusIssues, []string{blockedStatusState})
-		if !blockedRefreshOK {
-			currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, previousBlockedStatusIssues)
-		}
-		o.trackBlockedStatusIssues(state, currentBlockedStatusIssues, now)
-	}
-	o.dispatchReadyIssues(ctx, state, issues, now)
 }
 
 func observedStatusFetchStates() []string {
@@ -902,30 +822,7 @@ func (o *Orchestrator) applyRuntimeUpdate(state *State, update RuntimeUpdate, ti
 }
 
 func (o *Orchestrator) trackBlockedCandidates(state *State, issues []connector.Issue, now time.Time) {
-	seenBlocked := make(map[string]struct{})
-	for _, issue := range issues {
-		if issue.ID == "" {
-			continue
-		}
-		if todoBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
-			seenBlocked[issue.ID] = struct{}{}
-			state.Blocked[issue.ID] = Blocked{
-				Issue:     cloneIssue(issue),
-				Reason:    blockedReasonDependency,
-				BlockedAt: now,
-				Source:    BlockedSourceDependency,
-			}
-		}
-	}
-
-	for issueID, blocked := range state.Blocked {
-		if !blockedFromDependency(blocked) {
-			continue
-		}
-		if _, ok := seenBlocked[issueID]; !ok {
-			delete(state.Blocked, issueID)
-		}
-	}
+	o.dispatchPlanner().trackBlockedCandidates(state, issues, now)
 }
 
 func (o *Orchestrator) trackBlockedStatusIssues(state *State, issues []connector.Issue, now time.Time) {
@@ -967,44 +864,24 @@ func blockedStatusReason(issue connector.Issue) string {
 }
 
 func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
-	dueRetries := dueRetriesByIssue(state, now)
-	o.releaseMissingDueRetries(state, issues, dueRetries)
-
-	continuations := 0
-	for _, issue := range issues {
-		if retry, ok := dueRetries[issue.ID]; ok {
-			o.dispatchRetryIssue(ctx, state, issue, retry, now)
-			continue
-		}
-		if availableSlots(state) == 0 {
-			return
-		}
-		issue, ok := o.hydrateDispatchIssue(ctx, issue)
-		if !ok {
-			continue
-		}
-		if !o.dispatchable(issue, state, now) {
-			if todoBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
-				state.Blocked[issue.ID] = Blocked{
-					Issue:     cloneIssue(issue),
-					Reason:    blockedReasonDependency,
-					BlockedAt: now,
-					Source:    BlockedSourceDependency,
-				}
+	planner := o.dispatchPlanner()
+	planner.plan(state, issues, now, dispatchPlanHooks{
+		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
+			return o.hydrateDispatchIssue(ctx, issue)
+		},
+		beforeDispatch: func(_ connector.Issue, continuationIndex int) bool {
+			if continuationIndex < 0 {
+				return true
 			}
-			continue
-		}
-
-		delay := time.Duration(0)
-		if continuationDispatch(issue) {
-			delay = continuationDelay(continuations)
-			continuations++
-		}
-		if !waitForDispatchBackoff(ctx, delay) {
-			return
-		}
-		o.dispatchIssue(ctx, state, issue, 0, now, "")
-	}
+			return waitForDispatchBackoff(ctx, continuationDelay(continuationIndex))
+		},
+		dispatch: func(issue connector.Issue, attempt int, workerHost string) bool {
+			return o.dispatchIssue(ctx, state, issue, attempt, now, workerHost)
+		},
+		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
+			planner.scheduleRetry(state, issue, retry.Attempt, now, "claim verification failed", false, retry.WorkerHost)
+		},
+	})
 }
 
 func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, issue connector.Issue) (connector.Issue, bool) {
@@ -1053,142 +930,8 @@ func dueRetriesByIssue(state *State, now time.Time) map[string]Retry {
 	return retries
 }
 
-func (o *Orchestrator) releaseMissingDueRetries(
-	state *State,
-	issues []connector.Issue,
-	dueRetries map[string]Retry,
-) {
-	if len(dueRetries) == 0 {
-		return
-	}
-
-	byID := make(map[string]struct{}, len(issues))
-	for _, issue := range issues {
-		byID[issue.ID] = struct{}{}
-	}
-
-	for issueID := range dueRetries {
-		if _, ok := byID[issueID]; !ok {
-			if _, blocked := state.Blocked[issueID]; blocked {
-				o.releaseClaim(state, issueID)
-				continue
-			}
-			o.releaseIssue(state, issueID)
-		}
-	}
-}
-
-func (o *Orchestrator) dispatchRetryIssue(
-	ctx context.Context,
-	state *State,
-	issue connector.Issue,
-	retry Retry,
-	now time.Time,
-) {
-	delete(state.Retry, retry.Issue.ID)
-
-	if !o.dispatchableForRetry(issue, state, now, retry.WorkerHost) {
-		if o.budgetCooldownActive(state, issue.ID, now) {
-			o.scheduleRetry(state, issue, retry.Attempt, now, "budget cooldown active", false, retry.WorkerHost)
-			return
-		}
-		if !o.slotsAvailable(issue, state, retry.WorkerHost) {
-			o.scheduleRetry(state, issue, retry.Attempt, now, "no available orchestrator slots", false, retry.WorkerHost)
-			return
-		}
-		if _, blocked := state.Blocked[issue.ID]; blocked {
-			o.releaseClaim(state, issue.ID)
-			return
-		}
-
-		o.releaseIssue(state, issue.ID)
-		return
-	}
-
-	if !o.dispatchIssue(ctx, state, issue, retry.Attempt, now, retry.WorkerHost) {
-		o.scheduleRetry(state, issue, retry.Attempt, now, "claim verification failed", false, retry.WorkerHost)
-	}
-}
-
 func (o *Orchestrator) dispatchable(issue connector.Issue, state *State, now time.Time) bool {
-	return o.dispatchableIssue(issue, state, false, now, "")
-}
-
-func (o *Orchestrator) dispatchableForRetry(
-	issue connector.Issue,
-	state *State,
-	now time.Time,
-	preferredWorkerHost string,
-) bool {
-	return o.dispatchableIssue(issue, state, true, now, preferredWorkerHost)
-}
-
-func (o *Orchestrator) dispatchableIssue(
-	issue connector.Issue,
-	state *State,
-	allowClaimed bool,
-	now time.Time,
-	preferredWorkerHost string,
-) bool {
-	if !validCandidate(issue) {
-		return false
-	}
-	if !stateIn(issue.State, o.cfg.ActiveStates) || stateIn(issue.State, o.cfg.TerminalStates) {
-		return false
-	}
-	if duplicatePullRequestWork(issue) {
-		return false
-	}
-	if !o.authorized(issue) {
-		return false
-	}
-	if todoBlockedByNonTerminal(issue, o.cfg.TerminalStates) {
-		return false
-	}
-	if _, ok := state.Running[issue.ID]; ok {
-		return false
-	}
-	if _, ok := state.Claimed[issue.ID]; ok && !allowClaimed {
-		return false
-	}
-	if _, ok := state.Blocked[issue.ID]; ok {
-		return false
-	}
-	if o.budgetCooldownActive(state, issue.ID, now) {
-		return false
-	}
-
-	return o.slotsAvailable(issue, state, preferredWorkerHost)
-}
-
-func (o *Orchestrator) authorized(issue connector.Issue) bool {
-	if !o.cfg.Authorization.Configured() {
-		return true
-	}
-	return selector.Match(issue, o.cfg.Authorization, o.cfg.SelectorContext)
-}
-
-func (o *Orchestrator) slotsAvailable(issue connector.Issue, state *State, preferredWorkerHost string) bool {
-	return availableSlots(state) > 0 &&
-		o.stateSlotsAvailable(issue, state) &&
-		o.workerSlotsAvailable(state, preferredWorkerHost)
-}
-
-func (o *Orchestrator) stateSlotsAvailable(issue connector.Issue, state *State) bool {
-	limit := o.cfg.MaxConcurrentAgents
-	if stateLimit, ok := o.cfg.MaxConcurrentAgentsByState[normalizeState(issue.State)]; ok {
-		limit = stateLimit
-	}
-
-	used := 0
-	normalized := normalizeState(issue.State)
-	for _, running := range state.Running {
-		if normalizeState(running.Issue.State) == normalized {
-			used++
-		}
-	}
-
-	return used < limit
+	return o.dispatchPlanner().dispatchable(issue, state, now)
 }
 
 func (o *Orchestrator) dispatchIssue(
@@ -1377,11 +1120,7 @@ func (o *Orchestrator) scheduleRetry(
 	continuation bool,
 	workerHost string,
 ) {
-	if attempt < 1 {
-		attempt = 1
-	}
-
-	o.scheduleRetryAfter(state, issue, attempt, now, o.retryDelay(attempt, continuation), err, workerHost)
+	o.dispatchPlanner().scheduleRetry(state, issue, attempt, now, err, continuation, workerHost)
 }
 
 func (o *Orchestrator) scheduleRetryAfter(
@@ -1393,63 +1132,15 @@ func (o *Orchestrator) scheduleRetryAfter(
 	err string,
 	workerHost string,
 ) {
-	if attempt < 1 {
-		attempt = 1
-	}
-	if delay < 0 {
-		delay = 0
-	}
-
-	issue = cloneIssue(issue)
-	state.Retry[issue.ID] = Retry{
-		Issue:      issue,
-		Attempt:    attempt,
-		DueAt:      now.Add(delay),
-		Error:      err,
-		WorkerHost: workerHost,
-	}
-	if _, ok := state.Claimed[issue.ID]; !ok {
-		state.Claimed[issue.ID] = Claimed{
-			Issue:     issue,
-			ClaimedAt: now,
-		}
-	}
+	o.dispatchPlanner().scheduleRetryAfter(state, issue, attempt, now, delay, err, workerHost)
 }
 
 func (o *Orchestrator) retryDelay(attempt int, continuation bool) time.Duration {
-	if continuation {
-		return o.cfg.ContinuationRetryDelay
-	}
-	if attempt < 1 {
-		attempt = 1
-	}
-	exponent := attempt - 1
-	if exponent > 30 {
-		exponent = 30
-	}
-
-	delay := o.cfg.FailureRetryBaseDelay * time.Duration(math.Pow(2, float64(exponent)))
-	if delay > o.cfg.MaxRetryBackoff {
-		return o.cfg.MaxRetryBackoff
-	}
-	return delay
-}
-
-func (o *Orchestrator) releaseIssue(state *State, issueID string) {
-	cancelRunning(state, issueID)
-	delete(state.Running, issueID)
-	delete(state.Claimed, issueID)
-	delete(state.Blocked, issueID)
-	delete(state.Retry, issueID)
-	delete(state.BudgetRefusals, issueID)
+	return o.dispatchPlanner().retryDelay(attempt, continuation)
 }
 
 func (o *Orchestrator) releaseClaim(state *State, issueID string) {
-	cancelRunning(state, issueID)
-	delete(state.Running, issueID)
-	delete(state.Claimed, issueID)
-	delete(state.Retry, issueID)
-	delete(state.BudgetRefusals, issueID)
+	o.dispatchPlanner().releaseClaim(state, issueID)
 }
 
 func cancelRunning(state *State, issueID string) {
