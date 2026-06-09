@@ -577,11 +577,19 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 
 	p.mu.Lock()
 	projectConfig := p.cfg
+	githubToken := p.githubToken
+	connectorFactory := p.connectorFactory
+	schedulerFactory := p.schedulerFactory
+	runner := p.runner
+	projectOrchestrator := p.orchestrator
 	p.mu.Unlock()
+	if projectOrchestrator == nil {
+		return
+	}
 
 	workflow := normalizeWorkflow(update.Workflow)
 	workflow.Config = workflowConfigWithProjectIdentity(projectConfig, workflow.Config)
-	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, p.githubToken)
+	workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
 	if err := workflow.Config.Validate(); err != nil {
 		p.logger.Warn("workflow reload validation failed",
 			"project_id", p.id,
@@ -591,7 +599,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		return
 	}
 
-	projectConnector, err := buildConnector(workflow.Config, p.connectorFactory)
+	projectConnector, err := buildConnector(workflow.Config, connectorFactory)
 	if err != nil {
 		p.logger.Warn("workflow reload connector failed",
 			"project_id", p.id,
@@ -601,7 +609,7 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		return
 	}
 
-	projectScheduler, err := buildScheduler(workflow.Config, p.schedulerFactory)
+	projectScheduler, err := buildScheduler(workflow.Config, schedulerFactory)
 	if err != nil {
 		p.logger.Warn("workflow reload scheduler failed",
 			"project_id", p.id,
@@ -611,12 +619,12 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 		return
 	}
 
-	if updater, ok := p.runner.(workflowUpdater); ok {
+	if updater, ok := runner.(workflowUpdater); ok {
 		updater.UpdateWorkflow(workflow)
 	}
 
 	runtimeConfig := projectOrchestratorConfig(projectConfig, workflow.Config)
-	if err := p.orchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
+	if err := projectOrchestrator.UpdateRuntime(ctx, orchestrator.RuntimeUpdate{
 		Config:    runtimeConfig,
 		Connector: projectConnector,
 	}); err != nil {
