@@ -232,13 +232,16 @@ func (t *localTransport) readLoop() {
 	for {
 		msg, err := t.codec.ReadMessage()
 		if err != nil {
-			t.publishReceived(transportResult{err: err})
+			if !t.readingStopped() {
+				t.publishReceived(transportResult{err: err})
+			}
 			return
 		}
 
-		if !t.publishReceived(transportResult{msg: msg}) {
-			return
+		if t.readingStopped() {
+			continue
 		}
+		t.publishReceived(transportResult{msg: msg})
 	}
 }
 
@@ -271,6 +274,19 @@ func (t *localTransport) publishReceived(result transportResult) bool {
 	case t.received <- result:
 		return true
 	case <-t.readStop:
+		return false
+	}
+}
+
+func (t *localTransport) readingStopped() bool {
+	if t.readStop == nil {
+		return false
+	}
+
+	select {
+	case <-t.readStop:
+		return true
+	default:
 		return false
 	}
 }

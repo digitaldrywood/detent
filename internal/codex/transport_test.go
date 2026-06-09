@@ -174,6 +174,51 @@ func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
 	}
 }
 
+func TestLocalTransportCloseDrainsAfterSuccessfulTurnBackpressure(t *testing.T) {
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "turn-complete-backpressure")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+	capturingFactory := &capturingLocalTransportFactory{factory: factory}
+	server, err := NewAppServer(capturingFactory,
+		WithReadTimeout(2*time.Second),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	started := time.Now()
+	result, err := server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: t.TempDir(),
+		Prompt:    "complete then drain",
+	}, nil)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.ThreadID != "thread-1" || result.TurnID != "turn-1" {
+		t.Fatalf("RunTurn() result = %#v, want thread-1 turn-1", result)
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("RunTurn() took %s after completed turn, want prompt close", elapsed)
+	}
+
+	transport := capturingFactory.transport
+	if transport == nil {
+		t.Fatal("captured transport is nil")
+	}
+	assertChannelClosed(t, transport.readDone, "readLoop")
+	assertChannelClosed(t, transport.done, "wait")
+	if transport.cmd.ProcessState == nil {
+		t.Fatal("ProcessState is nil, want reaped process")
+	}
+}
+
 func TestLocalTransportSendWrapsCloseErrorAfterContextCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -330,7 +375,9 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 	case "exit":
 		return
 	case "turn-error-backpressure":
-		helperTurnErrorBackpressure()
+		helperTurnBackpressure(json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed"}}`), true)
+	case "turn-complete-backpressure":
+		helperTurnBackpressure(json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`), false)
 	default:
 		os.Exit(2)
 	}
@@ -347,7 +394,7 @@ func helperCommand(ctx context.Context, mode string) *exec.Cmd {
 	return cmd
 }
 
-func helperTurnErrorBackpressure() {
+func helperTurnBackpressure(completedParams json.RawMessage, blockAfterFlood bool) {
 	encoder := json.NewEncoder(os.Stdout)
 	encoder.SetEscapeHTML(false)
 
@@ -370,7 +417,7 @@ func helperTurnErrorBackpressure() {
 		{
 			JSONRPC: JSONRPCVersion,
 			Method:  "turn/completed",
-			Params:  json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed"}}`),
+			Params:  completedParams,
 		},
 	}
 	for _, msg := range messages {
@@ -387,7 +434,7 @@ func helperTurnErrorBackpressure() {
 		if err := encoder.Encode(msg); err != nil {
 			os.Exit(8)
 		}
-		if i == 1023 {
+		if blockAfterFlood && i == 1023 {
 			time.Sleep(time.Hour)
 		}
 	}
