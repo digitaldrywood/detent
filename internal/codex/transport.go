@@ -34,11 +34,13 @@ type localTransport struct {
 	stdin          io.WriteCloser
 	codec          *Codec
 	received       chan transportResult
+	readStop       chan struct{}
 	readDone       chan struct{}
 	done           chan struct{}
 	sendLock       chan struct{}
 	waitErr        error
 	waitMu         sync.Mutex
+	readStopOnce   sync.Once
 	closeOnce      sync.Once
 	closeErr       error
 }
@@ -87,6 +89,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 		stdin:          stdin,
 		codec:          NewCodec(stdout, stdin),
 		received:       make(chan transportResult, 64),
+		readStop:       make(chan struct{}),
 		readDone:       make(chan struct{}),
 		done:           make(chan struct{}),
 		sendLock:       make(chan struct{}, 1),
@@ -149,6 +152,7 @@ func (t *localTransport) Close(ctx context.Context) error {
 	ctx = contextOrBackground(ctx)
 
 	closeErr := t.closeStdin()
+	t.stopReading()
 
 	select {
 	case <-t.done:
@@ -228,16 +232,19 @@ func (t *localTransport) readLoop() {
 	for {
 		msg, err := t.codec.ReadMessage()
 		if err != nil {
-			t.received <- transportResult{err: err}
+			t.publishReceived(transportResult{err: err})
 			return
 		}
 
-		t.received <- transportResult{msg: msg}
+		if !t.publishReceived(transportResult{msg: msg}) {
+			return
+		}
 	}
 }
 
 func (t *localTransport) wait() {
 	<-t.readDone
+	t.stopReading()
 	err := t.cmd.Wait()
 	if cleanupErr := cleanupCommandProcessGroup(t.processGroupID); cleanupErr != nil {
 		err = errors.Join(err, cleanupErr)
@@ -246,6 +253,35 @@ func (t *localTransport) wait() {
 	t.waitErr = err
 	t.waitMu.Unlock()
 	close(t.done)
+}
+
+func (t *localTransport) publishReceived(result transportResult) bool {
+	if t.readStop == nil {
+		t.received <- result
+		return true
+	}
+
+	select {
+	case <-t.readStop:
+		return false
+	default:
+	}
+
+	select {
+	case t.received <- result:
+		return true
+	case <-t.readStop:
+		return false
+	}
+}
+
+func (t *localTransport) stopReading() {
+	if t.readStop == nil {
+		return
+	}
+	t.readStopOnce.Do(func() {
+		close(t.readStop)
+	})
 }
 
 func (t *localTransport) waitError() error {
