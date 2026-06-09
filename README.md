@@ -179,6 +179,13 @@ switches the detected Go-installed binary to the release asset and pins future
 updates to release-binary management. Source builds still print the recommended
 command instead of overwriting the binary.
 
+Release self-updates verify SHA256 checksums fetched from GitHub releases. The
+checksum verifier supports detached minisign signature assets named
+`<checksum>.minisig`, but enforcement is gated until the binary embeds the
+pinned minisign public key for the release stream. Until that release signing
+key is provisioned in #337, update integrity still depends on GitHub TLS plus
+the published checksum file.
+
 ## Release
 
 Cut releases from `main` by pushing a semver tag:
