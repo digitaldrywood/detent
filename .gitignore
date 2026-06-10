@@ -1,3 +1,8 @@
 tmp/
 /detent
 node_modules/
+
+# Release signing secrets — NEVER commit the private key or the password
+.envrc
+detent-release.key
+*.key
