@@ -34,7 +34,10 @@ stays in your spec; the runtime supplies the discipline.
 is Detent's own production config — it dispatches the agents that build Detent
 itself. Copy it as a template, and use
 [Bootstrap On A New Machine](#bootstrap-on-a-new-machine-humans-and-ai-agents)
-to go from a bare machine to a running board.
+to go from a bare machine to a running board. To onboard a new repository from
+no board, no `WORKFLOW.md`, and no `global.yaml` entry to its first dispatched
+issue, use the agent-executable [Project Onboarding](docs/ONBOARDING.md)
+runbook.
 
 ## How it works
 
@@ -436,7 +439,9 @@ repo is a real, working instance of this setup to copy from.
    ```
 
 6. **Author the project contract.** Copy the canonical example as a starting
-   point, then edit it:
+   point, then edit it. For from-zero board creation, interview questions, issue
+   intake, and the first-dispatch smoke test, follow
+   [Project Onboarding](docs/ONBOARDING.md):
 
    ```sh
    curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent-orchestration/main/WORKFLOW.md \
@@ -446,6 +451,13 @@ repo is a real, working instance of this setup to copy from.
    Set `tracker.project_slug` (your `PVT_` id), `workspace.source_root`
    (`<source-root>`), `workspace.root` (a worktrees directory), and the prompt
    body. The full field reference is in [Quick Start](#quick-start).
+
+   Interactive alternative: when Detent starts without a resolved `global.yaml`
+   and without a `WORKFLOW.md` in the current directory, it serves the
+   `/onboarding` web wizard. Open `http://localhost:<port>/onboarding` to walk
+   through tracker, credentials, project, agent, and write steps for generating
+   `WORKFLOW.md`; then return to the runbook for board creation, global
+   registration, issue intake, and the smoke test.
 
 7. **Create global config and register the project:**
 
