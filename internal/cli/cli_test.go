@@ -778,14 +778,14 @@ func (p *projectManagerProbe) Add(_ context.Context, cfg globalconfig.Project) e
 	return nil
 }
 
-func (p *projectManagerProbe) Remove(context.Context, project.ProjectID) error {
+func (p *projectManagerProbe) Remove(context.Context, project.ID) error {
 	return nil
 }
 
-func (p *projectManagerProbe) Pause(context.Context, project.ProjectID) error {
+func (p *projectManagerProbe) Pause(context.Context, project.ID) error {
 	return nil
 }
 
-func (p *projectManagerProbe) Unpause(context.Context, project.ProjectID) error {
+func (p *projectManagerProbe) Unpause(context.Context, project.ID) error {
 	return nil
 }

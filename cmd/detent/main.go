@@ -43,7 +43,7 @@ func newRootCommand(ctx context.Context) *cobra.Command {
 	cmd.SetVersionTemplate("{{.Version}}\n")
 	cmd.AddCommand(
 		newVersionCommand(),
-		newUpdateCommand(newDefaultUpdateRunner),
+		newUpdateCommand(ctx, newDefaultUpdateRunner),
 		newShadowRunCommand(),
 	)
 

@@ -7,9 +7,10 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
-	"regexp"
 	"sort"
 	"strings"
+
+	"github.com/digitaldrywood/detent/internal/pathsafe"
 
 	"gopkg.in/yaml.v3"
 )
@@ -18,8 +19,6 @@ const (
 	DefaultPath              = ".detent/skills"
 	DefaultMaxSkillsInPrompt = 50
 )
-
-var windowsAbsPathPattern = regexp.MustCompile(`^[A-Za-z]:[\\/]`)
 
 type Skill struct {
 	Name        string
@@ -234,33 +233,5 @@ func rejectDuplicateNames(skillList []Skill) ([]Skill, []ValidationError) {
 }
 
 func workspaceRelativePath(workspacePath string, relativePath string) (string, error) {
-	workspace := strings.TrimSpace(workspacePath)
-	if workspace == "" {
-		return "", errors.New("workspace path is required")
-	}
-
-	path := strings.TrimSpace(relativePath)
-	if path == "" || strings.HasPrefix(path, "~") || filepath.IsAbs(path) ||
-		strings.HasPrefix(path, `\`) || windowsAbsPathPattern.MatchString(path) ||
-		pathEscapesWorkspace(path) {
-		return "", errors.New("path must be a relative path inside the workspace")
-	}
-
-	absWorkspace, err := filepath.Abs(workspace)
-	if err != nil {
-		return "", fmt.Errorf("absolute workspace path: %w", err)
-	}
-
-	return filepath.Join(absWorkspace, filepath.Clean(path)), nil
-}
-
-func pathEscapesWorkspace(path string) bool {
-	for _, part := range strings.FieldsFunc(path, func(r rune) bool {
-		return r == '/' || r == '\\'
-	}) {
-		if part == ".." {
-			return true
-		}
-	}
-	return false
+	return pathsafe.WorkspaceRelative(workspacePath, relativePath)
 }

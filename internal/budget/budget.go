@@ -297,7 +297,7 @@ This issue will be reconsidered after: %s
 	}
 }
 
-func (c *Checker) refusal(code ReasonCode, req DispatchRequest, now time.Time, currentSpend float64, projectedCost float64, cap float64, resetAt *time.Time) *Refusal {
+func (c *Checker) refusal(code ReasonCode, req DispatchRequest, now time.Time, currentSpend float64, projectedCost float64, maxUSD float64, resetAt *time.Time) *Refusal {
 	message := "budget exceeded"
 	switch code {
 	case ReasonPerDayMaxUSD:
@@ -306,7 +306,6 @@ func (c *Checker) refusal(code ReasonCode, req DispatchRequest, now time.Time, c
 		message = "per-issue budget exceeded"
 	}
 
-	maxUSD := cap
 	projectedSpend := currentSpend + projectedCost
 	return &Refusal{
 		Code:              code,
@@ -347,8 +346,8 @@ func tokenCostUSD(tokens TokenEstimate, pricing ModelPricing) float64 {
 		float64(tokens.OutputTokens)*pricing.USDPerOutputToken
 }
 
-func capActive(cap float64) bool {
-	return cap > 0
+func capActive(maxUSD float64) bool {
+	return maxUSD > 0
 }
 
 func issueIdentityPresent(identity store.IssueIdentity) bool {

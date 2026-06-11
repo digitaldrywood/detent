@@ -9,7 +9,9 @@ linters:
   default: none
   enable:
     - bodyclose
+    - contextcheck
     - errcheck
+    - errorlint
     - gosec
     - govet
     - ineffassign
@@ -72,6 +74,9 @@ linters:
       - path: internal/store/sqlc/
         linters:
           - all
+      - linters:
+          - contextcheck
+        text: "Non-inherited new context"
 
 issues:
   max-issues-per-linter: 0

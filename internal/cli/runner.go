@@ -32,7 +32,7 @@ type lifetimeTotalsSource interface {
 	LifetimeTotals(context.Context) (store.LifetimeTotals, error)
 }
 
-// withRunnerFactory returns a project.ProjectFactory that constructs a
+// withRunnerFactory returns a project.Factory that constructs a
 // per-project agent Runner from the project's own workflow (so each project's
 // codex command and workspace root are honored), injects it into the project's
 // dependencies, and then delegates to load.
@@ -43,7 +43,7 @@ func withRunnerFactory(
 	sessionStore runnerpkg.SessionStore,
 	load func(project.Dependencies) (*project.Project, error),
 	githubTokenSource ...func() string,
-) project.ProjectFactory {
+) project.Factory {
 	return func(cfg globalconfig.Project) (*project.Project, error) {
 		workflow, err := workflowconfig.LoadWorkflow(cfg.Workflow)
 		if err != nil {

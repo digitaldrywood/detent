@@ -536,7 +536,7 @@ func (s *Service) applyReleaseUpdate(ctx context.Context, status Status, release
 			}, target)
 		}
 	}
-	if err := ReplaceBinary(replacement); err != nil {
+	if err := ReplaceBinary(ctx, replacement); err != nil {
 		status.Action = ActionRefused
 		status.Message = err.Error()
 		return status, err
@@ -733,16 +733,19 @@ func ExtractBinary(archive []byte, goos string) ([]byte, os.FileMode, error) {
 	return extractTarGzipBinary(archive)
 }
 
-func ReplaceBinary(replacement Replacement) error {
+func ReplaceBinary(ctx context.Context, replacement Replacement) error {
+	if replacement.Context == nil {
+		replacement.Context = ctx
+	}
 	goos := firstNonEmpty(replacement.GOOS, runtime.GOOS)
 	if goos == "windows" {
-		return stageWindowsReplacement(replacement)
+		return stageWindowsReplacement(ctx, replacement)
 	}
 	replacement.GOOS = goos
-	return replaceBinaryNow(replacement)
+	return replaceBinaryNow(ctx, replacement)
 }
 
-func replaceBinaryNow(replacement Replacement) error {
+func replaceBinaryNow(ctx context.Context, replacement Replacement) error {
 	target := replacement.Target
 	if strings.TrimSpace(target) == "" {
 		return errors.New("target binary path is required")
@@ -783,7 +786,7 @@ func replaceBinaryNow(replacement Replacement) error {
 		return fmt.Errorf("replace binary %s: %w", target, err)
 	}
 	cleanup = false
-	if err := finalizeReplacement(replacement); err != nil {
+	if err := finalizeReplacement(ctx, replacement); err != nil {
 		if rollbackErr := rollbackBinary(target, backupPath); rollbackErr != nil {
 			return fmt.Errorf("%w; rollback failed: %w", err, rollbackErr)
 		}
@@ -850,8 +853,10 @@ func backupBinary(target string) (string, error) {
 	return backupPath, nil
 }
 
-func finalizeReplacement(replacement Replacement) error {
-	ctx := replacement.Context
+func finalizeReplacement(ctx context.Context, replacement Replacement) error {
+	if replacement.Context != nil {
+		ctx = replacement.Context
+	}
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -893,7 +898,7 @@ func rollbackBinary(target string, backupPath string) error {
 	return nil
 }
 
-func stageWindowsReplacement(replacement Replacement) error {
+func stageWindowsReplacement(ctx context.Context, replacement Replacement) error {
 	if strings.TrimSpace(replacement.Target) == "" {
 		return errors.New("target binary path is required")
 	}
@@ -934,7 +939,9 @@ func stageWindowsReplacement(replacement Replacement) error {
 		return fmt.Errorf("start windows updater: %w", err)
 	}
 	if replacement.AfterReplace != nil {
-		ctx := replacement.Context
+		if replacement.Context != nil {
+			ctx = replacement.Context
+		}
 		if ctx == nil {
 			ctx = context.Background()
 		}

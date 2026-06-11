@@ -21,9 +21,9 @@ type updateRunner interface {
 	Apply(context.Context, detentupdate.ApplyOptions) (detentupdate.Status, error)
 }
 
-type updateFactory func() (updateRunner, error)
+type updateFactory func(context.Context) (updateRunner, error)
 
-func newUpdateCommand(factory updateFactory) *cobra.Command {
+func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command {
 	var checkOnly bool
 	var assumeYes bool
 	var fromRelease bool
@@ -35,14 +35,21 @@ func newUpdateCommand(factory updateFactory) *cobra.Command {
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			runner, err := factory()
+			runCtx := cmd.Context()
+			if runCtx == nil {
+				runCtx = ctx
+			}
+			if runCtx == nil {
+				runCtx = context.Background()
+			}
+			runner, err := factory(runCtx)
 			if err != nil {
 				return err
 			}
 
 			var status detentupdate.Status
 			if checkOnly {
-				status, err = runner.Check(cmd.Context())
+				status, err = runner.Check(runCtx)
 			} else {
 				streamOut := cmd.OutOrStdout()
 				if jsonOutput {
@@ -58,7 +65,7 @@ func newUpdateCommand(factory updateFactory) *cobra.Command {
 					opts.Confirm = confirmUpdate(cmd)
 					opts.SelectGoInstallAction = selectGoInstallAction(cmd)
 				}
-				status, err = runner.Apply(cmd.Context(), opts)
+				status, err = runner.Apply(runCtx, opts)
 			}
 
 			var writeErr error
@@ -80,7 +87,7 @@ func newUpdateCommand(factory updateFactory) *cobra.Command {
 	return cmd
 }
 
-func newDefaultUpdateRunner() (updateRunner, error) {
+func newDefaultUpdateRunner(context.Context) (updateRunner, error) {
 	executable, err := os.Executable()
 	if err != nil {
 		return nil, fmt.Errorf("resolve current executable: %w", err)

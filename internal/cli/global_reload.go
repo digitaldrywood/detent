@@ -203,7 +203,7 @@ func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Set
 	return fields
 }
 
-func projectIDs(ids []project.ProjectID) []string {
+func projectIDs(ids []project.ID) []string {
 	out := make([]string, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, string(id))

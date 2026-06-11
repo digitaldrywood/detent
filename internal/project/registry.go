@@ -7,12 +7,12 @@ import (
 
 type Registry struct {
 	mu       sync.RWMutex
-	projects map[ProjectID]*Project
+	projects map[ID]*Project
 }
 
 func NewRegistry() *Registry {
 	return &Registry{
-		projects: map[ProjectID]*Project{},
+		projects: map[ID]*Project{},
 	}
 }
 
@@ -33,7 +33,7 @@ func (r *Registry) Set(project *Project) error {
 	return nil
 }
 
-func (r *Registry) Get(id ProjectID) (*Project, bool) {
+func (r *Registry) Get(id ID) (*Project, bool) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
@@ -41,7 +41,7 @@ func (r *Registry) Get(id ProjectID) (*Project, bool) {
 	return project, ok
 }
 
-func (r *Registry) Delete(id ProjectID) bool {
+func (r *Registry) Delete(id ID) bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
@@ -58,7 +58,7 @@ func (r *Registry) List() []*Project {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	ids := make([]ProjectID, 0, len(r.projects))
+	ids := make([]ID, 0, len(r.projects))
 	for id := range r.projects {
 		ids = append(ids, id)
 	}

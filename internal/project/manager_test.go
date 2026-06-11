@@ -60,11 +60,11 @@ func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {
 		t.Fatalf("sleep delays = %v, want %v", slept, wantSleeps)
 	}
 
-	started := []project.ProjectID{
+	started := []project.ID{
 		receiveEvent(t, sub.C()).ProjectID,
 		receiveEvent(t, sub.C()).ProjectID,
 	}
-	if !reflect.DeepEqual(started, []project.ProjectID{"alpha", "bravo"}) {
+	if !reflect.DeepEqual(started, []project.ID{"alpha", "bravo"}) {
 		t.Fatalf("started projects = %v, want [alpha bravo]", started)
 	}
 	if manager.Registry().Len() != 3 {
@@ -161,7 +161,7 @@ func TestManagerReconcileProjects(t *testing.T) {
 		next        []globalconfig.Project
 		want        project.ReconcileResult
 		wantEvents  []project.Event
-		wantConfigs map[project.ProjectID]globalconfig.Project
+		wantConfigs map[project.ID]globalconfig.Project
 		wantErr     error
 	}{
 		{
@@ -169,9 +169,9 @@ func TestManagerReconcileProjects(t *testing.T) {
 			initial: []globalconfig.Project{{ID: "alpha", Weight: 1, Workdir: "/repo/alpha"}},
 			next:    []globalconfig.Project{{ID: "alpha", Weight: 1, Workdir: "/repo/alpha"}},
 			want: project.ReconcileResult{
-				Unchanged: []project.ProjectID{"alpha"},
+				Unchanged: []project.ID{"alpha"},
 			},
-			wantConfigs: map[project.ProjectID]globalconfig.Project{
+			wantConfigs: map[project.ID]globalconfig.Project{
 				"alpha": {ID: "alpha", Weight: 1, Workdir: "/repo/alpha"},
 			},
 		},
@@ -183,11 +183,11 @@ func TestManagerReconcileProjects(t *testing.T) {
 				{ID: "bravo", Weight: 2, Priority: 3, Workdir: "/repo/bravo"},
 			},
 			want: project.ReconcileResult{
-				Added:     []project.ProjectID{"bravo"},
-				Unchanged: []project.ProjectID{"alpha"},
+				Added:     []project.ID{"bravo"},
+				Unchanged: []project.ID{"alpha"},
 			},
 			wantEvents: []project.Event{{ProjectID: "bravo", Kind: project.EventStarted}},
-			wantConfigs: map[project.ProjectID]globalconfig.Project{
+			wantConfigs: map[project.ID]globalconfig.Project{
 				"alpha": {ID: "alpha", Weight: 1},
 				"bravo": {ID: "bravo", Weight: 2, Priority: 3, Workdir: "/repo/bravo"},
 			},
@@ -200,11 +200,11 @@ func TestManagerReconcileProjects(t *testing.T) {
 			},
 			next: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 			want: project.ReconcileResult{
-				Removed:   []project.ProjectID{"bravo"},
-				Unchanged: []project.ProjectID{"alpha"},
+				Removed:   []project.ID{"bravo"},
+				Unchanged: []project.ID{"alpha"},
 			},
 			wantEvents: []project.Event{{ProjectID: "bravo", Kind: project.EventStopped}},
-			wantConfigs: map[project.ProjectID]globalconfig.Project{
+			wantConfigs: map[project.ID]globalconfig.Project{
 				"alpha": {ID: "alpha", Weight: 1},
 			},
 		},
@@ -213,13 +213,13 @@ func TestManagerReconcileProjects(t *testing.T) {
 			initial: []globalconfig.Project{{ID: "alpha", Weight: 1, Workdir: "/repo/old"}},
 			next:    []globalconfig.Project{{ID: "alpha", Weight: 2, Priority: 1, Workdir: "/repo/new"}},
 			want: project.ReconcileResult{
-				Changed: []project.ProjectID{"alpha"},
+				Changed: []project.ID{"alpha"},
 			},
 			wantEvents: []project.Event{
 				{ProjectID: "alpha", Kind: project.EventStopped},
 				{ProjectID: "alpha", Kind: project.EventStarted},
 			},
-			wantConfigs: map[project.ProjectID]globalconfig.Project{
+			wantConfigs: map[project.ID]globalconfig.Project{
 				"alpha": {ID: "alpha", Weight: 2, Priority: 1, Workdir: "/repo/new"},
 			},
 		},
@@ -227,7 +227,7 @@ func TestManagerReconcileProjects(t *testing.T) {
 			name:    "invalid config retention",
 			initial: []globalconfig.Project{{ID: "alpha", Weight: 1, Workdir: "/repo/alpha"}},
 			next:    []globalconfig.Project{{ID: "  ", Weight: 1, Workdir: "/repo/invalid"}},
-			wantConfigs: map[project.ProjectID]globalconfig.Project{
+			wantConfigs: map[project.ID]globalconfig.Project{
 				"alpha": {ID: "alpha", Weight: 1, Workdir: "/repo/alpha"},
 			},
 			wantErr: project.ErrMissingProjectID,
@@ -313,7 +313,7 @@ func TestManagerReconcileChangesProjectsWhenRuntimeCredentialVersionChanges(t *t
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	want := project.ReconcileResult{Changed: []project.ProjectID{"alpha"}}
+	want := project.ReconcileResult{Changed: []project.ID{"alpha"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Reconcile() = %#v, want %#v", got, want)
 	}
@@ -365,7 +365,7 @@ func TestManagerReconcileKeepsRegistryWhenNewProjectCannotBeCreated(t *testing.T
 		t.Fatalf("Reconcile() error = %v, want %v", err, factoryErr)
 	}
 	assertNoProjectEvent(t, sub.C())
-	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+	assertManagerProjectConfigs(t, manager, map[project.ID]globalconfig.Project{
 		"alpha": {ID: "alpha", Weight: 1},
 	})
 }
@@ -409,7 +409,7 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementCannotBeCreated(t *te
 		t.Fatalf("Reconcile() error = %v, want %v", err, factoryErr)
 	}
 	assertNoProjectEvent(t, sub.C())
-	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+	assertManagerProjectConfigs(t, manager, map[project.ID]globalconfig.Project{
 		"alpha": {ID: "alpha", Weight: 1},
 	})
 
@@ -477,7 +477,7 @@ func TestManagerReconcileStopsChangedProjectBeforeStartingReplacement(t *testing
 	if err != nil {
 		t.Fatalf("Reconcile() error = %v", err)
 	}
-	want := project.ReconcileResult{Changed: []project.ProjectID{"alpha"}}
+	want := project.ReconcileResult{Changed: []project.ID{"alpha"}}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("Reconcile() = %#v, want %#v", got, want)
 	}
@@ -486,7 +486,7 @@ func TestManagerReconcileStopsChangedProjectBeforeStartingReplacement(t *testing
 		{ProjectID: "alpha", Kind: project.EventStarted},
 	})
 	assertNoProjectEvent(t, sub.C())
-	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+	assertManagerProjectConfigs(t, manager, map[project.ID]globalconfig.Project{
 		"alpha": {ID: "alpha", Weight: 2},
 	})
 }
@@ -540,7 +540,7 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementProvisionFails(t *tes
 		t.Fatalf("Reconcile() error = %v, want %v", err, provisionErr)
 	}
 	assertNoProjectEvent(t, sub.C())
-	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+	assertManagerProjectConfigs(t, manager, map[project.ID]globalconfig.Project{
 		"alpha": {ID: "alpha", Weight: 1},
 	})
 
@@ -591,7 +591,7 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementStartFails(t *testing
 		t.Fatalf("Reconcile() error = %v, want %v", err, project.ErrProjectStopped)
 	}
 	assertNoProjectEvent(t, sub.C())
-	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+	assertManagerProjectConfigs(t, manager, map[project.ID]globalconfig.Project{
 		"alpha": {ID: "alpha", Weight: 1},
 	})
 
@@ -648,7 +648,7 @@ func TestManagerReconcileKeepsRegistryWhenAddedProjectStartFailsAfterRemoval(t *
 		t.Fatalf("Reconcile() error = %v, want %v", err, project.ErrProjectStopped)
 	}
 	assertNoProjectEvent(t, sub.C())
-	assertManagerProjectConfigs(t, manager, map[project.ProjectID]globalconfig.Project{
+	assertManagerProjectConfigs(t, manager, map[project.ID]globalconfig.Project{
 		"alpha":   {ID: "alpha", Weight: 1},
 		"charlie": {ID: "charlie", Weight: 1},
 	})
@@ -687,9 +687,9 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 	if err := manager.Start(context.Background()); err != nil {
 		t.Fatalf("Start() error = %v", err)
 	}
-	assertStartedProjects(t, sub.C(), []project.ProjectID{"alpha", "bravo", "charlie"})
+	assertStartedProjects(t, sub.C(), []project.ID{"alpha", "bravo", "charlie"})
 
-	for _, id := range []project.ProjectID{"alpha", "bravo", "charlie"} {
+	for _, id := range []project.ID{"alpha", "bravo", "charlie"} {
 		got, ok := manager.Registry().Get(id)
 		if !ok {
 			t.Fatalf("Registry().Get(%q) ok = false, want true", id)
@@ -699,7 +699,7 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 		}
 	}
 
-	slots := requestProjectSlots(t, manager, []project.ProjectID{"alpha", "bravo"})
+	slots := requestProjectSlots(t, manager, []project.ID{"alpha", "bravo"})
 	if _, err := requestProjectSlot(manager, "charlie"); !errors.Is(err, scheduler.ErrNoSlots) {
 		t.Fatalf("charlie RequestSlot() error = %v, want ErrNoSlots", err)
 	}
@@ -863,7 +863,7 @@ func assertNoProjectEvent(t *testing.T, ch <-chan project.Event) {
 	}
 }
 
-func assertManagerProjectConfigs(t *testing.T, manager *project.Manager, want map[project.ProjectID]globalconfig.Project) {
+func assertManagerProjectConfigs(t *testing.T, manager *project.Manager, want map[project.ID]globalconfig.Project) {
 	t.Helper()
 
 	for id, expected := range want {
@@ -880,10 +880,10 @@ func assertManagerProjectConfigs(t *testing.T, manager *project.Manager, want ma
 	}
 }
 
-func assertStartedProjects(t *testing.T, ch <-chan project.Event, want []project.ProjectID) {
+func assertStartedProjects(t *testing.T, ch <-chan project.Event, want []project.ID) {
 	t.Helper()
 
-	got := make([]project.ProjectID, 0, len(want))
+	got := make([]project.ID, 0, len(want))
 	for range want {
 		event := receiveEvent(t, ch)
 		if event.Kind != project.EventStarted {
@@ -896,7 +896,7 @@ func assertStartedProjects(t *testing.T, ch <-chan project.Event, want []project
 	}
 }
 
-func requestProjectSlots(t *testing.T, manager *project.Manager, ids []project.ProjectID) []scheduler.Slot {
+func requestProjectSlots(t *testing.T, manager *project.Manager, ids []project.ID) []scheduler.Slot {
 	t.Helper()
 
 	slots := make([]scheduler.Slot, 0, len(ids))
@@ -910,7 +910,7 @@ func requestProjectSlots(t *testing.T, manager *project.Manager, ids []project.P
 	return slots
 }
 
-func requestProjectSlot(manager *project.Manager, id project.ProjectID) (scheduler.Slot, error) {
+func requestProjectSlot(manager *project.Manager, id project.ID) (scheduler.Slot, error) {
 	got, ok := manager.Registry().Get(id)
 	if !ok {
 		return scheduler.Slot{}, project.ErrProjectNotFound

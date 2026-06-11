@@ -170,7 +170,7 @@ func (m *globalReloadManager) Reconcile(
 ) (project.ReconcileResult, error) {
 	m.calls++
 	m.config = cfg
-	return project.ReconcileResult{Added: []project.ProjectID{"bravo"}}, m.err
+	return project.ReconcileResult{Added: []project.ID{"bravo"}}, m.err
 }
 
 func reloadTestConfig(path string, maxConcurrentAgents int, projects []globalconfig.Project) globalconfig.Config {
