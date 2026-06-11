@@ -2,6 +2,8 @@ package workspace
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -198,7 +200,12 @@ func issueKey(issue Issue) string {
 	if strings.TrimSpace(issue.ProjectID) == "" {
 		return identifierKey
 	}
-	return projectKey + "-" + identifierKey
+	return projectKey + "-" + identifierKey + "-" + issueKeyDigest(issue)
+}
+
+func issueKeyDigest(issue Issue) string {
+	sum := sha256.Sum256([]byte(strings.TrimSpace(issue.ProjectID) + "\x00" + strings.TrimSpace(issue.Identifier)))
+	return hex.EncodeToString(sum[:])[:12]
 }
 
 func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
