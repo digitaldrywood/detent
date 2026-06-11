@@ -18,6 +18,10 @@ type Connector interface {
 	SetField(context.Context, string, string, string) error
 }
 
+type Closer interface {
+	Close() error
+}
+
 type Authenticator interface {
 	Authenticate(context.Context) error
 }

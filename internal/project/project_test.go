@@ -156,6 +156,50 @@ func TestProjectStartStopPublishesLifecycleEvents(t *testing.T) {
 	}
 }
 
+func TestProjectCloseStopsAndClosesConnector(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(2))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	projectConnector := newCloseTrackingConnector()
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:     "detent",
+			Weight: 1,
+		},
+		Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+	}, project.Dependencies{
+		Connector: projectConnector,
+		Events:    events,
+		Runner:    blockingRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	receiveEvent(t, sub.C())
+	if err := got.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	stopped := receiveEvent(t, sub.C())
+	if stopped.ProjectID != got.ID() || stopped.Kind != project.EventStopped {
+		t.Fatalf("stopped event = %#v, want project stopped", stopped)
+	}
+	assertConnectorClosed(t, projectConnector)
+	if err := got.Close(); err != nil {
+		t.Fatalf("Close() second error = %v", err)
+	}
+	if err := got.Start(context.Background()); !errors.Is(err, project.ErrProjectStopped) {
+		t.Fatalf("Start() after Close error = %v, want %v", err, project.ErrProjectStopped)
+	}
+}
+
 func TestProjectAppliesWorkflowReloadsToRunningOrchestrator(t *testing.T) {
 	t.Parallel()
 
@@ -994,6 +1038,80 @@ func (c provisioningConnector) Provision(ctx context.Context) error {
 		return nil
 	}
 	return c.provision(ctx)
+}
+
+type closeTrackingConnector struct {
+	closed chan struct{}
+	once   sync.Once
+}
+
+func newCloseTrackingConnector() *closeTrackingConnector {
+	return &closeTrackingConnector{closed: make(chan struct{})}
+}
+
+func (c *closeTrackingConnector) Name() string {
+	return "close-tracking"
+}
+
+func (c *closeTrackingConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *closeTrackingConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *closeTrackingConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *closeTrackingConnector) CreateComment(context.Context, string, string) error {
+	return nil
+}
+
+func (c *closeTrackingConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (c *closeTrackingConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *closeTrackingConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}
+
+func (c *closeTrackingConnector) Close() error {
+	c.once.Do(func() {
+		close(c.closed)
+	})
+	return nil
+}
+
+type closeTrackingProvisioningConnector struct {
+	*closeTrackingConnector
+	provision func(context.Context) error
+}
+
+func newCloseTrackingProvisioningConnector() *closeTrackingProvisioningConnector {
+	return &closeTrackingProvisioningConnector{closeTrackingConnector: newCloseTrackingConnector()}
+}
+
+func (c *closeTrackingProvisioningConnector) Provision(ctx context.Context) error {
+	if c.provision == nil {
+		return nil
+	}
+	return c.provision(ctx)
+}
+
+func assertConnectorClosed(t *testing.T, projectConnector *closeTrackingConnector) {
+	t.Helper()
+
+	select {
+	case <-projectConnector.closed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for connector close")
+	}
 }
 
 func receiveEvent(t *testing.T, ch <-chan project.Event) project.Event {

@@ -105,6 +105,7 @@ type Project struct {
 	done            chan struct{}
 	runErr          error
 	started         bool
+	closed          bool
 	lifecycleEvents bool
 }
 
@@ -275,7 +276,7 @@ func (p *Project) start(ctx context.Context, opts startOptions) error {
 		p.mu.Unlock()
 		return ErrAlreadyRunning
 	}
-	if p.started {
+	if p.started || p.closed {
 		p.mu.Unlock()
 		return ErrProjectStopped
 	}
@@ -296,7 +297,7 @@ func (p *Project) start(ctx context.Context, opts startOptions) error {
 		p.mu.Unlock()
 		return ErrAlreadyRunning
 	}
-	if p.started {
+	if p.started || p.closed {
 		p.mu.Unlock()
 		return ErrProjectStopped
 	}
@@ -426,6 +427,45 @@ func (p *Project) Stop(ctx context.Context) error {
 	return p.stop(ctx, true)
 }
 
+func (p *Project) Close() error {
+	return p.close(context.Background(), true)
+}
+
+func (p *Project) close(ctx context.Context, publishEvents bool) error {
+	if p == nil {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	p.mu.Lock()
+	if p.closed {
+		p.mu.Unlock()
+		return nil
+	}
+	running := p.done != nil
+	p.closed = true
+	p.mu.Unlock()
+
+	var closeErr error
+	if running {
+		if err := p.stop(ctx, publishEvents); err != nil && !errors.Is(err, ErrNotRunning) {
+			closeErr = errors.Join(closeErr, err)
+		}
+	}
+	closeErr = errors.Join(closeErr, p.closeConnector())
+	return closeErr
+}
+
+func (p *Project) closeConnector() error {
+	p.mu.Lock()
+	projectConnector := p.connector
+	p.mu.Unlock()
+
+	return closeConnector(projectConnector)
+}
+
 func (p *Project) stop(ctx context.Context, publishEvents bool) error {
 	if ctx == nil {
 		ctx = context.Background()
@@ -454,6 +494,10 @@ func (p *Project) restart(ctx context.Context, opts startOptions) error {
 	if p.cfg.Paused {
 		p.mu.Unlock()
 		return ErrProjectPaused
+	}
+	if p.closed {
+		p.mu.Unlock()
+		return ErrProjectStopped
 	}
 	if p.done != nil {
 		p.mu.Unlock()
@@ -761,6 +805,14 @@ func buildConnector(cfg workflowconfig.Config, connectorFactory ConnectorFactory
 	}
 
 	return projectConnector, nil
+}
+
+func closeConnector(projectConnector connector.Connector) error {
+	closer, ok := projectConnector.(connector.Closer)
+	if !ok {
+		return nil
+	}
+	return closer.Close()
 }
 
 func resolveSchedulerFactory(deps Dependencies) schedulerFactory {

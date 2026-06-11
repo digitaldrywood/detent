@@ -51,6 +51,14 @@ func (c *PooledHTTPClient) LiveConnections() int {
 	return c.connections.live()
 }
 
+func (c *PooledHTTPClient) Close() error {
+	if c == nil || c.Client == nil {
+		return nil
+	}
+	c.CloseIdleConnections()
+	return nil
+}
+
 func normalizeHTTPTransportConfig(cfg HTTPTransportConfig) HTTPTransportConfig {
 	if cfg.MaxIdleConns <= 0 {
 		cfg.MaxIdleConns = defaultHTTPMaxIdleConns

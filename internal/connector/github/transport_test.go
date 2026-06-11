@@ -137,6 +137,12 @@ func TestConnectorUsesOnePooledClientForGitHubAppAndGraphQL(t *testing.T) {
 	if got := connector.LiveConnections(); got != 1 {
 		t.Fatalf("LiveConnections() = %d, want 1", got)
 	}
+	if err := connector.Close(); err != nil {
+		t.Fatalf("Close() error = %v", err)
+	}
+	if got := connector.LiveConnections(); got != 0 {
+		t.Fatalf("LiveConnections() after Close = %d, want 0", got)
+	}
 }
 
 func testPooledClientPrivateKeyPEM(t *testing.T) string {
