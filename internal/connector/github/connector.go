@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log/slog"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -72,6 +73,7 @@ type Connector struct {
 	priorityMap    map[string]*int
 	statusCache    *statusCache
 	projectCache   *projectCache
+	mu             sync.RWMutex
 	instanceLogin  string
 }
 
@@ -166,12 +168,18 @@ func (c *Connector) Authenticate(ctx context.Context) error {
 	if response.Node == nil || response.Node.TypeName != "ProjectV2" || strings.TrimSpace(response.Node.ID) == "" {
 		return ErrProjectNotFound
 	}
-	c.instanceLogin = strings.TrimSpace(response.Viewer.Login)
+	login := strings.TrimSpace(response.Viewer.Login)
+	c.mu.Lock()
+	c.instanceLogin = login
+	c.mu.Unlock()
 
 	return nil
 }
 
 func (c *Connector) InstanceLogin() string {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	return c.instanceLogin
 }
 

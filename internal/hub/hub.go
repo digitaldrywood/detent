@@ -127,6 +127,9 @@ func (h *Hub[T]) Close() {
 	}
 }
 
+// C returns a lossy subscription stream. Slow subscribers may miss intermediate
+// values when their buffer is full, and consumers racing with publishers should
+// use Latest when they need the authoritative current value.
 func (s *Subscription[T]) C() <-chan T {
 	return s.ch
 }

@@ -3,14 +3,8 @@ package watcher
 import (
 	"context"
 	"errors"
-	"fmt"
 	"log/slog"
-	"path/filepath"
-	"reflect"
-	"strings"
 	"time"
-
-	"github.com/fsnotify/fsnotify"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
@@ -34,11 +28,7 @@ type Update struct {
 type Option func(*options)
 
 type Watcher struct {
-	path     string
-	dir      string
-	debounce time.Duration
-	loader   Loader
-	logger   *slog.Logger
+	file *FileWatcher[workflowconfig.Workflow]
 }
 
 type options struct {
@@ -48,16 +38,6 @@ type options struct {
 }
 
 func New(path string, opts ...Option) (*Watcher, error) {
-	path = strings.TrimSpace(path)
-	if path == "" {
-		return nil, ErrMissingPath
-	}
-
-	absolute, err := filepath.Abs(path)
-	if err != nil {
-		return nil, fmt.Errorf("resolve workflow watch path: %w", err)
-	}
-
 	cfg := options{
 		debounce: defaultDebounce,
 		loader:   workflowconfig.LoadWorkflow,
@@ -76,13 +56,18 @@ func New(path string, opts ...Option) (*Watcher, error) {
 		cfg.logger = slog.Default()
 	}
 
-	return &Watcher{
-		path:     filepath.Clean(absolute),
-		dir:      filepath.Dir(absolute),
-		debounce: cfg.debounce,
-		loader:   cfg.loader,
-		logger:   cfg.logger,
-	}, nil
+	file, err := NewFile(path, func(path string) (workflowconfig.Workflow, error) {
+		workflow, err := cfg.loader(path)
+		if err == nil {
+			err = workflow.Config.Validate()
+		}
+		return workflow, err
+	}, WithFileDebounce(cfg.debounce), WithFileLogger(cfg.logger))
+	if err != nil {
+		return nil, err
+	}
+
+	return &Watcher{file: file}, nil
 }
 
 func WithDebounce(debounce time.Duration) Option {
@@ -108,122 +93,29 @@ func (w *Watcher) Watch(ctx context.Context) (<-chan Update, error) {
 		ctx = context.Background()
 	}
 
-	fsWatcher, err := fsnotify.NewWatcher()
+	fileUpdates, err := w.file.Watch(ctx)
 	if err != nil {
-		return nil, fmt.Errorf("create workflow watcher: %w", err)
-	}
-	if err := fsWatcher.Add(w.dir); err != nil {
-		closeErr := fsWatcher.Close()
-		return nil, errors.Join(fmt.Errorf("watch workflow directory: %w", err), closeErr)
+		return nil, err
 	}
 
 	updates := make(chan Update, 1)
-	go w.run(ctx, fsWatcher, updates)
-	return updates, nil
-}
-
-func (w *Watcher) run(ctx context.Context, fsWatcher *fsnotify.Watcher, updates chan<- Update) {
-	defer close(updates)
-	defer func() {
-		if err := fsWatcher.Close(); err != nil {
-			w.logger.Warn("close workflow watcher failed", "path", w.path, "error", err)
+	go func() {
+		defer close(updates)
+		for update := range fileUpdates {
+			mapped := Update{
+				Path:     update.Path,
+				Workflow: update.Value,
+				Err:      update.Err,
+				At:       update.At,
+			}
+			select {
+			case updates <- mapped:
+			case <-ctx.Done():
+				return
+			}
 		}
 	}()
-
-	timer := time.NewTimer(w.debounce)
-	if !timer.Stop() {
-		<-timer.C
-	}
-	var timerC <-chan time.Time
-	var lastUpdate *Update
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case event, ok := <-fsWatcher.Events:
-			if !ok {
-				return
-			}
-			if w.matches(event) {
-				resetTimer(timer, w.debounce)
-				timerC = timer.C
-			}
-		case err, ok := <-fsWatcher.Errors:
-			if !ok {
-				return
-			}
-			w.send(ctx, updates, Update{Path: w.path, Err: err, At: time.Now()})
-		case <-timerC:
-			timerC = nil
-			update := w.reload(ctx)
-			if sameUpdate(update, lastUpdate) {
-				continue
-			}
-			w.send(ctx, updates, update)
-			last := update
-			lastUpdate = &last
-		}
-	}
-}
-
-func (w *Watcher) matches(event fsnotify.Event) bool {
-	if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename|fsnotify.Remove) == 0 {
-		return false
-	}
-	return filepath.Clean(event.Name) == w.path
-}
-
-func (w *Watcher) reload(ctx context.Context) Update {
-	update := Update{
-		Path: w.path,
-		At:   time.Now(),
-	}
-
-	workflow, err := w.load(ctx)
-	if err != nil {
-		update.Err = err
-	} else {
-		update.Workflow = workflow
-	}
-
-	return update
-}
-
-func (w *Watcher) load(ctx context.Context) (workflowconfig.Workflow, error) {
-	workflow, err := w.loadOnce()
-	if err == nil {
-		return workflow, nil
-	}
-	lastErr := err
-
-	deadline := time.NewTimer(w.debounce)
-	defer deadline.Stop()
-	retry := time.NewTicker(retryInterval(w.debounce))
-	defer retry.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			return workflowconfig.Workflow{}, ctx.Err()
-		case <-deadline.C:
-			return workflowconfig.Workflow{}, lastErr
-		case <-retry.C:
-			workflow, err := w.loadOnce()
-			if err == nil {
-				return workflow, nil
-			}
-			lastErr = err
-		}
-	}
-}
-
-func (w *Watcher) loadOnce() (workflowconfig.Workflow, error) {
-	workflow, err := w.loader(w.path)
-	if err == nil {
-		err = workflow.Config.Validate()
-	}
-	return workflow, err
+	return updates, nil
 }
 
 func retryInterval(debounce time.Duration) time.Duration {
@@ -231,26 +123,6 @@ func retryInterval(debounce time.Duration) time.Duration {
 		return debounce
 	}
 	return reloadRetryInterval
-}
-
-func (w *Watcher) send(ctx context.Context, updates chan<- Update, update Update) {
-	select {
-	case updates <- update:
-	case <-ctx.Done():
-	}
-}
-
-func sameUpdate(update Update, last *Update) bool {
-	if last == nil || update.Path != last.Path {
-		return false
-	}
-	if (update.Err == nil) != (last.Err == nil) {
-		return false
-	}
-	if update.Err != nil {
-		return update.Err.Error() == last.Err.Error()
-	}
-	return reflect.DeepEqual(update.Workflow, last.Workflow)
 }
 
 func resetTimer(timer *time.Timer, debounce time.Duration) {

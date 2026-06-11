@@ -3,6 +3,7 @@ package hub_test
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
@@ -124,6 +125,42 @@ func TestHubWithBufferKeepsNewestBufferedEvents(t *testing.T) {
 	if got := receive(t, sub.C()); got != "new" {
 		t.Fatalf("second buffered event = %q, want new", got)
 	}
+}
+
+func TestHubConcurrentPublishAndConsumeIsRaceFree(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[int]()
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case _, ok := <-sub.C():
+				if !ok {
+					return
+				}
+			case <-done:
+				return
+			}
+		}
+	}()
+
+	for value := range 1000 {
+		if err := events.Publish(value); err != nil {
+			t.Fatalf("Publish(%d) error = %v", value, err)
+		}
+	}
+	close(done)
+	wg.Wait()
+	sub.Close()
 }
 
 func TestHubCloseClosesSubscribersAndRejectsOperations(t *testing.T) {

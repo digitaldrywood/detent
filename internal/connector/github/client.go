@@ -172,31 +172,36 @@ func (c *Client) GraphQLWithType(ctx context.Context, queryType string, query st
 }
 
 func (c *Client) REST(ctx context.Context, method string, path string, body any, out any) error {
+	_, err := c.rest(ctx, method, path, body, out)
+	return err
+}
+
+func (c *Client) rest(ctx context.Context, method string, path string, body any, out any) (http.Header, error) {
 	token, err := c.tokenSource.Token(ctx)
 	if err != nil {
-		return fmt.Errorf("resolve github token: %w", err)
+		return nil, fmt.Errorf("resolve github token: %w", err)
 	}
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return ErrMissingToken
+		return nil, ErrMissingToken
 	}
 
 	var requestBody io.Reader
 	if body != nil {
 		var encoded bytes.Buffer
 		if err := json.NewEncoder(&encoded).Encode(body); err != nil {
-			return fmt.Errorf("encode github rest request: %w", err)
+			return nil, fmt.Errorf("encode github rest request: %w", err)
 		}
 		requestBody = &encoded
 	}
 
 	url, err := c.restURL(path)
 	if err != nil {
-		return err
+		return nil, err
 	}
 	req, err := http.NewRequestWithContext(ctx, method, url, requestBody)
 	if err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -209,9 +214,9 @@ func (c *Client) REST(ctx context.Context, method string, path string, body any,
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return ctxErr
+			return nil, ctxErr
 		}
-		return fmt.Errorf("%w: %w", ErrTransient, err)
+		return nil, fmt.Errorf("%w: %w", ErrTransient, err)
 	}
 	defer func() {
 		if err := drainAndClose(resp.Body); err != nil {
@@ -222,21 +227,22 @@ func (c *Client) REST(ctx context.Context, method string, path string, body any,
 	c.logger.DebugContext(ctx, "github rest response", "method", method, "path", path, "status", resp.StatusCode, "live_connections", c.LiveConnections())
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return fmt.Errorf("%w: read response: %w", ErrTransient, err)
+		return nil, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return classifyStatus(resp.StatusCode, resp.Header, raw)
+		return nil, classifyStatus(resp.StatusCode, resp.Header, raw)
 	}
+	headers := resp.Header.Clone()
 	if out == nil || resp.StatusCode == http.StatusNoContent {
-		return nil
+		return headers, nil
 	}
 	if len(raw) == 0 {
-		return ErrInvalidResponse
+		return nil, ErrInvalidResponse
 	}
 	if err := json.Unmarshal(raw, out); err != nil {
-		return fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
-	return nil
+	return headers, nil
 }
 
 func (c *Client) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
@@ -504,6 +510,93 @@ func (c *Client) restURL(path string) (string, error) {
 	parsed.Path = strings.TrimRight(parsed.Path, "/") + relative.Path
 	parsed.RawQuery = relative.RawQuery
 	return parsed.String(), nil
+}
+
+func (c *Client) nextRESTPage(headers http.Header) (string, error) {
+	link := nextRESTLink(headers)
+	if link == "" {
+		return "", nil
+	}
+	return c.restPath(link)
+}
+
+func nextRESTLink(headers http.Header) string {
+	for _, value := range headers.Values("Link") {
+		for _, part := range strings.Split(value, ",") {
+			part = strings.TrimSpace(part)
+			if !strings.HasPrefix(part, "<") {
+				continue
+			}
+			end := strings.Index(part, ">")
+			if end <= 1 {
+				continue
+			}
+			if linkHasRelNext(part[end+1:]) {
+				return strings.TrimSpace(part[1:end])
+			}
+		}
+	}
+	return ""
+}
+
+func linkHasRelNext(params string) bool {
+	for _, param := range strings.Split(params, ";") {
+		key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
+		if !ok || !strings.EqualFold(strings.TrimSpace(key), "rel") {
+			continue
+		}
+		if strings.EqualFold(strings.Trim(strings.TrimSpace(value), `"`), "next") {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *Client) restPath(value string) (string, error) {
+	parsed, err := url.Parse(strings.TrimSpace(value))
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	if !parsed.IsAbs() {
+		if parsed.Path == "" {
+			return "", ErrInvalidEndpoint
+		}
+		return requestPath(parsed), nil
+	}
+
+	base, err := url.Parse(c.restEndpoint)
+	if err != nil {
+		return "", fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	if !strings.EqualFold(parsed.Scheme, base.Scheme) || !strings.EqualFold(parsed.Host, base.Host) {
+		return "", fmt.Errorf("%w: unexpected rest page host %s", ErrInvalidEndpoint, parsed.Host)
+	}
+
+	path := parsed.Path
+	basePath := strings.TrimRight(base.Path, "/")
+	if basePath != "" {
+		switch {
+		case path == basePath:
+			path = "/"
+		case strings.HasPrefix(path, basePath+"/"):
+			path = strings.TrimPrefix(path, basePath)
+		default:
+			return "", fmt.Errorf("%w: unexpected rest page path %s", ErrInvalidEndpoint, path)
+		}
+	}
+	parsed.Path = path
+	return requestPath(parsed), nil
+}
+
+func requestPath(value *url.URL) string {
+	path := value.EscapedPath()
+	if path == "" {
+		path = "/"
+	}
+	if value.RawQuery != "" {
+		path += "?" + value.RawQuery
+	}
+	return path
 }
 
 func classifyStatus(status int, headers http.Header, body []byte) error {
