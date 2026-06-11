@@ -94,11 +94,15 @@ func TestHelpScriptUsesStableSharedPopoverUtility(t *testing.T) {
 		"availableBelow",
 		"maxHeight",
 		"aria-describedby",
+		`document.addEventListener("htmx:afterSettle"`,
 		"Escape",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("help script missing %q:\n%s", want, html)
 		}
+	}
+	if strings.Contains(html, `document.body.addEventListener("htmx:afterSettle"`) {
+		t.Fatalf("help script installs htmx settle listener on document.body:\n%s", html)
 	}
 	if strings.Contains(html, "mousemove") {
 		t.Fatalf("help script should not reposition on mousemove:\n%s", html)
