@@ -17,6 +17,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -58,6 +59,40 @@ func TestShouldLaunchTerminalDashboard(t *testing.T) {
 				t.Fatalf("shouldLaunchTerminalDashboard(%#v) = %v, want %v", tt.cfg, got, tt.want)
 			}
 		})
+	}
+}
+
+func TestBuildGlobalSchedulerFromSettings(t *testing.T) {
+	t.Parallel()
+
+	global, err := buildGlobalScheduler(globalconfig.Settings{
+		MaxConcurrentAgents: 2,
+		Scheduling:          globalconfig.SchedulingRoundRobin,
+		FairShare:           map[string]any{"half_life": "30m"},
+	}, nil)
+	if err != nil {
+		t.Fatalf("buildGlobalScheduler() error = %v", err)
+	}
+	if global.Mode() != scheduler.ModeRoundRobin {
+		t.Fatalf("Mode() = %q, want %q", global.Mode(), scheduler.ModeRoundRobin)
+	}
+
+	first, err := global.RequestSlot(context.Background(), scheduler.SlotRequest{State: "Todo"})
+	if err != nil {
+		t.Fatalf("RequestSlot() first error = %v", err)
+	}
+	second, err := global.RequestSlot(context.Background(), scheduler.SlotRequest{State: "Todo"})
+	if err != nil {
+		t.Fatalf("RequestSlot() second error = %v", err)
+	}
+	if _, err := global.RequestSlot(context.Background(), scheduler.SlotRequest{State: "Todo"}); !errors.Is(err, scheduler.ErrNoSlots) {
+		t.Fatalf("RequestSlot() third error = %v, want ErrNoSlots", err)
+	}
+	if err := global.ReleaseSlot(first); err != nil {
+		t.Fatalf("ReleaseSlot() first error = %v", err)
+	}
+	if err := global.ReleaseSlot(second); err != nil {
+		t.Fatalf("ReleaseSlot() second error = %v", err)
 	}
 }
 

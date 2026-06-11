@@ -23,6 +23,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/tui"
@@ -184,11 +185,17 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}()
 
 	events := hub.New[project.Event]()
+	globalScheduler, err := buildGlobalScheduler(cfg.Global.Global, runtimeStore)
+	if err != nil {
+		return err
+	}
+	globalDispatchGate := scheduler.NewGlobalDispatchGate(globalScheduler)
 	runtimeGitHubToken := newRuntimeGitHubTokenState(runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken))
 	projectFactory := withRunnerFactory(project.Dependencies{
-		Events:      events,
-		Logger:      logger,
-		GitHubToken: runtimeGitHubToken.get(),
+		Events:             events,
+		Logger:             logger,
+		GlobalDispatchGate: globalDispatchGate,
+		GitHubToken:        runtimeGitHubToken.get(),
 	}, runtimeStore, nil, runtimeGitHubToken.get)
 	manager, err := project.NewManager(managerConfigWithRuntimeGitHubToken(cfg.Global, runtimeGitHubToken.get()), project.ManagerDependencies{
 		ProjectFactory: projectFactory,
@@ -430,6 +437,56 @@ func globalConfigFromWorkflow(globalPath string, workflowPath string) (globalcon
 		},
 	}
 	return cfg, nil
+}
+
+func buildGlobalScheduler(settings globalconfig.Settings, fairShareStore scheduler.FairShareStore) (scheduler.GlobalScheduler, error) {
+	halfLife, err := globalFairShareHalfLife(settings.FairShare)
+	if err != nil {
+		return nil, err
+	}
+
+	schedulerConfig := scheduler.Config{
+		Kind:          settings.Scheduling,
+		Capacity:      settings.MaxConcurrentAgents,
+		DecayHalfLife: halfLife,
+	}
+	if settings.Scheduling == globalconfig.SchedulingFairShare {
+		schedulerConfig.FairShareStore = fairShareStore
+	}
+
+	sched, err := scheduler.NewFromConfig(schedulerConfig)
+	if err != nil {
+		return nil, fmt.Errorf("create global scheduler: %w", err)
+	}
+	global, ok := sched.(scheduler.GlobalScheduler)
+	if !ok {
+		return nil, fmt.Errorf("create global scheduler: %w", scheduler.ErrUnsupportedBackend)
+	}
+	return global, nil
+}
+
+func globalFairShareHalfLife(settings map[string]any) (time.Duration, error) {
+	value, ok := settings["half_life"]
+	if !ok || value == nil {
+		return 0, nil
+	}
+
+	switch halfLife := value.(type) {
+	case string:
+		text := strings.TrimSpace(halfLife)
+		if text == "" {
+			return 0, nil
+		}
+		duration, err := time.ParseDuration(text)
+		if err != nil {
+			return 0, fmt.Errorf("global.fair_share.half_life: %w", err)
+		}
+		return duration, nil
+	case time.Duration:
+		return halfLife, nil
+	default:
+		return 0, fmt.Errorf("global.fair_share.half_life: must be a duration string")
+	}
 }
 
 func openRuntimeStore(ctx context.Context, cfg BootConfig) (store.Store, error) {

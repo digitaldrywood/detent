@@ -27,7 +27,9 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 
 	events := hub.New[project.Event]()
 	sched := scheduler.NewCountingSemaphore(scheduler.Config{Capacity: 3})
+	global := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 8}))
 	created := make(chan orchestrator.Config, 1)
+	createdDeps := make(chan orchestrator.Dependencies, 1)
 	workflowCfg := workflowConfigWithMemoryIssue("issue-1")
 	workflowCfg.Identity.Name = "workflow-persona"
 	workflowCfg.Identity.GitHubLogin = "workflow-bot"
@@ -55,11 +57,13 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 			Prompt: "Run issue",
 		},
 	}, project.Dependencies{
-		Scheduler: sched,
-		Events:    events,
-		Runner:    orchestrator.FakeRunner{},
+		Scheduler:          sched,
+		GlobalDispatchGate: global,
+		Events:             events,
+		Runner:             orchestrator.FakeRunner{},
 		OrchestratorFactory: func(cfg orchestrator.Config, deps orchestrator.Dependencies) (*orchestrator.Orchestrator, error) {
 			created <- cfg
+			createdDeps <- deps
 			return orchestrator.New(cfg, deps)
 		},
 	})
@@ -100,8 +104,20 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 		if len(cfg.Authorization.And) != 2 {
 			t.Fatalf("Authorization.And = %#v, want workflow and project selectors", cfg.Authorization.And)
 		}
+		if cfg.Project.ID != "detent" || cfg.Project.Weight != 2 || cfg.Project.Priority != 10 {
+			t.Fatalf("orchestrator Project = %#v, want detent weight 2 priority 10", cfg.Project)
+		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for orchestrator factory")
+	}
+
+	select {
+	case deps := <-createdDeps:
+		if deps.GlobalDispatchGate != global {
+			t.Fatalf("orchestrator GlobalDispatchGate = %T, want shared gate", deps.GlobalDispatchGate)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for orchestrator dependencies")
 	}
 }
 
@@ -617,6 +633,57 @@ func TestProjectStartRejectsPausedProject(t *testing.T) {
 
 	if err := got.Start(context.Background()); !errors.Is(err, project.ErrProjectPaused) {
 		t.Fatalf("Start() error = %v, want %v", err, project.ErrProjectPaused)
+	}
+}
+
+func TestProjectUnpauseRebuildsGlobalDispatchCandidate(t *testing.T) {
+	t.Parallel()
+
+	workflowCfg := workflowConfigWithMemoryIssue("issue-paused")
+	workflowCfg.Tracker.Issues[0].State = "Todo"
+	workflowCfg.Tracker.Issues[0].Title = "Run initially paused project"
+	workflowCfg.Tracker.Issues[0].AssignedToWorker = true
+	runner := newProjectBlockingRunner()
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:     "paused",
+			Paused: true,
+			Weight: 1,
+		},
+		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Run paused project."},
+	}, project.Dependencies{
+		Runner:             runner,
+		GlobalDispatchGate: scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1})),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if !got.Running() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		if err := got.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			cancel()
+			t.Fatalf("Stop() error = %v", err)
+		}
+		cancel()
+	})
+
+	if err := got.Start(context.Background()); !errors.Is(err, project.ErrProjectPaused) {
+		t.Fatalf("Start() error = %v, want %v", err, project.ErrProjectPaused)
+	}
+	if err := got.Unpause(context.Background()); err != nil {
+		t.Fatalf("Unpause() error = %v", err)
+	}
+
+	select {
+	case request := <-runner.started:
+		if request.Issue.ID != "issue-paused" {
+			t.Fatalf("RunRequest.Issue.ID = %q, want issue-paused", request.Issue.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for unpaused project dispatch")
 	}
 }
 

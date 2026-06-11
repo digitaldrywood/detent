@@ -77,6 +77,7 @@ type Dependencies struct {
 	WorkflowWatcherFactory WorkflowWatcherFactory
 	Runner                 orchestrator.Runner
 	Scheduler              scheduler.Scheduler
+	GlobalDispatchGate     scheduler.ProjectDispatchGate
 	Events                 *hub.Hub[Event]
 	Logger                 *slog.Logger
 	GitHubToken            string
@@ -159,9 +160,10 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 
 	orchConfig := projectOrchestratorConfig(cfg.Project, workflow.Config)
 	orchDeps := orchestrator.Dependencies{
-		Connector: projectConnector,
-		Runner:    deps.Runner,
-		Logger:    logger,
+		Connector:          projectConnector,
+		Runner:             deps.Runner,
+		GlobalDispatchGate: deps.GlobalDispatchGate,
+		Logger:             logger,
 	}
 	orch, err := orchestratorFactory(orchConfig, orchDeps)
 	if err != nil {
@@ -383,6 +385,10 @@ func (p *Project) Unpause(ctx context.Context) error {
 	}
 	p.cfg.Paused = false
 	running := p.done != nil
+	if !running {
+		p.orchConfig = projectOrchestratorConfig(p.cfg, p.workflow.Config)
+		p.orchestrator = nil
+	}
 	p.mu.Unlock()
 
 	if !running {
@@ -653,6 +659,12 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {
 	workflow = workflowConfigWithProjectIdentity(project, workflow)
 	cfg := orchestrator.ConfigFromWorkflow(workflow)
+	cfg.Project = scheduler.ProjectCandidate{
+		ID:       project.ID,
+		Weight:   project.Weight,
+		Priority: project.Priority,
+		Paused:   project.Paused,
+	}
 	cfg.Authorization = combineAuthorizationSelectors(cfg.Authorization, project.Authorization)
 	return cfg
 }

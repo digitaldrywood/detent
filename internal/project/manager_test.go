@@ -10,6 +10,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
@@ -750,6 +751,74 @@ func TestManagerSharedGlobalSchedulerGate(t *testing.T) {
 	})
 }
 
+func TestManagerProjectsShareGlobalDispatchCap(t *testing.T) {
+	t.Parallel()
+
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	runners := map[project.ID]*projectBlockingRunner{
+		"alpha": newProjectBlockingRunner(),
+		"bravo": newProjectBlockingRunner(),
+	}
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "alpha", Weight: 1},
+			{ID: "bravo", Weight: 1},
+		},
+	}, project.ManagerDependencies{
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			workflowCfg := workflowConfigWithMemoryIssue("issue-" + cfg.ID)
+			workflowCfg.Agent.MaxConcurrentAgents = 2
+			workflowCfg.Tracker.Issues[0].State = "Todo"
+			workflowCfg.Tracker.Issues[0].Title = "Run " + cfg.ID
+			workflowCfg.Tracker.Issues[0].AssignedToWorker = true
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Run test issue."},
+			}, project.Dependencies{
+				Runner:             runners[project.ID(cfg.ID)],
+				GlobalDispatchGate: globalGate,
+			})
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		for _, item := range manager.Registry().List() {
+			if !item.Running() {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			if err := item.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
+				cancel()
+				t.Fatalf("Stop(%s) error = %v", item.ID(), err)
+			}
+			cancel()
+		}
+	})
+
+	first := receiveFirstProjectRun(t, runners["alpha"].started, runners["bravo"].started)
+	var blocked <-chan orchestrator.RunRequest
+	if first == "alpha" {
+		blocked = runners["bravo"].started
+	} else {
+		blocked = runners["alpha"].started
+	}
+	select {
+	case request := <-blocked:
+		t.Fatalf("unexpected second project dispatch while global slot is full = %#v", request)
+	default:
+	}
+
+	if got := runningProjects(t, manager); got != 1 {
+		t.Fatalf("combined running agents = %d, want 1", got)
+	}
+}
+
 func TestManagerConfigFromGlobal(t *testing.T) {
 	t.Parallel()
 
@@ -919,6 +988,38 @@ func requestProjectSlot(manager *project.Manager, id project.ID) (scheduler.Slot
 		State: "Todo",
 		Host:  string(id),
 	})
+}
+
+func receiveFirstProjectRun(
+	t *testing.T,
+	alpha <-chan orchestrator.RunRequest,
+	bravo <-chan orchestrator.RunRequest,
+) project.ID {
+	t.Helper()
+
+	select {
+	case <-alpha:
+		return "alpha"
+	case <-bravo:
+		return "bravo"
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first project dispatch")
+	}
+	return ""
+}
+
+func runningProjects(t *testing.T, manager *project.Manager) int {
+	t.Helper()
+
+	total := 0
+	for _, item := range manager.Registry().List() {
+		state, err := item.Orchestrator().State(context.Background())
+		if err != nil {
+			t.Fatalf("State(%s) error = %v", item.ID(), err)
+		}
+		total += len(state.Running)
+	}
+	return total
 }
 
 func releaseProjectSlot(t *testing.T, global scheduler.GlobalScheduler, slot scheduler.Slot) {

@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -573,6 +574,79 @@ func TestDispatchCandidatesClaimsDuplicateIssueWithinCycle(t *testing.T) {
 	}
 	if len(state.Claimed) != 1 {
 		t.Fatalf("Claimed len = %d, want 1", len(state.Claimed))
+	}
+}
+
+func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
+	t.Parallel()
+
+	global := scheduler.NewRoundRobin(scheduler.Config{Capacity: 1})
+	globalGate := scheduler.NewGlobalDispatchGate(global)
+	now := time.Now()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	alphaRunner := newWorkerHostRunner()
+	alphaCfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Project:             scheduler.ProjectCandidate{ID: "alpha", Weight: 1},
+	})
+	alpha := Orchestrator{
+		cfg:                alphaCfg,
+		supervisor:         newTestSupervisor(t, alphaRunner, alphaCfg),
+		runResults:         make(chan runpkg.Completion),
+		globalDispatchGate: globalGate,
+	}
+	alphaState := newState(alphaCfg)
+	alphaIssue := dispatchTestIssue("issue-alpha", "Todo")
+
+	if !alpha.dispatchIssue(ctx, &alphaState, alphaIssue, 0, now, "") {
+		t.Fatal("alpha dispatchIssue() = false, want true")
+	}
+	alphaRequest := receiveWorkerHostRunRequest(t, alphaRunner.started)
+	if alphaRequest.Issue.ID != alphaIssue.ID {
+		t.Fatalf("alpha RunRequest.Issue.ID = %q, want %q", alphaRequest.Issue.ID, alphaIssue.ID)
+	}
+
+	bravoRunner := newWorkerHostRunner()
+	bravoCfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Project:             scheduler.ProjectCandidate{ID: "bravo", Weight: 1},
+	})
+	bravo := Orchestrator{
+		cfg:                bravoCfg,
+		supervisor:         newTestSupervisor(t, bravoRunner, bravoCfg),
+		runResults:         make(chan runpkg.Completion),
+		globalDispatchGate: globalGate,
+	}
+	bravoState := newState(bravoCfg)
+	bravoIssue := dispatchTestIssue("issue-bravo", "Todo")
+
+	if bravo.dispatchIssue(ctx, &bravoState, bravoIssue, 0, now, "") {
+		t.Fatal("bravo dispatchIssue() = true while global slot is held, want false")
+	}
+	select {
+	case request := <-bravoRunner.started:
+		t.Fatalf("unexpected bravo dispatch while global slot is held = %#v", request)
+	default:
+	}
+
+	alpha.handleRunResult(&alphaState, runpkg.Completion{
+		IssueID:     alphaIssue.ID,
+		CompletedAt: now.Add(time.Second),
+		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
+	})
+
+	if !bravo.dispatchIssue(ctx, &bravoState, bravoIssue, 0, now.Add(2*time.Second), "") {
+		t.Fatal("bravo dispatchIssue() after alpha completion = false, want true")
+	}
+	bravoRequest := receiveWorkerHostRunRequest(t, bravoRunner.started)
+	if bravoRequest.Issue.ID != bravoIssue.ID {
+		t.Fatalf("bravo RunRequest.Issue.ID = %q, want %q", bravoRequest.Issue.ID, bravoIssue.ID)
 	}
 }
 
