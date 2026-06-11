@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
 func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
@@ -125,6 +126,169 @@ func TestTickReconcilesRunningIssueTrackerState(t *testing.T) {
 			}
 			if !slices.Equal(tracker.requestedIDs, []string{prior.ID}) {
 				t.Fatalf("FetchIssueStatesByIDs() ids = %#v, want [%s]", tracker.requestedIDs, prior.ID)
+			}
+		})
+	}
+}
+
+func TestTickReapsTerminalRunningIssue(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	startedAt := now.Add(-10 * time.Minute)
+	terminalAt := now.Add(-30 * time.Second)
+	issue := connector.Issue{
+		ID:         "issue-cancelled",
+		Identifier: "digitaldrywood/detent#356",
+		Title:      "Cancelled session",
+		State:      "In Progress",
+		URL:        "https://github.com/digitaldrywood/detent/issues/356",
+	}
+	cancelled := cloneIssue(issue)
+	cancelled.State = "Cancelled"
+	cancelled.StageUpdatedAt = &terminalAt
+
+	project := scheduler.ProjectCandidate{ID: "detent", Weight: 1}
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	slot, ok, err := gate.TryAcquire(context.Background(), project, scheduler.SlotRequest{State: issue.State}, startedAt)
+	if err != nil {
+		t.Fatalf("TryAcquire() error = %v", err)
+	}
+	if !ok {
+		t.Fatal("TryAcquire() ok = false, want true")
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		Project:             project,
+		ActiveStates:        []string{"Todo", "In Progress", "Human Review", "Rework", "Merging"},
+		TerminalStates:      []string{"Done", "Cancelled", "Failed"},
+	})
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:      cloneIssue(issue),
+		StartedAt:  startedAt,
+		Tokens:     CodexTotals{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, RuntimeSeconds: 90},
+		globalSlot: slot,
+		cancel:     cancel,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: startedAt, Owner: "worker-1"}
+
+	tracker := &runningStateConnector{issues: []connector.Issue{cancelled}}
+	orch := &Orchestrator{
+		cfg:                cfg,
+		connector:          tracker,
+		logger:             slog.New(slog.NewTextHandler(io.Discard, nil)),
+		globalDispatchGate: gate,
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if _, ok := state.Running[issue.ID]; ok {
+		t.Fatalf("Running[%q] present after terminal reconciliation", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after terminal reconciliation", issue.ID)
+	}
+	completed, ok := state.Completed[issue.ID]
+	if !ok {
+		t.Fatalf("Completed[%q] missing after terminal reconciliation", issue.ID)
+	}
+	if completed.FinalState != "Cancelled" {
+		t.Fatalf("Completed[%q].FinalState = %q, want Cancelled", issue.ID, completed.FinalState)
+	}
+	if !completed.CompletedAt.Equal(terminalAt) {
+		t.Fatalf("Completed[%q].CompletedAt = %v, want %v", issue.ID, completed.CompletedAt, terminalAt)
+	}
+	if completed.Tokens.TotalTokens != 15 {
+		t.Fatalf("Completed[%q].Tokens.TotalTokens = %d, want 15", issue.ID, completed.Tokens.TotalTokens)
+	}
+	select {
+	case <-runCtx.Done():
+	default:
+		t.Fatal("running context was not cancelled")
+	}
+
+	nextSlot, ok, err := gate.TryAcquire(context.Background(), project, scheduler.SlotRequest{State: "Todo"}, now)
+	if err != nil {
+		t.Fatalf("TryAcquire() after terminal reap error = %v", err)
+	}
+	if !ok {
+		t.Fatal("TryAcquire() after terminal reap ok = false, want true")
+	}
+	if err := gate.Release(nextSlot); err != nil {
+		t.Fatalf("Release() after terminal reap error = %v", err)
+	}
+
+	snapshot := state.Snapshot(now)
+	if snapshot.Counts.Running != 0 || len(snapshot.Running) != 0 {
+		t.Fatalf("snapshot running count = %d len = %d, want 0", snapshot.Counts.Running, len(snapshot.Running))
+	}
+	if snapshot.Counts.Completed != 1 || len(snapshot.Completed) != 1 {
+		t.Fatalf("snapshot completed count = %d len = %d, want 1", snapshot.Counts.Completed, len(snapshot.Completed))
+	}
+}
+
+func TestTerminalCompletedAtUsesTerminalConditionTimestamp(t *testing.T) {
+	t.Parallel()
+
+	stageUpdatedAt := time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	fallback := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
+	terminalStates := normalizeConfig(Config{TerminalStates: []string{"Done", "Cancelled"}}).TerminalStates
+
+	tests := []struct {
+		name  string
+		issue connector.Issue
+		want  time.Time
+	}{
+		{
+			name: "status terminal uses stage update time",
+			issue: connector.Issue{
+				State:          "Cancelled",
+				StageUpdatedAt: &stageUpdatedAt,
+				UpdatedAt:      &updatedAt,
+			},
+			want: stageUpdatedAt,
+		},
+		{
+			name: "closed active issue uses issue update time",
+			issue: connector.Issue{
+				State:          "In Progress",
+				Closed:         true,
+				StageUpdatedAt: &stageUpdatedAt,
+				UpdatedAt:      &updatedAt,
+			},
+			want: updatedAt,
+		},
+		{
+			name: "merged active pull request uses issue update time",
+			issue: connector.Issue{
+				State:          "Merging",
+				StageUpdatedAt: &stageUpdatedAt,
+				UpdatedAt:      &updatedAt,
+				PullRequest:    &connector.PullRequest{State: "MERGED"},
+			},
+			want: updatedAt,
+		},
+		{
+			name: "missing tracker timestamps uses fallback",
+			issue: connector.Issue{
+				State: "Cancelled",
+			},
+			want: fallback,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := terminalCompletedAt(tt.issue, terminalStates, fallback)
+			if !got.Equal(tt.want) {
+				t.Fatalf("terminalCompletedAt() = %v, want %v", got, tt.want)
 			}
 		})
 	}
