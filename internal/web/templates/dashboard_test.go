@@ -488,6 +488,103 @@ func TestDashboardRendersBoundedPRPipelineLanes(t *testing.T) {
 	}
 }
 
+func TestDashboardPreservesSnapshotScrollContainersAcrossSSEMorph(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	stageAt := now.Add(-time.Minute)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Detent",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Pipeline: []telemetry.Issue{
+				{
+					ID:         "review",
+					Identifier: "DD-REVIEW",
+					Title:      "Review pipeline card",
+					State:      "Human Review",
+					UpdatedAt:  &stageAt,
+				},
+				{
+					ID:         "merging",
+					Identifier: "DD-MERGING",
+					Title:      "Merging pipeline card",
+					State:      "Merging",
+					UpdatedAt:  &stageAt,
+				},
+				{
+					ID:         "done",
+					Identifier: "DD-DONE",
+					Title:      "Done pipeline card",
+					State:      "Done",
+					UpdatedAt:  &stageAt,
+				},
+			},
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "running",
+						Identifier: "DD-RUNNING",
+						Title:      "Running issue",
+						State:      "In Progress",
+					},
+					StartedAt: now.Add(-5 * time.Minute),
+				},
+			},
+			Queue: []telemetry.Queued{
+				{
+					Issue: telemetry.Issue{
+						ID:         "queued",
+						Identifier: "DD-QUEUED",
+						Title:      "Queued issue",
+					},
+					Attempt: 1,
+				},
+			},
+			Blocked: []telemetry.Blocked{
+				{
+					Issue: telemetry.Issue{
+						ID:         "blocked",
+						Identifier: "DD-BLOCKED",
+						Title:      "Blocked issue",
+						State:      "Blocked",
+					},
+				},
+			},
+			Completed: []telemetry.Completed{
+				{
+					Issue: telemetry.Issue{
+						ID:         "completed",
+						Identifier: "DD-COMPLETED",
+						Title:      "Completed issue",
+					},
+					CompletedAt: now,
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`data-preserve-scroll="agent-activity"`,
+		`data-preserve-scroll="pr-pipeline-human-review"`,
+		`data-preserve-scroll="pr-pipeline-merging"`,
+		`data-preserve-scroll="pr-pipeline-done-today"`,
+		`data-preserve-scroll="running-issues"`,
+		`data-preserve-scroll="retry-queue"`,
+		`data-preserve-scroll="blocked-sessions"`,
+		`data-preserve-scroll="recent-sessions"`,
+		`document.body.addEventListener("htmx:beforeSwap"`,
+		`document.body.addEventListener("htmx:afterSettle"`,
+		"scrollTop",
+		"scrollLeft",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing scroll preservation marker %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestDashboardRendersReadableAgentTimelineForConcurrentSessions(t *testing.T) {
 	t.Parallel()
 
