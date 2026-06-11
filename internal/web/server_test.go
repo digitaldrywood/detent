@@ -1149,7 +1149,8 @@ func TestServerReadHeaderTimeoutDropsStalledHeaders(t *testing.T) {
 		if err == nil {
 			continue
 		}
-		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+		var netErr net.Error
+		if errors.As(err, &netErr) && netErr.Timeout() {
 			t.Fatalf("connection remained open after %v", time.Since(start))
 		}
 		if elapsed := time.Since(start); elapsed > readHeaderTimeout+500*time.Millisecond {

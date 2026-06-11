@@ -1066,7 +1066,7 @@ func TestReplaceBinaryPreservesValidDarwinSignature(t *testing.T) {
 	}
 
 	var calls []string
-	err := ReplaceBinary(Replacement{
+	err := ReplaceBinary(context.Background(), Replacement{
 		Target: target,
 		Binary: []byte("new"),
 		Mode:   0o755,
