@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -46,6 +47,7 @@ type Running struct {
 	RecentEvents    []telemetry.ActivityEvent
 	DiffStats       DiffStats
 	Tokens          CodexTotals
+	globalSlot      scheduler.Slot
 	cancel          context.CancelFunc
 }
 
@@ -132,6 +134,7 @@ func (s State) clone() State {
 	for id, running := range s.Running {
 		running.Issue = cloneIssue(running.Issue)
 		running.RecentEvents = cloneActivityEvents(running.RecentEvents)
+		running.globalSlot = scheduler.Slot{}
 		running.cancel = nil
 		cloned.Running[id] = running
 	}

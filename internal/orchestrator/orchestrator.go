@@ -11,6 +11,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -49,6 +50,7 @@ type Config struct {
 	DispatchPriorityByState       []string
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
+	Project                       scheduler.ProjectCandidate
 	Claiming                      ClaimingConfig
 	AutoPromote                   AutoPromoteConfig
 	ActiveStates                  []string
@@ -78,10 +80,11 @@ type ClaimingConfig struct {
 }
 
 type Dependencies struct {
-	Connector       connector.Connector
-	Runner          Runner
-	WorkspaceReaper WorkspaceReaper
-	Logger          *slog.Logger
+	Connector          connector.Connector
+	Runner             Runner
+	WorkspaceReaper    WorkspaceReaper
+	GlobalDispatchGate scheduler.ProjectDispatchGate
+	Logger             *slog.Logger
 }
 
 type WorkspaceReapResult = runpkg.WorkspaceReapResult
@@ -94,17 +97,18 @@ type RuntimeUpdate struct {
 }
 
 type Orchestrator struct {
-	cfg           Config
-	connector     connector.Connector
-	supervisor    *runpkg.Supervisor
-	reaper        WorkspaceReaper
-	logger        *slog.Logger
-	stateRequests chan stateRequest
-	configUpdates chan configUpdateRequest
-	refreshes     chan time.Time
-	runResults    chan runpkg.Completion
-	runUpdates    chan runUpdate
-	done          chan struct{}
+	cfg                Config
+	connector          connector.Connector
+	supervisor         *runpkg.Supervisor
+	reaper             WorkspaceReaper
+	logger             *slog.Logger
+	globalDispatchGate scheduler.ProjectDispatchGate
+	stateRequests      chan stateRequest
+	configUpdates      chan configUpdateRequest
+	refreshes          chan time.Time
+	runResults         chan runpkg.Completion
+	runUpdates         chan runUpdate
+	done               chan struct{}
 }
 
 type stateRequest struct {
@@ -195,17 +199,18 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	}
 
 	return &Orchestrator{
-		cfg:           cfg,
-		connector:     deps.Connector,
-		supervisor:    supervisor,
-		reaper:        reaper,
-		logger:        logger,
-		stateRequests: make(chan stateRequest),
-		configUpdates: make(chan configUpdateRequest),
-		refreshes:     make(chan time.Time, 1),
-		runResults:    make(chan runpkg.Completion),
-		runUpdates:    make(chan runUpdate, runUpdateBufferSize),
-		done:          make(chan struct{}),
+		cfg:                cfg,
+		connector:          deps.Connector,
+		supervisor:         supervisor,
+		reaper:             reaper,
+		logger:             logger,
+		globalDispatchGate: deps.GlobalDispatchGate,
+		stateRequests:      make(chan stateRequest),
+		configUpdates:      make(chan configUpdateRequest),
+		refreshes:          make(chan time.Time, 1),
+		runResults:         make(chan runpkg.Completion),
+		runUpdates:         make(chan runUpdate, runUpdateBufferSize),
+		done:               make(chan struct{}),
 	}, nil
 }
 
@@ -219,6 +224,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	defer ticker.Stop()
 
 	state := newState(o.cfg)
+	defer o.releaseRunningSlots(&state)
 	o.tick(ctx, &state, time.Now())
 	resetTicker(ticker, state.PollInterval)
 
@@ -485,7 +491,7 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 		running.Issue = mergeIssueTrackerFields(running.Issue, issue)
 		state.Running[id] = running
 		if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
-			cancelRunning(state, id)
+			o.cancelRunning(state, id)
 		}
 
 		if claimed, ok := state.Claimed[id]; ok {
@@ -864,6 +870,7 @@ func blockedStatusReason(issue connector.Issue) string {
 }
 
 func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
+	o.markGlobalProjectIdle()
 	planner := o.dispatchPlanner()
 	planner.plan(state, issues, now, dispatchPlanHooks{
 		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
@@ -904,6 +911,7 @@ func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, issue connector
 }
 
 func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
+	o.markGlobalProjectIdle()
 	for _, issue := range issues {
 		if availableSlots(state) == 0 {
 			return
@@ -947,8 +955,14 @@ func (o *Orchestrator) dispatchIssue(
 		return false
 	}
 
+	globalSlot, ok := o.acquireGlobalDispatchSlot(ctx, issue, workerHost, now)
+	if !ok {
+		return false
+	}
+
 	claimedIssue, claim, ok := o.claimIssue(ctx, issue, now)
 	if !ok {
+		o.releaseGlobalDispatchSlot(globalSlot)
 		return false
 	}
 
@@ -960,6 +974,7 @@ func (o *Orchestrator) dispatchIssue(
 		Attempt:    attempt,
 		StartedAt:  now,
 		WorkerHost: workerHost,
+		globalSlot: globalSlot,
 		cancel:     cancel,
 	}
 	state.Claimed[issue.ID] = claim
@@ -978,6 +993,45 @@ func (o *Orchestrator) dispatchIssue(
 	}
 	o.supervisor.Dispatch(runCtx, request, o.runResults)
 	return true
+}
+
+func (o *Orchestrator) markGlobalProjectIdle() {
+	if o.globalDispatchGate == nil {
+		return
+	}
+	o.globalDispatchGate.MarkIdle(o.cfg.Project.ID)
+}
+
+func (o *Orchestrator) acquireGlobalDispatchSlot(
+	ctx context.Context,
+	issue connector.Issue,
+	workerHost string,
+	now time.Time,
+) (scheduler.Slot, bool) {
+	if o.globalDispatchGate == nil {
+		return scheduler.Slot{}, true
+	}
+
+	slot, ok, err := o.globalDispatchGate.TryAcquire(ctx, o.cfg.Project, scheduler.SlotRequest{
+		State: issue.State,
+		Host:  workerHost,
+	}, now)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("global dispatch slot unavailable", "project_id", o.cfg.Project.ID, "issue_id", issue.ID, "error", err)
+		}
+		return scheduler.Slot{}, false
+	}
+	return slot, ok
+}
+
+func (o *Orchestrator) releaseGlobalDispatchSlot(slot scheduler.Slot) {
+	if o.globalDispatchGate == nil || slot == (scheduler.Slot{}) {
+		return
+	}
+	if err := o.globalDispatchGate.Release(slot); err != nil && o.logger != nil {
+		o.logger.Warn("release global dispatch slot failed", "project_id", o.cfg.Project.ID, "error", err)
+	}
 }
 
 func (o *Orchestrator) selectorContext() selector.Context {
@@ -1049,6 +1103,8 @@ func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {
 	if !ok {
 		return
 	}
+	o.releaseGlobalDispatchSlot(running.globalSlot)
+	running.globalSlot = scheduler.Slot{}
 	if running.cancel != nil {
 		running.cancel()
 	}
@@ -1139,18 +1195,43 @@ func (o *Orchestrator) retryDelay(attempt int, continuation bool) time.Duration 
 	return o.dispatchPlanner().retryDelay(attempt, continuation)
 }
 
-func (o *Orchestrator) releaseClaim(state *State, issueID string) {
-	o.dispatchPlanner().releaseClaim(state, issueID)
+func (o *Orchestrator) releaseIssue(state *State, issueID string) {
+	o.cancelRunning(state, issueID)
+	delete(state.Running, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Blocked, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
 }
 
-func cancelRunning(state *State, issueID string) {
+func (o *Orchestrator) releaseClaim(state *State, issueID string) {
+	o.cancelRunning(state, issueID)
+	delete(state.Running, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+}
+
+func (o *Orchestrator) cancelRunning(state *State, issueID string) {
 	running, ok := state.Running[issueID]
-	if !ok || running.cancel == nil {
+	if !ok {
 		return
 	}
-	running.cancel()
+	o.releaseGlobalDispatchSlot(running.globalSlot)
+	running.globalSlot = scheduler.Slot{}
+	if running.cancel != nil {
+		running.cancel()
+	}
 	running.cancel = nil
 	state.Running[issueID] = running
+}
+
+func (o *Orchestrator) releaseRunningSlots(state *State) {
+	for issueID, running := range state.Running {
+		o.releaseGlobalDispatchSlot(running.globalSlot)
+		running.globalSlot = scheduler.Slot{}
+		state.Running[issueID] = running
+	}
 }
 
 func normalizeConfig(cfg Config) Config {
