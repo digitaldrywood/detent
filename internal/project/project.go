@@ -445,17 +445,21 @@ func (p *Project) close(ctx context.Context, publishEvents bool) error {
 		return nil
 	}
 	running := p.done != nil
-	p.closed = true
 	p.mu.Unlock()
 
-	var closeErr error
 	if running {
 		if err := p.stop(ctx, publishEvents); err != nil && !errors.Is(err, ErrNotRunning) {
-			closeErr = errors.Join(closeErr, err)
+			return err
 		}
 	}
-	closeErr = errors.Join(closeErr, p.closeConnector())
-	return closeErr
+	if err := p.closeConnector(); err != nil {
+		return err
+	}
+
+	p.mu.Lock()
+	p.closed = true
+	p.mu.Unlock()
+	return nil
 }
 
 func (p *Project) closeConnector() error {

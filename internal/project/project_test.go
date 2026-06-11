@@ -827,6 +827,15 @@ func (blockingRunner) Run(ctx context.Context, _ orchestrator.RunRequest) (orche
 	return orchestrator.RunResult{}, ctx.Err()
 }
 
+type releaseBlockingRunner struct {
+	release <-chan struct{}
+}
+
+func (r releaseBlockingRunner) Run(ctx context.Context, _ orchestrator.RunRequest) (orchestrator.RunResult, error) {
+	<-r.release
+	return orchestrator.RunResult{}, ctx.Err()
+}
+
 type pauseBlockingConnector struct {
 	entered  chan struct{}
 	releasec chan struct{}
@@ -1111,6 +1120,16 @@ func assertConnectorClosed(t *testing.T, projectConnector *closeTrackingConnecto
 	case <-projectConnector.closed:
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for connector close")
+	}
+}
+
+func assertConnectorOpen(t *testing.T, projectConnector *closeTrackingConnector) {
+	t.Helper()
+
+	select {
+	case <-projectConnector.closed:
+		t.Fatal("connector closed, want open")
+	default:
 	}
 }
 

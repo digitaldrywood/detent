@@ -196,6 +196,60 @@ func TestManagerRemoveClosesProjectConnector(t *testing.T) {
 	assertConnectorClosed(t, projectConnector)
 }
 
+func TestManagerRemoveKeepsProjectOpenWhenStopContextExpires(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(4))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	release := make(chan struct{})
+	projectConnector := newCloseTrackingConnector()
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+			}, project.Dependencies{
+				Connector: projectConnector,
+				Events:    events,
+				Runner:    releaseBlockingRunner{release: release},
+			})
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	receiveEvent(t, sub.C())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := manager.Remove(ctx, "alpha"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Remove() error = %v, want %v", err, context.Canceled)
+	}
+	if _, ok := manager.Registry().Get("alpha"); !ok {
+		t.Fatal("Get(alpha) ok = false after failed Remove, want true")
+	}
+	assertConnectorOpen(t, projectConnector)
+
+	close(release)
+	if err := manager.Remove(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Remove() after release error = %v", err)
+	}
+	assertConnectorClosed(t, projectConnector)
+}
+
 func TestManagerReconcileProjects(t *testing.T) {
 	t.Parallel()
 
