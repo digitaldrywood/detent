@@ -1203,15 +1203,6 @@ func (o *Orchestrator) retryDelay(attempt int, continuation bool) time.Duration 
 	return o.dispatchPlanner().retryDelay(attempt, continuation)
 }
 
-func (o *Orchestrator) releaseIssue(state *State, issueID string) {
-	o.cancelRunning(state, issueID)
-	delete(state.Running, issueID)
-	delete(state.Claimed, issueID)
-	delete(state.Blocked, issueID)
-	delete(state.Retry, issueID)
-	delete(state.BudgetRefusals, issueID)
-}
-
 func (o *Orchestrator) releaseClaim(state *State, issueID string) {
 	o.cancelRunning(state, issueID)
 	delete(state.Running, issueID)
@@ -1227,9 +1218,16 @@ func (o *Orchestrator) cancelRunning(state *State, issueID string) {
 	}
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	running.globalSlot = scheduler.Slot{}
-	if running.cancel != nil {
-		running.cancel()
+	state.Running[issueID] = running
+	cancelRunning(state, issueID)
+}
+
+func cancelRunning(state *State, issueID string) {
+	running, ok := state.Running[issueID]
+	if !ok || running.cancel == nil {
+		return
 	}
+	running.cancel()
 	running.cancel = nil
 	state.Running[issueID] = running
 }

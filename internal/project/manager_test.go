@@ -755,7 +755,7 @@ func TestManagerProjectsShareGlobalDispatchCap(t *testing.T) {
 	t.Parallel()
 
 	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
-	runners := map[project.ProjectID]*projectBlockingRunner{
+	runners := map[project.ID]*projectBlockingRunner{
 		"alpha": newProjectBlockingRunner(),
 		"bravo": newProjectBlockingRunner(),
 	}
@@ -775,7 +775,7 @@ func TestManagerProjectsShareGlobalDispatchCap(t *testing.T) {
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Run test issue."},
 			}, project.Dependencies{
-				Runner:             runners[project.ProjectID(cfg.ID)],
+				Runner:             runners[project.ID(cfg.ID)],
 				GlobalDispatchGate: globalGate,
 			})
 		},
@@ -994,7 +994,7 @@ func receiveFirstProjectRun(
 	t *testing.T,
 	alpha <-chan orchestrator.RunRequest,
 	bravo <-chan orchestrator.RunRequest,
-) project.ProjectID {
+) project.ID {
 	t.Helper()
 
 	select {
