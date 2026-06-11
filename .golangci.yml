@@ -69,7 +69,7 @@ linters:
       - path: _templ\.go$
         linters:
           - all
-      - path: internal/database/sqlc/
+      - path: internal/store/sqlc/
         linters:
           - all
 

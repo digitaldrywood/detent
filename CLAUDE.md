@@ -37,4 +37,4 @@
 - `make generate` runs `go generate`, Templ, sqlc, and Tailwind when their inputs exist.
 - `make setup` installs Air, Templ, sqlc, goose, and golangci-lint v2.
 - `make sqlc` uses `sqlc/sqlc.yaml` by default.
-- `make db-migrate` uses goose against `internal/database/migrations` by default.
+- `make db-migrate` uses goose against `internal/store/migrations` by default.
