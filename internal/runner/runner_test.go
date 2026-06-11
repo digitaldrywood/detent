@@ -205,6 +205,12 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if !workspaceBackend.created || !workspaceBackend.beforeRun || !workspaceBackend.afterRun || !workspaceBackend.diffed {
 		t.Fatalf("workspace calls = created:%v before:%v after:%v diff:%v, want all true", workspaceBackend.created, workspaceBackend.beforeRun, workspaceBackend.afterRun, workspaceBackend.diffed)
 	}
+	if workspaceBackend.createIssue.ProjectID != "detent" ||
+		workspaceBackend.createIssue.ID != "issue-22" ||
+		workspaceBackend.createIssue.Identifier != "digitaldrywood/detent#22" ||
+		workspaceBackend.createIssue.BranchName != "detent/digitaldrywood_detent_22" {
+		t.Fatalf("Create() issue = %#v", workspaceBackend.createIssue)
+	}
 	if workspaceBackend.diffCalls != 3 {
 		t.Fatalf("DiffStat calls = %d, want throttled live calls plus final stat", workspaceBackend.diffCalls)
 	}
@@ -568,7 +574,8 @@ func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
 	if result.Worktrees != 1 || result.Branches != 1 || result.Processes != 2 {
 		t.Fatalf("ReapWorkspace() result = %#v, want 1 worktree, 1 branch, 2 processes", result)
 	}
-	if workspaceBackend.cleanupIssue.ID != "issue-311" ||
+	if workspaceBackend.cleanupIssue.ProjectID != "default" ||
+		workspaceBackend.cleanupIssue.ID != "issue-311" ||
 		workspaceBackend.cleanupIssue.Identifier != "digitaldrywood/detent#311" ||
 		workspaceBackend.cleanupIssue.BranchName != "detent/digitaldrywood_detent_311" {
 		t.Fatalf("CleanupIssue() issue = %#v", workspaceBackend.cleanupIssue)
@@ -585,12 +592,14 @@ type fakeWorkspaceBackend struct {
 	afterRunErr   error
 	diffed        bool
 	diffCalls     int
+	createIssue   workspace.Issue
 	cleanupIssue  workspace.Issue
 	cleanupResult workspace.CleanupResult
 }
 
 func (b *fakeWorkspaceBackend) Create(_ context.Context, issue workspace.Issue) (workspace.Info, error) {
 	b.created = true
+	b.createIssue = issue
 	b.info.Branch = issue.BranchName
 	return b.info, nil
 }

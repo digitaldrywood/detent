@@ -117,8 +117,9 @@ func TestMemoryConnectorRunnerE2EGateCreatesBranchDiffStatAndSQLiteTokens(t *tes
 		t.Fatalf("DiffStats = %#v, want one added file", diffStat)
 	}
 
-	workspacePath := filepath.Join(workspacesRoot, workspace.SafeKey(issue.Identifier))
-	wantBranch := "detent/" + strings.ToLower(workspace.SafeKey(issue.Identifier))
+	workspaceKey := workspace.SafeKey("detent") + "-" + workspace.SafeKey(issue.Identifier)
+	workspacePath := filepath.Join(workspacesRoot, workspaceKey)
+	wantBranch := "detent/" + strings.ToLower(workspaceKey)
 	if got := strings.TrimSpace(e2eRunGit(t, workspacePath, "branch", "--show-current")); got != wantBranch {
 		t.Fatalf("workspace branch = %q, want %q", got, wantBranch)
 	}

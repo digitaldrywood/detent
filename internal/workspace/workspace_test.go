@@ -88,6 +88,62 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 	}
 }
 
+func TestLocalGitInfoForIssueNamespacesKeysByProjectID(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	backend := &LocalGit{
+		root:       root,
+		autoBranch: true,
+	}
+
+	tests := []struct {
+		name       string
+		issue      Issue
+		wantKey    string
+		wantBranch string
+	}{
+		{
+			name:       "legacy issue identifier without project id",
+			issue:      Issue{Identifier: "digitaldrywood/detent#42"},
+			wantKey:    "digitaldrywood_detent_42",
+			wantBranch: "detent/digitaldrywood_detent_42",
+		},
+		{
+			name:       "alpha project",
+			issue:      Issue{ProjectID: "alpha", Identifier: "digitaldrywood/detent#42"},
+			wantKey:    "alpha-digitaldrywood_detent_42",
+			wantBranch: "detent/alpha-digitaldrywood_detent_42",
+		},
+		{
+			name:       "bravo project same identifier",
+			issue:      Issue{ProjectID: "bravo", Identifier: "digitaldrywood/detent#42"},
+			wantKey:    "bravo-digitaldrywood_detent_42",
+			wantBranch: "detent/bravo-digitaldrywood_detent_42",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			info, err := backend.infoForIssue(tt.issue)
+			if err != nil {
+				t.Fatalf("infoForIssue() error = %v", err)
+			}
+			if info.Key != tt.wantKey {
+				t.Fatalf("Key = %q, want %q", info.Key, tt.wantKey)
+			}
+			if filepath.Base(info.Path) != tt.wantKey {
+				t.Fatalf("Path basename = %q, want %q", filepath.Base(info.Path), tt.wantKey)
+			}
+			if info.Branch != tt.wantBranch {
+				t.Fatalf("Branch = %q, want %q", info.Branch, tt.wantBranch)
+			}
+		})
+	}
+}
+
 func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
 	t.Parallel()
 

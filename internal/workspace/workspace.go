@@ -48,6 +48,7 @@ type IssueCleaner interface {
 }
 
 type Issue struct {
+	ProjectID  string
 	ID         string
 	Identifier string
 	BranchName string
@@ -191,6 +192,15 @@ func SafeKey(identifier string) string {
 	return key
 }
 
+func issueKey(issue Issue) string {
+	identifierKey := SafeKey(issue.Identifier)
+	projectKey := SafeKey(issue.ProjectID)
+	if strings.TrimSpace(issue.ProjectID) == "" {
+		return identifierKey
+	}
+	return projectKey + "-" + identifierKey
+}
+
 func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 	info, err := l.infoForIssue(issue)
 	if err != nil {
@@ -289,7 +299,7 @@ func (l *LocalGit) AfterRun(ctx context.Context, info Info, issue Issue) {
 }
 
 func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
-	key := SafeKey(issue.Identifier)
+	key := issueKey(issue)
 	path, err := l.workspacePath(key)
 	if err != nil {
 		return Info{}, err
@@ -305,7 +315,7 @@ func (l *LocalGit) infoForIssue(issue Issue) (Info, error) {
 func (l *LocalGit) normalizeInfo(info Info, issue Issue) (Info, error) {
 	key := info.Key
 	if key == "" {
-		key = SafeKey(issue.Identifier)
+		key = issueKey(issue)
 	}
 	path := info.Path
 	if path == "" {
