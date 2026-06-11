@@ -385,6 +385,10 @@ func (p *Project) Unpause(ctx context.Context) error {
 	}
 	p.cfg.Paused = false
 	running := p.done != nil
+	if !running {
+		p.orchConfig = projectOrchestratorConfig(p.cfg, p.workflow.Config)
+		p.orchestrator = nil
+	}
 	p.mu.Unlock()
 
 	if !running {

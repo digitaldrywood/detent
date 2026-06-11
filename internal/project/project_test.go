@@ -636,6 +636,57 @@ func TestProjectStartRejectsPausedProject(t *testing.T) {
 	}
 }
 
+func TestProjectUnpauseRebuildsGlobalDispatchCandidate(t *testing.T) {
+	t.Parallel()
+
+	workflowCfg := workflowConfigWithMemoryIssue("issue-paused")
+	workflowCfg.Tracker.Issues[0].State = "Todo"
+	workflowCfg.Tracker.Issues[0].Title = "Run initially paused project"
+	workflowCfg.Tracker.Issues[0].AssignedToWorker = true
+	runner := newProjectBlockingRunner()
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:     "paused",
+			Paused: true,
+			Weight: 1,
+		},
+		Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Run paused project."},
+	}, project.Dependencies{
+		Runner:             runner,
+		GlobalDispatchGate: scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1})),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if !got.Running() {
+			return
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		if err := got.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			cancel()
+			t.Fatalf("Stop() error = %v", err)
+		}
+		cancel()
+	})
+
+	if err := got.Start(context.Background()); !errors.Is(err, project.ErrProjectPaused) {
+		t.Fatalf("Start() error = %v, want %v", err, project.ErrProjectPaused)
+	}
+	if err := got.Unpause(context.Background()); err != nil {
+		t.Fatalf("Unpause() error = %v", err)
+	}
+
+	select {
+	case request := <-runner.started:
+		if request.Issue.ID != "issue-paused" {
+			t.Fatalf("RunRequest.Issue.ID = %q, want issue-paused", request.Issue.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for unpaused project dispatch")
+	}
+}
+
 func TestProjectPauseUnpauseRestartsProject(t *testing.T) {
 	t.Parallel()
 

@@ -12,23 +12,31 @@ type ProjectDispatchGate interface {
 	MarkReady(ProjectCandidate)
 	MarkIdle(string)
 	TryAcquire(context.Context, ProjectCandidate, SlotRequest, time.Time) (Slot, bool, error)
+	SetPreempt(Slot, func())
 	Release(Slot) error
+}
+
+type runningProjectSlot struct {
+	RunningProject
+	slot    Slot
+	preempt func()
 }
 
 type GlobalDispatchGate struct {
 	global GlobalScheduler
 
-	mu       sync.Mutex
-	ready    map[string]ProjectCandidate
-	running  map[uint64]RunningProject
-	selected string
+	mu          sync.Mutex
+	ready       map[string]ProjectCandidate
+	running     map[uint64]runningProjectSlot
+	selected    string
+	preemptions []RunningProject
 }
 
 func NewGlobalDispatchGate(global GlobalScheduler) *GlobalDispatchGate {
 	return &GlobalDispatchGate{
 		global:  global,
 		ready:   map[string]ProjectCandidate{},
-		running: map[uint64]RunningProject{},
+		running: map[uint64]runningProjectSlot{},
 	}
 }
 
@@ -62,6 +70,7 @@ func (g *GlobalDispatchGate) MarkIdle(projectID string) {
 	delete(g.ready, projectID)
 	if g.selected == projectID {
 		g.selected = ""
+		g.preemptions = nil
 	}
 }
 
@@ -105,9 +114,15 @@ func (g *GlobalDispatchGate) TryAcquire(
 			return Slot{}, false, err
 		}
 		g.selected = selection.Project.ID
+		g.preemptions = selection.Preemptions
 	}
 	if g.selected != project.ID {
 		return Slot{}, false, nil
+	}
+	if err := g.preemptProjectsLocked(g.preemptions); err != nil {
+		g.selected = ""
+		g.preemptions = nil
+		return Slot{}, false, err
 	}
 
 	slot, err := g.global.RequestSlot(ctx, req)
@@ -116,6 +131,7 @@ func (g *GlobalDispatchGate) TryAcquire(
 			return Slot{}, false, nil
 		}
 		g.selected = ""
+		g.preemptions = nil
 		return Slot{}, false, err
 	}
 	if err := g.global.RecordProjectDispatch(ctx, ProjectDispatch{
@@ -124,16 +140,37 @@ func (g *GlobalDispatchGate) TryAcquire(
 		DispatchedAt: now,
 	}); err != nil {
 		g.selected = ""
+		g.preemptions = nil
 		return Slot{}, false, errors.Join(err, g.global.ReleaseSlot(slot))
 	}
 
 	delete(g.ready, project.ID)
 	g.selected = ""
-	g.running[slot.token] = RunningProject{
-		ProjectID: project.ID,
-		Priority:  project.Priority,
+	g.preemptions = nil
+	g.running[slot.token] = runningProjectSlot{
+		RunningProject: RunningProject{
+			ProjectID: project.ID,
+			Priority:  project.Priority,
+		},
+		slot: slot,
 	}
 	return slot, true, nil
+}
+
+func (g *GlobalDispatchGate) SetPreempt(slot Slot, preempt func()) {
+	if g == nil || slot == (Slot{}) {
+		return
+	}
+
+	g.mu.Lock()
+	defer g.mu.Unlock()
+
+	running, ok := g.running[slot.token]
+	if !ok {
+		return
+	}
+	running.preempt = preempt
+	g.running[slot.token] = running
 }
 
 func (g *GlobalDispatchGate) Release(slot Slot) error {
@@ -144,10 +181,37 @@ func (g *GlobalDispatchGate) Release(slot Slot) error {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 
+	if _, ok := g.running[slot.token]; !ok {
+		return nil
+	}
 	if err := g.global.ReleaseSlot(slot); err != nil {
 		return err
 	}
 	delete(g.running, slot.token)
+	return nil
+}
+
+func (g *GlobalDispatchGate) preemptProjectsLocked(preemptions []RunningProject) error {
+	for _, preemption := range preemptions {
+		if err := g.preemptProjectLocked(preemption); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (g *GlobalDispatchGate) preemptProjectLocked(preemption RunningProject) error {
+	for token, running := range g.running {
+		if running.ProjectID != preemption.ProjectID || running.Priority != preemption.Priority || running.preempt == nil {
+			continue
+		}
+		running.preempt()
+		if err := g.global.ReleaseSlot(running.slot); err != nil && !errors.Is(err, ErrSlotNotHeld) {
+			return err
+		}
+		delete(g.running, token)
+		return nil
+	}
 	return nil
 }
 
@@ -165,7 +229,7 @@ func (g *GlobalDispatchGate) readyProjectsLocked() []ProjectCandidate {
 func (g *GlobalDispatchGate) runningProjectsLocked() []RunningProject {
 	projects := make([]RunningProject, 0, len(g.running))
 	for _, project := range g.running {
-		projects = append(projects, project)
+		projects = append(projects, project.RunningProject)
 	}
 	sort.Slice(projects, func(i, j int) bool {
 		if projects[i].ProjectID != projects[j].ProjectID {
