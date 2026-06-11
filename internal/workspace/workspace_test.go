@@ -3,6 +3,8 @@ package workspace
 import (
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -213,6 +215,103 @@ func TestLocalGitHooksUseConfiguredShell(t *testing.T) {
 	}
 	if got := readFile(t, tracePath); got != "ok\n" {
 		t.Fatalf("hook trace = %q, want ok", got)
+	}
+}
+
+func TestRunGitAtWithEnvCancellationReturnsPromptly(t *testing.T) {
+	skipWindows(t)
+
+	binDir := filepath.Join(t.TempDir(), "bin")
+	if err := os.MkdirAll(binDir, 0o700); err != nil {
+		t.Fatalf("mkdir bin: %v", err)
+	}
+	gitPath := filepath.Join(binDir, "git")
+	gitScript := "#!/bin/sh\nsleep 4 &\nwait\n"
+	if err := os.WriteFile(gitPath, []byte(gitScript), 0o700); err != nil {
+		t.Fatalf("write fake git: %v", err)
+	}
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
+	defer cancel()
+
+	started := time.Now()
+	_, err := runGitAtWithEnv(ctx, t.TempDir(), nil, "status")
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatal("runGitAtWithEnv() error = nil, want cancellation error")
+	}
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		t.Fatalf("runGitAtWithEnv() error = %T, want *CommandError", err)
+	}
+	if !errors.Is(commandErr.Err, context.DeadlineExceeded) {
+		t.Fatalf("CommandError.Err = %v, want context deadline exceeded", commandErr.Err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("runGitAtWithEnv() elapsed = %s, want cancellation within wait delay", elapsed)
+	}
+}
+
+func TestLocalGitHookCancellationReturnsPromptly(t *testing.T) {
+	skipWindows(t)
+
+	workspacePath := t.TempDir()
+	backend := &LocalGit{
+		hooks:  Hooks{Timeout: 20 * time.Millisecond},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	started := time.Now()
+	err := backend.runHook(
+		context.Background(),
+		"before_run",
+		"sleep 4 & wait",
+		Info{Path: workspacePath, Key: "DD-HOOK", Branch: "detent/dd-hook"},
+		Issue{Identifier: "DD-HOOK"},
+	)
+	elapsed := time.Since(started)
+
+	if err == nil {
+		t.Fatal("runHook() error = nil, want cancellation error")
+	}
+	var hookErr *HookError
+	if !errors.As(err, &hookErr) {
+		t.Fatalf("runHook() error = %T, want *HookError", err)
+	}
+	if !errors.Is(hookErr.Err, context.DeadlineExceeded) {
+		t.Fatalf("HookError.Err = %v, want context deadline exceeded", hookErr.Err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("runHook() elapsed = %s, want cancellation within wait delay", elapsed)
+	}
+}
+
+func TestLocalGitHookAllowsDaemonizedSuccess(t *testing.T) {
+	skipWindows(t)
+
+	workspacePath := t.TempDir()
+	backend := &LocalGit{
+		hooks:  Hooks{Timeout: 3 * time.Second},
+		logger: slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	started := time.Now()
+	err := backend.runHook(
+		context.Background(),
+		"before_run",
+		"sleep 4 &",
+		Info{Path: workspacePath, Key: "DD-HOOK", Branch: "detent/dd-hook"},
+		Issue{Identifier: "DD-HOOK"},
+	)
+	elapsed := time.Since(started)
+
+	if err != nil {
+		t.Fatalf("runHook() error = %v, want nil", err)
+	}
+	if elapsed > 2*time.Second {
+		t.Fatalf("runHook() elapsed = %s, want daemonized hook within wait delay", elapsed)
 	}
 }
 

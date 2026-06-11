@@ -20,6 +20,7 @@ import (
 const KindLocalGit = "local_git"
 
 const defaultHookTimeout = time.Minute
+const workspaceCommandWaitDelay = time.Second
 
 var (
 	ErrHookFailed         = errors.New("workspace hook failed")
@@ -489,11 +490,15 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 	cmd := commandshell.Command(hookCtx, command, l.hooks.Shell)
 	cmd.Dir = info.Path
 	cmd.Env = hookEnv(info, issue)
+	cmd.WaitDelay = workspaceCommandWaitDelay
 
 	l.logger.Info("running workspace hook", slog.String("hook", name), slog.String("path", info.Path))
 
 	output, err := cmd.CombinedOutput()
 	if err == nil {
+		return nil
+	}
+	if errors.Is(err, exec.ErrWaitDelay) && hookCtx.Err() == nil {
 		return nil
 	}
 
@@ -526,6 +531,7 @@ func runGitAtWithEnv(ctx context.Context, dir string, env []string, args ...stri
 	gitArgs := append([]string{"git", "-C", dir}, args...)
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
+	cmd.WaitDelay = workspaceCommandWaitDelay
 	if len(env) > 0 {
 		cmd.Env = append(os.Environ(), env...)
 	}
