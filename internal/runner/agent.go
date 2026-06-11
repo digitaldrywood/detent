@@ -266,7 +266,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	}
 	workflow, agentRuntime := r.runtimeSnapshot()
 
-	workspaceIssue := workspaceIssue(req.Issue)
+	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
 	info, err := r.workspace.Create(ctx, workspaceIssue)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("create workspace: %w", err)
@@ -369,7 +369,7 @@ func (r *Runner) ReapWorkspace(ctx context.Context, issue connector.Issue) (Work
 		ctx = context.Background()
 	}
 
-	workspaceIssue := workspaceIssue(issue)
+	workspaceIssue := workspaceIssue(r.projectID, issue)
 	if cleaner, ok := r.workspace.(workspace.IssueCleaner); ok {
 		result, err := cleaner.CleanupIssue(ctx, workspaceIssue)
 		return WorkspaceReapResult{
@@ -505,8 +505,9 @@ func (r *Runner) usageCostUSD(model string, inputTokens int64, outputTokens int6
 	return cost
 }
 
-func workspaceIssue(issue connector.Issue) workspace.Issue {
+func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
 	return workspace.Issue{
+		ProjectID:  projectID,
 		ID:         issue.ID,
 		Identifier: issue.Identifier,
 		BranchName: issue.BranchName,

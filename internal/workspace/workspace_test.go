@@ -90,6 +90,97 @@ func TestLocalGitCreateCreatesWorktreeBranchAndRunsAfterCreateHook(t *testing.T)
 	}
 }
 
+func TestLocalGitInfoForIssueNamespacesKeysByProjectID(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	backend := &LocalGit{
+		root:       root,
+		autoBranch: true,
+	}
+
+	tests := []struct {
+		name          string
+		issue         Issue
+		wantKey       string
+		wantKeyPrefix string
+	}{
+		{
+			name:    "legacy issue identifier without project id",
+			issue:   Issue{Identifier: "digitaldrywood/detent#42"},
+			wantKey: "digitaldrywood_detent_42",
+		},
+		{
+			name:          "alpha project",
+			issue:         Issue{ProjectID: "alpha", Identifier: "digitaldrywood/detent#42"},
+			wantKeyPrefix: "alpha-digitaldrywood_detent_42-",
+		},
+		{
+			name:          "bravo project same identifier",
+			issue:         Issue{ProjectID: "bravo", Identifier: "digitaldrywood/detent#42"},
+			wantKeyPrefix: "bravo-digitaldrywood_detent_42-",
+		},
+		{
+			name:          "project ids with same safe key",
+			issue:         Issue{ProjectID: "foo/bar", Identifier: "baz"},
+			wantKeyPrefix: "foo_bar-baz-",
+		},
+		{
+			name:          "second project id with same safe key",
+			issue:         Issue{ProjectID: "foo_bar", Identifier: "baz"},
+			wantKeyPrefix: "foo_bar-baz-",
+		},
+		{
+			name:          "separator ambiguity left",
+			issue:         Issue{ProjectID: "foo", Identifier: "bar-baz"},
+			wantKeyPrefix: "foo-bar-baz-",
+		},
+		{
+			name:          "separator ambiguity right",
+			issue:         Issue{ProjectID: "foo-bar", Identifier: "baz"},
+			wantKeyPrefix: "foo-bar-baz-",
+		},
+	}
+
+	keys := make(map[string]string, len(tests))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			info, err := backend.infoForIssue(tt.issue)
+			if err != nil {
+				t.Fatalf("infoForIssue() error = %v", err)
+			}
+			switch {
+			case tt.wantKey != "" && info.Key != tt.wantKey:
+				t.Fatalf("Key = %q, want %q", info.Key, tt.wantKey)
+			case tt.wantKeyPrefix != "" && !strings.HasPrefix(info.Key, tt.wantKeyPrefix):
+				t.Fatalf("Key = %q, want prefix %q", info.Key, tt.wantKeyPrefix)
+			case tt.wantKeyPrefix != "" && len(info.Key) == len(tt.wantKeyPrefix):
+				t.Fatalf("Key = %q, want digest suffix", info.Key)
+			}
+			if filepath.Base(info.Path) != info.Key {
+				t.Fatalf("Path basename = %q, want %q", filepath.Base(info.Path), info.Key)
+			}
+			wantBranch := "detent/" + strings.ToLower(info.Key)
+			if info.Branch != wantBranch {
+				t.Fatalf("Branch = %q, want %q", info.Branch, wantBranch)
+			}
+
+			keys[tt.name] = info.Key
+		})
+	}
+
+	for leftName, leftKey := range keys {
+		for rightName, rightKey := range keys {
+			if leftName >= rightName {
+				continue
+			}
+			if leftKey == rightKey {
+				t.Fatalf("%s and %s both produced key %q", leftName, rightName, leftKey)
+			}
+		}
+	}
+}
+
 func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
 	t.Parallel()
 
