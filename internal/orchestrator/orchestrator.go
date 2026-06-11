@@ -490,7 +490,7 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 		running := state.Running[id]
 		running.Issue = mergeIssueTrackerFields(running.Issue, issue)
 		if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
-			o.completeTerminalRunning(ctx, state, id, running, terminalCompletedAt(running.Issue, now), running.Tokens)
+			o.completeTerminalRunning(ctx, state, id, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
 			continue
 		}
 		state.Running[id] = running
@@ -1130,7 +1130,7 @@ func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {
 		if diffStatsPresent(event.Result.DiffStats) {
 			running.DiffStats = event.Result.DiffStats
 		}
-		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, event.CompletedAt), tokens)
+		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
 		if event.Result.RateLimits != nil {
 			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 		}
@@ -1256,12 +1256,15 @@ func (o *Orchestrator) completeTerminalRunning(
 	o.reapWorkspace(ctx, state, running.Issue, workspaceReapReason(running.Issue, o.cfg.TerminalStates))
 }
 
-func terminalCompletedAt(issue connector.Issue, fallback time.Time) time.Time {
-	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+func terminalCompletedAt(issue connector.Issue, terminalStates []string, fallback time.Time) time.Time {
+	if stateIn(issue.State, terminalStates) && issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
 		return *issue.StageUpdatedAt
 	}
 	if issue.UpdatedAt != nil && !issue.UpdatedAt.IsZero() {
 		return *issue.UpdatedAt
+	}
+	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return *issue.StageUpdatedAt
 	}
 	if !fallback.IsZero() {
 		return fallback

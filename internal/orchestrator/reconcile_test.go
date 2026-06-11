@@ -231,6 +231,69 @@ func TestTickReapsTerminalRunningIssue(t *testing.T) {
 	}
 }
 
+func TestTerminalCompletedAtUsesTerminalConditionTimestamp(t *testing.T) {
+	t.Parallel()
+
+	stageUpdatedAt := time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC)
+	updatedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	fallback := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
+	terminalStates := normalizeConfig(Config{TerminalStates: []string{"Done", "Cancelled"}}).TerminalStates
+
+	tests := []struct {
+		name  string
+		issue connector.Issue
+		want  time.Time
+	}{
+		{
+			name: "status terminal uses stage update time",
+			issue: connector.Issue{
+				State:          "Cancelled",
+				StageUpdatedAt: &stageUpdatedAt,
+				UpdatedAt:      &updatedAt,
+			},
+			want: stageUpdatedAt,
+		},
+		{
+			name: "closed active issue uses issue update time",
+			issue: connector.Issue{
+				State:          "In Progress",
+				Closed:         true,
+				StageUpdatedAt: &stageUpdatedAt,
+				UpdatedAt:      &updatedAt,
+			},
+			want: updatedAt,
+		},
+		{
+			name: "merged active pull request uses issue update time",
+			issue: connector.Issue{
+				State:          "Merging",
+				StageUpdatedAt: &stageUpdatedAt,
+				UpdatedAt:      &updatedAt,
+				PullRequest:    &connector.PullRequest{State: "MERGED"},
+			},
+			want: updatedAt,
+		},
+		{
+			name: "missing tracker timestamps uses fallback",
+			issue: connector.Issue{
+				State: "Cancelled",
+			},
+			want: fallback,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := terminalCompletedAt(tt.issue, terminalStates, fallback)
+			if !got.Equal(tt.want) {
+				t.Fatalf("terminalCompletedAt() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.T) {
 	t.Parallel()
 
