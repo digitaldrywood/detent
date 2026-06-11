@@ -115,6 +115,14 @@ jobs:
           go-version: '1.26.4'
           cache: true
 
+      - name: Install minisign
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y minisign
+
+      - name: Prepare minisign snapshot key
+        run: minisign -G -W -s "$RUNNER_TEMP/detent-minisign.key" -p "$RUNNER_TEMP/detent-minisign.pub"
+
       - name: Run GoReleaser snapshot
         uses: goreleaser/goreleaser-action@v7
         with:
@@ -123,3 +131,5 @@ jobs:
           args: release --snapshot --clean
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          MINISIGN_KEY_FILE: ${{ runner.temp }}/detent-minisign.key
+          MINISIGN_PASSWORD: ""
