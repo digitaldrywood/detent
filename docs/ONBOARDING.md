@@ -29,11 +29,15 @@ Use these placeholders consistently:
    ```
 
 2. **Confirm GitHub CLI auth and scopes.** Detent needs a token that can read
-   the repo, org, and ProjectV2 board. Verify:
+   the repo, org, and ProjectV2 board. If any scope check fails, refresh the
+   token with `gh auth refresh -s repo -s read:org -s project`. Verify each
+   required scope independently:
 
    ```sh
    gh auth status
-   gh auth status 2>&1 | rg 'repo|read:org|project'
+   gh auth status 2>&1 | rg '\brepo\b'
+   gh auth status 2>&1 | rg '\bread:org\b'
+   gh auth status 2>&1 | rg '\bproject\b'
    ```
 
 3. **Confirm Codex is installed and signed in.** Detent dispatches agents
@@ -344,17 +348,31 @@ recommendation, and default-if-silent. Record answers in
    jq -e '.number and (.id | startswith("PVT_"))' "$ONBOARDING_DIR/project.json"
    ```
 
-3. **Create the `Priority` field from zero.** Detent can add missing options
-   inside an existing field, but it never creates the field. Verify:
+3. **Ensure the `Priority` field exists.** Detent can add missing options
+   inside an existing field, but it never creates the field. Reused boards can
+   already have this field, so check before creating it. If `Priority` exists
+   but is not a single-select field, stop and ask the human to rename the
+   conflicting field or choose another board. Verify:
 
    ```sh
    PROJECT_NUMBER="$(jq -r '.number' "$ONBOARDING_DIR/project.json")"
-   gh project field-create "$PROJECT_NUMBER" --owner <project-owner> \
-     --name Priority \
-     --data-type SINGLE_SELECT \
-     --single-select-options "Urgent,High,Medium,Low"
    gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json \
-     | jq -e '.fields[] | select(.name == "Priority") | [.options[].name] as $names | all(["Urgent","High","Medium","Low"][]; . as $want | $names | index($want))'
+     > "$ONBOARDING_DIR/fields.before.json"
+   if jq -e '.fields[] | select(.name == "Priority" and (.options | type == "array"))' \
+     "$ONBOARDING_DIR/fields.before.json" >/dev/null; then
+     echo "Priority field already exists; reusing it"
+   elif jq -e '.fields[] | select(.name == "Priority")' \
+     "$ONBOARDING_DIR/fields.before.json" >/dev/null; then
+     echo "Priority exists but is not a single-select field" >&2
+     exit 1
+   else
+     gh project field-create "$PROJECT_NUMBER" --owner <project-owner> \
+       --name Priority \
+       --data-type SINGLE_SELECT \
+       --single-select-options "Urgent,High,Medium,Low"
+   fi
+   gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json \
+     | jq -e '.fields[] | select(.name == "Priority" and (.options | type == "array"))'
    ```
 
 4. **Link the repository to the board.** This keeps the project discoverable
