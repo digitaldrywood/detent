@@ -223,14 +223,14 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	for _, id := range result.Changed {
 		_, preparedProject, err := m.createProjectLocked(desired[id])
 		if err != nil {
-			return result, err
+			return result, errors.Join(err, closePreparedProjects(ctx, prepared))
 		}
 		prepared[id] = preparedProject
 	}
 	for _, id := range result.Added {
 		_, preparedProject, err := m.createProjectLocked(desired[id])
 		if err != nil {
-			return result, err
+			return result, errors.Join(err, closePreparedProjects(ctx, prepared))
 		}
 		prepared[id] = preparedProject
 	}
@@ -243,6 +243,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	added := map[ID]struct{}{}
 	rollback := func() error {
 		cleanupErr := m.stopUncommittedStartedProjects(ctx, started)
+		cleanupErr = errors.Join(cleanupErr, closePreparedProjects(ctx, prepared))
 		for id := range added {
 			m.registry.Delete(id)
 		}
@@ -330,7 +331,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	for _, item := range started {
 		item.project.publishStarted()
 	}
-	return result, nil
+	return result, closeStoppedProjects(ctx, stopped)
 }
 
 func (m *Manager) removeLocked(ctx context.Context, id ID) error {
@@ -338,10 +339,8 @@ func (m *Manager) removeLocked(ctx context.Context, id ID) error {
 	if !ok {
 		return ErrProjectNotFound
 	}
-	if project.Running() {
-		if err := project.Stop(ctx); err != nil {
-			return err
-		}
+	if err := project.close(ctx, true); err != nil {
+		return err
 	}
 	m.registry.Delete(id)
 	return nil
@@ -428,7 +427,7 @@ func (m *Manager) registerProjectLocked(ctx context.Context, id ID, project *Pro
 	}
 	if err := m.startLocked(ctx, project); err != nil {
 		m.registry.Delete(id)
-		return err
+		return errors.Join(err, project.close(ctx, false))
 	}
 	return nil
 }
@@ -476,6 +475,22 @@ func (m *Manager) stopUncommittedStartedProjects(ctx context.Context, started []
 		if item.project.Running() {
 			cleanupErr = errors.Join(cleanupErr, item.project.stop(ctx, false))
 		}
+	}
+	return cleanupErr
+}
+
+func closePreparedProjects(ctx context.Context, prepared map[ID]*Project) error {
+	var cleanupErr error
+	for _, project := range prepared {
+		cleanupErr = errors.Join(cleanupErr, project.close(ctx, false))
+	}
+	return cleanupErr
+}
+
+func closeStoppedProjects(ctx context.Context, stopped []rollbackProject) error {
+	var cleanupErr error
+	for _, item := range stopped {
+		cleanupErr = errors.Join(cleanupErr, item.project.close(ctx, false))
 	}
 	return cleanupErr
 }

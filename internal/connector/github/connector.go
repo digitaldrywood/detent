@@ -145,6 +145,13 @@ func (c *Connector) LiveConnections() int {
 	return c.client.LiveConnections()
 }
 
+func (c *Connector) Close() error {
+	if c == nil || c.client == nil {
+		return nil
+	}
+	return c.client.Close()
+}
+
 func (c *Connector) Authenticate(ctx context.Context) error {
 	if c.projectID == "" {
 		return ErrMissingProject
@@ -185,6 +192,7 @@ func (c *Connector) InstanceLogin() string {
 
 var _ connector.Connector = (*Connector)(nil)
 var _ connector.Authenticator = (*Connector)(nil)
+var _ connector.Closer = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)

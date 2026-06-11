@@ -9,6 +9,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
@@ -153,6 +154,103 @@ func TestManagerLiveAddRemovePauseUnpause(t *testing.T) {
 	}
 }
 
+func TestManagerRemoveClosesProjectConnector(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(4))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	projectConnector := newCloseTrackingConnector()
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+			}, project.Dependencies{
+				Connector: projectConnector,
+				Events:    events,
+				Runner:    blockingRunner{},
+			})
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	receiveEvent(t, sub.C())
+
+	if err := manager.Remove(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	receiveEvent(t, sub.C())
+	assertConnectorClosed(t, projectConnector)
+}
+
+func TestManagerRemoveKeepsProjectOpenWhenStopContextExpires(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(4))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	release := make(chan struct{})
+	projectConnector := newCloseTrackingConnector()
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+			}, project.Dependencies{
+				Connector: projectConnector,
+				Events:    events,
+				Runner:    releaseBlockingRunner{release: release},
+			})
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	receiveEvent(t, sub.C())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := manager.Remove(ctx, "alpha"); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Remove() error = %v, want %v", err, context.Canceled)
+	}
+	if _, ok := manager.Registry().Get("alpha"); !ok {
+		t.Fatal("Get(alpha) ok = false after failed Remove, want true")
+	}
+	assertConnectorOpen(t, projectConnector)
+
+	close(release)
+	if err := manager.Remove(context.Background(), "alpha"); err != nil {
+		t.Fatalf("Remove() after release error = %v", err)
+	}
+	assertConnectorClosed(t, projectConnector)
+}
+
 func TestManagerReconcileProjects(t *testing.T) {
 	t.Parallel()
 
@@ -276,6 +374,44 @@ func TestManagerReconcileProjects(t *testing.T) {
 			assertManagerProjectConfigs(t, manager, tt.wantConfigs)
 		})
 	}
+}
+
+func TestManagerReconcileClosesPreparedProjectWhenLaterCreateFails(t *testing.T) {
+	t.Parallel()
+
+	factoryErr := errors.New("invalid workflow")
+	preparedConnector := newCloseTrackingConnector()
+	manager, err := project.NewManager(project.ManagerConfig{}, project.ManagerDependencies{
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			if cfg.ID == "bravo" {
+				return nil, factoryErr
+			}
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+			}, project.Dependencies{
+				Connector: preparedConnector,
+				Runner:    blockingRunner{},
+			})
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	_, err = manager.Reconcile(context.Background(), project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "alpha", Weight: 1},
+			{ID: "bravo", Weight: 1},
+		},
+	})
+	if !errors.Is(err, factoryErr) {
+		t.Fatalf("Reconcile() error = %v, want %v", err, factoryErr)
+	}
+	assertConnectorClosed(t, preparedConnector)
 }
 
 func TestManagerReconcileChangesProjectsWhenRuntimeCredentialVersionChanges(t *testing.T) {
@@ -496,6 +632,10 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementProvisionFails(t *tes
 	t.Parallel()
 
 	provisionErr := errors.New("provision failed")
+	replacementConnector := newCloseTrackingProvisioningConnector()
+	replacementConnector.provision = func(context.Context) error {
+		return provisionErr
+	}
 	events := hub.New[project.Event](hub.WithBuffer(8))
 	sub, err := events.Subscribe(context.Background())
 	if err != nil {
@@ -507,17 +647,15 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementProvisionFails(t *tes
 	}, project.ManagerDependencies{
 		Events: events,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
-			var provision func(context.Context) error
+			var projectConnector connector.Connector = provisioningConnector{}
 			if cfg.ID == "alpha" && cfg.Weight == 2 {
-				provision = func(context.Context) error {
-					return provisionErr
-				}
+				projectConnector = replacementConnector
 			}
 			return project.New(project.Config{
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
 			}, project.Dependencies{
-				Connector: provisioningConnector{provision: provision},
+				Connector: projectConnector,
 				Events:    events,
 				Runner:    blockingRunner{},
 			})
@@ -552,6 +690,7 @@ func TestManagerReconcileKeepsChangedProjectWhenReplacementProvisionFails(t *tes
 	if !got.Running() {
 		t.Fatal("alpha Running() = false, want true")
 	}
+	assertConnectorClosed(t, replacementConnector.closeTrackingConnector)
 }
 
 func TestManagerReconcileKeepsChangedProjectWhenReplacementStartFails(t *testing.T) {

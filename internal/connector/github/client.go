@@ -411,6 +411,23 @@ func (c *Client) LiveConnections() int {
 	return stats.LiveConnections()
 }
 
+func (c *Client) Close() error {
+	if c == nil || c.httpClient == nil {
+		return nil
+	}
+	if closer, ok := c.httpClient.(interface {
+		Close() error
+	}); ok {
+		return closer.Close()
+	}
+	if closer, ok := c.httpClient.(interface {
+		CloseIdleConnections()
+	}); ok {
+		closer.CloseIdleConnections()
+	}
+	return nil
+}
+
 func (c *Client) setRateLimit(snapshot connector.GraphQLRateLimit) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
