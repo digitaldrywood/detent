@@ -51,6 +51,14 @@ func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
 				t.Fatalf("dispatch order = %#v, want %#v", gotOrder, tt.Want.DispatchOrder)
 			}
 
+			plan := PlanDispatch(cfg, state.clone(), candidates, now)
+			if !slices.Equal(plan.DispatchOrder(), tt.Want.DispatchOrder) {
+				t.Fatalf("PlanDispatch order = %#v, want %#v", plan.DispatchOrder(), tt.Want.DispatchOrder)
+			}
+			assertParitySet(t, "PlanDispatch blocked", plan.Blocked, tt.Want.Blocked)
+			assertParitySet(t, "PlanDispatch claimed", plan.Claimed, tt.Want.Claimed)
+			assertParitySet(t, "PlanDispatch refusals", plan.BudgetRefusals, tt.Want.Refusals)
+
 			ctx, cancel := context.WithCancel(context.Background())
 			orch.dispatchReadyIssues(ctx, &state, candidates, now)
 			cancel()
