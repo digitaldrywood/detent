@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -85,6 +86,26 @@ func TestNewServerValidatesDependencies(t *testing.T) {
 				t.Fatalf("NewServer() error = %v, want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestNewServerConfiguresHTTPTimeouts(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	httpServer := server.Echo().Server
+	if httpServer.ReadHeaderTimeout <= 0 {
+		t.Fatalf("ReadHeaderTimeout = %v, want positive duration", httpServer.ReadHeaderTimeout)
+	}
+	if httpServer.IdleTimeout <= 0 {
+		t.Fatalf("IdleTimeout = %v, want positive duration", httpServer.IdleTimeout)
+	}
+	if httpServer.WriteTimeout != 0 {
+		t.Fatalf("WriteTimeout = %v, want 0 for long-lived SSE streams", httpServer.WriteTimeout)
 	}
 }
 
@@ -917,6 +938,78 @@ func TestServerEventsSendsTickEvents(t *testing.T) {
 	}
 	if strings.TrimSpace(event.data) == "" {
 		t.Fatal("tick event data is empty")
+	}
+}
+
+func TestServerEventsStreamsPastHTTPTimeouts(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{
+		SSETickInterval:       75 * time.Millisecond,
+		HTTPReadHeaderTimeout: 25 * time.Millisecond,
+		HTTPIdleTimeout:       25 * time.Millisecond,
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	addr := startWebServer(t, server)
+	conn, body, reader := openRawEventStream(t, addr)
+	defer conn.Close()
+	defer body.Close()
+
+	for range 2 {
+		event := readRawSSEEvent(t, conn, reader)
+		if event.name != "tick" {
+			t.Fatalf("event name = %q, want tick", event.name)
+		}
+		if strings.TrimSpace(event.data) == "" {
+			t.Fatal("tick event data is empty")
+		}
+	}
+}
+
+func TestServerReadHeaderTimeoutDropsStalledHeaders(t *testing.T) {
+	t.Parallel()
+
+	readHeaderTimeout := 100 * time.Millisecond
+	server, err := web.NewServer(web.Config{
+		HTTPReadHeaderTimeout: readHeaderTimeout,
+		HTTPIdleTimeout:       time.Second,
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	addr := startWebServer(t, server)
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	defer conn.Close()
+
+	if _, err := io.WriteString(conn, "GET /health HTTP/1.1\r\nHost: "+addr+"\r\nX-Slow:"); err != nil {
+		t.Fatalf("WriteString() error = %v", err)
+	}
+
+	start := time.Now()
+	if err := conn.SetReadDeadline(start.Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+
+	var buf [64]byte
+	for {
+		_, err := conn.Read(buf[:])
+		if err == nil {
+			continue
+		}
+		if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+			t.Fatalf("connection remained open after %v", time.Since(start))
+		}
+		if elapsed := time.Since(start); elapsed > readHeaderTimeout+500*time.Millisecond {
+			t.Fatalf("connection closed after %v, want close near %v", elapsed, readHeaderTimeout)
+		}
+		return
 	}
 }
 
@@ -2148,6 +2241,114 @@ func openEventStream(t *testing.T, server *web.Server) io.ReadCloser {
 	}
 
 	return resp.Body
+}
+
+func startWebServer(t *testing.T, server *web.Server) string {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("Listen() error = %v", err)
+	}
+
+	errs := make(chan error, 1)
+	go func() {
+		errs <- server.StartListener(listener)
+	}()
+
+	t.Cleanup(func() {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+
+		if err := server.Shutdown(ctx); err != nil {
+			t.Errorf("Shutdown() error = %v", err)
+		}
+
+		select {
+		case err := <-errs:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				t.Errorf("StartListener() error = %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Errorf("timed out waiting for StartListener to return")
+		}
+	})
+
+	return listener.Addr().String()
+}
+
+func openRawEventStream(t *testing.T, addr string) (net.Conn, io.ReadCloser, *bufio.Reader) {
+	t.Helper()
+
+	conn, err := net.Dial("tcp", addr)
+	if err != nil {
+		t.Fatalf("Dial() error = %v", err)
+	}
+	closeOnFailure := true
+	t.Cleanup(func() {
+		if closeOnFailure {
+			conn.Close()
+		}
+	})
+
+	if _, err := io.WriteString(conn, "GET /events HTTP/1.1\r\nHost: "+addr+"\r\nAccept: text/event-stream\r\n\r\n"); err != nil {
+		t.Fatalf("WriteString() error = %v", err)
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+		t.Fatalf("SetReadDeadline() error = %v", err)
+	}
+
+	reader := bufio.NewReader(conn)
+	resp, err := http.ReadResponse(reader, nil)
+	if err != nil {
+		t.Fatalf("ReadResponse() error = %v", err)
+	}
+	if resp.StatusCode != http.StatusOK {
+		resp.Body.Close()
+		t.Fatalf("status = %d, want %d", resp.StatusCode, http.StatusOK)
+	}
+	if got := resp.Header.Get("Content-Type"); !strings.HasPrefix(got, "text/event-stream") {
+		resp.Body.Close()
+		t.Fatalf("Content-Type = %q, want text/event-stream", got)
+	}
+
+	closeOnFailure = false
+	return conn, resp.Body, bufio.NewReader(resp.Body)
+}
+
+func readRawSSEEvent(t *testing.T, conn net.Conn, reader *bufio.Reader) sseEvent {
+	t.Helper()
+
+	var event sseEvent
+	deadline := time.Now().Add(time.Second)
+	for {
+		if err := conn.SetReadDeadline(deadline); err != nil {
+			t.Fatalf("SetReadDeadline() error = %v", err)
+		}
+		line, err := reader.ReadString('\n')
+		if err != nil {
+			t.Fatalf("reading SSE stream: %v", err)
+		}
+		line = strings.TrimRight(line, "\r\n")
+		if line == "" {
+			if event.name == "" {
+				t.Fatal("SSE event missing name")
+			}
+			return event
+		}
+		if name, ok := strings.CutPrefix(line, "event: "); ok {
+			event.name = name
+			continue
+		}
+		if data, ok := strings.CutPrefix(line, "data: "); ok {
+			if event.data != "" {
+				event.data += "\n"
+			}
+			event.data += data
+			continue
+		}
+		t.Fatalf("unexpected SSE line %q", line)
+	}
 }
 
 func readSSEEvent(t *testing.T, r io.Reader) sseEvent {
