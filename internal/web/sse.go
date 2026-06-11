@@ -56,7 +56,7 @@ func (s *Server) events(c echo.Context) error {
 			if !ok {
 				return nil
 			}
-			snapshot = s.enrichSnapshot(ctx, snapshot)
+			snapshot = s.cachedEnrichedSnapshot(ctx, snapshot)
 			if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, templates.SnapshotView(s.dashboardData(ctx, snapshot))); err != nil {
 				return err
 			}

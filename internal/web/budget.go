@@ -3,8 +3,10 @@ package web
 import (
 	"context"
 	"log/slog"
+	"reflect"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/store"
@@ -20,6 +22,66 @@ type configuredBudget struct {
 	ProjectID      string
 	PerDayMaxUSD   float64
 	PerIssueMaxUSD float64
+}
+
+type snapshotEnrichmentCache struct {
+	mu       sync.Mutex
+	cond     *sync.Cond
+	cached   bool
+	raw      telemetry.Snapshot
+	enriched telemetry.Snapshot
+	loading  bool
+}
+
+func newSnapshotEnrichmentCache() *snapshotEnrichmentCache {
+	cache := &snapshotEnrichmentCache{}
+	cache.cond = sync.NewCond(&cache.mu)
+	return cache
+}
+
+func (s *Server) cachedEnrichedSnapshot(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {
+	return s.snapshots.enrich(ctx, snapshot, s.enrichSnapshot)
+}
+
+func (c *snapshotEnrichmentCache) enrich(ctx context.Context, snapshot telemetry.Snapshot, enrich func(context.Context, telemetry.Snapshot) telemetry.Snapshot) telemetry.Snapshot {
+	if c == nil {
+		return enrich(ctx, snapshot)
+	}
+
+	c.mu.Lock()
+	for {
+		if c.cached && reflect.DeepEqual(c.raw, snapshot) {
+			enriched := c.enriched
+			c.mu.Unlock()
+			return enriched
+		}
+		if !c.loading {
+			c.loading = true
+			break
+		}
+		c.cond.Wait()
+	}
+	c.mu.Unlock()
+
+	enriched := enrich(ctx, snapshot)
+
+	if ctx != nil && ctx.Err() != nil {
+		c.mu.Lock()
+		c.loading = false
+		c.cond.Broadcast()
+		c.mu.Unlock()
+		return enriched
+	}
+
+	c.mu.Lock()
+	c.raw = snapshot
+	c.enriched = enriched
+	c.cached = true
+	c.loading = false
+	c.cond.Broadcast()
+	c.mu.Unlock()
+
+	return enriched
 }
 
 func (s *Server) enrichSnapshot(ctx context.Context, snapshot telemetry.Snapshot) telemetry.Snapshot {

@@ -30,7 +30,7 @@ func (s *Server) apiState(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
-	snapshot = s.enrichSnapshot(c.Request().Context(), snapshot)
+	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
 
 	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now)))
 }
@@ -40,7 +40,7 @@ func (s *Server) apiIssue(c echo.Context) error {
 	if !ok {
 		return c.JSON(http.StatusNotFound, errorResponse("issue_not_found", "Issue not found"))
 	}
-	snapshot = s.enrichSnapshot(c.Request().Context(), snapshot)
+	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
 
 	payload, ok := issueResponse(issueIdentifier(c), snapshot)
 	if !ok {
