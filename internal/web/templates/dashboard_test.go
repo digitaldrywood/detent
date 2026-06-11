@@ -574,8 +574,8 @@ func TestDashboardPreservesSnapshotScrollContainersAcrossSSEMorph(t *testing.T) 
 		`data-preserve-scroll="retry-queue"`,
 		`data-preserve-scroll="blocked-sessions"`,
 		`data-preserve-scroll="recent-sessions"`,
-		`document.body.addEventListener("htmx:beforeSwap"`,
-		`document.body.addEventListener("htmx:afterSettle"`,
+		`document.addEventListener("htmx:beforeSwap"`,
+		`document.addEventListener("htmx:afterSettle"`,
 		"scrollTop",
 		"scrollLeft",
 	} {
