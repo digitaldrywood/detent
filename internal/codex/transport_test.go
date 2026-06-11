@@ -132,6 +132,93 @@ func TestLocalTransportSendHonorsContextDuringBlockedWrite(t *testing.T) {
 	}
 }
 
+func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "turn-error-backpressure")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+	capturingFactory := &capturingLocalTransportFactory{factory: factory}
+	server, err := NewAppServer(capturingFactory,
+		WithReadTimeout(500*time.Millisecond),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	started := time.Now()
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: t.TempDir(),
+		Prompt:    "fail mid stream",
+	}, nil)
+	elapsed := time.Since(started)
+	if !errors.Is(err, ErrTurnFailed) {
+		t.Fatalf("RunTurn() error = %v, want ErrTurnFailed", err)
+	}
+	if elapsed > 900*time.Millisecond {
+		t.Fatalf("RunTurn() took %s after turn error, want prompt close", elapsed)
+	}
+
+	transport := capturingFactory.transport
+	if transport == nil {
+		t.Fatal("captured transport is nil")
+	}
+	assertChannelClosed(t, transport.readDone, "readLoop")
+	assertChannelClosed(t, transport.done, "wait")
+	if transport.cmd.ProcessState == nil {
+		t.Fatal("ProcessState is nil, want reaped process")
+	}
+}
+
+func TestLocalTransportCloseDrainsAfterSuccessfulTurnBackpressure(t *testing.T) {
+	t.Parallel()
+
+	factory, err := NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
+		return helperCommand(ctx, "turn-complete-backpressure")
+	})
+	if err != nil {
+		t.Fatalf("NewLocalTransportFactory() error = %v", err)
+	}
+	capturingFactory := &capturingLocalTransportFactory{factory: factory}
+	server, err := NewAppServer(capturingFactory,
+		WithReadTimeout(2*time.Second),
+		WithTurnTimeout(time.Second),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	started := time.Now()
+	result, err := server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace: t.TempDir(),
+		Prompt:    "complete then drain",
+	}, nil)
+	elapsed := time.Since(started)
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if result.ThreadID != "thread-1" || result.TurnID != "turn-1" {
+		t.Fatalf("RunTurn() result = %#v, want thread-1 turn-1", result)
+	}
+	if elapsed > 1500*time.Millisecond {
+		t.Fatalf("RunTurn() took %s after completed turn, want prompt close", elapsed)
+	}
+
+	transport := capturingFactory.transport
+	if transport == nil {
+		t.Fatal("captured transport is nil")
+	}
+	assertChannelClosed(t, transport.readDone, "readLoop")
+	assertChannelClosed(t, transport.done, "wait")
+	if transport.cmd.ProcessState == nil {
+		t.Fatal("ProcessState is nil, want reaped process")
+	}
+}
+
 func TestLocalTransportSendWrapsCloseErrorAfterContextCancellation(t *testing.T) {
 	t.Parallel()
 
@@ -287,6 +374,10 @@ func TestLocalTransportHelperProcess(t *testing.T) {
 		time.Sleep(time.Hour)
 	case "exit":
 		return
+	case "turn-error-backpressure":
+		helperTurnBackpressure(json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"failed"}}`), true)
+	case "turn-complete-backpressure":
+		helperTurnBackpressure(json.RawMessage(`{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`), false)
 	default:
 		os.Exit(2)
 	}
@@ -301,6 +392,52 @@ func helperCommand(ctx context.Context, mode string) *exec.Cmd {
 		"DETENT_CODEX_TRANSPORT_MODE="+mode,
 	)
 	return cmd
+}
+
+func helperTurnBackpressure(completedParams json.RawMessage, blockAfterFlood bool) {
+	encoder := json.NewEncoder(os.Stdout)
+	encoder.SetEscapeHTML(false)
+
+	messages := []Message{
+		{
+			JSONRPC: JSONRPCVersion,
+			ID:      json.RawMessage(`1`),
+			Result:  json.RawMessage(`{"userAgent":"codex-cli/test"}`),
+		},
+		{
+			JSONRPC: JSONRPCVersion,
+			ID:      json.RawMessage(`2`),
+			Result:  json.RawMessage(`{"thread":{"id":"thread-1"}}`),
+		},
+		{
+			JSONRPC: JSONRPCVersion,
+			ID:      json.RawMessage(`3`),
+			Result:  json.RawMessage(`{"turn":{"id":"turn-1"}}`),
+		},
+		{
+			JSONRPC: JSONRPCVersion,
+			Method:  "turn/completed",
+			Params:  completedParams,
+		},
+	}
+	for _, msg := range messages {
+		if err := encoder.Encode(msg); err != nil {
+			os.Exit(7)
+		}
+	}
+	for i := range 1024 {
+		msg := Message{
+			JSONRPC: JSONRPCVersion,
+			Method:  "item/agentMessage/delta",
+			Params:  json.RawMessage(`{"threadId":"thread-1","turnId":"turn-1","itemId":"item-1","delta":"still streaming"}`),
+		}
+		if err := encoder.Encode(msg); err != nil {
+			os.Exit(8)
+		}
+		if blockAfterFlood && i == 1023 {
+			time.Sleep(time.Hour)
+		}
+	}
 }
 
 func helperRoundTrip() {
@@ -376,4 +513,32 @@ func (noopWriteCloser) Write(p []byte) (int, error) {
 
 func (noopWriteCloser) Close() error {
 	return nil
+}
+
+type capturingLocalTransportFactory struct {
+	factory   *LocalTransportFactory
+	transport *localTransport
+}
+
+func (f *capturingLocalTransportFactory) NewTransport(ctx context.Context) (Transport, error) {
+	transport, err := f.factory.NewTransport(ctx)
+	if err != nil {
+		return nil, err
+	}
+	local, ok := transport.(*localTransport)
+	if !ok {
+		return nil, errors.New("transport is not local")
+	}
+	f.transport = local
+	return transport, nil
+}
+
+func assertChannelClosed(t *testing.T, ch <-chan struct{}, name string) {
+	t.Helper()
+
+	select {
+	case <-ch:
+	case <-time.After(100 * time.Millisecond):
+		t.Fatalf("%s did not exit", name)
+	}
 }
