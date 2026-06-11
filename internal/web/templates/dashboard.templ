@@ -89,7 +89,7 @@ templ SnapshotView(data DashboardData) {
 						}
 					</div>
 					<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
-						<div class="overflow-x-auto">
+						<div class="overflow-x-auto" data-preserve-scroll="running-issues">
 							<table class="dashboard-table w-full min-w-[76rem] table-fixed border-collapse text-sm">
 								<thead class="bg-muted/70">
 									<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
@@ -384,7 +384,7 @@ templ prPipelineLaneView(lane prPipelineLane) {
 				@dashboardEmptyState(lane.EmptyTitle, lane.EmptyDetail, lane.DotClass)
 			</div>
 		} else {
-			<div class="pr-pipeline-lane-scroll mt-3 grid max-h-[24rem] gap-2 overflow-y-auto pr-1">
+			<div class="pr-pipeline-lane-scroll mt-3 grid max-h-[24rem] gap-2 overflow-y-auto pr-1" data-preserve-scroll={ "pr-pipeline-" + lane.ID }>
 				for _, card := range lane.Cards {
 					@prPipelineCardView(card)
 				}
@@ -658,7 +658,7 @@ templ agentActivityTimeline(snapshot telemetry.Snapshot) {
 				}
 			</div>
 			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
-				<div class="dashboard-agent-scroll max-h-[32rem] overflow-x-auto overflow-y-auto">
+				<div class="dashboard-agent-scroll max-h-[32rem] overflow-x-auto overflow-y-auto" data-preserve-scroll="agent-activity">
 					<div class="min-w-[68rem]">
 						<div class="grid grid-cols-[18rem_minmax(0,1fr)_12rem] gap-3 border-b border-border bg-muted/70 px-3 py-3 text-xs font-medium uppercase text-muted-foreground">
 							<span>Agent</span>
@@ -749,7 +749,7 @@ templ retryQueueSection(snapshot telemetry.Snapshot) {
 				}
 			</div>
 			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
-				<div class="overflow-x-auto">
+				<div class="overflow-x-auto" data-preserve-scroll="retry-queue">
 					<table class="dashboard-table w-full min-w-[54rem] table-fixed border-collapse text-sm">
 						<thead class="bg-muted/70">
 							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
@@ -825,7 +825,7 @@ templ blockedSessionsSection(snapshot telemetry.Snapshot) {
 				}
 			</div>
 			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
-				<div class="overflow-x-auto">
+				<div class="overflow-x-auto" data-preserve-scroll="blocked-sessions">
 					<table class="dashboard-table w-full min-w-[68rem] table-fixed border-collapse text-sm">
 						<thead class="bg-muted/70">
 							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
@@ -921,7 +921,7 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 				}
 			</div>
 			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
-				<div class="overflow-x-auto">
+				<div class="overflow-x-auto" data-preserve-scroll="recent-sessions">
 					<table class="dashboard-table w-full min-w-[74rem] table-fixed border-collapse text-sm">
 						<thead class="bg-muted/70">
 							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">

@@ -180,13 +180,63 @@ templ helpScript() {
 			// attributes/inline styles back to the server markup, which would drop an open
 			// popover's open state and position. Re-assert the active popover after each
 			// settle so an open card stays put while telemetry streams underneath it.
-			document.body.addEventListener("htmx:afterSettle", () => {
+			document.addEventListener("htmx:afterSettle", () => {
 				if (!activePopover) return
 				if (!document.documentElement.contains(activePopover)) {
 					activePopover = null
 					return
 				}
 				openPopover(activePopover)
+			})
+		})();
+
+		(() => {
+			const selector = "[data-preserve-scroll]"
+			const positions = new Map()
+
+			function snapshotTarget(event) {
+				const detailTarget = event.detail && event.detail.target
+				const target = detailTarget instanceof Element ? detailTarget : event.target
+				if (!(target instanceof Element)) return null
+				if (target.id === "snapshot") return target
+				return target.closest("#snapshot")
+			}
+
+			function scrollKey(element) {
+				return element.dataset.preserveScroll || element.id || ""
+			}
+
+			function rememberScroll(root) {
+				root.querySelectorAll(selector).forEach((element) => {
+					const key = scrollKey(element)
+					if (!key) return
+					positions.set(key, {
+						left: element.scrollLeft,
+						top: element.scrollTop,
+					})
+				})
+			}
+
+			function restoreScroll(root) {
+				requestAnimationFrame(() => {
+					root.querySelectorAll(selector).forEach((element) => {
+						const key = scrollKey(element)
+						const position = key ? positions.get(key) : null
+						if (!position) return
+						element.scrollLeft = position.left
+						element.scrollTop = position.top
+					})
+				})
+			}
+
+			document.addEventListener("htmx:beforeSwap", (event) => {
+				const target = snapshotTarget(event)
+				if (target) rememberScroll(target)
+			})
+
+			document.addEventListener("htmx:afterSettle", (event) => {
+				const target = snapshotTarget(event)
+				if (target) restoreScroll(target)
 			})
 		})();
 
