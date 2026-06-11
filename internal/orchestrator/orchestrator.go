@@ -489,10 +489,11 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 
 		running := state.Running[id]
 		running.Issue = mergeIssueTrackerFields(running.Issue, issue)
-		state.Running[id] = running
 		if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
-			o.cancelRunning(state, id)
+			o.completeTerminalRunning(ctx, state, id, running, terminalCompletedAt(running.Issue, now), running.Tokens)
+			continue
 		}
+		state.Running[id] = running
 
 		if claimed, ok := state.Claimed[id]; ok {
 			claimed.Issue = mergeIssueTrackerFields(claimed.Issue, issue)
@@ -576,6 +577,9 @@ func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue
 	}
 	if refreshed.UpdatedAt != nil {
 		merged.UpdatedAt = refreshed.UpdatedAt
+	}
+	if refreshed.StageUpdatedAt != nil {
+		merged.StageUpdatedAt = refreshed.StageUpdatedAt
 	}
 	if refreshed.ModelOverride != "" {
 		merged.ModelOverride = refreshed.ModelOverride
@@ -1119,10 +1123,17 @@ func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {
 	delete(state.Running, event.IssueID)
 
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
-		delete(state.Claimed, event.IssueID)
-		delete(state.Retry, event.IssueID)
-		delete(state.BudgetRefusals, event.IssueID)
-		o.reapWorkspace(context.Background(), state, running.Issue, workspaceReapReason(running.Issue, o.cfg.TerminalStates))
+		tokens := event.Result.Tokens
+		if tokens == (CodexTotals{}) {
+			tokens = running.Tokens
+		}
+		if diffStatsPresent(event.Result.DiffStats) {
+			running.DiffStats = event.Result.DiffStats
+		}
+		o.completeTerminalRunning(context.Background(), state, event.IssueID, running, terminalCompletedAt(running.Issue, event.CompletedAt), tokens)
+		if event.Result.RateLimits != nil {
+			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+		}
 		return
 	}
 
@@ -1209,6 +1220,53 @@ func (o *Orchestrator) releaseClaim(state *State, issueID string) {
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+}
+
+func (o *Orchestrator) completeTerminalRunning(
+	ctx context.Context,
+	state *State,
+	issueID string,
+	running Running,
+	completedAt time.Time,
+	tokens CodexTotals,
+) {
+	o.releaseGlobalDispatchSlot(running.globalSlot)
+	if running.cancel != nil {
+		running.cancel()
+	}
+	delete(state.Running, issueID)
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	finalState := strings.TrimSpace(running.Issue.State)
+	if finalState == "" {
+		finalState = FinalStateCompleted
+	}
+	state.Completed[issueID] = Completed{
+		Issue:       cloneIssue(running.Issue),
+		StartedAt:   running.StartedAt,
+		CompletedAt: completedAt,
+		FinalState:  finalState,
+		Tokens:      tokens,
+	}
+	state.CodexTotals = addCodexTotals(state.CodexTotals, tokens)
+	if diffStatsPresent(running.DiffStats) {
+		state.DiffStats[issueID] = running.DiffStats
+	}
+	o.reapWorkspace(ctx, state, running.Issue, workspaceReapReason(running.Issue, o.cfg.TerminalStates))
+}
+
+func terminalCompletedAt(issue connector.Issue, fallback time.Time) time.Time {
+	if issue.StageUpdatedAt != nil && !issue.StageUpdatedAt.IsZero() {
+		return *issue.StageUpdatedAt
+	}
+	if issue.UpdatedAt != nil && !issue.UpdatedAt.IsZero() {
+		return *issue.UpdatedAt
+	}
+	if !fallback.IsZero() {
+		return fallback
+	}
+	return time.Now().UTC()
 }
 
 func (o *Orchestrator) cancelRunning(state *State, issueID string) {
