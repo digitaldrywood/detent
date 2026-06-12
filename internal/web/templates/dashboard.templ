@@ -23,46 +23,203 @@ templ Dashboard(data DashboardData) {
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
+			<script src={ chartJSPath(data.Assets) } defer></script>
+			<script src={ dashboardChartsScriptPath(data.Assets) } defer></script>
+			@dashboardSidebarScript()
 		</head>
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
 			@helpTooltipHost()
-			<main class="dashboard-shell mx-auto grid min-h-screen w-full max-w-7xl content-start gap-3 px-3 py-3 sm:gap-4 sm:px-6 lg:px-8" hx-ext="sse, morph" sse-connect="/events">
-				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
-					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
-						@dashboardTopbarBrand()
-						@dashboardPageHeading("Dashboard")
-						@dashboardNav("")
-						<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
-							<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
-							@dashboardTopbarDivider()
-							<span class="truncate">{ connectorName(data) }</span>
-							@dashboardTopbarDivider()
-							<span id="live-tick" class="sse-tick min-w-0 truncate font-mono" sse-swap="tick" hx-swap="innerHTML settle:120ms">{ generatedAtLabel(data.Snapshot) }</span>
+			<main class="dashboard-shell grid min-h-screen w-full grid-cols-1 bg-background md:grid-cols-[18rem_minmax(0,1fr)]" data-dashboard-shell hx-ext="sse, morph" sse-connect={ eventsPath(data) }>
+				@dashboardSidebar(data)
+				<section class="dashboard-main min-w-0 px-3 py-3 sm:px-6 lg:px-8">
+					<div class="mx-auto grid w-full max-w-7xl content-start gap-4 sm:gap-5">
+						<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+							<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+								@dashboardPageHeading(dashboardHeading(data))
+								<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+									<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
+									@dashboardTopbarDivider()
+									<span class="truncate">{ connectorName(data) }</span>
+									@dashboardTopbarDivider()
+									<span id="live-tick" class="sse-tick min-w-0 truncate font-mono" sse-swap="tick" hx-swap="innerHTML settle:120ms">{ generatedAtLabel(data.Snapshot) }</span>
+								</div>
+							</div>
+						</header>
+						<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
+							@SnapshotView(data)
 						</div>
+						@dashboardCharts(data)
 					</div>
-				</header>
-				<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
-					@SnapshotView(data)
-				</div>
+				</section>
 			</main>
 		</body>
 	</html>
 }
 
+templ dashboardSidebarScript() {
+	<script>
+		(function() {
+			const storageKey = "detent.dashboard.sidebar.collapsed";
+			function applyCollapsedState() {
+				const collapsed = window.localStorage && window.localStorage.getItem(storageKey) === "true";
+				document.querySelectorAll("[data-dashboard-shell]").forEach(function(shell) {
+					shell.dataset.sidebarCollapsed = collapsed ? "true" : "false";
+				});
+			}
+			document.addEventListener("DOMContentLoaded", applyCollapsedState);
+			document.addEventListener("click", function(event) {
+				const toggle = event.target.closest("[data-dashboard-sidebar-toggle]");
+				if (!toggle || !window.localStorage) {
+					return;
+				}
+				const collapsed = !(window.localStorage.getItem(storageKey) === "true");
+				window.localStorage.setItem(storageKey, collapsed ? "true" : "false");
+				applyCollapsedState();
+			});
+			document.addEventListener("input", function(event) {
+				const input = event.target.closest("[data-dashboard-project-filter]");
+				if (!input) {
+					return;
+				}
+				const query = input.value.trim().toLowerCase();
+				document.querySelectorAll("[data-dashboard-project-entry]").forEach(function(entry) {
+					const name = (entry.dataset.projectName || "").toLowerCase();
+					entry.hidden = query !== "" && !name.includes(query);
+				});
+			});
+			applyCollapsedState();
+		})();
+	</script>
+}
+
+templ dashboardSidebar(data DashboardData) {
+	<aside class="dashboard-sidebar sticky top-0 flex h-screen min-w-0 flex-col border-r border-border bg-card px-3 py-3" aria-label="Dashboard navigation">
+		<div class="flex min-h-12 items-center gap-2">
+			<div class="min-w-0 flex-1">
+				@dashboardTopbarBrand()
+			</div>
+			<button type="button" class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-dashboard-sidebar-toggle title="Collapse sidebar" aria-label="Collapse sidebar">
+				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+					<path d="M4 6h16"></path>
+					<path d="M4 12h16"></path>
+					<path d="M4 18h16"></path>
+				</svg>
+			</button>
+		</div>
+		<nav class="mt-4 grid min-h-0 flex-1 grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-3">
+			<a href="/" class={ sidebarFleetClass(data) } title="Fleet" if !isProjectDashboard(data) { aria-current="page" }>
+				<span class="inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-accent"></span>
+				<span class="dashboard-sidebar-label truncate">Fleet</span>
+			</a>
+			if sidebarFilterVisible(data) {
+				<label class="dashboard-sidebar-filter grid gap-1">
+					<span class="sr-only">{ sidebarProjectSearchLabel(data) }</span>
+					<input id="dashboard-project-filter" name="project_filter" type="search" class="min-h-9 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" placeholder="Filter projects" data-dashboard-project-filter/>
+				</label>
+			}
+			<div class="dashboard-sidebar-projects min-h-0 overflow-y-auto pr-1" data-dashboard-project-list>
+				<div class="grid gap-1">
+					for _, item := range sidebarProjectItems(data) {
+						<a href={ item.Href } class={ sidebarProjectClass(item) } title={ item.Name + " " + item.StatusLabel } data-dashboard-project-entry data-project-name={ item.Name } if item.Active { aria-current="page" }>
+							<span class={ "inline-flex h-2.5 w-2.5 shrink-0 rounded-full " + item.DotClass }></span>
+							<span class="dashboard-sidebar-label min-w-0 flex-1 truncate">{ item.Name }</span>
+							<span class={ "dashboard-sidebar-count shrink-0 rounded-full px-2 py-0.5 font-mono text-xs " + item.BadgeClass }>{ item.CountLabel }</span>
+						</a>
+					}
+				</div>
+			</div>
+			<div class="grid gap-1 border-t border-border pt-3">
+				<a href="/reports" class={ sidebarStaticNavClass(data, "reports") } title="Reports" if data.ActiveNav == "reports" { aria-current="page" }>
+					<span class="inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-muted-foreground"></span>
+					<span class="dashboard-sidebar-label truncate">Reports</span>
+				</a>
+				<a href="/settings" class={ sidebarStaticNavClass(data, "settings") } title="Settings" if data.ActiveNav == "settings" { aria-current="page" }>
+					<span class="inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-muted-foreground"></span>
+					<span class="dashboard-sidebar-label truncate">Settings</span>
+				</a>
+			</div>
+		</nav>
+	</aside>
+}
+
+templ dashboardCharts(data DashboardData) {
+	<section id="dashboard-charts" class="dashboard-chart-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label={ chartPanelTitle(data) } hx-preserve data-detent-charts data-chart-endpoint={ chartEndpoint(data) }>
+		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+			<div class="min-w-0">
+				<h2 class="text-base font-semibold text-foreground">{ chartPanelTitle(data) }</h2>
+				<p class="text-sm text-muted-foreground">{ chartPanelDescription(data) }</p>
+			</div>
+			<span class="shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">Chart.js</span>
+		</div>
+		<div class="mt-4 grid min-w-0 gap-3 lg:grid-cols-3">
+			<div class="min-w-0 rounded-md border border-border bg-muted/60 p-3">
+				<div class="mb-2 flex items-center justify-between gap-3">
+					<h3 class="truncate text-sm font-medium text-foreground">Running agents</h3>
+				</div>
+				<div class="h-56 min-w-0">
+					<canvas id="running-agents-chart" data-chart="running-agents" aria-label="Running agents over time"></canvas>
+				</div>
+			</div>
+			if isProjectDashboard(data) {
+				<div class="min-w-0 rounded-md border border-border bg-muted/60 p-3">
+					<div class="mb-2 flex items-center justify-between gap-3">
+						<h3 class="truncate text-sm font-medium text-foreground">Token spend</h3>
+					</div>
+					<div class="h-56 min-w-0">
+						<canvas id="token-spend-chart" data-chart="token-spend" aria-label="Token spend trend"></canvas>
+					</div>
+				</div>
+				<div class="min-w-0 rounded-md border border-border bg-muted/60 p-3">
+					<div class="mb-2 flex items-center justify-between gap-3">
+						<h3 class="truncate text-sm font-medium text-foreground">Board flow</h3>
+					</div>
+					<div class="h-56 min-w-0">
+						<canvas id="board-flow-chart" data-chart="board-flow" aria-label="Board state flow over time"></canvas>
+					</div>
+				</div>
+			} else {
+				<div class="min-w-0 rounded-md border border-border bg-muted/60 p-3">
+					<div class="mb-2 flex items-center justify-between gap-3">
+						<h3 class="truncate text-sm font-medium text-foreground">Tokens/sec</h3>
+					</div>
+					<div class="h-56 min-w-0">
+						<canvas id="tokens-per-second-chart" data-chart="tokens-per-second" aria-label="Tokens per second trend"></canvas>
+					</div>
+				</div>
+				<div class="min-w-0 rounded-md border border-border bg-muted/60 p-3">
+					<div class="mb-2 flex items-center justify-between gap-3">
+						<h3 class="truncate text-sm font-medium text-foreground">Completions</h3>
+					</div>
+					<div class="h-56 min-w-0">
+						<canvas id="completions-chart" data-chart="completions" aria-label="Completions per project"></canvas>
+					</div>
+				</div>
+			}
+		</div>
+	</section>
+}
+
 templ SnapshotView(data DashboardData) {
-	@dashboardHealth(data.Snapshot)
+	@dashboardHealth(data)
+	if isProjectDashboard(data) && data.ProjectPaused {
+		<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm" aria-label="Paused project">
+			<div class="flex items-start gap-3">
+				<span class="mt-1 h-2.5 w-2.5 rounded-full bg-warning"></span>
+				<div class="min-w-0">
+					<h2 class="text-sm font-semibold">{ projectDisplayName(data) } is paused.</h2>
+					<p class="mt-1 text-sm text-warning">Detent will keep showing telemetry, but this project is not dispatching new work.</p>
+				</div>
+			</div>
+		</section>
+	}
 	if data.Snapshot.GeneratedAt.IsZero() {
 		@snapshotLoading()
 	}
-	<section class="dashboard-section-grid grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-		@metricCard("Running", helpRunning, formatCount(runningCount(data.Snapshot)), "Active issue sessions", "border-t-accent", "bg-accent")
-		@metricCard("Queue", helpQueue, formatCount(queueCount(data.Snapshot)), "Waiting or retrying", "border-t-warning", "bg-warning")
-		@metricCard("Blocked", helpBlocked, formatCount(blockedCount(data.Snapshot)), "Needs operator action", "border-t-danger", "bg-danger")
-		@metricCard("Completed", helpCompleted, formatCount(completedCount(data.Snapshot)), "Finished sessions", "border-t-success", "bg-success")
-		@metricCard("Throughput", helpThroughput, throughputRate(data.Snapshot), "Rolling tokens/sec", "border-t-accent", "bg-accent")
-		@metricCard("Runtime", helpRuntime, runtimeLabel(data.Snapshot), "Aggregate agent uptime", "border-t-success", "bg-success")
-	</section>
 	@agentActivityTimeline(data.Snapshot)
+	@statStrip(data.Snapshot)
+	if !isProjectDashboard(data) {
+		@projectSmallMultiplesSection(data)
+	}
 	@prPipelineSection(data.Snapshot)
 	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
@@ -148,7 +305,6 @@ templ SnapshotView(data DashboardData) {
 		</aside>
 	</section>
 	<section class="dashboard-analytics grid min-w-0 gap-4 lg:gap-5" aria-label="Dashboard analytics">
-		@projectSmallMultiplesSection(data)
 		@boardHealthSection(data.Snapshot)
 		@cycleTimeSection(data.Snapshot.CycleTime)
 		@budgetCard(data.Snapshot)
@@ -157,11 +313,11 @@ templ SnapshotView(data DashboardData) {
 
 templ projectSmallMultiplesSection(data DashboardData) {
 	if len(projectSmallMultipleCards(data)) > 0 {
-		<section class="min-w-0" aria-label="Project small multiples">
+		<section class="min-w-0" aria-label="Fleet grid">
 			<div class="flex flex-col gap-2 sm:flex-row sm:items-end sm:justify-between">
 				<div class="min-w-0">
-					@helpHeading2("Projects", helpProjectMultiples, "project-small-multiples")
-					<p class="text-sm text-muted-foreground">Live throughput, spend, and queue depth across configured projects.</p>
+					@helpHeading2("Fleet grid", helpProjectMultiples, "project-small-multiples")
+					<p class="text-sm text-muted-foreground">Live running, queue, blocked, and token signals across configured projects.</p>
 				</div>
 				<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-muted px-2 py-1 text-sm font-medium text-muted-foreground">{ formatCount(len(projectSmallMultipleCards(data))) }</span>
 			</div>
@@ -175,18 +331,17 @@ templ projectSmallMultiplesSection(data DashboardData) {
 }
 
 templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
-	<article class="dashboard-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm" aria-label={ card.Name + " project" }>
+	<article class="dashboard-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm transition-colors hover:border-accent" aria-label={ card.Name + " project" }>
 		<div class="flex min-w-0 items-start justify-between gap-3">
 			<div class="min-w-0">
-				if card.URL != "" {
-					<a class="block truncate text-sm font-semibold text-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer">{ card.Name }</a>
-				} else {
-					<h3 class="truncate text-sm font-semibold text-foreground">{ card.Name }</h3>
-				}
+				<a class="block truncate text-sm font-semibold text-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.Href }>{ card.Name }</a>
 				<p class="mt-1 truncate font-mono text-xs text-muted-foreground">{ card.ActivityLabel }</p>
 			</div>
 			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ card.ThroughputLabel }</span>
 		</div>
+		if card.ExternalURL != "" {
+			<a class="mt-2 block truncate text-xs text-muted-foreground underline-offset-4 hover:text-accent hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.ExternalURL } target="_blank" rel="noopener noreferrer">{ card.ExternalURL }</a>
+		}
 		<div class="mt-3 grid grid-cols-4 gap-2 text-xs">
 			<span class="min-w-0 rounded-md bg-muted px-2 py-1.5">
 				<span class="block text-muted-foreground">Run</span>
@@ -292,23 +447,23 @@ templ LiveTick(timestamp time.Time) {
 	<span class="font-mono">Updated { timestamp.UTC().Format("15:04:05 UTC") }</span>
 }
 
-templ dashboardHealth(snapshot telemetry.Snapshot) {
+templ dashboardHealth(data DashboardData) {
 	<section class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card p-3 shadow-sm" aria-label="Dashboard health">
-		<span class={ "inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + runtimeStatusClass(snapshot) } aria-label="Runtime status">
+		<span class={ "inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + runtimeStatusClass(data.Snapshot) } aria-label="Runtime status">
 			<span class="h-2 w-2 rounded-full bg-current"></span>
-			<span>{ runtimeStatusLabel(snapshot) }</span>
+			<span>{ runtimeStatusLabel(data.Snapshot) }</span>
 		</span>
-		<span class={ "inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + statsStatusClass(snapshot) } aria-label="Stats status" title={ statsStatusTitle(snapshot) }>
+		<span class={ "inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + statsStatusClass(data.Snapshot) } aria-label="Stats status" title={ statsStatusTitle(data.Snapshot) }>
 			<span class="h-2 w-2 rounded-full bg-current"></span>
-			<span>{ statsStatusLabel(snapshot) }</span>
+			<span>{ statsStatusLabel(data.Snapshot) }</span>
 		</span>
-		<span class="inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground sm:max-w-[24rem]" aria-label="Instance identity" title={ instanceLabel(snapshot) }>
+		<span class="inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground sm:max-w-[24rem]" aria-label="Instance identity" title={ instanceLabel(data.Snapshot) }>
 			<span>Instance</span>
-			<span class="truncate font-medium text-foreground">{ instanceLabel(snapshot) }</span>
+			<span class="truncate font-medium text-foreground">{ instanceLabel(data.Snapshot) }</span>
 		</span>
-		<span class={ "inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold sm:max-w-[32rem] " + authorizationScopeClass(snapshot) } aria-label="Authorization scope" title={ authorizationScopeLabel(snapshot) }>
+		<span class={ "inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold sm:max-w-[32rem] " + dashboardScopeClass(data) } aria-label="Dashboard scope" title={ dashboardScopeLabel(data) }>
 			<span>Scope</span>
-			<span class="truncate">{ authorizationScopeLabel(snapshot) }</span>
+			<span class="truncate">{ dashboardScopeLabel(data) }</span>
 		</span>
 	</section>
 }
@@ -337,6 +492,28 @@ templ metricCard(label string, term helpTerm, value string, detail string, borde
 		</div>
 		<div class="mt-4 break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl">{ value }</div>
 	</article>
+}
+
+templ statStrip(snapshot telemetry.Snapshot) {
+	<section class="dashboard-stat-strip grid min-w-0 gap-2 rounded-md border border-border bg-card p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-6" aria-label="Dashboard statistics">
+		@statStripItem("Running", helpRunning, formatCount(runningCount(snapshot)), "Active issue sessions", "bg-accent")
+		@statStripItem("Queue", helpQueue, formatCount(queueCount(snapshot)), "Waiting or retrying", "bg-warning")
+		@statStripItem("Blocked", helpBlocked, formatCount(blockedCount(snapshot)), "Needs operator action", "bg-danger")
+		@statStripItem("Completed", helpCompleted, formatCount(completedCount(snapshot)), "Finished sessions", "bg-success")
+		@statStripItem("tps", helpThroughput, throughputRate(snapshot), "Rolling tokens/sec", "bg-accent")
+		@statStripItem("Uptime", helpRuntime, runtimeLabel(snapshot), "Aggregate agent uptime", "bg-success")
+	</section>
+}
+
+templ statStripItem(label string, term helpTerm, value string, detail string, dotClass string) {
+	<div class="min-w-0 rounded-md bg-muted/60 px-3 py-2">
+		<div class="flex min-w-0 items-center justify-between gap-2">
+			@helpInlineLabel(label, term, "dashboard-stat-strip", "truncate text-xs font-medium uppercase text-muted-foreground")
+			<span class={ "h-2 w-2 shrink-0 rounded-full " + dotClass }></span>
+		</div>
+		<div class="mt-1 truncate font-mono text-lg font-semibold text-foreground">{ value }</div>
+		<div class="truncate text-xs text-muted-foreground">{ detail }</div>
+	</div>
 }
 
 templ dashboardEmptyState(title string, detail string, dotClass string) {
@@ -405,6 +582,9 @@ templ prPipelineCardView(card prPipelineCard) {
 				} else {
 					<span class="font-mono text-xs font-semibold text-accent">{ card.IssueNumber }</span>
 					<span class="mt-1 line-clamp-2 text-sm font-medium text-foreground">{ card.Title }</span>
+				}
+				if card.ProjectID != "" {
+					<span class="mt-2 inline-flex max-w-full rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">{ card.ProjectID }</span>
 				}
 			</div>
 			<span class="shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
@@ -1009,6 +1189,9 @@ templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails 
 				<span class="block truncate font-medium text-foreground">{ issueIdentifier(issue) }</span>
 				<span class="line-clamp-1 text-muted-foreground">{ issueTitle(issue) }</span>
 			</button>
+			if issueProjectLabel(issue) != "" {
+				<span class="shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ "Project " + issueProjectLabel(issue) }>{ issueProjectLabel(issue) }</span>
+			}
 			if issue.URL != "" {
 				@issueCopyButton(issue.URL)
 			<a class="issue-external inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ issue.URL } target="_blank" rel="noopener noreferrer" title={ "Open " + issue.URL }>

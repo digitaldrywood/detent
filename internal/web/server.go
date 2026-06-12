@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -185,6 +186,7 @@ func (s *Server) registerRoutes() {
 	}
 
 	s.echo.GET("/", s.dashboard)
+	s.echo.GET("/projects/*", s.projectDashboard)
 	s.echo.GET("/settings", s.settings)
 	s.echo.GET("/reports", s.reports)
 	s.echo.GET("/events", s.events)
@@ -195,6 +197,8 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/onboarding/agent", s.onboardingAgent)
 	s.echo.POST("/onboarding/write", s.onboardingWrite)
 	s.echo.GET("/api/v1/state", s.apiState)
+	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries)
+	s.echo.GET("/api/v1/projects/*", s.apiProject)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
 	s.echo.GET("/api/v1/usage", s.apiUsage)
@@ -204,6 +208,23 @@ func (s *Server) registerRoutes() {
 func (s *Server) dashboard(c echo.Context) error {
 	ctx := c.Request().Context()
 	return render(c, templates.Dashboard(s.dashboardData(ctx, s.latestSnapshot(ctx))))
+}
+
+func (s *Server) projectDashboard(c echo.Context) error {
+	ctx := c.Request().Context()
+	data, ok := s.projectDashboardData(ctx, projectRouteParam(c), s.latestSnapshot(ctx))
+	if !ok {
+		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
+	}
+	return render(c, templates.Dashboard(data))
+}
+
+func projectRouteParam(c echo.Context) string {
+	projectID := strings.Trim(strings.TrimSpace(c.Param("*")), "/")
+	if unescaped, err := url.PathUnescape(projectID); err == nil {
+		return strings.Trim(strings.TrimSpace(unescaped), "/")
+	}
+	return projectID
 }
 
 func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
@@ -216,7 +237,60 @@ func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot)
 		Snapshot:      snapshot,
 		Projects:      s.projectSmallMultiples(ctx, snapshot),
 		Assets:        s.assets.templatePaths(),
+		ActiveNav:     "fleet",
 	}
+}
+
+func (s *Server) projectDashboardData(ctx context.Context, projectID string, snapshot telemetry.Snapshot) (templates.DashboardData, bool) {
+	projects := s.projectSmallMultiples(ctx, snapshot)
+	project, ok := s.dashboardProject(projectID, projects, snapshot)
+	if !ok {
+		return templates.DashboardData{}, false
+	}
+
+	scopedSnapshot := projectScopedSnapshotForProject(snapshot, telemetry.Project{
+		ID:          project.ID,
+		DisplayName: project.Name,
+		URL:         project.URL,
+	})
+	name := strings.TrimSpace(project.Name)
+	if name == "" {
+		name = strings.TrimSpace(project.ID)
+	}
+	return templates.DashboardData{
+		Title:         name + " - Detent",
+		Version:       s.version,
+		Build:         s.build,
+		ConnectorName: s.connector.Name(),
+		DashboardURL:  s.dashboardURL,
+		Snapshot:      scopedSnapshot,
+		Projects:      projects,
+		Assets:        s.assets.templatePaths(),
+		ActiveNav:     "project",
+		ProjectID:     strings.TrimSpace(project.ID),
+		ProjectName:   name,
+		ProjectPaused: project.Paused,
+	}, true
+}
+
+func (s *Server) dashboardProject(selectedProjectID string, projects []templates.ProjectSmallMultiple, snapshot telemetry.Snapshot) (templates.ProjectSmallMultiple, bool) {
+	selectedProjectID = strings.TrimSpace(selectedProjectID)
+	if selectedProjectID == "" {
+		return templates.ProjectSmallMultiple{}, false
+	}
+	for _, project := range projects {
+		if strings.TrimSpace(project.ID) == selectedProjectID {
+			return project, true
+		}
+	}
+	if projectSnapshot, ok := projectSnapshotForID(snapshot, selectedProjectID); ok {
+		return templates.ProjectSmallMultiple{
+			ID:   projectID(projectSnapshot.Project),
+			Name: strings.TrimSpace(projectSnapshot.Project.DisplayName),
+			URL:  strings.TrimSpace(projectSnapshot.Project.URL),
+		}, true
+	}
+	return templates.ProjectSmallMultiple{}, false
 }
 
 func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {

@@ -315,6 +315,52 @@ func TestMergeSnapshotMergesInstanceScope(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 14, 30, 0, 0, time.UTC)
+	stageAt := now.Add(-time.Minute)
+	completedAt := now.Add(-30 * time.Second)
+	got := mergeSnapshot(telemetry.Snapshot{}, telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Pipeline: []telemetry.Issue{
+			{ID: "pipeline", Identifier: "digitaldrywood/detent#1", StageUpdatedAt: &stageAt},
+		},
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{ID: "running", Identifier: "digitaldrywood/detent#2"}},
+		},
+		Queue: []telemetry.Queued{
+			{Issue: telemetry.Issue{ID: "queued", Identifier: "digitaldrywood/detent#3"}},
+		},
+		Blocked: []telemetry.Blocked{
+			{Issue: telemetry.Issue{ID: "blocked", Identifier: "digitaldrywood/detent#4"}},
+		},
+		Completed: []telemetry.Completed{
+			{Issue: telemetry.Issue{ID: "completed", Identifier: "digitaldrywood/detent#5"}, CompletedAt: completedAt},
+		},
+	})
+
+	tests := []struct {
+		name string
+		got  string
+	}{
+		{name: "pipeline", got: got.Pipeline[0].ProjectID},
+		{name: "running", got: got.Running[0].ProjectID},
+		{name: "queued", got: got.Queue[0].ProjectID},
+		{name: "blocked", got: got.Blocked[0].ProjectID},
+		{name: "completed", got: got.Completed[0].ProjectID},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if tt.got != "detent" {
+				t.Fatalf("ProjectID = %q, want detent", tt.got)
+			}
+		})
+	}
+}
+
 func TestTokenTrendRecorderAppliesRollingWindow(t *testing.T) {
 	t.Parallel()
 

@@ -3,8 +3,10 @@ package templates
 import "strings"
 
 type AssetPaths struct {
-	Favicon    string
-	Stylesheet string
+	Favicon         string
+	Stylesheet      string
+	ChartJS         string
+	DashboardCharts string
 }
 
 func faviconPath(assets AssetPaths) string {
@@ -19,4 +21,18 @@ func stylesheetPath(assets AssetPaths) string {
 		return stylesheet
 	}
 	return "/static/css/output.css"
+}
+
+func chartJSPath(assets AssetPaths) string {
+	if script := strings.TrimSpace(assets.ChartJS); script != "" {
+		return script
+	}
+	return "/static/vendor/chartjs/chart.umd.min.js"
+}
+
+func dashboardChartsScriptPath(assets AssetPaths) string {
+	if script := strings.TrimSpace(assets.DashboardCharts); script != "" {
+		return script
+	}
+	return "/static/js/dashboard-charts.js"
 }

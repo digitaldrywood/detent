@@ -173,7 +173,8 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 			wantFirst: projectSmallMultipleCard{
 				ID:              "busy",
 				Name:            "Busy",
-				URL:             "https://github.com/digitaldrywood/detent",
+				Href:            "/projects/busy",
+				ExternalURL:     "https://github.com/digitaldrywood/detent",
 				ActivityLabel:   "2 running / 3 queued / 1 blocked",
 				ThroughputLabel: "7.3 tps",
 				SpendLabel:      "$12.50",
@@ -197,6 +198,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 			wantFirst: projectSmallMultipleCard{
 				ID:              "detent",
 				Name:            "detent",
+				Href:            "/projects/detent",
 				ActivityLabel:   "1 running / 0 queued / 0 blocked",
 				ThroughputLabel: "0 tps",
 				SpendLabel:      "$0.00",
@@ -222,7 +224,8 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 			first := got[0]
 			if first.ID != tt.wantFirst.ID ||
 				first.Name != tt.wantFirst.Name ||
-				first.URL != tt.wantFirst.URL ||
+				first.Href != tt.wantFirst.Href ||
+				first.ExternalURL != tt.wantFirst.ExternalURL ||
 				first.ActivityLabel != tt.wantFirst.ActivityLabel ||
 				first.ThroughputLabel != tt.wantFirst.ThroughputLabel ||
 				first.SpendLabel != tt.wantFirst.SpendLabel ||
@@ -247,8 +250,8 @@ func TestProjectSmallMultiplesGridClass(t *testing.T) {
 		cards []projectSmallMultipleCard
 		want  string
 	}{
-		{name: "single card", cards: []projectSmallMultipleCard{{ID: "detent"}}, want: "mt-4 grid min-w-0 gap-3"},
-		{name: "multiple cards", cards: []projectSmallMultipleCard{{ID: "detent"}, {ID: "pyroapex"}}, want: "mt-4 grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3"},
+		{name: "single card", cards: []projectSmallMultipleCard{{ID: "detent"}}, want: "mt-4 grid min-w-0 gap-2"},
+		{name: "multiple cards", cards: []projectSmallMultipleCard{{ID: "detent"}, {ID: "pyroapex"}}, want: "mt-4 grid min-w-0 gap-2"},
 	}
 
 	for _, tt := range tests {

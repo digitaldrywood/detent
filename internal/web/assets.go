@@ -21,6 +21,8 @@ const (
 	staticURLPrefix        = "/static/"
 	defaultFaviconPath     = "/static/img/detent-mark.svg"
 	defaultStylesheetPath  = "/static/css/output.css"
+	defaultChartJSPath     = "/static/vendor/chartjs/chart.umd.min.js"
+	defaultDashboardJSPath = "/static/js/dashboard-charts.js"
 	headerETag             = "ETag"
 	fingerprintHashLength  = 12
 	immutableCacheControl  = "public, max-age=31536000, immutable"
@@ -57,8 +59,10 @@ func newStaticAssets(staticDir string) staticAssets {
 
 func (a staticAssets) templatePaths() templates.AssetPaths {
 	return templates.AssetPaths{
-		Favicon:    a.optionalAssetPath(defaultFaviconPath),
-		Stylesheet: a.assetPath(defaultStylesheetPath),
+		Favicon:         a.optionalAssetPath(defaultFaviconPath),
+		Stylesheet:      a.assetPath(defaultStylesheetPath),
+		ChartJS:         a.assetPath(defaultChartJSPath),
+		DashboardCharts: a.assetPath(defaultDashboardJSPath),
 	}
 }
 

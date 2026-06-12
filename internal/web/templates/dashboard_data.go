@@ -29,6 +29,10 @@ type DashboardData struct {
 	Snapshot      telemetry.Snapshot
 	Projects      []ProjectSmallMultiple
 	Assets        AssetPaths
+	ActiveNav     string
+	ProjectID     string
+	ProjectName   string
+	ProjectPaused bool
 }
 
 type Budget = telemetry.Budget
@@ -84,6 +88,7 @@ type ProjectSmallMultiple struct {
 	ID                        string
 	Name                      string
 	URL                       string
+	Paused                    bool
 	Running                   int
 	QueueCount                int
 	Blocked                   int
@@ -96,16 +101,20 @@ type ProjectSmallMultiple struct {
 
 type ProjectSmallMultipleSample struct {
 	At                        time.Time
+	Running                   int
 	TotalTokens               int64
 	ThroughputTokensPerSecond float64
 	SpendUSD                  float64
 	QueueDepth                int
+	Blocked                   int
+	Completed                 int
 }
 
 type projectSmallMultipleCard struct {
 	ID              string
 	Name            string
-	URL             string
+	Href            string
+	ExternalURL     string
 	ActivityLabel   string
 	RunningLabel    string
 	QueueLabel      string
@@ -116,6 +125,17 @@ type projectSmallMultipleCard struct {
 	ThroughputChart SeriesChartData
 	SpendChart      SeriesChartData
 	QueueChart      SeriesChartData
+}
+
+type sidebarProjectItem struct {
+	ID          string
+	Name        string
+	Href        string
+	StatusLabel string
+	DotClass    string
+	BadgeClass  string
+	CountLabel  string
+	Active      bool
 }
 
 type agentTimelineRow struct {
@@ -165,6 +185,7 @@ type prPipelineLane struct {
 type prPipelineCard struct {
 	IssueNumber      string
 	Identifier       string
+	ProjectID        string
 	Title            string
 	URL              string
 	CIStatus         string
@@ -204,6 +225,99 @@ func dashboardBuildVersionLabel(data DashboardData) string {
 		return build
 	}
 	return versionLabel(data)
+}
+
+func dashboardHeading(data DashboardData) string {
+	if strings.TrimSpace(data.ProjectID) != "" {
+		return projectDisplayName(data)
+	}
+	return "Fleet"
+}
+
+func projectDisplayName(data DashboardData) string {
+	name := strings.TrimSpace(data.ProjectName)
+	if name != "" {
+		return name
+	}
+	id := strings.TrimSpace(data.ProjectID)
+	if id != "" {
+		return id
+	}
+	return "Project"
+}
+
+func isProjectDashboard(data DashboardData) bool {
+	return strings.TrimSpace(data.ProjectID) != ""
+}
+
+func chartEndpoint(data DashboardData) string {
+	if id := strings.TrimSpace(data.ProjectID); id != "" {
+		return "/api/v1/projects/" + url.PathEscape(id) + "/timeseries"
+	}
+	return "/api/v1/timeseries"
+}
+
+func eventsPath(data DashboardData) string {
+	if id := strings.TrimSpace(data.ProjectID); id != "" {
+		return "/events?project=" + url.QueryEscape(id)
+	}
+	return "/events"
+}
+
+func dashboardScopeLabel(data DashboardData) string {
+	if isProjectDashboard(data) {
+		return "Project: " + projectDisplayName(data)
+	}
+	return authorizationScopeLabel(data.Snapshot)
+}
+
+func dashboardScopeClass(data DashboardData) string {
+	if isProjectDashboard(data) {
+		return "border-accent-soft bg-accent-soft text-accent"
+	}
+	return authorizationScopeClass(data.Snapshot)
+}
+
+func sidebarFilterVisible(data DashboardData) bool {
+	return len(sidebarProjectItems(data)) > 10
+}
+
+func sidebarFleetClass(data DashboardData) string {
+	return sidebarItemClass(!isProjectDashboard(data) && strings.TrimSpace(data.ActiveNav) != "reports" && strings.TrimSpace(data.ActiveNav) != "settings")
+}
+
+func sidebarProjectClass(item sidebarProjectItem) string {
+	return sidebarItemClass(item.Active)
+}
+
+func sidebarStaticNavClass(data DashboardData, id string) string {
+	return sidebarItemClass(strings.TrimSpace(data.ActiveNav) == id)
+}
+
+func sidebarItemClass(active bool) string {
+	base := "dashboard-sidebar-link flex min-h-10 min-w-0 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+	if active {
+		return base + " bg-accent-soft text-accent"
+	}
+	return base + " text-muted-foreground hover:bg-muted hover:text-foreground"
+}
+
+func sidebarProjectSearchLabel(data DashboardData) string {
+	return "Filter " + formatCount(len(sidebarProjectItems(data))) + " projects"
+}
+
+func chartPanelTitle(data DashboardData) string {
+	if isProjectDashboard(data) {
+		return projectDisplayName(data) + " activity"
+	}
+	return "Fleet activity"
+}
+
+func chartPanelDescription(data DashboardData) string {
+	if isProjectDashboard(data) {
+		return "Project-scoped activity, token spend, and board flow over the selected window."
+	}
+	return "Running agents, token throughput, and completions across registered projects."
 }
 
 func connectorName(data DashboardData) string {
@@ -247,14 +361,7 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 	}
 
 	projects := append([]ProjectSmallMultiple(nil), data.Projects...)
-	sort.SliceStable(projects, func(i, j int) bool {
-		left := projectSmallMultipleActivity(projects[i])
-		right := projectSmallMultipleActivity(projects[j])
-		if left != right {
-			return left > right
-		}
-		return projectSmallMultipleName(projects[i]) < projectSmallMultipleName(projects[j])
-	})
+	sortProjectSmallMultiples(projects)
 
 	cards := make([]projectSmallMultipleCard, 0, len(projects))
 	for _, project := range projects {
@@ -263,7 +370,8 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 		cards = append(cards, projectSmallMultipleCard{
 			ID:              strings.TrimSpace(project.ID),
 			Name:            name,
-			URL:             strings.TrimSpace(project.URL),
+			Href:            projectDashboardPath(project.ID),
+			ExternalURL:     strings.TrimSpace(project.URL),
 			ActivityLabel:   projectSmallMultipleActivityLabel(project),
 			RunningLabel:    formatCount(project.Running) + " running",
 			QueueLabel:      formatCount(project.QueueCount) + " queued",
@@ -285,11 +393,85 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 	return cards
 }
 
+func sidebarProjectItems(data DashboardData) []sidebarProjectItem {
+	if len(data.Projects) == 0 {
+		return nil
+	}
+
+	projects := append([]ProjectSmallMultiple(nil), data.Projects...)
+	sortProjectSmallMultiples(projects)
+	items := make([]sidebarProjectItem, 0, len(projects))
+	for _, project := range projects {
+		id := strings.TrimSpace(project.ID)
+		if id == "" {
+			continue
+		}
+		status := projectSmallMultipleStatus(project)
+		items = append(items, sidebarProjectItem{
+			ID:          id,
+			Name:        projectSmallMultipleName(project),
+			Href:        projectDashboardPath(id),
+			StatusLabel: status.Label,
+			DotClass:    status.DotClass,
+			BadgeClass:  status.BadgeClass,
+			CountLabel:  formatCount(project.Running),
+			Active:      strings.TrimSpace(data.ProjectID) == id,
+		})
+	}
+	return items
+}
+
+type projectStatusView struct {
+	Rank       int
+	Label      string
+	DotClass   string
+	BadgeClass string
+}
+
+func sortProjectSmallMultiples(projects []ProjectSmallMultiple) {
+	sort.SliceStable(projects, func(i, j int) bool {
+		left := projectSmallMultipleStatus(projects[i])
+		right := projectSmallMultipleStatus(projects[j])
+		if left.Rank != right.Rank {
+			return left.Rank < right.Rank
+		}
+		leftActivity := projectSmallMultipleActivity(projects[i])
+		rightActivity := projectSmallMultipleActivity(projects[j])
+		if leftActivity != rightActivity {
+			return leftActivity > rightActivity
+		}
+		return projectSmallMultipleName(projects[i]) < projectSmallMultipleName(projects[j])
+	})
+}
+
+func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView {
+	switch {
+	case project.Blocked > 0:
+		return projectStatusView{Rank: 0, Label: "blocked", DotClass: "bg-danger", BadgeClass: "bg-danger-soft text-danger"}
+	case project.Paused:
+		return projectStatusView{Rank: 3, Label: "paused", DotClass: "bg-muted-foreground", BadgeClass: "bg-muted text-muted-foreground"}
+	case project.Running > 0:
+		return projectStatusView{Rank: 1, Label: "active", DotClass: "bg-success", BadgeClass: "bg-success-soft text-success"}
+	case project.QueueCount > 0:
+		return projectStatusView{Rank: 2, Label: "queued", DotClass: "bg-warning", BadgeClass: "bg-warning-soft text-warning"}
+	default:
+		return projectStatusView{Rank: 4, Label: "idle", DotClass: "bg-muted-foreground", BadgeClass: "bg-muted text-muted-foreground"}
+	}
+}
+
+func projectDashboardPath(projectID string) string {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return "/"
+	}
+	return "/projects/" + url.PathEscape(projectID)
+}
+
 func projectSmallMultiplesGridClass(cards []projectSmallMultipleCard) string {
 	if len(cards) <= 1 {
-		return "mt-4 grid min-w-0 gap-3"
+		return "mt-4 grid min-w-0 gap-2"
 	}
-	return "mt-4 grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-3"
+	return "mt-4 grid min-w-0 gap-2"
 }
 
 func projectSmallMultipleActivity(project ProjectSmallMultiple) float64 {
@@ -310,6 +492,11 @@ func projectSmallMultipleName(project ProjectSmallMultiple) string {
 }
 
 func projectSmallMultipleActivityLabel(project ProjectSmallMultiple) string {
+	if project.Paused {
+		return "paused / " + formatCount(project.Running) + " running / " +
+			formatCount(project.QueueCount) + " queued / " +
+			formatCount(project.Blocked) + " blocked"
+	}
 	return formatCount(project.Running) + " running / " +
 		formatCount(project.QueueCount) + " queued / " +
 		formatCount(project.Blocked) + " blocked"
@@ -321,10 +508,13 @@ func projectSmallMultipleSamples(project ProjectSmallMultiple) []ProjectSmallMul
 	}
 	return []ProjectSmallMultipleSample{
 		{
+			Running:                   project.Running,
 			TotalTokens:               project.TotalTokens,
 			ThroughputTokensPerSecond: project.ThroughputTokensPerSecond,
 			SpendUSD:                  project.CurrentSpendUSD,
 			QueueDepth:                project.QueueCount,
+			Blocked:                   project.Blocked,
+			Completed:                 project.Completed,
 		},
 	}
 }
@@ -383,6 +573,14 @@ func issueTitle(issue telemetry.Issue) string {
 		return issue.Title
 	}
 	return "Untitled issue"
+}
+
+func issueProjectLabel(issue telemetry.Issue) string {
+	projectID := strings.TrimSpace(issue.ProjectID)
+	if projectID == "" {
+		return ""
+	}
+	return projectID
 }
 
 func issueDescriptionPreview(issue telemetry.Issue) string {
@@ -678,6 +876,7 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 	return prPipelineCard{
 		IssueNumber:      issueNumber(issue),
 		Identifier:       issueIdentifier(issue),
+		ProjectID:        strings.TrimSpace(issue.ProjectID),
 		Title:            issueTitle(issue),
 		URL:              prPipelineURL(issue),
 		CIStatus:         ciStatus,

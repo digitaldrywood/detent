@@ -497,6 +497,295 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 	}
 }
 
+func TestProjectDashboardRouteScopesSnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	mustSetWebProject(t, deps.Registry, "pyroapex", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Project:     telemetry.Project{DisplayName: "multiple projects"},
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Counts:  telemetry.Counts{Running: 1},
+				Tokens:  telemetry.Tokens{Total: 42_000},
+			},
+			{
+				Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"},
+				Counts:  telemetry.Counts{Running: 1},
+				Tokens:  telemetry.Tokens{Total: 88_000},
+			},
+		},
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:         "detent-running",
+					Identifier: "digitaldrywood/detent#377",
+					Title:      "Detent dashboard",
+					State:      "In Progress",
+					ProjectID:  "detent",
+				},
+				Tokens: telemetry.Tokens{Total: 42_000},
+			},
+			{
+				Issue: telemetry.Issue{
+					ID:         "pyro-running",
+					Identifier: "digitaldrywood/pyroapex#12",
+					Title:      "Pyro Apex migration",
+					State:      "In Progress",
+					ProjectID:  "pyroapex",
+				},
+				Tokens: telemetry.Tokens{Total: 88_000},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/projects/detent", nil)
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Detent",
+		`href="/projects/detent"`,
+		`aria-current="page"`,
+		`sse-connect="/events?project=detent"`,
+		`data-chart-endpoint="/api/v1/projects/detent/timeseries"`,
+		"digitaldrywood/detent#377",
+		"42,000",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("project dashboard missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+	for _, forbidden := range []string{
+		"digitaldrywood/pyroapex#12",
+		"88,000",
+	} {
+		if strings.Contains(rec.Body.String(), forbidden) {
+			t.Fatalf("project dashboard rendered forbidden %q:\n%s", forbidden, rec.Body.String())
+		}
+	}
+}
+
+func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
+	t.Parallel()
+
+	projectID := "digitaldrywood/detent"
+	now := time.Date(2026, 6, 12, 15, 30, 0, 0, time.UTC)
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, projectID, false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: projectID, DisplayName: "Detent"},
+				Counts:  telemetry.Counts{Running: 1},
+				Tokens:  telemetry.Tokens{Total: 42},
+			},
+		},
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "digitaldrywood/detent#377", ProjectID: projectID}},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/projects/digitaldrywood%2Fdetent", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		`href="/projects/digitaldrywood%2Fdetent"`,
+		`sse-connect="/events?project=digitaldrywood%2Fdetent"`,
+		`data-chart-endpoint="/api/v1/projects/digitaldrywood%2Fdetent/timeseries"`,
+		"digitaldrywood/detent#377",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("project dashboard missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/projects/digitaldrywood%2Fdetent/state", http.StatusOK)
+	if got := nestedString(t, state, "counts", "running"); got != "1" {
+		t.Fatalf("counts.running = %s, want 1", got)
+	}
+	series := requestJSON(t, server, http.MethodGet, "/api/v1/projects/digitaldrywood%2Fdetent/timeseries", http.StatusOK)
+	if series["scope"] != "project" || series["project_id"] != projectID {
+		t.Fatalf("series scope/project_id = %#v/%#v; payload = %#v", series["scope"], series["project_id"], series)
+	}
+}
+
+func TestProjectDashboardRouteReturnsNotFoundForUnknownProject(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/projects/missing", nil)
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusNotFound {
+		t.Fatalf("status = %d, want 404; body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestProjectStateAPIScopesSnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 16, 0, 0, 0, time.UTC)
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Counts:  telemetry.Counts{Running: 1},
+				Tokens:  telemetry.Tokens{Total: 42},
+			},
+			{
+				Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"},
+				Counts:  telemetry.Counts{Running: 1},
+				Tokens:  telemetry.Tokens{Total: 88},
+			},
+		},
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "digitaldrywood/detent#377", ProjectID: "detent"}},
+			{Issue: telemetry.Issue{ID: "pyro-running", Identifier: "digitaldrywood/pyroapex#12", ProjectID: "pyroapex"}},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/projects/detent/state", http.StatusOK)
+	if got := nestedString(t, state, "counts", "running"); got != "1" {
+		t.Fatalf("counts.running = %s, want 1", got)
+	}
+	if got := nestedString(t, state, "codex_totals", "total_tokens"); got != "42" {
+		t.Fatalf("codex_totals.total_tokens = %s, want 42", got)
+	}
+	running := state["running"].([]any)
+	if len(running) != 1 || running[0].(map[string]any)["issue_identifier"] != "digitaldrywood/detent#377" {
+		t.Fatalf("running = %#v, want only detent row", running)
+	}
+
+	missing := requestJSON(t, server, http.MethodGet, "/api/v1/projects/missing/state", http.StatusNotFound)
+	if nestedString(t, missing, "error", "code") != "project_not_found" {
+		t.Fatalf("missing project payload = %#v", missing)
+	}
+}
+
+func TestProjectStateAPIRendersConfiguredProjectWithoutTelemetryRows(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "detent", true)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 12, 16, 30, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/projects/detent/state", http.StatusOK)
+	if got := nestedString(t, state, "counts", "running"); got != "0" {
+		t.Fatalf("counts.running = %s, want 0", got)
+	}
+	if len(state["running"].([]any)) != 0 {
+		t.Fatalf("running = %#v, want empty", state["running"])
+	}
+}
+
+func TestTimeSeriesAPIRoutesReturnChartDatasets(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 17, 0, 0, 0, time.UTC)
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	mustSetWebProject(t, deps.Registry, "pyroapex", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project:    telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Counts:     telemetry.Counts{Running: 1, Queue: 2, Blocked: 1, Completed: 3},
+				Tokens:     telemetry.Tokens{Total: 42},
+				Throughput: telemetry.TokenThroughput{TokensPerSecond: 2.5},
+			},
+			{
+				Project:    telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"},
+				Counts:     telemetry.Counts{Running: 2, Completed: 5},
+				Tokens:     telemetry.Tokens{Total: 88},
+				Throughput: telemetry.TokenThroughput{TokensPerSecond: 4.5},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	fleet := requestJSON(t, server, http.MethodGet, "/api/v1/timeseries?window=2m&bucket=1m", http.StatusOK)
+	if fleet["scope"] != "fleet" {
+		t.Fatalf("fleet scope = %#v, want fleet; payload = %#v", fleet["scope"], fleet)
+	}
+	if len(fleet["labels"].([]any)) == 0 || len(fleet["running_agents"].([]any)) != 2 || len(fleet["completions"].([]any)) != 2 {
+		t.Fatalf("fleet datasets = %#v", fleet)
+	}
+	if fleet["board_flow"] != nil {
+		t.Fatalf("fleet board_flow = %#v, want omitted", fleet["board_flow"])
+	}
+
+	projectPayload := requestJSON(t, server, http.MethodGet, "/api/v1/projects/detent/timeseries?window=2m&bucket=1m", http.StatusOK)
+	if projectPayload["scope"] != "project" || projectPayload["project_id"] != "detent" {
+		t.Fatalf("project scope = %#v project_id = %#v; payload = %#v", projectPayload["scope"], projectPayload["project_id"], projectPayload)
+	}
+	if len(projectPayload["running_agents"].([]any)) != 1 || len(projectPayload["board_flow"].([]any)) != 4 {
+		t.Fatalf("project datasets = %#v", projectPayload)
+	}
+
+	invalid := requestJSON(t, server, http.MethodGet, "/api/v1/timeseries?window=not-a-duration", http.StatusBadRequest)
+	if nestedString(t, invalid, "error", "code") != "invalid_duration" {
+		t.Fatalf("invalid window payload = %#v", invalid)
+	}
+}
+
 func TestDashboardReadsLatestSnapshotWithoutSubscribing(t *testing.T) {
 	t.Parallel()
 
@@ -656,11 +945,16 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 		`src="https://unpkg.com/htmx.org@2.0.4"`,
 		`src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"`,
 		`src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"`,
+		`/static/vendor/chartjs/chart.umd.min`,
+		`/static/js/dashboard-charts`,
 		`hx-ext="sse, morph"`,
 		`sse-connect="/events"`,
 		`sse-swap="snapshot"`,
 		`sse-swap="tick"`,
 		`hx-swap="morph:innerHTML"`,
+		`hx-preserve`,
+		`data-detent-charts`,
+		`data-chart-endpoint="/api/v1/timeseries"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())
@@ -1633,7 +1927,7 @@ func TestDashboardRendersProjectSmallMultiplesFromSnapshots(t *testing.T) {
 
 	html := rec.Body.String()
 	for _, want := range []string{
-		"Project small multiples",
+		"Fleet grid",
 		"Detent project",
 		"Pyro Apex project",
 		"1 running / 3 queued / 0 blocked",
@@ -2084,6 +2378,28 @@ func testDeps(t *testing.T) web.Dependencies {
 		Store:     storeProbe{},
 		Registry:  project.NewRegistry(),
 		Connector: connectorProbe{name: "memory"},
+	}
+}
+
+func mustSetWebProject(t *testing.T, registry *project.Registry, id string, paused bool) {
+	t.Helper()
+
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: id, Paused: paused},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "memory"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
 	}
 }
 
