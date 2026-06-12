@@ -50,14 +50,18 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 	transitioned := map[string]struct{}{}
 	for _, issue := range issuesInStates(issues, cfg.SourceStates) {
 		issueID := strings.TrimSpace(issue.ID)
-		if issueID == "" || len(issue.BlockedBy) == 0 {
+		if issueID == "" {
 			continue
 		}
-		blockers := o.resolveDependencyBlockers(ctx, issue)
+		hydrated, ok := o.hydrateDependencyAutoUnblockIssue(ctx, issue, cfg.SourceStates)
+		if !ok || len(hydrated.BlockedBy) == 0 {
+			continue
+		}
+		blockers := o.resolveDependencyBlockers(ctx, hydrated)
 		if !dependencyBlockersReady(blockers, cfg, o.cfg.TerminalStates) {
 			continue
 		}
-		if !o.applyDependencyAutoUnblock(ctx, state, issue, blockers, cfg.TargetState, now) {
+		if !o.applyDependencyAutoUnblock(ctx, state, hydrated, blockers, cfg.TargetState, now) {
 			continue
 		}
 		transitioned[issueID] = struct{}{}
@@ -66,6 +70,46 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func (o *Orchestrator) hydrateDependencyAutoUnblockIssue(
+	ctx context.Context,
+	issue connector.Issue,
+	sourceStates []string,
+) (connector.Issue, bool) {
+	if len(issue.BlockedBy) > 0 || strings.TrimSpace(issue.Identifier) == "" {
+		return issue, stateIn(issue.State, sourceStates)
+	}
+	resolver, ok := o.connector.(connector.IssueReferenceResolver)
+	if !ok {
+		return issue, true
+	}
+	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, []string{issue.Identifier})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("hydrate dependency auto-unblock issue failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return connector.Issue{}, false
+	}
+	for _, hydrated := range issues {
+		if !sameIssueIdentity(issue, hydrated) {
+			continue
+		}
+		merged := mergeIssueTrackerFields(issue, hydrated)
+		return merged, stateIn(merged.State, sourceStates)
+	}
+	return issue, true
+}
+
+func sameIssueIdentity(left connector.Issue, right connector.Issue) bool {
+	leftID := strings.TrimSpace(left.ID)
+	rightID := strings.TrimSpace(right.ID)
+	if leftID != "" && rightID != "" && leftID == rightID {
+		return true
+	}
+	leftIdentifier := strings.ToLower(strings.TrimSpace(left.Identifier))
+	rightIdentifier := strings.ToLower(strings.TrimSpace(right.Identifier))
+	return leftIdentifier != "" && leftIdentifier == rightIdentifier
 }
 
 func (o *Orchestrator) resolveDependencyBlockers(ctx context.Context, issue connector.Issue) []dependencyBlocker {

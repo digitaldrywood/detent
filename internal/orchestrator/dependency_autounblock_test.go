@@ -4,6 +4,7 @@ import (
 	"context"
 	"io"
 	"log/slog"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -54,6 +55,44 @@ func TestTickAutoUnblocksDependencyWaitingIssue(t *testing.T) {
 	}
 	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "dependency_auto_unblock_transition" {
 		t.Fatalf("RecentEvents = %#v, want dependency auto-unblock event", state.RecentEvents)
+	}
+}
+
+func TestTickAutoUnblocksLightweightDependencyWaitingIssue(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-lightweight-blocked", "Blocked")
+	hydratedWaiting := waiting
+	hydratedWaiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#388"}}
+	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
+	blocker.Identifier = "digitaldrywood/detent#388"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues:     []connector.Issue{waiting},
+		hydratedIssues:  []connector.Issue{hydratedWaiting},
+		blockers:        []connector.Issue{blocker},
+		identifierCalls: []string{},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 3, 0, 0, time.UTC))
+
+	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
+		t.Fatalf("updates = %#v, want lightweight Blocked issue moved to Todo", got)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one audit comment", tracker.comments)
+	}
+	if !strings.Contains(tracker.comments[0].body, "digitaldrywood/detent#388") {
+		t.Fatalf("comment = %q, want hydrated dependency reference", tracker.comments[0].body)
+	}
+	if got, want := tracker.identifierCalls, []string{waiting.Identifier, "digitaldrywood/detent#388"}; !slices.Equal(got, want) {
+		t.Fatalf("identifier calls = %#v, want %#v", got, want)
 	}
 }
 
@@ -163,10 +202,12 @@ type dependencyAutoUnblockAudit struct {
 }
 
 type dependencyAutoUnblockConnector struct {
-	stateIssues []connector.Issue
-	blockers    []connector.Issue
-	updates     []dependencyAutoUnblockUpdate
-	comments    []dependencyAutoUnblockAudit
+	stateIssues     []connector.Issue
+	hydratedIssues  []connector.Issue
+	blockers        []connector.Issue
+	updates         []dependencyAutoUnblockUpdate
+	comments        []dependencyAutoUnblockAudit
+	identifierCalls []string
 }
 
 func (c *dependencyAutoUnblockConnector) Name() string {
@@ -188,10 +229,12 @@ func (c *dependencyAutoUnblockConnector) FetchIssueStatesByIDs(context.Context, 
 func (c *dependencyAutoUnblockConnector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {
 	wanted := make(map[string]struct{}, len(identifiers))
 	for _, identifier := range identifiers {
-		wanted[strings.ToLower(strings.TrimSpace(identifier))] = struct{}{}
+		normalized := strings.ToLower(strings.TrimSpace(identifier))
+		wanted[normalized] = struct{}{}
+		c.identifierCalls = append(c.identifierCalls, normalized)
 	}
-	out := make([]connector.Issue, 0, len(c.blockers))
-	for _, issue := range c.blockers {
+	out := make([]connector.Issue, 0, len(c.hydratedIssues)+len(c.blockers))
+	for _, issue := range append(c.hydratedIssues, c.blockers...) {
 		if _, ok := wanted[strings.ToLower(strings.TrimSpace(issue.Identifier))]; ok {
 			out = append(out, cloneIssue(issue))
 		}
