@@ -654,6 +654,7 @@ env: prod
 log_level: info
 github_token: gh
 port: 4000
+instance_name: buildbox
 global:
   max_concurrent_agents: 8
   scheduling: weighted
@@ -963,6 +964,7 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | Log level | `--log-level` | `LOG_LEVEL`, then `DETENT_LOG_LEVEL` | `log_level` | `info` |
 | GitHub token | | `GITHUB_TOKEN` | `github_token` | required for GitHub projects |
 | Web port | `--port` | `PORT` | `port` | `4000` |
+| Instance name | | | `instance_name` | short hostname |
 
 The web host resolves from `--host`, then the first registered workflow's
 `server.host`, then the built-in `127.0.0.1` default. It is not a top-level
@@ -974,6 +976,14 @@ committed. `github_token: gh-auth`, `${gh auth token}`, and
 `$(gh auth token)` are accepted aliases. If neither `GITHUB_TOKEN` nor
 `github_token` is set, Detent falls back to existing per-workflow
 `tracker.api_key` handling.
+
+Use `instance_name` to distinguish browser tabs and the dashboard navbar when
+several Detent instances are open at once. Detent resolves the display name
+from the first non-empty value in this order: top-level `instance_name` in
+`global.yaml`, `global.identity.name`, the short hostname, then empty. In
+single-project fallback mode without `global.yaml`, workflow top-level
+`identity.name` is used before the short hostname. Names are trimmed, must be a
+single line, and are capped at 40 characters in the web UI.
 
 `detent doctor` prints the resolved runtime values and their sources, with the
 GitHub token redacted.

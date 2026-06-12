@@ -243,6 +243,7 @@ env: dev
 log_level: debug
 github_token: gh
 port: 4100
+instance_name: " buildbox "
 global:
   max_concurrent_agents: 8
   scheduling: weighted
@@ -270,6 +271,9 @@ projects:
 	}
 	if cfg.Port == nil || *cfg.Port != 4100 {
 		t.Fatalf("Port = %v, want 4100", cfg.Port)
+	}
+	if cfg.InstanceName != "buildbox" {
+		t.Fatalf("InstanceName = %q, want buildbox", cfg.InstanceName)
 	}
 }
 
@@ -687,6 +691,7 @@ func TestReadReportsInvalidConfig(t *testing.T) {
 			name: "invalid shapes",
 			raw: `apiVersion: detent/v2
 kind: SomethingElse
+instance_name: []
 global:
   max_concurrent_agents: 0
   scheduling: random
@@ -706,6 +711,7 @@ projects:
 			want: []string{
 				"apiVersion: must equal detent/v1",
 				"kind: must equal GlobalConfig",
+				"instance_name: must be a string",
 				"global.max_concurrent_agents: must be a positive integer",
 				"global.scheduling: must be one of weighted, strict, round_robin, fair_share",
 				"global.fair_share: must be a mapping",
@@ -718,6 +724,22 @@ projects:
 				"projects[0].priority: must be an integer",
 				"projects[0].paused: must be a boolean",
 				"projects[0].credential_ref: must be a string",
+			},
+		},
+		{
+			name: "invalid instance name",
+			raw: `apiVersion: detent/v1
+kind: GlobalConfig
+instance_name: |-
+  buildbox
+  prod
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+projects: []
+`,
+			want: []string{
+				"instance_name: must be a single line",
 			},
 		},
 		{

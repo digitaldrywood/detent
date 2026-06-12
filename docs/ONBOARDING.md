@@ -337,7 +337,20 @@ recommendation, and default-if-silent. Record answers in
    rg '^GLOBAL_(PRIORITY|WEIGHT)=' "$ONBOARDING_DIR/answers.env"
    ```
 
-3. **Authorization filters.** Ask: "Should Detent consider all board items or
+3. **Instance name.** Ask: "What optional instance name should appear in
+   Detent browser tabs and the navbar?" Recommendation source: the short
+   hostname, existing `global.identity.name`, and any operator naming
+   convention for this host. Default if silent: the short hostname. Verify:
+
+   ```sh
+   INSTANCE_NAME="$(hostname -s 2>/dev/null || hostname)"
+   printf '%s\n' \
+     "INSTANCE_NAME=${INSTANCE_NAME}" \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^INSTANCE_NAME=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+4. **Authorization filters.** Ask: "Should Detent consider all board items or
    only items matching a filter?" Offer `none`, `labels.include`,
    `labels.exclude`, `assignee_in`, `author_in`, and `priority_in`.
    Recommendation source: live counts in `$ONBOARDING_DIR/issue-counts.json`
@@ -356,7 +369,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^AUTHORIZATION_' "$ONBOARDING_DIR/answers.env"
    ```
 
-4. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
+5. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
    localhost-only, a private/Tailscale IP, or all interfaces?" Recommendation
    source: the operator's access path, whether SSH tunnels or VPN/Tailscale are
    expected, the host firewall, and any known private interface addresses.
@@ -373,7 +386,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^DASHBOARD_' "$ONBOARDING_DIR/answers.env"
    ```
 
-5. **Validation gate.** Ask: "Use the detected command, a custom command, or a
+6. **Validation gate.** Ask: "Use the detected command, a custom command, or a
    human review label gate?" Recommendation source:
    `$ONBOARDING_DIR/gate.txt`, Makefile targets, and CI workflow commands.
    Default if silent: detected `make check` when present; otherwise
@@ -388,7 +401,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^GATE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-6. **Concurrency.** Ask: "How many agents may this project run at once?"
+7. **Concurrency.** Ask: "How many agents may this project run at once?"
    Recommendation source: host capacity, existing `global.yaml` projects, and
    the repo's gate cost. Default if silent: `agent.max_concurrent_agents: 5`
    for an active code repo, lower for expensive gates. State that
@@ -416,7 +429,7 @@ recommendation, and default-if-silent. Record answers in
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-7. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
+8. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
    it auto-promote to `Merging` after the human-defined criteria are true?"
    Recommendation source: repo risk, issue labels, review requirements, and how
    much trust the human wants to delegate. Default if silent:
@@ -440,7 +453,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-8. **Prompt body.** Ask: "Use the template prompt or add repo-specific
+9. **Prompt body.** Ask: "Use the template prompt or add repo-specific
    instructions?" Recommendation source: `CLAUDE.md`, `AGENTS.md`,
    `CONTRIBUTING.md`, README development commands, and CI workflows in
    `<source-root>`. Default if silent: template prompt plus any repo authority
@@ -457,7 +470,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-9. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
+10. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe
@@ -674,14 +687,15 @@ recommendation, and default-if-silent. Record answers in
    `github_token: gh` so Detent resolves the token from `gh auth token` at
    startup. This shares the operator's GraphQL budget with Detent and spawned
    agents; for production or high-volume boards, prefer GitHub App
-   installation authentication in `WORKFLOW.md`. Use a non-4000 port if
-   another Detent instance is already running; keep the dashboard host in
+   installation authentication in `WORKFLOW.md`. Set `instance_name` to the
+   interview answer or the short hostname. Use a non-4000 port if another
+   Detent instance is already running; keep the dashboard host in
    `WORKFLOW.md` `server.host` or pass it with `--host`. Verify:
 
    ```sh
    GLOBAL_CONFIG="$(detent config path | awk '/^path:/ {print $2}')"
-   perl -0pi -e 's/^(global:)/env: prod\nlog_level: info\ngithub_token: gh\nport: <port>\n$1/m if !/^github_token:/m' "$GLOBAL_CONFIG"
-   rg -n '^(env|log_level|github_token|port):' "$GLOBAL_CONFIG"
+   perl -0pi -e 's/^(global:)/env: prod\nlog_level: info\ngithub_token: gh\nport: <port>\ninstance_name: <instance-name>\n$1/m if !/^github_token:/m' "$GLOBAL_CONFIG"
+   rg -n '^(env|log_level|github_token|port|instance_name):' "$GLOBAL_CONFIG"
    ```
 
    Required shape:
@@ -691,6 +705,7 @@ recommendation, and default-if-silent. Record answers in
    log_level: info
    github_token: gh
    port: <port>
+   instance_name: <instance-name>
    ```
 
    GitHub App installation auth is configured in `WORKFLOW.md` with

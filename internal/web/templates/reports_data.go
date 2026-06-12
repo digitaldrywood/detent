@@ -11,15 +11,17 @@ import (
 const reportTopLimit = 5
 
 type ReportsData struct {
-	Title         string
-	ConnectorName string
-	GeneratedAt   time.Time
-	Day           UsageReportData
-	Project       UsageReportData
-	Issue         UsageReportData
-	PR            UsageReportData
-	Model         UsageReportData
-	Assets        AssetPaths
+	Title           string
+	ApplicationName string
+	InstanceName    string
+	ConnectorName   string
+	GeneratedAt     time.Time
+	Day             UsageReportData
+	Project         UsageReportData
+	Issue           UsageReportData
+	PR              UsageReportData
+	Model           UsageReportData
+	Assets          AssetPaths
 }
 
 type UsageReportData struct {

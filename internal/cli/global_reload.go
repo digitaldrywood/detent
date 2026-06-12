@@ -24,6 +24,7 @@ type globalConfigReloader struct {
 	logger             *slog.Logger
 	githubToken        *runtimeGitHubTokenState
 	resolveGitHubToken func(context.Context, globalconfig.Config) (string, error)
+	onReload           func(globalconfig.Config)
 }
 
 func startGlobalConfigWatcher(
@@ -32,6 +33,7 @@ func startGlobalConfigWatcher(
 	manager globalConfigManager,
 	logger *slog.Logger,
 	githubToken *runtimeGitHubTokenState,
+	onReload ...func(globalconfig.Config),
 ) <-chan struct{} {
 	if ctx == nil {
 		ctx = context.Background()
@@ -63,6 +65,9 @@ func startGlobalConfigWatcher(
 		manager:     manager,
 		logger:      logger,
 		githubToken: githubToken,
+	}
+	if len(onReload) > 0 {
+		reloader.onReload = onReload[0]
 	}
 	go func() {
 		defer close(done)
@@ -147,6 +152,9 @@ func (r *globalConfigReloader) apply(
 	}
 
 	r.current = update.Value
+	if r.onReload != nil {
+		r.onReload(update.Value)
+	}
 	return result, nil
 }
 

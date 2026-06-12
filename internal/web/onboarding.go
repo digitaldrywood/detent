@@ -156,15 +156,18 @@ func (s *Server) renderOnboardingStep(c echo.Context, form templates.OnboardingF
 }
 
 func (s *Server) onboardingData(form templates.OnboardingForm, problems []string, result templates.OnboardingResult) templates.OnboardingData {
+	instanceName := s.instanceName()
 	return templates.OnboardingData{
-		Title:        "Detent onboarding",
-		WorkflowPath: workflowDisplayPath(s.workflow),
-		Step:         form.Step,
-		Form:         form,
-		Errors:       problems,
-		Result:       result,
-		Assets:       s.assets.templatePaths(),
-		Polling:      templates.PollingData{MinIntervalMS: minPollingIntervalMS},
+		Title:           instancePageTitle(instanceName, "Detent onboarding"),
+		ApplicationName: applicationName(instanceName),
+		InstanceName:    instanceName,
+		WorkflowPath:    workflowDisplayPath(s.workflow),
+		Step:            form.Step,
+		Form:            form,
+		Errors:          problems,
+		Result:          result,
+		Assets:          s.assets.templatePaths(),
+		Polling:         templates.PollingData{MinIntervalMS: minPollingIntervalMS},
 	}
 }
 

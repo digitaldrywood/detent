@@ -21,18 +21,20 @@ const (
 )
 
 type DashboardData struct {
-	Title         string
-	Version       string
-	Build         buildinfo.Info
-	DashboardURL  string
-	ConnectorName string
-	Snapshot      telemetry.Snapshot
-	Projects      []ProjectSmallMultiple
-	Assets        AssetPaths
-	ActiveNav     string
-	ProjectID     string
-	ProjectName   string
-	ProjectPaused bool
+	Title           string
+	ApplicationName string
+	InstanceName    string
+	Version         string
+	Build           buildinfo.Info
+	DashboardURL    string
+	ConnectorName   string
+	Snapshot        telemetry.Snapshot
+	Projects        []ProjectSmallMultiple
+	Assets          AssetPaths
+	ActiveNav       string
+	ProjectID       string
+	ProjectName     string
+	ProjectPaused   bool
 }
 
 type Budget = telemetry.Budget

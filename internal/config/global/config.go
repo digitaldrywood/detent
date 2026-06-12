@@ -50,15 +50,16 @@ type PathResolution struct {
 }
 
 type Config struct {
-	Path        string    `yaml:"-"`
-	APIVersion  string    `yaml:"apiVersion"`
-	Kind        string    `yaml:"kind"`
-	Env         string    `yaml:"env,omitempty"`
-	LogLevel    string    `yaml:"log_level,omitempty"`
-	GitHubToken string    `yaml:"github_token,omitempty"`
-	Port        *int      `yaml:"port,omitempty"`
-	Global      Settings  `yaml:"global"`
-	Projects    []Project `yaml:"projects"`
+	Path         string    `yaml:"-"`
+	APIVersion   string    `yaml:"apiVersion"`
+	Kind         string    `yaml:"kind"`
+	Env          string    `yaml:"env,omitempty"`
+	LogLevel     string    `yaml:"log_level,omitempty"`
+	GitHubToken  string    `yaml:"github_token,omitempty"`
+	Port         *int      `yaml:"port,omitempty"`
+	InstanceName string    `yaml:"instance_name,omitempty"`
+	Global       Settings  `yaml:"global"`
+	Projects     []Project `yaml:"projects"`
 }
 
 type Settings struct {
@@ -300,6 +301,9 @@ func (c Config) Validate(opts ...Option) error {
 	if c.Port != nil && *c.Port < 0 {
 		problems = append(problems, "port: must be greater than or equal to 0")
 	}
+	if strings.ContainsAny(c.InstanceName, "\r\n") {
+		problems = append(problems, "instance_name: must be a single line")
+	}
 
 	if c.Global.MaxConcurrentAgents <= 0 {
 		problems = append(problems, "global.max_concurrent_agents: must be a positive integer")
@@ -530,6 +534,8 @@ func validateRaw(attrs map[string]any, opts options) []string {
 	problems = append(problems, optionalStringTypeError(attrs, "env")...)
 	problems = append(problems, optionalStringTypeError(attrs, "log_level")...)
 	problems = append(problems, optionalStringTypeError(attrs, "github_token")...)
+	problems = append(problems, optionalStringTypeError(attrs, "instance_name")...)
+	problems = append(problems, optionalSingleLineStringError(attrs, "instance_name")...)
 	problems = append(problems, optionalNonNegativeIntegerError(attrs["port"], "port")...)
 	problems = append(problems, globalErrors(attrs["global"])...)
 	problems = append(problems, projectsErrors(attrs["projects"], opts)...)
@@ -821,6 +827,21 @@ func optionalStringTypeError(attrs map[string]any, field string) []string {
 	return []string{field + ": must be a string"}
 }
 
+func optionalSingleLineStringError(attrs map[string]any, field string) []string {
+	value, ok := attrs[field]
+	if !ok || value == nil {
+		return nil
+	}
+	text, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	if strings.ContainsAny(text, "\r\n") {
+		return []string{field + ": must be a single line"}
+	}
+	return nil
+}
+
 func optionalNonNegativeIntegerError(value any, field string) []string {
 	if value == nil {
 		return nil
@@ -935,6 +956,10 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
 	}
+	instanceName, err := optionalString(attrs["instance_name"], "instance_name")
+	if err != nil {
+		return Config{}, buildValidationError(path, err)
+	}
 	port, err := optionalIntPointer(attrs["port"], "port")
 	if err != nil {
 		return Config{}, buildValidationError(path, err)
@@ -949,15 +974,16 @@ func build(attrs map[string]any, path string, opts options) (Config, error) {
 	}
 
 	return Config{
-		Path:        path,
-		APIVersion:  apiVersion,
-		Kind:        kind,
-		Env:         env,
-		LogLevel:    logLevel,
-		GitHubToken: githubToken,
-		Port:        port,
-		Global:      settings,
-		Projects:    builtProjects,
+		Path:         path,
+		APIVersion:   apiVersion,
+		Kind:         kind,
+		Env:          env,
+		LogLevel:     logLevel,
+		GitHubToken:  githubToken,
+		Port:         port,
+		InstanceName: instanceName,
+		Global:       settings,
+		Projects:     builtProjects,
 	}, nil
 }
 
