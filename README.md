@@ -399,10 +399,33 @@ detent
 ```
 
 Open the dashboard at <http://localhost:4000>. Use `--host` and `--port` to
-override the address:
+override the address. Before exposing a remote URL such as
+`http://prometheus:4000/`, choose the dashboard bind mode:
+
+- `127.0.0.1` keeps the dashboard local to the host and is the safest default
+  for SSH tunnel access.
+- A specific private or Tailscale IP exposes the dashboard only on that
+  interface and is preferred for VPN-only access.
+- `0.0.0.0` exposes the dashboard on every interface, not just Tailscale. Use
+  it only on trusted private networks with the expected host firewall rules.
+
+When Detent is bound to `127.0.0.1`, `curl` from the same host can work while
+`http://<host>:4000/` fails from another machine because loopback is not
+reachable remotely. Set `server.host` in `WORKFLOW.md` for the default bind, or
+set `--host` in the CLI command or service `ExecStart`:
 
 ```sh
-detent --host 127.0.0.1 --port 4001
+detent --host 127.0.0.1 --port 4000
+detent --host <tailscale-or-private-ip> --port 4000
+detent --headless --host 0.0.0.0 --port 4000
+```
+
+Verify the listener and the local or VPN URL you intend operators to use:
+
+```sh
+ss -ltnp | rg ':4000|detent'
+curl -fsS http://127.0.0.1:4000/api/v1/state
+curl -fsS http://<tailscale-or-private-ip>:4000/api/v1/state
 ```
 
 ## Bootstrap On A New Machine (Humans And AI Agents)
@@ -508,9 +531,21 @@ repo is a real, working instance of this setup to copy from.
 9. **Start Detent and confirm the dashboard:**
 
    ```sh
-   detent
-   curl -fsS http://localhost:4000/api/v1/state    # returns JSON telemetry
+   detent --host 127.0.0.1 --port 4000
+   ss -ltnp | rg ':4000|detent'
+   curl -fsS http://127.0.0.1:4000/api/v1/state
    ```
+
+   Keep `127.0.0.1` for SSH tunnels. For VPN access, use the selected private
+   or Tailscale IP instead and verify it from another machine:
+
+   ```sh
+   detent --host <tailscale-or-private-ip> --port 4000
+   curl -fsS http://<tailscale-or-private-ip>:4000/api/v1/state
+   ```
+
+   Use `--host 0.0.0.0` only when every host interface is trusted for dashboard
+   access; it is not limited to Tailscale.
 
 10. **Dispatch work.** Move a board issue to `Todo`. Detent claims it, creates
     an isolated worktree, dispatches an agent, and the issue appears under
@@ -925,6 +960,10 @@ Runtime settings resolve in this order: explicit flag, environment variable,
 | Log level | `--log-level` | `LOG_LEVEL`, then `DETENT_LOG_LEVEL` | `log_level` | `info` |
 | GitHub token | | `GITHUB_TOKEN` | `github_token` | required for GitHub projects |
 | Web port | `--port` | `PORT` | `port` | `4000` |
+
+The web host resolves from `--host`, then the first registered workflow's
+`server.host`, then the built-in `127.0.0.1` default. It is not a top-level
+`global.yaml` key.
 
 Use `github_token: gh` in `global.yaml` to resolve the token from
 `gh auth token` at startup. Literal token values also work but should not be
