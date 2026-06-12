@@ -216,7 +216,7 @@ gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"
 gh auth status 2>&1 | rg '\brepo\b'
 gh auth status 2>&1 | rg '\bread:org\b'
 gh auth status 2>&1 | rg '\bread:project\b'
-gh auth status 2>&1 | rg "'project'|, project|project,"
+gh auth status 2>&1 | rg "(^|[[:space:],'\"])project([[:space:],'\"]|$)"
 ```
 
 2. Find the GitHub ProjectV2 node id. Use the `id` field, which starts with
@@ -432,7 +432,7 @@ repo is a real, working instance of this setup to copy from.
    gh auth status 2>&1 | rg '\brepo\b'
    gh auth status 2>&1 | rg '\bread:org\b'
    gh auth status 2>&1 | rg '\bread:project\b'
-   gh auth status 2>&1 | rg "'project'|, project|project,"
+   gh auth status 2>&1 | rg "(^|[[:space:],'\"])project([[:space:],'\"]|$)"
    ```
 
    Use `github_token: gh` in `global.yaml` so Detent resolves this token at

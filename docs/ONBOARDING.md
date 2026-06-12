@@ -59,7 +59,7 @@ Use these placeholders consistently:
    gh auth status 2>&1 | rg '\brepo\b'
    gh auth status 2>&1 | rg '\bread:org\b'
    gh auth status 2>&1 | rg '\bread:project\b'
-   gh auth status 2>&1 | rg "'project'|, project|project,"
+   gh auth status 2>&1 | rg "(^|[[:space:],'\"])project([[:space:],'\"]|$)"
    gh project list --owner <project-owner> --format json --limit 1
    ```
 
