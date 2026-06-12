@@ -1040,6 +1040,46 @@ recommendation, and default-if-silent. Record answers in
      --jq '.[] | select(.body | startswith("## Codex Workpad")) | .html_url' | rg .
    ```
 
+## Reconfiguration Closeout
+
+Use this checklist after editing an existing Detent setup, especially after
+changing `global.yaml` or `WORKFLOW.md`.
+
+1. **Verify the binary you are about to run.** After pulling, rebuilding, or
+   installing updates, confirm the expected version, commit, and build date:
+
+   ```sh
+   detent version
+   ```
+
+2. **Run the preflight again.** `detent doctor` should pass before starting a
+   stopped instance because Phase 5 expects the configured server port to be
+   free:
+
+   ```sh
+   detent doctor
+   ```
+
+   If Detent is already running on the configured port, the server-port check
+   can fail because the live service owns that port. In that case, rerun the
+   config, toolchain, token, and database preflight with an ephemeral port, then
+   verify the live service separately:
+
+   ```sh
+   detent doctor --port 0
+   curl -fsS http://<dashboard-check-host>:<port>/health | jq -e '.status == "ok" and .mode == "running"'
+   ```
+
+3. **Reload the runtime that needs the change.** Restart Detent, reload the
+   user service, or rely on the documented hot-reload path only for settings
+   Detent reconciles while running. When in doubt, restart before dispatching
+   more work.
+
+4. **Hold dispatch on failed preflight.** Do not move new work to `Todo` from a
+   failed `detent doctor` run unless the only failure is the expected live-port
+   collision, `detent doctor --port 0` passes, and `/health` is green for the
+   running service.
+
 ## Appendix
 
 ### Interview Answers To Config Keys
