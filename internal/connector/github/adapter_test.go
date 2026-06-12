@@ -478,6 +478,13 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "detent/digitaldrywood_detent_182_followup" || pr.CIStatus != "pass" || pr.CodexReviewState != "COMMENTED" {
 		t.Fatalf("I_182 PullRequest = %#v, want PR 187 open followup", pr)
 	}
+	wantReviewSubmittedAt := time.Date(2026, 6, 5, 11, 0, 0, 0, time.UTC)
+	if pr.CodexReviewSubmittedAt == nil || !pr.CodexReviewSubmittedAt.Equal(wantReviewSubmittedAt) {
+		t.Fatalf("I_182 PullRequest.CodexReviewSubmittedAt = %v, want %v", pr.CodexReviewSubmittedAt, wantReviewSubmittedAt)
+	}
+	if len(pr.CodexReviewFindings) != 0 {
+		t.Fatalf("I_182 PullRequest.CodexReviewFindings = %#v, want none", pr.CodexReviewFindings)
+	}
 	if byID["I_18"].PullRequest != nil {
 		t.Fatalf("I_18 PullRequest = %#v, want nil", byID["I_18"].PullRequest)
 	}
@@ -526,7 +533,7 @@ func TestConnectorFetchCandidateIssuesPaginatesPullRequestStatusRESTEndpoints(t 
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/pulls/187/reviews?per_page=100&page=2",
-			body:   `[{"body":"[P1] Later paged finding.","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"sha-187","submitted_at":"2026-06-05T12:00:00Z"}]`,
+			body:   `[{"body":"[P1] Later paged finding.","html_url":"https://github.com/digitaldrywood/detent/pull/187#pullrequestreview-1","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"sha-187","submitted_at":"2026-06-05T12:00:00Z"}]`,
 		},
 	})
 
@@ -549,6 +556,11 @@ func TestConnectorFetchCandidateIssuesPaginatesPullRequestStatusRESTEndpoints(t 
 	}
 	if pr.CIStatus != "fail" || pr.CodexReviewState != "P1" {
 		t.Fatalf("PullRequest status = CI %q review %q, want fail/P1", pr.CIStatus, pr.CodexReviewState)
+	}
+	if len(pr.CodexReviewFindings) != 1 ||
+		pr.CodexReviewFindings[0].Body != "[P1] Later paged finding." ||
+		pr.CodexReviewFindings[0].URL != "https://github.com/digitaldrywood/detent/pull/187#pullrequestreview-1" {
+		t.Fatalf("PullRequest.CodexReviewFindings = %#v, want P1 review finding", pr.CodexReviewFindings)
 	}
 
 	requests := server.requests()
@@ -582,7 +594,7 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/pulls/190/reviews?per_page=100",
-			body:   `[{"body":"[P1] Unsafe migration.","state":"COMMENTED","user":{"login":"codex"},"commit_id":"sha-190","submitted_at":"2026-06-05T11:00:00Z"}]`,
+			body:   `[{"body":"[P1] Unsafe migration.","html_url":"https://github.com/digitaldrywood/detent/pull/190#pullrequestreview-2","state":"COMMENTED","user":{"login":"codex"},"commit_id":"sha-190","submitted_at":"2026-06-05T11:00:00Z"}]`,
 		},
 	})
 
@@ -603,6 +615,11 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	pr := got[0].PullRequest
 	if pr == nil || pr.Number != 190 || pr.CIStatus != "fail" || pr.CodexReviewState != "P1" {
 		t.Fatalf("PullRequest = %#v, want PR 190 with failing CI and P1 review", pr)
+	}
+	if len(pr.CodexReviewFindings) != 1 ||
+		pr.CodexReviewFindings[0].Body != "[P1] Unsafe migration." ||
+		pr.CodexReviewFindings[0].URL != "https://github.com/digitaldrywood/detent/pull/190#pullrequestreview-2" {
+		t.Fatalf("PullRequest.CodexReviewFindings = %#v, want P1 review finding", pr.CodexReviewFindings)
 	}
 }
 

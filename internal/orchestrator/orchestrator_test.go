@@ -1464,6 +1464,11 @@ func cloneIssues(issues []connector.Issue) []connector.Issue {
 		}
 		if issue.PullRequest != nil {
 			pullRequest := *issue.PullRequest
+			if issue.PullRequest.CodexReviewSubmittedAt != nil {
+				submittedAt := *issue.PullRequest.CodexReviewSubmittedAt
+				pullRequest.CodexReviewSubmittedAt = &submittedAt
+			}
+			pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
 			cloned[i].PullRequest = &pullRequest
 		}
 		cloned[i].BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)

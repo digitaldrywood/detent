@@ -41,12 +41,21 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
-	Number           int    `json:"number,omitempty" yaml:"number,omitempty"`
-	URL              string `json:"url,omitempty" yaml:"url,omitempty"`
-	BranchName       string `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
-	State            string `json:"state,omitempty" yaml:"state,omitempty"`
-	CIStatus         string `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
-	CodexReviewState string `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
+	Number                 int                  `json:"number,omitempty" yaml:"number,omitempty"`
+	URL                    string               `json:"url,omitempty" yaml:"url,omitempty"`
+	BranchName             string               `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
+	State                  string               `json:"state,omitempty" yaml:"state,omitempty"`
+	CIStatus               string               `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
+	CodexReviewState       string               `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
+	CodexReviewSubmittedAt *time.Time           `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`
+	CodexReviewFindings    []PullRequestFinding `json:"codex_review_findings,omitempty" yaml:"codex_review_findings,omitempty"`
+}
+
+type PullRequestFinding struct {
+	Body string `json:"body,omitempty" yaml:"body,omitempty"`
+	URL  string `json:"url,omitempty" yaml:"url,omitempty"`
+	Path string `json:"path,omitempty" yaml:"path,omitempty"`
+	Line int    `json:"line,omitempty" yaml:"line,omitempty"`
 }
 
 func NewIssue() Issue {

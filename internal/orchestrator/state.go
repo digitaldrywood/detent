@@ -192,6 +192,11 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	if issue.PullRequest != nil {
 		pullRequest := *issue.PullRequest
+		if issue.PullRequest.CodexReviewSubmittedAt != nil {
+			submittedAt := *issue.PullRequest.CodexReviewSubmittedAt
+			pullRequest.CodexReviewSubmittedAt = &submittedAt
+		}
+		pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
 		cloned.PullRequest = &pullRequest
 	}
 	if issue.CreatedAt != nil {
