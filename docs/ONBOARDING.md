@@ -600,6 +600,34 @@ recommendation, and default-if-silent. Record answers in
    detent doctor
    ```
 
+5. **Verify the systemd service PATH when Detent runs as a user service.**
+   User services do not inherit the interactive shell PATH. `detent doctor`
+   verifies Detent's direct dependencies, but a first dispatch can still fail
+   if repo hooks or validation gates call tools from a project-local directory
+   that is missing from the service environment, such as `$HOME/go/bin` for
+   `air`. Copy the exact `Environment=PATH=...` value from `detent.service`,
+   then verify Detent tools and every command used by `hooks.*` and the gate
+   from that same service context:
+
+   ```sh
+   systemd-run --user --wait --collect --pipe \
+     --property=Environment=PATH=<same-path-as-detent.service> \
+     /usr/bin/bash -lc 'command -v gh; command -v codex; command -v git; command -v detent; command -v go; command -v npm; command -v npx; command -v air'
+   ```
+
+   Add every missing tool directory to the service PATH before dispatching. For
+   example, if a repository bootstrap uses `air`, include the Go user binary
+   directory:
+
+   ```ini
+   Environment=PATH=/home/<user>/.local/bin:/home/<user>/.npm-global/bin:/home/<user>/go/bin:/usr/local/go/bin:/usr/bin:/bin
+   ```
+
+   When the project defines `hooks.after_create` or other bootstrap hooks,
+   dry-run that hook or the equivalent repo bootstrap script from an isolated
+   throwaway worktree with the same service PATH before moving an issue to
+   `Todo`.
+
 ## Phase 6 — Issue Intake
 
 1. **Confirm the selected initial status option exists.** If this fails on a

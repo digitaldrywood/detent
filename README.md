@@ -617,8 +617,11 @@ You bring the board; Detent fills in the rest.
 
 Before you dispatch anything, run **`detent doctor`** — it checks config
 resolution, the database, the `codex` binary, your GitHub token and scopes, git,
-and the server port. A clean `doctor` means you can move an issue to `Todo` and
-watch it run.
+and the server port. A clean `doctor` clears Detent's direct preflight. If
+Detent runs under a systemd user service, also verify the service PATH resolves
+every command used by project hooks and validation gates; `doctor` checks
+Detent's direct dependencies, not repo-specific bootstrap tools. The onboarding
+runbook includes the service-context check.
 
 ### Merge Train
 
