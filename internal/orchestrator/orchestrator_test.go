@@ -279,6 +279,66 @@ func TestForceQuitInterruptsRunningSessionAndAbandonsClaim(t *testing.T) {
 	}
 }
 
+func TestDrainCompletionAbandonsClaim(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-drain-claim", "digitaldrywood/detent#384", "In Progress")
+	tracker := newFakeConnector(issue)
+	runner := newBlockingRunner()
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        5 * time.Millisecond,
+		MaxConcurrentAgents: 1,
+		Claiming: orchestrator.ClaimingConfig{
+			Enabled:           true,
+			OwnershipMode:     workflowconfig.IdentityOwnershipField,
+			Owner:             "detent-test",
+			OwnerField:        "Owner",
+			LeaseField:        "Lease",
+			LeaseTTL:          time.Minute,
+			HeartbeatInterval: time.Hour,
+		},
+		ActiveStates:           []string{"In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay: time.Millisecond,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	receiveRunRequest(t, runner.started)
+	waitForState(t, orch, func(state orchestrator.State) bool {
+		_, running := state.Running[issue.ID]
+		_, claimed := state.Claimed[issue.ID]
+		return running && claimed
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := orch.Drain(ctx); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+	close(runner.release)
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		_, completed := state.Completed[issue.ID]
+		_, running := state.Running[issue.ID]
+		_, claimed := state.Claimed[issue.ID]
+		return state.Draining && completed && !running && !claimed
+	})
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after drain completion", issue.ID)
+	}
+	if !tracker.hasSetField(issue.ID, "Lease", "") {
+		t.Fatalf("SetField(%q, Lease, empty) not recorded; calls = %#v", issue.ID, tracker.setFieldCalls())
+	}
+}
+
 func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 	t.Parallel()
 

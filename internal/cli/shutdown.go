@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -39,6 +40,7 @@ const (
 
 type ShutdownController struct {
 	requests chan ShutdownRequest
+	active   atomic.Bool
 }
 
 func NewShutdownController() *ShutdownController {
@@ -58,6 +60,20 @@ func (c *ShutdownController) Requests() <-chan ShutdownRequest {
 		return nil
 	}
 	return c.requests
+}
+
+func (c *ShutdownController) Active() bool {
+	return c != nil && c.active.Load()
+}
+
+func (c *ShutdownController) activate() func() {
+	if c == nil {
+		return func() {}
+	}
+	c.active.Store(true)
+	return func() {
+		c.active.Store(false)
+	}
 }
 
 func (c *ShutdownController) request(request ShutdownRequest) {
@@ -96,6 +112,8 @@ func runWithShutdown(ctx context.Context, cfg runningShutdownConfig, serve shutd
 	if cfg.Controller == nil {
 		return serve(ctx)
 	}
+	deactivate := cfg.Controller.activate()
+	defer deactivate()
 
 	serveCtx, cancelServe := context.WithCancel(ctx)
 	defer cancelServe()

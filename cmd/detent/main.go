@@ -18,9 +18,10 @@ import (
 func main() {
 	setupLoggerFromEnv(os.Stdout, os.Stderr)
 
-	ctx := context.Background()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 	shutdownController := cli.NewShutdownController()
-	stopSignals := notifyShutdownRequests(shutdownController)
+	stopSignals := notifyShutdownRequests(shutdownController, cancel)
 	defer stopSignals()
 
 	if err := newRootCommand(ctx, shutdownController).ExecuteContext(ctx); err != nil {

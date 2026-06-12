@@ -74,6 +74,50 @@ func TestRunWithShutdownZeroSessionsExitsGracefully(t *testing.T) {
 	}
 }
 
+func TestRunWithShutdownMarksControllerActive(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	ctx, cancel := context.WithCancel(context.Background())
+	active := make(chan bool, 1)
+	errs := make(chan error, 1)
+
+	go func() {
+		errs <- runWithShutdown(ctx, runningShutdownConfig{
+			Controller:  controller,
+			Registry:    projectpkg.NewRegistry(),
+			SnapshotHub: hub.New[telemetry.Snapshot](),
+			HardTimeout: time.Second,
+		}, func(ctx context.Context) error {
+			active <- controller.Active()
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case got := <-active:
+		if !got {
+			t.Fatal("controller active = false while runWithShutdown is serving")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("server did not start")
+	}
+	cancel()
+
+	select {
+	case err := <-errs:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("runWithShutdown() error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shutdown")
+	}
+	if controller.Active() {
+		t.Fatal("controller active = true after runWithShutdown returned")
+	}
+}
+
 func TestRunWithShutdownForceReturnsForcedError(t *testing.T) {
 	t.Parallel()
 

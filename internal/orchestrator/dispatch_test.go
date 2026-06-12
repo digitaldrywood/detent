@@ -635,7 +635,7 @@ func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 	default:
 	}
 
-	alpha.handleRunResult(&alphaState, runpkg.Completion{
+	alpha.handleRunResult(ctx, &alphaState, runpkg.Completion{
 		IssueID:     alphaIssue.ID,
 		CompletedAt: now.Add(time.Second),
 		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},

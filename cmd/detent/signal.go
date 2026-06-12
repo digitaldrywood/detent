@@ -13,7 +13,7 @@ func newSignalContext(parent context.Context) (context.Context, context.CancelFu
 	return signal.NotifyContext(parent, shutdownSignals()...)
 }
 
-func notifyShutdownRequests(controller *cli.ShutdownController) func() {
+func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot context.CancelFunc) func() {
 	if controller == nil {
 		return func() {}
 	}
@@ -30,8 +30,14 @@ func notifyShutdownRequests(controller *cli.ShutdownController) func() {
 			signal.Stop(first)
 			return
 		case <-first:
-			controller.RequestDrain()
 			signal.Stop(first)
+			if !controller.Active() {
+				if cancelRoot != nil {
+					cancelRoot()
+				}
+				return
+			}
+			controller.RequestDrain()
 		}
 
 		second := make(chan os.Signal, 1)
@@ -41,7 +47,13 @@ func notifyShutdownRequests(controller *cli.ShutdownController) func() {
 		case <-stop:
 			return
 		case <-second:
-			controller.RequestForce()
+			if controller.Active() {
+				controller.RequestForce()
+				return
+			}
+			if cancelRoot != nil {
+				cancelRoot()
+			}
 		}
 	}()
 

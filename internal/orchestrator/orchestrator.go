@@ -254,7 +254,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.tick(ctx, &state, now)
 			resetTicker(ticker, state.PollInterval)
 		case result := <-o.runResults:
-			o.handleRunResult(&state, result)
+			o.handleRunResult(ctx, &state, result)
 		case update := <-o.runUpdates:
 			o.handleRunUpdate(&state, update)
 		case request := <-o.drainRequests:
@@ -1259,7 +1259,7 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	}
 }
 
-func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {
+func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event runpkg.Completion) {
 	running, ok := state.Running[event.IssueID]
 	if !ok {
 		return
@@ -1333,6 +1333,12 @@ func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {
 	}
 
 	if state.Draining {
+		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
+			o.logger.Warn("abandon completed drain claim failed", "issue_id", event.IssueID, "error", err)
+		}
+		delete(state.Claimed, event.IssueID)
+		delete(state.Retry, event.IssueID)
+		delete(state.BudgetRefusals, event.IssueID)
 		return
 	}
 	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
