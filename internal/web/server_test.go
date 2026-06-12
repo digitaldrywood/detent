@@ -656,7 +656,7 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 		`src="https://unpkg.com/htmx.org@2.0.4"`,
 		`src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"`,
 		`src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"`,
-		`hx-ext="sse morph"`,
+		`hx-ext="sse, morph"`,
 		`sse-connect="/events"`,
 		`sse-swap="snapshot"`,
 		`sse-swap="tick"`,
@@ -665,6 +665,9 @@ func TestDashboardWiresHTMXSSE(t *testing.T) {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())
 		}
+	}
+	if strings.Contains(rec.Body.String(), `hx-ext="sse morph"`) {
+		t.Fatalf("dashboard rendered space-separated htmx extensions:\n%s", rec.Body.String())
 	}
 }
 
