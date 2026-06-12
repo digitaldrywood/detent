@@ -826,6 +826,9 @@ Useful endpoints:
 | `/health` | Server health and configured dependency checks. |
 | `/events` | Server-sent dashboard updates. |
 | `/api/v1/state` | JSON telemetry snapshot. |
+| `/api/v1/timeseries?window=10m&bucket=1m` | Fleet chart samples for running agents, tokens/sec, and completions. |
+| `/api/v1/projects/<id>/state` | Project-scoped JSON telemetry snapshot. |
+| `/api/v1/projects/<id>/timeseries?window=10m&bucket=1m` | Project chart samples for running agents, token spend, and board flow. |
 | `/api/v1/refresh` | Request an orchestrator refresh with `POST`. |
 | `/api/v1/<issue>` | JSON detail for a running, retrying, or blocked issue. |
 

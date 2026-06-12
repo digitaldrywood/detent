@@ -102,6 +102,40 @@
     scrollbar-gutter: stable;
   }
 
+  .dashboard-shell[data-sidebar-collapsed="true"] {
+    grid-template-columns: 4.5rem minmax(0, 1fr);
+  }
+
+  .dashboard-shell[data-sidebar-collapsed="true"] .dashboard-sidebar {
+    padding-left: 0.5rem;
+    padding-right: 0.5rem;
+  }
+
+  .dashboard-shell[data-sidebar-collapsed="true"] .dashboard-sidebar-label,
+  .dashboard-shell[data-sidebar-collapsed="true"] .dashboard-sidebar-count,
+  .dashboard-shell[data-sidebar-collapsed="true"] .dashboard-sidebar-filter {
+    display: none;
+  }
+
+  .dashboard-shell[data-sidebar-collapsed="true"] .dashboard-sidebar-link {
+    justify-content: center;
+    padding-left: 0;
+    padding-right: 0;
+  }
+
+  @media (max-width: 767px) {
+    .dashboard-shell,
+    .dashboard-shell[data-sidebar-collapsed="true"] {
+      grid-template-columns: minmax(0, 1fr) !important;
+    }
+
+    .dashboard-sidebar {
+      position: static;
+      height: auto;
+      max-height: 20rem;
+    }
+  }
+
   .help-tip-button {
     align-items: center;
     background: var(--color-muted);

@@ -28,6 +28,7 @@ func (s *Server) events(c echo.Context) error {
 	}
 
 	ctx := c.Request().Context()
+	selectedProjectID := strings.TrimSpace(c.QueryParam("project"))
 	sub, err := s.hub.Subscribe(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -57,7 +58,13 @@ func (s *Server) events(c echo.Context) error {
 				return nil
 			}
 			snapshot = s.cachedEnrichedSnapshot(ctx, snapshot)
-			if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, templates.SnapshotView(s.dashboardData(ctx, snapshot))); err != nil {
+			data := s.dashboardData(ctx, snapshot)
+			if selectedProjectID != "" {
+				if scopedData, ok := s.projectDashboardData(ctx, selectedProjectID, snapshot); ok {
+					data = scopedData
+				}
+			}
+			if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, templates.SnapshotView(data)); err != nil {
 				return err
 			}
 			flusher.Flush()

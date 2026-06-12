@@ -35,6 +35,53 @@ func (s *Server) apiState(c echo.Context) error {
 	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now)))
 }
 
+func (s *Server) apiProjectState(c echo.Context) error {
+	now := apiNow()
+	snapshot, ok := s.hub.Latest()
+	if !ok {
+		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
+	}
+	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
+	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
+	project, ok := s.dashboardProject(c.Param("id"), projects, snapshot)
+	if !ok {
+		return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
+	}
+	scopedSnapshot := projectScopedSnapshotForProject(snapshot, telemetry.Project{
+		ID:          project.ID,
+		DisplayName: project.Name,
+		URL:         project.URL,
+	})
+
+	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now)))
+}
+
+func (s *Server) apiTimeSeries(c echo.Context) error {
+	window, bucket, response, status := timeSeriesQuery(c)
+	if response != nil {
+		return c.JSON(status, response)
+	}
+
+	snapshot := s.latestSnapshot(c.Request().Context())
+	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
+	return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, "", generatedAt(snapshot, apiNow()), window, bucket))
+}
+
+func (s *Server) apiProjectTimeSeries(c echo.Context) error {
+	window, bucket, response, status := timeSeriesQuery(c)
+	if response != nil {
+		return c.JSON(status, response)
+	}
+
+	snapshot := s.latestSnapshot(c.Request().Context())
+	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
+	project, ok := s.dashboardProject(c.Param("id"), projects, snapshot)
+	if !ok {
+		return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
+	}
+	return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, project.ID, generatedAt(snapshot, apiNow()), window, bucket))
+}
+
 func (s *Server) apiIssue(c echo.Context) error {
 	snapshot, ok := s.hub.Latest()
 	if !ok {
@@ -209,6 +256,7 @@ func runningEntries(entries []telemetry.Running) []runningAPIResponse {
 		payload = append(payload, runningAPIResponse{
 			IssueID:          entry.ID,
 			IssueIdentifier:  entry.Identifier,
+			ProjectID:        entry.ProjectID,
 			IssueURL:         optionalString(entry.URL),
 			IssueTitle:       optionalTrimmedString(entry.Title),
 			IssueDescription: issueDescription(entry.Description),
@@ -239,6 +287,7 @@ func retryEntries(entries []telemetry.Queued) []retryAPIResponse {
 		payload = append(payload, retryAPIResponse{
 			IssueID:          entry.ID,
 			IssueIdentifier:  entry.Identifier,
+			ProjectID:        entry.ProjectID,
 			IssueURL:         optionalString(entry.URL),
 			IssueTitle:       optionalTrimmedString(entry.Title),
 			IssueDescription: issueDescription(entry.Description),
@@ -259,6 +308,7 @@ func blockedEntries(entries []telemetry.Blocked) []blockedAPIResponse {
 		payload = append(payload, blockedAPIResponse{
 			IssueID:          entry.ID,
 			IssueIdentifier:  entry.Identifier,
+			ProjectID:        entry.ProjectID,
 			IssueURL:         optionalString(entry.URL),
 			IssueTitle:       optionalTrimmedString(entry.Title),
 			IssueDescription: issueDescription(entry.Description),
@@ -283,6 +333,7 @@ func recentSessionEntries(entries []telemetry.Completed) []recentSessionAPIRespo
 		payload = append(payload, recentSessionAPIResponse{
 			IssueID:        entry.ID,
 			Identifier:     entry.Identifier,
+			ProjectID:      entry.ProjectID,
 			IssueURL:       optionalString(entry.URL),
 			StartedAt:      timestampString(entry.StartedAt),
 			CompletedAt:    timestampString(entry.CompletedAt),
@@ -537,6 +588,40 @@ func usageDate(name string, value string) (time.Time, *apiErrorResponse, int) {
 	return parsed, nil, 0
 }
 
+func timeSeriesQuery(c echo.Context) (time.Duration, time.Duration, *apiErrorResponse, int) {
+	window, response, status := durationQueryParam(c.QueryParam("window"), defaultTimeSeriesWindow, time.Second, maxTimeSeriesWindow, "window")
+	if response != nil {
+		return 0, 0, response, status
+	}
+	bucket, response, status := durationQueryParam(c.QueryParam("bucket"), defaultTimeSeriesBucket, time.Second, window, "bucket")
+	if response != nil {
+		return 0, 0, response, status
+	}
+	window, bucket = cappedTimeSeriesWindow(window, bucket)
+	return window, bucket, nil, 0
+}
+
+func durationQueryParam(value string, fallback time.Duration, minValue time.Duration, maxValue time.Duration, name string) (time.Duration, *apiErrorResponse, int) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return fallback, nil, 0
+	}
+
+	duration, err := time.ParseDuration(value)
+	if err != nil {
+		response := errorResponse("invalid_duration", name+" must be a duration such as 10m or 30s")
+		return 0, &response, http.StatusBadRequest
+	}
+	if duration < minValue {
+		response := errorResponse("invalid_duration", name+" is below the minimum duration")
+		return 0, &response, http.StatusBadRequest
+	}
+	if duration > maxValue {
+		return maxValue, nil, 0
+	}
+	return duration, nil, 0
+}
+
 func usageReportResponse(report store.UsageReport, pricing budget.PricingTable) usageReportAPIResponse {
 	rows := usageBucketResponses(report.By, report.Rows, pricing)
 	response := usageReportAPIResponse{
@@ -763,6 +848,7 @@ type countsAPIResponse struct {
 type runningAPIResponse struct {
 	IssueID          string                   `json:"issue_id"`
 	IssueIdentifier  string                   `json:"issue_identifier"`
+	ProjectID        string                   `json:"project_id,omitempty"`
 	IssueURL         *string                  `json:"issue_url"`
 	IssueTitle       *string                  `json:"issue_title"`
 	IssueDescription *string                  `json:"issue_description"`
@@ -787,6 +873,7 @@ type runningAPIResponse struct {
 type retryAPIResponse struct {
 	IssueID          string  `json:"issue_id"`
 	IssueIdentifier  string  `json:"issue_identifier"`
+	ProjectID        string  `json:"project_id,omitempty"`
 	IssueURL         *string `json:"issue_url"`
 	IssueTitle       *string `json:"issue_title"`
 	IssueDescription *string `json:"issue_description"`
@@ -801,6 +888,7 @@ type retryAPIResponse struct {
 type blockedAPIResponse struct {
 	IssueID          string  `json:"issue_id"`
 	IssueIdentifier  string  `json:"issue_identifier"`
+	ProjectID        string  `json:"project_id,omitempty"`
 	IssueURL         *string `json:"issue_url"`
 	IssueTitle       *string `json:"issue_title"`
 	IssueDescription *string `json:"issue_description"`
@@ -854,6 +942,7 @@ type lifetimeTotalsResponse struct {
 type recentSessionAPIResponse struct {
 	IssueID        string  `json:"issue_id"`
 	Identifier     string  `json:"identifier"`
+	ProjectID      string  `json:"project_id,omitempty"`
 	IssueURL       *string `json:"issue_url"`
 	StartedAt      *string `json:"started_at"`
 	CompletedAt    *string `json:"completed_at"`

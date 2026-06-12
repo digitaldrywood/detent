@@ -102,12 +102,7 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 		return projects
 	}
 
-	seen := map[string]struct{}{}
-	for _, project := range projects {
-		if id := strings.TrimSpace(project.ID); id != "" {
-			seen[id] = struct{}{}
-		}
-	}
+	configured := map[string]templates.ProjectSmallMultiple{}
 	for _, trackedProject := range s.registry.List() {
 		if trackedProject == nil {
 			continue
@@ -116,14 +111,34 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 		if id == "" {
 			continue
 		}
+		configured[id] = templates.ProjectSmallMultiple{
+			ID:     id,
+			Name:   id,
+			URL:    trackerProjectURL(trackedProject),
+			Paused: trackedProject.Paused(),
+		}
+	}
+
+	seen := map[string]struct{}{}
+	for _, project := range projects {
+		if id := strings.TrimSpace(project.ID); id != "" {
+			seen[id] = struct{}{}
+		}
+	}
+	for i := range projects {
+		id := strings.TrimSpace(projects[i].ID)
+		if configuredProject, ok := configured[id]; ok {
+			projects[i].Paused = configuredProject.Paused
+			if strings.TrimSpace(projects[i].URL) == "" {
+				projects[i].URL = configuredProject.URL
+			}
+		}
+	}
+	for id, configuredProject := range configured {
 		if _, ok := seen[id]; ok {
 			continue
 		}
-		projects = append(projects, templates.ProjectSmallMultiple{
-			ID:   id,
-			Name: id,
-			URL:  trackerProjectURL(trackedProject),
-		})
+		projects = append(projects, configuredProject)
 		seen[id] = struct{}{}
 	}
 	return projects
@@ -224,10 +239,13 @@ func (r *projectSmallMultipleRecorder) record(now time.Time, projects []template
 		out[i].ThroughputTokensPerSecond = throughput
 		sample := templates.ProjectSmallMultipleSample{
 			At:                        now,
+			Running:                   out[i].Running,
 			TotalTokens:               out[i].TotalTokens,
 			ThroughputTokensPerSecond: throughput,
 			SpendUSD:                  out[i].CurrentSpendUSD,
 			QueueDepth:                out[i].QueueCount,
+			Blocked:                   out[i].Blocked,
+			Completed:                 out[i].Completed,
 		}
 		if len(samples) > 0 && !now.After(samples[len(samples)-1].At) {
 			samples[len(samples)-1] = sample

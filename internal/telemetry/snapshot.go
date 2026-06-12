@@ -61,6 +61,7 @@ type Counts struct {
 type Issue struct {
 	ID             string       `json:"issue_id"`
 	Identifier     string       `json:"identifier,omitempty"`
+	ProjectID      string       `json:"project_id,omitempty"`
 	URL            string       `json:"url,omitempty"`
 	Title          string       `json:"title,omitempty"`
 	Description    string       `json:"description,omitempty"`

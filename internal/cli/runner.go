@@ -395,6 +395,7 @@ func lifetimeTotals(ctx context.Context, source lifetimeTotalsSource) telemetry.
 }
 
 func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
+	next = stampSnapshotProjectID(next)
 	current.Project = mergeProject(current.Project, next.Project)
 	current.Instance = mergeInstance(current.Instance, next.Instance)
 	if project := projectSnapshot(next); project.Project != (telemetry.Project{}) {
@@ -426,6 +427,37 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 		current.RateLimits = next.RateLimits
 	}
 	return current
+}
+
+func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
+	projectID := strings.TrimSpace(snapshot.Project.ID)
+	if projectID == "" {
+		return snapshot
+	}
+
+	for i := range snapshot.Pipeline {
+		snapshot.Pipeline[i] = stampIssueProjectID(snapshot.Pipeline[i], projectID)
+	}
+	for i := range snapshot.Running {
+		snapshot.Running[i].Issue = stampIssueProjectID(snapshot.Running[i].Issue, projectID)
+	}
+	for i := range snapshot.Queue {
+		snapshot.Queue[i].Issue = stampIssueProjectID(snapshot.Queue[i].Issue, projectID)
+	}
+	for i := range snapshot.Blocked {
+		snapshot.Blocked[i].Issue = stampIssueProjectID(snapshot.Blocked[i].Issue, projectID)
+	}
+	for i := range snapshot.Completed {
+		snapshot.Completed[i].Issue = stampIssueProjectID(snapshot.Completed[i].Issue, projectID)
+	}
+	return snapshot
+}
+
+func stampIssueProjectID(issue telemetry.Issue, projectID string) telemetry.Issue {
+	if strings.TrimSpace(issue.ProjectID) == "" {
+		issue.ProjectID = projectID
+	}
+	return issue
 }
 
 func projectSnapshot(snapshot telemetry.Snapshot) telemetry.ProjectSnapshot {

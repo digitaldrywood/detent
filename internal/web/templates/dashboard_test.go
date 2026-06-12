@@ -397,7 +397,7 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 		`aria-label="Dashboard health"`,
 		`aria-label="Agent activity timeline"`,
 		`aria-label="Pull request pipeline"`,
-		`aria-label="Project small multiples"`,
+		`aria-label="Fleet grid"`,
 		`aria-label="Board health"`,
 		`aria-label="Cycle time"`,
 	} {
@@ -412,7 +412,7 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 		`aria-label="Detent dashboard"`,
 		`href="/"`,
 		">Detent</span>",
-		`<h1 class="sr-only">Dashboard</h1>`,
+		`<h1 class="sr-only">Fleet</h1>`,
 		`href="/reports"`,
 		`href="/settings"`,
 	} {
@@ -432,17 +432,17 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 	}
 
 	healthIndex := strings.Index(html, `aria-label="Dashboard health"`)
-	metricsIndex := strings.Index(html, "Active issue sessions")
 	activityIndex := strings.Index(html, `aria-label="Agent activity timeline"`)
+	metricsIndex := strings.Index(html, `aria-label="Dashboard statistics"`)
 	pipelineIndex := strings.Index(html, `aria-label="Pull request pipeline"`)
-	projectsIndex := strings.Index(html, `aria-label="Project small multiples"`)
+	projectsIndex := strings.Index(html, `aria-label="Fleet grid"`)
 	boardIndex := strings.Index(html, `aria-label="Board health"`)
 	cycleIndex := strings.Index(html, `aria-label="Cycle time"`)
 	if healthIndex < 0 || metricsIndex < 0 || activityIndex < 0 || pipelineIndex < 0 || projectsIndex < 0 || boardIndex < 0 || cycleIndex < 0 {
 		t.Fatalf("dashboard section indexes missing: health=%d metrics=%d activity=%d pipeline=%d projects=%d board=%d cycle=%d\n%s", healthIndex, metricsIndex, activityIndex, pipelineIndex, projectsIndex, boardIndex, cycleIndex, html)
 	}
-	if healthIndex >= metricsIndex || metricsIndex >= activityIndex || activityIndex >= pipelineIndex || pipelineIndex >= projectsIndex || projectsIndex >= boardIndex || boardIndex >= cycleIndex {
-		t.Fatalf("dashboard sections are not ordered as health, metrics, activity, pipeline, analytics: health=%d metrics=%d activity=%d pipeline=%d projects=%d board=%d cycle=%d\n%s", healthIndex, metricsIndex, activityIndex, pipelineIndex, projectsIndex, boardIndex, cycleIndex, html)
+	if healthIndex >= activityIndex || activityIndex >= metricsIndex || metricsIndex >= projectsIndex || projectsIndex >= pipelineIndex || pipelineIndex >= boardIndex || boardIndex >= cycleIndex {
+		t.Fatalf("dashboard sections are not ordered as health, activity, stats, projects, pipeline, analytics: health=%d activity=%d metrics=%d projects=%d pipeline=%d board=%d cycle=%d\n%s", healthIndex, activityIndex, metricsIndex, projectsIndex, pipelineIndex, boardIndex, cycleIndex, html)
 	}
 }
 
@@ -677,7 +677,7 @@ func TestDashboardRendersThroughputAndRuntimeTrend(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Throughput",
+		"Token throughput",
 		"Rolling tokens/sec",
 		"9.5 tps",
 		"Last 1m token throughput",
@@ -724,9 +724,9 @@ func TestDashboardRendersProjectSmallMultiples(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Project small multiples",
+		"Fleet grid",
 		"Detent project",
-		"Live throughput, spend, and queue depth across configured projects.",
+		"Live running, queue, blocked, and token signals across configured projects.",
 		"1 running / 2 queued / 0 blocked",
 		"4.5 tps",
 		"$6.75",
@@ -1121,8 +1121,9 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 	for _, want := range []string{
 		"overflow-x-hidden",
 		"px-3 py-3",
+		"dashboard-shell grid min-h-screen",
+		"dashboard-sidebar sticky top-0",
 		"dashboard-topbar",
-		"dashboard-nav flex min-w-0 items-center gap-4",
 		"min-h-8",
 		"min-h-10",
 		"h-7 w-7",
