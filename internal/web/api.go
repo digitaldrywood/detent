@@ -32,7 +32,7 @@ func (s *Server) apiState(c echo.Context) error {
 	}
 	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
 
-	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now)))
+	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now), s.instanceName()))
 }
 
 func (s *Server) apiProject(c echo.Context) error {
@@ -73,7 +73,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 		URL:         project.URL,
 	})
 
-	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now)))
+	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), s.instanceName()))
 }
 
 func (s *Server) apiTimeSeries(c echo.Context) error {
@@ -179,11 +179,12 @@ func (s *Server) handleHTTPError(err error, c echo.Context) {
 	}
 }
 
-func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time) stateAPIResponse {
+func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceName string) stateAPIResponse {
 	return stateAPIResponse{
 		GeneratedAt:    generatedAt,
 		Status:         runtimeStatus(snapshot),
 		Shutdown:       shutdownResponse(snapshot.Shutdown),
+		Instance:       instanceResponse(snapshot.Instance, instanceName),
 		Counts:         countsResponse(snapshot),
 		Running:        runningEntries(snapshot.Running),
 		Retrying:       retryEntries(snapshot.Queue),
@@ -218,6 +219,16 @@ func shutdownResponse(shutdown telemetry.Shutdown) shutdownAPIResponse {
 		RequestedAt:       timestampStringPtr(shutdown.RequestedAt),
 		CompletedAt:       timestampStringPtr(shutdown.CompletedAt),
 		Result:            optionalString(strings.TrimSpace(shutdown.Result)),
+	}
+}
+
+func instanceResponse(instance telemetry.Instance, displayName string) instanceAPIResponse {
+	return instanceAPIResponse{
+		DisplayName:             strings.TrimSpace(displayName),
+		Name:                    strings.TrimSpace(instance.Name),
+		GitHubLogin:             strings.TrimSpace(instance.GitHubLogin),
+		AuthorizationScope:      strings.TrimSpace(instance.AuthorizationScope),
+		AuthorizationConfigured: instance.AuthorizationConfigured,
 	}
 }
 
@@ -866,6 +877,7 @@ type stateAPIResponse struct {
 	GeneratedAt    time.Time                  `json:"generated_at"`
 	Status         string                     `json:"status"`
 	Shutdown       shutdownAPIResponse        `json:"shutdown"`
+	Instance       instanceAPIResponse        `json:"instance"`
 	Counts         countsAPIResponse          `json:"counts"`
 	Running        []runningAPIResponse       `json:"running"`
 	Retrying       []retryAPIResponse         `json:"retrying"`
@@ -887,6 +899,14 @@ type shutdownAPIResponse struct {
 	RequestedAt       *string `json:"requested_at,omitempty"`
 	CompletedAt       *string `json:"completed_at,omitempty"`
 	Result            *string `json:"result,omitempty"`
+}
+
+type instanceAPIResponse struct {
+	DisplayName             string `json:"display_name,omitempty"`
+	Name                    string `json:"name,omitempty"`
+	GitHubLogin             string `json:"github_login,omitempty"`
+	AuthorizationScope      string `json:"authorization_scope,omitempty"`
+	AuthorizationConfigured bool   `json:"authorization_configured"`
 }
 
 type boardAPIResponse struct {

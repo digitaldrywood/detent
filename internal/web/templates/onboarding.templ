@@ -1,14 +1,16 @@
 package templates
 
 type OnboardingData struct {
-	Title        string
-	WorkflowPath string
-	Step         string
-	Form         OnboardingForm
-	Errors       []string
-	Result       OnboardingResult
-	Assets       AssetPaths
-	Polling      PollingData
+	Title           string
+	ApplicationName string
+	InstanceName    string
+	WorkflowPath    string
+	Step            string
+	Form            OnboardingForm
+	Errors          []string
+	Result          OnboardingResult
+	Assets          AssetPaths
+	Polling         PollingData
 }
 
 type PollingData struct {
@@ -76,6 +78,7 @@ templ OnboardingPage(data OnboardingData) {
 		<head>
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
+			<meta name="application-name" content={ applicationName(data.ApplicationName) }/>
 			<title>{ data.Title }</title>
 			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
 			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
@@ -85,7 +88,7 @@ templ OnboardingPage(data OnboardingData) {
 			<main class="dashboard-shell mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-4 px-3 py-3 sm:px-6 lg:px-8">
 				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
 					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
-						@dashboardTopbarBrand()
+						@dashboardTopbarBrand(data.InstanceName)
 						@dashboardPageHeading("Onboarding")
 						@dashboardNav("")
 					</div>

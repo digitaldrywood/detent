@@ -3,12 +3,14 @@ package templates
 import "strings"
 
 type SettingsData struct {
-	Title    string
-	Version  string
-	Global   SettingsGlobal
-	Projects []SettingsProject
-	Runtime  SettingsRuntime
-	Assets   AssetPaths
+	Title           string
+	ApplicationName string
+	InstanceName    string
+	Version         string
+	Global          SettingsGlobal
+	Projects        []SettingsProject
+	Runtime         SettingsRuntime
+	Assets          AssetPaths
 }
 
 type SettingsGlobal struct {

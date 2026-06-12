@@ -7,6 +7,7 @@ templ Reports(data ReportsData) {
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<meta name="color-scheme" content="light dark"/>
+			<meta name="application-name" content={ applicationName(data.ApplicationName) }/>
 			<title>{ reportsPageTitle(data) }</title>
 			<script>
 				document.documentElement.classList.toggle("dark", Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches))
@@ -20,7 +21,7 @@ templ Reports(data ReportsData) {
 			<main class="dashboard-shell mx-auto grid min-h-screen w-full max-w-7xl content-start gap-3 px-3 py-3 sm:gap-4 sm:px-6 lg:px-8">
 				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
 					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
-						@dashboardTopbarBrand()
+						@dashboardTopbarBrand(data.InstanceName)
 						@dashboardPageHeading("Reports")
 						@dashboardNav("reports")
 						<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">

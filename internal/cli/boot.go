@@ -208,7 +208,8 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err := manager.Start(runCtx); err != nil {
 		return err
 	}
-	globalWatcherDone := startGlobalConfigWatcher(runCtx, cfg.Global, manager, logger, runtimeGitHubToken)
+	globalConfigState := newGlobalConfigState(cfg.Global)
+	globalWatcherDone := startGlobalConfigWatcher(runCtx, cfg.Global, manager, logger, runtimeGitHubToken, globalConfigState.set)
 	defer func() {
 		stop()
 		waitGlobalConfigWatcher(globalWatcherDone)
@@ -217,16 +218,17 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	snapshotHub := hub.New[telemetry.Snapshot]()
 	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, runtimeStore, displayURL, defaultSnapshotInterval, time.Now)
 	server, err := web.NewServer(web.Config{
-		Mode:           web.ModeRunning,
-		WorkflowPath:   firstWorkflowPath(cfg),
-		Version:        cfg.Version,
-		Build:          cfg.Build,
-		DashboardURL:   displayURL,
-		GlobalConfig:   cfg.Global,
-		ConfigPathRule: cfg.ConfigPathRule,
-		RuntimeDBPath:  runtimeStorePath(cfg),
-		RuntimeLogPath: runtimeLogPath(cfg),
-		ServerAddress:  listener.Addr().String(),
+		Mode:               web.ModeRunning,
+		WorkflowPath:       firstWorkflowPath(cfg),
+		Version:            cfg.Version,
+		Build:              cfg.Build,
+		DashboardURL:       displayURL,
+		GlobalConfig:       cfg.Global,
+		GlobalConfigSource: globalConfigState.get,
+		ConfigPathRule:     cfg.ConfigPathRule,
+		RuntimeDBPath:      runtimeStorePath(cfg),
+		RuntimeLogPath:     runtimeLogPath(cfg),
+		ServerAddress:      listener.Addr().String(),
 	}, web.Dependencies{
 		Hub:       snapshotHub,
 		Store:     runtimeStore,
@@ -305,6 +307,7 @@ func startOnboarding(ctx context.Context, cfg BootConfig) error {
 		Version:      cfg.Version,
 		Build:        cfg.Build,
 		DashboardURL: displayURL,
+		GlobalConfig: cfg.Global,
 	}, web.Dependencies{})
 	if err != nil {
 		return err

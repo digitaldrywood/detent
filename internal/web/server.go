@@ -64,6 +64,8 @@ type Config struct {
 	DashboardURL          string
 	Pricing               budget.PricingTable
 	GlobalConfig          globalconfig.Config
+	GlobalConfigSource    func() globalconfig.Config
+	Hostname              func() (string, error)
 	ConfigPathRule        globalconfig.PathRule
 	RuntimeDBPath         string
 	RuntimeLogPath        string
@@ -71,28 +73,30 @@ type Config struct {
 }
 
 type Server struct {
-	echo         *echo.Echo
-	hub          *hub.Hub[telemetry.Snapshot]
-	store        store.Store
-	registry     *project.Registry
-	connector    connector.Connector
-	refresher    Refresher
-	logger       *slog.Logger
-	mode         Mode
-	tickEvery    time.Duration
-	workflow     string
-	version      string
-	build        buildinfo.Info
-	dashboardURL string
-	pricing      budget.PricingTable
-	globalConfig globalconfig.Config
-	configRule   globalconfig.PathRule
-	dbPath       string
-	logPath      string
-	serverAddr   string
-	assets       staticAssets
-	projects     *projectSmallMultipleRecorder
-	snapshots    *snapshotEnrichmentCache
+	echo               *echo.Echo
+	hub                *hub.Hub[telemetry.Snapshot]
+	store              store.Store
+	registry           *project.Registry
+	connector          connector.Connector
+	refresher          Refresher
+	logger             *slog.Logger
+	mode               Mode
+	tickEvery          time.Duration
+	workflow           string
+	version            string
+	build              buildinfo.Info
+	dashboardURL       string
+	pricing            budget.PricingTable
+	globalConfig       globalconfig.Config
+	globalConfigSource func() globalconfig.Config
+	hostname           func() (string, error)
+	configRule         globalconfig.PathRule
+	dbPath             string
+	logPath            string
+	serverAddr         string
+	assets             staticAssets
+	projects           *projectSmallMultipleRecorder
+	snapshots          *snapshotEnrichmentCache
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -119,28 +123,30 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	e.Server.IdleTimeout = cfg.httpIdleTimeout()
 
 	server := &Server{
-		echo:         e,
-		hub:          deps.Hub,
-		store:        deps.Store,
-		registry:     deps.Registry,
-		connector:    deps.Connector,
-		refresher:    deps.Refresher,
-		logger:       cfg.logger(),
-		mode:         mode,
-		tickEvery:    cfg.sseTickInterval(),
-		workflow:     cfg.workflowPath(),
-		version:      strings.TrimSpace(cfg.Version),
-		build:        cfg.Build,
-		dashboardURL: cfg.dashboardURL(),
-		pricing:      cfg.pricing(),
-		globalConfig: cfg.GlobalConfig,
-		configRule:   cfg.ConfigPathRule,
-		dbPath:       strings.TrimSpace(cfg.RuntimeDBPath),
-		logPath:      strings.TrimSpace(cfg.RuntimeLogPath),
-		serverAddr:   strings.TrimSpace(cfg.ServerAddress),
-		assets:       newStaticAssets(cfg.staticDir()),
-		projects:     newProjectSmallMultipleRecorder(),
-		snapshots:    newSnapshotEnrichmentCache(),
+		echo:               e,
+		hub:                deps.Hub,
+		store:              deps.Store,
+		registry:           deps.Registry,
+		connector:          deps.Connector,
+		refresher:          deps.Refresher,
+		logger:             cfg.logger(),
+		mode:               mode,
+		tickEvery:          cfg.sseTickInterval(),
+		workflow:           cfg.workflowPath(),
+		version:            strings.TrimSpace(cfg.Version),
+		build:              cfg.Build,
+		dashboardURL:       cfg.dashboardURL(),
+		pricing:            cfg.pricing(),
+		globalConfig:       cfg.GlobalConfig,
+		globalConfigSource: cfg.globalConfigSource(),
+		hostname:           cfg.hostname(),
+		configRule:         cfg.ConfigPathRule,
+		dbPath:             strings.TrimSpace(cfg.RuntimeDBPath),
+		logPath:            strings.TrimSpace(cfg.RuntimeLogPath),
+		serverAddr:         strings.TrimSpace(cfg.ServerAddress),
+		assets:             newStaticAssets(cfg.staticDir()),
+		projects:           newProjectSmallMultipleRecorder(),
+		snapshots:          newSnapshotEnrichmentCache(),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes()
@@ -228,16 +234,19 @@ func projectRouteParam(c echo.Context) string {
 }
 
 func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
+	instanceName := s.instanceName()
 	return templates.DashboardData{
-		Title:         "Detent",
-		Version:       s.version,
-		Build:         s.build,
-		ConnectorName: s.connector.Name(),
-		DashboardURL:  s.dashboardURL,
-		Snapshot:      snapshot,
-		Projects:      s.projectSmallMultiples(ctx, snapshot),
-		Assets:        s.assets.templatePaths(),
-		ActiveNav:     "fleet",
+		Title:           instancePageTitle(instanceName, "Detent"),
+		ApplicationName: applicationName(instanceName),
+		InstanceName:    instanceName,
+		Version:         s.version,
+		Build:           s.build,
+		ConnectorName:   s.connector.Name(),
+		DashboardURL:    s.dashboardURL,
+		Snapshot:        snapshot,
+		Projects:        s.projectSmallMultiples(ctx, snapshot),
+		Assets:          s.assets.templatePaths(),
+		ActiveNav:       "fleet",
 	}
 }
 
@@ -257,19 +266,22 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 	if name == "" {
 		name = strings.TrimSpace(project.ID)
 	}
+	instanceName := s.instanceName()
 	return templates.DashboardData{
-		Title:         name + " - Detent",
-		Version:       s.version,
-		Build:         s.build,
-		ConnectorName: s.connector.Name(),
-		DashboardURL:  s.dashboardURL,
-		Snapshot:      scopedSnapshot,
-		Projects:      projects,
-		Assets:        s.assets.templatePaths(),
-		ActiveNav:     "project",
-		ProjectID:     strings.TrimSpace(project.ID),
-		ProjectName:   name,
-		ProjectPaused: project.Paused,
+		Title:           instancePageTitle(instanceName, name+" - Detent"),
+		ApplicationName: applicationName(instanceName),
+		InstanceName:    instanceName,
+		Version:         s.version,
+		Build:           s.build,
+		ConnectorName:   s.connector.Name(),
+		DashboardURL:    s.dashboardURL,
+		Snapshot:        scopedSnapshot,
+		Projects:        projects,
+		Assets:          s.assets.templatePaths(),
+		ActiveNav:       "project",
+		ProjectID:       strings.TrimSpace(project.ID),
+		ProjectName:     name,
+		ProjectPaused:   project.Paused,
 	}, true
 }
 

@@ -65,16 +65,19 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time) 
 		return templates.ReportsData{}, err
 	}
 
+	instanceName := s.instanceName()
 	return templates.ReportsData{
-		Title:         "Detent reports",
-		ConnectorName: s.connector.Name(),
-		GeneratedAt:   time.Now().UTC().Truncate(time.Second),
-		Day:           day,
-		Project:       project,
-		Issue:         issue,
-		PR:            pr,
-		Model:         model,
-		Assets:        s.assets.templatePaths(),
+		Title:           instancePageTitle(instanceName, "Detent reports"),
+		ApplicationName: applicationName(instanceName),
+		InstanceName:    instanceName,
+		ConnectorName:   s.connector.Name(),
+		GeneratedAt:     time.Now().UTC().Truncate(time.Second),
+		Day:             day,
+		Project:         project,
+		Issue:           issue,
+		PR:              pr,
+		Model:           model,
+		Assets:          s.assets.templatePaths(),
 	}, nil
 }
 

@@ -184,6 +184,181 @@ func TestServerRoutes(t *testing.T) {
 	}
 }
 
+func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC),
+		Instance: telemetry.Instance{
+			Name:        "worker-identity",
+			GitHubLogin: "detent-bot",
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	cfg := web.Config{
+		GlobalConfig: globalconfig.Config{InstanceName: "buildbox"},
+		Hostname: func() (string, error) {
+			return "fallback.example.com", nil
+		},
+	}
+	server, err := web.NewServer(cfg, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	onboardingServer, err := web.NewServer(web.Config{
+		Mode:         web.ModeOnboarding,
+		GlobalConfig: cfg.GlobalConfig,
+		Hostname:     cfg.Hostname,
+	}, web.Dependencies{})
+	if err != nil {
+		t.Fatalf("NewServer() onboarding error = %v", err)
+	}
+
+	tests := []struct {
+		name    string
+		handler http.Handler
+		path    string
+		title   string
+	}{
+		{name: "dashboard", handler: server.Handler(), path: "/", title: "buildbox · Detent"},
+		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports"},
+		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings"},
+		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := requestHTML(t, tt.handler, http.MethodGet, tt.path, http.StatusOK)
+			for _, want := range []string{
+				"<title>" + tt.title + "</title>",
+				`name="application-name" content="buildbox · Detent"`,
+				`aria-label="Instance name"`,
+				">buildbox</span>",
+			} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("%s body missing %q:\n%s", tt.path, want, body)
+				}
+			}
+		})
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	instance := state["instance"].(map[string]any)
+	if instance["display_name"] != "buildbox" {
+		t.Fatalf("instance.display_name = %#v, want buildbox", instance["display_name"])
+	}
+	if instance["name"] != "worker-identity" {
+		t.Fatalf("instance.name = %#v, want worker-identity", instance["name"])
+	}
+}
+
+func TestServerUsesHostnameFallbackForInstanceName(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	server, err := web.NewServer(web.Config{
+		Hostname: func() (string, error) {
+			return "runner-01.example.com", nil
+		},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	if !strings.Contains(body, "<title>runner-01 · Detent</title>") {
+		t.Fatalf("body missing hostname title:\n%s", body)
+	}
+	if !strings.Contains(body, ">runner-01</span>") {
+		t.Fatalf("body missing hostname badge:\n%s", body)
+	}
+}
+
+func TestServerReadsInstanceNameFromCurrentGlobalConfig(t *testing.T) {
+	t.Parallel()
+
+	current := globalconfig.Config{InstanceName: "first"}
+	server, err := web.NewServer(web.Config{
+		GlobalConfigSource: func() globalconfig.Config {
+			return current
+		},
+		Hostname: func() (string, error) {
+			return "", nil
+		},
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	if !strings.Contains(body, "<title>first · Detent</title>") {
+		t.Fatalf("body missing initial instance title:\n%s", body)
+	}
+
+	current = globalconfig.Config{InstanceName: "second"}
+	body = requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	if !strings.Contains(body, "<title>second · Detent</title>") {
+		t.Fatalf("body missing reloaded instance title:\n%s", body)
+	}
+}
+
+func TestServerOmitsInstanceBadgeWhenNameEmpty(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{
+		Hostname: func() (string, error) {
+			return "", nil
+		},
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	if !strings.Contains(body, "<title>Detent</title>") {
+		t.Fatalf("body missing default title:\n%s", body)
+	}
+	if strings.Contains(body, `aria-label="Instance name"`) {
+		t.Fatalf("body rendered empty instance badge:\n%s", body)
+	}
+}
+
+func TestServerEscapesInstanceName(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{
+		GlobalConfig: globalconfig.Config{InstanceName: "<b>prod</b>"},
+		Hostname: func() (string, error) {
+			return "", nil
+		},
+	}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+	if strings.Contains(body, "<title><b>prod</b> · Detent</title>") {
+		t.Fatalf("body rendered raw instance name in title:\n%s", body)
+	}
+	if strings.Contains(body, "><b>prod</b></span>") {
+		t.Fatalf("body rendered raw instance name in badge:\n%s", body)
+	}
+	for _, want := range []string{
+		"<title>&lt;b&gt;prod&lt;/b&gt; · Detent</title>",
+		`name="application-name" content="&lt;b&gt;prod&lt;/b&gt; · Detent"`,
+		">&lt;b&gt;prod&lt;/b&gt;</span>",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("body missing escaped instance name %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 	t.Parallel()
 
@@ -2651,6 +2826,19 @@ func requestJSON(t *testing.T, server *web.Server, method string, path string, w
 		t.Fatalf("Unmarshal(%s %s) error = %v; body = %s", method, path, err, rec.Body.String())
 	}
 	return payload
+}
+
+func requestHTML(t *testing.T, handler http.Handler, method string, path string, wantStatus int) string {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, nil)
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != wantStatus {
+		t.Fatalf("%s %s status = %d, want %d; body = %s", method, path, rec.Code, wantStatus, rec.Body.String())
+	}
+	return rec.Body.String()
 }
 
 func nestedString(t *testing.T, payload map[string]any, keys ...string) string {

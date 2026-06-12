@@ -13,6 +13,7 @@ templ Dashboard(data DashboardData) {
 			<meta charset="utf-8"/>
 			<meta name="viewport" content="width=device-width, initial-scale=1"/>
 			<meta name="color-scheme" content="light dark"/>
+			<meta name="application-name" content={ applicationName(data.ApplicationName) }/>
 			<title>{ pageTitle(data) }</title>
 			<script>
 				document.documentElement.classList.toggle("dark", Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches))
@@ -96,7 +97,7 @@ templ dashboardSidebar(data DashboardData) {
 	<aside class="dashboard-sidebar sticky top-0 flex h-screen min-w-0 flex-col border-r border-border bg-card px-3 py-3" aria-label="Dashboard navigation">
 		<div class="flex min-h-12 items-center gap-2">
 			<div class="min-w-0 flex-1">
-				@dashboardTopbarBrand()
+				@dashboardTopbarBrand(data.InstanceName)
 			</div>
 			<button type="button" class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-dashboard-sidebar-toggle title="Collapse sidebar" aria-label="Collapse sidebar">
 				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">

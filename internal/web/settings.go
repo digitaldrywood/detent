@@ -15,11 +15,15 @@ func (s *Server) settings(c echo.Context) error {
 }
 
 func (s *Server) settingsData() templates.SettingsData {
+	instanceName := s.instanceName()
+	globalConfig := s.currentGlobalConfig()
 	return templates.SettingsData{
-		Title:   "Detent settings",
-		Version: s.version,
+		Title:           instancePageTitle(instanceName, "Detent settings"),
+		ApplicationName: applicationName(instanceName),
+		InstanceName:    instanceName,
+		Version:         s.version,
 		Global: templates.SettingsGlobal{
-			ConfigPath: s.globalConfig.Path,
+			ConfigPath: globalConfig.Path,
 			PathRule:   string(s.configRule),
 		},
 		Projects: settingsProjects(s.registry),
