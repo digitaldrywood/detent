@@ -3,6 +3,7 @@ package workspace
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log/slog"
 	"os"
@@ -109,6 +110,11 @@ func TestLocalGitInfoForIssueNamespacesKeysByProjectID(t *testing.T) {
 			name:    "legacy issue identifier without project id",
 			issue:   Issue{Identifier: "digitaldrywood/detent#42"},
 			wantKey: "digitaldrywood_detent_42",
+		},
+		{
+			name:    "reserved detent metadata key",
+			issue:   Issue{Identifier: ".detent"},
+			wantKey: "issue",
 		},
 		{
 			name:          "alpha project",
@@ -497,13 +503,14 @@ func TestLocalGitHookFailureSurfaces(t *testing.T) {
 
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
+	hookCommand := "printf 'out\\n'; printf 'err\\n' >&2; exit 17"
 
 	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
 		Root:       root,
 		SourceRoot: source,
 		AutoBranch: true,
 		Hooks: Hooks{
-			AfterCreate: "echo nope && exit 17",
+			AfterCreate: hookCommand,
 			Timeout:     time.Second,
 		},
 	})
@@ -525,11 +532,83 @@ func TestLocalGitHookFailureSurfaces(t *testing.T) {
 	if hookErr.ExitCode != 17 {
 		t.Fatalf("HookError.ExitCode = %d, want 17", hookErr.ExitCode)
 	}
-	if !strings.Contains(hookErr.Output, "nope") {
-		t.Fatalf("HookError.Output = %q, want nope", hookErr.Output)
+	for _, want := range []string{"out", "err"} {
+		if !strings.Contains(hookErr.Output, want) {
+			t.Fatalf("HookError.Output = %q, want %q", hookErr.Output, want)
+		}
+	}
+	if hookErr.Command != hookCommand {
+		t.Fatalf("HookError.Command = %q, want hook command", hookErr.Command)
+	}
+	if filepath.Base(hookErr.Dir) != "DD-FAIL" {
+		t.Fatalf("HookError.Dir = %q, want DD-FAIL workspace", hookErr.Dir)
+	}
+	if hookErr.LogPath == "" {
+		t.Fatal("HookError.LogPath is empty")
+	}
+	wantLogDir := filepath.Join(backend.(*LocalGit).root, ".detent", "hook-logs", "DD-FAIL")
+	if !strings.HasPrefix(hookErr.LogPath, wantLogDir) {
+		t.Fatalf("HookError.LogPath = %q, want under root hook logs", hookErr.LogPath)
+	}
+	errorDetail := err.Error()
+	for _, want := range []string{
+		fmt.Sprintf("command %q", hookCommand),
+		"working directory",
+		"exit status 17",
+		"hook log",
+		"output (last",
+		"out",
+		"err",
+	} {
+		if !strings.Contains(errorDetail, want) {
+			t.Fatalf("Create() error = %q, want %q", errorDetail, want)
+		}
+	}
+	logContent := readFile(t, hookErr.LogPath)
+	for _, want := range []string{
+		"hook: after_create\n",
+		"command: " + hookCommand + "\n",
+		"exit_status: 17\n",
+		"output:\nout\nerr\n",
+	} {
+		if !strings.Contains(logContent, want) {
+			t.Fatalf("hook log = %q, want %q", logContent, want)
+		}
 	}
 	if _, statErr := os.Stat(filepath.Join(root, "DD-FAIL")); !errors.Is(statErr, os.ErrNotExist) {
 		t.Fatalf("failed after_create workspace exists, stat error = %v", statErr)
+	}
+}
+
+func TestHookErrorErrorIncludesBoundedOutputTail(t *testing.T) {
+	t.Parallel()
+
+	output := "prefix-" + strings.Repeat("x", hookOutputTailBytes) + "-tail"
+	err := (&HookError{
+		Hook:     "after_create",
+		Command:  "bootstrap",
+		Dir:      "/workspaces/DD-TAIL",
+		ExitCode: 1,
+		LogPath:  "/workspaces/.detent/hook-logs/DD-TAIL/hook.log",
+		Output:   output,
+		Err:      errors.New("exit status 1"),
+	}).Error()
+
+	for _, want := range []string{
+		"command \"bootstrap\"",
+		"working directory \"/workspaces/DD-TAIL\"",
+		"exit status 1",
+		"hook log \"/workspaces/.detent/hook-logs/DD-TAIL/hook.log\"",
+		"output (last 16 KiB)",
+		"truncated to last 16 KiB",
+		"-tail",
+	} {
+		if !strings.Contains(err, want) {
+			t.Fatalf("HookError.Error() = %q, want %q", err, want)
+		}
+	}
+	if strings.Contains(err, "prefix-") {
+		t.Fatalf("HookError.Error() includes truncated prefix: %q", err)
 	}
 }
 
