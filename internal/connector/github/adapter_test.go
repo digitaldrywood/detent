@@ -937,7 +937,7 @@ func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
 	}
 }
 
-func TestConnectorFetchIssueStatesByIdentifiersResolvesGitHubStateAndProjectStatus(t *testing.T) {
+func TestConnectorFetchIssueStatesByIdentifiersResolvesDependencyReadinessSignals(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
@@ -957,16 +957,29 @@ func TestConnectorFetchIssueStatesByIdentifiersResolvesGitHubStateAndProjectStat
 		{
 			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_done","project":{"id":"PVT_1"},"statusValue":{"name":"Done"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
 		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/253",
+			body:   `{"node_id":"I_merged_pr","number":253,"title":"Merged PR child","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/253","assignees":[],"labels":[]}`,
+		},
+		{
+			body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false},"nodes":[{"id":"PVTI_merged_pr","project":{"id":"PVT_1"},"statusValue":{"name":"In Progress"},"priorityValue":null,"fieldValues":{"nodes":[]}}]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[{"number":254,"html_url":"https://github.com/digitaldrywood/detent/pull/254","state":"closed","merged_at":"2026-06-12T16:00:00Z","head":{"ref":"detent/digitaldrywood_detent_253-autounblock","sha":"abc123"}}]`,
+		},
 	})
 
 	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
 
-	got, err := c.FetchIssueStatesByIdentifiers(context.Background(), []string{"digitaldrywood/detent#251", "digitaldrywood/detent#252"})
+	got, err := c.FetchIssueStatesByIdentifiers(context.Background(), []string{"digitaldrywood/detent#251", "digitaldrywood/detent#252", "digitaldrywood/detent#253"})
 	if err != nil {
 		t.Fatalf("FetchIssueStatesByIdentifiers() error = %v", err)
 	}
-	if ids := githubIssueIDs(got); !reflect.DeepEqual(ids, []string{"I_closed", "I_done"}) {
-		t.Fatalf("FetchIssueStatesByIdentifiers() ids = %#v, want [I_closed I_done]", ids)
+	if ids := githubIssueIDs(got); !reflect.DeepEqual(ids, []string{"I_closed", "I_done", "I_merged_pr"}) {
+		t.Fatalf("FetchIssueStatesByIdentifiers() ids = %#v, want [I_closed I_done I_merged_pr]", ids)
 	}
 	if !got[0].Closed || got[0].State != "Done" {
 		t.Fatalf("closed child = %#v, want Closed true and State Done", got[0])
@@ -974,13 +987,22 @@ func TestConnectorFetchIssueStatesByIdentifiersResolvesGitHubStateAndProjectStat
 	if got[1].Closed || got[1].State != "Done" {
 		t.Fatalf("project done child = %#v, want open issue with State Done", got[1])
 	}
+	if got[2].Closed || got[2].State != "In Progress" {
+		t.Fatalf("merged PR child = %#v, want open issue still In Progress", got[2])
+	}
+	if got[2].PullRequest == nil || got[2].PullRequest.State != "MERGED" || got[2].PullRequest.Number != 254 {
+		t.Fatalf("merged PR child PullRequest = %#v, want merged PR 254", got[2].PullRequest)
+	}
 
 	requests := server.requests()
-	if len(requests) != 4 {
-		t.Fatalf("request count = %d, want REST issue and project field reads for each identifier", len(requests))
+	if len(requests) != 7 {
+		t.Fatalf("request count = %d, want REST issue and project field reads for each identifier plus PR list", len(requests))
 	}
 	if requests[0]["method"] != http.MethodGet || requests[0]["path"] != "/repos/digitaldrywood/detent/issues/251" {
 		t.Fatalf("first request = %#v, want REST issue lookup", requests[0])
+	}
+	if requests[6]["method"] != http.MethodGet || requests[6]["path"] != "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all" {
+		t.Fatalf("PR request = %#v, want REST pull request list", requests[6])
 	}
 }
 

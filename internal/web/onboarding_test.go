@@ -89,6 +89,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				onboardingStepBadge("agent"),
 				"name=\"max_concurrent_agents\"",
 				"name=\"workspace_root\"",
+				"name=\"dependency_auto_unblock_enabled\"",
 			},
 		},
 		{
@@ -175,6 +176,7 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		"tracker:\n  kind: github",
 		"api_key: $GITHUB_TOKEN",
 		"project_slug: PVT_project",
+		"dependency_auto_unblock:\n    enabled: false\n    source_states:\n      - Blocked\n    target_state: Todo\n    readiness: terminal_or_merged",
 		"source_root: " + sourceRoot,
 		"codex:\n  command: codex app-server",
 		"gate:\n  kind: command\n  run: make check",
@@ -196,6 +198,34 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		if strings.Contains(content, unwanted) {
 			t.Fatalf("workflow contains %q:\n%s", unwanted, content)
 		}
+	}
+}
+
+func TestOnboardingWriteWorkflowCanEnableDependencyAutoUnblock(t *testing.T) {
+	t.Parallel()
+
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := validOnboardingForm()
+	form.Set("dependency_auto_unblock_enabled", "true")
+	rec := httptest.NewRecorder()
+	req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	raw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	if !strings.Contains(string(raw), "dependency_auto_unblock:\n    enabled: true") {
+		t.Fatalf("workflow missing enabled dependency auto-unblock:\n%s", raw)
 	}
 }
 
@@ -362,17 +392,18 @@ func TestOnboardingWriteValidatesInput(t *testing.T) {
 
 func validOnboardingForm() url.Values {
 	return url.Values{
-		"tracker_kind":               {"github"},
-		"endpoint":                   {"https://api.github.com/graphql"},
-		"api_key":                    {"$GITHUB_TOKEN"},
-		"project_slug":               {"PVT_project"},
-		"repo":                       {"digitaldrywood/detent"},
-		"workspace_root":             {"~/code/detent-workspaces"},
-		"max_concurrent_agents":      {"5"},
-		"max_turns":                  {"20"},
-		"polling_interval_ms":        {"120000"},
-		"merging_concurrency":        {"1"},
-		"dispatch_priority_by_state": {"Merging\nRework"},
+		"tracker_kind":                    {"github"},
+		"endpoint":                        {"https://api.github.com/graphql"},
+		"api_key":                         {"$GITHUB_TOKEN"},
+		"project_slug":                    {"PVT_project"},
+		"repo":                            {"digitaldrywood/detent"},
+		"workspace_root":                  {"~/code/detent-workspaces"},
+		"max_concurrent_agents":           {"5"},
+		"max_turns":                       {"20"},
+		"polling_interval_ms":             {"120000"},
+		"merging_concurrency":             {"1"},
+		"dispatch_priority_by_state":      {"Merging\nRework"},
+		"dependency_auto_unblock_enabled": {"false"},
 	}
 }
 

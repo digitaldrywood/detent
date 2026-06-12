@@ -23,6 +23,9 @@ const (
 	TrackerLinear = "linear"
 	TrackerMemory = "memory"
 
+	DependencyReadinessTerminal         = "terminal"
+	DependencyReadinessTerminalOrMerged = "terminal_or_merged"
+
 	defaultLinearEndpoint = "https://api.linear.app/graphql"
 	defaultGitHubEndpoint = "https://api.github.com/graphql"
 
@@ -61,28 +64,36 @@ type Config struct {
 }
 
 type Tracker struct {
-	Kind                       string            `yaml:"kind"`
-	Endpoint                   string            `yaml:"endpoint"`
-	APIKey                     string            `yaml:"api_key"`
-	HTTPMaxIdleConns           int               `yaml:"http_max_idle_conns"`
-	HTTPMaxIdleConnsPerHost    int               `yaml:"http_max_idle_conns_per_host"`
-	HTTPIdleConnTimeoutMS      int               `yaml:"http_idle_conn_timeout_ms"`
-	GitHubGraphQLWarnRemaining int               `yaml:"github_graphql_warn_remaining"`
-	GitHubAppID                string            `yaml:"github_app_id"`
-	GitHubAppPrivateKey        string            `yaml:"github_app_private_key"`
-	GitHubAppPrivateKeyPath    string            `yaml:"github_app_private_key_path"`
-	GitHubAppInstallationID    string            `yaml:"github_app_installation_id"`
-	ProjectSlug                string            `yaml:"project_slug"`
-	Assignee                   string            `yaml:"assignee"`
-	ActiveStates               []string          `yaml:"active_states"`
-	ObservedStates             []string          `yaml:"observed_states"`
-	TerminalStates             []string          `yaml:"terminal_states"`
-	StateMap                   StringOrMap       `yaml:"state_map"`
-	PriorityMap                StringOrMap       `yaml:"priority_map"`
-	AutoProvision              bool              `yaml:"auto_provision"`
-	Claims                     Claims            `yaml:"claims,omitempty"`
-	Authorization              selector.Selector `yaml:"authorization,omitempty"`
-	Issues                     []connector.Issue `yaml:"issues"`
+	Kind                       string                `yaml:"kind"`
+	Endpoint                   string                `yaml:"endpoint"`
+	APIKey                     string                `yaml:"api_key"`
+	HTTPMaxIdleConns           int                   `yaml:"http_max_idle_conns"`
+	HTTPMaxIdleConnsPerHost    int                   `yaml:"http_max_idle_conns_per_host"`
+	HTTPIdleConnTimeoutMS      int                   `yaml:"http_idle_conn_timeout_ms"`
+	GitHubGraphQLWarnRemaining int                   `yaml:"github_graphql_warn_remaining"`
+	GitHubAppID                string                `yaml:"github_app_id"`
+	GitHubAppPrivateKey        string                `yaml:"github_app_private_key"`
+	GitHubAppPrivateKeyPath    string                `yaml:"github_app_private_key_path"`
+	GitHubAppInstallationID    string                `yaml:"github_app_installation_id"`
+	ProjectSlug                string                `yaml:"project_slug"`
+	Assignee                   string                `yaml:"assignee"`
+	ActiveStates               []string              `yaml:"active_states"`
+	ObservedStates             []string              `yaml:"observed_states"`
+	TerminalStates             []string              `yaml:"terminal_states"`
+	StateMap                   StringOrMap           `yaml:"state_map"`
+	PriorityMap                StringOrMap           `yaml:"priority_map"`
+	DependencyAutoUnblock      DependencyAutoUnblock `yaml:"dependency_auto_unblock"`
+	AutoProvision              bool                  `yaml:"auto_provision"`
+	Claims                     Claims                `yaml:"claims,omitempty"`
+	Authorization              selector.Selector     `yaml:"authorization,omitempty"`
+	Issues                     []connector.Issue     `yaml:"issues"`
+}
+
+type DependencyAutoUnblock struct {
+	Enabled      bool     `yaml:"enabled"`
+	SourceStates []string `yaml:"source_states"`
+	TargetState  string   `yaml:"target_state"`
+	Readiness    string   `yaml:"readiness"`
 }
 
 type Identity struct {
@@ -378,6 +389,41 @@ func (c Claims) Validate(prefix string) []string {
 	return problems
 }
 
+func (d *DependencyAutoUnblock) Normalize() {
+	if d == nil {
+		return
+	}
+	d.SourceStates = normalizeStateList(d.SourceStates)
+	d.TargetState = strings.TrimSpace(d.TargetState)
+	d.Readiness = strings.ToLower(strings.TrimSpace(d.Readiness))
+	if d.Readiness == "" {
+		d.Readiness = DependencyReadinessTerminalOrMerged
+	}
+}
+
+func (d DependencyAutoUnblock) Validate(prefix string) []string {
+	d.Normalize()
+
+	var problems []string
+	validateStateList(prefix+".source_states", d.SourceStates, &problems)
+	if d.Enabled {
+		if len(d.SourceStates) == 0 {
+			problems = append(problems, prefix+".source_states must not be empty when "+prefix+".enabled is true")
+		}
+		if strings.TrimSpace(d.TargetState) == "" {
+			problems = append(problems, prefix+".target_state is required when "+prefix+".enabled is true")
+		}
+	}
+	if d.Readiness != "" {
+		switch d.Readiness {
+		case DependencyReadinessTerminal, DependencyReadinessTerminalOrMerged:
+		default:
+			problems = append(problems, prefix+".readiness must be one of terminal, terminal_or_merged")
+		}
+	}
+	return problems
+}
+
 type StringOrMap struct {
 	IsString bool
 	String   string
@@ -447,7 +493,12 @@ func Default() Config {
 			TerminalStates:             []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"},
 			StateMap:                   MapValue(map[string]any{}),
 			PriorityMap:                MapValue(defaultPriorityMap()),
-			AutoProvision:              true,
+			DependencyAutoUnblock: DependencyAutoUnblock{
+				SourceStates: []string{"Blocked"},
+				TargetState:  "Todo",
+				Readiness:    DependencyReadinessTerminalOrMerged,
+			},
+			AutoProvision: true,
 		},
 		Polling: Polling{
 			IntervalMS: DefaultPollingIntervalMS,
@@ -584,6 +635,7 @@ func (c *Config) normalize() {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
 	c.Tracker.Claims.Normalize()
+	c.Tracker.DependencyAutoUnblock.Normalize()
 	c.Tracker.Authorization.Normalize()
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
@@ -616,6 +668,7 @@ func (c *Config) validateTracker(problems *[]string) {
 	validateStateList("tracker.terminal_states", c.Tracker.TerminalStates, problems)
 	validateStateMap("tracker.state_map", c.Tracker.StateMap, problems)
 	validatePriorityMap("tracker.priority_map", c.Tracker.PriorityMap, problems)
+	*problems = append(*problems, c.Tracker.DependencyAutoUnblock.Validate("tracker.dependency_auto_unblock")...)
 	validatePositive("tracker.http_max_idle_conns", c.Tracker.HTTPMaxIdleConns, problems)
 	validatePositive("tracker.http_max_idle_conns_per_host", c.Tracker.HTTPMaxIdleConnsPerHost, problems)
 	validatePositive("tracker.http_idle_conn_timeout_ms", c.Tracker.HTTPIdleConnTimeoutMS, problems)

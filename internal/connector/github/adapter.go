@@ -760,6 +760,9 @@ func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifie
 			issues = append(issues, issue)
 		}
 	}
+	if err := c.attachPullRequestMergeStates(ctx, issues); err != nil {
+		return nil, err
+	}
 	sortIssuesByRequestedIdentifiers(issues, identifiers)
 	return issues, nil
 }
@@ -1347,6 +1350,83 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 		}
 	}
 	return nil
+}
+
+func (c *Connector) attachPullRequestMergeStates(ctx context.Context, issues []connector.Issue) error {
+	byRepo := make(map[pullRequestRepo][]issuePullRequestCandidate)
+	for index, issue := range issues {
+		if issue.PullRequest != nil {
+			continue
+		}
+		repo, ok := pullRequestRepoFromIdentifier(issue.Identifier)
+		if !ok {
+			continue
+		}
+		branchPrefix := detentIssueBranchPrefix(issue.Identifier)
+		if branchPrefix == "" {
+			continue
+		}
+		byRepo[repo] = append(byRepo[repo], issuePullRequestCandidate{
+			Index:        index,
+			BranchPrefix: branchPrefix,
+		})
+	}
+	if len(byRepo) == 0 {
+		return nil
+	}
+
+	repos := make([]pullRequestRepo, 0, len(byRepo))
+	for repo := range byRepo {
+		repos = append(repos, repo)
+	}
+	sort.Slice(repos, func(i, j int) bool {
+		left := repos[i].Owner + "/" + repos[i].Name
+		right := repos[j].Owner + "/" + repos[j].Name
+		return left < right
+	})
+
+	for _, repo := range repos {
+		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
+		if err != nil {
+			return err
+		}
+		attachMatchingPullRequestMergeStates(issues, byRepo[repo], pullRequests)
+	}
+	return nil
+}
+
+func attachMatchingPullRequestMergeStates(
+	issues []connector.Issue,
+	candidates []issuePullRequestCandidate,
+	pullRequests []pullRequestNode,
+) {
+	for _, pullRequest := range pullRequests {
+		if normalizeStateName(pullRequest.State) != "merged" {
+			continue
+		}
+		branchName := strings.TrimSpace(pullRequest.HeadRefName)
+		if branchName == "" {
+			continue
+		}
+		for _, candidate := range candidates {
+			if issues[candidate.Index].PullRequest != nil {
+				continue
+			}
+			if !branchMatchesIssuePrefix(branchName, candidate.BranchPrefix) {
+				continue
+			}
+			issues[candidate.Index].PullRequest = &connector.PullRequest{
+				Number:     pullRequest.Number,
+				URL:        strings.TrimSpace(pullRequest.URL),
+				BranchName: branchName,
+				State:      strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+			}
+			if issues[candidate.Index].PRNumber == nil && pullRequest.Number > 0 {
+				number := pullRequest.Number
+				issues[candidate.Index].PRNumber = &number
+			}
+		}
+	}
 }
 
 func (c *Connector) fetchRepositoryPullRequests(ctx context.Context, repo pullRequestRepo) ([]pullRequestNode, error) {

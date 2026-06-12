@@ -453,7 +453,25 @@ recommendation, and default-if-silent. Record answers in
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-9. **Prompt body.** Ask: "Use the template prompt or add repo-specific
+9. **Dependency waiting policy.** Ask: "Should dependency-waiting issues stay
+   in `Todo` and be gated by Detent, or should they sit in `Blocked` and be
+   auto-unblocked when dependencies clear?" Default if silent:
+   `tracker.dependency_auto_unblock.enabled: false`. Use the `Blocked`
+   auto-unblock mode only when the team writes explicit `Depends on:` or
+   `Blocked by:` lines for dependency blockers; Detent will not clear unrelated
+   human blockers. Verify:
+
+   ```sh
+   printf '%s\n' \
+     'DEPENDENCY_AUTO_UNBLOCK_ENABLED=<true|false>' \
+     'DEPENDENCY_AUTO_UNBLOCK_SOURCE_STATES=Blocked' \
+     'DEPENDENCY_AUTO_UNBLOCK_TARGET_STATE=Todo' \
+     'DEPENDENCY_AUTO_UNBLOCK_READINESS=terminal_or_merged' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^DEPENDENCY_AUTO_UNBLOCK_' "$ONBOARDING_DIR/answers.env"
+   ```
+
+10. **Prompt body.** Ask: "Use the template prompt or add repo-specific
    instructions?" Recommendation source: `CLAUDE.md`, `AGENTS.md`,
    `CONTRIBUTING.md`, README development commands, and CI workflows in
    `<source-root>`. Default if silent: template prompt plus any repo authority
@@ -470,7 +488,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-10. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
+11. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe
@@ -610,11 +628,12 @@ recommendation, and default-if-silent. Record answers in
      approval_label: <approval-label>
    ```
 
-5. **Set review policy and concurrency.** Keep `Merging: 1`. Use the review
-   policy selected by the human. Verify:
+5. **Set review policy, dependency waiting policy, and concurrency.** Keep
+   `Merging: 1`. Use the review and dependency policy selected by the human.
+   Verify:
 
    ```sh
-   rg -n 'max_concurrent_agents: <max>|Merging: 1|auto_promote:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:' \
+   rg -n 'max_concurrent_agents: <max>|Merging: 1|auto_promote:|dependency_auto_unblock:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:|source_states:|target_state:|readiness:' \
      <source-root>/WORKFLOW.md
    ```
 
@@ -640,6 +659,21 @@ recommendation, and default-if-silent. Record answers in
        allowed_issue_labels:
          - <allowed-label>
    ```
+
+   Dependency auto-unblock default:
+
+   ```yaml
+   tracker:
+     dependency_auto_unblock:
+       enabled: false
+       source_states:
+         - Blocked
+       target_state: Todo
+       readiness: terminal_or_merged
+   ```
+
+   Enable it only for projects that use `Blocked` as a dependency-waiting state
+   with explicit machine-readable dependency references.
 
 6. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
    repo authority files discovered in Phase 2, and state the validation gate.
@@ -952,3 +986,10 @@ issue starts. If there is no dependency, omit the line.
 
 Keep dependency order explicit. If issue B relies on issue A, issue B should
 carry `Depends on: #A` and stay out of `Todo` until A has merged.
+
+Alternatively, if the project has opted into
+`tracker.dependency_auto_unblock.enabled`, issue B can sit in a configured
+waiting state such as `Blocked` with the same `Depends on:` or `Blocked by:`
+line. Detent will move it to the configured ready state after every blocker is
+terminal, closed, or merged according to the workflow readiness rule. Do not use
+that mode for free-form human blockers without explicit dependency references.

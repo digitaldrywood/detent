@@ -58,6 +58,11 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
+			o.autoUnblockDependencyIssues(ctx, state, fetched.status, now),
+		)
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
 			o.autoPromoteHumanReviewIssues(ctx, state, fetched.status, now),
 		)
 	}
@@ -90,7 +95,7 @@ func (o *Orchestrator) fetchTickIssues(ctx context.Context) (tickFetchedIssues, 
 	fetched := tickFetchedIssues{
 		candidates: cloneIssues(issues),
 	}
-	statusIssues, statusErr := o.connector.FetchIssuesByStates(ctx, observedStatusFetchStates())
+	statusIssues, statusErr := o.connector.FetchIssuesByStates(ctx, o.observedStatusFetchStates())
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
 		return fetched, true

@@ -40,14 +40,15 @@ var (
 
 func (s *Server) onboarding(c echo.Context) error {
 	form := templates.OnboardingForm{
-		Step:                  onboardingStepTracker,
-		TrackerKind:           config.TrackerGitHub,
-		WorkspaceRoot:         defaultWorkspaceRoot,
-		MaxConcurrentAgents:   defaultMaxConcurrentAgents,
-		MaxTurns:              defaultMaxTurns,
-		PollingIntervalMS:     defaultPollingIntervalMS,
-		MergingConcurrency:    defaultMergingConcurrency,
-		DispatchPriorityState: defaultDispatchPriorityText,
+		Step:                         onboardingStepTracker,
+		TrackerKind:                  config.TrackerGitHub,
+		WorkspaceRoot:                defaultWorkspaceRoot,
+		MaxConcurrentAgents:          defaultMaxConcurrentAgents,
+		MaxTurns:                     defaultMaxTurns,
+		PollingIntervalMS:            defaultPollingIntervalMS,
+		MergingConcurrency:           defaultMergingConcurrency,
+		DispatchPriorityState:        defaultDispatchPriorityText,
+		DependencyAutoUnblockEnabled: "false",
 	}
 	return render(c, templates.OnboardingPage(s.onboardingData(form, nil, templates.OnboardingResult{})))
 }
@@ -173,17 +174,18 @@ func (s *Server) onboardingData(form templates.OnboardingForm, problems []string
 
 func parseOnboardingForm(c echo.Context) templates.OnboardingForm {
 	return templates.OnboardingForm{
-		TrackerKind:           strings.TrimSpace(c.FormValue("tracker_kind")),
-		Endpoint:              strings.TrimSpace(c.FormValue("endpoint")),
-		APIKey:                strings.TrimSpace(c.FormValue("api_key")),
-		ProjectSlug:           strings.TrimSpace(c.FormValue("project_slug")),
-		Repo:                  strings.TrimSpace(c.FormValue("repo")),
-		WorkspaceRoot:         strings.TrimSpace(c.FormValue("workspace_root")),
-		MaxConcurrentAgents:   strings.TrimSpace(c.FormValue("max_concurrent_agents")),
-		MaxTurns:              strings.TrimSpace(c.FormValue("max_turns")),
-		PollingIntervalMS:     strings.TrimSpace(c.FormValue("polling_interval_ms")),
-		MergingConcurrency:    strings.TrimSpace(c.FormValue("merging_concurrency")),
-		DispatchPriorityState: strings.TrimSpace(c.FormValue("dispatch_priority_by_state")),
+		TrackerKind:                  strings.TrimSpace(c.FormValue("tracker_kind")),
+		Endpoint:                     strings.TrimSpace(c.FormValue("endpoint")),
+		APIKey:                       strings.TrimSpace(c.FormValue("api_key")),
+		ProjectSlug:                  strings.TrimSpace(c.FormValue("project_slug")),
+		Repo:                         strings.TrimSpace(c.FormValue("repo")),
+		WorkspaceRoot:                strings.TrimSpace(c.FormValue("workspace_root")),
+		MaxConcurrentAgents:          strings.TrimSpace(c.FormValue("max_concurrent_agents")),
+		MaxTurns:                     strings.TrimSpace(c.FormValue("max_turns")),
+		PollingIntervalMS:            strings.TrimSpace(c.FormValue("polling_interval_ms")),
+		MergingConcurrency:           strings.TrimSpace(c.FormValue("merging_concurrency")),
+		DispatchPriorityState:        strings.TrimSpace(c.FormValue("dispatch_priority_by_state")),
+		DependencyAutoUnblockEnabled: onboardingBoolValue(c.FormValue("dependency_auto_unblock_enabled")),
 	}
 }
 
@@ -348,6 +350,9 @@ func applyAgentDefaults(form *templates.OnboardingForm) {
 	if form.DispatchPriorityState == "" {
 		form.DispatchPriorityState = defaultDispatchPriorityText
 	}
+	if form.DependencyAutoUnblockEnabled == "" {
+		form.DependencyAutoUnblockEnabled = "false"
+	}
 }
 
 func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
@@ -387,6 +392,11 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("    Medium: 3\n")
 	b.WriteString("    Low: 4\n")
 	b.WriteString("    No priority: null\n")
+	b.WriteString("  dependency_auto_unblock:\n")
+	writeScalar(&b, "    ", "enabled", form.DependencyAutoUnblockEnabled)
+	writeList(&b, "    ", "source_states", []string{"Blocked"})
+	b.WriteString("    target_state: Todo\n")
+	b.WriteString("    readiness: terminal_or_merged\n")
 	b.WriteString("polling:\n")
 	writeScalar(&b, "  ", "interval_ms", form.PollingIntervalMS)
 	b.WriteString("workspace:\n")
@@ -423,6 +433,13 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("---\n\n")
 	b.WriteString(renderWorkflowPrompt(form))
 	return b.String()
+}
+
+func onboardingBoolValue(value string) string {
+	if strings.EqualFold(strings.TrimSpace(value), "true") {
+		return "true"
+	}
+	return "false"
 }
 
 func workflowSourceRoot(workflowPath string) string {

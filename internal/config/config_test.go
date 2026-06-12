@@ -49,6 +49,13 @@ tracker:
   priority_map:
     Urgent: 1
     No priority: null
+  dependency_auto_unblock:
+    enabled: true
+    source_states:
+      - Blocked
+      - Waiting
+    target_state: Todo
+    readiness: terminal_or_merged
 polling:
   interval_ms: 60000
 workspace:
@@ -198,6 +205,18 @@ Ticket prompt {{ issue.title }}
 	if got := cfg.Tracker.PriorityMap.Map["No priority"]; got != nil {
 		t.Fatalf("Tracker.PriorityMap[No priority] = %v, want nil", got)
 	}
+	if !cfg.Tracker.DependencyAutoUnblock.Enabled {
+		t.Fatal("Tracker.DependencyAutoUnblock.Enabled = false, want true")
+	}
+	if got := cfg.Tracker.DependencyAutoUnblock.SourceStates; !reflect.DeepEqual(got, []string{"blocked", "waiting"}) {
+		t.Fatalf("Tracker.DependencyAutoUnblock.SourceStates = %#v, want blocked/waiting", got)
+	}
+	if cfg.Tracker.DependencyAutoUnblock.TargetState != "Todo" {
+		t.Fatalf("Tracker.DependencyAutoUnblock.TargetState = %q, want Todo", cfg.Tracker.DependencyAutoUnblock.TargetState)
+	}
+	if cfg.Tracker.DependencyAutoUnblock.Readiness != DependencyReadinessTerminalOrMerged {
+		t.Fatalf("Tracker.DependencyAutoUnblock.Readiness = %q, want %q", cfg.Tracker.DependencyAutoUnblock.Readiness, DependencyReadinessTerminalOrMerged)
+	}
 	if got := cfg.Agent.MaxConcurrentAgentsByState["merging"]; got != 1 {
 		t.Fatalf("Agent.MaxConcurrentAgentsByState[merging] = %d, want 1", got)
 	}
@@ -254,6 +273,18 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Tracker.Authorization.Configured() {
 		t.Fatalf("Tracker.Authorization = %#v, want authorize all default", cfg.Tracker.Authorization)
+	}
+	if cfg.Tracker.DependencyAutoUnblock.Enabled {
+		t.Fatal("Tracker.DependencyAutoUnblock.Enabled = true, want disabled by default")
+	}
+	if got := cfg.Tracker.DependencyAutoUnblock.SourceStates; !reflect.DeepEqual(got, []string{"blocked"}) {
+		t.Fatalf("Tracker.DependencyAutoUnblock.SourceStates = %#v, want blocked", got)
+	}
+	if cfg.Tracker.DependencyAutoUnblock.TargetState != "Todo" {
+		t.Fatalf("Tracker.DependencyAutoUnblock.TargetState = %q, want Todo", cfg.Tracker.DependencyAutoUnblock.TargetState)
+	}
+	if cfg.Tracker.DependencyAutoUnblock.Readiness != DependencyReadinessTerminalOrMerged {
+		t.Fatalf("Tracker.DependencyAutoUnblock.Readiness = %q, want %q", cfg.Tracker.DependencyAutoUnblock.Readiness, DependencyReadinessTerminalOrMerged)
 	}
 	if cfg.Polling.IntervalMS != 120000 {
 		t.Fatalf("Polling.IntervalMS = %d", cfg.Polling.IntervalMS)
@@ -719,6 +750,25 @@ polling:
 Prompt
 `,
 			want: []string{"polling.interval_ms must be at least 60000"},
+		},
+		{
+			name: "invalid dependency auto unblock config",
+			raw: `---
+tracker:
+  kind: memory
+  dependency_auto_unblock:
+    enabled: true
+    source_states: [""]
+    target_state: ""
+    readiness: sometimes
+---
+Prompt
+`,
+			want: []string{
+				"tracker.dependency_auto_unblock.source_states state names must not be blank",
+				"tracker.dependency_auto_unblock.target_state is required when tracker.dependency_auto_unblock.enabled is true",
+				"tracker.dependency_auto_unblock.readiness must be one of terminal, terminal_or_merged",
+			},
 		},
 		{
 			name: "invalid paths and priority map",

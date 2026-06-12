@@ -19,15 +19,16 @@ type SettingsGlobal struct {
 }
 
 type SettingsProject struct {
-	ID             string
-	WorkflowPath   string
-	Workdir        string
-	WorktreeRoot   string
-	Weight         int
-	Priority       int
-	Paused         bool
-	TrackerKind    string
-	TrackerProject string
+	ID                    string
+	WorkflowPath          string
+	Workdir               string
+	WorktreeRoot          string
+	Weight                int
+	Priority              int
+	Paused                bool
+	TrackerKind           string
+	TrackerProject        string
+	DependencyAutoUnblock string
 }
 
 type SettingsRuntime struct {

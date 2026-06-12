@@ -268,6 +268,12 @@ tracker:
     Medium: 3
     Low: 4
     No priority: null
+  dependency_auto_unblock:
+    enabled: false
+    source_states:
+      - Blocked
+    target_state: Todo
+    readiness: terminal_or_merged
 polling:
   interval_ms: 120000
 workspace:
@@ -614,6 +620,24 @@ You bring the board; Detent fills in the rest.
 - **Detent reads** status, priority, labels, blockers, assignees, and linked
   pull requests from each issue, and **writes back** status transitions and a
   `## Codex Workpad` comment as the agent works.
+
+### Dependency workflows
+
+Detent supports two dependency patterns. Use the one that matches how much of
+the wait should be visible on the board.
+
+- **Keep the issue in `Todo`.** Add a machine-readable dependency line such as
+  `Depends on: #123` or `Blocked by: owner/repo#123`. Detent keeps the issue out
+  of dispatch while any referenced blocker is non-terminal, then dispatches it
+  normally after blockers clear. This is the default behavior and needs no extra
+  configuration.
+- **Keep the issue in `Blocked`.** Enable `tracker.dependency_auto_unblock` when
+  your team wants dependency-waiting issues to sit in a waiting column. Detent
+  only moves issues that have explicit `Depends on:` or `Blocked by:` references.
+  When all blockers are terminal, closed, or have a merged linked PR under the
+  configured `readiness` rule, Detent updates the ProjectV2 `Status` to
+  `target_state` and posts an audit comment. Human blockers without explicit
+  dependency references stay blocked.
 
 Before you dispatch anything, run **`detent doctor`** — it checks config
 resolution, the database, the `codex` binary, your GitHub token and scopes, git,

@@ -30,6 +30,7 @@ type OnboardingForm struct {
 	PollingIntervalMS     string
 	MergingConcurrency    string
 	DispatchPriorityState string
+	DependencyAutoUnblockEnabled string
 }
 
 type OnboardingResult struct {
@@ -242,6 +243,13 @@ templ agentStep(data OnboardingData) {
 				<span class="text-sm font-medium">Dispatch priority by state</span>
 				<textarea class={ fieldClass() + " min-h-24" } name="dispatch_priority_by_state">{ data.Form.DispatchPriorityState }</textarea>
 			</label>
+			<label class="flex items-start gap-3 rounded-md border border-border p-3 sm:col-span-2">
+				<input class="mt-1" type="checkbox" name="dependency_auto_unblock_enabled" value="true" checked?={ data.Form.DependencyAutoUnblockEnabled == "true" }/>
+				<span>
+					<span class="block text-sm font-semibold text-foreground">Dependency auto-unblock</span>
+					<span class="block text-sm text-muted-foreground">Move dependency-waiting Blocked issues back to Todo when blockers clear.</span>
+				</span>
+			</label>
 			<div class="flex flex-wrap gap-2 pt-2 sm:col-span-2">
 				<button class={ buttonClass() } type="submit">Continue</button>
 				<button class={ secondaryButtonClass() } type="submit" hx-post="/onboarding/credentials">Back</button>
@@ -316,4 +324,5 @@ templ hiddenAgent(form OnboardingForm) {
 	<input type="hidden" name="polling_interval_ms" value={ form.PollingIntervalMS }/>
 	<input type="hidden" name="merging_concurrency" value={ form.MergingConcurrency }/>
 	<input type="hidden" name="dispatch_priority_by_state" value={ form.DispatchPriorityState }/>
+	<input type="hidden" name="dependency_auto_unblock_enabled" value={ form.DependencyAutoUnblockEnabled }/>
 }

@@ -50,15 +50,16 @@ func settingsProjects(registry *project.Registry) []templates.SettingsProject {
 		cfg := trackedProject.Config()
 		workflow := trackedProject.Workflow().Config
 		out = append(out, templates.SettingsProject{
-			ID:             string(trackedProject.ID()),
-			WorkflowPath:   cfg.Workflow,
-			Workdir:        cfg.Workdir,
-			WorktreeRoot:   workflow.Workspace.Root,
-			Weight:         cfg.Weight,
-			Priority:       cfg.Priority,
-			Paused:         cfg.Paused,
-			TrackerKind:    trackerKind(workflow),
-			TrackerProject: trackerProject(workflow),
+			ID:                    string(trackedProject.ID()),
+			WorkflowPath:          cfg.Workflow,
+			Workdir:               cfg.Workdir,
+			WorktreeRoot:          workflow.Workspace.Root,
+			Weight:                cfg.Weight,
+			Priority:              cfg.Priority,
+			Paused:                cfg.Paused,
+			TrackerKind:           trackerKind(workflow),
+			TrackerProject:        trackerProject(workflow),
+			DependencyAutoUnblock: dependencyAutoUnblockPolicy(workflow),
 		})
 	}
 	return out
@@ -73,4 +74,25 @@ func trackerKind(cfg workflowconfig.Config) string {
 
 func trackerProject(cfg workflowconfig.Config) string {
 	return strings.TrimSpace(cfg.Tracker.ProjectSlug)
+}
+
+func dependencyAutoUnblockPolicy(cfg workflowconfig.Config) string {
+	policy := cfg.Tracker.DependencyAutoUnblock
+	status := "disabled"
+	if policy.Enabled {
+		status = "enabled"
+	}
+	sourceStates := strings.Join(policy.SourceStates, ", ")
+	if strings.TrimSpace(sourceStates) == "" {
+		sourceStates = "n/a"
+	}
+	targetState := strings.TrimSpace(policy.TargetState)
+	if targetState == "" {
+		targetState = "n/a"
+	}
+	readiness := strings.TrimSpace(policy.Readiness)
+	if readiness == "" {
+		readiness = workflowconfig.DependencyReadinessTerminalOrMerged
+	}
+	return status + ": " + sourceStates + " -> " + targetState + " when " + readiness
 }
