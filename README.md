@@ -149,7 +149,8 @@ Requirements:
 - The [GitHub CLI](https://cli.github.com) (`gh`) for authentication and board
   lookups (optional but assumed throughout this guide).
 - A GitHub token with access to the target ProjectV2 board. For organization
-  projects, `repo`, `read:org`, and `project` scopes are usually required.
+  projects, `repo`, `read:org`, `read:project`, and write `project` scopes are
+  usually required.
 
 macOS and Linux hosts can install the latest release with the shell installer:
 
@@ -208,7 +209,14 @@ local repository checkout.
 1. Authenticate GitHub access:
 
 ```sh
-gh auth login --scopes "repo,read:org,project"
+gh auth login --scopes "repo,read:org,read:project,project"
+# For existing auth:
+gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"
+
+gh auth status 2>&1 | rg '\brepo\b'
+gh auth status 2>&1 | rg '\bread:org\b'
+gh auth status 2>&1 | rg '\bread:project\b'
+gh auth status 2>&1 | rg "'project'|, project|project,"
 ```
 
 2. Find the GitHub ProjectV2 node id. Use the `id` field, which starts with
@@ -217,6 +225,10 @@ gh auth login --scopes "repo,read:org,project"
 ```sh
 gh project list --owner <org-or-user> --format json --limit 20
 ```
+
+The `gh project list` command verifies the token can read ProjectV2 boards.
+The write `project` scope is verified when Detent first performs an intentional
+board mutation, such as provisioning fields or editing an issue status.
 
 Detent auto-provisions any missing `Status` and `Priority` options on the board
 the first time it runs, so you do not have to hand-create every column — but the
@@ -409,11 +421,22 @@ repo is a real, working instance of this setup to copy from.
    [`gh`](https://cli.github.com), then:
 
    ```sh
-   gh auth login --scopes "repo,read:org,project"
+   gh auth login --scopes "repo,read:org,read:project,project"
+   # For existing auth:
+   gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"
    ```
 
-   Verify: `gh auth status`. Use `github_token: gh` in `global.yaml` so
-   Detent resolves this token at startup.
+   Verify each required scope independently:
+
+   ```sh
+   gh auth status 2>&1 | rg '\brepo\b'
+   gh auth status 2>&1 | rg '\bread:org\b'
+   gh auth status 2>&1 | rg '\bread:project\b'
+   gh auth status 2>&1 | rg "'project'|, project|project,"
+   ```
+
+   Use `github_token: gh` in `global.yaml` so Detent resolves this token at
+   startup.
 
 3. **Install and sign in to the Codex CLI.** Install the
    [OpenAI Codex CLI](https://github.com/openai/codex) and sign in. Detent
@@ -426,7 +449,9 @@ repo is a real, working instance of this setup to copy from.
    gh project list --owner <org-or-user> --format json --limit 50
    ```
 
-   The board only needs to exist — Detent auto-provisions missing `Status` and
+   This verifies the token can read ProjectV2 boards. The write `project` scope
+   is verified when Detent first performs an intentional board mutation. The
+   board only needs to exist — Detent auto-provisions missing `Status` and
    `Priority` options on first run. The option names must match your
    `WORKFLOW.md` states, and Detent keeps known `Status` options in canonical
    board order.
