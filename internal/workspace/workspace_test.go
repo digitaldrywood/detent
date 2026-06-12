@@ -112,6 +112,11 @@ func TestLocalGitInfoForIssueNamespacesKeysByProjectID(t *testing.T) {
 			wantKey: "digitaldrywood_detent_42",
 		},
 		{
+			name:    "reserved detent metadata key",
+			issue:   Issue{Identifier: ".detent"},
+			wantKey: "issue",
+		},
+		{
 			name:          "alpha project",
 			issue:         Issue{ProjectID: "alpha", Identifier: "digitaldrywood/detent#42"},
 			wantKeyPrefix: "alpha-digitaldrywood_detent_42-",

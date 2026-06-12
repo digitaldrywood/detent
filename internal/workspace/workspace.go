@@ -218,7 +218,7 @@ func NewLocalGit(opts LocalGitOptions) (*LocalGit, error) {
 
 func SafeKey(identifier string) string {
 	key := unsafeKeyPattern.ReplaceAllString(strings.TrimSpace(identifier), "_")
-	if key == "" || key == "." || key == ".." {
+	if key == "" || key == "." || key == ".." || key == ".detent" {
 		return "issue"
 	}
 	return key
