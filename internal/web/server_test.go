@@ -580,6 +580,61 @@ func TestProjectDashboardRouteScopesSnapshot(t *testing.T) {
 	}
 }
 
+func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
+	t.Parallel()
+
+	projectID := "digitaldrywood/detent"
+	now := time.Date(2026, 6, 12, 15, 30, 0, 0, time.UTC)
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, projectID, false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: projectID, DisplayName: "Detent"},
+				Counts:  telemetry.Counts{Running: 1},
+				Tokens:  telemetry.Tokens{Total: 42},
+			},
+		},
+		Running: []telemetry.Running{
+			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "digitaldrywood/detent#377", ProjectID: projectID}},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/projects/digitaldrywood%2Fdetent", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	for _, want := range []string{
+		`href="/projects/digitaldrywood%2Fdetent"`,
+		`sse-connect="/events?project=digitaldrywood%2Fdetent"`,
+		`data-chart-endpoint="/api/v1/projects/digitaldrywood%2Fdetent/timeseries"`,
+		"digitaldrywood/detent#377",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("project dashboard missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/projects/digitaldrywood%2Fdetent/state", http.StatusOK)
+	if got := nestedString(t, state, "counts", "running"); got != "1" {
+		t.Fatalf("counts.running = %s, want 1", got)
+	}
+	series := requestJSON(t, server, http.MethodGet, "/api/v1/projects/digitaldrywood%2Fdetent/timeseries", http.StatusOK)
+	if series["scope"] != "project" || series["project_id"] != projectID {
+		t.Fatalf("series scope/project_id = %#v/%#v; payload = %#v", series["scope"], series["project_id"], series)
+	}
+}
+
 func TestProjectDashboardRouteReturnsNotFoundForUnknownProject(t *testing.T) {
 	t.Parallel()
 

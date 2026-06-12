@@ -35,7 +35,27 @@ func (s *Server) apiState(c echo.Context) error {
 	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now)))
 }
 
-func (s *Server) apiProjectState(c echo.Context) error {
+func (s *Server) apiProject(c echo.Context) error {
+	if projectID, ok := projectAPIParam(c, "state"); ok {
+		return s.apiProjectState(c, projectID)
+	}
+	if projectID, ok := projectAPIParam(c, "timeseries"); ok {
+		return s.apiProjectTimeSeries(c, projectID)
+	}
+	return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
+}
+
+func projectAPIParam(c echo.Context, suffix string) (string, bool) {
+	path := projectRouteParam(c)
+	trimmedSuffix := "/" + strings.Trim(strings.TrimSpace(suffix), "/")
+	if !strings.HasSuffix(path, trimmedSuffix) {
+		return "", false
+	}
+	projectID := strings.Trim(strings.TrimSuffix(path, trimmedSuffix), "/")
+	return projectID, projectID != ""
+}
+
+func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 	now := apiNow()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
@@ -43,7 +63,7 @@ func (s *Server) apiProjectState(c echo.Context) error {
 	}
 	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
 	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
-	project, ok := s.dashboardProject(c.Param("id"), projects, snapshot)
+	project, ok := s.dashboardProject(projectID, projects, snapshot)
 	if !ok {
 		return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 	}
@@ -67,7 +87,7 @@ func (s *Server) apiTimeSeries(c echo.Context) error {
 	return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, "", generatedAt(snapshot, apiNow()), window, bucket))
 }
 
-func (s *Server) apiProjectTimeSeries(c echo.Context) error {
+func (s *Server) apiProjectTimeSeries(c echo.Context, projectID string) error {
 	window, bucket, response, status := timeSeriesQuery(c)
 	if response != nil {
 		return c.JSON(status, response)
@@ -75,7 +95,7 @@ func (s *Server) apiProjectTimeSeries(c echo.Context) error {
 
 	snapshot := s.latestSnapshot(c.Request().Context())
 	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
-	project, ok := s.dashboardProject(c.Param("id"), projects, snapshot)
+	project, ok := s.dashboardProject(projectID, projects, snapshot)
 	if !ok {
 		return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
 	}

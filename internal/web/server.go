@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"strings"
 	"time"
 
@@ -185,7 +186,7 @@ func (s *Server) registerRoutes() {
 	}
 
 	s.echo.GET("/", s.dashboard)
-	s.echo.GET("/projects/:id", s.projectDashboard)
+	s.echo.GET("/projects/*", s.projectDashboard)
 	s.echo.GET("/settings", s.settings)
 	s.echo.GET("/reports", s.reports)
 	s.echo.GET("/events", s.events)
@@ -197,8 +198,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/onboarding/write", s.onboardingWrite)
 	s.echo.GET("/api/v1/state", s.apiState)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries)
-	s.echo.GET("/api/v1/projects/:id/state", s.apiProjectState)
-	s.echo.GET("/api/v1/projects/:id/timeseries", s.apiProjectTimeSeries)
+	s.echo.GET("/api/v1/projects/*", s.apiProject)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
 	s.echo.GET("/api/v1/usage", s.apiUsage)
@@ -212,11 +212,19 @@ func (s *Server) dashboard(c echo.Context) error {
 
 func (s *Server) projectDashboard(c echo.Context) error {
 	ctx := c.Request().Context()
-	data, ok := s.projectDashboardData(ctx, c.Param("id"), s.latestSnapshot(ctx))
+	data, ok := s.projectDashboardData(ctx, projectRouteParam(c), s.latestSnapshot(ctx))
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
 	}
 	return render(c, templates.Dashboard(data))
+}
+
+func projectRouteParam(c echo.Context) string {
+	projectID := strings.Trim(strings.TrimSpace(c.Param("*")), "/")
+	if unescaped, err := url.PathUnescape(projectID); err == nil {
+		return strings.Trim(strings.TrimSpace(unescaped), "/")
+	}
+	return projectID
 }
 
 func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
