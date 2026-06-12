@@ -581,6 +581,10 @@ recommendation, and default-if-silent. Record answers in
      > "$ONBOARDING_DIR/fields.before-detent.json"
    gh project item-list "$PROJECT_NUMBER" --owner <project-owner> --format json --limit 1000 \
      > "$ONBOARDING_DIR/project-items.before-detent.json"
+   gh project item-list "$PROJECT_NUMBER" --owner <project-owner> \
+     --query 'repo:<repo-owner>/<repo-name> is:issue is:open' \
+     --format json --limit 1000 \
+     > "$ONBOARDING_DIR/repo-open-project-items.before-detent.json"
 
    jq -r '.fields[] | select(.name == "Status") | .options[].name' \
      "$ONBOARDING_DIR/fields.before-detent.json" \
@@ -600,9 +604,8 @@ recommendation, and default-if-silent. Record answers in
    ```sh
    jq '[.items[] | (.status // "No status")] | sort | group_by(.) | map({status: .[0], count: length})' \
      "$ONBOARDING_DIR/project-items.before-detent.json"
-   jq --arg repo '<repo-owner>/<repo-name>' \
-     '[.items[] | select(.content.repository == $repo and .content.state == "OPEN") | (.status // "No status")] | sort | group_by(.) | map({status: .[0], count: length})' \
-     "$ONBOARDING_DIR/project-items.before-detent.json"
+   jq '[.items[] | (.status // "No status")] | sort | group_by(.) | map({status: .[0], count: length})' \
+     "$ONBOARDING_DIR/repo-open-project-items.before-detent.json"
    ```
 
    Compare option names against the configured Detent states, including
@@ -646,9 +649,9 @@ recommendation, and default-if-silent. Record answers in
 
    ```sh
    LEGACY_STATUS_REGEX='^(Ready|In progress|In review|Done)$'
-   jq -r --arg repo '<repo-owner>/<repo-name>' --arg re "$LEGACY_STATUS_REGEX" \
-     '.items[] | select(.content.repository == $repo and .content.state == "OPEN" and ((.status // "No status") | test($re))) | [.id, .status, .content.url] | @tsv' \
-     "$ONBOARDING_DIR/project-items.before-detent.json"
+   jq -r --arg re "$LEGACY_STATUS_REGEX" \
+     '.items[] | select((.status // "No status") | test($re)) | [.id, .status, .content.url] | @tsv' \
+     "$ONBOARDING_DIR/repo-open-project-items.before-detent.json"
    ```
 
    After the operator confirms the cleanup set, move those open items to
@@ -657,9 +660,9 @@ recommendation, and default-if-silent. Record answers in
    ```sh
    STATUS_FIELD_ID="$(gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json --jq '.fields[] | select(.name == "Status") | .id')"
    BACKLOG_OPTION_ID="$(gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json --jq '.fields[] | select(.name == "Status") | .options[] | select(.name == "Backlog") | .id')"
-   jq -r --arg repo '<repo-owner>/<repo-name>' --arg re "$LEGACY_STATUS_REGEX" \
-     '.items[] | select(.content.repository == $repo and .content.state == "OPEN" and ((.status // "No status") | test($re))) | .id' \
-     "$ONBOARDING_DIR/project-items.before-detent.json" |
+   jq -r --arg re "$LEGACY_STATUS_REGEX" \
+     '.items[] | select((.status // "No status") | test($re)) | .id' \
+     "$ONBOARDING_DIR/repo-open-project-items.before-detent.json" |
    while IFS= read -r item_id; do
      gh project item-edit \
        --id "$item_id" \
