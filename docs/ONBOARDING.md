@@ -640,6 +640,13 @@ recommendation, and default-if-silent. Record answers in
    statuses stay where they are, be closed, or move back to `Backlog` before
    Detent starts?"
 
+   Also ask what to do with empty non-Detent `Status` options that do not map
+   to the configured workflow. The operator should choose one action for each
+   option: remove it from the board, keep it as an intentional custom column, or
+   map it through the workflow state configuration. The default recommendation
+   is to remove empty non-mapping predecessor options during setup after status
+   counts have been reported.
+
    The default recommendation is to move open issues from predecessor active or
    terminal statuses back to `Backlog`, unless the operator confirms a status
    is intentional or the issue should be closed. If `Backlog` does not exist
