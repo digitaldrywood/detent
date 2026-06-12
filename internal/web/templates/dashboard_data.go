@@ -1854,12 +1854,18 @@ func runtimeStatusLabel(snapshot telemetry.Snapshot) string {
 	if snapshot.GeneratedAt.IsZero() {
 		return "Offline"
 	}
+	if snapshot.Shutdown.Draining {
+		return "Draining"
+	}
 	return "Live"
 }
 
 func runtimeStatusClass(snapshot telemetry.Snapshot) string {
 	if snapshot.GeneratedAt.IsZero() {
 		return "border-border bg-muted text-muted-foreground"
+	}
+	if snapshot.Shutdown.Draining {
+		return "border-warning-soft bg-warning-soft text-warning"
 	}
 	return "border-success-soft bg-success-soft text-success"
 }

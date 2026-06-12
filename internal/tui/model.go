@@ -106,7 +106,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
-		case "q", "esc", "ctrl+c":
+		case "q", "esc":
 			m.Close()
 			return m, tea.Quit
 		default:
@@ -183,6 +183,7 @@ func (m Model) renderSnapshot() string {
 			m.styles.warn.Render("total "+formatCount(snapshot.Tokens.Total)),
 		"│ Budget: " + formatBudget(snapshot.Budget, m.styles),
 		"│ Rate Limits: " + formatRateLimits(snapshot.RateLimits, m.now, m.styles),
+		"│ Shutdown: " + formatShutdown(snapshot.Shutdown, m.styles),
 		"│ Project: " + formatOptionalInfo(formatProject(snapshot.Project), m.styles),
 		"│ Instance: " + formatOptionalInfo(formatInstance(snapshot.Instance), m.styles),
 		"│ Scope: " + formatOptionalInfo(formatAuthorizationScope(snapshot.Instance), m.styles),
@@ -204,6 +205,17 @@ func (m Model) renderSnapshot() string {
 	lines = append(lines, closingBorder)
 
 	return strings.Join(lines, "\n")
+}
+
+func formatShutdown(shutdown telemetry.Shutdown, s styles) string {
+	if shutdown.Draining {
+		return s.warn.Render(fmt.Sprintf("draining (%d sessions remaining)", shutdown.SessionsRemaining))
+	}
+	status := strings.TrimSpace(shutdown.Status)
+	if status == "" {
+		status = "running"
+	}
+	return s.ok.Render(status)
 }
 
 func formatRunningRows(running []telemetry.Running, eventWidth int, s styles) []string {

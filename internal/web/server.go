@@ -302,10 +302,19 @@ func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
 }
 
 func (s *Server) health(c echo.Context) error {
+	status := "ok"
+	sessionsRemaining := 0
+	if s.hub != nil {
+		if snapshot, ok := s.hub.Latest(); ok && snapshot.Shutdown.Draining {
+			status = "draining"
+			sessionsRemaining = snapshot.Shutdown.SessionsRemaining
+		}
+	}
 	return c.JSON(http.StatusOK, healthResponse{
-		Status:    "ok",
-		Mode:      string(s.mode),
-		Connector: s.connectorName(),
+		Status:            status,
+		Mode:              string(s.mode),
+		Connector:         s.connectorName(),
+		SessionsRemaining: sessionsRemaining,
 		Checks: map[string]string{
 			"hub":       configuredStatus(s.hub),
 			"store":     configuredStatus(s.store),
@@ -404,8 +413,9 @@ func (s *Server) connectorName() string {
 }
 
 type healthResponse struct {
-	Status    string            `json:"status"`
-	Mode      string            `json:"mode"`
-	Connector string            `json:"connector"`
-	Checks    map[string]string `json:"checks"`
+	Status            string            `json:"status"`
+	Mode              string            `json:"mode"`
+	Connector         string            `json:"connector"`
+	SessionsRemaining int               `json:"sessions_remaining,omitempty"`
+	Checks            map[string]string `json:"checks"`
 }

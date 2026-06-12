@@ -18,13 +18,18 @@ import (
 func main() {
 	setupLoggerFromEnv(os.Stdout, os.Stderr)
 
-	ctx, stop := newSignalContext(context.Background())
-	defer stop()
+	ctx := context.Background()
+	shutdownController := cli.NewShutdownController()
+	stopSignals := notifyShutdownRequests(shutdownController)
+	defer stopSignals()
 
-	if err := newRootCommand(ctx).ExecuteContext(ctx); err != nil {
+	if err := newRootCommand(ctx, shutdownController).ExecuteContext(ctx); err != nil {
 		if errors.Is(err, context.Canceled) {
 			slog.Info("shutdown requested")
 			return
+		}
+		if errors.Is(err, cli.ErrShutdownForced) || errors.Is(err, cli.ErrShutdownTimeout) {
+			os.Exit(1)
 		}
 
 		slog.Error("command failed", "error", err)
@@ -32,13 +37,17 @@ func main() {
 	}
 }
 
-func newRootCommand(ctx context.Context) *cobra.Command {
+func newRootCommand(ctx context.Context, shutdownControllers ...*cli.ShutdownController) *cobra.Command {
 	build := currentBuildInfo()
-	cmd := cli.NewRootCommand(ctx,
+	opts := []cli.Option{
 		cli.WithVersion(build.Version),
 		cli.WithBuild(build),
 		cli.WithLoggerFunc(setupLoggerFromRuntime),
-	)
+	}
+	if len(shutdownControllers) > 0 && shutdownControllers[0] != nil {
+		opts = append(opts, cli.WithShutdownController(shutdownControllers[0]))
+	}
+	cmd := cli.NewRootCommand(ctx, opts...)
 	cmd.Version = build.Version
 	cmd.SetVersionTemplate("{{.Version}}\n")
 	cmd.AddCommand(

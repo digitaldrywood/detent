@@ -62,6 +62,8 @@ worker:
   max_concurrent_agents_per_host: 2
 agent:
   max_concurrent_agents: 5
+  shutdown:
+    drain_timeout_ms: 300000
   max_concurrent_agents_by_state:
     Merging: 1
   dispatch_priority_by_state:
@@ -199,6 +201,9 @@ Ticket prompt {{ issue.title }}
 	if got := cfg.Agent.MaxConcurrentAgentsByState["merging"]; got != 1 {
 		t.Fatalf("Agent.MaxConcurrentAgentsByState[merging] = %d, want 1", got)
 	}
+	if cfg.Agent.Shutdown.DrainTimeoutMS != 300000 {
+		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want 300000", cfg.Agent.Shutdown.DrainTimeoutMS)
+	}
 	if got := cfg.Agent.DispatchPriorityByState; len(got) != 2 || got[0] != "merging" || got[1] != "rework" {
 		t.Fatalf("Agent.DispatchPriorityByState = %#v", got)
 	}
@@ -273,6 +278,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.MaxConcurrentAgents != 10 {
 		t.Fatalf("Agent.MaxConcurrentAgents = %d, want 10", cfg.Agent.MaxConcurrentAgents)
+	}
+	if cfg.Agent.Shutdown.DrainTimeoutMS != DefaultShutdownDrainTimeoutMS {
+		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want %d", cfg.Agent.Shutdown.DrainTimeoutMS, DefaultShutdownDrainTimeoutMS)
 	}
 	if cfg.Agent.Lessons.Path != ".detent/lessons.md" {
 		t.Fatalf("Agent.Lessons.Path = %q", cfg.Agent.Lessons.Path)

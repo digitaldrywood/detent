@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -146,6 +147,136 @@ func TestRunReportsRunningStateWhileRunnerIsInFlight(t *testing.T) {
 		_, completed := state.Completed[issue.ID]
 		return completed
 	})
+}
+
+func TestDrainStopsDispatchAndLetsRunningSessionFinish(t *testing.T) {
+	t.Parallel()
+
+	runningIssue := testIssue("issue-running", "digitaldrywood/detent#11", "In Progress")
+	nextIssue := testIssue("issue-next", "digitaldrywood/detent#12", "Todo")
+	tracker := newFakeConnector(runningIssue, nextIssue)
+	runner := newBlockingRunner()
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:            5 * time.Millisecond,
+		MaxConcurrentAgents:     1,
+		DispatchPriorityByState: []string{"In Progress", "Todo"},
+		ActiveStates:            []string{"Todo", "In Progress"},
+		TerminalStates:          []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay:  time.Millisecond,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	started := receiveRunRequest(t, runner.started)
+	if started.Issue.ID != runningIssue.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", started.Issue.ID, runningIssue.ID)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := orch.Drain(ctx); err != nil {
+		t.Fatalf("Drain() error = %v", err)
+	}
+
+	state, err := orch.State(context.Background())
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+	if !state.Draining {
+		t.Fatal("State().Draining = false, want true")
+	}
+
+	close(runner.release)
+	waitForState(t, orch, func(state orchestrator.State) bool {
+		return state.Draining && len(state.Running) == 0
+	})
+
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected dispatch while draining = %#v", request)
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	state, err = orch.State(context.Background())
+	if err != nil {
+		t.Fatalf("State() final error = %v", err)
+	}
+	if _, ok := state.Retry[runningIssue.ID]; ok {
+		t.Fatalf("Retry[%q] present after drain completion", runningIssue.ID)
+	}
+	if _, ok := state.Running[nextIssue.ID]; ok {
+		t.Fatalf("Running[%q] present while draining", nextIssue.ID)
+	}
+}
+
+func TestForceQuitInterruptsRunningSessionAndAbandonsClaim(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-force", "digitaldrywood/detent#383", "In Progress")
+	tracker := newFakeConnector(issue)
+	runner := newBlockingRunner()
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        5 * time.Millisecond,
+		MaxConcurrentAgents: 1,
+		Claiming: orchestrator.ClaimingConfig{
+			Enabled:           true,
+			OwnershipMode:     workflowconfig.IdentityOwnershipField,
+			Owner:             "detent-test",
+			OwnerField:        "Owner",
+			LeaseField:        "Lease",
+			LeaseTTL:          time.Minute,
+			HeartbeatInterval: time.Hour,
+		},
+		ActiveStates:           []string{"In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay: time.Millisecond,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	receiveRunRequest(t, runner.started)
+	waitForState(t, orch, func(state orchestrator.State) bool {
+		_, running := state.Running[issue.ID]
+		_, claimed := state.Claimed[issue.ID]
+		return running && claimed
+	})
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := orch.ForceQuit(ctx); err != nil {
+		t.Fatalf("ForceQuit() error = %v", err)
+	}
+
+	state, err := orch.State(context.Background())
+	if err != nil {
+		t.Fatalf("State() error = %v", err)
+	}
+	if !state.Draining {
+		t.Fatal("State().Draining = false, want true")
+	}
+	if _, ok := state.Running[issue.ID]; ok {
+		t.Fatalf("Running[%q] present after force quit", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after force quit", issue.ID)
+	}
+	if !tracker.hasSetField(issue.ID, "Lease", "") {
+		t.Fatalf("SetField(%q, Lease, empty) not recorded; calls = %#v", issue.ID, tracker.setFieldCalls())
+	}
 }
 
 func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
@@ -948,6 +1079,13 @@ type fakeConnector struct {
 	fetchCandidateCount int
 	fetchByStatesCount  int
 	fetchByStatesLog    [][]string
+	setFields           []setFieldCall
+}
+
+type setFieldCall struct {
+	issueID string
+	field   string
+	value   string
 }
 
 func newFakeConnector(issues ...connector.Issue) *fakeConnector {
@@ -1016,8 +1154,49 @@ func (c *fakeConnector) SetAssignee(context.Context, string, string) error {
 	return nil
 }
 
-func (c *fakeConnector) SetField(context.Context, string, string, string) error {
+func (c *fakeConnector) SetField(_ context.Context, issueID string, field string, value string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.setFields = append(c.setFields, setFieldCall{issueID: issueID, field: field, value: value})
+	for i := range c.candidates {
+		if c.candidates[i].ID != issueID {
+			continue
+		}
+		if c.candidates[i].Fields == nil {
+			c.candidates[i].Fields = map[string]string{}
+		}
+		c.candidates[i].Fields[field] = value
+	}
+	for i := range c.stateIssues {
+		if c.stateIssues[i].ID != issueID {
+			continue
+		}
+		if c.stateIssues[i].Fields == nil {
+			c.stateIssues[i].Fields = map[string]string{}
+		}
+		c.stateIssues[i].Fields[field] = value
+	}
 	return nil
+}
+
+func (c *fakeConnector) hasSetField(issueID string, field string, value string) bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, call := range c.setFields {
+		if call.issueID == issueID && call.field == field && call.value == value {
+			return true
+		}
+	}
+	return false
+}
+
+func (c *fakeConnector) setFieldCalls() []setFieldCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]setFieldCall(nil), c.setFields...)
 }
 
 func (c *fakeConnector) fetchCandidateCalls() int {
@@ -1229,6 +1408,12 @@ func cloneIssues(issues []connector.Issue) []connector.Issue {
 		}
 		cloned[i].BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
 		cloned[i].Labels = append([]string(nil), issue.Labels...)
+		if issue.Fields != nil {
+			cloned[i].Fields = make(map[string]string, len(issue.Fields))
+			for key, value := range issue.Fields {
+				cloned[i].Fields[key] = value
+			}
+		}
 	}
 	return cloned
 }

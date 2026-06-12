@@ -13,6 +13,8 @@ type State struct {
 	PollInterval             time.Duration
 	MaxConcurrentAgents      int
 	Instance                 telemetry.Instance
+	Draining                 bool
+	DrainStartedAt           time.Time
 	LastRefreshAt            time.Time
 	NextRefreshAt            time.Time
 	LastRunningReconcileAt   time.Time
@@ -111,6 +113,8 @@ func (s State) clone() State {
 		PollInterval:             s.PollInterval,
 		MaxConcurrentAgents:      s.MaxConcurrentAgents,
 		Instance:                 s.Instance,
+		Draining:                 s.Draining,
+		DrainStartedAt:           s.DrainStartedAt,
 		LastRefreshAt:            s.LastRefreshAt,
 		NextRefreshAt:            s.NextRefreshAt,
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,

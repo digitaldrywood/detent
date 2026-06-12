@@ -182,6 +182,8 @@ func (s *Server) handleHTTPError(err error, c echo.Context) {
 func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time) stateAPIResponse {
 	return stateAPIResponse{
 		GeneratedAt:    generatedAt,
+		Status:         runtimeStatus(snapshot),
+		Shutdown:       shutdownResponse(snapshot.Shutdown),
 		Counts:         countsResponse(snapshot),
 		Running:        runningEntries(snapshot.Running),
 		Retrying:       retryEntries(snapshot.Queue),
@@ -194,6 +196,28 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time) stateAPIR
 		RecentSessions: recentSessionEntries(snapshot.Completed),
 		RateLimits:     snapshot.RateLimits,
 		Budget:         budgetResponse(snapshot.Budget),
+	}
+}
+
+func runtimeStatus(snapshot telemetry.Snapshot) string {
+	if snapshot.Shutdown.Draining {
+		return "draining"
+	}
+	return "running"
+}
+
+func shutdownResponse(shutdown telemetry.Shutdown) shutdownAPIResponse {
+	status := strings.TrimSpace(shutdown.Status)
+	if status == "" {
+		status = "running"
+	}
+	return shutdownAPIResponse{
+		Status:            status,
+		Draining:          shutdown.Draining,
+		SessionsRemaining: shutdown.SessionsRemaining,
+		RequestedAt:       timestampStringPtr(shutdown.RequestedAt),
+		CompletedAt:       timestampStringPtr(shutdown.CompletedAt),
+		Result:            optionalString(strings.TrimSpace(shutdown.Result)),
 	}
 }
 
@@ -840,6 +864,8 @@ func snapshotErrorResponse(generatedAt time.Time, code string, message string) s
 
 type stateAPIResponse struct {
 	GeneratedAt    time.Time                  `json:"generated_at"`
+	Status         string                     `json:"status"`
+	Shutdown       shutdownAPIResponse        `json:"shutdown"`
 	Counts         countsAPIResponse          `json:"counts"`
 	Running        []runningAPIResponse       `json:"running"`
 	Retrying       []retryAPIResponse         `json:"retrying"`
@@ -852,6 +878,15 @@ type stateAPIResponse struct {
 	RecentSessions []recentSessionAPIResponse `json:"recent_sessions"`
 	RateLimits     *telemetry.RateLimits      `json:"rate_limits"`
 	Budget         budgetAPIResponse          `json:"budget"`
+}
+
+type shutdownAPIResponse struct {
+	Status            string  `json:"status"`
+	Draining          bool    `json:"draining"`
+	SessionsRemaining int     `json:"sessions_remaining"`
+	RequestedAt       *string `json:"requested_at,omitempty"`
+	CompletedAt       *string `json:"completed_at,omitempty"`
+	Result            *string `json:"result,omitempty"`
 }
 
 type boardAPIResponse struct {

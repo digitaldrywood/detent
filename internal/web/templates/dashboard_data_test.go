@@ -48,6 +48,26 @@ func TestThroughputRateFormatsRollingTokenTPS(t *testing.T) {
 	}
 }
 
+func TestRuntimeStatusReflectsDraining(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
+		Shutdown: telemetry.Shutdown{
+			Status:            "draining",
+			Draining:          true,
+			SessionsRemaining: 2,
+		},
+	}
+
+	if got := runtimeStatusLabel(snapshot); got != "Draining" {
+		t.Fatalf("runtimeStatusLabel() = %q, want Draining", got)
+	}
+	if got := runtimeStatusClass(snapshot); got != "border-warning-soft bg-warning-soft text-warning" {
+		t.Fatalf("runtimeStatusClass() = %q, want warning class", got)
+	}
+}
+
 func TestThroughputTrendPoints(t *testing.T) {
 	t.Parallel()
 

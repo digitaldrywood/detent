@@ -405,6 +405,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 		current.DashboardURL = next.DashboardURL
 	}
 	current.Refresh = mergeRefresh(current.Refresh, next.Refresh)
+	current.Shutdown = mergeShutdown(current.Shutdown, next.Shutdown)
 
 	current.Running = append(current.Running, next.Running...)
 	current.Queue = append(current.Queue, next.Queue...)
@@ -458,6 +459,37 @@ func stampIssueProjectID(issue telemetry.Issue, projectID string) telemetry.Issu
 		issue.ProjectID = projectID
 	}
 	return issue
+}
+
+func mergeShutdown(current, next telemetry.Shutdown) telemetry.Shutdown {
+	if next == (telemetry.Shutdown{}) {
+		if current == (telemetry.Shutdown{}) {
+			return telemetry.Shutdown{Status: "running"}
+		}
+		return current
+	}
+	if current == (telemetry.Shutdown{}) {
+		current = telemetry.Shutdown{Status: "running"}
+	}
+	if strings.TrimSpace(next.Status) == "" {
+		next.Status = "running"
+	}
+	if !current.Draining && !next.Draining {
+		if current.Status == "" || current.Status == "running" {
+			current.Status = next.Status
+		}
+		return current
+	}
+
+	current.Status = "draining"
+	current.Draining = current.Draining || next.Draining
+	current.SessionsRemaining += next.SessionsRemaining
+	current.RequestedAt = earliestTime(current.RequestedAt, next.RequestedAt)
+	current.CompletedAt = latestTime(current.CompletedAt, next.CompletedAt)
+	if strings.TrimSpace(next.Result) != "" {
+		current.Result = next.Result
+	}
+	return current
 }
 
 func projectSnapshot(snapshot telemetry.Snapshot) telemetry.ProjectSnapshot {

@@ -104,6 +104,8 @@ type Orchestrator struct {
 	logger             *slog.Logger
 	globalDispatchGate scheduler.ProjectDispatchGate
 	stateRequests      chan stateRequest
+	drainRequests      chan drainRequest
+	forceRequests      chan forceRequest
 	configUpdates      chan configUpdateRequest
 	refreshes          chan time.Time
 	runResults         chan runpkg.Completion
@@ -113,6 +115,17 @@ type Orchestrator struct {
 
 type stateRequest struct {
 	reply chan State
+}
+
+type drainRequest struct {
+	at    time.Time
+	reply chan struct{}
+}
+
+type forceRequest struct {
+	ctx   context.Context
+	at    time.Time
+	reply chan error
 }
 
 type configUpdateRequest struct {
@@ -206,6 +219,8 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		logger:             logger,
 		globalDispatchGate: deps.GlobalDispatchGate,
 		stateRequests:      make(chan stateRequest),
+		drainRequests:      make(chan drainRequest),
+		forceRequests:      make(chan forceRequest),
 		configUpdates:      make(chan configUpdateRequest),
 		refreshes:          make(chan time.Time, 1),
 		runResults:         make(chan runpkg.Completion),
@@ -242,6 +257,11 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 			o.handleRunResult(&state, result)
 		case update := <-o.runUpdates:
 			o.handleRunUpdate(&state, update)
+		case request := <-o.drainRequests:
+			o.startDrain(&state, request.at)
+			request.reply <- struct{}{}
+		case request := <-o.forceRequests:
+			request.reply <- o.forceQuit(request.ctx, &state, request.at)
 		case update := <-o.configUpdates:
 			o.applyRuntimeUpdate(&state, update.update, ticker)
 			update.reply <- struct{}{}
@@ -310,6 +330,61 @@ func (o *Orchestrator) State(ctx context.Context) (State, error) {
 		return State{}, ErrStopped
 	case state := <-request.reply:
 		return state, nil
+	}
+}
+
+func (o *Orchestrator) Drain(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	request := drainRequest{
+		at:    time.Now().UTC(),
+		reply: make(chan struct{}, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case o.drainRequests <- request:
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case <-request.reply:
+		return nil
+	}
+}
+
+func (o *Orchestrator) ForceQuit(ctx context.Context) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+
+	request := forceRequest{
+		ctx:   ctx,
+		at:    time.Now().UTC(),
+		reply: make(chan error, 1),
+	}
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case o.forceRequests <- request:
+	}
+
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-o.done:
+		return ErrStopped
+	case err := <-request.reply:
+		return err
 	}
 }
 
@@ -873,8 +948,79 @@ func blockedStatusReason(issue connector.Issue) string {
 	return blockedReasonProjectStatus
 }
 
+func (o *Orchestrator) startDrain(state *State, now time.Time) {
+	if state == nil {
+		return
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	if !state.Draining {
+		state.Draining = true
+		state.DrainStartedAt = now
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "shutdown_drain_started",
+			Message: "shutdown drain started",
+		})
+	}
+	o.markGlobalProjectIdle()
+}
+
+func (o *Orchestrator) forceQuit(ctx context.Context, state *State, now time.Time) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if state == nil {
+		return nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	state.Draining = true
+	if state.DrainStartedAt.IsZero() {
+		state.DrainStartedAt = now
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "shutdown_force_requested",
+		Message: "shutdown force requested",
+	})
+
+	var err error
+	for _, issueID := range sortedKeys(state.Running) {
+		o.cancelRunning(state, issueID)
+		err = errors.Join(err, o.abandonClaim(ctx, issueID))
+		delete(state.Running, issueID)
+		delete(state.Claimed, issueID)
+		delete(state.Retry, issueID)
+		delete(state.BudgetRefusals, issueID)
+	}
+	o.markGlobalProjectIdle()
+	return err
+}
+
+func (o *Orchestrator) abandonClaim(ctx context.Context, issueID string) error {
+	if !o.cfg.Claiming.Enabled || strings.TrimSpace(o.cfg.Claiming.LeaseField) == "" {
+		return nil
+	}
+	if strings.TrimSpace(issueID) == "" || o.connector == nil {
+		return nil
+	}
+	if err := o.connector.SetField(ctx, issueID, o.cfg.Claiming.LeaseField, ""); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("abandon claim lease failed", "issue_id", issueID, "error", err)
+		}
+		return err
+	}
+	return nil
+}
+
 func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
 	o.markGlobalProjectIdle()
+	if state.Draining {
+		return
+	}
 	planner := o.dispatchPlanner()
 	planner.plan(state, issues, now, dispatchPlanHooks{
 		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
@@ -916,6 +1062,9 @@ func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, issue connector
 
 func (o *Orchestrator) dispatchCandidates(ctx context.Context, state *State, issues []connector.Issue, now time.Time) {
 	o.markGlobalProjectIdle()
+	if state.Draining {
+		return
+	}
 	for _, issue := range issues {
 		if availableSlots(state) == 0 {
 			return
@@ -1183,6 +1332,9 @@ func (o *Orchestrator) handleRunResult(state *State, event runpkg.Completion) {
 		state.BudgetRefusals[event.IssueID] = refusal
 	}
 
+	if state.Draining {
+		return
+	}
 	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
 }
 

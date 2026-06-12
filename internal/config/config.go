@@ -29,8 +29,9 @@ const (
 	DefaultAgentBackendID = "codex"
 	AgentBackendCodex     = "codex"
 
-	DefaultPollingIntervalMS = 120000
-	MinPollingIntervalMS     = 60000
+	DefaultPollingIntervalMS      = 120000
+	MinPollingIntervalMS          = 60000
+	DefaultShutdownDrainTimeoutMS = 600000
 
 	defaultCodexProtocol = "app-server"
 
@@ -119,12 +120,17 @@ type Agent struct {
 	MaxConcurrentAgents        int            `yaml:"max_concurrent_agents"`
 	MaxTurns                   int            `yaml:"max_turns"`
 	MaxRetryBackoffMS          int            `yaml:"max_retry_backoff_ms"`
+	Shutdown                   Shutdown       `yaml:"shutdown"`
 	MaxConcurrentAgentsByState map[string]int `yaml:"max_concurrent_agents_by_state"`
 	DispatchPriorityByState    []string       `yaml:"dispatch_priority_by_state"`
 	AutoPromote                AutoPromote    `yaml:"auto_promote"`
 	Budget                     Budget         `yaml:"budget"`
 	Lessons                    Lessons        `yaml:"lessons"`
 	Skills                     Skills         `yaml:"skills"`
+}
+
+type Shutdown struct {
+	DrainTimeoutMS int `yaml:"drain_timeout_ms"`
 }
 
 type Agents struct {
@@ -459,6 +465,7 @@ func Default() Config {
 			MaxConcurrentAgents:        10,
 			MaxTurns:                   20,
 			MaxRetryBackoffMS:          300000,
+			Shutdown:                   Shutdown{DrainTimeoutMS: DefaultShutdownDrainTimeoutMS},
 			MaxConcurrentAgentsByState: map[string]int{},
 			DispatchPriorityByState:    []string{},
 			AutoPromote: AutoPromote{
@@ -652,12 +659,19 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	validatePositive(prefix+".max_concurrent_agents", a.MaxConcurrentAgents, problems)
 	validatePositive(prefix+".max_turns", a.MaxTurns, problems)
 	validatePositive(prefix+".max_retry_backoff_ms", a.MaxRetryBackoffMS, problems)
+	a.Shutdown.validate(prefix+".shutdown", problems)
 	validateStateLimits(prefix+".max_concurrent_agents_by_state", a.MaxConcurrentAgentsByState, problems)
 	validateStateList(prefix+".dispatch_priority_by_state", a.DispatchPriorityByState, problems)
 	a.AutoPromote.validate(prefix+".auto_promote", problems)
 	a.Budget.validate(prefix+".budget", problems)
 	a.Lessons.validate(prefix+".lessons", problems)
 	a.Skills.validate(prefix+".skills", problems)
+}
+
+func (s Shutdown) validate(prefix string, problems *[]string) {
+	if s.DrainTimeoutMS < 0 {
+		*problems = append(*problems, prefix+".drain_timeout_ms must be greater than or equal to 0")
+	}
 }
 
 func (a *Agents) normalize() {
