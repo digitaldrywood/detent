@@ -220,21 +220,59 @@ grounded recommendation per Phase 2 question, then interview the human.
 
 7. **Inspect priority counts for reuse candidates.** `priority_in` depends on
    the ProjectV2 `Priority` field, so gather counts from the strongest reuse
-   candidate with one saved query result. For large boards, paginate once into
-   the same artifact instead of repeatedly calling `gh project item-list
-   --limit 1000`. For a new board, record an empty count table and recommend
-   no `priority_in` filter until issues have been added and ranked. Verify:
+   candidate with one paginated inventory pass saved to a local artifact. Do
+   not repeatedly call `gh project item-list --limit 1000`. For a new board,
+   record an empty count table and recommend no `priority_in` filter until
+   issues have been added and ranked. Verify:
 
    ```sh
    REUSE_PROJECT_NODE_ID="<reuse-candidate-project-node-id-or-empty>"
    if test -n "$REUSE_PROJECT_NODE_ID"; then
-     gh api graphql \
-       -f project="$REUSE_PROJECT_NODE_ID" \
-       -f query='query($project:ID!){node(id:$project){... on ProjectV2{items(first:100){nodes{content{... on Issue{state repository{nameWithOwner}}}priorityValue:fieldValueByName(name:"Priority"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}' \
-       > "$ONBOARDING_DIR/priority-items.json"
-     jq --arg repo '<repo-owner>/<repo-name>' \
-       '[.data.node.items.nodes[] | select(.content.repository.nameWithOwner == $repo and .content.state == "OPEN") | (.priorityValue.name // "No priority")] | sort | group_by(.) | map({name: .[0], count: length})' \
-       "$ONBOARDING_DIR/priority-items.json" > "$ONBOARDING_DIR/priority-counts.json"
+     PRIORITY_QUERY='
+       query($project: ID!, $after: String) {
+         node(id: $project) {
+           ... on ProjectV2 {
+             items(first: 100, after: $after) {
+               pageInfo { hasNextPage endCursor }
+               nodes {
+                 content {
+                   ... on Issue {
+                     state
+                     repository { nameWithOwner }
+                   }
+                 }
+                 priorityValue: fieldValueByName(name: "Priority") {
+                   ... on ProjectV2ItemFieldSingleSelectValue { name }
+                 }
+               }
+             }
+           }
+         }
+       }'
+     : > "$ONBOARDING_DIR/priority-items.jsonl"
+     AFTER=""
+     while :; do
+       if test -n "$AFTER"; then
+         gh api graphql \
+           -f project="$REUSE_PROJECT_NODE_ID" \
+           -f after="$AFTER" \
+           -f query="$PRIORITY_QUERY" \
+           > "$ONBOARDING_DIR/priority-page.json"
+       else
+         gh api graphql \
+           -f project="$REUSE_PROJECT_NODE_ID" \
+           -f query="$PRIORITY_QUERY" \
+           > "$ONBOARDING_DIR/priority-page.json"
+       fi
+       jq -c '.data.node.items.nodes[]' "$ONBOARDING_DIR/priority-page.json" \
+         >> "$ONBOARDING_DIR/priority-items.jsonl"
+       jq -e '.data.node.items.pageInfo.hasNextPage' "$ONBOARDING_DIR/priority-page.json" \
+         >/dev/null || break
+       AFTER="$(jq -r '.data.node.items.pageInfo.endCursor' "$ONBOARDING_DIR/priority-page.json")"
+     done
+     jq -s --arg repo '<repo-owner>/<repo-name>' \
+       '[.[] | select(.content.repository.nameWithOwner == $repo and .content.state == "OPEN") | (.priorityValue.name // "No priority")] | sort | group_by(.) | map({name: .[0], count: length})' \
+       "$ONBOARDING_DIR/priority-items.jsonl" > "$ONBOARDING_DIR/priority-counts.json"
    else
      printf '[]\n' > "$ONBOARDING_DIR/priority-counts.json"
    fi
