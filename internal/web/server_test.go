@@ -1298,6 +1298,8 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 		"paused true",
 		"github",
 		projectURL,
+		"Dependency auto-unblock",
+		"enabled: Blocked, Waiting -&gt; Todo when terminal_or_merged",
 		dbPath,
 		logPath,
 		"127.0.0.1:4101",
@@ -2675,6 +2677,10 @@ func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot
 	workflowCfg.Tracker.Endpoint = "https://api.github.com/graphql"
 	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
 	workflowCfg.Tracker.ProjectSlug = projectURL
+	workflowCfg.Tracker.DependencyAutoUnblock.Enabled = true
+	workflowCfg.Tracker.DependencyAutoUnblock.SourceStates = []string{"Blocked", "Waiting"}
+	workflowCfg.Tracker.DependencyAutoUnblock.TargetState = "Todo"
+	workflowCfg.Tracker.DependencyAutoUnblock.Readiness = workflowconfig.DependencyReadinessTerminalOrMerged
 	workflowCfg.Workspace.Root = worktreeRoot
 	workflowCfg.Workspace.SourceRoot = cfg.Workdir
 

@@ -53,6 +53,7 @@ type Config struct {
 	Project                       scheduler.ProjectCandidate
 	Claiming                      ClaimingConfig
 	AutoPromote                   AutoPromoteConfig
+	DependencyAutoUnblock         DependencyAutoUnblockConfig
 	ActiveStates                  []string
 	ObservedStates                []string
 	TerminalStates                []string
@@ -165,6 +166,12 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			OptoutLabel:        cfg.Agent.AutoPromote.OptoutLabel,
 			AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
 			Gate:               gate.Effective(cfg.Gate),
+		}),
+		DependencyAutoUnblock: normalizeDependencyAutoUnblockConfig(DependencyAutoUnblockConfig{
+			Enabled:      cfg.Tracker.DependencyAutoUnblock.Enabled,
+			SourceStates: append([]string(nil), cfg.Tracker.DependencyAutoUnblock.SourceStates...),
+			TargetState:  cfg.Tracker.DependencyAutoUnblock.TargetState,
+			Readiness:    cfg.Tracker.DependencyAutoUnblock.Readiness,
 		}),
 		ActiveStates:                  append([]string(nil), cfg.Tracker.ActiveStates...),
 		ObservedStates:                append([]string(nil), cfg.Tracker.ObservedStates...),
@@ -388,8 +395,13 @@ func (o *Orchestrator) ForceQuit(ctx context.Context) error {
 	}
 }
 
-func observedStatusFetchStates() []string {
-	return append([]string{blockedStatusState}, prPipelineFetchStates()...)
+func (o *Orchestrator) observedStatusFetchStates() []string {
+	states := append([]string{blockedStatusState}, prPipelineFetchStates()...)
+	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
+	if cfg.Enabled {
+		states = append(states, cfg.SourceStates...)
+	}
+	return displayStateNames(states)
 }
 
 func prPipelineFetchStates() []string {
@@ -407,6 +419,43 @@ func prPipelineFetchStates() []string {
 		states = append(states, state)
 	}
 	return states
+}
+
+func displayStateNames(states []string) []string {
+	out := make([]string, 0, len(states))
+	seen := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		key := normalizeState(state)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, displayStateName(state))
+	}
+	return out
+}
+
+func displayStateName(state string) string {
+	state = strings.TrimSpace(state)
+	switch normalizeState(state) {
+	case "blocked":
+		return blockedStatusState
+	case "human review":
+		return autoPromoteSourceState
+	case "merging":
+		return autoPromoteMergingState
+	case "rework":
+		return autoPromoteReworkState
+	case "todo":
+		return "Todo"
+	case "in progress":
+		return "In Progress"
+	default:
+		return state
+	}
 }
 
 func issuesInStates(issues []connector.Issue, states []string) []connector.Issue {
@@ -1501,6 +1550,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
 	cfg.Claiming = normalizeClaimingConfig(cfg.Claiming)
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
+	cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock)
 	cfg.Authorization.Normalize()
 	cfg.SelectorContext.InstanceLogin = strings.TrimSpace(cfg.SelectorContext.InstanceLogin)
 	cfg.SelectorContext.Persona = strings.TrimSpace(cfg.SelectorContext.Persona)
