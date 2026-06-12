@@ -1,6 +1,7 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -23,6 +24,7 @@ const KindLocalGit = "local_git"
 
 const defaultHookTimeout = time.Minute
 const workspaceCommandWaitDelay = time.Second
+const hookOutputTailBytes = 16 * 1024
 
 var (
 	ErrHookFailed         = errors.New("workspace hook failed")
@@ -105,16 +107,43 @@ func (e *PathError) Unwrap() error {
 
 type HookError struct {
 	Hook     string
+	Command  string
+	Dir      string
 	ExitCode int
+	LogPath  string
 	Output   string
 	Err      error
 }
 
 func (e *HookError) Error() string {
-	if e.Err != nil {
-		return fmt.Sprintf("%s: %s: %v", ErrHookFailed, e.Hook, e.Err)
+	parts := []string{}
+	if e.Command != "" {
+		parts = append(parts, fmt.Sprintf("command %q", e.Command))
 	}
-	return fmt.Sprintf("%s: %s exited with status %d", ErrHookFailed, e.Hook, e.ExitCode)
+	if e.Dir != "" {
+		parts = append(parts, fmt.Sprintf("working directory %q", e.Dir))
+	}
+	if e.ExitCode >= 0 {
+		parts = append(parts, fmt.Sprintf("exit status %d", e.ExitCode))
+	}
+	if e.LogPath != "" {
+		parts = append(parts, fmt.Sprintf("hook log %q", e.LogPath))
+	}
+
+	detail := ""
+	if len(parts) > 0 {
+		detail = " (" + strings.Join(parts, "; ") + ")"
+	}
+
+	output := hookOutputTail(e.Output, hookOutputTailBytes)
+	if output != "" {
+		detail += fmt.Sprintf("\noutput (last %d KiB):\n%s", hookOutputTailBytes/1024, output)
+	}
+
+	if e.Err != nil {
+		return fmt.Sprintf("%s: %s: %v%s", ErrHookFailed, e.Hook, e.Err, detail)
+	}
+	return fmt.Sprintf("%s: %s exited with status %d%s", ErrHookFailed, e.Hook, e.ExitCode, detail)
 }
 
 func (e *HookError) Unwrap() error {
@@ -509,7 +538,12 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 	cmd.Env = hookEnv(info, issue)
 	cmd.WaitDelay = workspaceCommandWaitDelay
 
-	l.logger.Info("running workspace hook", slog.String("hook", name), slog.String("path", info.Path))
+	l.logger.Info(
+		"running workspace hook",
+		slog.String("hook", name),
+		slog.String("path", info.Path),
+		slog.String("command", command),
+	)
 
 	output, err := cmd.CombinedOutput()
 	if err == nil {
@@ -528,12 +562,91 @@ func (l *LocalGit) runHook(ctx context.Context, name string, command string, inf
 		err = hookCtx.Err()
 	}
 
-	return &HookError{
+	logPath, logErr := l.writeHookLog(name, command, info, exitCode, err, output)
+	hookErr := &HookError{
 		Hook:     name,
+		Command:  command,
+		Dir:      info.Path,
 		ExitCode: exitCode,
+		LogPath:  logPath,
 		Output:   string(output),
 		Err:      err,
 	}
+	if logErr != nil {
+		l.logger.Warn(
+			"workspace hook log write failed",
+			slog.String("hook", name),
+			slog.String("path", info.Path),
+			slog.String("command", command),
+			slog.Any("error", logErr),
+		)
+	}
+	l.logger.Warn(
+		"workspace hook failed",
+		slog.String("hook", name),
+		slog.String("path", info.Path),
+		slog.String("command", command),
+		slog.Int("exit_code", exitCode),
+		slog.String("log_path", logPath),
+		slog.String("output_tail", hookOutputTail(string(output), hookOutputTailBytes)),
+		slog.Any("error", err),
+	)
+	return hookErr
+}
+
+func (l *LocalGit) writeHookLog(
+	name string,
+	command string,
+	info Info,
+	exitCode int,
+	err error,
+	output []byte,
+) (string, error) {
+	root := strings.TrimSpace(l.root)
+	if root == "" {
+		root = strings.TrimSpace(info.Path)
+	}
+	if root == "" {
+		return "", errors.New("workspace hook log root is empty")
+	}
+	dir := filepath.Join(root, ".detent", "hook-logs", SafeKey(info.Key))
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	path := filepath.Join(dir, hookLogFileName(name, time.Now().UTC(), os.Getpid()))
+
+	var buf bytes.Buffer
+	fmt.Fprintf(&buf, "hook: %s\n", name)
+	fmt.Fprintf(&buf, "command: %s\n", command)
+	fmt.Fprintf(&buf, "working_directory: %s\n", info.Path)
+	fmt.Fprintf(&buf, "exit_status: %d\n", exitCode)
+	if err != nil {
+		fmt.Fprintf(&buf, "error: %s\n", err)
+	}
+	fmt.Fprint(&buf, "\noutput:\n")
+	fmt.Fprint(&buf, string(output))
+	if len(output) > 0 && output[len(output)-1] != '\n' {
+		fmt.Fprint(&buf, "\n")
+	}
+
+	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+		return "", err
+	}
+	return path, nil
+}
+
+func hookLogFileName(name string, at time.Time, pid int) string {
+	return at.Format("20060102T150405.000000000Z") + "-" + SafeKey(name) + fmt.Sprintf("-%d.log", pid)
+}
+
+func hookOutputTail(output string, limit int) string {
+	if limit <= 0 || output == "" {
+		return ""
+	}
+	if len(output) <= limit {
+		return output
+	}
+	return "[truncated to last " + fmt.Sprint(limit/1024) + " KiB]\n" + output[len(output)-limit:]
 }
 
 func (l *LocalGit) runGit(ctx context.Context, args ...string) (string, error) {
