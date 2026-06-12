@@ -667,16 +667,19 @@ recommendation, and default-if-silent. Record answers in
    ExecStart=/home/<user>/.local/bin/detent --headless --host <dashboard-host> --port <port>
    ```
 
-   In another shell, verify the listener and the local API:
+   In another shell, verify the listener and the API URL that should work from
+   that shell. Use `127.0.0.1` for localhost-only binds, the selected
+   private/Tailscale IP for VPN-only binds, or `127.0.0.1` for same-host
+   checks when binding `0.0.0.0`:
 
    ```sh
    ss -ltnp | rg ':<port>|detent'
-   curl -fsS http://127.0.0.1:<port>/health | jq -e '.status == "ok" and .mode == "running"'
-   curl -fsS http://127.0.0.1:<port>/api/v1/state
+   curl -fsS http://<dashboard-check-host>:<port>/health | jq -e '.status == "ok" and .mode == "running"'
+   curl -fsS http://<dashboard-check-host>:<port>/api/v1/state
    ```
 
-   If the chosen host is a private or Tailscale IP, verify the remote URL from
-   another machine on that network:
+   If the chosen host is a private/Tailscale IP or `0.0.0.0`, verify the remote
+   URL from another machine on that network:
 
    ```sh
    curl -fsS http://<tailscale-or-private-ip>:<port>/api/v1/state
