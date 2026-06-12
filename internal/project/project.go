@@ -174,10 +174,9 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		return nil, ErrMissingOrchestrator
 	}
 
-	watcherFactory := deps.WorkflowWatcherFactory
-	if watcherFactory == nil {
-		watcherFactory = defaultWorkflowWatcherFactory
-	}
+	watcherProject := cfg.Project
+	watcherProject.ID = string(id)
+	watcherFactory := resolveWorkflowWatcherFactory(deps, watcherProject, deps.GitHubToken, logger)
 
 	cfg.Project.ID = string(id)
 	return &Project{
@@ -928,8 +927,30 @@ func trackerPriorityMap(value workflowconfig.StringOrMap) map[string]*int {
 	return out
 }
 
-func defaultWorkflowWatcherFactory(path string) (WorkflowWatcher, error) {
-	return configwatcher.New(path)
+func resolveWorkflowWatcherFactory(
+	deps Dependencies,
+	project globalconfig.Project,
+	githubToken string,
+	logger *slog.Logger,
+) WorkflowWatcherFactory {
+	if deps.WorkflowWatcherFactory != nil {
+		return deps.WorkflowWatcherFactory
+	}
+	return func(path string) (WorkflowWatcher, error) {
+		return configwatcher.New(path,
+			configwatcher.WithLoader(func(path string) (workflowconfig.Workflow, error) {
+				workflow, err := workflowconfig.LoadWorkflow(path)
+				if err != nil {
+					return workflow, err
+				}
+				workflow = normalizeWorkflow(workflow)
+				workflow.Config = workflowConfigWithProjectIdentity(project, workflow.Config)
+				workflow.Config = workflowConfigWithGitHubToken(workflow.Config, githubToken)
+				return workflow, nil
+			}),
+			configwatcher.WithLogger(logger),
+		)
+	}
 }
 
 func normalizeWorkflow(workflow workflowconfig.Workflow) workflowconfig.Workflow {

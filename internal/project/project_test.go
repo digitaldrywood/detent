@@ -485,6 +485,75 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 	}
 }
 
+func TestProjectHotReloadAppliesRuntimeGitHubTokenBeforeValidation(t *testing.T) {
+	dir := t.TempDir()
+	workflowPath := filepath.Join(dir, "WORKFLOW.md")
+	writeProjectGitHubWorkflow(t, workflowPath, int(time.Hour/time.Millisecond), "initial")
+
+	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+
+	connectorConfigs := make(chan workflowconfig.Config, 2)
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:       "pyroapex",
+			Workflow: workflowPath,
+			Weight:   1,
+		},
+		Workflow: workflow,
+	}, project.Dependencies{
+		GitHubToken: "global-token",
+		ConnectorFactory: func(cfg workflowconfig.Config) (connector.Connector, error) {
+			connectorConfigs <- cfg
+			return provisioningConnector{}, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	initial := receiveConnectorConfig(t, connectorConfigs)
+	if initial.Tracker.APIKey != "global-token" {
+		t.Fatalf("initial Tracker.APIKey = %q, want runtime token", initial.Tracker.APIKey)
+	}
+
+	if err := got.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	defer func() {
+		if err := got.Stop(context.Background()); err != nil && !errors.Is(err, project.ErrNotRunning) {
+			t.Fatalf("Stop() error = %v", err)
+		}
+	}()
+
+	watcherDelay := time.NewTimer(25 * time.Millisecond)
+	<-watcherDelay.C
+
+	writeProjectGitHubWorkflow(t, workflowPath, 60000, "reloaded")
+	waitForWorkflowPrompt(t, got, "reloaded\n")
+
+	reloaded := receiveConnectorConfig(t, connectorConfigs)
+	if reloaded.Tracker.APIKey != "global-token" {
+		t.Fatalf("reloaded Tracker.APIKey = %q, want runtime token", reloaded.Tracker.APIKey)
+	}
+	if got.Workflow().Prompt != "reloaded\n" {
+		t.Fatalf("Workflow().Prompt = %q, want reloaded", got.Workflow().Prompt)
+	}
+
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker: [\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", workflowPath, err)
+	}
+	select {
+	case extra := <-connectorConfigs:
+		t.Fatalf("connector rebuilt after invalid reload = %#v", extra)
+	case <-time.After(250 * time.Millisecond):
+	}
+	if got.Workflow().Prompt != "reloaded\n" {
+		t.Fatalf("Workflow().Prompt after invalid reload = %q, want last valid workflow", got.Workflow().Prompt)
+	}
+}
+
 func TestProjectStartRunsProvisionerWhenAutoProvisionEnabled(t *testing.T) {
 	t.Parallel()
 
@@ -1047,6 +1116,23 @@ tracker:
 	}
 }
 
+func writeProjectGitHubWorkflow(t *testing.T, path string, intervalMS int, prompt string) {
+	t.Helper()
+
+	raw := fmt.Sprintf(`---
+tracker:
+  kind: github
+  project_slug: PVT_pyroapex
+polling:
+  interval_ms: %d
+---
+%s
+`, intervalMS, prompt)
+	if err := os.WriteFile(path, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+}
+
 func receiveOrchestratorConfig(t *testing.T, ch <-chan orchestrator.Config) orchestrator.Config {
 	t.Helper()
 
@@ -1058,6 +1144,19 @@ func receiveOrchestratorConfig(t *testing.T, ch <-chan orchestrator.Config) orch
 	}
 
 	return orchestrator.Config{}
+}
+
+func receiveConnectorConfig(t *testing.T, ch <-chan workflowconfig.Config) workflowconfig.Config {
+	t.Helper()
+
+	select {
+	case cfg := <-ch:
+		return cfg
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for connector config")
+	}
+
+	return workflowconfig.Config{}
 }
 
 func receiveConnector(t *testing.T, ch <-chan connector.Connector) connector.Connector {
