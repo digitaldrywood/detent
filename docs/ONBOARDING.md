@@ -83,6 +83,48 @@ Use these placeholders consistently:
    git -C <source-root> rev-parse --show-toplevel
    ```
 
+## GitHub GraphQL Rate-Budget Discipline
+
+Treat every `gh project ...` command as GitHub GraphQL work. GitHub
+ProjectV2 is GraphQL-backed, so `gh project list`, `field-list`, `item-list`,
+`item-add`, and `item-edit` spend the same GraphQL primary rate-limit budget
+as Detent's GitHub connector. When `github_token: gh` is configured, the
+operator shell, Detent, and spawned Codex agents all use the same `gh` user
+token and therefore the same user-token GraphQL bucket.
+
+GitHub's documented primary GraphQL limit for user-backed tokens is 5,000
+points per hour. GitHub App installation tokens receive their own
+installation-scoped GraphQL budget and can scale for larger installations.
+
+GitHub reports REST and GraphQL primary limits separately. Check the GraphQL
+bucket before ProjectV2 discovery, before bulk status cleanup, and before the
+first smoke dispatch:
+
+```sh
+gh api rate_limit --jq '.resources.graphql | {limit, used, remaining, reset}'
+```
+
+If the remaining budget is low for the planned board size, stop before
+dispatching an agent. Wait for reset, reduce ProjectV2 inventory work, or move
+Detent to GitHub App installation authentication so the orchestrator receives
+an installation-scoped GraphQL budget instead of sharing the operator's user
+budget.
+
+Use one saved inventory artifact per step. Avoid loops that repeatedly run
+`gh project item-list --limit 1000` for board inventory, status cleanup, or
+smoke verification. Prefer one paginated GraphQL inventory query or one
+`gh project item-list` result written to `$ONBOARDING_DIR`, then run `jq`
+against the local file.
+
+Once an agent is running, stop operator polling against GitHub ProjectV2. The
+agent still needs GraphQL budget for workpad, status, PR, and review activity.
+Use the Detent dashboard or `/api/v1/state` for smoke verification and ongoing
+operator checks.
+
+Future Detent tooling should replace hand-rolled ProjectV2 inventory loops
+with a CLI command or onboarding wizard page that inventories a board once and
+prints status and priority counts from cached data.
+
 ## Phase 1 — Discover And Recommend
 
 Do not ask questions in this phase. Inspect the actual setup, write one
@@ -97,7 +139,22 @@ grounded recommendation per Phase 2 question, then interview the human.
    test -d "$ONBOARDING_DIR"
    ```
 
-2. **Inspect the validation surface.** Prefer a repo-local release gate over an
+2. **Record the initial GitHub GraphQL budget.** Use the REST rate-limit
+   endpoint before the first ProjectV2 discovery command. If the remaining
+   budget is low, record the warning in the recommendation and avoid
+   GraphQL-heavy board inventory until reset or GitHub App auth is available.
+   Verify:
+
+   ```sh
+   gh api rate_limit --jq '.resources.graphql | {limit, used, remaining, reset}' \
+     > "$ONBOARDING_DIR/graphql-rate-limit.before-discovery.json"
+   jq -r '"graphql remaining=\(.remaining) reset=\(.reset)"' \
+     "$ONBOARDING_DIR/graphql-rate-limit.before-discovery.json"
+   jq -e '.remaining >= 1000' "$ONBOARDING_DIR/graphql-rate-limit.before-discovery.json" \
+     || printf 'WARNING: low GitHub GraphQL budget; avoid ProjectV2 inventory loops before reset\n'
+   ```
+
+3. **Inspect the validation surface.** Prefer a repo-local release gate over an
    invented command. If `make check` exists, recommend `gate.kind: command`
    with `gate.run: make check`. If there is no local command but CI is clear,
    recommend the closest local equivalent. If no command can be inferred,
@@ -115,7 +172,7 @@ grounded recommendation per Phase 2 question, then interview the human.
    test -f "$ONBOARDING_DIR/gate.txt"
    ```
 
-3. **Inspect existing global scheduling.** Show the current project table
+4. **Inspect existing global scheduling.** Show the current project table
    before recommending `priority` and `weight`. Recommend `weight: 1` and
    `priority: 3` when no stronger signal exists. Recommend a higher weight or
    lower priority number only when the existing table shows this repo should
@@ -132,7 +189,7 @@ grounded recommendation per Phase 2 question, then interview the human.
    test -s "$ONBOARDING_DIR/global-projects.txt"
    ```
 
-4. **Inspect open issue distribution.** Count candidate issues by label,
+5. **Inspect open issue distribution.** Count candidate issues by label,
    assignee, author, and milestone before recommending authorization and intake
    filters. Verify:
 
@@ -150,7 +207,7 @@ grounded recommendation per Phase 2 question, then interview the human.
    jq -e '.total >= 0' "$ONBOARDING_DIR/issue-counts.json"
    ```
 
-5. **Inspect existing ProjectV2 boards.** Recommend reuse when a board clearly
+6. **Inspect existing ProjectV2 boards.** Recommend reuse when a board clearly
    belongs to this repo or workstream; otherwise recommend creating a new board
    named after the repo or product. This is the ProjectV2 read verification.
    Verify:
@@ -161,33 +218,74 @@ grounded recommendation per Phase 2 question, then interview the human.
    jq -e '.projects | length >= 0' "$ONBOARDING_DIR/projects.json"
    ```
 
-6. **Inspect priority counts for reuse candidates.** `priority_in` depends on
+7. **Inspect priority counts for reuse candidates.** `priority_in` depends on
    the ProjectV2 `Priority` field, so gather counts from the strongest reuse
-   candidate. For a new board, record an empty count table and recommend no
-   `priority_in` filter until issues have been added and ranked. Verify:
+   candidate with one paginated inventory pass saved to a local artifact. Do
+   not repeatedly call `gh project item-list --limit 1000`. For a new board,
+   record an empty count table and recommend no `priority_in` filter until
+   issues have been added and ranked. Verify:
 
    ```sh
    REUSE_PROJECT_NODE_ID="<reuse-candidate-project-node-id-or-empty>"
    if test -n "$REUSE_PROJECT_NODE_ID"; then
-     gh api graphql \
-       -f project="$REUSE_PROJECT_NODE_ID" \
-       -f query='query($project:ID!){node(id:$project){... on ProjectV2{items(first:100){nodes{content{... on Issue{state repository{nameWithOwner}}}priorityValue:fieldValueByName(name:"Priority"){... on ProjectV2ItemFieldSingleSelectValue{name}}}}}}}' \
-       > "$ONBOARDING_DIR/priority-items.json"
-     jq --arg repo '<repo-owner>/<repo-name>' \
-       '[.data.node.items.nodes[] | select(.content.repository.nameWithOwner == $repo and .content.state == "OPEN") | (.priorityValue.name // "No priority")] | sort | group_by(.) | map({name: .[0], count: length})' \
-       "$ONBOARDING_DIR/priority-items.json" > "$ONBOARDING_DIR/priority-counts.json"
+     PRIORITY_QUERY='
+       query($project: ID!, $after: String) {
+         node(id: $project) {
+           ... on ProjectV2 {
+             items(first: 100, after: $after) {
+               pageInfo { hasNextPage endCursor }
+               nodes {
+                 content {
+                   ... on Issue {
+                     state
+                     repository { nameWithOwner }
+                   }
+                 }
+                 priorityValue: fieldValueByName(name: "Priority") {
+                   ... on ProjectV2ItemFieldSingleSelectValue { name }
+                 }
+               }
+             }
+           }
+         }
+       }'
+     : > "$ONBOARDING_DIR/priority-items.jsonl"
+     AFTER=""
+     while :; do
+       if test -n "$AFTER"; then
+         gh api graphql \
+           -f project="$REUSE_PROJECT_NODE_ID" \
+           -f after="$AFTER" \
+           -f query="$PRIORITY_QUERY" \
+           > "$ONBOARDING_DIR/priority-page.json"
+       else
+         gh api graphql \
+           -f project="$REUSE_PROJECT_NODE_ID" \
+           -f query="$PRIORITY_QUERY" \
+           > "$ONBOARDING_DIR/priority-page.json"
+       fi
+       jq -c '.data.node.items.nodes[]' "$ONBOARDING_DIR/priority-page.json" \
+         >> "$ONBOARDING_DIR/priority-items.jsonl"
+       jq -e '.data.node.items.pageInfo.hasNextPage' "$ONBOARDING_DIR/priority-page.json" \
+         >/dev/null || break
+       AFTER="$(jq -r '.data.node.items.pageInfo.endCursor' "$ONBOARDING_DIR/priority-page.json")"
+     done
+     jq -s --arg repo '<repo-owner>/<repo-name>' \
+       '[.[] | select(.content.repository.nameWithOwner == $repo and .content.state == "OPEN") | (.priorityValue.name // "No priority")] | sort | group_by(.) | map({name: .[0], count: length})' \
+       "$ONBOARDING_DIR/priority-items.jsonl" > "$ONBOARDING_DIR/priority-counts.json"
    else
      printf '[]\n' > "$ONBOARDING_DIR/priority-counts.json"
    fi
    jq -e 'type == "array"' "$ONBOARDING_DIR/priority-counts.json"
    ```
 
-7. **Record recommendations before the interview.** The recommendation must
+8. **Record recommendations before the interview.** The recommendation must
    cite the discovery artifact that produced it. Verify:
 
    ```sh
    printf '%s\n' \
      'board: <reuse-or-create recommendation, from projects.json>' \
+     'rate_budget: <GraphQL remaining/reset and low-budget warning, from graphql-rate-limit.before-discovery.json>' \
      'scheduling: <priority/weight recommendation, from global-projects.txt>' \
      'authorization: <filter recommendation, from issue-counts.json and priority-counts.json>' \
      'dashboard_bind: <localhost/private-or-tailscale/all-interfaces recommendation>' \
@@ -197,7 +295,7 @@ grounded recommendation per Phase 2 question, then interview the human.
      'prompt: <template or repo-specific recommendation, from repo docs>' \
      'intake: <bulk-add filter and initial Status recommendation>' \
      > "$ONBOARDING_DIR/recommendations.md"
-   rg -n '^(board|scheduling|authorization|dashboard_bind|gate|concurrency|review_policy|prompt|intake):' \
+   rg -n '^(board|rate_budget|scheduling|authorization|dashboard_bind|gate|concurrency|review_policy|prompt|intake):' \
      "$ONBOARDING_DIR/recommendations.md"
    ```
 
@@ -574,9 +672,11 @@ recommendation, and default-if-silent. Record answers in
 
 3. **Set runtime keys in `global.yaml`.** For local onboarding, prefer
    `github_token: gh` so Detent resolves the token from `gh auth token` at
-   startup. Use a non-4000 port if another Detent instance is already running;
-   keep the dashboard host in `WORKFLOW.md` `server.host` or pass it with
-   `--host`. Verify:
+   startup. This shares the operator's GraphQL budget with Detent and spawned
+   agents; for production or high-volume boards, prefer GitHub App
+   installation authentication in `WORKFLOW.md`. Use a non-4000 port if
+   another Detent instance is already running; keep the dashboard host in
+   `WORKFLOW.md` `server.host` or pass it with `--host`. Verify:
 
    ```sh
    GLOBAL_CONFIG="$(detent config path | awk '/^path:/ {print $2}')"
@@ -592,6 +692,10 @@ recommendation, and default-if-silent. Record answers in
    github_token: gh
    port: <port>
    ```
+
+   GitHub App installation auth is configured in `WORKFLOW.md` with
+   `github_app_id`, `github_app_installation_id`, and either
+   `github_app_private_key` or `github_app_private_key_path`.
 
 4. **Run preflight until every check passes.** Fix every `FAIL`; do not
    dispatch work from a failed doctor run. Verify:
@@ -643,12 +747,17 @@ recommendation, and default-if-silent. Record answers in
    the exact `gh issue list` flags from the intake answer. Use `Backlog` for
    broad intake and `Todo` only for work that should dispatch immediately.
    This verifies the write `project` scope if no earlier board creation,
-   linking, field creation, or item edit has already done so. Verify:
+   linking, field creation, or item edit has already done so.
+   `gh project item-add` and `gh project item-edit` are GraphQL mutations, so
+   do not start a broad intake when the budget warning from Phase 1 is still
+   unresolved. Verify with one cached inventory after the mutations finish:
 
    ```sh
    PROJECT_NODE_ID="$(gh project view <project-number> --owner <project-owner> --format json --jq '.id')"
-   STATUS_FIELD_ID="$(gh project field-list <project-number> --owner <project-owner> --format json --jq '.fields[] | select(.name == "Status") | .id')"
-   STATUS_OPTION_ID="$(gh project field-list <project-number> --owner <project-owner> --format json --jq '.fields[] | select(.name == "Status") | .options[] | select(.name == "<initial-status>") | .id')"
+   gh project field-list <project-number> --owner <project-owner> --format json \
+     > "$ONBOARDING_DIR/project-fields.intake.json"
+   STATUS_FIELD_ID="$(jq -r '.fields[] | select(.name == "Status") | .id' "$ONBOARDING_DIR/project-fields.intake.json")"
+   STATUS_OPTION_ID="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "<initial-status>") | .id' "$ONBOARDING_DIR/project-fields.intake.json")"
 
    gh issue list --repo <repo-owner>/<repo-name> --state open <chosen-gh-issue-list-flags> \
      --limit 1000 --json url --jq '.[].url' |
@@ -662,7 +771,9 @@ recommendation, and default-if-silent. Record answers in
    done
 
    gh project item-list <project-number> --owner <project-owner> --format json --limit 1000 \
-     --jq '[.items[] | select(.content.repository == "<repo-owner>/<repo-name>" and .status == "<initial-status>")] | length'
+     > "$ONBOARDING_DIR/project-items.after-intake.json"
+   jq '[.items[] | select(.content.repository == "<repo-owner>/<repo-name>" and .status == "<initial-status>")] | length' \
+     "$ONBOARDING_DIR/project-items.after-intake.json"
    ```
 
 3. **Optionally enable auto-add.** This is a **human UI step** because GitHub's
@@ -673,7 +784,8 @@ recommendation, and default-if-silent. Record answers in
    ```sh
    gh project item-list <project-number> --owner <project-owner> \
      --query 'repo:<repo-owner>/<repo-name> is:issue is:open' \
-     --format json --jq '.totalCount'
+     --format json > "$ONBOARDING_DIR/project-items.auto-add.json"
+   jq '.totalCount' "$ONBOARDING_DIR/project-items.auto-add.json"
    ```
 
 ## Phase 7 — Smoke Test
@@ -713,32 +825,54 @@ recommendation, and default-if-silent. Record answers in
    curl -fsS http://<tailscale-or-private-ip>:<port>/api/v1/state
    ```
 
-2. **Move one real issue to `Todo`.** Use a real issue that matches the
-   authorization filters. Verify:
+2. **Check the GraphQL budget before smoke dispatch.** This is the last stop
+   before Detent and the spawned agent start spending GraphQL budget for
+   polling, workpad, status, PR, and review work. Verify:
 
    ```sh
-   TODO_OPTION_ID="$(gh project field-list <project-number> --owner <project-owner> --format json --jq '.fields[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id')"
-   STATUS_FIELD_ID="$(gh project field-list <project-number> --owner <project-owner> --format json --jq '.fields[] | select(.name == "Status") | .id')"
+   gh api rate_limit --jq '.resources.graphql | {limit, used, remaining, reset}' \
+     > "$ONBOARDING_DIR/graphql-rate-limit.before-smoke.json"
+   jq -r '"graphql remaining=\(.remaining) reset=\(.reset)"' \
+     "$ONBOARDING_DIR/graphql-rate-limit.before-smoke.json"
+   jq -e '.remaining >= 500' "$ONBOARDING_DIR/graphql-rate-limit.before-smoke.json" \
+     || printf 'WARNING: low GitHub GraphQL budget; defer smoke dispatch or use GitHub App auth\n'
+   ```
+
+3. **Move one real issue to `Todo`.** Use a real issue that matches the
+   authorization filters. Do not verify this by polling ProjectV2 after the
+   edit; switch to the local Detent API in the next step. Verify:
+
+   ```sh
+   gh project field-list <project-number> --owner <project-owner> --format json \
+     > "$ONBOARDING_DIR/project-fields.smoke.json"
+   TODO_OPTION_ID="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id' "$ONBOARDING_DIR/project-fields.smoke.json")"
+   STATUS_FIELD_ID="$(jq -r '.fields[] | select(.name == "Status") | .id' "$ONBOARDING_DIR/project-fields.smoke.json")"
    PROJECT_NODE_ID="$(gh project view <project-number> --owner <project-owner> --format json --jq '.id')"
-   ITEM_ID="$(gh project item-list <project-number> --owner <project-owner> --format json --limit 1000 --jq '.items[] | select(.content.url == "https://github.com/<repo-owner>/<repo-name>/issues/<issue-number>") | .id')"
+   ITEMS_JSON="$ONBOARDING_DIR/project-items.after-intake.json"
+   if ! test -f "$ITEMS_JSON"; then
+     gh project item-list <project-number> --owner <project-owner> --format json --limit 1000 \
+       > "$ONBOARDING_DIR/project-items.smoke.json"
+     ITEMS_JSON="$ONBOARDING_DIR/project-items.smoke.json"
+   fi
+   ITEM_ID="$(jq -er '[.items[] | select(.content.url == "https://github.com/<repo-owner>/<repo-name>/issues/<issue-number>") | .id][0]' "$ITEMS_JSON")"
    gh project item-edit \
      --id "$ITEM_ID" \
      --project-id "$PROJECT_NODE_ID" \
      --field-id "$STATUS_FIELD_ID" \
      --single-select-option-id "$TODO_OPTION_ID"
-   gh project item-list <project-number> --owner <project-owner> --format json --limit 1000 \
-     --jq '.items[] | select(.content.url == "https://github.com/<repo-owner>/<repo-name>/issues/<issue-number>") | .status' | rg -x 'Todo'
    ```
 
-3. **Verify the issue dispatches.** Onboarding is not complete until the issue
-   appears under Running on the dashboard. Verify:
+4. **Verify the issue dispatches locally.** Onboarding is not complete until
+   the issue appears under Running on the dashboard. Once it does, stop
+   operator GitHub ProjectV2 polling; the spawned agent owns GitHub work from
+   here. Verify:
 
    ```sh
    curl -fsS http://127.0.0.1:<port>/api/v1/state \
      | jq -e '.running[] | select(.identifier == "<repo-owner>/<repo-name>#<issue-number>")'
    ```
 
-4. **Verify Detent posted the workpad.** The issue must have a persistent
+5. **Verify Detent posted the workpad.** The issue must have a persistent
    `## Codex Workpad` comment. Verify:
 
    ```sh
