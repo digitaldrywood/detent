@@ -29,16 +29,44 @@ Use these placeholders consistently:
    ```
 
 2. **Confirm GitHub CLI auth and scopes.** Detent needs a token that can read
-   the repo, org, and ProjectV2 board. If any scope check fails, refresh the
-   token with `gh auth refresh -s repo -s read:org -s project`. Verify each
+   the repo, org, and ProjectV2 board, plus write ProjectV2 status fields. For
+   first-time auth, request every required scope:
+
+   ```sh
+   gh auth login --scopes "repo,read:org,read:project,project"
+   ```
+
+   If any scope check fails for existing auth, refresh the token:
+
+   ```sh
+   gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"
+   ```
+
+   In a remote or headless shell, avoid launching a remote GUI browser while
+   preserving the terminal-side device flow:
+
+   ```sh
+   BROWSER=/usr/bin/true gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"
+   ```
+
+   Press Enter in the terminal so `gh` starts polling, open
+   `https://github.com/login/device` in the operator browser, enter the code,
+   and wait for the terminal to print authentication completion. Verify each
    required scope independently:
 
    ```sh
    gh auth status
    gh auth status 2>&1 | rg '\brepo\b'
    gh auth status 2>&1 | rg '\bread:org\b'
-   gh auth status 2>&1 | rg '\bproject\b'
+   gh auth status 2>&1 | rg '\bread:project\b'
+   gh auth status 2>&1 | rg "(^|[[:space:],'\"])project([[:space:],'\"]|$)"
+   gh project list --owner <project-owner> --format json --limit 1
    ```
+
+   `gh project list` verifies the `read:project` board discovery path. Defer
+   write `project` verification until the first intentional ProjectV2 mutation,
+   such as creating or linking a board, creating fields, or editing the status
+   of a real existing item.
 
 3. **Confirm Codex is installed and signed in.** Detent dispatches agents
    through the Codex app-server. Verify:
@@ -124,7 +152,8 @@ grounded recommendation per Phase 2 question, then interview the human.
 
 5. **Inspect existing ProjectV2 boards.** Recommend reuse when a board clearly
    belongs to this repo or workstream; otherwise recommend creating a new board
-   named after the repo or product. Verify:
+   named after the repo or product. This is the ProjectV2 read verification.
+   Verify:
 
    ```sh
    gh project list --owner <project-owner> --format json --limit 50 \
@@ -556,7 +585,8 @@ recommendation, and default-if-silent. Record answers in
 2. **Bulk-add issues by the selected filter and set initial `Status`.** Use
    the exact `gh issue list` flags from the intake answer. Use `Backlog` for
    broad intake and `Todo` only for work that should dispatch immediately.
-   Verify:
+   This verifies the write `project` scope if no earlier board creation,
+   linking, field creation, or item edit has already done so. Verify:
 
    ```sh
    PROJECT_NODE_ID="$(gh project view <project-number> --owner <project-owner> --format json --jq '.id')"
