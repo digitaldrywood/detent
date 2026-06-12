@@ -1,6 +1,7 @@
-@import "tailwindcss";
+@import "tailwindcss" source(none);
 
 @source "../../internal/web/templates/**/*.templ";
+@source "../../internal/web/ui/components/**/*.templ";
 
 @custom-variant dark (&:where(.dark, .dark *));
 
@@ -20,6 +21,21 @@
   --color-danger-soft: oklch(0.94 0.055 25);
   --color-success: oklch(0.52 0.14 145);
   --color-success-soft: oklch(0.92 0.06 145);
+  --color-primary: var(--color-accent);
+  --color-primary-foreground: var(--color-white);
+  --color-secondary: var(--color-muted);
+  --color-secondary-foreground: var(--color-foreground);
+  --color-destructive: var(--color-danger);
+  --color-popover: var(--color-card);
+  --color-popover-foreground: var(--color-foreground);
+  --color-input: var(--color-border);
+  --color-ring: var(--color-accent);
+  --color-sidebar: var(--color-card);
+  --color-sidebar-foreground: var(--color-foreground);
+  --color-sidebar-border: var(--color-border);
+  --color-sidebar-accent: var(--color-accent-soft);
+  --color-sidebar-accent-foreground: var(--color-accent);
+  --color-sidebar-ring: var(--color-accent);
 }
 
 @variant dark {
@@ -100,40 +116,6 @@
   .pr-pipeline-lane-scroll {
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
-  }
-
-  .dashboard-shell[data-sidebar-collapsed="true"] {
-    grid-template-columns: 4.5rem minmax(0, 1fr);
-  }
-
-  .dashboard-shell[data-sidebar-collapsed="true"] .dashboard-sidebar {
-    padding-left: 0.5rem;
-    padding-right: 0.5rem;
-  }
-
-  .dashboard-shell[data-sidebar-collapsed="true"] .dashboard-sidebar-label,
-  .dashboard-shell[data-sidebar-collapsed="true"] .dashboard-sidebar-count,
-  .dashboard-shell[data-sidebar-collapsed="true"] .dashboard-sidebar-filter {
-    display: none;
-  }
-
-  .dashboard-shell[data-sidebar-collapsed="true"] .dashboard-sidebar-link {
-    justify-content: center;
-    padding-left: 0;
-    padding-right: 0;
-  }
-
-  @media (max-width: 767px) {
-    .dashboard-shell,
-    .dashboard-shell[data-sidebar-collapsed="true"] {
-      grid-template-columns: minmax(0, 1fr) !important;
-    }
-
-    .dashboard-sidebar {
-      position: static;
-      height: auto;
-      max-height: 20rem;
-    }
   }
 
   .help-tip-button {

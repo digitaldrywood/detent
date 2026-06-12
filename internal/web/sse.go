@@ -18,6 +18,7 @@ import (
 
 const (
 	sseEventSnapshot = "snapshot"
+	sseEventSidebar  = "sidebar"
 	sseEventTick     = "tick"
 )
 
@@ -65,6 +66,9 @@ func (s *Server) events(c echo.Context) error {
 				}
 			}
 			if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, templates.SnapshotView(data)); err != nil {
+				return err
+			}
+			if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(data)); err != nil {
 				return err
 			}
 			flusher.Flush()

@@ -672,6 +672,70 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		cookie      *http.Cookie
+		wantState   string
+		forbidState string
+	}{
+		{
+			name:        "defaults expanded",
+			wantState:   `data-tui-sidebar-state="expanded"`,
+			forbidState: `data-tui-sidebar-state="collapsed"`,
+		},
+		{
+			name: "renders collapsed from templui cookie",
+			cookie: &http.Cookie{
+				Name:  "sidebar_state",
+				Value: "false",
+			},
+			wantState:   `data-tui-sidebar-state="collapsed"`,
+			forbidState: `data-tui-sidebar-state="expanded"`,
+		},
+		{
+			name: "renders expanded from templui cookie",
+			cookie: &http.Cookie{
+				Name:  "sidebar_state",
+				Value: "true",
+			},
+			wantState:   `data-tui-sidebar-state="expanded"`,
+			forbidState: `data-tui-sidebar-state="collapsed"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, testDeps(t))
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			if tt.cookie != nil {
+				req.AddCookie(tt.cookie)
+			}
+
+			server.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), tt.wantState) {
+				t.Fatalf("dashboard missing %q:\n%s", tt.wantState, rec.Body.String())
+			}
+			if strings.Contains(rec.Body.String(), tt.forbidState) {
+				t.Fatalf("dashboard rendered forbidden state %q:\n%s", tt.forbidState, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestProjectDashboardRouteScopesSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -1369,6 +1433,67 @@ func TestServerEventsStreamsPublishedSnapshots(t *testing.T) {
 	}
 	if !strings.Contains(event.data, "4") {
 		t.Fatalf("snapshot event missing running count:\n%s", event.data)
+	}
+}
+
+func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	addr := startWebServer(t, server)
+	conn, body, reader := openRawEventStream(t, addr)
+	defer conn.Close()
+	defer body.Close()
+
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{
+					ID:          "detent",
+					DisplayName: "Detent",
+				},
+				Counts: telemetry.Counts{
+					Running: 7,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	snapshotEvent := readRawSSEEvent(t, conn, reader)
+	if snapshotEvent.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
+	}
+	sidebarEvent := readRawSSEEvent(t, conn, reader)
+	if sidebarEvent.name != "sidebar" {
+		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
+	}
+	for _, want := range []string{
+		"Detent",
+		`href="/projects/detent"`,
+		"Detent - active, 7 running",
+		`data-dashboard-project-entry`,
+		`data-tui-sidebar="menu-badge"`,
+		">7</span>",
+	} {
+		if !strings.Contains(sidebarEvent.data, want) {
+			t.Fatalf("sidebar event missing %q:\n%s", want, sidebarEvent.data)
+		}
+	}
+	for _, forbidden := range []string{
+		`data-tui-sidebar-state=`,
+		`data-tui-sidebar-trigger`,
+	} {
+		if strings.Contains(sidebarEvent.data, forbidden) {
+			t.Fatalf("sidebar event rendered wrapper marker %q:\n%s", forbidden, sidebarEvent.data)
+		}
 	}
 }
 

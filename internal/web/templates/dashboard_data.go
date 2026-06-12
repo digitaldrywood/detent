@@ -9,6 +9,8 @@ import (
 	"strings"
 	"time"
 
+	"github.com/a-h/templ"
+
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
@@ -21,20 +23,21 @@ const (
 )
 
 type DashboardData struct {
-	Title           string
-	ApplicationName string
-	InstanceName    string
-	Version         string
-	Build           buildinfo.Info
-	DashboardURL    string
-	ConnectorName   string
-	Snapshot        telemetry.Snapshot
-	Projects        []ProjectSmallMultiple
-	Assets          AssetPaths
-	ActiveNav       string
-	ProjectID       string
-	ProjectName     string
-	ProjectPaused   bool
+	Title            string
+	ApplicationName  string
+	InstanceName     string
+	Version          string
+	Build            buildinfo.Info
+	DashboardURL     string
+	ConnectorName    string
+	Snapshot         telemetry.Snapshot
+	Projects         []ProjectSmallMultiple
+	Assets           AssetPaths
+	ActiveNav        string
+	ProjectID        string
+	ProjectName      string
+	ProjectPaused    bool
+	SidebarCollapsed bool
 }
 
 type Budget = telemetry.Budget
@@ -284,24 +287,42 @@ func sidebarFilterVisible(data DashboardData) bool {
 	return len(sidebarProjectItems(data)) > 10
 }
 
-func sidebarFleetClass(data DashboardData) string {
-	return sidebarItemClass(!isProjectDashboard(data) && strings.TrimSpace(data.ActiveNav) != "reports" && strings.TrimSpace(data.ActiveNav) != "settings")
+func sidebarFleetActive(data DashboardData) bool {
+	return !isProjectDashboard(data) && strings.TrimSpace(data.ActiveNav) != "reports" && strings.TrimSpace(data.ActiveNav) != "settings"
 }
 
-func sidebarProjectClass(item sidebarProjectItem) string {
-	return sidebarItemClass(item.Active)
+func sidebarStaticNavActive(data DashboardData, id string) bool {
+	return strings.TrimSpace(data.ActiveNav) == id
 }
 
-func sidebarStaticNavClass(data DashboardData, id string) string {
-	return sidebarItemClass(strings.TrimSpace(data.ActiveNav) == id)
-}
-
-func sidebarItemClass(active bool) string {
-	base := "dashboard-sidebar-link flex min-h-10 min-w-0 items-center gap-3 rounded-md px-3 py-2 text-sm font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-	if active {
-		return base + " bg-accent-soft text-accent"
+func sidebarAriaCurrent(active bool) templ.Attributes {
+	if !active {
+		return nil
 	}
-	return base + " text-muted-foreground hover:bg-muted hover:text-foreground"
+	return templ.Attributes{"aria-current": "page"}
+}
+
+func sidebarProjectAttributes(item sidebarProjectItem) templ.Attributes {
+	attrs := templ.Attributes{
+		"data-dashboard-project-entry": true,
+		"data-project-name":            item.Name,
+	}
+	for name, value := range sidebarAriaCurrent(item.Active) {
+		attrs[name] = value
+	}
+	return attrs
+}
+
+func sidebarFleetTooltip(data DashboardData) string {
+	return "Fleet - " + strings.Join([]string{
+		formatCount(runningCount(data.Snapshot)) + " running",
+		formatCount(queueCount(data.Snapshot)) + " queued",
+		formatCount(blockedCount(data.Snapshot)) + " blocked",
+	}, ", ")
+}
+
+func sidebarProjectTooltip(item sidebarProjectItem) string {
+	return item.Name + " - " + item.StatusLabel + ", " + item.CountLabel + " running"
 }
 
 func sidebarProjectSearchLabel(data DashboardData) string {
