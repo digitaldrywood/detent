@@ -95,6 +95,21 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			}),
 		},
 		{
+			name: "skips closed pull request",
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+			},
+			issue: autoPromoteTickIssue("issue-closed-pr", []string{"bug"}, &connector.PullRequest{
+				Number:                 47,
+				URL:                    "https://github.test/digitaldrywood/detent/pull/47",
+				State:                  "MERGED",
+				CIStatus:               "pass",
+				CodexReviewState:       "COMMENTED",
+				CodexReviewSubmittedAt: &oldReview,
+			}),
+		},
+		{
 			name: "honors evaluator label filters",
 			cfg: AutoPromoteConfig{
 				Enabled:            true,

@@ -64,6 +64,9 @@ func autoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 	}
 
 	pullRequest := issue.PullRequest
+	if normalizePullRequestState(pullRequest.State) != "open" {
+		return summary
+	}
 	summary.PullRequestPresent = true
 	summary.PullRequestURL = strings.TrimSpace(pullRequest.URL)
 	summary.CIStatus = pullRequest.CIStatus
