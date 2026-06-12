@@ -190,13 +190,14 @@ grounded recommendation per Phase 2 question, then interview the human.
      'board: <reuse-or-create recommendation, from projects.json>' \
      'scheduling: <priority/weight recommendation, from global-projects.txt>' \
      'authorization: <filter recommendation, from issue-counts.json and priority-counts.json>' \
+     'dashboard_bind: <localhost/private-or-tailscale/all-interfaces recommendation>' \
      'gate: <gate recommendation, from gate.txt>' \
      'concurrency: <max agents and Merging cap recommendation>' \
      'review_policy: <hard stop or auto-promote recommendation>' \
      'prompt: <template or repo-specific recommendation, from repo docs>' \
      'intake: <bulk-add filter and initial Status recommendation>' \
      > "$ONBOARDING_DIR/recommendations.md"
-   rg -n '^(board|scheduling|authorization|gate|concurrency|review_policy|prompt|intake):' \
+   rg -n '^(board|scheduling|authorization|dashboard_bind|gate|concurrency|review_policy|prompt|intake):' \
      "$ONBOARDING_DIR/recommendations.md"
    ```
 
@@ -257,7 +258,24 @@ recommendation, and default-if-silent. Record answers in
    rg '^AUTHORIZATION_' "$ONBOARDING_DIR/answers.env"
    ```
 
-4. **Validation gate.** Ask: "Use the detected command, a custom command, or a
+4. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
+   localhost-only, a private/Tailscale IP, or all interfaces?" Recommendation
+   source: the operator's access path, whether SSH tunnels or VPN/Tailscale are
+   expected, the host firewall, and any known private interface addresses.
+   Default if silent: `127.0.0.1` for localhost-only access through SSH
+   tunnels. Use a specific private or Tailscale IP for VPN-only exposure. Use
+   `0.0.0.0` only on trusted private networks because it exposes the dashboard
+   on every interface, not just Tailscale. Verify:
+
+   ```sh
+   printf '%s\n' \
+     'DASHBOARD_HOST=<127.0.0.1|tailscale-or-private-ip|0.0.0.0>' \
+     'DASHBOARD_REMOTE_HOST=<tailscale-or-private-ip-or-empty>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^DASHBOARD_' "$ONBOARDING_DIR/answers.env"
+   ```
+
+5. **Validation gate.** Ask: "Use the detected command, a custom command, or a
    human review label gate?" Recommendation source:
    `$ONBOARDING_DIR/gate.txt`, Makefile targets, and CI workflow commands.
    Default if silent: detected `make check` when present; otherwise
@@ -272,7 +290,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^GATE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-5. **Concurrency.** Ask: "How many agents may this project run at once?"
+6. **Concurrency.** Ask: "How many agents may this project run at once?"
    Recommendation source: host capacity, existing `global.yaml` projects, and
    the repo's gate cost. Default if silent: `agent.max_concurrent_agents: 5`
    for an active code repo, lower for expensive gates. State that
@@ -300,7 +318,7 @@ recommendation, and default-if-silent. Record answers in
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-6. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
+7. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
    it auto-promote to `Merging` after the human-defined criteria are true?"
    Recommendation source: repo risk, issue labels, review requirements, and how
    much trust the human wants to delegate. Default if silent:
@@ -324,7 +342,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-7. **Prompt body.** Ask: "Use the template prompt or add repo-specific
+8. **Prompt body.** Ask: "Use the template prompt or add repo-specific
    instructions?" Recommendation source: `CLAUDE.md`, `AGENTS.md`,
    `CONTRIBUTING.md`, README development commands, and CI workflows in
    `<source-root>`. Default if silent: template prompt plus any repo authority
@@ -341,7 +359,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-8. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
+9. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe
@@ -447,7 +465,17 @@ recommendation, and default-if-silent. Record answers in
      <source-root>/WORKFLOW.md
    ```
 
-3. **Set the gate from the interview.** For command gates, include the command.
+3. **Set the dashboard bind from the interview.** This writes the default
+   `server.host` used when Detent starts without an explicit `--host`. Service
+   managers can still override it in `ExecStart` with the same selected host.
+   Verify:
+
+   ```sh
+   perl -0pi -e 's#(?m)^  host: .*$#  host: <dashboard-host>#' <source-root>/WORKFLOW.md
+   rg -n '^server:|host: <dashboard-host>|port:' <source-root>/WORKFLOW.md
+   ```
+
+4. **Set the gate from the interview.** For command gates, include the command.
    For human gates, include the approval label. Verify:
 
    ```sh
@@ -471,7 +499,7 @@ recommendation, and default-if-silent. Record answers in
      approval_label: <approval-label>
    ```
 
-4. **Set review policy and concurrency.** Keep `Merging: 1`. Use the review
+5. **Set review policy and concurrency.** Keep `Merging: 1`. Use the review
    policy selected by the human. Verify:
 
    ```sh
@@ -502,7 +530,7 @@ recommendation, and default-if-silent. Record answers in
          - <allowed-label>
    ```
 
-5. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
+6. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
    repo authority files discovered in Phase 2, and state the validation gate.
    Verify:
 
@@ -511,7 +539,7 @@ recommendation, and default-if-silent. Record answers in
      | rg 'Codex Workpad|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|<gate-command>|<repo-owner>/<repo-name>'
    ```
 
-6. **Check the workflow contract before registration.** This is a structural
+7. **Check the workflow contract before registration.** This is a structural
    check; `detent doctor` in Phase 5 is the full preflight. Verify:
 
    ```sh
@@ -546,8 +574,9 @@ recommendation, and default-if-silent. Record answers in
 
 3. **Set runtime keys in `global.yaml`.** For local onboarding, prefer
    `github_token: gh` so Detent resolves the token from `gh auth token` at
-   startup. Use a non-4000 port if another Detent instance is already running.
-   Verify:
+   startup. Use a non-4000 port if another Detent instance is already running;
+   keep the dashboard host in `WORKFLOW.md` `server.host` or pass it with
+   `--host`. Verify:
 
    ```sh
    GLOBAL_CONFIG="$(detent config path | awk '/^path:/ {print $2}')"
@@ -622,16 +651,38 @@ recommendation, and default-if-silent. Record answers in
 ## Phase 7 — Smoke Test
 
 1. **Start Detent or hot-reload the running process.** Use the configured port,
-   not `4000` when another Detent instance owns that port. Verify:
+   not `4000` when another Detent instance owns that port. Use the dashboard
+   host chosen in Phase 2: `127.0.0.1` for SSH tunnels, a private/Tailscale IP
+   for VPN-only exposure, or `0.0.0.0` only on trusted private networks because
+   it exposes every interface. Verify:
 
    ```sh
-   detent --host 127.0.0.1 --port <port>
+   detent --host <dashboard-host> --port <port>
    ```
 
-   In another shell, verify:
+   For a user-level systemd service, use the same bind choice in `ExecStart`,
+   then restart the user service:
+
+   ```ini
+   ExecStart=/home/<user>/.local/bin/detent --headless --host <dashboard-host> --port <port>
+   ```
+
+   In another shell, verify the listener and the API URL that should work from
+   that shell. Use `127.0.0.1` for localhost-only binds, the selected
+   private/Tailscale IP for VPN-only binds, or `127.0.0.1` for same-host
+   checks when binding `0.0.0.0`:
 
    ```sh
-   curl -fsS http://127.0.0.1:<port>/health | jq -e '.status == "ok" and .mode == "running"'
+   ss -ltnp | rg ':<port>|detent'
+   curl -fsS http://<dashboard-check-host>:<port>/health | jq -e '.status == "ok" and .mode == "running"'
+   curl -fsS http://<dashboard-check-host>:<port>/api/v1/state
+   ```
+
+   If the chosen host is a private/Tailscale IP or `0.0.0.0`, verify the remote
+   URL from another machine on that network:
+
+   ```sh
+   curl -fsS http://<tailscale-or-private-ip>:<port>/api/v1/state
    ```
 
 2. **Move one real issue to `Todo`.** Use a real issue that matches the
@@ -677,6 +728,7 @@ recommendation, and default-if-silent. Record answers in
 | Project scheduling priority | `projects[].priority` in `global.yaml`. |
 | Project scheduling weight | `projects[].weight` in `global.yaml`. |
 | Authorization filters | `tracker.authorization` in `WORKFLOW.md`; optionally `projects[].authorization` in `global.yaml` for host-level scoping. |
+| Dashboard bind | `server.host` in `WORKFLOW.md`, or `--host` in the startup command or service `ExecStart`. |
 | Validation command | `gate.kind: command` and `gate.run` in `WORKFLOW.md`. |
 | Human validation label | `gate.kind: human_review` and `gate.approval_label` in `WORKFLOW.md`. |
 | Per-project concurrency | `agent.max_concurrent_agents` in `WORKFLOW.md`. |
