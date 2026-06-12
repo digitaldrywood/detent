@@ -59,6 +59,7 @@ type BootConfig struct {
 	Headless       bool
 	StdoutTTY      bool
 	Output         io.Writer
+	Shutdown       *ShutdownController
 }
 
 type BootFunc func(context.Context, BootConfig) error
@@ -89,6 +90,7 @@ type options struct {
 	version       string
 	build         buildinfo.Info
 	stdoutTTY     func() bool
+	shutdown      *ShutdownController
 }
 
 func WithBootFunc(boot BootFunc) Option {
@@ -130,6 +132,12 @@ func WithStdoutTTY(stdoutTTY func() bool) Option {
 		if stdoutTTY != nil {
 			opts.stdoutTTY = stdoutTTY
 		}
+	}
+}
+
+func WithShutdownController(controller *ShutdownController) Option {
+	return func(opts *options) {
+		opts.shutdown = controller
 	}
 }
 
@@ -198,6 +206,7 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 			boot.Headless = headless
 			boot.StdoutTTY = stdoutTTY
 			boot.Output = cmd.OutOrStdout()
+			boot.Shutdown = opts.shutdown
 			slog.Info("resolved global config", "path", boot.Global.Path, "rule", boot.ConfigPathRule)
 			for _, warning := range boot.Runtime.Warnings {
 				slog.Warn(warning.Detail, "check", warning.Name, "hint", warning.Hint)

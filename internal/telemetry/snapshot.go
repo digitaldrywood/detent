@@ -8,6 +8,7 @@ type Snapshot struct {
 	Instance       Instance          `json:"instance"`
 	Projects       []ProjectSnapshot `json:"projects,omitempty"`
 	DashboardURL   string            `json:"dashboard_url,omitempty"`
+	Shutdown       Shutdown          `json:"shutdown,omitempty"`
 	Refresh        Refresh           `json:"refresh"`
 	Events         []ActivityEvent   `json:"events,omitempty"`
 	Counts         Counts            `json:"counts"`
@@ -23,6 +24,15 @@ type Snapshot struct {
 	LifetimeTotals LifetimeTotals    `json:"lifetime_totals"`
 	CycleTime      CycleTimeReport   `json:"cycle_time,omitempty"`
 	TokenTrend     []TokenTrendPoint `json:"token_trend,omitempty"`
+}
+
+type Shutdown struct {
+	Status            string     `json:"status,omitempty"`
+	Draining          bool       `json:"draining"`
+	SessionsRemaining int        `json:"sessions_remaining"`
+	RequestedAt       *time.Time `json:"requested_at,omitempty"`
+	CompletedAt       *time.Time `json:"completed_at,omitempty"`
+	Result            string     `json:"result,omitempty"`
 }
 
 type Project struct {

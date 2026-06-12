@@ -361,6 +361,39 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotMergesDrainingShutdown(t *testing.T) {
+	t.Parallel()
+
+	firstRequestedAt := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+	secondRequestedAt := firstRequestedAt.Add(2 * time.Minute)
+	got := mergeSnapshot(telemetry.Snapshot{}, telemetry.Snapshot{
+		Shutdown: telemetry.Shutdown{
+			Status:            "draining",
+			Draining:          true,
+			SessionsRemaining: 2,
+			RequestedAt:       &secondRequestedAt,
+		},
+	})
+	got = mergeSnapshot(got, telemetry.Snapshot{
+		Shutdown: telemetry.Shutdown{
+			Status:            "draining",
+			Draining:          true,
+			SessionsRemaining: 1,
+			RequestedAt:       &firstRequestedAt,
+		},
+	})
+
+	if got.Shutdown.Status != "draining" || !got.Shutdown.Draining {
+		t.Fatalf("Shutdown = %#v, want draining", got.Shutdown)
+	}
+	if got.Shutdown.SessionsRemaining != 3 {
+		t.Fatalf("Shutdown.SessionsRemaining = %d, want 3", got.Shutdown.SessionsRemaining)
+	}
+	if got.Shutdown.RequestedAt == nil || !got.Shutdown.RequestedAt.Equal(firstRequestedAt) {
+		t.Fatalf("Shutdown.RequestedAt = %v, want %v", got.Shutdown.RequestedAt, firstRequestedAt)
+	}
+}
+
 func TestTokenTrendRecorderAppliesRollingWindow(t *testing.T) {
 	t.Parallel()
 

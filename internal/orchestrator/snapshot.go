@@ -16,6 +16,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: now,
 		Instance:    s.Instance,
+		Shutdown:    shutdownSnapshot(s),
 		Events:      cloneActivityEvents(s.RecentEvents),
 		Refresh: telemetry.Refresh{
 			PollIntervalSeconds: int64(s.PollInterval / time.Second),
@@ -40,6 +41,19 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed: len(snapshot.Completed),
 	}
 	return snapshot
+}
+
+func shutdownSnapshot(state State) telemetry.Shutdown {
+	if !state.Draining {
+		return telemetry.Shutdown{Status: "running"}
+	}
+
+	return telemetry.Shutdown{
+		Status:            "draining",
+		Draining:          true,
+		SessionsRemaining: len(state.Running),
+		RequestedAt:       timePointer(state.DrainStartedAt),
+	}
 }
 
 func instanceSnapshot(cfg Config) telemetry.Instance {

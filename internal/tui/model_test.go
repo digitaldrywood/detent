@@ -55,6 +55,7 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 		"Tokens: in 110 | out 220 | total 330",
 		"Budget: enabled current $12.50 | projected $0.75 | day max $50.00 | issue max $5.00",
 		"Rate Limits: codex-primary | primary 90/100 reset 60s | secondary 0/100 reset 30s | credits 0/1",
+		"Shutdown: running",
 		"Running",
 		"PID",
 		"DD-44",
@@ -79,6 +80,29 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 	}
 	if strings.Contains(view, "worker-1") {
 		t.Fatalf("View() rendered worker host as process identity:\n%s", view)
+	}
+}
+
+func TestModelRendersDrainingShutdown(t *testing.T) {
+	t.Parallel()
+
+	snapshot := testSnapshot()
+	snapshot.Shutdown = telemetry.Shutdown{
+		Status:            "draining",
+		Draining:          true,
+		SessionsRemaining: 2,
+	}
+	model := Model{
+		snapshot:    snapshot,
+		hasSnapshot: true,
+		width:       defaultTerminalColumns,
+		now:         time.Now,
+		styles:      newStyles(),
+	}
+
+	view := stripANSI(model.View())
+	if !strings.Contains(view, "Shutdown: draining (2 sessions remaining)") {
+		t.Fatalf("View() missing draining shutdown:\n%s", view)
 	}
 }
 
@@ -133,6 +157,19 @@ func TestModelClosesSubscriptionOnQuit(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for subscription channel to close")
+	}
+}
+
+func TestModelLeavesCtrlCForSignalHandler(t *testing.T) {
+	t.Parallel()
+
+	model, err := NewModel(context.Background(), hub.New[telemetry.Snapshot]())
+	if err != nil {
+		t.Fatalf("NewModel() error = %v", err)
+	}
+
+	if _, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd != nil {
+		t.Fatal("Update(ctrl+c) returned command, want signal handler to own shutdown")
 	}
 }
 

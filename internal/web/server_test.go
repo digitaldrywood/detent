@@ -786,6 +786,95 @@ func TestTimeSeriesAPIRoutesReturnChartDatasets(t *testing.T) {
 	}
 }
 
+func TestHealthReportsDraining(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
+		Shutdown: telemetry.Shutdown{
+			Status:            "draining",
+			Draining:          true,
+			SessionsRemaining: 2,
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/health", nil)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"status":"draining"`) {
+		t.Fatalf("body missing draining status:\n%s", rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), `"sessions_remaining":2`) {
+		t.Fatalf("body missing sessions remaining:\n%s", rec.Body.String())
+	}
+}
+
+func TestAPIStateReportsDraining(t *testing.T) {
+	t.Parallel()
+
+	requestedAt := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: requestedAt,
+		Shutdown: telemetry.Shutdown{
+			Status:            "draining",
+			Draining:          true,
+			SessionsRemaining: 1,
+			RequestedAt:       &requestedAt,
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/state", nil)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	var payload struct {
+		Status   string `json:"status"`
+		Shutdown struct {
+			Status            string `json:"status"`
+			Draining          bool   `json:"draining"`
+			SessionsRemaining int    `json:"sessions_remaining"`
+			RequestedAt       string `json:"requested_at"`
+		} `json:"shutdown"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal() error = %v; body = %s", err, rec.Body.String())
+	}
+	if payload.Status != "draining" {
+		t.Fatalf("Status = %q, want draining", payload.Status)
+	}
+	if payload.Shutdown.Status != "draining" || !payload.Shutdown.Draining || payload.Shutdown.SessionsRemaining != 1 {
+		t.Fatalf("Shutdown = %#v, want draining with one session", payload.Shutdown)
+	}
+	if payload.Shutdown.RequestedAt != "2026-06-12T15:00:00Z" {
+		t.Fatalf("Shutdown.RequestedAt = %q, want RFC3339 timestamp", payload.Shutdown.RequestedAt)
+	}
+}
+
 func TestDashboardReadsLatestSnapshotWithoutSubscribing(t *testing.T) {
 	t.Parallel()
 

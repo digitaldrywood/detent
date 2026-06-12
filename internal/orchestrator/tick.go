@@ -39,6 +39,9 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	}
 
 	o.refreshActiveRuns(ctx, state, now)
+	if state.Draining {
+		return
+	}
 	fetched, ok := o.fetchTickIssues(ctx)
 	if !ok {
 		return

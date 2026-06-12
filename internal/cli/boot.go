@@ -243,13 +243,45 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			return err
 		}
 		listenerOwned = false
-		return serveWithTerminalDashboard(runCtx, server, listener, snapshotHub, cfg.Build)
+		if cfg.Shutdown == nil {
+			return serveWithTerminalDashboard(runCtx, server, listener, snapshotHub, cfg.Build)
+		}
+		return runWithShutdown(runCtx, runningShutdownConfig{
+			Controller:       cfg.Shutdown,
+			Registry:         manager.Registry(),
+			SnapshotHub:      snapshotHub,
+			LifetimeSource:   runtimeStore,
+			DashboardURL:     displayURL,
+			Output:           cfg.Output,
+			Logger:           logger,
+			DrainTimeout:     shutdownDrainTimeout(manager.Registry()),
+			ProgressInterval: defaultShutdownProgressInterval,
+			HardTimeout:      defaultShutdownHardTimeout,
+		}, func(ctx context.Context) error {
+			return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build)
+		})
 	}
 	if err := printBootBanner(cfg, displayURL); err != nil {
 		return err
 	}
 	listenerOwned = false
-	return serve(runCtx, server, listener)
+	if cfg.Shutdown == nil {
+		return serve(runCtx, server, listener)
+	}
+	return runWithShutdown(runCtx, runningShutdownConfig{
+		Controller:       cfg.Shutdown,
+		Registry:         manager.Registry(),
+		SnapshotHub:      snapshotHub,
+		LifetimeSource:   runtimeStore,
+		DashboardURL:     displayURL,
+		Output:           cfg.Output,
+		Logger:           logger,
+		DrainTimeout:     shutdownDrainTimeout(manager.Registry()),
+		ProgressInterval: defaultShutdownProgressInterval,
+		HardTimeout:      defaultShutdownHardTimeout,
+	}, func(ctx context.Context) error {
+		return serve(ctx, server, listener)
+	})
 }
 
 func startOnboarding(ctx context.Context, cfg BootConfig) error {
@@ -282,6 +314,16 @@ func startOnboarding(ctx context.Context, cfg BootConfig) error {
 		return err
 	}
 	listenerOwned = false
+	if cfg.Shutdown != nil {
+		return runWithShutdown(ctx, runningShutdownConfig{
+			Controller:  cfg.Shutdown,
+			Output:      cfg.Output,
+			Logger:      logger,
+			HardTimeout: defaultShutdownHardTimeout,
+		}, func(ctx context.Context) error {
+			return serve(ctx, server, listener)
+		})
+	}
 	return serve(ctx, server, listener)
 }
 
