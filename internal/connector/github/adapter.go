@@ -564,6 +564,7 @@ type statusCheckRollup struct {
 
 type pullRequestReview struct {
 	Body        string     `json:"body"`
+	URL         string     `json:"url"`
 	State       string     `json:"state"`
 	Author      *actor     `json:"author"`
 	CommitID    string     `json:"commitId"`
@@ -614,6 +615,7 @@ type restHead struct {
 
 type restReview struct {
 	Body        string     `json:"body"`
+	HTMLURL     string     `json:"html_url"`
 	State       string     `json:"state"`
 	User        *actor     `json:"user"`
 	CommitID    string     `json:"commit_id"`
@@ -1408,12 +1410,14 @@ func (c *Connector) attachMatchingPullRequests(
 				return err
 			}
 			issues[candidate.Index].PullRequest = &connector.PullRequest{
-				Number:           pullRequest.Number,
-				URL:              strings.TrimSpace(pullRequest.URL),
-				BranchName:       branchName,
-				State:            strings.ToUpper(strings.TrimSpace(pullRequest.State)),
-				CIStatus:         normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
-				CodexReviewState: pullRequestCodexReviewState(pullRequest),
+				Number:                 pullRequest.Number,
+				URL:                    strings.TrimSpace(pullRequest.URL),
+				BranchName:             branchName,
+				State:                  strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+				CIStatus:               normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
+				CodexReviewState:       pullRequestCodexReviewState(pullRequest),
+				CodexReviewSubmittedAt: pullRequestCodexReviewSubmittedAt(pullRequest),
+				CodexReviewFindings:    pullRequestCodexReviewFindings(pullRequest),
 			}
 			if issues[candidate.Index].PRNumber == nil && pullRequest.Number > 0 {
 				number := pullRequest.Number
@@ -2789,6 +2793,7 @@ func latestCodexReview(reviews []restReview, headSHA string) (pullRequestReview,
 		}
 		candidate := pullRequestReview{
 			Body:        review.Body,
+			URL:         review.HTMLURL,
 			State:       review.State,
 			Author:      review.User,
 			CommitID:    review.CommitID,
@@ -2837,6 +2842,34 @@ func pullRequestCodexReviewState(pullRequest pullRequestNode) string {
 		return "P2"
 	}
 	return reviewState
+}
+
+func pullRequestCodexReviewSubmittedAt(pullRequest pullRequestNode) *time.Time {
+	var latest *time.Time
+	for _, review := range pullRequest.LatestReviews.Nodes {
+		if review.SubmittedAt == nil {
+			continue
+		}
+		if latest == nil || review.SubmittedAt.After(*latest) {
+			value := *review.SubmittedAt
+			latest = &value
+		}
+	}
+	return latest
+}
+
+func pullRequestCodexReviewFindings(pullRequest pullRequestNode) []connector.PullRequestFinding {
+	findings := []connector.PullRequestFinding{}
+	for _, review := range pullRequest.LatestReviews.Nodes {
+		if !containsReviewSeverity(review.Body, "P1") {
+			continue
+		}
+		findings = append(findings, connector.PullRequestFinding{
+			Body: strings.TrimSpace(review.Body),
+			URL:  strings.TrimSpace(review.URL),
+		})
+	}
+	return findings
 }
 
 func containsReviewSeverity(body string, severity string) bool {

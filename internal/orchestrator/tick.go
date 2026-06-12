@@ -54,6 +54,13 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		fetched,
 		o.reconcileClosedCompletedIssueStatuses(ctx, state, transitions.issues, now),
 	)
+	if fetched.statusOK {
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
+			o.autoPromoteHumanReviewIssues(ctx, state, fetched.status, now),
+		)
+	}
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
 }
 
