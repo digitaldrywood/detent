@@ -25,17 +25,21 @@ func main() {
 	defer stopSignals()
 
 	if err := newRootCommand(ctx, shutdownController).ExecuteContext(ctx); err != nil {
-		if errors.Is(err, context.Canceled) {
-			slog.Info("shutdown requested")
-			return
-		}
-		if errors.Is(err, cli.ErrShutdownForced) || errors.Is(err, cli.ErrShutdownTimeout) {
-			os.Exit(1)
-		}
-
-		slog.Error("command failed", "error", err)
-		os.Exit(1)
+		os.Exit(handleCommandError(err))
 	}
+}
+
+func handleCommandError(err error) int {
+	code := cli.ExitCode(err)
+	if code == cli.ExitSuccess {
+		slog.Info("shutdown requested")
+		return code
+	}
+	if errors.Is(err, cli.ErrShutdownForced) || errors.Is(err, cli.ErrShutdownTimeout) {
+		return code
+	}
+	slog.Error("command failed", "error", err, "exit_code", code)
+	return code
 }
 
 func newRootCommand(ctx context.Context, shutdownControllers ...*cli.ShutdownController) *cobra.Command {
@@ -68,10 +72,11 @@ func newShadowRunCommand() *cobra.Command {
 		Use:          "shadow-run",
 		Short:        "Compare read-only Go decisions with an Elixir shadow report",
 		Example:      "  detent shadow-run --input ./shadow-report.json --allow-diff",
+		Args:         cli.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if inputPath == "" {
-				return errors.New("shadow-run --input is required")
+				return cli.ValidationError("shadow-run --input is required")
 			}
 			return runShadowRun(cmd.OutOrStdout(), inputPath, allowDiff)
 		},

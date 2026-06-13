@@ -26,7 +26,7 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--help"})
+	cmd.SetArgs([]string{"--format", "pretty", "--help"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -47,7 +47,7 @@ func TestRootCommandHelpDocumentsExamplesExitCodesAndFormat(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--help"})
+	cmd.SetArgs([]string{"--format", "pretty", "--help"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -93,7 +93,7 @@ func TestSubcommandHelpShowsExampleBeforeUsage(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"add-project", "--help"})
+	cmd.SetArgs([]string{"--format", "pretty", "add-project", "--help"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -168,6 +168,41 @@ func TestFormatJSONHelpWritesCommandCatalog(t *testing.T) {
 	}
 	if !catalogHasFlag(promote.Flags, "priority") {
 		t.Fatalf("promote catalog missing priority flag: %#v", promote.Flags)
+	}
+}
+
+func TestHelpFormatResolvesEnvironmentAndNonTTY(t *testing.T) {
+	tests := []struct {
+		name     string
+		env      string
+		wantJSON bool
+	}{
+		{name: "non-tty defaults to json", wantJSON: true},
+		{name: "env json selects catalog", env: "json", wantJSON: true},
+		{name: "env pretty selects text", env: "pretty", wantJSON: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DETENT_FORMAT", tt.env)
+
+			cmd := cli.NewRootCommand(context.Background())
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{"help"})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			if gotJSON := json.Valid(stdout.Bytes()); gotJSON != tt.wantJSON {
+				t.Fatalf("json.Valid(help output) = %v, want %v:\n%s", gotJSON, tt.wantJSON, stdout.String())
+			}
+			if !tt.wantJSON && !strings.Contains(stdout.String(), "Examples:") {
+				t.Fatalf("pretty help missing examples:\n%s", stdout.String())
+			}
+		})
 	}
 }
 

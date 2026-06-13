@@ -39,6 +39,7 @@ const (
 const (
 	outputFormatPretty = "pretty"
 	outputFormatJSON   = "json"
+	outputFormatEnv    = "DETENT_FORMAT"
 )
 
 const rootLongHelp = `Detent is an agent orchestrator for tracker-backed work queues.
@@ -234,16 +235,17 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	var host string
 	var port int
 	var headless bool
-	outputFormat := outputFormatPretty
+	var outputFormat string
 	cmd := &cobra.Command{
 		Use:          "detent",
 		Short:        "Detent agent orchestrator",
 		Long:         rootLongHelp,
 		Example:      "  detent --config ~/.config/detent/global.yaml --headless\n  detent --format json help",
-		Args:         cobra.NoArgs,
+		Args:         NoArgs,
 		SilenceUsage: true,
 		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
-			return validateOutputFormat(outputFormat)
+			_, err := resolveOutputFormat(outputFormat, strings.TrimSpace(outputFormat) != "", opts.lookupEnv(outputFormatEnv), opts.stdoutTTY())
+			return err
 		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			flags := runtimeFlags{
@@ -272,10 +274,10 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	}
 	cmd.SetContext(ctx)
 	cmd.SetUsageTemplate(examplesFirstUsageTemplate)
-	cmd.SetHelpFunc(newExamplesFirstHelpFunc(&outputFormat))
+	cmd.SetHelpFunc(newExamplesFirstHelpFunc(&outputFormat, opts.lookupEnv, opts.stdoutTTY))
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "path to global.yaml")
 	cmd.PersistentFlags().StringVar(&env, "env", "", "runtime environment")
-	cmd.PersistentFlags().StringVar(&outputFormat, "format", outputFormatPretty, "output format (pretty|json)")
+	cmd.PersistentFlags().StringVar(&outputFormat, "format", "", "output format: pretty or json (default: pretty on TTY, json when piped; DETENT_FORMAT overrides)")
 	cmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level")
 	cmd.PersistentFlags().StringVar(&host, "host", "", "web server host")
 	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
@@ -333,8 +335,7 @@ func noSignal(context.Context, Signal) error {
 }
 
 func stdoutIsTTY() bool {
-	info, err := os.Stdout.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return writerIsTTY(os.Stdout)
 }
 
 func newInitCommand(configPath *string, opts options) *cobra.Command {
@@ -343,7 +344,7 @@ func newInitCommand(configPath *string, opts options) *cobra.Command {
 		Use:     "init",
 		Short:   "Create a default global config",
 		Example: "  detent init --config ~/.config/detent/global.yaml",
-		Args:    cobra.NoArgs,
+		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := resolveConfigPath(*configPath, opts)
 			if err != nil {
@@ -393,7 +394,7 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 		Use:     "add-project",
 		Short:   "Add a project to global config",
 		Example: "  detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api --weight 2",
-		Args:    cobra.NoArgs,
+		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := resolveConfigPath(*configPath, opts)
 			if err != nil {
@@ -437,13 +438,13 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 func validateProjectFlags(cfg globalconfig.Project) error {
 	switch {
 	case cfg.ID == "":
-		return errors.New("project id is required")
+		return ValidationError("project id is required")
 	case strings.TrimSpace(cfg.Workflow) == "":
-		return errors.New("project workflow is required")
+		return ValidationError("project workflow is required")
 	case strings.TrimSpace(cfg.Workdir) == "":
-		return errors.New("project workdir is required")
+		return ValidationError("project workdir is required")
 	case cfg.Weight <= 0:
-		return errors.New("project weight must be positive")
+		return ValidationError("project weight must be positive")
 	default:
 		return nil
 	}
@@ -456,7 +457,7 @@ func newEditProjectCommand(configPath *string, opts options, operation Operation
 		Use:     use + " PROJECT_ID",
 		Short:   short,
 		Example: example,
-		Args:    cobra.ExactArgs(1),
+		Args:    ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return updateProject(cmd.Context(), *configPath, opts, operation, args[0], edit)
 		},
@@ -478,7 +479,7 @@ func newConfigPathCommand(configPath *string, opts options) *cobra.Command {
 		Use:     "path",
 		Short:   "Print the resolved global config path",
 		Example: "  detent config path --config ~/.config/detent/global.yaml",
-		Args:    cobra.NoArgs,
+		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			resolution, err := resolveConfigPathResolution(*configPath, opts)
 			if err != nil {
@@ -496,10 +497,10 @@ func newPromoteCommand(configPath *string, opts options) *cobra.Command {
 		Use:     "promote PROJECT_ID",
 		Short:   "Promote a project priority",
 		Example: "  detent promote api --priority 1",
-		Args:    cobra.ExactArgs(1),
+		Args:    ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if priority <= 0 {
-				return errors.New("priority must be positive")
+				return ValidationError("priority must be positive")
 			}
 			return updateProject(cmd.Context(), *configPath, opts, OperationPromoteProject, args[0], func(project *globalconfig.Project) error {
 				project.Priority = priority
@@ -545,7 +546,7 @@ func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {
 		Use:     "remove-project PROJECT_ID",
 		Short:   "Remove a project from global config",
 		Example: "  detent remove-project api",
-		Args:    cobra.ExactArgs(1),
+		Args:    ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolveConfigPath(*configPath, opts)
 			if err != nil {
@@ -604,34 +605,71 @@ func projectIndex(projects []globalconfig.Project, id string) int {
 	return -1
 }
 
-func validateOutputFormat(format string) error {
-	switch normalizedOutputFormat(format) {
-	case outputFormatPretty, outputFormatJSON:
-		return nil
-	default:
-		return fmt.Errorf("unsupported output format %q: use pretty or json", format)
-	}
-}
-
 func normalizedOutputFormat(format string) string {
 	return strings.ToLower(strings.TrimSpace(format))
 }
 
-func newExamplesFirstHelpFunc(format *string) func(*cobra.Command, []string) {
+func resolveOutputFormat(flagValue string, flagSet bool, envValue string, stdoutTTY bool) (string, error) {
+	if flagSet {
+		return parseOutputFormat(flagValue, "--format")
+	}
+	if strings.TrimSpace(envValue) != "" {
+		return parseOutputFormat(envValue, outputFormatEnv)
+	}
+	if stdoutTTY {
+		return outputFormatPretty, nil
+	}
+	return outputFormatJSON, nil
+}
+
+func parseOutputFormat(value string, source string) (string, error) {
+	switch normalizedOutputFormat(value) {
+	case outputFormatPretty:
+		return outputFormatPretty, nil
+	case outputFormatJSON:
+		return outputFormatJSON, nil
+	default:
+		return "", ValidationErrorf("invalid output format for %s: %q (want pretty or json)", source, value)
+	}
+}
+
+func newExamplesFirstHelpFunc(format *string, lookupEnv func(string) string, stdoutTTY func() bool) func(*cobra.Command, []string) {
 	return func(cmd *cobra.Command, _ []string) {
-		switch normalizedOutputFormat(derefString(format)) {
+		resolved, err := resolveOutputFormat(derefString(format), strings.TrimSpace(derefString(format)) != "", lookupEnv(outputFormatEnv), commandOutputTTY(cmd, stdoutTTY))
+		if err != nil {
+			cmd.PrintErrln(err)
+			return
+		}
+		switch resolved {
 		case outputFormatJSON:
 			if err := writeCommandCatalogJSON(cmd.OutOrStdout(), cmd.Root()); err != nil {
 				cmd.PrintErrln(err)
 			}
-		case outputFormatPretty, "":
+		case outputFormatPretty:
 			if err := writeExamplesFirstHelp(cmd.OutOrStdout(), cmd); err != nil {
 				cmd.PrintErrln(err)
 			}
-		default:
-			cmd.PrintErrln(validateOutputFormat(derefString(format)))
 		}
 	}
+}
+
+func commandOutputTTY(cmd *cobra.Command, fallback func() bool) bool {
+	if cmd != nil {
+		return writerIsTTY(cmd.OutOrStdout())
+	}
+	if fallback != nil {
+		return fallback()
+	}
+	return stdoutIsTTY()
+}
+
+func writerIsTTY(w io.Writer) bool {
+	file, ok := w.(*os.File)
+	if !ok {
+		return false
+	}
+	info, err := file.Stat()
+	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
 func writeExamplesFirstHelp(out io.Writer, cmd *cobra.Command) error {

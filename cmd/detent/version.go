@@ -8,6 +8,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/cli"
 )
 
 var version, commit, date = "dev", "none", "unknown"
@@ -26,7 +27,7 @@ func newVersionCommand() *cobra.Command {
 		Use:     "version",
 		Short:   "Print version metadata",
 		Example: "  detent version",
-		Args:    cobra.NoArgs,
+		Args:    cli.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := io.WriteString(cmd.OutOrStdout(), formatVersionInfo(currentVersionInfo()))
 			return err

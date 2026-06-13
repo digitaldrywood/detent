@@ -3,6 +3,9 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
+	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
@@ -10,6 +13,8 @@ import (
 	"time"
 
 	"github.com/spf13/cobra"
+
+	"github.com/digitaldrywood/detent/internal/cli"
 )
 
 func TestRootCommandHelp(t *testing.T) {
@@ -18,7 +23,7 @@ func TestRootCommandHelp(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--help"})
+	cmd.SetArgs([]string{"--format", "pretty", "--help"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -38,7 +43,7 @@ func TestSubcommandHelpShowsExampleBeforeUsage(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"update", "--help"})
+	cmd.SetArgs([]string{"--format", "pretty", "update", "--help"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -67,6 +72,33 @@ func TestRegisteredCommandsHaveExamples(t *testing.T) {
 	missing := commandsMissingExamples(cmd)
 	if len(missing) > 0 {
 		t.Fatalf("commands missing examples: %s", strings.Join(missing, ", "))
+	}
+}
+
+func TestHandleCommandErrorReturnsSemanticExitCode(t *testing.T) {
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "context canceled", err: context.Canceled, want: cli.ExitSuccess},
+		{name: "validation", err: cli.ValidationError("bad input"), want: cli.ExitValidation},
+		{name: "not found", err: errors.Join(cli.ErrProjectNotFound, errors.New("missing")), want: cli.ExitNotFoundOrConfig},
+		{name: "general", err: errors.New("boom"), want: cli.ExitGeneral},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := handleCommandError(tt.err); got != tt.want {
+				t.Fatalf("handleCommandError(%v) = %d, want %d", tt.err, got, tt.want)
+			}
+		})
 	}
 }
 

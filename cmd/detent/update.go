@@ -13,6 +13,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/digitaldrywood/detent/internal/cli"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -33,7 +34,7 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 		Use:          "update",
 		Short:        "Check for and apply Detent updates",
 		Example:      "  detent update --check --json\n  detent update --yes",
-		Args:         cobra.NoArgs,
+		Args:         cli.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			runCtx := cmd.Context()
@@ -152,7 +153,7 @@ func selectGoInstallAction(cmd *cobra.Command) func(detentupdate.Status) (detent
 		case "", "3", "a", "abort", "n", "no":
 			return detentupdate.GoInstallActionAbort, nil
 		default:
-			return "", fmt.Errorf("invalid update choice: %s", strings.TrimSpace(line))
+			return "", cli.ValidationErrorf("invalid update choice: %s", strings.TrimSpace(line))
 		}
 	}
 }
