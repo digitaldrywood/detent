@@ -47,6 +47,12 @@ type Client struct {
 	hasRateLimit bool
 }
 
+type restProbeResult struct {
+	StatusCode int
+	Headers    http.Header
+	Body       string
+}
+
 func NewClient(cfg ClientConfig) (*Client, error) {
 	endpoint := strings.TrimSpace(cfg.Endpoint)
 	if endpoint == "" {
@@ -174,6 +180,64 @@ func (c *Client) GraphQLWithType(ctx context.Context, queryType string, query st
 func (c *Client) REST(ctx context.Context, method string, path string, body any, out any) error {
 	_, err := c.rest(ctx, method, path, body, out)
 	return err
+}
+
+func (c *Client) restProbe(ctx context.Context, method string, path string, body any) (restProbeResult, error) {
+	token, err := c.tokenSource.Token(ctx)
+	if err != nil {
+		return restProbeResult{}, fmt.Errorf("resolve github token: %w", err)
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return restProbeResult{}, ErrMissingToken
+	}
+
+	var requestBody io.Reader
+	if body != nil {
+		var encoded bytes.Buffer
+		if err := json.NewEncoder(&encoded).Encode(body); err != nil {
+			return restProbeResult{}, fmt.Errorf("encode github rest request: %w", err)
+		}
+		requestBody = &encoded
+	}
+
+	url, err := c.restURL(path)
+	if err != nil {
+		return restProbeResult{}, err
+	}
+	req, err := http.NewRequestWithContext(ctx, method, url, requestBody)
+	if err != nil {
+		return restProbeResult{}, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
+	if body != nil {
+		req.Header.Set("Content-Type", "application/json")
+	}
+
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return restProbeResult{}, ctxErr
+		}
+		return restProbeResult{}, fmt.Errorf("%w: %w", ErrTransient, err)
+	}
+	defer func() {
+		if err := drainAndClose(resp.Body); err != nil {
+			c.logger.DebugContext(ctx, "github rest probe response body drain failed", "method", method, "path", path, "error", err)
+		}
+	}()
+
+	raw, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return restProbeResult{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
+	}
+	return restProbeResult{
+		StatusCode: resp.StatusCode,
+		Headers:    resp.Header.Clone(),
+		Body:       summarizeBody(raw),
+	}, nil
 }
 
 func (c *Client) rest(ctx context.Context, method string, path string, body any, out any) (http.Header, error) {

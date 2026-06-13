@@ -23,6 +23,7 @@ tracker:
   kind: github
   api_key: $GITHUB_TOKEN
   project_slug: "PVT_project"
+  write_probe_issue: " digitaldrywood/detent#1 "
   http_max_idle_conns: 120
   http_max_idle_conns_per_host: 40
   http_idle_conn_timeout_ms: 120000
@@ -160,6 +161,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Tracker.Endpoint != "https://api.github.com/graphql" {
 		t.Fatalf("Tracker.Endpoint = %q", cfg.Tracker.Endpoint)
+	}
+	if cfg.Tracker.WriteProbeIssue != "digitaldrywood/detent#1" {
+		t.Fatalf("Tracker.WriteProbeIssue = %q, want digitaldrywood/detent#1", cfg.Tracker.WriteProbeIssue)
 	}
 	if cfg.Tracker.HTTPMaxIdleConns != 120 {
 		t.Fatalf("Tracker.HTTPMaxIdleConns = %d, want 120", cfg.Tracker.HTTPMaxIdleConns)

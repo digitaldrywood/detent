@@ -76,6 +76,7 @@ type Tracker struct {
 	GitHubAppPrivateKeyPath    string                `yaml:"github_app_private_key_path"`
 	GitHubAppInstallationID    string                `yaml:"github_app_installation_id"`
 	ProjectSlug                string                `yaml:"project_slug"`
+	WriteProbeIssue            string                `yaml:"write_probe_issue,omitempty"`
 	Assignee                   string                `yaml:"assignee"`
 	ActiveStates               []string              `yaml:"active_states"`
 	ObservedStates             []string              `yaml:"observed_states"`
@@ -634,6 +635,7 @@ func (c *Config) normalize() {
 	if c.Tracker.Kind == TrackerGitHub && c.Tracker.Endpoint == defaultLinearEndpoint {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
+	c.Tracker.WriteProbeIssue = strings.TrimSpace(c.Tracker.WriteProbeIssue)
 	c.Tracker.Claims.Normalize()
 	c.Tracker.DependencyAutoUnblock.Normalize()
 	c.Tracker.Authorization.Normalize()

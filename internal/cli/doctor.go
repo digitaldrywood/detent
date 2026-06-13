@@ -9,6 +9,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,6 +27,7 @@ import (
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/factory"
+	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
@@ -112,6 +114,8 @@ type doctorStatusOptionVerifier interface {
 	VerifyStatusOptions(context.Context, []string) error
 }
 
+type doctorGitHubReadinessFunc func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error)
+
 type doctorDeps struct {
 	loadWorkflow         func(string) (workflowconfig.Workflow, error)
 	lookupEnv            func(string) string
@@ -119,10 +123,12 @@ type doctorDeps struct {
 	runCommand           func(context.Context, string, ...string) error
 	httpDo               func(*http.Request) (*http.Response, error)
 	githubScopes         func(context.Context, string) ([]string, error)
+	githubReadiness      doctorGitHubReadinessFunc
 	ghAuthToken          func(context.Context) (string, error)
 	listen               func(string, string) (net.Listener, error)
 	openSQLite           func(context.Context, string) (doctorStore, error)
 	gitWorkTree          func(context.Context, string) error
+	gitRemoteURL         func(context.Context, string) (string, error)
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
 	executable           func() (string, error)
 }
@@ -266,7 +272,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	jobs := []doctorCheckJob{}
 	if global != nil {
 		globalConfig := *global
-		githubToken := runtimeGlobalGitHubToken(runtime.GitHubToken)
+		githubToken := runtime.GitHubToken
 		jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken)...)
 	}
 	jobs = append(jobs,
@@ -526,7 +532,7 @@ func checkDoctorDetentExecutable(build buildinfo.Info, deps doctorDeps) doctorCh
 	}
 }
 
-func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, githubToken string) []doctorCheck {
+func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret) []doctorCheck {
 	if len(cfg.Projects) == 0 {
 		return []doctorCheck{
 			{
@@ -546,7 +552,7 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 	return checks
 }
 
-func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToken string) []doctorCheckJob {
+func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret) []doctorCheckJob {
 	if len(cfg.Projects) == 0 {
 		return []doctorCheckJob{{
 			Name: "Project workflows",
@@ -577,7 +583,7 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 	return jobs
 }
 
-func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps doctorDeps, githubToken string) []doctorCheck {
+func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps doctorDeps, githubToken RuntimeSecret) []doctorCheck {
 	id := doctorProjectID(project)
 	workflow, err := deps.loadWorkflow(project.Workflow)
 	if err != nil {
@@ -596,7 +602,7 @@ func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps 
 			},
 		}
 	}
-	workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, githubToken)
+	workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, runtimeGlobalGitHubToken(githubToken))
 	if err := workflow.Config.Validate(); err != nil {
 		return []doctorCheck{
 			{
@@ -654,11 +660,15 @@ func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps 
 			Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
 		})
 	}
-	return append(checks, doctorCheck{
+	checks = append(checks, doctorCheck{
 		Name:   "Project " + id + " source repo",
 		Status: doctorOK,
 		Detail: expandedSourceRoot + " is a git worktree",
 	})
+	if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub {
+		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot)...)
+	}
+	return checks
 }
 
 func doctorProjectID(project globalconfig.Project) string {
@@ -1492,6 +1502,285 @@ func defaultDoctorAutoPromoteConnector(cfg workflowconfig.Config) (doctorAutoPro
 	})
 }
 
+func checkDoctorGitHubReadiness(
+	ctx context.Context,
+	id string,
+	project globalconfig.Project,
+	cfg workflowconfig.Config,
+	deps doctorDeps,
+	githubToken RuntimeSecret,
+	sourceRoot string,
+) []doctorCheck {
+	checks, err := deps.githubReadiness(ctx, doctorGitHubConnectorConfig(cfg), doctorGitHubReadinessConfig(ctx, project, cfg, deps, githubToken, sourceRoot))
+	if err != nil {
+		return []doctorCheck{{
+			Name:   "Project " + id + " GitHub readiness",
+			Status: doctorFail,
+			Detail: "create GitHub readiness checker: " + err.Error(),
+			Hint:   "Fix GitHub tracker configuration and credentials.",
+		}}
+	}
+	out := make([]doctorCheck, 0, len(checks))
+	for _, check := range checks {
+		out = append(out, doctorCheck{
+			Name:   "Project " + id + " " + check.Name,
+			Status: doctorStatusFromGitHubReadiness(check.Status),
+			Detail: check.Detail,
+			Hint:   check.Hint,
+		})
+	}
+	return out
+}
+
+func doctorGitHubConnectorConfig(cfg workflowconfig.Config) ghconnector.Config {
+	return ghconnector.Config{
+		Endpoint: cfg.Tracker.Endpoint,
+		APIKey:   cfg.Tracker.APIKey,
+		HTTPTransport: ghconnector.HTTPTransportConfig{
+			MaxIdleConns:        cfg.Tracker.HTTPMaxIdleConns,
+			MaxIdleConnsPerHost: cfg.Tracker.HTTPMaxIdleConnsPerHost,
+			IdleConnTimeout:     time.Duration(cfg.Tracker.HTTPIdleConnTimeoutMS) * time.Millisecond,
+		},
+		GitHubAppID:             cfg.Tracker.GitHubAppID,
+		GitHubAppPrivateKey:     cfg.Tracker.GitHubAppPrivateKey,
+		GitHubAppPrivateKeyPath: cfg.Tracker.GitHubAppPrivateKeyPath,
+		GitHubAppInstallationID: cfg.Tracker.GitHubAppInstallationID,
+		ProjectSlug:             cfg.Tracker.ProjectSlug,
+		ActiveStates:            cfg.Tracker.ActiveStates,
+		ObservedStates:          cfg.Tracker.ObservedStates,
+		TerminalStates:          cfg.Tracker.TerminalStates,
+		StateMap:                doctorTrackerStateMap(cfg.Tracker.StateMap),
+	}
+}
+
+func doctorGitHubReadinessConfig(
+	ctx context.Context,
+	project globalconfig.Project,
+	cfg workflowconfig.Config,
+	deps doctorDeps,
+	githubToken RuntimeSecret,
+	sourceRoot string,
+) ghconnector.ReadinessConfig {
+	return ghconnector.ReadinessConfig{
+		AuthPath:                      doctorGitHubAuthPath(cfg, githubToken, deps.lookupEnv),
+		WriteProbeIssue:               cfg.Tracker.WriteProbeIssue,
+		Repositories:                  doctorGitHubRepositories(ctx, project, cfg, deps, sourceRoot),
+		StatusStates:                  doctorRequiredGitHubStatusStates(cfg),
+		ReadStates:                    doctorRequiredGitHubReadStates(cfg),
+		RequireIssueCommentsRead:      doctorRequiresIssueCommentsRead(cfg),
+		RequireDependencyMetadataRead: doctorRequiresDependencyMetadataRead(cfg),
+		RequireIssueChildrenRead:      doctorRequiresIssueChildrenRead(cfg),
+		RequireIssueParentsRead:       doctorRequiresIssueParentsRead(cfg),
+		RequirePullRequestRead:        doctorRequiresPullRequestRead(cfg),
+		RequirePullRequestReviews:     doctorRequiresPullRequestReviewsRead(cfg),
+		RequirePullRequestChecks:      doctorRequiresPullRequestChecksRead(cfg),
+		RequireProjectStatusWrite:     doctorRequiresProjectStatusWrite(cfg),
+		RequireIssueComments:          doctorRequiresIssueCommentWrite(cfg),
+		RequireAssigneeWrite:          doctorRequiresAssigneeWrite(cfg),
+		RequireIssueClose:             doctorRequiresIssueClose(cfg),
+		ProjectFieldWrites:            doctorRequiredProjectFieldWrites(cfg),
+	}
+}
+
+func doctorStatusFromGitHubReadiness(status ghconnector.ReadinessStatus) doctorStatus {
+	switch status {
+	case ghconnector.ReadinessOK:
+		return doctorOK
+	case ghconnector.ReadinessWarn:
+		return doctorWarn
+	case ghconnector.ReadinessFail:
+		return doctorFail
+	default:
+		return doctorWarn
+	}
+}
+
+func doctorGitHubAuthPath(cfg workflowconfig.Config, token RuntimeSecret, lookupEnv func(string) string) string {
+	if trackerHasGitHubAppCredentials(cfg.Tracker, lookupEnv) {
+		return "GitHub App installation token"
+	}
+	if token.ResolvedVia == "gh" {
+		return "gh-resolved token"
+	}
+	switch strings.TrimSpace(token.Source) {
+	case "GITHUB_TOKEN":
+		return "GITHUB_TOKEN PAT"
+	case "github_token":
+		return "global github_token PAT"
+	case "":
+		if strings.TrimSpace(cfg.Tracker.APIKey) != "" {
+			return "workflow tracker.api_key"
+		}
+		return "GitHub token"
+	default:
+		return token.Source + " PAT"
+	}
+}
+
+func doctorRequiredGitHubStatusStates(cfg workflowconfig.Config) []string {
+	return uniqueDoctorStrings(append(append([]string{}, cfg.Tracker.ActiveStates...), append(cfg.Tracker.ObservedStates, cfg.Tracker.TerminalStates...)...))
+}
+
+func doctorRequiredGitHubReadStates(cfg workflowconfig.Config) []string {
+	return uniqueDoctorStrings(append(append([]string{}, cfg.Tracker.ActiveStates...), cfg.Tracker.ObservedStates...))
+}
+
+func doctorRequiresProjectStatusWrite(cfg workflowconfig.Config) bool {
+	return len(cfg.Tracker.ActiveStates) > 0 ||
+		cfg.Agent.AutoPromote.Enabled ||
+		cfg.Tracker.DependencyAutoUnblock.Enabled
+}
+
+func doctorRequiresIssueCommentWrite(cfg workflowconfig.Config) bool {
+	return cfg.Agent.AutoPromote.Enabled ||
+		cfg.Tracker.DependencyAutoUnblock.Enabled ||
+		doctorRequiresIssueClose(cfg)
+}
+
+func doctorRequiresIssueCommentsRead(cfg workflowconfig.Config) bool {
+	return doctorStateInList("Blocked", cfg.Tracker.ObservedStates) ||
+		doctorStateInList("Blocked", cfg.Tracker.ActiveStates) ||
+		doctorStateInList("Blocked", cfg.Tracker.DependencyAutoUnblock.SourceStates)
+}
+
+func doctorRequiresDependencyMetadataRead(cfg workflowconfig.Config) bool {
+	return len(cfg.Tracker.ActiveStates) > 0 ||
+		cfg.Tracker.DependencyAutoUnblock.Enabled ||
+		doctorRequiresIssueParentsRead(cfg)
+}
+
+func doctorRequiresIssueChildrenRead(cfg workflowconfig.Config) bool {
+	return doctorRequiresIssueClose(cfg)
+}
+
+func doctorRequiresIssueParentsRead(cfg workflowconfig.Config) bool {
+	return doctorRequiresIssueClose(cfg)
+}
+
+func doctorRequiresAssigneeWrite(cfg workflowconfig.Config) bool {
+	if !cfg.Tracker.Claims.Enabled {
+		return false
+	}
+	identity := cfg.Identity
+	identity.Normalize()
+	return identity.OwnershipMode != workflowconfig.IdentityOwnershipField
+}
+
+func doctorRequiresIssueClose(cfg workflowconfig.Config) bool {
+	return len(cfg.Tracker.TerminalStates) > 0
+}
+
+func doctorRequiresPullRequestRead(cfg workflowconfig.Config) bool {
+	return len(cfg.Tracker.ActiveStates) > 0 ||
+		cfg.Agent.AutoPromote.Enabled ||
+		doctorStateInList("Human Review", cfg.Tracker.ObservedStates) ||
+		doctorStateInList("Merging", cfg.Tracker.ActiveStates)
+}
+
+func doctorRequiresPullRequestReviewsRead(cfg workflowconfig.Config) bool {
+	return doctorRequiresPullRequestRead(cfg)
+}
+
+func doctorRequiresPullRequestChecksRead(cfg workflowconfig.Config) bool {
+	return doctorRequiresPullRequestRead(cfg)
+}
+
+func doctorRequiredProjectFieldWrites(cfg workflowconfig.Config) []ghconnector.ReadinessProjectFieldWrite {
+	if !cfg.Tracker.Claims.Enabled {
+		return nil
+	}
+	fields := []ghconnector.ReadinessProjectFieldWrite{}
+	if field := strings.TrimSpace(cfg.Tracker.Claims.LeaseField); field != "" {
+		fields = append(fields, ghconnector.ReadinessProjectFieldWrite{Name: field})
+	}
+	identity := cfg.Identity
+	identity.Normalize()
+	if identity.OwnershipMode == workflowconfig.IdentityOwnershipField {
+		if field := strings.TrimSpace(identity.OwnerField); field != "" {
+			fields = append(fields, ghconnector.ReadinessProjectFieldWrite{Name: field})
+		}
+	}
+	return fields
+}
+
+func doctorGitHubRepositories(
+	ctx context.Context,
+	project globalconfig.Project,
+	cfg workflowconfig.Config,
+	deps doctorDeps,
+	sourceRoot string,
+) []string {
+	repositories := []string{}
+	if repo, ok := doctorGitHubRepositoryFromProbe(cfg.Tracker.WriteProbeIssue); ok {
+		repositories = append(repositories, repo)
+	}
+	if repo, ok := doctorGitHubRepositoryFromProbe(project.Workdir); ok {
+		repositories = append(repositories, repo)
+	}
+	if strings.TrimSpace(sourceRoot) != "" && deps.gitRemoteURL != nil {
+		if remote, err := deps.gitRemoteURL(ctx, sourceRoot); err == nil {
+			if repo, ok := doctorGitHubRepositoryFromRemoteURL(remote); ok {
+				repositories = append(repositories, repo)
+			}
+		}
+	}
+	return uniqueDoctorStrings(repositories)
+}
+
+func doctorGitHubRepositoryFromProbe(value string) (string, bool) {
+	repo, _, ok := strings.Cut(strings.TrimSpace(value), "#")
+	if !ok {
+		return "", false
+	}
+	owner, name, ok := strings.Cut(repo, "/")
+	if !ok || strings.TrimSpace(owner) == "" || strings.TrimSpace(name) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(owner) + "/" + strings.TrimSpace(name), true
+}
+
+func doctorGitHubRepositoryFromRemoteURL(remote string) (string, bool) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return "", false
+	}
+	if strings.HasPrefix(remote, "git@github.com:") {
+		return doctorCleanGitHubRepository(strings.TrimPrefix(remote, "git@github.com:"))
+	}
+	if parsed, err := url.Parse(remote); err == nil && strings.EqualFold(parsed.Hostname(), "github.com") {
+		return doctorCleanGitHubRepository(strings.TrimPrefix(parsed.Path, "/"))
+	}
+	return "", false
+}
+
+func doctorCleanGitHubRepository(path string) (string, bool) {
+	path = strings.TrimSpace(strings.TrimSuffix(path, ".git"))
+	parts := strings.Split(path, "/")
+	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(parts[0]) + "/" + strings.TrimSpace(parts[1]), true
+}
+
+func uniqueDoctorStrings(values []string) []string {
+	seen := map[string]struct{}{}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	sort.Strings(out)
+	return out
+}
+
 func doctorTrackerStateMap(value workflowconfig.StringOrMap) map[string]string {
 	if !value.IsMap {
 		return nil
@@ -1738,9 +2027,8 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token Runt
 	if token.Value == "" && !requiresRuntimeToken && hasGitHubProject {
 		return doctorCheck{
 			Name:   "GitHub token",
-			Status: doctorWarn,
-			Detail: "GitHub App credentials configured; token scope check skipped",
-			Hint:   "Use GitHub App installation authentication or configure github_token for PAT-based projects.",
+			Status: doctorOK,
+			Detail: "GitHub App credentials configured; installation permissions checked per project",
 		}
 	}
 	if token.Value == "" {
@@ -1762,6 +2050,13 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token Runt
 			Hint:   `Refresh the token with repo, read:org, and project scopes.`,
 		}
 	}
+	if len(scopes) == 0 {
+		return doctorCheck{
+			Name:   "GitHub token",
+			Status: doctorOK,
+			Detail: fmt.Sprintf("%s did not expose classic OAuth scopes; treating as fine-grained or resource-scoped token and relying on operation checks", source),
+		}
+	}
 	missing := missingGitHubScopes(scopes)
 	if len(missing) > 0 {
 		return doctorCheck{
@@ -1775,7 +2070,7 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token Runt
 	return doctorCheck{
 		Name:   "GitHub token",
 		Status: doctorOK,
-		Detail: fmt.Sprintf("%s has required scopes: %s", source, strings.Join(requiredGitHubScopes, ", ")),
+		Detail: fmt.Sprintf("%s has classic PAT scopes: %s; operation checks still verify resource access", source, strings.Join(requiredGitHubScopes, ", ")),
 	}
 }
 
@@ -2032,6 +2327,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.githubScopes == nil {
 		d.githubScopes = defaults.githubScopes
 	}
+	if d.githubReadiness == nil {
+		d.githubReadiness = defaults.githubReadiness
+	}
 	if d.ghAuthToken == nil {
 		d.ghAuthToken = defaults.ghAuthToken
 	}
@@ -2043,6 +2341,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	}
 	if d.gitWorkTree == nil {
 		d.gitWorkTree = defaults.gitWorkTree
+	}
+	if d.gitRemoteURL == nil {
+		d.gitRemoteURL = defaults.gitRemoteURL
 	}
 	if d.autoPromoteConnector == nil {
 		d.autoPromoteConnector = defaults.autoPromoteConnector
@@ -2061,10 +2362,12 @@ func defaultDoctorDeps() doctorDeps {
 		runCommand:           runDoctorCommand,
 		httpDo:               defaultDoctorHTTPDo,
 		githubScopes:         defaultGitHubScopes,
+		githubReadiness:      ghconnector.CheckReadiness,
 		ghAuthToken:          defaultGHAuthToken,
 		listen:               net.Listen,
 		openSQLite:           openDoctorSQLite,
 		gitWorkTree:          defaultGitWorkTree,
+		gitRemoteURL:         defaultGitRemoteURL,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
 		executable:           os.Executable,
 	}
@@ -2141,6 +2444,28 @@ func defaultGitWorkTree(ctx context.Context, path string) error {
 	return nil
 }
 
+func defaultGitRemoteURL(ctx context.Context, path string) (string, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(commandCtx, "git", "-C", path, "remote", "get-url", "origin") // #nosec G204 -- doctor runs fixed git preflight arguments against configured checkout paths.
+	output, err := cmd.CombinedOutput()
+	if commandCtx.Err() != nil {
+		return "", commandCtx.Err()
+	}
+	if err != nil {
+		if detail := strings.TrimSpace(string(output)); detail != "" {
+			return "", fmt.Errorf("%w: %s", err, detail)
+		}
+		return "", err
+	}
+	remote := strings.TrimSpace(string(output))
+	if remote == "" {
+		return "", errors.New("origin remote URL is blank")
+	}
+	return remote, nil
+}
+
 func defaultGitHubScopes(ctx context.Context, token string) ([]string, error) {
 	requestCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
 	defer cancel()
@@ -2170,9 +2495,6 @@ func defaultGitHubScopes(ctx context.Context, token string) ([]string, error) {
 	}
 
 	scopes := parseGitHubScopes(resp.Header.Get("X-OAuth-Scopes"))
-	if len(scopes) == 0 {
-		return nil, errors.New("GitHub did not report OAuth scopes")
-	}
 	return scopes, nil
 }
 
