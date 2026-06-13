@@ -447,20 +447,21 @@ func TestCheckDoctorRuntimeSettingsReportsSources(t *testing.T) {
 func TestCheckDoctorDetentExecutableReportsRunningBinary(t *testing.T) {
 	t.Parallel()
 
+	executablePath := filepath.Join("Users", "corylanou", "go", "bin", "detent")
 	got := checkDoctorDetentExecutable(buildinfo.Info{
 		Version: "v1.2.3",
 		Commit:  "abcdef123456",
 		Date:    "2026-06-13T15:35:40Z",
 	}, doctorDeps{
 		executable: func() (string, error) {
-			return "/Users/corylanou/go/bin/detent", nil
+			return executablePath, nil
 		},
 	})
 
 	if got.Status != doctorOK {
 		t.Fatalf("Status = %s, want %s", got.Status, doctorOK)
 	}
-	for _, want := range []string{"/Users/corylanou/go/bin/detent", "v1.2.3", "abcdef1"} {
+	for _, want := range []string{executablePath, "v1.2.3", "abcdef1"} {
 		if !strings.Contains(got.Detail, want) {
 			t.Fatalf("Detail missing %q:\n%s", want, got.Detail)
 		}
@@ -1092,7 +1093,7 @@ func successfulDoctorDeps() doctorDeps {
 			return nil
 		},
 		executable: func() (string, error) {
-			return "/Users/corylanou/go/bin/detent", nil
+			return filepath.Join("Users", "corylanou", "go", "bin", "detent"), nil
 		},
 	}
 }
