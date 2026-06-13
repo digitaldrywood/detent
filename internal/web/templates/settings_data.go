@@ -3,14 +3,17 @@ package templates
 import "strings"
 
 type SettingsData struct {
-	Title           string
-	ApplicationName string
-	InstanceName    string
-	Version         string
-	Global          SettingsGlobal
-	Projects        []SettingsProject
-	Runtime         SettingsRuntime
-	Assets          AssetPaths
+	Title            string
+	ApplicationName  string
+	InstanceName     string
+	Version          string
+	Global           SettingsGlobal
+	Projects         []SettingsProject
+	Runtime          SettingsRuntime
+	Assets           AssetPaths
+	SidebarProjects  []ProjectSmallMultiple
+	ActiveNav        string
+	SidebarCollapsed bool
 }
 
 type SettingsGlobal struct {
@@ -42,6 +45,23 @@ func settingsPageTitle(data SettingsData) string {
 		return data.Title
 	}
 	return "Detent settings"
+}
+
+func settingsDashboardData(data SettingsData) DashboardData {
+	activeNav := strings.TrimSpace(data.ActiveNav)
+	if activeNav == "" {
+		activeNav = "settings"
+	}
+	return DashboardData{
+		Title:            settingsPageTitle(data),
+		ApplicationName:  data.ApplicationName,
+		InstanceName:     data.InstanceName,
+		Version:          data.Version,
+		Projects:         data.SidebarProjects,
+		Assets:           data.Assets,
+		ActiveNav:        activeNav,
+		SidebarCollapsed: data.SidebarCollapsed,
+	}
 }
 
 func settingsVersionLabel(data SettingsData) string {

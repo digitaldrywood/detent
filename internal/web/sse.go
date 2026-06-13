@@ -22,6 +22,17 @@ const (
 	sseEventTick     = "tick"
 )
 
+func staticSidebarNav(value string) string {
+	switch strings.TrimSpace(value) {
+	case "reports":
+		return "reports"
+	case "settings":
+		return "settings"
+	default:
+		return ""
+	}
+}
+
 func (s *Server) events(c echo.Context) error {
 	flusher, ok := c.Response().Writer.(http.Flusher)
 	if !ok {
@@ -30,6 +41,7 @@ func (s *Server) events(c echo.Context) error {
 
 	ctx := c.Request().Context()
 	selectedProjectID := strings.TrimSpace(c.QueryParam("project"))
+	selectedNav := staticSidebarNav(c.QueryParam("nav"))
 	sub, err := s.hub.Subscribe(ctx)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -64,6 +76,8 @@ func (s *Server) events(c echo.Context) error {
 				if scopedData, ok := s.projectDashboardData(ctx, selectedProjectID, snapshot); ok {
 					data = scopedData
 				}
+			} else if selectedNav != "" {
+				data.ActiveNav = selectedNav
 			}
 			if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, templates.SnapshotView(data)); err != nil {
 				return err

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"strings"
 
 	"github.com/labstack/echo/v4"
@@ -11,12 +12,15 @@ import (
 )
 
 func (s *Server) settings(c echo.Context) error {
-	return render(c, templates.Settings(s.settingsData()))
+	data := s.settingsData(c.Request().Context())
+	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	return render(c, templates.Settings(data))
 }
 
-func (s *Server) settingsData() templates.SettingsData {
+func (s *Server) settingsData(ctx context.Context) templates.SettingsData {
 	instanceName := s.instanceName()
 	globalConfig := s.currentGlobalConfig()
+	snapshot := s.latestSnapshot(ctx)
 	return templates.SettingsData{
 		Title:           instancePageTitle(instanceName, "Detent settings"),
 		ApplicationName: applicationName(instanceName),
@@ -32,7 +36,9 @@ func (s *Server) settingsData() templates.SettingsData {
 			LogPath:       s.logPath,
 			ServerAddress: s.serverAddr,
 		},
-		Assets: s.assets.templatePaths(),
+		Assets:          s.assets.templatePaths(),
+		SidebarProjects: s.projectSmallMultiples(ctx, snapshot),
+		ActiveNav:       "settings",
 	}
 }
 

@@ -18,11 +18,13 @@ func (s *Server) reports(c echo.Context) error {
 		return c.JSON(status, response)
 	}
 
-	data, err := s.reportsData(c.Request().Context(), from, to)
+	ctx := c.Request().Context()
+	data, err := s.reportsData(ctx, from, to)
 	if err != nil {
 		s.logger.Error("usage reports page failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse("usage_reports_failed", "Usage reports failed"))
 	}
+	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 
 	return render(c, templates.Reports(data))
 }
@@ -66,6 +68,7 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time) 
 	}
 
 	instanceName := s.instanceName()
+	snapshot := s.latestSnapshot(ctx)
 	return templates.ReportsData{
 		Title:           instancePageTitle(instanceName, "Detent reports"),
 		ApplicationName: applicationName(instanceName),
@@ -78,6 +81,8 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time) 
 		PR:              pr,
 		Model:           model,
 		Assets:          s.assets.templatePaths(),
+		Projects:        s.projectSmallMultiples(ctx, snapshot),
+		ActiveNav:       "reports",
 	}, nil
 }
 

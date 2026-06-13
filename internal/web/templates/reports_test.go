@@ -59,6 +59,13 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 	html := renderComponent(t, templates.Reports(templates.ReportsData{
 		Title:       "Detent reports",
 		GeneratedAt: time.Date(2026, 5, 31, 17, 0, 0, 0, time.UTC),
+		Projects: []templates.ProjectSmallMultiple{
+			{
+				ID:      "detent",
+				Name:    "Detent",
+				Running: 2,
+			},
+		},
 		Day: templates.UsageReportData{
 			Totals: templates.UsageTotalsData{
 				TotalTokens: 125_000,
@@ -70,11 +77,20 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 
 	for _, want := range []string{
 		"overflow-x-hidden",
-		"px-3 py-3",
+		`data-tui-sidebar-layout`,
+		`data-tui-sidebar-collapsible="icon"`,
+		`data-tui-sidebar="menu-badge"`,
+		`data-tui-sheet`,
+		`/static/js/templui/sidebar.min.js`,
+		`/static/js/templui/dialog.min.js`,
+		`/static/js/templui/popover.min.js`,
+		`data-tui-sidebar-active="true" aria-current="page"`,
+		`href="/reports"`,
+		`href="/settings"`,
+		`href="/"`,
 		"dashboard-topbar",
-		"dashboard-nav flex min-w-0 items-center gap-4",
+		`data-tui-sidebar-target="dashboard-sidebar"`,
 		`<h1 class="sr-only">Reports</h1>`,
-		"underline decoration-2 underline-offset-4",
 		"grid min-w-0 gap-5 xl:grid-cols-2",
 		"grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]",
 		"break-all font-mono text-2xl",
@@ -82,5 +98,17 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("reports page missing responsive marker %q:\n%s", want, html)
 		}
+	}
+	for _, forbidden := range []string{
+		"dashboard-nav flex min-w-0 items-center gap-4",
+		"dashboard-nav-link",
+		"underline decoration-2 underline-offset-4",
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("reports page rendered old nav marker %q:\n%s", forbidden, html)
+		}
+	}
+	if !strings.Contains(html, `aria-current="page"`) {
+		t.Fatalf("reports page missing active sidebar aria-current:\n%s", html)
 	}
 }
