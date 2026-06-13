@@ -6,8 +6,11 @@ import (
 	"errors"
 	"io"
 	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -711,7 +714,7 @@ func TestCheckDoctorServerPort(t *testing.T) {
 		{
 			name:       "port available",
 			want:       doctorOK,
-			wantDetail: "is available",
+			wantDetail: "available for pre-start bind",
 		},
 	}
 
@@ -720,7 +723,7 @@ func TestCheckDoctorServerPort(t *testing.T) {
 			t.Parallel()
 
 			port := 0
-			got := checkDoctorServerPort(BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
+			got := checkDoctorServerPort(context.Background(), BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
 				listen: func(_, address string) (net.Listener, error) {
 					if address != "127.0.0.1:0" {
 						t.Fatalf("listen address = %q, want 127.0.0.1:0", address)
@@ -736,6 +739,156 @@ func TestCheckDoctorServerPort(t *testing.T) {
 			}
 			if !strings.Contains(got.Detail, tt.wantDetail) {
 				t.Fatalf("Detail = %q, want containing %q", got.Detail, tt.wantDetail)
+			}
+		})
+	}
+}
+
+func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		host       string
+		listenHost string
+		statusCode int
+		body       string
+		want       doctorStatus
+		wantDetail []string
+	}{
+		{
+			name:       "healthy running detent on wildcard host",
+			host:       "0.0.0.0",
+			listenHost: "0.0.0.0",
+			statusCode: http.StatusOK,
+			body:       `{"status":"ok","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"}}`,
+			want:       doctorWarn,
+			wantDetail: []string{
+				"pre-start bind",
+				"healthy Detent instance",
+				"http://127.0.0.1:",
+				"/health",
+				"status ok",
+				"mode running",
+			},
+		},
+		{
+			name:       "unhealthy detent service",
+			host:       "127.0.0.1",
+			listenHost: "127.0.0.1",
+			statusCode: http.StatusOK,
+			body:       `{"status":"error","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"}}`,
+			want:       doctorFail,
+			wantDetail: []string{
+				"pre-start bind",
+				"health probe",
+				"did not report healthy status",
+			},
+		},
+		{
+			name:       "non-detent service",
+			host:       "127.0.0.1",
+			listenHost: "127.0.0.1",
+			statusCode: http.StatusOK,
+			body:       `{"status":"ok"}`,
+			want:       doctorFail,
+			wantDetail: []string{
+				"pre-start bind",
+				"health probe",
+				"did not return Detent health",
+			},
+		},
+		{
+			name:       "generic health service",
+			host:       "127.0.0.1",
+			listenHost: "127.0.0.1",
+			statusCode: http.StatusOK,
+			body:       `{"status":"ok","mode":"ready","checks":{}}`,
+			want:       doctorFail,
+			wantDetail: []string{
+				"pre-start bind",
+				"health probe",
+				"did not return Detent health",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			port := occupiedDoctorPort(t, tt.listenHost, tt.statusCode, tt.body)
+			got := checkDoctorServerPort(context.Background(), BootConfig{Host: tt.host, Port: &port}, doctorDeps{
+				listen: net.Listen,
+			})
+			if got.Status != tt.want {
+				t.Fatalf("Status = %s, want %s: %+v", got.Status, tt.want, got)
+			}
+			for _, want := range tt.wantDetail {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+				}
+			}
+		})
+	}
+}
+
+func TestDoctorHealthProbeHostMapsWildcardToLoopback(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		host string
+		want string
+	}{
+		{name: "empty uses default", want: "127.0.0.1"},
+		{name: "ipv4 wildcard", host: "0.0.0.0", want: "127.0.0.1"},
+		{name: "ipv6 wildcard", host: "::", want: "::1"},
+		{name: "bracketed ipv6 wildcard", host: "[::]", want: "::1"},
+		{name: "loopback unchanged", host: "127.0.0.1", want: "127.0.0.1"},
+		{name: "hostname unchanged", host: "dashboard.internal", want: "dashboard.internal"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := doctorHealthProbeHost(tt.host); got != tt.want {
+				t.Fatalf("doctorHealthProbeHost(%q) = %q, want %q", tt.host, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestServerAddrNormalizesBracketedIPv6Host(t *testing.T) {
+	t.Parallel()
+
+	port := 4001
+	if got := serverAddr(BootConfig{Host: "[::]", Port: &port}); got != "[::]:4001" {
+		t.Fatalf("serverAddr() = %q, want [::]:4001", got)
+	}
+}
+
+func TestDoctorListenErrIndicatesOccupied(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", want: false},
+		{name: "unix bind collision", err: errors.New("bind: address already in use"), want: true},
+		{name: "windows bind collision", err: errors.New("bind: Only one usage of each socket address (protocol/network address/port) is normally permitted."), want: true},
+		{name: "other listen error", err: errors.New("bind: permission denied"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := doctorListenErrIndicatesOccupied(tt.err); got != tt.want {
+				t.Fatalf("doctorListenErrIndicatesOccupied() = %v, want %v", got, tt.want)
 			}
 		})
 	}
@@ -1148,4 +1301,45 @@ func (b *synchronizedBuffer) String() string {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.String()
+}
+
+func occupiedDoctorPort(t *testing.T, host string, statusCode int, body string) int {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", net.JoinHostPort(host, "0"))
+	if err != nil {
+		t.Fatalf("Listen(%q) error = %v", host, err)
+	}
+	port := doctorPortFromAddr(t, listener.Addr())
+
+	server := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/health" {
+			http.NotFound(w, r)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(statusCode)
+		if _, err := w.Write([]byte(body)); err != nil {
+			t.Errorf("Write() error = %v", err)
+		}
+	}))
+	server.Listener = listener
+	server.Start()
+	t.Cleanup(server.Close)
+
+	return port
+}
+
+func doctorPortFromAddr(t *testing.T, addr net.Addr) int {
+	t.Helper()
+
+	_, portText, err := net.SplitHostPort(addr.String())
+	if err != nil {
+		t.Fatalf("SplitHostPort(%q) error = %v", addr.String(), err)
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil {
+		t.Fatalf("Atoi(%q) error = %v", portText, err)
+	}
+	return port
 }

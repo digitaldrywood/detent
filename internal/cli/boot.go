@@ -692,11 +692,23 @@ func serverAddr(cfg BootConfig) string {
 	if host == "" {
 		host = defaultWebHost
 	}
+	host = unbracketIPv6Host(host)
 	port := defaultWebPort
 	if cfg.Port != nil {
 		port = *cfg.Port
 	}
 	return net.JoinHostPort(host, strconv.Itoa(port))
+}
+
+func unbracketIPv6Host(host string) string {
+	if len(host) < 2 || host[0] != '[' || host[len(host)-1] != ']' {
+		return host
+	}
+	unbracketed := strings.TrimSuffix(strings.TrimPrefix(host, "["), "]")
+	if net.ParseIP(unbracketed) == nil {
+		return host
+	}
+	return unbracketed
 }
 
 func listenForBoot(cfg BootConfig) (net.Listener, string, error) {
