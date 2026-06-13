@@ -24,8 +24,9 @@ const defaultDashboardURL = "http://localhost:4000"
 type Option func(*options)
 
 type options struct {
-	now   func() time.Time
-	build buildinfo.Info
+	now       func() time.Time
+	build     buildinfo.Info
+	interrupt func()
 }
 
 type Model struct {
@@ -37,6 +38,7 @@ type Model struct {
 	height       int
 	now          func() time.Time
 	build        buildinfo.Info
+	interrupt    func()
 	styles       styles
 }
 
@@ -70,6 +72,7 @@ func NewModel(ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot], opts 
 		width:        defaultTerminalColumns,
 		now:          cfg.now,
 		build:        cfg.build,
+		interrupt:    cfg.interrupt,
 		styles:       newStyles(),
 	}, nil
 }
@@ -85,6 +88,12 @@ func WithNow(now func() time.Time) Option {
 func WithBuild(build buildinfo.Info) Option {
 	return func(cfg *options) {
 		cfg.build = build
+	}
+}
+
+func WithInterruptFunc(interrupt func()) Option {
+	return func(cfg *options) {
+		cfg.interrupt = interrupt
 	}
 }
 
@@ -106,6 +115,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
+		case "ctrl+c":
+			if m.interrupt != nil {
+				m.interrupt()
+				return m, nil
+			}
+			m.Close()
+			return m, tea.Quit
 		case "q", "esc":
 			m.Close()
 			return m, tea.Quit

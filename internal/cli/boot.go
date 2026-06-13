@@ -246,7 +246,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		}
 		listenerOwned = false
 		if cfg.Shutdown == nil {
-			return serveWithTerminalDashboard(runCtx, server, listener, snapshotHub, cfg.Build)
+			return serveWithTerminalDashboard(runCtx, server, listener, snapshotHub, cfg.Build, nil)
 		}
 		return runWithShutdown(runCtx, runningShutdownConfig{
 			Controller:       cfg.Shutdown,
@@ -260,7 +260,9 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 			ProgressInterval: defaultShutdownProgressInterval,
 			HardTimeout:      defaultShutdownHardTimeout,
 		}, func(ctx context.Context) error {
-			return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build)
+			return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, func() {
+				cfg.Shutdown.RequestInterrupt()
+			})
 		})
 	}
 	if err := printBootBanner(cfg, displayURL); err != nil {
@@ -356,7 +358,7 @@ func serve(ctx context.Context, server *web.Server, listener net.Listener) error
 	}
 }
 
-func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listener net.Listener, snapshots *hub.Hub[telemetry.Snapshot], build buildinfo.Info) error {
+func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listener net.Listener, snapshots *hub.Hub[telemetry.Snapshot], build buildinfo.Info, interrupt func()) error {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -372,7 +374,7 @@ func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listene
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
-	model, err := tui.NewModel(runCtx, snapshots, tui.WithBuild(build))
+	model, err := tui.NewModel(runCtx, snapshots, tui.WithBuild(build), tui.WithInterruptFunc(interrupt))
 	if err != nil {
 		return err
 	}
@@ -384,7 +386,7 @@ func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listene
 		errs <- serve(runCtx, server, listener)
 	}()
 	go func() {
-		_, err := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(runCtx)).Run()
+		_, err := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(runCtx), tea.WithoutSignalHandler()).Run()
 		errs <- err
 	}()
 
