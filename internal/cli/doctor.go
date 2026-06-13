@@ -49,6 +49,8 @@ var requiredGitHubScopes = []string{"repo", "read:org", "project"}
 
 const doctorAutoPromoteSampleLimit = 5
 
+var doctorHealthCheckKeys = []string{"hub", "store", "registry", "connector"}
+
 type doctorCheck struct {
 	Name   string
 	Status doctorStatus
@@ -1238,13 +1240,25 @@ func probeDoctorHealth(cfg BootConfig, deps doctorDeps) (doctorHealthProbe, erro
 	}
 	probe.Health.Status = strings.TrimSpace(probe.Health.Status)
 	probe.Health.Mode = strings.TrimSpace(probe.Health.Mode)
-	if probe.Health.Mode == "" || probe.Health.Checks == nil {
+	if probe.Health.Mode == "" || !doctorHealthHasDetentChecks(probe.Health.Checks) {
 		return probe, errors.New("did not return Detent health")
 	}
 	if probe.Health.Status != "ok" {
 		return probe, fmt.Errorf("did not report healthy status: status %s, mode %s", probe.Health.Status, probe.Health.Mode)
 	}
 	return probe, nil
+}
+
+func doctorHealthHasDetentChecks(checks map[string]string) bool {
+	if checks == nil {
+		return false
+	}
+	for _, key := range doctorHealthCheckKeys {
+		if _, ok := checks[key]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 func doctorHealthProbeURL(cfg BootConfig) string {

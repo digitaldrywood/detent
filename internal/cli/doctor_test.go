@@ -761,7 +761,7 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 			host:       "0.0.0.0",
 			listenHost: "0.0.0.0",
 			statusCode: http.StatusOK,
-			body:       `{"status":"ok","mode":"running","checks":{"hub":"configured"}}`,
+			body:       `{"status":"ok","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"}}`,
 			want:       doctorWarn,
 			wantDetail: []string{
 				"pre-start bind",
@@ -777,7 +777,7 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 			host:       "127.0.0.1",
 			listenHost: "127.0.0.1",
 			statusCode: http.StatusOK,
-			body:       `{"status":"error","mode":"running","checks":{"hub":"configured"}}`,
+			body:       `{"status":"error","mode":"running","checks":{"hub":"configured","store":"configured","registry":"configured","connector":"configured"}}`,
 			want:       doctorFail,
 			wantDetail: []string{
 				"pre-start bind",
@@ -791,6 +791,19 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 			listenHost: "127.0.0.1",
 			statusCode: http.StatusOK,
 			body:       `{"status":"ok"}`,
+			want:       doctorFail,
+			wantDetail: []string{
+				"pre-start bind",
+				"health probe",
+				"did not return Detent health",
+			},
+		},
+		{
+			name:       "generic health service",
+			host:       "127.0.0.1",
+			listenHost: "127.0.0.1",
+			statusCode: http.StatusOK,
+			body:       `{"status":"ok","mode":"ready","checks":{}}`,
 			want:       doctorFail,
 			wantDetail: []string{
 				"pre-start bind",
