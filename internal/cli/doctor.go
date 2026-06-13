@@ -47,7 +47,7 @@ const (
 	doctorFail doctorStatus = "FAIL"
 )
 
-var requiredGitHubScopes = []string{"repo", "read:org", "project"}
+var requiredGitHubScopes = []string{"repo", "read:org", "read:project", "project"}
 
 const (
 	doctorAutoPromoteSampleLimit           = 5
@@ -2395,7 +2395,7 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token Runt
 			Name:   "GitHub token",
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s scope check failed: %v", source, err),
-			Hint:   `Refresh the token with repo, read:org, and project scopes.`,
+			Hint:   githubAuthHint,
 		}
 	}
 	if len(scopes) == 0 {

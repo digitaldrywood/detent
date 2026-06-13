@@ -26,7 +26,7 @@ const (
 	runtimeSourceWorkflow = "workflow"
 	runtimeSourceDefault  = "default"
 
-	githubAuthHint = `Run gh auth login --scopes "repo,read:org,project" and set github_token: gh in global.yaml.`
+	githubAuthHint = `Run gh auth login --scopes "repo,read:org,read:project,project" and set github_token: gh in global.yaml. For existing auth, run gh auth refresh -h github.com --scopes "repo,read:org,read:project,project".`
 )
 
 type RuntimeValue struct {

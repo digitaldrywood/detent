@@ -988,6 +988,7 @@ func TestCheckDoctorGitHub(t *testing.T) {
 		env        map[string]string
 		want       doctorStatus
 		wantDetail string
+		wantHint   string
 	}{
 		{
 			name:       "missing token",
@@ -1002,11 +1003,20 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			wantDetail: "scope check failed",
 		},
 		{
-			name:       "missing required scope",
+			name:       "missing required scopes",
 			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
 			scopes:     []string{"repo"},
 			want:       doctorFail,
-			wantDetail: "read:org",
+			wantDetail: "read:org, read:project, project",
+			wantHint:   `gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"`,
+		},
+		{
+			name:       "missing read project scope",
+			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
+			scopes:     []string{"repo", "read:org", "project"},
+			want:       doctorFail,
+			wantDetail: "missing scope(s): read:project",
+			wantHint:   `gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"`,
 		},
 		{
 			name:       "fine grained token has no classic scopes",
@@ -1053,21 +1063,21 @@ func TestCheckDoctorGitHub(t *testing.T) {
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
 			}},
 			token:      RuntimeSecret{Value: "token", Source: "PROJECT_TOKEN"},
-			scopes:     []string{"project", "read:org", "repo"},
+			scopes:     []string{"project", "read:project", "read:org", "repo"},
 			want:       doctorOK,
 			wantDetail: "PROJECT_TOKEN has classic PAT scopes",
 		},
 		{
 			name:       "environment token has required scopes",
 			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
-			scopes:     []string{"workflow", "project", "read:org", "repo"},
+			scopes:     []string{"workflow", "project", "read:project", "read:org", "repo"},
 			want:       doctorOK,
 			wantDetail: "GITHUB_TOKEN has classic PAT scopes",
 		},
 		{
 			name:       "gh sentinel token has required scopes",
 			token:      RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"},
-			scopes:     []string{"project", "read:org", "repo"},
+			scopes:     []string{"project", "read:project", "read:org", "repo"},
 			want:       doctorOK,
 			wantDetail: "github_token resolved via gh has classic PAT scopes",
 		},
@@ -1095,6 +1105,9 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			}
 			if !strings.Contains(got.Detail, tt.wantDetail) {
 				t.Fatalf("Detail = %q, want containing %q", got.Detail, tt.wantDetail)
+			}
+			if tt.wantHint != "" && !strings.Contains(got.Hint, tt.wantHint) {
+				t.Fatalf("Hint = %q, want containing %q", got.Hint, tt.wantHint)
 			}
 		})
 	}
@@ -1855,7 +1868,7 @@ func successfulDoctorDeps() doctorDeps {
 			return nil
 		},
 		githubScopes: func(context.Context, string) ([]string, error) {
-			return []string{"repo", "read:org", "project"}, nil
+			return []string{"repo", "read:org", "read:project", "project"}, nil
 		},
 		githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
 			return []ghconnector.ReadinessCheck{
