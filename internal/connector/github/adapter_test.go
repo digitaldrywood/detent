@@ -495,7 +495,7 @@ func TestConnectorFetchIssuesByStatesAttachesLinkedPullRequestBeforeBranchPrefix
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
-			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_370","content":{"__typename":"Issue","id":"I_370","number":370,"title":"Linked PR issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/370","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"bug"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":376,"url":"https://github.com/digitaldrywood/detent/pull/376"}]}},"statusValue":{"name":"Reviewing"},"priorityValue":null}]}}}}`,
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_370","content":{"__typename":"Issue","id":"I_370","number":370,"title":"Linked PR issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/370","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"bug"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":375,"url":"https://github.com/digitaldrywood/detent/pull/375","state":"CLOSED"},{"number":376,"url":"https://github.com/digitaldrywood/detent/pull/376","state":"OPEN"}]}},"statusValue":{"name":"Reviewing"},"priorityValue":null}]}}}}`,
 		},
 		{
 			method: http.MethodGet,
@@ -549,6 +549,9 @@ func TestConnectorFetchIssuesByStatesAttachesLinkedPullRequestBeforeBranchPrefix
 	query := requests[0]["query"].(string)
 	if !strings.Contains(query, "closedByPullRequestsReferences") {
 		t.Fatalf("observed status query does not request linked pull requests:\n%s", query)
+	}
+	if !strings.Contains(query, "nodes { number url state }") {
+		t.Fatalf("observed status query does not request linked pull request states:\n%s", query)
 	}
 	for _, request := range requests {
 		path, _ := request["path"].(string)

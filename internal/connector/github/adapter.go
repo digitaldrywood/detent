@@ -92,7 +92,7 @@ query DetentGitHubObservedStatusProjectItems(
               stateReason
               url
               repository { nameWithOwner }
-              closedByPullRequestsReferences(first: 5) { nodes { number url } }
+              closedByPullRequestsReferences(first: 5) { nodes { number url state } }
             }
           }
           statusValue: fieldValueByName(name: "Status") {
@@ -577,6 +577,7 @@ type issueComment struct {
 type pullRequest struct {
 	Number int    `json:"number"`
 	URL    string `json:"url"`
+	State  string `json:"state"`
 }
 
 type pullRequestNode struct {
@@ -2845,13 +2846,21 @@ func projectFieldValueString(value projectFieldValue) (string, bool) {
 }
 
 func firstPullRequestNumber(pullRequests nodeConnection[pullRequest]) *int {
+	var fallback *int
 	for _, pullRequest := range pullRequests.Nodes {
-		if pullRequest.Number > 0 {
+		if pullRequest.Number <= 0 {
+			continue
+		}
+		if fallback == nil {
+			number := pullRequest.Number
+			fallback = &number
+		}
+		if normalizeStateName(pullRequest.State) == "open" {
 			number := pullRequest.Number
 			return &number
 		}
 	}
-	return nil
+	return fallback
 }
 
 func pullRequestCIState(pullRequest pullRequestNode) string {
