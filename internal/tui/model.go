@@ -209,9 +209,9 @@ func (m Model) renderSnapshot() string {
 		"│",
 	}...)
 
-	runningWidth := runningEventWidth(m.width)
-	lines = append(lines, runningTableHeader(runningWidth, m.styles), runningTableSeparator(runningWidth, m.styles))
-	lines = append(lines, formatRunningRows(snapshot.Running, runningWidth, m.styles)...)
+	runningLayout := newRunningTableLayout(snapshot.Running, m.width)
+	lines = append(lines, runningTableHeaderWithLayout(runningLayout, m.styles), runningTableSeparatorWithLayout(runningLayout, m.styles))
+	lines = append(lines, formatRunningRowsWithLayout(snapshot.Running, runningLayout, m.styles)...)
 	lines = append(lines, m.styles.title.Render("├─ Backoff queue"), "│")
 	lines = append(lines, formatQueueRows(snapshot.Queue, m.styles)...)
 	lines = append(lines, m.styles.title.Render("├─ Blocked"), "│")
@@ -235,6 +235,10 @@ func formatShutdown(shutdown telemetry.Shutdown, s styles) string {
 }
 
 func formatRunningRows(running []telemetry.Running, eventWidth int, s styles) []string {
+	return formatRunningRowsWithLayout(running, runningTableLayout{issueWidth: runningIDWidth, eventWidth: eventWidth}, s)
+}
+
+func formatRunningRowsWithLayout(running []telemetry.Running, layout runningTableLayout, s styles) []string {
 	if len(running) == 0 {
 		return []string{"│  " + s.muted.Render("No active agents")}
 	}
@@ -256,13 +260,13 @@ func formatRunningRows(running []telemetry.Running, eventWidth int, s styles) []
 
 		statusStyle := statusStyle(row.LastEvent, s)
 		cells := []string{
-			formatCell(issueLabel(row.Issue), runningIDWidth, alignLeft),
+			formatIssueCell(row.Issue, layout.issueWidth),
 			formatCell(defaultString(row.State, "unknown"), runningStageWidth, alignLeft),
 			formatCell(defaultString(row.ProcessIdentity, "n/a"), runningProcessWidth, alignLeft),
 			formatCell(formatRuntimeAndTurns(row.RuntimeSeconds, row.TurnCount), runningAgeWidth, alignLeft),
 			formatCell(formatCount(row.Tokens.Total), runningTokensWidth, alignRight),
 			formatCell(compactSessionID(row.SessionID), runningSessionWidth, alignLeft),
-			formatCell(cleanInline(event), eventWidth, alignLeft),
+			formatCell(cleanInline(event), layout.eventWidth, alignLeft),
 		}
 
 		lines = append(lines, "│ "+s.ok.Render("●")+" "+
@@ -294,7 +298,7 @@ func formatQueueRows(queue []telemetry.Queued, s styles) []string {
 	lines := make([]string, 0, len(rows))
 	for _, row := range rows {
 		line := "│  " + s.warn.Render("↻") + " " +
-			s.error.Render(issueLabel(row.Issue)) + " " +
+			s.error.Render(issueDisplayLabel(row.Issue, 0)) + " " +
 			s.warn.Render(fmt.Sprintf("attempt=%d", row.Attempt)) +
 			s.muted.Render(" in ") +
 			s.info.Render(formatDueIn(row.DueInMillis))
@@ -330,7 +334,7 @@ func formatBlockedRows(blocked []telemetry.Blocked, s styles) []string {
 		}
 
 		lines = append(lines, "│  "+s.error.Render("●")+" "+
-			s.info.Render(issueLabel(row.Issue))+" "+
+			s.info.Render(issueDisplayLabel(row.Issue, 0))+" "+
 			s.error.Render(defaultString(row.State, "Blocked"))+" "+
 			s.muted.Render(truncate(detail, 120)))
 	}
@@ -356,7 +360,7 @@ func formatCompletedRows(completed []telemetry.Completed, s styles) []string {
 		}
 
 		line := "│  " + s.ok.Render("✓") + " " +
-			s.info.Render(issueLabel(row.Issue)) + " " +
+			s.info.Render(issueDisplayLabel(row.Issue, 0)) + " " +
 			s.ok.Render(state) + " " +
 			s.accent.Render(formatRuntimeAndTurns(row.RuntimeSeconds, row.Turns)) + " " +
 			s.warn.Render(formatCount(row.Tokens.Total))
@@ -475,22 +479,51 @@ func formatReset(bucket *telemetry.RateLimitBucket, now func() time.Time) string
 	return formatCount(seconds) + "s"
 }
 
-func runningTableHeader(eventWidth int, s styles) string {
+type runningTableLayout struct {
+	issueWidth int
+	eventWidth int
+}
+
+func newRunningTableLayout(running []telemetry.Running, columns int) runningTableLayout {
+	issueWidth := runningIDWidth
+	fullIssueWidth := maxRunningIssueLabelWidth(running)
+	if fullIssueWidth > issueWidth {
+		fullIssueWidth = min(fullIssueWidth, runningIDMaxWidth)
+		if runningEventWidthFor(columns, fullIssueWidth) >= runningEventDefaultWidth {
+			issueWidth = fullIssueWidth
+		}
+	}
+
+	return runningTableLayout{
+		issueWidth: issueWidth,
+		eventWidth: runningEventWidthFor(columns, issueWidth),
+	}
+}
+
+func maxRunningIssueLabelWidth(running []telemetry.Running) int {
+	width := 0
+	for _, row := range running {
+		width = max(width, runeLen(issueLabel(row.Issue)))
+	}
+	return width
+}
+
+func runningTableHeaderWithLayout(layout runningTableLayout, s styles) string {
 	cells := []string{
-		formatCell("ID", runningIDWidth, alignLeft),
+		formatCell("ID", layout.issueWidth, alignLeft),
 		formatCell("STAGE", runningStageWidth, alignLeft),
 		formatCell("PID", runningProcessWidth, alignLeft),
 		formatCell("AGE / TURN", runningAgeWidth, alignLeft),
 		formatCell("TOKENS", runningTokensWidth, alignLeft),
 		formatCell("SESSION", runningSessionWidth, alignLeft),
-		formatCell("EVENT", eventWidth, alignLeft),
+		formatCell("EVENT", layout.eventWidth, alignLeft),
 	}
 
 	return "│   " + s.muted.Render(strings.Join(cells, " "))
 }
 
-func runningTableSeparator(eventWidth int, s styles) string {
-	width := runningIDWidth + runningStageWidth + runningProcessWidth + runningAgeWidth + runningTokensWidth + runningSessionWidth + eventWidth + runningColumnGaps
+func runningTableSeparatorWithLayout(layout runningTableLayout, s styles) string {
+	width := layout.issueWidth + runningStageWidth + runningProcessWidth + runningAgeWidth + runningTokensWidth + runningSessionWidth + layout.eventWidth + runningColumnGaps
 	return "│   " + s.muted.Render(strings.Repeat("─", width))
 }
 
@@ -517,6 +550,49 @@ func issueLabel(issue telemetry.Issue) string {
 	}
 
 	return "unknown"
+}
+
+func issueDisplayLabel(issue telemetry.Issue, width int) string {
+	label := issueLabel(issue)
+	if width <= 0 || runeLen(label) <= width {
+		return label
+	}
+
+	compact := compactIssueLabel(label)
+	if compact != label && runeLen(compact) <= width {
+		return compact
+	}
+
+	return label
+}
+
+func formatIssueCell(issue telemetry.Issue, width int) string {
+	return formatCell(issueDisplayLabel(issue, width), width, alignLeft)
+}
+
+func compactIssueLabel(label string) string {
+	if key, ok := githubIssueKey(label); ok {
+		return key
+	}
+
+	return label
+}
+
+func githubIssueKey(label string) (string, bool) {
+	label = strings.TrimSpace(cleanInline(label))
+	hash := strings.LastIndex(label, "#")
+	if hash < 0 || hash == len(label)-1 || !strings.Contains(label[:hash], "/") {
+		return "", false
+	}
+
+	number := label[hash+1:]
+	for _, r := range number {
+		if r < '0' || r > '9' {
+			return "", false
+		}
+	}
+
+	return "#" + number, true
 }
 
 func defaultString(value string, fallback string) string {
@@ -722,12 +798,16 @@ func truncate(value string, width int) string {
 	return string(runes[:width-3]) + "..."
 }
 
-func runningEventWidth(columns int) int {
+func runeLen(value string) int {
+	return len([]rune(value))
+}
+
+func runningEventWidthFor(columns int, issueWidth int) int {
 	if columns <= 0 {
 		columns = defaultTerminalColumns
 	}
 
-	width := columns - fixedRunningWidth - runningRowChromeWidth
+	width := columns - issueWidth - fixedRunningWidthWithoutID - runningRowChromeWidth
 	if width < runningEventMinWidth {
 		return runningEventMinWidth
 	}
@@ -758,16 +838,18 @@ func newStyles() styles {
 }
 
 const (
-	defaultTerminalColumns = 123
-	runningIDWidth         = 8
-	runningStageWidth      = 14
-	runningProcessWidth    = 12
-	runningAgeWidth        = 12
-	runningTokensWidth     = 10
-	runningSessionWidth    = 18
-	runningEventMinWidth   = 12
-	runningRowChromeWidth  = 10
-	runningColumnGaps      = 6
-	fixedRunningWidth      = runningIDWidth + runningStageWidth + runningProcessWidth + runningAgeWidth + runningTokensWidth + runningSessionWidth
-	closingBorder          = "╰─"
+	defaultTerminalColumns     = 123
+	runningIDWidth             = 8
+	runningIDMaxWidth          = 32
+	runningStageWidth          = 14
+	runningProcessWidth        = 12
+	runningAgeWidth            = 12
+	runningTokensWidth         = 10
+	runningSessionWidth        = 18
+	runningEventMinWidth       = 12
+	runningRowChromeWidth      = 10
+	runningColumnGaps          = 6
+	fixedRunningWidthWithoutID = runningStageWidth + runningProcessWidth + runningAgeWidth + runningTokensWidth + runningSessionWidth
+	runningEventDefaultWidth   = defaultTerminalColumns - runningIDWidth - fixedRunningWidthWithoutID - runningRowChromeWidth
+	closingBorder              = "╰─"
 )
