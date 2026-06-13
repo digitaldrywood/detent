@@ -40,7 +40,7 @@ func main() {
 
 func writeCommandError(cmd *cobra.Command, err error) int {
 	if cli.CommandOutputIsJSON(cmd) {
-		if writeErr := cli.WriteCommandErrorJSON(cmd.OutOrStdout(), err); writeErr != nil {
+		if writeErr := cli.WriteCommandErrorJSON(cmd.ErrOrStderr(), err); writeErr != nil {
 			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", writeErr)
 		}
 		return 1

@@ -35,8 +35,9 @@ func TestRootCommandWritesSuggestionErrorsAsJSON(t *testing.T) {
 	cmd := newRootCommand(context.Background())
 
 	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
-	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetErr(&stderr)
 	cmd.SetArgs([]string{"--format", "json", "paues"})
 
 	err := cmd.Execute()
@@ -54,8 +55,11 @@ func TestRootCommandWritesSuggestionErrorsAsJSON(t *testing.T) {
 			DidYouMean []string `json:"did_you_mean"`
 		} `json:"error"`
 	}
-	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
-		t.Fatalf("Unmarshal() error = %v\n%s", decodeErr, stdout.String())
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if decodeErr := json.Unmarshal(stderr.Bytes(), &got); decodeErr != nil {
+		t.Fatalf("Unmarshal() error = %v\n%s", decodeErr, stderr.String())
 	}
 	if got.Error.Code != "unknown_command" {
 		t.Fatalf("error.code = %q, want unknown_command", got.Error.Code)

@@ -124,7 +124,11 @@ func suggestedNoArgs(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
-	return fmt.Errorf("unknown command %q for %q%s", args[0], cmd.CommandPath(), commandSuggestionText(cmd, args[0]))
+	return unknownCommandError(cmd, args[0])
+}
+
+func unknownCommandError(cmd *cobra.Command, typedName string) error {
+	return fmt.Errorf("unknown command %q for %q%s", typedName, cmd.CommandPath(), commandSuggestionText(cmd, typedName))
 }
 
 func commandSuggestionText(cmd *cobra.Command, typedName string) string {
@@ -139,7 +143,12 @@ func commandSuggestionText(cmd *cobra.Command, typedName string) string {
 		builder.WriteString("\n\n")
 		builder.WriteString(didYouMeanHeading)
 		builder.WriteString("\n")
+		seen := map[string]struct{}{}
 		for _, suggestion := range suggestions {
+			if _, ok := seen[suggestion]; ok {
+				continue
+			}
+			seen[suggestion] = struct{}{}
 			fmt.Fprintf(&builder, "\t%s\n", suggestion)
 		}
 	}
@@ -147,6 +156,10 @@ func commandSuggestionText(cmd *cobra.Command, typedName string) string {
 }
 
 func flagSuggestionError(cmd *cobra.Command, err error) error {
+	if commandErr := commandSuggestionFromFlagContext(cmd); commandErr != nil {
+		return commandErr
+	}
+
 	var notExist *pflag.NotExistError
 	if !errors.As(err, &notExist) || strings.TrimSpace(notExist.GetSpecifiedShortnames()) != "" {
 		return err
@@ -160,6 +173,21 @@ func flagSuggestionError(cmd *cobra.Command, err error) error {
 		return err
 	}
 	return fmt.Errorf("%w\n\n%s\n\t--%s", err, didYouMeanHeading, suggestion)
+}
+
+func commandSuggestionFromFlagContext(cmd *cobra.Command) error {
+	if cmd == nil || cmd.HasParent() {
+		return nil
+	}
+	args := cmd.Flags().Args()
+	if len(args) == 0 {
+		return nil
+	}
+	typedName := strings.TrimSpace(args[0])
+	if typedName == "" || strings.HasPrefix(typedName, "-") {
+		return nil
+	}
+	return unknownCommandError(cmd, typedName)
 }
 
 func closestFlagName(cmd *cobra.Command, input string) string {

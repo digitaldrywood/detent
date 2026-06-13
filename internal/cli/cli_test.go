@@ -47,6 +47,7 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 		args       []string
 		want       []string
 		dontWant   []string
+		wantCount  map[string]int
 		wantNoBoot bool
 	}{
 		{
@@ -65,6 +66,14 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 			name:       "semantic command suggestion",
 			args:       []string{"rm", "detent"},
 			want:       []string{`unknown command "rm"`, "Did you mean this?", "\tremove-project"},
+			wantNoBoot: true,
+		},
+		{
+			name:       "semantic command suggestion before intended local flags",
+			args:       []string{"add", "--id", "detent", "--workflow", "WORKFLOW.md", "--workdir", "."},
+			want:       []string{`unknown command "add"`, "Did you mean this?", "\tadd-project"},
+			dontWant:   []string{"unknown flag"},
+			wantCount:  map[string]int{"\tadd-project": 1},
 			wantNoBoot: true,
 		},
 		{
@@ -107,6 +116,11 @@ func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
 			for _, unwanted := range tt.dontWant {
 				if strings.Contains(output, unwanted) {
 					t.Fatalf("Execute() error contains %q:\n%s", unwanted, output)
+				}
+			}
+			for value, count := range tt.wantCount {
+				if got := strings.Count(output, value); got != count {
+					t.Fatalf("Execute() error contains %q %d times, want %d:\n%s", value, got, count, output)
 				}
 			}
 			if tt.wantNoBoot && booted {
