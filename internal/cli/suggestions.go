@@ -243,33 +243,6 @@ func knownFlagNames(cmd *cobra.Command) []string {
 	return names
 }
 
-func levenshteinDistance(a string, b string) int {
-	left := []rune(strings.ToLower(a))
-	right := []rune(strings.ToLower(b))
-	previous := make([]int, len(right)+1)
-	for index := range previous {
-		previous[index] = index
-	}
-
-	for leftIndex, leftRune := range left {
-		current := make([]int, len(right)+1)
-		current[0] = leftIndex + 1
-		for rightIndex, rightRune := range right {
-			cost := 0
-			if leftRune != rightRune {
-				cost = 1
-			}
-			current[rightIndex+1] = min(
-				current[rightIndex]+1,
-				previous[rightIndex+1]+1,
-				previous[rightIndex]+cost,
-			)
-		}
-		previous = current
-	}
-	return previous[len(right)]
-}
-
 func unknownCommandInput(message string) (string, bool) {
 	if !strings.HasPrefix(message, unknownCommandErrorPrefix) {
 		return "", false

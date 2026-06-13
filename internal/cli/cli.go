@@ -706,8 +706,8 @@ func closestProjectID(target string, ids []string) string {
 }
 
 func levenshteinDistance(a string, b string) int {
-	ar := []rune(a)
-	br := []rune(b)
+	ar := []rune(strings.ToLower(a))
+	br := []rune(strings.ToLower(b))
 	if len(ar) == 0 {
 		return len(br)
 	}
