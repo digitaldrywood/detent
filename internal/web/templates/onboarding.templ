@@ -89,15 +89,40 @@ templ OnboardingPage(data OnboardingData) {
 			<main class="dashboard-shell mx-auto flex min-h-screen w-full max-w-4xl flex-col gap-4 px-3 py-3 sm:px-6 lg:px-8">
 				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
 					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
-						@dashboardTopbarBrand(data.InstanceName)
+						@onboardingTopbarBrand(data.InstanceName)
 						@dashboardPageHeading("Onboarding")
-						@dashboardNav("")
+						@onboardingNav("")
 					</div>
 				</header>
 				@OnboardingStep(data)
 			</main>
 		</body>
 	</html>
+}
+
+templ onboardingTopbarBrand(instanceName string) {
+	<a class="inline-flex min-h-8 shrink-0 items-center gap-2 text-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/" aria-label="Detent dashboard">
+		<span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-accent-soft font-semibold text-accent">D</span>
+		<span class="text-sm font-semibold">Detent</span>
+		if instanceName != "" {
+			<span class="max-w-[12rem] truncate rounded-full border border-border bg-muted px-2 py-0.5 font-mono text-xs font-medium text-muted-foreground" aria-label="Instance name">{ instanceName }</span>
+		}
+	</a>
+}
+
+templ onboardingNav(active string) {
+	<nav class="onboarding-nav flex min-w-0 items-center gap-4" aria-label="Dashboard pages">
+		@onboardingNavItem(active, "reports", "/reports", "Reports")
+		@onboardingNavItem(active, "settings", "/settings", "Settings")
+	</nav>
+}
+
+templ onboardingNavItem(active string, id string, href string, label string) {
+	if active == id {
+		<a class="onboarding-nav-link inline-flex items-center py-1 text-sm font-medium text-accent underline decoration-2 underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href } aria-current="page">{ label }</a>
+	} else {
+		<a class="onboarding-nav-link inline-flex items-center py-1 text-sm font-medium text-muted-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>{ label }</a>
+	}
 }
 
 templ OnboardingStep(data OnboardingData) {

@@ -265,7 +265,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 func TestSidebarProjectItemsUseAttentionFirstDefaultOrder(t *testing.T) {
 	t.Parallel()
 
-	got := sidebarProjectItems(DashboardData{Projects: []ProjectSmallMultiple{
+	got := sidebarProjectItems(DashboardShellData{Projects: []ProjectSmallMultiple{
 		{ID: "paused", Name: "Paused", Paused: true},
 		{ID: "idle", Name: "Idle"},
 		{ID: "queued", Name: "Queued", QueueCount: 1},

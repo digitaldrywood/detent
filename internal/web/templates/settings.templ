@@ -1,7 +1,7 @@
 package templates
 
 templ Settings(data SettingsData) {
-	@dashboardShell(settingsDashboardData(data), false) {
+	@DashboardShell(settingsDashboardShellData(data)) {
 		<script>
 			function copySettingValue(button) {
 				const value = button.dataset.copy || ""
@@ -97,39 +97,6 @@ templ Settings(data SettingsData) {
 				</section>
 			</section>
 		</div>
-	}
-}
-
-templ dashboardTopbarBrand(instanceName string) {
-	<a class="inline-flex min-h-8 shrink-0 items-center gap-2 text-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/" aria-label="Detent dashboard">
-		<span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-accent-soft font-semibold text-accent">D</span>
-		<span class="text-sm font-semibold">Detent</span>
-		if instanceName != "" {
-			<span class="max-w-[12rem] truncate rounded-full border border-border bg-muted px-2 py-0.5 font-mono text-xs font-medium text-muted-foreground" aria-label="Instance name">{ instanceName }</span>
-		}
-	</a>
-}
-
-templ dashboardPageHeading(title string) {
-	<h1 class="sr-only">{ title }</h1>
-}
-
-templ dashboardTopbarDivider() {
-	<span aria-hidden="true">/</span>
-}
-
-templ dashboardNav(active string) {
-	<nav class="dashboard-nav flex min-w-0 items-center gap-4" aria-label="Primary">
-		@dashboardNavItem(active, "reports", "/reports", "Reports")
-		@dashboardNavItem(active, "settings", "/settings", "Settings")
-	</nav>
-}
-
-templ dashboardNavItem(active string, id string, href string, label string) {
-	if active == id {
-		<a class="dashboard-nav-link inline-flex items-center py-1 text-sm font-medium text-accent underline decoration-2 underline-offset-4 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href } aria-current="page">{ label }</a>
-	} else {
-		<a class="dashboard-nav-link inline-flex items-center py-1 text-sm font-medium text-muted-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>{ label }</a>
 	}
 }
 

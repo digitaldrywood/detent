@@ -82,7 +82,7 @@ func (s *Server) events(c echo.Context) error {
 			if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, templates.SnapshotView(data)); err != nil {
 				return err
 			}
-			if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(data)); err != nil {
+			if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data))); err != nil {
 				return err
 			}
 			flusher.Flush()

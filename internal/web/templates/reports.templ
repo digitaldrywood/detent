@@ -1,7 +1,7 @@
 package templates
 
 templ Reports(data ReportsData) {
-	@dashboardShell(reportsDashboardData(data), false) {
+	@DashboardShell(reportsDashboardShellData(data)) {
 		<div class="mx-auto grid w-full max-w-7xl content-start gap-3 sm:gap-4">
 			<header class="dashboard-topbar min-w-0 border-b border-border py-2">
 				<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
