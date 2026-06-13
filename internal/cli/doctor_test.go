@@ -360,6 +360,156 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+
+	tests := []struct {
+		name  string
+		issue connector.Issue
+		want  doctorAutoPromoteCandidateDiagnostic
+	}{
+		{
+			name: "missing review",
+			issue: doctorAutoPromoteIssue("issue-missing-review", &connector.PullRequest{
+				Number:   403,
+				URL:      "https://github.test/pull/403",
+				State:    "OPEN",
+				HeadSHA:  "head-missing-review",
+				CIStatus: "success",
+			}),
+			want: doctorAutoPromoteCandidateDiagnostic{
+				IssueID:         "issue-missing-review",
+				IssueIdentifier: "digitaldrywood/detent#399",
+				PRNumber:        403,
+				PRURL:           "https://github.test/pull/403",
+				PRHeadSHA:       "head-missing-review",
+				Reason:          "automated_review_missing",
+			},
+		},
+		{
+			name: "stale review",
+			issue: doctorAutoPromoteIssue("issue-stale-review", &connector.PullRequest{
+				Number:                       411,
+				URL:                          "https://github.test/pull/411",
+				State:                        "OPEN",
+				HeadSHA:                      "head-current",
+				CIStatus:                     "success",
+				LatestCodexReviewState:       "COMMENTED",
+				LatestCodexReviewCommitSHA:   "head-previous",
+				LatestCodexReviewSubmittedAt: &oldReview,
+			}),
+			want: doctorAutoPromoteCandidateDiagnostic{
+				IssueID:                      "issue-stale-review",
+				IssueIdentifier:              "digitaldrywood/detent#399",
+				PRNumber:                     411,
+				PRURL:                        "https://github.test/pull/411",
+				PRHeadSHA:                    "head-current",
+				LatestCodexReviewState:       "COMMENTED",
+				LatestCodexReviewCommitSHA:   "head-previous",
+				LatestCodexReviewSubmittedAt: &oldReview,
+				Reason:                       "stale_automated_review",
+			},
+		},
+		{
+			name: "ready current head review",
+			issue: doctorAutoPromoteIssue("issue-ready-review", &connector.PullRequest{
+				Number:                       398,
+				URL:                          "https://github.test/pull/398",
+				State:                        "OPEN",
+				HeadSHA:                      "head-ready",
+				CIStatus:                     "success",
+				CodexReviewState:             "COMMENTED",
+				CodexReviewSubmittedAt:       &oldReview,
+				LatestCodexReviewState:       "COMMENTED",
+				LatestCodexReviewCommitSHA:   "head-ready",
+				LatestCodexReviewSubmittedAt: &oldReview,
+			}),
+			want: doctorAutoPromoteCandidateDiagnostic{
+				IssueID:                      "issue-ready-review",
+				IssueIdentifier:              "digitaldrywood/detent#399",
+				PRNumber:                     398,
+				PRURL:                        "https://github.test/pull/398",
+				PRHeadSHA:                    "head-ready",
+				LatestCodexReviewState:       "COMMENTED",
+				LatestCodexReviewCommitSHA:   "head-ready",
+				LatestCodexReviewSubmittedAt: &oldReview,
+				Reason:                       "ready",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := checkDoctorAutoPromote(context.Background(), "alpha", validDoctorAutoPromoteWorkflow(), doctorDeps{
+				autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+					return &fakeDoctorAutoPromoteConnector{issues: []connector.Issue{tt.issue}}, nil
+				},
+			}, now)
+			if got.Status != doctorOK {
+				t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorOK, got)
+			}
+			if len(got.AutoPromoteCandidates) != 1 {
+				t.Fatalf("AutoPromoteCandidates len = %d, want 1: %#v", len(got.AutoPromoteCandidates), got.AutoPromoteCandidates)
+			}
+			if got.AutoPromoteCandidates[0] != tt.want {
+				t.Fatalf("AutoPromoteCandidates[0] = %#v, want %#v", got.AutoPromoteCandidates[0], tt.want)
+			}
+			for _, want := range []string{tt.want.IssueID, tt.want.PRHeadSHA, tt.want.Reason} {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+				}
+			}
+		})
+	}
+}
+
+func TestWriteDoctorJSONReportIncludesAutoPromoteCandidateDiagnostics(t *testing.T) {
+	t.Parallel()
+
+	reviewedAt := time.Date(2026, 6, 12, 11, 40, 0, 0, time.UTC)
+	report := doctorReport{Checks: []doctorCheck{{
+		Name:   "Project alpha auto-promote",
+		Status: doctorOK,
+		Detail: "sampled 1 Human Review candidate",
+		AutoPromoteCandidates: []doctorAutoPromoteCandidateDiagnostic{{
+			IssueID:                      "issue-stale-review",
+			IssueIdentifier:              "digitaldrywood/detent#399",
+			PRNumber:                     411,
+			PRURL:                        "https://github.test/pull/411",
+			PRHeadSHA:                    "head-current",
+			LatestCodexReviewState:       "COMMENTED",
+			LatestCodexReviewCommitSHA:   "head-previous",
+			LatestCodexReviewSubmittedAt: &reviewedAt,
+			Reason:                       "stale_automated_review",
+		}},
+	}}}
+
+	var output bytes.Buffer
+	if err := json.NewEncoder(&output).Encode(newDoctorOutputReport(report)); err != nil {
+		t.Fatalf("Encode() error = %v", err)
+	}
+
+	var got struct {
+		Checks []struct {
+			AutoPromoteCandidates []doctorAutoPromoteCandidateDiagnostic `json:"auto_promote_candidates"`
+		} `json:"checks"`
+	}
+	if err := json.Unmarshal(output.Bytes(), &got); err != nil {
+		t.Fatalf("json.Unmarshal() error = %v\n%s", err, output.String())
+	}
+	if len(got.Checks) != 1 || len(got.Checks[0].AutoPromoteCandidates) != 1 {
+		t.Fatalf("decoded candidates = %#v, want one candidate", got)
+	}
+	if got.Checks[0].AutoPromoteCandidates[0].Reason != "stale_automated_review" {
+		t.Fatalf("Reason = %q, want stale_automated_review", got.Checks[0].AutoPromoteCandidates[0].Reason)
+	}
+}
+
 func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 	t.Parallel()
 

@@ -589,6 +589,7 @@ type pullRequestNode struct {
 	HeadSHA       string                            `json:"headSHA"`
 	Commits       nodeConnection[pullRequestCommit] `json:"commits"`
 	LatestReviews nodeConnection[pullRequestReview] `json:"latestReviews"`
+	CodexReviews  pullRequestCodexReviews           `json:"-"`
 }
 
 type pullRequestCommit struct {
@@ -610,6 +611,11 @@ type pullRequestReview struct {
 	Author      *actor     `json:"author"`
 	CommitID    string     `json:"commitId"`
 	SubmittedAt *time.Time `json:"submittedAt"`
+}
+
+type pullRequestCodexReviews struct {
+	CurrentHead []pullRequestReview
+	Latest      []pullRequestReview
 }
 
 type actor struct {
@@ -1677,14 +1683,18 @@ func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 
 func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pullRequest pullRequestNode) {
 	issue.PullRequest = &connector.PullRequest{
-		Number:                 pullRequest.Number,
-		URL:                    strings.TrimSpace(pullRequest.URL),
-		BranchName:             strings.TrimSpace(pullRequest.HeadRefName),
-		State:                  strings.ToUpper(strings.TrimSpace(pullRequest.State)),
-		CIStatus:               normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
-		CodexReviewState:       pullRequestCodexReviewState(pullRequest),
-		CodexReviewSubmittedAt: pullRequestCodexReviewSubmittedAt(pullRequest),
-		CodexReviewFindings:    pullRequestCodexReviewFindings(pullRequest),
+		Number:                       pullRequest.Number,
+		URL:                          strings.TrimSpace(pullRequest.URL),
+		BranchName:                   strings.TrimSpace(pullRequest.HeadRefName),
+		State:                        strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+		HeadSHA:                      strings.TrimSpace(pullRequest.HeadSHA),
+		CIStatus:                     normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
+		CodexReviewState:             pullRequestCodexReviewState(pullRequest),
+		CodexReviewSubmittedAt:       pullRequestCodexReviewSubmittedAt(pullRequest),
+		CodexReviewFindings:          pullRequestCodexReviewFindings(pullRequest),
+		LatestCodexReviewState:       pullRequestLatestCodexReviewState(pullRequest),
+		LatestCodexReviewCommitSHA:   pullRequestLatestCodexReviewCommitSHA(pullRequest),
+		LatestCodexReviewSubmittedAt: pullRequestLatestCodexReviewSubmittedAt(pullRequest),
 	}
 	if issue.PRNumber == nil && pullRequest.Number > 0 {
 		number := pullRequest.Number
@@ -1718,7 +1728,8 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	if err != nil {
 		return err
 	}
-	pullRequest.LatestReviews = nodeConnection[pullRequestReview]{Nodes: reviews}
+	pullRequest.LatestReviews = nodeConnection[pullRequestReview]{Nodes: reviews.CurrentHead}
+	pullRequest.CodexReviews = reviews
 	return nil
 }
 
@@ -1734,16 +1745,19 @@ func (c *Connector) fetchPullRequestCIState(ctx context.Context, repo pullReques
 	return combinedCIState(checkRunsState(checkRuns), commitStatusesState(statuses)), nil
 }
 
-func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullRequestRepo, number int, headSHA string) ([]pullRequestReview, error) {
+func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullRequestRepo, number int, headSHA string) (pullRequestCodexReviews, error) {
 	response, err := fetchRESTList[restReview](ctx, c.client, restPullRequestReviewsPath(repo, number))
 	if err != nil {
-		return nil, fmt.Errorf("fetch github pull request reviews: %w", err)
+		return pullRequestCodexReviews{}, fmt.Errorf("fetch github pull request reviews: %w", err)
 	}
-	review, ok := latestCodexReview(response, headSHA)
-	if !ok {
-		return nil, nil
+	reviews := pullRequestCodexReviews{}
+	if review, ok := latestCodexReview(response, headSHA); ok {
+		reviews.CurrentHead = []pullRequestReview{review}
 	}
-	return []pullRequestReview{review}, nil
+	if review, ok := latestCodexReview(response, ""); ok {
+		reviews.Latest = []pullRequestReview{review}
+	}
+	return reviews, nil
 }
 
 func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, query string, keepIssue func(connector.Issue) bool) ([]connector.Issue, error) {
@@ -3188,9 +3202,17 @@ func pullRequestReviewAfter(left pullRequestReview, right pullRequestReview) boo
 }
 
 func pullRequestCodexReviewState(pullRequest pullRequestNode) string {
+	return pullRequestCodexReviewStateFromReviews(pullRequest.LatestReviews.Nodes)
+}
+
+func pullRequestLatestCodexReviewState(pullRequest pullRequestNode) string {
+	return pullRequestCodexReviewStateFromReviews(pullRequest.CodexReviews.Latest)
+}
+
+func pullRequestCodexReviewStateFromReviews(reviews []pullRequestReview) string {
 	hasP2 := false
 	reviewState := ""
-	for _, review := range pullRequest.LatestReviews.Nodes {
+	for _, review := range reviews {
 		if containsReviewSeverity(review.Body, "P1") {
 			return "P1"
 		}
@@ -3208,8 +3230,16 @@ func pullRequestCodexReviewState(pullRequest pullRequestNode) string {
 }
 
 func pullRequestCodexReviewSubmittedAt(pullRequest pullRequestNode) *time.Time {
+	return pullRequestCodexReviewSubmittedAtFromReviews(pullRequest.LatestReviews.Nodes)
+}
+
+func pullRequestLatestCodexReviewSubmittedAt(pullRequest pullRequestNode) *time.Time {
+	return pullRequestCodexReviewSubmittedAtFromReviews(pullRequest.CodexReviews.Latest)
+}
+
+func pullRequestCodexReviewSubmittedAtFromReviews(reviews []pullRequestReview) *time.Time {
 	var latest *time.Time
-	for _, review := range pullRequest.LatestReviews.Nodes {
+	for _, review := range reviews {
 		if review.SubmittedAt == nil {
 			continue
 		}
@@ -3219,6 +3249,15 @@ func pullRequestCodexReviewSubmittedAt(pullRequest pullRequestNode) *time.Time {
 		}
 	}
 	return latest
+}
+
+func pullRequestLatestCodexReviewCommitSHA(pullRequest pullRequestNode) string {
+	for _, review := range pullRequest.CodexReviews.Latest {
+		if commitID := strings.TrimSpace(review.CommitID); commitID != "" {
+			return commitID
+		}
+	}
+	return ""
 }
 
 func pullRequestCodexReviewFindings(pullRequest pullRequestNode) []connector.PullRequestFinding {

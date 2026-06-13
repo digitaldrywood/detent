@@ -720,6 +720,66 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchIssuesByStatesSurfacesStaleCodexReview(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_401","content":{"__typename":"Issue","id":"I_401","number":401,"title":"Human review issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/401","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"enhancement"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":411,"url":"https://github.com/digitaldrywood/detent/pull/411","state":"OPEN","repository":{"nameWithOwner":"digitaldrywood/detent"}}]}},"statusValue":{"name":"Human Review"},"priorityValue":null}]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/411",
+			body:   `{"number":411,"html_url":"https://github.com/digitaldrywood/detent/pull/411","state":"open","head":{"ref":"detent/digitaldrywood_detent_401","sha":"head-current"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100",
+			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/head-current/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/411/reviews?per_page=100",
+			body:   `[{"body":"No blocking findings on an older head.","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"head-previous","submitted_at":"2026-06-12T11:40:00Z"}]`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+
+	pr := got[0].PullRequest
+	if pr == nil {
+		t.Fatal("PullRequest = nil, want linked PR")
+	}
+	if pr.HeadSHA != "head-current" {
+		t.Fatalf("HeadSHA = %q, want head-current", pr.HeadSHA)
+	}
+	if pr.CIStatus != "pass" {
+		t.Fatalf("CIStatus = %q, want pass", pr.CIStatus)
+	}
+	if pr.CodexReviewState != "" || pr.CodexReviewSubmittedAt != nil {
+		t.Fatalf("current-head Codex review = %q at %v, want none", pr.CodexReviewState, pr.CodexReviewSubmittedAt)
+	}
+	if pr.LatestCodexReviewState != "COMMENTED" || pr.LatestCodexReviewCommitSHA != "head-previous" {
+		t.Fatalf("latest Codex review = state %q commit %q, want COMMENTED/head-previous", pr.LatestCodexReviewState, pr.LatestCodexReviewCommitSHA)
+	}
+	wantSubmittedAt := time.Date(2026, 6, 12, 11, 40, 0, 0, time.UTC)
+	if pr.LatestCodexReviewSubmittedAt == nil || !pr.LatestCodexReviewSubmittedAt.Equal(wantSubmittedAt) {
+		t.Fatalf("LatestCodexReviewSubmittedAt = %v, want %v", pr.LatestCodexReviewSubmittedAt, wantSubmittedAt)
+	}
+}
+
 func TestConnectorFetchIssuesByStatesLimitStopsAfterSample(t *testing.T) {
 	t.Parallel()
 

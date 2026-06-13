@@ -42,14 +42,18 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
-	Number                 int                  `json:"number,omitempty" yaml:"number,omitempty"`
-	URL                    string               `json:"url,omitempty" yaml:"url,omitempty"`
-	BranchName             string               `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
-	State                  string               `json:"state,omitempty" yaml:"state,omitempty"`
-	CIStatus               string               `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
-	CodexReviewState       string               `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
-	CodexReviewSubmittedAt *time.Time           `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`
-	CodexReviewFindings    []PullRequestFinding `json:"codex_review_findings,omitempty" yaml:"codex_review_findings,omitempty"`
+	Number                       int                  `json:"number,omitempty" yaml:"number,omitempty"`
+	URL                          string               `json:"url,omitempty" yaml:"url,omitempty"`
+	BranchName                   string               `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
+	State                        string               `json:"state,omitempty" yaml:"state,omitempty"`
+	HeadSHA                      string               `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
+	CIStatus                     string               `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
+	CodexReviewState             string               `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
+	CodexReviewSubmittedAt       *time.Time           `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`
+	CodexReviewFindings          []PullRequestFinding `json:"codex_review_findings,omitempty" yaml:"codex_review_findings,omitempty"`
+	LatestCodexReviewState       string               `json:"latest_codex_review_state,omitempty" yaml:"latest_codex_review_state,omitempty"`
+	LatestCodexReviewCommitSHA   string               `json:"latest_codex_review_commit_sha,omitempty" yaml:"latest_codex_review_commit_sha,omitempty"`
+	LatestCodexReviewSubmittedAt *time.Time           `json:"latest_codex_review_submitted_at,omitempty" yaml:"latest_codex_review_submitted_at,omitempty"`
 }
 
 type PullRequestFinding struct {
