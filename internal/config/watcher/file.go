@@ -67,10 +67,7 @@ func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*Fil
 	}
 
 	path = filepath.Clean(absolute)
-	watchPath := path
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		watchPath = filepath.Clean(resolved)
-	}
+	watchPath := resolveWatchPath(path)
 
 	return &FileWatcher[T]{
 		path:      path,
@@ -94,6 +91,13 @@ func watchDirs(paths ...string) []string {
 		dirs = append(dirs, dir)
 	}
 	return dirs
+}
+
+func resolveWatchPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return path
 }
 
 func WithFileDebounce(debounce time.Duration) FileOption {
@@ -153,6 +157,7 @@ func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher *fsnotify.Watcher, u
 				return
 			}
 			if w.matches(event) {
+				w.refreshWatchPath(fsWatcher.Add)
 				resetTimer(timer, w.debounce)
 				timerC = timer.C
 			}
@@ -180,6 +185,41 @@ func (w *FileWatcher[T]) matches(event fsnotify.Event) bool {
 	}
 	name := filepath.Clean(event.Name)
 	return name == w.path || name == w.watchPath
+}
+
+func (w *FileWatcher[T]) refreshWatchPath(addDir func(string) error) {
+	watchPath := resolveWatchPath(w.path)
+	if watchPath == w.watchPath {
+		return
+	}
+
+	w.watchPath = watchPath
+	for _, dir := range watchDirs(w.path, watchPath) {
+		if hasWatchDir(w.dirs, dir) {
+			continue
+		}
+		if addDir != nil {
+			if err := addDir(dir); err != nil {
+				w.logger.Warn("watch config symlink target directory failed",
+					"path", w.path,
+					"target", watchPath,
+					"dir", dir,
+					"error", err,
+				)
+				continue
+			}
+		}
+		w.dirs = append(w.dirs, dir)
+	}
+}
+
+func hasWatchDir(dirs []string, dir string) bool {
+	for _, candidate := range dirs {
+		if candidate == dir {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *FileWatcher[T]) reload(ctx context.Context) FileUpdate[T] {
