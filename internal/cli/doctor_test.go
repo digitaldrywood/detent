@@ -856,6 +856,31 @@ func TestServerAddrNormalizesBracketedIPv6Host(t *testing.T) {
 	}
 }
 
+func TestDoctorListenErrIndicatesOccupied(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want bool
+	}{
+		{name: "nil", want: false},
+		{name: "unix bind collision", err: errors.New("bind: address already in use"), want: true},
+		{name: "windows bind collision", err: errors.New("bind: Only one usage of each socket address (protocol/network address/port) is normally permitted."), want: true},
+		{name: "other listen error", err: errors.New("bind: permission denied"), want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := doctorListenErrIndicatesOccupied(tt.err); got != tt.want {
+				t.Fatalf("doctorListenErrIndicatesOccupied() = %v, want %v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestDoctorCommandExitStatus(t *testing.T) {
 	t.Parallel()
 

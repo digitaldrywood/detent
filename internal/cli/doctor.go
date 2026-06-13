@@ -1281,7 +1281,10 @@ func doctorListenErrIndicatesOccupied(err error) bool {
 	if err == nil {
 		return false
 	}
-	return errors.Is(err, syscall.EADDRINUSE) || strings.Contains(strings.ToLower(err.Error()), "address already in use")
+	message := strings.ToLower(err.Error())
+	return errors.Is(err, syscall.EADDRINUSE) ||
+		strings.Contains(message, "address already in use") ||
+		strings.Contains(message, "only one usage of each socket address")
 }
 
 func doctorOptions(opts options) options {
