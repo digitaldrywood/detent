@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -98,6 +100,7 @@ type doctorDeps struct {
 	lookupEnv            func(string) string
 	lookPath             func(string) (string, error)
 	runCommand           func(context.Context, string, ...string) error
+	httpDo               func(*http.Request) (*http.Response, error)
 	githubScopes         func(context.Context, string) ([]string, error)
 	ghAuthToken          func(context.Context) (string, error)
 	listen               func(string, string) (net.Listener, error)
@@ -1155,21 +1158,36 @@ func missingGitHubScopes(scopes []string) []string {
 }
 
 func checkDoctorServerPort(cfg BootConfig, deps doctorDeps) doctorCheck {
+	deps = deps.withDefaults()
 	addr := serverAddr(cfg)
 	listener, err := deps.listen("tcp", addr)
 	if err != nil {
-		return doctorCheck{
+		check := doctorCheck{
 			Name:   "Server port",
 			Status: doctorFail,
-			Detail: fmt.Sprintf("%s is not available: %v", addr, err),
+			Detail: fmt.Sprintf("%s is not available for pre-start bind: %v", addr, err),
 			Hint:   "Stop the process using the port or pass --port with an available value.",
+		}
+		if !doctorListenErrIndicatesOccupied(err) || doctorServerPort(cfg) == 0 {
+			return check
+		}
+		probe, probeErr := probeDoctorHealth(cfg, deps)
+		if probeErr != nil {
+			check.Detail = fmt.Sprintf("%s is occupied for pre-start bind; health probe %s %v", addr, probe.URL, probeErr)
+			return check
+		}
+		return doctorCheck{
+			Name:   "Server port",
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("%s is occupied for pre-start bind; health probe %s found healthy Detent instance (status %s, mode %s)", addr, probe.URL, probe.Health.Status, probe.Health.Mode),
+			Hint:   "No action is needed if doctor is checking the live instance; stop Detent before a clean pre-start availability check.",
 		}
 	}
 	if err := listener.Close(); err != nil {
 		return doctorCheck{
 			Name:   "Server port",
 			Status: doctorWarn,
-			Detail: fmt.Sprintf("%s was available, but close failed: %v", addr, err),
+			Detail: fmt.Sprintf("%s was available for pre-start bind, but close failed: %v", addr, err),
 			Hint:   "Rerun detent doctor and check for local network errors.",
 		}
 	}
@@ -1184,8 +1202,86 @@ func checkDoctorServerPort(cfg BootConfig, deps doctorDeps) doctorCheck {
 	return doctorCheck{
 		Name:   "Server port",
 		Status: doctorOK,
-		Detail: addr + " is available",
+		Detail: addr + " is available for pre-start bind",
 	}
+}
+
+type doctorHealthProbe struct {
+	URL    string
+	Health doctorHealthResponse
+}
+
+type doctorHealthResponse struct {
+	Status string            `json:"status"`
+	Mode   string            `json:"mode"`
+	Checks map[string]string `json:"checks"`
+}
+
+func probeDoctorHealth(cfg BootConfig, deps doctorDeps) (doctorHealthProbe, error) {
+	url := doctorHealthProbeURL(cfg)
+	probe := doctorHealthProbe{URL: url}
+	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	if err != nil {
+		return probe, fmt.Errorf("could not be built: %w", err)
+	}
+	resp, err := deps.httpDo(req)
+	if err != nil {
+		return probe, fmt.Errorf("could not be reached: %w", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		return probe, fmt.Errorf("returned HTTP %d", resp.StatusCode)
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&probe.Health); err != nil {
+		return probe, fmt.Errorf("did not return Detent health: %w", err)
+	}
+	probe.Health.Status = strings.TrimSpace(probe.Health.Status)
+	probe.Health.Mode = strings.TrimSpace(probe.Health.Mode)
+	if probe.Health.Mode == "" || probe.Health.Checks == nil {
+		return probe, errors.New("did not return Detent health")
+	}
+	if probe.Health.Status != "ok" {
+		return probe, fmt.Errorf("did not report healthy status: status %s, mode %s", probe.Health.Status, probe.Health.Mode)
+	}
+	return probe, nil
+}
+
+func doctorHealthProbeURL(cfg BootConfig) string {
+	return "http://" + net.JoinHostPort(doctorHealthProbeHost(cfg.Host), strconv.Itoa(doctorServerPort(cfg))) + "/health"
+}
+
+func doctorHealthProbeHost(host string) string {
+	host = strings.TrimSpace(host)
+	if host == "" {
+		host = defaultWebHost
+	}
+	host = unbracketIPv6Host(host)
+	ip := net.ParseIP(host)
+	if ip == nil {
+		return host
+	}
+	if ip.IsUnspecified() {
+		if ip.To4() != nil {
+			return "127.0.0.1"
+		}
+		return "::1"
+	}
+	return host
+}
+
+func doctorServerPort(cfg BootConfig) int {
+	if cfg.Port != nil {
+		return *cfg.Port
+	}
+	return defaultWebPort
+}
+
+func doctorListenErrIndicatesOccupied(err error) bool {
+	if err == nil {
+		return false
+	}
+	return errors.Is(err, syscall.EADDRINUSE) || strings.Contains(strings.ToLower(err.Error()), "address already in use")
 }
 
 func doctorOptions(opts options) options {
@@ -1212,6 +1308,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	}
 	if d.runCommand == nil {
 		d.runCommand = defaults.runCommand
+	}
+	if d.httpDo == nil {
+		d.httpDo = defaults.httpDo
 	}
 	if d.githubScopes == nil {
 		d.githubScopes = defaults.githubScopes
@@ -1243,6 +1342,7 @@ func defaultDoctorDeps() doctorDeps {
 		lookupEnv:            os.Getenv,
 		lookPath:             exec.LookPath,
 		runCommand:           runDoctorCommand,
+		httpDo:               defaultDoctorHTTPDo,
 		githubScopes:         defaultGitHubScopes,
 		ghAuthToken:          defaultGHAuthToken,
 		listen:               net.Listen,
@@ -1251,6 +1351,11 @@ func defaultDoctorDeps() doctorDeps {
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
 		executable:           os.Executable,
 	}
+}
+
+func defaultDoctorHTTPDo(req *http.Request) (*http.Response, error) {
+	client := http.Client{Timeout: doctorCommandTimeout}
+	return client.Do(req)
 }
 
 func openDoctorSQLite(ctx context.Context, path string) (doctorStore, error) {
