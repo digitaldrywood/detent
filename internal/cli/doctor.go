@@ -21,6 +21,10 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/connector/factory"
+	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
 
 var ErrDoctorFailed = errors.New("doctor found failed checks")
@@ -36,6 +40,8 @@ const (
 )
 
 var requiredGitHubScopes = []string{"repo", "read:org", "project"}
+
+const doctorAutoPromoteSampleLimit = 5
 
 type doctorCheck struct {
 	Name   string
@@ -58,16 +64,29 @@ type doctorStore interface {
 	Close() error
 }
 
+type doctorAutoPromoteConnector interface {
+	FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error)
+}
+
+type doctorAutoPromoteLimitedConnector interface {
+	FetchIssuesByStatesLimit(context.Context, []string, int) ([]connector.Issue, error)
+}
+
+type doctorStatusOptionVerifier interface {
+	VerifyStatusOptions(context.Context, []string) error
+}
+
 type doctorDeps struct {
-	loadWorkflow func(string) (workflowconfig.Workflow, error)
-	lookupEnv    func(string) string
-	lookPath     func(string) (string, error)
-	runCommand   func(context.Context, string, ...string) error
-	githubScopes func(context.Context, string) ([]string, error)
-	ghAuthToken  func(context.Context) (string, error)
-	listen       func(string, string) (net.Listener, error)
-	openSQLite   func(context.Context, string) (doctorStore, error)
-	gitWorkTree  func(context.Context, string) error
+	loadWorkflow         func(string) (workflowconfig.Workflow, error)
+	lookupEnv            func(string) string
+	lookPath             func(string) (string, error)
+	runCommand           func(context.Context, string, ...string) error
+	githubScopes         func(context.Context, string) ([]string, error)
+	ghAuthToken          func(context.Context) (string, error)
+	listen               func(string, string) (net.Listener, error)
+	openSQLite           func(context.Context, string) (doctorStore, error)
+	gitWorkTree          func(context.Context, string) error
+	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
 }
 
 func newDoctorCommand(configPath *string, env *string, logLevel *string, host *string, port *int, opts options) *cobra.Command {
@@ -333,6 +352,9 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 			Status: doctorOK,
 			Detail: doctorWorkflowDetail(project.Workflow, project, workflow.Config),
 		})
+		if workflow.Config.Agent.AutoPromote.Enabled {
+			checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
+		}
 
 		sourceRoot := projectSourceRoot(project, workflow.Config)
 		if sourceRoot == "" {
@@ -371,6 +393,264 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 	}
 
 	return checks
+}
+
+func checkDoctorAutoPromote(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps, now time.Time) doctorCheck {
+	name := "Project " + id + " auto-promote"
+	if !cfg.Agent.AutoPromote.Enabled {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "agent.auto_promote.enabled=false; live candidate diagnostics disabled",
+		}
+	}
+	if !doctorStateInList("Human Review", cfg.Tracker.ObservedStates) {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "agent.auto_promote.enabled=true but tracker.observed_states does not include Human Review",
+			Hint:   "Add Human Review to tracker.observed_states so Detent can observe review-lane candidates.",
+		}
+	}
+	if !doctorStateInList("Merging", cfg.Tracker.ActiveStates) {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "agent.auto_promote.enabled=true but tracker.active_states does not include Merging",
+			Hint:   "Add Merging to tracker.active_states so promoted issues can enter the merge lane.",
+		}
+	}
+	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "agent.auto_promote.enabled=true; live GitHub diagnostics skipped for " + cfg.Tracker.Kind + " tracker",
+		}
+	}
+
+	if deps.autoPromoteConnector == nil {
+		deps.autoPromoteConnector = defaultDoctorAutoPromoteConnector
+	}
+	projectConnector, err := deps.autoPromoteConnector(cfg)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("create auto-promote diagnostic connector: %v", err),
+			Hint:   "Fix GitHub tracker credentials and ProjectV2 configuration.",
+		}
+	}
+	if projectConnector == nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "create auto-promote diagnostic connector: connector is nil",
+			Hint:   "Fix GitHub tracker configuration.",
+		}
+	}
+
+	check := checkDoctorAutoPromoteLive(ctx, name, cfg, projectConnector, now)
+	if err := closeDoctorAutoPromoteConnector(projectConnector); err != nil && check.Status != doctorFail {
+		check.Status = doctorWarn
+		check.Detail = check.Detail + "; connector close failed: " + err.Error()
+		check.Hint = "Rerun detent doctor and check local network resources."
+	}
+	return check
+}
+
+func checkDoctorAutoPromoteLive(
+	ctx context.Context,
+	name string,
+	cfg workflowconfig.Config,
+	projectConnector doctorAutoPromoteConnector,
+	now time.Time,
+) doctorCheck {
+	if verifier, ok := projectConnector.(doctorStatusOptionVerifier); ok {
+		if err := verifier.VerifyStatusOptions(ctx, []string{"Human Review", "Merging"}); err != nil {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorFail,
+				Detail: fmt.Sprintf("status option verification failed: %v", err),
+				Hint:   "Ensure Human Review and Merging resolve through tracker.state_map to existing GitHub Project Status options.",
+			}
+		}
+	}
+
+	issues, err := fetchDoctorAutoPromoteIssues(ctx, projectConnector, []string{"Human Review"})
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("fetch Human Review candidates: %v", err),
+			Hint:   "Check GitHub Project access, Status field options, and repository pull request access.",
+		}
+	}
+
+	autoPromoteCfg := doctorAutoPromoteConfig(cfg)
+	reasonCounts := map[orchestrator.AutoPromoteReason]int{}
+	var quietRemaining time.Duration
+	for _, issue := range issues {
+		summary := orchestrator.AutoPromoteSummaryFromIssue(issue)
+		decision := orchestrator.EvaluateAutoPromote(issue, summary, autoPromoteCfg, now)
+		reasonCounts[decision.Reason]++
+		if decision.QuietRemaining > quietRemaining {
+			quietRemaining = decision.QuietRemaining
+		}
+		if decision.Reason == orchestrator.AutoPromoteReasonMissingPullRequest {
+			if prNumber, ok := doctorLinkedPullRequestNumber(issue); ok {
+				return doctorCheck{
+					Name:   name,
+					Status: doctorFail,
+					Detail: fmt.Sprintf("%s has linked PR #%d but auto-promote readiness reports missing_pull_request", doctorIssueLabel(issue), prNumber),
+					Hint:   "Verify GitHub PR attachment, branch prefix matching, and repository access for Human Review candidates.",
+				}
+			}
+		}
+	}
+
+	detail := fmt.Sprintf(
+		"agent.auto_promote.enabled=true; status options resolved; sampled %d Human Review candidate(s)",
+		len(issues),
+	)
+	if len(reasonCounts) > 0 {
+		detail += "; reasons: " + doctorAutoPromoteReasonCounts(reasonCounts)
+	}
+	if quietRemaining > 0 {
+		detail += "; max_quiet_remaining=" + quietRemaining.Truncate(time.Second).String()
+	}
+	return doctorCheck{
+		Name:   name,
+		Status: doctorOK,
+		Detail: detail,
+	}
+}
+
+func fetchDoctorAutoPromoteIssues(
+	ctx context.Context,
+	projectConnector doctorAutoPromoteConnector,
+	states []string,
+) ([]connector.Issue, error) {
+	if limited, ok := projectConnector.(doctorAutoPromoteLimitedConnector); ok {
+		return limited.FetchIssuesByStatesLimit(ctx, states, doctorAutoPromoteSampleLimit)
+	}
+	issues, err := projectConnector.FetchIssuesByStates(ctx, states)
+	if err != nil {
+		return nil, err
+	}
+	if len(issues) > doctorAutoPromoteSampleLimit {
+		issues = issues[:doctorAutoPromoteSampleLimit]
+	}
+	return issues, nil
+}
+
+func doctorAutoPromoteConfig(cfg workflowconfig.Config) orchestrator.AutoPromoteConfig {
+	return orchestrator.AutoPromoteConfig{
+		Enabled:            cfg.Agent.AutoPromote.Enabled,
+		QuietDuration:      time.Duration(cfg.Agent.AutoPromote.QuietSeconds) * time.Second,
+		OptoutLabel:        cfg.Agent.AutoPromote.OptoutLabel,
+		AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
+		Gate:               cfg.Gate,
+	}
+}
+
+func doctorAutoPromoteReasonCounts(counts map[orchestrator.AutoPromoteReason]int) string {
+	reasons := make([]string, 0, len(counts))
+	for reason := range counts {
+		if strings.TrimSpace(string(reason)) != "" {
+			reasons = append(reasons, string(reason))
+		}
+	}
+	sort.Strings(reasons)
+
+	parts := make([]string, 0, len(reasons))
+	for _, reason := range reasons {
+		parts = append(parts, fmt.Sprintf("%s=%d", reason, counts[orchestrator.AutoPromoteReason(reason)]))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func doctorLinkedPullRequestNumber(issue connector.Issue) (int, bool) {
+	if issue.PRNumber == nil || *issue.PRNumber <= 0 {
+		return 0, false
+	}
+	return *issue.PRNumber, true
+}
+
+func doctorIssueLabel(issue connector.Issue) string {
+	id := strings.TrimSpace(issue.ID)
+	identifier := strings.TrimSpace(issue.Identifier)
+	switch {
+	case id != "" && identifier != "":
+		return id + " (" + identifier + ")"
+	case id != "":
+		return id
+	case identifier != "":
+		return identifier
+	default:
+		return "sampled issue"
+	}
+}
+
+func doctorStateInList(state string, states []string) bool {
+	state = strings.ToLower(strings.TrimSpace(state))
+	if state == "" {
+		return false
+	}
+	for _, candidate := range states {
+		if strings.ToLower(strings.TrimSpace(candidate)) == state {
+			return true
+		}
+	}
+	return false
+}
+
+func closeDoctorAutoPromoteConnector(projectConnector doctorAutoPromoteConnector) error {
+	closer, ok := projectConnector.(connector.Closer)
+	if !ok {
+		return nil
+	}
+	return closer.Close()
+}
+
+func defaultDoctorAutoPromoteConnector(cfg workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+	return factory.NewFromConfig(factory.Config{
+		Kind:                    cfg.Tracker.Kind,
+		Memory:                  memory.Config{Issues: cfg.Tracker.Issues},
+		Endpoint:                cfg.Tracker.Endpoint,
+		APIKey:                  cfg.Tracker.APIKey,
+		HTTPMaxIdleConns:        cfg.Tracker.HTTPMaxIdleConns,
+		HTTPMaxIdleConnsPerHost: cfg.Tracker.HTTPMaxIdleConnsPerHost,
+		HTTPIdleConnTimeoutMS:   cfg.Tracker.HTTPIdleConnTimeoutMS,
+		GitHubAppID:             cfg.Tracker.GitHubAppID,
+		GitHubAppPrivateKey:     cfg.Tracker.GitHubAppPrivateKey,
+		GitHubAppPrivateKeyPath: cfg.Tracker.GitHubAppPrivateKeyPath,
+		GitHubAppInstallationID: cfg.Tracker.GitHubAppInstallationID,
+		ProjectSlug:             cfg.Tracker.ProjectSlug,
+		ActiveStates:            cfg.Tracker.ActiveStates,
+		ObservedStates:          cfg.Tracker.ObservedStates,
+		TerminalStates:          cfg.Tracker.TerminalStates,
+		StateMap:                doctorTrackerStateMap(cfg.Tracker.StateMap),
+	})
+}
+
+func doctorTrackerStateMap(value workflowconfig.StringOrMap) map[string]string {
+	if !value.IsMap {
+		return nil
+	}
+
+	out := make(map[string]string, len(value.Map))
+	for state, mapped := range value.Map {
+		mappedState, ok := mapped.(string)
+		if !ok {
+			continue
+		}
+		state = strings.TrimSpace(state)
+		mappedState = strings.TrimSpace(mappedState)
+		if state != "" && mappedState != "" {
+			out[state] = mappedState
+		}
+	}
+	return out
 }
 
 func doctorWorkflowConfigWithRuntimeGitHubToken(cfg workflowconfig.Config, token string) workflowconfig.Config {
@@ -744,20 +1024,24 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.gitWorkTree == nil {
 		d.gitWorkTree = defaults.gitWorkTree
 	}
+	if d.autoPromoteConnector == nil {
+		d.autoPromoteConnector = defaults.autoPromoteConnector
+	}
 	return d
 }
 
 func defaultDoctorDeps() doctorDeps {
 	return doctorDeps{
-		loadWorkflow: workflowconfig.LoadWorkflow,
-		lookupEnv:    os.Getenv,
-		lookPath:     exec.LookPath,
-		runCommand:   runDoctorCommand,
-		githubScopes: defaultGitHubScopes,
-		ghAuthToken:  defaultGHAuthToken,
-		listen:       net.Listen,
-		openSQLite:   openDoctorSQLite,
-		gitWorkTree:  defaultGitWorkTree,
+		loadWorkflow:         workflowconfig.LoadWorkflow,
+		lookupEnv:            os.Getenv,
+		lookPath:             exec.LookPath,
+		runCommand:           runDoctorCommand,
+		githubScopes:         defaultGitHubScopes,
+		ghAuthToken:          defaultGHAuthToken,
+		listen:               net.Listen,
+		openSQLite:           openDoctorSQLite,
+		gitWorkTree:          defaultGitWorkTree,
+		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
 	}
 }
 

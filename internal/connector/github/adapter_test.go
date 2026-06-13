@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -694,6 +695,44 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 		pr.CodexReviewFindings[0].Body != "[P1] Unsafe migration." ||
 		pr.CodexReviewFindings[0].URL != "https://github.com/digitaldrywood/detent/pull/190#pullrequestreview-2" {
 		t.Fatalf("PullRequest.CodexReviewFindings = %#v, want P1 review finding", pr.CodexReviewFindings)
+	}
+}
+
+func TestConnectorFetchIssuesByStatesLimitStopsAfterSample(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":true,"endCursor":"next"},"nodes":[{"id":"PVTI_370","content":{"__typename":"Issue","id":"I_370","number":370,"title":"Review issue","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/370","repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":371,"url":"https://github.com/digitaldrywood/detent/pull/371"}]}},"statusValue":{"name":"Human Review"},"priorityValue":null},{"id":"PVTI_387","content":{"__typename":"Issue","id":"I_387","number":387,"title":"Review issue 2","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/387","repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":{"name":"Human Review"},"priorityValue":null}]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssuesByStatesLimit(context.Background(), []string{"Human Review"}, 1)
+	if err != nil {
+		t.Fatalf("FetchIssuesByStatesLimit() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStatesLimit() len = %d, want 1", len(got))
+	}
+	if got[0].PRNumber == nil || *got[0].PRNumber != 371 {
+		t.Fatalf("PRNumber = %v, want linked PR 371", got[0].PRNumber)
+	}
+	if got[0].PullRequest != nil {
+		t.Fatalf("PullRequest = %#v, want nil when branch metadata is not attached", got[0].PullRequest)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want one project page and one pull request page", len(requests))
+	}
+	if requests[0]["variables"].(map[string]any)["after"] != nil {
+		t.Fatalf("first project request after = %v, want nil", requests[0]["variables"].(map[string]any)["after"])
 	}
 }
 
@@ -1450,6 +1489,34 @@ func TestConnectorUpdateIssueStateWritesStatusOptionID(t *testing.T) {
 	}
 	if variables["optionId"] == "Ready" {
 		t.Fatal("optionId used the option name, want option id")
+	}
+}
+
+func TestConnectorVerifyStatusOptionsChecksMappedStatusOptions(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_review","name":"Reviewing"}]}}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+		StateMap:    map[string]string{"Human Review": "Reviewing"},
+	})
+
+	err := c.VerifyStatusOptions(context.Background(), []string{"Human Review", "Merging"})
+	if !errors.Is(err, ErrStatusOptionNotFound) {
+		t.Fatalf("VerifyStatusOptions() error = %v, want ErrStatusOptionNotFound", err)
+	}
+	if !strings.Contains(err.Error(), "Merging") {
+		t.Fatalf("VerifyStatusOptions() error = %q, want missing Merging detail", err.Error())
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	if strings.Contains(requests[0]["query"].(string), "updateProjectV2ItemFieldValue") {
+		t.Fatalf("VerifyStatusOptions issued mutation: %q", requests[0]["query"])
 	}
 }
 
