@@ -37,7 +37,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			continue
 		}
 
-		summary := autoPromoteSummaryFromIssue(issue)
+		summary := AutoPromoteSummaryFromIssue(issue)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		targetState := autoPromoteTargetState(decision.Action)
 		if targetState == "" {
@@ -55,7 +55,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 	return transitioned
 }
 
-func autoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
+func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 	summary := AutoPromoteSummary{
 		LastActivityAt: autoPromoteLastActivityAt(issue),
 	}

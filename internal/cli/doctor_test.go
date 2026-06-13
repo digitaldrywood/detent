@@ -9,9 +9,11 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -175,6 +177,131 @@ func TestProjectSourceRootPrefersProjectWorkdirBeforeWorkspaceRoot(t *testing.T)
 	cfg.Workspace.SourceRoot = "/configured-source"
 	if got := projectSourceRoot(project, cfg); got != "/configured-source" {
 		t.Fatalf("projectSourceRoot() with source_root = %q, want /configured-source", got)
+	}
+}
+
+func TestCheckDoctorAutoPromote(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC)
+	oldActivity := now.Add(-20 * time.Minute)
+	prNumber := 42
+	waitingIssue := doctorAutoPromoteIssue("issue-ci", &connector.PullRequest{
+		Number:           41,
+		URL:              "https://github.test/pull/41",
+		State:            "OPEN",
+		CIStatus:         "fail",
+		CodexReviewState: "COMMENTED",
+	})
+	missingReviewIssue := doctorAutoPromoteIssue("issue-review", &connector.PullRequest{
+		Number:   43,
+		URL:      "https://github.test/pull/43",
+		State:    "OPEN",
+		CIStatus: "success",
+	})
+	linkedWithoutMetadata := doctorAutoPromoteIssue("issue-missing-pr", nil)
+	linkedWithoutMetadata.PRNumber = &prNumber
+	readyIssue := doctorAutoPromoteIssue("issue-ready", &connector.PullRequest{
+		Number:                 44,
+		URL:                    "https://github.test/pull/44",
+		State:                  "OPEN",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldActivity,
+	})
+
+	tests := []struct {
+		name        string
+		cfg         workflowconfig.Config
+		connector   *fakeDoctorAutoPromoteConnector
+		want        doctorStatus
+		wantDetails []string
+	}{
+		{
+			name:        "disabled",
+			cfg:         validDoctorWorkflow("/repo"),
+			want:        doctorOK,
+			wantDetails: []string{"disabled"},
+		},
+		{
+			name: "human review observed state is not required",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorAutoPromoteWorkflow()
+				cfg.Tracker.ObservedStates = []string{"Blocked"}
+				return cfg
+			}(),
+			connector:   &fakeDoctorAutoPromoteConnector{},
+			want:        doctorOK,
+			wantDetails: []string{"sampled 0 Human Review candidate"},
+		},
+		{
+			name: "missing merging active state",
+			cfg: func() workflowconfig.Config {
+				cfg := validDoctorAutoPromoteWorkflow()
+				cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "Rework"}
+				return cfg
+			}(),
+			want:        doctorFail,
+			wantDetails: []string{"tracker.active_states", "Merging"},
+		},
+		{
+			name: "status option verification fails",
+			cfg:  validDoctorAutoPromoteWorkflow(),
+			connector: &fakeDoctorAutoPromoteConnector{
+				verifyErr: errors.New("github status option not found: Human Review maps to Reviewing"),
+			},
+			want:        doctorFail,
+			wantDetails: []string{"status option", "Human Review", "Reviewing"},
+		},
+		{
+			name: "linked pr missing metadata fails",
+			cfg:  validDoctorAutoPromoteWorkflow(),
+			connector: &fakeDoctorAutoPromoteConnector{
+				issues: []connector.Issue{linkedWithoutMetadata},
+			},
+			want:        doctorFail,
+			wantDetails: []string{"missing_pull_request", "linked PR #42", "issue-missing-pr"},
+		},
+		{
+			name: "expected waiting reasons pass with counts",
+			cfg:  validDoctorAutoPromoteWorkflow(),
+			connector: &fakeDoctorAutoPromoteConnector{
+				issues: []connector.Issue{waitingIssue, missingReviewIssue},
+			},
+			want:        doctorOK,
+			wantDetails: []string{"automated_review_missing=1", "ci_not_green=1"},
+		},
+		{
+			name: "ready candidate passes with count",
+			cfg:  validDoctorAutoPromoteWorkflow(),
+			connector: &fakeDoctorAutoPromoteConnector{
+				issues: []connector.Issue{readyIssue},
+			},
+			want:        doctorOK,
+			wantDetails: []string{"ready=1"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := doctorDeps{}
+			if tt.connector != nil {
+				deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+					return tt.connector, nil
+				}
+			}
+			got := checkDoctorAutoPromote(context.Background(), "alpha", tt.cfg, deps, now)
+			if got.Status != tt.want {
+				t.Fatalf("Status = %s, want %s: %#v", got.Status, tt.want, got)
+			}
+			for _, want := range tt.wantDetails {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+				}
+			}
+		})
 	}
 }
 
@@ -655,6 +782,45 @@ func validDoctorWorkflow(sourceRoot string) workflowconfig.Config {
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = sourceRoot
 	return cfg
+}
+
+func validDoctorAutoPromoteWorkflow() workflowconfig.Config {
+	cfg := validDoctorWorkflow("/repo")
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.APIKey = "token"
+	cfg.Tracker.ProjectSlug = "PVT_1"
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "Rework", "Merging"}
+	cfg.Tracker.ObservedStates = []string{"Backlog", "Human Review", "Blocked"}
+	cfg.Agent.AutoPromote.Enabled = true
+	cfg.Agent.AutoPromote.QuietSeconds = 600
+	return cfg
+}
+
+func doctorAutoPromoteIssue(id string, pullRequest *connector.PullRequest) connector.Issue {
+	issue := connector.NewIssue()
+	issue.ID = id
+	issue.Identifier = "digitaldrywood/detent#399"
+	issue.Title = "Auto promote diagnostic"
+	issue.State = "Human Review"
+	issue.PullRequest = pullRequest
+	return issue
+}
+
+type fakeDoctorAutoPromoteConnector struct {
+	issues    []connector.Issue
+	verifyErr error
+}
+
+func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return c.issues, nil
+}
+
+func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesLimit(context.Context, []string, int) ([]connector.Issue, error) {
+	return c.issues, nil
+}
+
+func (c *fakeDoctorAutoPromoteConnector) VerifyStatusOptions(context.Context, []string) error {
+	return c.verifyErr
 }
 
 func successfulDoctorOptions(configPath string) options {
