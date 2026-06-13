@@ -26,27 +26,32 @@ func main() {
 
 	cmd := newRootCommand(ctx, shutdownController)
 	if err := cmd.ExecuteContext(ctx); err != nil {
-		if errors.Is(err, context.Canceled) {
-			slog.Info("shutdown requested")
-			return
-		}
-		if errors.Is(err, cli.ErrShutdownForced) || errors.Is(err, cli.ErrShutdownTimeout) {
-			os.Exit(1)
-		}
-
-		os.Exit(writeCommandError(cmd, err))
+		os.Exit(handleCommandError(cmd, err))
 	}
 }
 
-func writeCommandError(cmd *cobra.Command, err error) int {
-	if cli.CommandOutputIsJSON(cmd) {
-		if writeErr := cli.WriteCommandErrorJSON(cmd.ErrOrStderr(), err); writeErr != nil {
-			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", writeErr)
-		}
-		return 1
+func handleCommandError(cmd *cobra.Command, err error) int {
+	code := cli.ExitCode(err)
+	if code == cli.ExitSuccess {
+		slog.Info("shutdown requested")
+		return code
 	}
-	fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
-	return 1
+	if errors.Is(err, cli.ErrShutdownForced) || errors.Is(err, cli.ErrShutdownTimeout) {
+		return code
+	}
+
+	var errOut io.Writer = os.Stderr
+	if cmd != nil {
+		errOut = cmd.ErrOrStderr()
+	}
+	if cli.CommandOutputIsJSON(cmd) {
+		if writeErr := cli.WriteCommandErrorJSON(errOut, err); writeErr != nil {
+			fmt.Fprintf(errOut, "Error: %v\n", writeErr)
+		}
+		return code
+	}
+	fmt.Fprintf(errOut, "Error: %v\n", err)
+	return code
 }
 
 func newRootCommand(ctx context.Context, shutdownControllers ...*cli.ShutdownController) *cobra.Command {
@@ -78,10 +83,11 @@ func newShadowRunCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "shadow-run",
 		Short:        "Compare read-only Go decisions with an Elixir shadow report",
+		Args:         cli.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if inputPath == "" {
-				return errors.New("shadow-run --input is required")
+				return cli.ValidationError("shadow-run --input is required")
 			}
 			return runShadowRun(cmd.OutOrStdout(), inputPath, allowDiff)
 		},

@@ -268,9 +268,16 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	var headless bool
 	var outputFormat string
 	cmd := &cobra.Command{
-		Use:                        "detent",
-		Short:                      "Detent agent orchestrator",
-		Long:                       "Detent is an agent orchestrator for tracker-backed work queues.",
+		Use:   "detent",
+		Short: "Detent agent orchestrator",
+		Long: `Detent is an agent orchestrator for tracker-backed work queues.
+
+Exit codes:
+  0  success
+  1  general or unexpected error
+  2  auth or GitHub token problem
+  3  input validation error
+  4  not found or config conflict`,
 		Args:                       suggestedNoArgs,
 		SilenceUsage:               true,
 		SilenceErrors:              true,
@@ -314,7 +321,9 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
 	cmd.PersistentFlags().BoolVar(&headless, "headless", false, "stream logs instead of launching the terminal dashboard")
 	cmd.PersistentFlags().Var(newOutputFormatValue(&outputFormat), outputFormatFlagName, "output format: pretty or json (default: pretty on TTY, json when piped; DETENT_FORMAT overrides)")
-	cmd.SetFlagErrorFunc(flagSuggestionError)
+	cmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return WrapValidation(flagSuggestionError(cmd, err))
+	})
 
 	addProjectCommand := newAddProjectCommand(&configPath, opts)
 	addProjectCommand.SuggestFor = []string{"add", "new"}
@@ -431,7 +440,7 @@ func newInitCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "init",
 		Short: "Create a default global config",
-		Args:  cobra.NoArgs,
+		Args:  NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {
@@ -498,7 +507,7 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "add-project",
 		Short: "Add a project to global config",
-		Args:  cobra.NoArgs,
+		Args:  NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {
@@ -549,14 +558,14 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 func validateProjectFlags(cfg globalconfig.Project) error {
 	switch {
 	case cfg.ID == "":
-		return hintedError(nil, "--id is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand)
+		return WrapValidation(hintedError(nil, "--id is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand))
 	case strings.TrimSpace(cfg.Workflow) == "":
-		return hintedError(nil, "--workflow is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand)
+		return WrapValidation(hintedError(nil, "--workflow is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand))
 	case strings.TrimSpace(cfg.Workdir) == "":
-		return hintedError(nil, "--workdir is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand)
+		return WrapValidation(hintedError(nil, "--workdir is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand))
 	case cfg.Weight <= 0:
 		command := addProjectExampleCommand + " --weight 1"
-		return hintedError(nil, "--weight must be positive", exampleHint(command), command)
+		return WrapValidation(hintedError(nil, "--weight must be positive", exampleHint(command), command))
 	default:
 		return nil
 	}
@@ -568,7 +577,7 @@ func newEditProjectCommand(configPath *string, opts options, operation Operation
 	return &cobra.Command{
 		Use:   use + " PROJECT_ID",
 		Short: short,
-		Args:  cobra.ExactArgs(1),
+		Args:  ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {
@@ -596,7 +605,7 @@ func newConfigPathCommand(configPath *string, opts options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "path",
 		Short: "Print the resolved global config path",
-		Args:  cobra.NoArgs,
+		Args:  NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {
@@ -622,10 +631,10 @@ func newPromoteCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:   "promote PROJECT_ID",
 		Short: "Promote a project priority",
-		Args:  cobra.ExactArgs(1),
+		Args:  ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if priority <= 0 {
-				return hintedError(nil, "--priority must be positive", exampleHint(promoteExampleCommand), promoteExampleCommand)
+				return WrapValidation(hintedError(nil, "--priority must be positive", exampleHint(promoteExampleCommand), promoteExampleCommand))
 			}
 			out, err := OutputForCommand(cmd)
 			if err != nil {
@@ -685,7 +694,7 @@ func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {
 	return &cobra.Command{
 		Use:   "remove-project PROJECT_ID",
 		Short: "Remove a project from global config",
-		Args:  cobra.ExactArgs(1),
+		Args:  ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {

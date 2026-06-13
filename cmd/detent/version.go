@@ -26,7 +26,7 @@ func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
 		Use:   "version",
 		Short: "Print version metadata",
-		Args:  cobra.NoArgs,
+		Args:  cli.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			info := currentVersionInfo()
 			out, err := cli.OutputForCommand(cmd)

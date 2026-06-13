@@ -687,6 +687,9 @@ func TestCLIValidationErrorsCarryHints(t *testing.T) {
 			if err == nil {
 				t.Fatal("Execute() error = nil, want error")
 			}
+			if !errors.Is(err, cli.ErrValidation) {
+				t.Fatalf("Execute() error = %v, want %v", err, cli.ErrValidation)
+			}
 			assertHintedError(t, err, nil, tt.wantMessage, tt.wantHint, tt.wantCommands)
 			if !strings.Contains(stderr.String(), "Hint: "+tt.wantHint) {
 				t.Fatalf("stderr missing hint %q:\n%s", tt.wantHint, stderr.String())

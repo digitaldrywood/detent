@@ -196,6 +196,19 @@ pinned minisign public key for the release stream. Until that release signing
 key is provisioned in #337, update integrity still depends on GitHub TLS plus
 the published checksum file.
 
+## CLI exit codes
+
+Detent uses stable process exit codes so scripts and agents can branch on the
+failure class.
+
+| Code | Meaning |
+| --- | --- |
+| 0 | Success |
+| 1 | General or unexpected error |
+| 2 | Auth or GitHub token problem |
+| 3 | Input validation error |
+| 4 | Not found or config conflict |
+
 ## Release
 
 Cut releases from `main` by pushing a semver tag:
