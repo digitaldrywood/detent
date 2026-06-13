@@ -200,12 +200,16 @@ func TestCheckDoctorConfigReloadReportsSymlinkTarget(t *testing.T) {
 	if err := os.Symlink(targetPath, linkPath); err != nil {
 		t.Skipf("symlink unavailable: %v", err)
 	}
+	resolvedTarget, err := filepath.EvalSymlinks(targetPath)
+	if err != nil {
+		t.Fatalf("EvalSymlinks() error = %v", err)
+	}
 
 	got := checkDoctorConfigReload(globalconfig.Config{Path: linkPath})
 	if got.Status != doctorOK {
 		t.Fatalf("Status = %s, want %s", got.Status, doctorOK)
 	}
-	for _, want := range []string{linkPath, targetPath, "symlink", "live reload watches"} {
+	for _, want := range []string{linkPath, resolvedTarget, "symlink", "live reload watches"} {
 		if !strings.Contains(got.Detail, want) {
 			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
 		}
