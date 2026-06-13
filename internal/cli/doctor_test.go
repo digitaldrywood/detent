@@ -723,7 +723,7 @@ func TestCheckDoctorServerPort(t *testing.T) {
 			t.Parallel()
 
 			port := 0
-			got := checkDoctorServerPort(BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
+			got := checkDoctorServerPort(context.Background(), BootConfig{Host: "127.0.0.1", Port: &port}, doctorDeps{
 				listen: func(_, address string) (net.Listener, error) {
 					if address != "127.0.0.1:0" {
 						t.Fatalf("listen address = %q, want 127.0.0.1:0", address)
@@ -818,7 +818,7 @@ func TestCheckDoctorServerPortProbesExistingInstance(t *testing.T) {
 			t.Parallel()
 
 			port := occupiedDoctorPort(t, tt.listenHost, tt.statusCode, tt.body)
-			got := checkDoctorServerPort(BootConfig{Host: tt.host, Port: &port}, doctorDeps{
+			got := checkDoctorServerPort(context.Background(), BootConfig{Host: tt.host, Port: &port}, doctorDeps{
 				listen: net.Listen,
 			})
 			if got.Status != tt.want {

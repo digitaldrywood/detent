@@ -254,7 +254,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		doctorCheckJob{
 			Name: "Server port",
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorServerPort(boot, deps)}
+				return []doctorCheck{checkDoctorServerPort(jobCtx, boot, deps)}
 			},
 		},
 		doctorCheckJob{
@@ -1159,7 +1159,10 @@ func missingGitHubScopes(scopes []string) []string {
 	return missing
 }
 
-func checkDoctorServerPort(cfg BootConfig, deps doctorDeps) doctorCheck {
+func checkDoctorServerPort(ctx context.Context, cfg BootConfig, deps doctorDeps) doctorCheck {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	deps = deps.withDefaults()
 	addr := serverAddr(cfg)
 	listener, err := deps.listen("tcp", addr)
@@ -1173,7 +1176,7 @@ func checkDoctorServerPort(cfg BootConfig, deps doctorDeps) doctorCheck {
 		if !doctorListenErrIndicatesOccupied(err) || doctorServerPort(cfg) == 0 {
 			return check
 		}
-		probe, probeErr := probeDoctorHealth(cfg, deps)
+		probe, probeErr := probeDoctorHealth(ctx, cfg, deps)
 		if probeErr != nil {
 			check.Detail = fmt.Sprintf("%s is occupied for pre-start bind; health probe %s %v", addr, probe.URL, probeErr)
 			return check
@@ -1219,10 +1222,13 @@ type doctorHealthResponse struct {
 	Checks map[string]string `json:"checks"`
 }
 
-func probeDoctorHealth(cfg BootConfig, deps doctorDeps) (doctorHealthProbe, error) {
+func probeDoctorHealth(ctx context.Context, cfg BootConfig, deps doctorDeps) (doctorHealthProbe, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	url := doctorHealthProbeURL(cfg)
 	probe := doctorHealthProbe{URL: url}
-	req, err := http.NewRequestWithContext(context.Background(), http.MethodGet, url, nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return probe, fmt.Errorf("could not be built: %w", err)
 	}
