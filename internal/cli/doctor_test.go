@@ -224,14 +224,15 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 			wantDetails: []string{"disabled"},
 		},
 		{
-			name: "missing human review observed state",
+			name: "human review observed state is not required",
 			cfg: func() workflowconfig.Config {
 				cfg := validDoctorAutoPromoteWorkflow()
 				cfg.Tracker.ObservedStates = []string{"Blocked"}
 				return cfg
 			}(),
-			want:        doctorFail,
-			wantDetails: []string{"tracker.observed_states", "Human Review"},
+			connector:   &fakeDoctorAutoPromoteConnector{},
+			want:        doctorOK,
+			wantDetails: []string{"sampled 0 Human Review candidate"},
 		},
 		{
 			name: "missing merging active state",

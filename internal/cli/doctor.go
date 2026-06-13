@@ -404,14 +404,6 @@ func checkDoctorAutoPromote(ctx context.Context, id string, cfg workflowconfig.C
 			Detail: "agent.auto_promote.enabled=false; live candidate diagnostics disabled",
 		}
 	}
-	if !doctorStateInList("Human Review", cfg.Tracker.ObservedStates) {
-		return doctorCheck{
-			Name:   name,
-			Status: doctorFail,
-			Detail: "agent.auto_promote.enabled=true but tracker.observed_states does not include Human Review",
-			Hint:   "Add Human Review to tracker.observed_states so Detent can observe review-lane candidates.",
-		}
-	}
 	if !doctorStateInList("Merging", cfg.Tracker.ActiveStates) {
 		return doctorCheck{
 			Name:   name,
