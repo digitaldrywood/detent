@@ -439,9 +439,10 @@ recommendation, and default-if-silent. Record answers in
    For criteria-based auto-promote, use only existing config keys:
    `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and
    `allowed_issue_labels`. `quiet_seconds` is the quiet period after automated
-   review activity, `optout_label` is the per-issue escape hatch, and
-   `allowed_issue_labels` is an allowlist such as `documentation` for
-   low-risk issue classes. Verify:
+   review activity on the current pull request head, `optout_label` is the
+   per-issue escape hatch, and `allowed_issue_labels` is an allowlist such as
+   `documentation` for low-risk issue classes. A Codex review on an older commit
+   does not clear this gate. Verify:
 
    ```sh
    printf '%s\n' \
@@ -459,7 +460,9 @@ recommendation, and default-if-silent. Record answers in
    `tracker.dependency_auto_unblock.enabled: false`. Use the `Blocked`
    auto-unblock mode only when the team writes explicit `Depends on:` or
    `Blocked by:` lines for dependency blockers; Detent will not clear unrelated
-   human blockers. Verify:
+   human blockers. If dependency-waiting issues are placed in `Blocked` while
+   this setting stays disabled, Detent will only display them as blocked and
+   will not move them back to `Todo`. Verify:
 
    ```sh
    printf '%s\n' \
@@ -771,6 +774,11 @@ recommendation, and default-if-silent. Record answers in
          - <allowed-label>
    ```
 
+   Auto-promote requires a linked open PR, green CI, a current-head Codex review
+   with no P1 findings, and the configured quiet period. `detent doctor --port
+   0` reports sampled `Human Review` candidates and reasons such as
+   `automated_review_missing` when that gate is not met.
+
    Dependency auto-unblock default:
 
    ```yaml
@@ -784,7 +792,9 @@ recommendation, and default-if-silent. Record answers in
    ```
 
    Enable it only for projects that use `Blocked` as a dependency-waiting state
-   with explicit machine-readable dependency references.
+   with explicit machine-readable dependency references. Without this enabled,
+   `Blocked` is an observed/display state and dependency completion will not
+   move issues back to `Todo`.
 
 6. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
    repo authority files discovered in Phase 2, and state the validation gate.
@@ -1136,7 +1146,10 @@ issue starts. If there is no dependency, omit the line.
 ```
 
 Keep dependency order explicit. If issue B relies on issue A, issue B should
-carry `Depends on: #A` and stay out of `Todo` until A has merged.
+carry `Depends on: #A` and stay out of `Todo` until A has merged. Same-repo
+`#A`, cross-repo `owner/repo#A`, and full
+`https://github.com/owner/repo/issues/A` issue URLs are supported inside
+`Depends on:` and `Blocked by:` lines.
 
 Alternatively, if the project has opted into
 `tracker.dependency_auto_unblock.enabled`, issue B can sit in a configured
@@ -1144,3 +1157,5 @@ waiting state such as `Blocked` with the same `Depends on:` or `Blocked by:`
 line. Detent will move it to the configured ready state after every blocker is
 terminal, closed, or merged according to the workflow readiness rule. Do not use
 that mode for free-form human blockers without explicit dependency references.
+If auto-unblock is disabled, a dependency-waiting issue in `Blocked` will remain
+there even after the dependency clears.

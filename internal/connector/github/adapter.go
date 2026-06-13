@@ -3367,18 +3367,15 @@ func parseBlockedBy(body string, repo string) []connector.BlockedRef {
 		if len(lineMatches) != 2 {
 			continue
 		}
-		for _, refMatches := range issueRefPattern.FindAllStringSubmatch(lineMatches[1], -1) {
-			if len(refMatches) != 3 {
+		for _, identifier := range issueReferencesInText(lineMatches[1], repo) {
+			key := normalizedIssueIdentifier(identifier)
+			if key == "" {
 				continue
 			}
-			identifier := blockerIdentifier(refMatches[1], refMatches[2], repo)
-			if identifier == "" {
+			if _, ok := seen[key]; ok {
 				continue
 			}
-			if _, ok := seen[identifier]; ok {
-				continue
-			}
-			seen[identifier] = struct{}{}
+			seen[key] = struct{}{}
 			blockers = append(blockers, connector.BlockedRef{Identifier: identifier})
 		}
 	}

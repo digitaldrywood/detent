@@ -51,8 +51,9 @@ The board is the state machine; board status drives everything.
    contract — moving the issue to `In Progress`.
 3. **The agent works** in its own branch, runs your validation gate, and opens
    or updates a PR, then moves the issue to `Human Review`.
-4. **Gates decide.** Your approval plus automated review (e.g. Codex) clear it
-   to `Merging`; unresolved feedback sends it to `Rework` for another pass.
+4. **Gates decide.** Your approval plus current-head automated review (e.g.
+   Codex) clear it to `Merging`; unresolved feedback sends it to `Rework` for
+   another pass.
 5. **The merge train is serialized** — one rebase, CI-watch, and merge at a
    time, so concurrent candidates never invalidate each other's CI — then the
    issue is `Done`.
@@ -601,7 +602,7 @@ The recommended GitHub Project board states are:
 | `Backlog` | Not eligible for agents yet. |
 | `Todo` | Ready for Detent to claim and dispatch. |
 | `In Progress` | An agent is actively working or continuing work. |
-| `Blocked` | Detent cannot continue without human action. |
+| `Blocked` | Human-blocked work, or dependency-waiting work when auto-unblock is enabled. |
 | `Human Review` | The PR is ready for approval. |
 | `Rework` | Human or bot feedback needs another agent pass. |
 | `Merging` | Final rebase, validation, CI watch, and merge. |
@@ -638,17 +639,20 @@ Detent supports two dependency patterns. Use the one that matches how much of
 the wait should be visible on the board.
 
 - **Keep the issue in `Todo`.** Add a machine-readable dependency line such as
-  `Depends on: #123` or `Blocked by: owner/repo#123`. Detent keeps the issue out
-  of dispatch while any referenced blocker is non-terminal, then dispatches it
-  normally after blockers clear. This is the default behavior and needs no extra
-  configuration.
+  `Depends on: #123`, `Blocked by: owner/repo#123`, or
+  `Depends on: https://github.com/owner/repo/issues/123`. Detent keeps the
+  issue out of dispatch while any referenced blocker is non-terminal, then
+  dispatches it normally after blockers clear. This is the default behavior and
+  needs no extra configuration.
 - **Keep the issue in `Blocked`.** Enable `tracker.dependency_auto_unblock` when
   your team wants dependency-waiting issues to sit in a waiting column. Detent
   only moves issues that have explicit `Depends on:` or `Blocked by:` references.
   When all blockers are terminal, closed, or have a merged linked PR under the
   configured `readiness` rule, Detent updates the ProjectV2 `Status` to
-  `target_state` and posts an audit comment. Human blockers without explicit
-  dependency references stay blocked.
+  `target_state` and posts an audit comment. Without
+  `tracker.dependency_auto_unblock.enabled: true`, a `Blocked` issue is observed
+  for display but will not be moved back to `Todo`. Human blockers without
+  explicit dependency references stay blocked.
 
 Before you dispatch anything, run **`detent doctor`** — it checks config
 resolution, the database, the `codex` binary, your GitHub token and scopes, git,
