@@ -22,6 +22,50 @@ var (
 	ErrProjectNotFound = errors.New("project not found")
 )
 
+const (
+	addProjectExampleCommand = "detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api"
+	configPathCommand        = "detent config path"
+	forceInitCommand         = "detent init --force"
+	ghAuthLoginCommand       = `gh auth login --scopes "repo,read:org,project"`
+	portExampleCommand       = "detent --port 0"
+	promoteExampleCommand    = "detent promote api --priority 10"
+)
+
+type HintedError struct {
+	Err      error
+	Message  string
+	Hint     string
+	Commands []string
+}
+
+func (e *HintedError) Error() string {
+	if e == nil {
+		return ""
+	}
+	if strings.TrimSpace(e.Message) != "" {
+		return e.Message
+	}
+	if e.Err != nil {
+		return e.Err.Error()
+	}
+	return ""
+}
+
+func (e *HintedError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func HintFor(err error) (string, []string, bool) {
+	var hinted *HintedError
+	if !errors.As(err, &hinted) {
+		return "", nil, false
+	}
+	return hinted.Hint, append([]string(nil), hinted.Commands...), true
+}
+
 type Operation string
 
 const (
@@ -237,6 +281,7 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 		newPromoteCommand(&configPath, opts),
 		newRemoveProjectCommand(&configPath, opts),
 	)
+	wrapHintedErrors(cmd)
 
 	return cmd
 }
@@ -278,6 +323,49 @@ func stdoutIsTTY() bool {
 	return err == nil && info.Mode()&os.ModeCharDevice != 0
 }
 
+func hintedError(cause error, message string, hint string, commands ...string) error {
+	return &HintedError{
+		Err:      cause,
+		Message:  message,
+		Hint:     strings.TrimSpace(hint),
+		Commands: append([]string(nil), commands...),
+	}
+}
+
+func exampleHint(command string) string {
+	return "e.g. " + command
+}
+
+func wrapHintedErrors(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	if cmd.RunE != nil {
+		runE := cmd.RunE
+		cmd.RunE = func(cmd *cobra.Command, args []string) error {
+			err := runE(cmd, args)
+			if err != nil {
+				if writeErr := writeErrorHint(cmd.ErrOrStderr(), err); writeErr != nil {
+					return errors.Join(err, writeErr)
+				}
+			}
+			return err
+		}
+	}
+	for _, child := range cmd.Commands() {
+		wrapHintedErrors(child)
+	}
+}
+
+func writeErrorHint(out io.Writer, err error) error {
+	hint, _, ok := HintFor(err)
+	if !ok || strings.TrimSpace(hint) == "" {
+		return nil
+	}
+	_, writeErr := fmt.Fprintf(out, "Hint: %s\n", hint)
+	return writeErr
+}
+
 func newInitCommand(configPath *string, opts options) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
@@ -314,7 +402,13 @@ func checkInitTarget(path string, force bool) error {
 	_, err := os.Stat(path)
 	if err == nil {
 		if !force {
-			return fmt.Errorf("%w: %s", ErrConfigExists, path)
+			return hintedError(
+				ErrConfigExists,
+				fmt.Sprintf("%s: %s", ErrConfigExists, path),
+				"run detent init --force to overwrite it, or edit the file reported by detent config path",
+				forceInitCommand,
+				configPathCommand,
+			)
 		}
 		if _, readErr := os.ReadFile(path); readErr != nil {
 			return fmt.Errorf("read existing global config %s: %w", path, readErr)
@@ -349,7 +443,7 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 				return err
 			}
 			if projectIndex(global.Projects, cfg.ID) >= 0 {
-				return fmt.Errorf("%w: %s", ErrProjectExists, cfg.ID)
+				return projectExistsError(cfg.ID)
 			}
 
 			global.Projects = append(global.Projects, cfg)
@@ -376,13 +470,14 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 func validateProjectFlags(cfg globalconfig.Project) error {
 	switch {
 	case cfg.ID == "":
-		return errors.New("project id is required")
+		return hintedError(nil, "--id is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand)
 	case strings.TrimSpace(cfg.Workflow) == "":
-		return errors.New("project workflow is required")
+		return hintedError(nil, "--workflow is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand)
 	case strings.TrimSpace(cfg.Workdir) == "":
-		return errors.New("project workdir is required")
+		return hintedError(nil, "--workdir is required", exampleHint(addProjectExampleCommand), addProjectExampleCommand)
 	case cfg.Weight <= 0:
-		return errors.New("project weight must be positive")
+		command := addProjectExampleCommand + " --weight 1"
+		return hintedError(nil, "--weight must be positive", exampleHint(command), command)
 	default:
 		return nil
 	}
@@ -434,7 +529,7 @@ func newPromoteCommand(configPath *string, opts options) *cobra.Command {
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if priority <= 0 {
-				return errors.New("priority must be positive")
+				return hintedError(nil, "--priority must be positive", exampleHint(promoteExampleCommand), promoteExampleCommand)
 			}
 			return updateProject(cmd.Context(), *configPath, opts, OperationPromoteProject, args[0], func(project *globalconfig.Project) error {
 				project.Priority = priority
@@ -459,7 +554,7 @@ func updateProject(ctx context.Context, configPath string, opts options, operati
 	id = strings.TrimSpace(id)
 	index := projectIndex(cfg.Projects, id)
 	if index < 0 {
-		return fmt.Errorf("%w: %s", ErrProjectNotFound, id)
+		return projectNotFoundError(id, cfg.Projects)
 	}
 	if err := edit(&cfg.Projects[index]); err != nil {
 		return err
@@ -493,7 +588,7 @@ func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {
 			id := strings.TrimSpace(args[0])
 			index := projectIndex(cfg.Projects, id)
 			if index < 0 {
-				return fmt.Errorf("%w: %s", ErrProjectNotFound, id)
+				return projectNotFoundError(id, cfg.Projects)
 			}
 			removed := cfg.Projects[index]
 			cfg.Projects = append(cfg.Projects[:index], cfg.Projects[index+1:]...)
@@ -536,4 +631,103 @@ func projectIndex(projects []globalconfig.Project, id string) int {
 		}
 	}
 	return -1
+}
+
+func projectExistsError(id string) error {
+	id = strings.TrimSpace(id)
+	return hintedError(
+		ErrProjectExists,
+		fmt.Sprintf("project %q already exists", id),
+		fmt.Sprintf("project id %q is already taken; run detent config path to inspect current projects before choosing a new --id", id),
+		configPathCommand,
+	)
+}
+
+func projectNotFoundError(id string, projects []globalconfig.Project) error {
+	id = strings.TrimSpace(id)
+	ids := projectHintIDs(projects)
+	if len(ids) == 0 {
+		return hintedError(
+			ErrProjectNotFound,
+			fmt.Sprintf("project %q not found", id),
+			"no projects are configured; run detent add-project to add one",
+			addProjectExampleCommand,
+		)
+	}
+
+	hint := "available: " + strings.Join(ids, ", ")
+	if closest := closestProjectID(id, ids); closest != "" {
+		hint += fmt.Sprintf("\ndid you mean %q? see `%s`, then retry", closest, configPathCommand)
+	} else {
+		hint += fmt.Sprintf("\nsee `%s`, then retry", configPathCommand)
+	}
+	return hintedError(ErrProjectNotFound, fmt.Sprintf("project %q not found", id), hint, configPathCommand)
+}
+
+func projectHintIDs(projects []globalconfig.Project) []string {
+	ids := make([]string, 0, len(projects))
+	for _, project := range projects {
+		id := strings.TrimSpace(project.ID)
+		if id != "" {
+			ids = append(ids, id)
+		}
+	}
+	return ids
+}
+
+func closestProjectID(target string, ids []string) string {
+	target = strings.TrimSpace(target)
+	bestID := ""
+	bestDistance := 0
+	for _, id := range ids {
+		distance := levenshteinDistance(target, id)
+		if bestID == "" || distance < bestDistance {
+			bestID = id
+			bestDistance = distance
+		}
+	}
+	return bestID
+}
+
+func levenshteinDistance(a string, b string) int {
+	ar := []rune(a)
+	br := []rune(b)
+	if len(ar) == 0 {
+		return len(br)
+	}
+	if len(br) == 0 {
+		return len(ar)
+	}
+
+	previous := make([]int, len(br)+1)
+	for j := range previous {
+		previous[j] = j
+	}
+	for i, ra := range ar {
+		current := make([]int, len(br)+1)
+		current[0] = i + 1
+		for j, rb := range br {
+			cost := 0
+			if ra != rb {
+				cost = 1
+			}
+			current[j+1] = minInt(
+				current[j]+1,
+				previous[j+1]+1,
+				previous[j]+cost,
+			)
+		}
+		previous = current
+	}
+	return previous[len(br)]
+}
+
+func minInt(values ...int) int {
+	min := values[0]
+	for _, value := range values[1:] {
+		if value < min {
+			min = value
+		}
+	}
+	return min
 }

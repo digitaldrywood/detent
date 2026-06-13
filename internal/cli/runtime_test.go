@@ -203,21 +203,24 @@ func TestResolveRuntimeSettingsGitHubTokenErrors(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name    string
-		cfg     globalconfig.Config
-		ghErr   error
-		wantErr string
+		name     string
+		cfg      globalconfig.Config
+		ghErr    error
+		wantErr  string
+		wantHint string
 	}{
 		{
-			name:    "sentinel failure includes gh auth guidance",
-			cfg:     githubRuntimeConfig("gh"),
-			ghErr:   errors.New("not logged in"),
-			wantErr: "gh auth login",
+			name:     "sentinel failure includes gh auth guidance",
+			cfg:      githubRuntimeConfig("gh"),
+			ghErr:    errors.New("not logged in"),
+			wantErr:  "not logged in",
+			wantHint: "gh auth login",
 		},
 		{
-			name:    "github projects require token",
-			cfg:     githubRuntimeConfig(""),
-			wantErr: "GITHUB_TOKEN",
+			name:     "github projects require token",
+			cfg:      githubRuntimeConfig(""),
+			wantErr:  "GITHUB_TOKEN",
+			wantHint: "gh auth login",
 		},
 	}
 
@@ -241,6 +244,13 @@ func TestResolveRuntimeSettingsGitHubTokenErrors(t *testing.T) {
 			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
+			}
+			hint, _, ok := HintFor(err)
+			if !ok {
+				t.Fatalf("HintFor(%v) ok = false, want true", err)
+			}
+			if !strings.Contains(hint, tt.wantHint) {
+				t.Fatalf("hint = %q, want containing %q", hint, tt.wantHint)
 			}
 		})
 	}
