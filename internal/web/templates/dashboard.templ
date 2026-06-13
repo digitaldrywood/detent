@@ -4,6 +4,12 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/button"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/popover"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/sheet"
+	"github.com/digitaldrywood/detent/internal/web/ui/components/sidebar"
 )
 
 templ Dashboard(data DashboardData) {
@@ -26,16 +32,25 @@ templ Dashboard(data DashboardData) {
 			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
 			<script src={ chartJSPath(data.Assets) } defer></script>
 			<script src={ dashboardChartsScriptPath(data.Assets) } defer></script>
-			@dashboardSidebarScript()
+			@sidebar.Script()
+			@popover.Script()
+			@dialog.Script()
 		</head>
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
 			@helpTooltipHost()
-			<main class="dashboard-shell grid min-h-screen w-full grid-cols-1 bg-background md:grid-cols-[18rem_minmax(0,1fr)]" data-dashboard-shell hx-ext="sse, morph" sse-connect={ eventsPath(data) }>
+			@sidebar.Layout(sidebar.LayoutProps{
+				Class: "dashboard-shell min-h-screen w-full bg-background",
+				Attributes: templ.Attributes{
+					"hx-ext":      "sse, morph",
+					"sse-connect": eventsPath(data),
+				},
+			}) {
 				@dashboardSidebar(data)
-				<section class="dashboard-main min-w-0 px-3 py-3 sm:px-6 lg:px-8">
+				@sidebar.Inset(sidebar.InsetProps{Class: "dashboard-main min-w-0 px-3 py-3 sm:px-6 lg:px-8"}) {
 					<div class="mx-auto grid w-full max-w-7xl content-start gap-4 sm:gap-5">
 						<header class="dashboard-topbar min-w-0 border-b border-border py-2">
 							<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+								@dashboardMobileSidebarTrigger()
 								@dashboardPageHeading(dashboardHeading(data))
 								<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
 									<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
@@ -51,32 +66,28 @@ templ Dashboard(data DashboardData) {
 						</div>
 						@dashboardCharts(data)
 					</div>
-				</section>
-			</main>
+				}
+			}
 		</body>
 	</html>
 }
 
-templ dashboardSidebarScript() {
+templ dashboardMobileSidebarTrigger() {
+	@sheet.Trigger(sheet.TriggerProps{For: "dashboard-sidebar-mobile", Class: "md:hidden shrink-0"}) {
+		@button.Button(button.Props{
+			Size:    button.SizeIcon,
+			Variant: button.VariantGhost,
+			Class:   "size-8 text-foreground hover:bg-muted focus-visible:ring-accent",
+		}) {
+			@icon.PanelLeft(icon.Props{Class: "size-4"})
+			<span class="sr-only">Toggle Sidebar</span>
+		}
+	}
+}
+
+templ dashboardSidebarFilterScript() {
 	<script>
 		(function() {
-			const storageKey = "detent.dashboard.sidebar.collapsed";
-			function applyCollapsedState() {
-				const collapsed = window.localStorage && window.localStorage.getItem(storageKey) === "true";
-				document.querySelectorAll("[data-dashboard-shell]").forEach(function(shell) {
-					shell.dataset.sidebarCollapsed = collapsed ? "true" : "false";
-				});
-			}
-			document.addEventListener("DOMContentLoaded", applyCollapsedState);
-			document.addEventListener("click", function(event) {
-				const toggle = event.target.closest("[data-dashboard-sidebar-toggle]");
-				if (!toggle || !window.localStorage) {
-					return;
-				}
-				const collapsed = !(window.localStorage.getItem(storageKey) === "true");
-				window.localStorage.setItem(storageKey, collapsed ? "true" : "false");
-				applyCollapsedState();
-			});
 			document.addEventListener("input", function(event) {
 				const input = event.target.closest("[data-dashboard-project-filter]");
 				if (!input) {
@@ -88,59 +99,111 @@ templ dashboardSidebarScript() {
 					entry.hidden = query !== "" && !name.includes(query);
 				});
 			});
-			applyCollapsedState();
 		})();
 	</script>
 }
 
 templ dashboardSidebar(data DashboardData) {
-	<aside class="dashboard-sidebar sticky top-0 flex h-screen min-w-0 flex-col border-r border-border bg-card px-3 py-3" aria-label="Dashboard navigation">
-		<div class="flex min-h-12 items-center gap-2">
-			<div class="min-w-0 flex-1">
-				@dashboardTopbarBrand(data.InstanceName)
-			</div>
-			<button type="button" class="inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-md border border-border bg-muted text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-dashboard-sidebar-toggle title="Collapse sidebar" aria-label="Collapse sidebar">
-				<svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
-					<path d="M4 6h16"></path>
-					<path d="M4 12h16"></path>
-					<path d="M4 18h16"></path>
-				</svg>
-			</button>
-		</div>
-		<nav class="mt-4 grid min-h-0 flex-1 grid-rows-[auto_auto_minmax(0,1fr)_auto] gap-3">
-			<a href="/" class={ sidebarFleetClass(data) } title="Fleet" if !isProjectDashboard(data) { aria-current="page" }>
-				<span class="inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-accent"></span>
-				<span class="dashboard-sidebar-label truncate">Fleet</span>
+	@sidebar.Sidebar(sidebar.Props{
+		ID:          "dashboard-sidebar",
+		Collapsible: sidebar.CollapsibleIcon,
+		Collapsed:   data.SidebarCollapsed,
+		Class:       "dashboard-sidebar text-sidebar-foreground",
+	}) {
+		@sidebar.Header(sidebar.HeaderProps{Class: "flex-row items-center justify-between border-b border-sidebar-border group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:justify-center"}) {
+			<a class="inline-flex min-h-8 min-w-0 shrink-0 items-center gap-2 text-sidebar-foreground hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden" href="/" aria-label="Detent dashboard">
+				<span class="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded bg-sidebar-accent font-semibold text-sidebar-accent-foreground">D</span>
+				<span class="truncate text-sm font-semibold">Detent</span>
+				if data.InstanceName != "" {
+					<span class="max-w-[8rem] truncate rounded-full border border-sidebar-border bg-sidebar-accent px-2 py-0.5 font-mono text-xs font-medium text-sidebar-accent-foreground" aria-label="Instance name">{ data.InstanceName }</span>
+				}
 			</a>
-			if sidebarFilterVisible(data) {
-				<label class="dashboard-sidebar-filter grid gap-1">
-					<span class="sr-only">{ sidebarProjectSearchLabel(data) }</span>
-					<input id="dashboard-project-filter" name="project_filter" type="search" class="min-h-9 rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" placeholder="Filter projects" data-dashboard-project-filter/>
-				</label>
+			@sidebar.Trigger(sidebar.TriggerProps{
+				Target: "dashboard-sidebar",
+				Class:  "text-sidebar-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring",
+			})
+		}
+		@sidebar.Content(sidebar.ContentProps{
+			ID:    "dashboard-sidebar-live",
+			Class: "dashboard-sidebar-content",
+			Attributes: templ.Attributes{
+				"sse-swap": "sidebar",
+				"hx-swap":  "morph:innerHTML",
+			},
+		}) {
+			@DashboardSidebarContent(data)
+		}
+	}
+	@dashboardSidebarFilterScript()
+}
+
+templ DashboardSidebarContent(data DashboardData) {
+	@sidebar.Group() {
+		@sidebar.Menu() {
+			@sidebar.MenuItem() {
+				@sidebar.MenuButton(sidebar.MenuButtonProps{
+					Href:       "/",
+					IsActive:   sidebarFleetActive(data),
+					Tooltip:    sidebarFleetTooltip(data),
+					Attributes: sidebarAriaCurrent(sidebarFleetActive(data)),
+				}) {
+					@icon.LayoutDashboard(icon.Props{Class: "size-4 shrink-0"})
+					<span>Fleet</span>
+				}
 			}
-			<div class="dashboard-sidebar-projects min-h-0 overflow-y-auto pr-1" data-dashboard-project-list>
-				<div class="grid gap-1">
-					for _, item := range sidebarProjectItems(data) {
-						<a href={ item.Href } class={ sidebarProjectClass(item) } title={ item.Name + " " + item.StatusLabel } data-dashboard-project-entry data-project-name={ item.Name } if item.Active { aria-current="page" }>
-							<span class={ "inline-flex h-2.5 w-2.5 shrink-0 rounded-full " + item.DotClass }></span>
-							<span class="dashboard-sidebar-label min-w-0 flex-1 truncate">{ item.Name }</span>
-							<span class={ "dashboard-sidebar-count shrink-0 rounded-full px-2 py-0.5 font-mono text-xs " + item.BadgeClass }>{ item.CountLabel }</span>
-						</a>
+		}
+		if sidebarFilterVisible(data) {
+			<label class="grid gap-1 px-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden">
+				<span class="sr-only">{ sidebarProjectSearchLabel(data) }</span>
+				<input id="dashboard-project-filter" name="project_filter" type="search" class="min-h-9 rounded-md border border-sidebar-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-sidebar-ring focus:outline-none focus:ring-2 focus:ring-sidebar-ring" placeholder="Filter projects" data-dashboard-project-filter/>
+			</label>
+		}
+		@sidebar.Menu(sidebar.MenuProps{Class: "dashboard-sidebar-projects"}) {
+			for _, item := range sidebarProjectItems(data) {
+				@sidebar.MenuItem() {
+					@sidebar.MenuButton(sidebar.MenuButtonProps{
+						Href:       item.Href,
+						IsActive:   item.Active,
+						Tooltip:    sidebarProjectTooltip(item),
+						Attributes: sidebarProjectAttributes(item),
+					}) {
+						<span class={ "inline-flex size-2.5 shrink-0 rounded-full " + item.DotClass }></span>
+						<span>{ item.Name }</span>
+						@sidebar.MenuBadge(sidebar.MenuBadgeProps{Class: "font-mono " + item.BadgeClass}) {
+							{ item.CountLabel }
+						}
 					}
-				</div>
-			</div>
-			<div class="grid gap-1 border-t border-border pt-3">
-				<a href="/reports" class={ sidebarStaticNavClass(data, "reports") } title="Reports" if data.ActiveNav == "reports" { aria-current="page" }>
-					<span class="inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-muted-foreground"></span>
-					<span class="dashboard-sidebar-label truncate">Reports</span>
-				</a>
-				<a href="/settings" class={ sidebarStaticNavClass(data, "settings") } title="Settings" if data.ActiveNav == "settings" { aria-current="page" }>
-					<span class="inline-flex h-2.5 w-2.5 shrink-0 rounded-full bg-muted-foreground"></span>
-					<span class="dashboard-sidebar-label truncate">Settings</span>
-				</a>
-			</div>
-		</nav>
-	</aside>
+				}
+			}
+		}
+	}
+	@sidebar.Separator()
+	@sidebar.Group() {
+		@sidebar.Menu() {
+			@sidebar.MenuItem() {
+				@sidebar.MenuButton(sidebar.MenuButtonProps{
+					Href:       "/reports",
+					IsActive:   sidebarStaticNavActive(data, "reports"),
+					Tooltip:    "Reports",
+					Attributes: sidebarAriaCurrent(sidebarStaticNavActive(data, "reports")),
+				}) {
+					@icon.ChartNoAxesCombined(icon.Props{Class: "size-4 shrink-0"})
+					<span>Reports</span>
+				}
+			}
+			@sidebar.MenuItem() {
+				@sidebar.MenuButton(sidebar.MenuButtonProps{
+					Href:       "/settings",
+					IsActive:   sidebarStaticNavActive(data, "settings"),
+					Tooltip:    "Settings",
+					Attributes: sidebarAriaCurrent(sidebarStaticNavActive(data, "settings")),
+				}) {
+					@icon.Settings(icon.Props{Class: "size-4 shrink-0"})
+					<span>Settings</span>
+				}
+			}
+		}
+	}
 }
 
 templ dashboardCharts(data DashboardData) {
@@ -253,11 +316,21 @@ templ SnapshotView(data DashboardData) {
 									<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
 										<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 										<th class="w-[9rem] px-3 py-3 font-medium">State</th>
-										<th class="w-[10rem] px-3 py-3 font-medium">@helpInlineLabel("Runtime / turns", helpAgeTurn, "running-table", "")</th>
-										<th class="px-3 py-3 font-medium">@helpInlineLabel("Codex update", helpEvent, "running-table", "")</th>
-										<th class="w-[8rem] px-3 py-3 font-medium">@helpInlineLabel("Diff", helpDiff, "running-table", "")</th>
-										<th class="w-[10rem] px-3 py-3 font-medium">@helpInlineLabel("Tokens", helpTokens, "running-table", "")</th>
-										<th class="w-[9rem] px-3 py-3 font-medium">@helpInlineLabel("Session", helpSession, "running-table", "")</th>
+										<th class="w-[10rem] px-3 py-3 font-medium">
+											@helpInlineLabel("Runtime / turns", helpAgeTurn, "running-table", "")
+										</th>
+										<th class="px-3 py-3 font-medium">
+											@helpInlineLabel("Codex update", helpEvent, "running-table", "")
+										</th>
+										<th class="w-[8rem] px-3 py-3 font-medium">
+											@helpInlineLabel("Diff", helpDiff, "running-table", "")
+										</th>
+										<th class="w-[10rem] px-3 py-3 font-medium">
+											@helpInlineLabel("Tokens", helpTokens, "running-table", "")
+										</th>
+										<th class="w-[9rem] px-3 py-3 font-medium">
+											@helpInlineLabel("Session", helpSession, "running-table", "")
+										</th>
 									</tr>
 								</thead>
 								<tbody>
@@ -468,7 +541,6 @@ templ dashboardHealth(data DashboardData) {
 		</span>
 	</section>
 }
-
 
 templ snapshotLoading() {
 	<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm">
@@ -937,7 +1009,9 @@ templ retryQueueSection(snapshot telemetry.Snapshot) {
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[7rem] px-3 py-3 font-medium">Attempt</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Due time</th>
-								<th class="px-3 py-3 font-medium">@helpInlineLabel("Error", helpEvent, "retry-table", "")</th>
+								<th class="px-3 py-3 font-medium">
+									@helpInlineLabel("Error", helpEvent, "retry-table", "")
+								</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -1012,10 +1086,16 @@ templ blockedSessionsSection(snapshot telemetry.Snapshot) {
 							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">State</th>
-								<th class="w-[11rem] px-3 py-3 font-medium">@helpInlineLabel("Session", helpSession, "blocked-table", "")</th>
+								<th class="w-[11rem] px-3 py-3 font-medium">
+									@helpInlineLabel("Session", helpSession, "blocked-table", "")
+								</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Blocked time</th>
-								<th class="px-3 py-3 font-medium">@helpInlineLabel("Last update", helpEvent, "blocked-table", "")</th>
-								<th class="w-[14rem] px-3 py-3 font-medium">@helpInlineLabel("Error", helpEvent, "blocked-table-error", "")</th>
+								<th class="px-3 py-3 font-medium">
+									@helpInlineLabel("Last update", helpEvent, "blocked-table", "")
+								</th>
+								<th class="w-[14rem] px-3 py-3 font-medium">
+									@helpInlineLabel("Error", helpEvent, "blocked-table-error", "")
+								</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -1108,11 +1188,17 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Completed</th>
-								<th class="w-[11rem] px-3 py-3 font-medium">@helpInlineLabel("Runtime / turns", helpAgeTurn, "recent-table", "")</th>
-								<th class="w-[10rem] px-3 py-3 font-medium">@helpInlineLabel("Tokens", helpTokens, "recent-table", "")</th>
+								<th class="w-[11rem] px-3 py-3 font-medium">
+									@helpInlineLabel("Runtime / turns", helpAgeTurn, "recent-table", "")
+								</th>
+								<th class="w-[10rem] px-3 py-3 font-medium">
+									@helpInlineLabel("Tokens", helpTokens, "recent-table", "")
+								</th>
 								<th class="w-[10rem] px-3 py-3 font-medium">Final state</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">Model</th>
-								<th class="w-[11rem] px-3 py-3 font-medium">@helpInlineLabel("Session", helpSession, "recent-table", "")</th>
+								<th class="w-[11rem] px-3 py-3 font-medium">
+									@helpInlineLabel("Session", helpSession, "recent-table", "")
+								</th>
 							</tr>
 						</thead>
 						<tbody>
@@ -1195,7 +1281,7 @@ templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails 
 			}
 			if issue.URL != "" {
 				@issueCopyButton(issue.URL)
-			<a class="issue-external inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ issue.URL } target="_blank" rel="noopener noreferrer" title={ "Open " + issue.URL }>
+				<a class="issue-external inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ issue.URL } target="_blank" rel="noopener noreferrer" title={ "Open " + issue.URL }>
 					<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
 						<path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
 						<polyline points="15 3 21 3 21 9"></polyline>
@@ -1350,7 +1436,7 @@ templ rateLimitsCard(limits *RateLimits) {
 				for _, row := range rateLimitRows(limits) {
 					<div class="grid gap-2">
 						<div class="flex items-center justify-between gap-3">
-							@helpInlineLabel(row.Name, rateLimitHelpTerm(row.Name), "rate-limit-" + helpIDPart(row.Name), "font-medium text-foreground")
+							@helpInlineLabel(row.Name, rateLimitHelpTerm(row.Name), "rate-limit-"+helpIDPart(row.Name), "font-medium text-foreground")
 							<span class="font-mono text-sm text-muted-foreground">{ row.Reset }</span>
 						</div>
 						<div class="h-2 overflow-hidden rounded-full bg-muted">

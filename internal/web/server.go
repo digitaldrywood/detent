@@ -49,6 +49,7 @@ const (
 const (
 	defaultHTTPReadHeaderTimeout = 5 * time.Second
 	defaultHTTPIdleTimeout       = 2 * time.Minute
+	sidebarStateCookieName       = "sidebar_state"
 )
 
 type Config struct {
@@ -213,7 +214,9 @@ func (s *Server) registerRoutes() {
 
 func (s *Server) dashboard(c echo.Context) error {
 	ctx := c.Request().Context()
-	return render(c, templates.Dashboard(s.dashboardData(ctx, s.latestSnapshot(ctx))))
+	data := s.dashboardData(ctx, s.latestSnapshot(ctx))
+	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	return render(c, templates.Dashboard(data))
 }
 
 func (s *Server) projectDashboard(c echo.Context) error {
@@ -222,7 +225,16 @@ func (s *Server) projectDashboard(c echo.Context) error {
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
 	}
+	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 	return render(c, templates.Dashboard(data))
+}
+
+func dashboardSidebarCollapsed(r *http.Request) bool {
+	cookie, err := r.Cookie(sidebarStateCookieName)
+	if err != nil {
+		return false
+	}
+	return strings.TrimSpace(cookie.Value) == "false"
 }
 
 func projectRouteParam(c echo.Context) string {

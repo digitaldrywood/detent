@@ -410,6 +410,10 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 	}
 	for _, want := range []string{
 		`aria-label="Detent dashboard"`,
+		`data-tui-sidebar-layout`,
+		`data-tui-sidebar-collapsible="icon"`,
+		`data-tui-sidebar-trigger`,
+		`data-tui-sidebar-target="dashboard-sidebar"`,
 		`href="/"`,
 		">Detent</span>",
 		`<h1 class="sr-only">Fleet</h1>`,
@@ -861,7 +865,6 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 		`onmouseenter=`,
 		`onfocus=`,
 		`popovertarget=`,
-		`popover=`,
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard contains flicker-prone popover markup %q:\n%s", forbidden, html)
@@ -1121,12 +1124,17 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 	for _, want := range []string{
 		"overflow-x-hidden",
 		"px-3 py-3",
-		"dashboard-shell grid min-h-screen",
-		"dashboard-sidebar sticky top-0",
+		"dashboard-shell",
+		"min-h-screen",
+		"dashboard-sidebar",
+		"text-sidebar-foreground",
+		"data-tui-sidebar-mobile-portal",
+		"data-tui-sheet",
 		"dashboard-topbar",
 		"min-h-8",
-		"min-h-10",
 		"h-7 w-7",
+		"md:hidden",
+		"hidden md:block",
 		"sm:hidden",
 		"hidden overflow-hidden rounded-md border border-border sm:block",
 		"running-mobile-issue-popover-0",
@@ -1220,12 +1228,63 @@ func TestDashboardIncludesMotionAndThemeHooks(t *testing.T) {
 		`document.documentElement.classList.toggle("dark"`,
 		`id="snapshot"`,
 		`sse-swap="snapshot"`,
+		`id="dashboard-sidebar-live"`,
+		`sse-swap="sidebar"`,
 		`hx-swap="morph:innerHTML"`,
 		`sse-surface`,
 		`sse-tick`,
+		`/static/js/templui/dialog.min.js`,
+		`/static/js/templui/popover.min.js`,
+		`/static/js/templui/sidebar.min.js`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardRendersTemplUISidebar(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboard(t, templates.DashboardData{
+		Title:            "Detent",
+		ConnectorName:    "github",
+		SidebarCollapsed: true,
+		Projects: []templates.ProjectSmallMultiple{
+			{
+				ID:      "detent",
+				Name:    "Detent",
+				Running: 2,
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`data-tui-sidebar-state="collapsed"`,
+		`data-tui-sidebar-collapsible="icon"`,
+		`data-tui-sidebar-keyboard-shortcut="b"`,
+		`data-tui-sidebar="menu-badge"`,
+		`data-tui-popover-root`,
+		`data-tui-popover-trigger`,
+		`data-tui-dialog`,
+		`data-tui-sheet`,
+		`Detent - active, 2 running`,
+		`>Fleet</span>`,
+		`>Reports</span>`,
+		`>Settings</span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard sidebar missing %q:\n%s", want, html)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"data-dashboard-sidebar-toggle",
+		"detent.dashboard.sidebar.collapsed",
+		"grid-rows-[auto_auto_minmax(0,1fr)_auto]",
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard sidebar rendered old marker %q:\n%s", forbidden, html)
 		}
 	}
 }
