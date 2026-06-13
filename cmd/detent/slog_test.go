@@ -155,7 +155,7 @@ func TestSetupLoggerWithOutputsRoutesTextToStdout(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	logger := setupLoggerWithOutputs("", false, "debug", &stdout, &stderr, true)
+	logger := setupLoggerWithOutputs("", false, "debug", &stdout, &stderr, true, false)
 	logger.Debug("ready")
 
 	if json.Valid(stdout.Bytes()) {
@@ -177,7 +177,7 @@ func TestSetupLoggerWithOutputsRoutesJSONToStderr(t *testing.T) {
 
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer
-	logger := setupLoggerWithOutputs("prod", true, "info", &stdout, &stderr, true)
+	logger := setupLoggerWithOutputs("prod", true, "info", &stdout, &stderr, true, false)
 	logger.Info("ready")
 
 	if stdout.Len() != 0 {
@@ -190,6 +190,55 @@ func TestSetupLoggerWithOutputsRoutesJSONToStderr(t *testing.T) {
 	}
 	if record["msg"] != "ready" {
 		t.Fatalf("msg = %v, want ready", record["msg"])
+	}
+}
+
+func TestSetupLoggerWithOutputsRoutesTextToStderrForJSONCommandOutput(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	logger := setupLoggerWithOutputs("", false, "debug", &stdout, &stderr, true, true)
+	logger.Debug("ready")
+
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+	if json.Valid(stderr.Bytes()) {
+		t.Fatalf("stderr log output is JSON, want text:\n%s", stderr.String())
+	}
+	if !strings.Contains(stderr.String(), "ready") {
+		t.Fatalf("stderr log output missing message:\n%s", stderr.String())
+	}
+}
+
+func TestCommandOutputJSONSelected(t *testing.T) {
+	tests := []struct {
+		name      string
+		env       string
+		args      []string
+		stdoutTTY bool
+		want      bool
+	}{
+		{name: "tty defaults to pretty", stdoutTTY: true},
+		{name: "pipe defaults to json", want: true},
+		{name: "env json overrides tty", env: "json", stdoutTTY: true, want: true},
+		{name: "env pretty overrides pipe", env: "pretty"},
+		{name: "flag json overrides env pretty", env: "pretty", args: []string{"version", "--format", "json"}, stdoutTTY: true, want: true},
+		{name: "flag pretty overrides env json", env: "json", args: []string{"--format=pretty", "version"}, want: false},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Setenv("DETENT_FORMAT", tt.env)
+
+			if got := commandOutputJSONSelected(tt.args, tt.stdoutTTY); got != tt.want {
+				t.Fatalf("commandOutputJSONSelected(%v, %v) = %v, want %v", tt.args, tt.stdoutTTY, got, tt.want)
+			}
+		})
 	}
 }
 

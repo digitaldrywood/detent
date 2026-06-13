@@ -176,8 +176,9 @@ detent update --check
 ```
 
 Release-installer installs can update with `detent update`; use
-`detent update --yes` for non-interactive automation and `detent update --json`
-for machine-readable status. On Windows, replacement is staged and completes
+`detent update --yes` for non-interactive automation and
+`detent update --format json` for machine-readable status. The legacy
+`detent update --json` flag remains supported. On Windows, replacement is staged and completes
 after the running `detent.exe` exits. Homebrew installs delegate to
 `brew upgrade digitaldrywood/tap/detent`. Go-installed binaries offer an
 interactive choice: run
@@ -1019,6 +1020,32 @@ Detent logs with `log/slog`.
 - `--env` and `--log-level` override environment variables for one run.
 - `DETENT_ENV` and `DETENT_LOG_LEVEL` remain deprecated fallbacks for one release. The unprefixed names win when both are set.
 - Text logs are written to stdout; JSON logs are written to stderr.
+
+## CLI Output
+
+Detent command output is selected by `--format pretty|json`. The explicit flag
+wins, then `DETENT_FORMAT`, then the stdout terminal check. Interactive
+terminals default to `pretty`; pipes, redirects, and agent subprocesses default
+to `json`. JSON is written to stdout. Progress and logs that would corrupt a
+JSON stdout stream are written to stderr in JSON mode.
+
+This changes piped output for scripts that parsed the old prose output. Use
+`--format pretty` for a single command or `DETENT_FORMAT=pretty` for a process
+environment that must keep the old text shape.
+
+Structured command objects:
+
+| Command | JSON object |
+| --- | --- |
+| `detent version` | `{"version":"v0.1.0","commit":"abc1234","build_date":"2026-06-13T00:00:00Z","go_version":"go1.26.4","os":"linux","arch":"amd64"}` |
+| `detent update` | The update status object, including `current_version`, `latest_version`, `latest_tag`, `update_available`, `install_source`, `action`, `message`, and `command` when present. |
+| `detent init` | `{"status":"ok","path":"/path/global.yaml","rule":"--config"}` |
+| `detent add-project` | `{"id":"api","workflow":"/repo/WORKFLOW.md","workdir":"/repo","weight":1,"priority":0,"paused":false,"credential_ref":"github"}` |
+| `detent pause api` / `detent unpause api` | `{"status":"ok","project":"api","paused":true}` |
+| `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
+| `detent remove-project api` | `{"status":"ok","project":"api","removed":true}` |
+| `detent config path` | `{"path":"/path/global.yaml","rule":"--config"}` |
+| `detent doctor` | `{"checks":[{"name":"Config resolution","status":"OK","detail":"...","hint":"..."}],"summary":{"ok":8,"warn":0,"fail":0},"result":"PASS"}` |
 
 ## Configuration
 

@@ -52,14 +52,26 @@ const doctorAutoPromoteSampleLimit = 5
 var doctorHealthCheckKeys = []string{"hub", "store", "registry", "connector"}
 
 type doctorCheck struct {
-	Name   string
-	Status doctorStatus
-	Detail string
-	Hint   string
+	Name   string       `json:"name"`
+	Status doctorStatus `json:"status"`
+	Detail string       `json:"detail"`
+	Hint   string       `json:"hint,omitempty"`
 }
 
 type doctorReport struct {
 	Checks []doctorCheck
+}
+
+type doctorOutputReport struct {
+	Checks  []doctorCheck `json:"checks"`
+	Summary doctorSummary `json:"summary"`
+	Result  string        `json:"result"`
+}
+
+type doctorSummary struct {
+	OK   int `json:"ok"`
+	Warn int `json:"warn"`
+	Fail int `json:"fail"`
 }
 
 type doctorCheckJob struct {
@@ -123,10 +135,18 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 		Short: "Run preflight health checks",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			progressOut := cmd.OutOrStdout()
+			if out.IsJSON() {
+				progressOut = cmd.ErrOrStderr()
+			}
 			report := runDoctor(cmd.Context(), doctorConfig{
 				ConfigPath:   derefString(configPath),
 				Host:         derefString(host),
-				Output:       cmd.OutOrStdout(),
+				Output:       progressOut,
 				CheckTimeout: timeout,
 				Build:        opts.build,
 				Flags: runtimeFlags{
@@ -135,7 +155,9 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 					Port:     runtimeIntFlag{Value: derefInt(port, -1), Set: flagChanged(cmd, "port")},
 				},
 			}, opts, deps)
-			if err := writeDoctorReport(cmd.OutOrStdout(), report); err != nil {
+			if err := out.Write(func(out io.Writer) error {
+				return writeDoctorReport(out, report)
+			}, newDoctorOutputReport(report)); err != nil {
 				return err
 			}
 			if report.HasFailures() {
@@ -145,6 +167,10 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 		},
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", doctorCheckTimeout, "per-check timeout")
+	cmd.SetContext(withCommandOutputOptions(context.Background(), commandOutputOptions{
+		lookupEnv: opts.lookupEnv,
+		stdoutTTY: opts.stdoutTTY,
+	}))
 	return cmd
 }
 
@@ -411,6 +437,23 @@ func writeDoctorReport(out io.Writer, report doctorReport) error {
 	}
 	_, err := fmt.Fprintf(out, "Result: %s\n", result)
 	return err
+}
+
+func newDoctorOutputReport(report doctorReport) doctorOutputReport {
+	counts := report.counts()
+	result := "PASS"
+	if counts[doctorFail] > 0 {
+		result = "FAIL"
+	}
+	return doctorOutputReport{
+		Checks: report.Checks,
+		Summary: doctorSummary{
+			OK:   counts[doctorOK],
+			Warn: counts[doctorWarn],
+			Fail: counts[doctorFail],
+		},
+		Result: result,
+	}
 }
 
 func checkDoctorConfig(configPath string, opts options) (globalconfig.PathResolution, *globalconfig.Config, doctorCheck) {

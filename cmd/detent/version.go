@@ -8,17 +8,18 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/cli"
 )
 
 var version, commit, date = "dev", "none", "unknown"
 
 type versionInfo struct {
-	Version   string
-	Commit    string
-	Date      string
-	GoVersion string
-	OS        string
-	Arch      string
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	Date      string `json:"build_date"`
+	GoVersion string `json:"go_version"`
+	OS        string `json:"os"`
+	Arch      string `json:"arch"`
 }
 
 func newVersionCommand() *cobra.Command {
@@ -27,8 +28,15 @@ func newVersionCommand() *cobra.Command {
 		Short: "Print version metadata",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			_, err := io.WriteString(cmd.OutOrStdout(), formatVersionInfo(currentVersionInfo()))
-			return err
+			info := currentVersionInfo()
+			out, err := cli.OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			return out.Write(func(out io.Writer) error {
+				_, err := io.WriteString(out, formatVersionInfo(info))
+				return err
+			}, info)
 		},
 	}
 }

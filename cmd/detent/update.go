@@ -3,7 +3,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/digitaldrywood/detent/internal/cli"
 	detentupdate "github.com/digitaldrywood/detent/internal/update"
 )
 
@@ -35,6 +35,14 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			out, err := cli.OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			if jsonOutput {
+				out.Format = cli.OutputFormatJSON
+			}
+
 			runCtx := cmd.Context()
 			if runCtx == nil {
 				runCtx = ctx
@@ -52,7 +60,7 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 				status, err = runner.Check(runCtx)
 			} else {
 				streamOut := cmd.OutOrStdout()
-				if jsonOutput {
+				if out.IsJSON() {
 					streamOut = cmd.ErrOrStderr()
 				}
 				opts := detentupdate.ApplyOptions{
@@ -61,20 +69,16 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 					Stdout:      streamOut,
 					Stderr:      cmd.ErrOrStderr(),
 				}
-				if !assumeYes && !fromRelease && !jsonOutput {
+				if !assumeYes && !fromRelease && !out.IsJSON() {
 					opts.Confirm = confirmUpdate(cmd)
 					opts.SelectGoInstallAction = selectGoInstallAction(cmd)
 				}
 				status, err = runner.Apply(runCtx, opts)
 			}
 
-			var writeErr error
-			if jsonOutput {
-				writeErr = writeUpdateJSON(cmd.OutOrStdout(), status)
-			} else {
-				writeErr = writeUpdateText(cmd.OutOrStdout(), status)
-			}
-			if writeErr != nil {
+			if writeErr := out.Write(func(out io.Writer) error {
+				return writeUpdateText(out, status)
+			}, status); writeErr != nil {
 				return writeErr
 			}
 			return err
@@ -154,12 +158,6 @@ func selectGoInstallAction(cmd *cobra.Command) func(detentupdate.Status) (detent
 			return "", fmt.Errorf("invalid update choice: %s", strings.TrimSpace(line))
 		}
 	}
-}
-
-func writeUpdateJSON(out io.Writer, status detentupdate.Status) error {
-	encoder := json.NewEncoder(out)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(status)
 }
 
 func writeUpdateText(out io.Writer, status detentupdate.Status) error {
