@@ -122,6 +122,133 @@ func TestModelRendersWaitingStateBeforeSnapshot(t *testing.T) {
 	}
 }
 
+func TestFormatRunningRowsUsesUsefulIssueKey(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		issue      telemetry.Issue
+		want       string
+		notWant    string
+		eventWidth int
+	}{
+		{
+			name: "github identifier",
+			issue: telemetry.Issue{
+				ID:         "I_kwDOSskuwc8AAAABFX6APA",
+				Identifier: "digitaldrywood/detent#402",
+				State:      "In Progress",
+			},
+			want:       "#402",
+			notWant:    "digit...",
+			eventWidth: 32,
+		},
+		{
+			name: "linear identifier",
+			issue: telemetry.Issue{
+				ID:         "issue-linear",
+				Identifier: "DD-402",
+				State:      "In Progress",
+			},
+			want:       "DD-402",
+			eventWidth: 32,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			rows := formatRunningRows([]telemetry.Running{
+				{
+					Issue:           tt.issue,
+					ProcessIdentity: "4242",
+					SessionID:       "session-1234567890",
+					LastEvent:       "turn_completed",
+					LastMessage:     "latest event",
+					RuntimeSeconds:  12,
+				},
+			}, tt.eventWidth, newStyles())
+
+			got := stripANSI(strings.Join(rows, "\n"))
+			if !strings.Contains(got, tt.want) {
+				t.Fatalf("formatRunningRows() missing %q:\n%s", tt.want, got)
+			}
+			if tt.notWant != "" && strings.Contains(got, tt.notWant) {
+				t.Fatalf("formatRunningRows() rendered %q:\n%s", tt.notWant, got)
+			}
+		})
+	}
+}
+
+func TestModelNarrowSnapshotKeepsIssueKeyAndEventReadable(t *testing.T) {
+	t.Parallel()
+
+	snapshot := testSnapshot()
+	snapshot.Counts = telemetry.Counts{Running: 1}
+	snapshot.Running[0].Issue = telemetry.Issue{
+		ID:         "I_kwDOSskuwc8AAAABFX6APA",
+		Identifier: "digitaldrywood/detent#402",
+		State:      "In Progress",
+		Title:      "fix(tui): show useful issue key for running agents",
+	}
+	snapshot.Running[0].LastEvent = "turn_completed"
+	snapshot.Running[0].LastMessage = "latest event"
+	snapshot.Queue = nil
+	snapshot.Blocked = nil
+	snapshot.Completed = nil
+
+	model := Model{
+		snapshot:    snapshot,
+		hasSnapshot: true,
+		width:       72,
+		now:         time.Now,
+		styles:      newStyles(),
+	}
+
+	view := stripANSI(model.View())
+	for _, want := range []string{"#402", "In Progress", "12m 5s / 3", "latest event"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("View() missing %q:\n%s", want, view)
+		}
+	}
+	if strings.Contains(view, "digit...") {
+		t.Fatalf("View() rendered truncated GitHub identifier:\n%s", view)
+	}
+}
+
+func TestModelWideSnapshotShowsFullRunningIdentifier(t *testing.T) {
+	t.Parallel()
+
+	snapshot := testSnapshot()
+	snapshot.Counts = telemetry.Counts{Running: 1}
+	snapshot.Running[0].Issue = telemetry.Issue{
+		ID:         "I_kwDOSskuwc8AAAABFX6APA",
+		Identifier: "digitaldrywood/detent#402",
+		State:      "In Progress",
+	}
+	snapshot.Running[0].LastMessage = "latest event"
+	snapshot.Queue = nil
+	snapshot.Blocked = nil
+	snapshot.Completed = nil
+
+	model := Model{
+		snapshot:    snapshot,
+		hasSnapshot: true,
+		width:       160,
+		now:         time.Now,
+		styles:      newStyles(),
+	}
+
+	view := stripANSI(model.View())
+	if !strings.Contains(view, "digitaldrywood/detent#402") {
+		t.Fatalf("View() missing full running identifier:\n%s", view)
+	}
+	if !strings.Contains(view, "latest event") {
+		t.Fatalf("View() missing latest event:\n%s", view)
+	}
+}
+
 func TestModelHandlesWindowSize(t *testing.T) {
 	t.Parallel()
 
