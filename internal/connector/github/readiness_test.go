@@ -31,6 +31,23 @@ func TestReadinessProjectItemsReadReportsMissingAccess(t *testing.T) {
 	}
 }
 
+func TestReadinessConnectorConfigDefaultsLookupEnvForAppCredentials(t *testing.T) {
+	t.Setenv("DETENT_TEST_GITHUB_APP_ID", "123")
+	t.Setenv("DETENT_TEST_GITHUB_APP_INSTALLATION_ID", "987")
+	t.Setenv("DETENT_TEST_GITHUB_APP_PRIVATE_KEY", "private-key")
+
+	cfg := readinessConnectorConfig(Config{
+		GitHubAppID:             "$DETENT_TEST_GITHUB_APP_ID",
+		GitHubAppInstallationID: "$DETENT_TEST_GITHUB_APP_INSTALLATION_ID",
+		GitHubAppPrivateKey:     "$DETENT_TEST_GITHUB_APP_PRIVATE_KEY",
+		TokenSource:             staticTokenSource("token"),
+	})
+
+	if !hasGitHubAppCredentials(cfg, cfg.LookupEnv) {
+		t.Fatal("hasGitHubAppCredentials() = false, want env-backed credentials detected")
+	}
+}
+
 func TestReadinessProjectStatusWriteReportsMissingProjectWrite(t *testing.T) {
 	t.Parallel()
 
@@ -151,6 +168,20 @@ func TestReadinessPullRequestChecksReportsMissingAccess(t *testing.T) {
 		if !strings.Contains(got.Detail, want) {
 			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
 		}
+	}
+}
+
+func TestReadinessGitHubAppSelectedRepositoriesAreCaseInsensitive(t *testing.T) {
+	t.Parallel()
+
+	got := missingInstallationRepositories(InstallationTokenDetails{
+		RepositorySelection: "selected",
+		Repositories: []InstallationRepository{{
+			FullName: "DigitalDryWood/Detent",
+		}},
+	}, []string{"digitaldrywood/detent"})
+	if len(got) != 0 {
+		t.Fatalf("missingInstallationRepositories() = %#v, want none", got)
 	}
 }
 

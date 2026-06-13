@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -112,6 +113,9 @@ func readinessConnectorConfig(cfg Config) Config {
 		httpClient = NewPooledHTTPClient(cfg.HTTPTransport)
 	}
 	cfg.HTTPClient = httpClient
+	if cfg.LookupEnv == nil {
+		cfg.LookupEnv = os.Getenv
+	}
 	if cfg.TokenSource == nil {
 		cfg.TokenSource = NewTokenResolver(TokenResolverConfig{
 			Endpoint:                cfg.Endpoint,
@@ -967,13 +971,13 @@ func missingInstallationRepositories(details InstallationTokenDetails, repositor
 	}
 	available := make(map[string]struct{}, len(details.Repositories))
 	for _, repo := range details.Repositories {
-		if normalized := normalizeRepository(repo.FullName); normalized != "" {
+		if normalized := strings.ToLower(normalizeRepository(repo.FullName)); normalized != "" {
 			available[normalized] = struct{}{}
 		}
 	}
 	var missing []string
 	for _, repo := range repositories {
-		if _, ok := available[normalizeRepository(repo)]; !ok {
+		if _, ok := available[strings.ToLower(normalizeRepository(repo))]; !ok {
 			missing = append(missing, "repository access to "+repo)
 		}
 	}
