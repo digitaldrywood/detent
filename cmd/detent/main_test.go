@@ -31,6 +31,9 @@ func TestRootCommandHelp(t *testing.T) {
 	}
 
 	output := stdout.String()
+	if !strings.HasPrefix(output, "Examples:\n") {
+		t.Fatalf("help output does not lead with examples:\n%s", output)
+	}
 	for _, want := range []string{"detent", "agent orchestrator", "Usage:", "Exit codes:", "2  auth", "4  not found"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
