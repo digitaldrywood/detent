@@ -359,6 +359,120 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
+	t.Parallel()
+
+	readyRef := "digitaldrywood/detent#387"
+	unresolvedRef := "digitaldrywood/detent#9999"
+
+	tests := []struct {
+		name        string
+		cfg         workflowconfig.Config
+		connector   *fakeDoctorAutoPromoteConnector
+		want        doctorStatus
+		wantDetails []string
+	}{
+		{
+			name: "disabled auto unblock warns with candidates and references",
+			cfg:  validDoctorDependencyWorkflow(false),
+			connector: &fakeDoctorAutoPromoteConnector{
+				issues: []connector.Issue{
+					doctorDependencyIssue("issue-blocked", []connector.BlockedRef{{Identifier: readyRef}}),
+				},
+			},
+			want: doctorWarn,
+			wantDetails: []string{
+				"dependency_auto_unblock_disabled",
+				"issue-blocked",
+				"digitaldrywood/detent#blocked",
+				readyRef,
+				"tracker.dependency_auto_unblock.enabled: true",
+			},
+		},
+		{
+			name: "unresolved dependency reference warns with issue content fix",
+			cfg:  validDoctorDependencyWorkflow(true),
+			connector: &fakeDoctorAutoPromoteConnector{
+				issues: []connector.Issue{
+					doctorDependencyIssue("issue-unresolved", []connector.BlockedRef{{Identifier: unresolvedRef}}),
+				},
+			},
+			want: doctorWarn,
+			wantDetails: []string{
+				"dependency_reference_unresolved",
+				"issue-unresolved",
+				unresolvedRef,
+				"Depends on:",
+			},
+		},
+		{
+			name: "dependency line without structured ref warns with issue content fix",
+			cfg:  validDoctorDependencyWorkflow(true),
+			connector: &fakeDoctorAutoPromoteConnector{
+				issues: []connector.Issue{
+					doctorDependencyIssueWithBody("issue-line", "Depends on: release train"),
+				},
+			},
+			want: doctorWarn,
+			wantDetails: []string{
+				"dependency_reference_unresolved",
+				"issue-line",
+				"release train",
+				"Depends on:",
+			},
+		},
+		{
+			name: "ready blockers still blocked warns with config fix",
+			cfg:  validDoctorDependencyWorkflow(true),
+			connector: &fakeDoctorAutoPromoteConnector{
+				issues: []connector.Issue{
+					doctorDependencyIssue("issue-ready", []connector.BlockedRef{{Identifier: readyRef}}),
+				},
+				resolvedIssues: []connector.Issue{
+					doctorDependencyResolvedIssue("blocker-done", readyRef, "Done", false, nil),
+				},
+			},
+			want: doctorWarn,
+			wantDetails: []string{
+				"dependency_ready_but_still_blocked",
+				"issue-ready",
+				readyRef,
+				"tracker.dependency_auto_unblock",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := doctorDeps{
+				autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+					return tt.connector, nil
+				},
+			}
+			got := checkDoctorDependencyAutoUnblock(context.Background(), "alpha", tt.cfg, deps)
+			if got.Status != tt.want {
+				t.Fatalf("Status = %s, want %s: %#v", got.Status, tt.want, got)
+			}
+			for _, want := range tt.wantDetails {
+				if !strings.Contains(got.Detail, want) && !strings.Contains(got.Hint, want) {
+					t.Fatalf("check missing %q:\nDetail: %s\nHint: %s", want, got.Detail, got.Hint)
+				}
+			}
+			if tt.connector.limit != doctorDependencyAutoUnblockSampleLimit {
+				t.Fatalf("FetchIssuesByStatesLimit limit = %d, want %d", tt.connector.limit, doctorDependencyAutoUnblockSampleLimit)
+			}
+			if !stringSliceContains(tt.connector.verifyStates, "Blocked") {
+				t.Fatalf("VerifyStatusOptions states = %#v, want Blocked", tt.connector.verifyStates)
+			}
+			if tt.cfg.Tracker.DependencyAutoUnblock.Enabled && !stringSliceContains(tt.connector.verifyStates, "Todo") {
+				t.Fatalf("VerifyStatusOptions states = %#v, want Todo", tt.connector.verifyStates)
+			}
+		})
+	}
+}
+
 func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
 	t.Parallel()
 
@@ -1319,6 +1433,18 @@ func validDoctorAutoPromoteWorkflow() workflowconfig.Config {
 	return cfg
 }
 
+func validDoctorDependencyWorkflow(enabled bool) workflowconfig.Config {
+	cfg := validDoctorWorkflow("/repo")
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.APIKey = "token"
+	cfg.Tracker.ProjectSlug = "PVT_1"
+	cfg.Tracker.DependencyAutoUnblock.Enabled = enabled
+	cfg.Tracker.DependencyAutoUnblock.SourceStates = []string{"Blocked"}
+	cfg.Tracker.DependencyAutoUnblock.TargetState = "Todo"
+	cfg.Tracker.DependencyAutoUnblock.Readiness = workflowconfig.DependencyReadinessTerminalOrMerged
+	return cfg
+}
+
 func doctorAutoPromoteIssue(id string, pullRequest *connector.PullRequest) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id
@@ -1329,21 +1455,76 @@ func doctorAutoPromoteIssue(id string, pullRequest *connector.PullRequest) conne
 	return issue
 }
 
+func doctorDependencyIssue(id string, blockedBy []connector.BlockedRef) connector.Issue {
+	issue := connector.NewIssue()
+	issue.ID = id
+	issue.Identifier = "digitaldrywood/detent#" + strings.TrimPrefix(id, "issue-")
+	issue.Title = "Dependency diagnostic"
+	issue.State = "Blocked"
+	issue.BlockedBy = blockedBy
+	return issue
+}
+
+func doctorDependencyIssueWithBody(id string, body string) connector.Issue {
+	issue := doctorDependencyIssue(id, nil)
+	issue.Description = body
+	return issue
+}
+
+func doctorDependencyResolvedIssue(id string, identifier string, state string, closed bool, pullRequest *connector.PullRequest) connector.Issue {
+	issue := connector.NewIssue()
+	issue.ID = id
+	issue.Identifier = identifier
+	issue.Title = "Dependency blocker"
+	issue.State = state
+	issue.Closed = closed
+	issue.PullRequest = pullRequest
+	return issue
+}
+
 type fakeDoctorAutoPromoteConnector struct {
-	issues    []connector.Issue
-	verifyErr error
+	issues         []connector.Issue
+	resolvedIssues []connector.Issue
+	verifyErr      error
+	verifyStates   []string
+	limit          int
 }
 
 func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
 	return c.issues, nil
 }
 
-func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesLimit(context.Context, []string, int) ([]connector.Issue, error) {
+func (c *fakeDoctorAutoPromoteConnector) FetchIssuesByStatesLimit(_ context.Context, _ []string, limit int) ([]connector.Issue, error) {
+	c.limit = limit
 	return c.issues, nil
 }
 
-func (c *fakeDoctorAutoPromoteConnector) VerifyStatusOptions(context.Context, []string) error {
+func (c *fakeDoctorAutoPromoteConnector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {
+	wanted := make(map[string]struct{}, len(identifiers))
+	for _, identifier := range identifiers {
+		wanted[strings.ToLower(strings.TrimSpace(identifier))] = struct{}{}
+	}
+	issues := make([]connector.Issue, 0, len(c.resolvedIssues))
+	for _, issue := range c.resolvedIssues {
+		if _, ok := wanted[strings.ToLower(strings.TrimSpace(issue.Identifier))]; ok {
+			issues = append(issues, issue)
+		}
+	}
+	return issues, nil
+}
+
+func (c *fakeDoctorAutoPromoteConnector) VerifyStatusOptions(_ context.Context, states []string) error {
+	c.verifyStates = append([]string(nil), states...)
 	return c.verifyErr
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func successfulDoctorOptions(configPath string) options {

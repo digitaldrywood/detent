@@ -47,7 +47,10 @@ const (
 
 var requiredGitHubScopes = []string{"repo", "read:org", "project"}
 
-const doctorAutoPromoteSampleLimit = 5
+const (
+	doctorAutoPromoteSampleLimit           = 5
+	doctorDependencyAutoUnblockSampleLimit = 5
+)
 
 var doctorHealthCheckKeys = []string{"hub", "store", "registry", "connector"}
 
@@ -621,6 +624,9 @@ func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps 
 	if workflow.Config.Agent.AutoPromote.Enabled {
 		checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
 	}
+	if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub {
+		checks = append(checks, checkDoctorDependencyAutoUnblock(ctx, id, workflow.Config, deps))
+	}
 
 	sourceRoot := projectSourceRoot(project, workflow.Config)
 	if sourceRoot == "" {
@@ -827,6 +833,599 @@ func doctorAutoPromoteReasonCounts(counts map[orchestrator.AutoPromoteReason]int
 		parts = append(parts, fmt.Sprintf("%s=%d", reason, counts[orchestrator.AutoPromoteReason(reason)]))
 	}
 	return strings.Join(parts, ", ")
+}
+
+type doctorDependencyAutoUnblockSettings struct {
+	Enabled      bool
+	SourceStates []string
+	TargetState  string
+	Readiness    string
+}
+
+type doctorDependencyBlocker struct {
+	Ref      connector.BlockedRef
+	Issue    connector.Issue
+	Resolved bool
+}
+
+type doctorDependencyDiagnostic struct {
+	Code       string
+	Issue      connector.Issue
+	References []string
+}
+
+func checkDoctorDependencyAutoUnblock(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
+	name := "Project " + id + " dependency auto-unblock"
+	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "live dependency auto-unblock diagnostics skipped for " + cfg.Tracker.Kind + " tracker",
+		}
+	}
+
+	if deps.autoPromoteConnector == nil {
+		deps.autoPromoteConnector = defaultDoctorAutoPromoteConnector
+	}
+	projectConnector, err := deps.autoPromoteConnector(cfg)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("create dependency auto-unblock diagnostic connector: %v", err),
+			Hint:   "Fix GitHub tracker credentials and ProjectV2 configuration.",
+		}
+	}
+	if projectConnector == nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "create dependency auto-unblock diagnostic connector: connector is nil",
+			Hint:   "Fix GitHub tracker configuration.",
+		}
+	}
+
+	check := checkDoctorDependencyAutoUnblockLive(ctx, name, cfg, projectConnector)
+	if err := closeDoctorAutoPromoteConnector(projectConnector); err != nil && check.Status != doctorFail {
+		check.Status = doctorWarn
+		check.Detail = check.Detail + "; connector close failed: " + err.Error()
+		check.Hint = "Rerun detent doctor and check local network resources."
+	}
+	return check
+}
+
+func checkDoctorDependencyAutoUnblockLive(
+	ctx context.Context,
+	name string,
+	cfg workflowconfig.Config,
+	projectConnector doctorAutoPromoteConnector,
+) doctorCheck {
+	dependencyCfg := doctorDependencyAutoUnblockConfig(cfg)
+	if verifier, ok := projectConnector.(doctorStatusOptionVerifier); ok {
+		states := append([]string(nil), dependencyCfg.SourceStates...)
+		if dependencyCfg.Enabled {
+			states = append(states, dependencyCfg.TargetState)
+		}
+		if len(states) > 0 {
+			if err := verifier.VerifyStatusOptions(ctx, states); err != nil {
+				return doctorCheck{
+					Name:   name,
+					Status: doctorFail,
+					Detail: fmt.Sprintf("status option verification failed: %v", err),
+					Hint:   "Ensure dependency auto-unblock source_states and target_state resolve through tracker.state_map to existing GitHub Project Status options.",
+				}
+			}
+		}
+	}
+
+	issues, err := fetchDoctorDependencyAutoUnblockIssues(ctx, projectConnector, dependencyCfg.SourceStates)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("fetch dependency waiting candidates: %v", err),
+			Hint:   "Check GitHub Project access, Status field options, and repository issue access.",
+		}
+	}
+
+	diagnostics, err := doctorDependencyDiagnostics(ctx, projectConnector, dependencyCfg, cfg.Tracker.TerminalStates, issues)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("inspect dependency waiting candidates: %v", err),
+			Hint:   "Check GitHub issue access and dependency references.",
+		}
+	}
+
+	detail := doctorDependencyAutoUnblockDetail(dependencyCfg, len(issues), diagnostics)
+	if len(diagnostics) == 0 {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: detail,
+		}
+	}
+	return doctorCheck{
+		Name:   name,
+		Status: doctorWarn,
+		Detail: detail,
+		Hint:   doctorDependencyAutoUnblockHint(diagnostics),
+	}
+}
+
+func doctorDependencyAutoUnblockConfig(cfg workflowconfig.Config) doctorDependencyAutoUnblockSettings {
+	dependencyCfg := cfg.Tracker.DependencyAutoUnblock
+	dependencyCfg.Normalize()
+	sourceStates := doctorDependencySourceStates(dependencyCfg.SourceStates)
+	targetState := strings.TrimSpace(dependencyCfg.TargetState)
+	if targetState == "" {
+		targetState = "Todo"
+	}
+	readiness := strings.ToLower(strings.TrimSpace(dependencyCfg.Readiness))
+	if readiness == "" {
+		readiness = workflowconfig.DependencyReadinessTerminalOrMerged
+	}
+	return doctorDependencyAutoUnblockSettings{
+		Enabled:      dependencyCfg.Enabled,
+		SourceStates: sourceStates,
+		TargetState:  targetState,
+		Readiness:    readiness,
+	}
+}
+
+func doctorDependencySourceStates(states []string) []string {
+	if len(states) == 0 {
+		states = []string{"Blocked"}
+	}
+	out := make([]string, 0, len(states))
+	seen := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		display := doctorDisplayStateName(state)
+		key := strings.ToLower(strings.TrimSpace(display))
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, display)
+	}
+	return out
+}
+
+func doctorDisplayStateName(state string) string {
+	state = strings.TrimSpace(state)
+	switch strings.ToLower(state) {
+	case "blocked":
+		return "Blocked"
+	case "human review":
+		return "Human Review"
+	case "merging":
+		return "Merging"
+	case "rework":
+		return "Rework"
+	case "todo":
+		return "Todo"
+	case "in progress":
+		return "In Progress"
+	default:
+		return state
+	}
+}
+
+func fetchDoctorDependencyAutoUnblockIssues(
+	ctx context.Context,
+	projectConnector doctorAutoPromoteConnector,
+	states []string,
+) ([]connector.Issue, error) {
+	if limited, ok := projectConnector.(doctorAutoPromoteLimitedConnector); ok {
+		return limited.FetchIssuesByStatesLimit(ctx, states, doctorDependencyAutoUnblockSampleLimit)
+	}
+	issues, err := projectConnector.FetchIssuesByStates(ctx, states)
+	if err != nil {
+		return nil, err
+	}
+	if len(issues) > doctorDependencyAutoUnblockSampleLimit {
+		issues = issues[:doctorDependencyAutoUnblockSampleLimit]
+	}
+	return issues, nil
+}
+
+func doctorDependencyDiagnostics(
+	ctx context.Context,
+	projectConnector doctorAutoPromoteConnector,
+	cfg doctorDependencyAutoUnblockSettings,
+	terminalStates []string,
+	issues []connector.Issue,
+) ([]doctorDependencyDiagnostic, error) {
+	diagnostics := []doctorDependencyDiagnostic{}
+	for _, issue := range issues {
+		hydrated, ok, err := hydrateDoctorDependencyIssue(ctx, projectConnector, issue, cfg.SourceStates)
+		if err != nil {
+			return nil, err
+		}
+		if !ok {
+			continue
+		}
+
+		references := doctorDependencyReferenceLabels(hydrated)
+		if len(references) == 0 {
+			continue
+		}
+		if !cfg.Enabled {
+			diagnostics = append(diagnostics, doctorDependencyDiagnostic{
+				Code:       "dependency_auto_unblock_disabled",
+				Issue:      hydrated,
+				References: references,
+			})
+			continue
+		}
+		if len(hydrated.BlockedBy) == 0 {
+			diagnostics = append(diagnostics, doctorDependencyDiagnostic{
+				Code:       "dependency_reference_unresolved",
+				Issue:      hydrated,
+				References: references,
+			})
+			continue
+		}
+
+		blockers, err := resolveDoctorDependencyBlockers(ctx, projectConnector, hydrated)
+		if err != nil {
+			return nil, err
+		}
+		if unresolved := unresolvedDoctorDependencyReferences(blockers); len(unresolved) > 0 {
+			diagnostics = append(diagnostics, doctorDependencyDiagnostic{
+				Code:       "dependency_reference_unresolved",
+				Issue:      hydrated,
+				References: unresolved,
+			})
+			continue
+		}
+		if doctorDependencyBlockersReady(blockers, cfg, terminalStates) {
+			diagnostics = append(diagnostics, doctorDependencyDiagnostic{
+				Code:       "dependency_ready_but_still_blocked",
+				Issue:      hydrated,
+				References: doctorDependencyBlockerLabels(blockers),
+			})
+		}
+	}
+	return diagnostics, nil
+}
+
+func hydrateDoctorDependencyIssue(
+	ctx context.Context,
+	projectConnector doctorAutoPromoteConnector,
+	issue connector.Issue,
+	sourceStates []string,
+) (connector.Issue, bool, error) {
+	if len(issue.BlockedBy) > 0 || strings.TrimSpace(issue.Identifier) == "" {
+		return issue, doctorStateInList(issue.State, sourceStates), nil
+	}
+	resolver, ok := projectConnector.(connector.IssueReferenceResolver)
+	if !ok {
+		return issue, doctorStateInList(issue.State, sourceStates), nil
+	}
+	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, []string{issue.Identifier})
+	if err != nil {
+		return connector.Issue{}, false, err
+	}
+	for _, hydrated := range issues {
+		if sameDoctorIssueIdentity(issue, hydrated) {
+			return mergeDoctorDependencyIssue(issue, hydrated), doctorStateInList(hydrated.State, sourceStates), nil
+		}
+	}
+	return issue, doctorStateInList(issue.State, sourceStates), nil
+}
+
+func resolveDoctorDependencyBlockers(
+	ctx context.Context,
+	projectConnector doctorAutoPromoteConnector,
+	issue connector.Issue,
+) ([]doctorDependencyBlocker, error) {
+	blockers := make([]doctorDependencyBlocker, 0, len(issue.BlockedBy))
+	identifiers := make([]string, 0, len(issue.BlockedBy))
+	seen := map[string]struct{}{}
+	for _, ref := range issue.BlockedBy {
+		ref.Identifier = strings.TrimSpace(ref.Identifier)
+		ref.ID = strings.TrimSpace(ref.ID)
+		ref.State = strings.TrimSpace(ref.State)
+		blockers = append(blockers, doctorDependencyBlocker{Ref: ref})
+		if ref.Identifier == "" {
+			continue
+		}
+		key := strings.ToLower(ref.Identifier)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		identifiers = append(identifiers, ref.Identifier)
+	}
+
+	resolver, ok := projectConnector.(connector.IssueReferenceResolver)
+	if !ok || len(identifiers) == 0 {
+		return blockers, nil
+	}
+	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, identifiers)
+	if err != nil {
+		return nil, err
+	}
+	byIdentifier := make(map[string]connector.Issue, len(issues))
+	for _, blocker := range issues {
+		identifier := strings.ToLower(strings.TrimSpace(blocker.Identifier))
+		if identifier != "" {
+			byIdentifier[identifier] = blocker
+		}
+	}
+	for index := range blockers {
+		identifier := strings.ToLower(strings.TrimSpace(blockers[index].Ref.Identifier))
+		blocker, ok := byIdentifier[identifier]
+		if !ok {
+			continue
+		}
+		blockers[index].Issue = blocker
+		blockers[index].Resolved = true
+		blockers[index].Ref.ID = doctorFirstNonBlank(blocker.ID, blockers[index].Ref.ID)
+		blockers[index].Ref.Identifier = doctorFirstNonBlank(blocker.Identifier, blockers[index].Ref.Identifier)
+		blockers[index].Ref.State = doctorFirstNonBlank(blocker.State, blockers[index].Ref.State)
+	}
+	return blockers, nil
+}
+
+func unresolvedDoctorDependencyReferences(blockers []doctorDependencyBlocker) []string {
+	refs := []string{}
+	for _, blocker := range blockers {
+		if blocker.Resolved {
+			continue
+		}
+		ref := doctorDependencyRefLabel(blocker.Ref)
+		if ref != "" {
+			refs = append(refs, ref)
+		}
+	}
+	return refs
+}
+
+func doctorDependencyBlockersReady(
+	blockers []doctorDependencyBlocker,
+	cfg doctorDependencyAutoUnblockSettings,
+	terminalStates []string,
+) bool {
+	if len(blockers) == 0 {
+		return false
+	}
+	for _, blocker := range blockers {
+		if !doctorDependencyBlockerReady(blocker, cfg, terminalStates) {
+			return false
+		}
+	}
+	return true
+}
+
+func doctorDependencyBlockerReady(
+	blocker doctorDependencyBlocker,
+	cfg doctorDependencyAutoUnblockSettings,
+	terminalStates []string,
+) bool {
+	if blocker.Resolved {
+		if blocker.Issue.Closed || doctorStateInList(blocker.Issue.State, terminalStates) {
+			return true
+		}
+		if cfg.Readiness == workflowconfig.DependencyReadinessTerminalOrMerged && doctorPullRequestMerged(blocker.Issue.PullRequest) {
+			return true
+		}
+		return false
+	}
+	if strings.TrimSpace(blocker.Ref.State) == "" {
+		return false
+	}
+	return doctorStateInList(blocker.Ref.State, terminalStates)
+}
+
+func doctorPullRequestMerged(pullRequest *connector.PullRequest) bool {
+	return pullRequest != nil && strings.EqualFold(strings.TrimSpace(pullRequest.State), "merged")
+}
+
+func doctorDependencyAutoUnblockDetail(
+	cfg doctorDependencyAutoUnblockSettings,
+	sampled int,
+	diagnostics []doctorDependencyDiagnostic,
+) string {
+	status := "tracker.dependency_auto_unblock.enabled=false"
+	if cfg.Enabled {
+		status = "tracker.dependency_auto_unblock.enabled=true"
+	}
+	detail := fmt.Sprintf(
+		"%s; sampled %d dependency waiting candidate(s) from source_states=%s",
+		status,
+		sampled,
+		strings.Join(cfg.SourceStates, ","),
+	)
+	if len(diagnostics) == 0 {
+		return detail + "; no stalled dependency candidates found"
+	}
+	parts := make([]string, 0, len(diagnostics))
+	for _, diagnostic := range diagnostics {
+		parts = append(parts, doctorDependencyDiagnosticDetail(diagnostic))
+	}
+	return detail + "; " + strings.Join(parts, "; ")
+}
+
+func doctorDependencyDiagnosticDetail(diagnostic doctorDependencyDiagnostic) string {
+	return fmt.Sprintf(
+		"%s: %s references %s",
+		diagnostic.Code,
+		doctorIssueLabel(diagnostic.Issue),
+		strings.Join(diagnostic.References, ", "),
+	)
+}
+
+func doctorDependencyAutoUnblockHint(diagnostics []doctorDependencyDiagnostic) string {
+	codes := map[string]struct{}{}
+	for _, diagnostic := range diagnostics {
+		codes[diagnostic.Code] = struct{}{}
+	}
+	hints := []string{}
+	if _, ok := codes["dependency_auto_unblock_disabled"]; ok {
+		hints = append(hints, "Set tracker.dependency_auto_unblock.enabled: true and ensure source_states include the waiting Status values.")
+	}
+	if _, ok := codes["dependency_reference_unresolved"]; ok {
+		hints = append(hints, "Fix issue content so Depends on: or Blocked by: references point to existing GitHub issues.")
+	}
+	if _, ok := codes["dependency_ready_but_still_blocked"]; ok {
+		hints = append(hints, "Check tracker.dependency_auto_unblock source_states, target_state, readiness, and GitHub Project Status mappings.")
+	}
+	return strings.Join(hints, " ")
+}
+
+func doctorDependencyReferenceLabels(issue connector.Issue) []string {
+	refs := doctorBlockedRefLabels(issue.BlockedBy)
+	if len(refs) > 0 {
+		return refs
+	}
+	return doctorDependencyLineReferences(issue.Description)
+}
+
+func doctorBlockedRefLabels(refs []connector.BlockedRef) []string {
+	labels := make([]string, 0, len(refs))
+	seen := map[string]struct{}{}
+	for _, ref := range refs {
+		label := doctorDependencyRefLabel(ref)
+		if label == "" {
+			continue
+		}
+		key := strings.ToLower(label)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		labels = append(labels, label)
+	}
+	return labels
+}
+
+func doctorDependencyLineReferences(body string) []string {
+	refs := []string{}
+	seen := map[string]struct{}{}
+	for _, line := range strings.FieldsFunc(body, func(r rune) bool {
+		return r == '\n' || r == '\r'
+	}) {
+		ref, ok := doctorDependencyLineReference(line)
+		if !ok {
+			continue
+		}
+		key := strings.ToLower(ref)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, ref)
+	}
+	return refs
+}
+
+func doctorDependencyLineReference(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	for {
+		switch {
+		case strings.HasPrefix(line, ">"):
+			line = strings.TrimSpace(strings.TrimPrefix(line, ">"))
+		case strings.HasPrefix(line, "- "):
+			line = strings.TrimSpace(strings.TrimPrefix(line, "- "))
+		case strings.HasPrefix(line, "* "):
+			line = strings.TrimSpace(strings.TrimPrefix(line, "* "))
+		case strings.HasPrefix(line, "+ "):
+			line = strings.TrimSpace(strings.TrimPrefix(line, "+ "))
+		default:
+			goto trimmed
+		}
+	}
+trimmed:
+	lower := strings.ToLower(line)
+	for _, prefix := range []string{"depends on:", "depends-on:", "blocked by:"} {
+		if strings.HasPrefix(lower, prefix) {
+			ref := strings.TrimSpace(line[len(prefix):])
+			return ref, ref != ""
+		}
+	}
+	return "", false
+}
+
+func doctorDependencyBlockerLabels(blockers []doctorDependencyBlocker) []string {
+	labels := make([]string, 0, len(blockers))
+	for _, blocker := range blockers {
+		if blocker.Resolved {
+			if identifier := strings.TrimSpace(blocker.Issue.Identifier); identifier != "" {
+				labels = append(labels, identifier)
+				continue
+			}
+			if id := strings.TrimSpace(blocker.Issue.ID); id != "" {
+				labels = append(labels, id)
+				continue
+			}
+		}
+		if label := doctorDependencyRefLabel(blocker.Ref); label != "" {
+			labels = append(labels, label)
+		}
+	}
+	return labels
+}
+
+func doctorDependencyRefLabel(ref connector.BlockedRef) string {
+	if identifier := strings.TrimSpace(ref.Identifier); identifier != "" {
+		return identifier
+	}
+	return strings.TrimSpace(ref.ID)
+}
+
+func sameDoctorIssueIdentity(left connector.Issue, right connector.Issue) bool {
+	leftID := strings.TrimSpace(left.ID)
+	rightID := strings.TrimSpace(right.ID)
+	if leftID != "" && rightID != "" && leftID == rightID {
+		return true
+	}
+	leftIdentifier := strings.ToLower(strings.TrimSpace(left.Identifier))
+	rightIdentifier := strings.ToLower(strings.TrimSpace(right.Identifier))
+	return leftIdentifier != "" && leftIdentifier == rightIdentifier
+}
+
+func mergeDoctorDependencyIssue(left connector.Issue, right connector.Issue) connector.Issue {
+	merged := left
+	if strings.TrimSpace(right.ID) != "" {
+		merged.ID = right.ID
+	}
+	if strings.TrimSpace(right.Identifier) != "" {
+		merged.Identifier = right.Identifier
+	}
+	if strings.TrimSpace(right.Title) != "" {
+		merged.Title = right.Title
+	}
+	if strings.TrimSpace(right.Description) != "" {
+		merged.Description = right.Description
+	}
+	if strings.TrimSpace(right.State) != "" {
+		merged.State = right.State
+	}
+	if strings.TrimSpace(right.URL) != "" {
+		merged.URL = right.URL
+	}
+	if len(right.BlockedBy) > 0 {
+		merged.BlockedBy = right.BlockedBy
+	}
+	if strings.TrimSpace(right.BlockerReason) != "" {
+		merged.BlockerReason = right.BlockerReason
+	}
+	return merged
+}
+
+func doctorFirstNonBlank(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func doctorLinkedPullRequestNumber(issue connector.Issue) (int, bool) {
