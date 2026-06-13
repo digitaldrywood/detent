@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"runtime"
 	"strings"
 	"testing"
@@ -60,7 +61,7 @@ func TestVersionCommandPrintsBuildFields(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"version"})
+	cmd.SetArgs([]string{"--format", "pretty", "version"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -77,6 +78,38 @@ func TestVersionCommandPrintsBuildFields(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("version output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestVersionCommandWritesJSON(t *testing.T) {
+	withVersionMetadata(t, "v1.2.3", "abc1234", "2026-05-31T18:30:00Z")
+
+	cmd := newRootCommand(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "version"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		Version   string `json:"version"`
+		Commit    string `json:"commit"`
+		BuildDate string `json:"build_date"`
+		GoVersion string `json:"go_version"`
+		OS        string `json:"os"`
+		Arch      string `json:"arch"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v\n%s", err, stdout.String())
+	}
+	if got.Version != "v1.2.3" || got.Commit != "abc1234" || got.BuildDate != "2026-05-31T18:30:00Z" {
+		t.Fatalf("version json = %#v", got)
+	}
+	if got.GoVersion != runtime.Version() || got.OS != runtime.GOOS || got.Arch != runtime.GOARCH {
+		t.Fatalf("runtime json = %#v", got)
 	}
 }
 

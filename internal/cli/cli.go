@@ -83,6 +83,45 @@ type Signal struct {
 	Project   globalconfig.Project
 }
 
+type initResult struct {
+	Status string `json:"status"`
+	Path   string `json:"path"`
+	Rule   string `json:"rule"`
+}
+
+type configPathResult struct {
+	Path string `json:"path"`
+	Rule string `json:"rule"`
+}
+
+type projectResult struct {
+	ID            string `json:"id"`
+	Workflow      string `json:"workflow"`
+	Workdir       string `json:"workdir"`
+	Weight        int    `json:"weight"`
+	Priority      int    `json:"priority"`
+	Paused        bool   `json:"paused"`
+	CredentialRef string `json:"credential_ref,omitempty"`
+}
+
+type projectPausedResult struct {
+	Status  string `json:"status"`
+	Project string `json:"project"`
+	Paused  bool   `json:"paused"`
+}
+
+type projectPriorityResult struct {
+	Status   string `json:"status"`
+	Project  string `json:"project"`
+	Priority int    `json:"priority"`
+}
+
+type projectRemovedResult struct {
+	Status  string `json:"status"`
+	Project string `json:"project"`
+	Removed bool   `json:"removed"`
+}
+
 type BootMode string
 
 const (
@@ -237,6 +276,9 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 		SilenceErrors:              true,
 		SuggestionsMinimumDistance: 2,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			if _, err := OutputForCommand(cmd); err != nil {
+				return err
+			}
 			flags := runtimeFlags{
 				Env:      runtimeStringFlag{Value: env, Set: flagChanged(cmd, "env")},
 				LogLevel: runtimeStringFlag{Value: logLevel, Set: flagChanged(cmd, "log-level")},
@@ -261,14 +303,17 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 			return opts.boot(cmd.Context(), boot)
 		},
 	}
-	cmd.SetContext(ctx)
+	cmd.SetContext(withCommandOutputOptions(ctx, commandOutputOptions{
+		lookupEnv: opts.lookupEnv,
+		stdoutTTY: opts.stdoutTTY,
+	}))
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "path to global.yaml")
 	cmd.PersistentFlags().StringVar(&env, "env", "", "runtime environment")
 	cmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level")
 	cmd.PersistentFlags().StringVar(&host, "host", "", "web server host")
 	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
 	cmd.PersistentFlags().BoolVar(&headless, "headless", false, "stream logs instead of launching the terminal dashboard")
-	cmd.PersistentFlags().Var(newOutputFormatValue(&outputFormat), outputFormatFlagName, "output format: pretty or json")
+	cmd.PersistentFlags().Var(newOutputFormatValue(&outputFormat), outputFormatFlagName, "output format: pretty or json (default: pretty on TTY, json when piped; DETENT_FORMAT overrides)")
 	cmd.SetFlagErrorFunc(flagSuggestionError)
 
 	addProjectCommand := newAddProjectCommand(&configPath, opts)
@@ -335,8 +380,7 @@ func noSignal(context.Context, Signal) error {
 }
 
 func stdoutIsTTY() bool {
-	info, err := os.Stdout.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return WriterIsTTY(os.Stdout)
 }
 
 func hintedError(cause error, message string, hint string, commands ...string) error {
@@ -389,10 +433,15 @@ func newInitCommand(configPath *string, opts options) *cobra.Command {
 		Short: "Create a default global config",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			path, err := resolveConfigPath(*configPath, opts)
+			out, err := OutputForCommand(cmd)
 			if err != nil {
 				return err
 			}
+			resolution, err := resolveConfigPathResolution(*configPath, opts)
+			if err != nil {
+				return err
+			}
+			path := resolution.Path
 
 			cfg, err := globalconfig.DefaultAt(path)
 			if err != nil {
@@ -405,8 +454,15 @@ func newInitCommand(configPath *string, opts options) *cobra.Command {
 			if err := opts.write(path, cfg); err != nil {
 				return err
 			}
-			return opts.signal(cmd.Context(), Signal{
+			if err := opts.signal(cmd.Context(), Signal{
 				Operation: OperationInit,
+			}); err != nil {
+				return err
+			}
+			return out.Write(nil, initResult{
+				Status: "ok",
+				Path:   path,
+				Rule:   string(resolution.Rule),
 			})
 		},
 	}
@@ -444,6 +500,10 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 		Short: "Add a project to global config",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
 			path, err := resolveConfigPath(*configPath, opts)
 			if err != nil {
 				return err
@@ -466,11 +526,14 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 			if err := opts.write(path, global); err != nil {
 				return err
 			}
-			return opts.signal(cmd.Context(), Signal{
+			if err := opts.signal(cmd.Context(), Signal{
 				Operation: OperationAddProject,
 				ProjectID: cfg.ID,
 				Project:   cfg,
-			})
+			}); err != nil {
+				return err
+			}
+			return out.Write(nil, newProjectResult(cfg))
 		},
 	}
 	cmd.Flags().StringVar(&cfg.ID, "id", "", "project id")
@@ -507,7 +570,15 @@ func newEditProjectCommand(configPath *string, opts options, operation Operation
 		Short: short,
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return updateProject(cmd.Context(), *configPath, opts, operation, args[0], edit)
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			updated, err := updateProject(cmd.Context(), *configPath, opts, operation, args[0], edit)
+			if err != nil {
+				return err
+			}
+			return out.Write(nil, projectEditResult(operation, updated))
 		},
 	}
 }
@@ -527,12 +598,21 @@ func newConfigPathCommand(configPath *string, opts options) *cobra.Command {
 		Short: "Print the resolved global config path",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
 			resolution, err := resolveConfigPathResolution(*configPath, opts)
 			if err != nil {
 				return err
 			}
-			_, err = fmt.Fprintf(cmd.OutOrStdout(), "path: %s\nrule: %s\n", resolution.Path, resolution.Rule)
-			return err
+			return out.Write(func(out io.Writer) error {
+				_, err := fmt.Fprintf(out, "path: %s\nrule: %s\n", resolution.Path, resolution.Rule)
+				return err
+			}, configPathResult{
+				Path: resolution.Path,
+				Rule: string(resolution.Rule),
+			})
 		},
 	}
 }
@@ -547,9 +627,21 @@ func newPromoteCommand(configPath *string, opts options) *cobra.Command {
 			if priority <= 0 {
 				return hintedError(nil, "--priority must be positive", exampleHint(promoteExampleCommand), promoteExampleCommand)
 			}
-			return updateProject(cmd.Context(), *configPath, opts, OperationPromoteProject, args[0], func(project *globalconfig.Project) error {
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			updated, err := updateProject(cmd.Context(), *configPath, opts, OperationPromoteProject, args[0], func(project *globalconfig.Project) error {
 				project.Priority = priority
 				return nil
+			})
+			if err != nil {
+				return err
+			}
+			return out.Write(nil, projectPriorityResult{
+				Status:   "ok",
+				Project:  updated.ID,
+				Priority: updated.Priority,
 			})
 		},
 	}
@@ -557,33 +649,36 @@ func newPromoteCommand(configPath *string, opts options) *cobra.Command {
 	return cmd
 }
 
-func updateProject(ctx context.Context, configPath string, opts options, operation Operation, id string, edit projectEdit) error {
+func updateProject(ctx context.Context, configPath string, opts options, operation Operation, id string, edit projectEdit) (globalconfig.Project, error) {
 	path, err := resolveConfigPath(configPath, opts)
 	if err != nil {
-		return err
+		return globalconfig.Project{}, err
 	}
 	cfg, err := opts.readOrDefault(path)
 	if err != nil {
-		return err
+		return globalconfig.Project{}, err
 	}
 
 	id = strings.TrimSpace(id)
 	index := projectIndex(cfg.Projects, id)
 	if index < 0 {
-		return projectNotFoundError(id, cfg.Projects)
+		return globalconfig.Project{}, projectNotFoundError(id, cfg.Projects)
 	}
 	if err := edit(&cfg.Projects[index]); err != nil {
-		return err
+		return globalconfig.Project{}, err
 	}
 	if err := opts.write(path, cfg); err != nil {
-		return err
+		return globalconfig.Project{}, err
 	}
 
-	return opts.signal(ctx, Signal{
+	if err := opts.signal(ctx, Signal{
 		Operation: operation,
 		ProjectID: cfg.Projects[index].ID,
 		Project:   cfg.Projects[index],
-	})
+	}); err != nil {
+		return globalconfig.Project{}, err
+	}
+	return cfg.Projects[index], nil
 }
 
 func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {
@@ -592,6 +687,10 @@ func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {
 		Short: "Remove a project from global config",
 		Args:  cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
 			path, err := resolveConfigPath(*configPath, opts)
 			if err != nil {
 				return err
@@ -615,12 +714,44 @@ func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {
 				return err
 			}
 
-			return opts.signal(cmd.Context(), Signal{
+			if err := opts.signal(cmd.Context(), Signal{
 				Operation: OperationRemoveProject,
 				ProjectID: removed.ID,
 				Project:   removed,
+			}); err != nil {
+				return err
+			}
+			return out.Write(nil, projectRemovedResult{
+				Status:  "ok",
+				Project: removed.ID,
+				Removed: true,
 			})
 		},
+	}
+}
+
+func newProjectResult(project globalconfig.Project) projectResult {
+	return projectResult{
+		ID:            project.ID,
+		Workflow:      project.Workflow,
+		Workdir:       project.Workdir,
+		Weight:        project.Weight,
+		Priority:      project.Priority,
+		Paused:        project.Paused,
+		CredentialRef: project.CredentialRef,
+	}
+}
+
+func projectEditResult(operation Operation, project globalconfig.Project) any {
+	switch operation {
+	case OperationPauseProject, OperationUnpauseProject:
+		return projectPausedResult{
+			Status:  "ok",
+			Project: project.ID,
+			Paused:  project.Paused,
+		}
+	default:
+		return newProjectResult(project)
 	}
 }
 

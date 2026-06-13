@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"net"
@@ -1149,6 +1150,57 @@ func TestDoctorCommandTimeoutFlagBoundsCheck(t *testing.T) {
 	}
 }
 
+func TestDoctorCommandWritesJSONReport(t *testing.T) {
+	t.Setenv("DETENT_FORMAT", "json")
+
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	env := ""
+	logLevel := ""
+	host := "127.0.0.1"
+	port := 0
+	opts := successfulDoctorOptions(configPath)
+	deps := successfulDoctorDeps()
+
+	cmd := newDoctorCommandWithDeps(&configPath, &env, &logLevel, &host, &port, opts, deps)
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		Checks []struct {
+			Name   string `json:"name"`
+			Status string `json:"status"`
+			Detail string `json:"detail"`
+			Hint   string `json:"hint,omitempty"`
+		} `json:"checks"`
+		Summary struct {
+			OK   int `json:"ok"`
+			Warn int `json:"warn"`
+			Fail int `json:"fail"`
+		} `json:"summary"`
+		Result string `json:"result"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v\n%s", err, stdout.String())
+	}
+	if got.Result != "PASS" {
+		t.Fatalf("result = %q, want PASS", got.Result)
+	}
+	if got.Summary.OK == 0 {
+		t.Fatalf("summary.ok = 0, want successful checks\n%s", stdout.String())
+	}
+	if len(got.Checks) == 0 {
+		t.Fatal("checks length = 0, want checks")
+	}
+	if strings.Contains(stdout.String(), "RUN    ") {
+		t.Fatalf("json stdout contains progress lines:\n%s", stdout.String())
+	}
+}
+
 func TestRunDoctorChecksRunsJobsInParallel(t *testing.T) {
 	t.Parallel()
 
@@ -1311,6 +1363,7 @@ func successfulDoctorOptions(configPath string) options {
 				Projects: []globalconfig.Project{},
 			}, nil
 		},
+		stdoutTTY: func() bool { return true },
 	}
 }
 

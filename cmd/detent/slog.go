@@ -14,20 +14,21 @@ import (
 
 func setupLoggerFromEnv(stdout io.Writer, stderr io.Writer) *slog.Logger {
 	env, envSet := envValueWithPresence("ENV", "DETENT_ENV")
-	return setupLoggerWithOutputs(env, envSet, envValue("LOG_LEVEL", "DETENT_LOG_LEVEL"), stdout, stderr, writerIsTTY(stdout))
+	stdoutTTY := cli.WriterIsTTY(stdout)
+	return setupLoggerWithOutputs(env, envSet, envValue("LOG_LEVEL", "DETENT_LOG_LEVEL"), stdout, stderr, stdoutTTY, commandOutputJSONSelected(os.Args[1:], stdoutTTY))
 }
 
 func setupLoggerFromRuntime(settings cli.RuntimeSettings, stdout io.Writer, stderr io.Writer, stdoutTTY bool) {
-	setupLoggerWithOutputs(settings.Env.Value, strings.TrimSpace(settings.Env.Value) != "", settings.LogLevel.Value, stdout, stderr, stdoutTTY)
+	setupLoggerWithOutputs(settings.Env.Value, strings.TrimSpace(settings.Env.Value) != "", settings.LogLevel.Value, stdout, stderr, stdoutTTY, commandOutputJSONSelected(os.Args[1:], stdoutTTY))
 }
 
 func setupLogger(env string, level string, w io.Writer) *slog.Logger {
 	return setupLoggerForTerminal(env, strings.TrimSpace(env) != "", level, w, false)
 }
 
-func setupLoggerWithOutputs(env string, envSet bool, level string, stdout io.Writer, stderr io.Writer, stdoutTTY bool) *slog.Logger {
+func setupLoggerWithOutputs(env string, envSet bool, level string, stdout io.Writer, stderr io.Writer, stdoutTTY bool, forceStderr bool) *slog.Logger {
 	w := stderr
-	if useTextLogs(env, envSet, stdoutTTY) {
+	if !forceStderr && useTextLogs(env, envSet, stdoutTTY) {
 		w = stdout
 	}
 	return setupLoggerForTerminal(env, envSet, level, w, stdoutTTY)
@@ -72,13 +73,22 @@ func useTextLogs(env string, envSet bool, stdoutTTY bool) bool {
 	return stdoutTTY
 }
 
-func writerIsTTY(w io.Writer) bool {
-	file, ok := w.(*os.File)
-	if !ok {
-		return false
+func commandOutputJSONSelected(args []string, stdoutTTY bool) bool {
+	formatFlag, flagSet := outputFormatArg(args)
+	format, err := cli.ResolveOutputFormat(formatFlag, flagSet, os.Getenv("DETENT_FORMAT"), stdoutTTY)
+	return err == nil && format == cli.OutputFormatJSON
+}
+
+func outputFormatArg(args []string) (string, bool) {
+	for index, arg := range args {
+		if arg == "--format" && index+1 < len(args) {
+			return args[index+1], true
+		}
+		if value, ok := strings.CutPrefix(arg, "--format="); ok {
+			return value, true
+		}
 	}
-	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	return "", false
 }
 
 func parseLogLevel(level string) slog.Level {

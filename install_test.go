@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net"
@@ -675,17 +676,24 @@ func assertInstalledVersionMetadata(t *testing.T, binary string, root string, en
 	if err != nil {
 		t.Fatalf("detent version error = %v\nstderr:\n%s", err, stderr)
 	}
-	for _, want := range []string{
-		"version: " + wantVersion,
-		"commit: " + wantCommit,
-		"go version: " + runtime.Version(),
-		"os/arch: " + runtime.GOOS + "/" + runtime.GOARCH,
-	} {
-		if !strings.Contains(stdout, want) {
-			t.Fatalf("detent version output missing %q:\n%s", want, stdout)
-		}
+	var got struct {
+		Version   string `json:"version"`
+		Commit    string `json:"commit"`
+		BuildDate string `json:"build_date"`
+		GoVersion string `json:"go_version"`
+		OS        string `json:"os"`
+		Arch      string `json:"arch"`
 	}
-	if strings.Contains(stdout, "build date: unknown") {
+	if err := json.Unmarshal([]byte(stdout), &got); err != nil {
+		t.Fatalf("detent version JSON error = %v\nstdout:\n%s", err, stdout)
+	}
+	if got.Version != wantVersion || got.Commit != wantCommit {
+		t.Fatalf("detent version metadata = %#v, want version %q commit %q", got, wantVersion, wantCommit)
+	}
+	if got.GoVersion != runtime.Version() || got.OS != runtime.GOOS || got.Arch != runtime.GOARCH {
+		t.Fatalf("detent version runtime metadata = %#v", got)
+	}
+	if got.BuildDate == "unknown" {
 		t.Fatalf("detent version output kept unknown build date:\n%s", stdout)
 	}
 }

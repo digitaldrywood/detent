@@ -180,7 +180,7 @@ grounded recommendation per Phase 2 question, then interview the human.
    outrank peers. Verify:
 
    ```sh
-   detent config path > "$ONBOARDING_DIR/global-path.txt"
+   detent --format pretty config path > "$ONBOARDING_DIR/global-path.txt"
    GLOBAL_CONFIG="$(awk '/^path:/ {print $2}' "$ONBOARDING_DIR/global-path.txt")"
    if test -f "$GLOBAL_CONFIG"; then
      awk '/^projects:/ {show=1} show {print}' "$GLOBAL_CONFIG" > "$ONBOARDING_DIR/global-projects.txt"
@@ -832,7 +832,7 @@ recommendation, and default-if-silent. Record answers in
 
    ```sh
    detent init
-   detent config path
+   detent --format pretty config path
    ```
 
 2. **Register the project.** `priority` and `weight` are the scheduling answers
@@ -845,7 +845,7 @@ recommendation, and default-if-silent. Record answers in
      --workdir <source-root> \
      --weight <global-weight> \
      --priority <global-priority>
-   GLOBAL_CONFIG="$(detent config path | awk '/^path:/ {print $2}')"
+   GLOBAL_CONFIG="$(detent --format pretty config path | awk '/^path:/ {print $2}')"
    rg -n 'id: <detent-project-id>|workflow: <source-root>/WORKFLOW.md|workdir: <source-root>|weight: <global-weight>|priority: <global-priority>' \
      "$GLOBAL_CONFIG"
    ```
@@ -860,7 +860,7 @@ recommendation, and default-if-silent. Record answers in
    `WORKFLOW.md` `server.host` or pass it with `--host`. Verify:
 
    ```sh
-   GLOBAL_CONFIG="$(detent config path | awk '/^path:/ {print $2}')"
+   GLOBAL_CONFIG="$(detent --format pretty config path | awk '/^path:/ {print $2}')"
    perl -0pi -e 's/^(global:)/env: prod\nlog_level: info\ngithub_token: gh\nport: <port>\ninstance_name: <instance-name>\n$1/m if !/^github_token:/m' "$GLOBAL_CONFIG"
    rg -n '^(env|log_level|github_token|port|instance_name):' "$GLOBAL_CONFIG"
    ```

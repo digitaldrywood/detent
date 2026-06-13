@@ -56,7 +56,7 @@ func TestUpdateCommandCheckJSON(t *testing.T) {
 }
 
 func TestUpdateCommandYesAppliesWithoutPrompt(t *testing.T) {
-	t.Parallel()
+	t.Setenv("DETENT_FORMAT", "pretty")
 
 	fake := &fakeUpdater{
 		applyStatus: update.Status{
@@ -93,6 +93,41 @@ func TestUpdateCommandYesAppliesWithoutPrompt(t *testing.T) {
 	}
 	if !strings.Contains(stdout.String(), "Updated Detent from 1.2.3 to 1.2.4.") {
 		t.Fatalf("stdout = %q, want update message", stdout.String())
+	}
+}
+
+func TestUpdateCommandDefaultsToJSONWhenStdoutIsNotTTY(t *testing.T) {
+	t.Parallel()
+
+	fake := &fakeUpdater{
+		checkStatus: update.Status{
+			CurrentVersion:  "1.2.3",
+			LatestVersion:   "1.2.4",
+			LatestTag:       "v1.2.4",
+			UpdateAvailable: true,
+			InstallSource:   update.InstallSourceRelease,
+			Action:          update.ActionAvailable,
+			Message:         "Detent 1.2.3 can be updated to 1.2.4.",
+		},
+	}
+	cmd := newUpdateCommand(context.Background(), func(context.Context) (updateRunner, error) {
+		return fake, nil
+	})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--check"})
+
+	if err := cmd.ExecuteContext(context.Background()); err != nil {
+		t.Fatalf("ExecuteContext() error = %v", err)
+	}
+
+	var got update.Status
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v\n%s", err, stdout.String())
+	}
+	if !got.UpdateAvailable {
+		t.Fatal("UpdateAvailable = false, want true")
 	}
 }
 

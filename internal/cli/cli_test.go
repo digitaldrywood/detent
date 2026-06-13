@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -165,7 +166,7 @@ func TestConfigPathCommandPrintsResolvedPathAndRule(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), "global.yaml")
-	cmd := cli.NewRootCommand(context.Background())
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
@@ -180,6 +181,85 @@ func TestConfigPathCommandPrintsResolvedPathAndRule(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("config path output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestOutputFormatPrecedence(t *testing.T) {
+	tests := []struct {
+		name      string
+		env       string
+		stdoutTTY bool
+		args      []string
+		wantJSON  bool
+	}{
+		{
+			name:     "non tty defaults to json",
+			wantJSON: true,
+		},
+		{
+			name:      "tty defaults to pretty",
+			stdoutTTY: true,
+		},
+		{
+			name: "env pretty overrides non tty",
+			env:  "pretty",
+		},
+		{
+			name:      "env json overrides tty",
+			env:       "json",
+			stdoutTTY: true,
+			wantJSON:  true,
+		},
+		{
+			name:     "flag json overrides env pretty",
+			env:      "pretty",
+			args:     []string{"--format", "json"},
+			wantJSON: true,
+		},
+		{
+			name:      "flag pretty overrides env json",
+			env:       "json",
+			stdoutTTY: false,
+			args:      []string{"--format", "pretty"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "global.yaml")
+			cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return tt.stdoutTTY }))
+			if tt.env != "" {
+				t.Setenv("DETENT_FORMAT", tt.env)
+			}
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			args := append([]string{}, tt.args...)
+			args = append(args, "--config", path, "config", "path")
+			cmd.SetArgs(args)
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			if tt.wantJSON {
+				var got struct {
+					Path string `json:"path"`
+					Rule string `json:"rule"`
+				}
+				if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+					t.Fatalf("Unmarshal() error = %v\n%s", err, stdout.String())
+				}
+				if got.Path != path || got.Rule != string(globalconfig.PathRuleFlag) {
+					t.Fatalf("json output = %#v, want path %q rule %q", got, path, globalconfig.PathRuleFlag)
+				}
+				return
+			}
+			for _, want := range []string{"path: " + path, "rule: " + string(globalconfig.PathRuleFlag)} {
+				if !strings.Contains(stdout.String(), want) {
+					t.Fatalf("pretty output missing %q:\n%s", want, stdout.String())
+				}
+			}
+		})
 	}
 }
 
@@ -424,7 +504,7 @@ func TestInitWritesDefaultGlobalConfig(t *testing.T) {
 	t.Parallel()
 
 	path := filepath.Join(t.TempDir(), ".detent", "global.yaml")
-	cmd := cli.NewRootCommand(context.Background())
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"--config", path, "init"})
@@ -442,6 +522,74 @@ func TestInitWritesDefaultGlobalConfig(t *testing.T) {
 	}
 	if len(cfg.Projects) != 0 {
 		t.Fatalf("Projects = %#v, want empty", cfg.Projects)
+	}
+}
+
+func TestProjectCommandsWriteJSONResults(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{
+			name: "init",
+			args: []string{"init"},
+			want: fmt.Sprintf(`{"status":"ok","path":%q,"rule":"--config"}`, configPath),
+		},
+		{
+			name: "add-project",
+			args: []string{
+				"add-project",
+				"--id", "detent",
+				"--workflow", paths.workflowPath,
+				"--workdir", paths.workdirPath,
+				"--weight", "5",
+				"--priority", "50",
+				"--paused",
+				"--credential-ref", "github-default",
+			},
+			want: fmt.Sprintf(`{"id":"detent","workflow":%q,"workdir":%q,"weight":5,"priority":50,"paused":true,"credential_ref":"github-default"}`, paths.workflowPath, paths.workdirPath),
+		},
+		{
+			name: "pause",
+			args: []string{"pause", "detent"},
+			want: `{"status":"ok","project":"detent","paused":true}`,
+		},
+		{
+			name: "unpause",
+			args: []string{"unpause", "detent"},
+			want: `{"status":"ok","project":"detent","paused":false}`,
+		},
+		{
+			name: "promote",
+			args: []string{"promote", "detent", "--priority", "1"},
+			want: `{"status":"ok","project":"detent","priority":1}`,
+		},
+		{
+			name: "remove-project",
+			args: []string{"remove-project", "detent"},
+			want: `{"status":"ok","project":"detent","removed":true}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cmd := cli.NewRootCommand(context.Background())
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			args := append([]string{"--config", configPath}, tt.args...)
+			cmd.SetArgs(args)
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+			assertJSONEqual(t, stdout.Bytes(), tt.want)
+		})
 	}
 }
 
@@ -617,10 +765,14 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 	configPath := filepath.Join(paths.root, "global.yaml")
 	signals := make(chan cli.Signal, 1)
 
-	cmd := cli.NewRootCommand(context.Background(), cli.WithSignalFunc(func(_ context.Context, signal cli.Signal) error {
-		signals <- signal
-		return nil
-	}))
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return true }),
+		cli.WithSignalFunc(func(_ context.Context, signal cli.Signal) error {
+			signals <- signal
+			return nil
+		}),
+	)
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{
@@ -686,10 +838,14 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 		t.Helper()
 
 		allArgs := append([]string{"--config", configPath}, args...)
-		cmd := cli.NewRootCommand(context.Background(), cli.WithSignalFunc(func(_ context.Context, signal cli.Signal) error {
-			signals <- signal
-			return nil
-		}))
+		cmd := cli.NewRootCommand(
+			context.Background(),
+			cli.WithStdoutTTY(func() bool { return true }),
+			cli.WithSignalFunc(func(_ context.Context, signal cli.Signal) error {
+				signals <- signal
+				return nil
+			}),
+		)
 		cmd.SetOut(&bytes.Buffer{})
 		cmd.SetErr(&bytes.Buffer{})
 		cmd.SetArgs(allArgs)
@@ -758,7 +914,7 @@ projects:
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	cmd := cli.NewRootCommand(context.Background())
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{"--config", configPath, "pause", "detent"})
@@ -873,7 +1029,7 @@ func TestWithProjectManagerSignalsLiveManager(t *testing.T) {
 	paths := createProjectFiles(t)
 	configPath := filepath.Join(paths.root, "global.yaml")
 	manager := &projectManagerProbe{}
-	cmd := cli.NewRootCommand(context.Background(), cli.WithProjectManager(manager))
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }), cli.WithProjectManager(manager))
 	cmd.SetOut(&bytes.Buffer{})
 	cmd.SetErr(&bytes.Buffer{})
 	cmd.SetArgs([]string{
@@ -1036,6 +1192,22 @@ func assertHintedError(t *testing.T, err error, wantErr error, wantMessage strin
 	}
 	if !reflect.DeepEqual(gotCommands, wantCommands) {
 		t.Fatalf("commands = %#v, want %#v", gotCommands, wantCommands)
+	}
+}
+
+func assertJSONEqual(t *testing.T, got []byte, want string) {
+	t.Helper()
+
+	var gotValue any
+	if err := json.Unmarshal(got, &gotValue); err != nil {
+		t.Fatalf("Unmarshal(got) error = %v\n%s", err, string(got))
+	}
+	var wantValue any
+	if err := json.Unmarshal([]byte(want), &wantValue); err != nil {
+		t.Fatalf("Unmarshal(want) error = %v\n%s", err, want)
+	}
+	if !reflect.DeepEqual(gotValue, wantValue) {
+		t.Fatalf("json output = %#v, want %#v\nraw: %s", gotValue, wantValue, string(got))
 	}
 }
 
