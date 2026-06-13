@@ -1280,12 +1280,68 @@ func TestDashboardRendersTemplUISidebar(t *testing.T) {
 
 	for _, forbidden := range []string{
 		"data-dashboard-sidebar-toggle",
+		"data-dashboard-project-drag-handle",
 		"detent.dashboard.sidebar.collapsed",
 		"grid-rows-[auto_auto_minmax(0,1fr)_auto]",
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard sidebar rendered old marker %q:\n%s", forbidden, html)
 		}
+	}
+}
+
+func TestDashboardRendersProjectOrderControls(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Detent",
+		ConnectorName: "github",
+		Projects: []templates.ProjectSmallMultiple{
+			{ID: "paused", Name: "Paused", Paused: true},
+			{ID: "idle", Name: "Idle"},
+			{ID: "active", Name: "Active", Running: 1},
+			{ID: "blocked", Name: "Blocked", Blocked: 1},
+		},
+	})
+
+	for _, want := range []string{
+		`data-dashboard-project-order-list`,
+		`data-dashboard-project-entry`,
+		`data-project-id="blocked"`,
+		`data-project-default-index="0"`,
+		`data-dashboard-project-drag-handle`,
+		`data-dashboard-project-order-controls`,
+		`data-dashboard-project-move="up"`,
+		`data-dashboard-project-move="down"`,
+		`Move Blocked up`,
+		`Move Blocked down`,
+		`data-dashboard-project-order-reset`,
+		`Reset order`,
+		`detent.ui.projectOrder`,
+		`storageVersion = 1`,
+		`window.localStorage`,
+		`JSON.stringify({ v: storageVersion, order: order })`,
+		`document.addEventListener("DOMContentLoaded"`,
+		`document.addEventListener("htmx:afterSettle"`,
+		`document.addEventListener("dragstart"`,
+		`document.addEventListener("dragover"`,
+		`document.addEventListener("drop"`,
+		`document.addEventListener("htmx:beforeSwap"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard project order controls missing %q:\n%s", want, html)
+		}
+	}
+
+	blockedIndex := strings.Index(html, `data-project-id="blocked"`)
+	activeIndex := strings.Index(html, `data-project-id="active"`)
+	idleIndex := strings.Index(html, `data-project-id="idle"`)
+	pausedIndex := strings.Index(html, `data-project-id="paused"`)
+	if blockedIndex < 0 || activeIndex < 0 || idleIndex < 0 || pausedIndex < 0 {
+		t.Fatalf("project indexes missing: blocked=%d active=%d idle=%d paused=%d\n%s", blockedIndex, activeIndex, idleIndex, pausedIndex, html)
+	}
+	if blockedIndex >= activeIndex || activeIndex >= idleIndex || idleIndex >= pausedIndex {
+		t.Fatalf("project order should be blocked, active, idle, paused: blocked=%d active=%d idle=%d paused=%d\n%s", blockedIndex, activeIndex, idleIndex, pausedIndex, html)
 	}
 }
 

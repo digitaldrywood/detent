@@ -262,6 +262,31 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 	}
 }
 
+func TestSidebarProjectItemsUseAttentionFirstDefaultOrder(t *testing.T) {
+	t.Parallel()
+
+	got := sidebarProjectItems(DashboardData{Projects: []ProjectSmallMultiple{
+		{ID: "paused", Name: "Paused", Paused: true},
+		{ID: "idle", Name: "Idle"},
+		{ID: "queued", Name: "Queued", QueueCount: 1},
+		{ID: "active", Name: "Active", Running: 1},
+		{ID: "blocked", Name: "Blocked", Blocked: 1},
+	}})
+	want := []string{"blocked", "active", "queued", "idle", "paused"}
+
+	if len(got) != len(want) {
+		t.Fatalf("sidebarProjectItems() len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i, wantID := range want {
+		if got[i].ID != wantID {
+			t.Fatalf("sidebarProjectItems()[%d].ID = %q, want %q; got %#v", i, got[i].ID, wantID, got)
+		}
+		if got[i].DefaultIndex != i {
+			t.Fatalf("sidebarProjectItems()[%d].DefaultIndex = %d, want %d; got %#v", i, got[i].DefaultIndex, i, got)
+		}
+	}
+}
+
 func TestProjectSmallMultiplesGridClass(t *testing.T) {
 	t.Parallel()
 

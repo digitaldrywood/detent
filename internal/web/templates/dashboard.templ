@@ -103,6 +103,405 @@ templ dashboardSidebarFilterScript() {
 	</script>
 }
 
+templ dashboardSidebarProjectOrderScript() {
+	<script>
+		(function() {
+			const storageKey = "detent.ui.projectOrder";
+			const storageVersion = 1;
+			let draggingProjectID = "";
+			let pendingApplyFrame = 0;
+			let observedSidebar = null;
+			let sidebarObserver = null;
+
+			function projectOrderStorage() {
+				try {
+					return window.localStorage;
+				} catch (error) {
+					return null;
+				}
+			}
+
+			function projectList() {
+				return document.querySelector("[data-dashboard-project-order-list]");
+			}
+
+			function projectEntries() {
+				const list = projectList();
+				if (!list) {
+					return [];
+				}
+				return Array.from(list.children).filter(function(child) {
+					return child instanceof HTMLElement && child.hasAttribute("data-dashboard-project-entry");
+				});
+			}
+
+			function projectEntryFor(target) {
+				if (!(target instanceof Element)) {
+					return null;
+				}
+				return target.closest("[data-dashboard-project-entry]");
+			}
+
+			function sidebarWrapper() {
+				return document.querySelector("[data-tui-sidebar-wrapper][data-tui-sidebar-id='dashboard-sidebar']");
+			}
+
+			function sidebarCollapsed() {
+				const wrapper = sidebarWrapper();
+				return Boolean(wrapper && wrapper.dataset.tuiSidebarState === "collapsed");
+			}
+
+			function savedProjectOrder() {
+				const store = projectOrderStorage();
+				if (!store) {
+					return [];
+				}
+				let parsed = null;
+				try {
+					parsed = JSON.parse(store.getItem(storageKey) || "");
+				} catch (error) {
+					return [];
+				}
+				if (!parsed || parsed.v !== storageVersion || !Array.isArray(parsed.order)) {
+					return [];
+				}
+				const seen = new Set();
+				return parsed.order.filter(function(id) {
+					if (typeof id !== "string" || id.trim() === "" || seen.has(id)) {
+						return false;
+					}
+					seen.add(id);
+					return true;
+				});
+			}
+
+			function currentProjectOrder() {
+				return projectEntries().map(function(entry) {
+					return entry.dataset.projectId || "";
+				}).filter(Boolean);
+			}
+
+			function setManualOrderState(manual) {
+				const list = projectList();
+				if (list) {
+					list.dataset.projectOrderManual = manual ? "true" : "false";
+				}
+				const reset = document.querySelector("[data-dashboard-project-order-reset]");
+				if (reset instanceof HTMLButtonElement) {
+					reset.disabled = !manual;
+				}
+			}
+
+			function saveProjectOrder(order) {
+				const store = projectOrderStorage();
+				if (!store) {
+					return;
+				}
+				store.setItem(storageKey, JSON.stringify({ v: storageVersion, order: order }));
+				setManualOrderState(true);
+			}
+
+			function clearProjectOrder() {
+				const store = projectOrderStorage();
+				if (store) {
+					store.removeItem(storageKey);
+				}
+				setManualOrderState(false);
+			}
+
+			function defaultProjectIndex(entry, fallback) {
+				const index = Number(entry.dataset.projectDefaultIndex);
+				return Number.isFinite(index) ? index : fallback;
+			}
+
+			function restoreDefaultOrder() {
+				const list = projectList();
+				if (!list) {
+					return;
+				}
+				projectEntries().map(function(entry, index) {
+					return { entry: entry, index: index, rank: defaultProjectIndex(entry, index) };
+				}).sort(function(left, right) {
+					return left.rank - right.rank || left.index - right.index;
+				}).forEach(function(item) {
+					list.appendChild(item.entry);
+				});
+			}
+
+			function orderProjectNodes(order) {
+				const list = projectList();
+				if (!list || order.length === 0) {
+					return;
+				}
+				const entries = projectEntries();
+				const nodesByID = new Map();
+				entries.forEach(function(entry) {
+					const id = entry.dataset.projectId || "";
+					if (id && !nodesByID.has(id)) {
+						nodesByID.set(id, entry);
+					}
+				});
+				const ordered = [];
+				const orderedIDs = new Set();
+				order.forEach(function(id) {
+					const entry = nodesByID.get(id);
+					if (!entry) {
+						return;
+					}
+					ordered.push(entry);
+					orderedIDs.add(id);
+				});
+				entries.forEach(function(entry) {
+					const id = entry.dataset.projectId || "";
+					if (!orderedIDs.has(id)) {
+						ordered.push(entry);
+					}
+				});
+				ordered.forEach(function(entry) {
+					list.appendChild(entry);
+				});
+			}
+
+			function reorderAvailable() {
+				return projectEntries().length > 1 && !sidebarCollapsed();
+			}
+
+			function setButtonDisabled(button, disabled) {
+				if (!(button instanceof HTMLButtonElement)) {
+					return;
+				}
+				button.disabled = disabled;
+				button.setAttribute("aria-disabled", disabled ? "true" : "false");
+			}
+
+			function updateProjectControls() {
+				const list = projectList();
+				const entries = projectEntries();
+				const available = reorderAvailable();
+				if (list) {
+					list.dataset.projectOrderEnabled = available ? "true" : "false";
+				}
+				entries.forEach(function(entry, index) {
+					entry.draggable = available;
+					entry.setAttribute("aria-grabbed", draggingProjectID === entry.dataset.projectId ? "true" : "false");
+					entry.dataset.projectOrderReady = available ? "true" : "false";
+					setButtonDisabled(entry.querySelector("[data-dashboard-project-move='up']"), !available || index === 0);
+					setButtonDisabled(entry.querySelector("[data-dashboard-project-move='down']"), !available || index === entries.length - 1);
+				});
+				setManualOrderState(savedProjectOrder().length > 0);
+			}
+
+			function observeSidebarState() {
+				const wrapper = sidebarWrapper();
+				if (wrapper === observedSidebar) {
+					return;
+				}
+				if (sidebarObserver) {
+					sidebarObserver.disconnect();
+					sidebarObserver = null;
+				}
+				observedSidebar = wrapper;
+				if (!wrapper || !("MutationObserver" in window)) {
+					return;
+				}
+				sidebarObserver = new MutationObserver(function() {
+					updateProjectControls();
+				});
+				sidebarObserver.observe(wrapper, { attributes: true, attributeFilter: ["data-tui-sidebar-state"] });
+			}
+
+			function applySavedProjectOrder() {
+				if (draggingProjectID) {
+					updateProjectControls();
+					return;
+				}
+				const order = savedProjectOrder();
+				if (order.length > 0) {
+					orderProjectNodes(order);
+				}
+				updateProjectControls();
+				observeSidebarState();
+			}
+
+			function scheduleApplySavedProjectOrder() {
+				if (pendingApplyFrame) {
+					return;
+				}
+				pendingApplyFrame = window.requestAnimationFrame(function() {
+					pendingApplyFrame = 0;
+					applySavedProjectOrder();
+				});
+			}
+
+			function rowBeforePointer(clientY) {
+				let candidate = null;
+				let candidateOffset = Number.NEGATIVE_INFINITY;
+				projectEntries().forEach(function(entry) {
+					if (entry.dataset.projectId === draggingProjectID) {
+						return;
+					}
+					const rect = entry.getBoundingClientRect();
+					const offset = clientY - rect.top - rect.height / 2;
+					if (offset < 0 && offset > candidateOffset) {
+						candidateOffset = offset;
+						candidate = entry;
+					}
+				});
+				return candidate;
+			}
+
+			function clearDragState() {
+				projectEntries().forEach(function(entry) {
+					entry.classList.remove("dashboard-project-entry-dragging");
+					entry.setAttribute("aria-grabbed", "false");
+				});
+				draggingProjectID = "";
+				updateProjectControls();
+			}
+
+			function sidebarSwapTarget(event) {
+				const detailTarget = event.detail && event.detail.target;
+				const target = detailTarget instanceof Element ? detailTarget : event.target;
+				if (!(target instanceof Element)) {
+					return null;
+				}
+				if (target.id === "dashboard-sidebar-live") {
+					return target;
+				}
+				return target.closest("#dashboard-sidebar-live");
+			}
+
+			function moveProject(entry, direction) {
+				const list = projectList();
+				const entries = projectEntries();
+				const index = entries.indexOf(entry);
+				if (!list || index < 0) {
+					return;
+				}
+				if (direction === "up" && index > 0) {
+					list.insertBefore(entry, entries[index - 1]);
+				}
+				if (direction === "down" && index < entries.length - 1) {
+					list.insertBefore(entry, entries[index + 2] || null);
+				}
+				saveProjectOrder(currentProjectOrder());
+				updateProjectControls();
+				const button = entry.querySelector("[data-dashboard-project-move='" + direction + "']");
+				if (button instanceof HTMLButtonElement) {
+					button.focus();
+				}
+			}
+
+			document.addEventListener("dragstart", function(event) {
+				const target = event.target instanceof Element ? event.target : null;
+				const entry = projectEntryFor(target);
+				if (!entry) {
+					return;
+				}
+				if (!reorderAvailable() || (target && target.closest("[data-dashboard-project-order-controls]"))) {
+					event.preventDefault();
+					return;
+				}
+				draggingProjectID = entry.dataset.projectId || "";
+				if (!draggingProjectID) {
+					event.preventDefault();
+					return;
+				}
+				entry.classList.add("dashboard-project-entry-dragging");
+				entry.setAttribute("aria-grabbed", "true");
+				if (event.dataTransfer) {
+					event.dataTransfer.effectAllowed = "move";
+					event.dataTransfer.setData("text/plain", draggingProjectID);
+				}
+			});
+
+			document.addEventListener("dragover", function(event) {
+				if (!draggingProjectID || !reorderAvailable()) {
+					return;
+				}
+				const list = projectList();
+				const target = event.target instanceof Element ? event.target : null;
+				if (!list || !target || (target !== list && !list.contains(target))) {
+					return;
+				}
+				const dragged = projectEntries().find(function(entry) {
+					return entry.dataset.projectId === draggingProjectID;
+				});
+				if (!dragged) {
+					return;
+				}
+				event.preventDefault();
+				const before = rowBeforePointer(event.clientY);
+				if (before) {
+					list.insertBefore(dragged, before);
+				} else {
+					list.appendChild(dragged);
+				}
+				updateProjectControls();
+			});
+
+			document.addEventListener("drop", function(event) {
+				if (!draggingProjectID) {
+					return;
+				}
+				event.preventDefault();
+				saveProjectOrder(currentProjectOrder());
+				clearDragState();
+			});
+
+			document.addEventListener("dragend", function() {
+				if (draggingProjectID) {
+					clearDragState();
+				}
+			});
+
+			document.addEventListener("click", function(event) {
+				const reset = event.target instanceof Element ? event.target.closest("[data-dashboard-project-order-reset]") : null;
+				if (reset) {
+					event.preventDefault();
+					clearProjectOrder();
+					restoreDefaultOrder();
+					updateProjectControls();
+					return;
+				}
+				const button = event.target instanceof Element ? event.target.closest("[data-dashboard-project-move]") : null;
+				if (button instanceof HTMLButtonElement) {
+					event.preventDefault();
+					if (!reorderAvailable() || button.disabled) {
+						return;
+					}
+					const entry = projectEntryFor(button);
+					if (entry) {
+						moveProject(entry, button.dataset.dashboardProjectMove || "");
+					}
+				}
+			});
+
+			document.addEventListener("htmx:beforeSwap", function(event) {
+				if (draggingProjectID && sidebarSwapTarget(event)) {
+					event.preventDefault();
+				}
+			});
+
+			document.addEventListener("htmx:afterSettle", function() {
+				scheduleApplySavedProjectOrder();
+			});
+
+			window.addEventListener("storage", function(event) {
+				if (event.key === storageKey) {
+					scheduleApplySavedProjectOrder();
+				}
+			});
+
+			if (document.readyState === "loading") {
+				document.addEventListener("DOMContentLoaded", applySavedProjectOrder);
+			} else {
+				applySavedProjectOrder();
+			}
+		})();
+	</script>
+}
+
 templ dashboardSidebar(data DashboardData) {
 	@sidebar.Sidebar(sidebar.Props{
 		ID:          "dashboard-sidebar",
@@ -133,8 +532,28 @@ templ dashboardSidebar(data DashboardData) {
 		}) {
 			@DashboardSidebarContent(data)
 		}
+		@dashboardProjectOrderFooter()
 	}
 	@dashboardSidebarFilterScript()
+	@dashboardSidebarProjectOrderScript()
+}
+
+templ dashboardProjectOrderFooter() {
+	@sidebar.Footer(sidebar.FooterProps{Class: "border-t border-sidebar-border group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden"}) {
+		@button.Button(button.Props{
+			Variant:   button.VariantGhost,
+			Size:      button.SizeSm,
+			FullWidth: true,
+			Class:     "justify-start px-2 text-xs text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring",
+			Attributes: templ.Attributes{
+				"data-dashboard-project-order-reset": true,
+				"aria-label":                         "Reset project order",
+			},
+		}) {
+			@icon.RotateCcw(icon.Props{Class: "size-3.5 shrink-0"})
+			<span>Reset order</span>
+		}
+	}
 }
 
 templ DashboardSidebarContent(data DashboardData) {
@@ -158,20 +577,37 @@ templ DashboardSidebarContent(data DashboardData) {
 				<input id="dashboard-project-filter" name="project_filter" type="search" class="min-h-9 rounded-md border border-sidebar-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-sidebar-ring focus:outline-none focus:ring-2 focus:ring-sidebar-ring" placeholder="Filter projects" data-dashboard-project-filter/>
 			</label>
 		}
-		@sidebar.Menu(sidebar.MenuProps{Class: "dashboard-sidebar-projects"}) {
+		@sidebar.Menu(sidebar.MenuProps{
+			Class: "dashboard-sidebar-projects",
+			Attributes: templ.Attributes{
+				"data-dashboard-project-order-list": true,
+			},
+		}) {
 			for _, item := range sidebarProjectItems(data) {
-				@sidebar.MenuItem() {
+				@sidebar.MenuItem(sidebar.MenuItemProps{
+					Class:      "dashboard-project-entry",
+					Attributes: sidebarProjectItemAttributes(item),
+				}) {
 					@sidebar.MenuButton(sidebar.MenuButtonProps{
 						Href:       item.Href,
 						IsActive:   item.Active,
 						Tooltip:    sidebarProjectTooltip(item),
-						Attributes: sidebarProjectAttributes(item),
+						Class:      "dashboard-project-menu-button",
+						Attributes: sidebarProjectButtonAttributes(item),
 					}) {
+						if sidebarProjectOrderAvailable(data) {
+							<span class="dashboard-project-drag-handle group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden" data-dashboard-project-drag-handle aria-hidden="true">
+								@icon.GripVertical(icon.Props{Class: "size-3.5"})
+							</span>
+						}
 						<span class={ "inline-flex size-2.5 shrink-0 rounded-full " + item.DotClass }></span>
 						<span>{ item.Name }</span>
 						@sidebar.MenuBadge(sidebar.MenuBadgeProps{Class: "font-mono " + item.BadgeClass}) {
 							{ item.CountLabel }
 						}
+					}
+					if sidebarProjectOrderAvailable(data) {
+						@dashboardProjectOrderControls(item)
 					}
 				}
 			}
@@ -204,6 +640,35 @@ templ DashboardSidebarContent(data DashboardData) {
 			}
 		}
 	}
+}
+
+templ dashboardProjectOrderControls(item sidebarProjectItem) {
+	<div class="dashboard-project-order-controls group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden" data-dashboard-project-order-controls>
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeIcon,
+			Class:   "size-6 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring",
+			Attributes: templ.Attributes{
+				"data-dashboard-project-move": "up",
+				"data-project-id":              item.ID,
+				"aria-label":                   "Move " + item.Name + " up",
+			},
+		}) {
+			@icon.ArrowUp(icon.Props{Class: "size-3.5"})
+		}
+		@button.Button(button.Props{
+			Variant: button.VariantGhost,
+			Size:    button.SizeIcon,
+			Class:   "size-6 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring",
+			Attributes: templ.Attributes{
+				"data-dashboard-project-move": "down",
+				"data-project-id":              item.ID,
+				"aria-label":                   "Move " + item.Name + " down",
+			},
+		}) {
+			@icon.ArrowDown(icon.Props{Class: "size-3.5"})
+		}
+	</div>
 }
 
 templ dashboardCharts(data DashboardData) {
