@@ -389,6 +389,28 @@ func TestConnectorFetchCandidateIssuesLeavesDependencyResolutionForHydration(t *
 	}
 }
 
+func TestParseBlockedByRecognizesIssueReferences(t *testing.T) {
+	t.Parallel()
+
+	body := strings.Join([]string{
+		"Depends on: #24",
+		"Blocked by: digitaldrywood/agent-runtime#25",
+		"Depends on: https://github.com/digitaldrywood/detent/issues/26",
+		"Depends on: https://github.com/digitaldrywood/detent/issues/26 and #24",
+		"Mention only: #27",
+	}, "\n")
+
+	got := parseBlockedBy(body, "digitaldrywood/detent")
+	want := []connector.BlockedRef{
+		{Identifier: "digitaldrywood/detent#24"},
+		{Identifier: "digitaldrywood/agent-runtime#25"},
+		{Identifier: "digitaldrywood/detent#26"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseBlockedBy() = %#v, want %#v", got, want)
+	}
+}
+
 func TestConnectorFetchCandidateIssuesCapturesLinkedChildIssues(t *testing.T) {
 	t.Parallel()
 

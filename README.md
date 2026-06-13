@@ -51,8 +51,10 @@ The board is the state machine; board status drives everything.
    contract — moving the issue to `In Progress`.
 3. **The agent works** in its own branch, runs your validation gate, and opens
    or updates a PR, then moves the issue to `Human Review`.
-4. **Gates decide.** Your approval plus automated review (e.g. Codex) clear it
-   to `Merging`; unresolved feedback sends it to `Rework` for another pass.
+4. **Gates decide.** `Human Review` is the holding state. The workflow decides
+   whether promotion to `Merging` waits for a human label, a current-head
+   automated PR review, or only linked PR + green CI + quiet time. Unresolved
+   feedback sends it to `Rework` for another pass.
 5. **The merge train is serialized** — one rebase, CI-watch, and merge at a
    time, so concurrent candidates never invalidate each other's CI — then the
    issue is `Done`.
@@ -84,11 +86,14 @@ counts:
   labels, blockers, comments, and pull requests are the state machine.
 - **Multi-project from one host.** `global.yaml` runs many repositories with
   weights, priority, pause, and fair scheduling.
-- **Explicit gates + a serialized merge train.** CI plus automated (Codex)
-  review plus a one-at-a-time `Merging` lane, so what lands is always green.
+- **Explicit gates + a serialized merge train.** CI, optional automated PR
+  review criteria, and a one-at-a-time `Merging` lane, so what lands is always
+  green.
 - **Pluggable validation gates.** Code defaults use `make check`, CI, and
-  automated review, while workflow authors can choose a command gate or a human
-  approval-label gate for files-in-repo work.
+  automated review, while workflow authors can choose whether a command gate
+  requires automated PR review or instead only waits for CI and the quiet
+  window. A human approval-label gate is available when the workflow explicitly
+  wants one.
 - **A real operator surface.** A live dashboard (charts, trends, timelines,
   hover detail, budget and rate-limit state) and terminal UI, `detent doctor`
   preflight checks, cross-platform config discovery, and a GoReleaser pipeline.
@@ -312,6 +317,7 @@ codex:
 gate:
   kind: command
   run: make check
+  require_automated_review: true
 server:
   host: 127.0.0.1
   port: 4000
@@ -345,9 +351,13 @@ default because Symphony polls Linear, which has a different rate model.
 
 `gate` controls the validation contract the agent and operator flow follow.
 Omitting it preserves the code default: `kind: command` with `run: make check`,
-plus green CI and clean automated review before promotion. Use
-`kind: human_review` with `approval_label` when the gate is a human label rather
-than a command.
+plus green CI, no P1 automated PR review findings, a quiet window, and a
+current-head automated PR review before auto-promotion. Set
+`require_automated_review: false` on a command gate when the workflow should
+auto-promote from `Human Review` after a linked open PR, green CI, no P1 bot
+review findings, and the quiet period. Use `kind: human_review` with
+`approval_label` only when the workflow explicitly requires a human approval
+label to promote.
 
 For production, self-hosted, or multi-instance GitHub Projects, prefer GitHub
 App installation authentication instead of a shared personal access token. App
@@ -601,12 +611,31 @@ The recommended GitHub Project board states are:
 | `Backlog` | Not eligible for agents yet. |
 | `Todo` | Ready for Detent to claim and dispatch. |
 | `In Progress` | An agent is actively working or continuing work. |
-| `Blocked` | Detent cannot continue without human action. |
-| `Human Review` | The PR is ready for approval. |
+| `Blocked` | Human-blocked work, or dependency-waiting work when auto-unblock is enabled. |
+| `Human Review` | The PR is ready for review/soak until the workflow's promotion criteria pass. |
 | `Rework` | Human or bot feedback needs another agent pass. |
 | `Merging` | Final rebase, validation, CI watch, and merge. |
 | `Done` | Complete. |
 | `Cancelled` | Terminal state mapped to `Done` in the default release flow. |
+
+### Review gate
+
+`Human Review` is the holding state before the merge train. Auto-promotion out
+of that state is controlled by the workflow:
+
+- `gate.kind: command` requires a linked open PR, green CI, no P1 automated PR
+  review findings, and the configured quiet period. By default it also requires
+  a current-head automated GitHub PR review.
+- `gate.kind: command` with `require_automated_review: false` keeps the linked
+  PR, green CI, no-P1, and quiet-period checks but does not require a bot PR
+  review to exist.
+- `gate.kind: human_review` requires a linked open PR plus the configured
+  `approval_label` on the issue.
+
+A Codex coding session that created the PR is not the same signal as a
+Codex/ChatGPT/Claude GitHub PR review. If automated PR review is required and
+the PR head changes after a review, request or wait for a fresh automated review
+before expecting auto-promotion.
 
 ### Set up the board
 
@@ -638,17 +667,20 @@ Detent supports two dependency patterns. Use the one that matches how much of
 the wait should be visible on the board.
 
 - **Keep the issue in `Todo`.** Add a machine-readable dependency line such as
-  `Depends on: #123` or `Blocked by: owner/repo#123`. Detent keeps the issue out
-  of dispatch while any referenced blocker is non-terminal, then dispatches it
-  normally after blockers clear. This is the default behavior and needs no extra
-  configuration.
+  `Depends on: #123`, `Blocked by: owner/repo#123`, or
+  `Depends on: https://github.com/owner/repo/issues/123`. Detent keeps the
+  issue out of dispatch while any referenced blocker is non-terminal, then
+  dispatches it normally after blockers clear. This is the default behavior and
+  needs no extra configuration.
 - **Keep the issue in `Blocked`.** Enable `tracker.dependency_auto_unblock` when
   your team wants dependency-waiting issues to sit in a waiting column. Detent
   only moves issues that have explicit `Depends on:` or `Blocked by:` references.
   When all blockers are terminal, closed, or have a merged linked PR under the
   configured `readiness` rule, Detent updates the ProjectV2 `Status` to
-  `target_state` and posts an audit comment. Human blockers without explicit
-  dependency references stay blocked.
+  `target_state` and posts an audit comment. Without
+  `tracker.dependency_auto_unblock.enabled: true`, a `Blocked` issue is observed
+  for display but will not be moved back to `Todo`. Human blockers without
+  explicit dependency references stay blocked.
 
 Before you dispatch anything, run **`detent doctor`** — it checks config
 resolution, the database, the `codex` binary, your GitHub token and scopes, git,

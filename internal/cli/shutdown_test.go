@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"strings"
 	"testing"
 	"time"
@@ -71,6 +72,47 @@ func TestRunWithShutdownZeroSessionsExitsGracefully(t *testing.T) {
 	}
 	if got := output.String(); !strings.Contains(got, "shutdown requested — no agent sessions in flight") {
 		t.Fatalf("output missing zero-session notice:\n%s", got)
+	}
+}
+
+func TestRunWithShutdownZeroSessionsExitsWhenServeIgnoresCancellation(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	started := make(chan struct{})
+	errs := make(chan error, 1)
+
+	go func() {
+		errs <- runWithShutdown(context.Background(), runningShutdownConfig{
+			Controller:       controller,
+			Registry:         projectpkg.NewRegistry(),
+			SnapshotHub:      hub.New[telemetry.Snapshot](),
+			Output:           io.Discard,
+			ProgressInterval: time.Millisecond,
+			HardTimeout:      20 * time.Millisecond,
+			Now: func() time.Time {
+				return time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+			},
+		}, func(context.Context) error {
+			close(started)
+			select {}
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("server did not start")
+	}
+	controller.RequestDrain()
+
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("runWithShutdown() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shutdown")
 	}
 }
 

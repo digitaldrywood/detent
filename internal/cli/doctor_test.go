@@ -4,13 +4,16 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -441,6 +444,30 @@ func TestCheckDoctorRuntimeSettingsReportsSources(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorDetentExecutableReportsRunningBinary(t *testing.T) {
+	t.Parallel()
+
+	executablePath := filepath.Join("Users", "corylanou", "go", "bin", "detent")
+	got := checkDoctorDetentExecutable(buildinfo.Info{
+		Version: "v1.2.3",
+		Commit:  "abcdef123456",
+		Date:    "2026-06-13T15:35:40Z",
+	}, doctorDeps{
+		executable: func() (string, error) {
+			return executablePath, nil
+		},
+	})
+
+	if got.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s", got.Status, doctorOK)
+	}
+	for _, want := range []string{executablePath, "v1.2.3", "abcdef1"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail missing %q:\n%s", want, got.Detail)
+		}
+	}
+}
+
 func TestCheckDoctorGitHub(t *testing.T) {
 	t.Parallel()
 
@@ -777,6 +804,199 @@ func TestDoctorCommandExitStatus(t *testing.T) {
 	}
 }
 
+func TestDoctorCommandStreamsProgressBeforeSlowCheckCompletes(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	env := ""
+	logLevel := ""
+	host := "127.0.0.1"
+	port := 0
+	opts := successfulDoctorOptions(configPath)
+	deps := successfulDoctorDeps()
+	codexStarted := make(chan struct{})
+	releaseCodex := make(chan struct{})
+	var once sync.Once
+	deps.runCommand = func(ctx context.Context, path string, _ ...string) error {
+		if strings.HasSuffix(path, "codex") {
+			once.Do(func() {
+				close(codexStarted)
+			})
+			select {
+			case <-releaseCodex:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
+			}
+		}
+		return nil
+	}
+
+	cmd := newDoctorCommandWithDeps(&configPath, &env, &logLevel, &host, &port, opts, deps)
+	stdout := &synchronizedBuffer{}
+	cmd.SetOut(stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	errs := make(chan error, 1)
+	go func() {
+		errs <- cmd.Execute()
+	}()
+
+	select {
+	case <-codexStarted:
+	case <-time.After(time.Second):
+		t.Fatal("codex check did not start")
+	}
+	if got := stdout.String(); !strings.Contains(got, "RUN    codex binary") {
+		t.Fatalf("progress output missing codex start before check returned:\n%s", got)
+	}
+	close(releaseCodex)
+
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("Execute() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for doctor command")
+	}
+}
+
+func TestDoctorCommandTimeoutFlagBoundsCheck(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	env := ""
+	logLevel := ""
+	host := "127.0.0.1"
+	port := 0
+	opts := successfulDoctorOptions(configPath)
+	deps := successfulDoctorDeps()
+	releaseCodex := make(chan struct{})
+	defer close(releaseCodex)
+	deps.runCommand = func(_ context.Context, path string, _ ...string) error {
+		if strings.HasSuffix(path, "codex") {
+			<-releaseCodex
+		}
+		return nil
+	}
+
+	cmd := newDoctorCommandWithDeps(&configPath, &env, &logLevel, &host, &port, opts, deps)
+	cmd.SetArgs([]string{"--timeout", "20ms"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+
+	err := cmd.Execute()
+	if !errors.Is(err, ErrDoctorFailed) {
+		t.Fatalf("Execute() error = %v, want %v", err, ErrDoctorFailed)
+	}
+	for _, want := range []string{"FAIL", "codex binary", "timed out after 20ms", "Result: FAIL"} {
+		if !strings.Contains(stdout.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, stdout.String())
+		}
+	}
+}
+
+func TestRunDoctorChecksRunsJobsInParallel(t *testing.T) {
+	t.Parallel()
+
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	jobs := []doctorCheckJob{
+		{
+			Name: "first",
+			Run: func(context.Context) []doctorCheck {
+				close(firstStarted)
+				<-secondStarted
+				return []doctorCheck{{Name: "first", Status: doctorOK, Detail: "done"}}
+			},
+		},
+		{
+			Name: "second",
+			Run: func(context.Context) []doctorCheck {
+				close(secondStarted)
+				<-firstStarted
+				return []doctorCheck{{Name: "second", Status: doctorOK, Detail: "done"}}
+			},
+		},
+	}
+
+	results := runDoctorChecks(context.Background(), jobs, time.Second, io.Discard)
+	if len(results) != 2 || len(results[0]) != 1 || len(results[1]) != 1 {
+		t.Fatalf("results = %#v", results)
+	}
+	if results[0][0].Name != "first" || results[1][0].Name != "second" {
+		t.Fatalf("results order = %#v, want first then second", results)
+	}
+}
+
+func TestDoctorReportKeepsStableOrderAfterParallelChecks(t *testing.T) {
+	t.Parallel()
+
+	firstDone := make(chan struct{})
+	secondDone := make(chan struct{})
+	jobs := []doctorCheckJob{
+		{
+			Name: "first",
+			Run: func(context.Context) []doctorCheck {
+				<-secondDone
+				close(firstDone)
+				return []doctorCheck{{Name: "first", Status: doctorOK, Detail: "done"}}
+			},
+		},
+		{
+			Name: "second",
+			Run: func(context.Context) []doctorCheck {
+				close(secondDone)
+				return []doctorCheck{{Name: "second", Status: doctorOK, Detail: "done"}}
+			},
+		},
+	}
+
+	var report doctorReport
+	for _, checks := range runDoctorChecks(context.Background(), jobs, time.Second, io.Discard) {
+		report.Checks = append(report.Checks, checks...)
+	}
+	select {
+	case <-firstDone:
+	default:
+		t.Fatal("first check did not complete")
+	}
+
+	var output bytes.Buffer
+	if err := writeDoctorReport(&output, report); err != nil {
+		t.Fatalf("writeDoctorReport() error = %v", err)
+	}
+	got := output.String()
+	firstIndex := strings.Index(got, "first")
+	secondIndex := strings.Index(got, "second")
+	if firstIndex < 0 || secondIndex < 0 || firstIndex > secondIndex {
+		t.Fatalf("report order =\n%s\nwant first before second", got)
+	}
+}
+
+func TestRunDoctorCheckTimesOutUnresponsiveJob(t *testing.T) {
+	t.Parallel()
+
+	checks := runDoctorCheck(context.Background(), doctorCheckJob{
+		Name: "slow check",
+		Run: func(context.Context) []doctorCheck {
+			select {}
+		},
+	}, 20*time.Millisecond)
+
+	if len(checks) != 1 {
+		t.Fatalf("checks len = %d, want 1", len(checks))
+	}
+	if checks[0].Status != doctorFail {
+		t.Fatalf("Status = %s, want %s", checks[0].Status, doctorFail)
+	}
+	if checks[0].Name != "slow check" || !strings.Contains(checks[0].Detail, "timed out after 20ms") {
+		t.Fatalf("check = %#v, want timeout detail", checks[0])
+	}
+}
+
 func validDoctorWorkflow(sourceRoot string) workflowconfig.Config {
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
@@ -872,6 +1092,9 @@ func successfulDoctorDeps() doctorDeps {
 		gitWorkTree: func(context.Context, string) error {
 			return nil
 		},
+		executable: func() (string, error) {
+			return filepath.Join("Users", "corylanou", "go", "bin", "detent"), nil
+		},
 	}
 }
 
@@ -908,4 +1131,21 @@ func (a fakeDoctorAddr) Network() string {
 
 func (a fakeDoctorAddr) String() string {
 	return string(a)
+}
+
+type synchronizedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.Write(p)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buf.String()
 }

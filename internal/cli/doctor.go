@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -29,7 +30,10 @@ import (
 
 var ErrDoctorFailed = errors.New("doctor found failed checks")
 
-const doctorCommandTimeout = 5 * time.Second
+const (
+	doctorCommandTimeout = 5 * time.Second
+	doctorCheckTimeout   = 5 * time.Second
+)
 
 type doctorStatus string
 
@@ -54,10 +58,23 @@ type doctorReport struct {
 	Checks []doctorCheck
 }
 
+type doctorCheckJob struct {
+	Name string
+	Run  func(context.Context) []doctorCheck
+}
+
+type doctorCheckResult struct {
+	Index  int
+	Checks []doctorCheck
+}
+
 type doctorConfig struct {
-	ConfigPath string
-	Host       string
-	Flags      runtimeFlags
+	ConfigPath   string
+	Host         string
+	Flags        runtimeFlags
+	Output       io.Writer
+	CheckTimeout time.Duration
+	Build        buildinfo.Info
 }
 
 type doctorStore interface {
@@ -87,6 +104,7 @@ type doctorDeps struct {
 	openSQLite           func(context.Context, string) (doctorStore, error)
 	gitWorkTree          func(context.Context, string) error
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
+	executable           func() (string, error)
 }
 
 func newDoctorCommand(configPath *string, env *string, logLevel *string, host *string, port *int, opts options) *cobra.Command {
@@ -94,14 +112,18 @@ func newDoctorCommand(configPath *string, env *string, logLevel *string, host *s
 }
 
 func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string, host *string, port *int, opts options, deps doctorDeps) *cobra.Command {
-	return &cobra.Command{
+	timeout := doctorCheckTimeout
+	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Run preflight health checks",
 		Args:  cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			report := runDoctor(cmd.Context(), doctorConfig{
-				ConfigPath: derefString(configPath),
-				Host:       derefString(host),
+				ConfigPath:   derefString(configPath),
+				Host:         derefString(host),
+				Output:       cmd.OutOrStdout(),
+				CheckTimeout: timeout,
+				Build:        opts.build,
 				Flags: runtimeFlags{
 					Env:      runtimeStringFlag{Value: derefString(env), Set: flagChanged(cmd, "env")},
 					LogLevel: runtimeStringFlag{Value: derefString(logLevel), Set: flagChanged(cmd, "log-level")},
@@ -117,6 +139,8 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 			return nil
 		},
 	}
+	cmd.Flags().DurationVar(&timeout, "timeout", doctorCheckTimeout, "per-check timeout")
+	return cmd
 }
 
 func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorDeps) doctorReport {
@@ -125,16 +149,22 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	}
 	opts = doctorOptions(opts)
 	deps = deps.withDefaults()
+	timeout := doctorNormalizedTimeout(cfg.CheckTimeout)
+	progressOut := cfg.Output
 
 	var report doctorReport
+	writeDoctorProgressStart(progressOut, "Config resolution")
 	resolution, global, configCheck := checkDoctorConfig(cfg.ConfigPath, opts)
+	writeDoctorProgressDone(progressOut, configCheck)
 	report.Add(configCheck)
 
 	workflowPath := ""
 	if global != nil {
 		workflowPath = firstGlobalWorkflowPath(*global)
 	}
-	runtime, runtimeErr := resolveRuntimeSettings(ctx, runtimeInput{
+	writeDoctorProgressStart(progressOut, "Runtime settings")
+	runtimeCtx, cancelRuntime := context.WithTimeout(ctx, timeout)
+	runtime, runtimeErr := resolveRuntimeSettings(runtimeCtx, runtimeInput{
 		Config:     global,
 		ConfigPath: resolution,
 		Workflow:   workflowPath,
@@ -144,16 +174,25 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		ghAuthToken:  deps.ghAuthToken,
 		loadWorkflow: deps.loadWorkflow,
 	})
+	cancelRuntime()
 	if runtimeErr != nil {
-		report.Add(doctorCheck{
+		check := doctorCheck{
 			Name:   "Runtime settings",
 			Status: doctorFail,
 			Detail: runtimeErr.Error(),
 			Hint:   "Fix runtime flags, environment variables, or global.yaml.",
-		})
+		}
+		writeDoctorProgressDone(progressOut, check)
+		report.Add(check)
 	} else {
-		report.Add(checkDoctorRuntimeSettings(runtime))
+		check := checkDoctorRuntimeSettings(runtime)
+		writeDoctorProgressDone(progressOut, check)
+		report.Add(check)
 	}
+	writeDoctorProgressStart(progressOut, "Detent executable")
+	executableCheck := checkDoctorDetentExecutable(cfg.Build, deps)
+	writeDoctorProgressDone(progressOut, executableCheck)
+	report.Add(executableCheck)
 
 	boot := BootConfig{
 		Host: strings.TrimSpace(cfg.Host),
@@ -166,24 +205,134 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	if global != nil {
 		boot.Global = *global
 		boot.Host = bootHost(cfg.Host, firstGlobalWorkflowPath(*global))
-		report.Add(checkDoctorInstanceIdentity(*global))
-		report.Checks = append(report.Checks, checkDoctorProjects(ctx, *global, deps, runtimeGlobalGitHubToken(runtime.GitHubToken))...)
+		writeDoctorProgressStart(progressOut, "Instance identity")
+		check := checkDoctorInstanceIdentity(*global)
+		writeDoctorProgressDone(progressOut, check)
+		report.Add(check)
 	} else {
-		report.Add(doctorCheck{
+		writeDoctorProgressStart(progressOut, "Project workflows")
+		check := doctorCheck{
 			Name:   "Project workflows",
 			Status: doctorWarn,
 			Detail: "skipped because global config could not be loaded",
 			Hint:   "Fix the global config, then rerun detent doctor.",
-		})
+		}
+		writeDoctorProgressDone(progressOut, check)
+		report.Add(check)
 	}
 
-	report.Add(checkDoctorSQLite(ctx, resolution, deps))
-	report.Add(checkDoctorCodex(ctx, deps))
-	report.Add(checkDoctorGitHub(ctx, global, runtime.GitHubToken, deps))
-	report.Add(checkDoctorServerPort(boot, deps))
-	report.Add(checkDoctorGit(ctx, deps))
+	jobs := []doctorCheckJob{}
+	if global != nil {
+		globalConfig := *global
+		githubToken := runtimeGlobalGitHubToken(runtime.GitHubToken)
+		jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken)...)
+	}
+	jobs = append(jobs,
+		doctorCheckJob{
+			Name: "SQLite database",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorSQLite(jobCtx, resolution, deps)}
+			},
+		},
+		doctorCheckJob{
+			Name: "codex binary",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorCodex(jobCtx, deps)}
+			},
+		},
+		doctorCheckJob{
+			Name: "GitHub token",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorGitHub(jobCtx, global, runtime.GitHubToken, deps)}
+			},
+		},
+		doctorCheckJob{
+			Name: "Server port",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorServerPort(boot, deps)}
+			},
+		},
+		doctorCheckJob{
+			Name: "git binary",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorGit(jobCtx, deps)}
+			},
+		},
+	)
+	for _, checks := range runDoctorChecks(ctx, jobs, timeout, progressOut) {
+		report.Checks = append(report.Checks, checks...)
+	}
 
 	return report
+}
+
+func runDoctorChecks(ctx context.Context, jobs []doctorCheckJob, timeout time.Duration, out io.Writer) [][]doctorCheck {
+	results := make([][]doctorCheck, len(jobs))
+	done := make(chan doctorCheckResult, len(jobs))
+	for i, job := range jobs {
+		writeDoctorProgressStart(out, job.Name)
+		go func(index int, job doctorCheckJob) {
+			done <- doctorCheckResult{
+				Index:  index,
+				Checks: runDoctorCheck(ctx, job, timeout),
+			}
+		}(i, job)
+	}
+	for range jobs {
+		result := <-done
+		for _, check := range result.Checks {
+			writeDoctorProgressDone(out, check)
+		}
+		results[result.Index] = result.Checks
+	}
+	return results
+}
+
+func runDoctorCheck(ctx context.Context, job doctorCheckJob, timeout time.Duration) []doctorCheck {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	timeout = doctorNormalizedTimeout(timeout)
+	checkCtx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	done := make(chan []doctorCheck, 1)
+	go func() {
+		done <- job.Run(checkCtx)
+	}()
+
+	select {
+	case checks := <-done:
+		return checks
+	case <-checkCtx.Done():
+		return []doctorCheck{{
+			Name:   job.Name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("timed out after %s: %v", timeout, checkCtx.Err()),
+			Hint:   "Rerun detent doctor; if this repeats, check network access, GitHub availability, local subprocesses, and SQLite locks.",
+		}}
+	}
+}
+
+func doctorNormalizedTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 {
+		return doctorCheckTimeout
+	}
+	return timeout
+}
+
+func writeDoctorProgressStart(out io.Writer, name string) {
+	if out == nil {
+		return
+	}
+	fmt.Fprintf(out, "%-5s  %-28s  checking\n", "RUN", name)
+}
+
+func writeDoctorProgressDone(out io.Writer, check doctorCheck) {
+	if out == nil {
+		return
+	}
+	fmt.Fprintf(out, "%-5s  %-28s  %s\n", check.Status, check.Name, check.Detail)
 }
 
 func (r *doctorReport) Add(check doctorCheck) {
@@ -296,6 +445,28 @@ func checkDoctorRuntimeSettings(settings RuntimeSettings) doctorCheck {
 	return check
 }
 
+func checkDoctorDetentExecutable(build buildinfo.Info, deps doctorDeps) doctorCheck {
+	path, err := deps.executable()
+	if err != nil {
+		return doctorCheck{
+			Name:   "Detent executable",
+			Status: doctorFail,
+			Detail: err.Error(),
+			Hint:   "Start Detent from the expected installed binary.",
+		}
+	}
+	path = filepath.Clean(path)
+	detail := path + " is running"
+	if !buildinfo.IsZero(build) {
+		detail = path + " " + buildinfo.DisplayLabel(build)
+	}
+	return doctorCheck{
+		Name:   "Detent executable",
+		Status: doctorOK,
+		Detail: detail,
+	}
+}
+
 func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, githubToken string) []doctorCheck {
 	if len(cfg.Projects) == 0 {
 		return []doctorCheck{
@@ -310,89 +481,130 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 
 	checks := make([]doctorCheck, 0, len(cfg.Projects)*2)
 	for _, project := range cfg.Projects {
-		id := strings.TrimSpace(project.ID)
-		if id == "" {
-			id = "project"
-		}
-		workflow, err := deps.loadWorkflow(project.Workflow)
-		if err != nil {
-			checks = append(checks, doctorCheck{
+		checks = append(checks, checkDoctorProject(ctx, project, deps, githubToken)...)
+	}
+
+	return checks
+}
+
+func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToken string) []doctorCheckJob {
+	if len(cfg.Projects) == 0 {
+		return []doctorCheckJob{{
+			Name: "Project workflows",
+			Run: func(context.Context) []doctorCheck {
+				return []doctorCheck{
+					{
+						Name:   "Project workflows",
+						Status: doctorWarn,
+						Detail: "no projects configured",
+						Hint:   "Run detent add-project to add a project.",
+					},
+				}
+			},
+		}}
+	}
+
+	jobs := make([]doctorCheckJob, 0, len(cfg.Projects))
+	for _, project := range cfg.Projects {
+		project := project
+		id := doctorProjectID(project)
+		jobs = append(jobs, doctorCheckJob{
+			Name: "Project " + id + " checks",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return checkDoctorProject(jobCtx, project, deps, githubToken)
+			},
+		})
+	}
+	return jobs
+}
+
+func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps doctorDeps, githubToken string) []doctorCheck {
+	id := doctorProjectID(project)
+	workflow, err := deps.loadWorkflow(project.Workflow)
+	if err != nil {
+		return []doctorCheck{
+			{
 				Name:   "Project " + id + " workflow",
 				Status: doctorFail,
 				Detail: fmt.Sprintf("%s: %v", project.Workflow, err),
 				Hint:   "Fix the WORKFLOW.md path or YAML frontmatter.",
-			})
-			checks = append(checks, doctorCheck{
+			},
+			{
 				Name:   "Project " + id + " source repo",
 				Status: doctorWarn,
 				Detail: "skipped because WORKFLOW.md could not be loaded",
 				Hint:   "Fix the workflow file, then rerun detent doctor.",
-			})
-			continue
+			},
 		}
-		workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, githubToken)
-		if err := workflow.Config.Validate(); err != nil {
-			checks = append(checks, doctorCheck{
+	}
+	workflow.Config = doctorWorkflowConfigWithRuntimeGitHubToken(workflow.Config, githubToken)
+	if err := workflow.Config.Validate(); err != nil {
+		return []doctorCheck{
+			{
 				Name:   "Project " + id + " workflow",
 				Status: doctorFail,
 				Detail: fmt.Sprintf("%s: %v", project.Workflow, err),
 				Hint:   "Fix invalid WORKFLOW.md frontmatter.",
-			})
-			checks = append(checks, doctorCheck{
+			},
+			{
 				Name:   "Project " + id + " source repo",
 				Status: doctorWarn,
 				Detail: "skipped because WORKFLOW.md is invalid",
 				Hint:   "Fix the workflow file, then rerun detent doctor.",
-			})
-			continue
+			},
 		}
+	}
 
-		checks = append(checks, doctorCheck{
+	checks := []doctorCheck{
+		{
 			Name:   "Project " + id + " workflow",
 			Status: doctorOK,
 			Detail: doctorWorkflowDetail(project.Workflow, project, workflow.Config),
-		})
-		if workflow.Config.Agent.AutoPromote.Enabled {
-			checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
-		}
-
-		sourceRoot := projectSourceRoot(project, workflow.Config)
-		if sourceRoot == "" {
-			checks = append(checks, doctorCheck{
-				Name:   "Project " + id + " source repo",
-				Status: doctorFail,
-				Detail: "source root is not configured",
-				Hint:   "Set workspace.source_root, project workdir, or workspace.root to an existing git checkout.",
-			})
-			continue
-		}
-		expandedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
-		if err != nil {
-			checks = append(checks, doctorCheck{
-				Name:   "Project " + id + " source repo",
-				Status: doctorFail,
-				Detail: fmt.Sprintf("%s: %v", sourceRoot, err),
-				Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
-			})
-			continue
-		}
-		if err := deps.gitWorkTree(ctx, expandedSourceRoot); err != nil {
-			checks = append(checks, doctorCheck{
-				Name:   "Project " + id + " source repo",
-				Status: doctorFail,
-				Detail: fmt.Sprintf("%s: %v", expandedSourceRoot, err),
-				Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
-			})
-			continue
-		}
-		checks = append(checks, doctorCheck{
-			Name:   "Project " + id + " source repo",
-			Status: doctorOK,
-			Detail: expandedSourceRoot + " is a git worktree",
-		})
+		},
+	}
+	if workflow.Config.Agent.AutoPromote.Enabled {
+		checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
 	}
 
-	return checks
+	sourceRoot := projectSourceRoot(project, workflow.Config)
+	if sourceRoot == "" {
+		return append(checks, doctorCheck{
+			Name:   "Project " + id + " source repo",
+			Status: doctorFail,
+			Detail: "source root is not configured",
+			Hint:   "Set workspace.source_root, project workdir, or workspace.root to an existing git checkout.",
+		})
+	}
+	expandedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
+	if err != nil {
+		return append(checks, doctorCheck{
+			Name:   "Project " + id + " source repo",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s: %v", sourceRoot, err),
+			Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
+		})
+	}
+	if err := deps.gitWorkTree(ctx, expandedSourceRoot); err != nil {
+		return append(checks, doctorCheck{
+			Name:   "Project " + id + " source repo",
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s: %v", expandedSourceRoot, err),
+			Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
+		})
+	}
+	return append(checks, doctorCheck{
+		Name:   "Project " + id + " source repo",
+		Status: doctorOK,
+		Detail: expandedSourceRoot + " is a git worktree",
+	})
+}
+
+func doctorProjectID(project globalconfig.Project) string {
+	id := strings.TrimSpace(project.ID)
+	if id == "" {
+		return "project"
+	}
+	return id
 }
 
 func checkDoctorAutoPromote(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps, now time.Time) doctorCheck {
@@ -1019,6 +1231,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.autoPromoteConnector == nil {
 		d.autoPromoteConnector = defaults.autoPromoteConnector
 	}
+	if d.executable == nil {
+		d.executable = defaults.executable
+	}
 	return d
 }
 
@@ -1034,6 +1249,7 @@ func defaultDoctorDeps() doctorDeps {
 		openSQLite:           openDoctorSQLite,
 		gitWorkTree:          defaultGitWorkTree,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
+		executable:           os.Executable,
 	}
 }
 

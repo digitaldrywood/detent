@@ -52,7 +52,7 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			},
 		},
 		{
-			name: "linked pull request without automated review waits for review",
+			name: "linked pull request without required automated review waits for review",
 			cfg: AutoPromoteConfig{
 				Enabled:       true,
 				QuietDuration: 10 * time.Minute,

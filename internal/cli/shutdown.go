@@ -129,7 +129,7 @@ func runWithShutdown(ctx context.Context, cfg runningShutdownConfig, serve shutd
 			return unexpectedShutdownServeError(err)
 		case <-ctx.Done():
 			cancelServe()
-			if err := waitForServeExit(serveErrs); err != nil {
+			if err := waitForServeExit(context.Background(), serveErrs); err != nil {
 				return err
 			}
 			return ctx.Err()
@@ -158,9 +158,17 @@ func runDrainShutdown(
 	writeShutdownBanner(shutdownOutput(cfg), sessions)
 	shutdownLogger(cfg).Info("shutdown requested", "sessions", len(sessions))
 
-	if err := drainProjects(ctx, cfg.Registry); err != nil {
-		return err
+	hardTimeout := cfg.HardTimeout
+	if hardTimeout <= 0 {
+		hardTimeout = defaultShutdownHardTimeout
 	}
+	drainCtx, cancelDrain := context.WithTimeout(ctx, hardTimeout)
+	if err := runShutdownStep(drainCtx, func(stepCtx context.Context) error {
+		return drainProjects(stepCtx, cfg.Registry)
+	}); err != nil {
+		shutdownLogger(cfg).Warn("drain projects during shutdown failed", "error", err)
+	}
+	cancelDrain()
 	publishShutdownSnapshot(ctx, cfg, startedAt)
 
 	if len(sessions) == 0 {
@@ -172,11 +180,6 @@ func runDrainShutdown(
 	if progressInterval <= 0 {
 		progressInterval = defaultShutdownProgressInterval
 	}
-	hardTimeout := cfg.HardTimeout
-	if hardTimeout <= 0 {
-		hardTimeout = defaultShutdownHardTimeout
-	}
-
 	poll := time.NewTicker(shutdownDrainPollInterval)
 	defer poll.Stop()
 	progress := time.NewTicker(progressInterval)
@@ -202,7 +205,7 @@ func runDrainShutdown(
 			return unexpectedShutdownServeError(err)
 		case <-ctx.Done():
 			cancelServe()
-			if err := waitForServeExit(serveErrs); err != nil {
+			if err := waitForServeExit(context.Background(), serveErrs); err != nil {
 				return err
 			}
 			return ctx.Err()
@@ -256,7 +259,9 @@ func runForceShutdownWithDeadline(
 
 	forceCtx, cancel := context.WithTimeout(context.Background(), hardTimeout)
 	defer cancel()
-	if err := forceProjects(forceCtx, cfg.Registry); err != nil {
+	if err := runShutdownStep(forceCtx, func(stepCtx context.Context) error {
+		return forceProjects(stepCtx, cfg.Registry)
+	}); err != nil {
 		shutdownLogger(cfg).Warn("force shutdown cleanup failed", "error", err)
 	}
 	publishShutdownSnapshot(forceCtx, cfg, startedAt)
@@ -282,18 +287,41 @@ func completeShutdown(
 	}
 	stopCtx, cancel := context.WithTimeout(ctx, hardTimeout)
 	defer cancel()
-	if err := stopProjects(stopCtx, cfg.Registry); err != nil {
+	if err := runShutdownStep(stopCtx, func(stepCtx context.Context) error {
+		return stopProjects(stepCtx, cfg.Registry)
+	}); err != nil {
 		shutdownLogger(cfg).Warn("stop projects during shutdown failed", "error", err)
 	}
 
 	cancelServe()
-	if err := waitForServeExit(serveErrs); err != nil {
+	if err := waitForServeExit(stopCtx, serveErrs); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+			shutdownLogger(cfg).Warn("serve did not exit before shutdown deadline", "error", err)
+			return returnErr
+		}
 		return err
 	}
 
 	result := shutdownResultLabel(machine)
 	shutdownLogger(cfg).Info("shutdown complete ("+result+")", "duration", shutdownNow(cfg).Sub(startedAt))
 	return returnErr
+}
+
+func runShutdownStep(ctx context.Context, step func(context.Context) error) error {
+	if step == nil {
+		return nil
+	}
+	done := make(chan error, 1)
+	go func() {
+		done <- step(ctx)
+	}()
+
+	select {
+	case err := <-done:
+		return err
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func shutdownResultLabel(machine shutdownstate.Machine) string {
@@ -531,9 +559,16 @@ func shutdownNow(cfg runningShutdownConfig) time.Time {
 	return time.Now()
 }
 
-func waitForServeExit(serveErrs <-chan error) error {
-	err := <-serveErrs
-	return unexpectedShutdownServeError(err)
+func waitForServeExit(ctx context.Context, serveErrs <-chan error) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	select {
+	case err := <-serveErrs:
+		return unexpectedShutdownServeError(err)
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func unexpectedShutdownServeError(err error) error {

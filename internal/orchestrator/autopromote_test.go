@@ -105,7 +105,7 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
-			name:  "missing Codex review awaits human review",
+			name:  "missing automated review awaits review",
 			issue: autoPromoteTestIssue("issue-missing-review", nil),
 			cfg:   enabled,
 			input: AutoPromoteSummary{
@@ -115,6 +115,25 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			want: AutoPromoteDecision{
 				Action: AutoPromoteActionAwaitReview,
 				Reason: AutoPromoteReasonCodexReviewMissing,
+			},
+		},
+		{
+			name:  "automated review disabled promotes after green ci and quiet period",
+			issue: autoPromoteTestIssue("issue-no-review-required", nil),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+			},
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
 			},
 		},
 		{

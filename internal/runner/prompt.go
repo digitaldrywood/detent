@@ -178,10 +178,16 @@ func promptAssigns(cfg config.Config, issue connector.Issue, opts PromptOptions)
 func gateAssigns(cfg gate.Config) map[string]any {
 	effective := gate.Effective(cfg)
 	return map[string]any{
-		"kind":           effective.Kind,
-		"run":            effective.Run,
-		"approval_label": effective.ApprovalLabel,
+		"kind":                     effective.Kind,
+		"run":                      effective.Run,
+		"approval_label":           effective.ApprovalLabel,
+		"require_automated_review": requireAutomatedReview(effective),
 	}
+}
+
+func requireAutomatedReview(cfg gate.Config) bool {
+	effective := gate.Effective(cfg)
+	return effective.RequireAutomatedReview != nil && *effective.RequireAutomatedReview
 }
 
 func issueAssigns(issue connector.Issue) map[string]any {

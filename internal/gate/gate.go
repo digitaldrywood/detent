@@ -14,9 +14,10 @@ const (
 )
 
 type Config struct {
-	Kind          string `yaml:"kind"`
-	Run           string `yaml:"run"`
-	ApprovalLabel string `yaml:"approval_label"`
+	Kind                   string `yaml:"kind"`
+	Run                    string `yaml:"run"`
+	ApprovalLabel          string `yaml:"approval_label"`
+	RequireAutomatedReview *bool  `yaml:"require_automated_review"`
 }
 
 type Summary struct {
@@ -70,9 +71,10 @@ type Decision struct {
 
 func DefaultConfig() Config {
 	return Config{
-		Kind:          KindCommand,
-		Run:           DefaultCommand,
-		ApprovalLabel: DefaultApprovalLabel,
+		Kind:                   KindCommand,
+		Run:                    DefaultCommand,
+		ApprovalLabel:          DefaultApprovalLabel,
+		RequireAutomatedReview: new(true),
 	}
 }
 
@@ -89,9 +91,12 @@ func Effective(cfg Config) Config {
 	}
 	if cfg.Kind == KindHumanReview {
 		cfg.Run = ""
+		cfg.RequireAutomatedReview = nil
 		if cfg.ApprovalLabel == "" {
 			cfg.ApprovalLabel = DefaultApprovalLabel
 		}
+	} else if cfg.RequireAutomatedReview == nil {
+		cfg.RequireAutomatedReview = new(true)
 	}
 	if cfg.ApprovalLabel == "" {
 		cfg.ApprovalLabel = DefaultApprovalLabel
@@ -126,8 +131,12 @@ func Instructions(cfg Config) string {
 		return "The validation gate is human review. Keep the pull request in Human Review until a human applies label `" +
 			cfg.ApprovalLabel + "`; do not move it to Merging before that label is present."
 	default:
-		return "The validation gate is a command. Run `" + cfg.Run +
-			"` from the workspace root before Human Review and after any rebase in Merging; the pull request still needs green CI and clean automated review before promotion."
+		instructions := "The validation gate is a command. Run `" + cfg.Run +
+			"` from the workspace root before Human Review and after any rebase in Merging; the pull request still needs green CI before promotion."
+		if automatedReviewRequired(cfg) {
+			return instructions + " Automated review is required on the current pull request head before promotion."
+		}
+		return instructions + " Automated review is not required for promotion, but any P1 automated review findings still block promotion."
 	}
 }
 
@@ -137,11 +146,11 @@ func Evaluate(cfg Config, labels []string, summary Summary, now time.Time, opts 
 	case KindHumanReview:
 		return evaluateHumanReview(cfg, labels, summary)
 	default:
-		return evaluateCommand(summary, now, opts)
+		return evaluateCommand(cfg, summary, now, opts)
 	}
 }
 
-func evaluateCommand(summary Summary, now time.Time, opts EvaluationOptions) Decision {
+func evaluateCommand(cfg Config, summary Summary, now time.Time, opts EvaluationOptions) Decision {
 	if missingPullRequest(summary) {
 		return decision(ActionSkip, ReasonMissingPullRequest)
 	}
@@ -155,7 +164,7 @@ func evaluateCommand(summary Summary, now time.Time, opts EvaluationOptions) Dec
 		out.Findings = cloneFindings(summary.P1Findings)
 		return out
 	}
-	if !automatedReviewSubmitted(summary.ReviewState) {
+	if automatedReviewRequired(cfg) && !automatedReviewSubmitted(summary.ReviewState) {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {
@@ -234,4 +243,9 @@ func cloneFindings(findings []Finding) []Finding {
 
 func normalizeLabel(label string) string {
 	return strings.ToLower(strings.TrimSpace(label))
+}
+
+func automatedReviewRequired(cfg Config) bool {
+	cfg = Effective(cfg)
+	return cfg.Kind == KindCommand && cfg.RequireAutomatedReview != nil && *cfg.RequireAutomatedReview
 }
