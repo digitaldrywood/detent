@@ -241,6 +241,146 @@ func TestFileWatcherDebouncesGlobalConfigWrites(t *testing.T) {
 	}
 }
 
+func TestFileWatcherWatchesSymlinkTargetWrites(t *testing.T) {
+	t.Parallel()
+
+	linkDir := t.TempDir()
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "global.yaml")
+	linkPath := filepath.Join(linkDir, "global.yaml")
+	writeGlobalConfig(t, targetPath, 2)
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	w, err := NewFile(linkPath, func(path string) (globalconfig.Config, error) {
+		return globalconfig.Read(path)
+	}, WithFileDebounce(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewFile() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	updates, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+
+	tmpPath := filepath.Join(targetDir, ".global.yaml.tmp")
+	writeGlobalConfig(t, tmpPath, 5)
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		t.Fatalf("Rename() error = %v", err)
+	}
+
+	update := receiveFileUpdate(t, updates)
+	if update.Err != nil {
+		t.Fatalf("update error = %v", update.Err)
+	}
+	if update.Path != linkPath {
+		t.Fatalf("Path = %q, want symlink path %q", update.Path, linkPath)
+	}
+	if update.Value.Path != linkPath {
+		t.Fatalf("Value.Path = %q, want symlink path %q", update.Value.Path, linkPath)
+	}
+	if update.Value.Global.MaxConcurrentAgents != 5 {
+		t.Fatalf("MaxConcurrentAgents = %d, want 5", update.Value.Global.MaxConcurrentAgents)
+	}
+}
+
+func TestFileWatcherWatchesSymlinkTargetTouches(t *testing.T) {
+	t.Parallel()
+
+	linkDir := t.TempDir()
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "global.yaml")
+	linkPath := filepath.Join(linkDir, "global.yaml")
+	writeGlobalConfig(t, targetPath, 2)
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	w, err := NewFile(linkPath, func(path string) (globalconfig.Config, error) {
+		return globalconfig.Read(path)
+	}, WithFileDebounce(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewFile() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	updates, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+
+	touchedAt := time.Now().Add(time.Minute)
+	if err := os.Chtimes(targetPath, touchedAt, touchedAt); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	update := receiveFileUpdate(t, updates)
+	if update.Err != nil {
+		t.Fatalf("update error = %v", update.Err)
+	}
+	if update.Path != linkPath {
+		t.Fatalf("Path = %q, want symlink path %q", update.Path, linkPath)
+	}
+	if update.Value.Global.MaxConcurrentAgents != 2 {
+		t.Fatalf("MaxConcurrentAgents = %d, want 2", update.Value.Global.MaxConcurrentAgents)
+	}
+}
+
+func TestFileWatcherRefreshesRetargetedSymlinkTarget(t *testing.T) {
+	t.Parallel()
+
+	linkDir := t.TempDir()
+	firstDir := t.TempDir()
+	nextDir := t.TempDir()
+	firstPath := filepath.Join(firstDir, "global.yaml")
+	nextPath := filepath.Join(nextDir, "global.yaml")
+	linkPath := filepath.Join(linkDir, "global.yaml")
+	writeGlobalConfig(t, firstPath, 2)
+	writeGlobalConfig(t, nextPath, 3)
+	if err := os.Symlink(firstPath, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	w, err := NewFile(linkPath, func(path string) (globalconfig.Config, error) {
+		return globalconfig.Read(path)
+	})
+	if err != nil {
+		t.Fatalf("NewFile() error = %v", err)
+	}
+
+	if err := os.Remove(linkPath); err != nil {
+		t.Fatalf("Remove() error = %v", err)
+	}
+	if err := os.Symlink(nextPath, linkPath); err != nil {
+		t.Fatalf("Symlink() retarget error = %v", err)
+	}
+
+	var added []string
+	w.refreshWatchPath(func(dir string) error {
+		added = append(added, dir)
+		return nil
+	})
+
+	resolvedNext := resolveWatchPath(linkPath)
+	if w.watchPath != resolvedNext {
+		t.Fatalf("watchPath = %q, want %q", w.watchPath, resolvedNext)
+	}
+	nextWatchDir := filepath.Dir(resolvedNext)
+	if !hasWatchDir(w.dirs, nextWatchDir) {
+		t.Fatalf("watch dirs = %#v, want %q", w.dirs, nextWatchDir)
+	}
+	if len(added) != 1 || added[0] != nextWatchDir {
+		t.Fatalf("added dirs = %#v, want [%q]", added, nextWatchDir)
+	}
+}
+
 func receiveUpdate(t *testing.T, updates <-chan Update) Update {
 	t.Helper()
 

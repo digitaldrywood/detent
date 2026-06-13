@@ -1092,10 +1092,22 @@ changing `global.yaml` or `WORKFLOW.md`.
    curl -fsS http://<dashboard-check-host>:<port>/health | jq -e '.status == "ok" and .mode == "running"'
    ```
 
-3. **Reload the runtime that needs the change.** Restart Detent, reload the
-   user service, or rely on the documented hot-reload path only for settings
-   Detent reconciles while running. When in doubt, restart before dispatching
-   more work.
+3. **Reload the runtime that needs the change.** Detent watches the active
+   `global.yaml`, including symlinked config targets, and applies this reload
+   matrix:
+
+   | Field | Reload behavior |
+   | --- | --- |
+   | Project list and project settings | Live reload |
+   | Credentials: `github_token` and project credentials | Live reload |
+   | `global.startup` | Live reload |
+   | `instance_name` | Live reload |
+   | `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
+   | `global.max_concurrent_agents`, `global.scheduling`, `global.fair_share` | Restart required |
+   | `port`, `env`, `log_level` | Restart required |
+
+   When a changed field requires restart, Detent logs
+   `global config setting change requires restart` with the field name.
 
 4. **Hold dispatch on failed preflight.** Do not move new work to `Todo` from a
    failed `detent doctor` run unless the only failure is the expected live-port

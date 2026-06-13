@@ -210,8 +210,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	if global != nil {
 		boot.Global = *global
 		boot.Host = bootHost(cfg.Host, firstGlobalWorkflowPath(*global))
+		writeDoctorProgressStart(progressOut, "Global config reload")
+		check := checkDoctorConfigReload(*global)
+		writeDoctorProgressDone(progressOut, check)
+		report.Add(check)
 		writeDoctorProgressStart(progressOut, "Instance identity")
-		check := checkDoctorInstanceIdentity(*global)
+		check = checkDoctorInstanceIdentity(*global)
 		writeDoctorProgressDone(progressOut, check)
 		report.Add(check)
 	} else {
@@ -868,6 +872,50 @@ func doctorWorkflowConfigWithRuntimeGitHubToken(cfg workflowconfig.Config, token
 		cfg.Tracker.APIKey = token
 	}
 	return cfg
+}
+
+func checkDoctorConfigReload(cfg globalconfig.Config) doctorCheck {
+	path := strings.TrimSpace(cfg.Path)
+	if path == "" {
+		return doctorCheck{
+			Name:   "Global config reload",
+			Status: doctorWarn,
+			Detail: "global config path is unavailable",
+			Hint:   "Fix config resolution, then rerun detent doctor.",
+		}
+	}
+
+	info, err := os.Lstat(path)
+	if err != nil {
+		return doctorCheck{
+			Name:   "Global config reload",
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("%s: %v", path, err),
+			Hint:   "Fix the global config path before relying on live reload.",
+		}
+	}
+	if info.Mode()&os.ModeSymlink == 0 {
+		return doctorCheck{
+			Name:   "Global config reload",
+			Status: doctorOK,
+			Detail: path + " is watched for live reload",
+		}
+	}
+
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return doctorCheck{
+			Name:   "Global config reload",
+			Status: doctorWarn,
+			Detail: fmt.Sprintf("%s is a symlink but its target cannot be resolved: %v", path, err),
+			Hint:   "Fix the symlink target before relying on live reload.",
+		}
+	}
+	return doctorCheck{
+		Name:   "Global config reload",
+		Status: doctorOK,
+		Detail: fmt.Sprintf("%s is a symlink to %s; live reload watches the configured path and target", path, target),
+	}
 }
 
 func checkDoctorInstanceIdentity(cfg globalconfig.Config) doctorCheck {

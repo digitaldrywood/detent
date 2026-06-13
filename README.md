@@ -771,11 +771,22 @@ detent remove-project <id>
 ```
 
 These commands persist the global config. A running Detent process watches the
-active `global.yaml` and reconciles project additions, removals, and
-`global.startup` changes without a restart. Changes to
-`global.max_concurrent_agents`, `global.scheduling`, and `global.fair_share`
-require a restart before runtime concurrency and scheduling behavior changes.
-Invalid edits are logged and ignored while the last valid config stays live.
+active `global.yaml`, including symlinked config targets, and reconciles
+supported live-reload fields without a process restart. Invalid edits are
+logged and ignored while the last valid config stays live.
+
+| Field | Reload behavior |
+| --- | --- |
+| Project list and project settings | Live reload |
+| Credentials: `github_token` and project credentials | Live reload |
+| `global.startup` | Live reload |
+| `instance_name` | Live reload |
+| `global.identity` | Live reload; project runtimes restart in-process and `/api/v1/state.instance.name` updates after the next telemetry snapshot |
+| `global.max_concurrent_agents`, `global.scheduling`, `global.fair_share` | Restart required |
+| `port`, `env`, `log_level` | Restart required |
+
+When a changed field requires restart, Detent logs
+`global config setting change requires restart` with the field name.
 
 ## Running Multiple Instances
 

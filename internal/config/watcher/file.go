@@ -25,11 +25,12 @@ type FileUpdate[T any] struct {
 type FileOption func(*fileOptions)
 
 type FileWatcher[T any] struct {
-	path     string
-	dir      string
-	debounce time.Duration
-	loader   FileLoader[T]
-	logger   *slog.Logger
+	path      string
+	watchPath string
+	dirs      []string
+	debounce  time.Duration
+	loader    FileLoader[T]
+	logger    *slog.Logger
 }
 
 type fileOptions struct {
@@ -65,13 +66,38 @@ func NewFile[T any](path string, loader FileLoader[T], opts ...FileOption) (*Fil
 		cfg.logger = slog.Default()
 	}
 
+	path = filepath.Clean(absolute)
+	watchPath := resolveWatchPath(path)
+
 	return &FileWatcher[T]{
-		path:     filepath.Clean(absolute),
-		dir:      filepath.Dir(absolute),
-		debounce: cfg.debounce,
-		loader:   loader,
-		logger:   cfg.logger,
+		path:      path,
+		watchPath: watchPath,
+		dirs:      watchDirs(path, watchPath),
+		debounce:  cfg.debounce,
+		loader:    loader,
+		logger:    cfg.logger,
 	}, nil
+}
+
+func watchDirs(paths ...string) []string {
+	seen := map[string]struct{}{}
+	dirs := make([]string, 0, len(paths))
+	for _, path := range paths {
+		dir := filepath.Dir(path)
+		if _, ok := seen[dir]; ok {
+			continue
+		}
+		seen[dir] = struct{}{}
+		dirs = append(dirs, dir)
+	}
+	return dirs
+}
+
+func resolveWatchPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return path
 }
 
 func WithFileDebounce(debounce time.Duration) FileOption {
@@ -95,9 +121,11 @@ func (w *FileWatcher[T]) Watch(ctx context.Context) (<-chan FileUpdate[T], error
 	if err != nil {
 		return nil, fmt.Errorf("create config watcher: %w", err)
 	}
-	if err := fsWatcher.Add(w.dir); err != nil {
-		closeErr := fsWatcher.Close()
-		return nil, errors.Join(fmt.Errorf("watch config directory: %w", err), closeErr)
+	for _, dir := range w.dirs {
+		if err := fsWatcher.Add(dir); err != nil {
+			closeErr := fsWatcher.Close()
+			return nil, errors.Join(fmt.Errorf("watch config directory %s: %w", dir, err), closeErr)
+		}
 	}
 
 	updates := make(chan FileUpdate[T], 1)
@@ -129,6 +157,7 @@ func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher *fsnotify.Watcher, u
 				return
 			}
 			if w.matches(event) {
+				w.refreshWatchPath(fsWatcher.Add)
 				resetTimer(timer, w.debounce)
 				timerC = timer.C
 			}
@@ -151,10 +180,46 @@ func (w *FileWatcher[T]) run(ctx context.Context, fsWatcher *fsnotify.Watcher, u
 }
 
 func (w *FileWatcher[T]) matches(event fsnotify.Event) bool {
-	if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename|fsnotify.Remove) == 0 {
+	if event.Op&(fsnotify.Create|fsnotify.Write|fsnotify.Rename|fsnotify.Remove|fsnotify.Chmod) == 0 {
 		return false
 	}
-	return filepath.Clean(event.Name) == w.path
+	name := filepath.Clean(event.Name)
+	return name == w.path || name == w.watchPath
+}
+
+func (w *FileWatcher[T]) refreshWatchPath(addDir func(string) error) {
+	watchPath := resolveWatchPath(w.path)
+	if watchPath == w.watchPath {
+		return
+	}
+
+	w.watchPath = watchPath
+	for _, dir := range watchDirs(w.path, watchPath) {
+		if hasWatchDir(w.dirs, dir) {
+			continue
+		}
+		if addDir != nil {
+			if err := addDir(dir); err != nil {
+				w.logger.Warn("watch config symlink target directory failed",
+					"path", w.path,
+					"target", watchPath,
+					"dir", dir,
+					"error", err,
+				)
+				continue
+			}
+		}
+		w.dirs = append(w.dirs, dir)
+	}
+}
+
+func hasWatchDir(dirs []string, dir string) bool {
+	for _, candidate := range dirs {
+		if candidate == dir {
+			return true
+		}
+	}
+	return false
 }
 
 func (w *FileWatcher[T]) reload(ctx context.Context) FileUpdate[T] {

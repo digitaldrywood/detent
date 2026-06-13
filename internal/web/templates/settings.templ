@@ -51,7 +51,7 @@ templ Settings(data SettingsData) {
 						<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
 							<div>
 								@helpHeading2("Global config", helpSettingsConfig, "settings-global-config")
-								<p class="text-sm text-muted-foreground">Project membership and startup settings reload live; concurrency and scheduling settings require a restart.</p>
+								<p class="text-sm text-muted-foreground">Live reload applies to project membership, credentials, startup, instance display, and telemetry identity. Runtime scheduling, concurrency, fair share, and server binding require a restart.</p>
 							</div>
 							<span class="rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ settingsPathRule(data.Global.PathRule) }</span>
 						</div>
@@ -59,6 +59,7 @@ templ Settings(data SettingsData) {
 							@settingsPathRow("Resolved global config path", data.Global.ConfigPath)
 							@settingsValueRow("Discovery rule", settingsPathRule(data.Global.PathRule))
 						</div>
+						@settingsReloadMatrix()
 					</section>
 					<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
 						<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
@@ -146,6 +147,35 @@ templ dashboardNavItem(active string, id string, href string, label string) {
 	} else {
 		<a class="dashboard-nav-link inline-flex items-center py-1 text-sm font-medium text-muted-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href }>{ label }</a>
 	}
+}
+
+templ settingsReloadMatrix() {
+	<div class="mt-5 overflow-hidden rounded-md border border-border">
+		<table class="w-full text-left text-sm">
+			<thead class="bg-muted text-xs uppercase text-muted-foreground">
+				<tr>
+					<th class="px-3 py-2 font-medium">Field</th>
+					<th class="px-3 py-2 font-medium">Behavior</th>
+				</tr>
+			</thead>
+			<tbody class="divide-y divide-border">
+				@settingsReloadRow("Project list and project settings", "Live reload")
+				@settingsReloadRow("Credentials: github_token and project credentials", "Live reload")
+				@settingsReloadRow("global.startup", "Live reload")
+				@settingsReloadRow("instance_name", "Live reload")
+				@settingsReloadRow("global.identity", "Live reload; project runtimes restart in-process and /api/v1/state.instance.name updates after the next telemetry snapshot")
+				@settingsReloadRow("global.max_concurrent_agents, global.scheduling, global.fair_share", "Restart required")
+				@settingsReloadRow("port, env, log_level", "Restart required")
+			</tbody>
+		</table>
+	</div>
+}
+
+templ settingsReloadRow(field string, behavior string) {
+	<tr>
+		<td class="px-3 py-2 font-mono text-xs text-foreground">{ field }</td>
+		<td class="px-3 py-2 text-muted-foreground">{ behavior }</td>
+	</tr>
 }
 
 templ settingsPathRow(label string, value string) {
