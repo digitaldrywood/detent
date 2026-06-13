@@ -2,7 +2,6 @@ package orchestrator
 
 import (
 	"context"
-	"io"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -25,6 +24,8 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 		issue                connector.Issue
 		wantUpdates          []autoPromoteTickUpdate
 		wantCommentFragments []string
+		wantLogFragments     []string
+		rejectLogFragments   []string
 	}{
 		{
 			name: "promotes ready issue to merging",
@@ -48,6 +49,26 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 				"Auto-promoted this issue from Human Review to Merging.",
 				"reason: ready",
 				"https://github.test/digitaldrywood/detent/pull/42",
+			},
+		},
+		{
+			name: "linked pull request without automated review waits for review",
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+			},
+			issue: autoPromoteTickIssue("issue-linked-missing-review", []string{"bug"}, &connector.PullRequest{
+				Number:     390,
+				URL:        "https://github.test/digitaldrywood/detent/pull/390",
+				BranchName: "detent/detent-digitaldrywood_detent_387-29d3e4765f21",
+				State:      "OPEN",
+				CIStatus:   "pass",
+			}),
+			wantLogFragments: []string{
+				"reason=automated_review_missing",
+			},
+			rejectLogFragments: []string{
+				"reason=missing_pull_request",
 			},
 		},
 		{
@@ -155,10 +176,11 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			})
 			state := newState(cfg)
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{tt.issue}}
+			var logs strings.Builder
 			orch := &Orchestrator{
 				cfg:       cfg,
 				connector: tracker,
-				logger:    slog.New(slog.NewTextHandler(io.Discard, &slog.HandlerOptions{Level: slog.LevelDebug})),
+				logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
 			}
 
 			orch.tick(context.Background(), &state, now)
@@ -176,14 +198,24 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 				if len(tracker.comments) != 0 {
 					t.Fatalf("comments = %#v, want none", tracker.comments)
 				}
-				return
+			} else {
+				if len(tracker.comments) != 1 {
+					t.Fatalf("comments = %#v, want one comment", tracker.comments)
+				}
+				for _, fragment := range tt.wantCommentFragments {
+					if !strings.Contains(tracker.comments[0].body, fragment) {
+						t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+					}
+				}
 			}
-			if len(tracker.comments) != 1 {
-				t.Fatalf("comments = %#v, want one comment", tracker.comments)
+			for _, fragment := range tt.wantLogFragments {
+				if !strings.Contains(logs.String(), fragment) {
+					t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+				}
 			}
-			for _, fragment := range tt.wantCommentFragments {
-				if !strings.Contains(tracker.comments[0].body, fragment) {
-					t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+			for _, fragment := range tt.rejectLogFragments {
+				if strings.Contains(logs.String(), fragment) {
+					t.Fatalf("logs %q contain rejected fragment %q", logs.String(), fragment)
 				}
 			}
 		})

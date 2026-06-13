@@ -490,6 +490,74 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 	}
 }
 
+func TestConnectorFetchIssuesByStatesAttachesLinkedPullRequestBeforeBranchPrefix(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_370","content":{"__typename":"Issue","id":"I_370","number":370,"title":"Linked PR issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/370","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"bug"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":376,"url":"https://github.com/digitaldrywood/detent/pull/376"}]}},"statusValue":{"name":"Reviewing"},"priorityValue":null}]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/376",
+			body:   `{"number":376,"html_url":"https://github.com/digitaldrywood/detent/pull/376","state":"open","head":{"ref":"detent/detent-digitaldrywood_detent_370-e71678a9ca7e","sha":"sha-376"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-376/check-runs?per_page=100",
+			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-376/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/376/reviews?per_page=100",
+			body:   `[{"body":"No blocking findings.","state":"COMMENTED","user":{"login":"chatgpt-codex-connector[bot]"},"commit_id":"sha-376","submitted_at":"2026-06-05T11:00:00Z"}]`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+		StateMap: map[string]string{
+			"Human Review": "Reviewing",
+		},
+	})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+
+	pr := got[0].PullRequest
+	if pr == nil {
+		t.Fatal("PullRequest = nil, want linked PR")
+	}
+	if pr.Number != 376 || pr.State != "OPEN" || pr.BranchName != "detent/detent-digitaldrywood_detent_370-e71678a9ca7e" || pr.CIStatus != "pass" || pr.CodexReviewState != "COMMENTED" {
+		t.Fatalf("PullRequest = %#v, want linked PR 376 with hydrated status", pr)
+	}
+
+	requests := server.requests()
+	if len(requests) != 5 {
+		t.Fatalf("request count = %d, want observed query plus linked PR status requests", len(requests))
+	}
+	query := requests[0]["query"].(string)
+	if !strings.Contains(query, "closedByPullRequestsReferences") {
+		t.Fatalf("observed status query does not request linked pull requests:\n%s", query)
+	}
+	for _, request := range requests {
+		path, _ := request["path"].(string)
+		if strings.Contains(path, "/pulls?") {
+			t.Fatalf("request path = %q, want linked PR path without repository-wide pull list", path)
+		}
+	}
+}
+
 func TestConnectorFetchCandidateIssuesPaginatesPullRequestStatusRESTEndpoints(t *testing.T) {
 	t.Parallel()
 

@@ -69,6 +69,45 @@ query DetentGitHubProjectItems(
   rateLimit { limit used remaining cost resetAt }
 }`
 
+const observedStatusProjectItemsQuery = `
+query DetentGitHubObservedStatusProjectItems(
+  $projectId: ID!
+  $first: Int!
+  $after: String
+  $query: String
+) {
+  node(id: $projectId) {
+    ... on ProjectV2 {
+      items(first: $first, after: $after, query: $query) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          content {
+            __typename
+            ... on Issue {
+              id
+              number
+              title
+              state
+              stateReason
+              url
+              repository { nameWithOwner }
+              closedByPullRequestsReferences(first: 5) { nodes { number url } }
+            }
+          }
+          statusValue: fieldValueByName(name: "Status") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name updatedAt }
+          }
+          priorityValue: fieldValueByName(name: "Priority") {
+            ... on ProjectV2ItemFieldSingleSelectValue { name }
+          }
+        }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
 const issueIdentitiesByIDQuery = `
 query DetentGitHubIssueIdentitiesByID($issueIds: [ID!]!) {
   nodes(ids: $issueIds) {
@@ -1301,8 +1340,9 @@ func (c *Connector) SetField(ctx context.Context, issueID string, fieldName stri
 }
 
 type issuePullRequestCandidate struct {
-	Index        int
-	BranchPrefix string
+	Index             int
+	BranchPrefix      string
+	PullRequestNumber int
 }
 
 type pullRequestRepo struct {
@@ -1318,12 +1358,17 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 			continue
 		}
 		branchPrefix := detentIssueBranchPrefix(issue.Identifier)
-		if branchPrefix == "" {
+		pullRequestNumber := 0
+		if issue.PRNumber != nil {
+			pullRequestNumber = *issue.PRNumber
+		}
+		if branchPrefix == "" && pullRequestNumber <= 0 {
 			continue
 		}
 		byRepo[repo] = append(byRepo[repo], issuePullRequestCandidate{
-			Index:        index,
-			BranchPrefix: branchPrefix,
+			Index:             index,
+			BranchPrefix:      branchPrefix,
+			PullRequestNumber: pullRequestNumber,
 		})
 	}
 	if len(byRepo) == 0 {
@@ -1341,6 +1386,12 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 	})
 
 	for _, repo := range repos {
+		if err := c.attachLinkedPullRequests(ctx, repo, issues, byRepo[repo]); err != nil {
+			return err
+		}
+		if !hasUnattachedBranchPullRequestCandidates(issues, byRepo[repo]) {
+			continue
+		}
 		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
 		if err != nil {
 			return err
@@ -1444,6 +1495,14 @@ func (c *Connector) fetchRepositoryPullRequests(ctx context.Context, repo pullRe
 	return pullRequests, nil
 }
 
+func (c *Connector) fetchRepositoryPullRequest(ctx context.Context, repo pullRequestRepo, number int) (pullRequestNode, error) {
+	var response restPullRequest
+	if err := c.client.REST(ctx, http.MethodGet, restPullRequestPath(repo, number), nil, &response); err != nil {
+		return pullRequestNode{}, fmt.Errorf("fetch github pull request: %w", err)
+	}
+	return pullRequestNodeFromREST(response), nil
+}
+
 func (c *Connector) fetchRepositoryPullRequestsPage(
 	ctx context.Context,
 	repo pullRequestRepo,
@@ -1455,15 +1514,37 @@ func (c *Connector) fetchRepositoryPullRequestsPage(
 	}
 	pullRequests := make([]pullRequestNode, 0, len(response))
 	for _, pullRequest := range response {
-		pullRequests = append(pullRequests, pullRequestNode{
-			Number:      pullRequest.Number,
-			URL:         pullRequest.HTMLURL,
-			State:       restPullRequestState(pullRequest),
-			HeadRefName: pullRequest.Head.Ref,
-			HeadSHA:     pullRequest.Head.SHA,
-		})
+		pullRequests = append(pullRequests, pullRequestNodeFromREST(pullRequest))
 	}
 	return pullRequests, nil
+}
+
+func (c *Connector) attachLinkedPullRequests(
+	ctx context.Context,
+	repo pullRequestRepo,
+	issues []connector.Issue,
+	candidates []issuePullRequestCandidate,
+) error {
+	pullRequests := map[int]pullRequestNode{}
+	for _, candidate := range candidates {
+		if issues[candidate.Index].PullRequest != nil || candidate.PullRequestNumber <= 0 {
+			continue
+		}
+		pullRequest, ok := pullRequests[candidate.PullRequestNumber]
+		if !ok {
+			var err error
+			pullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, candidate.PullRequestNumber)
+			if err != nil {
+				return err
+			}
+			if err := c.populatePullRequestStatus(ctx, repo, &pullRequest); err != nil {
+				return err
+			}
+			pullRequests[candidate.PullRequestNumber] = pullRequest
+		}
+		attachPullRequestToIssue(&issues[candidate.Index], pullRequest)
+	}
+	return nil
 }
 
 func (c *Connector) attachMatchingPullRequests(
@@ -1489,23 +1570,46 @@ func (c *Connector) attachMatchingPullRequests(
 			if err := c.populatePullRequestStatus(ctx, repo, &pullRequest); err != nil {
 				return err
 			}
-			issues[candidate.Index].PullRequest = &connector.PullRequest{
-				Number:                 pullRequest.Number,
-				URL:                    strings.TrimSpace(pullRequest.URL),
-				BranchName:             branchName,
-				State:                  strings.ToUpper(strings.TrimSpace(pullRequest.State)),
-				CIStatus:               normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
-				CodexReviewState:       pullRequestCodexReviewState(pullRequest),
-				CodexReviewSubmittedAt: pullRequestCodexReviewSubmittedAt(pullRequest),
-				CodexReviewFindings:    pullRequestCodexReviewFindings(pullRequest),
-			}
-			if issues[candidate.Index].PRNumber == nil && pullRequest.Number > 0 {
-				number := pullRequest.Number
-				issues[candidate.Index].PRNumber = &number
-			}
+			attachPullRequestToIssue(&issues[candidate.Index], pullRequest)
 		}
 	}
 	return nil
+}
+
+func hasUnattachedBranchPullRequestCandidates(issues []connector.Issue, candidates []issuePullRequestCandidate) bool {
+	for _, candidate := range candidates {
+		if issues[candidate.Index].PullRequest == nil && strings.TrimSpace(candidate.BranchPrefix) != "" {
+			return true
+		}
+	}
+	return false
+}
+
+func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
+	return pullRequestNode{
+		Number:      pullRequest.Number,
+		URL:         pullRequest.HTMLURL,
+		State:       restPullRequestState(pullRequest),
+		HeadRefName: pullRequest.Head.Ref,
+		HeadSHA:     pullRequest.Head.SHA,
+	}
+}
+
+func attachPullRequestToIssue(issue *connector.Issue, pullRequest pullRequestNode) {
+	issue.PullRequest = &connector.PullRequest{
+		Number:                 pullRequest.Number,
+		URL:                    strings.TrimSpace(pullRequest.URL),
+		BranchName:             strings.TrimSpace(pullRequest.HeadRefName),
+		State:                  strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+		CIStatus:               normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
+		CodexReviewState:       pullRequestCodexReviewState(pullRequest),
+		CodexReviewSubmittedAt: pullRequestCodexReviewSubmittedAt(pullRequest),
+		CodexReviewFindings:    pullRequestCodexReviewFindings(pullRequest),
+	}
+	if issue.PRNumber == nil && pullRequest.Number > 0 {
+		number := pullRequest.Number
+		issue.PRNumber = &number
+	}
 }
 
 func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode) error {
@@ -1565,7 +1669,7 @@ func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, que
 				Items projectItemsConnection `json:"items"`
 			} `json:"node"`
 		}
-		if err := c.client.GraphQLWithType(ctx, queryType, projectItemsQuery, map[string]any{
+		if err := c.client.GraphQLWithType(ctx, queryType, projectItemsQueryForType(queryType), map[string]any{
 			"projectId": c.projectID,
 			"first":     projectItemsPageSize,
 			"after":     after,
@@ -1608,6 +1712,13 @@ func (c *Connector) fetchProjectItems(ctx context.Context, queryType string, que
 		}
 		after = &cursor
 	}
+}
+
+func projectItemsQueryForType(queryType string) string {
+	if queryType == graphQLQueryObservedStatus {
+		return observedStatusProjectItemsQuery
+	}
+	return projectItemsQuery
 }
 
 func (c *Connector) normalizeProjectItem(item projectItemNode) (connector.Issue, bool, string, error) {
@@ -2493,6 +2604,10 @@ func restPullRequestsPath(repo pullRequestRepo, page int) string {
 	values.Set("per_page", strconv.Itoa(pullRequestsPageSize))
 	values.Set("page", strconv.Itoa(page))
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls?" + values.Encode()
+}
+
+func restPullRequestPath(repo pullRequestRepo, number int) string {
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls/" + strconv.Itoa(number)
 }
 
 func restPullRequestReviewsPath(repo pullRequestRepo, number int) string {
