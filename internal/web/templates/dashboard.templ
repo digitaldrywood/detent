@@ -13,6 +13,30 @@ import (
 )
 
 templ Dashboard(data DashboardData) {
+	@dashboardShell(data, true) {
+		<div class="mx-auto grid w-full max-w-7xl content-start gap-4 sm:gap-5">
+			<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+				<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+					@dashboardMobileSidebarTrigger()
+					@dashboardPageHeading(dashboardHeading(data))
+					<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+						<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
+						@dashboardTopbarDivider()
+						<span class="truncate">{ connectorName(data) }</span>
+						@dashboardTopbarDivider()
+						<span id="live-tick" class="sse-tick min-w-0 truncate font-mono" sse-swap="tick" hx-swap="innerHTML settle:120ms">{ generatedAtLabel(data.Snapshot) }</span>
+					</div>
+				</div>
+			</header>
+			<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
+				@SnapshotView(data)
+			</div>
+			@dashboardCharts(data)
+		</div>
+	}
+}
+
+templ dashboardShell(data DashboardData, includeDashboardCharts bool) {
 	<!DOCTYPE html>
 	<html lang="en">
 		<head>
@@ -30,8 +54,10 @@ templ Dashboard(data DashboardData) {
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
-			<script src={ chartJSPath(data.Assets) } defer></script>
-			<script src={ dashboardChartsScriptPath(data.Assets) } defer></script>
+			if includeDashboardCharts {
+				<script src={ chartJSPath(data.Assets) } defer></script>
+				<script src={ dashboardChartsScriptPath(data.Assets) } defer></script>
+			}
 			@sidebar.Script()
 			@popover.Script()
 			@dialog.Script()
@@ -47,25 +73,7 @@ templ Dashboard(data DashboardData) {
 			}) {
 				@dashboardSidebar(data)
 				@sidebar.Inset(sidebar.InsetProps{Class: "dashboard-main min-w-0 px-3 py-3 sm:px-6 lg:px-8"}) {
-					<div class="mx-auto grid w-full max-w-7xl content-start gap-4 sm:gap-5">
-						<header class="dashboard-topbar min-w-0 border-b border-border py-2">
-							<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
-								@dashboardMobileSidebarTrigger()
-								@dashboardPageHeading(dashboardHeading(data))
-								<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
-									<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
-									@dashboardTopbarDivider()
-									<span class="truncate">{ connectorName(data) }</span>
-									@dashboardTopbarDivider()
-									<span id="live-tick" class="sse-tick min-w-0 truncate font-mono" sse-swap="tick" hx-swap="innerHTML settle:120ms">{ generatedAtLabel(data.Snapshot) }</span>
-								</div>
-							</div>
-						</header>
-						<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
-							@SnapshotView(data)
-						</div>
-						@dashboardCharts(data)
-					</div>
+					{ children... }
 				}
 			}
 		</body>

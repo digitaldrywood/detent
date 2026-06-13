@@ -1,119 +1,103 @@
 package templates
 
 templ Settings(data SettingsData) {
-	<!DOCTYPE html>
-	<html lang="en">
-		<head>
-			<meta charset="utf-8"/>
-			<meta name="viewport" content="width=device-width, initial-scale=1"/>
-			<meta name="color-scheme" content="light dark"/>
-			<meta name="application-name" content={ applicationName(data.ApplicationName) }/>
-			<title>{ settingsPageTitle(data) }</title>
-			<script>
-				document.documentElement.classList.toggle("dark", Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches))
-				function copySettingValue(button) {
-					const value = button.dataset.copy || ""
-					const label = button.querySelector("[data-copy-label]")
-					const reset = button.dataset.label || "Copy"
-					const done = () => {
-						if (!label) return
-						label.textContent = "Copied!"
-						clearTimeout(button._copyTimer)
-						button._copyTimer = setTimeout(() => { label.textContent = reset }, 1200)
-					}
-					if (navigator.clipboard && navigator.clipboard.writeText) {
-						navigator.clipboard.writeText(value).then(done, done)
-						return
-					}
-					done()
+	@dashboardShell(settingsDashboardData(data), false) {
+		<script>
+			function copySettingValue(button) {
+				const value = button.dataset.copy || ""
+				const label = button.querySelector("[data-copy-label]")
+				const reset = button.dataset.label || "Copy"
+				const done = () => {
+					if (!label) return
+					label.textContent = "Copied!"
+					clearTimeout(button._copyTimer)
+					button._copyTimer = setTimeout(() => { label.textContent = reset }, 1200)
 				}
-			</script>
-			@helpScript()
-			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
-			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
-		</head>
-		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
-			@helpTooltipHost()
-			<main class="dashboard-shell mx-auto grid min-h-screen w-full max-w-7xl content-start gap-3 px-3 py-3 sm:gap-4 sm:px-6 lg:px-8">
-				<header class="dashboard-topbar min-w-0 border-b border-border py-2">
-					<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
-						@dashboardTopbarBrand(data.InstanceName)
-						@dashboardPageHeading("Settings")
-						@dashboardNav("settings")
-						<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
-							<span class="truncate font-mono">{ settingsVersionLabel(data) }</span>
-						</div>
+				if (navigator.clipboard && navigator.clipboard.writeText) {
+					navigator.clipboard.writeText(value).then(done, done)
+					return
+				}
+				done()
+			}
+		</script>
+		<div class="mx-auto grid w-full max-w-7xl content-start gap-3 sm:gap-4">
+			<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+				<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+					@dashboardMobileSidebarTrigger()
+					@dashboardPageHeading("Settings")
+					<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+						<span class="truncate font-mono">{ settingsVersionLabel(data) }</span>
 					</div>
-					<span class="sr-only">Startup configuration, project paths, and runtime files.</span>
-				</header>
-				<section class="grid gap-5">
-					<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
-						<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-							<div>
-								@helpHeading2("Global config", helpSettingsConfig, "settings-global-config")
-								<p class="text-sm text-muted-foreground">Live reload applies to project membership, credentials, startup, instance display, and telemetry identity. Runtime scheduling, concurrency, fair share, and server binding require a restart.</p>
-							</div>
-							<span class="rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ settingsPathRule(data.Global.PathRule) }</span>
-						</div>
-						<div class="mt-5 grid gap-3">
-							@settingsPathRow("Resolved global config path", data.Global.ConfigPath)
-							@settingsValueRow("Discovery rule", settingsPathRule(data.Global.PathRule))
-						</div>
-						@settingsReloadMatrix()
-					</section>
-					<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
-						<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
-							<div>
-								@helpHeading2("Projects", helpSettingsProjects, "settings-projects")
-								<p class="text-sm text-muted-foreground">Loaded project configuration and tracker wiring.</p>
-							</div>
-							<span class="inline-flex min-w-9 justify-center rounded-full bg-muted px-2 py-1 text-sm font-medium text-muted-foreground">{ settingsInt(len(data.Projects)) }</span>
-						</div>
-						if len(data.Projects) == 0 {
-							<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No projects loaded.</p>
-						} else {
-							<div class="mt-5 grid gap-4">
-								for _, project := range data.Projects {
-									<article class="border-t border-border pt-4 first:border-t-0 first:pt-0">
-										<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-											<div class="min-w-0">
-												<h3 class="truncate text-sm font-semibold text-foreground">{ settingsText(project.ID) }</h3>
-												<p class="font-mono text-xs text-muted-foreground">{ settingsText(project.TrackerKind) }</p>
-											</div>
-											<div class="flex flex-wrap gap-2 text-xs">
-												<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">weight { settingsInt(project.Weight) }</span>
-												<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">priority { settingsInt(project.Priority) }</span>
-												<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">paused { settingsBool(project.Paused) }</span>
-											</div>
-										</div>
-										<div class="mt-4 grid gap-3">
-											@settingsPathRow("Workflow path", project.WorkflowPath)
-											@settingsPathRow("Workdir", project.Workdir)
-											@settingsPathRow("Worktree root", project.WorktreeRoot)
-											@settingsValueRow("Tracker kind", settingsText(project.TrackerKind))
-											@settingsPathRow("Project URL", project.TrackerProject)
-											@settingsValueRow("Dependency auto-unblock", settingsText(project.DependencyAutoUnblock))
-										</div>
-									</article>
-								}
-							</div>
-						}
-					</section>
-					<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+				</div>
+				<span class="sr-only">Startup configuration, project paths, and runtime files.</span>
+			</header>
+			<section class="grid gap-5">
+				<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+					<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
 						<div>
-							@helpHeading2("Runtime paths", helpSettingsRuntime, "settings-runtime-paths")
-							<p class="text-sm text-muted-foreground">Files and listener for this running server.</p>
+							@helpHeading2("Global config", helpSettingsConfig, "settings-global-config")
+							<p class="text-sm text-muted-foreground">Live reload applies to project membership, credentials, startup, instance display, and telemetry identity. Runtime scheduling, concurrency, fair share, and server binding require a restart.</p>
 						</div>
-						<div class="mt-5 grid gap-3">
-							@settingsPathRow("SQLite db path", data.Runtime.DBPath)
-							@settingsPathRow("Log file path", data.Runtime.LogPath)
-							@settingsPathRow("Server host:port", data.Runtime.ServerAddress)
-						</div>
-					</section>
+						<span class="rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ settingsPathRule(data.Global.PathRule) }</span>
+					</div>
+					<div class="mt-5 grid gap-3">
+						@settingsPathRow("Resolved global config path", data.Global.ConfigPath)
+						@settingsValueRow("Discovery rule", settingsPathRule(data.Global.PathRule))
+					</div>
+					@settingsReloadMatrix()
 				</section>
-			</main>
-		</body>
-	</html>
+				<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+					<div class="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between">
+						<div>
+							@helpHeading2("Projects", helpSettingsProjects, "settings-projects")
+							<p class="text-sm text-muted-foreground">Loaded project configuration and tracker wiring.</p>
+						</div>
+						<span class="inline-flex min-w-9 justify-center rounded-full bg-muted px-2 py-1 text-sm font-medium text-muted-foreground">{ settingsInt(len(data.Projects)) }</span>
+					</div>
+					if len(data.Projects) == 0 {
+						<p class="mt-5 rounded-md border border-dashed border-border bg-muted/60 px-4 py-8 text-center text-sm text-muted-foreground">No projects loaded.</p>
+					} else {
+						<div class="mt-5 grid gap-4">
+							for _, project := range data.Projects {
+								<article class="border-t border-border pt-4 first:border-t-0 first:pt-0">
+									<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+										<div class="min-w-0">
+											<h3 class="truncate text-sm font-semibold text-foreground">{ settingsText(project.ID) }</h3>
+											<p class="font-mono text-xs text-muted-foreground">{ settingsText(project.TrackerKind) }</p>
+										</div>
+										<div class="flex flex-wrap gap-2 text-xs">
+											<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">weight { settingsInt(project.Weight) }</span>
+											<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">priority { settingsInt(project.Priority) }</span>
+											<span class="rounded-full bg-card px-2 py-1 font-mono text-muted-foreground">paused { settingsBool(project.Paused) }</span>
+										</div>
+									</div>
+									<div class="mt-4 grid gap-3">
+										@settingsPathRow("Workflow path", project.WorkflowPath)
+										@settingsPathRow("Workdir", project.Workdir)
+										@settingsPathRow("Worktree root", project.WorktreeRoot)
+										@settingsValueRow("Tracker kind", settingsText(project.TrackerKind))
+										@settingsPathRow("Project URL", project.TrackerProject)
+										@settingsValueRow("Dependency auto-unblock", settingsText(project.DependencyAutoUnblock))
+									</div>
+								</article>
+							}
+						</div>
+					}
+				</section>
+				<section class="rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+					<div>
+						@helpHeading2("Runtime paths", helpSettingsRuntime, "settings-runtime-paths")
+						<p class="text-sm text-muted-foreground">Files and listener for this running server.</p>
+					</div>
+					<div class="mt-5 grid gap-3">
+						@settingsPathRow("SQLite db path", data.Runtime.DBPath)
+						@settingsPathRow("Log file path", data.Runtime.LogPath)
+						@settingsPathRow("Server host:port", data.Runtime.ServerAddress)
+					</div>
+				</section>
+			</section>
+		</div>
+	}
 }
 
 templ dashboardTopbarBrand(instanceName string) {

@@ -11,17 +11,20 @@ import (
 const reportTopLimit = 5
 
 type ReportsData struct {
-	Title           string
-	ApplicationName string
-	InstanceName    string
-	ConnectorName   string
-	GeneratedAt     time.Time
-	Day             UsageReportData
-	Project         UsageReportData
-	Issue           UsageReportData
-	PR              UsageReportData
-	Model           UsageReportData
-	Assets          AssetPaths
+	Title            string
+	ApplicationName  string
+	InstanceName     string
+	ConnectorName    string
+	GeneratedAt      time.Time
+	Day              UsageReportData
+	Project          UsageReportData
+	Issue            UsageReportData
+	PR               UsageReportData
+	Model            UsageReportData
+	Assets           AssetPaths
+	Projects         []ProjectSmallMultiple
+	ActiveNav        string
+	SidebarCollapsed bool
 }
 
 type UsageReportData struct {
@@ -71,6 +74,23 @@ func reportsPageTitle(data ReportsData) string {
 		return data.Title
 	}
 	return "Detent reports"
+}
+
+func reportsDashboardData(data ReportsData) DashboardData {
+	activeNav := strings.TrimSpace(data.ActiveNav)
+	if activeNav == "" {
+		activeNav = "reports"
+	}
+	return DashboardData{
+		Title:            reportsPageTitle(data),
+		ApplicationName:  data.ApplicationName,
+		InstanceName:     data.InstanceName,
+		ConnectorName:    data.ConnectorName,
+		Projects:         data.Projects,
+		Assets:           data.Assets,
+		ActiveNav:        activeNav,
+		SidebarCollapsed: data.SidebarCollapsed,
+	}
 }
 
 func reportsConnectorName(data ReportsData) string {

@@ -267,6 +267,9 @@ func eventsPath(data DashboardData) string {
 	if id := strings.TrimSpace(data.ProjectID); id != "" {
 		return "/events?project=" + url.QueryEscape(id)
 	}
+	if activeNav := staticSidebarNav(data.ActiveNav); activeNav != "" {
+		return "/events?nav=" + url.QueryEscape(activeNav)
+	}
 	return "/events"
 }
 
@@ -294,6 +297,17 @@ func sidebarFleetActive(data DashboardData) bool {
 
 func sidebarStaticNavActive(data DashboardData, id string) bool {
 	return strings.TrimSpace(data.ActiveNav) == id
+}
+
+func staticSidebarNav(activeNav string) string {
+	switch strings.TrimSpace(activeNav) {
+	case "reports":
+		return "reports"
+	case "settings":
+		return "settings"
+	default:
+		return ""
+	}
 }
 
 func sidebarAriaCurrent(active bool) templ.Attributes {

@@ -13,6 +13,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -693,7 +694,15 @@ func TestDashboardRendersLatestSnapshot(t *testing.T) {
 func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 	t.Parallel()
 
-	tests := []struct {
+	routes := []struct {
+		name string
+		path string
+	}{
+		{name: "dashboard", path: "/"},
+		{name: "reports", path: "/reports"},
+		{name: "settings", path: "/settings"},
+	}
+	states := []struct {
 		name        string
 		cookie      *http.Cookie
 		wantState   string
@@ -724,31 +733,131 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 		},
 	}
 
+	for _, route := range routes {
+		for _, state := range states {
+			t.Run(route.name+" "+state.name, func(t *testing.T) {
+				t.Parallel()
+
+				server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, testDeps(t))
+				if err != nil {
+					t.Fatalf("NewServer() error = %v", err)
+				}
+
+				rec := httptest.NewRecorder()
+				req := httptest.NewRequest(http.MethodGet, route.path, nil)
+				if state.cookie != nil {
+					req.AddCookie(state.cookie)
+				}
+
+				server.Handler().ServeHTTP(rec, req)
+
+				if rec.Code != http.StatusOK {
+					t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+				}
+				if !strings.Contains(rec.Body.String(), state.wantState) {
+					t.Fatalf("%s missing %q:\n%s", route.path, state.wantState, rec.Body.String())
+				}
+				if strings.Contains(rec.Body.String(), state.forbidState) {
+					t.Fatalf("%s rendered forbidden state %q:\n%s", route.path, state.forbidState, rec.Body.String())
+				}
+			})
+		}
+	}
+}
+
+func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Counts:  telemetry.Counts{Running: 3},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		path         string
+		activeHref   string
+		sseConnect   string
+		inactiveHref []string
+	}{
+		{
+			name:         "fleet",
+			path:         "/",
+			activeHref:   "/",
+			sseConnect:   `sse-connect="/events"`,
+			inactiveHref: []string{"/reports", "/settings"},
+		},
+		{
+			name:         "reports",
+			path:         "/reports",
+			activeHref:   "/reports",
+			sseConnect:   `sse-connect="/events?nav=reports"`,
+			inactiveHref: []string{"/", "/settings"},
+		},
+		{
+			name:         "settings",
+			path:         "/settings",
+			activeHref:   "/settings",
+			sseConnect:   `sse-connect="/events?nav=settings"`,
+			inactiveHref: []string{"/", "/reports"},
+		},
+	}
+
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, testDeps(t))
-			if err != nil {
-				t.Fatalf("NewServer() error = %v", err)
-			}
-
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
-			if tt.cookie != nil {
-				req.AddCookie(tt.cookie)
-			}
-
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
 			server.Handler().ServeHTTP(rec, req)
 
 			if rec.Code != http.StatusOK {
 				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 			}
-			if !strings.Contains(rec.Body.String(), tt.wantState) {
-				t.Fatalf("dashboard missing %q:\n%s", tt.wantState, rec.Body.String())
+			body := rec.Body.String()
+			for _, want := range []string{
+				`data-tui-sidebar-layout`,
+				`id="dashboard-sidebar-live"`,
+				`sse-swap="sidebar"`,
+				`hx-swap="morph:innerHTML"`,
+				`data-tui-sidebar-target="dashboard-sidebar"`,
+				`data-tui-sheet`,
+				`href="/projects/detent"`,
+				`Detent - active, 3 running`,
+				tt.sseConnect,
+			} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("%s missing shared sidebar marker %q:\n%s", tt.path, want, body)
+				}
 			}
-			if strings.Contains(rec.Body.String(), tt.forbidState) {
-				t.Fatalf("dashboard rendered forbidden state %q:\n%s", tt.forbidState, rec.Body.String())
+			assertActiveSidebarLink(t, body, tt.activeHref)
+			for _, href := range tt.inactiveHref {
+				assertInactiveSidebarLink(t, body, href)
+			}
+			if tt.path != "/" {
+				for _, forbidden := range []string{
+					"dashboard-nav flex min-w-0 items-center gap-4",
+					"dashboard-nav-link",
+				} {
+					if strings.Contains(body, forbidden) {
+						t.Fatalf("%s rendered old top nav marker %q:\n%s", tt.path, forbidden, body)
+					}
+				}
 			}
 		})
 	}
@@ -1519,6 +1628,39 @@ func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 			t.Fatalf("sidebar event rendered wrapper marker %q:\n%s", forbidden, sidebarEvent.data)
 		}
 	}
+}
+
+func TestServerEventsPreservesStaticSidebarNavigation(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	addr := startWebServer(t, server)
+	conn, body, reader := openRawEventStream(t, addr, "/events?nav=reports")
+	defer conn.Close()
+	defer body.Close()
+
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	snapshotEvent := readRawSSEEvent(t, conn, reader)
+	if snapshotEvent.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
+	}
+	sidebarEvent := readRawSSEEvent(t, conn, reader)
+	if sidebarEvent.name != "sidebar" {
+		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
+	}
+	assertActiveSidebarLink(t, sidebarEvent.data, "/reports")
+	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
+	assertInactiveSidebarLink(t, sidebarEvent.data, "/settings")
 }
 
 func TestServerEventsEnrichesSnapshotOncePerPublish(t *testing.T) {
@@ -2785,6 +2927,24 @@ func TestReportsPageRendersUsageCharts(t *testing.T) {
 	}
 }
 
+func assertActiveSidebarLink(t *testing.T, body string, href string) {
+	t.Helper()
+
+	pattern := `<a[^>]*href="` + regexp.QuoteMeta(href) + `"[^>]*data-tui-sidebar-active="true"[^>]*aria-current="page"`
+	if !regexp.MustCompile(pattern).MatchString(body) {
+		t.Fatalf("body missing active sidebar link %q:\n%s", href, body)
+	}
+}
+
+func assertInactiveSidebarLink(t *testing.T, body string, href string) {
+	t.Helper()
+
+	pattern := `<a[^>]*href="` + regexp.QuoteMeta(href) + `"[^>]*data-tui-sidebar-active="true"[^>]*aria-current="page"`
+	if regexp.MustCompile(pattern).MatchString(body) {
+		t.Fatalf("body rendered inactive sidebar link %q as active:\n%s", href, body)
+	}
+}
+
 func testDeps(t *testing.T) web.Dependencies {
 	t.Helper()
 
@@ -3179,7 +3339,7 @@ func startWebServer(t *testing.T, server *web.Server) string {
 	return listener.Addr().String()
 }
 
-func openRawEventStream(t *testing.T, addr string) (net.Conn, io.ReadCloser, *bufio.Reader) {
+func openRawEventStream(t *testing.T, addr string, paths ...string) (net.Conn, io.ReadCloser, *bufio.Reader) {
 	t.Helper()
 
 	conn, err := net.Dial("tcp", addr)
@@ -3193,7 +3353,11 @@ func openRawEventStream(t *testing.T, addr string) (net.Conn, io.ReadCloser, *bu
 		}
 	})
 
-	if _, err := io.WriteString(conn, "GET /events HTTP/1.1\r\nHost: "+addr+"\r\nAccept: text/event-stream\r\n\r\n"); err != nil {
+	path := "/events"
+	if len(paths) > 0 {
+		path = paths[0]
+	}
+	if _, err := io.WriteString(conn, "GET "+path+" HTTP/1.1\r\nHost: "+addr+"\r\nAccept: text/event-stream\r\n\r\n"); err != nil {
 		t.Fatalf("WriteString() error = %v", err)
 	}
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
