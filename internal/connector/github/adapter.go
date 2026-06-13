@@ -92,7 +92,7 @@ query DetentGitHubObservedStatusProjectItems(
               stateReason
               url
               repository { nameWithOwner }
-              closedByPullRequestsReferences(first: 5) { nodes { number url state } }
+              closedByPullRequestsReferences(first: 5) { nodes { number url state repository { nameWithOwner } } }
             }
           }
           statusValue: fieldValueByName(name: "Status") {
@@ -265,7 +265,7 @@ fragment DetentGitHubIssueParent on Issue {
   assignees(first: 100) { nodes { id login } }
   labels(first: 20) { nodes { name } }
   repository { nameWithOwner }
-  closedByPullRequestsReferences(first: 5) { nodes { number url } }
+  closedByPullRequestsReferences(first: 5) { nodes { number url state repository { nameWithOwner } } }
   subIssues(first: $linkedIssuesFirst) {
     pageInfo { hasNextPage endCursor }
     nodes {
@@ -575,9 +575,10 @@ type issueComment struct {
 }
 
 type pullRequest struct {
-	Number int    `json:"number"`
-	URL    string `json:"url"`
-	State  string `json:"state"`
+	Number     int        `json:"number"`
+	URL        string     `json:"url"`
+	State      string     `json:"state"`
+	Repository repository `json:"repository"`
 }
 
 type pullRequestNode struct {
@@ -1344,6 +1345,12 @@ type issuePullRequestCandidate struct {
 	Index             int
 	BranchPrefix      string
 	PullRequestNumber int
+	PullRequestRepo   pullRequestRepo
+}
+
+type pullRequestKey struct {
+	Repo   pullRequestRepo
+	Number int
 }
 
 type pullRequestRepo struct {
@@ -1360,8 +1367,12 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 		}
 		branchPrefix := detentIssueBranchPrefix(issue.Identifier)
 		pullRequestNumber := 0
+		linkedPullRequestRepo := repo
 		if issue.PRNumber != nil {
 			pullRequestNumber = *issue.PRNumber
+		}
+		if owner, name, ok := splitRepositoryName(issue.PRRepository); ok {
+			linkedPullRequestRepo = pullRequestRepo{Owner: owner, Name: name}
 		}
 		if branchPrefix == "" && pullRequestNumber <= 0 {
 			continue
@@ -1370,6 +1381,7 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 			Index:             index,
 			BranchPrefix:      branchPrefix,
 			PullRequestNumber: pullRequestNumber,
+			PullRequestRepo:   linkedPullRequestRepo,
 		})
 	}
 	if len(byRepo) == 0 {
@@ -1442,12 +1454,13 @@ func (c *Connector) attachPullRequestMergeStates(ctx context.Context, issues []c
 		if err != nil {
 			return err
 		}
-		attachMatchingPullRequestMergeStates(issues, byRepo[repo], pullRequests)
+		attachMatchingPullRequestMergeStates(repo, issues, byRepo[repo], pullRequests)
 	}
 	return nil
 }
 
 func attachMatchingPullRequestMergeStates(
+	repo pullRequestRepo,
 	issues []connector.Issue,
 	candidates []issuePullRequestCandidate,
 	pullRequests []pullRequestNode,
@@ -1476,6 +1489,9 @@ func attachMatchingPullRequestMergeStates(
 			if issues[candidate.Index].PRNumber == nil && pullRequest.Number > 0 {
 				number := pullRequest.Number
 				issues[candidate.Index].PRNumber = &number
+			}
+			if issues[candidate.Index].PRRepository == "" {
+				issues[candidate.Index].PRRepository = pullRequestRepoName(repo)
 			}
 		}
 	}
@@ -1526,24 +1542,29 @@ func (c *Connector) attachLinkedPullRequests(
 	issues []connector.Issue,
 	candidates []issuePullRequestCandidate,
 ) error {
-	pullRequests := map[int]pullRequestNode{}
+	pullRequests := map[pullRequestKey]pullRequestNode{}
 	for _, candidate := range candidates {
 		if issues[candidate.Index].PullRequest != nil || candidate.PullRequestNumber <= 0 {
 			continue
 		}
-		pullRequest, ok := pullRequests[candidate.PullRequestNumber]
+		pullRequestRepo := candidate.PullRequestRepo
+		if strings.TrimSpace(pullRequestRepo.Owner) == "" || strings.TrimSpace(pullRequestRepo.Name) == "" {
+			pullRequestRepo = repo
+		}
+		key := pullRequestKey{Repo: pullRequestRepo, Number: candidate.PullRequestNumber}
+		pullRequest, ok := pullRequests[key]
 		if !ok {
 			var err error
-			pullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, candidate.PullRequestNumber)
+			pullRequest, err = c.fetchRepositoryPullRequest(ctx, pullRequestRepo, candidate.PullRequestNumber)
 			if err != nil {
 				return err
 			}
-			if err := c.populatePullRequestStatus(ctx, repo, &pullRequest); err != nil {
+			if err := c.populatePullRequestStatus(ctx, pullRequestRepo, &pullRequest); err != nil {
 				return err
 			}
-			pullRequests[candidate.PullRequestNumber] = pullRequest
+			pullRequests[key] = pullRequest
 		}
-		attachPullRequestToIssue(&issues[candidate.Index], pullRequest)
+		attachPullRequestToIssue(&issues[candidate.Index], pullRequestRepo, pullRequest)
 	}
 	return nil
 }
@@ -1571,7 +1592,7 @@ func (c *Connector) attachMatchingPullRequests(
 			if err := c.populatePullRequestStatus(ctx, repo, &pullRequest); err != nil {
 				return err
 			}
-			attachPullRequestToIssue(&issues[candidate.Index], pullRequest)
+			attachPullRequestToIssue(&issues[candidate.Index], repo, pullRequest)
 		}
 	}
 	return nil
@@ -1596,7 +1617,7 @@ func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 	}
 }
 
-func attachPullRequestToIssue(issue *connector.Issue, pullRequest pullRequestNode) {
+func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pullRequest pullRequestNode) {
 	issue.PullRequest = &connector.PullRequest{
 		Number:                 pullRequest.Number,
 		URL:                    strings.TrimSpace(pullRequest.URL),
@@ -1611,6 +1632,18 @@ func attachPullRequestToIssue(issue *connector.Issue, pullRequest pullRequestNod
 		number := pullRequest.Number
 		issue.PRNumber = &number
 	}
+	if issue.PRRepository == "" {
+		issue.PRRepository = pullRequestRepoName(repo)
+	}
+}
+
+func pullRequestRepoName(repo pullRequestRepo) string {
+	owner := strings.TrimSpace(repo.Owner)
+	name := strings.TrimSpace(repo.Name)
+	if owner == "" || name == "" {
+		return ""
+	}
+	return owner + "/" + name
 }
 
 func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode) error {
@@ -1941,6 +1974,17 @@ func (c *Connector) fetchProjectFieldsPage(ctx context.Context, issueID string, 
 
 func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorityName string, statusUpdatedAt *time.Time, fields map[string]string) connector.Issue {
 	repo := strings.TrimSpace(issue.Repository.NameWithOwner)
+	pullRequestRef, hasPullRequestRef := firstPullRequestReference(issue.ClosedByPullRequestsReferences)
+	var pullRequestNumber *int
+	var pullRequestRepository string
+	if hasPullRequestRef {
+		number := pullRequestRef.Number
+		pullRequestNumber = &number
+		pullRequestRepository = pullRequestRef.Repository
+		if pullRequestRepository == "" {
+			pullRequestRepository = repo
+		}
+	}
 	return connector.Issue{
 		ID:               issue.ID,
 		Identifier:       buildIdentifier(repo, issue.Number),
@@ -1951,7 +1995,8 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		URL:              issue.URL,
 		Closed:           githubIssueClosed(issue.State),
 		ClosedReason:     issue.StateReason,
-		PRNumber:         firstPullRequestNumber(issue.ClosedByPullRequestsReferences),
+		PRNumber:         pullRequestNumber,
+		PRRepository:     pullRequestRepository,
 		AuthorID:         actorLogin(issue.Author),
 		AssigneeID:       firstAssigneeLogin(issue.Assignees),
 		Assignees:        allAssigneeLogins(issue.Assignees),
@@ -2845,22 +2890,31 @@ func projectFieldValueString(value projectFieldValue) (string, bool) {
 	}
 }
 
-func firstPullRequestNumber(pullRequests nodeConnection[pullRequest]) *int {
-	var fallback *int
+type pullRequestReference struct {
+	Number     int
+	Repository string
+}
+
+func firstPullRequestReference(pullRequests nodeConnection[pullRequest]) (pullRequestReference, bool) {
+	var fallback pullRequestReference
+	fallbackOK := false
 	for _, pullRequest := range pullRequests.Nodes {
 		if pullRequest.Number <= 0 {
 			continue
 		}
-		if fallback == nil {
-			number := pullRequest.Number
-			fallback = &number
+		ref := pullRequestReference{
+			Number:     pullRequest.Number,
+			Repository: strings.TrimSpace(pullRequest.Repository.NameWithOwner),
+		}
+		if !fallbackOK {
+			fallback = ref
+			fallbackOK = true
 		}
 		if normalizeStateName(pullRequest.State) == "open" {
-			number := pullRequest.Number
-			return &number
+			return ref, true
 		}
 	}
-	return fallback
+	return fallback, fallbackOK
 }
 
 func pullRequestCIState(pullRequest pullRequestNode) string {
