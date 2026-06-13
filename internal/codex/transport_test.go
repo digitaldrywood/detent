@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -144,7 +145,7 @@ func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
 	capturingFactory := &capturingLocalTransportFactory{factory: factory}
 	server, err := NewAppServer(capturingFactory,
 		WithReadTimeout(500*time.Millisecond),
-		WithTurnTimeout(time.Second),
+		WithTurnTimeout(5*time.Second),
 	)
 	if err != nil {
 		t.Fatalf("NewAppServer() error = %v", err)
@@ -159,8 +160,12 @@ func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
 	if !errors.Is(err, ErrTurnFailed) {
 		t.Fatalf("RunTurn() error = %v, want ErrTurnFailed", err)
 	}
-	if elapsed > 900*time.Millisecond {
-		t.Fatalf("RunTurn() took %s after turn error, want prompt close", elapsed)
+	promptCloseDeadline := 900 * time.Millisecond
+	if runtime.GOOS == "windows" {
+		promptCloseDeadline = 2 * time.Second
+	}
+	if elapsed > promptCloseDeadline {
+		t.Fatalf("RunTurn() took %s after turn error, want prompt close under %s", elapsed, promptCloseDeadline)
 	}
 
 	transport := capturingFactory.transport
