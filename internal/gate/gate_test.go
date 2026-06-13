@@ -16,12 +16,17 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 		{
 			name: "omitted gate defaults to make check command",
 			cfg:  Config{},
-			want: Config{Kind: KindCommand, Run: DefaultCommand, ApprovalLabel: DefaultApprovalLabel},
+			want: Config{Kind: KindCommand, Run: DefaultCommand, ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true)},
 		},
 		{
 			name: "command keeps custom run",
 			cfg:  Config{Kind: " command ", Run: " make verify "},
-			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true)},
+		},
+		{
+			name: "command can disable automated review requirement",
+			cfg:  Config{Kind: KindCommand, Run: "make verify", RequireAutomatedReview: new(false)},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(false)},
 		},
 		{
 			name: "human review normalizes alias and approval label",
@@ -40,7 +45,7 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 			t.Parallel()
 
 			got := Effective(tt.cfg)
-			if got != tt.want {
+			if !configsEqual(got, tt.want) {
 				t.Fatalf("Effective() = %#v, want %#v", got, tt.want)
 			}
 		})
@@ -89,6 +94,17 @@ func TestEvaluate(t *testing.T) {
 				CIStatus:       "green",
 			},
 			want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing},
+		},
+		{
+			name: "command gate passes without automated review when disabled",
+			cfg:  Config{Kind: KindCommand, RequireAutomatedReview: new(false)},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				LastActivityAt: &oldActivity,
+			},
+			opts: EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want: Decision{Action: ActionPass, Reason: ReasonReady},
 		},
 		{
 			name: "command gate requests rework for p1 findings",
@@ -162,4 +178,18 @@ func TestEvaluate(t *testing.T) {
 			}
 		})
 	}
+}
+
+func configsEqual(left Config, right Config) bool {
+	return left.Kind == right.Kind &&
+		left.Run == right.Run &&
+		left.ApprovalLabel == right.ApprovalLabel &&
+		boolPointerEqual(left.RequireAutomatedReview, right.RequireAutomatedReview)
+}
+
+func boolPointerEqual(left *bool, right *bool) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }

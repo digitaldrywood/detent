@@ -436,6 +436,38 @@ Prompt
 	}
 }
 
+func TestParseWorkflowCommandGateDisablesAutomatedReviewRequirement(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+gate:
+  kind: command
+  run: make check
+  require_automated_review: false
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	cfg := workflow.Config.Gate
+	if cfg.Kind != gate.KindCommand || cfg.Run != gate.DefaultCommand {
+		t.Fatalf("Gate = %#v, want command make check", cfg)
+	}
+	if cfg.RequireAutomatedReview == nil {
+		t.Fatal("Gate.RequireAutomatedReview = nil, want false")
+	}
+	if *cfg.RequireAutomatedReview {
+		t.Fatal("Gate.RequireAutomatedReview = true, want false")
+	}
+}
+
 func TestParseWorkflowAgentRoutesCanUseLegacyCodexBackend(t *testing.T) {
 	t.Parallel()
 

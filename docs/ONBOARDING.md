@@ -158,7 +158,8 @@ grounded recommendation per Phase 2 question, then interview the human.
    invented command. If `make check` exists, recommend `gate.kind: command`
    with `gate.run: make check`. If there is no local command but CI is clear,
    recommend the closest local equivalent. If no command can be inferred,
-   recommend `gate.kind: human_review` with an approval label. Verify:
+   recommend `gate.kind: human_review` with an approval label only when the
+   workflow explicitly wants a human label to promote. Verify:
 
    ```sh
    cd <source-root>
@@ -387,15 +388,18 @@ recommendation, and default-if-silent. Record answers in
    ```
 
 6. **Validation gate.** Ask: "Use the detected command, a custom command, or a
-   human review label gate?" Recommendation source:
-   `$ONBOARDING_DIR/gate.txt`, Makefile targets, and CI workflow commands.
-   Default if silent: detected `make check` when present; otherwise
-   `kind: human_review` with `approval_label: human-approved`. Verify:
+   human review label gate? If this is a command gate, should auto-promotion
+   require an automated GitHub PR review from a bot?" Recommendation source:
+   `$ONBOARDING_DIR/gate.txt`, Makefile targets, CI workflow commands, and the
+   repo's review policy. Default if silent: detected `make check` when present
+   with `require_automated_review: true`; otherwise `kind: human_review` with
+   `approval_label: human-approved`. Verify:
 
    ```sh
    printf '%s\n' \
      'GATE_KIND=<command|human_review>' \
      'GATE_RUN=<command-if-command>' \
+     'GATE_REQUIRE_AUTOMATED_REVIEW=<true|false-if-command>' \
      'GATE_APPROVAL_LABEL=<label-if-human-review>' \
      >> "$ONBOARDING_DIR/answers.env"
    rg '^GATE_' "$ONBOARDING_DIR/answers.env"
@@ -436,18 +440,20 @@ recommendation, and default-if-silent. Record answers in
    `agent.auto_promote.enabled: false`, the safe hard stop. Both modes are
    fully supported, and this is the human's call.
 
-   For criteria-based auto-promote, use only existing config keys:
-   `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and
-   `allowed_issue_labels`. `quiet_seconds` is the quiet period after automated
-   review activity on the current pull request head, `optout_label` is the
-   per-issue escape hatch, and `allowed_issue_labels` is an allowlist such as
-   `documentation` for low-risk issue classes. A Codex review on an older commit
-   does not clear this gate. Verify:
+   For criteria-based auto-promote, use `agent.auto_promote.enabled`,
+   `quiet_seconds`, `optout_label`, `allowed_issue_labels`, and the top-level
+   command gate's `require_automated_review` setting. `quiet_seconds` is the
+   quiet period after observed issue/status/review activity, `optout_label` is
+   the per-issue escape hatch, and `allowed_issue_labels` is an allowlist such
+   as `documentation` for low-risk issue classes. When automated review is
+   required, a Codex/ChatGPT/Claude review on an older commit does not clear
+   this gate. Verify:
 
    ```sh
    printf '%s\n' \
      'AUTO_PROMOTE_ENABLED=<true|false>' \
      'AUTO_PROMOTE_QUIET_SECONDS=<seconds>' \
+     'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=<true|false-if-command>' \
      'AUTO_PROMOTE_OPTOUT_LABEL=<label>' \
      'AUTO_PROMOTE_ALLOWED_LABELS=<comma-separated-labels-or-empty>' \
      >> "$ONBOARDING_DIR/answers.env"
@@ -718,11 +724,12 @@ recommendation, and default-if-silent. Record answers in
    rg -n '^server:|host: <dashboard-host>|port:' <source-root>/WORKFLOW.md
    ```
 
-4. **Set the gate from the interview.** For command gates, include the command.
+4. **Set the gate from the interview.** For command gates, include the command
+   and whether an automated GitHub PR review is required for auto-promotion.
    For human gates, include the approval label. Verify:
 
    ```sh
-   rg -n '^gate:|kind: <command|human_review>|run: <gate-command>|approval_label: <label>' \
+   rg -n '^gate:|kind: <command|human_review>|run: <gate-command>|require_automated_review: <true|false>|approval_label: <label>' \
      <source-root>/WORKFLOW.md
    ```
 
@@ -732,6 +739,7 @@ recommendation, and default-if-silent. Record answers in
    gate:
      kind: command
      run: <gate-command>
+     require_automated_review: <true|false>
    ```
 
    Human review gate shape:
@@ -774,10 +782,14 @@ recommendation, and default-if-silent. Record answers in
          - <allowed-label>
    ```
 
-   Auto-promote requires a linked open PR, green CI, a current-head Codex review
-   with no P1 findings, and the configured quiet period. `detent doctor --port
-   0` reports sampled `Human Review` candidates and reasons such as
-   `automated_review_missing` when that gate is not met.
+   For a command gate, auto-promote requires a linked open PR, green CI, no P1
+   automated PR review findings, and the configured quiet period. With
+   `require_automated_review: true`, it also requires a current-head automated
+   GitHub PR review. With `require_automated_review: false`, bot PR review is
+   not required to exist, but any observed P1 bot findings still route the item
+   to `Rework`. `detent doctor --port 0` reports sampled `Human Review`
+   candidates and reasons such as `automated_review_missing` when that gate is
+   not met.
 
    Dependency auto-unblock default:
 
@@ -1102,6 +1114,7 @@ changing `global.yaml` or `WORKFLOW.md`.
 | Authorization filters | `tracker.authorization` in `WORKFLOW.md`; optionally `projects[].authorization` in `global.yaml` for host-level scoping. |
 | Dashboard bind | `server.host` in `WORKFLOW.md`, or `--host` in the startup command or service `ExecStart`. |
 | Validation command | `gate.kind: command` and `gate.run` in `WORKFLOW.md`. |
+| Automated PR review requirement | `gate.kind: command` and `gate.require_automated_review` in `WORKFLOW.md`. |
 | Human validation label | `gate.kind: human_review` and `gate.approval_label` in `WORKFLOW.md`. |
 | Per-project concurrency | `agent.max_concurrent_agents` in `WORKFLOW.md`. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `WORKFLOW.md`. |
