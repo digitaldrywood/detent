@@ -1147,11 +1147,23 @@ func missingGitHubScopes(scopes []string) []string {
 
 	var missing []string
 	for _, scope := range requiredGitHubScopes {
-		if _, ok := have[scope]; !ok {
+		if !hasEffectiveGitHubScope(have, scope) {
 			missing = append(missing, scope)
 		}
 	}
 	return missing
+}
+
+func hasEffectiveGitHubScope(scopes map[string]struct{}, scope string) bool {
+	if _, ok := scopes[scope]; ok {
+		return true
+	}
+	return scope == "read:project" && hasGitHubProjectScope(scopes)
+}
+
+func hasGitHubProjectScope(scopes map[string]struct{}) bool {
+	_, ok := scopes["project"]
+	return ok
 }
 
 func checkDoctorServerPort(cfg BootConfig, deps doctorDeps) doctorCheck {

@@ -508,12 +508,19 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			wantHint:   `gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"`,
 		},
 		{
-			name:       "missing read project scope",
+			name:       "missing write project scope",
+			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
+			scopes:     []string{"repo", "read:org", "read:project"},
+			want:       doctorFail,
+			wantDetail: "missing scope(s): project",
+			wantHint:   `gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"`,
+		},
+		{
+			name:       "project scope satisfies normalized read project scope",
 			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
 			scopes:     []string{"repo", "read:org", "project"},
-			want:       doctorFail,
-			wantDetail: "missing scope(s): read:project",
-			wantHint:   `gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"`,
+			want:       doctorOK,
+			wantDetail: "GITHUB_TOKEN has required scopes",
 		},
 		{
 			name: "non github projects skip token scopes",
