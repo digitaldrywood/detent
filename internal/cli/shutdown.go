@@ -39,8 +39,9 @@ const (
 )
 
 type ShutdownController struct {
-	requests chan ShutdownRequest
-	active   atomic.Bool
+	requests          chan ShutdownRequest
+	active            atomic.Bool
+	shutdownRequested atomic.Bool
 }
 
 func NewShutdownController() *ShutdownController {
@@ -48,10 +49,16 @@ func NewShutdownController() *ShutdownController {
 }
 
 func (c *ShutdownController) RequestDrain() {
+	if c != nil {
+		c.shutdownRequested.Store(true)
+	}
 	c.request(ShutdownRequestDrain)
 }
 
 func (c *ShutdownController) RequestForce() {
+	if c != nil {
+		c.shutdownRequested.Store(true)
+	}
 	c.request(ShutdownRequestForce)
 }
 
@@ -66,13 +73,27 @@ func (c *ShutdownController) Active() bool {
 	return c != nil && c.active.Load()
 }
 
+func (c *ShutdownController) RequestInterrupt() bool {
+	if c == nil || !c.Active() {
+		return false
+	}
+	if c.shutdownRequested.CompareAndSwap(false, true) {
+		c.request(ShutdownRequestDrain)
+		return true
+	}
+	c.request(ShutdownRequestForce)
+	return true
+}
+
 func (c *ShutdownController) activate() func() {
 	if c == nil {
 		return func() {}
 	}
+	c.shutdownRequested.Store(false)
 	c.active.Store(true)
 	return func() {
 		c.active.Store(false)
+		c.shutdownRequested.Store(false)
 	}
 }
 

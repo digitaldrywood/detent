@@ -28,6 +28,52 @@ func TestShutdownControllerQueuesRequests(t *testing.T) {
 	}
 }
 
+func TestShutdownControllerInterruptRequestsDrainThenForce(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	if controller.RequestInterrupt() {
+		t.Fatal("inactive interrupt was handled")
+	}
+
+	deactivate := controller.activate()
+	defer deactivate()
+
+	if !controller.RequestInterrupt() {
+		t.Fatal("active interrupt was not handled")
+	}
+	if got := <-controller.Requests(); got != ShutdownRequestDrain {
+		t.Fatalf("first interrupt = %v, want drain", got)
+	}
+
+	if !controller.RequestInterrupt() {
+		t.Fatal("second interrupt was not handled")
+	}
+	if got := <-controller.Requests(); got != ShutdownRequestForce {
+		t.Fatalf("second interrupt = %v, want force", got)
+	}
+}
+
+func TestShutdownControllerDrainMakesNextInterruptForce(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	deactivate := controller.activate()
+	defer deactivate()
+
+	controller.RequestDrain()
+	if got := <-controller.Requests(); got != ShutdownRequestDrain {
+		t.Fatalf("explicit drain = %v, want drain", got)
+	}
+
+	if !controller.RequestInterrupt() {
+		t.Fatal("interrupt after drain was not handled")
+	}
+	if got := <-controller.Requests(); got != ShutdownRequestForce {
+		t.Fatalf("interrupt after drain = %v, want force", got)
+	}
+}
+
 func TestRunWithShutdownZeroSessionsExitsGracefully(t *testing.T) {
 	t.Parallel()
 

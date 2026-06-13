@@ -160,7 +160,29 @@ func TestModelClosesSubscriptionOnQuit(t *testing.T) {
 	}
 }
 
-func TestModelLeavesCtrlCForSignalHandler(t *testing.T) {
+func TestModelRequestsInterruptOnCtrlC(t *testing.T) {
+	t.Parallel()
+
+	interrupts := make(chan struct{}, 1)
+	model, err := NewModel(context.Background(), hub.New[telemetry.Snapshot]())
+	if err != nil {
+		t.Fatalf("NewModel() error = %v", err)
+	}
+	model.interrupt = func() {
+		interrupts <- struct{}{}
+	}
+
+	if _, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd != nil {
+		t.Fatal("Update(ctrl+c) returned command")
+	}
+	select {
+	case <-interrupts:
+	case <-time.After(time.Second):
+		t.Fatal("interrupt handler was not called")
+	}
+}
+
+func TestModelQuitsOnCtrlCWithoutInterruptHandler(t *testing.T) {
 	t.Parallel()
 
 	model, err := NewModel(context.Background(), hub.New[telemetry.Snapshot]())
@@ -168,8 +190,8 @@ func TestModelLeavesCtrlCForSignalHandler(t *testing.T) {
 		t.Fatalf("NewModel() error = %v", err)
 	}
 
-	if _, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd != nil {
-		t.Fatal("Update(ctrl+c) returned command, want signal handler to own shutdown")
+	if _, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd == nil {
+		t.Fatal("Update(ctrl+c) did not return quit command")
 	}
 }
 

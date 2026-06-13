@@ -31,13 +31,12 @@ func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot conte
 			return
 		case <-first:
 			signal.Stop(first)
-			if !controller.Active() {
+			if !controller.RequestInterrupt() {
 				if cancelRoot != nil {
 					cancelRoot()
 				}
 				return
 			}
-			controller.RequestDrain()
 		}
 
 		second := make(chan os.Signal, 1)
@@ -47,8 +46,7 @@ func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot conte
 		case <-stop:
 			return
 		case <-second:
-			if controller.Active() {
-				controller.RequestForce()
+			if controller.RequestInterrupt() {
 				return
 			}
 			if cancelRoot != nil {
