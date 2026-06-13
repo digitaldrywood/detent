@@ -241,6 +241,98 @@ func TestFileWatcherDebouncesGlobalConfigWrites(t *testing.T) {
 	}
 }
 
+func TestFileWatcherWatchesSymlinkTargetWrites(t *testing.T) {
+	t.Parallel()
+
+	linkDir := t.TempDir()
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "global.yaml")
+	linkPath := filepath.Join(linkDir, "global.yaml")
+	writeGlobalConfig(t, targetPath, 2)
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	w, err := NewFile(linkPath, func(path string) (globalconfig.Config, error) {
+		return globalconfig.Read(path)
+	}, WithFileDebounce(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewFile() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	updates, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+
+	tmpPath := filepath.Join(targetDir, ".global.yaml.tmp")
+	writeGlobalConfig(t, tmpPath, 5)
+	if err := os.Rename(tmpPath, targetPath); err != nil {
+		t.Fatalf("Rename() error = %v", err)
+	}
+
+	update := receiveFileUpdate(t, updates)
+	if update.Err != nil {
+		t.Fatalf("update error = %v", update.Err)
+	}
+	if update.Path != linkPath {
+		t.Fatalf("Path = %q, want symlink path %q", update.Path, linkPath)
+	}
+	if update.Value.Path != linkPath {
+		t.Fatalf("Value.Path = %q, want symlink path %q", update.Value.Path, linkPath)
+	}
+	if update.Value.Global.MaxConcurrentAgents != 5 {
+		t.Fatalf("MaxConcurrentAgents = %d, want 5", update.Value.Global.MaxConcurrentAgents)
+	}
+}
+
+func TestFileWatcherWatchesSymlinkTargetTouches(t *testing.T) {
+	t.Parallel()
+
+	linkDir := t.TempDir()
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "global.yaml")
+	linkPath := filepath.Join(linkDir, "global.yaml")
+	writeGlobalConfig(t, targetPath, 2)
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Fatalf("Symlink() error = %v", err)
+	}
+
+	w, err := NewFile(linkPath, func(path string) (globalconfig.Config, error) {
+		return globalconfig.Read(path)
+	}, WithFileDebounce(10*time.Millisecond))
+	if err != nil {
+		t.Fatalf("NewFile() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	updates, err := w.Watch(ctx)
+	if err != nil {
+		t.Fatalf("Watch() error = %v", err)
+	}
+
+	touchedAt := time.Now().Add(time.Minute)
+	if err := os.Chtimes(targetPath, touchedAt, touchedAt); err != nil {
+		t.Fatalf("Chtimes() error = %v", err)
+	}
+
+	update := receiveFileUpdate(t, updates)
+	if update.Err != nil {
+		t.Fatalf("update error = %v", update.Err)
+	}
+	if update.Path != linkPath {
+		t.Fatalf("Path = %q, want symlink path %q", update.Path, linkPath)
+	}
+	if update.Value.Global.MaxConcurrentAgents != 2 {
+		t.Fatalf("MaxConcurrentAgents = %d, want 2", update.Value.Global.MaxConcurrentAgents)
+	}
+}
+
 func receiveUpdate(t *testing.T, updates <-chan Update) Update {
 	t.Helper()
 

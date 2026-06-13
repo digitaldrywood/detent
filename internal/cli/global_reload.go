@@ -27,6 +27,11 @@ type globalConfigReloader struct {
 	onReload           func(globalconfig.Config)
 }
 
+type globalConfigChange struct {
+	Field           string
+	RequiresRestart bool
+}
+
 func startGlobalConfigWatcher(
 	ctx context.Context,
 	current globalconfig.Config,
@@ -109,7 +114,7 @@ func (r *globalConfigReloader) handle(ctx context.Context, update configwatcher.
 		return
 	}
 
-	logGlobalSettingChanges(logger, previous.Global, r.current.Global)
+	logGlobalConfigChanges(logger, previous, r.current)
 	logger.Info("global config reloaded",
 		"path", update.Path,
 		"added_projects", projectIDs(result.Added),
@@ -180,35 +185,65 @@ func managerConfigWithRuntimeGitHubToken(cfg globalconfig.Config, token string) 
 	return managerConfig
 }
 
-func logGlobalSettingChanges(logger *slog.Logger, previous globalconfig.Settings, next globalconfig.Settings) {
-	for _, field := range changedGlobalSettings(previous, next) {
-		switch field {
-		case "global.startup":
-			logger.Info("global config setting reloaded", "field", field)
-		default:
-			logger.Warn("global config setting change requires restart", "field", field)
+func logGlobalConfigChanges(logger *slog.Logger, previous globalconfig.Config, next globalconfig.Config) {
+	for _, change := range changedGlobalConfigFields(previous, next) {
+		if change.RequiresRestart {
+			logger.Warn("global config setting change requires restart", "field", change.Field)
+			continue
 		}
+		logger.Info("global config setting reloaded", "field", change.Field)
 	}
 }
 
-func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Settings) []string {
-	fields := []string{}
+func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.Config) []globalConfigChange {
+	fields := []globalConfigChange{}
+	if previous.Env != next.Env {
+		fields = append(fields, globalConfigChange{Field: "env", RequiresRestart: true})
+	}
+	if previous.LogLevel != next.LogLevel {
+		fields = append(fields, globalConfigChange{Field: "log_level", RequiresRestart: true})
+	}
+	if previous.GitHubToken != next.GitHubToken {
+		fields = append(fields, globalConfigChange{Field: "github_token"})
+	}
+	if !sameOptionalInt(previous.Port, next.Port) {
+		fields = append(fields, globalConfigChange{Field: "port", RequiresRestart: true})
+	}
+	if previous.InstanceName != next.InstanceName {
+		fields = append(fields, globalConfigChange{Field: "instance_name"})
+	}
+	if !reflect.DeepEqual(previous.Projects, next.Projects) {
+		fields = append(fields, globalConfigChange{Field: "projects"})
+	}
+	fields = append(fields, changedGlobalSettings(previous.Global, next.Global)...)
+	return fields
+}
+
+func changedGlobalSettings(previous globalconfig.Settings, next globalconfig.Settings) []globalConfigChange {
+	fields := []globalConfigChange{}
 	if previous.MaxConcurrentAgents != next.MaxConcurrentAgents {
-		fields = append(fields, "global.max_concurrent_agents")
+		fields = append(fields, globalConfigChange{Field: "global.max_concurrent_agents", RequiresRestart: true})
 	}
 	if previous.Scheduling != next.Scheduling {
-		fields = append(fields, "global.scheduling")
+		fields = append(fields, globalConfigChange{Field: "global.scheduling", RequiresRestart: true})
 	}
 	if !reflect.DeepEqual(previous.Identity, next.Identity) {
-		fields = append(fields, "global.identity")
+		fields = append(fields, globalConfigChange{Field: "global.identity"})
 	}
 	if !reflect.DeepEqual(previous.FairShare, next.FairShare) {
-		fields = append(fields, "global.fair_share")
+		fields = append(fields, globalConfigChange{Field: "global.fair_share", RequiresRestart: true})
 	}
 	if !reflect.DeepEqual(previous.Startup, next.Startup) {
-		fields = append(fields, "global.startup")
+		fields = append(fields, globalConfigChange{Field: "global.startup"})
 	}
 	return fields
+}
+
+func sameOptionalInt(left *int, right *int) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func projectIDs(ids []project.ID) []string {

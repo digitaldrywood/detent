@@ -282,6 +282,14 @@ func TestServerUsesHostnameFallbackForInstanceName(t *testing.T) {
 func TestServerReadsInstanceNameFromCurrentGlobalConfig(t *testing.T) {
 	t.Parallel()
 
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 12, 12, 0, 0, 0, time.UTC),
+		Instance:    telemetry.Instance{Name: "worker-identity"},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
 	current := globalconfig.Config{InstanceName: "first"}
 	server, err := web.NewServer(web.Config{
 		GlobalConfigSource: func() globalconfig.Config {
@@ -290,7 +298,7 @@ func TestServerReadsInstanceNameFromCurrentGlobalConfig(t *testing.T) {
 		Hostname: func() (string, error) {
 			return "", nil
 		},
-	}, testDeps(t))
+	}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
@@ -299,11 +307,21 @@ func TestServerReadsInstanceNameFromCurrentGlobalConfig(t *testing.T) {
 	if !strings.Contains(body, "<title>first · Detent</title>") {
 		t.Fatalf("body missing initial instance title:\n%s", body)
 	}
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	instance := state["instance"].(map[string]any)
+	if instance["display_name"] != "first" {
+		t.Fatalf("initial instance.display_name = %#v, want first", instance["display_name"])
+	}
 
 	current = globalconfig.Config{InstanceName: "second"}
 	body = requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
 	if !strings.Contains(body, "<title>second · Detent</title>") {
 		t.Fatalf("body missing reloaded instance title:\n%s", body)
+	}
+	state = requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	instance = state["instance"].(map[string]any)
+	if instance["display_name"] != "second" {
+		t.Fatalf("reloaded instance.display_name = %#v, want second", instance["display_name"])
 	}
 }
 
@@ -1344,7 +1362,13 @@ func TestSettingsRendersConfigProjectsAndRuntimePaths(t *testing.T) {
 	for _, want := range []string{
 		"Settings",
 		"Startup configuration, project paths, and runtime files.",
-		"Project membership and startup settings reload live; concurrency and scheduling settings require a restart.",
+		"Live reload applies to project membership, credentials, startup, instance display, and telemetry identity.",
+		"Project list and project settings",
+		"Credentials: github_token and project credentials",
+		"global.identity",
+		"Live reload; project runtimes restart in-process",
+		"global.max_concurrent_agents, global.scheduling, global.fair_share",
+		"Restart required",
 		`href="/"`,
 		`href="/reports"`,
 		`href="/settings"`,

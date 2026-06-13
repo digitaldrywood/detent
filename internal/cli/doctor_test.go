@@ -169,6 +169,49 @@ func TestCheckDoctorProjects(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorConfigReload(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	path := filepath.Join(dir, "global.yaml")
+	if err := os.WriteFile(path, []byte("global"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	got := checkDoctorConfigReload(globalconfig.Config{Path: path})
+	if got.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s", got.Status, doctorOK)
+	}
+	if !strings.Contains(got.Detail, "is watched for live reload") {
+		t.Fatalf("Detail = %q, want live reload detail", got.Detail)
+	}
+}
+
+func TestCheckDoctorConfigReloadReportsSymlinkTarget(t *testing.T) {
+	t.Parallel()
+
+	linkDir := t.TempDir()
+	targetDir := t.TempDir()
+	targetPath := filepath.Join(targetDir, "global.yaml")
+	linkPath := filepath.Join(linkDir, "global.yaml")
+	if err := os.WriteFile(targetPath, []byte("global"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	if err := os.Symlink(targetPath, linkPath); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	got := checkDoctorConfigReload(globalconfig.Config{Path: linkPath})
+	if got.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s", got.Status, doctorOK)
+	}
+	for _, want := range []string{linkPath, targetPath, "symlink", "live reload watches"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
 func TestProjectSourceRootPrefersProjectWorkdirBeforeWorkspaceRoot(t *testing.T) {
 	t.Parallel()
 

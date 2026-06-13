@@ -158,6 +158,70 @@ func TestGlobalConfigReloaderRestoresRuntimeGitHubTokenOnError(t *testing.T) {
 	}
 }
 
+func TestGlobalConfigReloaderAppliesIdentityReload(t *testing.T) {
+	t.Parallel()
+
+	current := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	current.Global.Identity = globalconfig.Identity{Name: "old-worker", GitHubLogin: "old-bot"}
+	next := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next.Global.Identity = globalconfig.Identity{Name: "new-worker", GitHubLogin: "new-bot"}
+	manager := &globalReloadManager{}
+	reloader := &globalConfigReloader{
+		current: current,
+		manager: manager,
+	}
+
+	_, err := reloader.apply(context.Background(), configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  next.Path,
+		Value: next,
+	})
+	if err != nil {
+		t.Fatalf("apply() error = %v", err)
+	}
+	if manager.config.Identity.Name != "new-worker" {
+		t.Fatalf("manager identity name = %q, want new-worker", manager.config.Identity.Name)
+	}
+	if len(manager.config.Projects) != 1 || manager.config.Projects[0].Identity.Name != "new-worker" {
+		t.Fatalf("manager project identity = %#v, want new-worker", manager.config.Projects)
+	}
+}
+
+func TestChangedGlobalConfigFieldsReloadMatrix(t *testing.T) {
+	t.Parallel()
+
+	base := reloadTestConfig("global.yaml", 2, []globalconfig.Project{{ID: "alpha", Weight: 1}})
+	next := reloadTestConfig("global.yaml", 4, []globalconfig.Project{{ID: "bravo", Weight: 2, CredentialRef: "github-app"}})
+	next.Env = "dev"
+	next.LogLevel = "debug"
+	next.GitHubToken = "gh"
+	port := 4101
+	next.Port = &port
+	next.InstanceName = "buildbox"
+	next.Global.Scheduling = globalconfig.SchedulingFairShare
+	next.Global.Identity = globalconfig.Identity{Name: "new-worker", GitHubLogin: "new-bot"}
+	next.Global.FairShare = map[string]any{"half_life": "2h"}
+	next.Global.Startup = map[string]any{"jitter_seconds": 1, "max_spawn_per_second": 2}
+
+	want := []globalConfigChange{
+		{Field: "env", RequiresRestart: true},
+		{Field: "log_level", RequiresRestart: true},
+		{Field: "github_token", RequiresRestart: false},
+		{Field: "port", RequiresRestart: true},
+		{Field: "instance_name", RequiresRestart: false},
+		{Field: "projects", RequiresRestart: false},
+		{Field: "global.max_concurrent_agents", RequiresRestart: true},
+		{Field: "global.scheduling", RequiresRestart: true},
+		{Field: "global.identity", RequiresRestart: false},
+		{Field: "global.fair_share", RequiresRestart: true},
+		{Field: "global.startup", RequiresRestart: false},
+	}
+
+	got := changedGlobalConfigFields(base, next)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("changedGlobalConfigFields() = %#v, want %#v", got, want)
+	}
+}
+
 type globalReloadManager struct {
 	calls  int
 	config project.ManagerConfig
