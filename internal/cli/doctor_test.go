@@ -269,7 +269,7 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 				issues: []connector.Issue{waitingIssue, missingReviewIssue},
 			},
 			want:        doctorOK,
-			wantDetails: []string{"ci_not_green=1", "codex_review_missing=1"},
+			wantDetails: []string{"automated_review_missing=1", "ci_not_green=1"},
 		},
 		{
 			name: "ready candidate passes with count",

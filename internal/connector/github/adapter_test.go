@@ -707,7 +707,22 @@ func TestConnectorFetchIssuesByStatesLimitStopsAfterSample(t *testing.T) {
 		},
 		{
 			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			path:   "/repos/digitaldrywood/detent/pulls/371",
+			body:   `{"number":371,"html_url":"https://github.com/digitaldrywood/detent/pull/371","state":"open","head":{"ref":"detent/digitaldrywood_detent_370","sha":"sha-371"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-371/check-runs?per_page=100",
+			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-371/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/371/reviews?per_page=100",
 			body:   `[]`,
 		},
 	})
@@ -723,13 +738,14 @@ func TestConnectorFetchIssuesByStatesLimitStopsAfterSample(t *testing.T) {
 	if got[0].PRNumber == nil || *got[0].PRNumber != 371 {
 		t.Fatalf("PRNumber = %v, want linked PR 371", got[0].PRNumber)
 	}
-	if got[0].PullRequest != nil {
-		t.Fatalf("PullRequest = %#v, want nil when branch metadata is not attached", got[0].PullRequest)
+	pr := got[0].PullRequest
+	if pr == nil || pr.Number != 371 || pr.CIStatus != "pass" {
+		t.Fatalf("PullRequest = %#v, want hydrated linked PR 371 with passing CI", pr)
 	}
 
 	requests := server.requests()
-	if len(requests) != 2 {
-		t.Fatalf("request count = %d, want one project page and one pull request page", len(requests))
+	if len(requests) != 5 {
+		t.Fatalf("request count = %d, want one project page and linked PR status requests", len(requests))
 	}
 	if requests[0]["variables"].(map[string]any)["after"] != nil {
 		t.Fatalf("first project request after = %v, want nil", requests[0]["variables"].(map[string]any)["after"])
