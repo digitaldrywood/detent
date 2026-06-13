@@ -395,8 +395,12 @@ port: 4000
 
 `detent doctor` is a preflight check: config resolution, the SQLite database,
 the `codex` binary, the GitHub token and scopes, the git binary, and whether the
-server port is free. Fix any `FAIL` before starting (missing `github_token: gh`
-or an unauthenticated `codex` are the usual culprits).
+server port is free. Before starting Detent, fix any `FAIL` (missing
+`github_token: gh` or an unauthenticated `codex` are the usual culprits). If
+Detent is already running on the configured port, the server-port check can fail
+because the live service owns the port; use `detent doctor --port 0` for the
+same config, toolchain, token, and database preflight without the port
+collision, then verify the live service with `/health`.
 
 6. Start Detent:
 
@@ -531,8 +535,15 @@ repo is a real, working instance of this setup to copy from.
    detent doctor
    ```
 
-   Every check must pass (the server-port check may fail if Detent is already
-   running — that is expected).
+   Every check must pass before starting Detent. If Detent is already running on
+   the configured port, the server-port check may fail because the live service
+   owns the port. In that case, validate the rest of the setup without the port
+   collision, then verify the running service:
+
+   ```sh
+   detent doctor --port 0
+   curl -fsS http://127.0.0.1:4000/health | jq -e '.status == "ok" and .mode == "running"'
+   ```
 
 9. **Start Detent and confirm the dashboard:**
 
@@ -641,11 +652,16 @@ the wait should be visible on the board.
 
 Before you dispatch anything, run **`detent doctor`** — it checks config
 resolution, the database, the `codex` binary, your GitHub token and scopes, git,
-and the server port. A clean `doctor` clears Detent's direct preflight. If
-Detent runs under a systemd user service, also verify the service PATH resolves
-every command used by project hooks and validation gates; `doctor` checks
-Detent's direct dependencies, not repo-specific bootstrap tools. The onboarding
-runbook includes the service-context check.
+and the server port. A clean pre-start `doctor` clears Detent's direct
+preflight. When a running Detent process already owns the configured port,
+`detent doctor --port 0` validates the config, database, tools, and token
+without treating the live listener as a blocker; pair it with `/health` on the
+actual service before dispatching more work. Do not dispatch from a failed
+doctor run unless the only failure is that expected live-port collision and
+`/health` is green. If Detent runs under a systemd user service, also verify the
+service PATH resolves every command used by project hooks and validation gates;
+`doctor` checks Detent's direct dependencies, not repo-specific bootstrap tools.
+The onboarding runbook includes the service-context check.
 
 ### Merge Train
 
