@@ -374,6 +374,151 @@ func TestInitRefusesExistingConfigWithoutForce(t *testing.T) {
 	}
 }
 
+func TestCLIValidationErrorsCarryHints(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	writeGlobalConfig(t, configPath, nil)
+
+	tests := []struct {
+		name         string
+		args         []string
+		wantMessage  string
+		wantHint     string
+		wantCommands []string
+	}{
+		{
+			name:         "root port",
+			args:         []string{"--config", configPath, "--port", "-1"},
+			wantMessage:  "--port must be greater than or equal to 0",
+			wantHint:     "e.g. detent --port 0",
+			wantCommands: []string{"detent --port 0"},
+		},
+		{
+			name:         "missing project id",
+			args:         []string{"--config", configPath, "add-project", "--workflow", "./WORKFLOW.md", "--workdir", "~/code/api"},
+			wantMessage:  "--id is required",
+			wantHint:     "e.g. detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api",
+			wantCommands: []string{"detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api"},
+		},
+		{
+			name:         "missing project workflow",
+			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workdir", "~/code/api"},
+			wantMessage:  "--workflow is required",
+			wantHint:     "e.g. detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api",
+			wantCommands: []string{"detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api"},
+		},
+		{
+			name:         "missing project workdir",
+			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workflow", "./WORKFLOW.md"},
+			wantMessage:  "--workdir is required",
+			wantHint:     "e.g. detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api",
+			wantCommands: []string{"detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api"},
+		},
+		{
+			name:         "invalid project weight",
+			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workflow", "./WORKFLOW.md", "--workdir", "~/code/api", "--weight", "0"},
+			wantMessage:  "--weight must be positive",
+			wantHint:     "e.g. detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api --weight 1",
+			wantCommands: []string{"detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api --weight 1"},
+		},
+		{
+			name:         "invalid promote priority",
+			args:         []string{"--config", configPath, "promote", "api", "--priority", "0"},
+			wantMessage:  "--priority must be positive",
+			wantHint:     "e.g. detent promote api --priority 10",
+			wantCommands: []string{"detent promote api --priority 10"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var stderr bytes.Buffer
+			cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(context.Context, cli.BootConfig) error {
+				t.Fatal("boot should not run")
+				return nil
+			}))
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&stderr)
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want error")
+			}
+			assertHintedError(t, err, nil, tt.wantMessage, tt.wantHint, tt.wantCommands)
+			if !strings.Contains(stderr.String(), "Hint: "+tt.wantHint) {
+				t.Fatalf("stderr missing hint %q:\n%s", tt.wantHint, stderr.String())
+			}
+		})
+	}
+}
+
+func TestConfigAndProjectConflictErrorsCarryHints(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "detent", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+	})
+
+	tests := []struct {
+		name         string
+		args         []string
+		wantErr      error
+		wantMessage  string
+		wantHint     string
+		wantCommands []string
+	}{
+		{
+			name:         "config exists",
+			args:         []string{"--config", configPath, "init"},
+			wantErr:      cli.ErrConfigExists,
+			wantMessage:  "global config already exists: " + configPath,
+			wantHint:     "run detent init --force to overwrite it, or edit the file reported by detent config path",
+			wantCommands: []string{"detent init --force", "detent config path"},
+		},
+		{
+			name: "project exists",
+			args: []string{
+				"--config", configPath,
+				"add-project",
+				"--id", "detent",
+				"--workflow", paths.workflowPath,
+				"--workdir", paths.workdirPath,
+			},
+			wantErr:      cli.ErrProjectExists,
+			wantMessage:  `project "detent" already exists`,
+			wantHint:     `project id "detent" is already taken; run detent config path to inspect current projects before choosing a new --id`,
+			wantCommands: []string{"detent config path"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var stderr bytes.Buffer
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&stderr)
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want error")
+			}
+			assertHintedError(t, err, tt.wantErr, tt.wantMessage, tt.wantHint, tt.wantCommands)
+			if !strings.Contains(stderr.String(), "Hint: "+tt.wantHint) {
+				t.Fatalf("stderr missing hint %q:\n%s", tt.wantHint, stderr.String())
+			}
+		})
+	}
+}
+
 func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 	t.Parallel()
 
@@ -569,16 +714,22 @@ projects:
 func TestProjectAdminCommandsRejectMissingProject(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "global.yaml")
-	writeGlobalConfig(t, configPath, nil)
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "api", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+		{ID: "web", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+		{ID: "infra", Workflow: paths.workflowPath, Workdir: paths.workdirPath, Weight: 1},
+	})
 
+	var stderr bytes.Buffer
 	cmd := cli.NewRootCommand(context.Background(), cli.WithSignalFunc(func(context.Context, cli.Signal) error {
 		t.Fatal("signal should not be emitted")
 		return nil
 	}))
 	cmd.SetOut(&bytes.Buffer{})
-	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--config", configPath, "pause", "missing"})
+	cmd.SetErr(&stderr)
+	cmd.SetArgs([]string{"--config", configPath, "pause", "ap"})
 
 	err := cmd.Execute()
 	if err == nil {
@@ -586,6 +737,13 @@ func TestProjectAdminCommandsRejectMissingProject(t *testing.T) {
 	}
 	if !errors.Is(err, cli.ErrProjectNotFound) {
 		t.Fatalf("Execute() error = %v, want %v", err, cli.ErrProjectNotFound)
+	}
+	assertHintedError(t, err, cli.ErrProjectNotFound, `project "ap" not found`, "available: api, web, infra\n"+
+		"did you mean \"api\"? see `detent config path`, then retry", []string{"detent config path"})
+	for _, want := range []string{"Hint: available: api, web, infra", "did you mean \"api\"? see `detent config path`, then retry"} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
+		}
 	}
 }
 
@@ -766,6 +924,27 @@ func assertSignal(t *testing.T, signals <-chan cli.Signal, operation cli.Operati
 	signal := <-signals
 	if signal.Operation != operation || signal.ProjectID != projectID {
 		t.Fatalf("signal = %#v, want %s %s", signal, operation, projectID)
+	}
+}
+
+func assertHintedError(t *testing.T, err error, wantErr error, wantMessage string, wantHint string, wantCommands []string) {
+	t.Helper()
+
+	if wantErr != nil && !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+	if err.Error() != wantMessage {
+		t.Fatalf("error message = %q, want %q", err.Error(), wantMessage)
+	}
+	gotHint, gotCommands, ok := cli.HintFor(err)
+	if !ok {
+		t.Fatalf("HintFor(%v) ok = false, want true", err)
+	}
+	if gotHint != wantHint {
+		t.Fatalf("hint = %q, want %q", gotHint, wantHint)
+	}
+	if !reflect.DeepEqual(gotCommands, wantCommands) {
+		t.Fatalf("commands = %#v, want %#v", gotCommands, wantCommands)
 	}
 }
 

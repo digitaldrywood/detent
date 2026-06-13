@@ -183,14 +183,14 @@ func resolveRuntimeString(input runtimeStringInput, lookupEnv func(string) strin
 func resolveRuntimePort(ctx context.Context, input runtimeInput, deps runtimeDeps) (RuntimeIntValue, error) {
 	if input.Flags.Port.Set {
 		if input.Flags.Port.Value < 0 {
-			return RuntimeIntValue{}, errors.New("port must be greater than or equal to 0")
+			return RuntimeIntValue{}, hintedError(nil, "--port must be greater than or equal to 0", exampleHint(portExampleCommand), portExampleCommand)
 		}
 		return RuntimeIntValue{Value: input.Flags.Port.Value, Source: runtimeSourceFlag}, nil
 	}
 	if raw := strings.TrimSpace(deps.lookupEnv("PORT")); raw != "" {
 		port, err := strconv.Atoi(raw)
 		if err != nil || port < 0 {
-			return RuntimeIntValue{}, errors.New("PORT must be an integer greater than or equal to 0")
+			return RuntimeIntValue{}, hintedError(nil, "PORT must be an integer greater than or equal to 0", "set PORT=4000 or run detent --port 0", portExampleCommand)
 		}
 		return RuntimeIntValue{Value: port, Source: "PORT"}, nil
 	}
@@ -244,7 +244,7 @@ func resolveRuntimeGitHubToken(ctx context.Context, cfg *globalconfig.Config, de
 		return token, nil, nil
 	}
 	if requiresRuntimeToken {
-		return RuntimeSecret{}, nil, fmt.Errorf("GITHUB_TOKEN is not set, github_token is not configured, and no usable tracker.api_key was found. %s", githubAuthHint)
+		return RuntimeSecret{}, nil, hintedError(nil, "GITHUB_TOKEN is not set, github_token is not configured, and no usable tracker.api_key was found", githubAuthHint, ghAuthLoginCommand)
 	}
 	return RuntimeSecret{Required: false}, nil, nil
 }
@@ -253,11 +253,13 @@ func resolveConfiguredGitHubToken(ctx context.Context, token string, deps runtim
 	if githubTokenSentinel(token) {
 		resolved, err := deps.ghAuthToken(ctx)
 		if err != nil {
-			return RuntimeSecret{}, fmt.Errorf("resolve github_token via gh auth token: %w. %s", err, githubAuthHint)
+			cause := fmt.Errorf("resolve github_token via gh auth token: %w", err)
+			return RuntimeSecret{}, hintedError(cause, cause.Error(), githubAuthHint, ghAuthLoginCommand)
 		}
 		resolved = strings.TrimSpace(resolved)
 		if resolved == "" {
-			return RuntimeSecret{}, fmt.Errorf("resolve github_token via gh auth token: empty token. %s", githubAuthHint)
+			message := "resolve github_token via gh auth token: empty token"
+			return RuntimeSecret{}, hintedError(nil, message, githubAuthHint, ghAuthLoginCommand)
 		}
 		return RuntimeSecret{Value: resolved, Source: "github_token", ResolvedVia: "gh", Required: true}, nil
 	}

@@ -494,6 +494,57 @@ func TestCheckDoctorRuntimeSettingsReportsSources(t *testing.T) {
 	}
 }
 
+func TestRunDoctorPreservesHintedRuntimeErrorHint(t *testing.T) {
+	t.Parallel()
+
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	opts := successfulDoctorOptions(configPath)
+	opts.read = func(string) (globalconfig.Config, error) {
+		return globalconfig.Config{
+			Path:       configPath,
+			APIVersion: globalconfig.APIVersion,
+			Kind:       globalconfig.Kind,
+			Global: globalconfig.Settings{
+				MaxConcurrentAgents: 1,
+				Scheduling:          globalconfig.SchedulingWeighted,
+			},
+			Projects: []globalconfig.Project{
+				{ID: "api", Workflow: "WORKFLOW.md", Workdir: "/repo"},
+			},
+		}, nil
+	}
+	deps := successfulDoctorDeps()
+	deps.lookupEnv = func(string) string {
+		return ""
+	}
+	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+		cfg := validDoctorWorkflow("/repo")
+		cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+		return workflowconfig.Workflow{Config: cfg}, nil
+	}
+
+	report := runDoctor(context.Background(), doctorConfig{
+		ConfigPath:   configPath,
+		Host:         "127.0.0.1",
+		Output:       io.Discard,
+		CheckTimeout: time.Second,
+	}, opts, deps)
+
+	for _, check := range report.Checks {
+		if check.Name != "Runtime settings" {
+			continue
+		}
+		if check.Hint != githubAuthHint {
+			t.Fatalf("Runtime settings hint = %q, want %q", check.Hint, githubAuthHint)
+		}
+		if strings.Contains(check.Detail, githubAuthHint) {
+			t.Fatalf("Runtime settings detail includes hint: %q", check.Detail)
+		}
+		return
+	}
+	t.Fatal("Runtime settings check not found")
+}
+
 func TestCheckDoctorDetentExecutableReportsRunningBinary(t *testing.T) {
 	t.Parallel()
 
