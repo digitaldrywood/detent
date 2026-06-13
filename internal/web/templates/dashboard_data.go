@@ -133,14 +133,15 @@ type projectSmallMultipleCard struct {
 }
 
 type sidebarProjectItem struct {
-	ID          string
-	Name        string
-	Href        string
-	StatusLabel string
-	DotClass    string
-	BadgeClass  string
-	CountLabel  string
-	Active      bool
+	ID           string
+	Name         string
+	Href         string
+	StatusLabel  string
+	DotClass     string
+	BadgeClass   string
+	CountLabel   string
+	DefaultIndex int
+	Active       bool
 }
 
 type agentTimelineRow struct {
@@ -302,15 +303,26 @@ func sidebarAriaCurrent(active bool) templ.Attributes {
 	return templ.Attributes{"aria-current": "page"}
 }
 
-func sidebarProjectAttributes(item sidebarProjectItem) templ.Attributes {
+func sidebarProjectItemAttributes(item sidebarProjectItem) templ.Attributes {
 	attrs := templ.Attributes{
 		"data-dashboard-project-entry": true,
+		"data-project-id":              item.ID,
 		"data-project-name":            item.Name,
+		"data-project-default-index":   strconv.Itoa(item.DefaultIndex),
 	}
+	return attrs
+}
+
+func sidebarProjectButtonAttributes(item sidebarProjectItem) templ.Attributes {
+	attrs := templ.Attributes{}
 	for name, value := range sidebarAriaCurrent(item.Active) {
 		attrs[name] = value
 	}
 	return attrs
+}
+
+func sidebarProjectOrderAvailable(data DashboardData) bool {
+	return len(sidebarProjectItems(data)) > 1
 }
 
 func sidebarFleetTooltip(data DashboardData) string {
@@ -431,14 +443,15 @@ func sidebarProjectItems(data DashboardData) []sidebarProjectItem {
 		}
 		status := projectSmallMultipleStatus(project)
 		items = append(items, sidebarProjectItem{
-			ID:          id,
-			Name:        projectSmallMultipleName(project),
-			Href:        projectDashboardPath(id),
-			StatusLabel: status.Label,
-			DotClass:    status.DotClass,
-			BadgeClass:  status.BadgeClass,
-			CountLabel:  formatCount(project.Running),
-			Active:      strings.TrimSpace(data.ProjectID) == id,
+			ID:           id,
+			Name:         projectSmallMultipleName(project),
+			Href:         projectDashboardPath(id),
+			StatusLabel:  status.Label,
+			DotClass:     status.DotClass,
+			BadgeClass:   status.BadgeClass,
+			CountLabel:   formatCount(project.Running),
+			DefaultIndex: len(items),
+			Active:       strings.TrimSpace(data.ProjectID) == id,
 		})
 	}
 	return items
@@ -472,13 +485,13 @@ func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView 
 	case project.Blocked > 0:
 		return projectStatusView{Rank: 0, Label: "blocked", DotClass: "bg-danger", BadgeClass: "bg-danger-soft text-danger"}
 	case project.Paused:
-		return projectStatusView{Rank: 3, Label: "paused", DotClass: "bg-muted-foreground", BadgeClass: "bg-muted text-muted-foreground"}
+		return projectStatusView{Rank: 4, Label: "paused", DotClass: "bg-muted-foreground", BadgeClass: "bg-muted text-muted-foreground"}
 	case project.Running > 0:
 		return projectStatusView{Rank: 1, Label: "active", DotClass: "bg-success", BadgeClass: "bg-success-soft text-success"}
 	case project.QueueCount > 0:
 		return projectStatusView{Rank: 2, Label: "queued", DotClass: "bg-warning", BadgeClass: "bg-warning-soft text-warning"}
 	default:
-		return projectStatusView{Rank: 4, Label: "idle", DotClass: "bg-muted-foreground", BadgeClass: "bg-muted text-muted-foreground"}
+		return projectStatusView{Rank: 3, Label: "idle", DotClass: "bg-muted-foreground", BadgeClass: "bg-muted text-muted-foreground"}
 	}
 }
 
