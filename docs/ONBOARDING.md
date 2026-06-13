@@ -568,6 +568,117 @@ recommendation, and default-if-silent. Record answers in
      | jq -e '[.fields[].name] as $names | all(["Status","Priority"][]; . as $want | $names | index($want))'
    ```
 
+6. **Clean up inherited statuses before first Detent dispatch.** Reused boards
+   often carry status options and stale item placements from a predecessor
+   orchestrator. Inventory the board before the first Detent start so the
+   operator can distinguish intentional custom lanes from old active or
+   terminal columns. Verify:
+
+   ```sh
+   PROJECT_NUMBER="$(jq -r '.number' "$ONBOARDING_DIR/project.json")"
+   PROJECT_NODE_ID="$(jq -r '.id' "$ONBOARDING_DIR/project.json")"
+   gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json \
+     > "$ONBOARDING_DIR/fields.before-detent.json"
+   gh project item-list "$PROJECT_NUMBER" --owner <project-owner> --format json --limit 1000 \
+     > "$ONBOARDING_DIR/project-items.before-detent.json"
+   gh project item-list "$PROJECT_NUMBER" --owner <project-owner> \
+     --query 'repo:<repo-owner>/<repo-name> is:issue is:open' \
+     --format json --limit 1000 \
+     > "$ONBOARDING_DIR/repo-open-project-items.before-detent.json"
+
+   jq -r '.fields[] | select(.name == "Status") | .options[].name' \
+     "$ONBOARDING_DIR/fields.before-detent.json" \
+     > "$ONBOARDING_DIR/status-options.before-detent.txt"
+   cat "$ONBOARDING_DIR/status-options.before-detent.txt"
+   ```
+
+   Detent will add missing canonical `Status` options from `WORKFLOW.md` on
+   first run and reorder known options into Detent's configured order. It
+   preserves extra custom options after the configured Detent states; do not
+   delete a custom option unless the operator confirms it is a predecessor
+   leftover.
+
+   Print status counts for every board item and for open issues from the target
+   repository:
+
+   ```sh
+   jq '[.items[] | (.status // "No status")] | sort | group_by(.) | map({status: .[0], count: length})' \
+     "$ONBOARDING_DIR/project-items.before-detent.json"
+   jq '[.items[] | (.status // "No status")] | sort | group_by(.) | map({status: .[0], count: length})' \
+     "$ONBOARDING_DIR/repo-open-project-items.before-detent.json"
+   ```
+
+   Compare option names against the configured Detent states, including
+   case-only differences such as `In progress` versus `In Progress`. If this
+   project uses custom state names in `WORKFLOW.md`, replace the default list
+   below with those configured states. Verify:
+
+   ```sh
+   printf '%s\n' \
+     Backlog Todo 'In Progress' Blocked 'Human Review' Rework Merging Done Cancelled \
+     > "$ONBOARDING_DIR/detent-status-options.txt"
+   awk '
+     NR == FNR {
+       canonical[$0] = 1
+       canonical_lower[tolower($0)] = $0
+       next
+     }
+     !($0 in canonical) {
+       if (tolower($0) in canonical_lower) {
+         printf "case-different\t%s\tcanonical:%s\n", $0, canonical_lower[tolower($0)]
+       } else {
+         printf "custom-or-legacy\t%s\n", $0
+       }
+     }
+   ' "$ONBOARDING_DIR/detent-status-options.txt" \
+     "$ONBOARDING_DIR/status-options.before-detent.txt"
+   ```
+
+   Treat old active or terminal names such as `Ready`, `In progress`,
+   `In review`, or `Done` as migration questions, not automatic truths. Ask the
+   operator: "Should open issues currently in inherited active or terminal
+   statuses stay where they are, be closed, or move back to `Backlog` before
+   Detent starts?"
+
+   Also ask what to do with empty non-Detent `Status` options that do not map
+   to the configured workflow. The operator should choose one action for each
+   option: remove it from the board, keep it as an intentional custom column, or
+   map it through the workflow state configuration. The default recommendation
+   is to remove empty non-mapping predecessor options during setup after status
+   counts have been reported.
+
+   The default recommendation is to move open issues from predecessor active or
+   terminal statuses back to `Backlog`, unless the operator confirms a status
+   is intentional or the issue should be closed. If `Backlog` does not exist
+   yet, create it manually or start Detent once with no dispatchable items so it
+   can provision canonical options, then repeat this cleanup before moving any
+   issue to `Todo`. Verify the selected cleanup set before editing items:
+
+   ```sh
+   LEGACY_STATUS_REGEX='^(Ready|In progress|In review|Done)$'
+   jq -r --arg re "$LEGACY_STATUS_REGEX" \
+     '.items[] | select((.status // "No status") | test($re)) | [.id, .status, .content.url] | @tsv' \
+     "$ONBOARDING_DIR/repo-open-project-items.before-detent.json"
+   ```
+
+   After the operator confirms the cleanup set, move those open items to
+   `Backlog`:
+
+   ```sh
+   STATUS_FIELD_ID="$(gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json --jq '.fields[] | select(.name == "Status") | .id')"
+   BACKLOG_OPTION_ID="$(gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json --jq '.fields[] | select(.name == "Status") | .options[] | select(.name == "Backlog") | .id')"
+   jq -r --arg re "$LEGACY_STATUS_REGEX" \
+     '.items[] | select((.status // "No status") | test($re)) | .id' \
+     "$ONBOARDING_DIR/repo-open-project-items.before-detent.json" |
+   while IFS= read -r item_id; do
+     gh project item-edit \
+       --id "$item_id" \
+       --project-id "$PROJECT_NODE_ID" \
+       --field-id "$STATUS_FIELD_ID" \
+       --single-select-option-id "$BACKLOG_OPTION_ID" >/dev/null
+   done
+   ```
+
 ## Phase 4 — Author WORKFLOW.md
 
 1. **Fetch the canonical template.** Read the existing file first if one is
