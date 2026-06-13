@@ -16,42 +16,63 @@ import (
 )
 
 func main() {
-	setupLoggerFromEnv(os.Stdout, os.Stderr)
+	os.Exit(runCLI(context.Background(), os.Args[1:], os.Stdout, os.Stderr))
+}
 
-	ctx, cancel := context.WithCancel(context.Background())
+func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer) int {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	setupLoggerFromEnv(stdout, stderr)
+
+	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	shutdownController := cli.NewShutdownController()
 	stopSignals := notifyShutdownRequests(shutdownController, cancel)
 	defer stopSignals()
 
 	cmd := newRootCommand(ctx, shutdownController)
+	cmd.SetOut(stdout)
+	cmd.SetErr(stderr)
+	cmd.SetArgs(args)
+	cmd.SilenceErrors = true
+	format, formatErr := cli.ResolveOutputFormatFromArgs(args, os.Getenv, cli.WriterIsTTY(stdout))
 	if err := cmd.ExecuteContext(ctx); err != nil {
-		os.Exit(handleCommandError(cmd, err))
+		if errors.Is(err, context.Canceled) {
+			slog.Info("shutdown requested")
+			return cli.ExitSuccess
+		}
+		return renderCommandError(cmd, err, stderr, format, formatErr)
 	}
+	return cli.ExitSuccess
 }
 
-func handleCommandError(cmd *cobra.Command, err error) int {
-	code := cli.ExitCode(err)
-	if code == cli.ExitSuccess {
-		slog.Info("shutdown requested")
-		return code
-	}
-	if errors.Is(err, cli.ErrShutdownForced) || errors.Is(err, cli.ErrShutdownTimeout) {
-		return code
-	}
-
-	var errOut io.Writer = os.Stderr
-	if cmd != nil {
-		errOut = cmd.ErrOrStderr()
-	}
-	if cli.CommandOutputIsJSON(cmd) {
-		if writeErr := cli.WriteCommandErrorJSON(errOut, err); writeErr != nil {
-			fmt.Fprintf(errOut, "Error: %v\n", writeErr)
+func renderCommandError(cmd *cobra.Command, err error, stderr io.Writer, format cli.OutputFormat, formatErr error) int {
+	problem := cli.ProblemForCommandError(cmd, err)
+	if formatErr == nil && format == cli.OutputFormatJSON {
+		if writeErr := cli.WriteProblemJSON(stderr, problem); writeErr != nil {
+			slog.Error("write problem response", "error", writeErr)
 		}
-		return code
+		return problem.ExitCode
 	}
-	fmt.Fprintf(errOut, "Error: %v\n", err)
-	return code
+	if writeErr := writePrettyCommandError(stderr, err, problem); writeErr != nil {
+		slog.Error("write error response", "error", writeErr)
+	}
+	return problem.ExitCode
+}
+
+func writePrettyCommandError(stderr io.Writer, err error, problem cli.Problem) error {
+	if stderr == nil {
+		return nil
+	}
+	if writeErr := cli.WritePrettyError(stderr, err); writeErr != nil {
+		return writeErr
+	}
+	if cli.ErrorHint(err) != "" || problem.SuggestedFix == "" {
+		return nil
+	}
+	_, writeErr := fmt.Fprintf(stderr, "Hint: %s\n", problem.SuggestedFix)
+	return writeErr
 }
 
 func newRootCommand(ctx context.Context, shutdownControllers ...*cli.ShutdownController) *cobra.Command {
@@ -72,6 +93,7 @@ func newRootCommand(ctx context.Context, shutdownControllers ...*cli.ShutdownCon
 		newUpdateCommand(ctx, newDefaultUpdateRunner),
 		newShadowRunCommand(),
 	)
+	cli.ConfigureCommandSuggestions(cmd)
 
 	return cmd
 }
@@ -84,10 +106,11 @@ func newShadowRunCommand() *cobra.Command {
 		Use:          "shadow-run",
 		Short:        "Compare read-only Go decisions with an Elixir shadow report",
 		Args:         cli.NoArgs,
+		Example:      "detent shadow-run --input ./shadow.json --allow-diff",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if inputPath == "" {
-				return cli.ValidationError("shadow-run --input is required")
+				return cli.NewValidationError("shadow-run --input is required", "Run detent shadow-run --input ./shadow.json.", nil)
 			}
 			return runShadowRun(cmd.OutOrStdout(), inputPath, allowDiff)
 		},

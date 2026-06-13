@@ -22,7 +22,7 @@ import (
 func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	t.Parallel()
 
-	cmd := cli.NewRootCommand(context.Background())
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
@@ -170,7 +170,7 @@ func TestConfigPathCommandPrintsResolvedPathAndRule(t *testing.T) {
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--config", path, "config", "path"})
+	cmd.SetArgs([]string{"--config", path, "--format", "pretty", "config", "path"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -258,6 +258,78 @@ func TestOutputFormatPrecedence(t *testing.T) {
 				if !strings.Contains(stdout.String(), want) {
 					t.Fatalf("pretty output missing %q:\n%s", want, stdout.String())
 				}
+			}
+		})
+	}
+}
+
+func TestResolveOutputFormatFromArgsPrecedence(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name      string
+		args      []string
+		env       string
+		stdoutTTY bool
+		want      cli.OutputFormat
+	}{
+		{
+			name:      "flag before unknown command beats tty",
+			args:      []string{"--format", "json", "paues"},
+			stdoutTTY: true,
+			want:      cli.OutputFormatJSON,
+		},
+		{
+			name:      "flag after unknown command beats tty",
+			args:      []string{"paues", "--format", "json"},
+			stdoutTTY: true,
+			want:      cli.OutputFormatJSON,
+		},
+		{
+			name:      "equals form beats tty",
+			args:      []string{"paues", "--format=json"},
+			stdoutTTY: true,
+			want:      cli.OutputFormatJSON,
+		},
+		{
+			name: "flag beats env and non tty",
+			args: []string{"paues", "--format", "pretty"},
+			env:  "json",
+			want: cli.OutputFormatPretty,
+		},
+		{
+			name:      "env beats tty",
+			args:      []string{"paues"},
+			env:       "json",
+			stdoutTTY: true,
+			want:      cli.OutputFormatJSON,
+		},
+		{
+			name:      "tty defaults pretty",
+			args:      []string{"paues"},
+			stdoutTTY: true,
+			want:      cli.OutputFormatPretty,
+		},
+		{
+			name:      "terminator stops flag scan",
+			args:      []string{"paues", "--", "--format", "json"},
+			stdoutTTY: true,
+			want:      cli.OutputFormatPretty,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := cli.ResolveOutputFormatFromArgs(tt.args, func(string) string {
+				return tt.env
+			}, tt.stdoutTTY)
+			if err != nil {
+				t.Fatalf("ResolveOutputFormatFromArgs() error = %v", err)
+			}
+			if got != tt.want {
+				t.Fatalf("ResolveOutputFormatFromArgs() = %q, want %q", got, tt.want)
 			}
 		})
 	}
@@ -818,6 +890,127 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 	signal := <-signals
 	if signal.Operation != cli.OperationAddProject || !reflect.DeepEqual(signal.Project, want) {
 		t.Fatalf("signal = %#v, want add project %#v", signal, want)
+	}
+}
+
+func TestAddProjectCommandEmitsJSONResult(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"add-project",
+		"--id", "detent",
+		"--workflow", paths.workflowPath,
+		"--workdir", paths.workdirPath,
+		"--weight", "5",
+		"--paused",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		ID       string `json:"id"`
+		Workflow string `json:"workflow"`
+		Workdir  string `json:"workdir"`
+		Weight   int    `json:"weight"`
+		Paused   bool   `json:"paused"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("add-project output is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.ID != "detent" || got.Workflow != paths.workflowPath || got.Workdir != paths.workdirPath {
+		t.Fatalf("project = %#v, want detent project", got)
+	}
+	if got.Weight != 5 || !got.Paused {
+		t.Fatalf("project weight/paused = %d/%v, want 5/true", got.Weight, got.Paused)
+	}
+}
+
+func TestRootCommandClassifiesMistypedCommandSuggestion(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		args []string
+		want string
+	}{
+		{name: "near miss", args: []string{"paues"}, want: "pause"},
+		{name: "semantic alias", args: []string{"rm", "api"}, want: "remove-project"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			cmd := cli.NewRootCommand(context.Background())
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want unknown command")
+			}
+			problem := cli.ProblemForCommandError(cmd, err)
+			if len(problem.DidYouMean) != 1 || problem.DidYouMean[0] != tt.want {
+				t.Fatalf("did_you_mean = %#v, want %s", problem.DidYouMean, tt.want)
+			}
+			if !strings.Contains(problem.SuggestedFix, "detent "+tt.want) {
+				t.Fatalf("suggested_fix = %q, want detent %s", problem.SuggestedFix, tt.want)
+			}
+		})
+	}
+}
+
+func TestProblemForErrorClassifiesSemanticFailures(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "validation", err: cli.NewValidationError("--id is required", "Run detent add-project.", nil), want: cli.ExitValidation},
+		{name: "not found", err: fmt.Errorf("%w: api", cli.ErrProjectNotFound), want: cli.ExitNotFoundOrConfig},
+		{name: "auth", err: errors.New(`GITHUB_TOKEN is not set and github_token is not configured. Run gh auth login --scopes "repo,read:org,project" and set github_token: gh in global.yaml.`), want: cli.ExitAuth},
+		{name: "general", err: errors.New("disk is full"), want: cli.ExitGeneral},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := cli.ProblemForError(tt.err).ExitCode; got != tt.want {
+				t.Fatalf("ProblemForError().ExitCode = %d, want %d", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRootCommandSuggestsMistypedFlag(t *testing.T) {
+	t.Parallel()
+
+	cmd := cli.NewRootCommand(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--hedless"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want unknown flag")
+	}
+	for _, want := range []string{"unknown flag: --hedless", "Did you mean this?", "\t--headless"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Execute() error missing %q:\n%v", want, err)
+		}
 	}
 }
 

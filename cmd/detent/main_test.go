@@ -7,12 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"log/slog"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/spf13/cobra"
 
 	"github.com/digitaldrywood/detent/internal/cli"
 )
@@ -37,58 +38,158 @@ func TestRootCommandHelp(t *testing.T) {
 	}
 }
 
-func TestRootCommandWritesSuggestionErrorsAsJSON(t *testing.T) {
+func TestRootCommandHelpCatalogJSON(t *testing.T) {
 	cmd := newRootCommand(context.Background())
 
 	var stdout bytes.Buffer
-	var stderr bytes.Buffer
 	cmd.SetOut(&stdout)
-	cmd.SetErr(&stderr)
-	cmd.SetArgs([]string{"--format", "json", "paues"})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "help"})
 
-	err := cmd.Execute()
-	if err == nil {
-		t.Fatal("Execute() error = nil, want error")
-	}
-	if exitCode := handleCommandError(cmd, err); exitCode != cli.ExitValidation {
-		t.Fatalf("handleCommandError() exit code = %d, want %d", exitCode, cli.ExitValidation)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
 	}
 
 	var got struct {
-		Error struct {
-			Code       string   `json:"code"`
-			ExitCode   int      `json:"exit_code"`
-			Input      string   `json:"input"`
-			DidYouMean []string `json:"did_you_mean"`
-		} `json:"error"`
+		Commands []struct {
+			Name    string `json:"name"`
+			Short   string `json:"short"`
+			Example string `json:"example"`
+			Flags   []struct {
+				Name string `json:"name"`
+			} `json:"flags"`
+		} `json:"commands"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("help catalog is not JSON: %v\n%s", err, stdout.String())
+	}
+
+	wantCommands := map[string]bool{
+		"detent":      false,
+		"add-project": false,
+		"config path": false,
+		"doctor":      false,
+		"update":      false,
+		"version":     false,
+		"shadow-run":  false,
+	}
+	for _, command := range got.Commands {
+		if _, ok := wantCommands[command.Name]; ok {
+			wantCommands[command.Name] = true
+			if strings.TrimSpace(command.Short) == "" {
+				t.Fatalf("command %q short description is empty", command.Name)
+			}
+			if strings.TrimSpace(command.Example) == "" {
+				t.Fatalf("command %q example is empty", command.Name)
+			}
+		}
+	}
+	for command, found := range wantCommands {
+		if !found {
+			t.Fatalf("help catalog missing %q:\n%s", command, stdout.String())
+		}
+	}
+}
+
+func TestRegisteredCommandsHaveExamples(t *testing.T) {
+	cmd := newRootCommand(context.Background())
+	var missing []string
+	collectCommandsWithoutExamples(cmd, &missing)
+	if len(missing) > 0 {
+		t.Fatalf("commands missing examples: %s", strings.Join(missing, ", "))
+	}
+}
+
+func TestRunCLIWritesProblemJSONForUnknownCommand(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runCLI(context.Background(), []string{"--format", "json", "paues"}, &stdout, &stderr)
+	if code != 3 {
+		t.Fatalf("exit code = %d, want 3\nstderr:\n%s", code, stderr.String())
 	}
 	if stdout.Len() != 0 {
 		t.Fatalf("stdout = %q, want empty", stdout.String())
 	}
-	if decodeErr := json.Unmarshal(stderr.Bytes(), &got); decodeErr != nil {
-		t.Fatalf("Unmarshal() error = %v\n%s", decodeErr, stderr.String())
+
+	var got struct {
+		Type         string   `json:"type"`
+		Title        string   `json:"title"`
+		Detail       string   `json:"detail"`
+		ExitCode     int      `json:"exit_code"`
+		DidYouMean   []string `json:"did_you_mean"`
+		SuggestedFix string   `json:"suggested_fix"`
 	}
-	if got.Error.Code != "unknown_command" {
-		t.Fatalf("error.code = %q, want unknown_command", got.Error.Code)
+	if err := json.Unmarshal(stderr.Bytes(), &got); err != nil {
+		t.Fatalf("stderr is not problem JSON: %v\n%s", err, stderr.String())
 	}
-	if got.Error.ExitCode != cli.ExitValidation {
-		t.Fatalf("error.exit_code = %d, want %d", got.Error.ExitCode, cli.ExitValidation)
+	if got.Type != "https://detent.dev/errors/unknown_command" {
+		t.Fatalf("type = %q, want unknown_command", got.Type)
 	}
-	if got.Error.Input != "paues" {
-		t.Fatalf("error.input = %q, want paues", got.Error.Input)
+	if got.Title != "Unknown command" {
+		t.Fatalf("title = %q, want Unknown command", got.Title)
 	}
-	if len(got.Error.DidYouMean) != 1 || got.Error.DidYouMean[0] != "pause" {
-		t.Fatalf("error.did_you_mean = %#v, want [pause]", got.Error.DidYouMean)
+	if got.ExitCode != code {
+		t.Fatalf("exit_code = %d, want %d", got.ExitCode, code)
+	}
+	if !strings.Contains(got.Detail, "paues") {
+		t.Fatalf("detail = %q, want typo", got.Detail)
+	}
+	if len(got.DidYouMean) != 1 || got.DidYouMean[0] != "pause" {
+		t.Fatalf("did_you_mean = %#v, want pause", got.DidYouMean)
+	}
+	if !strings.Contains(got.SuggestedFix, "detent pause") {
+		t.Fatalf("suggested_fix = %q, want detent pause", got.SuggestedFix)
 	}
 }
 
-func TestHandleCommandErrorUsesSemanticExitCodes(t *testing.T) {
-	previous := slog.Default()
-	t.Cleanup(func() {
-		slog.SetDefault(previous)
-	})
-	slog.SetDefault(slog.New(slog.NewJSONHandler(io.Discard, nil)))
+func TestRunCLIWritesProblemJSONForUnknownFlag(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
 
+	code := runCLI(context.Background(), []string{"--format", "json", "--hedless"}, &stdout, &stderr)
+	if code != 3 {
+		t.Fatalf("exit code = %d, want 3\nstderr:\n%s", code, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+
+	var got struct {
+		Code       string   `json:"code"`
+		ExitCode   int      `json:"exit_code"`
+		DidYouMean []string `json:"did_you_mean"`
+	}
+	if err := json.Unmarshal(stderr.Bytes(), &got); err != nil {
+		t.Fatalf("stderr is not problem JSON: %v\n%s", err, stderr.String())
+	}
+	if got.Code != "unknown_flag" {
+		t.Fatalf("code = %q, want unknown_flag", got.Code)
+	}
+	if got.ExitCode != code {
+		t.Fatalf("exit_code = %d, want %d", got.ExitCode, code)
+	}
+	if len(got.DidYouMean) != 1 || got.DidYouMean[0] != "--headless" {
+		t.Fatalf("did_you_mean = %#v, want --headless", got.DidYouMean)
+	}
+}
+
+func TestRunCLIPrettyUnknownCommandPrintsHint(t *testing.T) {
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runCLI(context.Background(), []string{"paues", "--format", "pretty"}, &stdout, &stderr)
+	if code != 3 {
+		t.Fatalf("exit code = %d, want 3\nstderr:\n%s", code, stderr.String())
+	}
+	for _, want := range []string{"Error: unknown command", "Hint: Run detent pause instead."} {
+		if !strings.Contains(stderr.String(), want) {
+			t.Fatalf("stderr missing %q:\n%s", want, stderr.String())
+		}
+	}
+}
+
+func TestRenderCommandErrorUsesSemanticExitCodes(t *testing.T) {
 	tests := []struct {
 		name string
 		err  error
@@ -105,9 +206,8 @@ func TestHandleCommandErrorUsesSemanticExitCodes(t *testing.T) {
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			cmd := newRootCommand(context.Background())
-			cmd.SetErr(io.Discard)
-			if got := handleCommandError(cmd, tt.err); got != tt.want {
-				t.Fatalf("handleCommandError(%v) = %d, want %d", tt.err, got, tt.want)
+			if got := renderCommandError(cmd, tt.err, io.Discard, cli.OutputFormatPretty, nil); got != tt.want {
+				t.Fatalf("renderCommandError(%v) = %d, want %d", tt.err, got, tt.want)
 			}
 		})
 	}
@@ -194,6 +294,23 @@ func TestSignalContextCancel(t *testing.T) {
 	case <-ctx.Done():
 	case <-time.After(time.Second):
 		t.Fatal("signal context was not canceled")
+	}
+}
+
+func collectCommandsWithoutExamples(cmd *cobra.Command, missing *[]string) {
+	name := cmd.CommandPath()
+	if name == "" {
+		name = cmd.Name()
+	}
+	switch cmd.Name() {
+	case "completion":
+		return
+	}
+	if strings.TrimSpace(cmd.Example) == "" {
+		*missing = append(*missing, name)
+	}
+	for _, child := range cmd.Commands() {
+		collectCommandsWithoutExamples(child, missing)
 	}
 }
 

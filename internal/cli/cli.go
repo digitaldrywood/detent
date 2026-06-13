@@ -266,22 +266,33 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	var host string
 	var port int
 	var headless bool
-	var outputFormat string
+	var format string
 	cmd := &cobra.Command{
 		Use:   "detent",
 		Short: "Detent agent orchestrator",
-		Long: `Detent is an agent orchestrator for tracker-backed work queues.
+		Long: strings.TrimSpace(`Detent is an agent orchestrator for tracker-backed work queues.
+
+Examples:
+  detent --config ~/.config/detent/global.yaml --headless
+  detent --format json config path
+  detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api
+
+Output:
+  --format pretty prints human-readable output.
+  --format json prints machine-readable JSON.
+  DETENT_FORMAT can set the default format.
+  When neither is set, Detent prints pretty output on a TTY and JSON otherwise.
 
 Exit codes:
   0  success
-  1  general or unexpected error
+  1  general or unexpected failure
   2  auth or GitHub token problem
-  3  input validation error
-  4  not found or config conflict`,
-		Args:                       suggestedNoArgs,
-		SilenceUsage:               true,
-		SilenceErrors:              true,
-		SuggestionsMinimumDistance: 2,
+  3  validation, unknown command, or unknown flag
+  4  not found or config conflict`),
+		Example: strings.TrimSpace(`detent --config ~/.config/detent/global.yaml --headless
+detent --format json config path`),
+		Args:         suggestedNoArgs,
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := OutputForCommand(cmd); err != nil {
 				return err
@@ -320,38 +331,26 @@ Exit codes:
 	cmd.PersistentFlags().StringVar(&host, "host", "", "web server host")
 	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
 	cmd.PersistentFlags().BoolVar(&headless, "headless", false, "stream logs instead of launching the terminal dashboard")
-	cmd.PersistentFlags().Var(newOutputFormatValue(&outputFormat), outputFormatFlagName, "output format: pretty or json (default: pretty on TTY, json when piped; DETENT_FORMAT overrides)")
-	cmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
-		return WrapValidation(flagSuggestionError(cmd, err))
-	})
-
-	addProjectCommand := newAddProjectCommand(&configPath, opts)
-	addProjectCommand.SuggestFor = []string{"add", "new"}
-	pauseCommand := newEditProjectCommand(&configPath, opts, OperationPauseProject, "pause", "Pause a project", func(project *globalconfig.Project) error {
-		project.Paused = true
-		return nil
-	})
-	pauseCommand.SuggestFor = []string{"stop"}
-	unpauseCommand := newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
-		project.Paused = false
-		return nil
-	})
-	unpauseCommand.SuggestFor = []string{"resume", "start"}
-	promoteCommand := newPromoteCommand(&configPath, opts)
-	promoteCommand.SuggestFor = []string{"prioritize"}
-	removeProjectCommand := newRemoveProjectCommand(&configPath, opts)
-	removeProjectCommand.SuggestFor = []string{"rm", "delete", "remove"}
+	AddFormatFlag(cmd, &format)
 	cmd.AddCommand(
 		newDoctorCommand(&configPath, &env, &logLevel, &host, &port, opts),
 		newInitCommand(&configPath, opts),
-		addProjectCommand,
-		pauseCommand,
-		unpauseCommand,
+		newAddProjectCommand(&configPath, opts),
+		newEditProjectCommand(&configPath, opts, OperationPauseProject, "pause", "Pause a project", func(project *globalconfig.Project) error {
+			project.Paused = true
+			return nil
+		}),
+		newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
+			project.Paused = false
+			return nil
+		}),
 		newConfigCommand(&configPath, opts),
-		promoteCommand,
-		removeProjectCommand,
+		newPromoteCommand(&configPath, opts),
+		newRemoveProjectCommand(&configPath, opts),
 	)
-	wrapHintedErrors(cmd)
+	cmd.SetHelpCommand(newHelpCommand(cmd, opts))
+	ConfigureCommandSuggestions(cmd)
+	wrapHintedErrors(cmd, opts)
 
 	return cmd
 }
@@ -373,6 +372,37 @@ func defaultOptions() options {
 		lookupEnv:   os.Getenv,
 		ghAuthToken: defaultGHAuthToken,
 		stdoutTTY:   stdoutIsTTY,
+	}
+}
+
+func newHelpCommand(root *cobra.Command, opts options) *cobra.Command {
+	return &cobra.Command{
+		Use:   "help [command]",
+		Short: "Show help for a command",
+		Example: strings.TrimSpace(`detent help add-project
+detent --format json help`),
+		Args: cobra.ArbitraryArgs,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			format, err := commandOutputFormat(cmd, opts)
+			if err != nil {
+				return err
+			}
+			if format == OutputFormatJSON {
+				return WriteJSON(cmd.OutOrStdout(), NewCommandCatalog(root))
+			}
+
+			target := root
+			if len(args) > 0 {
+				found, _, findErr := root.Find(args)
+				if findErr != nil {
+					return findErr
+				}
+				target = found
+			}
+			target.SetOut(cmd.OutOrStdout())
+			target.SetErr(cmd.ErrOrStderr())
+			return target.Help()
+		},
 	}
 }
 
@@ -405,7 +435,7 @@ func exampleHint(command string) string {
 	return "e.g. " + command
 }
 
-func wrapHintedErrors(cmd *cobra.Command) {
+func wrapHintedErrors(cmd *cobra.Command, opts options) {
 	if cmd == nil {
 		return
 	}
@@ -414,6 +444,9 @@ func wrapHintedErrors(cmd *cobra.Command) {
 		cmd.RunE = func(cmd *cobra.Command, args []string) error {
 			err := runE(cmd, args)
 			if err != nil {
+				if cmd.Root().SilenceErrors {
+					return err
+				}
 				if writeErr := writeErrorHint(cmd.ErrOrStderr(), err); writeErr != nil {
 					return errors.Join(err, writeErr)
 				}
@@ -422,7 +455,7 @@ func wrapHintedErrors(cmd *cobra.Command) {
 		}
 	}
 	for _, child := range cmd.Commands() {
-		wrapHintedErrors(child)
+		wrapHintedErrors(child, opts)
 	}
 }
 
@@ -438,9 +471,10 @@ func writeErrorHint(out io.Writer, err error) error {
 func newInitCommand(configPath *string, opts options) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "Create a default global config",
-		Args:  NoArgs,
+		Use:     "init",
+		Short:   "Create a default global config",
+		Example: "detent init --config ~/.config/detent/global.yaml",
+		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {
@@ -505,9 +539,10 @@ func checkInitTarget(path string, force bool) error {
 func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 	var cfg globalconfig.Project
 	cmd := &cobra.Command{
-		Use:   "add-project",
-		Short: "Add a project to global config",
-		Args:  NoArgs,
+		Use:     "add-project",
+		Short:   "Add a project to global config",
+		Example: "detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api --weight 2",
+		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {
@@ -575,9 +610,10 @@ type projectEdit func(*globalconfig.Project) error
 
 func newEditProjectCommand(configPath *string, opts options, operation Operation, use string, short string, edit projectEdit) *cobra.Command {
 	return &cobra.Command{
-		Use:   use + " PROJECT_ID",
-		Short: short,
-		Args:  ExactArgs(1),
+		Use:     use + " PROJECT_ID",
+		Short:   short,
+		Example: "detent " + use + " api",
+		Args:    ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {
@@ -594,8 +630,9 @@ func newEditProjectCommand(configPath *string, opts options, operation Operation
 
 func newConfigCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "config",
-		Short: "Inspect global config settings",
+		Use:     "config",
+		Short:   "Inspect global config settings",
+		Example: "detent config path",
 	}
 	cmd.AddCommand(newConfigPathCommand(configPath, opts))
 	return cmd
@@ -603,9 +640,10 @@ func newConfigCommand(configPath *string, opts options) *cobra.Command {
 
 func newConfigPathCommand(configPath *string, opts options) *cobra.Command {
 	return &cobra.Command{
-		Use:   "path",
-		Short: "Print the resolved global config path",
-		Args:  NoArgs,
+		Use:     "path",
+		Short:   "Print the resolved global config path",
+		Example: "detent --format json config path",
+		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {
@@ -629,9 +667,10 @@ func newConfigPathCommand(configPath *string, opts options) *cobra.Command {
 func newPromoteCommand(configPath *string, opts options) *cobra.Command {
 	var priority int
 	cmd := &cobra.Command{
-		Use:   "promote PROJECT_ID",
-		Short: "Promote a project priority",
-		Args:  ExactArgs(1),
+		Use:     "promote PROJECT_ID",
+		Short:   "Promote a project priority",
+		Example: "detent promote api --priority 1",
+		Args:    ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if priority <= 0 {
 				return WrapValidation(hintedError(nil, "--priority must be positive", exampleHint(promoteExampleCommand), promoteExampleCommand))
@@ -692,9 +731,10 @@ func updateProject(ctx context.Context, configPath string, opts options, operati
 
 func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {
 	return &cobra.Command{
-		Use:   "remove-project PROJECT_ID",
-		Short: "Remove a project from global config",
-		Args:  ExactArgs(1),
+		Use:     "remove-project PROJECT_ID",
+		Short:   "Remove a project from global config",
+		Example: "detent remove-project api",
+		Args:    ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {

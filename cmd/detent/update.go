@@ -32,6 +32,7 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 	cmd := &cobra.Command{
 		Use:          "update",
 		Short:        "Check for and apply Detent updates",
+		Example:      "detent update --check",
 		Args:         cli.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
