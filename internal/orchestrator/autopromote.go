@@ -50,7 +50,7 @@ const (
 	AutoPromoteReasonLabelNotAllowed      AutoPromoteReason = "label_not_allowed"
 	AutoPromoteReasonMissingPullRequest   AutoPromoteReason = "missing_pull_request"
 	AutoPromoteReasonCINotGreen           AutoPromoteReason = "ci_not_green"
-	AutoPromoteReasonCodexReviewMissing   AutoPromoteReason = "codex_review_missing"
+	AutoPromoteReasonCodexReviewMissing   AutoPromoteReason = "automated_review_missing"
 	AutoPromoteReasonP1Findings           AutoPromoteReason = "p1_findings"
 	AutoPromoteReasonCodexReviewNotQuiet  AutoPromoteReason = "codex_review_not_quiet"
 	AutoPromoteReasonHumanApprovalMissing AutoPromoteReason = "human_approval_missing"

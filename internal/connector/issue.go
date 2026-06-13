@@ -18,6 +18,7 @@ type Issue struct {
 	Closed           bool              `json:"closed,omitempty" yaml:"closed,omitempty"`
 	ClosedReason     string            `json:"closed_reason,omitempty" yaml:"closed_reason,omitempty"`
 	PRNumber         *int              `json:"pr_number,omitempty" yaml:"pr_number,omitempty"`
+	PRRepository     string            `json:"pr_repository,omitempty" yaml:"pr_repository,omitempty"`
 	PullRequest      *PullRequest      `json:"pull_request,omitempty" yaml:"pull_request,omitempty"`
 	AuthorID         string            `json:"author_id,omitempty" yaml:"author_id,omitempty"`
 	AssigneeID       string            `json:"assignee_id,omitempty" yaml:"assignee_id,omitempty"`
