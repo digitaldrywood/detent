@@ -1323,6 +1323,8 @@ func TestDashboardRendersProjectOrderControls(t *testing.T) {
 		`JSON.stringify({ v: storageVersion, order: order })`,
 		`document.addEventListener("DOMContentLoaded"`,
 		`document.addEventListener("htmx:afterSettle"`,
+		`function projectFilterActive()`,
+		`!projectFilterActive()`,
 		`document.addEventListener("dragstart"`,
 		`document.addEventListener("dragover"`,
 		`document.addEventListener("drop"`,

@@ -151,6 +151,11 @@ templ dashboardSidebarProjectOrderScript() {
 				return Boolean(wrapper && wrapper.dataset.tuiSidebarState === "collapsed");
 			}
 
+			function projectFilterActive() {
+				const input = document.querySelector("[data-dashboard-project-filter]");
+				return input instanceof HTMLInputElement && input.value.trim() !== "";
+			}
+
 			function savedProjectOrder() {
 				const store = projectOrderStorage();
 				if (!store) {
@@ -263,7 +268,7 @@ templ dashboardSidebarProjectOrderScript() {
 			}
 
 			function reorderAvailable() {
-				return projectEntries().length > 1 && !sidebarCollapsed();
+				return projectEntries().length > 1 && !sidebarCollapsed() && !projectFilterActive();
 			}
 
 			function setButtonDisabled(button, disabled) {
@@ -474,6 +479,13 @@ templ dashboardSidebarProjectOrderScript() {
 					if (entry) {
 						moveProject(entry, button.dataset.dashboardProjectMove || "");
 					}
+				}
+			});
+
+			document.addEventListener("input", function(event) {
+				const input = event.target instanceof Element ? event.target.closest("[data-dashboard-project-filter]") : null;
+				if (input) {
+					updateProjectControls();
 				}
 			});
 
