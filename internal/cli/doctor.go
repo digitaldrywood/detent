@@ -181,11 +181,15 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	})
 	cancelRuntime()
 	if runtimeErr != nil {
+		hint := "Fix runtime flags, environment variables, or global.yaml."
+		if runtimeHint, _, ok := HintFor(runtimeErr); ok && strings.TrimSpace(runtimeHint) != "" {
+			hint = runtimeHint
+		}
 		check := doctorCheck{
 			Name:   "Runtime settings",
 			Status: doctorFail,
 			Detail: runtimeErr.Error(),
-			Hint:   "Fix runtime flags, environment variables, or global.yaml.",
+			Hint:   hint,
 		}
 		writeDoctorProgressDone(progressOut, check)
 		report.Add(check)
