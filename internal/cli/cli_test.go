@@ -3,6 +3,7 @@ package cli_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -37,6 +38,178 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
 	}
+}
+
+func TestRootCommandHelpDocumentsExamplesExitCodesAndFormat(t *testing.T) {
+	t.Parallel()
+
+	cmd := cli.NewRootCommand(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	output := stdout.String()
+	examplesAt := strings.Index(output, "Examples:")
+	usageAt := strings.Index(output, "Usage:")
+	if examplesAt < 0 {
+		t.Fatalf("help output missing Examples:\n%s", output)
+	}
+	if usageAt < 0 {
+		t.Fatalf("help output missing Usage:\n%s", output)
+	}
+	if examplesAt > usageAt {
+		t.Fatalf("Examples section appears after Usage:\n%s", output)
+	}
+
+	for _, want := range []string{
+		"detent --config ~/.config/detent/global.yaml --headless",
+		"Exit Codes:",
+		"0  success",
+		"1  general or unexpected error",
+		"2  authentication or GitHub token problem",
+		"3  input validation error",
+		"4  not found or config conflict",
+		"Output Format:",
+		"--format pretty",
+		"--format json",
+		"DETENT_FORMAT",
+		"non-TTY stdout defaults to JSON",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("help output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestSubcommandHelpShowsExampleBeforeUsage(t *testing.T) {
+	t.Parallel()
+
+	cmd := cli.NewRootCommand(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"add-project", "--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	output := stdout.String()
+	examplesAt := strings.Index(output, "Examples:")
+	usageAt := strings.Index(output, "Usage:")
+	if examplesAt < 0 {
+		t.Fatalf("help output missing Examples:\n%s", output)
+	}
+	if usageAt < 0 {
+		t.Fatalf("help output missing Usage:\n%s", output)
+	}
+	if examplesAt > usageAt {
+		t.Fatalf("Examples section appears after Usage:\n%s", output)
+	}
+	if !strings.Contains(output, "detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api --weight 2") {
+		t.Fatalf("help output missing add-project example:\n%s", output)
+	}
+}
+
+func TestFormatJSONHelpWritesCommandCatalog(t *testing.T) {
+	t.Parallel()
+
+	cmd := cli.NewRootCommand(context.Background())
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var catalog testCommandCatalog
+	if err := json.Unmarshal(stdout.Bytes(), &catalog); err != nil {
+		t.Fatalf("Unmarshal() error = %v\n%s", err, stdout.String())
+	}
+	if len(catalog.Commands) == 0 {
+		t.Fatal("catalog commands length = 0, want commands")
+	}
+
+	for _, command := range catalog.Commands {
+		if strings.HasPrefix(command.Name, "detent help") || strings.HasPrefix(command.Name, "detent completion") {
+			t.Fatalf("catalog includes generated command %q", command.Name)
+		}
+	}
+
+	addProject := catalogCommand(t, catalog.Commands, "detent add-project")
+	if addProject.Short != "Add a project to global config" {
+		t.Fatalf("add-project short = %q", addProject.Short)
+	}
+	if addProject.Args != "" {
+		t.Fatalf("add-project args = %q, want empty", addProject.Args)
+	}
+	if !strings.Contains(addProject.Example, "detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api --weight 2") {
+		t.Fatalf("add-project example = %q", addProject.Example)
+	}
+	for _, wantFlag := range []string{"id", "workflow", "workdir", "weight", "config"} {
+		if !catalogHasFlag(addProject.Flags, wantFlag) {
+			t.Fatalf("add-project catalog missing flag %q: %#v", wantFlag, addProject.Flags)
+		}
+	}
+
+	promote := catalogCommand(t, catalog.Commands, "detent promote")
+	if promote.Args != "PROJECT_ID" {
+		t.Fatalf("promote args = %q, want PROJECT_ID", promote.Args)
+	}
+	if !strings.Contains(promote.Example, "detent promote api --priority 1") {
+		t.Fatalf("promote example = %q", promote.Example)
+	}
+	if !catalogHasFlag(promote.Flags, "priority") {
+		t.Fatalf("promote catalog missing priority flag: %#v", promote.Flags)
+	}
+}
+
+type testCommandCatalog struct {
+	Commands []testCommandCatalogEntry `json:"commands"`
+}
+
+type testCommandCatalogEntry struct {
+	Name    string                   `json:"name"`
+	Short   string                   `json:"short"`
+	Args    string                   `json:"args"`
+	Example string                   `json:"example"`
+	Flags   []testCommandCatalogFlag `json:"flags"`
+}
+
+type testCommandCatalogFlag struct {
+	Name      string `json:"name"`
+	Usage     string `json:"usage"`
+	Type      string `json:"type"`
+	Default   string `json:"default"`
+	Inherited bool   `json:"inherited"`
+}
+
+func catalogCommand(t *testing.T, commands []testCommandCatalogEntry, name string) testCommandCatalogEntry {
+	t.Helper()
+
+	for _, command := range commands {
+		if command.Name == name {
+			return command
+		}
+	}
+	t.Fatalf("catalog missing command %q: %#v", name, commands)
+	return testCommandCatalogEntry{}
+}
+
+func catalogHasFlag(flags []testCommandCatalogFlag, name string) bool {
+	for _, flag := range flags {
+		if flag.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func TestRootCommandBootsFromGlobalConfig(t *testing.T) {

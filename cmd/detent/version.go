@@ -23,9 +23,10 @@ type versionInfo struct {
 
 func newVersionCommand() *cobra.Command {
 	return &cobra.Command{
-		Use:   "version",
-		Short: "Print version metadata",
-		Args:  cobra.NoArgs,
+		Use:     "version",
+		Short:   "Print version metadata",
+		Example: "  detent version",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			_, err := io.WriteString(cmd.OutOrStdout(), formatVersionInfo(currentVersionInfo()))
 			return err

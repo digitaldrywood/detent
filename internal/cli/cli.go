@@ -2,14 +2,17 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -32,6 +35,54 @@ const (
 	OperationPromoteProject Operation = "promote"
 	OperationRemoveProject  Operation = "remove-project"
 )
+
+const (
+	outputFormatPretty = "pretty"
+	outputFormatJSON   = "json"
+)
+
+const rootLongHelp = `Detent is an agent orchestrator for tracker-backed work queues.
+
+Exit Codes:
+  0  success
+  1  general or unexpected error
+  2  authentication or GitHub token problem
+  3  input validation error
+  4  not found or config conflict
+
+Output Format:
+  --format pretty writes human-readable output.
+  --format json writes machine-readable JSON where supported; with help it writes the command catalog.
+  DETENT_FORMAT can set the default output format for commands that honor shared output resolution.
+  A non-TTY stdout defaults to JSON for shared-output commands; use --format pretty to force text.`
+
+const examplesFirstUsageTemplate = `Usage:{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+Aliases:
+  {{.NameAndAliases}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
+
+Available Commands:{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+
+{{.Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+Additional Commands:{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+Flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+
+Global Flags:
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasHelpSubCommands}}
+
+Additional help topics:{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}
+  {{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableSubCommands}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
+`
 
 type Signal struct {
 	Operation Operation
@@ -183,12 +234,17 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	var host string
 	var port int
 	var headless bool
+	outputFormat := outputFormatPretty
 	cmd := &cobra.Command{
 		Use:          "detent",
 		Short:        "Detent agent orchestrator",
-		Long:         "Detent is an agent orchestrator for tracker-backed work queues.",
+		Long:         rootLongHelp,
+		Example:      "  detent --config ~/.config/detent/global.yaml --headless\n  detent --format json help",
 		Args:         cobra.NoArgs,
 		SilenceUsage: true,
+		PersistentPreRunE: func(_ *cobra.Command, _ []string) error {
+			return validateOutputFormat(outputFormat)
+		},
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			flags := runtimeFlags{
 				Env:      runtimeStringFlag{Value: env, Set: flagChanged(cmd, "env")},
@@ -215,8 +271,11 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 		},
 	}
 	cmd.SetContext(ctx)
+	cmd.SetUsageTemplate(examplesFirstUsageTemplate)
+	cmd.SetHelpFunc(newExamplesFirstHelpFunc(&outputFormat))
 	cmd.PersistentFlags().StringVar(&configPath, "config", "", "path to global.yaml")
 	cmd.PersistentFlags().StringVar(&env, "env", "", "runtime environment")
+	cmd.PersistentFlags().StringVar(&outputFormat, "format", outputFormatPretty, "output format (pretty|json)")
 	cmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level")
 	cmd.PersistentFlags().StringVar(&host, "host", "", "web server host")
 	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
@@ -225,11 +284,11 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 		newDoctorCommand(&configPath, &env, &logLevel, &host, &port, opts),
 		newInitCommand(&configPath, opts),
 		newAddProjectCommand(&configPath, opts),
-		newEditProjectCommand(&configPath, opts, OperationPauseProject, "pause", "Pause a project", func(project *globalconfig.Project) error {
+		newEditProjectCommand(&configPath, opts, OperationPauseProject, "pause", "Pause a project", "  detent pause api", func(project *globalconfig.Project) error {
 			project.Paused = true
 			return nil
 		}),
-		newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
+		newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", "  detent unpause api", func(project *globalconfig.Project) error {
 			project.Paused = false
 			return nil
 		}),
@@ -281,9 +340,10 @@ func stdoutIsTTY() bool {
 func newInitCommand(configPath *string, opts options) *cobra.Command {
 	var force bool
 	cmd := &cobra.Command{
-		Use:   "init",
-		Short: "Create a default global config",
-		Args:  cobra.NoArgs,
+		Use:     "init",
+		Short:   "Create a default global config",
+		Example: "  detent init --config ~/.config/detent/global.yaml",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := resolveConfigPath(*configPath, opts)
 			if err != nil {
@@ -330,9 +390,10 @@ func checkInitTarget(path string, force bool) error {
 func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 	var cfg globalconfig.Project
 	cmd := &cobra.Command{
-		Use:   "add-project",
-		Short: "Add a project to global config",
-		Args:  cobra.NoArgs,
+		Use:     "add-project",
+		Short:   "Add a project to global config",
+		Example: "  detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api --weight 2",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			path, err := resolveConfigPath(*configPath, opts)
 			if err != nil {
@@ -390,11 +451,12 @@ func validateProjectFlags(cfg globalconfig.Project) error {
 
 type projectEdit func(*globalconfig.Project) error
 
-func newEditProjectCommand(configPath *string, opts options, operation Operation, use string, short string, edit projectEdit) *cobra.Command {
+func newEditProjectCommand(configPath *string, opts options, operation Operation, use string, short string, example string, edit projectEdit) *cobra.Command {
 	return &cobra.Command{
-		Use:   use + " PROJECT_ID",
-		Short: short,
-		Args:  cobra.ExactArgs(1),
+		Use:     use + " PROJECT_ID",
+		Short:   short,
+		Example: example,
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			return updateProject(cmd.Context(), *configPath, opts, operation, args[0], edit)
 		},
@@ -403,8 +465,9 @@ func newEditProjectCommand(configPath *string, opts options, operation Operation
 
 func newConfigCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "config",
-		Short: "Inspect global config settings",
+		Use:     "config",
+		Short:   "Inspect global config settings",
+		Example: "  detent config path",
 	}
 	cmd.AddCommand(newConfigPathCommand(configPath, opts))
 	return cmd
@@ -412,9 +475,10 @@ func newConfigCommand(configPath *string, opts options) *cobra.Command {
 
 func newConfigPathCommand(configPath *string, opts options) *cobra.Command {
 	return &cobra.Command{
-		Use:   "path",
-		Short: "Print the resolved global config path",
-		Args:  cobra.NoArgs,
+		Use:     "path",
+		Short:   "Print the resolved global config path",
+		Example: "  detent config path --config ~/.config/detent/global.yaml",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			resolution, err := resolveConfigPathResolution(*configPath, opts)
 			if err != nil {
@@ -429,9 +493,10 @@ func newConfigPathCommand(configPath *string, opts options) *cobra.Command {
 func newPromoteCommand(configPath *string, opts options) *cobra.Command {
 	var priority int
 	cmd := &cobra.Command{
-		Use:   "promote PROJECT_ID",
-		Short: "Promote a project priority",
-		Args:  cobra.ExactArgs(1),
+		Use:     "promote PROJECT_ID",
+		Short:   "Promote a project priority",
+		Example: "  detent promote api --priority 1",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if priority <= 0 {
 				return errors.New("priority must be positive")
@@ -477,9 +542,10 @@ func updateProject(ctx context.Context, configPath string, opts options, operati
 
 func newRemoveProjectCommand(configPath *string, opts options) *cobra.Command {
 	return &cobra.Command{
-		Use:   "remove-project PROJECT_ID",
-		Short: "Remove a project from global config",
-		Args:  cobra.ExactArgs(1),
+		Use:     "remove-project PROJECT_ID",
+		Short:   "Remove a project from global config",
+		Example: "  detent remove-project api",
+		Args:    cobra.ExactArgs(1),
 		RunE: func(cmd *cobra.Command, args []string) error {
 			path, err := resolveConfigPath(*configPath, opts)
 			if err != nil {
@@ -536,4 +602,166 @@ func projectIndex(projects []globalconfig.Project, id string) int {
 		}
 	}
 	return -1
+}
+
+func validateOutputFormat(format string) error {
+	switch normalizedOutputFormat(format) {
+	case outputFormatPretty, outputFormatJSON:
+		return nil
+	default:
+		return fmt.Errorf("unsupported output format %q: use pretty or json", format)
+	}
+}
+
+func normalizedOutputFormat(format string) string {
+	return strings.ToLower(strings.TrimSpace(format))
+}
+
+func newExamplesFirstHelpFunc(format *string) func(*cobra.Command, []string) {
+	return func(cmd *cobra.Command, _ []string) {
+		switch normalizedOutputFormat(derefString(format)) {
+		case outputFormatJSON:
+			if err := writeCommandCatalogJSON(cmd.OutOrStdout(), cmd.Root()); err != nil {
+				cmd.PrintErrln(err)
+			}
+		case outputFormatPretty, "":
+			if err := writeExamplesFirstHelp(cmd.OutOrStdout(), cmd); err != nil {
+				cmd.PrintErrln(err)
+			}
+		default:
+			cmd.PrintErrln(validateOutputFormat(derefString(format)))
+		}
+	}
+}
+
+func writeExamplesFirstHelp(out io.Writer, cmd *cobra.Command) error {
+	if strings.TrimSpace(cmd.Example) != "" {
+		if _, err := fmt.Fprintf(out, "Examples:\n%s\n\n", strings.TrimRight(cmd.Example, "\n")); err != nil {
+			return err
+		}
+	}
+
+	description := strings.TrimSpace(cmd.Long)
+	if description == "" {
+		description = strings.TrimSpace(cmd.Short)
+	}
+	if description != "" {
+		if _, err := fmt.Fprintf(out, "%s\n\n", description); err != nil {
+			return err
+		}
+	}
+
+	if cmd.Runnable() || cmd.HasSubCommands() {
+		_, err := fmt.Fprint(out, cmd.UsageString())
+		return err
+	}
+	return nil
+}
+
+type commandCatalog struct {
+	Commands []commandCatalogEntry `json:"commands"`
+}
+
+type commandCatalogEntry struct {
+	Name    string               `json:"name"`
+	Short   string               `json:"short"`
+	Args    string               `json:"args"`
+	Example string               `json:"example"`
+	Flags   []commandCatalogFlag `json:"flags"`
+}
+
+type commandCatalogFlag struct {
+	Name      string `json:"name"`
+	Usage     string `json:"usage"`
+	Type      string `json:"type"`
+	Default   string `json:"default"`
+	Inherited bool   `json:"inherited"`
+}
+
+func writeCommandCatalogJSON(out io.Writer, root *cobra.Command) error {
+	encoder := json.NewEncoder(out)
+	encoder.SetIndent("", "  ")
+	return encoder.Encode(buildCommandCatalog(root))
+}
+
+func buildCommandCatalog(root *cobra.Command) commandCatalog {
+	var commands []commandCatalogEntry
+	walkCatalogCommands(root, func(cmd *cobra.Command) {
+		if isGeneratedCatalogCommand(cmd) || cmd.Hidden {
+			return
+		}
+		cmd.InitDefaultHelpFlag()
+		cmd.InitDefaultVersionFlag()
+		commands = append(commands, commandCatalogEntry{
+			Name:    cmd.CommandPath(),
+			Short:   cmd.Short,
+			Args:    commandArgs(cmd),
+			Example: catalogExample(cmd.Example),
+			Flags:   catalogFlags(cmd),
+		})
+	})
+	sort.Slice(commands, func(i, j int) bool {
+		return commands[i].Name < commands[j].Name
+	})
+	return commandCatalog{Commands: commands}
+}
+
+func walkCatalogCommands(cmd *cobra.Command, visit func(*cobra.Command)) {
+	if isGeneratedCatalogCommand(cmd) || cmd.Hidden {
+		return
+	}
+	visit(cmd)
+	for _, child := range cmd.Commands() {
+		walkCatalogCommands(child, visit)
+	}
+}
+
+func isGeneratedCatalogCommand(cmd *cobra.Command) bool {
+	name := cmd.Name()
+	return name == "help" || name == "completion" || strings.HasPrefix(name, cobra.ShellCompRequestCmd)
+}
+
+func commandArgs(cmd *cobra.Command) string {
+	fields := strings.Fields(cmd.Use)
+	if len(fields) <= 1 {
+		return ""
+	}
+	return strings.Join(fields[1:], " ")
+}
+
+func catalogExample(example string) string {
+	lines := strings.Split(strings.TrimSpace(example), "\n")
+	for i, line := range lines {
+		lines[i] = strings.TrimSpace(line)
+	}
+	return strings.Join(lines, "\n")
+}
+
+func catalogFlags(cmd *cobra.Command) []commandCatalogFlag {
+	flags := collectCatalogFlags(cmd.LocalFlags(), false)
+	flags = append(flags, collectCatalogFlags(cmd.InheritedFlags(), true)...)
+	sort.Slice(flags, func(i, j int) bool {
+		if flags[i].Name == flags[j].Name {
+			return !flags[i].Inherited && flags[j].Inherited
+		}
+		return flags[i].Name < flags[j].Name
+	})
+	return flags
+}
+
+func collectCatalogFlags(flagSet *pflag.FlagSet, inherited bool) []commandCatalogFlag {
+	var flags []commandCatalogFlag
+	flagSet.VisitAll(func(flag *pflag.Flag) {
+		if flag.Hidden {
+			return
+		}
+		flags = append(flags, commandCatalogFlag{
+			Name:      flag.Name,
+			Usage:     flag.Usage,
+			Type:      flag.Value.Type(),
+			Default:   flag.DefValue,
+			Inherited: inherited,
+		})
+	})
+	return flags
 }

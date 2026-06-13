@@ -119,9 +119,10 @@ func newDoctorCommand(configPath *string, env *string, logLevel *string, host *s
 func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string, host *string, port *int, opts options, deps doctorDeps) *cobra.Command {
 	timeout := doctorCheckTimeout
 	cmd := &cobra.Command{
-		Use:   "doctor",
-		Short: "Run preflight health checks",
-		Args:  cobra.NoArgs,
+		Use:     "doctor",
+		Short:   "Run preflight health checks",
+		Example: "  detent doctor --config ~/.config/detent/global.yaml --timeout 10s",
+		Args:    cobra.NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			report := runDoctor(cmd.Context(), doctorConfig{
 				ConfigPath:   derefString(configPath),

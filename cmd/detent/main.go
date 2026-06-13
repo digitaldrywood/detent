@@ -67,6 +67,7 @@ func newShadowRunCommand() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:          "shadow-run",
 		Short:        "Compare read-only Go decisions with an Elixir shadow report",
+		Example:      "  detent shadow-run --input ./shadow-report.json --allow-diff",
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if inputPath == "" {
