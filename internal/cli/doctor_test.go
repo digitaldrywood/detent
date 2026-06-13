@@ -13,6 +13,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -440,6 +441,29 @@ func TestCheckDoctorRuntimeSettingsReportsSources(t *testing.T) {
 	}
 	if strings.Contains(got.Detail, "secret-token") {
 		t.Fatalf("Detail leaked token: %s", got.Detail)
+	}
+}
+
+func TestCheckDoctorDetentExecutableReportsRunningBinary(t *testing.T) {
+	t.Parallel()
+
+	got := checkDoctorDetentExecutable(buildinfo.Info{
+		Version: "v1.2.3",
+		Commit:  "abcdef123456",
+		Date:    "2026-06-13T15:35:40Z",
+	}, doctorDeps{
+		executable: func() (string, error) {
+			return "/Users/corylanou/go/bin/detent", nil
+		},
+	})
+
+	if got.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s", got.Status, doctorOK)
+	}
+	for _, want := range []string{"/Users/corylanou/go/bin/detent", "v1.2.3", "abcdef1"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail missing %q:\n%s", want, got.Detail)
+		}
 	}
 }
 
@@ -1066,6 +1090,9 @@ func successfulDoctorDeps() doctorDeps {
 		},
 		gitWorkTree: func(context.Context, string) error {
 			return nil
+		},
+		executable: func() (string, error) {
+			return "/Users/corylanou/go/bin/detent", nil
 		},
 	}
 }

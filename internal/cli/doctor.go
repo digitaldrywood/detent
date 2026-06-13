@@ -19,6 +19,7 @@ import (
 	"github.com/spf13/cobra"
 	_ "modernc.org/sqlite"
 
+	"github.com/digitaldrywood/detent/internal/buildinfo"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -73,6 +74,7 @@ type doctorConfig struct {
 	Flags        runtimeFlags
 	Output       io.Writer
 	CheckTimeout time.Duration
+	Build        buildinfo.Info
 }
 
 type doctorStore interface {
@@ -102,6 +104,7 @@ type doctorDeps struct {
 	openSQLite           func(context.Context, string) (doctorStore, error)
 	gitWorkTree          func(context.Context, string) error
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
+	executable           func() (string, error)
 }
 
 func newDoctorCommand(configPath *string, env *string, logLevel *string, host *string, port *int, opts options) *cobra.Command {
@@ -120,6 +123,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 				Host:         derefString(host),
 				Output:       cmd.OutOrStdout(),
 				CheckTimeout: timeout,
+				Build:        opts.build,
 				Flags: runtimeFlags{
 					Env:      runtimeStringFlag{Value: derefString(env), Set: flagChanged(cmd, "env")},
 					LogLevel: runtimeStringFlag{Value: derefString(logLevel), Set: flagChanged(cmd, "log-level")},
@@ -185,6 +189,10 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		writeDoctorProgressDone(progressOut, check)
 		report.Add(check)
 	}
+	writeDoctorProgressStart(progressOut, "Detent executable")
+	executableCheck := checkDoctorDetentExecutable(cfg.Build, deps)
+	writeDoctorProgressDone(progressOut, executableCheck)
+	report.Add(executableCheck)
 
 	boot := BootConfig{
 		Host: strings.TrimSpace(cfg.Host),
@@ -435,6 +443,28 @@ func checkDoctorRuntimeSettings(settings RuntimeSettings) doctorCheck {
 	check.Detail = check.Detail + "; " + warning.Detail
 	check.Hint = warning.Hint
 	return check
+}
+
+func checkDoctorDetentExecutable(build buildinfo.Info, deps doctorDeps) doctorCheck {
+	path, err := deps.executable()
+	if err != nil {
+		return doctorCheck{
+			Name:   "Detent executable",
+			Status: doctorFail,
+			Detail: err.Error(),
+			Hint:   "Start Detent from the expected installed binary.",
+		}
+	}
+	path = filepath.Clean(path)
+	detail := path + " is running"
+	if !buildinfo.IsZero(build) {
+		detail = path + " " + buildinfo.DisplayLabel(build)
+	}
+	return doctorCheck{
+		Name:   "Detent executable",
+		Status: doctorOK,
+		Detail: detail,
+	}
 }
 
 func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, githubToken string) []doctorCheck {
@@ -1201,6 +1231,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.autoPromoteConnector == nil {
 		d.autoPromoteConnector = defaults.autoPromoteConnector
 	}
+	if d.executable == nil {
+		d.executable = defaults.executable
+	}
 	return d
 }
 
@@ -1216,6 +1249,7 @@ func defaultDoctorDeps() doctorDeps {
 		openSQLite:           openDoctorSQLite,
 		gitWorkTree:          defaultGitWorkTree,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
+		executable:           os.Executable,
 	}
 }
 
