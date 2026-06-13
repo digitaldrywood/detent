@@ -39,6 +39,83 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	}
 }
 
+func TestRootCommandSuggestsMistypedCommandsAndFlags(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		args       []string
+		want       []string
+		dontWant   []string
+		wantNoBoot bool
+	}{
+		{
+			name:       "command typo",
+			args:       []string{"paues"},
+			want:       []string{`unknown command "paues"`, "Did you mean this?", "\tpause"},
+			wantNoBoot: true,
+		},
+		{
+			name:     "no close command match",
+			args:     []string{"definitely-not-close"},
+			want:     []string{`unknown command "definitely-not-close"`},
+			dontWant: []string{"Did you mean this?"},
+		},
+		{
+			name:       "semantic command suggestion",
+			args:       []string{"rm", "detent"},
+			want:       []string{`unknown command "rm"`, "Did you mean this?", "\tremove-project"},
+			wantNoBoot: true,
+		},
+		{
+			name:       "persistent flag typo",
+			args:       []string{"--hedless"},
+			want:       []string{"unknown flag: --hedless", "Did you mean this?", "\t--headless"},
+			wantNoBoot: true,
+		},
+		{
+			name:       "local flag typo",
+			args:       []string{"add-project", "--wokdir", "x"},
+			want:       []string{"unknown flag: --wokdir", "Did you mean this?", "\t--workdir"},
+			wantNoBoot: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			booted := false
+			cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(context.Context, cli.BootConfig) error {
+				booted = true
+				return nil
+			}))
+			cmd.SetOut(&bytes.Buffer{})
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs(tt.args)
+
+			err := cmd.Execute()
+			if err == nil {
+				t.Fatal("Execute() error = nil, want error")
+			}
+			output := err.Error()
+			for _, want := range tt.want {
+				if !strings.Contains(output, want) {
+					t.Fatalf("Execute() error missing %q:\n%s", want, output)
+				}
+			}
+			for _, unwanted := range tt.dontWant {
+				if strings.Contains(output, unwanted) {
+					t.Fatalf("Execute() error contains %q:\n%s", unwanted, output)
+				}
+			}
+			if tt.wantNoBoot && booted {
+				t.Fatal("boot executed for invalid command")
+			}
+		})
+	}
+}
+
 func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
 	t.Parallel()
 

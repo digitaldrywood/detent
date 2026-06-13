@@ -24,7 +24,8 @@ func main() {
 	stopSignals := notifyShutdownRequests(shutdownController, cancel)
 	defer stopSignals()
 
-	if err := newRootCommand(ctx, shutdownController).ExecuteContext(ctx); err != nil {
+	cmd := newRootCommand(ctx, shutdownController)
+	if err := cmd.ExecuteContext(ctx); err != nil {
 		if errors.Is(err, context.Canceled) {
 			slog.Info("shutdown requested")
 			return
@@ -33,9 +34,19 @@ func main() {
 			os.Exit(1)
 		}
 
-		slog.Error("command failed", "error", err)
-		os.Exit(1)
+		os.Exit(writeCommandError(cmd, err))
 	}
+}
+
+func writeCommandError(cmd *cobra.Command, err error) int {
+	if cli.CommandOutputIsJSON(cmd) {
+		if writeErr := cli.WriteCommandErrorJSON(cmd.OutOrStdout(), err); writeErr != nil {
+			fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", writeErr)
+		}
+		return 1
+	}
+	fmt.Fprintf(cmd.ErrOrStderr(), "Error: %v\n", err)
+	return 1
 }
 
 func newRootCommand(ctx context.Context, shutdownControllers ...*cli.ShutdownController) *cobra.Command {

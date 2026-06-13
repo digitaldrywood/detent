@@ -227,12 +227,15 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	var host string
 	var port int
 	var headless bool
+	var outputFormat string
 	cmd := &cobra.Command{
-		Use:          "detent",
-		Short:        "Detent agent orchestrator",
-		Long:         "Detent is an agent orchestrator for tracker-backed work queues.",
-		Args:         cobra.NoArgs,
-		SilenceUsage: true,
+		Use:                        "detent",
+		Short:                      "Detent agent orchestrator",
+		Long:                       "Detent is an agent orchestrator for tracker-backed work queues.",
+		Args:                       suggestedNoArgs,
+		SilenceUsage:               true,
+		SilenceErrors:              true,
+		SuggestionsMinimumDistance: 2,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			flags := runtimeFlags{
 				Env:      runtimeStringFlag{Value: env, Set: flagChanged(cmd, "env")},
@@ -265,21 +268,34 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 	cmd.PersistentFlags().StringVar(&host, "host", "", "web server host")
 	cmd.PersistentFlags().IntVar(&port, "port", -1, "web server port, or 0 for an ephemeral port")
 	cmd.PersistentFlags().BoolVar(&headless, "headless", false, "stream logs instead of launching the terminal dashboard")
+	cmd.PersistentFlags().Var(newOutputFormatValue(&outputFormat), outputFormatFlagName, "output format: pretty or json")
+	cmd.SetFlagErrorFunc(flagSuggestionError)
+
+	addProjectCommand := newAddProjectCommand(&configPath, opts)
+	addProjectCommand.SuggestFor = []string{"add", "new"}
+	pauseCommand := newEditProjectCommand(&configPath, opts, OperationPauseProject, "pause", "Pause a project", func(project *globalconfig.Project) error {
+		project.Paused = true
+		return nil
+	})
+	pauseCommand.SuggestFor = []string{"stop"}
+	unpauseCommand := newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
+		project.Paused = false
+		return nil
+	})
+	unpauseCommand.SuggestFor = []string{"resume", "start"}
+	promoteCommand := newPromoteCommand(&configPath, opts)
+	promoteCommand.SuggestFor = []string{"prioritize"}
+	removeProjectCommand := newRemoveProjectCommand(&configPath, opts)
+	removeProjectCommand.SuggestFor = []string{"rm", "delete", "remove"}
 	cmd.AddCommand(
 		newDoctorCommand(&configPath, &env, &logLevel, &host, &port, opts),
 		newInitCommand(&configPath, opts),
-		newAddProjectCommand(&configPath, opts),
-		newEditProjectCommand(&configPath, opts, OperationPauseProject, "pause", "Pause a project", func(project *globalconfig.Project) error {
-			project.Paused = true
-			return nil
-		}),
-		newEditProjectCommand(&configPath, opts, OperationUnpauseProject, "unpause", "Unpause a project", func(project *globalconfig.Project) error {
-			project.Paused = false
-			return nil
-		}),
+		addProjectCommand,
+		pauseCommand,
+		unpauseCommand,
 		newConfigCommand(&configPath, opts),
-		newPromoteCommand(&configPath, opts),
-		newRemoveProjectCommand(&configPath, opts),
+		promoteCommand,
+		removeProjectCommand,
 	)
 	wrapHintedErrors(cmd)
 

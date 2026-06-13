@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -27,6 +28,43 @@ func TestRootCommandHelp(t *testing.T) {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestRootCommandWritesSuggestionErrorsAsJSON(t *testing.T) {
+	cmd := newRootCommand(context.Background())
+
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "paues"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want error")
+	}
+	if exitCode := writeCommandError(cmd, err); exitCode == 0 {
+		t.Fatal("writeCommandError() exit code = 0, want non-zero")
+	}
+
+	var got struct {
+		Error struct {
+			Code       string   `json:"code"`
+			Input      string   `json:"input"`
+			DidYouMean []string `json:"did_you_mean"`
+		} `json:"error"`
+	}
+	if decodeErr := json.Unmarshal(stdout.Bytes(), &got); decodeErr != nil {
+		t.Fatalf("Unmarshal() error = %v\n%s", decodeErr, stdout.String())
+	}
+	if got.Error.Code != "unknown_command" {
+		t.Fatalf("error.code = %q, want unknown_command", got.Error.Code)
+	}
+	if got.Error.Input != "paues" {
+		t.Fatalf("error.input = %q, want paues", got.Error.Input)
+	}
+	if len(got.Error.DidYouMean) != 1 || got.Error.DidYouMean[0] != "pause" {
+		t.Fatalf("error.did_you_mean = %#v, want [pause]", got.Error.DidYouMean)
 	}
 }
 
