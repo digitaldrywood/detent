@@ -1769,12 +1769,3 @@ func doctorPortFromAddr(t *testing.T, addr net.Addr) int {
 	}
 	return port
 }
-
-func stringSliceContains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
-}
