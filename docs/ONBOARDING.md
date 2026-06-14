@@ -443,9 +443,10 @@ recommendation, and default-if-silent. Record answers in
    For criteria-based auto-promote, use `agent.auto_promote.enabled`,
    `quiet_seconds`, `optout_label`, `allowed_issue_labels`, and the top-level
    command gate's `require_automated_review` setting. `quiet_seconds` is the
-   quiet period after observed issue/status/review activity, `optout_label` is
-   the per-issue escape hatch, and `allowed_issue_labels` is an allowlist such
-   as `documentation` for low-risk issue classes. When automated review is
+   quiet period after observed issue/status/review activity and linked PR
+   activity such as a fresh push to the PR head, `optout_label` is the
+   per-issue escape hatch, and `allowed_issue_labels` is an allowlist such as
+   `documentation` for low-risk issue classes. When automated review is
    required, a Codex/ChatGPT/Claude review on an older commit does not clear
    this gate. Verify:
 
@@ -787,9 +788,11 @@ recommendation, and default-if-silent. Record answers in
    `require_automated_review: true`, it also requires a current-head automated
    GitHub PR review. With `require_automated_review: false`, bot PR review is
    not required to exist, but any observed P1 bot findings still route the item
-   to `Rework`. `detent doctor --port 0` reports sampled `Human Review`
-   candidates and reasons such as `automated_review_missing` when that gate is
-   not met.
+   to `Rework`. The quiet period resets on observed issue updates, Project
+   status updates, automated PR review submission, and linked PR activity such
+   as a fresh push to the PR head. `detent doctor --port 0` reports sampled
+   `Human Review` candidates and reasons such as `automated_review_missing`
+   when that gate is not met.
 
    Dependency auto-unblock default:
 

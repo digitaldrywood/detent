@@ -291,6 +291,44 @@ func TestEvaluateAutoPromote(t *testing.T) {
 	}
 }
 
+func TestAutoPromoteWaitsForFreshPullRequestActivityWithoutAutomatedReview(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+	oldActivity := now.Add(-30 * time.Minute)
+	recentPullRequestActivity := now.Add(-30 * time.Second)
+	issue := autoPromoteTestIssue("issue-fresh-pr-activity", []string{"bug"})
+	issue.UpdatedAt = &oldActivity
+	issue.PullRequest = &connector.PullRequest{
+		Number:     42,
+		URL:        "https://github.test/digitaldrywood/detent/pull/42",
+		State:      "OPEN",
+		CIStatus:   "pass",
+		ActivityAt: &recentPullRequestActivity,
+	}
+
+	summary := AutoPromoteSummaryFromIssue(issue)
+	if summary.LastActivityAt == nil || !summary.LastActivityAt.Equal(recentPullRequestActivity) {
+		t.Fatalf("LastActivityAt = %v, want pull request activity %v", summary.LastActivityAt, recentPullRequestActivity)
+	}
+
+	got := EvaluateAutoPromote(issue, summary, AutoPromoteConfig{
+		Enabled:       true,
+		QuietDuration: 10 * time.Minute,
+		OptoutLabel:   "requires-human-review",
+		Gate:          gate.Config{Kind: gate.KindCommand, RequireAutomatedReview: new(false)},
+	}, now)
+	if got.Action != AutoPromoteActionAwaitReview {
+		t.Fatalf("Action = %q, want %q", got.Action, AutoPromoteActionAwaitReview)
+	}
+	if got.Reason != AutoPromoteReasonCodexReviewNotQuiet {
+		t.Fatalf("Reason = %q, want %q", got.Reason, AutoPromoteReasonCodexReviewNotQuiet)
+	}
+	if got.QuietRemaining != 570*time.Second {
+		t.Fatalf("QuietRemaining = %s, want 570s", got.QuietRemaining)
+	}
+}
+
 func autoPromoteTestIssue(id string, labels []string) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id
