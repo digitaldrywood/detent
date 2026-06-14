@@ -208,17 +208,21 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
-	if err := manager.Start(runCtx); err != nil {
-		return err
-	}
 	globalConfigState := newGlobalConfigState(cfg.Global)
-	globalWatcherDone := startGlobalConfigWatcher(runCtx, cfg.Global, manager, logger, runtimeGitHubToken, globalConfigState.set)
+	globalWatcherStarted := make(chan (<-chan struct{}), 1)
 	defer func() {
 		stop()
-		waitGlobalConfigWatcher(globalWatcherDone)
+		select {
+		case globalWatcherDone := <-globalWatcherStarted:
+			waitGlobalConfigWatcher(globalWatcherDone)
+		default:
+		}
 	}()
 
 	snapshotHub := hub.New[telemetry.Snapshot]()
+	if err := publishStartupSnapshotOnce(runCtx, cfg.Global, snapshotHub, runtimeStore, displayURL, time.Now()); err != nil {
+		return err
+	}
 	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, runtimeStore, displayURL, defaultSnapshotInterval, time.Now)
 	server, err := web.NewServer(web.Config{
 		Mode:               web.ModeRunning,
@@ -243,28 +247,46 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		return err
 	}
 
+	startProjects := func(ctx context.Context) error {
+		if err := manager.Start(ctx); err != nil {
+			return err
+		}
+		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, globalConfigState.set)
+		select {
+		case globalWatcherStarted <- globalWatcherDone:
+		default:
+		}
+		return nil
+	}
+
 	if useDashboard {
 		if err := printBootBanner(cfg, displayURL); err != nil {
 			return err
 		}
 		listenerOwned = false
 		if cfg.Shutdown == nil {
-			return serveWithTerminalDashboard(runCtx, server, listener, snapshotHub, cfg.Build, nil)
+			return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
+				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, nil)
+			})
 		}
-		return runWithShutdown(runCtx, runningShutdownConfig{
-			Controller:       cfg.Shutdown,
-			Registry:         manager.Registry(),
-			SnapshotHub:      snapshotHub,
-			LifetimeSource:   runtimeStore,
-			DashboardURL:     displayURL,
-			Output:           cfg.Output,
-			Logger:           logger,
-			DrainTimeout:     shutdownDrainTimeout(manager.Registry()),
-			ProgressInterval: defaultShutdownProgressInterval,
-			HardTimeout:      defaultShutdownHardTimeout,
-		}, func(ctx context.Context) error {
-			return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, func() {
-				cfg.Shutdown.RequestInterrupt()
+		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
+			return runWithShutdown(ctx, runningShutdownConfig{
+				Controller:     cfg.Shutdown,
+				Registry:       manager.Registry(),
+				SnapshotHub:    snapshotHub,
+				LifetimeSource: runtimeStore,
+				DashboardURL:   displayURL,
+				Output:         cfg.Output,
+				Logger:         logger,
+				DrainTimeoutSource: func() time.Duration {
+					return shutdownDrainTimeout(manager.Registry())
+				},
+				ProgressInterval: defaultShutdownProgressInterval,
+				HardTimeout:      defaultShutdownHardTimeout,
+			}, func(ctx context.Context) error {
+				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, func() {
+					cfg.Shutdown.RequestInterrupt()
+				})
 			})
 		})
 	}
@@ -273,21 +295,27 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 	listenerOwned = false
 	if cfg.Shutdown == nil {
-		return serve(runCtx, server, listener)
+		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
+			return serve(ctx, server, listener)
+		})
 	}
-	return runWithShutdown(runCtx, runningShutdownConfig{
-		Controller:       cfg.Shutdown,
-		Registry:         manager.Registry(),
-		SnapshotHub:      snapshotHub,
-		LifetimeSource:   runtimeStore,
-		DashboardURL:     displayURL,
-		Output:           cfg.Output,
-		Logger:           logger,
-		DrainTimeout:     shutdownDrainTimeout(manager.Registry()),
-		ProgressInterval: defaultShutdownProgressInterval,
-		HardTimeout:      defaultShutdownHardTimeout,
-	}, func(ctx context.Context) error {
-		return serve(ctx, server, listener)
+	return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
+		return runWithShutdown(ctx, runningShutdownConfig{
+			Controller:     cfg.Shutdown,
+			Registry:       manager.Registry(),
+			SnapshotHub:    snapshotHub,
+			LifetimeSource: runtimeStore,
+			DashboardURL:   displayURL,
+			Output:         cfg.Output,
+			Logger:         logger,
+			DrainTimeoutSource: func() time.Duration {
+				return shutdownDrainTimeout(manager.Registry())
+			},
+			ProgressInterval: defaultShutdownProgressInterval,
+			HardTimeout:      defaultShutdownHardTimeout,
+		}, func(ctx context.Context) error {
+			return serve(ctx, server, listener)
+		})
 	})
 }
 
@@ -359,6 +387,67 @@ func serve(ctx context.Context, server *web.Server, listener net.Listener) error
 		}
 		return err
 	}
+}
+
+type startupServeResult struct {
+	name string
+	err  error
+}
+
+func runStartupAndServe(
+	ctx context.Context,
+	startup func(context.Context) error,
+	serveApp func(context.Context) error,
+) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	results := make(chan startupServeResult, 2)
+	go func() {
+		results <- startupServeResult{name: "startup", err: startup(runCtx)}
+	}()
+	go func() {
+		results <- startupServeResult{name: "serve", err: serveApp(runCtx)}
+	}()
+
+	startupDone := false
+	for {
+		result := <-results
+		switch result.name {
+		case "startup":
+			if result.err != nil {
+				cancel()
+				serveResult := <-results
+				if unexpected := unexpectedBootServeError(serveResult.err); unexpected != nil {
+					return errors.Join(result.err, unexpected)
+				}
+				return result.err
+			}
+			startupDone = true
+		case "serve":
+			cancel()
+			if !startupDone {
+				startupResult := <-results
+				if startupResult.err != nil {
+					if unexpected := unexpectedBootServeError(result.err); unexpected != nil {
+						return errors.Join(unexpected, startupResult.err)
+					}
+					return startupResult.err
+				}
+			}
+			return result.err
+		}
+	}
+}
+
+func unexpectedBootServeError(err error) error {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, http.ErrServerClosed) {
+		return nil
+	}
+	return err
 }
 
 func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listener net.Listener, snapshots *hub.Hub[telemetry.Snapshot], build buildinfo.Info, interrupt func()) error {

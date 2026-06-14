@@ -230,6 +230,77 @@ func publishSnapshots(
 	}
 }
 
+func publishStartupSnapshotOnce(
+	ctx context.Context,
+	cfg globalconfig.Config,
+	snapshotHub *hub.Hub[telemetry.Snapshot],
+	lifetimeSource lifetimeTotalsSource,
+	dashboardURL string,
+	now time.Time,
+) error {
+	if snapshotHub == nil {
+		return nil
+	}
+	snapshot := startupSnapshot(ctx, cfg, lifetimeSource, dashboardURL, now)
+	if err := snapshotHub.Publish(snapshot); err != nil {
+		return fmt.Errorf("publish startup snapshot: %w", err)
+	}
+	return nil
+}
+
+func startupSnapshot(
+	ctx context.Context,
+	cfg globalconfig.Config,
+	lifetimeSource lifetimeTotalsSource,
+	dashboardURL string,
+	now time.Time,
+) telemetry.Snapshot {
+	nextRefreshAt := now
+	snapshot := telemetry.Snapshot{
+		GeneratedAt:    now,
+		Instance:       startupSnapshotInstance(cfg),
+		Projects:       startupProjectSnapshots(cfg.Projects),
+		DashboardURL:   cleanDashboardURL(dashboardURL),
+		Shutdown:       telemetry.Shutdown{Status: "running"},
+		Refresh:        telemetry.Refresh{NextRefreshAt: &nextRefreshAt},
+		LifetimeTotals: lifetimeTotals(ctx, lifetimeSource),
+	}
+	switch len(snapshot.Projects) {
+	case 0:
+	case 1:
+		snapshot.Project = snapshot.Projects[0].Project
+	default:
+		snapshot.Project = telemetry.Project{DisplayName: "multiple projects"}
+	}
+	return snapshot
+}
+
+func startupSnapshotInstance(cfg globalconfig.Config) telemetry.Instance {
+	identity := cfg.Global.Identity
+	identity.Normalize()
+	return telemetry.Instance{
+		Name:        identity.Name,
+		GitHubLogin: identity.GitHubLogin,
+	}
+}
+
+func startupProjectSnapshots(projects []globalconfig.Project) []telemetry.ProjectSnapshot {
+	out := make([]telemetry.ProjectSnapshot, 0, len(projects))
+	for _, cfg := range projects {
+		id := strings.TrimSpace(cfg.ID)
+		if id == "" {
+			continue
+		}
+		out = append(out, telemetry.ProjectSnapshot{
+			Project: telemetry.Project{
+				ID:          id,
+				DisplayName: id,
+			},
+		})
+	}
+	return out
+}
+
 func publishSnapshotOnce(
 	ctx context.Context,
 	registry *project.Registry,
@@ -240,8 +311,20 @@ func publishSnapshotOnce(
 	dashboardURL string,
 ) error {
 	merged := telemetry.Snapshot{GeneratedAt: now}
-	for _, trackedProject := range registry.List() {
+	trackedProjects := registry.List()
+	if len(trackedProjects) == 0 {
+		return nil
+	}
+	for _, trackedProject := range trackedProjects {
+		projectMetadata := projectSnapshotMetadata(trackedProject)
 		if !trackedProject.Running() {
+			nextRefreshAt := now
+			merged = mergeSnapshot(merged, telemetry.Snapshot{
+				Project:      projectMetadata,
+				DashboardURL: cleanDashboardURL(dashboardURL),
+				Shutdown:     telemetry.Shutdown{Status: "running"},
+				Refresh:      telemetry.Refresh{NextRefreshAt: &nextRefreshAt},
+			})
 			continue
 		}
 		orch := trackedProject.Orchestrator()
@@ -253,7 +336,7 @@ func publishSnapshotOnce(
 			continue
 		}
 		snapshot := state.Snapshot(now)
-		snapshot.Project = projectSnapshotMetadata(trackedProject)
+		snapshot.Project = projectMetadata
 		snapshot.DashboardURL = cleanDashboardURL(dashboardURL)
 		merged = mergeSnapshot(merged, snapshot)
 	}

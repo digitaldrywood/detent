@@ -16,6 +16,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/web"
@@ -219,6 +220,75 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 	}
 }
 
+func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *testing.T) {
+	host, port := freeLoopbackPort(t)
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
+	})
+	global, err := globalconfig.Read(configPath)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	provisionStarted := make(chan struct{})
+	provisionRelease := make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- startRunning(ctx, BootConfig{
+			Mode:   BootModeRunning,
+			Global: global,
+			Host:   host,
+			Port:   &port,
+			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
+				return bootProvisioningConnector{
+					provision: func(ctx context.Context) error {
+						close(provisionStarted)
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case <-provisionRelease:
+							return nil
+						}
+					},
+				}, nil
+			},
+		})
+	}()
+
+	select {
+	case <-provisionStarted:
+	case err := <-done:
+		t.Fatalf("startRunning returned before provisioning blocked: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for project provisioning to start")
+	}
+
+	stateURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/api/v1/state"
+	body := waitForDashboardCondition(t, stateURL, done, "startup snapshot", func(body string) bool {
+		return strings.Contains(body, `"generated_at"`) &&
+			strings.Contains(body, `"alpha"`) &&
+			!strings.Contains(body, "snapshot_unavailable")
+	})
+	if !strings.Contains(body, `"running":0`) {
+		t.Fatalf("startup snapshot body missing zero running count:\n%s", body)
+	}
+
+	close(provisionRelease)
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
+			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for startRunning to stop")
+	}
+}
+
 func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 	host, port := freeLoopbackPort(t)
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
@@ -366,14 +436,16 @@ func waitForDashboardCondition(t *testing.T, url string, done <-chan error, name
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
+	lastBody := ""
 	for ctx.Err() == nil {
 		body := waitForDashboard(t, url, done)
+		lastBody = body
 		if ok(body) {
 			return body
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
-	t.Fatalf("timed out waiting for dashboard condition %q at %s", name, url)
+	t.Fatalf("timed out waiting for dashboard condition %q at %s; last body:\n%s", name, url, lastBody)
 	return ""
 }
 
@@ -477,4 +549,47 @@ func assertRefresh(t *testing.T, response web.RefreshResponse) {
 	if len(response.Operations) != 2 || response.Operations[0] != "poll" || response.Operations[1] != "reconcile" {
 		t.Fatalf("Operations = %#v, want poll/reconcile", response.Operations)
 	}
+}
+
+type bootProvisioningConnector struct {
+	provision func(context.Context) error
+}
+
+func (bootProvisioningConnector) Name() string {
+	return "boot"
+}
+
+func (bootProvisioningConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (bootProvisioningConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (bootProvisioningConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (bootProvisioningConnector) CreateComment(context.Context, string, string) error {
+	return nil
+}
+
+func (bootProvisioningConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (bootProvisioningConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (bootProvisioningConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}
+
+func (c bootProvisioningConnector) Provision(ctx context.Context) error {
+	if c.provision == nil {
+		return nil
+	}
+	return c.provision(ctx)
 }

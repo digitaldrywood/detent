@@ -110,17 +110,18 @@ func (c *ShutdownController) request(request ShutdownRequest) {
 type shutdownServeFunc func(context.Context) error
 
 type runningShutdownConfig struct {
-	Controller       *ShutdownController
-	Registry         *project.Registry
-	SnapshotHub      *hub.Hub[telemetry.Snapshot]
-	LifetimeSource   lifetimeTotalsSource
-	DashboardURL     string
-	Output           io.Writer
-	Logger           *slog.Logger
-	DrainTimeout     time.Duration
-	ProgressInterval time.Duration
-	HardTimeout      time.Duration
-	Now              func() time.Time
+	Controller         *ShutdownController
+	Registry           *project.Registry
+	SnapshotHub        *hub.Hub[telemetry.Snapshot]
+	LifetimeSource     lifetimeTotalsSource
+	DashboardURL       string
+	Output             io.Writer
+	Logger             *slog.Logger
+	DrainTimeout       time.Duration
+	DrainTimeoutSource func() time.Duration
+	ProgressInterval   time.Duration
+	HardTimeout        time.Duration
+	Now                func() time.Time
 }
 
 func runWithShutdown(ctx context.Context, cfg runningShutdownConfig, serve shutdownServeFunc) error {
@@ -197,6 +198,7 @@ func runDrainShutdown(
 		return completeShutdown(ctx, cfg, cancelServe, serveErrs, startedAt, machine, nil)
 	}
 
+	drainTimeout := shutdownDrainTimeoutForConfig(cfg)
 	progressInterval := cfg.ProgressInterval
 	if progressInterval <= 0 {
 		progressInterval = defaultShutdownProgressInterval
@@ -208,8 +210,8 @@ func runDrainShutdown(
 
 	var timeout <-chan time.Time
 	var timeoutTimer *time.Timer
-	if cfg.DrainTimeout > 0 {
-		timeoutTimer = time.NewTimer(cfg.DrainTimeout)
+	if drainTimeout > 0 {
+		timeoutTimer = time.NewTimer(drainTimeout)
 		timeout = timeoutTimer.C
 		defer timeoutTimer.Stop()
 	}
@@ -433,6 +435,13 @@ func shutdownRunningSessions(ctx context.Context, registry *project.Registry, no
 		return shutdownIssueLabel(sessions[i]) < shutdownIssueLabel(sessions[j])
 	})
 	return sessions
+}
+
+func shutdownDrainTimeoutForConfig(cfg runningShutdownConfig) time.Duration {
+	if cfg.DrainTimeoutSource != nil {
+		return cfg.DrainTimeoutSource()
+	}
+	return cfg.DrainTimeout
 }
 
 func publishShutdownSnapshot(ctx context.Context, cfg runningShutdownConfig, now time.Time) {

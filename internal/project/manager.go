@@ -11,6 +11,8 @@ import (
 	"sync"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hub"
 )
@@ -21,11 +23,14 @@ var (
 	ErrProjectNotFound = errors.New("project not found")
 )
 
+const defaultMaxConcurrentStarts = 4
+
 type Factory func(globalconfig.Project) (*Project, error)
 
 type StartupConfig struct {
-	Jitter            time.Duration
-	MaxSpawnPerSecond int
+	Jitter              time.Duration
+	MaxSpawnPerSecond   int
+	MaxConcurrentStarts int
 }
 
 type ManagerConfig struct {
@@ -78,8 +83,9 @@ func ManagerConfigFromGlobal(cfg globalconfig.Config) ManagerConfig {
 		Identity: cfg.Global.Identity,
 		Projects: cfg.Projects,
 		Startup: StartupConfig{
-			Jitter:            time.Duration(startupInt(cfg.Global.Startup, "jitter_seconds")) * time.Second,
-			MaxSpawnPerSecond: startupInt(cfg.Global.Startup, "max_spawn_per_second"),
+			Jitter:              time.Duration(startupInt(cfg.Global.Startup, "jitter_seconds")) * time.Second,
+			MaxSpawnPerSecond:   startupInt(cfg.Global.Startup, "max_spawn_per_second"),
+			MaxConcurrentStarts: startupInt(cfg.Global.Startup, "max_concurrent_starts"),
 		},
 	})
 }
@@ -135,18 +141,54 @@ func (m *Manager) Start(ctx context.Context) error {
 	}
 
 	m.mu.Lock()
-	defer m.mu.Unlock()
-
 	if m.running {
+		m.mu.Unlock()
 		return ErrManagerRunning
 	}
 	m.running = true
 
+	projects := make([]*Project, 0, len(m.cfg.Projects))
+	registered := make([]ID, 0, len(m.cfg.Projects))
 	for _, cfg := range m.cfg.Projects {
-		if err := m.addLocked(ctx, cfg); err != nil {
+		id, project, err := m.createProjectLocked(cfg)
+		if err != nil {
+			for _, registeredID := range registered {
+				m.registry.Delete(registeredID)
+			}
 			m.running = false
-			return err
+			m.mu.Unlock()
+			return errors.Join(err, closeProjectSlice(ctx, projects))
 		}
+		if _, ok := m.registry.Get(id); ok {
+			for _, registeredID := range registered {
+				m.registry.Delete(registeredID)
+			}
+			m.running = false
+			m.mu.Unlock()
+			return errors.Join(ErrProjectExists, project.close(ctx, false), closeProjectSlice(ctx, projects))
+		}
+		if err := m.registry.Set(project); err != nil {
+			for _, registeredID := range registered {
+				m.registry.Delete(registeredID)
+			}
+			m.running = false
+			m.mu.Unlock()
+			return errors.Join(err, project.close(ctx, false), closeProjectSlice(ctx, projects))
+		}
+		registered = append(registered, id)
+		projects = append(projects, project)
+	}
+	startup := m.cfg.Startup
+	m.mu.Unlock()
+
+	started, err := m.startInitialProjects(ctx, projects, startup)
+	if err != nil {
+		return errors.Join(err, m.rollbackInitialStart(ctx, registered, projects, started))
+	}
+	if len(started) > 0 {
+		m.mu.Lock()
+		m.spawned = true
+		m.mu.Unlock()
 	}
 	return nil
 }
@@ -479,6 +521,113 @@ func (m *Manager) stopUncommittedStartedProjects(ctx context.Context, started []
 	return cleanupErr
 }
 
+func (m *Manager) startInitialProjects(
+	ctx context.Context,
+	projects []*Project,
+	startup StartupConfig,
+) ([]startedProject, error) {
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(maxConcurrentStarts(startup, len(projects)))
+
+	limiter := startupLimiter{
+		startup: startup,
+		sleep:   m.sleep,
+		jitter:  m.jitter,
+	}
+	var startedMu sync.Mutex
+	started := make([]startedProject, 0, len(projects))
+	for _, project := range projects {
+		trackedProject := project
+		if trackedProject.Paused() {
+			continue
+		}
+		group.Go(func() error {
+			if err := limiter.wait(groupCtx); err != nil {
+				return err
+			}
+			if err := trackedProject.provision(groupCtx); err != nil {
+				return err
+			}
+			if err := groupCtx.Err(); err != nil {
+				return err
+			}
+			if err := trackedProject.start(ctx, startOptions{provision: false, publishEvents: true}); err != nil {
+				return err
+			}
+			startedMu.Lock()
+			started = append(started, startedProject{project: trackedProject})
+			startedMu.Unlock()
+			return nil
+		})
+	}
+	if err := group.Wait(); err != nil {
+		return started, err
+	}
+	return started, nil
+}
+
+func (m *Manager) rollbackInitialStart(
+	ctx context.Context,
+	registered []ID,
+	projects []*Project,
+	started []startedProject,
+) error {
+	cleanupErr := m.stopUncommittedStartedProjects(ctx, started)
+	cleanupErr = errors.Join(cleanupErr, closeProjectSlice(ctx, projects))
+
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	for _, id := range registered {
+		m.registry.Delete(id)
+	}
+	m.running = false
+	m.spawned = false
+	return cleanupErr
+}
+
+type startupLimiter struct {
+	startup StartupConfig
+	sleep   func(context.Context, time.Duration) error
+	jitter  func(time.Duration) time.Duration
+
+	mu      sync.Mutex
+	spawned bool
+}
+
+func (l *startupLimiter) wait(ctx context.Context) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	delay := spawnDelay(l.startup, l.spawned, l.jitter)
+	if delay > 0 {
+		if err := l.sleep(ctx, delay); err != nil {
+			return err
+		}
+	}
+	l.spawned = true
+	return nil
+}
+
+func maxConcurrentStarts(startup StartupConfig, projectCount int) int {
+	limit := startup.MaxConcurrentStarts
+	if limit <= 0 {
+		limit = defaultMaxConcurrentStarts
+	}
+	if projectCount > 0 && limit > projectCount {
+		return projectCount
+	}
+	return limit
+}
+
+func closeProjectSlice(ctx context.Context, projects []*Project) error {
+	var cleanupErr error
+	for _, project := range projects {
+		cleanupErr = errors.Join(cleanupErr, project.close(ctx, false))
+	}
+	return cleanupErr
+}
+
 func closePreparedProjects(ctx context.Context, prepared map[ID]*Project) error {
 	var cleanupErr error
 	for _, project := range prepared {
@@ -496,17 +645,25 @@ func closeStoppedProjects(ctx context.Context, stopped []rollbackProject) error 
 }
 
 func (m *Manager) waitBeforeSpawn(ctx context.Context) error {
-	delay := time.Duration(0)
-	if m.spawned && m.cfg.Startup.MaxSpawnPerSecond > 0 {
-		delay += time.Second / time.Duration(m.cfg.Startup.MaxSpawnPerSecond)
-	}
-	if m.cfg.Startup.Jitter > 0 {
-		delay += m.jitter(m.cfg.Startup.Jitter)
-	}
+	delay := spawnDelay(m.cfg.Startup, m.spawned, m.jitter)
 	if delay <= 0 {
 		return nil
 	}
 	return m.sleep(ctx, delay)
+}
+
+func spawnDelay(startup StartupConfig, spawned bool, jitter func(time.Duration) time.Duration) time.Duration {
+	if !spawned {
+		return 0
+	}
+	delay := time.Duration(0)
+	if startup.MaxSpawnPerSecond > 0 {
+		delay += time.Second / time.Duration(startup.MaxSpawnPerSecond)
+	}
+	if startup.Jitter > 0 && jitter != nil {
+		delay += jitter(startup.Jitter)
+	}
+	return delay
 }
 
 func startupInt(values map[string]any, key string) int {

@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"slices"
+	"sync"
 	"testing"
 	"time"
 
@@ -57,7 +59,7 @@ func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {
 		t.Fatalf("Start() error = %v", err)
 	}
 
-	wantSleeps := []time.Duration{100 * time.Millisecond, 600 * time.Millisecond}
+	wantSleeps := []time.Duration{600 * time.Millisecond}
 	if !reflect.DeepEqual(slept, wantSleeps) {
 		t.Fatalf("sleep delays = %v, want %v", slept, wantSleeps)
 	}
@@ -66,11 +68,115 @@ func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {
 		receiveEvent(t, sub.C()).ProjectID,
 		receiveEvent(t, sub.C()).ProjectID,
 	}
+	slices.Sort(started)
 	if !reflect.DeepEqual(started, []project.ID{"alpha", "bravo"}) {
 		t.Fatalf("started projects = %v, want [alpha bravo]", started)
 	}
 	if manager.Registry().Len() != 3 {
 		t.Fatalf("Registry().Len() = %d, want 3", manager.Registry().Len())
+	}
+}
+
+func TestManagerStartsProjectsWithBoundedConcurrency(t *testing.T) {
+	t.Parallel()
+
+	const maxConcurrentStarts = 2
+
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	release := make(chan struct{})
+	started := make(chan project.ID, 4)
+	var active int
+	var maxActive int
+	var mu sync.Mutex
+
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "alpha", Weight: 1},
+			{ID: "bravo", Weight: 1},
+			{ID: "charlie", Weight: 1},
+			{ID: "delta", Weight: 1},
+		},
+		Startup: project.StartupConfig{
+			MaxConcurrentStarts: maxConcurrentStarts,
+		},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			projectConnector := provisioningConnector{
+				provision: func(ctx context.Context) error {
+					mu.Lock()
+					active++
+					if active > maxActive {
+						maxActive = active
+					}
+					mu.Unlock()
+
+					started <- project.ID(cfg.ID)
+					select {
+					case <-ctx.Done():
+						return ctx.Err()
+					case <-release:
+					}
+
+					mu.Lock()
+					active--
+					mu.Unlock()
+					return nil
+				},
+			}
+			return project.New(project.Config{
+				Project:  cfg,
+				Workflow: workflowconfig.Workflow{Config: workflowConfig("memory")},
+			}, project.Dependencies{
+				Connector: projectConnector,
+				Events:    events,
+				Runner:    blockingRunner{},
+			})
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- manager.Start(context.Background())
+	}()
+
+	for range maxConcurrentStarts {
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for concurrent project startup")
+		}
+	}
+	select {
+	case id := <-started:
+		t.Fatalf("project %s started beyond concurrency limit", id)
+	default:
+	}
+
+	close(release)
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("Start() error = %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for manager.Start")
+	}
+
+	mu.Lock()
+	gotMaxActive := maxActive
+	mu.Unlock()
+	if gotMaxActive != maxConcurrentStarts {
+		t.Fatalf("max active starts = %d, want %d", gotMaxActive, maxConcurrentStarts)
+	}
+	if manager.Registry().Len() != 4 {
+		t.Fatalf("Registry().Len() = %d, want 4", manager.Registry().Len())
 	}
 }
 
@@ -968,8 +1074,9 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 				GitHubLogin: "detent-bot",
 			},
 			Startup: map[string]any{
-				"jitter_seconds":       3,
-				"max_spawn_per_second": 4,
+				"jitter_seconds":        3,
+				"max_spawn_per_second":  4,
+				"max_concurrent_starts": 2,
 			},
 		},
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
@@ -981,6 +1088,9 @@ func TestManagerConfigFromGlobal(t *testing.T) {
 	}
 	if got.Startup.MaxSpawnPerSecond != 4 {
 		t.Fatalf("Startup.MaxSpawnPerSecond = %d, want 4", got.Startup.MaxSpawnPerSecond)
+	}
+	if got.Startup.MaxConcurrentStarts != 2 {
+		t.Fatalf("Startup.MaxConcurrentStarts = %d, want 2", got.Startup.MaxConcurrentStarts)
 	}
 	if got.Identity.Name != "release-captain" {
 		t.Fatalf("Identity.Name = %q, want release-captain", got.Identity.Name)
@@ -1099,6 +1209,8 @@ func assertStartedProjects(t *testing.T, ch <-chan project.Event, want []project
 		}
 		got = append(got, event.ProjectID)
 	}
+	slices.Sort(got)
+	slices.Sort(want)
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("started projects = %v, want %v", got, want)
 	}
