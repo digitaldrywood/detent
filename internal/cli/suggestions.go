@@ -81,6 +81,7 @@ type commandErrorResponse struct {
 
 type commandError struct {
 	Code       string   `json:"code"`
+	ExitCode   int      `json:"exit_code"`
 	Input      string   `json:"input,omitempty"`
 	DidYouMean []string `json:"did_you_mean,omitempty"`
 	Message    string   `json:"message,omitempty"`
@@ -99,10 +100,12 @@ func commandErrorResponseFromError(err error) commandErrorResponse {
 	if err != nil {
 		message = err.Error()
 	}
+	exitCode := ExitCode(err)
 
 	if input, ok := unknownCommandInput(message); ok {
 		return commandErrorResponse{Error: commandError{
 			Code:       unknownCommandErrorCode,
+			ExitCode:   exitCode,
 			Input:      input,
 			DidYouMean: didYouMeanSuggestions(message),
 		}}
@@ -110,13 +113,15 @@ func commandErrorResponseFromError(err error) commandErrorResponse {
 	if input, ok := unknownFlagInput(message); ok {
 		return commandErrorResponse{Error: commandError{
 			Code:       unknownFlagErrorCode,
+			ExitCode:   exitCode,
 			Input:      input,
 			DidYouMean: didYouMeanSuggestions(message),
 		}}
 	}
 	return commandErrorResponse{Error: commandError{
-		Code:    commandFailedErrorCode,
-		Message: firstErrorLine(message),
+		Code:     commandFailedErrorCode,
+		ExitCode: exitCode,
+		Message:  firstErrorLine(message),
 	}}
 }
 
@@ -124,7 +129,7 @@ func suggestedNoArgs(cmd *cobra.Command, args []string) error {
 	if len(args) == 0 {
 		return nil
 	}
-	return unknownCommandError(cmd, args[0])
+	return WrapValidation(unknownCommandError(cmd, args[0]))
 }
 
 func unknownCommandError(cmd *cobra.Command, typedName string) error {

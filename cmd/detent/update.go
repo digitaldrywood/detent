@@ -32,7 +32,7 @@ func newUpdateCommand(ctx context.Context, factory updateFactory) *cobra.Command
 	cmd := &cobra.Command{
 		Use:          "update",
 		Short:        "Check for and apply Detent updates",
-		Args:         cobra.NoArgs,
+		Args:         cli.NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out, err := cli.OutputForCommand(cmd)
@@ -155,7 +155,7 @@ func selectGoInstallAction(cmd *cobra.Command) func(detentupdate.Status) (detent
 		case "", "3", "a", "abort", "n", "no":
 			return detentupdate.GoInstallActionAbort, nil
 		default:
-			return "", fmt.Errorf("invalid update choice: %s", strings.TrimSpace(line))
+			return "", cli.ValidationErrorf("invalid update choice: %s", strings.TrimSpace(line))
 		}
 	}
 }

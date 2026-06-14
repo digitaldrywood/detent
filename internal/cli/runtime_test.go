@@ -242,6 +242,9 @@ func TestResolveRuntimeSettingsGitHubTokenErrors(t *testing.T) {
 			if err == nil {
 				t.Fatal("resolveRuntimeSettings() error = nil, want error")
 			}
+			if !errors.Is(err, ErrGitHubAuth) {
+				t.Fatalf("resolveRuntimeSettings() error = %v, want %v", err, ErrGitHubAuth)
+			}
 			if !strings.Contains(err.Error(), tt.wantErr) {
 				t.Fatalf("error = %v, want containing %q", err, tt.wantErr)
 			}
