@@ -1107,6 +1107,25 @@ committing changes to Templ templates, sqlc queries, or Tailwind inputs.
 `make modernize-check` runs the Go modernizer diff check with the repo's
 selected safe analyzer set.
 
+Packages that own transport, hub, watcher, orchestrator, and runner goroutines
+also run `go.uber.org/goleak` from package-level tests, so `go test ./...`,
+race tests, and `make check` fail on unexpected goroutines. Add goleak ignores
+only in the package that needs them, and only after identifying the dependency
+or intentionally shared test goroutine.
+
+Nil safety is tracked separately with a local audit command:
+
+```sh
+make nilaway-audit
+```
+
+NilAway is not part of `make check` yet. The standalone audit currently reports
+first-party findings that need triage before it can become a CI gate, and its
+golangci-lint integration requires a custom module-plugin linter binary. Go
+1.26's experimental `runtime/pprof` `goroutineleak` profile remains a runtime
+audit aid behind `GOEXPERIMENT=goroutineleakprofile`; the stable CI coverage for
+now is the goleak-backed test gate.
+
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor workflow.
 
 ## Logging
