@@ -82,8 +82,9 @@ counts:
 - **A product, not a spec.** One CGO-free Go binary for macOS, Linux, and
   Windows — `go install`, Homebrew, or copy a single file. No BEAM service to
   adapt, nothing to stand up.
-- **GitHub Projects v2, not Linear.** Issues, status columns, priorities,
-  labels, blockers, comments, and pull requests are the state machine.
+- **[GitHub Projects v2, not Linear](#why-these-defaults).** Issues, status
+  columns, priorities, labels, blockers, comments, and pull requests are the
+  state machine.
 - **Multi-project from one host.** `global.yaml` runs many repositories with
   weights, priority, pause, and fair scheduling.
 - **Explicit gates + a serialized merge train.** CI, optional automated PR
@@ -120,6 +121,50 @@ The goal is not to replace engineers or hide work behind opaque behavior — it 
 to scale the judgment of engineers who already have a high bar. The system does
 not try to be smarter than you; it tries to be as disciplined as you would be,
 every time, in parallel.
+
+## Why these defaults
+
+Two choices define Detent's footprint: **GitHub Projects** as the board and
+**Codex** as the coding agent. Both are deliberate.
+
+### Why GitHub Projects, not Linear
+
+The reference design Detent grew from polls a **Linear** board while code, pull
+requests, and CI live in **GitHub** — two systems for one unit of work. That
+split forces you to map Linear issue IDs onto GitHub PR numbers and to read
+discussion in two places: planning comments in Linear, review comments in
+GitHub. Detent puts the whole state machine in one system. A GitHub Project
+*is* the board; its issues are the work items, its pull requests are the
+deliverables, and its comments and reviews are where every conversation
+happens. One ID space, one place to look.
+
+It is also cheaper at the scale where orchestration matters:
+
+- **Cost.** GitHub Projects has no per-seat charge and ships with repositories
+  most teams already pay for. Linear's Business plan is \$16/user/month — about
+  \$9,600/year at 50 seats — and its free tier is capped.
+- **API headroom.** Authenticated GitHub REST allows 5,000 requests/hour (more
+  for GitHub Apps); Linear allows 1,500 requests/hour against a complexity
+  budget. A poller driving many repositories wants the larger ceiling.
+
+### Why Codex, not Claude
+
+Detent dispatches agents non-interactively, headless, many at once. The
+important question is how that mode is metered.
+
+- A **ChatGPT** plan (Plus, Pro, Business) covers Codex CLI usage *including
+  scripted `codex exec` automation*, billed against the subscription you already
+  have.
+- **Claude Code** keeps interactive terminal and IDE use on subscription usage
+  limits. Effective **June 15, 2026**, Anthropic moves headless `claude -p`,
+  the Agent SDK, Claude Code GitHub Actions, and third-party Agent SDK apps to
+  a separate monthly Agent SDK credit. That credit is per-user, does not roll
+  over, and overages move to usage credits at standard API rates when enabled.
+
+For an orchestrator that runs agents around the clock in parallel, the Codex
+subscription is the one that makes the economics work. Codex is the agent
+backend Detent ships; the `agents.backends` config keeps the door open for
+others as their automation terms allow.
 
 ## Install
 
