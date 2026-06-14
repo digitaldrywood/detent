@@ -1266,9 +1266,11 @@ func (c *Connector) populateBlockerReasons(ctx context.Context, issues []connect
 			return fmt.Errorf("fetch github issue comments: %w", err)
 		}
 		node := githubIssueNode{
-			ID:       issues[index].ID,
-			Body:     issues[index].Description,
-			Comments: nodeConnection[issueComment]{Nodes: comments},
+			ID:         issues[index].ID,
+			Number:     ref.Number,
+			Body:       issues[index].Description,
+			Repository: repository{NameWithOwner: ref.Owner + "/" + ref.Name},
+			Comments:   nodeConnection[issueComment]{Nodes: comments},
 		}
 		if len(issues[index].BlockedBy) == 0 {
 			issues[index].BlockedBy = parseBlockedByFromIssueText(node, issueRepo(issues[index].Identifier))
@@ -3460,12 +3462,20 @@ func parseBlockerReason(issue githubIssueNode) string {
 }
 
 func parseBlockedByFromIssueText(issue githubIssueNode, repo string) []connector.BlockedRef {
+	repo = strings.TrimSpace(repo)
+	if repo == "" {
+		repo = strings.TrimSpace(issue.Repository.NameWithOwner)
+	}
+	self := normalizedIssueIdentifier(buildIdentifier(repo, issue.Number))
 	blockers := []connector.BlockedRef{}
 	seen := map[string]struct{}{}
 	appendBlockers := func(refs []connector.BlockedRef) {
 		for _, ref := range refs {
 			key := normalizedIssueIdentifier(ref.Identifier)
 			if key == "" {
+				continue
+			}
+			if self != "" && key == self {
 				continue
 			}
 			if _, ok := seen[key]; ok {

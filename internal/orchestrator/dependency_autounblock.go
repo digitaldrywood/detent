@@ -85,12 +85,12 @@ func (o *Orchestrator) hydrateDependencyAutoUnblockIssue(
 	sourceStates []string,
 ) (connector.Issue, bool) {
 	issue = issueWithTextDependencyRefs(issue)
-	if len(issue.BlockedBy) > 0 || strings.TrimSpace(issue.Identifier) == "" {
+	if strings.TrimSpace(issue.Identifier) == "" {
 		return issue, stateIn(issue.State, sourceStates)
 	}
 	resolver, ok := o.connector.(connector.IssueReferenceResolver)
 	if !ok {
-		return issue, true
+		return issue, stateIn(issue.State, sourceStates)
 	}
 	issues, err := resolver.FetchIssueStatesByIdentifiers(ctx, []string{issue.Identifier})
 	if err != nil {
@@ -103,19 +103,64 @@ func (o *Orchestrator) hydrateDependencyAutoUnblockIssue(
 		if !sameIssueIdentity(issue, hydrated) {
 			continue
 		}
+		previousBlockedBy := append([]connector.BlockedRef(nil), issue.BlockedBy...)
 		merged := mergeIssueTrackerFields(issue, hydrated)
+		merged.BlockedBy = mergeDependencyBlockedRefs(previousBlockedBy, merged.BlockedBy)
 		merged = issueWithTextDependencyRefs(merged)
 		return merged, stateIn(merged.State, sourceStates)
 	}
-	return issue, true
+	return issue, stateIn(issue.State, sourceStates)
 }
 
 func issueWithTextDependencyRefs(issue connector.Issue) connector.Issue {
-	if len(issue.BlockedBy) > 0 {
-		return issue
-	}
-	issue.BlockedBy = dependencyRefsFromIssueText(issue)
+	issue.BlockedBy = mergeDependencyBlockedRefs(issue.BlockedBy, dependencyRefsFromIssueText(issue))
+	issue.BlockedBy = dependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
 	return issue
+}
+
+func mergeDependencyBlockedRefs(existing []connector.BlockedRef, incoming []connector.BlockedRef) []connector.BlockedRef {
+	if len(existing) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	merged := make([]connector.BlockedRef, 0, len(existing)+len(incoming))
+	seen := map[string]struct{}{}
+	appendRefs := func(refs []connector.BlockedRef) {
+		for _, ref := range refs {
+			key := strings.ToLower(strings.TrimSpace(ref.Identifier))
+			if key == "" {
+				key = strings.ToLower(strings.TrimSpace(ref.ID))
+			}
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, ref)
+		}
+	}
+	appendRefs(existing)
+	appendRefs(incoming)
+	return merged
+}
+
+func dependencyBlockedRefsWithoutSelf(refs []connector.BlockedRef, identifier string) []connector.BlockedRef {
+	self := strings.ToLower(strings.TrimSpace(identifier))
+	if self == "" || len(refs) == 0 {
+		return refs
+	}
+	filtered := refs[:0]
+	for _, ref := range refs {
+		if strings.ToLower(strings.TrimSpace(ref.Identifier)) == self {
+			continue
+		}
+		filtered = append(filtered, ref)
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
 }
 
 func dependencyRefsFromIssueText(issue connector.Issue) []connector.BlockedRef {

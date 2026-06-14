@@ -1053,7 +1053,7 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) 
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/issues/416/comments?per_page=100",
-			body:   `[{"body":"## Codex Workpad\n\n### Blockers\n- Blocked by: #415\n- Waiting for digitaldrywood/agent-runtime#25\n\n### Validation\n- Pending."}]`,
+			body:   `[{"body":"## Codex Workpad\n\n### Blockers\n- Blocked by: #415\n- Waiting for digitaldrywood/agent-runtime#25\n- Human action needed: merge #415, then move #416 back to Todo.\n\n### Validation\n- Pending."}]`,
 		},
 	})
 
