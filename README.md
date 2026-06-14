@@ -481,6 +481,25 @@ service owns the port; use `detent doctor --port 0` for the same config,
 toolchain, token, and database preflight without the port collision, then verify
 the live service with `/health`.
 
+For Detent dogfood/self-tests that need a running server, start an isolated mock
+runtime instead of stopping or reusing the live process on `127.0.0.1:4000`:
+
+```sh
+detent dev-runtime \
+  --port 0 \
+  --home "$(mktemp -d)" \
+  --db ':memory:' \
+  --tracker memory \
+  --fixture testdata/dogfood/autopromote.yaml
+```
+
+The command prints `Mode: isolated dev runtime`, the selected dashboard URL,
+temp home, DB mode, tracker mode, and fixture path. By default it uses a temp
+config/workspace home, an in-memory SQLite database, a stateful fixture-backed
+memory tracker, and a fake runner; it does not call GitHub or mutate a real
+ProjectV2 board. It refuses the live dogfood port and live
+`~/.detent/detent.db` unless explicitly overridden.
+
 6. Start Detent:
 
 ```sh

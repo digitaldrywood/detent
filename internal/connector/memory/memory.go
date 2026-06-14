@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -34,11 +35,16 @@ type EventSink func(Event)
 type Config struct {
 	Issues    []connector.Issue
 	EventSink EventSink
+	Stateful  bool
+	Now       func() time.Time
 }
 
 type Connector struct {
 	issues    []connector.Issue
 	eventSink EventSink
+	stateful  bool
+	now       func() time.Time
+	mu        sync.RWMutex
 }
 
 var _ connector.Connector = (*Connector)(nil)
@@ -49,9 +55,15 @@ var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 
 func New(cfg Config) *Connector {
+	now := cfg.Now
+	if now == nil {
+		now = time.Now
+	}
 	return &Connector{
 		issues:    cloneIssues(cfg.Issues),
 		eventSink: cfg.EventSink,
+		stateful:  cfg.Stateful,
+		now:       now,
 	}
 }
 
@@ -64,10 +76,16 @@ func (c *Connector) InstanceLogin() string {
 }
 
 func (c *Connector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	return cloneIssues(c.issues), nil
 }
 
 func (c *Connector) FetchIssuesByStates(_ context.Context, stateNames []string) ([]connector.Issue, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	wantedStates := make(map[string]struct{}, len(stateNames))
 	for _, stateName := range stateNames {
 		wantedStates[normalizeState(stateName)] = struct{}{}
@@ -84,6 +102,9 @@ func (c *Connector) FetchIssuesByStates(_ context.Context, stateNames []string) 
 }
 
 func (c *Connector) FetchIssueStatesByIDs(_ context.Context, issueIDs []string) ([]connector.Issue, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	wantedIDs := make(map[string]struct{}, len(issueIDs))
 	for _, issueID := range issueIDs {
 		wantedIDs[issueID] = struct{}{}
@@ -100,6 +121,9 @@ func (c *Connector) FetchIssueStatesByIDs(_ context.Context, issueIDs []string) 
 }
 
 func (c *Connector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers []string) ([]connector.Issue, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	wantedIdentifiers := make(map[string]struct{}, len(identifiers))
 	for _, identifier := range identifiers {
 		wantedIdentifiers[normalizeState(identifier)] = struct{}{}
@@ -116,6 +140,9 @@ func (c *Connector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers
 }
 
 func (c *Connector) FetchIssueParents(_ context.Context, issueID string) ([]connector.Issue, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	issueID = strings.TrimSpace(issueID)
 	if issueID == "" {
 		return []connector.Issue{}, nil
@@ -153,6 +180,9 @@ func (c *Connector) FetchIssueParents(_ context.Context, issueID string) ([]conn
 }
 
 func (c *Connector) FetchIssueChildren(_ context.Context, issueID string) ([]connector.BlockedRef, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
 	for _, issue := range c.issues {
 		if issue.ID == issueID {
 			return append([]connector.BlockedRef(nil), issue.ChildIssues...), nil
@@ -167,23 +197,68 @@ func (c *Connector) CreateComment(_ context.Context, issueID string, body string
 }
 
 func (c *Connector) CloseIssue(_ context.Context, issueID string) error {
+	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
+		issue.Closed = true
+		issue.UpdatedAt = &now
+	})
 	c.send(Event{Kind: EventKindClose, IssueID: issueID})
 	return nil
 }
 
 func (c *Connector) UpdateIssueState(_ context.Context, issueID string, stateName string) error {
+	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
+		issue.State = stateName
+		issue.StageUpdatedAt = &now
+		issue.UpdatedAt = &now
+		if issue.Fields == nil {
+			issue.Fields = map[string]string{}
+		}
+		issue.Fields["Status"] = stateName
+	})
 	c.send(Event{Kind: EventKindStateUpdate, IssueID: issueID, State: stateName})
 	return nil
 }
 
 func (c *Connector) SetAssignee(_ context.Context, issueID string, login string) error {
+	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
+		issue.AssigneeID = login
+		if !stringSliceContains(issue.Assignees, login) {
+			issue.Assignees = append(issue.Assignees, login)
+		}
+		issue.UpdatedAt = &now
+	})
 	c.send(Event{Kind: EventKindAssigneeUpdate, IssueID: issueID, Login: login})
 	return nil
 }
 
 func (c *Connector) SetField(_ context.Context, issueID string, fieldName string, value string) error {
+	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
+		if issue.Fields == nil {
+			issue.Fields = map[string]string{}
+		}
+		issue.Fields[fieldName] = value
+		issue.UpdatedAt = &now
+	})
 	c.send(Event{Kind: EventKindFieldUpdate, IssueID: issueID, FieldName: fieldName, FieldValue: value})
 	return nil
+}
+
+func (c *Connector) applyIssue(issueID string, update func(*connector.Issue, time.Time)) {
+	if !c.stateful {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := c.now()
+	for index := range c.issues {
+		if c.issues[index].ID != issueID {
+			continue
+		}
+		update(&c.issues[index], now)
+		return
+	}
 }
 
 func (c *Connector) send(event Event) {
@@ -304,4 +379,13 @@ func cloneTime(value *time.Time) *time.Time {
 
 	cloned := *value
 	return &cloned
+}
+
+func stringSliceContains(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }

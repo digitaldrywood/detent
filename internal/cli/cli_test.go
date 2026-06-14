@@ -33,7 +33,7 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
-	for _, want := range []string{"detent", "agent orchestrator", "doctor", "init", "add-project", "pause", "unpause", "promote", "remove-project"} {
+	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "init", "add-project", "pause", "unpause", "promote", "remove-project"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
@@ -159,6 +159,53 @@ func TestRootCommandBootsFromGlobalConfig(t *testing.T) {
 	}
 	if got.ConfigPathRule != globalconfig.PathRuleFlag {
 		t.Fatalf("config path rule = %q, want %q", got.ConfigPathRule, globalconfig.PathRuleFlag)
+	}
+}
+
+func TestDevRuntimeCommandBuildsIsolatedBootConfig(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--host", "127.0.0.2",
+		"--port", "0",
+		"dev-runtime",
+		"--home", home,
+		"--db", "fixture.db",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Isolated == nil {
+		t.Fatal("Isolated = nil, want isolated runtime metadata")
+	}
+	if got.Runner == nil {
+		t.Fatal("Runner = nil, want fake runner override")
+	}
+	if got.ConnectorFactory == nil {
+		t.Fatal("ConnectorFactory = nil, want stateful memory connector factory")
+	}
+	if got.Host != "127.0.0.2" {
+		t.Fatalf("Host = %q, want 127.0.0.2", got.Host)
+	}
+	if got.Port == nil || *got.Port != 0 {
+		t.Fatalf("Port = %v, want 0", got.Port)
+	}
+	if got.RuntimeDBPath != filepath.Join(home, "fixture.db") {
+		t.Fatalf("RuntimeDBPath = %q, want fixture DB under home", got.RuntimeDBPath)
+	}
+	if got.Isolated.DBMode != "file" || got.Isolated.TrackerMode != "memory" {
+		t.Fatalf("isolated metadata = %#v, want file DB and memory tracker", got.Isolated)
 	}
 }
 

@@ -196,6 +196,8 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		Logger:             logger,
 		GlobalDispatchGate: globalDispatchGate,
 		GitHubToken:        runtimeGitHubToken.get(),
+		ConnectorFactory:   cfg.ConnectorFactory,
+		Runner:             cfg.Runner,
 	}, runtimeStore, nil, runtimeGitHubToken.get)
 	manager, err := project.NewManager(managerConfigWithRuntimeGitHubToken(cfg.Global, runtimeGitHubToken.get()), project.ManagerDependencies{
 		ProjectFactory: projectFactory,
@@ -544,6 +546,9 @@ func openRuntimeStore(ctx context.Context, cfg BootConfig) (store.Store, error) 
 }
 
 func runtimeStorePath(cfg BootConfig) string {
+	if path := strings.TrimSpace(cfg.RuntimeDBPath); path != "" {
+		return path
+	}
 	path := filepath.Join(filepath.Dir(cfg.Global.Path), "detent.db")
 	if strings.TrimSpace(cfg.Global.Path) == "" {
 		path = filepath.Join(mustGetwd(), ".detent", "detent.db")
@@ -552,6 +557,9 @@ func runtimeStorePath(cfg BootConfig) string {
 }
 
 func runtimeLogPath(cfg BootConfig) string {
+	if path := strings.TrimSpace(cfg.RuntimeLogPath); path != "" {
+		return path
+	}
 	return filepath.Join(filepath.Dir(runtimeStorePath(cfg)), "detent.log")
 }
 
@@ -747,11 +755,11 @@ func printBootBanner(cfg BootConfig, displayURL string) error {
 	if out == nil {
 		out = os.Stdout
 	}
-	_, err := io.WriteString(out, bootBanner(cfg.Version, displayURL))
+	_, err := io.WriteString(out, bootBanner(cfg.Version, displayURL, cfg.Isolated))
 	return err
 }
 
-func bootBanner(version string, displayURL string) string {
+func bootBanner(version string, displayURL string, isolated *IsolatedRuntimeInfo) string {
 	version = strings.TrimSpace(version)
 	if version == "" {
 		version = "dev"
@@ -771,7 +779,29 @@ func bootBanner(version string, displayURL string) string {
 	out.WriteString("Dashboard: ")
 	out.WriteString(displayURL)
 	out.WriteByte('\n')
+	if isolated != nil {
+		out.WriteString("Mode: isolated dev runtime\n")
+		writeBootBannerLine(&out, "Home", isolated.Home)
+		writeBootBannerLine(&out, "Config", isolated.ConfigPath)
+		writeBootBannerLine(&out, "Workflow", isolated.WorkflowPath)
+		writeBootBannerLine(&out, "Workspace root", isolated.WorkspaceRoot)
+		writeBootBannerLine(&out, "DB", isolated.DBPath)
+		writeBootBannerLine(&out, "DB mode", isolated.DBMode)
+		writeBootBannerLine(&out, "Tracker", isolated.TrackerMode)
+		writeBootBannerLine(&out, "Fixture", isolated.FixturePath)
+	}
 	return out.String()
+}
+
+func writeBootBannerLine(out *strings.Builder, label string, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	out.WriteString(label)
+	out.WriteString(": ")
+	out.WriteString(value)
+	out.WriteByte('\n')
 }
 
 func mustGetwd() string {
