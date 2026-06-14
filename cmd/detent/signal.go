@@ -15,48 +15,31 @@ func newSignalContext(parent context.Context) (context.Context, context.CancelFu
 	return signal.NotifyContext(parent, shutdownSignals()...)
 }
 
-func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot context.CancelFunc, noticeOut io.Writer) func() {
+type shutdownInterruptRequester interface {
+	RequestInterruptKind() (cli.ShutdownRequest, bool)
+}
+
+func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot context.CancelFunc, noticeOut io.Writer, hardExit func(int)) func() {
 	if controller == nil {
 		return func() {}
 	}
 
 	stop := make(chan struct{})
 	done := make(chan struct{})
-	first := make(chan os.Signal, 1)
-	signal.Notify(first, shutdownSignals()...)
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, shutdownSignals()...)
 
 	go func() {
 		defer close(done)
-		select {
-		case <-stop:
-			signal.Stop(first)
-			return
-		case <-first:
-			signal.Stop(first)
-			request, handled := controller.RequestInterruptKind()
-			writeSignalShutdownNotice(noticeOut, request)
-			if !handled {
-				if cancelRoot != nil {
-					cancelRoot()
+		defer signal.Stop(signals)
+		for {
+			select {
+			case <-stop:
+				return
+			case <-signals:
+				if handleShutdownSignal(controller, cancelRoot, noticeOut, hardExit) {
+					return
 				}
-				return
-			}
-		}
-
-		second := make(chan os.Signal, 1)
-		signal.Notify(second, shutdownSignals()...)
-		defer signal.Stop(second)
-		select {
-		case <-stop:
-			return
-		case <-second:
-			request, handled := controller.RequestInterruptKind()
-			writeSignalShutdownNotice(noticeOut, request)
-			if handled {
-				return
-			}
-			if cancelRoot != nil {
-				cancelRoot()
 			}
 		}
 	}()
@@ -65,10 +48,37 @@ func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot conte
 	return func() {
 		once.Do(func() {
 			close(stop)
-			signal.Stop(first)
+			signal.Stop(signals)
 			<-done
 		})
 	}
+}
+
+func handleShutdownSignal(controller shutdownInterruptRequester, cancelRoot context.CancelFunc, noticeOut io.Writer, hardExit func(int)) bool {
+	var request cli.ShutdownRequest
+	var handled bool
+	if controller != nil {
+		request, handled = controller.RequestInterruptKind()
+	}
+	writeSignalShutdownNotice(noticeOut, request)
+	if request == cli.ShutdownRequestForce {
+		hardExitSignal(hardExit)
+		return true
+	}
+	if handled {
+		return false
+	}
+	if cancelRoot != nil {
+		cancelRoot()
+	}
+	return true
+}
+
+func hardExitSignal(hardExit func(int)) {
+	if hardExit == nil {
+		hardExit = os.Exit
+	}
+	hardExit(cli.ExitGeneral)
 }
 
 func writeSignalShutdownNotice(out io.Writer, request cli.ShutdownRequest) {

@@ -334,6 +334,70 @@ func TestWriteSignalShutdownNotice(t *testing.T) {
 	}
 }
 
+func TestHandleShutdownSignalHardExitsOnForceInterrupt(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	interrupts := &shutdownInterruptStub{
+		requests: []cli.ShutdownRequest{
+			cli.ShutdownRequestDrain,
+			cli.ShutdownRequestForce,
+		},
+	}
+	var output bytes.Buffer
+	var exits []int
+
+	if done := handleShutdownSignal(interrupts, cancel, &output, func(code int) {
+		exits = append(exits, code)
+	}); done {
+		t.Fatal("first interrupt stopped signal loop")
+	}
+	if len(exits) != 0 {
+		t.Fatalf("first interrupt exit codes = %v, want none", exits)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("first interrupt canceled root context")
+	default:
+	}
+
+	if done := handleShutdownSignal(interrupts, cancel, &output, func(code int) {
+		exits = append(exits, code)
+	}); !done {
+		t.Fatal("force interrupt did not stop signal loop")
+	}
+	if len(exits) != 1 || exits[0] != cli.ExitGeneral {
+		t.Fatalf("force interrupt exit codes = %v, want [%d]", exits, cli.ExitGeneral)
+	}
+
+	notice := output.String()
+	for _, want := range []string{
+		"shutdown requested; draining sessions, press Ctrl+C again to force quit",
+		"force quit requested; interrupting sessions",
+	} {
+		if !strings.Contains(notice, want) {
+			t.Fatalf("notice missing %q:\n%s", want, notice)
+		}
+	}
+}
+
+type shutdownInterruptStub struct {
+	requests []cli.ShutdownRequest
+	calls    int
+}
+
+func (s *shutdownInterruptStub) RequestInterruptKind() (cli.ShutdownRequest, bool) {
+	if s.calls >= len(s.requests) {
+		s.calls++
+		return 0, false
+	}
+	request := s.requests[s.calls]
+	s.calls++
+	return request, request != 0
+}
+
 func collectCommandsWithoutExamples(cmd *cobra.Command, missing *[]string) {
 	name := cmd.CommandPath()
 	if name == "" {
