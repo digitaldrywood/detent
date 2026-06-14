@@ -2195,14 +2195,17 @@ func TestServerAPIRoutes(t *testing.T) {
 	if got := nestedString(t, state, "counts", "blocked"); got != "1" {
 		t.Fatalf("counts.blocked = %s, want 1", got)
 	}
-	if got := boardStateCount(t, state, "Todo"); got != "2" {
-		t.Fatalf("board Todo count = %s, want 2", got)
+	if got := boardStateCount(t, state, "Todo"); got != "1" {
+		t.Fatalf("board Todo count = %s, want 1", got)
 	}
 	if got := boardStateCount(t, state, "In Progress"); got != "1" {
 		t.Fatalf("board In Progress count = %s, want 1", got)
 	}
-	if got := boardStateCount(t, state, "Done"); got != "1" {
-		t.Fatalf("board Done count = %s, want 1", got)
+	if got := boardStateCount(t, state, "Blocked"); got != "1" {
+		t.Fatalf("board Blocked count = %s, want 1", got)
+	}
+	if got, ok := boardStateCountOK(t, state, "Done"); ok {
+		t.Fatalf("board Done count = %s, want missing because completed sessions are history", got)
 	}
 	flow := state["board"].(map[string]any)["flow"].([]any)
 	if len(flow) != 1 || flow[0].(map[string]any)["label"] != "03:24" || flow[0].(map[string]any)["count"] != float64(1) {
@@ -3194,16 +3197,27 @@ func nestedString(t *testing.T, payload map[string]any, keys ...string) string {
 func boardStateCount(t *testing.T, payload map[string]any, stateName string) string {
 	t.Helper()
 
+	if count, ok := boardStateCountOK(t, payload, stateName); ok {
+		return count
+	}
+	board := payload["board"].(map[string]any)
+	distribution := board["state_distribution"].([]any)
+	t.Fatalf("board state %q missing from %#v", stateName, distribution)
+	return ""
+}
+
+func boardStateCountOK(t *testing.T, payload map[string]any, stateName string) (string, bool) {
+	t.Helper()
+
 	board := payload["board"].(map[string]any)
 	distribution := board["state_distribution"].([]any)
 	for _, entry := range distribution {
 		row := entry.(map[string]any)
 		if row["state"] == stateName {
-			return strconv.FormatFloat(row["count"].(float64), 'f', -1, 64)
+			return strconv.FormatFloat(row["count"].(float64), 'f', -1, 64), true
 		}
 	}
-	t.Fatalf("board state %q missing from %#v", stateName, distribution)
-	return ""
+	return "", false
 }
 
 type storeProbe struct {

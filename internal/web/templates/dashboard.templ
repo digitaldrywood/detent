@@ -923,7 +923,7 @@ templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
 				<strong class="block truncate font-mono font-medium text-foreground">{ card.BlockedLabel }</strong>
 			</span>
 			<span class="min-w-0 rounded-md bg-muted px-2 py-1.5">
-				<span class="block text-muted-foreground">Done</span>
+				<span class="block text-muted-foreground">Sessions</span>
 				<strong class="block truncate font-mono font-medium text-foreground">{ card.CompletedLabel }</strong>
 			</span>
 		</div>
@@ -1281,14 +1281,14 @@ templ boardHealthSection(snapshot telemetry.Snapshot) {
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
 				@helpHeading2("Board health", helpBoardHealth, "board-health")
-				<p class="text-sm text-muted-foreground">State distribution and completed progress from the latest snapshot.</p>
+				<p class="text-sm text-muted-foreground">Current issue state distribution and completed session history from the latest snapshot.</p>
 			</div>
 			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ boardStateTotalLabel(snapshot) }</span>
 		</div>
 		<div class="mt-5 grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]">
 			<div class="min-w-0">
 				<div class="flex items-center justify-between gap-3">
-					@helpHeading3("State distribution", helpStateDistribution, "board-health")
+					@helpHeading3("Current issue states", helpStateDistribution, "board-health")
 					<span class="font-mono text-xs text-muted-foreground">{ boardStateTotalLabel(snapshot) } issues</span>
 				</div>
 				if len(boardStateRows(snapshot)) == 0 {
@@ -1314,12 +1314,12 @@ templ boardHealthSection(snapshot telemetry.Snapshot) {
 			</div>
 			<div class="min-w-0">
 				<div class="flex items-center justify-between gap-3">
-					@helpHeading3("Cumulative flow", helpCumulativeFlow, "board-health")
-					<span class="font-mono text-xs text-muted-foreground">{ boardProgressCount(snapshot) } finished</span>
+					@helpHeading3("Session completions", helpCumulativeFlow, "board-health")
+					<span class="font-mono text-xs text-muted-foreground">{ boardProgressCount(snapshot) } sessions</span>
 				</div>
 				if len(telemetry.BoardProgressPoints(snapshot)) == 0 {
 					<div class="mt-3">
-						@dashboardEmptyState("No board progress history yet.", "Cumulative flow appears after completed state samples arrive.", "bg-success")
+						@dashboardEmptyState("No completed session history yet.", "Session completion progress appears after completed session samples arrive.", "bg-success")
 					</div>
 				} else {
 					<div class="mt-3">

@@ -738,7 +738,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 			},
 		},
 		{
-			name: "session fallback rows",
+			name: "runtime fallback rows",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				Running: []telemetry.Running{
@@ -752,31 +752,9 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 						StartedAt: now.Add(-5 * time.Minute),
 					},
 				},
-				Completed: []telemetry.Completed{
-					{
-						Issue: telemetry.Issue{
-							ID:         "review-session",
-							Identifier: "digitaldrywood/detent#22",
-							Title:      "Review session",
-						},
-						CompletedAt: now.Add(-30 * time.Minute),
-						FinalState:  "Human Review",
-					},
-					{
-						Issue: telemetry.Issue{
-							ID:         "done-session",
-							Identifier: "digitaldrywood/detent#23",
-							Title:      "Done session",
-						},
-						CompletedAt: now.Add(-10 * time.Minute),
-						FinalState:  "Done",
-					},
-				},
 			},
 			want: []pipelineCardSnapshot{
-				{Lane: "Human Review", IssueNumber: "#22", Title: "Review session", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "30m 0s"},
 				{Lane: "Merging", IssueNumber: "#21", Title: "Merge session", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "5m 0s"},
-				{Lane: "Done today", IssueNumber: "#23", Title: "Done session", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "10m 0s"},
 			},
 		},
 		{
@@ -802,6 +780,41 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPRPipelineLanesDoNotTreatCompletedSessionAsCurrentDone(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 13, 15, 0, 0, 0, time.UTC)
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		Blocked: []telemetry.Blocked{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-396",
+					Identifier: "digitaldrywood/detent#396",
+					Title:      "Blocked after completed session",
+					State:      "Blocked",
+				},
+			},
+		},
+		Completed: []telemetry.Completed{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-396",
+					Identifier: "digitaldrywood/detent#396",
+					Title:      "Blocked after completed session",
+				},
+				CompletedAt: now.Add(-5 * time.Minute),
+				FinalState:  "completed",
+			},
+		},
+	}
+
+	got := collectPipelineCards(prPipelineLanes(snapshot))
+	if len(got) != 0 {
+		t.Fatalf("pipeline cards len = %d, want 0; got %#v", len(got), got)
 	}
 }
 

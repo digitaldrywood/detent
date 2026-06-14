@@ -299,6 +299,11 @@ func TestBoardStateCountsAggregateSnapshotStates(t *testing.T) {
 	t.Parallel()
 
 	snapshot := telemetry.Snapshot{
+		Pipeline: []telemetry.Issue{
+			{ID: "review", State: "Human Review"},
+			{ID: "done", State: "Done"},
+			{ID: "cancelled", State: "Cancelled"},
+		},
 		Running: []telemetry.Running{
 			{Issue: telemetry.Issue{ID: "running", State: "In Progress"}},
 			{Issue: telemetry.Issue{ID: "merging", State: "Merging"}},
@@ -309,11 +314,6 @@ func TestBoardStateCountsAggregateSnapshotStates(t *testing.T) {
 		},
 		Blocked: []telemetry.Blocked{
 			{Issue: telemetry.Issue{ID: "blocked", State: "Blocked"}},
-		},
-		Completed: []telemetry.Completed{
-			{Issue: telemetry.Issue{ID: "review"}, FinalState: "Human Review"},
-			{Issue: telemetry.Issue{ID: "done"}, FinalState: "Done"},
-			{Issue: telemetry.Issue{ID: "cancelled"}, FinalState: "Cancelled"},
 		},
 	}
 
@@ -348,6 +348,9 @@ func TestBoardStateCountsIncludeAggregateDetailDelta(t *testing.T) {
 			Blocked:   2,
 			Completed: 3,
 		},
+		Pipeline: []telemetry.Issue{
+			{ID: "review", State: "Human Review"},
+		},
 		Running: []telemetry.Running{
 			{Issue: telemetry.Issue{ID: "merging", State: "Merging"}},
 		},
@@ -357,9 +360,6 @@ func TestBoardStateCountsIncludeAggregateDetailDelta(t *testing.T) {
 		Blocked: []telemetry.Blocked{
 			{Issue: telemetry.Issue{ID: "blocked", State: "Blocked"}},
 		},
-		Completed: []telemetry.Completed{
-			{Issue: telemetry.Issue{ID: "review"}, FinalState: "Human Review"},
-		},
 	}
 
 	got := telemetry.BoardStateCounts(snapshot)
@@ -368,8 +368,84 @@ func TestBoardStateCountsIncludeAggregateDetailDelta(t *testing.T) {
 		{State: "In Progress", Count: 2},
 		{State: "Review", Count: 1},
 		{State: "Merging", Count: 1},
-		{State: "Done", Count: 2},
 		{State: "Blocked", Count: 2},
+	}
+
+	if len(got) != len(want) {
+		t.Fatalf("BoardStateCounts() len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("BoardStateCounts()[%d] = %#v, want %#v; got %#v", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestBoardStateCountsIgnoreCompletedSessionHistory(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{
+		Counts: telemetry.Counts{Blocked: 1, Completed: 1},
+		Blocked: []telemetry.Blocked{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-396",
+					Identifier: "digitaldrywood/detent#396",
+					State:      "Blocked",
+				},
+			},
+		},
+		Completed: []telemetry.Completed{
+			{
+				Issue: telemetry.Issue{
+					ID:         "issue-396",
+					Identifier: "digitaldrywood/detent#396",
+					State:      "Done",
+				},
+				FinalState: "completed",
+			},
+		},
+	}
+
+	got := telemetry.BoardStateCounts(snapshot)
+	want := []telemetry.BoardStateCount{{State: "Blocked", Count: 1}}
+
+	if len(got) != len(want) {
+		t.Fatalf("BoardStateCounts() len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("BoardStateCounts()[%d] = %#v, want %#v; got %#v", i, got[i], want[i], got)
+		}
+	}
+}
+
+func TestBoardStateCountsScopeIssueKeysByProject(t *testing.T) {
+	t.Parallel()
+
+	snapshot := telemetry.Snapshot{
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:        "issue-1",
+					ProjectID: "detent",
+					State:     "In Progress",
+				},
+			},
+			{
+				Issue: telemetry.Issue{
+					ID:        "issue-1",
+					ProjectID: "pyroapex",
+					State:     "Merging",
+				},
+			},
+		},
+	}
+
+	got := telemetry.BoardStateCounts(snapshot)
+	want := []telemetry.BoardStateCount{
+		{State: "In Progress", Count: 1},
+		{State: "Merging", Count: 1},
 	}
 
 	if len(got) != len(want) {
