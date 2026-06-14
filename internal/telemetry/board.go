@@ -33,6 +33,7 @@ var secondaryBoardStateOrder = []string{
 
 func BoardStateCounts(snapshot Snapshot) []BoardStateCount {
 	counts := map[string]int{}
+	issues := map[string]issueStateCount{}
 	addStateCount := func(state string, fallback string, count int) {
 		if count <= 0 {
 			return
@@ -46,32 +47,69 @@ func BoardStateCounts(snapshot Snapshot) []BoardStateCount {
 		}
 		counts[state] += count
 	}
-
-	for _, row := range snapshot.Running {
-		addStateCount(row.State, "In Progress", 1)
+	addIssueState := func(issue Issue, fallback string, rank int, preferFallback bool) {
+		state := fallback
+		if !preferFallback {
+			state = normalizeBoardState(issue.State)
+			if state == "" {
+				state = fallback
+			}
+		}
+		if state == "" {
+			return
+		}
+		key := issueStateKey(issue)
+		if key == "" {
+			counts[state]++
+			return
+		}
+		current, ok := issues[key]
+		if !ok || rank >= current.rank {
+			issues[key] = issueStateCount{state: state, rank: rank}
+		}
 	}
-	addStateCount("", "In Progress", aggregateDelta(snapshot.Counts.Running, len(snapshot.Running)))
 
+	for _, issue := range snapshot.Pipeline {
+		addIssueState(issue, "", 10, false)
+	}
 	for _, row := range snapshot.Queue {
-		addStateCount(row.State, "Todo", 1)
+		addIssueState(row.Issue, "Todo", 20, false)
 	}
 	addStateCount("", "Todo", aggregateDelta(snapshot.Counts.Queue, len(snapshot.Queue)))
-
+	for _, row := range snapshot.Running {
+		addIssueState(row.Issue, "In Progress", 30, false)
+	}
+	addStateCount("", "In Progress", aggregateDelta(snapshot.Counts.Running, len(snapshot.Running)))
 	for _, row := range snapshot.Blocked {
-		addStateCount(row.State, "Blocked", 1)
+		addIssueState(row.Issue, "Blocked", 40, true)
 	}
 	addStateCount("", "Blocked", aggregateDelta(snapshot.Counts.Blocked, len(snapshot.Blocked)))
 
-	for _, row := range snapshot.Completed {
-		state := row.FinalState
-		if strings.TrimSpace(state) == "" {
-			state = row.State
-		}
-		addStateCount(state, "Done", 1)
+	for _, issue := range issues {
+		counts[issue.state]++
 	}
-	addStateCount("", "Done", aggregateDelta(snapshot.Counts.Completed, len(snapshot.Completed)))
 
 	return orderedBoardStateCounts(counts)
+}
+
+type issueStateCount struct {
+	state string
+	rank  int
+}
+
+func issueStateKey(issue Issue) string {
+	scope := strings.TrimSpace(issue.ProjectID)
+	prefix := ""
+	if scope != "" {
+		prefix = "project:" + scope + ":"
+	}
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		return prefix + "id:" + id
+	}
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		return prefix + "identifier:" + identifier
+	}
+	return ""
 }
 
 func BoardProgressPoints(snapshot Snapshot) []BoardProgressPoint {
@@ -129,7 +167,10 @@ func orderedBoardStateCounts(counts map[string]int) []BoardStateCount {
 
 	out := make([]BoardStateCount, 0, len(counts))
 	for _, state := range primaryBoardStateOrder {
-		out = append(out, BoardStateCount{State: state, Count: counts[state]})
+		count := counts[state]
+		if count > 0 {
+			out = append(out, BoardStateCount{State: state, Count: count})
+		}
 		delete(counts, state)
 	}
 	for _, state := range secondaryBoardStateOrder {

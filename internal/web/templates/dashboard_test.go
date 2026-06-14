@@ -318,17 +318,16 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Input 14:55: 20,000 tokens",
 		"Output 15:00: 50,000 tokens",
 		"Board health",
-		"State distribution",
-		`aria-label="Board state distribution"`,
-		"<title>Board state distribution</title>",
+		"Current issue states",
+		`aria-label="Current issue state distribution"`,
+		"<title>Current issue state distribution</title>",
 		"Todo: 3 issues",
 		"In Progress: 2 issues",
 		"Review: 1 issues",
-		"Done: 3 issues",
-		"Cumulative flow",
-		`aria-label="Board cumulative flow"`,
-		"<title>Board cumulative flow</title>",
-		"14:59: 4 issues",
+		"Session completions",
+		`aria-label="Completed sessions over time"`,
+		"<title>Completed sessions over time</title>",
+		"14:59: 4 sessions",
 		"PR pipeline",
 		"Live merge-train lanes",
 		"#142",
@@ -345,6 +344,92 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
 		}
+	}
+}
+
+func TestDashboardRendersBlockedIssueWithCompletedSessionAsCurrentBlocked(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 13, 15, 0, 0, 0, time.UTC)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Detent",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Counts: telemetry.Counts{
+				Blocked:   1,
+				Completed: 1,
+			},
+			Blocked: []telemetry.Blocked{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-396",
+						Identifier: "digitaldrywood/detent#396",
+						Title:      "Blocked after completed session",
+						State:      "Blocked",
+					},
+					Error: "blocked by project status",
+				},
+			},
+			Completed: []telemetry.Completed{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-396",
+						Identifier: "digitaldrywood/detent#396",
+						Title:      "Blocked after completed session",
+					},
+					StartedAt:   now.Add(-15 * time.Minute),
+					CompletedAt: now.Add(-5 * time.Minute),
+					FinalState:  "completed",
+				},
+			},
+		},
+	})
+
+	blockedSection := dashboardSection(t, html, "Blocked sessions", "Recent sessions")
+	for _, want := range []string{
+		"digitaldrywood/detent#396",
+		"Blocked after completed session",
+		"Blocked",
+		"blocked by project status",
+	} {
+		if !strings.Contains(blockedSection, want) {
+			t.Fatalf("blocked section missing %q:\n%s", want, blockedSection)
+		}
+	}
+
+	doneLane := dashboardSection(t, html, `aria-label="Done today lane"`, "Running issues")
+	if !strings.Contains(doneLane, "No PRs finished today.") {
+		t.Fatalf("done lane should be empty:\n%s", doneLane)
+	}
+	if strings.Contains(doneLane, "digitaldrywood/detent#396") {
+		t.Fatalf("done lane rendered blocked issue from completed session:\n%s", doneLane)
+	}
+
+	recentSection := dashboardSection(t, html, "Recent sessions", "Token throughput")
+	for _, want := range []string{
+		"digitaldrywood/detent#396",
+		"Final state",
+		"completed",
+	} {
+		if !strings.Contains(recentSection, want) {
+			t.Fatalf("recent session section missing %q:\n%s", want, recentSection)
+		}
+	}
+
+	boardSection := dashboardSection(t, html, "Board health", "Cycle time")
+	for _, want := range []string{
+		"Current issue states",
+		"Blocked: 1 issues",
+		"Session completions",
+		"14:55: 1 sessions",
+	} {
+		if !strings.Contains(boardSection, want) {
+			t.Fatalf("board section missing %q:\n%s", want, boardSection)
+		}
+	}
+	if strings.Contains(boardSection, "Done: 1 issues") {
+		t.Fatalf("board state distribution counted completed session as current Done:\n%s", boardSection)
 	}
 }
 
@@ -1262,7 +1347,7 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 		"No completed sessions recorded.",
 		"No completed issues yet.",
 		"No board states recorded.",
-		"No board progress history yet.",
+		"No completed session history yet.",
 		"Budget disabled",
 		"No rate-limit snapshot.",
 		"No token trend yet.",
@@ -1495,4 +1580,18 @@ func renderDashboardShell(t *testing.T, data templates.DashboardShellData) strin
 		t.Fatalf("Render() error = %v", err)
 	}
 	return buf.String()
+}
+
+func dashboardSection(t *testing.T, html string, start string, end string) string {
+	t.Helper()
+
+	startIndex := strings.Index(html, start)
+	if startIndex < 0 {
+		t.Fatalf("section start %q missing:\n%s", start, html)
+	}
+	endIndex := strings.Index(html[startIndex:], end)
+	if endIndex < 0 {
+		t.Fatalf("section end %q after %q missing:\n%s", end, start, html[startIndex:])
+	}
+	return html[startIndex : startIndex+endIndex]
 }

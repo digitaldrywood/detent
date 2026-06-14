@@ -463,7 +463,7 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 			RunningLabel:    formatCount(project.Running) + " running",
 			QueueLabel:      formatCount(project.QueueCount) + " queued",
 			BlockedLabel:    formatCount(project.Blocked) + " blocked",
-			CompletedLabel:  formatCount(project.Completed) + " done",
+			CompletedLabel:  formatCount(project.Completed) + " sessions",
 			ThroughputLabel: formatDecimal(project.ThroughputTokensPerSecond) + " tps",
 			SpendLabel:      formatUSD(project.CurrentSpendUSD),
 			ThroughputChart: projectSmallMultipleChart(name+" throughput", samples, "tps", "text-accent", func(sample ProjectSmallMultipleSample) float64 {
@@ -855,9 +855,6 @@ func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {
 		}
 		appendPRPipelineCard(cardsByLane, seen, row.Issue, issueState(row.Issue, "Blocked"), stageAt, now)
 	}
-	for _, row := range snapshot.Completed {
-		appendPRPipelineCard(cardsByLane, seen, row.Issue, completedState(row), row.CompletedAt, now)
-	}
 
 	prunePRPipelineCards(cardsByLane)
 
@@ -1236,8 +1233,8 @@ func boardDistributionChart(snapshot telemetry.Snapshot) TimelineChartData {
 		})
 	}
 	return TimelineChartData{
-		Title:       "Board state distribution",
-		AriaLabel:   "Board state distribution",
+		Title:       "Current issue state distribution",
+		AriaLabel:   "Current issue state distribution",
 		Segments:    segments,
 		ValueSuffix: "issues",
 		Class:       "h-9",
@@ -1255,10 +1252,10 @@ func boardProgressChart(snapshot telemetry.Snapshot) SeriesChartData {
 		})
 	}
 	return SeriesChartData{
-		Title:       "Board cumulative flow",
-		AriaLabel:   "Board cumulative flow",
+		Title:       "Completed sessions over time",
+		AriaLabel:   "Completed sessions over time",
 		Points:      chartPoints,
-		ValueSuffix: "issues",
+		ValueSuffix: "sessions",
 		ColorClass:  "text-success",
 	}
 }
