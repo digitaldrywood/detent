@@ -333,6 +333,11 @@ func publishSnapshotOnce(
 		}
 		state, err := orch.State(ctx)
 		if err != nil {
+			slog.Default().Warn(
+				"project telemetry snapshot skipped",
+				slog.String("project_id", string(trackedProject.ID())),
+				slog.String("error", err.Error()),
+			)
 			continue
 		}
 		snapshot := state.Snapshot(now)

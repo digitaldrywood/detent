@@ -2,6 +2,7 @@ package workspace
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -114,5 +115,20 @@ func TestLocalGitDiffStat(t *testing.T) {
 	status := runGit(t, info.Path, "status", "--short")
 	if !strings.Contains(status, "?? added.txt") {
 		t.Fatalf("git status = %q, want added.txt to remain untracked", status)
+	}
+}
+
+func TestGitDiffStatMissingWorkspaceIsClassified(t *testing.T) {
+	t.Parallel()
+
+	_, err := GitDiffStat(context.Background(), filepath.Join(t.TempDir(), "missing-worktree"))
+	if err == nil {
+		t.Fatal("GitDiffStat() error = nil, want missing workspace error")
+	}
+	if !IsMissingWorkspaceError(err) {
+		t.Fatalf("IsMissingWorkspaceError(%v) = false, want true", err)
+	}
+	if !errors.Is(err, ErrMissingWorkspace) {
+		t.Fatalf("GitDiffStat() error = %v, want ErrMissingWorkspace", err)
 	}
 }

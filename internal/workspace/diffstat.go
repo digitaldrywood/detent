@@ -35,6 +35,12 @@ func GitDiffStat(ctx context.Context, workspacePath string) (DiffStat, error) {
 	if strings.TrimSpace(workspacePath) == "" {
 		return DiffStat{}, errors.New("workspace path is required")
 	}
+	if _, err := os.Stat(workspacePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return DiffStat{}, fmt.Errorf("%w: %s: %w", ErrMissingWorkspace, workspacePath, err)
+		}
+		return DiffStat{}, fmt.Errorf("stat workspace path: %w", err)
+	}
 
 	output, err := gitDiffStatOutput(ctx, workspacePath)
 	if err != nil {

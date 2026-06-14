@@ -231,6 +231,97 @@ func TestTickReapsTerminalRunningIssue(t *testing.T) {
 	}
 }
 
+func TestTickCompletesTerminalRunningIssueDuringWorkspaceCleanupSweep(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 15, 15, 0, 0, time.UTC)
+	startedAt := now.Add(-12 * time.Minute)
+	terminalAt := now.Add(-30 * time.Second)
+	prior := connector.Issue{
+		ID:         "issue-merged",
+		Identifier: "digitaldrywood/detent#453",
+		Title:      "Release snapshot",
+		State:      "Merging",
+		URL:        "https://github.com/digitaldrywood/detent/issues/453",
+	}
+	done := cloneIssue(prior)
+	done.State = "Done"
+	done.StageUpdatedAt = &terminalAt
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	cfg := normalizeConfig(Config{
+		PollInterval:                  time.Minute,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress", "Human Review", "Rework", "Merging"},
+		ObservedStates:                []string{"Human Review", "Merging"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Hour,
+	})
+	state := newState(cfg)
+	state.LastRunningReconcileAt = now.Add(-time.Second)
+	state.Running[prior.ID] = Running{
+		Issue:       cloneIssue(prior),
+		StartedAt:   startedAt,
+		LastMessage: "GoReleaser Snapshot remains in progress; continuing to wait.",
+		Tokens:      CodexTotals{TotalTokens: 42, RuntimeSeconds: 90},
+		cancel:      cancel,
+	}
+	state.Claimed[prior.ID] = Claimed{Issue: cloneIssue(prior), ClaimedAt: startedAt, Owner: "worker-1"}
+
+	tracker := &runningStateConnector{issuesByState: []connector.Issue{done}}
+	reaper := &cleanupSweepReaper{}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		reaper:    reaper,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if _, ok := state.Running[prior.ID]; ok {
+		t.Fatalf("Running[%q] present after terminal cleanup sweep", prior.ID)
+	}
+	if _, ok := state.Claimed[prior.ID]; ok {
+		t.Fatalf("Claimed[%q] present after terminal cleanup sweep", prior.ID)
+	}
+	completed, ok := state.Completed[prior.ID]
+	if !ok {
+		t.Fatalf("Completed[%q] missing after terminal cleanup sweep", prior.ID)
+	}
+	if completed.Issue.State != "Done" || completed.FinalState != "Done" {
+		t.Fatalf("Completed[%q] state = (%q, %q), want Done/Done", prior.ID, completed.Issue.State, completed.FinalState)
+	}
+	if !completed.CompletedAt.Equal(terminalAt) {
+		t.Fatalf("Completed[%q].CompletedAt = %v, want %v", prior.ID, completed.CompletedAt, terminalAt)
+	}
+	if completed.Tokens.TotalTokens != 42 {
+		t.Fatalf("Completed[%q].Tokens.TotalTokens = %d, want 42", prior.ID, completed.Tokens.TotalTokens)
+	}
+	if !slices.Equal(tracker.requestedIDs, nil) {
+		t.Fatalf("FetchIssueStatesByIDs() ids = %#v, want no throttled running reconcile", tracker.requestedIDs)
+	}
+	if len(reaper.issues) != 1 || reaper.issues[0].ID != prior.ID || reaper.issues[0].State != "Done" {
+		t.Fatalf("reaped issues = %#v, want terminal Done issue", reaper.issues)
+	}
+	select {
+	case <-runCtx.Done():
+	default:
+		t.Fatal("running context was not cancelled")
+	}
+
+	snapshot := state.Snapshot(now.Add(time.Second))
+	if !snapshot.GeneratedAt.Equal(now.Add(time.Second)) {
+		t.Fatalf("snapshot GeneratedAt = %v, want fresh publish time", snapshot.GeneratedAt)
+	}
+	if snapshot.Counts.Running != 0 || len(snapshot.Running) != 0 {
+		t.Fatalf("snapshot running count = %d len = %d, want 0", snapshot.Counts.Running, len(snapshot.Running))
+	}
+	if snapshot.Counts.Completed != 1 || len(snapshot.Completed) != 1 || snapshot.Completed[0].State != "Done" {
+		t.Fatalf("snapshot completed = %#v, want terminal Done row", snapshot.Completed)
+	}
+}
+
 func TestTerminalCompletedAtUsesTerminalConditionTimestamp(t *testing.T) {
 	t.Parallel()
 
@@ -344,9 +435,10 @@ func TestMergeIssueTrackerFieldsDistinguishesMissingAndEmptyMetadata(t *testing.
 }
 
 type runningStateConnector struct {
-	issues       []connector.Issue
-	err          error
-	requestedIDs []string
+	issues        []connector.Issue
+	issuesByState []connector.Issue
+	err           error
+	requestedIDs  []string
 }
 
 func (c *runningStateConnector) Name() string {
@@ -358,7 +450,7 @@ func (c *runningStateConnector) FetchCandidateIssues(context.Context) ([]connect
 }
 
 func (c *runningStateConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
-	return []connector.Issue{}, nil
+	return cloneIssues(c.issuesByState), nil
 }
 
 func (c *runningStateConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
@@ -383,4 +475,13 @@ func (c *runningStateConnector) SetAssignee(context.Context, string, string) err
 
 func (c *runningStateConnector) SetField(context.Context, string, string, string) error {
 	return nil
+}
+
+type cleanupSweepReaper struct {
+	issues []connector.Issue
+}
+
+func (r *cleanupSweepReaper) ReapWorkspace(_ context.Context, issue connector.Issue) (WorkspaceReapResult, error) {
+	r.issues = append(r.issues, cloneIssue(issue))
+	return WorkspaceReapResult{}, nil
 }

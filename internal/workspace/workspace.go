@@ -28,6 +28,7 @@ const hookOutputTailBytes = 16 * 1024
 
 var (
 	ErrHookFailed         = errors.New("workspace hook failed")
+	ErrMissingWorkspace   = errors.New("workspace missing")
 	ErrUnsafePath         = errors.New("unsafe workspace path")
 	ErrUnsupportedBackend = errors.New("unsupported workspace backend")
 )
@@ -171,6 +172,22 @@ func (e *CommandError) Error() string {
 
 func (e *CommandError) Unwrap() error {
 	return e.Err
+}
+
+func IsMissingWorkspaceError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if errors.Is(err, ErrMissingWorkspace) || errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+
+	var commandErr *CommandError
+	if !errors.As(err, &commandErr) {
+		return false
+	}
+	output := strings.ToLower(commandErr.Output)
+	return strings.Contains(output, "cannot change to") && strings.Contains(output, "no such file or directory")
 }
 
 func NewBackend(kind string, opts LocalGitOptions) (Backend, error) {
