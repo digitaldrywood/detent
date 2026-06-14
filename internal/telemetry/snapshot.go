@@ -88,12 +88,15 @@ type Issue struct {
 }
 
 type PullRequest struct {
-	Number           int    `json:"number,omitempty"`
-	URL              string `json:"url,omitempty"`
-	BranchName       string `json:"branch_name,omitempty"`
-	State            string `json:"state,omitempty"`
-	CIStatus         string `json:"ci_status,omitempty"`
-	CodexReviewState string `json:"codex_review_state,omitempty"`
+	Number             int    `json:"number,omitempty"`
+	URL                string `json:"url,omitempty"`
+	BranchName         string `json:"branch_name,omitempty"`
+	State              string `json:"state,omitempty"`
+	MergeableState     string `json:"mergeable_state,omitempty"`
+	CIStatus           string `json:"ci_status,omitempty"`
+	CheckRunCount      int    `json:"check_run_count,omitempty"`
+	StatusContextCount int    `json:"status_context_count,omitempty"`
+	CodexReviewState   string `json:"codex_review_state,omitempty"`
 }
 
 type ActivityEvent struct {
@@ -135,14 +138,16 @@ type Queued struct {
 
 type Blocked struct {
 	Issue
-	WorkerHost    string     `json:"worker_host,omitempty"`
-	WorkspacePath string     `json:"workspace_path,omitempty"`
-	SessionID     string     `json:"session_id,omitempty"`
-	Error         string     `json:"error,omitempty"`
-	BlockedAt     *time.Time `json:"blocked_at,omitempty"`
-	LastEventAt   *time.Time `json:"last_event_at,omitempty"`
-	LastEvent     string     `json:"last_event,omitempty"`
-	LastMessage   string     `json:"last_message,omitempty"`
+	WorkerHost     string     `json:"worker_host,omitempty"`
+	WorkspacePath  string     `json:"workspace_path,omitempty"`
+	SessionID      string     `json:"session_id,omitempty"`
+	Error          string     `json:"error,omitempty"`
+	RecoveryReason string     `json:"recovery_reason,omitempty"`
+	RecoveryTarget string     `json:"recovery_target,omitempty"`
+	BlockedAt      *time.Time `json:"blocked_at,omitempty"`
+	LastEventAt    *time.Time `json:"last_event_at,omitempty"`
+	LastEvent      string     `json:"last_event,omitempty"`
+	LastMessage    string     `json:"last_message,omitempty"`
 }
 
 type Completed struct {

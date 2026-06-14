@@ -370,6 +370,8 @@ func blockedEntries(entries []telemetry.Blocked) []blockedAPIResponse {
 			BudgetAlert:      false,
 			State:            entry.State,
 			Error:            optionalString(entry.Error),
+			RecoveryReason:   optionalString(entry.RecoveryReason),
+			RecoveryTarget:   optionalString(entry.RecoveryTarget),
 			WorkerHost:       optionalString(entry.WorkerHost),
 			WorkspacePath:    optionalString(entry.WorkspacePath),
 			SessionID:        optionalString(entry.SessionID),
@@ -436,15 +438,17 @@ func retryIssueResponse(entry telemetry.Queued) *retryIssueAPIResponse {
 
 func blockedIssueResponse(entry telemetry.Blocked) *blockedIssueAPIResponse {
 	return &blockedIssueAPIResponse{
-		WorkerHost:    optionalString(entry.WorkerHost),
-		WorkspacePath: optionalString(entry.WorkspacePath),
-		SessionID:     optionalString(entry.SessionID),
-		State:         entry.State,
-		Error:         optionalString(entry.Error),
-		BlockedAt:     timestampStringPtr(entry.BlockedAt),
-		LastEvent:     optionalString(entry.LastEvent),
-		LastMessage:   optionalString(entry.LastMessage),
-		LastEventAt:   timestampStringPtr(entry.LastEventAt),
+		WorkerHost:     optionalString(entry.WorkerHost),
+		WorkspacePath:  optionalString(entry.WorkspacePath),
+		SessionID:      optionalString(entry.SessionID),
+		State:          entry.State,
+		Error:          optionalString(entry.Error),
+		RecoveryReason: optionalString(entry.RecoveryReason),
+		RecoveryTarget: optionalString(entry.RecoveryTarget),
+		BlockedAt:      timestampStringPtr(entry.BlockedAt),
+		LastEvent:      optionalString(entry.LastEvent),
+		LastMessage:    optionalString(entry.LastMessage),
+		LastEventAt:    timestampStringPtr(entry.LastEventAt),
 	}
 }
 
@@ -970,6 +974,8 @@ type blockedAPIResponse struct {
 	BudgetAlert      bool    `json:"budget_alert?"`
 	State            string  `json:"state"`
 	Error            *string `json:"error"`
+	RecoveryReason   *string `json:"recovery_reason"`
+	RecoveryTarget   *string `json:"recovery_target"`
 	WorkerHost       *string `json:"worker_host"`
 	WorkspacePath    *string `json:"workspace_path"`
 	SessionID        *string `json:"session_id"`
@@ -1140,15 +1146,17 @@ type retryIssueAPIResponse struct {
 }
 
 type blockedIssueAPIResponse struct {
-	WorkerHost    *string `json:"worker_host"`
-	WorkspacePath *string `json:"workspace_path"`
-	SessionID     *string `json:"session_id"`
-	State         string  `json:"state"`
-	Error         *string `json:"error"`
-	BlockedAt     *string `json:"blocked_at"`
-	LastEvent     *string `json:"last_event"`
-	LastMessage   *string `json:"last_message"`
-	LastEventAt   *string `json:"last_event_at"`
+	WorkerHost     *string `json:"worker_host"`
+	WorkspacePath  *string `json:"workspace_path"`
+	SessionID      *string `json:"session_id"`
+	State          string  `json:"state"`
+	Error          *string `json:"error"`
+	RecoveryReason *string `json:"recovery_reason"`
+	RecoveryTarget *string `json:"recovery_target"`
+	BlockedAt      *string `json:"blocked_at"`
+	LastEvent      *string `json:"last_event"`
+	LastMessage    *string `json:"last_message"`
+	LastEventAt    *string `json:"last_event_at"`
 }
 
 type logsAPIResponse struct {

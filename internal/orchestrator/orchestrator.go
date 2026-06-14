@@ -965,12 +965,15 @@ func (o *Orchestrator) trackBlockedStatusIssues(state *State, issues []connector
 		if issue.ID == "" {
 			continue
 		}
+		recovery := EvaluateBlockedRecovery(issue)
 		seenBlocked[issue.ID] = struct{}{}
 		state.Blocked[issue.ID] = Blocked{
-			Issue:     cloneIssue(issue),
-			Reason:    blockedStatusReason(issue),
-			BlockedAt: now,
-			Source:    BlockedSourceProjectStatus,
+			Issue:          cloneIssue(issue),
+			Reason:         blockedStatusReason(issue),
+			RecoveryReason: string(recovery.Reason),
+			RecoveryTarget: recovery.TargetState,
+			BlockedAt:      now,
+			Source:         BlockedSourceProjectStatus,
 		}
 	}
 

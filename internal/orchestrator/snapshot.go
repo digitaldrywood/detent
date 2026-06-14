@@ -133,8 +133,10 @@ func blockedSnapshots(blocked map[string]Blocked, claims map[string]Claimed, now
 		issue := telemetryIssue(entry.Issue)
 		applyClaimSnapshot(&issue, claims[id], now)
 		item := telemetry.Blocked{
-			Issue: issue,
-			Error: entry.Reason,
+			Issue:          issue,
+			Error:          entry.Reason,
+			RecoveryReason: entry.RecoveryReason,
+			RecoveryTarget: entry.RecoveryTarget,
 		}
 		if !entry.BlockedAt.IsZero() {
 			blockedAt := entry.BlockedAt
@@ -228,12 +230,15 @@ func telemetryPullRequest(pullRequest *connector.PullRequest, prNumber *int) *te
 		pullRequest = &connector.PullRequest{Number: *prNumber}
 	}
 	return &telemetry.PullRequest{
-		Number:           pullRequest.Number,
-		URL:              pullRequest.URL,
-		BranchName:       pullRequest.BranchName,
-		State:            pullRequest.State,
-		CIStatus:         pullRequest.CIStatus,
-		CodexReviewState: pullRequest.CodexReviewState,
+		Number:             pullRequest.Number,
+		URL:                pullRequest.URL,
+		BranchName:         pullRequest.BranchName,
+		State:              pullRequest.State,
+		MergeableState:     pullRequest.MergeableState,
+		CIStatus:           pullRequest.CIStatus,
+		CheckRunCount:      pullRequest.CheckRunCount,
+		StatusContextCount: pullRequest.StatusContextCount,
+		CodexReviewState:   pullRequest.CodexReviewState,
 	}
 }
 

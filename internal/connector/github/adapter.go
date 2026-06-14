@@ -584,15 +584,18 @@ type pullRequest struct {
 }
 
 type pullRequestNode struct {
-	Number        int                               `json:"number"`
-	URL           string                            `json:"url"`
-	State         string                            `json:"state"`
-	ActivityAt    *time.Time                        `json:"activityAt"`
-	HeadRefName   string                            `json:"headRefName"`
-	HeadSHA       string                            `json:"headSHA"`
-	Commits       nodeConnection[pullRequestCommit] `json:"commits"`
-	LatestReviews nodeConnection[pullRequestReview] `json:"latestReviews"`
-	CodexReviews  pullRequestCodexReviews           `json:"-"`
+	Number         int                               `json:"number"`
+	URL            string                            `json:"url"`
+	State          string                            `json:"state"`
+	MergeableState string                            `json:"mergeableState"`
+	Draft          bool                              `json:"draft"`
+	ActivityAt     *time.Time                        `json:"activityAt"`
+	HeadRefName    string                            `json:"headRefName"`
+	HeadSHA        string                            `json:"headSHA"`
+	Commits        nodeConnection[pullRequestCommit] `json:"commits"`
+	LatestReviews  nodeConnection[pullRequestReview] `json:"latestReviews"`
+	CodexReviews   pullRequestCodexReviews           `json:"-"`
+	CI             pullRequestCI                     `json:"-"`
 }
 
 type pullRequestCommit struct {
@@ -651,12 +654,14 @@ type restAssignee struct {
 }
 
 type restPullRequest struct {
-	Number    int        `json:"number"`
-	HTMLURL   string     `json:"html_url"`
-	State     string     `json:"state"`
-	Head      restHead   `json:"head"`
-	UpdatedAt *time.Time `json:"updated_at"`
-	MergedAt  *string    `json:"merged_at"`
+	Number         int        `json:"number"`
+	HTMLURL        string     `json:"html_url"`
+	State          string     `json:"state"`
+	MergeableState string     `json:"mergeable_state"`
+	Draft          bool       `json:"draft"`
+	Head           restHead   `json:"head"`
+	UpdatedAt      *time.Time `json:"updated_at"`
+	MergedAt       *string    `json:"merged_at"`
 }
 
 type restHead struct {
@@ -686,6 +691,12 @@ type restCommitStatus struct {
 	Context   string     `json:"context"`
 	State     string     `json:"state"`
 	CreatedAt *time.Time `json:"created_at"`
+}
+
+type pullRequestCI struct {
+	State              string
+	CheckRunCount      int
+	StatusContextCount int
 }
 
 type restComment struct {
@@ -1251,6 +1262,9 @@ func (c *Connector) populateBlockerReasons(ctx context.Context, issues []connect
 			Body:     issues[index].Description,
 			Comments: nodeConnection[issueComment]{Nodes: comments},
 		}
+		if len(issues[index].BlockedBy) == 0 {
+			issues[index].BlockedBy = parseBlockedByFromIssueText(node, issueRepo(issues[index].Identifier))
+		}
 		if reason := parseBlockerReason(node); reason != "" {
 			issues[index].BlockerReason = reason
 		}
@@ -1439,6 +1453,9 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 		}
 		if owner, name, ok := splitRepositoryName(issue.PRRepository); ok {
 			linkedPullRequestRepo = pullRequestRepo{Owner: owner, Name: name}
+		}
+		if normalizeStateName(issue.State) == normalizeStateName("Blocked") && pullRequestNumber <= 0 {
+			branchPrefix = ""
 		}
 		if branchPrefix == "" && pullRequestNumber <= 0 {
 			continue
@@ -1676,12 +1693,14 @@ func hasUnattachedBranchPullRequestCandidates(issues []connector.Issue, candidat
 
 func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 	return pullRequestNode{
-		Number:      pullRequest.Number,
-		URL:         pullRequest.HTMLURL,
-		State:       restPullRequestState(pullRequest),
-		ActivityAt:  cloneGitHubTime(pullRequest.UpdatedAt),
-		HeadRefName: pullRequest.Head.Ref,
-		HeadSHA:     pullRequest.Head.SHA,
+		Number:         pullRequest.Number,
+		URL:            pullRequest.HTMLURL,
+		State:          restPullRequestState(pullRequest),
+		MergeableState: strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)),
+		Draft:          pullRequest.Draft,
+		ActivityAt:     cloneGitHubTime(pullRequest.UpdatedAt),
+		HeadRefName:    pullRequest.Head.Ref,
+		HeadSHA:        pullRequest.Head.SHA,
 	}
 }
 
@@ -1691,9 +1710,13 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		URL:                          strings.TrimSpace(pullRequest.URL),
 		BranchName:                   strings.TrimSpace(pullRequest.HeadRefName),
 		State:                        strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+		MergeableState:               strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)),
+		Draft:                        pullRequest.Draft,
 		ActivityAt:                   cloneGitHubTime(pullRequest.ActivityAt),
 		HeadSHA:                      strings.TrimSpace(pullRequest.HeadSHA),
 		CIStatus:                     normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
+		CheckRunCount:                pullRequest.CI.CheckRunCount,
+		StatusContextCount:           pullRequest.CI.StatusContextCount,
 		CodexReviewState:             pullRequestCodexReviewState(pullRequest),
 		CodexReviewSubmittedAt:       pullRequestCodexReviewSubmittedAt(pullRequest),
 		CodexReviewFindings:          pullRequestCodexReviewFindings(pullRequest),
@@ -1721,12 +1744,13 @@ func pullRequestRepoName(repo pullRequestRepo) string {
 
 func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode) error {
 	if strings.TrimSpace(pullRequest.HeadSHA) != "" {
-		ciState, err := c.fetchPullRequestCIState(ctx, repo, pullRequest.HeadSHA)
+		ci, err := c.fetchPullRequestCI(ctx, repo, pullRequest.HeadSHA)
 		if err != nil {
 			return err
 		}
+		pullRequest.CI = ci
 		pullRequest.Commits = nodeConnection[pullRequestCommit]{Nodes: []pullRequestCommit{{
-			Commit: commitNode{StatusCheckRollup: &statusCheckRollup{State: ciState}},
+			Commit: commitNode{StatusCheckRollup: &statusCheckRollup{State: ci.State}},
 		}}}
 	}
 	reviews, err := c.fetchPullRequestReviews(ctx, repo, pullRequest.Number, pullRequest.HeadSHA)
@@ -1738,16 +1762,20 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	return nil
 }
 
-func (c *Connector) fetchPullRequestCIState(ctx context.Context, repo pullRequestRepo, sha string) (string, error) {
+func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo, sha string) (pullRequestCI, error) {
 	checkRuns, err := fetchRESTCheckRuns(ctx, c.client, restCommitCheckRunsPath(repo, sha))
 	if err != nil {
-		return "", fmt.Errorf("fetch github check runs: %w", err)
+		return pullRequestCI{}, fmt.Errorf("fetch github check runs: %w", err)
 	}
 	statuses, err := fetchRESTList[restCommitStatus](ctx, c.client, restCommitStatusesPath(repo, sha))
 	if err != nil {
-		return "", fmt.Errorf("fetch github commit statuses: %w", err)
+		return pullRequestCI{}, fmt.Errorf("fetch github commit statuses: %w", err)
 	}
-	return combinedCIState(checkRunsState(checkRuns), commitStatusesState(statuses)), nil
+	return pullRequestCI{
+		State:              combinedCIState(checkRunsState(checkRuns), commitStatusesState(statuses)),
+		CheckRunCount:      len(checkRuns),
+		StatusContextCount: len(statuses),
+	}, nil
 }
 
 func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullRequestRepo, number int, headSHA string) (pullRequestCodexReviews, error) {
@@ -3342,6 +3370,35 @@ func parseBlockerReason(issue githubIssueNode) string {
 	return markdownSectionText(issue.Body, "Human Action Needed")
 }
 
+func parseBlockedByFromIssueText(issue githubIssueNode, repo string) []connector.BlockedRef {
+	blockers := []connector.BlockedRef{}
+	seen := map[string]struct{}{}
+	appendBlockers := func(refs []connector.BlockedRef) {
+		for _, ref := range refs {
+			key := normalizedIssueIdentifier(ref.Identifier)
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			blockers = append(blockers, ref)
+		}
+	}
+	appendBlockers(parseBlockedBy(issue.Body, repo))
+	for _, comment := range issue.Comments.Nodes {
+		appendBlockers(parseBlockedBy(comment.Body, repo))
+		if !strings.Contains(strings.ToLower(comment.Body), "codex workpad") {
+			continue
+		}
+		for _, identifier := range issueReferencesInText(markdownSectionText(comment.Body, "Blockers"), repo) {
+			appendBlockers([]connector.BlockedRef{{Identifier: identifier}})
+		}
+	}
+	return blockers
+}
+
 func markdownSectionText(body string, title string) string {
 	want := normalizeSectionTitle(title)
 	inSection := false
@@ -3588,7 +3645,7 @@ func stateInList(state string, states []string) bool {
 }
 
 func attachPullRequestsForStates(states map[string]struct{}) bool {
-	for _, state := range []string{"Human Review", "Merging", "Done"} {
+	for _, state := range []string{"Human Review", "Merging", "Done", "Blocked"} {
 		if _, ok := states[normalizeStateName(state)]; ok {
 			return true
 		}

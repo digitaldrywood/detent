@@ -58,6 +58,11 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
+			o.recoverBlockedIssues(ctx, state, fetched.status, now),
+		)
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
 			o.autoUnblockDependencyIssues(ctx, state, fetched.status, now),
 		)
 		fetched = filterReconciledTickIssues(

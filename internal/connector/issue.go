@@ -46,9 +46,13 @@ type PullRequest struct {
 	URL                          string               `json:"url,omitempty" yaml:"url,omitempty"`
 	BranchName                   string               `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	State                        string               `json:"state,omitempty" yaml:"state,omitempty"`
+	MergeableState               string               `json:"mergeable_state,omitempty" yaml:"mergeable_state,omitempty"`
+	Draft                        bool                 `json:"draft,omitempty" yaml:"draft,omitempty"`
 	ActivityAt                   *time.Time           `json:"activity_at,omitempty" yaml:"activity_at,omitempty"`
 	HeadSHA                      string               `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
 	CIStatus                     string               `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
+	CheckRunCount                int                  `json:"check_run_count,omitempty" yaml:"check_run_count,omitempty"`
+	StatusContextCount           int                  `json:"status_context_count,omitempty" yaml:"status_context_count,omitempty"`
 	CodexReviewState             string               `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
 	CodexReviewSubmittedAt       *time.Time           `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`
 	CodexReviewFindings          []PullRequestFinding `json:"codex_review_findings,omitempty" yaml:"codex_review_findings,omitempty"`
