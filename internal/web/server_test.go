@@ -697,6 +697,7 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 		path string
 	}{
 		{name: "dashboard", path: "/"},
+		{name: "project", path: "/projects/detent"},
 		{name: "reports", path: "/reports"},
 		{name: "settings", path: "/settings"},
 	}
@@ -736,7 +737,19 @@ func TestDashboardRendersSidebarStateFromCookie(t *testing.T) {
 			t.Run(route.name+" "+state.name, func(t *testing.T) {
 				t.Parallel()
 
-				server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, testDeps(t))
+				deps := testDeps(t)
+				mustSetWebProject(t, deps.Registry, "detent", false)
+				if err := deps.Hub.Publish(telemetry.Snapshot{
+					GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
+					Projects: []telemetry.ProjectSnapshot{
+						{
+							Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+						},
+					},
+				}); err != nil {
+					t.Fatalf("Publish() error = %v", err)
+				}
+				server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
 				if err != nil {
 					t.Fatalf("NewServer() error = %v", err)
 				}
@@ -837,6 +850,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			body := rec.Body.String()
 			for _, want := range []string{
 				`data-tui-sidebar-layout`,
+				`id="dashboard-sidebar"`,
 				`id="dashboard-sidebar-live"`,
 				`sse-swap="sidebar"`,
 				`hx-swap="morph:innerHTML"`,
@@ -845,6 +859,9 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 				`/static/js/templui/sidebar.min.js`,
 				`/static/js/templui/dialog.min.js`,
 				`/static/js/templui/popover.min.js`,
+				`href="/"`,
+				`href="/reports"`,
+				`href="/settings"`,
 				`href="/projects/detent"`,
 				`Detent - active, 3 running`,
 				tt.sseConnect,
@@ -853,9 +870,8 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 					t.Fatalf("%s missing shared sidebar marker %q:\n%s", tt.path, want, body)
 				}
 			}
-			if got := strings.Count(body, `data-tui-sidebar-layout`); got != 1 {
-				t.Fatalf("%s rendered data-tui-sidebar-layout %d times, want 1:\n%s", tt.path, got, body)
-			}
+			assertSharedDashboardShellOnce(t, body, tt.path)
+			assertSingleCurrentSidebarItem(t, body)
 			assertActiveSidebarLink(t, body, tt.activeHref)
 			for _, href := range tt.inactiveHref {
 				assertInactiveSidebarLink(t, body, href)
@@ -2944,8 +2960,7 @@ func TestReportsPageRendersUsageCharts(t *testing.T) {
 func assertActiveSidebarLink(t *testing.T, body string, href string) {
 	t.Helper()
 
-	pattern := `<a[^>]*href="` + regexp.QuoteMeta(href) + `"[^>]*data-tui-sidebar-active="true"[^>]*aria-current="page"`
-	if !regexp.MustCompile(pattern).MatchString(body) {
+	if !sidebarLinkActive(body, href) {
 		t.Fatalf("body missing active sidebar link %q:\n%s", href, body)
 	}
 }
@@ -2953,10 +2968,46 @@ func assertActiveSidebarLink(t *testing.T, body string, href string) {
 func assertInactiveSidebarLink(t *testing.T, body string, href string) {
 	t.Helper()
 
-	pattern := `<a[^>]*href="` + regexp.QuoteMeta(href) + `"[^>]*data-tui-sidebar-active="true"[^>]*aria-current="page"`
-	if regexp.MustCompile(pattern).MatchString(body) {
+	if sidebarLinkActive(body, href) {
 		t.Fatalf("body rendered inactive sidebar link %q as active:\n%s", href, body)
 	}
+}
+
+func assertSingleCurrentSidebarItem(t *testing.T, body string) {
+	t.Helper()
+
+	currentLinks := regexp.MustCompile(`<a[^>]*aria-current="page"[^>]*>`).FindAllString(body, -1)
+	if len(currentLinks) != 1 {
+		t.Fatalf("body rendered %d current sidebar links, want 1: %v\n%s", len(currentLinks), currentLinks, body)
+	}
+	if !strings.Contains(currentLinks[0], `data-tui-sidebar-active="true"`) {
+		t.Fatalf("current sidebar link missing active marker: %s\n%s", currentLinks[0], body)
+	}
+}
+
+func assertSharedDashboardShellOnce(t *testing.T, body string, path string) {
+	t.Helper()
+
+	for _, marker := range []string{
+		`data-tui-sidebar-layout`,
+		`/static/js/templui/sidebar.min.js`,
+		`/static/js/templui/dialog.min.js`,
+		`/static/js/templui/popover.min.js`,
+	} {
+		if got := strings.Count(body, marker); got != 1 {
+			t.Fatalf("%s rendered %q %d times, want 1:\n%s", path, marker, got, body)
+		}
+	}
+}
+
+func sidebarLinkActive(body string, href string) bool {
+	pattern := `<a[^>]*href="` + regexp.QuoteMeta(href) + `"[^>]*>`
+	for _, link := range regexp.MustCompile(pattern).FindAllString(body, -1) {
+		if strings.Contains(link, `data-tui-sidebar-active="true"`) && strings.Contains(link, `aria-current="page"`) {
+			return true
+		}
+	}
+	return false
 }
 
 func testDeps(t *testing.T) web.Dependencies {
