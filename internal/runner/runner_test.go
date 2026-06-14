@@ -511,6 +511,82 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	}
 }
 
+func TestRunnerRunTreatsMissingWorkspaceFinalDiffAsCompleted(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	startedAt := time.Date(2026, 6, 14, 15, 10, 0, 0, time.UTC)
+	completedAt := startedAt.Add(4 * time.Second)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info:    workspace.Info{Path: filepath.Join(t.TempDir(), "missing-worktree"), Key: "issue-453", Branch: "detent/issue-453"},
+		diffErr: errors.Join(workspace.ErrMissingWorkspace, os.ErrNotExist),
+	}
+	codexClient := &fakeCodexClient{
+		updates: []AgentUpdate{{
+			Type:     AgentUpdateTokenUsage,
+			ThreadID: "thread-453",
+			TurnID:   "turn-1",
+			Tokens: AgentTokenUsage{
+				InputTokens:  100,
+				OutputTokens: 25,
+				TotalTokens:  125,
+			},
+		}},
+		result: AgentTurnResult{ThreadID: "thread-453", TurnID: "turn-1", SessionID: "thread-453-turn-1"},
+	}
+	sessionStore := &fakeSessionStore{sessionID: 453}
+	now := newFakeClock(
+		startedAt,
+		startedAt.Add(time.Second),
+		completedAt,
+		completedAt,
+	)
+
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: codexClient,
+		Store:        sessionStore,
+		Now:          now.Now,
+		Logger:       slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-453",
+			Identifier: "digitaldrywood/detent#453",
+			Title:      "Release snapshot",
+		},
+		StartedAt: startedAt,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want completed run despite missing workspace diff", err)
+	}
+	if result.FinalState != FinalStateCompleted {
+		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateCompleted)
+	}
+	if result.DiffStats != (DiffStats{}) {
+		t.Fatalf("DiffStats = %#v, want empty when workspace disappeared", result.DiffStats)
+	}
+	if sessionStore.finished.FinalState != FinalStateCompleted {
+		t.Fatalf("SessionFinish.FinalState = %q, want %q", sessionStore.finished.FinalState, FinalStateCompleted)
+	}
+	logOutput := logs.String()
+	for _, want := range []string{
+		"workspace final diff stat skipped",
+		"issue_id=issue-453",
+		"issue_identifier=digitaldrywood/detent#453",
+		"workspace_path=" + workspaceBackend.info.Path,
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("log output missing %q:\n%s", want, logOutput)
+		}
+	}
+}
+
 func TestRunnerRunUsesFreshContextForAfterRunCleanup(t *testing.T) {
 	t.Parallel()
 
@@ -586,6 +662,7 @@ type fakeWorkspaceBackend struct {
 	info          workspace.Info
 	diffStat      workspace.DiffStat
 	diffStats     []workspace.DiffStat
+	diffErr       error
 	created       bool
 	beforeRun     bool
 	afterRun      bool
@@ -625,6 +702,9 @@ func (b *fakeWorkspaceBackend) AfterRun(ctx context.Context, _ workspace.Info, _
 
 func (b *fakeWorkspaceBackend) DiffStat(context.Context, workspace.Info, workspace.Issue) (workspace.DiffStat, error) {
 	b.diffed = true
+	if b.diffErr != nil {
+		return workspace.DiffStat{}, b.diffErr
+	}
 	if len(b.diffStats) > 0 {
 		index := b.diffCalls
 		if index >= len(b.diffStats) {

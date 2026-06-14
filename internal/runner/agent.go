@@ -345,6 +345,22 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 
 	diffStat, err := r.workspace.DiffStat(ctx, info, workspaceIssue)
 	if err != nil {
+		if workspace.IsMissingWorkspaceError(err) {
+			r.logger.Info(
+				"workspace final diff stat skipped",
+				slog.String("issue_id", workspaceIssue.ID),
+				slog.String("issue_identifier", workspaceIssue.Identifier),
+				slog.String("workspace_path", info.Path),
+				slog.String("phase", "final"),
+				slog.String("error", err.Error()),
+			)
+			finishedAt := r.now().UTC()
+			result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
+			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, 1); err != nil {
+				return result, err
+			}
+			return result, nil
+		}
 		result.FinalState = FinalStateFailed
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
@@ -695,10 +711,23 @@ func (r *Runner) liveDiffStats(
 	progress.diffStatsCheckedAt = eventAt
 	stat, err := r.workspace.DiffStat(ctx, info, issue)
 	if err != nil {
+		if workspace.IsMissingWorkspaceError(err) {
+			r.logger.Info(
+				"workspace live diff stat skipped",
+				slog.String("issue_id", issue.ID),
+				slog.String("issue_identifier", issue.Identifier),
+				slog.String("workspace_path", info.Path),
+				slog.String("phase", "live"),
+				slog.String("error", err.Error()),
+			)
+			return progress.cachedDiffStats()
+		}
 		r.logger.Warn(
 			"workspace live diff stat failed",
 			slog.String("issue_id", issue.ID),
 			slog.String("issue_identifier", issue.Identifier),
+			slog.String("workspace_path", info.Path),
+			slog.String("phase", "live"),
 			slog.String("error", err.Error()),
 		)
 		return progress.cachedDiffStats()

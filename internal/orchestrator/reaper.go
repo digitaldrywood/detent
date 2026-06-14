@@ -32,6 +32,9 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
 		}
+		if o.completeRunningIssueFromWorkspaceCleanup(ctx, state, issue, now) {
+			continue
+		}
 		o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates))
 	}
 }
@@ -109,6 +112,33 @@ func workspaceReapReason(issue connector.Issue, terminalStates []string) string 
 	default:
 		return "idle"
 	}
+}
+
+func (o *Orchestrator) completeRunningIssueFromWorkspaceCleanup(ctx context.Context, state *State, issue connector.Issue, now time.Time) bool {
+	if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
+		return false
+	}
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" {
+		return false
+	}
+	running, ok := state.Running[issueID]
+	if !ok {
+		return false
+	}
+
+	running.Issue = mergeIssueTrackerFields(running.Issue, issue)
+	if o.logger != nil {
+		o.logger.Info(
+			"completed running issue during workspace cleanup",
+			slog.String("issue_id", issueID),
+			slog.String("issue_identifier", running.Issue.Identifier),
+			slog.String("state", running.Issue.State),
+			slog.String("reason", workspaceReapReason(running.Issue, o.cfg.TerminalStates)),
+		)
+	}
+	o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
+	return true
 }
 
 func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue connector.Issue, reason string) {
