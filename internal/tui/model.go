@@ -21,6 +21,11 @@ var ErrNilHub = errors.New("nil telemetry hub")
 
 const defaultDashboardURL = "http://localhost:4000"
 
+const (
+	shutdownDrainNotice = "shutdown requested; draining sessions, press Ctrl+C again to force quit"
+	shutdownForceNotice = "force quit requested; interrupting sessions"
+)
+
 type Option func(*options)
 
 type options struct {
@@ -39,6 +44,8 @@ type Model struct {
 	now          func() time.Time
 	build        buildinfo.Info
 	interrupt    func()
+	interrupts   int
+	shutdownNote string
 	styles       styles
 }
 
@@ -117,6 +124,12 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch msg.String() {
 		case "ctrl+c":
 			if m.interrupt != nil {
+				m.interrupts++
+				if m.interrupts == 1 {
+					m.shutdownNote = shutdownDrainNotice
+				} else {
+					m.shutdownNote = shutdownForceNotice
+				}
 				m.interrupt()
 				return m, nil
 			}
@@ -166,15 +179,21 @@ func (m Model) renderWaiting() string {
 	lines := []string{
 		m.styles.title.Render("╭─ DETENT STATUS"),
 		"│ Dashboard: " + m.styles.info.Render(defaultDashboardURL),
-		"│ " + m.styles.muted.Render("Waiting for telemetry snapshot"),
-		closingBorder,
 	}
+	if m.shutdownNote != "" {
+		lines = append(lines, "│ Shutdown: "+m.styles.warn.Render(m.shutdownNote))
+	}
+	lines = append(lines, "│ "+m.styles.muted.Render("Waiting for telemetry snapshot"), closingBorder)
 
 	return strings.Join(lines, "\n")
 }
 
 func (m Model) renderSnapshot() string {
 	snapshot := m.snapshot
+	shutdownStatus := formatShutdown(snapshot.Shutdown, m.styles)
+	if m.shutdownNote != "" {
+		shutdownStatus = m.styles.warn.Render(m.shutdownNote)
+	}
 	lines := []string{
 		m.styles.title.Render("╭─ DETENT STATUS"),
 		"│ Generated: " + m.styles.muted.Render(formatTimestamp(snapshot.GeneratedAt)),
@@ -199,7 +218,7 @@ func (m Model) renderSnapshot() string {
 			m.styles.warn.Render("total "+formatCount(snapshot.Tokens.Total)),
 		"│ Budget: " + formatBudget(snapshot.Budget, m.styles),
 		"│ Rate Limits: " + formatRateLimits(snapshot.RateLimits, m.now, m.styles),
-		"│ Shutdown: " + formatShutdown(snapshot.Shutdown, m.styles),
+		"│ Shutdown: " + shutdownStatus,
 		"│ Project: " + formatOptionalInfo(formatProject(snapshot.Project), m.styles),
 		"│ Instance: " + formatOptionalInfo(formatInstance(snapshot.Instance), m.styles),
 		"│ Scope: " + formatOptionalInfo(formatAuthorizationScope(snapshot.Instance), m.styles),

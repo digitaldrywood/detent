@@ -297,6 +297,43 @@ func TestSignalContextCancel(t *testing.T) {
 	}
 }
 
+func TestWriteSignalShutdownNotice(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		request cli.ShutdownRequest
+		want    string
+	}{
+		{
+			name:    "drain",
+			request: cli.ShutdownRequestDrain,
+			want:    "shutdown requested; draining sessions, press Ctrl+C again to force quit",
+		},
+		{
+			name:    "force",
+			request: cli.ShutdownRequestForce,
+			want:    "force quit requested; interrupting sessions",
+		},
+		{
+			name: "stopping",
+			want: "shutdown requested; stopping",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var output bytes.Buffer
+			writeSignalShutdownNotice(&output, tt.request)
+			if got := strings.TrimSpace(output.String()); got != tt.want {
+				t.Fatalf("notice = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func collectCommandsWithoutExamples(cmd *cobra.Command, missing *[]string) {
 	name := cmd.CommandPath()
 	if name == "" {

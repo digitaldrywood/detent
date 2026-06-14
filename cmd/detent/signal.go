@@ -2,6 +2,8 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"sync"
@@ -13,7 +15,7 @@ func newSignalContext(parent context.Context) (context.Context, context.CancelFu
 	return signal.NotifyContext(parent, shutdownSignals()...)
 }
 
-func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot context.CancelFunc) func() {
+func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot context.CancelFunc, noticeOut io.Writer) func() {
 	if controller == nil {
 		return func() {}
 	}
@@ -31,7 +33,9 @@ func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot conte
 			return
 		case <-first:
 			signal.Stop(first)
-			if !controller.RequestInterrupt() {
+			request, handled := controller.RequestInterruptKind()
+			writeSignalShutdownNotice(noticeOut, request)
+			if !handled {
 				if cancelRoot != nil {
 					cancelRoot()
 				}
@@ -46,7 +50,9 @@ func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot conte
 		case <-stop:
 			return
 		case <-second:
-			if controller.RequestInterrupt() {
+			request, handled := controller.RequestInterruptKind()
+			writeSignalShutdownNotice(noticeOut, request)
+			if handled {
 				return
 			}
 			if cancelRoot != nil {
@@ -62,5 +68,19 @@ func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot conte
 			signal.Stop(first)
 			<-done
 		})
+	}
+}
+
+func writeSignalShutdownNotice(out io.Writer, request cli.ShutdownRequest) {
+	if out == nil {
+		return
+	}
+	switch request {
+	case cli.ShutdownRequestDrain:
+		fmt.Fprintln(out, "shutdown requested; draining sessions, press Ctrl+C again to force quit")
+	case cli.ShutdownRequestForce:
+		fmt.Fprintln(out, "force quit requested; interrupting sessions")
+	default:
+		fmt.Fprintln(out, "shutdown requested; stopping")
 	}
 }

@@ -28,7 +28,7 @@ func runCLI(ctx context.Context, args []string, stdout io.Writer, stderr io.Writ
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	shutdownController := cli.NewShutdownController()
-	stopSignals := notifyShutdownRequests(shutdownController, cancel)
+	stopSignals := notifyShutdownRequests(shutdownController, cancel, stderr)
 	defer stopSignals()
 
 	cmd := newRootCommand(ctx, shutdownController)

@@ -309,6 +309,67 @@ func TestModelRequestsInterruptOnCtrlC(t *testing.T) {
 	}
 }
 
+func TestModelShowsShutdownNoticeOnCtrlC(t *testing.T) {
+	t.Parallel()
+
+	interrupts := 0
+	model := Model{
+		snapshot:    testSnapshot(),
+		hasSnapshot: true,
+		width:       defaultTerminalColumns,
+		now:         time.Now,
+		interrupt: func() {
+			interrupts++
+		},
+		styles: newStyles(),
+	}
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatal("Update(first ctrl+c) returned command")
+	}
+	got := next.(Model)
+	if interrupts != 1 {
+		t.Fatalf("interrupts = %d, want 1", interrupts)
+	}
+	view := stripANSI(got.View())
+	if !strings.Contains(view, "Shutdown: "+shutdownDrainNotice) {
+		t.Fatalf("View() missing shutdown notice:\n%s", view)
+	}
+
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatal("Update(second ctrl+c) returned command")
+	}
+	got = next.(Model)
+	if interrupts != 2 {
+		t.Fatalf("interrupts = %d, want 2", interrupts)
+	}
+	view = stripANSI(got.View())
+	if !strings.Contains(view, "Shutdown: "+shutdownForceNotice) {
+		t.Fatalf("View() missing force shutdown notice:\n%s", view)
+	}
+}
+
+func TestModelShowsShutdownNoticeBeforeSnapshot(t *testing.T) {
+	t.Parallel()
+
+	model, err := NewModel(context.Background(), hub.New[telemetry.Snapshot](), WithInterruptFunc(func() {}))
+	if err != nil {
+		t.Fatalf("NewModel() error = %v", err)
+	}
+
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatal("Update(ctrl+c) returned command")
+	}
+
+	view := stripANSI(next.(Model).View())
+	if !strings.Contains(view, "Shutdown: "+shutdownDrainNotice) {
+		t.Fatalf("View() missing shutdown notice before snapshot:\n%s", view)
+	}
+}
+
 func TestModelQuitsOnCtrlCWithoutInterruptHandler(t *testing.T) {
 	t.Parallel()
 

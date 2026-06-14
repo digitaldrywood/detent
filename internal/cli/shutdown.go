@@ -74,15 +74,20 @@ func (c *ShutdownController) Active() bool {
 }
 
 func (c *ShutdownController) RequestInterrupt() bool {
+	_, handled := c.RequestInterruptKind()
+	return handled
+}
+
+func (c *ShutdownController) RequestInterruptKind() (ShutdownRequest, bool) {
 	if c == nil || !c.Active() {
-		return false
+		return 0, false
 	}
 	if c.shutdownRequested.CompareAndSwap(false, true) {
 		c.request(ShutdownRequestDrain)
-		return true
+		return ShutdownRequestDrain, true
 	}
 	c.request(ShutdownRequestForce)
-	return true
+	return ShutdownRequestForce, true
 }
 
 func (c *ShutdownController) activate() func() {
