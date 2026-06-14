@@ -28,9 +28,10 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	var allowProductionPort bool
 
 	cmd := &cobra.Command{
-		Use:   "dev-runtime",
-		Short: "Run an isolated mock Detent runtime for dogfood-safe e2e tests",
-		Args:  NoArgs,
+		Use:     "dev-runtime",
+		Short:   "Run an isolated mock Detent runtime for dogfood-safe e2e tests",
+		Example: devRuntimeExampleCommand,
+		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			if _, err := OutputForCommand(cmd); err != nil {
 				return err
