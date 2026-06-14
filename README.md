@@ -866,8 +866,10 @@ gates; repeated full local validation after a source-clean rebase, noisy status
 polling, uncached tool install, and duplicated post-merge work are optimization
 targets.
 
-The repository CI uses a prebuilt cached golangci-lint action instead of
-installing the linter with `go install` on every run. `GoReleaser Snapshot`
+The repository CI caches the project-pinned golangci-lint binary and only builds
+it with `go install` on cache miss. The official prebuilt action was evaluated,
+but the prebuilt `v2.1.6` binary targets an older Go toolchain than this repo and
+newer prebuilt lint releases change the enforced lint set. `GoReleaser Snapshot`
 continues to run on every PR in this workflow; moving it off PRs or making it
 path-based is a release-policy decision because it trades package coverage for
 merge latency.

@@ -51,6 +51,9 @@ The execution edge still carries these code/git/PR assumptions.
 - Duplicate full local validation after a source-clean rebase, uncached tool
   install, noisy polling, and post-merge work that is not part of the merge
   decision are optimization targets.
+- The CI lint job keeps the project-pinned golangci-lint version and caches its
+  binary so cache hits avoid a per-run `go install` without changing lint
+  coverage.
 - Moving `GoReleaser Snapshot` off every PR or making it path-based is a
   release-policy decision because it trades release-package coverage for merge
   latency.
