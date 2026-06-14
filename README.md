@@ -149,17 +149,17 @@ It is also cheaper at the scale where orchestration matters:
 
 ### Why Codex, not Claude
 
-Detent dispatches agents non-interactively, headless, many at once — the mode a
-subscription either covers or it doesn't.
+Detent dispatches agents non-interactively, headless, many at once. The
+important question is how that mode is metered.
 
 - A **ChatGPT** plan (Plus, Pro, Business) covers Codex CLI usage *including
   scripted `codex exec` automation*, billed against the subscription you already
   have.
-- **Claude Code** is subscription-covered only when used interactively.
-  Effective **June 15, 2026**, Anthropic bills headless `claude -p`, the Agent
-  SDK, Claude Code GitHub Actions, and third-party agents from a separate
-  monthly credit metered at full API rates — and keeping subscription auth alive
-  headlessly on a server is against Anthropic's terms.
+- **Claude Code** keeps interactive terminal and IDE use on subscription usage
+  limits. Effective **June 15, 2026**, Anthropic moves headless `claude -p`,
+  the Agent SDK, Claude Code GitHub Actions, and third-party Agent SDK apps to
+  a separate monthly Agent SDK credit. That credit is per-user, does not roll
+  over, and overages move to usage credits at standard API rates when enabled.
 
 For an orchestrator that runs agents around the clock in parallel, the Codex
 subscription is the one that makes the economics work. Codex is the agent
