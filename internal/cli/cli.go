@@ -324,6 +324,14 @@ Output:
   DETENT_FORMAT can set the default format.
   When neither is set, Detent prints pretty output on a TTY and JSON otherwise.
 
+JSON errors:
+  JSON-mode failures write one problem object to stderr.
+  Fields: type, code, title, detail, exit_code, suggested_fix, did_you_mean, docs_url.
+  Optional fields: suggested_fix, did_you_mean, docs_url.
+  Stable codes: general, validation, unknown_command, unknown_flag, github_auth,
+  config_exists, project_exists, project_not_found, doctor_failed, shutdown_forced,
+  shutdown_timeout.
+
 Exit codes:
   0  success
   1  general or unexpected failure
