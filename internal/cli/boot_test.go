@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -234,6 +235,7 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 
 	provisionStarted := make(chan struct{})
 	provisionRelease := make(chan struct{})
+	var provisionStartedOnce sync.Once
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
@@ -246,7 +248,9 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
 				return bootProvisioningConnector{
 					provision: func(ctx context.Context) error {
-						close(provisionStarted)
+						provisionStartedOnce.Do(func() {
+							close(provisionStarted)
+						})
 						select {
 						case <-ctx.Done():
 							return ctx.Err()
@@ -345,6 +349,87 @@ func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for startRunning to stop")
+	}
+}
+
+func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing.T) {
+	host, port := freeLoopbackPort(t)
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	bravo := createBootProjectFiles(t)
+	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
+	})
+	global, err := globalconfig.Read(configPath)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	provisionStarted := make(chan struct{})
+	provisionRelease := make(chan struct{})
+	var provisionStartedOnce sync.Once
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- startRunning(ctx, BootConfig{
+			Mode:   BootModeRunning,
+			Global: global,
+			Host:   host,
+			Port:   &port,
+			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
+				return bootProvisioningConnector{
+					provision: func(ctx context.Context) error {
+						provisionStartedOnce.Do(func() {
+							close(provisionStarted)
+						})
+						select {
+						case <-ctx.Done():
+							return ctx.Err()
+						case <-provisionRelease:
+							return nil
+						}
+					},
+				}, nil
+			},
+		})
+	}()
+
+	select {
+	case <-provisionStarted:
+	case err := <-done:
+		t.Fatalf("startRunning returned before provisioning blocked: %v", err)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for project provisioning to start")
+	}
+
+	settingsURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/settings"
+	body := waitForDashboard(t, settingsURL, done)
+	if !strings.Contains(body, "alpha") {
+		t.Fatalf("settings body missing alpha:\n%s", body)
+	}
+
+	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
+		{ID: "bravo", Workflow: bravo.workflowPath, Workdir: bravo.workdirPath, Weight: 1},
+	})
+	close(provisionRelease)
+
+	body = waitForDashboardCondition(t, settingsURL, done, "bravo added after startup write", func(body string) bool {
+		return strings.Contains(body, "bravo")
+	})
+	if !strings.Contains(body, "alpha") {
+		t.Fatalf("settings body missing alpha after startup write:\n%s", body)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
 		}
 	case <-time.After(10 * time.Second):

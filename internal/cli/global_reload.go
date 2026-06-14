@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
@@ -74,6 +75,7 @@ func startGlobalConfigWatcher(
 	if len(onReload) > 0 {
 		reloader.onReload = onReload[0]
 	}
+	syncLatestGlobalConfig(ctx, path, reloader)
 	go func() {
 		defer close(done)
 		for {
@@ -89,6 +91,23 @@ func startGlobalConfigWatcher(
 		}
 	}()
 	return done
+}
+
+func syncLatestGlobalConfig(ctx context.Context, path string, reloader *globalConfigReloader) {
+	if reloader == nil {
+		return
+	}
+	latest, err := readGlobalConfig(path)
+	update := configwatcher.FileUpdate[globalconfig.Config]{
+		Path:  path,
+		Value: latest,
+		Err:   err,
+		At:    time.Now(),
+	}
+	if err == nil && reflect.DeepEqual(reloader.current, latest) {
+		return
+	}
+	reloader.handle(ctx, update)
 }
 
 func readGlobalConfig(path string) (globalconfig.Config, error) {
