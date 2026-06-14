@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -31,38 +32,63 @@ type ErrorClass struct {
 	ExitCode int
 }
 
-var errorClassifiers = []struct {
-	class ErrorClass
+type errorClass struct {
+	ErrorClass
+	Title string
 	match func(error) bool
-}{
+}
+
+var (
+	successErrorClass = errorClass{ErrorClass: ErrorClass{Slug: "success", ExitCode: ExitSuccess}, Title: "Success"}
+	generalErrorClass = errorClass{ErrorClass: ErrorClass{Slug: errorCodeGeneral, ExitCode: ExitGeneral}, Title: "Command failed"}
+)
+
+var errorClassifiers = []errorClass{
 	{
-		class: ErrorClass{Slug: "github_auth", ExitCode: ExitAuth},
+		ErrorClass: ErrorClass{Slug: errorCodeUnknownCommand, ExitCode: ExitValidation},
+		Title:      "Unknown command",
+		match: func(err error) bool {
+			return errorTextContains(err, "unknown command")
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeUnknownFlag, ExitCode: ExitValidation},
+		Title:      "Unknown flag",
+		match: func(err error) bool {
+			return errorTextContains(err, "unknown flag")
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeGitHubAuth, ExitCode: ExitAuth},
+		Title:      "GitHub authentication required",
 		match: func(err error) bool {
 			return errors.Is(err, ErrGitHubAuth) ||
 				errors.Is(err, githubconnector.ErrMissingToken) ||
-				errors.Is(err, githubconnector.ErrAuthenticationFailed)
+				errors.Is(err, githubconnector.ErrAuthenticationFailed) ||
+				errorTextContains(err, githubAuthHint) ||
+				errorTextContains(err, "github_token")
 		},
 	},
 	{
-		class: ErrorClass{Slug: "validation", ExitCode: ExitValidation},
+		ErrorClass: ErrorClass{Slug: errorCodeConfigExists, ExitCode: ExitNotFoundOrConfig},
+		Title:      "Global config already exists",
 		match: func(err error) bool {
-			var globalValidation globalconfig.ValidationError
-			var globalParse globalconfig.ParseError
-			var workflowValidation workflowconfig.ValidationError
-			return errors.Is(err, ErrValidation) ||
-				errors.Is(err, ErrInvalidOutputFormat) ||
-				errors.As(err, &globalValidation) ||
-				errors.As(err, &globalParse) ||
-				errors.As(err, &workflowValidation)
+			return errors.Is(err, ErrConfigExists)
 		},
 	},
 	{
-		class: ErrorClass{Slug: "not_found_or_config", ExitCode: ExitNotFoundOrConfig},
+		ErrorClass: ErrorClass{Slug: errorCodeProjectExists, ExitCode: ExitNotFoundOrConfig},
+		Title:      "Project already exists",
 		match: func(err error) bool {
-			return errors.Is(err, ErrConfigExists) ||
-				errors.Is(err, ErrProjectExists) ||
-				errors.Is(err, ErrProjectNotFound) ||
-				errors.Is(err, project.ErrProjectExists) ||
+			return errors.Is(err, ErrProjectExists) ||
+				errors.Is(err, project.ErrProjectExists)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeProjectNotFound, ExitCode: ExitNotFoundOrConfig},
+		Title:      "Project not found",
+		match: func(err error) bool {
+			return errors.Is(err, ErrProjectNotFound) ||
 				errors.Is(err, project.ErrProjectNotFound) ||
 				errors.Is(err, githubconnector.ErrProjectNotFound) ||
 				errors.Is(err, githubconnector.ErrProjectItemNotFound) ||
@@ -72,22 +98,98 @@ var errorClassifiers = []struct {
 				errors.Is(err, githubconnector.ErrStatusOptionNotFound)
 		},
 	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeDoctorFailed, ExitCode: ExitGeneral},
+		Title:      "Doctor checks failed",
+		match: func(err error) bool {
+			return errors.Is(err, ErrDoctorFailed)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeShutdownForced, ExitCode: ExitGeneral},
+		Title:      "Shutdown forced",
+		match: func(err error) bool {
+			return errors.Is(err, ErrShutdownForced)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeShutdownTimeout, ExitCode: ExitGeneral},
+		Title:      "Shutdown timed out",
+		match: func(err error) bool {
+			return errors.Is(err, ErrShutdownTimeout)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeValidation, ExitCode: ExitValidation},
+		Title:      "Validation failed",
+		match: func(err error) bool {
+			var globalValidation globalconfig.ValidationError
+			var globalParse globalconfig.ParseError
+			var workflowValidation workflowconfig.ValidationError
+			var hinted *HintedError
+			return errors.Is(err, ErrValidation) ||
+				errors.Is(err, ErrInvalidOutputFormat) ||
+				(errors.As(err, &hinted) && hinted.Err == nil) ||
+				errors.As(err, &globalValidation) ||
+				errors.As(err, &globalParse) ||
+				errors.As(err, &workflowValidation)
+		},
+	},
 }
 
 func ClassifyError(err error) ErrorClass {
+	return classifyError(err).ErrorClass
+}
+
+func classifyError(err error) errorClass {
 	if err == nil || errors.Is(err, context.Canceled) {
-		return ErrorClass{Slug: "success", ExitCode: ExitSuccess}
+		return successErrorClass
 	}
-	for _, classifier := range errorClassifiers {
-		if classifier.match(err) {
-			return classifier.class
+
+	var classified *ClassifiedError
+	if errors.As(err, &classified) && classified.Code != "" {
+		if class, ok := errorClassForSlug(classified.Code); ok {
+			return class
+		}
+		exitCode := ExitGeneral
+		if classified.Err != nil {
+			exitCode = ClassifyError(classified.Err).ExitCode
+		}
+		return errorClass{
+			ErrorClass: ErrorClass{Slug: classified.Code, ExitCode: exitCode},
+			Title:      generalErrorClass.Title,
 		}
 	}
-	return ErrorClass{Slug: "general", ExitCode: ExitGeneral}
+
+	for _, classifier := range errorClassifiers {
+		if classifier.match(err) {
+			return classifier
+		}
+	}
+	return generalErrorClass
 }
 
 func ExitCode(err error) int {
 	return ClassifyError(err).ExitCode
+}
+
+func errorClassForSlug(slug string) (errorClass, bool) {
+	if slug == successErrorClass.Slug {
+		return successErrorClass, true
+	}
+	if slug == generalErrorClass.Slug {
+		return generalErrorClass, true
+	}
+	for _, class := range errorClassifiers {
+		if class.Slug == slug {
+			return class, true
+		}
+	}
+	return errorClass{}, false
+}
+
+func errorTextContains(err error, text string) bool {
+	return err != nil && text != "" && strings.Contains(err.Error(), text)
 }
 
 func NoArgs(cmd *cobra.Command, args []string) error {

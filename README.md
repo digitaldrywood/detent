@@ -290,6 +290,54 @@ failure class.
 | 3 | Input validation error |
 | 4 | Not found or config conflict |
 
+## CLI JSON error envelopes
+
+When the resolved output format is JSON, command failures write one
+RFC 9457-style problem object to stderr. Human-readable pretty-mode errors are
+unchanged.
+
+```json
+{
+  "type": "https://detent.dev/errors/project_not_found",
+  "code": "project_not_found",
+  "title": "Project not found",
+  "detail": "project \"ap\" not found",
+  "exit_code": 4,
+  "suggested_fix": "available: api, web, infra\ndid you mean \"api\"? see `detent config path`, then retry",
+  "did_you_mean": ["api"],
+  "docs_url": "https://detent.dev/docs/cli#project-not-found"
+}
+```
+
+Envelope fields:
+
+| Field | Required | Meaning |
+| --- | --- | --- |
+| `type` | Yes | Stable problem type URL, using the code slug. |
+| `code` | Yes | Stable machine-readable slug. |
+| `title` | Yes | Short human title for the error class. |
+| `detail` | Yes | Specific failure detail. |
+| `exit_code` | Yes | Process exit code for the failure. |
+| `suggested_fix` | No | Actionable next step when Detent has a hint. |
+| `did_you_mean` | No | Candidate correction list when Detent has suggestions. |
+| `docs_url` | No | Documentation URL for the error class. |
+
+Stable JSON error codes:
+
+| Code | Type URL | Exit code | Source |
+| --- | --- | --- | --- |
+| <a id="general"></a>`general` | `https://detent.dev/errors/general` | 1 | Unexpected error. |
+| <a id="validation"></a>`validation` | `https://detent.dev/errors/validation` | 3 | Input validation, invalid config, or invalid output format. |
+| <a id="unknown-command"></a>`unknown_command` | `https://detent.dev/errors/unknown_command` | 3 | Unknown command. |
+| <a id="unknown-flag"></a>`unknown_flag` | `https://detent.dev/errors/unknown_flag` | 3 | Unknown flag. |
+| <a id="github-auth"></a>`github_auth` | `https://detent.dev/errors/github_auth` | 2 | GitHub token or authentication failure. |
+| <a id="config-exists"></a>`config_exists` | `https://detent.dev/errors/config_exists` | 4 | `ErrConfigExists`. |
+| <a id="project-exists"></a>`project_exists` | `https://detent.dev/errors/project_exists` | 4 | `ErrProjectExists`. |
+| <a id="project-not-found"></a>`project_not_found` | `https://detent.dev/errors/project_not_found` | 4 | `ErrProjectNotFound`. |
+| <a id="doctor-failed"></a>`doctor_failed` | `https://detent.dev/errors/doctor_failed` | 1 | `ErrDoctorFailed`. |
+| <a id="shutdown-forced"></a>`shutdown_forced` | `https://detent.dev/errors/shutdown_forced` | 1 | `ErrShutdownForced`. |
+| <a id="shutdown-timeout"></a>`shutdown_timeout` | `https://detent.dev/errors/shutdown_timeout` | 1 | `ErrShutdownTimeout`. |
+
 ## Release
 
 Cut releases from `main` by pushing a semver tag:

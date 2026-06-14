@@ -177,6 +177,95 @@ func TestRunCLIWritesProblemJSONForUnknownFlag(t *testing.T) {
 	}
 }
 
+func TestRunCLIWritesProblemJSONForProjectNotFound(t *testing.T) {
+	root := t.TempDir()
+	workflowPath := filepath.Join(root, "WORKFLOW.md")
+	workdirPath := filepath.Join(root, "repo")
+	configPath := filepath.Join(root, "global.yaml")
+	if err := os.Mkdir(workdirPath, 0o755); err != nil {
+		t.Fatalf("Mkdir() error = %v", err)
+	}
+	if err := os.WriteFile(workflowPath, []byte("name: test\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile(workflow) error = %v", err)
+	}
+	config := fmt.Sprintf(`apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 1
+  scheduling: weighted
+projects:
+  - id: api
+    workflow: %s
+    workdir: %s
+    weight: 1
+    priority: 0
+  - id: web
+    workflow: %s
+    workdir: %s
+    weight: 1
+    priority: 0
+  - id: infra
+    workflow: %s
+    workdir: %s
+    weight: 1
+    priority: 0
+`, workflowPath, workdirPath, workflowPath, workdirPath, workflowPath, workdirPath)
+	if err := os.WriteFile(configPath, []byte(config), 0o644); err != nil {
+		t.Fatalf("WriteFile(config) error = %v", err)
+	}
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+
+	code := runCLI(context.Background(), []string{"--config", configPath, "--format", "json", "pause", "ap"}, &stdout, &stderr)
+	if code != cli.ExitNotFoundOrConfig {
+		t.Fatalf("exit code = %d, want %d\nstderr:\n%s", code, cli.ExitNotFoundOrConfig, stderr.String())
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("stdout = %q, want empty", stdout.String())
+	}
+
+	var got struct {
+		Type         string   `json:"type"`
+		Code         string   `json:"code"`
+		Title        string   `json:"title"`
+		Detail       string   `json:"detail"`
+		ExitCode     int      `json:"exit_code"`
+		SuggestedFix string   `json:"suggested_fix"`
+		DidYouMean   []string `json:"did_you_mean"`
+		DocsURL      string   `json:"docs_url"`
+	}
+	if err := json.Unmarshal(stderr.Bytes(), &got); err != nil {
+		t.Fatalf("stderr is not problem JSON: %v\n%s", err, stderr.String())
+	}
+	if got.Type != "https://detent.dev/errors/project_not_found" {
+		t.Fatalf("type = %q, want project_not_found", got.Type)
+	}
+	if got.Code != "project_not_found" {
+		t.Fatalf("code = %q, want project_not_found", got.Code)
+	}
+	if got.Title != "Project not found" {
+		t.Fatalf("title = %q, want Project not found", got.Title)
+	}
+	if got.Detail != `project "ap" not found` {
+		t.Fatalf("detail = %q, want project not found", got.Detail)
+	}
+	if got.ExitCode != code {
+		t.Fatalf("exit_code = %d, want %d", got.ExitCode, code)
+	}
+	for _, want := range []string{"available: api, web, infra", `did you mean "api"?`} {
+		if !strings.Contains(got.SuggestedFix, want) {
+			t.Fatalf("suggested_fix missing %q:\n%s", want, got.SuggestedFix)
+		}
+	}
+	if len(got.DidYouMean) != 1 || got.DidYouMean[0] != "api" {
+		t.Fatalf("did_you_mean = %#v, want api", got.DidYouMean)
+	}
+	if got.DocsURL != "https://detent.dev/docs/cli#project-not-found" {
+		t.Fatalf("docs_url = %q, want project-not-found docs", got.DocsURL)
+	}
+}
+
 func TestRunCLIPrettyUnknownCommandPrintsHint(t *testing.T) {
 	var stdout bytes.Buffer
 	var stderr bytes.Buffer

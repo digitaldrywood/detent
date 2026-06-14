@@ -1042,28 +1042,74 @@ func TestRootCommandClassifiesMistypedCommandSuggestion(t *testing.T) {
 	}
 }
 
-func TestProblemForErrorClassifiesSemanticFailures(t *testing.T) {
+func TestProblemForErrorBuildsStableEnvelope(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name string
-		err  error
-		want int
+		name      string
+		err       error
+		wantCode  string
+		wantTitle string
+		wantExit  int
 	}{
-		{name: "validation", err: cli.NewValidationError("--id is required", "Run detent add-project.", nil), want: cli.ExitValidation},
-		{name: "not found", err: fmt.Errorf("%w: api", cli.ErrProjectNotFound), want: cli.ExitNotFoundOrConfig},
-		{name: "auth", err: errors.New(`GITHUB_TOKEN is not set and github_token is not configured. Run gh auth login --scopes "repo,read:org,project" and set github_token: gh in global.yaml.`), want: cli.ExitAuth},
-		{name: "general", err: errors.New("disk is full"), want: cli.ExitGeneral},
+		{name: "general", err: errors.New("disk is full"), wantCode: "general", wantTitle: "Command failed", wantExit: cli.ExitGeneral},
+		{name: "validation", err: cli.NewValidationError("--id is required", "Run detent add-project.", nil), wantCode: "validation", wantTitle: "Validation failed", wantExit: cli.ExitValidation},
+		{name: "unknown command", err: errors.New(`unknown command "paues" for "detent"`), wantCode: "unknown_command", wantTitle: "Unknown command", wantExit: cli.ExitValidation},
+		{name: "unknown flag", err: errors.New("unknown flag: --hedless"), wantCode: "unknown_flag", wantTitle: "Unknown flag", wantExit: cli.ExitValidation},
+		{name: "auth", err: fmt.Errorf("wrapped: %w", cli.ErrGitHubAuth), wantCode: "github_auth", wantTitle: "GitHub authentication required", wantExit: cli.ExitAuth},
+		{name: "config exists", err: fmt.Errorf("%w: /tmp/global.yaml", cli.ErrConfigExists), wantCode: "config_exists", wantTitle: "Global config already exists", wantExit: cli.ExitNotFoundOrConfig},
+		{name: "project exists", err: fmt.Errorf("%w: api", cli.ErrProjectExists), wantCode: "project_exists", wantTitle: "Project already exists", wantExit: cli.ExitNotFoundOrConfig},
+		{name: "project not found", err: fmt.Errorf("%w: api", cli.ErrProjectNotFound), wantCode: "project_not_found", wantTitle: "Project not found", wantExit: cli.ExitNotFoundOrConfig},
+		{name: "doctor failed", err: cli.ErrDoctorFailed, wantCode: "doctor_failed", wantTitle: "Doctor checks failed", wantExit: cli.ExitGeneral},
+		{name: "shutdown forced", err: cli.ErrShutdownForced, wantCode: "shutdown_forced", wantTitle: "Shutdown forced", wantExit: cli.ExitGeneral},
+		{name: "shutdown timeout", err: cli.ErrShutdownTimeout, wantCode: "shutdown_timeout", wantTitle: "Shutdown timed out", wantExit: cli.ExitGeneral},
 	}
 
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			if got := cli.ProblemForError(tt.err).ExitCode; got != tt.want {
-				t.Fatalf("ProblemForError().ExitCode = %d, want %d", got, tt.want)
+			got := cli.ProblemForError(tt.err)
+			if got.Code != tt.wantCode {
+				t.Fatalf("ProblemForError().Code = %q, want %q", got.Code, tt.wantCode)
+			}
+			if got.Type != "https://detent.dev/errors/"+tt.wantCode {
+				t.Fatalf("ProblemForError().Type = %q, want slug %q", got.Type, tt.wantCode)
+			}
+			if got.Title != tt.wantTitle {
+				t.Fatalf("ProblemForError().Title = %q, want %q", got.Title, tt.wantTitle)
+			}
+			if got.ExitCode != tt.wantExit {
+				t.Fatalf("ProblemForError().ExitCode = %d, want %d", got.ExitCode, tt.wantExit)
+			}
+			wantDocs := "https://detent.dev/docs/cli#" + strings.ReplaceAll(tt.wantCode, "_", "-")
+			if got.DocsURL != wantDocs {
+				t.Fatalf("ProblemForError().DocsURL = %q, want %q", got.DocsURL, wantDocs)
+			}
+			if strings.TrimSpace(got.Detail) == "" {
+				t.Fatal("ProblemForError().Detail is empty")
 			}
 		})
+	}
+}
+
+func TestProblemForErrorExtractsInlineDidYouMeanFromHint(t *testing.T) {
+	t.Parallel()
+
+	err := &cli.HintedError{
+		Err:     cli.ErrProjectNotFound,
+		Message: `project "ap" not found`,
+		Hint: "available: api, web, infra\n" +
+			"did you mean \"api\"? see `detent config path`, then retry",
+		Commands: []string{"detent config path"},
+	}
+
+	got := cli.ProblemForError(err)
+	if !reflect.DeepEqual(got.DidYouMean, []string{"api"}) {
+		t.Fatalf("ProblemForError().DidYouMean = %#v, want api", got.DidYouMean)
+	}
+	if got.SuggestedFix != err.Hint {
+		t.Fatalf("ProblemForError().SuggestedFix = %q, want %q", got.SuggestedFix, err.Hint)
 	}
 }
 

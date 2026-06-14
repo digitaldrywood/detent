@@ -19,7 +19,8 @@ const (
 	errorCodeProjectExists   = "project_exists"
 	errorCodeProjectNotFound = "project_not_found"
 	errorCodeDoctorFailed    = "doctor_failed"
-	errorCodeShutdown        = "shutdown"
+	errorCodeShutdownForced  = "shutdown_forced"
+	errorCodeShutdownTimeout = "shutdown_timeout"
 )
 
 type ClassifiedError struct {
@@ -87,18 +88,19 @@ func NewClassifiedError(err error, code string, detail string, hint string, didY
 }
 
 func ProblemForError(err error) Problem {
-	code := classifyErrorCode(err)
+	class := classifyError(err)
+	code := class.Slug
 	detail := ErrorDetail(err)
 	didYouMean := ErrorDidYouMean(err)
 	problem := Problem{
 		Type:         "https://detent.dev/errors/" + code,
 		Code:         code,
-		Title:        errorTitle(code),
+		Title:        class.Title,
 		Detail:       detail,
-		ExitCode:     problemExitCode(err, code),
+		ExitCode:     class.ExitCode,
 		SuggestedFix: ErrorHint(err),
 		DidYouMean:   didYouMean,
-		DocsURL:      "https://detent.dev/docs/cli#" + code,
+		DocsURL:      docsURLForErrorCode(code),
 	}
 	if problem.SuggestedFix == "" {
 		problem.SuggestedFix = defaultSuggestedFix(code, didYouMean)
@@ -122,19 +124,6 @@ func ProblemForCommandError(cmd *cobra.Command, err error) Problem {
 	problem.DidYouMean = suggestions
 	problem.SuggestedFix = defaultSuggestedFix(problem.Code, suggestions)
 	return problem
-}
-
-func problemExitCode(err error, code string) int {
-	switch code {
-	case errorCodeGitHubAuth:
-		return ExitAuth
-	case errorCodeValidation, errorCodeUnknownCommand, errorCodeUnknownFlag:
-		return ExitValidation
-	case errorCodeConfigExists, errorCodeProjectExists, errorCodeProjectNotFound:
-		return ExitNotFoundOrConfig
-	default:
-		return ExitCode(err)
-	}
 }
 
 func ErrorDetail(err error) string {
@@ -191,72 +180,6 @@ func WritePrettyError(out io.Writer, err error) error {
 	return nil
 }
 
-func classifyErrorCode(err error) string {
-	var classified *ClassifiedError
-	if errors.As(err, &classified) && classified.Code != "" {
-		return classified.Code
-	}
-	var hinted *HintedError
-	if errors.As(err, &hinted) && hinted.Err == nil {
-		return errorCodeValidation
-	}
-	switch {
-	case errors.Is(err, ErrGitHubAuth):
-		return errorCodeGitHubAuth
-	case errors.Is(err, ErrConfigExists):
-		return errorCodeConfigExists
-	case errors.Is(err, ErrProjectExists):
-		return errorCodeProjectExists
-	case errors.Is(err, ErrProjectNotFound):
-		return errorCodeProjectNotFound
-	case errors.Is(err, ErrDoctorFailed):
-		return errorCodeDoctorFailed
-	case errors.Is(err, ErrShutdownForced), errors.Is(err, ErrShutdownTimeout):
-		return errorCodeShutdown
-	}
-	text := ""
-	if err != nil {
-		text = err.Error()
-	}
-	switch {
-	case strings.Contains(text, "unknown command"):
-		return errorCodeUnknownCommand
-	case strings.Contains(text, "unknown flag"):
-		return errorCodeUnknownFlag
-	case strings.Contains(text, githubAuthHint), strings.Contains(text, "github_token"):
-		return errorCodeGitHubAuth
-	case errors.Is(err, ErrValidation), errors.Is(err, ErrInvalidOutputFormat):
-		return errorCodeValidation
-	default:
-		return errorCodeGeneral
-	}
-}
-
-func errorTitle(code string) string {
-	switch code {
-	case errorCodeValidation:
-		return "Validation failed"
-	case errorCodeUnknownCommand:
-		return "Unknown command"
-	case errorCodeUnknownFlag:
-		return "Unknown flag"
-	case errorCodeGitHubAuth:
-		return "GitHub authentication required"
-	case errorCodeConfigExists:
-		return "Global config already exists"
-	case errorCodeProjectExists:
-		return "Project already exists"
-	case errorCodeProjectNotFound:
-		return "Project not found"
-	case errorCodeDoctorFailed:
-		return "Doctor checks failed"
-	case errorCodeShutdown:
-		return "Shutdown failed"
-	default:
-		return "Command failed"
-	}
-}
-
 func defaultSuggestedFix(code string, didYouMean []string) string {
 	switch {
 	case code == errorCodeUnknownCommand && len(didYouMean) > 0:
@@ -278,11 +201,18 @@ func firstNonEmptyLine(text string) string {
 	return strings.TrimSpace(text)
 }
 
+func docsURLForErrorCode(code string) string {
+	return "https://detent.dev/docs/cli#" + strings.ReplaceAll(code, "_", "-")
+}
+
 func parseDidYouMean(text string) []string {
 	lines := strings.Split(text, "\n")
 	for index, line := range lines {
 		if !strings.Contains(strings.ToLower(line), "did you mean") {
 			continue
+		}
+		if suggestion := inlineDidYouMeanSuggestion(line); suggestion != "" {
+			return []string{suggestion}
 		}
 		var suggestions []string
 		for _, candidate := range lines[index+1:] {
@@ -294,20 +224,29 @@ func parseDidYouMean(text string) []string {
 		}
 		return compactStrings(suggestions)
 	}
-	if start := strings.Index(strings.ToLower(text), "did you mean "); start >= 0 {
-		candidate := strings.TrimSpace(text[start+len("did you mean "):])
-		if after, ok := strings.CutPrefix(candidate, "\""); ok {
-			candidate = after
-			if end := strings.Index(candidate, "\""); end >= 0 {
-				candidate = candidate[:end]
-			}
-		} else if fields := strings.Fields(candidate); len(fields) > 0 {
-			candidate = fields[0]
-		}
-		candidate = strings.Trim(candidate, "?`\"")
-		return compactStrings([]string{candidate})
-	}
 	return nil
+}
+
+func inlineDidYouMeanSuggestion(line string) string {
+	lower := strings.ToLower(line)
+	start := strings.Index(lower, "did you mean")
+	if start < 0 {
+		return ""
+	}
+	candidate := strings.TrimSpace(line[start+len("did you mean"):])
+	candidate = strings.TrimLeft(candidate, " :")
+	if candidate == "" || strings.HasPrefix(strings.ToLower(candidate), "this") {
+		return ""
+	}
+	if after, ok := strings.CutPrefix(candidate, "\""); ok {
+		if end := strings.Index(after, "\""); end >= 0 {
+			return strings.TrimSpace(after[:end])
+		}
+		candidate = after
+	} else if fields := strings.Fields(candidate); len(fields) > 0 {
+		candidate = fields[0]
+	}
+	return strings.Trim(candidate, "?`\"")
 }
 
 func unknownCommandName(detail string) string {
