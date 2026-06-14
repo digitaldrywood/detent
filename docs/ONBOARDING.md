@@ -230,19 +230,32 @@ change.
    ```
 
 3. **Inspect the validation surface.** Prefer a repo-local release gate over an
-   invented command. If `make check` exists, recommend `gate.kind: command`
-   with `gate.run: make check`. If there is no local command but CI is clear,
-   recommend the closest local equivalent. If no command can be inferred,
-   recommend `gate.kind: human_review` with an approval label only when the
-   workflow explicitly wants a human label to promote. Verify:
+   invented command. Do not assume the target repository is written in Go. First
+   identify its manifests, package managers, task runners, CI workflows, and
+   existing release commands. If `make check` exists, recommend
+   `gate.kind: command` with `gate.run: make check`. Otherwise recommend the
+   closest local equivalent for the detected ecosystem, such as `mix test`,
+   `bundle exec rspec`, `npm test`, `pnpm test`, `pytest`, `cargo test`,
+   `composer test`, `mvn test`, `gradle test`, `dotnet test`, or a documented
+   static-site/build check. If no command can be inferred, recommend
+   `gate.kind: human_review` with an approval label only when the workflow
+   explicitly wants a human label to promote. Verify:
 
    ```sh
    cd <source-root>
+   MANIFEST_PATTERN='^(Makefile|Justfile|justfile|Taskfile\.ya?ml|package\.json|pnpm-lock\.yaml|yarn\.lock|bun\.lockb|deno\.jsonc?|go\.mod|mix\.exs|Gemfile|Rakefile|pyproject\.toml|requirements\.txt|tox\.ini|noxfile\.py|Cargo\.toml|composer\.json|pom\.xml|build\.gradle(\.kts)?|settings\.gradle(\.kts)?|Package\.swift|pubspec\.yaml|build\.zig|\.tool-versions|mise\.toml)$'
+   GATE_PATTERN='make check|make test|go test|npm (run )?test|npm test|pnpm (run )?test|yarn test|bun test|deno test|mix test|bundle exec rspec|bundle exec rake|rspec|rake test|pytest|python -m pytest|tox|nox|cargo test|composer test|phpunit|mvn test|gradle test|./gradlew test|dotnet test|swift test|flutter test|zig build test|just |task '
    {
+     printf 'Detected manifests:\n'
+     fd -H -a -d 4 "$MANIFEST_PATTERN" . 2>/dev/null || true
+     printf '\nCandidate validation commands:\n'
      test -f Makefile && awk -F: '/^[A-Za-z0-9][A-Za-z0-9_.-]*:/ {print "make " $1}' Makefile
      fd -a '' .github/workflows 2>/dev/null || true
-     rg -n 'make check|go test|npm test|pnpm test|pytest|cargo test|just|task' \
-       Makefile .github/workflows package.json go.mod pyproject.toml justfile Taskfile.yml \
+     rg -n "$GATE_PATTERN" \
+       .github/workflows Makefile Justfile justfile Taskfile.yml Taskfile.yaml \
+       package.json deno.json deno.jsonc go.mod mix.exs Gemfile Rakefile \
+       pyproject.toml tox.ini noxfile.py Cargo.toml composer.json pom.xml \
+       build.gradle build.gradle.kts Package.swift pubspec.yaml build.zig \
        2>/dev/null || true
    } > "$ONBOARDING_DIR/gate.txt"
    test -f "$ONBOARDING_DIR/gate.txt"
@@ -497,10 +510,12 @@ recommendation, and default-if-silent. Record answers in
 7. **Validation gate.** Ask: "Use the detected command, a custom command, or a
    human review label gate? If this is a command gate, should auto-promotion
    require an automated GitHub PR review from a bot?" Recommendation source:
-   `$ONBOARDING_DIR/gate.txt`, Makefile targets, CI workflow commands, and the
-   repo's review policy. Default if silent: detected `make check` when present
-   with `require_automated_review: true`; otherwise `kind: human_review` with
-   `approval_label: human-approved`. Verify:
+   `$ONBOARDING_DIR/gate.txt`, detected manifests, task runners, CI workflow
+   commands, and the repo's review policy. Default if silent: detected
+   `make check` when present with `require_automated_review: true`; otherwise
+   use the strongest ecosystem-specific command from the repo evidence, or
+   `kind: human_review` with `approval_label: human-approved` when no reliable
+   local command exists. Verify:
 
    ```sh
    printf '%s\n' \
@@ -590,15 +605,24 @@ recommendation, and default-if-silent. Record answers in
 
 11. **Prompt body.** Ask: "Use the template prompt or add repo-specific
    instructions?" Recommendation source: `CLAUDE.md`, `AGENTS.md`,
-   `CONTRIBUTING.md`, README development commands, and CI workflows in
-   `<source-root>`. Default if silent: template prompt plus any repo authority
-   files found. Verify:
+   `CONTRIBUTING.md`, README development commands, manifests, and CI workflows
+   in `<source-root>`. Default if silent: template prompt plus any repo
+   authority files found. Verify:
 
    ```sh
+   AUTHORITY_PATTERN='^(CLAUDE|AGENTS|CONTRIBUTING|README)\.md$'
+   MANIFEST_PATTERN='^(Makefile|Justfile|justfile|Taskfile\.ya?ml|package\.json|deno\.jsonc?|go\.mod|mix\.exs|Gemfile|Rakefile|pyproject\.toml|Cargo\.toml|composer\.json|pom\.xml|build\.gradle(\.kts)?|Package\.swift|pubspec\.yaml|build\.zig|\.tool-versions|mise\.toml)$'
+   GATE_PATTERN='make check|make test|go test|npm (run )?test|npm test|pnpm (run )?test|yarn test|bun test|deno test|mix test|bundle exec rspec|rspec|rake test|pytest|python -m pytest|cargo test|composer test|phpunit|mvn test|gradle test|./gradlew test|dotnet test|swift test|flutter test|zig build test'
    {
-     fd -a '^(CLAUDE|AGENTS|CONTRIBUTING)\.md$' <source-root> 2>/dev/null || true
-     rg -n 'make check|go test|npm test|pnpm test|pytest|cargo test' \
-       <source-root>/README.md <source-root>/CONTRIBUTING.md <source-root>/.github/workflows \
+     fd -H -a -d 4 "$AUTHORITY_PATTERN" <source-root> 2>/dev/null || true
+     fd -H -a -d 4 "$MANIFEST_PATTERN" <source-root> 2>/dev/null || true
+     rg -n "$GATE_PATTERN" \
+       <source-root>/README.md <source-root>/CONTRIBUTING.md \
+       <source-root>/.github/workflows <source-root>/package.json \
+       <source-root>/mix.exs <source-root>/Gemfile <source-root>/Rakefile \
+       <source-root>/pyproject.toml <source-root>/Cargo.toml \
+       <source-root>/composer.json <source-root>/pom.xml \
+       <source-root>/build.gradle <source-root>/build.gradle.kts \
        2>/dev/null || true
    } > "$ONBOARDING_DIR/prompt-evidence.txt"
    printf 'PROMPT_MODE=<template|repo-specific>\n' >> "$ONBOARDING_DIR/answers.env"
@@ -1050,24 +1074,32 @@ recommendation, and default-if-silent. Record answers in
 5. **Verify the systemd service PATH when Detent runs as a user service.**
    User services do not inherit the interactive shell PATH. `detent doctor`
    verifies Detent's direct dependencies, but a first dispatch can still fail
-   if repo hooks or validation gates call tools from a project-local directory
-   that is missing from the service environment, such as `$HOME/go/bin` for
-   `air`. Copy the exact `Environment=PATH=...` value from `detent.service`,
-   then verify Detent tools and every command used by `hooks.*` and the gate
-   from that same service context:
+   if repo hooks or validation gates call tools from project-local, language
+   manager, or user binary directories that are missing from the service
+   environment. Copy the exact `Environment=PATH=...` value from
+   `detent.service`, then verify Detent tools and every command used by
+   `hooks.*` and the selected gate from that same service context. Replace the
+   placeholder tools below with the actual binaries required by the target repo,
+   such as `mix`, `bundle`, `ruby`, `node`, `pnpm`, `python`, `cargo`, `composer`,
+   `mvn`, `gradle`, `dotnet`, or a static-site generator:
 
    ```sh
    systemd-run --user --wait --collect --pipe \
      --property=Environment=PATH=<same-path-as-detent.service> \
-     /usr/bin/bash -lc 'command -v gh; command -v codex; command -v git; command -v detent; command -v go; command -v npm; command -v npx; command -v air'
+     /usr/bin/bash -lc '
+       for tool in gh codex git detent <gate-tool> <hook-tool>; do
+         command -v "$tool"
+       done
+     '
    ```
 
-   Add every missing tool directory to the service PATH before dispatching. For
-   example, if a repository bootstrap uses `air`, include the Go user binary
-   directory:
+   Add every missing tool directory to the service PATH before dispatching. Use
+   the directories required by the target repo's language manager and selected
+   validation gate; do not add Go or npm paths unless that repo needs them. For
+   example:
 
    ```ini
-   Environment=PATH=/home/<user>/.local/bin:/home/<user>/.npm-global/bin:/home/<user>/go/bin:/usr/local/go/bin:/usr/bin:/bin
+   Environment=PATH=/home/<user>/.local/bin:/home/<user>/.asdf/shims:/home/<user>/.cargo/bin:/usr/local/bin:/usr/bin:/bin
    ```
 
    When the project defines `hooks.after_create` or other bootstrap hooks,
@@ -1321,7 +1353,8 @@ What is broken, missing, or valuable, and who cares?
 
 ## Validation
 
-- Exact command the agent must run, such as `make check`.
+- Exact command the agent must run, such as `make check`, `mix test`,
+  `bundle exec rspec`, `npm test`, or another repo-specific gate.
 - Any focused tests or manual checks expected before the full gate.
 
 ## Dependencies

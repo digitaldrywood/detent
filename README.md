@@ -20,9 +20,12 @@ You are onboarding Detent with me. Treat this as an AI-driven project, not a
 manual README skim.
 
 Start by inspecting this repository. Read README.md, CLAUDE.md or AGENTS.md if
-present, docs/ONBOARDING.md, CONTRIBUTING.md, Makefile, go.mod, .github/workflows,
-install scripts, and any existing WORKFLOW.md or global.yaml examples. Do not
-ask setup questions until you have gathered local evidence.
+present, docs/ONBOARDING.md, CONTRIBUTING.md, build and language manifests,
+.github/workflows, install scripts, and any existing WORKFLOW.md or global.yaml
+examples. Do not assume the target repository is a Go project; Detent can drive
+Elixir, Ruby, JavaScript, Python, static web, or any other project with a clear
+workflow and validation gate. Do not ask setup questions until you have gathered
+local evidence.
 
 Use docs/ONBOARDING.md as the interrogation guide. First determine which path
 applies: a new Detent install, an existing Detent install that must be found and
