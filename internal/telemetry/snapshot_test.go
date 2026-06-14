@@ -291,6 +291,89 @@ func TestSnapshotJSONShape(t *testing.T) {
 	}
 }
 
+func TestSnapshotJSONZeroValueSemantics(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 6, 13, 0, 0, 0, 0, time.UTC)
+	end := start.Add(24 * time.Hour)
+
+	tests := []struct {
+		name              string
+		snapshot          telemetry.Snapshot
+		wantBudgetPresent []string
+		wantBudgetMissing []string
+	}{
+		{
+			name:              "zero budget period omitted",
+			snapshot:          telemetry.Snapshot{},
+			wantBudgetMissing: []string{"period_start", "period_end"},
+		},
+		{
+			name: "configured budget period emitted",
+			snapshot: telemetry.Snapshot{
+				Budget: telemetry.Budget{
+					Enabled:     true,
+					PeriodStart: start,
+					PeriodEnd:   end,
+				},
+			},
+			wantBudgetPresent: []string{"period_start", "period_end"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := json.Marshal(tt.snapshot)
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+
+			var got map[string]any
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+
+			for _, key := range []string{"shutdown", "throughput", "cycle_time"} {
+				if _, ok := got[key]; !ok {
+					t.Fatalf("snapshot JSON missing %q: %s", key, string(data))
+				}
+			}
+
+			budget := got["budget"].(map[string]any)
+			for _, key := range tt.wantBudgetPresent {
+				if _, ok := budget[key]; !ok {
+					t.Fatalf("budget JSON missing %q: %s", key, string(data))
+				}
+			}
+			for _, key := range tt.wantBudgetMissing {
+				if _, ok := budget[key]; ok {
+					t.Fatalf("budget JSON includes %q: %s", key, string(data))
+				}
+			}
+		})
+	}
+}
+
+func TestProjectSnapshotJSONKeepsZeroThroughput(t *testing.T) {
+	t.Parallel()
+
+	data, err := json.Marshal(telemetry.ProjectSnapshot{})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+
+	if _, ok := got["throughput"]; !ok {
+		t.Fatalf("project snapshot JSON missing throughput: %s", string(data))
+	}
+}
+
 func TestBoardStateCountsAggregateSnapshotStates(t *testing.T) {
 	t.Parallel()
 

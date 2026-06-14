@@ -25,9 +25,9 @@ type Input struct {
 
 type Scenario struct {
 	Config       DispatchConfig  `json:"config"`
-	InitialState InitialState    `json:"initial_state"`
+	InitialState InitialState    `json:"initial_state,omitzero"`
 	Candidates   []Issue         `json:"candidates,omitempty"`
-	Tokens       TokenAccounting `json:"tokens"`
+	Tokens       TokenAccounting `json:"tokens,omitzero"`
 }
 
 type DispatchConfig struct {

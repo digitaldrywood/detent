@@ -1,6 +1,7 @@
 package shadow
 
 import (
+	"encoding/json"
 	"slices"
 	"testing"
 	"time"
@@ -154,6 +155,63 @@ func TestRunDiffsDispatchDetailsWhenBothReportsIncludeThem(t *testing.T) {
 	}
 	if !diffFieldsContain(report.Diff.Dispatch, "dispatch_details") {
 		t.Fatalf("Dispatch diffs = %#v, want dispatch_details", report.Diff.Dispatch)
+	}
+}
+
+func TestScenarioJSONOptionalStructs(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		scenario    Scenario
+		wantPresent []string
+		wantMissing []string
+	}{
+		{
+			name: "zero optional structs omitted",
+			scenario: Scenario{
+				Config: DispatchConfig{MaxConcurrentAgents: 1},
+			},
+			wantMissing: []string{"initial_state", "tokens"},
+		},
+		{
+			name: "populated optional structs emitted",
+			scenario: Scenario{
+				Config: DispatchConfig{MaxConcurrentAgents: 1},
+				InitialState: InitialState{
+					Running: []Running{{Issue: Issue{ID: "issue-running"}}},
+				},
+				Tokens: TokenAccounting{TotalTokens: 12},
+			},
+			wantPresent: []string{"initial_state", "tokens"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data, err := json.Marshal(tt.scenario)
+			if err != nil {
+				t.Fatalf("Marshal() error = %v", err)
+			}
+
+			var got map[string]any
+			if err := json.Unmarshal(data, &got); err != nil {
+				t.Fatalf("Unmarshal() error = %v", err)
+			}
+
+			for _, key := range tt.wantPresent {
+				if _, ok := got[key]; !ok {
+					t.Fatalf("scenario JSON missing %q: %s", key, string(data))
+				}
+			}
+			for _, key := range tt.wantMissing {
+				if _, ok := got[key]; ok {
+					t.Fatalf("scenario JSON includes %q: %s", key, string(data))
+				}
+			}
+		})
 	}
 }
 

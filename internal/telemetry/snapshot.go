@@ -165,8 +165,8 @@ type Budget struct {
 	CurrentSpendUSD   float64            `json:"current_spend_usd"`
 	ProjectedCostUSD  float64            `json:"projected_cost_usd"`
 	ProjectedSpendUSD float64            `json:"projected_spend_usd,omitempty"`
-	PeriodStart       time.Time          `json:"period_start"`
-	PeriodEnd         time.Time          `json:"period_end"`
+	PeriodStart       time.Time          `json:"period_start,omitzero"`
+	PeriodEnd         time.Time          `json:"period_end,omitzero"`
 	SpendPoints       []BudgetSpendPoint `json:"spend_points,omitempty"`
 	Days              []BudgetDay        `json:"days,omitempty"`
 	Refusals          []BudgetRefusal    `json:"refusals,omitempty"`
