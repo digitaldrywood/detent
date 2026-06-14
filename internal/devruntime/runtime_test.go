@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"gopkg.in/yaml.v3"
@@ -113,6 +114,11 @@ func TestBuildRejectsUnsafeRuntimeInputs(t *testing.T) {
 			cfg:  Config{Home: t.TempDir(), DBPath: liveDatabasePath()},
 			want: ErrLiveDatabase,
 		},
+		{
+			name: "live database sqlite file uri",
+			cfg:  Config{Home: t.TempDir(), DBPath: sqliteLiveDatabaseURI()},
+			want: ErrLiveDatabase,
+		},
 	}
 
 	for _, tt := range tests {
@@ -143,4 +149,24 @@ func TestBuildAllowsExplicitUnsafeOverrides(t *testing.T) {
 	if runtime.Port != liveDogfoodPort {
 		t.Fatalf("Port = %d, want %d", runtime.Port, liveDogfoodPort)
 	}
+}
+
+func TestBuildAllowsNamedSharedMemoryURI(t *testing.T) {
+	t.Parallel()
+
+	dbPath := "file:detent-dev-runtime?mode=memory&cache=shared"
+	runtime, err := Build(Config{
+		Home:   t.TempDir(),
+		DBPath: dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if runtime.DBPath != dbPath || runtime.DBMode != "memory" {
+		t.Fatalf("DB = %q mode %q, want shared memory URI", runtime.DBPath, runtime.DBMode)
+	}
+}
+
+func sqliteLiveDatabaseURI() string {
+	return "file:" + strings.ReplaceAll(filepath.ToSlash(liveDatabasePath()), " ", "%20") + "?mode=rw"
 }

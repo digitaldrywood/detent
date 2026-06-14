@@ -3,6 +3,7 @@ package devruntime
 import (
 	"errors"
 	"fmt"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -166,10 +167,42 @@ func runtimeDBPath(home string, path string, allowLive bool) (string, error) {
 			path = filepath.Join(home, path)
 		}
 	}
-	if !allowLive && samePath(path, liveDatabasePath()) {
+	guardPath := path
+	if uriPath, ok := sqliteURIFilePath(path); ok {
+		guardPath = uriPath
+	}
+	if !allowLive && samePath(guardPath, liveDatabasePath()) {
 		return "", fmt.Errorf("%w: %s", ErrLiveDatabase, path)
 	}
 	return path, nil
+}
+
+func sqliteURIFilePath(path string) (string, bool) {
+	path = strings.TrimSpace(path)
+	if !strings.HasPrefix(strings.ToLower(path), "file:") {
+		return "", false
+	}
+	parsed, err := url.Parse(path)
+	if err != nil {
+		return "", false
+	}
+	if strings.EqualFold(parsed.Query().Get("mode"), "memory") {
+		return "", false
+	}
+
+	candidate := parsed.Path
+	if candidate == "" {
+		candidate = parsed.Opaque
+	}
+	candidate = strings.TrimSpace(candidate)
+	if candidate == "" || strings.HasPrefix(candidate, ":memory:") {
+		return "", false
+	}
+	unescaped, err := url.PathUnescape(candidate)
+	if err == nil {
+		candidate = unescaped
+	}
+	return filepath.FromSlash(candidate), true
 }
 
 func liveDatabasePath() string {
