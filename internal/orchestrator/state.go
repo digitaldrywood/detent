@@ -192,6 +192,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	if issue.PullRequest != nil {
 		pullRequest := *issue.PullRequest
+		if issue.PullRequest.ActivityAt != nil {
+			activityAt := *issue.PullRequest.ActivityAt
+			pullRequest.ActivityAt = &activityAt
+		}
 		if issue.PullRequest.CodexReviewSubmittedAt != nil {
 			submittedAt := *issue.PullRequest.CodexReviewSubmittedAt
 			pullRequest.CodexReviewSubmittedAt = &submittedAt

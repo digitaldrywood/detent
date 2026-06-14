@@ -46,6 +46,7 @@ type PullRequest struct {
 	URL                          string               `json:"url,omitempty" yaml:"url,omitempty"`
 	BranchName                   string               `json:"branch_name,omitempty" yaml:"branch_name,omitempty"`
 	State                        string               `json:"state,omitempty" yaml:"state,omitempty"`
+	ActivityAt                   *time.Time           `json:"activity_at,omitempty" yaml:"activity_at,omitempty"`
 	HeadSHA                      string               `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
 	CIStatus                     string               `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
 	CodexReviewState             string               `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`

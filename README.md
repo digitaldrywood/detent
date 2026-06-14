@@ -370,9 +370,11 @@ plus green CI, no P1 automated PR review findings, a quiet window, and a
 current-head automated PR review before auto-promotion. Set
 `require_automated_review: false` on a command gate when the workflow should
 auto-promote from `Human Review` after a linked open PR, green CI, no P1 bot
-review findings, and the quiet period. Use `kind: human_review` with
-`approval_label` only when the workflow explicitly requires a human approval
-label to promote.
+review findings, and the quiet period. The quiet period resets on observed
+issue updates, Project status updates, automated PR review submission, and
+linked PR activity such as a fresh push to the PR head. Use
+`kind: human_review` with `approval_label` only when the workflow explicitly
+requires a human approval label to promote.
 
 For production, self-hosted, or multi-instance GitHub Projects, prefer GitHub
 App installation authentication instead of a shared personal access token. App
@@ -654,6 +656,10 @@ of that state is controlled by the workflow:
   review to exist.
 - `gate.kind: human_review` requires a linked open PR plus the configured
   `approval_label` on the issue.
+
+The quiet period resets on observed issue updates, Project status updates,
+automated PR review submission, and linked PR activity such as a fresh push to
+the PR head.
 
 A Codex coding session that created the PR is not the same signal as a
 Codex/ChatGPT/Claude GitHub PR review. If automated PR review is required and

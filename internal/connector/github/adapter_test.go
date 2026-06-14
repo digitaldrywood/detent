@@ -458,7 +458,7 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
-			body:   `[{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182_followup","sha":"sha-187"}},{"number":188,"html_url":"https://github.com/digitaldrywood/detent/pull/188","state":"closed","head":{"ref":"detent/digitaldrywood_detent_181","sha":"sha-188"},"merged_at":"2026-06-01T00:00:00Z"}]`,
+			body:   `[{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","updated_at":"2026-06-05T11:30:00Z","head":{"ref":"detent/digitaldrywood_detent_182_followup","sha":"sha-187"}},{"number":188,"html_url":"https://github.com/digitaldrywood/detent/pull/188","state":"closed","head":{"ref":"detent/digitaldrywood_detent_181","sha":"sha-188"},"merged_at":"2026-06-01T00:00:00Z"}]`,
 		},
 		{
 			method: http.MethodGet,
@@ -500,6 +500,10 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 	}
 	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "detent/digitaldrywood_detent_182_followup" || pr.CIStatus != "pass" || pr.CodexReviewState != "COMMENTED" {
 		t.Fatalf("I_182 PullRequest = %#v, want PR 187 open followup", pr)
+	}
+	wantActivityAt := time.Date(2026, 6, 5, 11, 30, 0, 0, time.UTC)
+	if pr.ActivityAt == nil || !pr.ActivityAt.Equal(wantActivityAt) {
+		t.Fatalf("I_182 PullRequest.ActivityAt = %v, want %v", pr.ActivityAt, wantActivityAt)
 	}
 	wantReviewSubmittedAt := time.Date(2026, 6, 5, 11, 0, 0, 0, time.UTC)
 	if pr.CodexReviewSubmittedAt == nil || !pr.CodexReviewSubmittedAt.Equal(wantReviewSubmittedAt) {

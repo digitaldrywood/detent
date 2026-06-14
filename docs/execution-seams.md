@@ -23,6 +23,9 @@ The execution edge still carries these code/git/PR assumptions.
 - `gate.kind: command` with `require_automated_review: false` keeps the
   command, linked PR, green CI, no-P1, and quiet-period checks but does not
   require an automated GitHub PR review to exist before promotion.
+- The quiet period resets on observed issue updates, Project status updates,
+  automated PR review submission, and linked PR activity such as a fresh push
+  to the PR head.
 - `gate.kind: human_review` requires a PR plus `gate.approval_label`
   (`human-approved` by default) before promotion.
 - `internal/runner/prompt.go` renders gate variables and appends gate

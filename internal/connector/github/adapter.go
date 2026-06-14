@@ -585,6 +585,7 @@ type pullRequestNode struct {
 	Number        int                               `json:"number"`
 	URL           string                            `json:"url"`
 	State         string                            `json:"state"`
+	ActivityAt    *time.Time                        `json:"activityAt"`
 	HeadRefName   string                            `json:"headRefName"`
 	HeadSHA       string                            `json:"headSHA"`
 	Commits       nodeConnection[pullRequestCommit] `json:"commits"`
@@ -648,11 +649,12 @@ type restAssignee struct {
 }
 
 type restPullRequest struct {
-	Number   int      `json:"number"`
-	HTMLURL  string   `json:"html_url"`
-	State    string   `json:"state"`
-	Head     restHead `json:"head"`
-	MergedAt *string  `json:"merged_at"`
+	Number    int        `json:"number"`
+	HTMLURL   string     `json:"html_url"`
+	State     string     `json:"state"`
+	Head      restHead   `json:"head"`
+	UpdatedAt *time.Time `json:"updated_at"`
+	MergedAt  *string    `json:"merged_at"`
 }
 
 type restHead struct {
@@ -1549,6 +1551,7 @@ func attachMatchingPullRequestMergeStates(
 				URL:        strings.TrimSpace(pullRequest.URL),
 				BranchName: branchName,
 				State:      strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+				ActivityAt: cloneGitHubTime(pullRequest.ActivityAt),
 			}
 			if issues[candidate.Index].PRNumber == nil && pullRequest.Number > 0 {
 				number := pullRequest.Number
@@ -1676,6 +1679,7 @@ func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 		Number:      pullRequest.Number,
 		URL:         pullRequest.HTMLURL,
 		State:       restPullRequestState(pullRequest),
+		ActivityAt:  cloneGitHubTime(pullRequest.UpdatedAt),
 		HeadRefName: pullRequest.Head.Ref,
 		HeadSHA:     pullRequest.Head.SHA,
 	}
@@ -1687,6 +1691,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		URL:                          strings.TrimSpace(pullRequest.URL),
 		BranchName:                   strings.TrimSpace(pullRequest.HeadRefName),
 		State:                        strings.ToUpper(strings.TrimSpace(pullRequest.State)),
+		ActivityAt:                   cloneGitHubTime(pullRequest.ActivityAt),
 		HeadSHA:                      strings.TrimSpace(pullRequest.HeadSHA),
 		CIStatus:                     normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
 		CodexReviewState:             pullRequestCodexReviewState(pullRequest),
@@ -3306,6 +3311,14 @@ func parseGitHubTime(value *string) *time.Time {
 		return nil
 	}
 	return &parsed
+}
+
+func cloneGitHubTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func parseModelOverride(body string) string {

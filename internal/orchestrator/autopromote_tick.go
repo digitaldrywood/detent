@@ -80,6 +80,7 @@ func autoPromoteLastActivityAt(issue connector.Issue) *time.Time {
 	latest = latestTime(latest, issue.StageUpdatedAt)
 	latest = latestTime(latest, issue.UpdatedAt)
 	if issue.PullRequest != nil {
+		latest = latestTime(latest, issue.PullRequest.ActivityAt)
 		latest = latestTime(latest, issue.PullRequest.CodexReviewSubmittedAt)
 	}
 	return latest
