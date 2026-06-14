@@ -22,10 +22,10 @@ manual README skim.
 Start by inspecting this repository. Read README.md, CLAUDE.md or AGENTS.md if
 present, docs/ONBOARDING.md, CONTRIBUTING.md, build and language manifests,
 .github/workflows, install scripts, and any existing WORKFLOW.md or global.yaml
-examples. Do not assume the target repository is a Go project; Detent can drive
-Elixir, Ruby, JavaScript, Python, static web, or any other project with a clear
-workflow and validation gate. Do not ask setup questions until you have gathered
-local evidence.
+examples. Detent can drive any project with a clear workflow and validation
+gate, so use the repository evidence to identify the stack, tools, and commands
+instead of starting from one language. Do not ask setup questions until you have
+gathered local evidence.
 
 Use docs/ONBOARDING.md as the interrogation guide. First determine which path
 applies: a new Detent install, an existing Detent install that must be found and

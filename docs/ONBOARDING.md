@@ -230,9 +230,9 @@ change.
    ```
 
 3. **Inspect the validation surface.** Prefer a repo-local release gate over an
-   invented command. Do not assume the target repository is written in Go. First
-   identify its manifests, package managers, task runners, CI workflows, and
-   existing release commands. If `make check` exists, recommend
+   invented command. Detent is stack-agnostic at the project boundary: identify
+   the target repository's manifests, package managers, task runners, CI
+   workflows, and existing release commands. If `make check` exists, recommend
    `gate.kind: command` with `gate.run: make check`. Otherwise recommend the
    closest local equivalent for the detected ecosystem, such as `mix test`,
    `bundle exec rspec`, `npm test`, `pnpm test`, `pytest`, `cargo test`,
@@ -1095,8 +1095,7 @@ recommendation, and default-if-silent. Record answers in
 
    Add every missing tool directory to the service PATH before dispatching. Use
    the directories required by the target repo's language manager and selected
-   validation gate; do not add Go or npm paths unless that repo needs them. For
-   example:
+   validation gate. For example:
 
    ```ini
    Environment=PATH=/home/<user>/.local/bin:/home/<user>/.asdf/shims:/home/<user>/.cargo/bin:/usr/local/bin:/usr/bin:/bin
