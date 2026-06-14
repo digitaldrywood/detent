@@ -690,7 +690,7 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/commits/sha-190/check-runs?per_page=100",
-			body:   `{"check_runs":[{"status":"completed","conclusion":"failure"}]}`,
+			body:   `{"check_runs":[{"name":"Verify (ubuntu-latest)","status":"completed","conclusion":"success","started_at":"2026-06-05T11:00:00Z","completed_at":"2026-06-05T11:03:00Z"},{"name":"GoReleaser Snapshot","status":"completed","conclusion":"failure","started_at":"2026-06-05T11:03:30Z","completed_at":"2026-06-05T11:11:30Z"},{"name":"Windows Core","status":"in_progress","conclusion":"","started_at":"2026-06-05T11:05:00Z","completed_at":null}]}`,
 		},
 		{
 			method: http.MethodGet,
@@ -722,10 +722,49 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	if pr == nil || pr.Number != 190 || pr.CIStatus != "fail" || pr.CodexReviewState != "P1" {
 		t.Fatalf("PullRequest = %#v, want PR 190 with failing CI and P1 review", pr)
 	}
+	if pr.CIDurationSeconds != 0 {
+		t.Fatalf("CIDurationSeconds = %d, want 0 while checks are running", pr.CIDurationSeconds)
+	}
+	if len(pr.SlowChecks) != 2 {
+		t.Fatalf("SlowChecks len = %d, want 2: %#v", len(pr.SlowChecks), pr.SlowChecks)
+	}
+	if pr.SlowChecks[0].Name != "GoReleaser Snapshot" || pr.SlowChecks[0].DurationSeconds != 480 {
+		t.Fatalf("SlowChecks[0] = %#v, want GoReleaser Snapshot 480s", pr.SlowChecks[0])
+	}
+	if pr.SlowChecks[1].Name != "Verify (ubuntu-latest)" || pr.SlowChecks[1].DurationSeconds != 180 {
+		t.Fatalf("SlowChecks[1] = %#v, want Verify 180s", pr.SlowChecks[1])
+	}
+	if len(pr.RunningChecks) != 1 || pr.RunningChecks[0] != "Windows Core" {
+		t.Fatalf("RunningChecks = %#v, want Windows Core", pr.RunningChecks)
+	}
 	if len(pr.CodexReviewFindings) != 1 ||
 		pr.CodexReviewFindings[0].Body != "[P1] Unsafe migration." ||
 		pr.CodexReviewFindings[0].URL != "https://github.com/digitaldrywood/detent/pull/190#pullrequestreview-2" {
 		t.Fatalf("PullRequest.CodexReviewFindings = %#v, want P1 review finding", pr.CodexReviewFindings)
+	}
+}
+
+func TestCheckRunTelemetryReportsCompletedSpan(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 6, 5, 11, 0, 0, 0, time.UTC)
+	verifyDone := start.Add(3 * time.Minute)
+	snapshotStart := verifyDone.Add(30 * time.Second)
+	snapshotDone := snapshotStart.Add(8 * time.Minute)
+
+	durationSeconds, slowChecks, runningChecks := checkRunTelemetry([]restCheckRun{
+		{Name: "Verify (ubuntu-latest)", Status: "completed", Conclusion: "success", StartedAt: &start, CompletedAt: &verifyDone},
+		{Name: "GoReleaser Snapshot", Status: "completed", Conclusion: "success", StartedAt: &snapshotStart, CompletedAt: &snapshotDone},
+	})
+
+	if durationSeconds != 690 {
+		t.Fatalf("durationSeconds = %d, want 690", durationSeconds)
+	}
+	if len(slowChecks) != 2 || slowChecks[0].Name != "GoReleaser Snapshot" {
+		t.Fatalf("slowChecks = %#v, want snapshot first", slowChecks)
+	}
+	if len(runningChecks) != 0 {
+		t.Fatalf("runningChecks = %#v, want none", runningChecks)
 	}
 }
 

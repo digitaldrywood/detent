@@ -132,7 +132,10 @@ func Instructions(cfg Config) string {
 			cfg.ApprovalLabel + "`; do not move it to Merging before that label is present."
 	default:
 		instructions := "The validation gate is a command. Run `" + cfg.Run +
-			"` from the workspace root before Human Review and after any rebase in Merging; the pull request still needs green CI before promotion."
+			"` from the workspace root before Human Review; the pull request still needs green CI before promotion. " +
+			"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation and no source files changed during rebase. " +
+			"Run full `" + cfg.Run + "` in Merging when code changes, conflicts are resolved, or validation state is stale or unknown. " +
+			"Watch current-head CI with REST check-runs polling/backoff, report slow checks, and record merge wait telemetry in the Workpad: quiet-window wait, local merge-gate duration, PR CI duration, slow check names, and whether post-merge main CI is still running."
 		if automatedReviewRequired(cfg) {
 			return instructions + " Automated review is required on the current pull request head before promotion."
 		}

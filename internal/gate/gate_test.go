@@ -1,6 +1,7 @@
 package gate
 
 import (
+	"strings"
 	"testing"
 	"time"
 )
@@ -177,6 +178,22 @@ func TestEvaluate(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestInstructionsDescribeOptimizedMergingGate(t *testing.T) {
+	t.Parallel()
+
+	got := Instructions(Config{Kind: KindCommand, Run: "make check", RequireAutomatedReview: new(false)})
+	for _, want := range []string{
+		"Run `make check` from the workspace root before Human Review",
+		"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation",
+		"Run full `make check` in Merging when code changes, conflicts are resolved, or validation state is stale or unknown",
+		"REST check-runs",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("Instructions() missing %q:\n%s", want, got)
+		}
 	}
 }
 

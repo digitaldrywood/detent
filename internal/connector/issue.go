@@ -53,12 +53,22 @@ type PullRequest struct {
 	CIStatus                     string               `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
 	CheckRunCount                int                  `json:"check_run_count,omitempty" yaml:"check_run_count,omitempty"`
 	StatusContextCount           int                  `json:"status_context_count,omitempty" yaml:"status_context_count,omitempty"`
+	CIDurationSeconds            int64                `json:"ci_duration_seconds,omitempty" yaml:"ci_duration_seconds,omitempty"`
+	SlowChecks                   []PullRequestCheck   `json:"slow_checks,omitempty" yaml:"slow_checks,omitempty"`
+	RunningChecks                []string             `json:"running_checks,omitempty" yaml:"running_checks,omitempty"`
 	CodexReviewState             string               `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
 	CodexReviewSubmittedAt       *time.Time           `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`
 	CodexReviewFindings          []PullRequestFinding `json:"codex_review_findings,omitempty" yaml:"codex_review_findings,omitempty"`
 	LatestCodexReviewState       string               `json:"latest_codex_review_state,omitempty" yaml:"latest_codex_review_state,omitempty"`
 	LatestCodexReviewCommitSHA   string               `json:"latest_codex_review_commit_sha,omitempty" yaml:"latest_codex_review_commit_sha,omitempty"`
 	LatestCodexReviewSubmittedAt *time.Time           `json:"latest_codex_review_submitted_at,omitempty" yaml:"latest_codex_review_submitted_at,omitempty"`
+}
+
+type PullRequestCheck struct {
+	Name            string `json:"name,omitempty" yaml:"name,omitempty"`
+	Status          string `json:"status,omitempty" yaml:"status,omitempty"`
+	Conclusion      string `json:"conclusion,omitempty" yaml:"conclusion,omitempty"`
+	DurationSeconds int64  `json:"duration_seconds,omitempty" yaml:"duration_seconds,omitempty"`
 }
 
 type PullRequestFinding struct {

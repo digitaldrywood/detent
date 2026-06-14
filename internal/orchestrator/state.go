@@ -13,6 +13,7 @@ import (
 type State struct {
 	PollInterval             time.Duration
 	MaxConcurrentAgents      int
+	AutoPromoteQuietDuration time.Duration
 	Instance                 telemetry.Instance
 	Draining                 bool
 	DrainStartedAt           time.Time
@@ -98,6 +99,7 @@ func newState(cfg Config) State {
 	return State{
 		PollInterval:             cfg.PollInterval,
 		MaxConcurrentAgents:      cfg.MaxConcurrentAgents,
+		AutoPromoteQuietDuration: cfg.AutoPromote.QuietDuration,
 		Instance:                 instanceSnapshot(cfg),
 		Running:                  map[string]Running{},
 		Claimed:                  map[string]Claimed{},
@@ -115,6 +117,7 @@ func (s State) clone() State {
 	cloned := State{
 		PollInterval:             s.PollInterval,
 		MaxConcurrentAgents:      s.MaxConcurrentAgents,
+		AutoPromoteQuietDuration: s.AutoPromoteQuietDuration,
 		Instance:                 s.Instance,
 		Draining:                 s.Draining,
 		DrainStartedAt:           s.DrainStartedAt,

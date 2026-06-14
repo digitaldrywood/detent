@@ -743,7 +743,7 @@ The recommended GitHub Project board states are:
 | `Blocked` | Human-blocked work, or dependency-waiting work when auto-unblock is enabled. |
 | `Human Review` | The PR is ready for review/soak until the workflow's promotion criteria pass. |
 | `Rework` | Human or bot feedback needs another agent pass. |
-| `Merging` | Final rebase, validation, CI watch, and merge. |
+| `Merging` | Final rebase, merge-gate check, CI watch, and merge. |
 | `Done` | Complete. |
 | `Cancelled` | Terminal state mapped to `Done` in the default release flow. |
 
@@ -764,6 +764,11 @@ of that state is controlled by the workflow:
 The quiet period resets on observed issue updates, Project status updates,
 automated PR review submission, and linked PR activity such as a fresh push to
 the PR head.
+
+The quiet period is an intentional quality gate. Tune
+`agent.auto_promote.quiet_seconds` when reviewer soak time is too conservative,
+but keep the gate explicit so faster merges are a policy choice rather than an
+accidental bypass.
 
 A Codex coding session that created the PR is not the same signal as a
 Codex/ChatGPT/Claude GitHub PR review. If automated PR review is required and
@@ -842,6 +847,32 @@ agent:
 Do not cap `Todo`, `In Progress`, or `Rework` unless you have a specific
 operational reason. Those states should share the global agent pool so workers
 stay busy while merge candidates wait for CI or a clean base branch.
+
+Inside the serialized `Merging` lane, avoid duplicating the full local release
+gate when it does not buy new signal. If the PR already passed the pre-review
+gate, the branch rebases cleanly onto current `origin/main`, and no source files
+change during rebase, the merge agent should run a focused rebase/smoke gate
+locally and rely on required current-head CI for full enforcement. If the merge
+agent edits code, resolves conflicts, detects stale or unknown validation state,
+or cannot prove the final rebase was source-clean, it must run the full
+configured gate again.
+
+CI waiting should poll current-head REST check runs with backoff, not loop on
+GraphQL-heavy PR status commands. Merge handoff telemetry should record the
+quiet-window wait, local merge-gate duration, current-head PR CI duration, slow
+check names, and whether post-merge `main` CI is still running. The quiet
+window, current-head required CI, and conflict/full-gate fallback are quality
+gates; repeated full local validation after a source-clean rebase, noisy status
+polling, uncached tool install, and duplicated post-merge work are optimization
+targets.
+
+The repository CI caches the project-pinned golangci-lint binary and only builds
+it with `go install` on cache miss. The official prebuilt action was evaluated,
+but the prebuilt `v2.1.6` binary targets an older Go toolchain than this repo and
+newer prebuilt lint releases change the enforced lint set. `GoReleaser Snapshot`
+continues to run on every PR in this workflow; moving it off PRs or making it
+path-based is a release-policy decision because it trades package coverage for
+merge latency.
 
 ## Multi-Project Operation
 
