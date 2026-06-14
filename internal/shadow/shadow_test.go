@@ -28,7 +28,7 @@ func TestRunComputesGoObservationAndReportsDiffs(t *testing.T) {
 					State:            "Todo",
 					Priority:         &priority,
 					CreatedAt:        now.Add(-time.Hour).Format(time.RFC3339),
-					AssignedToWorker: boolPtr(true),
+					AssignedToWorker: new(true),
 				},
 			},
 			Tokens: TokenAccounting{
@@ -173,8 +173,4 @@ func tokenDiffsContain(diffs []TokenDiff, field string) bool {
 		}
 	}
 	return false
-}
-
-func boolPtr(value bool) *bool {
-	return &value
 }

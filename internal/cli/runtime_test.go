@@ -263,7 +263,7 @@ func TestResolveRuntimeSettingsDoesNotRequireTokenForGitHubApp(t *testing.T) {
 	t.Parallel()
 
 	got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
-		Config: ptrGlobalConfig(githubRuntimeConfig("")),
+		Config: new(githubRuntimeConfig("")),
 	}, runtimeDeps{
 		lookupEnv: mapLookup(map[string]string{
 			"APP_ID":           "12345",
@@ -314,7 +314,7 @@ func TestResolveRuntimeSettingsSkipsConfigTokenWhenNoProjectNeedsRuntimeToken(t 
 
 			ghCalls := 0
 			got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
-				Config: ptrGlobalConfig(githubRuntimeConfig("gh")),
+				Config: new(githubRuntimeConfig("gh")),
 			}, runtimeDeps{
 				lookupEnv: mapLookup(tt.env),
 				ghAuthToken: func(context.Context) (string, error) {
@@ -345,7 +345,7 @@ func TestResolveRuntimeSettingsRequiresTokenForMissingGitHubAppEnvRefs(t *testin
 	t.Parallel()
 
 	_, err := resolveRuntimeSettings(context.Background(), runtimeInput{
-		Config: ptrGlobalConfig(githubRuntimeConfig("")),
+		Config: new(githubRuntimeConfig("")),
 	}, runtimeDeps{
 		lookupEnv: mapLookup(nil),
 		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
@@ -468,10 +468,6 @@ func githubAppWorkflow() workflowconfig.Config {
 	cfg.Tracker.GitHubAppInstallationID = "$INSTALLATION_ID"
 	cfg.Tracker.GitHubAppPrivateKeyPath = "$PRIVATE_KEY_PATH"
 	return cfg
-}
-
-func ptrGlobalConfig(cfg globalconfig.Config) *globalconfig.Config {
-	return &cfg
 }
 
 func mapLookup(values map[string]string) func(string) string {

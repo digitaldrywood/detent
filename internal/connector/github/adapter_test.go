@@ -31,7 +31,7 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 		ProjectSlug:  "PVT_1",
 		ActiveStates: []string{"Todo"},
 		StateMap:     map[string]string{"Todo": "Ready"},
-		PriorityMap:  map[string]*int{"P0": intPtr(1), "No priority": nil},
+		PriorityMap:  map[string]*int{"P0": new(1), "No priority": nil},
 	})
 
 	got, err := c.FetchCandidateIssues(context.Background())
@@ -1035,7 +1035,7 @@ func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testi
 			"Todo":         "Ready",
 			"Human Review": "Reviewing",
 		},
-		PriorityMap: map[string]*int{"P1": intPtr(2), "No priority": nil},
+		PriorityMap: map[string]*int{"P1": new(2), "No priority": nil},
 	})
 
 	got, err := c.FetchIssueStatesByIDs(context.Background(), []string{"I_kw2", "I_kw1"})
@@ -1127,7 +1127,7 @@ func TestConnectorFetchIssueStatesByIDsPaginatesProjectItems(t *testing.T) {
 		StateMap: map[string]string{
 			"Human Review": "Reviewing",
 		},
-		PriorityMap: map[string]*int{"P2": intPtr(3)},
+		PriorityMap: map[string]*int{"P2": new(3)},
 	})
 
 	got, err := c.FetchIssueStatesByIDs(context.Background(), []string{"I_kw1"})
@@ -1974,8 +1974,4 @@ func githubIssueIDs(issues []connector.Issue) []string {
 		ids = append(ids, issue.ID)
 	}
 	return ids
-}
-
-func intPtr(value int) *int {
-	return &value
 }

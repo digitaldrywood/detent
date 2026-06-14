@@ -354,7 +354,7 @@ func testSnapshot() telemetry.Snapshot {
 		Refresh: telemetry.Refresh{
 			PollIntervalSeconds: 30,
 			LastRefreshAt:       &generatedAt,
-			NextRefreshAt:       timePointer(generatedAt.Add(30 * time.Second)),
+			NextRefreshAt:       new(generatedAt.Add(30 * time.Second)),
 		},
 		Counts: telemetry.Counts{
 			Running:   1,
@@ -471,8 +471,4 @@ func testSnapshot() telemetry.Snapshot {
 func stripANSI(value string) string {
 	ansi := regexp.MustCompile(`\x1b\[[0-9;]*[A-Za-z]`)
 	return ansi.ReplaceAllString(value, "")
-}
-
-func timePointer(value time.Time) *time.Time {
-	return &value
 }

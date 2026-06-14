@@ -3656,14 +3656,10 @@ func clonePriorityMapWithDefault(values map[string]*int) map[string]*int {
 
 func defaultPriorityMap() map[string]*int {
 	return map[string]*int{
-		"Urgent":      intValue(1),
-		"High":        intValue(2),
-		"Medium":      intValue(3),
-		"Low":         intValue(4),
+		"Urgent":      new(1),
+		"High":        new(2),
+		"Medium":      new(3),
+		"Low":         new(4),
 		"No priority": nil,
 	}
-}
-
-func intValue(value int) *int {
-	return &value
 }

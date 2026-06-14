@@ -3077,7 +3077,7 @@ func seedUsageAPIEvents(t *testing.T, ctx context.Context, backend store.Store) 
 			ProjectID:      "detent",
 			IssueID:        "issue-119",
 			Identifier:     "digitaldrywood/detent#119",
-			PRNumber:       int64Ptr(141),
+			PRNumber:       new(int64(141)),
 			Model:          "gpt-report",
 			InputTokens:    100,
 			OutputTokens:   50,
@@ -3091,7 +3091,7 @@ func seedUsageAPIEvents(t *testing.T, ctx context.Context, backend store.Store) 
 			ProjectID:      "detent",
 			IssueID:        "issue-120",
 			Identifier:     "digitaldrywood/detent#120",
-			PRNumber:       int64Ptr(142),
+			PRNumber:       new(int64(142)),
 			Model:          "gpt-report-mini",
 			InputTokens:    50,
 			OutputTokens:   25,
@@ -3105,7 +3105,7 @@ func seedUsageAPIEvents(t *testing.T, ctx context.Context, backend store.Store) 
 			ProjectID:      "pyroapex",
 			IssueID:        "issue-119",
 			Identifier:     "digitaldrywood/detent#119",
-			PRNumber:       int64Ptr(141),
+			PRNumber:       new(int64(141)),
 			Model:          "gpt-report",
 			InputTokens:    70,
 			OutputTokens:   30,
@@ -3135,10 +3135,6 @@ func usageBucket(t *testing.T, rows []any, bucket string) map[string]any {
 	}
 	t.Fatalf("missing bucket %q in %#v", bucket, rows)
 	return nil
-}
-
-func int64Ptr(value int64) *int64 {
-	return &value
 }
 
 func requestJSON(t *testing.T, server *web.Server, method string, path string, wantStatus int) map[string]any {

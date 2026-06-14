@@ -32,7 +32,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 		DashboardURL: "http://localhost:4101",
 		Refresh: telemetry.Refresh{
 			PollIntervalSeconds: 30,
-			NextRefreshAt:       timePointer(generatedAt.Add(30 * time.Second)),
+			NextRefreshAt:       new(generatedAt.Add(30 * time.Second)),
 		},
 		Counts: telemetry.Counts{
 			Running:   1,
@@ -289,10 +289,6 @@ func TestSnapshotJSONShape(t *testing.T) {
 	if latest["input_tokens"] != float64(110) || latest["output_tokens"] != float64(220) || latest["total_tokens"] != float64(330) {
 		t.Fatalf("token_trend[1] = %#v", latest)
 	}
-}
-
-func timePointer(value time.Time) *time.Time {
-	return &value
 }
 
 func TestBoardStateCountsAggregateSnapshotStates(t *testing.T) {
