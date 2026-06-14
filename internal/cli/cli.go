@@ -13,6 +13,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
 )
 
@@ -130,19 +131,35 @@ const (
 )
 
 type BootConfig struct {
-	Mode           BootMode
-	Global         globalconfig.Config
-	ConfigPathRule globalconfig.PathRule
-	Runtime        RuntimeSettings
-	WorkflowPath   string
-	Host           string
-	Port           *int
-	Version        string
-	Build          buildinfo.Info
-	Headless       bool
-	StdoutTTY      bool
-	Output         io.Writer
-	Shutdown       *ShutdownController
+	Mode             BootMode
+	Global           globalconfig.Config
+	ConfigPathRule   globalconfig.PathRule
+	Runtime          RuntimeSettings
+	WorkflowPath     string
+	Host             string
+	Port             *int
+	RuntimeDBPath    string
+	RuntimeLogPath   string
+	Isolated         *IsolatedRuntimeInfo
+	Version          string
+	Build            buildinfo.Info
+	Headless         bool
+	StdoutTTY        bool
+	Output           io.Writer
+	Shutdown         *ShutdownController
+	Runner           orchestrator.Runner
+	ConnectorFactory project.ConnectorFactory
+}
+
+type IsolatedRuntimeInfo struct {
+	Home          string
+	ConfigPath    string
+	WorkflowPath  string
+	WorkspaceRoot string
+	DBPath        string
+	DBMode        string
+	TrackerMode   string
+	FixturePath   string
 }
 
 type BootFunc func(context.Context, BootConfig) error
@@ -334,6 +351,7 @@ detent --format json config path`),
 	AddFormatFlag(cmd, &format)
 	cmd.AddCommand(
 		newDoctorCommand(&configPath, &env, &logLevel, &host, &port, opts),
+		newDevRuntimeCommand(&host, &port, opts),
 		newInitCommand(&configPath, opts),
 		newAddProjectCommand(&configPath, opts),
 		newEditProjectCommand(&configPath, opts, OperationPauseProject, "pause", "Pause a project", func(project *globalconfig.Project) error {

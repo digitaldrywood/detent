@@ -54,9 +54,13 @@ func withRunnerFactory(
 			workflow.Config.Identity.Normalize()
 		}
 
-		run, err := buildRunner(workflow, cfg.ID, cfg.Workdir, sessionStore, deps.Logger)
-		if err != nil {
-			return nil, fmt.Errorf("build project runner %s: %w", cfg.ID, err)
+		run := deps.Runner
+		if run == nil {
+			var err error
+			run, err = buildRunner(workflow, cfg.ID, cfg.Workdir, sessionStore, deps.Logger)
+			if err != nil {
+				return nil, fmt.Errorf("build project runner %s: %w", cfg.ID, err)
+			}
 		}
 
 		projectDeps := deps

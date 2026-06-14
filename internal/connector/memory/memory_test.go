@@ -279,6 +279,61 @@ func TestConnectorMutationsMatchElixirMemoryAdapter(t *testing.T) {
 	}
 }
 
+func TestConnectorStatefulMutationsUpdateFixtureState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 12, 30, 0, 0, time.UTC)
+	c := New(Config{
+		Issues: []connector.Issue{{
+			ID:        "issue-1",
+			State:     "Human Review",
+			Assignees: []string{"worker-0"},
+			Fields:    map[string]string{"Status": "Human Review"},
+		}},
+		Stateful: true,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if err := c.UpdateIssueState(context.Background(), "issue-1", "Merging"); err != nil {
+		t.Fatalf("UpdateIssueState() error = %v", err)
+	}
+	if err := c.SetAssignee(context.Background(), "issue-1", "worker-1"); err != nil {
+		t.Fatalf("SetAssignee() error = %v", err)
+	}
+	if err := c.SetField(context.Background(), "issue-1", "Train", "ready"); err != nil {
+		t.Fatalf("SetField() error = %v", err)
+	}
+	if err := c.CloseIssue(context.Background(), "issue-1"); err != nil {
+		t.Fatalf("CloseIssue() error = %v", err)
+	}
+
+	issues, err := c.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+	got := issues[0]
+	if got.State != "Merging" {
+		t.Fatalf("State = %q, want Merging", got.State)
+	}
+	if !got.Closed {
+		t.Fatal("Closed = false, want true")
+	}
+	if got.Fields["Status"] != "Merging" || got.Fields["Train"] != "ready" {
+		t.Fatalf("Fields = %#v, want updated Status and Train", got.Fields)
+	}
+	if !reflect.DeepEqual(got.Assignees, []string{"worker-0", "worker-1"}) {
+		t.Fatalf("Assignees = %#v, want worker-0 and worker-1", got.Assignees)
+	}
+	if got.UpdatedAt == nil || !got.UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %v, want %v", got.UpdatedAt, now)
+	}
+	if got.StageUpdatedAt == nil || !got.StageUpdatedAt.Equal(now) {
+		t.Fatalf("StageUpdatedAt = %v, want %v", got.StageUpdatedAt, now)
+	}
+}
+
 func TestConnectorMutationsNoopWithoutEventSink(t *testing.T) {
 	t.Parallel()
 
