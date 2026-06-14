@@ -215,14 +215,16 @@ func telemetryIssue(issue connector.Issue) telemetry.Issue {
 		Description:    issue.Description,
 		State:          issue.State,
 		Labels:         append([]string(nil), issue.Labels...),
-		PullRequest:    telemetryPullRequest(issue.PullRequest, issue.PRNumber),
+		PullRequest:    telemetryPullRequest(issue),
 		CreatedAt:      timePointerFromPtr(issue.CreatedAt),
 		UpdatedAt:      timePointerFromPtr(issue.UpdatedAt),
 		StageUpdatedAt: timePointerFromPtr(issue.StageUpdatedAt),
 	}
 }
 
-func telemetryPullRequest(pullRequest *connector.PullRequest, prNumber *int) *telemetry.PullRequest {
+func telemetryPullRequest(issue connector.Issue) *telemetry.PullRequest {
+	pullRequest := issue.PullRequest
+	prNumber := issue.PRNumber
 	if pullRequest == nil && prNumber == nil {
 		return nil
 	}
@@ -238,8 +240,56 @@ func telemetryPullRequest(pullRequest *connector.PullRequest, prNumber *int) *te
 		CIStatus:           pullRequest.CIStatus,
 		CheckRunCount:      pullRequest.CheckRunCount,
 		StatusContextCount: pullRequest.StatusContextCount,
+		CIDurationSeconds:  pullRequest.CIDurationSeconds,
+		QuietWaitSeconds:   pullRequestQuietWaitSeconds(issue),
+		SlowChecks:         telemetryPullRequestChecks(pullRequest.SlowChecks),
+		RunningChecks:      append([]string(nil), pullRequest.RunningChecks...),
 		CodexReviewState:   pullRequest.CodexReviewState,
 	}
+}
+
+func telemetryPullRequestChecks(checks []connector.PullRequestCheck) []telemetry.PullRequestCheck {
+	out := make([]telemetry.PullRequestCheck, 0, len(checks))
+	for _, check := range checks {
+		out = append(out, telemetry.PullRequestCheck{
+			Name:            check.Name,
+			Status:          check.Status,
+			Conclusion:      check.Conclusion,
+			DurationSeconds: check.DurationSeconds,
+		})
+	}
+	return out
+}
+
+func pullRequestQuietWaitSeconds(issue connector.Issue) int64 {
+	if issue.PullRequest == nil || issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() {
+		return 0
+	}
+	switch normalizeState(issue.State) {
+	case "merging", "done", "cancelled", "canceled", "closed":
+	default:
+		return 0
+	}
+	stageAt := *issue.StageUpdatedAt
+	var latest *time.Time
+	latest = latestBefore(latest, issue.PullRequest.ActivityAt, stageAt)
+	latest = latestBefore(latest, issue.PullRequest.CodexReviewSubmittedAt, stageAt)
+	latest = latestBefore(latest, issue.UpdatedAt, stageAt)
+	if latest == nil || stageAt.Before(*latest) {
+		return 0
+	}
+	return int64(stageAt.Sub(*latest) / time.Second)
+}
+
+func latestBefore(current *time.Time, candidate *time.Time, before time.Time) *time.Time {
+	if candidate == nil || candidate.IsZero() || candidate.After(before) {
+		return current
+	}
+	if current == nil || candidate.After(*current) {
+		value := *candidate
+		return &value
+	}
+	return current
 }
 
 func tokensFromCodexTotals(totals CodexTotals) telemetry.Tokens {

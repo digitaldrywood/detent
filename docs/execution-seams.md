@@ -18,8 +18,8 @@ The execution edge still carries these code/git/PR assumptions.
 - `internal/config` exposes top-level `gate`.
 - `internal/gate` selects and evaluates gate behavior.
 - `gate.kind: command` is the default and keeps the code workflow contract:
-  run `gate.run` (`make check` by default), then require green CI and clean
-  automated review before promotion.
+  run `gate.run` (`make check` by default) before Human Review, then require
+  green CI and clean automated review before promotion.
 - `gate.kind: command` with `require_automated_review: false` keeps the
   command, linked PR, green CI, no-P1, and quiet-period checks but does not
   require an automated GitHub PR review to exist before promotion.
@@ -35,6 +35,26 @@ The execution edge still carries these code/git/PR assumptions.
   to the configured gate while preserving the surrounding opt-out and label
   policy.
 
+### Merge Waits
+
+- The quiet window before auto-promotion is an intentional quality gate.
+- The serialized `Merging` lane should run a focused rebase/smoke gate when the
+  PR already passed the pre-review gate, the rebase is clean, and no source
+  files change during the rebase.
+- `Merging` must still run the full configured gate after merge-agent edits,
+  conflict resolution, stale validation, or unknown validation state.
+- Current-head CI waiting should use REST check-run polling with backoff and
+  clear slow-check status rather than GraphQL-heavy PR polling loops.
+- Merge telemetry should report quiet-window wait, local merge-gate duration,
+  current-head PR CI duration, slow check names, and whether post-merge `main`
+  CI is still running.
+- Duplicate full local validation after a source-clean rebase, uncached tool
+  install, noisy polling, and post-merge work that is not part of the merge
+  decision are optimization targets.
+- Moving `GoReleaser Snapshot` off every PR or making it path-based is a
+  release-policy decision because it trades release-package coverage for merge
+  latency.
+
 ## Still Git/PR Coupled
 
 ### Workspace
@@ -48,7 +68,8 @@ The execution edge still carries these code/git/PR assumptions.
 ### Deliverable
 
 - `internal/connector/github` discovers pull requests by issue branch prefix and
-  reads PR state, CI status, and automated review state.
+  reads PR state, CI status, check-run timing, slow checks, running checks, and
+  automated review state.
 - `connector.Issue` stores `PRNumber` and `PullRequest` directly.
 - The dashboard and telemetry models render a PR pipeline for `Human Review`,
   `Merging`, and terminal states.

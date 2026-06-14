@@ -27,6 +27,8 @@ const (
 	bodyParentSearchPageSize                  = 100
 	pullRequestsPageSize                      = 100
 	pullRequestsPageLimit                     = 3
+	pullRequestSlowCheckLimit                 = 3
+	pullRequestRunningCheckLimit              = 5
 	defaultProjectItemStatusState             = "Backlog"
 	defaultProjectItemStatusWriteParallelism  = 4
 	defaultProjectItemStatusWriteTimeout      = 2 * time.Minute
@@ -683,8 +685,11 @@ type restCheckRuns struct {
 }
 
 type restCheckRun struct {
-	Status     string `json:"status"`
-	Conclusion string `json:"conclusion"`
+	Status      string     `json:"status"`
+	Conclusion  string     `json:"conclusion"`
+	Name        string     `json:"name"`
+	StartedAt   *time.Time `json:"started_at"`
+	CompletedAt *time.Time `json:"completed_at"`
 }
 
 type restCommitStatus struct {
@@ -697,6 +702,9 @@ type pullRequestCI struct {
 	State              string
 	CheckRunCount      int
 	StatusContextCount int
+	CIDurationSeconds  int64
+	SlowChecks         []connector.PullRequestCheck
+	RunningChecks      []string
 }
 
 type restComment struct {
@@ -1717,6 +1725,9 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		CIStatus:                     normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
 		CheckRunCount:                pullRequest.CI.CheckRunCount,
 		StatusContextCount:           pullRequest.CI.StatusContextCount,
+		CIDurationSeconds:            pullRequest.CI.CIDurationSeconds,
+		SlowChecks:                   append([]connector.PullRequestCheck(nil), pullRequest.CI.SlowChecks...),
+		RunningChecks:                append([]string(nil), pullRequest.CI.RunningChecks...),
 		CodexReviewState:             pullRequestCodexReviewState(pullRequest),
 		CodexReviewSubmittedAt:       pullRequestCodexReviewSubmittedAt(pullRequest),
 		CodexReviewFindings:          pullRequestCodexReviewFindings(pullRequest),
@@ -1771,10 +1782,14 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	if err != nil {
 		return pullRequestCI{}, fmt.Errorf("fetch github commit statuses: %w", err)
 	}
+	durationSeconds, slowChecks, runningChecks := checkRunTelemetry(checkRuns)
 	return pullRequestCI{
 		State:              combinedCIState(checkRunsState(checkRuns), commitStatusesState(statuses)),
 		CheckRunCount:      len(checkRuns),
 		StatusContextCount: len(statuses),
+		CIDurationSeconds:  durationSeconds,
+		SlowChecks:         slowChecks,
+		RunningChecks:      runningChecks,
 	}, nil
 }
 
@@ -3109,6 +3124,78 @@ func checkRunsState(checkRuns []restCheckRun) string {
 		return "pending"
 	}
 	return "success"
+}
+
+func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequestCheck, []string) {
+	var startedAt *time.Time
+	var completedAt *time.Time
+	slowChecks := make([]connector.PullRequestCheck, 0, len(checkRuns))
+	runningChecks := make([]string, 0, len(checkRuns))
+
+	for _, checkRun := range checkRuns {
+		startedAt = earliestGitHubTime(startedAt, checkRun.StartedAt)
+		completedAt = latestGitHubTime(completedAt, checkRun.CompletedAt)
+
+		name := strings.TrimSpace(checkRun.Name)
+		status := strings.ToLower(strings.TrimSpace(checkRun.Status))
+		conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
+		if status != "" && status != "completed" {
+			runningChecks = append(runningChecks, name)
+			continue
+		}
+		if name == "" || checkRun.StartedAt == nil || checkRun.CompletedAt == nil || checkRun.CompletedAt.Before(*checkRun.StartedAt) {
+			continue
+		}
+		slowChecks = append(slowChecks, connector.PullRequestCheck{
+			Name:            name,
+			Status:          status,
+			Conclusion:      conclusion,
+			DurationSeconds: int64(checkRun.CompletedAt.Sub(*checkRun.StartedAt) / time.Second),
+		})
+	}
+
+	sort.SliceStable(slowChecks, func(i, j int) bool {
+		if slowChecks[i].DurationSeconds != slowChecks[j].DurationSeconds {
+			return slowChecks[i].DurationSeconds > slowChecks[j].DurationSeconds
+		}
+		return slowChecks[i].Name < slowChecks[j].Name
+	})
+	if len(slowChecks) > pullRequestSlowCheckLimit {
+		slowChecks = slowChecks[:pullRequestSlowCheckLimit]
+	}
+	runningChecks = uniqueNonBlank(runningChecks)
+	sort.Strings(runningChecks)
+	if len(runningChecks) > pullRequestRunningCheckLimit {
+		runningChecks = runningChecks[:pullRequestRunningCheckLimit]
+	}
+
+	var durationSeconds int64
+	if startedAt != nil && completedAt != nil && !completedAt.Before(*startedAt) {
+		durationSeconds = int64(completedAt.Sub(*startedAt) / time.Second)
+	}
+	return durationSeconds, slowChecks, runningChecks
+}
+
+func earliestGitHubTime(current *time.Time, candidate *time.Time) *time.Time {
+	if candidate == nil {
+		return current
+	}
+	if current == nil || candidate.Before(*current) {
+		value := *candidate
+		return &value
+	}
+	return current
+}
+
+func latestGitHubTime(current *time.Time, candidate *time.Time) *time.Time {
+	if candidate == nil {
+		return current
+	}
+	if current == nil || candidate.After(*current) {
+		value := *candidate
+		return &value
+	}
+	return current
 }
 
 func commitStatusesState(statuses []restCommitStatus) string {

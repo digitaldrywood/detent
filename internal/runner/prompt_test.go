@@ -77,6 +77,7 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 		"Check generator aliases before editing.",
 		"## Validation gate",
 		"Run `make check` from the workspace root",
+		"In Merging, run a focused rebase/smoke gate after a clean rebase when the PR already passed current-head validation",
 		"## Available skills",
 		"- migrate — Issue mentions schema changes.",
 	} {

@@ -154,10 +154,15 @@ func TestStateSnapshotPopulated(t *testing.T) {
 			Labels:     []string{"enhancement"},
 			UpdatedAt:  &pipelineUpdatedAt,
 			PullRequest: &connector.PullRequest{
-				Number:           142,
-				URL:              "https://github.com/digitaldrywood/detent/pull/142",
-				State:            "OPEN",
-				CIStatus:         "pending",
+				Number:            142,
+				URL:               "https://github.com/digitaldrywood/detent/pull/142",
+				State:             "OPEN",
+				CIStatus:          "pending",
+				CIDurationSeconds: 900,
+				SlowChecks: []connector.PullRequestCheck{
+					{Name: "GoReleaser Snapshot", DurationSeconds: 247},
+				},
+				RunningChecks:    []string{"Test Coverage"},
 				CodexReviewState: "P2",
 			},
 		},
@@ -225,6 +230,15 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if pipeline.PullRequest == nil || pipeline.PullRequest.Number != 142 || pipeline.PullRequest.CIStatus != "pending" || pipeline.PullRequest.CodexReviewState != "P2" {
 		t.Fatalf("Pipeline[0].PullRequest = %#v", pipeline.PullRequest)
+	}
+	if pipeline.PullRequest.CIDurationSeconds != 900 {
+		t.Fatalf("Pipeline[0].PullRequest.CIDurationSeconds = %d, want 900", pipeline.PullRequest.CIDurationSeconds)
+	}
+	if len(pipeline.PullRequest.SlowChecks) != 1 || pipeline.PullRequest.SlowChecks[0].Name != "GoReleaser Snapshot" {
+		t.Fatalf("Pipeline[0].PullRequest.SlowChecks = %#v", pipeline.PullRequest.SlowChecks)
+	}
+	if len(pipeline.PullRequest.RunningChecks) != 1 || pipeline.PullRequest.RunningChecks[0] != "Test Coverage" {
+		t.Fatalf("Pipeline[0].PullRequest.RunningChecks = %#v", pipeline.PullRequest.RunningChecks)
 	}
 
 	if len(snapshot.Running) != 2 {
@@ -313,6 +327,53 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if snapshot.Refresh.PollIntervalSeconds != 30 || snapshot.Refresh.LastRefreshAt == nil || snapshot.Refresh.NextRefreshAt == nil {
 		t.Fatalf("Refresh = %#v, want poll interval and refresh timestamps", snapshot.Refresh)
+	}
+}
+
+func TestStateSnapshotIncludesPullRequestMergeWaitTelemetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 15, 30, 0, 0, time.UTC)
+	stageUpdatedAt := now.Add(-5 * time.Minute)
+	prActivityAt := stageUpdatedAt.Add(-12 * time.Minute)
+	reviewSubmittedAt := stageUpdatedAt.Add(-10 * time.Minute)
+	state := newState(normalizeConfig(Config{}))
+	state.Pipeline = []connector.Issue{
+		{
+			ID:             "merge",
+			Identifier:     "digitaldrywood/detent#461",
+			Title:          "Merge wait telemetry",
+			State:          "Merging",
+			StageUpdatedAt: &stageUpdatedAt,
+			PullRequest: &connector.PullRequest{
+				Number:                 461,
+				ActivityAt:             &prActivityAt,
+				CodexReviewSubmittedAt: &reviewSubmittedAt,
+				CIDurationSeconds:      480,
+				SlowChecks: []connector.PullRequestCheck{
+					{Name: "GoReleaser Snapshot", DurationSeconds: 247},
+				},
+				RunningChecks: []string{"Test Coverage"},
+			},
+		},
+	}
+
+	snapshot := state.Snapshot(now)
+	if len(snapshot.Pipeline) != 1 || snapshot.Pipeline[0].PullRequest == nil {
+		t.Fatalf("Pipeline = %#v, want one PR pipeline row", snapshot.Pipeline)
+	}
+	pr := snapshot.Pipeline[0].PullRequest
+	if pr.QuietWaitSeconds != 600 {
+		t.Fatalf("QuietWaitSeconds = %d, want 600", pr.QuietWaitSeconds)
+	}
+	if pr.CIDurationSeconds != 480 {
+		t.Fatalf("CIDurationSeconds = %d, want 480", pr.CIDurationSeconds)
+	}
+	if len(pr.SlowChecks) != 1 || pr.SlowChecks[0].Name != "GoReleaser Snapshot" {
+		t.Fatalf("SlowChecks = %#v", pr.SlowChecks)
+	}
+	if len(pr.RunningChecks) != 1 || pr.RunningChecks[0] != "Test Coverage" {
+		t.Fatalf("RunningChecks = %#v", pr.RunningChecks)
 	}
 }
 

@@ -219,6 +219,7 @@ type prPipelineCard struct {
 	CodexReviewClass string
 	TimeInStage      string
 	TimeInStageTitle string
+	WaitDetail       string
 	Stage            string
 	StageAt          time.Time
 }
@@ -969,9 +970,66 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 		CodexReviewClass: prPipelineCodexReviewClass(codexReview),
 		TimeInStage:      prPipelineAge(stageAt, now),
 		TimeInStageTitle: prPipelineAgeTitle(state, stageAt, now),
+		WaitDetail:       prPipelineWaitDetail(issue),
 		Stage:            chartText(state, "n/a"),
 		StageAt:          stageAt.UTC(),
 	}
+}
+
+func prPipelineWaitDetail(issue telemetry.Issue) string {
+	if issue.PullRequest == nil {
+		return ""
+	}
+	parts := []string{}
+	if issue.PullRequest.QuietWaitSeconds > 0 {
+		parts = append(parts, "quiet "+formatDuration(float64(issue.PullRequest.QuietWaitSeconds)))
+	}
+	if issue.PullRequest.CIDurationSeconds > 0 {
+		parts = append(parts, "CI "+formatDuration(float64(issue.PullRequest.CIDurationSeconds)))
+	}
+	if slowChecks := prPipelineSlowChecks(issue.PullRequest.SlowChecks); slowChecks != "" {
+		parts = append(parts, "slow "+slowChecks)
+	}
+	if runningChecks := prPipelineRunningChecks(issue.PullRequest.RunningChecks); runningChecks != "" {
+		parts = append(parts, "running "+runningChecks)
+	}
+	return strings.Join(parts, " / ")
+}
+
+func prPipelineSlowChecks(checks []telemetry.PullRequestCheck) string {
+	labels := make([]string, 0, len(checks))
+	for _, check := range checks {
+		name := strings.TrimSpace(check.Name)
+		if name == "" {
+			continue
+		}
+		if check.DurationSeconds > 0 {
+			name += " " + formatDuration(float64(check.DurationSeconds))
+		}
+		labels = append(labels, name)
+	}
+	return strings.Join(labels, ", ")
+}
+
+func prPipelineRunningChecks(checks []string) string {
+	return strings.Join(uniqueStrings(checks), ", ")
+}
+
+func uniqueStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func pipelineNow(snapshot telemetry.Snapshot) time.Time {

@@ -1164,6 +1164,12 @@ templ prPipelineCardView(card prPipelineCard) {
 				<span class="text-muted-foreground">Time in stage</span>
 				<span class="font-mono font-medium text-foreground" title={ card.TimeInStageTitle }>{ card.TimeInStage }</span>
 			</div>
+			if card.WaitDetail != "" {
+				<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-muted/60 px-2 py-1">
+					<span class="text-muted-foreground">Waits</span>
+					<span class="min-w-0 truncate font-mono font-medium text-foreground" title={ card.WaitDetail }>{ card.WaitDetail }</span>
+				</div>
+			}
 		</div>
 	</article>
 }
