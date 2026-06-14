@@ -271,14 +271,16 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		}
 		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
 			return runWithShutdown(ctx, runningShutdownConfig{
-				Controller:       cfg.Shutdown,
-				Registry:         manager.Registry(),
-				SnapshotHub:      snapshotHub,
-				LifetimeSource:   runtimeStore,
-				DashboardURL:     displayURL,
-				Output:           cfg.Output,
-				Logger:           logger,
-				DrainTimeout:     shutdownDrainTimeout(manager.Registry()),
+				Controller:     cfg.Shutdown,
+				Registry:       manager.Registry(),
+				SnapshotHub:    snapshotHub,
+				LifetimeSource: runtimeStore,
+				DashboardURL:   displayURL,
+				Output:         cfg.Output,
+				Logger:         logger,
+				DrainTimeoutSource: func() time.Duration {
+					return shutdownDrainTimeout(manager.Registry())
+				},
 				ProgressInterval: defaultShutdownProgressInterval,
 				HardTimeout:      defaultShutdownHardTimeout,
 			}, func(ctx context.Context) error {
@@ -299,14 +301,16 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 	return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
 		return runWithShutdown(ctx, runningShutdownConfig{
-			Controller:       cfg.Shutdown,
-			Registry:         manager.Registry(),
-			SnapshotHub:      snapshotHub,
-			LifetimeSource:   runtimeStore,
-			DashboardURL:     displayURL,
-			Output:           cfg.Output,
-			Logger:           logger,
-			DrainTimeout:     shutdownDrainTimeout(manager.Registry()),
+			Controller:     cfg.Shutdown,
+			Registry:       manager.Registry(),
+			SnapshotHub:    snapshotHub,
+			LifetimeSource: runtimeStore,
+			DashboardURL:   displayURL,
+			Output:         cfg.Output,
+			Logger:         logger,
+			DrainTimeoutSource: func() time.Duration {
+				return shutdownDrainTimeout(manager.Registry())
+			},
 			ProgressInterval: defaultShutdownProgressInterval,
 			HardTimeout:      defaultShutdownHardTimeout,
 		}, func(ctx context.Context) error {

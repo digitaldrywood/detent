@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/hub"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -251,6 +253,32 @@ func TestRunWithShutdownForceReturnsForcedError(t *testing.T) {
 	}
 }
 
+func TestRunningShutdownConfigComputesDrainTimeoutFromCurrentRegistry(t *testing.T) {
+	t.Parallel()
+
+	registry := projectpkg.NewRegistry()
+	cfg := runningShutdownConfig{
+		Registry: registry,
+		DrainTimeoutSource: func() time.Duration {
+			return shutdownDrainTimeout(registry)
+		},
+	}
+
+	wantDefault := time.Duration(workflowconfig.DefaultShutdownDrainTimeoutMS) * time.Millisecond
+	if got := shutdownDrainTimeoutForConfig(cfg); got != wantDefault {
+		t.Fatalf("shutdownDrainTimeoutForConfig() = %v, want %v", got, wantDefault)
+	}
+
+	project := newShutdownProject(t, "alpha", 0)
+	if err := registry.Set(project); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+
+	if got := shutdownDrainTimeoutForConfig(cfg); got != 0 {
+		t.Fatalf("shutdownDrainTimeoutForConfig() after registry update = %v, want 0", got)
+	}
+}
+
 func TestShutdownBannerFormatsRunningSessions(t *testing.T) {
 	t.Parallel()
 
@@ -280,4 +308,24 @@ func TestShutdownBannerFormatsRunningSessions(t *testing.T) {
 			t.Fatalf("banner missing %q:\n%s", want, got)
 		}
 	}
+}
+
+func newShutdownProject(t *testing.T, id string, drainTimeoutMS int) *projectpkg.Project {
+	t.Helper()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Agent.Shutdown.DrainTimeoutMS = drainTimeoutMS
+	project, err := projectpkg.New(projectpkg.Config{
+		Project: globalconfig.Project{
+			ID:      id,
+			Workdir: t.TempDir(),
+			Weight:  1,
+		},
+		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
+	}, projectpkg.Dependencies{})
+	if err != nil {
+		t.Fatalf("project.New() error = %v", err)
+	}
+	return project
 }
