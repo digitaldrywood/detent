@@ -78,6 +78,34 @@ const (
 	OperationRemoveProject  Operation = "remove-project"
 )
 
+const examplesFirstUsageTemplate = `Usage:{{if .Runnable}}
+  {{.UseLine}}{{end}}{{if .HasAvailableSubCommands}}
+  {{.CommandPath}} [command]{{end}}{{if gt (len .Aliases) 0}}
+
+Aliases:
+  {{.NameAndAliases}}{{end}}{{if .HasAvailableSubCommands}}{{$cmds := .Commands}}{{if eq (len .Groups) 0}}
+
+Available Commands:{{range $cmds}}{{if (or .IsAvailableCommand (eq .Name "help"))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{else}}{{range $group := .Groups}}
+
+{{.Title}}{{range $cmds}}{{if (and (eq .GroupID $group.ID) (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{if not .AllChildCommandsHaveGroup}}
+
+Additional Commands:{{range $cmds}}{{if (and (eq .GroupID "") (or .IsAvailableCommand (eq .Name "help")))}}
+  {{rpad .Name .NamePadding }} {{.Short}}{{end}}{{end}}{{end}}{{end}}{{end}}{{if .HasAvailableLocalFlags}}
+
+Flags:
+{{.LocalFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasAvailableInheritedFlags}}
+
+Global Flags:
+{{.InheritedFlags.FlagUsages | trimTrailingWhitespaces}}{{end}}{{if .HasHelpSubCommands}}
+
+Additional help topics:{{range .Commands}}{{if .IsAdditionalHelpTopicCommand}}
+  {{rpad .CommandPath .CommandPathPadding}} {{.Short}}{{end}}{{end}}{{end}}{{if .HasAvailableSubCommands}}
+
+Use "{{.CommandPath}} [command] --help" for more information about a command.{{end}}
+`
+
 type Signal struct {
 	Operation Operation
 	ProjectID string
@@ -290,11 +318,6 @@ func NewRootCommand(ctx context.Context, optFns ...Option) *cobra.Command {
 		Short: "Detent agent orchestrator",
 		Long: strings.TrimSpace(`Detent is an agent orchestrator for tracker-backed work queues.
 
-Examples:
-  detent --config ~/.config/detent/global.yaml --headless
-  detent --format json config path
-  detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api
-
 Output:
   --format pretty prints human-readable output.
   --format json prints machine-readable JSON.
@@ -368,6 +391,7 @@ detent --format json config path`),
 		newRemoveProjectCommand(&configPath, opts),
 	)
 	cmd.SetHelpCommand(newHelpCommand(cmd, opts))
+	ConfigureExamplesFirstHelp(cmd)
 	ConfigureCommandSuggestions(cmd)
 	wrapHintedErrors(cmd, opts)
 
@@ -423,6 +447,63 @@ detent --format json help`),
 			return target.Help()
 		},
 	}
+}
+
+func ConfigureExamplesFirstHelp(cmd *cobra.Command) {
+	if cmd == nil {
+		return
+	}
+	cmd.SetUsageTemplate(examplesFirstUsageTemplate)
+	cmd.SetHelpFunc(examplesFirstHelp)
+	for _, child := range cmd.Commands() {
+		ConfigureExamplesFirstHelp(child)
+	}
+}
+
+func examplesFirstHelp(cmd *cobra.Command, _ []string) {
+	format, err := helpOutputFormat(cmd)
+	if err != nil {
+		cmd.PrintErrln(err)
+		return
+	}
+	if format == OutputFormatJSON {
+		if err := WriteJSON(cmd.OutOrStdout(), NewCommandCatalog(cmd.Root())); err != nil {
+			cmd.PrintErrln(err)
+		}
+		return
+	}
+	if err := writeExamplesFirstHelp(cmd.OutOrStdout(), cmd); err != nil {
+		cmd.PrintErrln(err)
+	}
+}
+
+func helpOutputFormat(cmd *cobra.Command) (OutputFormat, error) {
+	value, set := outputFormatFlagValue(cmd)
+	return ResolveOutputFormat(value, set, os.Getenv(outputFormatEnv), true)
+}
+
+func writeExamplesFirstHelp(out io.Writer, cmd *cobra.Command) error {
+	if strings.TrimSpace(cmd.Example) != "" {
+		if _, err := fmt.Fprintf(out, "Examples:\n%s\n\n", strings.TrimRight(cmd.Example, "\n")); err != nil {
+			return err
+		}
+	}
+
+	description := strings.TrimSpace(cmd.Long)
+	if description == "" {
+		description = strings.TrimSpace(cmd.Short)
+	}
+	if description != "" {
+		if _, err := fmt.Fprintf(out, "%s\n\n", description); err != nil {
+			return err
+		}
+	}
+
+	if cmd.Runnable() || cmd.HasSubCommands() {
+		_, err := fmt.Fprint(out, cmd.UsageString())
+		return err
+	}
+	return nil
 }
 
 func flagChanged(cmd *cobra.Command, name string) bool {

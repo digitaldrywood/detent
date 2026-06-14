@@ -33,10 +33,35 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	}
 
 	output := stdout.String()
+	if !strings.HasPrefix(output, "Examples:\n") {
+		t.Fatalf("help output does not lead with examples:\n%s", output)
+	}
 	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "init", "add-project", "pause", "unpause", "promote", "remove-project"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}
+	}
+}
+
+func TestCommandHelpLeadsWithExample(t *testing.T) {
+	t.Parallel()
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"add-project", "--help"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	output := stdout.String()
+	if !strings.HasPrefix(output, "Examples:\ndetent add-project --id api") {
+		t.Fatalf("add-project help does not lead with its runnable example:\n%s", output)
+	}
+	if strings.Count(output, "Examples:") != 1 {
+		t.Fatalf("add-project help examples count = %d, want 1:\n%s", strings.Count(output, "Examples:"), output)
 	}
 }
 

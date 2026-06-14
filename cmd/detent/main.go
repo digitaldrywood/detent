@@ -93,6 +93,7 @@ func newRootCommand(ctx context.Context, shutdownControllers ...*cli.ShutdownCon
 		newUpdateCommand(ctx, newDefaultUpdateRunner),
 		newShadowRunCommand(),
 	)
+	cli.ConfigureExamplesFirstHelp(cmd)
 	cli.ConfigureCommandSuggestions(cmd)
 
 	return cmd
