@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -41,12 +42,7 @@ func IsWorkspaceRelative(relativePath string) bool {
 }
 
 func escapesWorkspace(path string) bool {
-	for _, part := range strings.FieldsFunc(path, func(r rune) bool {
+	return slices.Contains(strings.FieldsFunc(path, func(r rune) bool {
 		return r == '/' || r == '\\'
-	}) {
-		if part == ".." {
-			return true
-		}
-	}
-	return false
+	}), "..")
 }

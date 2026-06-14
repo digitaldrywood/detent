@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"strings"
 	"sync"
 	"time"
@@ -278,9 +279,7 @@ func decrement(values map[string]int, key string, value int) {
 
 func cloneIntMap(values map[string]int) map[string]int {
 	cloned := make(map[string]int, len(values))
-	for key, value := range values {
-		cloned[key] = value
-	}
+	maps.Copy(cloned, values)
 	return cloned
 }
 

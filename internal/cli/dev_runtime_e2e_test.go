@@ -83,7 +83,7 @@ func waitForIsolatedRuntimeURL(t *testing.T, output *lockedBuffer, done <-chan e
 		default:
 		}
 
-		for _, line := range strings.Split(output.String(), "\n") {
+		for line := range strings.SplitSeq(output.String(), "\n") {
 			url, ok := strings.CutPrefix(line, "Dashboard: ")
 			if ok && strings.TrimSpace(url) != "" {
 				return strings.TrimSpace(url)

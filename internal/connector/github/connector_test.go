@@ -84,25 +84,21 @@ func TestConnectorInstanceLoginConcurrentAuthenticateAndRead(t *testing.T) {
 	start := make(chan struct{})
 	var wg sync.WaitGroup
 	for range 8 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			for range 25 {
 				if err := c.Authenticate(context.Background()); err != nil {
 					t.Errorf("Authenticate() error = %v", err)
 				}
 			}
-		}()
+		})
 	}
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		<-start
 		for range 200 {
 			_ = c.InstanceLogin()
 		}
-	}()
+	})
 
 	close(start)
 	wg.Wait()

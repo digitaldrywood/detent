@@ -3,6 +3,7 @@ package orchestrator_test
 import (
 	"context"
 	"errors"
+	"maps"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -1483,9 +1484,7 @@ func cloneIssues(issues []connector.Issue) []connector.Issue {
 		cloned[i].Labels = append([]string(nil), issue.Labels...)
 		if issue.Fields != nil {
 			cloned[i].Fields = make(map[string]string, len(issue.Fields))
-			for key, value := range issue.Fields {
-				cloned[i].Fields[key] = value
-			}
+			maps.Copy(cloned[i].Fields, issue.Fields)
 		}
 	}
 	return cloned

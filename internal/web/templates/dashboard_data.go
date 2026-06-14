@@ -2,6 +2,7 @@ package templates
 
 import (
 	"fmt"
+	"maps"
 	"math"
 	"net/url"
 	"sort"
@@ -367,9 +368,7 @@ func sidebarProjectItemAttributes(item sidebarProjectItem) templ.Attributes {
 
 func sidebarProjectButtonAttributes(item sidebarProjectItem) templ.Attributes {
 	attrs := templ.Attributes{}
-	for name, value := range sidebarAriaCurrent(item.Active) {
-		attrs[name] = value
-	}
+	maps.Copy(attrs, sidebarAriaCurrent(item.Active))
 	return attrs
 }
 
@@ -1916,10 +1915,7 @@ func budgetHistoryCount(budget telemetry.Budget) string {
 func budgetHistoryHeightStyle(spend float64, maxSpend float64) string {
 	percent := 12
 	if spend > 0 && maxSpend > 0 {
-		percent = int(math.Round(spend / maxSpend * 100))
-		if percent < 12 {
-			percent = 12
-		}
+		percent = max(int(math.Round(spend/maxSpend*100)), 12)
 	}
 	if percent > 100 {
 		percent = 100
@@ -2180,8 +2176,8 @@ func pluralize(word string, count int64) string {
 	if count == 1 {
 		return word
 	}
-	if strings.HasSuffix(word, "y") {
-		return strings.TrimSuffix(word, "y") + "ies"
+	if before, ok := strings.CutSuffix(word, "y"); ok {
+		return before + "ies"
 	}
 	return word + "s"
 }

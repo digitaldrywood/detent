@@ -375,9 +375,7 @@ func TestClientGraphQLSerializesHeaderInferredMutationCosts(t *testing.T) {
 	for i := 1; i <= mutations; i++ {
 		used := int64(10 + i)
 		remaining := int64(5000) - used
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			headers := http.Header{}
 			headers.Set("X-RateLimit-Limit", "5000")
@@ -387,7 +385,7 @@ func TestClientGraphQLSerializesHeaderInferredMutationCosts(t *testing.T) {
 
 			snapshot := client.recordRateLimitFromHeaders(headers, now)
 			client.recordGraphQLQueryCostFromHeaders("mutation", snapshot)
-		}()
+		})
 	}
 	close(start)
 	wg.Wait()

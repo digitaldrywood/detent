@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"time"
 
@@ -214,12 +215,7 @@ func (w *FileWatcher[T]) refreshWatchPath(addDir func(string) error) {
 }
 
 func hasWatchDir(dirs []string, dir string) bool {
-	for _, candidate := range dirs {
-		if candidate == dir {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(dirs, dir)
 }
 
 func (w *FileWatcher[T]) reload(ctx context.Context) FileUpdate[T] {

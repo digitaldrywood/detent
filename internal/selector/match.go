@@ -2,6 +2,7 @@ package selector
 
 import (
 	"fmt"
+	"slices"
 	"strconv"
 	"strings"
 
@@ -261,12 +262,7 @@ func matchPriority(priority *int, allowed []int) bool {
 	if priority == nil {
 		return false
 	}
-	for _, allowedPriority := range allowed {
-		if *priority == allowedPriority {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(allowed, *priority)
 }
 
 func issueAssignees(issue connector.Issue) []string {

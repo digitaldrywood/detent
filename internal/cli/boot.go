@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -645,12 +646,7 @@ func appendOperations(operations []string, next []string) []string {
 }
 
 func hasOperation(operations []string, operation string) bool {
-	for _, existing := range operations {
-		if existing == operation {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(operations, operation)
 }
 
 func firstWorkflowPath(cfg BootConfig) string {

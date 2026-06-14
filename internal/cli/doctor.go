@@ -603,7 +603,6 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 
 	jobs := make([]doctorCheckJob, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
-		project := project
 		id := doctorProjectID(project)
 		jobs = append(jobs, doctorCheckJob{
 			Name: "Project " + id + " checks",
@@ -1913,8 +1912,8 @@ func doctorGitHubRepositoryFromRemoteURL(remote string) (string, bool) {
 	if remote == "" {
 		return "", false
 	}
-	if strings.HasPrefix(remote, "git@github.com:") {
-		return doctorCleanGitHubRepository(strings.TrimPrefix(remote, "git@github.com:"))
+	if after, ok := strings.CutPrefix(remote, "git@github.com:"); ok {
+		return doctorCleanGitHubRepository(after)
 	}
 	if parsed, err := url.Parse(remote); err == nil && strings.EqualFold(parsed.Hostname(), "github.com") {
 		return doctorCleanGitHubRepository(strings.TrimPrefix(parsed.Path, "/"))

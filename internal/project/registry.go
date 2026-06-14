@@ -1,7 +1,7 @@
 package project
 
 import (
-	"sort"
+	"slices"
 	"sync"
 )
 
@@ -62,9 +62,7 @@ func (r *Registry) List() []*Project {
 	for id := range r.projects {
 		ids = append(ids, id)
 	}
-	sort.Slice(ids, func(i, j int) bool {
-		return ids[i] < ids[j]
-	})
+	slices.Sort(ids)
 
 	projects := make([]*Project, 0, len(ids))
 	for _, id := range ids {

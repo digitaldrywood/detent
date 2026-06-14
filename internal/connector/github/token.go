@@ -137,8 +137,8 @@ func resolveSecretValue(value string, lookupEnv func(string) string) string {
 	if value == "" {
 		return ""
 	}
-	if strings.HasPrefix(value, "$") {
-		name := strings.TrimPrefix(value, "$")
+	if after, ok := strings.CutPrefix(value, "$"); ok {
+		name := after
 		if envNamePattern.MatchString(name) {
 			return strings.TrimSpace(lookupEnv(name))
 		}

@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"maps"
 	"math"
 	"strconv"
 	"strings"
@@ -247,9 +248,7 @@ func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
 		return nil
 	}
 	out := make(map[string]AgentBackend, len(in))
-	for id, backend := range in {
-		out[id] = backend
-	}
+	maps.Copy(out, in)
 	return out
 }
 

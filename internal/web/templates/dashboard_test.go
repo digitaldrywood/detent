@@ -747,7 +747,7 @@ func TestDashboardRendersReadableAgentTimelineForConcurrentSessions(t *testing.T
 
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
 	running := make([]telemetry.Running, 0, 5)
-	for i := 0; i < 5; i++ {
+	for i := range 5 {
 		running = append(running, telemetry.Running{
 			Issue: telemetry.Issue{
 				ID:         "running-" + strconv.Itoa(i),
