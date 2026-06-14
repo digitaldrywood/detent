@@ -722,8 +722,8 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	if pr == nil || pr.Number != 190 || pr.CIStatus != "fail" || pr.CodexReviewState != "P1" {
 		t.Fatalf("PullRequest = %#v, want PR 190 with failing CI and P1 review", pr)
 	}
-	if pr.CIDurationSeconds != 690 {
-		t.Fatalf("CIDurationSeconds = %d, want 690", pr.CIDurationSeconds)
+	if pr.CIDurationSeconds != 0 {
+		t.Fatalf("CIDurationSeconds = %d, want 0 while checks are running", pr.CIDurationSeconds)
 	}
 	if len(pr.SlowChecks) != 2 {
 		t.Fatalf("SlowChecks len = %d, want 2: %#v", len(pr.SlowChecks), pr.SlowChecks)
@@ -741,6 +741,30 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 		pr.CodexReviewFindings[0].Body != "[P1] Unsafe migration." ||
 		pr.CodexReviewFindings[0].URL != "https://github.com/digitaldrywood/detent/pull/190#pullrequestreview-2" {
 		t.Fatalf("PullRequest.CodexReviewFindings = %#v, want P1 review finding", pr.CodexReviewFindings)
+	}
+}
+
+func TestCheckRunTelemetryReportsCompletedSpan(t *testing.T) {
+	t.Parallel()
+
+	start := time.Date(2026, 6, 5, 11, 0, 0, 0, time.UTC)
+	verifyDone := start.Add(3 * time.Minute)
+	snapshotStart := verifyDone.Add(30 * time.Second)
+	snapshotDone := snapshotStart.Add(8 * time.Minute)
+
+	durationSeconds, slowChecks, runningChecks := checkRunTelemetry([]restCheckRun{
+		{Name: "Verify (ubuntu-latest)", Status: "completed", Conclusion: "success", StartedAt: &start, CompletedAt: &verifyDone},
+		{Name: "GoReleaser Snapshot", Status: "completed", Conclusion: "success", StartedAt: &snapshotStart, CompletedAt: &snapshotDone},
+	})
+
+	if durationSeconds != 690 {
+		t.Fatalf("durationSeconds = %d, want 690", durationSeconds)
+	}
+	if len(slowChecks) != 2 || slowChecks[0].Name != "GoReleaser Snapshot" {
+		t.Fatalf("slowChecks = %#v, want snapshot first", slowChecks)
+	}
+	if len(runningChecks) != 0 {
+		t.Fatalf("runningChecks = %#v, want none", runningChecks)
 	}
 }
 

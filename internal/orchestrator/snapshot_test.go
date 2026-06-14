@@ -338,6 +338,8 @@ func TestStateSnapshotIncludesPullRequestMergeWaitTelemetry(t *testing.T) {
 	prActivityAt := stageUpdatedAt.Add(-12 * time.Minute)
 	reviewSubmittedAt := stageUpdatedAt.Add(-10 * time.Minute)
 	state := newState(normalizeConfig(Config{}))
+	state.AutoPromoteQuietDuration = 10 * time.Minute
+	state.PollInterval = time.Minute
 	state.Pipeline = []connector.Issue{
 		{
 			ID:             "merge",
@@ -374,6 +376,41 @@ func TestStateSnapshotIncludesPullRequestMergeWaitTelemetry(t *testing.T) {
 	}
 	if len(pr.RunningChecks) != 1 || pr.RunningChecks[0] != "Test Coverage" {
 		t.Fatalf("RunningChecks = %#v", pr.RunningChecks)
+	}
+}
+
+func TestStateSnapshotOmitsStalePullRequestQuietWait(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 15, 30, 0, 0, time.UTC)
+	stageUpdatedAt := now.Add(-5 * time.Minute)
+	prActivityAt := stageUpdatedAt.Add(-3 * time.Hour)
+	state := newState(normalizeConfig(Config{
+		PollInterval: time.Minute,
+		AutoPromote: AutoPromoteConfig{
+			QuietDuration: 10 * time.Minute,
+		},
+	}))
+	state.Pipeline = []connector.Issue{
+		{
+			ID:             "merge",
+			Identifier:     "digitaldrywood/detent#461",
+			Title:          "Merge wait telemetry",
+			State:          "Merging",
+			StageUpdatedAt: &stageUpdatedAt,
+			PullRequest: &connector.PullRequest{
+				Number:     461,
+				ActivityAt: &prActivityAt,
+			},
+		},
+	}
+
+	snapshot := state.Snapshot(now)
+	if len(snapshot.Pipeline) != 1 || snapshot.Pipeline[0].PullRequest == nil {
+		t.Fatalf("Pipeline = %#v, want one PR pipeline row", snapshot.Pipeline)
+	}
+	if got := snapshot.Pipeline[0].PullRequest.QuietWaitSeconds; got != 0 {
+		t.Fatalf("QuietWaitSeconds = %d, want 0 for stale activity", got)
 	}
 }
 

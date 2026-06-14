@@ -23,7 +23,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 			LastRefreshAt:       timePointer(s.LastRefreshAt),
 			NextRefreshAt:       timePointer(s.NextRefreshAt),
 		},
-		Pipeline:   pipelineSnapshots(s.Pipeline),
+		Pipeline:   pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval),
 		Running:    runningSnapshots(s.Running, s.Claimed, now),
 		Queue:      queueSnapshots(s.Retry, s.Claimed, now),
 		Blocked:    blockedSnapshots(s.Blocked, s.Claimed, now),
@@ -65,10 +65,10 @@ func instanceSnapshot(cfg Config) telemetry.Instance {
 	}
 }
 
-func pipelineSnapshots(issues []connector.Issue) []telemetry.Issue {
+func pipelineSnapshots(issues []connector.Issue, quietDuration time.Duration, pollInterval time.Duration) []telemetry.Issue {
 	out := make([]telemetry.Issue, 0, len(issues))
 	for _, issue := range issues {
-		out = append(out, telemetryIssue(issue))
+		out = append(out, telemetryIssue(issue, quietDuration, pollInterval))
 	}
 	return out
 }
@@ -79,7 +79,7 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, now
 	for _, id := range ids {
 		entry := running[id]
 		lastEventAt := timePointer(entry.LastEventAt)
-		issue := telemetryIssue(entry.Issue)
+		issue := telemetryIssue(entry.Issue, 0, 0)
 		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Running{
 			Issue:           issue,
@@ -108,7 +108,7 @@ func queueSnapshots(retry map[string]Retry, claims map[string]Claimed, now time.
 	out := make([]telemetry.Queued, 0, len(ids))
 	for _, id := range ids {
 		entry := retry[id]
-		issue := telemetryIssue(entry.Issue)
+		issue := telemetryIssue(entry.Issue, 0, 0)
 		applyClaimSnapshot(&issue, claims[id], now)
 		queued := telemetry.Queued{
 			Issue:      issue,
@@ -130,7 +130,7 @@ func blockedSnapshots(blocked map[string]Blocked, claims map[string]Claimed, now
 	out := make([]telemetry.Blocked, 0, len(ids))
 	for _, id := range ids {
 		entry := blocked[id]
-		issue := telemetryIssue(entry.Issue)
+		issue := telemetryIssue(entry.Issue, 0, 0)
 		applyClaimSnapshot(&issue, claims[id], now)
 		item := telemetry.Blocked{
 			Issue:          issue,
@@ -152,7 +152,7 @@ func completedSnapshots(completed map[string]Completed, claims map[string]Claime
 	out := make([]telemetry.Completed, 0, len(ids))
 	for _, id := range ids {
 		entry := completed[id]
-		issue := telemetryIssue(entry.Issue)
+		issue := telemetryIssue(entry.Issue, 0, 0)
 		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Completed{
 			Issue:          issue,
@@ -206,7 +206,7 @@ func applyClaimSnapshot(issue *telemetry.Issue, claim Claimed, now time.Time) {
 	issue.LeaseStale = !claim.LeaseExpiresAt.IsZero() && !now.Before(claim.LeaseExpiresAt)
 }
 
-func telemetryIssue(issue connector.Issue) telemetry.Issue {
+func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInterval time.Duration) telemetry.Issue {
 	return telemetry.Issue{
 		ID:             issue.ID,
 		Identifier:     issue.Identifier,
@@ -215,14 +215,14 @@ func telemetryIssue(issue connector.Issue) telemetry.Issue {
 		Description:    issue.Description,
 		State:          issue.State,
 		Labels:         append([]string(nil), issue.Labels...),
-		PullRequest:    telemetryPullRequest(issue),
+		PullRequest:    telemetryPullRequest(issue, quietDuration, pollInterval),
 		CreatedAt:      timePointerFromPtr(issue.CreatedAt),
 		UpdatedAt:      timePointerFromPtr(issue.UpdatedAt),
 		StageUpdatedAt: timePointerFromPtr(issue.StageUpdatedAt),
 	}
 }
 
-func telemetryPullRequest(issue connector.Issue) *telemetry.PullRequest {
+func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, pollInterval time.Duration) *telemetry.PullRequest {
 	pullRequest := issue.PullRequest
 	prNumber := issue.PRNumber
 	if pullRequest == nil && prNumber == nil {
@@ -241,7 +241,7 @@ func telemetryPullRequest(issue connector.Issue) *telemetry.PullRequest {
 		CheckRunCount:      pullRequest.CheckRunCount,
 		StatusContextCount: pullRequest.StatusContextCount,
 		CIDurationSeconds:  pullRequest.CIDurationSeconds,
-		QuietWaitSeconds:   pullRequestQuietWaitSeconds(issue),
+		QuietWaitSeconds:   pullRequestQuietWaitSeconds(issue, quietDuration, pollInterval),
 		SlowChecks:         telemetryPullRequestChecks(pullRequest.SlowChecks),
 		RunningChecks:      append([]string(nil), pullRequest.RunningChecks...),
 		CodexReviewState:   pullRequest.CodexReviewState,
@@ -261,7 +261,7 @@ func telemetryPullRequestChecks(checks []connector.PullRequestCheck) []telemetry
 	return out
 }
 
-func pullRequestQuietWaitSeconds(issue connector.Issue) int64 {
+func pullRequestQuietWaitSeconds(issue connector.Issue, quietDuration time.Duration, pollInterval time.Duration) int64 {
 	if issue.PullRequest == nil || issue.StageUpdatedAt == nil || issue.StageUpdatedAt.IsZero() {
 		return 0
 	}
@@ -278,7 +278,17 @@ func pullRequestQuietWaitSeconds(issue connector.Issue) int64 {
 	if latest == nil || stageAt.Before(*latest) {
 		return 0
 	}
-	return int64(stageAt.Sub(*latest) / time.Second)
+	wait := stageAt.Sub(*latest)
+	if quietDuration > 0 {
+		maxWait := quietDuration
+		if pollInterval > 0 {
+			maxWait += pollInterval
+		}
+		if wait > maxWait {
+			return 0
+		}
+	}
+	return int64(wait / time.Second)
 }
 
 func latestBefore(current *time.Time, candidate *time.Time, before time.Time) *time.Time {

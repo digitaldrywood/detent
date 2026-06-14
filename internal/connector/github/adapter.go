@@ -3129,6 +3129,7 @@ func checkRunsState(checkRuns []restCheckRun) string {
 func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequestCheck, []string) {
 	var startedAt *time.Time
 	var completedAt *time.Time
+	hasRunning := false
 	slowChecks := make([]connector.PullRequestCheck, 0, len(checkRuns))
 	runningChecks := make([]string, 0, len(checkRuns))
 
@@ -3139,7 +3140,8 @@ func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequest
 		name := strings.TrimSpace(checkRun.Name)
 		status := strings.ToLower(strings.TrimSpace(checkRun.Status))
 		conclusion := strings.ToLower(strings.TrimSpace(checkRun.Conclusion))
-		if status != "" && status != "completed" {
+		if status != "completed" || conclusion == "" {
+			hasRunning = true
 			runningChecks = append(runningChecks, name)
 			continue
 		}
@@ -3170,7 +3172,7 @@ func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequest
 	}
 
 	var durationSeconds int64
-	if startedAt != nil && completedAt != nil && !completedAt.Before(*startedAt) {
+	if !hasRunning && startedAt != nil && completedAt != nil && !completedAt.Before(*startedAt) {
 		durationSeconds = int64(completedAt.Sub(*startedAt) / time.Second)
 	}
 	return durationSeconds, slowChecks, runningChecks
