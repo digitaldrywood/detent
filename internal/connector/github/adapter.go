@@ -3392,10 +3392,8 @@ func parseBlockedByFromIssueText(issue githubIssueNode, repo string) []connector
 		if !strings.Contains(strings.ToLower(comment.Body), "codex workpad") {
 			continue
 		}
-		for _, section := range []string{"Blockers", "Human Action Needed"} {
-			for _, identifier := range issueReferencesInText(markdownSectionText(comment.Body, section), repo) {
-				appendBlockers([]connector.BlockedRef{{Identifier: identifier}})
-			}
+		for _, identifier := range issueReferencesInText(markdownSectionText(comment.Body, "Blockers"), repo) {
+			appendBlockers([]connector.BlockedRef{{Identifier: identifier}})
 		}
 	}
 	return blockers

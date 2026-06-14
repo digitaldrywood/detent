@@ -136,10 +136,8 @@ func dependencyRefsFromIssueText(issue connector.Issue) []connector.BlockedRef {
 		}
 	}
 	appendRefs(dependencyLineRefs(issue.Description, repo))
-	for _, section := range []string{"Blockers", "Human Action Needed"} {
-		appendRefs(dependencyRefsInText(dependencyMarkdownSectionText(issue.Description, section), repo))
-	}
-	appendRefs(dependencyRefsInText(issue.BlockerReason, repo))
+	appendRefs(dependencyRefsInText(dependencyMarkdownSectionText(issue.Description, "Blockers"), repo))
+	appendRefs(dependencyReasonRefs(issue.BlockerReason, repo))
 	return refs
 }
 
@@ -163,6 +161,34 @@ func dependencyRefsInText(text string, repo string) []connector.BlockedRef {
 		refs = append(refs, connector.BlockedRef{Identifier: identifier})
 	}
 	return refs
+}
+
+func dependencyReasonRefs(reason string, repo string) []connector.BlockedRef {
+	refs := dependencyLineRefs(reason, repo)
+	if len(refs) > 0 {
+		return refs
+	}
+	if !dependencyReasonMentionsWaiting(reason) {
+		return nil
+	}
+	return dependencyRefsInText(reason, repo)
+}
+
+func dependencyReasonMentionsWaiting(reason string) bool {
+	reason = strings.ToLower(strings.Join(strings.Fields(reason), " "))
+	for _, phrase := range []string{
+		"waiting on",
+		"waited on",
+		"blocked by",
+		"depends on",
+		"dependency",
+		"blocker",
+	} {
+		if strings.Contains(reason, phrase) {
+			return true
+		}
+	}
+	return false
 }
 
 func dependencyIssueIdentifiersInText(text string, repo string) []string {

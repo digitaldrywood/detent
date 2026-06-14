@@ -129,7 +129,7 @@ func TestTickAutoUnblocksDependencyFromBlockedReason(t *testing.T) {
 	t.Parallel()
 
 	waiting := dependencyAutoUnblockIssue("issue-reason-blocked", "Blocked")
-	waiting.BlockerReason = "Blocked by: digitaldrywood/detent#415"
+	waiting.BlockerReason = "Waiting on #415 before continuing."
 	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
 	blocker.Identifier = "digitaldrywood/detent#415"
 	tracker := &dependencyAutoUnblockConnector{
@@ -261,6 +261,44 @@ func TestTickLeavesHumanOnlyPRBackedBlockedIssueBlocked(t *testing.T) {
 	}
 	if _, ok := state.Blocked[waiting.ID]; !ok {
 		t.Fatalf("Blocked[%q] missing for human-only blocker", waiting.ID)
+	}
+}
+
+func TestTickLeavesDependencyBlockedPRIssueBlocked(t *testing.T) {
+	t.Parallel()
+
+	prNumber := 428
+	waiting := dependencyAutoUnblockIssue("issue-dependent-pr-blocked", "Blocked")
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415", State: "In Progress"}}
+	waiting.PRNumber = &prNumber
+	waiting.PullRequest = &connector.PullRequest{
+		Number:         prNumber,
+		State:          "OPEN",
+		HeadSHA:        "sha-current",
+		MergeableState: "dirty",
+	}
+	waiting.BlockerReason = "Waiting on #415 before resolving PR conflicts."
+	blocker := dependencyAutoUnblockIssue("issue-in-progress", "In Progress")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 8, 0, 0, time.UTC))
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none while dependency is not ready", tracker.updates)
+	}
+	if _, ok := state.Blocked[waiting.ID]; !ok {
+		t.Fatalf("Blocked[%q] missing for unresolved dependency blocker", waiting.ID)
 	}
 }
 

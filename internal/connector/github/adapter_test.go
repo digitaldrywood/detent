@@ -1037,6 +1037,34 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) 
 	}
 }
 
+func TestConnectorFetchIssuesByStatesIgnoresHumanActionIssueMentions(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw417","number":417,"title":"Human blocked reference","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/417","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Blocked"},"priorityValue":null}]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/417/comments?per_page=100",
+			body:   `[{"body":"## Codex Workpad\n\n### Human Action Needed\n- Need product approval based on #123 before continuing.\n\n### Validation\n- Pending."}]`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Blocked"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+	if len(got[0].BlockedBy) != 0 {
+		t.Fatalf("BlockedBy = %#v, want no dependency refs from Human Action Needed prose", got[0].BlockedBy)
+	}
+}
+
 func TestConnectorFetchIssuesByStatesAttachesBlockedPullRequest(t *testing.T) {
 	t.Parallel()
 

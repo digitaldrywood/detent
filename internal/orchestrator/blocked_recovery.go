@@ -22,6 +22,7 @@ type BlockedRecoveryReason string
 const (
 	BlockedRecoveryReasonNotBlocked             BlockedRecoveryReason = "not_blocked"
 	BlockedRecoveryReasonHumanBlocker           BlockedRecoveryReason = "human_blocker"
+	BlockedRecoveryReasonDependencyBlocker      BlockedRecoveryReason = "dependency_blocker"
 	BlockedRecoveryReasonMissingPullRequest     BlockedRecoveryReason = "missing_pull_request"
 	BlockedRecoveryReasonPullRequestNotOpen     BlockedRecoveryReason = "pull_request_not_open"
 	BlockedRecoveryReasonNoRecoverableSignal    BlockedRecoveryReason = "no_recoverable_signal"
@@ -44,6 +45,9 @@ func EvaluateBlockedRecovery(issue connector.Issue) BlockedRecoveryDecision {
 	}
 	if blockedRecoveryHumanOnly(issue) {
 		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonHumanBlocker, "blocked reason requires a human")
+	}
+	if len(issue.BlockedBy) > 0 {
+		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonDependencyBlocker, "dependency blockers must clear first")
 	}
 	if issue.PullRequest == nil {
 		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonMissingPullRequest, "")
