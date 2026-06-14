@@ -76,12 +76,12 @@ func reportsPageTitle(data ReportsData) string {
 	return "Detent reports"
 }
 
-func reportsDashboardData(data ReportsData) DashboardData {
+func reportsDashboardShellData(data ReportsData) DashboardShellData {
 	activeNav := strings.TrimSpace(data.ActiveNav)
 	if activeNav == "" {
 		activeNav = "reports"
 	}
-	return DashboardData{
+	return DashboardShellData{
 		Title:            reportsPageTitle(data),
 		ApplicationName:  data.ApplicationName,
 		InstanceName:     data.InstanceName,

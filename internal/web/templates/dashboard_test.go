@@ -3,10 +3,13 @@ package templates_test
 import (
 	"bytes"
 	"context"
+	"io"
 	"strconv"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/a-h/templ"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -585,6 +588,71 @@ func TestDashboardPreservesSnapshotScrollContainersAcrossSSEMorph(t *testing.T) 
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing scroll preservation marker %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboardShell(t, templates.DashboardShellData{
+		Title:           "Detent settings",
+		ApplicationName: "Detent",
+		InstanceName:    "release-captain",
+		Assets: templates.AssetPaths{
+			Stylesheet:      "/assets/detent.css",
+			ChartJS:         "/assets/chart.js",
+			DashboardCharts: "/assets/dashboard-charts.js",
+		},
+		Projects: []templates.ProjectSmallMultiple{
+			{ID: "detent", Name: "Detent", Running: 2},
+		},
+		ActiveNav:              "settings",
+		SidebarCollapsed:       true,
+		IncludeDashboardCharts: true,
+	})
+
+	for _, want := range []string{
+		`<title>Detent settings</title>`,
+		`<link rel="stylesheet" href="/assets/detent.css"`,
+		`src="/assets/chart.js"`,
+		`src="/assets/dashboard-charts.js"`,
+		`data-tui-sidebar-layout`,
+		`id="dashboard-sidebar"`,
+		`data-tui-sidebar-state="collapsed"`,
+		`/static/js/templui/sidebar.min.js`,
+		`/static/js/templui/dialog.min.js`,
+		`/static/js/templui/popover.min.js`,
+		`data-tui-sheet`,
+		`data-tui-sidebar-target="dashboard-sidebar"`,
+		`href="/projects/detent"`,
+		`href="/settings"`,
+		`data-tui-sidebar-active="true" aria-current="page"`,
+		`data-shell-test-child`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard shell missing %q:\n%s", want, html)
+		}
+	}
+
+	for _, wantSingle := range []string{
+		`data-tui-sidebar-layout`,
+		`/static/js/templui/sidebar.min.js`,
+		`/static/js/templui/dialog.min.js`,
+		`/static/js/templui/popover.min.js`,
+	} {
+		if got := strings.Count(html, wantSingle); got != 1 {
+			t.Fatalf("dashboard shell rendered %q %d times, want 1:\n%s", wantSingle, got, html)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"dashboard-nav flex min-w-0 items-center gap-4",
+		"dashboard-nav-link",
+		`aria-label="Primary"`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard shell rendered retired nav marker %q:\n%s", forbidden, html)
 		}
 	}
 }
@@ -1409,6 +1477,21 @@ func renderDashboard(t *testing.T, data templates.DashboardData) string {
 
 	var buf bytes.Buffer
 	if err := templates.Dashboard(data).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	return buf.String()
+}
+
+func renderDashboardShell(t *testing.T, data templates.DashboardShellData) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	child := templ.ComponentFunc(func(ctx context.Context, w io.Writer) error {
+		_, err := io.WriteString(w, `<main data-shell-test-child>Shell content</main>`)
+		return err
+	})
+	ctx := templ.WithChildren(context.Background(), child)
+	if err := templates.DashboardShell(data).Render(ctx, &buf); err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
 	return buf.String()

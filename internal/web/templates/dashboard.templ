@@ -13,7 +13,7 @@ import (
 )
 
 templ Dashboard(data DashboardData) {
-	@dashboardShell(data, true) {
+	@DashboardShell(DashboardShellDataFromDashboard(data)) {
 		<div class="mx-auto grid w-full max-w-7xl content-start gap-4 sm:gap-5">
 			<header class="dashboard-topbar min-w-0 border-b border-border py-2">
 				<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
@@ -36,7 +36,7 @@ templ Dashboard(data DashboardData) {
 	}
 }
 
-templ dashboardShell(data DashboardData, includeDashboardCharts bool) {
+templ DashboardShell(data DashboardShellData) {
 	<!DOCTYPE html>
 	<html lang="en">
 		<head>
@@ -54,7 +54,7 @@ templ dashboardShell(data DashboardData, includeDashboardCharts bool) {
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
-			if includeDashboardCharts {
+			if data.IncludeDashboardCharts {
 				<script src={ chartJSPath(data.Assets) } defer></script>
 				<script src={ dashboardChartsScriptPath(data.Assets) } defer></script>
 			}
@@ -78,6 +78,14 @@ templ dashboardShell(data DashboardData, includeDashboardCharts bool) {
 			}
 		</body>
 	</html>
+}
+
+templ dashboardPageHeading(title string) {
+	<h1 class="sr-only">{ title }</h1>
+}
+
+templ dashboardTopbarDivider() {
+	<span aria-hidden="true">/</span>
 }
 
 templ dashboardMobileSidebarTrigger() {
@@ -522,7 +530,7 @@ templ dashboardSidebarProjectOrderScript() {
 	</script>
 }
 
-templ dashboardSidebar(data DashboardData) {
+templ dashboardSidebar(data DashboardShellData) {
 	@sidebar.Sidebar(sidebar.Props{
 		ID:          "dashboard-sidebar",
 		Collapsible: sidebar.CollapsibleIcon,
@@ -576,7 +584,7 @@ templ dashboardProjectOrderFooter() {
 	}
 }
 
-templ DashboardSidebarContent(data DashboardData) {
+templ DashboardSidebarContent(data DashboardShellData) {
 	@sidebar.Group() {
 		@sidebar.Menu() {
 			@sidebar.MenuItem() {

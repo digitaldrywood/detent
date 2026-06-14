@@ -810,6 +810,13 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			inactiveHref: []string{"/", "/settings"},
 		},
 		{
+			name:         "project",
+			path:         "/projects/detent",
+			activeHref:   "/projects/detent",
+			sseConnect:   `sse-connect="/events?project=detent"`,
+			inactiveHref: []string{"/", "/reports", "/settings"},
+		},
+		{
 			name:         "settings",
 			path:         "/settings",
 			activeHref:   "/settings",
@@ -837,6 +844,9 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 				`hx-swap="morph:innerHTML"`,
 				`data-tui-sidebar-target="dashboard-sidebar"`,
 				`data-tui-sheet`,
+				`/static/js/templui/sidebar.min.js`,
+				`/static/js/templui/dialog.min.js`,
+				`/static/js/templui/popover.min.js`,
 				`href="/projects/detent"`,
 				`Detent - active, 3 running`,
 				tt.sseConnect,
@@ -844,6 +854,9 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 				if !strings.Contains(body, want) {
 					t.Fatalf("%s missing shared sidebar marker %q:\n%s", tt.path, want, body)
 				}
+			}
+			if got := strings.Count(body, `data-tui-sidebar-layout`); got != 1 {
+				t.Fatalf("%s rendered data-tui-sidebar-layout %d times, want 1:\n%s", tt.path, got, body)
 			}
 			assertActiveSidebarLink(t, body, tt.activeHref)
 			for _, href := range tt.inactiveHref {

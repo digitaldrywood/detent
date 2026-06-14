@@ -40,6 +40,24 @@ type DashboardData struct {
 	SidebarCollapsed bool
 }
 
+type DashboardShellData struct {
+	Title                  string
+	ApplicationName        string
+	InstanceName           string
+	Version                string
+	Build                  buildinfo.Info
+	DashboardURL           string
+	ConnectorName          string
+	Snapshot               telemetry.Snapshot
+	Projects               []ProjectSmallMultiple
+	Assets                 AssetPaths
+	ActiveNav              string
+	ProjectID              string
+	ProjectName            string
+	SidebarCollapsed       bool
+	IncludeDashboardCharts bool
+}
+
 type Budget = telemetry.Budget
 
 type RateLimits = telemetry.RateLimits
@@ -204,7 +222,27 @@ type prPipelineCard struct {
 	StageAt          time.Time
 }
 
-func pageTitle(data DashboardData) string {
+func DashboardShellDataFromDashboard(data DashboardData) DashboardShellData {
+	return DashboardShellData{
+		Title:                  data.Title,
+		ApplicationName:        data.ApplicationName,
+		InstanceName:           data.InstanceName,
+		Version:                data.Version,
+		Build:                  data.Build,
+		DashboardURL:           data.DashboardURL,
+		ConnectorName:          data.ConnectorName,
+		Snapshot:               data.Snapshot,
+		Projects:               data.Projects,
+		Assets:                 data.Assets,
+		ActiveNav:              data.ActiveNav,
+		ProjectID:              data.ProjectID,
+		ProjectName:            data.ProjectName,
+		SidebarCollapsed:       data.SidebarCollapsed,
+		IncludeDashboardCharts: true,
+	}
+}
+
+func pageTitle(data DashboardShellData) string {
 	if data.Title != "" {
 		return data.Title
 	}
@@ -263,7 +301,7 @@ func chartEndpoint(data DashboardData) string {
 	return "/api/v1/timeseries"
 }
 
-func eventsPath(data DashboardData) string {
+func eventsPath(data DashboardShellData) string {
 	if id := strings.TrimSpace(data.ProjectID); id != "" {
 		return "/events?project=" + url.QueryEscape(id)
 	}
@@ -287,15 +325,15 @@ func dashboardScopeClass(data DashboardData) string {
 	return authorizationScopeClass(data.Snapshot)
 }
 
-func sidebarFilterVisible(data DashboardData) bool {
+func sidebarFilterVisible(data DashboardShellData) bool {
 	return len(sidebarProjectItems(data)) > 10
 }
 
-func sidebarFleetActive(data DashboardData) bool {
-	return !isProjectDashboard(data) && strings.TrimSpace(data.ActiveNav) != "reports" && strings.TrimSpace(data.ActiveNav) != "settings"
+func sidebarFleetActive(data DashboardShellData) bool {
+	return strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) != "reports" && strings.TrimSpace(data.ActiveNav) != "settings"
 }
 
-func sidebarStaticNavActive(data DashboardData, id string) bool {
+func sidebarStaticNavActive(data DashboardShellData, id string) bool {
 	return strings.TrimSpace(data.ActiveNav) == id
 }
 
@@ -335,11 +373,11 @@ func sidebarProjectButtonAttributes(item sidebarProjectItem) templ.Attributes {
 	return attrs
 }
 
-func sidebarProjectOrderAvailable(data DashboardData) bool {
+func sidebarProjectOrderAvailable(data DashboardShellData) bool {
 	return len(sidebarProjectItems(data)) > 1
 }
 
-func sidebarFleetTooltip(data DashboardData) string {
+func sidebarFleetTooltip(data DashboardShellData) string {
 	return "Fleet - " + strings.Join([]string{
 		formatCount(runningCount(data.Snapshot)) + " running",
 		formatCount(queueCount(data.Snapshot)) + " queued",
@@ -351,7 +389,7 @@ func sidebarProjectTooltip(item sidebarProjectItem) string {
 	return item.Name + " - " + item.StatusLabel + ", " + item.CountLabel + " running"
 }
 
-func sidebarProjectSearchLabel(data DashboardData) string {
+func sidebarProjectSearchLabel(data DashboardShellData) string {
 	return "Filter " + formatCount(len(sidebarProjectItems(data))) + " projects"
 }
 
@@ -442,7 +480,7 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 	return cards
 }
 
-func sidebarProjectItems(data DashboardData) []sidebarProjectItem {
+func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {
 	if len(data.Projects) == 0 {
 		return nil
 	}

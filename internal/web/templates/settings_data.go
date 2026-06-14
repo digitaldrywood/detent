@@ -47,12 +47,12 @@ func settingsPageTitle(data SettingsData) string {
 	return "Detent settings"
 }
 
-func settingsDashboardData(data SettingsData) DashboardData {
+func settingsDashboardShellData(data SettingsData) DashboardShellData {
 	activeNav := strings.TrimSpace(data.ActiveNav)
 	if activeNav == "" {
 		activeNav = "settings"
 	}
-	return DashboardData{
+	return DashboardShellData{
 		Title:            settingsPageTitle(data),
 		ApplicationName:  data.ApplicationName,
 		InstanceName:     data.InstanceName,
