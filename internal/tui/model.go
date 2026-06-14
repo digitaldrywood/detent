@@ -190,9 +190,10 @@ func (m Model) renderWaiting() string {
 
 func (m Model) renderSnapshot() string {
 	snapshot := m.snapshot
-	shutdownStatus := formatShutdown(snapshot.Shutdown, m.styles)
+	lifecycleLabel, lifecycleStatus := formatLifecycle(snapshot.Shutdown, m.styles)
 	if m.shutdownNote != "" {
-		shutdownStatus = m.styles.warn.Render(m.shutdownNote)
+		lifecycleLabel = "Shutdown"
+		lifecycleStatus = m.styles.warn.Render(m.shutdownNote)
 	}
 	lines := []string{
 		m.styles.title.Render("╭─ DETENT STATUS"),
@@ -218,12 +219,12 @@ func (m Model) renderSnapshot() string {
 			m.styles.warn.Render("total "+formatCount(snapshot.Tokens.Total)),
 		"│ Budget: " + formatBudget(snapshot.Budget, m.styles),
 		"│ Rate Limits: " + formatRateLimits(snapshot.RateLimits, m.now, m.styles),
-		"│ Shutdown: " + shutdownStatus,
 		"│ Project: " + formatOptionalInfo(formatProject(snapshot.Project), m.styles),
 		"│ Instance: " + formatOptionalInfo(formatInstance(snapshot.Instance), m.styles),
 		"│ Scope: " + formatOptionalInfo(formatAuthorizationScope(snapshot.Instance), m.styles),
 		"│ Dashboard: " + m.styles.info.Render(formatDashboardURL(snapshot)),
 		"│ Next refresh: " + formatOptionalInfo(formatNextRefresh(snapshot.Refresh), m.styles),
+		"│ " + lifecycleLabel + ": " + lifecycleStatus,
 		m.styles.title.Render("├─ Running"),
 		"│",
 	}...)
@@ -242,15 +243,18 @@ func (m Model) renderSnapshot() string {
 	return strings.Join(lines, "\n")
 }
 
-func formatShutdown(shutdown telemetry.Shutdown, s styles) string {
+func formatLifecycle(shutdown telemetry.Shutdown, s styles) (string, string) {
 	if shutdown.Draining {
-		return s.warn.Render(fmt.Sprintf("draining (%d sessions remaining)", shutdown.SessionsRemaining))
+		return "Shutdown", s.warn.Render(fmt.Sprintf("draining (%d sessions remaining)", shutdown.SessionsRemaining))
 	}
 	status := strings.TrimSpace(shutdown.Status)
 	if status == "" {
 		status = "running"
 	}
-	return s.ok.Render(status)
+	if strings.EqualFold(status, "running") {
+		return "Lifecycle", s.ok.Render(status)
+	}
+	return "Shutdown", s.warn.Render(status)
 }
 
 func formatRunningRows(running []telemetry.Running, eventWidth int, s styles) []string {

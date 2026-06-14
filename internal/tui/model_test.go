@@ -55,7 +55,7 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 		"Tokens: in 110 | out 220 | total 330",
 		"Budget: enabled current $12.50 | projected $0.75 | day max $50.00 | issue max $5.00",
 		"Rate Limits: codex-primary | primary 90/100 reset 60s | secondary 0/100 reset 30s | credits 0/1",
-		"Shutdown: running",
+		"Lifecycle: running",
 		"Running",
 		"PID",
 		"DD-44",
@@ -80,6 +80,12 @@ func TestModelRendersSnapshotFromHub(t *testing.T) {
 	}
 	if strings.Contains(view, "worker-1") {
 		t.Fatalf("View() rendered worker host as process identity:\n%s", view)
+	}
+	if strings.Contains(view, "Shutdown: running") {
+		t.Fatalf("View() rendered confusing shutdown status:\n%s", view)
+	}
+	if strings.Index(view, "Lifecycle: running") < strings.Index(view, "Next refresh:") {
+		t.Fatalf("View() promoted lifecycle status above refresh details:\n%s", view)
 	}
 }
 
