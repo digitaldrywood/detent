@@ -178,7 +178,7 @@ func IsMissingWorkspaceError(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, ErrMissingWorkspace) || errors.Is(err, os.ErrNotExist) {
+	if errors.Is(err, ErrMissingWorkspace) {
 		return true
 	}
 

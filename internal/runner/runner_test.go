@@ -519,7 +519,7 @@ func TestRunnerRunTreatsMissingWorkspaceFinalDiffAsCompleted(t *testing.T) {
 	completedAt := startedAt.Add(4 * time.Second)
 	workspaceBackend := &fakeWorkspaceBackend{
 		info:    workspace.Info{Path: filepath.Join(t.TempDir(), "missing-worktree"), Key: "issue-453", Branch: "detent/issue-453"},
-		diffErr: os.ErrNotExist,
+		diffErr: errors.Join(workspace.ErrMissingWorkspace, os.ErrNotExist),
 	}
 	codexClient := &fakeCodexClient{
 		updates: []AgentUpdate{{

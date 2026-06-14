@@ -132,3 +132,12 @@ func TestGitDiffStatMissingWorkspaceIsClassified(t *testing.T) {
 		t.Fatalf("GitDiffStat() error = %v, want ErrMissingWorkspace", err)
 	}
 }
+
+func TestIsMissingWorkspaceErrorIgnoresUnmarkedNotExist(t *testing.T) {
+	t.Parallel()
+
+	err := &os.PathError{Op: "read", Path: filepath.Join(t.TempDir(), "index"), Err: os.ErrNotExist}
+	if IsMissingWorkspaceError(err) {
+		t.Fatalf("IsMissingWorkspaceError(%v) = true, want false", err)
+	}
+}
