@@ -255,6 +255,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 			submittedAt := *issue.PullRequest.CodexReviewSubmittedAt
 			pullRequest.CodexReviewSubmittedAt = &submittedAt
 		}
+		if issue.PullRequest.LatestCodexReviewSubmittedAt != nil {
+			submittedAt := *issue.PullRequest.LatestCodexReviewSubmittedAt
+			pullRequest.LatestCodexReviewSubmittedAt = &submittedAt
+		}
 		pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
 		issue.PullRequest = &pullRequest
 	}

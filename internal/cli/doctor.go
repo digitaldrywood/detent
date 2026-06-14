@@ -57,16 +57,31 @@ const (
 var doctorHealthCheckKeys = []string{"hub", "store", "registry", "connector"}
 
 type doctorCheck struct {
-	Name   string       `json:"name"`
-	Status doctorStatus `json:"status"`
-	Detail string       `json:"detail"`
-	Hint   string       `json:"hint,omitempty"`
+	Name                  string                                 `json:"name"`
+	Status                doctorStatus                           `json:"status"`
+	Detail                string                                 `json:"detail"`
+	Hint                  string                                 `json:"hint,omitempty"`
+	AutoPromoteCandidates []doctorAutoPromoteCandidateDiagnostic `json:"auto_promote_candidates,omitempty"`
 }
 
 type doctorReport struct {
 	Checks  []doctorCheck `json:"checks"`
 	Summary doctorSummary `json:"summary"`
 	Result  string        `json:"result"`
+}
+
+type doctorAutoPromoteCandidateDiagnostic struct {
+	IssueID                      string     `json:"issue_id,omitempty"`
+	IssueIdentifier              string     `json:"issue_identifier,omitempty"`
+	IssueURL                     string     `json:"issue_url,omitempty"`
+	PRNumber                     int        `json:"pr_number,omitempty"`
+	PRURL                        string     `json:"pr_url,omitempty"`
+	PRHeadSHA                    string     `json:"pr_head_sha,omitempty"`
+	LatestCodexReviewState       string     `json:"latest_codex_review_state,omitempty"`
+	LatestCodexReviewCommitSHA   string     `json:"latest_codex_review_commit_sha,omitempty"`
+	LatestCodexReviewSubmittedAt *time.Time `json:"latest_codex_review_submitted_at,omitempty"`
+	QuietRemainingSeconds        int64      `json:"quiet_remaining_seconds,omitempty"`
+	Reason                       string     `json:"reason"`
 }
 
 type doctorSummary struct {
@@ -780,22 +795,26 @@ func checkDoctorAutoPromoteLive(
 	}
 
 	autoPromoteCfg := doctorAutoPromoteConfig(cfg)
-	reasonCounts := map[orchestrator.AutoPromoteReason]int{}
+	reasonCounts := map[string]int{}
+	candidates := make([]doctorAutoPromoteCandidateDiagnostic, 0, len(issues))
 	var quietRemaining time.Duration
 	for _, issue := range issues {
 		summary := orchestrator.AutoPromoteSummaryFromIssue(issue)
 		decision := orchestrator.EvaluateAutoPromote(issue, summary, autoPromoteCfg, now)
-		reasonCounts[decision.Reason]++
+		candidate := doctorAutoPromoteCandidateDiagnosticFromIssue(issue, decision)
+		candidates = append(candidates, candidate)
+		reasonCounts[candidate.Reason]++
 		if decision.QuietRemaining > quietRemaining {
 			quietRemaining = decision.QuietRemaining
 		}
 		if decision.Reason == orchestrator.AutoPromoteReasonMissingPullRequest {
 			if prNumber, ok := doctorLinkedPullRequestNumber(issue); ok {
 				return doctorCheck{
-					Name:   name,
-					Status: doctorFail,
-					Detail: fmt.Sprintf("%s has linked PR #%d but auto-promote readiness reports missing_pull_request", doctorIssueLabel(issue), prNumber),
-					Hint:   "Verify GitHub PR attachment, branch prefix matching, and repository access for Human Review candidates.",
+					Name:                  name,
+					Status:                doctorFail,
+					Detail:                fmt.Sprintf("%s has linked PR #%d but auto-promote readiness reports missing_pull_request", doctorIssueLabel(issue), prNumber),
+					Hint:                  "Verify GitHub PR attachment, branch prefix matching, and repository access for Human Review candidates.",
+					AutoPromoteCandidates: []doctorAutoPromoteCandidateDiagnostic{candidate},
 				}
 			}
 		}
@@ -811,10 +830,14 @@ func checkDoctorAutoPromoteLive(
 	if quietRemaining > 0 {
 		detail += "; max_quiet_remaining=" + quietRemaining.Truncate(time.Second).String()
 	}
+	if len(candidates) > 0 {
+		detail += "; candidates: " + doctorAutoPromoteCandidateSummaries(candidates)
+	}
 	return doctorCheck{
-		Name:   name,
-		Status: doctorOK,
-		Detail: detail,
+		Name:                  name,
+		Status:                doctorOK,
+		Detail:                detail,
+		AutoPromoteCandidates: candidates,
 	}
 }
 
@@ -846,18 +869,147 @@ func doctorAutoPromoteConfig(cfg workflowconfig.Config) orchestrator.AutoPromote
 	}
 }
 
-func doctorAutoPromoteReasonCounts(counts map[orchestrator.AutoPromoteReason]int) string {
+func doctorAutoPromoteCandidateDiagnosticFromIssue(
+	issue connector.Issue,
+	decision orchestrator.AutoPromoteDecision,
+) doctorAutoPromoteCandidateDiagnostic {
+	diagnostic := doctorAutoPromoteCandidateDiagnostic{
+		IssueID:         strings.TrimSpace(issue.ID),
+		IssueIdentifier: strings.TrimSpace(issue.Identifier),
+		IssueURL:        strings.TrimSpace(issue.URL),
+		Reason:          doctorAutoPromoteDiagnosticReason(issue, decision),
+	}
+	if decision.QuietRemaining > 0 {
+		diagnostic.QuietRemainingSeconds = int64(decision.QuietRemaining.Truncate(time.Second) / time.Second)
+	}
+	if prNumber, ok := doctorLinkedPullRequestNumber(issue); ok {
+		diagnostic.PRNumber = prNumber
+	}
+	if issue.PullRequest == nil {
+		return diagnostic
+	}
+
+	pullRequest := issue.PullRequest
+	if pullRequest.Number > 0 {
+		diagnostic.PRNumber = pullRequest.Number
+	}
+	diagnostic.PRURL = strings.TrimSpace(pullRequest.URL)
+	diagnostic.PRHeadSHA = strings.TrimSpace(pullRequest.HeadSHA)
+	diagnostic.LatestCodexReviewState = doctorLatestCodexReviewState(pullRequest)
+	diagnostic.LatestCodexReviewCommitSHA = strings.TrimSpace(pullRequest.LatestCodexReviewCommitSHA)
+	diagnostic.LatestCodexReviewSubmittedAt = doctorLatestCodexReviewSubmittedAt(pullRequest)
+	return diagnostic
+}
+
+func doctorAutoPromoteDiagnosticReason(issue connector.Issue, decision orchestrator.AutoPromoteDecision) string {
+	if decision.Reason == orchestrator.AutoPromoteReasonCodexReviewMissing && doctorPullRequestHasStaleCodexReview(issue.PullRequest) {
+		return "stale_automated_review"
+	}
+	if decision.Reason == orchestrator.AutoPromoteReasonCodexReviewNotQuiet {
+		return "quiet_period_remaining"
+	}
+	return string(decision.Reason)
+}
+
+func doctorPullRequestHasStaleCodexReview(pullRequest *connector.PullRequest) bool {
+	if pullRequest == nil {
+		return false
+	}
+	headSHA := strings.TrimSpace(pullRequest.HeadSHA)
+	reviewCommitSHA := strings.TrimSpace(pullRequest.LatestCodexReviewCommitSHA)
+	if headSHA == "" || reviewCommitSHA == "" {
+		return false
+	}
+	if doctorLatestCodexReviewState(pullRequest) == "" && pullRequest.LatestCodexReviewSubmittedAt == nil {
+		return false
+	}
+	return !strings.EqualFold(headSHA, reviewCommitSHA)
+}
+
+func doctorLatestCodexReviewState(pullRequest *connector.PullRequest) string {
+	if pullRequest == nil {
+		return ""
+	}
+	if state := strings.TrimSpace(pullRequest.LatestCodexReviewState); state != "" {
+		return state
+	}
+	return strings.TrimSpace(pullRequest.CodexReviewState)
+}
+
+func doctorLatestCodexReviewSubmittedAt(pullRequest *connector.PullRequest) *time.Time {
+	if pullRequest == nil {
+		return nil
+	}
+	if pullRequest.LatestCodexReviewSubmittedAt != nil {
+		return pullRequest.LatestCodexReviewSubmittedAt
+	}
+	return pullRequest.CodexReviewSubmittedAt
+}
+
+func doctorAutoPromoteCandidateSummaries(candidates []doctorAutoPromoteCandidateDiagnostic) string {
+	parts := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		parts = append(parts, doctorAutoPromoteCandidateSummary(candidate))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func doctorAutoPromoteCandidateSummary(candidate doctorAutoPromoteCandidateDiagnostic) string {
+	parts := []string{doctorAutoPromoteCandidateIssueLabel(candidate)}
+	if candidate.PRNumber > 0 {
+		parts = append(parts, fmt.Sprintf("PR #%d", candidate.PRNumber))
+	}
+	if candidate.PRURL != "" {
+		parts = append(parts, candidate.PRURL)
+	}
+	if candidate.PRHeadSHA != "" {
+		parts = append(parts, "head="+candidate.PRHeadSHA)
+	}
+	if candidate.LatestCodexReviewState != "" || candidate.LatestCodexReviewCommitSHA != "" {
+		review := strings.TrimSpace(candidate.LatestCodexReviewState)
+		if candidate.LatestCodexReviewCommitSHA != "" {
+			if review == "" {
+				review = "review"
+			}
+			review += "@" + candidate.LatestCodexReviewCommitSHA
+		}
+		parts = append(parts, "review="+review)
+	}
+	if candidate.LatestCodexReviewSubmittedAt != nil {
+		parts = append(parts, "submitted="+candidate.LatestCodexReviewSubmittedAt.UTC().Format(time.RFC3339))
+	}
+	if candidate.QuietRemainingSeconds > 0 {
+		parts = append(parts, "quiet_remaining="+(time.Duration(candidate.QuietRemainingSeconds)*time.Second).String())
+	}
+	parts = append(parts, "reason="+candidate.Reason)
+	return strings.Join(parts, " ")
+}
+
+func doctorAutoPromoteCandidateIssueLabel(candidate doctorAutoPromoteCandidateDiagnostic) string {
+	switch {
+	case candidate.IssueID != "" && candidate.IssueIdentifier != "":
+		return candidate.IssueID + " (" + candidate.IssueIdentifier + ")"
+	case candidate.IssueID != "":
+		return candidate.IssueID
+	case candidate.IssueIdentifier != "":
+		return candidate.IssueIdentifier
+	default:
+		return "sampled issue"
+	}
+}
+
+func doctorAutoPromoteReasonCounts(counts map[string]int) string {
 	reasons := make([]string, 0, len(counts))
 	for reason := range counts {
-		if strings.TrimSpace(string(reason)) != "" {
-			reasons = append(reasons, string(reason))
+		if strings.TrimSpace(reason) != "" {
+			reasons = append(reasons, reason)
 		}
 	}
 	sort.Strings(reasons)
 
 	parts := make([]string, 0, len(reasons))
 	for _, reason := range reasons {
-		parts = append(parts, fmt.Sprintf("%s=%d", reason, counts[orchestrator.AutoPromoteReason(reason)]))
+		parts = append(parts, fmt.Sprintf("%s=%d", reason, counts[reason]))
 	}
 	return strings.Join(parts, ", ")
 }
