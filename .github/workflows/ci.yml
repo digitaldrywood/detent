@@ -138,13 +138,24 @@ jobs:
           fi
 
           release_relevant=false
-          while IFS=$'\t' read -r path previous_path status; do
-            case "$path" in
+          is_release_input() {
+            case "$1" in
               .goreleaser.yaml|.github/workflows/ci.yml|.github/workflows/release.yml|Makefile|go.mod|go.sum|detent-release.pub|install.sh|install.ps1)
-                release_relevant=true
-                break
+                return 0
                 ;;
             esac
+            return 1
+          }
+
+          while IFS= read -r file; do
+            path="$(jq -r '.[0]' <<< "$file")"
+            previous_path="$(jq -r '.[1]' <<< "$file")"
+            status="$(jq -r '.[2]' <<< "$file")"
+
+            if is_release_input "$path" || is_release_input "$previous_path"; then
+              release_relevant=true
+              break
+            fi
 
             if [ "$status" = "removed" ] || [ "$status" = "renamed" ]; then
               case "$path" in
@@ -160,7 +171,7 @@ jobs:
                   ;;
               esac
             fi
-          done < <(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/files" --paginate --jq '.[] | [.filename, (.previous_filename // ""), .status] | @tsv')
+          done < <(gh api "repos/$REPOSITORY/pulls/$PR_NUMBER/files" --paginate --jq '.[] | [.filename, (.previous_filename // ""), .status] | @json')
 
           if [ "$release_relevant" = true ]; then
             echo "snapshot=true" >> "$GITHUB_OUTPUT"
