@@ -48,6 +48,7 @@ type Config struct {
 	MaxConcurrentAgents           int
 	MaxConcurrentAgentsByState    map[string]int
 	DispatchPriorityByState       []string
+	DispatchPriorityByLabel       []string
 	MaxConcurrentAgentsPerHost    int
 	MaxRetryBackoff               time.Duration
 	Project                       scheduler.ProjectCandidate
@@ -148,6 +149,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		MaxConcurrentAgents:        cfg.Agent.MaxConcurrentAgents,
 		MaxConcurrentAgentsByState: cloneStateLimits(cfg.Agent.MaxConcurrentAgentsByState),
 		DispatchPriorityByState:    append([]string(nil), cfg.Agent.DispatchPriorityByState...),
+		DispatchPriorityByLabel:    append([]string(nil), cfg.Agent.DispatchPriorityByLabel...),
 		MaxConcurrentAgentsPerHost: positiveIntValue(cfg.Worker.MaxConcurrentAgentsPerHost),
 		MaxRetryBackoff:            durationFromMillis(cfg.Agent.MaxRetryBackoffMS),
 		Claiming: ClaimingConfig{
@@ -1548,6 +1550,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.TerminalStates = normalizedStates(cfg.TerminalStates)
 	cfg.MaxConcurrentAgentsByState = cloneStateLimits(cfg.MaxConcurrentAgentsByState)
 	cfg.DispatchPriorityByState = normalizedStates(cfg.DispatchPriorityByState)
+	cfg.DispatchPriorityByLabel = normalizeLabels(cfg.DispatchPriorityByLabel)
 	cfg.Claiming = normalizeClaimingConfig(cfg.Claiming)
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
 	cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock)

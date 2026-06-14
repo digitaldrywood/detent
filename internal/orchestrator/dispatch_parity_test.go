@@ -27,6 +27,7 @@ func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
 				MaxConcurrentAgents:        tt.Config.MaxConcurrentAgents,
 				MaxConcurrentAgentsByState: tt.Config.MaxConcurrentAgentsByState,
 				DispatchPriorityByState:    tt.Config.DispatchPriorityByState,
+				DispatchPriorityByLabel:    tt.Config.DispatchPriorityByLabel,
 				ActiveStates:               tt.Config.ActiveStates,
 				TerminalStates:             tt.Config.TerminalStates,
 				WorkerHosts:                tt.Config.WorkerHosts,
@@ -42,7 +43,7 @@ func TestDispatchParityWithElixirRecordedCandidateSets(t *testing.T) {
 			applyParityInitialState(t, &state, tt.InitialState, now)
 
 			candidates := parityIssues(t, tt.Candidates)
-			sortIssuesForDispatch(candidates, cfg.DispatchPriorityByState)
+			sortIssuesForDispatch(candidates, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel)
 			orch.pruneBudgetRefusals(&state, now)
 			orch.trackBlockedCandidates(&state, candidates, now)
 
@@ -88,6 +89,7 @@ type dispatchParityCfg struct {
 	MaxConcurrentAgents          int            `json:"max_concurrent_agents"`
 	MaxConcurrentAgentsByState   map[string]int `json:"max_concurrent_agents_by_state"`
 	DispatchPriorityByState      []string       `json:"dispatch_priority_by_state"`
+	DispatchPriorityByLabel      []string       `json:"dispatch_priority_by_label"`
 	ActiveStates                 []string       `json:"active_states"`
 	TerminalStates               []string       `json:"terminal_states"`
 	BudgetRefusalCooldownSeconds int            `json:"budget_refusal_cooldown_seconds"`

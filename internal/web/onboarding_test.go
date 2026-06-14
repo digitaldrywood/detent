@@ -90,6 +90,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"name=\"max_concurrent_agents\"",
 				"name=\"workspace_root\"",
 				"name=\"dependency_auto_unblock_enabled\"",
+				"name=\"dispatch_priority_by_label\"",
 			},
 		},
 		{
@@ -108,6 +109,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"polling_interval_ms":        {"120000"},
 				"merging_concurrency":        {"1"},
 				"dispatch_priority_by_state": {"Merging\nRework"},
+				"dispatch_priority_by_label": {"bug\nregression\nenhancement"},
 			},
 			wantStatus: http.StatusOK,
 			wantContent: []string{
@@ -182,6 +184,7 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		"gate:\n  kind: command\n  run: make check",
 		"hooks:\n  timeout_ms: 60000",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
+		"dispatch_priority_by_label:\n    - bug\n    - regression\n    - enhancement",
 		"You are working on GitHub issue `{{ issue.identifier }}`",
 	} {
 		if !strings.Contains(content, want) {
@@ -403,6 +406,7 @@ func validOnboardingForm() url.Values {
 		"polling_interval_ms":             {"120000"},
 		"merging_concurrency":             {"1"},
 		"dispatch_priority_by_state":      {"Merging\nRework"},
+		"dispatch_priority_by_label":      {"bug\nregression\nenhancement"},
 		"dependency_auto_unblock_enabled": {"false"},
 	}
 }
