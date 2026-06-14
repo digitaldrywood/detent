@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"slices"
 	"testing"
 	"time"
 
@@ -556,8 +557,7 @@ func TestDispatchCandidatesClaimsDuplicateIssueWithinCycle(t *testing.T) {
 	now := time.Now()
 	candidate := dispatchTestIssue("issue-duplicate", "Todo")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	orch.dispatchCandidates(ctx, &state, []connector.Issue{candidate, candidate}, now)
 	request := receiveWorkerHostRunRequest(t, runner.started)
@@ -583,8 +583,7 @@ func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 	global := scheduler.NewRoundRobin(scheduler.Config{Capacity: 1})
 	globalGate := scheduler.NewGlobalDispatchGate(global)
 	now := time.Now()
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	alphaRunner := newWorkerHostRunner()
 	alphaCfg := normalizeConfig(Config{
@@ -677,8 +676,7 @@ func TestDispatchReadyIssuesHydratesLightweightCandidateBeforeDependencyGate(t *
 	state := newState(cfg)
 	now := time.Now()
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{candidate}, now)
 	select {
@@ -714,8 +712,7 @@ func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	first := dispatchTestIssueWithPullRequest("issue-first", "In Progress", "OPEN")
 	second := dispatchTestIssueWithPullRequest("issue-second", "In Progress", "OPEN")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	done := make(chan struct{})
 	go func() {
@@ -788,8 +785,7 @@ func TestDispatchCandidatesAssignsLeastLoadedWorkerHost(t *testing.T) {
 	state.Running[running.ID] = Running{Issue: running, WorkerHost: "worker-a"}
 	candidate := dispatchTestIssue("issue-candidate", "Todo")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	orch.dispatchCandidates(ctx, &state, []connector.Issue{candidate}, now)
 	request := receiveWorkerHostRunRequest(t, runner.started)
@@ -822,8 +818,7 @@ func TestDispatchIssueIncludesSelectorContext(t *testing.T) {
 	now := time.Now()
 	issue := dispatchTestIssue("issue-selector-context", "Todo")
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	orch.dispatchIssue(ctx, &state, issue, 0, now, "")
 	request := receiveWorkerHostRunRequest(t, runner.started)
@@ -922,10 +917,8 @@ func (c hydratingDispatchConnector) FetchIssuesByStates(context.Context, []strin
 }
 
 func (c hydratingDispatchConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
-	for _, id := range ids {
-		if id == c.issue.ID {
-			return []connector.Issue{c.issue}, nil
-		}
+	if slices.Contains(ids, c.issue.ID) {
+		return []connector.Issue{c.issue}, nil
 	}
 	return nil, nil
 }

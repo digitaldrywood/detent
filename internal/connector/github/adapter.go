@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"regexp"
@@ -1138,9 +1139,7 @@ func (c *Connector) issueRefsForIDs(ctx context.Context, ids []string, queryType
 	if err != nil {
 		return nil, err
 	}
-	for id, ref := range fetched {
-		refs[id] = ref
-	}
+	maps.Copy(refs, fetched)
 	return refs, nil
 }
 
@@ -3347,7 +3346,7 @@ func markdownSectionText(body string, title string) string {
 	want := normalizeSectionTitle(title)
 	inSection := false
 	lines := []string{}
-	for _, line := range strings.Split(body, "\n") {
+	for line := range strings.SplitSeq(body, "\n") {
 		heading, ok := markdownHeadingTitle(line)
 		if ok {
 			if inSection {
@@ -3399,8 +3398,8 @@ func normalizeSectionLines(lines []string) string {
 func normalizeSectionLine(line string) string {
 	line = strings.TrimSpace(line)
 	for _, marker := range []string{"- ", "* ", "+ "} {
-		if strings.HasPrefix(line, marker) {
-			line = strings.TrimSpace(strings.TrimPrefix(line, marker))
+		if after, ok := strings.CutPrefix(line, marker); ok {
+			line = strings.TrimSpace(after)
 			break
 		}
 	}

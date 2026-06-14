@@ -103,7 +103,7 @@ func parseStatusDashboardParity(content string) statusDashboardParity {
 	var parsed statusDashboardParity
 	section := ""
 
-	for _, line := range strings.Split(strings.TrimSpace(content), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSpace(content), "\n") {
 		line = strings.TrimRight(line, " ")
 		switch {
 		case strings.Contains(line, "├─ Running"):
@@ -244,7 +244,7 @@ func sideBySide(want string, got string) string {
 	out.WriteString("go internal/tui\n")
 
 	total := max(len(wantLines), len(gotLines))
-	for i := 0; i < total; i++ {
+	for i := range total {
 		var left, right string
 		if i < len(wantLines) {
 			left = wantLines[i]

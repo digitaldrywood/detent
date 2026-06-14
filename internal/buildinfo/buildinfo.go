@@ -191,7 +191,7 @@ func modulePathMatches(root string, modulePath string) bool {
 	if err != nil {
 		return false
 	}
-	for _, line := range strings.Split(string(data), "\n") {
+	for line := range strings.SplitSeq(string(data), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) >= 2 && fields[0] == "module" {
 			return strings.Trim(fields[1], `"`) == modulePath

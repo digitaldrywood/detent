@@ -79,7 +79,7 @@ func TestInstallationTokenSourceMintsAndCachesToken(t *testing.T) {
 		t.Fatalf("NewInstallationTokenSource() error = %v", err)
 	}
 
-	for i := 0; i < 2; i++ {
+	for range 2 {
 		token, err := source.Token(context.Background())
 		if err != nil {
 			t.Fatalf("Token() error = %v", err)

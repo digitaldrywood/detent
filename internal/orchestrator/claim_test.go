@@ -31,8 +31,7 @@ func TestClaimingOverlappingOrchestratorsDispatchOnlyTieBreakWinner(t *testing.T
 		}
 	}
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	alphaRunner := newClaimBlockingRunner()
 	betaRunner := newClaimBlockingRunner()
@@ -90,8 +89,7 @@ func TestClaimingReclaimsStaleLease(t *testing.T) {
 	issue.Fields["Detent Lease"] = now.Add(-2 * time.Minute).Format(time.RFC3339Nano)
 	store := newClaimTestStore([]connector.Issue{issue})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	runner := newClaimBlockingRunner()
 	orch := newClaimTestOrchestrator(t, claimTestConfig("alpha", "alpha"), claimTestConnector{store: store, login: "alpha"}, runner)
@@ -122,8 +120,7 @@ func TestClaimingUsesConfiguredOwnerField(t *testing.T) {
 	issue.Fields["Detent Lease"] = now.Add(-2 * time.Minute).Format(time.RFC3339Nano)
 	store := newClaimTestStore([]connector.Issue{issue})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	runner := newClaimBlockingRunner()
 	cfg := claimTestConfig("alpha", "alpha")
@@ -152,8 +149,7 @@ func TestClaimingHeartbeatKeepsActiveLeaseFromReclaim(t *testing.T) {
 	issue.Fields["Detent Lease"] = now.Format(time.RFC3339Nano)
 	store := newClaimTestStore([]connector.Issue{issue})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	alphaRunner := newClaimBlockingRunner()
 	alpha := newClaimTestOrchestrator(t, claimTestConfig("alpha", "alpha"), claimTestConnector{store: store, login: "alpha"}, alphaRunner)
@@ -189,8 +185,7 @@ func TestClaimingHeartbeatReleasesLocalRunWhenOwnershipChanges(t *testing.T) {
 	issue.Fields["Detent Lease"] = now.Format(time.RFC3339Nano)
 	store := newClaimTestStore([]connector.Issue{issue})
 
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
+	ctx := t.Context()
 
 	alphaRunner := newClaimBlockingRunner()
 	alpha := newClaimTestOrchestrator(t, claimTestConfig("alpha", "alpha"), claimTestConnector{store: store, login: "alpha"}, alphaRunner)

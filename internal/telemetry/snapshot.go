@@ -8,7 +8,7 @@ type Snapshot struct {
 	Instance       Instance          `json:"instance"`
 	Projects       []ProjectSnapshot `json:"projects,omitempty"`
 	DashboardURL   string            `json:"dashboard_url,omitempty"`
-	Shutdown       Shutdown          `json:"shutdown,omitempty"`
+	Shutdown       Shutdown          `json:"shutdown"`
 	Refresh        Refresh           `json:"refresh"`
 	Events         []ActivityEvent   `json:"events,omitempty"`
 	Counts         Counts            `json:"counts"`
@@ -22,7 +22,7 @@ type Snapshot struct {
 	Tokens         Tokens            `json:"tokens"`
 	Throughput     TokenThroughput   `json:"throughput"`
 	LifetimeTotals LifetimeTotals    `json:"lifetime_totals"`
-	CycleTime      CycleTimeReport   `json:"cycle_time,omitempty"`
+	CycleTime      CycleTimeReport   `json:"cycle_time"`
 	TokenTrend     []TokenTrendPoint `json:"token_trend,omitempty"`
 }
 
@@ -52,7 +52,7 @@ type ProjectSnapshot struct {
 	Project    Project         `json:"project"`
 	Counts     Counts          `json:"counts"`
 	Tokens     Tokens          `json:"tokens"`
-	Throughput TokenThroughput `json:"throughput,omitempty"`
+	Throughput TokenThroughput `json:"throughput"`
 }
 
 type Refresh struct {
@@ -165,8 +165,8 @@ type Budget struct {
 	CurrentSpendUSD   float64            `json:"current_spend_usd"`
 	ProjectedCostUSD  float64            `json:"projected_cost_usd"`
 	ProjectedSpendUSD float64            `json:"projected_spend_usd,omitempty"`
-	PeriodStart       time.Time          `json:"period_start,omitempty"`
-	PeriodEnd         time.Time          `json:"period_end,omitempty"`
+	PeriodStart       time.Time          `json:"period_start"`
+	PeriodEnd         time.Time          `json:"period_end"`
 	SpendPoints       []BudgetSpendPoint `json:"spend_points,omitempty"`
 	Days              []BudgetDay        `json:"days,omitempty"`
 	Refusals          []BudgetRefusal    `json:"refusals,omitempty"`

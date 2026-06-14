@@ -269,7 +269,7 @@ func defaultSuggestedFix(code string, didYouMean []string) string {
 }
 
 func firstNonEmptyLine(text string) string {
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			return line
@@ -296,8 +296,8 @@ func parseDidYouMean(text string) []string {
 	}
 	if start := strings.Index(strings.ToLower(text), "did you mean "); start >= 0 {
 		candidate := strings.TrimSpace(text[start+len("did you mean "):])
-		if strings.HasPrefix(candidate, "\"") {
-			candidate = strings.TrimPrefix(candidate, "\"")
+		if after, ok := strings.CutPrefix(candidate, "\""); ok {
+			candidate = after
 			if end := strings.Index(candidate, "\""); end >= 0 {
 				candidate = candidate[:end]
 			}
@@ -321,11 +321,11 @@ func unknownCommandName(detail string) string {
 		return ""
 	}
 	remainder = strings.TrimPrefix(remainder, "\"")
-	index := strings.Index(remainder, "\"")
-	if index < 0 {
+	before, _, ok := strings.Cut(remainder, "\"")
+	if !ok {
 		return ""
 	}
-	return remainder[:index]
+	return before
 }
 
 func compactStrings(values []string) []string {

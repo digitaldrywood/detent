@@ -103,7 +103,7 @@ func writeSSEComponent(ctx context.Context, w io.Writer, event string, component
 	if _, err := fmt.Fprintf(w, "event: %s\n", event); err != nil {
 		return err
 	}
-	for _, line := range strings.Split(strings.TrimSuffix(body.String(), "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.TrimSuffix(body.String(), "\n"), "\n") {
 		if _, err := fmt.Fprintf(w, "data: %s\n", line); err != nil {
 			return err
 		}

@@ -11,6 +11,7 @@ DEV_VERSION ?= dev
 COVERPROFILE := tmp/coverage.out
 COVERPROFILE_RAW := tmp/coverage.raw.out
 COVERAGE_THRESHOLD := 70.0
+MODERNIZE_FIX_FLAGS ?= -newexpr=false
 TEMPL ?= go run github.com/a-h/templ/cmd/templ@v0.3.1001
 TAILWIND_INPUT ?= static/css/input.css
 TAILWIND_OUTPUT ?= static/css/output.css
@@ -19,7 +20,7 @@ MIGRATIONS_DIR ?= internal/store/migrations
 GOOSE_DRIVER ?= sqlite3
 DATABASE_URL ?= tmp/detent.db
 
-.PHONY: dev generate css css-watch build test test-race test-cover lint vet check release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate css css-watch build test test-race test-cover lint vet check modernize-check release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -89,6 +90,9 @@ vet:
 check: build lint vet test-race test-cover
 	@echo "All checks passed."
 
+modernize-check:
+	go fix -diff $(MODERNIZE_FIX_FLAGS) ./...
+
 release-snapshot:
 	goreleaser release --snapshot --clean
 
@@ -130,6 +134,7 @@ help:
 	@echo "  test-cover   Run Go coverage with a $(COVERAGE_THRESHOLD)% minimum"
 	@echo "  lint         Run golangci-lint"
 	@echo "  check        Run the local validation gate"
+	@echo "  modernize-check  Run the Go modernizer diff check"
 	@echo "  release-snapshot  Build local GoReleaser snapshot archives"
 	@echo "  sqlc         Generate sqlc output"
 	@echo "  db-migrate   Run goose migrations"

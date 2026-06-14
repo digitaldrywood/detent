@@ -3,6 +3,7 @@ package shadow
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"reflect"
 	"sort"
 	"strings"
@@ -24,9 +25,9 @@ type Input struct {
 
 type Scenario struct {
 	Config       DispatchConfig  `json:"config"`
-	InitialState InitialState    `json:"initial_state,omitempty"`
+	InitialState InitialState    `json:"initial_state"`
 	Candidates   []Issue         `json:"candidates,omitempty"`
-	Tokens       TokenAccounting `json:"tokens,omitempty"`
+	Tokens       TokenAccounting `json:"tokens"`
 }
 
 type DispatchConfig struct {
@@ -693,9 +694,7 @@ func trimStrings(values []string) []string {
 
 func cloneIntMap(values map[string]int) map[string]int {
 	cloned := make(map[string]int, len(values))
-	for key, value := range values {
-		cloned[key] = value
-	}
+	maps.Copy(cloned, values)
 	return cloned
 }
 

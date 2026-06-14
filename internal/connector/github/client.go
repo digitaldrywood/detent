@@ -560,10 +560,10 @@ func restEndpointFromGraphQLEndpoint(endpoint string) (string, error) {
 	basePath := strings.TrimRight(parsed.Path, "/")
 	if parsed.Host == "api.github.com" {
 		basePath = ""
-	} else if strings.HasSuffix(basePath, "/api/graphql") {
-		basePath = strings.TrimSuffix(basePath, "/api/graphql") + "/api/v3"
-	} else if strings.HasSuffix(basePath, "/graphql") {
-		basePath = strings.TrimSuffix(basePath, "/graphql")
+	} else if before, ok := strings.CutSuffix(basePath, "/api/graphql"); ok {
+		basePath = before + "/api/v3"
+	} else if before, ok := strings.CutSuffix(basePath, "/graphql"); ok {
+		basePath = before
 	}
 
 	parsed.Path = strings.TrimRight(basePath, "/")
@@ -603,7 +603,7 @@ func (c *Client) nextRESTPage(headers http.Header) (string, error) {
 
 func nextRESTLink(headers http.Header) string {
 	for _, value := range headers.Values("Link") {
-		for _, part := range strings.Split(value, ",") {
+		for part := range strings.SplitSeq(value, ",") {
 			part = strings.TrimSpace(part)
 			if !strings.HasPrefix(part, "<") {
 				continue
@@ -621,7 +621,7 @@ func nextRESTLink(headers http.Header) string {
 }
 
 func linkHasRelNext(params string) bool {
-	for _, param := range strings.Split(params, ";") {
+	for param := range strings.SplitSeq(params, ";") {
 		key, value, ok := strings.Cut(strings.TrimSpace(param), "=")
 		if !ok || !strings.EqualFold(strings.TrimSpace(key), "rel") {
 			continue
@@ -771,7 +771,7 @@ func summarizeBody(body []byte) string {
 }
 
 func firstLine(text string) string {
-	for _, line := range strings.Split(text, "\n") {
+	for line := range strings.SplitSeq(text, "\n") {
 		line = strings.TrimSpace(line)
 		if line != "" {
 			return line

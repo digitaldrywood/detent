@@ -95,7 +95,7 @@ func lsofWorkspaceProcessIDs(ctx context.Context, path string) ([]int, error) {
 
 	seen := map[int]struct{}{}
 	pids := []int{}
-	for _, line := range strings.Split(string(output), "\n") {
+	for line := range strings.SplitSeq(string(output), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" {
 			continue

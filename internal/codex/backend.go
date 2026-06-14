@@ -93,13 +93,7 @@ func rateLimitBucketFromCodex(window *RateLimitWindow) *telemetry.RateLimitBucke
 		return nil
 	}
 
-	used := int64(math.Round(window.UsedPercent))
-	if used < 0 {
-		used = 0
-	}
-	if used > 100 {
-		used = 100
-	}
+	used := min(max(int64(math.Round(window.UsedPercent)), 0), 100)
 
 	bucket := &telemetry.RateLimitBucket{
 		Limit:     100,

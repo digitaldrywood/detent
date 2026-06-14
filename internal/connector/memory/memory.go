@@ -2,6 +2,8 @@ package memory
 
 import (
 	"context"
+	"maps"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -366,9 +368,7 @@ func cloneStringSlice(values []string) []string {
 
 func cloneStringMap(values map[string]string) map[string]string {
 	out := make(map[string]string, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
+	maps.Copy(out, values)
 	return out
 }
 
@@ -382,10 +382,5 @@ func cloneTime(value *time.Time) *time.Time {
 }
 
 func stringSliceContains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }

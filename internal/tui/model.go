@@ -471,10 +471,7 @@ func formatReset(bucket *telemetry.RateLimitBucket, now func() time.Time) string
 		now = time.Now
 	}
 
-	seconds := int64(math.Ceil(bucket.ResetAt.Sub(now()).Seconds()))
-	if seconds < 0 {
-		seconds = 0
-	}
+	seconds := max(int64(math.Ceil(bucket.ResetAt.Sub(now()).Seconds())), 0)
 
 	return formatCount(seconds) + "s"
 }

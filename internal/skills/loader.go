@@ -175,12 +175,12 @@ func splitFrontmatter(content []byte) ([]byte, error) {
 	if body == "---" {
 		return []byte{}, nil
 	}
-	closeIndex := strings.Index(body, "\n---\n")
-	if closeIndex >= 0 {
-		return []byte(body[:closeIndex]), nil
+	before, _, ok := strings.Cut(body, "\n---\n")
+	if ok {
+		return []byte(before), nil
 	}
-	if strings.HasSuffix(body, "\n---") {
-		return []byte(strings.TrimSuffix(body, "\n---")), nil
+	if before, ok := strings.CutSuffix(body, "\n---"); ok {
+		return []byte(before), nil
 	}
 
 	return nil, errors.New("missing closing front matter delimiter")

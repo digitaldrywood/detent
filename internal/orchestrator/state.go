@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"maps"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -170,12 +171,8 @@ func (s State) clone() State {
 		}
 		cloned.BudgetRefusals[id] = refusal
 	}
-	for id, diffStats := range s.DiffStats {
-		cloned.DiffStats[id] = diffStats
-	}
-	for id, reapedAt := range s.ReapedWorkspaces {
-		cloned.ReapedWorkspaces[id] = reapedAt
-	}
+	maps.Copy(cloned.DiffStats, s.DiffStats)
+	maps.Copy(cloned.ReapedWorkspaces, s.ReapedWorkspaces)
 
 	return cloned
 }
@@ -250,9 +247,7 @@ func cloneStringMap(values map[string]string) map[string]string {
 		return nil
 	}
 	out := make(map[string]string, len(values))
-	for key, value := range values {
-		out[key] = value
-	}
+	maps.Copy(out, values)
 	return out
 }
 

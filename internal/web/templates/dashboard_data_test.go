@@ -823,7 +823,7 @@ func TestPRPipelineLanesCapDoneTodayToRecentCards(t *testing.T) {
 
 	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
 	issues := make([]telemetry.Issue, 0, 12)
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		updatedAt := now.Add(-time.Duration(11-i) * time.Minute)
 		issues = append(issues, telemetry.Issue{
 			ID:         "done-" + strconv.Itoa(i),

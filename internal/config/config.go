@@ -917,13 +917,13 @@ func splitFrontmatter(raw []byte) ([]byte, []byte, error) {
 		return []byte{}, []byte{}, nil
 	}
 
-	closeIndex := strings.Index(body, "\n---\n")
-	if closeIndex >= 0 {
-		return []byte(body[:closeIndex]), []byte(body[closeIndex+len("\n---\n"):]), nil
+	before, after, ok := strings.Cut(body, "\n---\n")
+	if ok {
+		return []byte(before), []byte(after), nil
 	}
 
-	if strings.HasSuffix(body, "\n---") {
-		return []byte(strings.TrimSuffix(body, "\n---")), []byte{}, nil
+	if before, ok := strings.CutSuffix(body, "\n---"); ok {
+		return []byte(before), []byte{}, nil
 	}
 
 	return nil, nil, errors.New("unterminated YAML frontmatter")

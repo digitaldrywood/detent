@@ -11,6 +11,7 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -1758,12 +1759,7 @@ func (c *fakeDoctorAutoPromoteConnector) VerifyStatusOptions(_ context.Context, 
 }
 
 func stringSliceContains(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func successfulDoctorOptions(configPath string) options {

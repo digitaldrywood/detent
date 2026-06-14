@@ -18,6 +18,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -1128,7 +1129,7 @@ func verifyInstalledVersion(status Status, installed string) error {
 }
 
 func installedVersion(status Status, versionOutput string) string {
-	for _, line := range strings.Split(versionOutput, "\n") {
+	for line := range strings.SplitSeq(versionOutput, "\n") {
 		key, value, ok := strings.Cut(line, ":")
 		if ok && strings.EqualFold(strings.TrimSpace(key), "version") {
 			if version := strings.TrimSpace(value); version != "" {
@@ -1136,7 +1137,7 @@ func installedVersion(status Status, versionOutput string) string {
 			}
 		}
 	}
-	for _, line := range strings.Split(versionOutput, "\n") {
+	for line := range strings.SplitSeq(versionOutput, "\n") {
 		if value := strings.TrimSpace(line); value != "" {
 			return value
 		}
@@ -1251,7 +1252,7 @@ func extractZipBinary(archive []byte) ([]byte, os.FileMode, error) {
 }
 
 func expectedChecksum(checksums []byte, assetName string) (string, bool) {
-	for _, line := range strings.Split(string(checksums), "\n") {
+	for line := range strings.SplitSeq(string(checksums), "\n") {
 		fields := strings.Fields(line)
 		if len(fields) < 2 {
 			continue
@@ -1319,7 +1320,7 @@ func parseMinisignSignature(raw []byte) ([]byte, []byte, string, []byte, error) 
 }
 
 func firstMinisignPayloadLine(raw string) string {
-	for _, line := range strings.Split(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
+	for line := range strings.SplitSeq(strings.ReplaceAll(raw, "\r\n", "\n"), "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || strings.HasPrefix(line, "untrusted comment:") {
 			continue
@@ -1432,10 +1433,8 @@ func parseVersion(version string) (semVersion, error) {
 	var prereleaseParts []string
 	if hasPrerelease {
 		prereleaseParts = strings.Split(prerelease, ".")
-		for _, part := range prereleaseParts {
-			if part == "" {
-				return semVersion{}, fmt.Errorf("invalid semantic version: %s", version)
-			}
+		if slices.Contains(prereleaseParts, "") {
+			return semVersion{}, fmt.Errorf("invalid semantic version: %s", version)
 		}
 	}
 	return semVersion{major: major, minor: minor, patch: patch, prerelease: prereleaseParts}, nil
@@ -1578,7 +1577,7 @@ func readInstallLockBinary(path string) (string, bool) {
 	if err != nil {
 		return "", false
 	}
-	for _, line := range strings.Split(string(raw), "\n") {
+	for line := range strings.SplitSeq(string(raw), "\n") {
 		key, value, ok := strings.Cut(line, "=")
 		if !ok || strings.TrimSpace(key) != "binary" {
 			continue

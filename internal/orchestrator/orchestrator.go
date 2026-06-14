@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"log/slog"
+	"slices"
 	"strings"
 	"time"
 
@@ -635,10 +636,7 @@ func (o *Orchestrator) shouldReconcileRunningIssues(state *State, now time.Time)
 	if state.LastRunningReconcileAt.IsZero() {
 		return true
 	}
-	interval := defaultRunningReconcileInterval
-	if o.cfg.PollInterval > interval {
-		interval = o.cfg.PollInterval
-	}
+	interval := max(o.cfg.PollInterval, defaultRunningReconcileInterval)
 	return !now.Before(state.LastRunningReconcileAt.Add(interval))
 }
 
@@ -1711,12 +1709,7 @@ func nextAttempt(attempt int) int {
 
 func stateIn(state string, states []string) bool {
 	normalized := normalizeState(state)
-	for _, candidate := range states {
-		if normalized == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(states, normalized)
 }
 
 func normalizedStates(states []string) []string {

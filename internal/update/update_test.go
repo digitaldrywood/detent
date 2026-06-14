@@ -182,7 +182,7 @@ func TestSelectReleaseAssetsAndVerifyChecksum(t *testing.T) {
 	signatureName := "detent_1.2.4_checksums.txt.minisig"
 	archive := []byte("archive")
 	sum := sha256.Sum256(archive)
-	checksums := []byte(fmt.Sprintf("%x  %s\n", sum, archiveName))
+	checksums := fmt.Appendf(nil, "%x  %s\n", sum, archiveName)
 
 	assets, err := SelectReleaseAssets(Release{
 		TagName: "v1.2.4",
@@ -1231,12 +1231,12 @@ func testMinisignSignature(t *testing.T, privateKey ed25519.PrivateKey, keyID []
 	packet := append([]byte("ED"), keyID...)
 	packet = append(packet, signature...)
 	globalSignature := ed25519.Sign(privateKey, append(signature, []byte(trustedComment)...))
-	return []byte(fmt.Sprintf(
+	return fmt.Appendf(nil,
 		"untrusted comment: signature from minisign secret key\n%s\ntrusted comment: %s\n%s\n",
 		base64.StdEncoding.EncodeToString(packet),
 		trustedComment,
 		base64.StdEncoding.EncodeToString(globalSignature),
-	))
+	)
 }
 
 func acceptChecksumSignature(context.Context, []byte, []byte) error {

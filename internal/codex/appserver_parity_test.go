@@ -105,12 +105,9 @@ func assertTranscriptBytes(t *testing.T, got []byte, want []byte) {
 func firstTranscriptMismatch(got []byte, want []byte) string {
 	gotLines := strings.Split(string(got), "\n")
 	wantLines := strings.Split(string(want), "\n")
-	maxLines := len(wantLines)
-	if len(gotLines) > maxLines {
-		maxLines = len(gotLines)
-	}
+	maxLines := max(len(gotLines), len(wantLines))
 
-	for i := 0; i < maxLines; i++ {
+	for i := range maxLines {
 		var gotLine string
 		if i < len(gotLines) {
 			gotLine = gotLines[i]

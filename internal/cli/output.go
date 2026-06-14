@@ -229,7 +229,7 @@ func outputFormatFlagValue(cmd *cobra.Command) (string, bool) {
 }
 
 func outputFormatArg(args []string) (string, bool) {
-	for index := 0; index < len(args); index++ {
+	for index := range args {
 		arg := args[index]
 		if arg == "--" {
 			return "", false
@@ -240,8 +240,8 @@ func outputFormatArg(args []string) (string, bool) {
 			}
 			return args[index+1], true
 		}
-		if strings.HasPrefix(arg, "--format=") {
-			return strings.TrimPrefix(arg, "--format="), true
+		if after, ok := strings.CutPrefix(arg, "--format="); ok {
+			return after, true
 		}
 	}
 	return "", false

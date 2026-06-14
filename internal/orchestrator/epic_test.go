@@ -909,8 +909,8 @@ func epicTestIssue(id string, state string, closed bool, title string, labels []
 	issue := connector.NewIssue()
 	issue.ID = id
 	issue.Identifier = "digitaldrywood/detent#" + strings.TrimPrefix(id, "child-")
-	if strings.HasPrefix(id, "epic-") {
-		issue.Identifier = "digitaldrywood/detent#" + strings.TrimPrefix(id, "epic-")
+	if after, ok := strings.CutPrefix(id, "epic-"); ok {
+		issue.Identifier = "digitaldrywood/detent#" + after
 	}
 	issue.Title = title
 	issue.State = state

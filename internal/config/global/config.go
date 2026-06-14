@@ -3,8 +3,10 @@ package global
 import (
 	"errors"
 	"fmt"
+	"maps"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 
 	"gopkg.in/yaml.v3"
@@ -614,12 +616,7 @@ func schedulingErrors(value any) []string {
 }
 
 func validSchedulingMode(mode string) bool {
-	for _, candidate := range schedulingModes {
-		if mode == candidate {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(schedulingModes, mode)
 }
 
 func optionalMapErrors(attrs map[string]any, field string) []string {
@@ -1131,9 +1128,7 @@ func decodeYAMLValue(value any, out any) error {
 
 func mergeMap(defaults map[string]any, value any, field string) (map[string]any, error) {
 	out := make(map[string]any, len(defaults))
-	for key, nestedValue := range defaults {
-		out[key] = nestedValue
-	}
+	maps.Copy(out, defaults)
 
 	if value == nil {
 		return out, nil
@@ -1143,9 +1138,7 @@ func mergeMap(defaults map[string]any, value any, field string) (map[string]any,
 	if err != nil {
 		return nil, err
 	}
-	for key, nestedValue := range source {
-		out[key] = nestedValue
-	}
+	maps.Copy(out, source)
 	return out, nil
 }
 

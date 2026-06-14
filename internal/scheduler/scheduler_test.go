@@ -291,9 +291,7 @@ func TestCountingSemaphoreSupportsConcurrentRequests(t *testing.T) {
 	var wg sync.WaitGroup
 
 	for range workers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 
 			slot, err := sched.RequestSlot(context.Background(), scheduler.SlotRequest{})
@@ -301,7 +299,7 @@ func TestCountingSemaphoreSupportsConcurrentRequests(t *testing.T) {
 				slots <- slot
 			}
 			results <- err
-		}()
+		})
 	}
 
 	close(start)

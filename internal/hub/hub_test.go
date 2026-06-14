@@ -138,9 +138,7 @@ func TestHubConcurrentPublishAndConsumeIsRaceFree(t *testing.T) {
 
 	done := make(chan struct{})
 	var wg sync.WaitGroup
-	wg.Add(1)
-	go func() {
-		defer wg.Done()
+	wg.Go(func() {
 		for {
 			select {
 			case _, ok := <-sub.C():
@@ -151,7 +149,7 @@ func TestHubConcurrentPublishAndConsumeIsRaceFree(t *testing.T) {
 				return
 			}
 		}
-	}()
+	})
 
 	for value := range 1000 {
 		if err := events.Publish(value); err != nil {

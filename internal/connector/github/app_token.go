@@ -288,10 +288,10 @@ func installationTokenURL(endpoint string, installationID string) (string, error
 	basePath := strings.TrimRight(parsed.Path, "/")
 	if parsed.Host == "api.github.com" {
 		basePath = ""
-	} else if strings.HasSuffix(basePath, "/api/graphql") {
-		basePath = strings.TrimSuffix(basePath, "/api/graphql") + "/api/v3"
-	} else if strings.HasSuffix(basePath, "/graphql") {
-		basePath = strings.TrimSuffix(basePath, "/graphql")
+	} else if before, ok := strings.CutSuffix(basePath, "/api/graphql"); ok {
+		basePath = before + "/api/v3"
+	} else if before, ok := strings.CutSuffix(basePath, "/graphql"); ok {
+		basePath = before
 	}
 
 	parsed.Path = strings.TrimRight(basePath, "/") + "/app/installations/" + url.PathEscape(installationID) + "/access_tokens"

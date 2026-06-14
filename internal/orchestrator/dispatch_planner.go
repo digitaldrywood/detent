@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"math"
+	"slices"
 	"strings"
 	"time"
 
@@ -388,10 +389,8 @@ func (p dispatchPlanner) selectWorkerHost(state *State, preferredWorkerHost stri
 
 	preferredWorkerHost = strings.TrimSpace(preferredWorkerHost)
 	if preferredWorkerHost != "" {
-		for _, host := range availableHosts {
-			if host == preferredWorkerHost {
-				return preferredWorkerHost, true
-			}
+		if slices.Contains(availableHosts, preferredWorkerHost) {
+			return preferredWorkerHost, true
 		}
 	}
 
@@ -461,10 +460,7 @@ func (p dispatchPlanner) retryDelay(attempt int, continuation bool) time.Duratio
 	if attempt < 1 {
 		attempt = 1
 	}
-	exponent := attempt - 1
-	if exponent > 30 {
-		exponent = 30
-	}
+	exponent := min(attempt-1, 30)
 
 	delay := p.cfg.FailureRetryBaseDelay * time.Duration(math.Pow(2, float64(exponent)))
 	if delay > p.cfg.MaxRetryBackoff {
