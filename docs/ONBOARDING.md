@@ -338,7 +338,22 @@ recommendation, and default-if-silent. Record answers in
    rg '^GLOBAL_(PRIORITY|WEIGHT)=' "$ONBOARDING_DIR/answers.env"
    ```
 
-3. **Instance name.** Ask: "What optional instance name should appear in
+3. **Dispatch label ordering.** Ask: "When two issues have the same board
+   `Priority`, should labels break the tie before age?" Show the label counts
+   from `$ONBOARDING_DIR/issue-counts.json` and recommend an ordered list from
+   labels that represent work type or risk, such as `bug`, `regression`, then
+   `enhancement` when those labels are common. Explain that the board
+   `Priority` field still wins first, unlisted labels rank last, and an empty
+   answer means no label ordering. Verify:
+
+   ```sh
+   printf '%s\n' \
+     'DISPATCH_PRIORITY_BY_LABEL=<comma-separated-labels-or-empty>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^DISPATCH_PRIORITY_BY_LABEL=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+4. **Instance name.** Ask: "What optional instance name should appear in
    Detent browser tabs and the navbar?" Recommendation source: the short
    hostname, existing `global.identity.name`, and any operator naming
    convention for this host. Default if silent: the short hostname. Verify:
@@ -351,7 +366,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^INSTANCE_NAME=' "$ONBOARDING_DIR/answers.env"
    ```
 
-4. **Authorization filters.** Ask: "Should Detent consider all board items or
+5. **Authorization filters.** Ask: "Should Detent consider all board items or
    only items matching a filter?" Offer `none`, `labels.include`,
    `labels.exclude`, `assignee_in`, `author_in`, and `priority_in`.
    Recommendation source: live counts in `$ONBOARDING_DIR/issue-counts.json`
@@ -370,7 +385,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^AUTHORIZATION_' "$ONBOARDING_DIR/answers.env"
    ```
 
-5. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
+6. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
    localhost-only, a private/Tailscale IP, or all interfaces?" Recommendation
    source: the operator's access path, whether SSH tunnels or VPN/Tailscale are
    expected, the host firewall, and any known private interface addresses.
@@ -387,7 +402,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^DASHBOARD_' "$ONBOARDING_DIR/answers.env"
    ```
 
-6. **Validation gate.** Ask: "Use the detected command, a custom command, or a
+7. **Validation gate.** Ask: "Use the detected command, a custom command, or a
    human review label gate? If this is a command gate, should auto-promotion
    require an automated GitHub PR review from a bot?" Recommendation source:
    `$ONBOARDING_DIR/gate.txt`, Makefile targets, CI workflow commands, and the
@@ -405,7 +420,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^GATE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-7. **Concurrency.** Ask: "How many agents may this project run at once?"
+8. **Concurrency.** Ask: "How many agents may this project run at once?"
    Recommendation source: host capacity, existing `global.yaml` projects, and
    the repo's gate cost. Default if silent: `agent.max_concurrent_agents: 5`
    for an active code repo, lower for expensive gates. State that
@@ -433,7 +448,7 @@ recommendation, and default-if-silent. Record answers in
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-8. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
+9. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
    it auto-promote to `Merging` after the human-defined criteria are true?"
    Recommendation source: repo risk, issue labels, review requirements, and how
    much trust the human wants to delegate. Default if silent:
@@ -461,7 +476,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-9. **Dependency waiting policy.** Ask: "Should dependency-waiting issues stay
+10. **Dependency waiting policy.** Ask: "Should dependency-waiting issues stay
    in `Todo` and be gated by Detent, or should they sit in `Blocked` and be
    auto-unblocked when dependencies clear?" Default if silent:
    `tracker.dependency_auto_unblock.enabled: false`. Use the `Blocked`
@@ -751,13 +766,29 @@ recommendation, and default-if-silent. Record answers in
      approval_label: <approval-label>
    ```
 
-5. **Set review policy, dependency waiting policy, and concurrency.** Keep
-   `Merging: 1`. Use the review and dependency policy selected by the human.
-   Verify:
+5. **Set dispatch ordering, review policy, dependency waiting policy, and
+   concurrency.** Keep `Merging: 1`. Use the dispatch label ordering, review
+   policy, and dependency policy selected by the human. Verify:
 
    ```sh
-   rg -n 'max_concurrent_agents: <max>|Merging: 1|auto_promote:|dependency_auto_unblock:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:|source_states:|target_state:|readiness:' \
+   rg -n 'max_concurrent_agents: <max>|Merging: 1|dispatch_priority_by_label:|auto_promote:|dependency_auto_unblock:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:|source_states:|target_state:|readiness:' \
      <source-root>/WORKFLOW.md
+   ```
+
+   Label tie-breaker shape:
+
+   ```yaml
+   agent:
+     dispatch_priority_by_label:
+       - <highest-ranked-label>
+       - <next-ranked-label>
+   ```
+
+   Empty list shape:
+
+   ```yaml
+   agent:
+     dispatch_priority_by_label: []
    ```
 
    Hard-stop review policy:
@@ -1126,6 +1157,7 @@ changing `global.yaml` or `WORKFLOW.md`.
 | Board node id | `tracker.project_slug` in `WORKFLOW.md`. |
 | Project scheduling priority | `projects[].priority` in `global.yaml`. |
 | Project scheduling weight | `projects[].weight` in `global.yaml`. |
+| Dispatch label ordering | `agent.dispatch_priority_by_label` in `WORKFLOW.md`. |
 | Authorization filters | `tracker.authorization` in `WORKFLOW.md`; optionally `projects[].authorization` in `global.yaml` for host-level scoping. |
 | Dashboard bind | `server.host` in `WORKFLOW.md`, or `--host` in the startup command or service `ExecStart`. |
 | Validation command | `gate.kind: command` and `gate.run` in `WORKFLOW.md`. |

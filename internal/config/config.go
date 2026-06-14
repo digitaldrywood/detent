@@ -135,6 +135,7 @@ type Agent struct {
 	Shutdown                   Shutdown       `yaml:"shutdown"`
 	MaxConcurrentAgentsByState map[string]int `yaml:"max_concurrent_agents_by_state"`
 	DispatchPriorityByState    []string       `yaml:"dispatch_priority_by_state"`
+	DispatchPriorityByLabel    []string       `yaml:"dispatch_priority_by_label"`
 	AutoPromote                AutoPromote    `yaml:"auto_promote"`
 	Budget                     Budget         `yaml:"budget"`
 	Lessons                    Lessons        `yaml:"lessons"`
@@ -520,6 +521,7 @@ func Default() Config {
 			Shutdown:                   Shutdown{DrainTimeoutMS: DefaultShutdownDrainTimeoutMS},
 			MaxConcurrentAgentsByState: map[string]int{},
 			DispatchPriorityByState:    []string{},
+			DispatchPriorityByLabel:    []string{},
 			AutoPromote: AutoPromote{
 				QuietSeconds:       600,
 				OptoutLabel:        "requires-human-review",
@@ -642,6 +644,7 @@ func (c *Config) normalize() {
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
+	c.Agent.DispatchPriorityByLabel = normalizeLabels(c.Agent.DispatchPriorityByLabel)
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
 	c.Agent.AutoPromote.AllowedIssueLabels = normalizeLabels(c.Agent.AutoPromote.AllowedIssueLabels)
 	c.Agents.normalize()
@@ -717,6 +720,7 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	a.Shutdown.validate(prefix+".shutdown", problems)
 	validateStateLimits(prefix+".max_concurrent_agents_by_state", a.MaxConcurrentAgentsByState, problems)
 	validateStateList(prefix+".dispatch_priority_by_state", a.DispatchPriorityByState, problems)
+	validateLabelList(prefix+".dispatch_priority_by_label", a.DispatchPriorityByLabel, problems)
 	a.AutoPromote.validate(prefix+".auto_promote", problems)
 	a.Budget.validate(prefix+".budget", problems)
 	a.Lessons.validate(prefix+".lessons", problems)
@@ -1176,6 +1180,15 @@ func validateStateList(field string, states []string, problems *[]string) {
 			return
 		}
 		seen[state] = struct{}{}
+	}
+}
+
+func validateLabelList(field string, labels []string, problems *[]string) {
+	for _, label := range labels {
+		if strings.TrimSpace(label) == "" {
+			*problems = append(*problems, field+" labels must not be blank")
+			return
+		}
 	}
 }
 

@@ -185,6 +185,7 @@ func parseOnboardingForm(c echo.Context) templates.OnboardingForm {
 		PollingIntervalMS:            strings.TrimSpace(c.FormValue("polling_interval_ms")),
 		MergingConcurrency:           strings.TrimSpace(c.FormValue("merging_concurrency")),
 		DispatchPriorityState:        strings.TrimSpace(c.FormValue("dispatch_priority_by_state")),
+		DispatchPriorityLabel:        strings.TrimSpace(c.FormValue("dispatch_priority_by_label")),
 		DependencyAutoUnblockEnabled: onboardingBoolValue(c.FormValue("dependency_auto_unblock_enabled")),
 	}
 }
@@ -271,6 +272,11 @@ func validateAgent(form templates.OnboardingForm) []string {
 		problems = append(problems, rejectNewlines("dispatch priority state", state)...)
 		if strings.TrimSpace(state) == "" {
 			problems = append(problems, "dispatch priority states must not be blank")
+		}
+	}
+	for _, label := range dispatchPriorityLabels(form) {
+		if strings.TrimSpace(label) == "" {
+			problems = append(problems, "dispatch priority labels must not be blank")
 		}
 	}
 	return problems
@@ -409,6 +415,7 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("  max_concurrent_agents_by_state:\n")
 	writeScalar(&b, "    ", "Merging", form.MergingConcurrency)
 	writeList(&b, "  ", "dispatch_priority_by_state", dispatchPriorityStates(form))
+	writeList(&b, "  ", "dispatch_priority_by_label", dispatchPriorityLabels(form))
 	b.WriteString("  auto_promote:\n")
 	b.WriteString("    enabled: false\n")
 	b.WriteString("    quiet_seconds: 600\n")
@@ -503,19 +510,28 @@ func writeList(b *strings.Builder, indent string, key string, values []string) {
 }
 
 func dispatchPriorityStates(form templates.OnboardingForm) []string {
-	raw := strings.NewReplacer(",", "\n", "\r\n", "\n", "\r", "\n").Replace(form.DispatchPriorityState)
-	lines := strings.Split(raw, "\n")
-	states := make([]string, 0, len(lines))
-	for _, line := range lines {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			states = append(states, line)
-		}
-	}
+	states := splitOnboardingList(form.DispatchPriorityState)
 	if len(states) == 0 {
 		return []string{"Merging", "Rework"}
 	}
 	return states
+}
+
+func dispatchPriorityLabels(form templates.OnboardingForm) []string {
+	return splitOnboardingList(form.DispatchPriorityLabel)
+}
+
+func splitOnboardingList(value string) []string {
+	raw := strings.NewReplacer(",", "\n", "\r\n", "\n", "\r", "\n").Replace(value)
+	lines := strings.Split(raw, "\n")
+	values := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line != "" {
+			values = append(values, line)
+		}
+	}
+	return values
 }
 
 func writeWorkflowFile(path string, content string, replace bool) error {

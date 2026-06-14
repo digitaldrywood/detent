@@ -40,7 +40,7 @@ func (p dispatchPlanner) plan(
 	state.ensureInitialized(p.cfg)
 
 	plannedCandidates := cloneIssues(candidates)
-	sortIssuesForDispatch(plannedCandidates, p.cfg.DispatchPriorityByState)
+	sortIssuesForDispatch(plannedCandidates, p.cfg.DispatchPriorityByState, p.cfg.DispatchPriorityByLabel)
 	dueRetries := dueRetriesByIssue(state, now)
 	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries)
 

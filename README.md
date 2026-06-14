@@ -358,6 +358,10 @@ agent:
     - Rework
     - In Progress
     - Todo
+  dispatch_priority_by_label:
+    - bug
+    - regression
+    - enhancement
   auto_promote:
     enabled: false
     quiet_seconds: 600

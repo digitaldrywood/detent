@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"gopkg.in/yaml.v3"
+
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
@@ -77,6 +79,10 @@ agent:
   dispatch_priority_by_state:
     - Merging
     - Rework
+  dispatch_priority_by_label:
+    - Bug
+    - regression
+    - enhancement
   auto_promote:
     enabled: true
     quiet_seconds: 0
@@ -230,6 +236,9 @@ Ticket prompt {{ issue.title }}
 	if got := cfg.Agent.DispatchPriorityByState; len(got) != 2 || got[0] != "merging" || got[1] != "rework" {
 		t.Fatalf("Agent.DispatchPriorityByState = %#v", got)
 	}
+	if got := cfg.Agent.DispatchPriorityByLabel; !reflect.DeepEqual(got, []string{"bug", "regression", "enhancement"}) {
+		t.Fatalf("Agent.DispatchPriorityByLabel = %#v, want bug/regression/enhancement", got)
+	}
 	if cfg.Agent.AutoPromote.OptoutLabel != "requires-human-review" {
 		t.Fatalf("Agent.AutoPromote.OptoutLabel = %q", cfg.Agent.AutoPromote.OptoutLabel)
 	}
@@ -347,8 +356,29 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if len(cfg.Agents.Routes) != 0 {
 		t.Fatalf("Agents.Routes len = %d, want legacy empty config", len(cfg.Agents.Routes))
 	}
+	if len(cfg.Agent.DispatchPriorityByLabel) != 0 {
+		t.Fatalf("Agent.DispatchPriorityByLabel = %#v, want empty default", cfg.Agent.DispatchPriorityByLabel)
+	}
 	if cfg.Gate.Kind != gate.KindCommand || cfg.Gate.Run != gate.DefaultCommand {
 		t.Fatalf("Gate = %#v, want default command gate", cfg.Gate)
+	}
+}
+
+func TestAgentDispatchPriorityByLabelYAMLRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	want := []string{"bug", "regression", "enhancement"}
+	raw, err := yaml.Marshal(Agent{DispatchPriorityByLabel: want})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var got Agent
+	if err := yaml.Unmarshal(raw, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if !reflect.DeepEqual(got.DispatchPriorityByLabel, want) {
+		t.Fatalf("DispatchPriorityByLabel = %#v, want %#v", got.DispatchPriorityByLabel, want)
 	}
 }
 
@@ -743,6 +773,7 @@ agent:
   max_concurrent_agents_by_state:
     Todo: 0
   dispatch_priority_by_state: ["Todo", "Todo"]
+  dispatch_priority_by_label: [""]
 codex:
   turn_timeout_ms: 0
 hooks:
@@ -768,6 +799,7 @@ Prompt
 				"agent.max_concurrent_agents must be greater than 0",
 				"agent.max_concurrent_agents_by_state limits must be positive integers",
 				"agent.dispatch_priority_by_state state names must be unique",
+				"agent.dispatch_priority_by_label labels must not be blank",
 				"codex.turn_timeout_ms must be greater than 0",
 				"hooks.timeout_ms must be greater than 0",
 				"observability.refresh_ms must be greater than 0",

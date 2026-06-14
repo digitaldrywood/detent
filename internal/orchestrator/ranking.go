@@ -6,8 +6,9 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
-func sortIssuesForDispatch(issues []connector.Issue, dispatchPriority []string) {
-	stateRanks := stateDispatchRanks(dispatchPriority)
+func sortIssuesForDispatch(issues []connector.Issue, dispatchStatePriority []string, dispatchLabelPriority []string) {
+	stateRanks := stateDispatchRanks(dispatchStatePriority)
+	labelRanks := labelDispatchRanks(dispatchLabelPriority)
 
 	sort.SliceStable(issues, func(i, j int) bool {
 		left := issues[i]
@@ -17,6 +18,9 @@ func sortIssuesForDispatch(issues []connector.Issue, dispatchPriority []string) 
 			return leftRank < rightRank
 		}
 		if leftRank, rightRank := priorityRank(left.Priority), priorityRank(right.Priority); leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		if leftRank, rightRank := labelDispatchRank(labelRanks, left.Labels), labelDispatchRank(labelRanks, right.Labels); leftRank != rightRank {
 			return leftRank < rightRank
 		}
 		if left.CreatedAt != nil && right.CreatedAt != nil && !left.CreatedAt.Equal(*right.CreatedAt) {
@@ -53,6 +57,31 @@ func stateDispatchRank(ranks map[string]int, state string) int {
 		return rank
 	}
 	return len(ranks)
+}
+
+func labelDispatchRanks(labels []string) map[string]int {
+	ranks := make(map[string]int, len(labels))
+	for _, label := range labels {
+		label = normalizeLabel(label)
+		if label == "" {
+			continue
+		}
+		if _, ok := ranks[label]; ok {
+			continue
+		}
+		ranks[label] = len(ranks)
+	}
+	return ranks
+}
+
+func labelDispatchRank(ranks map[string]int, labels []string) int {
+	best := len(ranks)
+	for _, label := range labels {
+		if rank, ok := ranks[normalizeLabel(label)]; ok && rank < best {
+			best = rank
+		}
+	}
+	return best
 }
 
 func priorityRank(priority *int) int {
