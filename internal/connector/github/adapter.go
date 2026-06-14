@@ -54,6 +54,7 @@ query DetentGitHubProjectItems(
               stateReason
               url
               repository { nameWithOwner }
+              labels(first: 20) { nodes { name } }
             }
           }
           statusValue: fieldValueByName(name: "Status") {

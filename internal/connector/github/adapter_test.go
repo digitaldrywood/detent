@@ -20,7 +20,7 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{{
-		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/digitaldrywood/detent/issues/26","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/27","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
+		body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw1","number":26,"title":"GitHub adapter","state":"CLOSED","stateReason":"COMPLETED","url":"https://github.com/digitaldrywood/detent/issues/26","labels":{"nodes":[{"name":"Bug"},{"name":" enhancement "}]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Ready"},"priorityValue":{"name":"P0"}},{"id":"PVTI_2","content":{"__typename":"Issue","id":"I_kw2","number":27,"title":"Backlog item","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/27","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Backlog"},"priorityValue":{"name":"No priority"}}]}}}}`,
 	}, {
 		method: http.MethodGet,
 		path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
@@ -53,7 +53,7 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 		Closed:           true,
 		ClosedReason:     "COMPLETED",
 		BlockedBy:        []connector.BlockedRef{},
-		Labels:           []string{},
+		Labels:           []string{"bug", "enhancement"},
 		Assignees:        []string{},
 		Fields:           map[string]string{},
 		AssignedToWorker: true,
@@ -80,7 +80,6 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 	for _, forbidden := range []string{
 		"author { login }",
 		"assignees(",
-		"labels(",
 		"body",
 		"closedByPullRequestsReferences",
 		"subIssues(",
@@ -90,6 +89,9 @@ func TestConnectorFetchCandidateIssuesNormalizesProjectItems(t *testing.T) {
 		if strings.Contains(query, forbidden) {
 			t.Fatalf("project query contains %q:\n%s", forbidden, query)
 		}
+	}
+	if !strings.Contains(query, "labels(first: 20)") {
+		t.Fatalf("project query missing labels:\n%s", query)
 	}
 	if requests[1]["method"] != http.MethodGet || !strings.HasPrefix(requests[1]["path"].(string), "/repos/digitaldrywood/detent/pulls?") {
 		t.Fatalf("pull request request = %#v, want REST pulls list", requests[1])
@@ -445,6 +447,9 @@ func TestConnectorFetchCandidateIssuesCapturesLinkedChildIssues(t *testing.T) {
 		if strings.Contains(query, forbidden) {
 			t.Fatalf("project query contains %q:\n%s", forbidden, query)
 		}
+	}
+	if !strings.Contains(query, "labels(first: 20)") {
+		t.Fatalf("project query missing labels:\n%s", query)
 	}
 }
 
