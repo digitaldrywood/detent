@@ -301,6 +301,15 @@ git tag v0.1.0 && git push origin v0.1.0
 Tags matching `v*` trigger the release workflow, which runs GoReleaser and
 publishes the GitHub Release archives and checksums.
 
+CI also runs `GoReleaser Snapshot` on every push to `main` so the current
+merge head remains release-package validated. Pull requests run that snapshot
+only when release packaging inputs change: `.goreleaser.yaml`, the CI or
+release workflows, `Makefile`, Go module files, installer scripts, the release
+public key, or removal/rename of the top-level `README.md` and `LICENSE` files
+that are bundled into release archives. Other pull requests keep the required
+lint, build, vet, test, race, coverage, and Windows checks without the release
+packaging tail.
+
 ## Quick Start
 
 The quickest production-shaped setup is one GitHub ProjectV2 board and one
