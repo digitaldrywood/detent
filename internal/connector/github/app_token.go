@@ -49,6 +49,19 @@ type InstallationTokenSource struct {
 	mu             sync.Mutex
 	cachedToken    string
 	expiresAt      time.Time
+	details        InstallationTokenDetails
+}
+
+type InstallationTokenDetails struct {
+	Token               string
+	ExpiresAt           time.Time
+	Permissions         map[string]string
+	RepositorySelection string
+	Repositories        []InstallationRepository
+}
+
+type InstallationRepository struct {
+	FullName string
 }
 
 func NewInstallationTokenSource(cfg InstallationTokenConfig) (*InstallationTokenSource, error) {
@@ -95,8 +108,16 @@ func NewInstallationTokenSource(cfg InstallationTokenConfig) (*InstallationToken
 }
 
 func (s *InstallationTokenSource) Token(ctx context.Context) (string, error) {
-	if err := ctx.Err(); err != nil {
+	details, err := s.TokenDetails(ctx)
+	if err != nil {
 		return "", err
+	}
+	return details.Token, nil
+}
+
+func (s *InstallationTokenSource) TokenDetails(ctx context.Context) (InstallationTokenDetails, error) {
+	if err := ctx.Err(); err != nil {
+		return InstallationTokenDetails{}, err
 	}
 
 	s.mu.Lock()
@@ -104,22 +125,23 @@ func (s *InstallationTokenSource) Token(ctx context.Context) (string, error) {
 
 	now := s.now()
 	if s.cachedToken != "" && s.expiresAt.After(now.Add(tokenRefreshWindow)) {
-		return s.cachedToken, nil
+		return s.details, nil
 	}
 
 	jwt, err := s.jwt(now)
 	if err != nil {
-		return "", err
+		return InstallationTokenDetails{}, err
 	}
 
-	token, expiresAt, err := s.requestInstallationToken(ctx, jwt)
+	details, err := s.requestInstallationToken(ctx, jwt)
 	if err != nil {
-		return "", err
+		return InstallationTokenDetails{}, err
 	}
-	s.cachedToken = token
-	s.expiresAt = expiresAt
+	s.cachedToken = details.Token
+	s.expiresAt = details.ExpiresAt
+	s.details = details
 
-	return token, nil
+	return details, nil
 }
 
 func (s *InstallationTokenSource) jwt(now time.Time) (string, error) {
@@ -145,15 +167,15 @@ func (s *InstallationTokenSource) jwt(now time.Time) (string, error) {
 	return signingInput + "." + base64.RawURLEncoding.EncodeToString(signature), nil
 }
 
-func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, jwt string) (string, time.Time, error) {
+func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, jwt string) (InstallationTokenDetails, error) {
 	endpoint, err := installationTokenURL(s.endpoint, s.installationID)
 	if err != nil {
-		return "", time.Time{}, err
+		return InstallationTokenDetails{}, err
 	}
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, endpoint, bytes.NewReader([]byte("{}")))
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
+		return InstallationTokenDetails{}, fmt.Errorf("%w: %w", ErrInvalidEndpoint, err)
 	}
 	req.Header.Set("Authorization", "Bearer "+jwt)
 	req.Header.Set("Accept", "application/vnd.github+json")
@@ -163,9 +185,9 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 	resp, err := s.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
-			return "", time.Time{}, ctxErr
+			return InstallationTokenDetails{}, ctxErr
 		}
-		return "", time.Time{}, fmt.Errorf("%w: %w", ErrTransient, err)
+		return InstallationTokenDetails{}, fmt.Errorf("%w: %w", ErrTransient, err)
 	}
 	defer func() {
 		if err := drainAndClose(resp.Body); err != nil {
@@ -175,25 +197,50 @@ func (s *InstallationTokenSource) requestInstallationToken(ctx context.Context, 
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
-		return "", time.Time{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
+		return InstallationTokenDetails{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
 
 	if resp.StatusCode != http.StatusOK && resp.StatusCode != http.StatusCreated {
-		return "", time.Time{}, classifyStatus(resp.StatusCode, resp.Header, raw)
+		return InstallationTokenDetails{}, classifyStatus(resp.StatusCode, resp.Header, raw)
 	}
 
 	var decoded struct {
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expires_at"`
+		Token               string            `json:"token"`
+		ExpiresAt           time.Time         `json:"expires_at"`
+		Permissions         map[string]string `json:"permissions"`
+		RepositorySelection string            `json:"repository_selection"`
+		Repositories        []struct {
+			FullName string `json:"full_name"`
+		} `json:"repositories"`
 	}
 	if err := json.Unmarshal(raw, &decoded); err != nil {
-		return "", time.Time{}, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
+		return InstallationTokenDetails{}, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	if strings.TrimSpace(decoded.Token) == "" || decoded.ExpiresAt.IsZero() {
-		return "", time.Time{}, ErrInvalidResponse
+		return InstallationTokenDetails{}, ErrInvalidResponse
 	}
 
-	return decoded.Token, decoded.ExpiresAt, nil
+	details := InstallationTokenDetails{
+		Token:               strings.TrimSpace(decoded.Token),
+		ExpiresAt:           decoded.ExpiresAt,
+		Permissions:         make(map[string]string, len(decoded.Permissions)),
+		RepositorySelection: strings.TrimSpace(decoded.RepositorySelection),
+		Repositories:        make([]InstallationRepository, 0, len(decoded.Repositories)),
+	}
+	for key, value := range decoded.Permissions {
+		key = strings.TrimSpace(key)
+		value = strings.TrimSpace(value)
+		if key != "" && value != "" {
+			details.Permissions[key] = value
+		}
+	}
+	for _, repo := range decoded.Repositories {
+		fullName := strings.TrimSpace(repo.FullName)
+		if fullName != "" {
+			details.Repositories = append(details.Repositories, InstallationRepository{FullName: fullName})
+		}
+	}
+	return details, nil
 }
 
 func privateKeyFromConfig(cfg InstallationTokenConfig, lookupEnv func(string) string) (string, error) {

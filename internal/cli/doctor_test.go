@@ -21,6 +21,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
+	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -154,7 +155,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 				gitWorkTree: func(context.Context, string) error {
 					return tt.gitErr
 				},
-			}, "")
+			}, RuntimeSecret{})
 			if len(got) != len(tt.wantStatus) {
 				t.Fatalf("len(checks) = %d, want %d: %#v", len(got), len(tt.wantStatus), got)
 			}
@@ -568,7 +569,7 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 			gotPath = path
 			return nil
 		},
-	}, "")
+	}, RuntimeSecret{})
 
 	wantPath := filepath.Join(home, "repo")
 	if gotPath != wantPath {
@@ -576,6 +577,87 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	}
 	if len(checks) != 2 || checks[1].Status != doctorOK {
 		t.Fatalf("checks = %#v, want source repo OK", checks)
+	}
+}
+
+func TestCheckDoctorProjectBuildsGitHubReadinessInventory(t *testing.T) {
+	t.Parallel()
+
+	workflow := validDoctorWorkflow("/repo")
+	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflow.Tracker.ProjectSlug = "PVT_1"
+	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress", "Merging"}
+	workflow.Tracker.ObservedStates = []string{"Backlog", "Human Review", "Blocked"}
+	workflow.Tracker.TerminalStates = []string{"Done", "Cancelled"}
+	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
+	workflow.Tracker.Claims = workflowconfig.Claims{
+		Enabled:          true,
+		LeaseField:       "Detent Lease",
+		TTLSeconds:       300,
+		HeartbeatSeconds: 60,
+	}
+	workflow.Identity = workflowconfig.Identity{
+		Name:          "release-captain",
+		OwnershipMode: workflowconfig.IdentityOwnershipField,
+		OwnerField:    "Owner",
+	}
+	var gotConnector ghconnector.Config
+	var gotReadiness ghconnector.ReadinessConfig
+
+	checks := checkDoctorProject(context.Background(), globalconfig.Project{
+		ID:       "alpha",
+		Workflow: "WORKFLOW.md",
+	}, doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: workflow}, nil
+		},
+		gitWorkTree: func(context.Context, string) error {
+			return nil
+		},
+		gitRemoteURL: func(context.Context, string) (string, error) {
+			return "git@github.com:digitaldrywood/detent.git", nil
+		},
+		githubReadiness: func(_ context.Context, connectorCfg ghconnector.Config, readinessCfg ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+			gotConnector = connectorCfg
+			gotReadiness = readinessCfg
+			return []ghconnector.ReadinessCheck{{Name: "GitHub auth path", Status: ghconnector.ReadinessOK, Detail: readinessCfg.AuthPath}}, nil
+		},
+	}, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"})
+
+	if gotConnector.APIKey != "token" {
+		t.Fatalf("connector APIKey = %q, want injected runtime token", gotConnector.APIKey)
+	}
+	if gotConnector.ProjectSlug != "PVT_1" {
+		t.Fatalf("connector ProjectSlug = %q, want PVT_1", gotConnector.ProjectSlug)
+	}
+	if gotReadiness.AuthPath != "gh-resolved token" {
+		t.Fatalf("AuthPath = %q, want gh-resolved token", gotReadiness.AuthPath)
+	}
+	if gotReadiness.WriteProbeIssue != "digitaldrywood/detent#1" {
+		t.Fatalf("WriteProbeIssue = %q, want configured probe", gotReadiness.WriteProbeIssue)
+	}
+	if len(gotReadiness.Repositories) != 1 || gotReadiness.Repositories[0] != "digitaldrywood/detent" {
+		t.Fatalf("Repositories = %#v, want digitaldrywood/detent", gotReadiness.Repositories)
+	}
+	if !gotReadiness.RequireProjectStatusWrite || !gotReadiness.RequireIssueComments || gotReadiness.RequireAssigneeWrite || !gotReadiness.RequireIssueClose {
+		t.Fatalf("write/read requirements = %#v", gotReadiness)
+	}
+	if !gotReadiness.RequireIssueCommentsRead || !gotReadiness.RequireDependencyMetadataRead || !gotReadiness.RequireIssueChildrenRead || !gotReadiness.RequireIssueParentsRead {
+		t.Fatalf("issue read requirements = %#v", gotReadiness)
+	}
+	if !gotReadiness.RequirePullRequestRead || !gotReadiness.RequirePullRequestReviews || !gotReadiness.RequirePullRequestChecks {
+		t.Fatalf("pull request read requirements = %#v", gotReadiness)
+	}
+	if len(gotReadiness.ProjectFieldWrites) != 2 {
+		t.Fatalf("ProjectFieldWrites = %#v, want lease and owner fields", gotReadiness.ProjectFieldWrites)
+	}
+	for _, want := range []string{"Todo", "Human Review", "Done"} {
+		if !stringSliceContains(gotReadiness.StatusStates, want) {
+			t.Fatalf("StatusStates = %#v, want %q", gotReadiness.StatusStates, want)
+		}
+	}
+	if len(checks) < 3 || checks[len(checks)-1].Status != doctorOK {
+		t.Fatalf("checks = %#v, want readiness OK check appended", checks)
 	}
 }
 
@@ -722,6 +804,13 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			wantDetail: "read:org",
 		},
 		{
+			name:       "fine grained token has no classic scopes",
+			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
+			scopes:     []string{},
+			want:       doctorOK,
+			wantDetail: "fine-grained or resource-scoped token",
+		},
+		{
 			name: "non github projects skip token scopes",
 			cfg: &globalconfig.Config{Projects: []globalconfig.Project{
 				{ID: "alpha", Workflow: "WORKFLOW.md"},
@@ -741,7 +830,7 @@ func TestCheckDoctorGitHub(t *testing.T) {
 				"INSTALLATION_ID":  "67890",
 				"PRIVATE_KEY_PATH": ".detent/github-app.pem",
 			},
-			want:       doctorWarn,
+			want:       doctorOK,
 			wantDetail: "GitHub App credentials configured",
 		},
 		{
@@ -761,21 +850,21 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			token:      RuntimeSecret{Value: "token", Source: "PROJECT_TOKEN"},
 			scopes:     []string{"project", "read:org", "repo"},
 			want:       doctorOK,
-			wantDetail: "PROJECT_TOKEN has required scopes",
+			wantDetail: "PROJECT_TOKEN has classic PAT scopes",
 		},
 		{
 			name:       "environment token has required scopes",
 			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
 			scopes:     []string{"workflow", "project", "read:org", "repo"},
 			want:       doctorOK,
-			wantDetail: "GITHUB_TOKEN has required scopes",
+			wantDetail: "GITHUB_TOKEN has classic PAT scopes",
 		},
 		{
 			name:       "gh sentinel token has required scopes",
 			token:      RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"},
 			scopes:     []string{"project", "read:org", "repo"},
 			want:       doctorOK,
-			wantDetail: "github_token resolved via gh has required scopes",
+			wantDetail: "github_token resolved via gh has classic PAT scopes",
 		},
 	}
 
@@ -1567,6 +1656,11 @@ func successfulDoctorDeps() doctorDeps {
 		},
 		githubScopes: func(context.Context, string) ([]string, error) {
 			return []string{"repo", "read:org", "project"}, nil
+		},
+		githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+			return []ghconnector.ReadinessCheck{
+				{Name: "GitHub readiness", Status: ghconnector.ReadinessOK, Detail: "ready"},
+			}, nil
 		},
 		listen: func(string, string) (net.Listener, error) {
 			return fakeDoctorListener{addr: fakeDoctorAddr("127.0.0.1:49152")}, nil

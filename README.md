@@ -263,6 +263,7 @@ after the required Detent states.
 tracker:
   kind: github
   project_slug: PVT_replace_with_project_id
+  write_probe_issue: owner/repo#123
   http_max_idle_conns: 100
   http_max_idle_conns_per_host: 32
   http_idle_conn_timeout_ms: 90000
@@ -418,13 +419,16 @@ port: 4000
    ```
 
 `detent doctor` is a preflight check: config resolution, the SQLite database,
-the `codex` binary, the GitHub token and scopes, the git binary, and whether the
-server port is free. Before starting Detent, fix any `FAIL` (missing
-`github_token: gh` or an unauthenticated `codex` are the usual culprits). If
-Detent is already running on the configured port, the server-port check can fail
-because the live service owns the port; use `detent doctor --port 0` for the
-same config, toolchain, token, and database preflight without the port
-collision, then verify the live service with `/health`.
+the `codex` binary, GitHub auth mode, GitHub ProjectV2 and repository
+readiness, git, and whether the server port is free. Before starting Detent, fix
+any `FAIL` (missing `github_token: gh` or an unauthenticated `codex` are the
+usual culprits). Configure `tracker.write_probe_issue` with a scratch issue on
+the project board when you want doctor to prove ProjectV2 and issue write
+capabilities instead of reporting WARN for unproven writes. If Detent is already
+running on the configured port, the server-port check can fail because the live
+service owns the port; use `detent doctor --port 0` for the same config,
+toolchain, token, and database preflight without the port collision, then verify
+the live service with `/health`.
 
 6. Start Detent:
 
@@ -606,6 +610,11 @@ GitHub configuration lives in each project's `WORKFLOW.md` frontmatter. The
 `project_slug` value is the GitHub ProjectV2 node id. Detent reads issue
 state, priority, labels, blockers, and assignment from the board, then writes
 comments and state transitions back through the connector.
+Set `tracker.write_probe_issue` to a scratch issue already present on that
+ProjectV2 board if `detent doctor` should prove write operations by replaying
+existing values and sending non-mutating validation probes. Without a probe
+issue, doctor reports required write capabilities as WARN instead of inferring
+that broad token scopes are enough.
 
 The GitHub connector uses one pooled keep-alive HTTP client for GraphQL and
 GitHub App REST token requests. Tune `tracker.http_max_idle_conns`,
@@ -697,9 +706,10 @@ the wait should be visible on the board.
   explicit dependency references stay blocked.
 
 Before you dispatch anything, run **`detent doctor`** — it checks config
-resolution, the database, the `codex` binary, your GitHub token and scopes, git,
-and the server port. A clean pre-start `doctor` clears Detent's direct
-preflight. When a running Detent process already owns the configured port,
+resolution, the database, the `codex` binary, GitHub auth mode, configured
+ProjectV2 access, repository issue/PR access, required write proofs, git, and
+the server port. A clean pre-start `doctor` clears Detent's direct preflight.
+When a running Detent process already owns the configured port,
 `detent doctor --port 0` validates the config, database, tools, and token
 without treating the live listener as a blocker; pair it with `/health` on the
 actual service before dispatching more work. Do not dispatch from a failed
