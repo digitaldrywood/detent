@@ -81,14 +81,14 @@ func TestVersionCommandPrintsBuildFields(t *testing.T) {
 	}
 }
 
-func TestVersionCommandWritesJSON(t *testing.T) {
+func TestVersionCommandDefaultsJSONForNonTTY(t *testing.T) {
 	withVersionMetadata(t, "v1.2.3", "abc1234", "2026-05-31T18:30:00Z")
 
 	cmd := newRootCommand(context.Background())
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
-	cmd.SetArgs([]string{"--format", "json", "version"})
+	cmd.SetArgs([]string{"version"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("Execute() error = %v", err)
@@ -103,13 +103,13 @@ func TestVersionCommandWritesJSON(t *testing.T) {
 		Arch      string `json:"arch"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
-		t.Fatalf("Unmarshal() error = %v\n%s", err, stdout.String())
+		t.Fatalf("version output is not JSON: %v\n%s", err, stdout.String())
 	}
 	if got.Version != "v1.2.3" || got.Commit != "abc1234" || got.BuildDate != "2026-05-31T18:30:00Z" {
-		t.Fatalf("version json = %#v", got)
+		t.Fatalf("version metadata = %#v, want build metadata", got)
 	}
 	if got.GoVersion != runtime.Version() || got.OS != runtime.GOOS || got.Arch != runtime.GOARCH {
-		t.Fatalf("runtime json = %#v", got)
+		t.Fatalf("runtime metadata = %#v, want current runtime", got)
 	}
 }
 

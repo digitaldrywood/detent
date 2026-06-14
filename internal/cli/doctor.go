@@ -64,10 +64,6 @@ type doctorCheck struct {
 }
 
 type doctorReport struct {
-	Checks []doctorCheck
-}
-
-type doctorOutputReport struct {
 	Checks  []doctorCheck `json:"checks"`
 	Summary doctorSummary `json:"summary"`
 	Result  string        `json:"result"`
@@ -77,6 +73,12 @@ type doctorSummary struct {
 	OK   int `json:"ok"`
 	Warn int `json:"warn"`
 	Fail int `json:"fail"`
+}
+
+type doctorOutputReport struct {
+	Checks  []doctorCheck `json:"checks"`
+	Summary doctorSummary `json:"summary"`
+	Result  string        `json:"result"`
 }
 
 type doctorCheckJob struct {
@@ -140,9 +142,11 @@ func newDoctorCommand(configPath *string, env *string, logLevel *string, host *s
 func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string, host *string, port *int, opts options, deps doctorDeps) *cobra.Command {
 	timeout := doctorCheckTimeout
 	cmd := &cobra.Command{
-		Use:   "doctor",
-		Short: "Run preflight health checks",
-		Args:  NoArgs,
+		Use:          "doctor",
+		Short:        "Run preflight health checks",
+		Example:      "detent doctor --config ~/.config/detent/global.yaml",
+		Args:         NoArgs,
+		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out, err := OutputForCommand(cmd)
 			if err != nil {
@@ -408,9 +412,26 @@ func (r doctorReport) counts() map[doctorStatus]int {
 	return counts
 }
 
-func writeDoctorReport(out io.Writer, report doctorReport) error {
+func (r doctorReport) withSummary() doctorReport {
+	counts := r.counts()
+	r.Summary = doctorSummary{
+		OK:   counts[doctorOK],
+		Warn: counts[doctorWarn],
+		Fail: counts[doctorFail],
+	}
+	r.Result = "PASS"
+	if r.Summary.Fail > 0 {
+		r.Result = "FAIL"
+	}
+	return r
+}
+
+func writeDoctorReport(out io.Writer, report doctorReport, format ...OutputFormat) error {
 	if out == nil {
 		out = io.Discard
+	}
+	if len(format) > 0 && format[0] == OutputFormatJSON {
+		return WriteJSON(out, report.withSummary())
 	}
 
 	if _, err := fmt.Fprintln(out, "Detent Doctor"); err != nil {
@@ -433,18 +454,14 @@ func writeDoctorReport(out io.Writer, report doctorReport) error {
 		}
 	}
 
-	counts := report.counts()
 	if _, err := fmt.Fprintln(out); err != nil {
 		return err
 	}
-	if _, err := fmt.Fprintf(out, "Summary: %d OK, %d WARN, %d FAIL\n", counts[doctorOK], counts[doctorWarn], counts[doctorFail]); err != nil {
+	report = report.withSummary()
+	if _, err := fmt.Fprintf(out, "Summary: %d OK, %d WARN, %d FAIL\n", report.Summary.OK, report.Summary.Warn, report.Summary.Fail); err != nil {
 		return err
 	}
-	result := "PASS"
-	if counts[doctorFail] > 0 {
-		result = "FAIL"
-	}
-	_, err := fmt.Fprintf(out, "Result: %s\n", result)
+	_, err := fmt.Fprintf(out, "Result: %s\n", report.Result)
 	return err
 }
 

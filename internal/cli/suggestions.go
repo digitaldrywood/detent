@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"sort"
 	"strings"
 
@@ -13,116 +11,54 @@ import (
 )
 
 const (
-	outputFormatFlagName      = "format"
-	outputFormatPretty        = "pretty"
-	outputFormatJSON          = "json"
 	flagSuggestionMaxDistance = 2
 	didYouMeanHeading         = "Did you mean this?"
-	unknownCommandErrorPrefix = `unknown command "`
-	unknownFlagErrorPrefix    = "unknown flag: "
-	commandFailedErrorCode    = "command_failed"
-	unknownCommandErrorCode   = "unknown_command"
-	unknownFlagErrorCode      = "unknown_flag"
 )
 
-type outputFormatValue struct {
-	value *string
-}
-
-func newOutputFormatValue(value *string) outputFormatValue {
-	if value != nil && strings.TrimSpace(*value) == "" {
-		*value = outputFormatPretty
-	}
-	return outputFormatValue{value: value}
-}
-
-func (v outputFormatValue) String() string {
-	if v.value == nil || strings.TrimSpace(*v.value) == "" {
-		return outputFormatPretty
-	}
-	return *v.value
-}
-
-func (v outputFormatValue) Set(value string) error {
-	value = strings.ToLower(strings.TrimSpace(value))
-	switch value {
-	case outputFormatPretty, outputFormatJSON:
-		if v.value != nil {
-			*v.value = value
-		}
-		return nil
-	default:
-		return fmt.Errorf("output format must be %q or %q", outputFormatPretty, outputFormatJSON)
-	}
-}
-
-func (v outputFormatValue) Type() string {
-	return "format"
-}
-
-func CommandOutputIsJSON(cmd *cobra.Command) bool {
-	if cmd == nil {
-		return false
-	}
-	root := cmd.Root()
+func ConfigureCommandSuggestions(root *cobra.Command) {
 	if root == nil {
-		root = cmd
+		return
 	}
-	flag := root.PersistentFlags().Lookup(outputFormatFlagName)
-	if flag == nil {
-		flag = root.Flags().Lookup(outputFormatFlagName)
-	}
-	return flag != nil && strings.EqualFold(flag.Value.String(), outputFormatJSON)
+	root.SuggestionsMinimumDistance = flagSuggestionMaxDistance
+	root.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return WrapValidation(flagSuggestionError(cmd, err))
+	})
+	setSuggestFor(root, "remove-project", "rm", "delete", "remove")
+	setSuggestFor(root, "add-project", "add", "new")
+	setSuggestFor(root, "unpause", "resume", "start")
+	setSuggestFor(root, "pause", "stop")
+	setSuggestFor(root, "promote", "prioritize")
 }
 
-type commandErrorResponse struct {
-	Error commandError `json:"error"`
+func setSuggestFor(root *cobra.Command, name string, suggestions ...string) {
+	cmd := findCommandByName(root, name)
+	if cmd != nil {
+		seen := map[string]bool{}
+		for _, suggestion := range cmd.SuggestFor {
+			seen[suggestion] = true
+		}
+		for _, suggestion := range suggestions {
+			if !seen[suggestion] {
+				cmd.SuggestFor = append(cmd.SuggestFor, suggestion)
+				seen[suggestion] = true
+			}
+		}
+	}
 }
 
-type commandError struct {
-	Code       string   `json:"code"`
-	ExitCode   int      `json:"exit_code"`
-	Input      string   `json:"input,omitempty"`
-	DidYouMean []string `json:"did_you_mean,omitempty"`
-	Message    string   `json:"message,omitempty"`
-}
-
-func WriteCommandErrorJSON(out io.Writer, err error) error {
-	if out == nil {
-		out = io.Discard
+func findCommandByName(cmd *cobra.Command, name string) *cobra.Command {
+	if cmd == nil {
+		return nil
 	}
-	encoder := json.NewEncoder(out)
-	return encoder.Encode(commandErrorResponseFromError(err))
-}
-
-func commandErrorResponseFromError(err error) commandErrorResponse {
-	message := ""
-	if err != nil {
-		message = err.Error()
+	if cmd.Name() == name {
+		return cmd
 	}
-	exitCode := ExitCode(err)
-
-	if input, ok := unknownCommandInput(message); ok {
-		return commandErrorResponse{Error: commandError{
-			Code:       unknownCommandErrorCode,
-			ExitCode:   exitCode,
-			Input:      input,
-			DidYouMean: didYouMeanSuggestions(message),
-		}}
+	for _, child := range cmd.Commands() {
+		if found := findCommandByName(child, name); found != nil {
+			return found
+		}
 	}
-	if input, ok := unknownFlagInput(message); ok {
-		return commandErrorResponse{Error: commandError{
-			Code:       unknownFlagErrorCode,
-			ExitCode:   exitCode,
-			Input:      input,
-			DidYouMean: didYouMeanSuggestions(message),
-		}}
-	}
-	return commandErrorResponse{Error: commandError{
-		Code:     commandFailedErrorCode,
-		ExitCode: exitCode,
-		Message:  firstErrorLine(message),
-	}}
+	return nil
 }
 
 func suggestedNoArgs(cmd *cobra.Command, args []string) error {
@@ -141,7 +77,7 @@ func commandSuggestionText(cmd *cobra.Command, typedName string) string {
 		return ""
 	}
 	if cmd.SuggestionsMinimumDistance <= 0 {
-		cmd.SuggestionsMinimumDistance = 2
+		cmd.SuggestionsMinimumDistance = flagSuggestionMaxDistance
 	}
 	var builder strings.Builder
 	if suggestions := cmd.SuggestionsFor(typedName); len(suggestions) > 0 {
@@ -246,50 +182,4 @@ func knownFlagNames(cmd *cobra.Command) []string {
 	}
 	sort.Strings(names)
 	return names
-}
-
-func unknownCommandInput(message string) (string, bool) {
-	if !strings.HasPrefix(message, unknownCommandErrorPrefix) {
-		return "", false
-	}
-	rest := strings.TrimPrefix(message, unknownCommandErrorPrefix)
-	end := strings.Index(rest, `"`)
-	if end < 0 {
-		return "", false
-	}
-	return rest[:end], true
-}
-
-func unknownFlagInput(message string) (string, bool) {
-	line := firstErrorLine(message)
-	if !strings.HasPrefix(line, unknownFlagErrorPrefix) {
-		return "", false
-	}
-	rest := strings.TrimSpace(strings.TrimPrefix(line, unknownFlagErrorPrefix))
-	fields := strings.Fields(rest)
-	if len(fields) == 0 {
-		return "", false
-	}
-	return fields[0], true
-}
-
-func didYouMeanSuggestions(message string) []string {
-	index := strings.Index(message, didYouMeanHeading)
-	if index < 0 {
-		return nil
-	}
-	rest := message[index+len(didYouMeanHeading):]
-	var suggestions []string
-	for _, line := range strings.Split(rest, "\n") {
-		line = strings.TrimSpace(line)
-		if line != "" {
-			suggestions = append(suggestions, line)
-		}
-	}
-	return suggestions
-}
-
-func firstErrorLine(message string) string {
-	line, _, _ := strings.Cut(message, "\n")
-	return strings.TrimSpace(line)
 }
