@@ -642,6 +642,9 @@ func startupErrors(startup map[string]any, prefix string) []string {
 	if value, ok := startup["max_spawn_per_second"]; ok && !positiveInteger(value) {
 		problems = append(problems, prefix+".max_spawn_per_second: must be a positive integer")
 	}
+	if value, ok := startup["max_concurrent_starts"]; ok && !positiveInteger(value) {
+		problems = append(problems, prefix+".max_concurrent_starts: must be a positive integer")
+	}
 	return problems
 }
 

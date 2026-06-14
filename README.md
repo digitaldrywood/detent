@@ -869,6 +869,7 @@ global:
   startup:
     jitter_seconds: 10
     max_spawn_per_second: 2
+    max_concurrent_starts: 4
 projects:
   - id: detent
     workflow: /absolute/path/to/detent/WORKFLOW.md

@@ -4,6 +4,8 @@ import (
 	"context"
 	"time"
 
+	"golang.org/x/sync/errgroup"
+
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
@@ -91,16 +93,33 @@ func (o *Orchestrator) refreshActiveRuns(ctx context.Context, state *State, now 
 }
 
 func (o *Orchestrator) fetchTickIssues(ctx context.Context) (tickFetchedIssues, bool) {
-	issues, err := o.connector.FetchCandidateIssues(ctx)
-	if err != nil {
-		o.logger.Warn("fetch candidate issues failed", "error", err)
+	var candidateIssues []connector.Issue
+	var candidateErr error
+	var statusIssues []connector.Issue
+	var statusErr error
+	observedStates := o.observedStatusFetchStates()
+
+	group, groupCtx := errgroup.WithContext(ctx)
+	group.SetLimit(2)
+	group.Go(func() error {
+		candidateIssues, candidateErr = o.connector.FetchCandidateIssues(groupCtx)
+		return candidateErr
+	})
+	group.Go(func() error {
+		statusIssues, statusErr = o.connector.FetchIssuesByStates(groupCtx, observedStates)
+		return nil
+	})
+	if err := group.Wait(); err != nil && candidateErr == nil {
+		candidateErr = err
+	}
+	if candidateErr != nil {
+		o.logger.Warn("fetch candidate issues failed", "error", candidateErr)
 		return tickFetchedIssues{}, false
 	}
 
 	fetched := tickFetchedIssues{
-		candidates: cloneIssues(issues),
+		candidates: cloneIssues(candidateIssues),
 	}
-	statusIssues, statusErr := o.connector.FetchIssuesByStates(ctx, o.observedStatusFetchStates())
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
 		return fetched, true

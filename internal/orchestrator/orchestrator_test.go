@@ -860,6 +860,28 @@ func TestRunFetchesOnlyActionableObservedStates(t *testing.T) {
 	}
 }
 
+func TestRunFetchesCandidatesAndObservedStatesConcurrently(t *testing.T) {
+	t.Parallel()
+
+	tracker := newParallelFetchConnector()
+	orch := newTestOrchestrator(t, tracker, &staticRunner{})
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	tracker.waitBothStarted(t)
+	tracker.releaseFetches()
+
+	waitForState(t, orch, func(state orchestrator.State) bool {
+		return !state.LastRefreshAt.IsZero()
+	})
+	if got := tracker.candidateCalls.Load(); got != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want 1", got)
+	}
+	if got := tracker.statusCalls.Load(); got != 1 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want 1", got)
+	}
+}
+
 func TestStateReturnsDefensiveCopies(t *testing.T) {
 	t.Parallel()
 
@@ -1290,6 +1312,103 @@ func (c *fakeConnector) setStateIssues(issues ...connector.Issue) {
 	defer c.mu.Unlock()
 
 	c.stateIssues = cloneIssues(issues)
+}
+
+type parallelFetchConnector struct {
+	candidateStarted chan struct{}
+	statusStarted    chan struct{}
+	release          chan struct{}
+	candidateOnce    sync.Once
+	statusOnce       sync.Once
+	releaseOnce      sync.Once
+	candidateCalls   atomic.Int64
+	statusCalls      atomic.Int64
+}
+
+func newParallelFetchConnector() *parallelFetchConnector {
+	return &parallelFetchConnector{
+		candidateStarted: make(chan struct{}),
+		statusStarted:    make(chan struct{}),
+		release:          make(chan struct{}),
+	}
+}
+
+func (c *parallelFetchConnector) Name() string {
+	return "parallel"
+}
+
+func (c *parallelFetchConnector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	c.candidateCalls.Add(1)
+	c.candidateOnce.Do(func() {
+		close(c.candidateStarted)
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.statusStarted:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.release:
+		return nil, nil
+	}
+}
+
+func (c *parallelFetchConnector) FetchIssuesByStates(ctx context.Context, _ []string) ([]connector.Issue, error) {
+	c.statusCalls.Add(1)
+	c.statusOnce.Do(func() {
+		close(c.statusStarted)
+	})
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.candidateStarted:
+	}
+	select {
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	case <-c.release:
+		return nil, nil
+	}
+}
+
+func (c *parallelFetchConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, nil
+}
+
+func (c *parallelFetchConnector) CreateComment(context.Context, string, string) error {
+	return nil
+}
+
+func (c *parallelFetchConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (c *parallelFetchConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *parallelFetchConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}
+
+func (c *parallelFetchConnector) waitBothStarted(t *testing.T) {
+	t.Helper()
+
+	for _, ch := range []<-chan struct{}{c.candidateStarted, c.statusStarted} {
+		select {
+		case <-ch:
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for candidate and observed status fetches to overlap")
+		}
+	}
+}
+
+func (c *parallelFetchConnector) releaseFetches() {
+	c.releaseOnce.Do(func() {
+		close(c.release)
+	})
 }
 
 type staticRunner struct {
