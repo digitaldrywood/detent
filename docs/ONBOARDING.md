@@ -1,9 +1,10 @@
 # Agent-Executable Project Onboarding
 
-This runbook takes a target repository from zero Detent setup to one
-dispatched issue. It assumes the human has already named the target repository
-and that the agent will inspect before asking questions. Replace every
-`<...>` placeholder before running a command.
+This runbook takes a target repository from zero Detent setup to one dispatched
+issue, or adds a new project to an existing Detent install. It assumes the human
+has named the target repository when project onboarding is needed and that the
+agent will inspect before asking questions. Replace every `<...>` placeholder
+before running a command.
 
 Use these placeholders consistently:
 
@@ -18,14 +19,83 @@ Use these placeholders consistently:
 | `<project-node-id>` | ProjectV2 node id, starting with `PVT_`. |
 | `<detent-project-id>` | Local `global.yaml` project id, such as `api`. |
 
+## Start Here — Determine The Mode
+
+Do not assume this is a fresh install. Inspect first, write down the evidence,
+then ask the human to confirm only if the mode is still ambiguous.
+
+Classify the work into one of these modes:
+
+- `new-install`: Detent is not installed or the human wants a fresh host. Follow
+  [Bootstrap On A New Machine](../README.md#bootstrap-on-a-new-machine-humans-and-ai-agents)
+  through tool installation and authentication, then continue with this runbook.
+- `existing-install`: Detent is already installed or a service/dashboard appears
+  to be running. Verify the binary, config path, registered projects, service
+  health, GitHub auth, Codex auth, and `detent doctor` before proposing changes.
+- `add-project`: An existing Detent install is present and the target repository
+  is not registered yet. Reuse the existing `global.yaml`, preserve current
+  runtime settings unless the human chooses otherwise, then create or adopt a
+  board, author `WORKFLOW.md`, register the project, and smoke test.
+
+Record the mode evidence before the interview:
+
+```sh
+ONBOARDING_DIR="${TMPDIR:-/tmp}/detent-onboarding-<repo-owner>-<repo-name>"
+mkdir -p "$ONBOARDING_DIR"
+
+{
+  command -v detent || true
+  detent version 2>/dev/null || true
+  detent --format pretty config path 2>/dev/null || true
+  gh auth status 2>&1 || true
+  codex --version 2>/dev/null || true
+} > "$ONBOARDING_DIR/mode-evidence.txt"
+
+if command -v detent >/dev/null 2>&1; then
+  detent --format pretty config path \
+    > "$ONBOARDING_DIR/global-path.txt" 2>/dev/null || true
+  GLOBAL_CONFIG="$(
+    awk '/^path:/ {print $2}' "$ONBOARDING_DIR/global-path.txt" 2>/dev/null || true
+  )"
+  if test -n "$GLOBAL_CONFIG" && test -f "$GLOBAL_CONFIG"; then
+    sed -n '1,240p' "$GLOBAL_CONFIG" > "$ONBOARDING_DIR/global-config.before.txt"
+    awk '/^projects:/ {show=1} show {print}' "$GLOBAL_CONFIG" \
+      > "$ONBOARDING_DIR/global-projects.txt"
+  fi
+fi
+
+test -s "$ONBOARDING_DIR/mode-evidence.txt"
+```
+
+If Detent appears to be running, verify the live service before changing config.
+Use the configured port when known, and use `detent doctor --port 0` when the
+live process already owns the dashboard port:
+
+```sh
+detent doctor --port 0
+curl -fsS http://127.0.0.1:<port>/health | jq -e '.status == "ok"'
+curl -fsS http://127.0.0.1:<port>/api/v1/state
+```
+
+Before adding a project to an existing install, check whether it is already
+registered and decide whether this is a new registration or a repair/update:
+
+```sh
+rg -n 'id: <detent-project-id>|workflow: .*<repo-name>|workdir: .*<repo-name>' \
+  "$ONBOARDING_DIR/global-config.before.txt" 2>/dev/null || true
+```
+
 ## Phase 0 — Preconditions
 
-1. **Confirm Detent is installed.** Follow
-   [Bootstrap On A New Machine steps 1-3](../README.md#bootstrap-on-a-new-machine-humans-and-ai-agents)
-   before project onboarding. Verify:
+1. **Confirm Detent is installed or intentionally new.** For `new-install`,
+   follow [Bootstrap On A New Machine steps 1-3](../README.md#bootstrap-on-a-new-machine-humans-and-ai-agents)
+   before project onboarding. For `existing-install` and `add-project`, verify
+   the detected binary and config path before changing anything. Verify:
 
    ```sh
+   command -v detent
    detent version
+   detent --format pretty config path
    ```
 
 2. **Confirm GitHub CLI auth and scopes.** Detent needs a token that can read
@@ -75,8 +145,10 @@ Use these placeholders consistently:
    codex --version
    ```
 
-4. **Confirm the target checkout exists.** If `<source-root>` does not exist,
-   clone it from the repository named by the human. Verify:
+4. **Confirm the target checkout exists when project work is in scope.** If
+   `<source-root>` does not exist, clone it from the repository named by the
+   human. For `existing-install` without project changes, record the existing
+   registered checkouts from `global.yaml` instead. Verify:
 
    ```sh
    git -C <source-root> remote get-url origin
@@ -128,7 +200,10 @@ prints status and priority counts from cached data.
 ## Phase 1 — Discover And Recommend
 
 Do not ask questions in this phase. Inspect the actual setup, write one
-grounded recommendation per Phase 2 question, then interview the human.
+grounded recommendation per Phase 2 question, then interview the human. For an
+existing install, include the mode evidence, current config path, registered
+project table, and service health in the recommendations before asking what to
+change.
 
 1. **Create an onboarding notes directory.** Keep all discovery artifacts in
    one place so recommendations can cite evidence. Verify:
@@ -285,8 +360,9 @@ grounded recommendation per Phase 2 question, then interview the human.
 
    ```sh
    printf '%s\n' \
+     'mode: <new-install|existing-install|add-project, from mode evidence>' \
      'board: <reuse-or-create recommendation, from projects.json>' \
-     'rate_budget: <GraphQL remaining/reset and low-budget warning, from graphql-rate-limit.before-discovery.json>' \
+     'rate_budget: <GraphQL remaining/reset and low-budget warning>' \
      'scheduling: <priority/weight recommendation, from global-projects.txt>' \
      'authorization: <filter recommendation, from issue-counts.json and priority-counts.json>' \
      'dashboard_bind: <localhost/private-or-tailscale/all-interfaces recommendation>' \
@@ -296,7 +372,9 @@ grounded recommendation per Phase 2 question, then interview the human.
      'prompt: <template or repo-specific recommendation, from repo docs>' \
      'intake: <bulk-add filter and initial Status recommendation>' \
      > "$ONBOARDING_DIR/recommendations.md"
-   rg -n '^(board|rate_budget|scheduling|authorization|dashboard_bind|gate|concurrency|review_policy|prompt|intake):' \
+   rg -n '^(mode|board|rate_budget|scheduling|authorization|dashboard_bind):' \
+     "$ONBOARDING_DIR/recommendations.md"
+   rg -n '^(gate|concurrency|review_policy|prompt|intake):' \
      "$ONBOARDING_DIR/recommendations.md"
    ```
 
@@ -305,6 +383,20 @@ grounded recommendation per Phase 2 question, then interview the human.
 Ask only these decision questions. Present each as question, grounded
 recommendation, and default-if-silent. Record answers in
 `$ONBOARDING_DIR/answers.env`.
+
+0. **Mode.** Ask only if inspection did not make the path obvious: "Are we
+   doing a new Detent install, verifying an existing install, or adding this
+   repository as a new project to an existing install?" Show
+   `$ONBOARDING_DIR/mode-evidence.txt` and `$ONBOARDING_DIR/global-projects.txt`
+   when present. Default if silent: use the mode with the strongest evidence.
+   Verify:
+
+   ```sh
+   printf '%s\n' \
+     'DETENT_ONBOARDING_MODE=<new-install|existing-install|add-project>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^DETENT_ONBOARDING_MODE=' "$ONBOARDING_DIR/answers.env"
+   ```
 
 1. **Board.** Ask: "Reuse an existing ProjectV2 board or create a new one?"
    List the boards from `$ONBOARDING_DIR/projects.json`.
@@ -496,7 +588,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^DEPENDENCY_AUTO_UNBLOCK_' "$ONBOARDING_DIR/answers.env"
    ```
 
-10. **Prompt body.** Ask: "Use the template prompt or add repo-specific
+11. **Prompt body.** Ask: "Use the template prompt or add repo-specific
    instructions?" Recommendation source: `CLAUDE.md`, `AGENTS.md`,
    `CONTRIBUTING.md`, README development commands, and CI workflows in
    `<source-root>`. Default if silent: template prompt plus any repo authority
@@ -513,7 +605,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-11. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
+12. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe
@@ -861,41 +953,76 @@ recommendation, and default-if-silent. Record answers in
 
 ## Phase 5 — Register The Project
 
-1. **Create global config if needed.** Use the resolved path Detent reports.
+1. **Create global config only when needed.** Use the resolved path Detent
+   reports. For `add-project`, read and preserve the existing config; do not
+   reinitialize or overwrite runtime keys unless the human selected that change.
    Verify:
 
    ```sh
-   detent init
+   detent --format pretty config path
+   GLOBAL_CONFIG="$(
+     detent --format pretty config path | awk '/^path:/ {print $2}'
+   )"
+   if test -f "$GLOBAL_CONFIG"; then
+     sed -n '1,240p' "$GLOBAL_CONFIG" \
+       > "$ONBOARDING_DIR/global-config.before-register.txt"
+   else
+     detent init
+   fi
    detent --format pretty config path
    ```
 
-2. **Register the project.** `priority` and `weight` are the scheduling answers
-   from Phase 2. Verify:
+2. **Register the project.** Skip this if the project is already registered and
+   the human chose to repair or update the existing entry. `priority` and
+   `weight` are the scheduling answers from Phase 2. Verify:
 
    ```sh
-   detent add-project \
-     --id <detent-project-id> \
-     --workflow <source-root>/WORKFLOW.md \
-     --workdir <source-root> \
-     --weight <global-weight> \
-     --priority <global-priority>
-   GLOBAL_CONFIG="$(detent --format pretty config path | awk '/^path:/ {print $2}')"
-   rg -n 'id: <detent-project-id>|workflow: <source-root>/WORKFLOW.md|workdir: <source-root>|weight: <global-weight>|priority: <global-priority>' \
-     "$GLOBAL_CONFIG"
+   GLOBAL_CONFIG="$(
+     detent --format pretty config path | awk '/^path:/ {print $2}'
+   )"
+   PROJECT_ENTRY_PATTERN='id: <detent-project-id>|workflow: <source-root>/WORKFLOW.md|workdir: <source-root>'
+   if rg -n "$PROJECT_ENTRY_PATTERN" "$GLOBAL_CONFIG"; then
+     printf 'Project already registered; confirm before editing\n'
+   else
+     detent add-project \
+       --id <detent-project-id> \
+       --workflow <source-root>/WORKFLOW.md \
+       --workdir <source-root> \
+       --weight <global-weight> \
+       --priority <global-priority>
+   fi
+   GLOBAL_CONFIG="$(
+     detent --format pretty config path | awk '/^path:/ {print $2}'
+   )"
+   PROJECT_ENTRY_PATTERN='id: <detent-project-id>|workflow: <source-root>/WORKFLOW.md|workdir: <source-root>|weight: <global-weight>|priority: <global-priority>'
+   rg -n "$PROJECT_ENTRY_PATTERN" "$GLOBAL_CONFIG"
    ```
 
-3. **Set runtime keys in `global.yaml`.** For local onboarding, prefer
-   `github_token: gh` so Detent resolves the token from `gh auth token` at
-   startup. This shares the operator's GraphQL budget with Detent and spawned
-   agents; for production or high-volume boards, prefer GitHub App
-   installation authentication in `WORKFLOW.md`. Set `instance_name` to the
-   interview answer or the short hostname. Use a non-4000 port if another
-   Detent instance is already running; keep the dashboard host in
-   `WORKFLOW.md` `server.host` or pass it with `--host`. Verify:
+3. **Set or preserve runtime keys in `global.yaml`.** For local onboarding,
+   prefer `github_token: gh` so Detent resolves the token from `gh auth token`
+   at startup. This shares the operator's GraphQL budget with Detent and spawned
+   agents; for production or high-volume boards, prefer GitHub App installation
+   authentication in `WORKFLOW.md`. Set `instance_name` to the interview answer
+   or the short hostname on new installs. For existing installs, preserve
+   `env`, `log_level`, `github_token`, `port`, and `instance_name` unless the
+   human selected different values. Use a non-4000 port if another Detent
+   instance is already running; keep the dashboard host in `WORKFLOW.md`
+   `server.host` or pass it with `--host`. Verify:
 
    ```sh
-   GLOBAL_CONFIG="$(detent --format pretty config path | awk '/^path:/ {print $2}')"
-   perl -0pi -e 's/^(global:)/env: prod\nlog_level: info\ngithub_token: gh\nport: <port>\ninstance_name: <instance-name>\n$1/m if !/^github_token:/m' "$GLOBAL_CONFIG"
+   GLOBAL_CONFIG="$(
+     detent --format pretty config path | awk '/^path:/ {print $2}'
+   )"
+   sed -n '1,240p' "$GLOBAL_CONFIG"
+   # Run this edit only for new installs or confirmed runtime-key changes.
+   GLOBAL_RUNTIME_INSERT='
+   if (!/^github_token:/m) {
+     my $runtime = "env: prod\nlog_level: info\ngithub_token: gh\n";
+     $runtime .= "port: <port>\ninstance_name: <instance-name>\n";
+     s/^(global:)/${runtime}$1/m;
+   }
+   '
+   perl -0pi -e "$GLOBAL_RUNTIME_INSERT" "$GLOBAL_CONFIG"
    rg -n '^(env|log_level|github_token|port|instance_name):' "$GLOBAL_CONFIG"
    ```
 

@@ -6,6 +6,40 @@
 [![License](https://img.shields.io/github/license/digitaldrywood/detent)](LICENSE)
 [![Release](https://img.shields.io/github/v/release/digitaldrywood/detent?include_prereleases&sort=semver)](https://github.com/digitaldrywood/detent/releases)
 
+## Start With AI
+
+Hi, welcome to Detent. If you are reading this as a human, pause here and paste
+the prompt below into Codex or Claude Code. Detent is meant to be driven from
+the top down by AI agents, so the fastest way to get moving is to let an agent
+inspect the repo, interrogate the onboarding runbook, and guide you through the
+right setup path. You can keep reading by hand too; nobody will revoke your
+keyboard.
+
+```text
+You are onboarding Detent with me. Treat this as an AI-driven project, not a
+manual README skim.
+
+Start by inspecting this repository. Read README.md, CLAUDE.md or AGENTS.md if
+present, docs/ONBOARDING.md, CONTRIBUTING.md, Makefile, go.mod, .github/workflows,
+install scripts, and any existing WORKFLOW.md or global.yaml examples. Do not
+ask setup questions until you have gathered local evidence.
+
+Use docs/ONBOARDING.md as the interrogation guide. First determine which path
+applies: a new Detent install, an existing Detent install that must be found and
+verified, or a new repository/project being added to an existing Detent install.
+
+For an existing install, find and verify the detent binary, config path, running
+service or dashboard, registered projects, GitHub auth, Codex auth, and doctor
+status before recommending changes. For a new install, follow the bootstrap flow
+and verify each step before moving on. For adding a project, inspect the target
+repository and existing global.yaml, then walk me through the board, workflow,
+registration, issue intake, and smoke-test decisions.
+
+Present findings with evidence, ask only the next necessary human decisions, and
+do not mutate GitHub Projects, overwrite WORKFLOW.md or global.yaml, or dispatch
+agents until the runbook says to verify and I confirm the risky action.
+```
+
 A **detent** is the catch that holds a moving part at a fixed position until it
 is deliberately released — the click-stop on a dial, the notch on a ratchet.
 Detent holds each piece of work at a defined stop on your board and only lets it
@@ -34,10 +68,9 @@ stays in your spec; the runtime supplies the discipline.
 is Detent's own production config — it dispatches the agents that build Detent
 itself. Copy it as a template, and use
 [Bootstrap On A New Machine](#bootstrap-on-a-new-machine-humans-and-ai-agents)
-to go from a bare machine to a running board. To onboard a new repository from
-no board, no `WORKFLOW.md`, and no `global.yaml` entry to its first dispatched
-issue, use the agent-executable [Project Onboarding](docs/ONBOARDING.md)
-runbook.
+to go from a bare machine to a running board. To onboard a repository, verify an
+existing install, or add a new project to an existing Detent host, use the
+agent-executable [Project Onboarding](docs/ONBOARDING.md) runbook.
 
 ## How it works
 
