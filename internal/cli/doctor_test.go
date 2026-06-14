@@ -625,6 +625,60 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorBlockedRecovery(t *testing.T) {
+	t.Parallel()
+
+	prNumber := 426
+	humanPRNumber := 427
+	recoverable := doctorDependencyIssue("issue-recoverable", nil)
+	recoverable.PRNumber = &prNumber
+	recoverable.PullRequest = &connector.PullRequest{
+		Number:         prNumber,
+		State:          "OPEN",
+		HeadSHA:        "head-current",
+		MergeableState: "dirty",
+	}
+	recoverable.BlockerReason = "PR #426 conflicts with main and needs agent maintenance."
+	humanOnly := doctorDependencyIssue("issue-human", nil)
+	humanOnly.PRNumber = &humanPRNumber
+	humanOnly.PullRequest = &connector.PullRequest{
+		Number:         humanPRNumber,
+		State:          "OPEN",
+		HeadSHA:        "head-current",
+		MergeableState: "dirty",
+	}
+	humanOnly.BlockerReason = "Waiting on explicit human approval."
+	fake := &fakeDoctorAutoPromoteConnector{
+		issues: []connector.Issue{recoverable, humanOnly},
+	}
+
+	got := checkDoctorBlockedRecovery(context.Background(), "alpha", validDoctorDependencyWorkflow(true), doctorDeps{
+		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			return fake, nil
+		},
+	})
+
+	if got.Status != doctorWarn {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorWarn, got)
+	}
+	for _, want := range []string{
+		"pr_recoverable_blocked",
+		"issue-recoverable",
+		"merge_conflicts",
+		"Rework",
+	} {
+		if !strings.Contains(got.Detail, want) && !strings.Contains(got.Hint, want) {
+			t.Fatalf("check missing %q:\nDetail: %s\nHint: %s", want, got.Detail, got.Hint)
+		}
+	}
+	if strings.Contains(got.Detail, "issue-human") {
+		t.Fatalf("Detail = %q, want human blocker omitted from recoverable diagnostics", got.Detail)
+	}
+	if !stringSliceContains(fake.verifyStates, "Blocked") || !stringSliceContains(fake.verifyStates, "Rework") {
+		t.Fatalf("VerifyStatusOptions states = %#v, want Blocked and Rework", fake.verifyStates)
+	}
+}
+
 func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
 	t.Parallel()
 

@@ -52,16 +52,18 @@ var requiredGitHubScopes = []string{"repo", "read:org", "project"}
 const (
 	doctorAutoPromoteSampleLimit           = 5
 	doctorDependencyAutoUnblockSampleLimit = 5
+	doctorBlockedRecoverySampleLimit       = 5
 )
 
 var doctorHealthCheckKeys = []string{"hub", "store", "registry", "connector"}
 
 type doctorCheck struct {
-	Name                  string                                 `json:"name"`
-	Status                doctorStatus                           `json:"status"`
-	Detail                string                                 `json:"detail"`
-	Hint                  string                                 `json:"hint,omitempty"`
-	AutoPromoteCandidates []doctorAutoPromoteCandidateDiagnostic `json:"auto_promote_candidates,omitempty"`
+	Name                      string                                     `json:"name"`
+	Status                    doctorStatus                               `json:"status"`
+	Detail                    string                                     `json:"detail"`
+	Hint                      string                                     `json:"hint,omitempty"`
+	AutoPromoteCandidates     []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
+	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
 }
 
 type doctorReport struct {
@@ -82,6 +84,18 @@ type doctorAutoPromoteCandidateDiagnostic struct {
 	LatestCodexReviewSubmittedAt *time.Time `json:"latest_codex_review_submitted_at,omitempty"`
 	QuietRemainingSeconds        int64      `json:"quiet_remaining_seconds,omitempty"`
 	Reason                       string     `json:"reason"`
+}
+
+type doctorBlockedRecoveryCandidateDiagnostic struct {
+	IssueID         string `json:"issue_id,omitempty"`
+	IssueIdentifier string `json:"issue_identifier,omitempty"`
+	IssueURL        string `json:"issue_url,omitempty"`
+	PRNumber        int    `json:"pr_number,omitempty"`
+	PRURL           string `json:"pr_url,omitempty"`
+	PRHeadSHA       string `json:"pr_head_sha,omitempty"`
+	TargetState     string `json:"target_state,omitempty"`
+	Reason          string `json:"reason"`
+	Detail          string `json:"detail,omitempty"`
 }
 
 type doctorSummary struct {
@@ -663,6 +677,7 @@ func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps 
 	}
 	if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub {
 		checks = append(checks, checkDoctorDependencyAutoUnblock(ctx, id, workflow.Config, deps))
+		checks = append(checks, checkDoctorBlockedRecovery(ctx, id, workflow.Config, deps))
 	}
 
 	sourceRoot := projectSourceRoot(project, workflow.Config)
@@ -1030,6 +1045,171 @@ type doctorDependencyDiagnostic struct {
 	Code       string
 	Issue      connector.Issue
 	References []string
+}
+
+func checkDoctorBlockedRecovery(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
+	name := "Project " + id + " blocked recovery"
+	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "live blocked recovery diagnostics skipped for " + cfg.Tracker.Kind + " tracker",
+		}
+	}
+
+	if deps.autoPromoteConnector == nil {
+		deps.autoPromoteConnector = defaultDoctorAutoPromoteConnector
+	}
+	projectConnector, err := deps.autoPromoteConnector(cfg)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("create blocked recovery diagnostic connector: %v", err),
+			Hint:   "Fix GitHub tracker credentials and ProjectV2 configuration.",
+		}
+	}
+	if projectConnector == nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "create blocked recovery diagnostic connector: connector is nil",
+			Hint:   "Fix GitHub tracker configuration.",
+		}
+	}
+
+	check := checkDoctorBlockedRecoveryLive(ctx, name, projectConnector)
+	if err := closeDoctorAutoPromoteConnector(projectConnector); err != nil && check.Status != doctorFail {
+		check.Status = doctorWarn
+		check.Detail = check.Detail + "; connector close failed: " + err.Error()
+		check.Hint = "Rerun detent doctor and check local network resources."
+	}
+	return check
+}
+
+func checkDoctorBlockedRecoveryLive(
+	ctx context.Context,
+	name string,
+	projectConnector doctorAutoPromoteConnector,
+) doctorCheck {
+	if verifier, ok := projectConnector.(doctorStatusOptionVerifier); ok {
+		if err := verifier.VerifyStatusOptions(ctx, []string{"Blocked", "Rework"}); err != nil {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorFail,
+				Detail: fmt.Sprintf("status option verification failed: %v", err),
+				Hint:   "Ensure Blocked and Rework resolve through tracker.state_map to existing GitHub Project Status options.",
+			}
+		}
+	}
+
+	issues, err := fetchDoctorBlockedRecoveryIssues(ctx, projectConnector)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("fetch blocked candidates: %v", err),
+			Hint:   "Check GitHub Project access, Status field options, and repository pull request access.",
+		}
+	}
+
+	candidates := []doctorBlockedRecoveryCandidateDiagnostic{}
+	for _, issue := range issues {
+		decision := orchestrator.EvaluateBlockedRecovery(issue)
+		if decision.Action != orchestrator.BlockedRecoveryActionRework {
+			continue
+		}
+		candidates = append(candidates, doctorBlockedRecoveryCandidateDiagnosticFromIssue(issue, decision))
+	}
+
+	detail := fmt.Sprintf("sampled %d Blocked candidate(s)", len(issues))
+	if len(candidates) == 0 {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: detail + "; no agent-recoverable blocked candidates found",
+		}
+	}
+	detail += "; " + doctorBlockedRecoveryCandidateSummaries(candidates)
+	return doctorCheck{
+		Name:                      name,
+		Status:                    doctorWarn,
+		Detail:                    detail,
+		Hint:                      "Detent can recover these Blocked issues to Rework because the next action is PR maintenance.",
+		BlockedRecoveryCandidates: candidates,
+	}
+}
+
+func fetchDoctorBlockedRecoveryIssues(
+	ctx context.Context,
+	projectConnector doctorAutoPromoteConnector,
+) ([]connector.Issue, error) {
+	if limited, ok := projectConnector.(doctorAutoPromoteLimitedConnector); ok {
+		return limited.FetchIssuesByStatesLimit(ctx, []string{"Blocked"}, doctorBlockedRecoverySampleLimit)
+	}
+	issues, err := projectConnector.FetchIssuesByStates(ctx, []string{"Blocked"})
+	if err != nil {
+		return nil, err
+	}
+	if len(issues) > doctorBlockedRecoverySampleLimit {
+		issues = issues[:doctorBlockedRecoverySampleLimit]
+	}
+	return issues, nil
+}
+
+func doctorBlockedRecoveryCandidateDiagnosticFromIssue(
+	issue connector.Issue,
+	decision orchestrator.BlockedRecoveryDecision,
+) doctorBlockedRecoveryCandidateDiagnostic {
+	diagnostic := doctorBlockedRecoveryCandidateDiagnostic{
+		IssueID:         strings.TrimSpace(issue.ID),
+		IssueIdentifier: strings.TrimSpace(issue.Identifier),
+		IssueURL:        strings.TrimSpace(issue.URL),
+		TargetState:     strings.TrimSpace(decision.TargetState),
+		Reason:          string(decision.Reason),
+		Detail:          strings.TrimSpace(decision.Detail),
+	}
+	if issue.PullRequest == nil {
+		return diagnostic
+	}
+	pullRequest := issue.PullRequest
+	diagnostic.PRNumber = pullRequest.Number
+	diagnostic.PRURL = strings.TrimSpace(pullRequest.URL)
+	diagnostic.PRHeadSHA = strings.TrimSpace(pullRequest.HeadSHA)
+	return diagnostic
+}
+
+func doctorBlockedRecoveryCandidateSummaries(candidates []doctorBlockedRecoveryCandidateDiagnostic) string {
+	parts := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		summary := "pr_recoverable_blocked: " + doctorBlockedRecoveryIssueLabel(candidate)
+		if candidate.PRNumber > 0 {
+			summary += fmt.Sprintf(" PR #%d", candidate.PRNumber)
+		}
+		if candidate.Reason != "" {
+			summary += " reason=" + candidate.Reason
+		}
+		if candidate.TargetState != "" {
+			summary += " target=" + candidate.TargetState
+		}
+		parts = append(parts, summary)
+	}
+	return strings.Join(parts, "; ")
+}
+
+func doctorBlockedRecoveryIssueLabel(candidate doctorBlockedRecoveryCandidateDiagnostic) string {
+	id := strings.TrimSpace(candidate.IssueID)
+	identifier := strings.TrimSpace(candidate.IssueIdentifier)
+	switch {
+	case id != "" && identifier != "":
+		return id + " (" + identifier + ")"
+	case id != "":
+		return id
+	case identifier != "":
+		return identifier
+	default:
+		return "sampled issue"
+	}
 }
 
 func checkDoctorDependencyAutoUnblock(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {

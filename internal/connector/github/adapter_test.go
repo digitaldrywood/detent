@@ -1004,6 +1004,91 @@ func TestConnectorFetchIssuesByStatesExtractsWorkpadHumanActionNeeded(t *testing
 	}
 }
 
+func TestConnectorFetchIssuesByStatesExtractsWorkpadBlockedByRefs(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","content":{"__typename":"Issue","id":"I_kw416","number":416,"title":"Blocked workpad dependency","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/416","repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Blocked"},"priorityValue":null}]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/416/comments?per_page=100",
+			body:   `[{"body":"## Codex Workpad\n\n### Blockers\n- Blocked by: #415\n- Waiting for digitaldrywood/agent-runtime#25\n\n### Validation\n- Pending."}]`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Blocked"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+
+	want := []connector.BlockedRef{
+		{Identifier: "digitaldrywood/detent#415"},
+		{Identifier: "digitaldrywood/agent-runtime#25"},
+	}
+	if !reflect.DeepEqual(got[0].BlockedBy, want) {
+		t.Fatalf("BlockedBy = %#v, want %#v", got[0].BlockedBy, want)
+	}
+}
+
+func TestConnectorFetchIssuesByStatesAttachesBlockedPullRequest(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_396","content":{"__typename":"Issue","id":"I_396","number":396,"title":"Blocked PR maintenance","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/396","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[{"name":"bug"}]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":426,"url":"https://github.com/digitaldrywood/detent/pull/426","state":"OPEN","repository":{"nameWithOwner":"digitaldrywood/detent"}}]}},"statusValue":{"name":"Blocked"},"priorityValue":null}]}}}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/396/comments?per_page=100",
+			body:   `[{"body":"## Codex Workpad\n\n### Human Action Needed\n- PR #426 latest head has no check-runs and conflicts with main."}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/426",
+			body:   `{"number":426,"html_url":"https://github.com/digitaldrywood/detent/pull/426","state":"open","mergeable_state":"dirty","head":{"ref":"detent/digitaldrywood_detent_396","sha":"head-current"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100",
+			body:   `{"check_runs":[]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/head-current/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/426/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Blocked"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+	pr := got[0].PullRequest
+	if pr == nil {
+		t.Fatal("PullRequest = nil, want linked blocked PR")
+	}
+	if pr.Number != 426 || pr.State != "OPEN" || pr.HeadSHA != "head-current" || pr.MergeableState != "dirty" || pr.CIStatus != "" || pr.CheckRunCount != 0 {
+		t.Fatalf("PullRequest = %#v, want dirty PR with no current-head checks", pr)
+	}
+}
+
 func TestConnectorFetchIssueStatesByIDsUsesProjectStatusAndRequestOrder(t *testing.T) {
 	t.Parallel()
 

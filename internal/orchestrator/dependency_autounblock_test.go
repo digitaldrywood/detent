@@ -96,6 +96,67 @@ func TestTickAutoUnblocksLightweightDependencyWaitingIssue(t *testing.T) {
 	}
 }
 
+func TestTickAutoUnblocksDependencyFromIssueBody(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-body-blocked", "Blocked")
+	waiting.Description = "Depends on: #415"
+	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 3, 30, 0, time.UTC))
+
+	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
+		t.Fatalf("updates = %#v, want Blocked issue moved to Todo", got)
+	}
+	if got, want := tracker.identifierCalls, []string{"digitaldrywood/detent#415"}; !slices.Equal(got, want) {
+		t.Fatalf("identifier calls = %#v, want %#v", got, want)
+	}
+}
+
+func TestTickAutoUnblocksDependencyFromBlockedReason(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-reason-blocked", "Blocked")
+	waiting.BlockerReason = "Blocked by: digitaldrywood/detent#415"
+	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 4, 0, 0, time.UTC))
+
+	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
+		t.Fatalf("updates = %#v, want Blocked issue moved to Todo", got)
+	}
+	if got, want := tracker.identifierCalls, []string{"digitaldrywood/detent#415"}; !slices.Equal(got, want) {
+		t.Fatalf("identifier calls = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "digitaldrywood/detent#415") {
+		t.Fatalf("comments = %#v, want recovery comment with blocked reason dependency", tracker.comments)
+	}
+}
+
 func TestTickLeavesHumanBlockedIssueBlocked(t *testing.T) {
 	t.Parallel()
 
@@ -124,6 +185,82 @@ func TestTickLeavesHumanBlockedIssueBlocked(t *testing.T) {
 	}
 	if blocked.Reason != waiting.BlockerReason {
 		t.Fatalf("Blocked reason = %q, want %q", blocked.Reason, waiting.BlockerReason)
+	}
+}
+
+func TestTickRecoversPRBackedBlockedIssueToRework(t *testing.T) {
+	t.Parallel()
+
+	prNumber := 426
+	waiting := dependencyAutoUnblockIssue("issue-pr-blocked", "Blocked")
+	waiting.PRNumber = &prNumber
+	waiting.PullRequest = &connector.PullRequest{
+		Number:         prNumber,
+		URL:            "https://github.com/digitaldrywood/detent/pull/426",
+		State:          "OPEN",
+		HeadSHA:        "sha-current",
+		MergeableState: "dirty",
+	}
+	waiting.BlockerReason = "PR #426 conflicts with main and needs a rebase."
+	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{waiting}}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 6, 0, 0, time.UTC))
+
+	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Rework"}) {
+		t.Fatalf("updates = %#v, want Blocked issue moved to Rework", got)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one recovery comment", tracker.comments)
+	}
+	for _, want := range []string{"PR maintenance is agent-recoverable.", "Blocked to Rework", "merge conflicts", "#426"} {
+		if !strings.Contains(tracker.comments[0].body, want) {
+			t.Fatalf("comment %q missing %q", tracker.comments[0].body, want)
+		}
+	}
+	if _, ok := state.Blocked[waiting.ID]; ok {
+		t.Fatalf("Blocked[%q] present after PR recovery", waiting.ID)
+	}
+}
+
+func TestTickLeavesHumanOnlyPRBackedBlockedIssueBlocked(t *testing.T) {
+	t.Parallel()
+
+	prNumber := 427
+	waiting := dependencyAutoUnblockIssue("issue-human-pr-blocked", "Blocked")
+	waiting.PRNumber = &prNumber
+	waiting.PullRequest = &connector.PullRequest{
+		Number:         prNumber,
+		State:          "OPEN",
+		HeadSHA:        "sha-current",
+		MergeableState: "dirty",
+	}
+	waiting.BlockerReason = "Waiting on explicit human approval before continuing."
+	tracker := &dependencyAutoUnblockConnector{stateIssues: []connector.Issue{waiting}}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 7, 0, 0, time.UTC))
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none", tracker.comments)
+	}
+	if _, ok := state.Blocked[waiting.ID]; !ok {
+		t.Fatalf("Blocked[%q] missing for human-only blocker", waiting.ID)
 	}
 }
 

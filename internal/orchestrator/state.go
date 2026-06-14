@@ -70,10 +70,12 @@ const (
 )
 
 type Blocked struct {
-	Issue     connector.Issue
-	Reason    string
-	BlockedAt time.Time
-	Source    BlockedSource
+	Issue          connector.Issue
+	Reason         string
+	RecoveryReason string
+	RecoveryTarget string
+	BlockedAt      time.Time
+	Source         BlockedSource
 }
 
 type Completed struct {
