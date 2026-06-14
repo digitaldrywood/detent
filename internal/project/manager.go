@@ -311,7 +311,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 
 	for _, id := range result.Removed {
 		current, ok := m.registry.Get(id)
-		if !ok {
+		if !ok || current == nil {
 			return result, errors.Join(ErrProjectNotFound, rollback())
 		}
 		wasRunning := current.Running()
@@ -327,7 +327,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 	}
 	for _, id := range result.Changed {
 		current, ok := m.registry.Get(id)
-		if !ok {
+		if !ok || current == nil {
 			return result, errors.Join(ErrProjectNotFound, rollback())
 		}
 		wasRunning := current.Running()
@@ -337,7 +337,10 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 			}
 		}
 		stopped = append(stopped, rollbackProject{project: current, wasRunning: wasRunning})
-		preparedProject := prepared[id]
+		preparedProject, err := preparedProjectByID(prepared, id)
+		if err != nil {
+			return result, errors.Join(err, rollback())
+		}
 		didStart, err := m.startPreparedProjectLocked(ctx, preparedProject)
 		if err != nil {
 			return result, errors.Join(err, rollback())
@@ -350,7 +353,10 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		}
 	}
 	for _, id := range result.Added {
-		preparedProject := prepared[id]
+		preparedProject, err := preparedProjectByID(prepared, id)
+		if err != nil {
+			return result, errors.Join(err, rollback())
+		}
 		didStart, err := m.startPreparedProjectLocked(ctx, preparedProject)
 		if err != nil {
 			return result, errors.Join(err, rollback())
@@ -378,7 +384,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 
 func (m *Manager) removeLocked(ctx context.Context, id ID) error {
 	project, ok := m.registry.Get(id)
-	if !ok {
+	if !ok || project == nil {
 		return ErrProjectNotFound
 	}
 	if err := project.close(ctx, true); err != nil {
@@ -397,7 +403,7 @@ func (m *Manager) Pause(ctx context.Context, id ID) error {
 	defer m.mu.Unlock()
 
 	project, ok := m.registry.Get(id)
-	if !ok {
+	if !ok || project == nil {
 		return ErrProjectNotFound
 	}
 	return project.Pause(ctx)
@@ -412,7 +418,7 @@ func (m *Manager) Unpause(ctx context.Context, id ID) error {
 	defer m.mu.Unlock()
 
 	project, ok := m.registry.Get(id)
-	if !ok {
+	if !ok || project == nil {
 		return ErrProjectNotFound
 	}
 	if !project.Paused() {
@@ -457,10 +463,16 @@ func (m *Manager) createProjectLocked(cfg globalconfig.Project) (ID, *Project, e
 	if err != nil {
 		return "", nil, fmt.Errorf("create project %s: %w", id, err)
 	}
+	if project == nil {
+		return "", nil, ErrMissingProject
+	}
 	return id, project, nil
 }
 
 func (m *Manager) registerProjectLocked(ctx context.Context, id ID, project *Project) error {
+	if project == nil {
+		return ErrMissingProject
+	}
 	if err := m.registry.Set(project); err != nil {
 		return err
 	}
@@ -475,6 +487,9 @@ func (m *Manager) registerProjectLocked(ctx context.Context, id ID, project *Pro
 }
 
 func (m *Manager) startPreparedProjectLocked(ctx context.Context, project *Project) (bool, error) {
+	if project == nil {
+		return false, ErrMissingProject
+	}
 	if !m.running || project.Paused() {
 		return false, nil
 	}
@@ -489,6 +504,9 @@ func (m *Manager) startLocked(ctx context.Context, project *Project) error {
 }
 
 func (m *Manager) startProjectLocked(ctx context.Context, project *Project, publishEvents bool) error {
+	if project == nil {
+		return ErrMissingProject
+	}
 	if err := m.waitBeforeSpawn(ctx); err != nil {
 		return err
 	}
@@ -623,6 +641,9 @@ func maxConcurrentStarts(startup StartupConfig, projectCount int) int {
 func closeProjectSlice(ctx context.Context, projects []*Project) error {
 	var cleanupErr error
 	for _, project := range projects {
+		if project == nil {
+			continue
+		}
 		cleanupErr = errors.Join(cleanupErr, project.close(ctx, false))
 	}
 	return cleanupErr
@@ -631,6 +652,9 @@ func closeProjectSlice(ctx context.Context, projects []*Project) error {
 func closePreparedProjects(ctx context.Context, prepared map[ID]*Project) error {
 	var cleanupErr error
 	for _, project := range prepared {
+		if project == nil {
+			continue
+		}
 		cleanupErr = errors.Join(cleanupErr, project.close(ctx, false))
 	}
 	return cleanupErr
@@ -639,9 +663,20 @@ func closePreparedProjects(ctx context.Context, prepared map[ID]*Project) error 
 func closeStoppedProjects(ctx context.Context, stopped []rollbackProject) error {
 	var cleanupErr error
 	for _, item := range stopped {
+		if item.project == nil {
+			continue
+		}
 		cleanupErr = errors.Join(cleanupErr, item.project.close(ctx, false))
 	}
 	return cleanupErr
+}
+
+func preparedProjectByID(prepared map[ID]*Project, id ID) (*Project, error) {
+	project := prepared[id]
+	if project == nil {
+		return nil, ErrMissingProject
+	}
+	return project, nil
 }
 
 func (m *Manager) waitBeforeSpawn(ctx context.Context) error {

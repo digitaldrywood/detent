@@ -77,6 +77,28 @@ func TestManagerStartsProjectsWithStartupLimits(t *testing.T) {
 	}
 }
 
+func TestManagerStartRejectsNilProjectFactoryResult(t *testing.T) {
+	t.Parallel()
+
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		ProjectFactory: func(globalconfig.Project) (*project.Project, error) {
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+
+	if err := manager.Start(context.Background()); !errors.Is(err, project.ErrMissingProject) {
+		t.Fatalf("Start() error = %v, want %v", err, project.ErrMissingProject)
+	}
+	if manager.Registry().Len() != 0 {
+		t.Fatalf("Registry().Len() = %d, want 0", manager.Registry().Len())
+	}
+}
+
 func TestManagerStartsProjectsWithBoundedConcurrency(t *testing.T) {
 	t.Parallel()
 
@@ -613,6 +635,52 @@ func TestManagerReconcileKeepsRegistryWhenNewProjectCannotBeCreated(t *testing.T
 	})
 }
 
+func TestManagerReconcileKeepsRegistryWhenNewProjectFactoryReturnsNil(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			if cfg.ID == "bravo" {
+				return nil, nil
+			}
+			return newManagerTestProject(t, cfg, events)
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	drainProjectEvents(t, sub.C(), 1)
+
+	_, err = manager.Reconcile(context.Background(), project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "alpha", Weight: 1},
+			{ID: "bravo", Weight: 1},
+		},
+	})
+	if !errors.Is(err, project.ErrMissingProject) {
+		t.Fatalf("Reconcile() error = %v, want %v", err, project.ErrMissingProject)
+	}
+	assertNoProjectEvent(t, sub.C())
+	assertManagerProjectConfigs(t, manager, map[project.ID]globalconfig.Project{
+		"alpha": {ID: "alpha", Weight: 1},
+	})
+}
+
 func TestManagerReconcileKeepsChangedProjectWhenReplacementCannotBeCreated(t *testing.T) {
 	t.Parallel()
 
@@ -1011,6 +1079,11 @@ func TestManagerProjectsShareGlobalDispatchCap(t *testing.T) {
 		},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			runner := runners[project.ID(cfg.ID)]
+			if runner == nil {
+				t.Fatalf("runner for project %q = nil, want runner", cfg.ID)
+				return nil, project.ErrMissingProject
+			}
 			workflowCfg := workflowConfigWithMemoryIssue("issue-" + cfg.ID)
 			workflowCfg.Agent.MaxConcurrentAgents = 2
 			workflowCfg.Tracker.Issues[0].State = "Todo"
@@ -1020,7 +1093,7 @@ func TestManagerProjectsShareGlobalDispatchCap(t *testing.T) {
 				Project:  cfg,
 				Workflow: workflowconfig.Workflow{Config: workflowCfg, Prompt: "Run test issue."},
 			}, project.Dependencies{
-				Runner:             runners[project.ID(cfg.ID)],
+				Runner:             runner,
 				GlobalDispatchGate: globalGate,
 			})
 		},
@@ -1046,12 +1119,23 @@ func TestManagerProjectsShareGlobalDispatchCap(t *testing.T) {
 		}
 	})
 
-	first := receiveFirstProjectRun(t, runners["alpha"].started, runners["bravo"].started)
+	alphaRunner := runners["alpha"]
+	if alphaRunner == nil {
+		t.Fatal("runner for project alpha = nil, want runner")
+		return
+	}
+	bravoRunner := runners["bravo"]
+	if bravoRunner == nil {
+		t.Fatal("runner for project bravo = nil, want runner")
+		return
+	}
+
+	first := receiveFirstProjectRun(t, alphaRunner.started, bravoRunner.started)
 	var blocked <-chan orchestrator.RunRequest
 	if first == "alpha" {
-		blocked = runners["bravo"].started
+		blocked = bravoRunner.started
 	} else {
-		blocked = runners["alpha"].started
+		blocked = alphaRunner.started
 	}
 	select {
 	case request := <-blocked:

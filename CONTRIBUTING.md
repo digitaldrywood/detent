@@ -71,6 +71,7 @@ make check
 - `make build`, which runs `make generate` before building `./tmp/detent`.
 - `golangci-lint run --timeout=5m` with golangci-lint v2.
 - `go vet ./...`.
+- `make nilaway-audit`.
 - `go test -race ./...`.
 - Coverage with a 70% minimum, excluding generated Templ output and sqlc output.
 
