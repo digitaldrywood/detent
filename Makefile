@@ -19,8 +19,11 @@ SQLC_CONFIG ?= sqlc/sqlc.yaml
 MIGRATIONS_DIR ?= internal/store/migrations
 GOOSE_DRIVER ?= sqlite3
 DATABASE_URL ?= tmp/detent.db
+NILAWAY_VERSION ?= v0.0.0-20260612163715-2d8907f431ca
+NILAWAY ?= go run go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
+NILAWAY_INCLUDE_PKGS ?= github.com/digitaldrywood/detent
 
-.PHONY: dev generate css css-watch build test test-race test-cover lint vet check modernize-check release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate css css-watch build test test-race test-cover lint vet check modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -87,6 +90,9 @@ lint:
 vet:
 	go vet ./...
 
+nilaway-audit:
+	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
+
 check: build lint vet test-race test-cover
 	@echo "All checks passed."
 
@@ -135,6 +141,7 @@ help:
 	@echo "  lint         Run golangci-lint"
 	@echo "  check        Run the local validation gate"
 	@echo "  modernize-check  Run the Go modernizer diff check"
+	@echo "  nilaway-audit  Run the local NilAway audit"
 	@echo "  release-snapshot  Build local GoReleaser snapshot archives"
 	@echo "  sqlc         Generate sqlc output"
 	@echo "  db-migrate   Run goose migrations"
