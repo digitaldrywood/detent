@@ -40,6 +40,7 @@ type BlockedRecoveryDecision struct {
 }
 
 func EvaluateBlockedRecovery(issue connector.Issue) BlockedRecoveryDecision {
+	issue = issueWithTextDependencyRefs(issue)
 	if normalizeState(issue.State) != "blocked" {
 		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonNotBlocked, "")
 	}

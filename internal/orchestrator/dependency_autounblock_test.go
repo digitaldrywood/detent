@@ -302,6 +302,46 @@ func TestTickLeavesDependencyBlockedPRIssueBlocked(t *testing.T) {
 	}
 }
 
+func TestTickLeavesTextDependencyBlockedPRIssueBlocked(t *testing.T) {
+	t.Parallel()
+
+	prNumber := 429
+	waiting := dependencyAutoUnblockIssue("issue-text-dependent-pr-blocked", "Blocked")
+	waiting.PRNumber = &prNumber
+	waiting.PullRequest = &connector.PullRequest{
+		Number:         prNumber,
+		State:          "OPEN",
+		HeadSHA:        "sha-current",
+		MergeableState: "dirty",
+	}
+	waiting.BlockerReason = "Waiting on #415 before resolving PR conflicts."
+	blocker := dependencyAutoUnblockIssue("issue-in-progress", "In Progress")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 9, 0, 0, time.UTC))
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none while text dependency is not ready", tracker.updates)
+	}
+	if got, want := tracker.identifierCalls, []string{"digitaldrywood/detent#415"}; !slices.Equal(got, want) {
+		t.Fatalf("identifier calls = %#v, want %#v", got, want)
+	}
+	if _, ok := state.Blocked[waiting.ID]; !ok {
+		t.Fatalf("Blocked[%q] missing for unresolved text dependency blocker", waiting.ID)
+	}
+}
+
 func TestDependencyAutoUnblockDoesNotChangeTodoDependencyGate(t *testing.T) {
 	t.Parallel()
 
