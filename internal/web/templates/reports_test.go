@@ -1,6 +1,7 @@
 package templates_test
 
 import (
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -81,10 +82,11 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 		`data-tui-sidebar-collapsible="icon"`,
 		`data-tui-sidebar="menu-badge"`,
 		`data-tui-sheet`,
+		`id="dashboard-sidebar"`,
 		`/static/js/templui/sidebar.min.js`,
 		`/static/js/templui/dialog.min.js`,
 		`/static/js/templui/popover.min.js`,
-		`data-tui-sidebar-active="true" aria-current="page"`,
+		`href="/projects/detent"`,
 		`href="/reports"`,
 		`href="/settings"`,
 		`href="/"`,
@@ -108,7 +110,63 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 			t.Fatalf("reports page rendered old nav marker %q:\n%s", forbidden, html)
 		}
 	}
-	if !strings.Contains(html, `aria-current="page"`) {
-		t.Fatalf("reports page missing active sidebar aria-current:\n%s", html)
+	assertTemplateSharedDashboardShellOnce(t, html)
+	assertTemplateSingleCurrentSidebarItem(t, html)
+	assertTemplateActiveSidebarLink(t, html, "/reports")
+	assertTemplateInactiveSidebarLink(t, html, "/")
+	assertTemplateInactiveSidebarLink(t, html, "/settings")
+	assertTemplateInactiveSidebarLink(t, html, "/projects/detent")
+}
+
+func assertTemplateActiveSidebarLink(t *testing.T, html string, href string) {
+	t.Helper()
+
+	if !templateSidebarLinkActive(html, href) {
+		t.Fatalf("page missing active sidebar link %q:\n%s", href, html)
 	}
+}
+
+func assertTemplateInactiveSidebarLink(t *testing.T, html string, href string) {
+	t.Helper()
+
+	if templateSidebarLinkActive(html, href) {
+		t.Fatalf("page rendered inactive sidebar link %q as active:\n%s", href, html)
+	}
+}
+
+func assertTemplateSingleCurrentSidebarItem(t *testing.T, html string) {
+	t.Helper()
+
+	currentLinks := regexp.MustCompile(`<a[^>]*aria-current="page"[^>]*>`).FindAllString(html, -1)
+	if len(currentLinks) != 1 {
+		t.Fatalf("page rendered %d current sidebar links, want 1: %v\n%s", len(currentLinks), currentLinks, html)
+	}
+	if !strings.Contains(currentLinks[0], `data-tui-sidebar-active="true"`) {
+		t.Fatalf("current sidebar link missing active marker: %s\n%s", currentLinks[0], html)
+	}
+}
+
+func assertTemplateSharedDashboardShellOnce(t *testing.T, html string) {
+	t.Helper()
+
+	for _, marker := range []string{
+		`data-tui-sidebar-layout`,
+		`/static/js/templui/sidebar.min.js`,
+		`/static/js/templui/dialog.min.js`,
+		`/static/js/templui/popover.min.js`,
+	} {
+		if got := strings.Count(html, marker); got != 1 {
+			t.Fatalf("page rendered %q %d times, want 1:\n%s", marker, got, html)
+		}
+	}
+}
+
+func templateSidebarLinkActive(html string, href string) bool {
+	pattern := `<a[^>]*href="` + regexp.QuoteMeta(href) + `"[^>]*>`
+	for _, link := range regexp.MustCompile(pattern).FindAllString(html, -1) {
+		if strings.Contains(link, `data-tui-sidebar-active="true"`) && strings.Contains(link, `aria-current="page"`) {
+			return true
+		}
+	}
+	return false
 }

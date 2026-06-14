@@ -557,30 +557,22 @@ templ MenuButton(props ...MenuButtonProps) {
 	}
 	if p.Tooltip != "" {
 		{{ tooltipID := utils.RandomID() }}
-		// When collapsed to icon mode - show with tooltip
-		<div class="group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:block hidden">
-			@tooltip.Tooltip() {
-				@tooltip.Trigger(tooltip.TriggerProps{}) {
-					@menuButtonContent(p, "") {
-						{ children... }
-					}
-				}
-				@tooltip.Content(tooltip.ContentProps{
-					ID:            tooltipID,
-					Position:      tooltip.PositionRight,
-					HoverDelay:    200,
-					HoverOutDelay: 100,
-				}) {
-					{ p.Tooltip }
+		@tooltip.Tooltip() {
+			@tooltip.Trigger(tooltip.TriggerProps{}) {
+				@menuButtonContent(p, "") {
+					{ children... }
 				}
 			}
-		</div>
-		// When expanded - show without tooltip
-		<div class="group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden">
-			@menuButtonContent(p, "") {
-				{ children... }
+			@tooltip.Content(tooltip.ContentProps{
+				ID:            tooltipID,
+				Class:         "hidden group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:block",
+				Position:      tooltip.PositionRight,
+				HoverDelay:    200,
+				HoverOutDelay: 100,
+			}) {
+				{ p.Tooltip }
 			}
-		</div>
+		}
 	} else {
 		@menuButtonContent(p, "") {
 			{ children... }
