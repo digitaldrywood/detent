@@ -120,8 +120,8 @@ func TestTickAutoUnblocksDependencyFromIssueBody(t *testing.T) {
 	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
 		t.Fatalf("updates = %#v, want Blocked issue moved to Todo", got)
 	}
-	if got, want := tracker.identifierCalls, []string{"digitaldrywood/detent#415"}; !slices.Equal(got, want) {
-		t.Fatalf("identifier calls = %#v, want %#v", got, want)
+	if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#415") {
+		t.Fatalf("identifier calls = %#v, want dependency lookup", tracker.identifierCalls)
 	}
 }
 
@@ -149,8 +149,8 @@ func TestTickAutoUnblocksDependencyFromBlockedReason(t *testing.T) {
 	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
 		t.Fatalf("updates = %#v, want Blocked issue moved to Todo", got)
 	}
-	if got, want := tracker.identifierCalls, []string{"digitaldrywood/detent#415"}; !slices.Equal(got, want) {
-		t.Fatalf("identifier calls = %#v, want %#v", got, want)
+	if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#415") {
+		t.Fatalf("identifier calls = %#v, want dependency lookup", tracker.identifierCalls)
 	}
 	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "digitaldrywood/detent#415") {
 		t.Fatalf("comments = %#v, want recovery comment with blocked reason dependency", tracker.comments)
@@ -302,6 +302,86 @@ func TestTickLeavesDependencyBlockedPRIssueBlocked(t *testing.T) {
 	}
 }
 
+func TestTickMergesHydratedTextDependenciesWithConnectorRefs(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-416", "Blocked")
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415"}}
+	hydratedWaiting := waiting
+	hydratedWaiting.Description = strings.Join([]string{
+		"Depends on: #414",
+		"Depends on: #415",
+	}, "\n")
+	readyBlocker := dependencyAutoUnblockIssue("issue-415", "Done")
+	readyBlocker.Identifier = "digitaldrywood/detent#415"
+	unreadyBlocker := dependencyAutoUnblockIssue("issue-414", "In Progress")
+	unreadyBlocker.Identifier = "digitaldrywood/detent#414"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues:    []connector.Issue{waiting},
+		hydratedIssues: []connector.Issue{hydratedWaiting},
+		blockers:       []connector.Issue{readyBlocker, unreadyBlocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 8, 30, 0, time.UTC))
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none while hydrated body dependency is not ready", tracker.updates)
+	}
+	if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#416") {
+		t.Fatalf("identifier calls = %#v, want hydration lookup for waiting issue", tracker.identifierCalls)
+	}
+	if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#414") {
+		t.Fatalf("identifier calls = %#v, want body dependency lookup", tracker.identifierCalls)
+	}
+	if _, ok := state.Blocked[waiting.ID]; !ok {
+		t.Fatalf("Blocked[%q] missing for unresolved hydrated body dependency", waiting.ID)
+	}
+}
+
+func TestTickIgnoresSelfReferenceFromConnectorRefs(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-416", "Blocked")
+	waiting.BlockedBy = []connector.BlockedRef{
+		{Identifier: "digitaldrywood/detent#415"},
+		{Identifier: "digitaldrywood/detent#416"},
+	}
+	hydratedWaiting := waiting
+	hydratedWaiting.Description = strings.Join([]string{
+		"Depends on: #414",
+		"Depends on: #415",
+	}, "\n")
+	firstBlocker := dependencyAutoUnblockIssue("issue-414", "Done")
+	firstBlocker.Identifier = "digitaldrywood/detent#414"
+	secondBlocker := dependencyAutoUnblockIssue("issue-415", "Done")
+	secondBlocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues:    []connector.Issue{waiting},
+		hydratedIssues: []connector.Issue{hydratedWaiting},
+		blockers:       []connector.Issue{firstBlocker, secondBlocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 8, 45, 0, time.UTC))
+
+	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
+		t.Fatalf("updates = %#v, want self-reference ignored and issue moved to Todo", got)
+	}
+}
+
 func TestTickLeavesTextDependencyBlockedPRIssueBlocked(t *testing.T) {
 	t.Parallel()
 
@@ -334,8 +414,8 @@ func TestTickLeavesTextDependencyBlockedPRIssueBlocked(t *testing.T) {
 	if len(tracker.updates) != 0 {
 		t.Fatalf("updates = %#v, want none while text dependency is not ready", tracker.updates)
 	}
-	if got, want := tracker.identifierCalls, []string{"digitaldrywood/detent#415"}; !slices.Equal(got, want) {
-		t.Fatalf("identifier calls = %#v, want %#v", got, want)
+	if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#415") {
+		t.Fatalf("identifier calls = %#v, want dependency lookup", tracker.identifierCalls)
 	}
 	if _, ok := state.Blocked[waiting.ID]; !ok {
 		t.Fatalf("Blocked[%q] missing for unresolved text dependency blocker", waiting.ID)

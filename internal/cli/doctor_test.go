@@ -546,7 +546,11 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 			cfg:  validDoctorDependencyWorkflow(true),
 			connector: &fakeDoctorAutoPromoteConnector{
 				issues: []connector.Issue{
-					doctorDependencyIssue("issue-unresolved", []connector.BlockedRef{{Identifier: unresolvedRef}}),
+					func() connector.Issue {
+						issue := doctorDependencyIssueWithBody("issue-unresolved", "Depends on: "+unresolvedRef)
+						issue.BlockedBy = []connector.BlockedRef{{Identifier: unresolvedRef}}
+						return issue
+					}(),
 				},
 			},
 			want: doctorWarn,
@@ -555,6 +559,26 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 				"issue-unresolved",
 				unresolvedRef,
 				"Depends on:",
+			},
+		},
+		{
+			name: "dependency refs without body metadata warn with issue body fix",
+			cfg:  validDoctorDependencyWorkflow(true),
+			connector: &fakeDoctorAutoPromoteConnector{
+				issues: []connector.Issue{
+					doctorDependencyIssue("issue-416", []connector.BlockedRef{
+						{Identifier: "digitaldrywood/detent#415"},
+						{Identifier: "digitaldrywood/detent#416"},
+					}),
+				},
+			},
+			want: doctorWarn,
+			wantDetails: []string{
+				"dependency_metadata_missing",
+				"issue-416",
+				"digitaldrywood/detent#415",
+				"Depends on:",
+				"Blocked by:",
 			},
 		},
 		{
@@ -578,7 +602,11 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 			cfg:  validDoctorDependencyWorkflow(true),
 			connector: &fakeDoctorAutoPromoteConnector{
 				issues: []connector.Issue{
-					doctorDependencyIssue("issue-ready", []connector.BlockedRef{{Identifier: readyRef}}),
+					func() connector.Issue {
+						issue := doctorDependencyIssueWithBody("issue-ready", "Depends on: "+readyRef)
+						issue.BlockedBy = []connector.BlockedRef{{Identifier: readyRef}}
+						return issue
+					}(),
 				},
 				resolvedIssues: []connector.Issue{
 					doctorDependencyResolvedIssue("blocker-done", readyRef, "Done", false, nil),
@@ -590,6 +618,32 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 				"issue-ready",
 				readyRef,
 				"tracker.dependency_auto_unblock",
+			},
+		},
+		{
+			name: "hydrated body metadata is merged with connector refs",
+			cfg:  validDoctorDependencyWorkflow(true),
+			connector: &fakeDoctorAutoPromoteConnector{
+				issues: []connector.Issue{
+					doctorDependencyIssue("issue-416", []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415"}}),
+				},
+				hydratedIssues: []connector.Issue{
+					doctorDependencyIssueWithBody("issue-416", strings.Join([]string{
+						"Depends on: #414",
+						"Depends on: #415",
+					}, "\n")),
+				},
+				resolvedIssues: []connector.Issue{
+					doctorDependencyResolvedIssue("blocker-414", "digitaldrywood/detent#414", "Done", false, nil),
+					doctorDependencyResolvedIssue("blocker-415", "digitaldrywood/detent#415", "Done", false, nil),
+				},
+			},
+			want: doctorWarn,
+			wantDetails: []string{
+				"dependency_ready_but_still_blocked",
+				"issue-416",
+				"digitaldrywood/detent#414",
+				"digitaldrywood/detent#415",
 			},
 		},
 	}
@@ -1798,6 +1852,7 @@ func doctorDependencyResolvedIssue(id string, identifier string, state string, c
 
 type fakeDoctorAutoPromoteConnector struct {
 	issues         []connector.Issue
+	hydratedIssues []connector.Issue
 	resolvedIssues []connector.Issue
 	verifyErr      error
 	verifyStates   []string
@@ -1818,8 +1873,8 @@ func (c *fakeDoctorAutoPromoteConnector) FetchIssueStatesByIdentifiers(_ context
 	for _, identifier := range identifiers {
 		wanted[strings.ToLower(strings.TrimSpace(identifier))] = struct{}{}
 	}
-	issues := make([]connector.Issue, 0, len(c.resolvedIssues))
-	for _, issue := range c.resolvedIssues {
+	issues := make([]connector.Issue, 0, len(c.hydratedIssues)+len(c.resolvedIssues))
+	for _, issue := range append(c.hydratedIssues, c.resolvedIssues...) {
 		if _, ok := wanted[strings.ToLower(strings.TrimSpace(issue.Identifier))]; ok {
 			issues = append(issues, issue)
 		}

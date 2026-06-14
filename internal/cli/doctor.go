@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"sort"
 	"strconv"
 	"strings"
@@ -37,6 +38,11 @@ var ErrDoctorFailed = errors.New("doctor found failed checks")
 const (
 	doctorCommandTimeout = 5 * time.Second
 	doctorCheckTimeout   = 5 * time.Second
+)
+
+var (
+	doctorDependencyIssueURLPattern = regexp.MustCompile(`https://github\.com/([^/\s]+/[^/\s]+)/(?:issues|pull)/(\d+)`)
+	doctorDependencyIssueRefPattern = regexp.MustCompile(`(?:^|[\s(,;:])([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)?#(\d+)\b`)
 )
 
 type doctorStatus string
@@ -1420,6 +1426,14 @@ func doctorDependencyDiagnostics(
 			})
 			continue
 		}
+		if len(hydrated.BlockedBy) > 0 && len(doctorDependencyTextBlockedRefs(hydrated)) == 0 {
+			diagnostics = append(diagnostics, doctorDependencyDiagnostic{
+				Code:       "dependency_metadata_missing",
+				Issue:      hydrated,
+				References: references,
+			})
+			continue
+		}
 		if len(hydrated.BlockedBy) == 0 {
 			diagnostics = append(diagnostics, doctorDependencyDiagnostic{
 				Code:       "dependency_reference_unresolved",
@@ -1458,7 +1472,8 @@ func hydrateDoctorDependencyIssue(
 	issue connector.Issue,
 	sourceStates []string,
 ) (connector.Issue, bool, error) {
-	if len(issue.BlockedBy) > 0 || strings.TrimSpace(issue.Identifier) == "" {
+	issue = doctorIssueWithTextDependencyRefs(issue)
+	if strings.TrimSpace(issue.Identifier) == "" {
 		return issue, doctorStateInList(issue.State, sourceStates), nil
 	}
 	resolver, ok := projectConnector.(connector.IssueReferenceResolver)
@@ -1471,7 +1486,11 @@ func hydrateDoctorDependencyIssue(
 	}
 	for _, hydrated := range issues {
 		if sameDoctorIssueIdentity(issue, hydrated) {
-			return mergeDoctorDependencyIssue(issue, hydrated), doctorStateInList(hydrated.State, sourceStates), nil
+			previousBlockedBy := append([]connector.BlockedRef(nil), issue.BlockedBy...)
+			merged := mergeDoctorDependencyIssue(issue, hydrated)
+			merged.BlockedBy = mergeDoctorDependencyBlockedRefs(previousBlockedBy, merged.BlockedBy)
+			merged = doctorIssueWithTextDependencyRefs(merged)
+			return merged, doctorStateInList(merged.State, sourceStates), nil
 		}
 	}
 	return issue, doctorStateInList(issue.State, sourceStates), nil
@@ -1631,6 +1650,9 @@ func doctorDependencyAutoUnblockHint(diagnostics []doctorDependencyDiagnostic) s
 	if _, ok := codes["dependency_reference_unresolved"]; ok {
 		hints = append(hints, "Fix issue content so Depends on: or Blocked by: references point to existing GitHub issues.")
 	}
+	if _, ok := codes["dependency_metadata_missing"]; ok {
+		hints = append(hints, "Add canonical Depends on: or Blocked by: lines to the blocked issue body before leaving dependency-blocked work in Blocked.")
+	}
 	if _, ok := codes["dependency_ready_but_still_blocked"]; ok {
 		hints = append(hints, "Check tracker.dependency_auto_unblock source_states, target_state, readiness, and GitHub Project Status mappings.")
 	}
@@ -1681,6 +1703,137 @@ func doctorDependencyLineReferences(body string) []string {
 		refs = append(refs, ref)
 	}
 	return refs
+}
+
+func doctorIssueWithTextDependencyRefs(issue connector.Issue) connector.Issue {
+	issue.BlockedBy = mergeDoctorDependencyBlockedRefs(issue.BlockedBy, doctorDependencyTextBlockedRefs(issue))
+	issue.BlockedBy = doctorDependencyBlockedRefsWithoutSelf(issue.BlockedBy, issue.Identifier)
+	return issue
+}
+
+func doctorDependencyTextBlockedRefs(issue connector.Issue) []connector.BlockedRef {
+	repo := doctorDependencyIssueRepo(issue.Identifier)
+	refs := []connector.BlockedRef{}
+	seen := map[string]struct{}{}
+	appendIdentifier := func(identifier string) {
+		identifier = strings.TrimSpace(identifier)
+		if identifier == "" {
+			return
+		}
+		key := strings.ToLower(identifier)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, connector.BlockedRef{Identifier: identifier})
+	}
+	for _, lineRef := range doctorDependencyLineReferences(issue.Description) {
+		identifiers := doctorDependencyIssueIdentifiersInText(lineRef, repo)
+		if len(identifiers) == 0 {
+			appendIdentifier(lineRef)
+			continue
+		}
+		for _, identifier := range identifiers {
+			appendIdentifier(identifier)
+		}
+	}
+	return refs
+}
+
+func mergeDoctorDependencyBlockedRefs(existing []connector.BlockedRef, incoming []connector.BlockedRef) []connector.BlockedRef {
+	if len(existing) == 0 && len(incoming) == 0 {
+		return nil
+	}
+	merged := make([]connector.BlockedRef, 0, len(existing)+len(incoming))
+	seen := map[string]struct{}{}
+	appendRefs := func(refs []connector.BlockedRef) {
+		for _, ref := range refs {
+			key := strings.ToLower(strings.TrimSpace(ref.Identifier))
+			if key == "" {
+				key = strings.ToLower(strings.TrimSpace(ref.ID))
+			}
+			if key == "" {
+				continue
+			}
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			merged = append(merged, ref)
+		}
+	}
+	appendRefs(existing)
+	appendRefs(incoming)
+	return merged
+}
+
+func doctorDependencyBlockedRefsWithoutSelf(refs []connector.BlockedRef, identifier string) []connector.BlockedRef {
+	self := strings.ToLower(strings.TrimSpace(identifier))
+	if self == "" || len(refs) == 0 {
+		return refs
+	}
+	filtered := refs[:0]
+	for _, ref := range refs {
+		if strings.ToLower(strings.TrimSpace(ref.Identifier)) == self {
+			continue
+		}
+		filtered = append(filtered, ref)
+	}
+	if len(filtered) == 0 {
+		return nil
+	}
+	return filtered
+}
+
+func doctorDependencyIssueIdentifiersInText(text string, repo string) []string {
+	refs := []string{}
+	seen := map[string]struct{}{}
+	appendIdentifier := func(refRepo string, number string) {
+		identifier := doctorDependencyBlockerIdentifier(refRepo, number, repo)
+		if identifier == "" {
+			return
+		}
+		key := strings.ToLower(identifier)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		refs = append(refs, identifier)
+	}
+	for _, matches := range doctorDependencyIssueURLPattern.FindAllStringSubmatch(text, -1) {
+		if len(matches) == 3 {
+			appendIdentifier(matches[1], matches[2])
+		}
+	}
+	for _, matches := range doctorDependencyIssueRefPattern.FindAllStringSubmatch(text, -1) {
+		if len(matches) == 3 {
+			appendIdentifier(matches[1], matches[2])
+		}
+	}
+	return refs
+}
+
+func doctorDependencyIssueRepo(identifier string) string {
+	identifier = strings.TrimSpace(identifier)
+	index := strings.LastIndex(identifier, "#")
+	if index <= 0 {
+		return ""
+	}
+	return strings.TrimSpace(identifier[:index])
+}
+
+func doctorDependencyBlockerIdentifier(refRepo string, number string, repo string) string {
+	if strings.TrimSpace(number) == "" {
+		return ""
+	}
+	refRepo = strings.TrimSpace(refRepo)
+	if refRepo == "" {
+		if repo == "" {
+			return "#" + strings.TrimSpace(number)
+		}
+		refRepo = repo
+	}
+	return refRepo + "#" + strings.TrimSpace(number)
 }
 
 func doctorDependencyLineReference(line string) (string, bool) {
