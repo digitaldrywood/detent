@@ -38,19 +38,30 @@ func TestShutdownControllerInterruptRequestsDrainThenForce(t *testing.T) {
 	if controller.RequestInterrupt() {
 		t.Fatal("inactive interrupt was handled")
 	}
+	if request, handled := controller.RequestInterruptKind(); handled || request != 0 {
+		t.Fatalf("inactive interrupt kind = %v, %v, want 0, false", request, handled)
+	}
 
 	deactivate := controller.activate()
 	defer deactivate()
 
-	if !controller.RequestInterrupt() {
-		t.Fatal("active interrupt was not handled")
+	request, handled := controller.RequestInterruptKind()
+	if !handled {
+		t.Fatal("active interrupt kind was not handled")
+	}
+	if request != ShutdownRequestDrain {
+		t.Fatalf("first interrupt kind = %v, want drain", request)
 	}
 	if got := <-controller.Requests(); got != ShutdownRequestDrain {
 		t.Fatalf("first interrupt = %v, want drain", got)
 	}
 
-	if !controller.RequestInterrupt() {
-		t.Fatal("second interrupt was not handled")
+	request, handled = controller.RequestInterruptKind()
+	if !handled {
+		t.Fatal("second interrupt kind was not handled")
+	}
+	if request != ShutdownRequestForce {
+		t.Fatalf("second interrupt kind = %v, want force", request)
 	}
 	if got := <-controller.Requests(); got != ShutdownRequestForce {
 		t.Fatalf("second interrupt = %v, want force", got)
