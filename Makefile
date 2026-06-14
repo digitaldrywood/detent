@@ -93,7 +93,7 @@ vet:
 nilaway-audit:
 	$(NILAWAY) -include-pkgs=$(NILAWAY_INCLUDE_PKGS) ./...
 
-check: build lint vet test-race test-cover
+check: build lint vet nilaway-audit test-race test-cover
 	@echo "All checks passed."
 
 modernize-check:
@@ -139,7 +139,7 @@ help:
 	@echo "  test-race    Run Go tests with the race detector"
 	@echo "  test-cover   Run Go coverage with a $(COVERAGE_THRESHOLD)% minimum"
 	@echo "  lint         Run golangci-lint"
-	@echo "  check        Run the local validation gate"
+	@echo "  check        Run the local validation gate, including NilAway"
 	@echo "  modernize-check  Run the Go modernizer diff check"
 	@echo "  nilaway-audit  Run the local NilAway audit"
 	@echo "  release-snapshot  Build local GoReleaser snapshot archives"

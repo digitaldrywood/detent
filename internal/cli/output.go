@@ -173,7 +173,10 @@ func WriterIsTTY(w io.Writer) bool {
 		return false
 	}
 	info, err := file.Stat()
-	return err == nil && info.Mode()&os.ModeCharDevice != 0
+	if err != nil || info == nil {
+		return false
+	}
+	return info.Mode()&os.ModeCharDevice != 0
 }
 
 func NewCommandCatalog(root *cobra.Command) CommandCatalog {

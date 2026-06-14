@@ -1763,6 +1763,10 @@ func TestConnectorVerifyStatusOptionsChecksMappedStatusOptions(t *testing.T) {
 	})
 
 	err := c.VerifyStatusOptions(context.Background(), []string{"Human Review", "Merging"})
+	if err == nil {
+		t.Fatal("VerifyStatusOptions() error = nil, want ErrStatusOptionNotFound")
+		return
+	}
 	if !errors.Is(err, ErrStatusOptionNotFound) {
 		t.Fatalf("VerifyStatusOptions() error = %v, want ErrStatusOptionNotFound", err)
 	}

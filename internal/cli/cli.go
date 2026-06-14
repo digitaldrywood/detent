@@ -1015,7 +1015,7 @@ func levenshteinDistance(a string, b string) int {
 			if ra != rb {
 				cost = 1
 			}
-			current[j+1] = minInt(
+			current[j+1] = minInt3(
 				current[j]+1,
 				previous[j+1]+1,
 				previous[j]+cost,
@@ -1026,12 +1026,13 @@ func levenshteinDistance(a string, b string) int {
 	return previous[len(br)]
 }
 
-func minInt(values ...int) int {
-	min := values[0]
-	for _, value := range values[1:] {
-		if value < min {
-			min = value
-		}
+func minInt3(a int, b int, c int) int {
+	min := a
+	if b < min {
+		min = b
+	}
+	if c < min {
+		min = c
 	}
 	return min
 }

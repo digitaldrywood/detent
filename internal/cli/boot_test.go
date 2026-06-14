@@ -176,6 +176,7 @@ func TestRegistryRefresherRequestsProjectOrchestrators(t *testing.T) {
 	refresher := refresherForRegistry(registry)
 	if refresher == nil {
 		t.Fatal("refresherForRegistry() = nil, want refresher")
+		return
 	}
 
 	response, err := refresher.RequestRefresh(context.Background())
@@ -444,6 +445,10 @@ func TestRegistryRefresherSkipsStoppedProjectOrchestrators(t *testing.T) {
 	mustSetProject(t, registry, newRefreshProject(t, "stopped"))
 
 	refresher := refresherForRegistry(registry)
+	if refresher == nil {
+		t.Fatal("refresherForRegistry() = nil, want refresher")
+		return
+	}
 	_, err := refresher.RequestRefresh(context.Background())
 	if !errors.Is(err, projectpkg.ErrProjectNotFound) {
 		t.Fatalf("RequestRefresh() error = %v, want %v", err, projectpkg.ErrProjectNotFound)
@@ -454,6 +459,10 @@ func TestRegistryRefresherReturnsProjectNotFoundWithoutOrchestrators(t *testing.
 	t.Parallel()
 
 	refresher := refresherForRegistry(projectpkg.NewRegistry())
+	if refresher == nil {
+		t.Fatal("refresherForRegistry() = nil, want refresher")
+		return
+	}
 	_, err := refresher.RequestRefresh(context.Background())
 	if !errors.Is(err, projectpkg.ErrProjectNotFound) {
 		t.Fatalf("RequestRefresh() error = %v, want %v", err, projectpkg.ErrProjectNotFound)

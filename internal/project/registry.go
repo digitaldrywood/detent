@@ -38,6 +38,9 @@ func (r *Registry) Get(id ID) (*Project, bool) {
 	defer r.mu.RUnlock()
 
 	project, ok := r.projects[normalizeProjectID(id)]
+	if project == nil {
+		return nil, false
+	}
 	return project, ok
 }
 

@@ -1227,8 +1227,8 @@ commit SHA and build date, rotates
 `tmp/air-combined.log`.
 
 `make check` runs the local release gate: build, `golangci-lint`, `go vet`,
-race tests, and the 70 percent coverage check. Run `make generate` before
-committing changes to Templ templates, sqlc queries, or Tailwind inputs.
+NilAway, race tests, and the 70 percent coverage check. Run `make generate`
+before committing changes to Templ templates, sqlc queries, or Tailwind inputs.
 `make modernize-check` runs the Go modernizer diff check with the repo's
 selected safe analyzer set.
 
@@ -1238,18 +1238,18 @@ race tests, and `make check` fail on unexpected goroutines. Add goleak ignores
 only in the package that needs them, and only after identifying the dependency
 or intentionally shared test goroutine.
 
-Nil safety is tracked separately with a local audit command:
+Nil safety is enforced by `make check` and can also be run directly while
+iterating:
 
 ```sh
 make nilaway-audit
 ```
 
-NilAway is not part of `make check` yet. The standalone audit currently reports
-first-party findings that need triage before it can become a CI gate, and its
-golangci-lint integration requires a custom module-plugin linter binary. Go
-1.26's experimental `runtime/pprof` `goroutineleak` profile remains a runtime
-audit aid behind `GOEXPERIMENT=goroutineleakprofile`; the stable CI coverage for
-now is the goleak-backed test gate.
+The project uses the standalone NilAway command instead of golangci-lint
+integration because the linter integration requires a custom module-plugin
+binary. Go 1.26's experimental `runtime/pprof` `goroutineleak` profile remains a
+runtime audit aid behind `GOEXPERIMENT=goroutineleakprofile`; the stable CI
+coverage for now is the goleak-backed test gate.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md) for the full contributor workflow.
 
