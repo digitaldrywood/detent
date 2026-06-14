@@ -34,7 +34,7 @@ func TestConnectorEnsureStateOptionsCreatesMissingStatusAndPriorityOptions(t *te
 			"Cancelled":    "Done",
 		},
 		PriorityMap: map[string]*int{
-			"P0":          intPtr(1),
+			"P0":          new(1),
 			"No priority": nil,
 		},
 	})
@@ -144,7 +144,7 @@ func TestConnectorEnsureStateOptionsNoopsWhenOptionsPresent(t *testing.T) {
 		ActiveStates:   []string{"Todo"},
 		TerminalStates: []string{"Done"},
 		PriorityMap: map[string]*int{
-			"High":        intPtr(2),
+			"High":        new(2),
 			"No priority": nil,
 		},
 	})

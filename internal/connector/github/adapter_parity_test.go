@@ -54,10 +54,10 @@ func TestProjectsV2ParityGateMatchesElixirAdapterFlow(t *testing.T) {
 			"Cancelled":    "Done",
 		},
 		PriorityMap: map[string]*int{
-			"Urgent":      intPtr(1),
-			"High":        intPtr(2),
-			"Medium":      intPtr(3),
-			"Low":         intPtr(4),
+			"Urgent":      new(1),
+			"High":        new(2),
+			"Medium":      new(3),
+			"Low":         new(4),
 			"No priority": nil,
 		},
 	})

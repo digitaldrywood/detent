@@ -545,7 +545,7 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 				SessionID:      42,
 				IssueID:        " I_kwDOSskuwc8AAAABD6psJQ ",
 				Identifier:     " digitaldrywood/detent#117 ",
-				PRNumber:       int64Ptr(91),
+				PRNumber:       new(int64(91)),
 				Model:          " gpt-5-codex ",
 				InputTokens:    123,
 				OutputTokens:   45,
@@ -936,7 +936,7 @@ func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {
 			ProjectID:      "detent",
 			IssueID:        "issue-117",
 			Identifier:     "digitaldrywood/detent#117",
-			PRNumber:       int64Ptr(133),
+			PRNumber:       new(int64(133)),
 			Model:          "gpt-5.4",
 			InputTokens:    100,
 			OutputTokens:   50,
@@ -950,7 +950,7 @@ func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {
 			ProjectID:      "detent",
 			IssueID:        "issue-119",
 			Identifier:     "digitaldrywood/detent#119",
-			PRNumber:       int64Ptr(141),
+			PRNumber:       new(int64(141)),
 			Model:          "gpt-5.4",
 			InputTokens:    50,
 			OutputTokens:   25,
@@ -964,7 +964,7 @@ func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {
 			ProjectID:      "detent",
 			IssueID:        "issue-119",
 			Identifier:     "digitaldrywood/detent#119",
-			PRNumber:       int64Ptr(141),
+			PRNumber:       new(int64(141)),
 			Model:          "gpt-5.4-mini",
 			InputTokens:    70,
 			OutputTokens:   30,
@@ -976,7 +976,7 @@ func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {
 		},
 		{
 			ProjectID:      "pyroapex",
-			PRNumber:       int64Ptr(141),
+			PRNumber:       new(int64(141)),
 			Model:          "",
 			InputTokens:    5,
 			OutputTokens:   2,
@@ -1035,8 +1035,4 @@ func queryInt(t *testing.T, db *sql.DB, query string) int64 {
 		t.Fatalf("querying %q: %v", query, err)
 	}
 	return value
-}
-
-func int64Ptr(value int64) *int64 {
-	return &value
 }

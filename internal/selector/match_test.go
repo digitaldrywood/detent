@@ -121,7 +121,7 @@ func TestMatch(t *testing.T) {
 		{
 			name: "priority in matches configured rank",
 			issue: &connector.Issue{
-				Priority: intPtr(2),
+				Priority: new(2),
 				Labels:   []string{},
 				Fields:   map[string]string{},
 			},
@@ -133,7 +133,7 @@ func TestMatch(t *testing.T) {
 		{
 			name: "priority in rejects different rank",
 			issue: &connector.Issue{
-				Priority: intPtr(3),
+				Priority: new(3),
 				Labels:   []string{},
 				Fields:   map[string]string{},
 			},
@@ -298,8 +298,4 @@ func TestDescribe(t *testing.T) {
 			}
 		})
 	}
-}
-
-func intPtr(value int) *int {
-	return &value
 }
