@@ -32,6 +32,7 @@ func TestExitCodeClassifiesRepresentativeErrors(t *testing.T) {
 		{name: "validation", err: fmt.Errorf("wrapped: %w", cli.ErrValidation), want: cli.ExitValidation},
 		{name: "invalid output format", err: fmt.Errorf("wrapped: %w", cli.ErrInvalidOutputFormat), want: cli.ExitValidation},
 		{name: "global config validation", err: globalconfig.ValidationError{Problems: []string{"global bad"}}, want: cli.ExitValidation},
+		{name: "global config github token validation", err: globalconfig.ValidationError{Problems: []string{"github_token: must be a string"}}, want: cli.ExitValidation},
 		{name: "global config parse", err: globalconfig.ParseError{Path: "global.yaml", Err: errors.New("bad yaml")}, want: cli.ExitValidation},
 		{name: "workflow config validation", err: workflowconfig.ValidationError{Problems: []string{"workflow bad"}}, want: cli.ExitValidation},
 		{name: "cli project missing", err: fmt.Errorf("wrapped: %w", cli.ErrProjectNotFound), want: cli.ExitNotFoundOrConfig},

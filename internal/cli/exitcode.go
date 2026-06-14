@@ -59,17 +59,6 @@ var errorClassifiers = []errorClass{
 		},
 	},
 	{
-		ErrorClass: ErrorClass{Slug: errorCodeGitHubAuth, ExitCode: ExitAuth},
-		Title:      "GitHub authentication required",
-		match: func(err error) bool {
-			return errors.Is(err, ErrGitHubAuth) ||
-				errors.Is(err, githubconnector.ErrMissingToken) ||
-				errors.Is(err, githubconnector.ErrAuthenticationFailed) ||
-				errorTextContains(err, githubAuthHint) ||
-				errorTextContains(err, "github_token")
-		},
-	},
-	{
 		ErrorClass: ErrorClass{Slug: errorCodeConfigExists, ExitCode: ExitNotFoundOrConfig},
 		Title:      "Global config already exists",
 		match: func(err error) bool {
@@ -133,6 +122,17 @@ var errorClassifiers = []errorClass{
 				errors.As(err, &globalValidation) ||
 				errors.As(err, &globalParse) ||
 				errors.As(err, &workflowValidation)
+		},
+	},
+	{
+		ErrorClass: ErrorClass{Slug: errorCodeGitHubAuth, ExitCode: ExitAuth},
+		Title:      "GitHub authentication required",
+		match: func(err error) bool {
+			return errors.Is(err, ErrGitHubAuth) ||
+				errors.Is(err, githubconnector.ErrMissingToken) ||
+				errors.Is(err, githubconnector.ErrAuthenticationFailed) ||
+				errorTextContains(err, githubAuthHint) ||
+				errorTextContains(err, "github_token")
 		},
 	},
 }
