@@ -285,7 +285,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 				HardTimeout:      defaultShutdownHardTimeout,
 			}, func(ctx context.Context) error {
 				return serveWithTerminalDashboard(ctx, server, listener, snapshotHub, cfg.Build, func() {
-					cfg.Shutdown.RequestInterrupt()
+					requestTerminalShutdownInterrupt(cfg.Shutdown, cfg.HardExit)
 				})
 			})
 		})
@@ -513,6 +513,24 @@ func unexpectedTerminalDashboardError(err error) error {
 
 func shouldLaunchTerminalDashboard(cfg BootConfig) bool {
 	return cfg.Mode == BootModeRunning && cfg.StdoutTTY && !cfg.Headless
+}
+
+func requestTerminalShutdownInterrupt(controller *ShutdownController, hardExit func(int)) bool {
+	request, handled := controller.RequestInterruptKind()
+	if !handled {
+		return false
+	}
+	if request == ShutdownRequestForce {
+		hardExitProcess(hardExit)
+	}
+	return true
+}
+
+func hardExitProcess(hardExit func(int)) {
+	if hardExit == nil {
+		hardExit = os.Exit
+	}
+	hardExit(ExitGeneral)
 }
 
 func redirectDefaultLogger(path string, level string) (func(), error) {

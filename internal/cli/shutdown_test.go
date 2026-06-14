@@ -88,6 +88,39 @@ func TestShutdownControllerDrainMakesNextInterruptForce(t *testing.T) {
 	}
 }
 
+func TestRequestTerminalShutdownInterruptHardExitsOnSecondInterrupt(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	deactivate := controller.activate()
+	defer deactivate()
+
+	var exits []int
+	hardExit := func(code int) {
+		exits = append(exits, code)
+	}
+
+	if !requestTerminalShutdownInterrupt(controller, hardExit) {
+		t.Fatal("first interrupt was not handled")
+	}
+	if len(exits) != 0 {
+		t.Fatalf("first interrupt exit codes = %v, want none", exits)
+	}
+	if got := <-controller.Requests(); got != ShutdownRequestDrain {
+		t.Fatalf("first interrupt request = %v, want drain", got)
+	}
+
+	if !requestTerminalShutdownInterrupt(controller, hardExit) {
+		t.Fatal("second interrupt was not handled")
+	}
+	if got := <-controller.Requests(); got != ShutdownRequestForce {
+		t.Fatalf("second interrupt request = %v, want force", got)
+	}
+	if len(exits) != 1 || exits[0] != ExitGeneral {
+		t.Fatalf("second interrupt exit codes = %v, want [%d]", exits, ExitGeneral)
+	}
+}
+
 func TestRunWithShutdownZeroSessionsExitsGracefully(t *testing.T) {
 	t.Parallel()
 

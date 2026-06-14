@@ -147,6 +147,7 @@ type BootConfig struct {
 	StdoutTTY        bool
 	Output           io.Writer
 	Shutdown         *ShutdownController
+	HardExit         func(int)
 	Runner           orchestrator.Runner
 	ConnectorFactory project.ConnectorFactory
 }
