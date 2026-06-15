@@ -1389,6 +1389,55 @@ func (c *Connector) CreateComment(ctx context.Context, issueID string, body stri
 	return nil
 }
 
+func (c *Connector) CreatePullRequestComment(ctx context.Context, repository string, number int, body string) error {
+	owner, name, ok := splitRepositoryName(repository)
+	if !ok || number <= 0 {
+		return ErrCommentCreateFailed
+	}
+
+	var response struct {
+		NodeID string `json:"node_id"`
+	}
+	ref := issueRef{Owner: owner, Name: name, Number: number}
+	if err := c.client.REST(ctx, http.MethodPost, restIssueCommentsPath(ref), map[string]any{"body": body}, &response); err != nil {
+		return fmt.Errorf("create github pull request comment: %w", err)
+	}
+	if strings.TrimSpace(response.NodeID) == "" {
+		return ErrCommentCreateFailed
+	}
+
+	return nil
+}
+
+func (c *Connector) SetIssueField(ctx context.Context, issueID string, fieldID int, value string) error {
+	if fieldID <= 0 || strings.TrimSpace(value) == "" {
+		return ErrIssueFieldUpdateFailed
+	}
+
+	ref, ok, err := c.issueRefForID(ctx, issueID, graphQLQueryIssueLookup)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrIssueFieldUpdateFailed
+	}
+
+	var response []restIssueFieldValue
+	if err := c.client.REST(ctx, http.MethodPost, restIssueFieldValuesPath(ref), map[string]any{
+		"issue_field_values": []map[string]any{{
+			"field_id": fieldID,
+			"value":    strings.TrimSpace(value),
+		}},
+	}, &response); err != nil {
+		return fmt.Errorf("update github issue field: %w", err)
+	}
+	if len(response) == 0 {
+		return ErrIssueFieldUpdateFailed
+	}
+
+	return nil
+}
+
 func (c *Connector) CloseIssue(ctx context.Context, issueID string) error {
 	ref, ok, err := c.issueRefForID(ctx, issueID, graphQLQueryIssueLookup)
 	if err != nil {

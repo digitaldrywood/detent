@@ -654,7 +654,9 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 	doneAt := now.Add(-2 * time.Minute)
 
 	board := projectKanbanBoardView(DashboardData{
-		WorkflowStates: []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Merging", "Done", "Cancelled"},
+		Kanban: KanbanData{
+			States: []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Merging", "Done", "Cancelled"},
+		},
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
 			BoardIssues: []telemetry.Issue{
@@ -789,7 +791,9 @@ func TestProjectKanbanBoardDoesNotTreatCompletedSessionsAsCurrentDone(t *testing
 
 	now := time.Date(2026, 6, 13, 15, 0, 0, 0, time.UTC)
 	board := projectKanbanBoardView(DashboardData{
-		WorkflowStates: []string{"Todo", "Done"},
+		Kanban: KanbanData{
+			States: []string{"Todo", "Done"},
+		},
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
 			Completed: []telemetry.Completed{

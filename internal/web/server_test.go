@@ -11,11 +11,13 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -182,6 +184,416 @@ func TestServerRoutes(t *testing.T) {
 				t.Fatalf("body missing %q:\n%s", tt.wantContent, rec.Body.String())
 			}
 		})
+	}
+}
+
+func TestKanbanActionsRejectReadOnlyMode(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeReadOnly,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Running: []telemetry.Running{{
+			Issue: telemetry.Issue{
+				ID:         "I_kw1",
+				Identifier: "digitaldrywood/detent#1",
+				ProjectID:  "detent",
+				Title:      "Read-only card",
+				State:      "Todo",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent", http.StatusOK)
+	if strings.Contains(body, "/api/v1/kanban/") || strings.Contains(body, "data-kanban-action") {
+		t.Fatalf("read-only dashboard exposed Kanban mutation UI:\n%s", body)
+	}
+
+	form := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw1"},
+		"current_state": {"Todo"},
+		"target_state":  {"In Progress"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusForbidden, rec.Body.String())
+	}
+	if len(actionConnector.stateUpdates()) != 0 {
+		t.Fatalf("state updates = %#v, want none", actionConnector.stateUpdates())
+	}
+}
+
+func TestKanbanMoveRoutesProjectV2AndIssueFieldUpdates(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		kanban      workflowconfig.Kanban
+		targetState string
+		wantState   []kanbanStateUpdate
+		wantField   []kanbanIssueFieldUpdate
+	}{
+		{
+			name:        "project v2 status",
+			kanban:      workflowconfig.Kanban{Mode: workflowconfig.KanbanModeIntegration},
+			targetState: "In Progress",
+			wantState:   []kanbanStateUpdate{{issueID: "I_kw1", state: "In Progress"}},
+		},
+		{
+			name: "issue field status",
+			kanban: workflowconfig.Kanban{
+				Mode:              workflowconfig.KanbanModeIntegration,
+				IssueStateFieldID: 123,
+			},
+			targetState: "Human Review",
+			wantField:   []kanbanIssueFieldUpdate{{issueID: "I_kw1", fieldID: 123, value: "In Review"}},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			actionConnector := &kanbanActionConnector{name: "github"}
+			mustSetKanbanProject(t, deps.Registry, "detent", tt.kanban, actionConnector)
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+				Project:     telemetry.Project{ID: "detent"},
+				Running: []telemetry.Running{{
+					Issue: telemetry.Issue{
+						ID:         "I_kw1",
+						Identifier: "digitaldrywood/detent#1",
+						ProjectID:  "detent",
+						Title:      "Movable card",
+						State:      "Todo",
+					},
+				}},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			form := url.Values{
+				"project_id":    {"detent"},
+				"issue_id":      {"I_kw1"},
+				"current_state": {"Todo"},
+				"target_state":  {tt.targetState},
+			}
+			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "Moved") {
+				t.Fatalf("body missing success feedback: %s", rec.Body.String())
+			}
+			if got := actionConnector.stateUpdates(); !equalStateUpdates(got, tt.wantState) {
+				t.Fatalf("state updates = %#v, want %#v", got, tt.wantState)
+			}
+			if got := actionConnector.issueFieldUpdates(); !equalIssueFieldUpdates(got, tt.wantField) {
+				t.Fatalf("issue field updates = %#v, want %#v", got, tt.wantField)
+			}
+		})
+	}
+}
+
+func TestKanbanActionsRouteCommentsToIssuesAndPullRequests(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kw1",
+			Identifier: "digitaldrywood/detent#1",
+			ProjectID:  "detent",
+			Title:      "Commentable issue",
+			State:      "Todo",
+			PullRequest: &telemetry.PullRequest{
+				Number: 42,
+				URL:    "https://github.com/digitaldrywood/frontend/pull/42",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	issueForm := url.Values{
+		"project_id": {"detent"},
+		"target":     {"issue"},
+		"issue_id":   {"I_kw1"},
+		"body":       {"Issue note"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/comment", issueForm)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("issue comment status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	prForm := url.Values{
+		"project_id":    {"detent"},
+		"target":        {"pr"},
+		"pr_repository": {"digitaldrywood/frontend"},
+		"pr_number":     {"42"},
+		"body":          {"PR note"},
+	}
+	rec = performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/comment", prForm)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("pr comment status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+
+	if got, want := actionConnector.comments(), []kanbanComment{{issueID: "I_kw1", body: "Issue note"}}; !equalComments(got, want) {
+		t.Fatalf("comments = %#v, want %#v", got, want)
+	}
+	if got, want := actionConnector.prComments(), []kanbanPRComment{{repository: "digitaldrywood/frontend", number: 42, body: "PR note"}}; !equalPRComments(got, want) {
+		t.Fatalf("pr comments = %#v, want %#v", got, want)
+	}
+}
+
+func TestKanbanCommentRejectsTargetsOutsideCurrentBoard(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kw1",
+			Identifier: "digitaldrywood/detent#1",
+			ProjectID:  "detent",
+			Title:      "Commentable issue",
+			State:      "Todo",
+			PullRequest: &telemetry.PullRequest{
+				Number: 42,
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	tests := []struct {
+		name string
+		form url.Values
+	}{
+		{
+			name: "unknown issue",
+			form: url.Values{
+				"project_id": {"detent"},
+				"target":     {"issue"},
+				"issue_id":   {"I_hidden"},
+				"body":       {"Hidden issue note"},
+			},
+		},
+		{
+			name: "unknown pull request",
+			form: url.Values{
+				"project_id":    {"detent"},
+				"target":        {"pr"},
+				"pr_repository": {"digitaldrywood/detent"},
+				"pr_number":     {"99"},
+				"body":          {"Hidden PR note"},
+			},
+		},
+		{
+			name: "wrong pull request repository",
+			form: url.Values{
+				"project_id":    {"detent"},
+				"target":        {"pr"},
+				"pr_repository": {"other/repo"},
+				"pr_number":     {"42"},
+				"body":          {"Wrong repo PR note"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/comment", tt.form)
+			if rec.Code != http.StatusNotFound {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusNotFound, rec.Body.String())
+			}
+		})
+	}
+	if len(actionConnector.comments()) != 0 {
+		t.Fatalf("comments = %#v, want none", actionConnector.comments())
+	}
+	if len(actionConnector.prComments()) != 0 {
+		t.Fatalf("pr comments = %#v, want none", actionConnector.prComments())
+	}
+}
+
+func TestKanbanMoveSerializesMutationsPerProject(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	started := make(chan struct{}, 2)
+	release := make(chan struct{})
+	actionConnector := &kanbanActionConnector{
+		name:        "github",
+		moveStarted: started,
+		releaseMove: release,
+	}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Running: []telemetry.Running{{
+			Issue: telemetry.Issue{
+				ID:         "I_kw1",
+				Identifier: "digitaldrywood/detent#1",
+				ProjectID:  "detent",
+				Title:      "Serialized card",
+				State:      "Todo",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw1"},
+		"current_state": {"Todo"},
+		"target_state":  {"In Progress"},
+	}
+	results := make(chan int, 2)
+	for range 2 {
+		go func() {
+			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+			results <- rec.Code
+		}()
+	}
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first mutation did not start")
+	}
+	select {
+	case <-started:
+		t.Fatal("second mutation started before first completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+
+	for range 2 {
+		select {
+		case status := <-results:
+			if status != http.StatusOK {
+				t.Fatalf("status = %d, want %d", status, http.StatusOK)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("mutation request did not finish")
+		}
+	}
+	if got := actionConnector.maxActiveMoves(); got != 1 {
+		t.Fatalf("max active moves = %d, want 1", got)
+	}
+	if got := actionConnector.stateUpdates(); len(got) != 2 {
+		t.Fatalf("state updates len = %d, want 2; updates = %#v", len(got), got)
+	}
+}
+
+func TestKanbanMoveRejectsStaleAndPROnlyCards(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Pipeline: []telemetry.Issue{
+			{
+				ID:         "I_kw1",
+				Identifier: "digitaldrywood/detent#1",
+				ProjectID:  "detent",
+				Title:      "Stale card",
+				State:      "Todo",
+			},
+			{
+				Identifier: "digitaldrywood/detent#2",
+				ProjectID:  "detent",
+				Title:      "PR-only card",
+				State:      "Human Review",
+				PullRequest: &telemetry.PullRequest{
+					Number: 42,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	staleForm := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw1"},
+		"current_state": {"Backlog"},
+		"target_state":  {"In Progress"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", staleForm)
+	if rec.Code != http.StatusConflict {
+		t.Fatalf("stale status = %d, want %d; body = %s", rec.Code, http.StatusConflict, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "stale") {
+		t.Fatalf("stale body missing useful error: %s", rec.Body.String())
+	}
+
+	prOnlyForm := url.Values{
+		"project_id":    {"detent"},
+		"current_state": {"Human Review"},
+		"target_state":  {"Merging"},
+		"pr_number":     {"42"},
+	}
+	rec = performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", prOnlyForm)
+	if rec.Code != http.StatusUnprocessableEntity {
+		t.Fatalf("pr-only status = %d, want %d; body = %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+	}
+	if len(actionConnector.stateUpdates()) != 0 {
+		t.Fatalf("state updates = %#v, want none", actionConnector.stateUpdates())
 	}
 }
 
@@ -3436,6 +3848,238 @@ func (p connectorProbe) SetAssignee(context.Context, string, string) error {
 
 func (p connectorProbe) SetField(context.Context, string, string, string) error {
 	return connector.ErrNotImplemented
+}
+
+type kanbanStateUpdate struct {
+	issueID string
+	state   string
+}
+
+type kanbanIssueFieldUpdate struct {
+	issueID string
+	fieldID int
+	value   string
+}
+
+type kanbanComment struct {
+	issueID string
+	body    string
+}
+
+type kanbanPRComment struct {
+	repository string
+	number     int
+	body       string
+}
+
+type kanbanActionConnector struct {
+	name string
+
+	mu           sync.Mutex
+	states       []kanbanStateUpdate
+	fields       []kanbanIssueFieldUpdate
+	commentLog   []kanbanComment
+	prCommentLog []kanbanPRComment
+	activeMoves  int
+	maxMoves     int
+	moveStarted  chan<- struct{}
+	releaseMove  <-chan struct{}
+}
+
+func (c *kanbanActionConnector) Name() string {
+	return c.name
+}
+
+func (c *kanbanActionConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (c *kanbanActionConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (c *kanbanActionConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
+	return nil, connector.ErrNotImplemented
+}
+
+func (c *kanbanActionConnector) CreateComment(_ context.Context, issueID string, body string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.commentLog = append(c.commentLog, kanbanComment{issueID: issueID, body: body})
+	return nil
+}
+
+func (c *kanbanActionConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
+	c.mu.Lock()
+	c.activeMoves++
+	if c.activeMoves > c.maxMoves {
+		c.maxMoves = c.activeMoves
+	}
+	c.states = append(c.states, kanbanStateUpdate{issueID: issueID, state: state})
+	started := c.moveStarted
+	release := c.releaseMove
+	c.mu.Unlock()
+
+	if started != nil {
+		started <- struct{}{}
+	}
+	if release != nil {
+		<-release
+	}
+
+	c.mu.Lock()
+	c.activeMoves--
+	c.mu.Unlock()
+	return nil
+}
+
+func (c *kanbanActionConnector) SetAssignee(context.Context, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (c *kanbanActionConnector) SetField(context.Context, string, string, string) error {
+	return connector.ErrNotImplemented
+}
+
+func (c *kanbanActionConnector) SetIssueField(_ context.Context, issueID string, fieldID int, value string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.fields = append(c.fields, kanbanIssueFieldUpdate{issueID: issueID, fieldID: fieldID, value: value})
+	return nil
+}
+
+func (c *kanbanActionConnector) CreatePullRequestComment(_ context.Context, repository string, number int, body string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.prCommentLog = append(c.prCommentLog, kanbanPRComment{repository: repository, number: number, body: body})
+	return nil
+}
+
+func (c *kanbanActionConnector) stateUpdates() []kanbanStateUpdate {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]kanbanStateUpdate(nil), c.states...)
+}
+
+func (c *kanbanActionConnector) issueFieldUpdates() []kanbanIssueFieldUpdate {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]kanbanIssueFieldUpdate(nil), c.fields...)
+}
+
+func (c *kanbanActionConnector) comments() []kanbanComment {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]kanbanComment(nil), c.commentLog...)
+}
+
+func (c *kanbanActionConnector) prComments() []kanbanPRComment {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]kanbanPRComment(nil), c.prCommentLog...)
+}
+
+func (c *kanbanActionConnector) maxActiveMoves() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.maxMoves
+}
+
+func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, kanban workflowconfig.Kanban, actionConnector connector.Connector) {
+	t.Helper()
+
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "Human Review", "Rework", "Merging"}
+	workflowCfg.Tracker.ObservedStates = []string{"Backlog", "Blocked"}
+	workflowCfg.Tracker.TerminalStates = []string{"Done", "Cancelled"}
+	workflowCfg.Tracker.StateMap = workflowconfig.MapValue(map[string]any{
+		"Human Review": "In Review",
+	})
+	workflowCfg.Server.Kanban = kanban
+
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: id},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: actionConnector,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+}
+
+func performForm(t *testing.T, handler http.Handler, method string, path string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
+func equalStateUpdates(left, right []kanbanStateUpdate) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalIssueFieldUpdates(left, right []kanbanIssueFieldUpdate) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalComments(left, right []kanbanComment) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalPRComments(left, right []kanbanPRComment) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 type sseEvent struct {

@@ -38,6 +38,14 @@ type IssueCloser interface {
 	CloseIssue(context.Context, string) error
 }
 
+type IssueFieldSetter interface {
+	SetIssueField(context.Context, string, int, string) error
+}
+
+type PullRequestCommenter interface {
+	CreatePullRequestComment(context.Context, string, int, string) error
+}
+
 type IssueReferenceResolver interface {
 	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
 }

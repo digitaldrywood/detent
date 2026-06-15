@@ -1678,6 +1678,67 @@ func TestConnectorCreateCommentCallsAddComment(t *testing.T) {
 	}
 }
 
+func TestConnectorCreatePullRequestCommentUsesIssueCommentsEndpoint(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodPost,
+		path:   "/repos/example/repo/issues/42/comments",
+		body:   `{"node_id":"IC_pr"}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.CreatePullRequestComment(context.Background(), "example/repo", 42, "ship it"); err != nil {
+		t.Fatalf("CreatePullRequestComment() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	body := requests[0]["body"].(map[string]any)
+	if body["body"] != "ship it" {
+		t.Fatalf("body = %v, want ship it", body["body"])
+	}
+}
+
+func TestConnectorSetIssueFieldUsesIssueFieldEndpoint(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw28","number":28,"repository":{"nameWithOwner":"digitaldrywood/detent"}}]}}`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/repos/digitaldrywood/detent/issues/28/issue-field-values",
+			body:   `[{"issue_field_id":123,"node_id":"IFSS_status","data_type":"single_select","value":1,"single_select_option":{"id":1,"name":"In Progress","color":"blue"}}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.SetIssueField(context.Background(), "I_kw28", 123, "In Progress"); err != nil {
+		t.Fatalf("SetIssueField() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if requests[1]["method"] != http.MethodPost || requests[1]["path"] != "/repos/digitaldrywood/detent/issues/28/issue-field-values" {
+		t.Fatalf("issue field request = %#v, want REST issue field update", requests[1])
+	}
+	body := requests[1]["body"].(map[string]any)
+	values := body["issue_field_values"].([]any)
+	if len(values) != 1 {
+		t.Fatalf("issue_field_values len = %d, want 1", len(values))
+	}
+	value := values[0].(map[string]any)
+	if value["field_id"] != float64(123) || value["value"] != "In Progress" {
+		t.Fatalf("issue field value = %#v, want field_id 123 value In Progress", value)
+	}
+}
+
 func TestConnectorCloseIssueCallsCloseIssue(t *testing.T) {
 	t.Parallel()
 
