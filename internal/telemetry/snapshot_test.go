@@ -40,6 +40,14 @@ func TestSnapshotJSONShape(t *testing.T) {
 			Blocked:   3,
 			Completed: 4,
 		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "issue-board",
+				Identifier: "DD-BOARD",
+				State:      "Backlog",
+				Title:      "Board issue",
+			},
+		},
 		Running: []telemetry.Running{
 			{
 				Issue: telemetry.Issue{
@@ -187,6 +195,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 		"dashboard_url",
 		"refresh",
 		"counts",
+		"board_issues",
 		"running",
 		"queue",
 		"blocked",
@@ -389,6 +398,10 @@ func TestBoardStateCountsAggregateSnapshotStates(t *testing.T) {
 	t.Parallel()
 
 	snapshot := telemetry.Snapshot{
+		BoardIssues: []telemetry.Issue{
+			{ID: "backlog", State: "Backlog"},
+			{ID: "todo", State: "Backlog"},
+		},
 		Pipeline: []telemetry.Issue{
 			{ID: "review", State: "Human Review"},
 			{ID: "done", State: "Done"},
@@ -414,6 +427,7 @@ func TestBoardStateCountsAggregateSnapshotStates(t *testing.T) {
 		{State: "Review", Count: 1},
 		{State: "Merging", Count: 1},
 		{State: "Done", Count: 2},
+		{State: "Backlog", Count: 1},
 		{State: "Rework", Count: 1},
 		{State: "Blocked", Count: 1},
 	}

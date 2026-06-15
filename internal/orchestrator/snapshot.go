@@ -23,13 +23,14 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 			LastRefreshAt:       timePointer(s.LastRefreshAt),
 			NextRefreshAt:       timePointer(s.NextRefreshAt),
 		},
-		Pipeline:   pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval),
-		Running:    runningSnapshots(s.Running, s.Claimed, now),
-		Queue:      queueSnapshots(s.Retry, s.Claimed, now),
-		Blocked:    blockedSnapshots(s.Blocked, s.Claimed, now),
-		Completed:  completedSnapshots(s.Completed, s.Claimed, now),
-		RateLimits: cloneRateLimits(s.RateLimits),
-		Tokens:     tokensFromCodexTotals(s.liveCodexTotals()),
+		BoardIssues: issueSnapshots(s.BoardIssues, s.AutoPromoteQuietDuration, s.PollInterval),
+		Pipeline:    pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval),
+		Running:     runningSnapshots(s.Running, s.Claimed, now),
+		Queue:       queueSnapshots(s.Retry, s.Claimed, now),
+		Blocked:     blockedSnapshots(s.Blocked, s.Claimed, now),
+		Completed:   completedSnapshots(s.Completed, s.Claimed, now),
+		RateLimits:  cloneRateLimits(s.RateLimits),
+		Tokens:      tokensFromCodexTotals(s.liveCodexTotals()),
 		Budget: telemetry.Budget{
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
 		},
@@ -66,6 +67,10 @@ func instanceSnapshot(cfg Config) telemetry.Instance {
 }
 
 func pipelineSnapshots(issues []connector.Issue, quietDuration time.Duration, pollInterval time.Duration) []telemetry.Issue {
+	return issueSnapshots(issues, quietDuration, pollInterval)
+}
+
+func issueSnapshots(issues []connector.Issue, quietDuration time.Duration, pollInterval time.Duration) []telemetry.Issue {
 	out := make([]telemetry.Issue, 0, len(issues))
 	for _, issue := range issues {
 		out = append(out, telemetryIssue(issue, quietDuration, pollInterval))

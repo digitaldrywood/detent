@@ -64,6 +64,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out := snapshot
 	out.Project = selectedProject
 	out.Projects = nil
+	out.BoardIssues = scopedIssues(snapshot.BoardIssues, selectedProjectID, fallbackProjectID)
 	out.Pipeline = scopedIssues(snapshot.Pipeline, selectedProjectID, fallbackProjectID)
 	out.Running = scopedRunning(snapshot.Running, selectedProjectID, fallbackProjectID)
 	out.Queue = scopedQueue(snapshot.Queue, selectedProjectID, fallbackProjectID)

@@ -12,6 +12,7 @@ type Snapshot struct {
 	Refresh        Refresh           `json:"refresh"`
 	Events         []ActivityEvent   `json:"events,omitempty"`
 	Counts         Counts            `json:"counts"`
+	BoardIssues    []Issue           `json:"board_issues,omitempty"`
 	Pipeline       []Issue           `json:"pipeline,omitempty"`
 	Running        []Running         `json:"running"`
 	Queue          []Queued          `json:"queue"`

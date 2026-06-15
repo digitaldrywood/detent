@@ -323,6 +323,9 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 	completedAt := now.Add(-30 * time.Second)
 	got := mergeSnapshot(telemetry.Snapshot{}, telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		BoardIssues: []telemetry.Issue{
+			{ID: "board", Identifier: "digitaldrywood/detent#6"},
+		},
 		Pipeline: []telemetry.Issue{
 			{ID: "pipeline", Identifier: "digitaldrywood/detent#1", StageUpdatedAt: &stageAt},
 		},
@@ -345,6 +348,7 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 		got  string
 	}{
 		{name: "pipeline", got: got.Pipeline[0].ProjectID},
+		{name: "board", got: got.BoardIssues[0].ProjectID},
 		{name: "running", got: got.Running[0].ProjectID},
 		{name: "queued", got: got.Queue[0].ProjectID},
 		{name: "blocked", got: got.Blocked[0].ProjectID},

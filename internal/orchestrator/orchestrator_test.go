@@ -860,6 +860,55 @@ func TestRunFetchesOnlyActionableObservedStates(t *testing.T) {
 	}
 }
 
+func TestRunPublishesBoardIssuesFromCandidatesAndObservedStates(t *testing.T) {
+	t.Parallel()
+
+	candidate := testIssue("issue-todo", "digitaldrywood/detent#91", "Todo")
+	backlog := testIssue("issue-backlog", "digitaldrywood/detent#92", "Backlog")
+	review := testIssue("issue-review", "digitaldrywood/detent#93", "Human Review")
+	tracker := newFakeConnector(candidate)
+	tracker.setStateIssues(backlog, review)
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:           5 * time.Millisecond,
+		MaxConcurrentAgents:    1,
+		MaxRetryBackoff:        time.Hour,
+		FailureRetryBaseDelay:  time.Hour,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		ObservedStates:         []string{"Backlog", "Human Review"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Second,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    &staticRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForFetchByStatesCalls(t, tracker, 1)
+	if !stateRequestsContain(tracker.fetchByStatesRequests(), []string{"Blocked", "Human Review", "Merging", "Backlog"}) {
+		t.Fatalf("FetchIssuesByStates requests = %#v, want configured observed states included", tracker.fetchByStatesRequests())
+	}
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		return len(state.BoardIssues) >= 3
+	})
+	got := map[string]string{}
+	for _, issue := range state.BoardIssues {
+		got[issue.ID] = issue.State
+	}
+	want := map[string]string{
+		"issue-todo":    "Todo",
+		"issue-backlog": "Backlog",
+		"issue-review":  "Human Review",
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("BoardIssues = %#v, want %#v", got, want)
+	}
+}
+
 func TestRunFetchesCandidatesAndObservedStatesConcurrently(t *testing.T) {
 	t.Parallel()
 

@@ -961,6 +961,9 @@ func projectKanbanIssues(snapshot telemetry.Snapshot) []projectKanbanIssueCard {
 		nextIndex++
 	}
 
+	for _, issue := range snapshot.BoardIssues {
+		appendIssue(issue, issueState(issue, ""), projectKanbanIssueStageTime(issue, time.Time{}), 5)
+	}
 	for _, issue := range snapshot.Pipeline {
 		appendIssue(issue, issueState(issue, ""), pipelineIssueStageTime(issue), 10)
 	}

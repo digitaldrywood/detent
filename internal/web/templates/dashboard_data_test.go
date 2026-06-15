@@ -646,6 +646,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	backlogAt := now.Add(-7 * time.Minute)
 	todoAt := now.Add(-6 * time.Minute)
 	runningAt := now.Add(-5 * time.Minute)
 	blockedAt := now.Add(-4 * time.Minute)
@@ -656,6 +657,23 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 		WorkflowStates: []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Merging", "Done", "Cancelled"},
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:             "backlog",
+					Identifier:     "digitaldrywood/detent#10",
+					ProjectID:      "detent",
+					Title:          "Backlog issue",
+					State:          "Backlog",
+					StageUpdatedAt: &backlogAt,
+				},
+				{
+					ID:         "todo",
+					Identifier: "digitaldrywood/detent#11",
+					ProjectID:  "detent",
+					Title:      "Stale board issue",
+					State:      "Backlog",
+				},
+			},
 			Pipeline: []telemetry.Issue{
 				{
 					ID:             "review",
@@ -729,15 +747,16 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 		},
 	})
 
-	if board.TotalLabel != "5" {
-		t.Fatalf("TotalLabel = %q, want 5", board.TotalLabel)
+	if board.TotalLabel != "6" {
+		t.Fatalf("TotalLabel = %q, want 6", board.TotalLabel)
 	}
-	if board.EmptyCountLabel != "3" {
-		t.Fatalf("EmptyCountLabel = %q, want 3", board.EmptyCountLabel)
+	if board.EmptyCountLabel != "2" {
+		t.Fatalf("EmptyCountLabel = %q, want 2", board.EmptyCountLabel)
 	}
 
 	got := collectKanbanCards(board.Lanes)
 	want := []kanbanCardSnapshot{
+		{Lane: "Backlog", IssueNumber: "#10", Title: "Backlog issue", TimeInStage: "7m 0s", Metadata: "No linked PR"},
 		{Lane: "Todo", IssueNumber: "#11", Title: "Todo issue", TimeInStage: "6m 0s", Metadata: "No linked PR"},
 		{Lane: "In Progress", IssueNumber: "#13", Title: "Running issue", TimeInStage: "5m 0s", Labels: "bug", Assignees: "bob", Metadata: "No linked PR"},
 		{Lane: "Blocked", IssueNumber: "#14", Title: "Blocked issue", TimeInStage: "4m 0s", Blockers: "digitaldrywood/detent#401 In Progress", Metadata: "No linked PR"},
@@ -754,7 +773,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 	}
 
 	gotEmpty := collectKanbanLaneTitles(board.EmptyLanes)
-	wantEmpty := []string{"Backlog", "Merging", "Cancelled"}
+	wantEmpty := []string{"Merging", "Cancelled"}
 	if len(gotEmpty) != len(wantEmpty) {
 		t.Fatalf("empty lanes len = %d, want %d; got %#v", len(gotEmpty), len(wantEmpty), gotEmpty)
 	}

@@ -32,6 +32,10 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 			{ID: "detent-pipeline", Identifier: "digitaldrywood/detent#1", ProjectID: "detent"},
 			{ID: "pyro-pipeline", Identifier: "digitaldrywood/pyroapex#1", ProjectID: "pyroapex"},
 		},
+		BoardIssues: []telemetry.Issue{
+			{ID: "detent-board", Identifier: "digitaldrywood/detent#6", ProjectID: "detent"},
+			{ID: "pyro-board", Identifier: "digitaldrywood/pyroapex#6", ProjectID: "pyroapex"},
+		},
 		Running: []telemetry.Running{
 			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "digitaldrywood/detent#2", ProjectID: "detent"}},
 			{Issue: telemetry.Issue{ID: "pyro-running", Identifier: "digitaldrywood/pyroapex#2", ProjectID: "pyroapex"}},
@@ -65,6 +69,9 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	if len(got.Pipeline) != 1 || got.Pipeline[0].ID != "detent-pipeline" {
 		t.Fatalf("Pipeline = %#v, want only detent row", got.Pipeline)
 	}
+	if len(got.BoardIssues) != 1 || got.BoardIssues[0].ID != "detent-board" {
+		t.Fatalf("BoardIssues = %#v, want only detent row", got.BoardIssues)
+	}
 	if len(got.Running) != 1 || got.Running[0].ID != "detent-running" {
 		t.Fatalf("Running = %#v, want only detent row", got.Running)
 	}
@@ -84,6 +91,9 @@ func TestProjectScopedSnapshotFallsBackToSingleProjectRows(t *testing.T) {
 
 	got, ok := projectScopedSnapshot(telemetry.Snapshot{
 		Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		BoardIssues: []telemetry.Issue{
+			{ID: "board", Identifier: "digitaldrywood/detent#1"},
+		},
 		Running: []telemetry.Running{
 			{Issue: telemetry.Issue{ID: "running", Identifier: "digitaldrywood/detent#2"}},
 		},
@@ -94,6 +104,9 @@ func TestProjectScopedSnapshotFallsBackToSingleProjectRows(t *testing.T) {
 	}
 	if len(got.Running) != 1 || got.Running[0].ID != "running" {
 		t.Fatalf("Running = %#v, want single-project rows", got.Running)
+	}
+	if len(got.BoardIssues) != 1 || got.BoardIssues[0].ID != "board" {
+		t.Fatalf("BoardIssues = %#v, want single-project rows", got.BoardIssues)
 	}
 }
 

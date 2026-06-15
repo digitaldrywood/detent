@@ -400,6 +400,7 @@ func (o *Orchestrator) ForceQuit(ctx context.Context) error {
 
 func (o *Orchestrator) observedStatusFetchStates() []string {
 	states := append([]string{blockedStatusState}, prPipelineFetchStates()...)
+	states = append(states, o.cfg.ObservedStates...)
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	if cfg.Enabled {
 		states = append(states, cfg.SourceStates...)

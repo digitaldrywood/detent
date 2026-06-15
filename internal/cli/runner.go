@@ -503,6 +503,7 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Queue = append(current.Queue, next.Queue...)
 	current.Blocked = append(current.Blocked, next.Blocked...)
 	current.Completed = append(current.Completed, next.Completed...)
+	current.BoardIssues = append(current.BoardIssues, next.BoardIssues...)
 	current.Pipeline = append(current.Pipeline, next.Pipeline...)
 	current.Budget.Refusals = append(current.Budget.Refusals, next.Budget.Refusals...)
 
@@ -530,6 +531,9 @@ func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
 
 	for i := range snapshot.Pipeline {
 		snapshot.Pipeline[i] = stampIssueProjectID(snapshot.Pipeline[i], projectID)
+	}
+	for i := range snapshot.BoardIssues {
+		snapshot.BoardIssues[i] = stampIssueProjectID(snapshot.BoardIssues[i], projectID)
 	}
 	for i := range snapshot.Running {
 		snapshot.Running[i].Issue = stampIssueProjectID(snapshot.Running[i].Issue, projectID)

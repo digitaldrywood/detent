@@ -73,6 +73,7 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 			o.autoPromoteHumanReviewIssues(ctx, state, fetched.status, now),
 		)
 	}
+	state.BoardIssues = boardIssuesFromFetched(fetched)
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
 }
 
@@ -194,6 +195,14 @@ func filterReconciledTickIssues(
 	state.epicTransitionWatch = filterReconciledIssues(state.epicTransitionWatch, reconciled)
 	state.Pipeline = filterReconciledIssues(state.Pipeline, reconciled)
 	return fetched
+}
+
+func boardIssuesFromFetched(fetched tickFetchedIssues) []connector.Issue {
+	issues := cloneIssues(fetched.candidates)
+	if fetched.statusOK {
+		issues = mergeIssueSlices(issues, fetched.status)
+	}
+	return issues
 }
 
 func (o *Orchestrator) dispatchTickIssues(

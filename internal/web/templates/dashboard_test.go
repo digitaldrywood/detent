@@ -584,6 +584,7 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	backlogAt := now.Add(-9 * time.Minute)
 	todoAt := now.Add(-8 * time.Minute)
 	reviewAt := now.Add(-3 * time.Minute)
 	html := renderDashboard(t, templates.DashboardData{
@@ -594,6 +595,16 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 		WorkflowStates: []string{"Backlog", "Todo", "In Progress", "Human Review", "Done"},
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:             "backlog",
+					Identifier:     "digitaldrywood/detent#476",
+					ProjectID:      "detent",
+					Title:          "Backlog board item",
+					State:          "Backlog",
+					StageUpdatedAt: &backlogAt,
+				},
+			},
 			Pipeline: []telemetry.Issue{
 				{
 					ID:             "review",
@@ -648,6 +659,7 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 		"ui",
 		"release-captain",
 		"digitaldrywood/detent#415 Done",
+		"Backlog board item",
 		"No linked PR",
 		"Read workflow state",
 	} {
