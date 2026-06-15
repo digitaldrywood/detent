@@ -43,6 +43,9 @@ const (
 
 	IdentityOwnershipAssignee = "assignee"
 	IdentityOwnershipField    = "field"
+
+	KanbanModeReadOnly    = "read_only"
+	KanbanModeIntegration = "integration"
 )
 
 type Workflow struct {
@@ -299,8 +302,14 @@ func (b AgentBackend) CodexConfig(fallback Codex) Codex {
 }
 
 type Server struct {
-	Port *int   `yaml:"port"`
-	Host string `yaml:"host"`
+	Port   *int   `yaml:"port"`
+	Host   string `yaml:"host"`
+	Kanban Kanban `yaml:"kanban,omitempty"`
+}
+
+type Kanban struct {
+	Mode              string `yaml:"mode,omitempty"`
+	IssueStateFieldID int    `yaml:"issue_state_field_id,omitempty"`
 }
 
 type Observability struct {
@@ -556,7 +565,8 @@ func Default() Config {
 		},
 		Gate: gate.DefaultConfig(),
 		Server: Server{
-			Host: "127.0.0.1",
+			Host:   "127.0.0.1",
+			Kanban: Kanban{Mode: KanbanModeReadOnly},
 		},
 		Observability: Observability{
 			DashboardEnabled: true,
@@ -664,6 +674,7 @@ func (c *Config) normalize() {
 	c.Agents.normalize()
 	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
 	c.Gate = gate.Effective(c.Gate)
+	c.Server.Normalize()
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
 }
 
@@ -932,6 +943,39 @@ func (c *Codex) validate(problems *[]string) {
 	}
 }
 
+func (k *Kanban) Normalize() {
+	if k == nil {
+		return
+	}
+	k.Mode = strings.ToLower(strings.TrimSpace(k.Mode))
+	if k.Mode == "" {
+		k.Mode = KanbanModeReadOnly
+	}
+}
+
+func (k Kanban) Validate(prefix string) []string {
+	k.Normalize()
+
+	var problems []string
+	switch k.Mode {
+	case KanbanModeReadOnly, KanbanModeIntegration:
+	default:
+		problems = append(problems, prefix+".mode must be one of read_only, integration")
+	}
+	if k.IssueStateFieldID < 0 {
+		problems = append(problems, prefix+".issue_state_field_id must be greater than 0 when set")
+	}
+	return problems
+}
+
+func (s *Server) Normalize() {
+	if s == nil {
+		return
+	}
+	s.Host = strings.TrimSpace(s.Host)
+	s.Kanban.Normalize()
+}
+
 func (s *Server) validate(problems *[]string) {
 	if s.Port != nil && *s.Port < 0 {
 		*problems = append(*problems, "server.port must be greater than or equal to 0")
@@ -939,6 +983,7 @@ func (s *Server) validate(problems *[]string) {
 	if strings.TrimSpace(s.Host) == "" {
 		*problems = append(*problems, "server.host is required")
 	}
+	*problems = append(*problems, s.Kanban.Validate("server.kanban")...)
 }
 
 func (o *Observability) validate(problems *[]string) {

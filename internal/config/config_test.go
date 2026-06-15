@@ -835,6 +835,9 @@ budget:
   per_day_max_usd: 0
 server:
   port: -1
+  kanban:
+    mode: edit
+    issue_state_field_id: -1
 ---
 Prompt
 `,
@@ -856,6 +859,8 @@ Prompt
 				"observability.refresh_ms must be greater than 0",
 				"budget.per_day_max_usd must be greater than 0",
 				"server.port must be greater than or equal to 0",
+				"server.kanban.mode must be one of read_only, integration",
+				"server.kanban.issue_state_field_id must be greater than 0 when set",
 			},
 		},
 		{

@@ -20,6 +20,7 @@ var (
 	ErrAssigneeNotFound           = errors.New("github assignee not found")
 	ErrAssigneeUpdateFailed       = errors.New("github assignee update failed")
 	ErrCommentCreateFailed        = errors.New("github comment create failed")
+	ErrIssueFieldUpdateFailed     = errors.New("github issue field update failed")
 	ErrIssueCloseFailed           = errors.New("github issue close failed")
 	ErrProjectItemNotFound        = errors.New("github project item not found")
 	ErrProjectFieldNotFound       = errors.New("github project field not found")

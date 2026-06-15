@@ -33,7 +33,7 @@ type DashboardData struct {
 	ConnectorName    string
 	Snapshot         telemetry.Snapshot
 	Projects         []ProjectSmallMultiple
-	WorkflowStates   []string
+	Kanban           KanbanData
 	Assets           AssetPaths
 	ActiveNav        string
 	ProjectID        string
@@ -63,6 +63,12 @@ type DashboardShellData struct {
 type Budget = telemetry.Budget
 
 type RateLimits = telemetry.RateLimits
+
+type KanbanData struct {
+	Mode      string
+	ProjectID string
+	States    []string
+}
 
 type rateLimitRow struct {
 	Name        string
@@ -262,6 +268,12 @@ type projectKanbanCard struct {
 	Assignees        []string
 	Blockers         []string
 	HasPullRequest   bool
+	IssueID          string
+	PRNumber         int
+	PRRepository     string
+	PRURL            string
+	Movable          bool
+	DisabledText     string
 }
 
 type projectKanbanIssueCard struct {
@@ -270,6 +282,27 @@ type projectKanbanIssueCard struct {
 	stageAt time.Time
 	rank    int
 	index   int
+}
+
+type kanbanLane struct {
+	State      string
+	CountLabel string
+	DotClass   string
+	Cards      []kanbanCard
+}
+
+type kanbanCard struct {
+	IssueID      string
+	Identifier   string
+	ProjectID    string
+	Title        string
+	URL          string
+	State        string
+	PRNumber     int
+	PRRepository string
+	PRURL        string
+	Movable      bool
+	DisabledText string
 }
 
 func DashboardShellDataFromDashboard(data DashboardData) DashboardShellData {
@@ -876,7 +909,7 @@ func activityValue(value string, fallback string) string {
 
 func projectKanbanBoardView(data DashboardData) projectKanbanBoard {
 	cardsByState := projectKanbanCardsByState(data)
-	states := projectKanbanStateOrder(data.WorkflowStates, cardsByState)
+	states := projectKanbanStateOrder(data.Kanban.States, cardsByState)
 	allLanes := make([]projectKanbanLane, 0, len(states))
 	visibleLanes := make([]projectKanbanLane, 0, len(states))
 	emptyLanes := make([]projectKanbanLane, 0, len(states))
@@ -910,7 +943,7 @@ func projectKanbanBoardView(data DashboardData) projectKanbanBoard {
 
 func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCard {
 	issues := projectKanbanIssues(data.Snapshot)
-	configured := projectKanbanConfiguredStateMap(data.WorkflowStates)
+	configured := projectKanbanConfiguredStateMap(data.Kanban.States)
 	cardsByState := map[string][]projectKanbanCard{}
 	for _, entry := range issues {
 		state := projectKanbanDisplayState(entry.state, configured)
@@ -1009,6 +1042,106 @@ func projectKanbanIssueKey(issue telemetry.Issue) string {
 	}
 	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
 		return prefix + "identifier:" + identifier
+	}
+	return ""
+}
+
+func kanbanIntegrationEnabled(data DashboardData) bool {
+	return strings.EqualFold(strings.TrimSpace(data.Kanban.Mode), "integration")
+}
+
+func kanbanProjectID(data DashboardData) string {
+	if projectID := strings.TrimSpace(data.Kanban.ProjectID); projectID != "" {
+		return projectID
+	}
+	return strings.TrimSpace(data.ProjectID)
+}
+
+func kanbanLanes(data DashboardData) []kanbanLane {
+	states := kanbanStates(data)
+	cardsByState := make(map[string][]kanbanCard, len(states))
+	for _, state := range states {
+		cardsByState[normalizeDashboardState(state)] = []kanbanCard{}
+	}
+	for _, issue := range kanbanIssues(data.Snapshot) {
+		state := strings.TrimSpace(issue.State)
+		if state == "" {
+			continue
+		}
+		key := normalizeDashboardState(state)
+		if _, ok := cardsByState[key]; !ok {
+			states = append(states, state)
+			cardsByState[key] = []kanbanCard{}
+		}
+		cardsByState[key] = append(cardsByState[key], kanbanCardFromIssue(issue))
+	}
+
+	lanes := make([]kanbanLane, 0, len(states))
+	for _, state := range states {
+		cards := cardsByState[normalizeDashboardState(state)]
+		lanes = append(lanes, kanbanLane{
+			State:      state,
+			CountLabel: formatCount(len(cards)),
+			DotClass:   boardStateDotClass(state),
+			Cards:      cards,
+		})
+	}
+	return lanes
+}
+
+func kanbanStates(data DashboardData) []string {
+	states := make([]string, 0, len(data.Kanban.States))
+	seen := map[string]struct{}{}
+	for _, state := range data.Kanban.States {
+		state = strings.TrimSpace(state)
+		if state == "" {
+			continue
+		}
+		key := normalizeDashboardState(state)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		states = append(states, state)
+	}
+	return states
+}
+
+func kanbanIssues(snapshot telemetry.Snapshot) []telemetry.Issue {
+	issues := make([]telemetry.Issue, 0, len(snapshot.Pipeline)+len(snapshot.Running)+len(snapshot.Queue)+len(snapshot.Blocked))
+	seen := map[string]struct{}{}
+	add := func(issue telemetry.Issue) {
+		key := kanbanIssueKey(issue)
+		if key == "" {
+			return
+		}
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		issues = append(issues, issue)
+	}
+	for _, issue := range snapshot.Pipeline {
+		add(issue)
+	}
+	for _, row := range snapshot.Running {
+		add(row.Issue)
+	}
+	for _, row := range snapshot.Queue {
+		add(row.Issue)
+	}
+	for _, row := range snapshot.Blocked {
+		add(row.Issue)
+	}
+	return issues
+}
+
+func kanbanIssueKey(issue telemetry.Issue) string {
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		return "issue:" + id
+	}
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		return "identifier:" + identifier
 	}
 	return ""
 }
@@ -1177,6 +1310,7 @@ func projectKanbanLaneID(state string) string {
 func projectKanbanCardForIssue(issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
 	card := projectKanbanCard{
 		IssueNumber:      issueNumber(issue),
+		IssueID:          strings.TrimSpace(issue.ID),
 		Identifier:       issueIdentifier(issue),
 		ProjectID:        strings.TrimSpace(issue.ProjectID),
 		Title:            issueTitle(issue),
@@ -1191,6 +1325,7 @@ func projectKanbanCardForIssue(issue telemetry.Issue, state string, stageAt time
 		Assignees:        uniqueStrings(issue.Assignees),
 		Blockers:         projectKanbanBlockerLabels(issue.BlockedBy),
 		HasPullRequest:   issue.PullRequest != nil,
+		Movable:          strings.TrimSpace(issue.ID) != "",
 	}
 	if issue.PullRequest != nil {
 		ciStatus := prPipelineCIStatus(issue, projectKanbanLaneID(state))
@@ -1199,6 +1334,33 @@ func projectKanbanCardForIssue(issue telemetry.Issue, state string, stageAt time
 		card.CIClass = prPipelineCIClass(ciStatus)
 		card.CodexReviewState = codexReview
 		card.CodexReviewClass = prPipelineCodexReviewClass(codexReview)
+		card.PRNumber = issue.PullRequest.Number
+		card.PRURL = strings.TrimSpace(issue.PullRequest.URL)
+		card.PRRepository = pullRequestRepository(issue)
+	}
+	if !card.Movable && card.PRNumber > 0 {
+		card.DisabledText = "Cannot move PR-only card"
+	}
+	return card
+}
+
+func kanbanCardFromIssue(issue telemetry.Issue) kanbanCard {
+	card := kanbanCard{
+		IssueID:    strings.TrimSpace(issue.ID),
+		Identifier: issueIdentifier(issue),
+		ProjectID:  strings.TrimSpace(issue.ProjectID),
+		Title:      issueTitle(issue),
+		URL:        strings.TrimSpace(issue.URL),
+		State:      strings.TrimSpace(issue.State),
+		Movable:    strings.TrimSpace(issue.ID) != "",
+	}
+	if issue.PullRequest != nil {
+		card.PRNumber = issue.PullRequest.Number
+		card.PRURL = strings.TrimSpace(issue.PullRequest.URL)
+		card.PRRepository = pullRequestRepository(issue)
+	}
+	if !card.Movable && card.PRNumber > 0 {
+		card.DisabledText = "Cannot move PR-only card"
 	}
 	return card
 }
@@ -1239,11 +1401,47 @@ func projectKanbanLaneClass(lane projectKanbanLane) string {
 	return class
 }
 
-func projectKanbanLaneAttributes(lane projectKanbanLane) templ.Attributes {
-	if !lane.Empty {
-		return nil
+func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLane) templ.Attributes {
+	attrs := templ.Attributes{}
+	if lane.Empty {
+		attrs["data-project-kanban-empty-lane"] = true
 	}
-	return templ.Attributes{"data-project-kanban-empty-lane": true}
+	if kanbanIntegrationEnabled(data) {
+		attrs["data-kanban-drop-state"] = lane.Title
+	}
+	return attrs
+}
+
+func projectKanbanCardAttributes(data DashboardData, card projectKanbanCard) templ.Attributes {
+	attrs := templ.Attributes{
+		"data-project-kanban-card": card.Identifier,
+	}
+	if !kanbanIntegrationEnabled(data) {
+		return attrs
+	}
+	attrs["data-kanban-card"] = true
+	attrs["data-kanban-current-state"] = card.Stage
+	if card.IssueID != "" {
+		attrs["data-kanban-issue-id"] = card.IssueID
+	}
+	if card.Movable {
+		attrs["draggable"] = "true"
+		attrs["data-kanban-action"] = "move"
+	} else {
+		attrs["aria-disabled"] = "true"
+	}
+	return attrs
+}
+
+func projectKanbanControlID(prefix string, card projectKanbanCard) string {
+	id := projectKanbanLaneID(card.Identifier)
+	if id == "" {
+		id = projectKanbanLaneID(card.IssueID)
+	}
+	if id == "" {
+		id = "card"
+	}
+	return prefix + "-" + id
 }
 
 func projectKanbanEmptyToggleLabel(board projectKanbanBoard) string {
@@ -1251,6 +1449,69 @@ func projectKanbanEmptyToggleLabel(board projectKanbanBoard) string {
 		return "Show 1 empty state"
 	}
 	return "Show " + formatCount(len(board.EmptyLanes)) + " empty states"
+}
+
+func kanbanLaneAttributes(data DashboardData, lane kanbanLane) templ.Attributes {
+	attrs := templ.Attributes{}
+	if kanbanIntegrationEnabled(data) {
+		attrs["data-kanban-drop-state"] = lane.State
+	}
+	return attrs
+}
+
+func kanbanCardAttributes(data DashboardData, card kanbanCard) templ.Attributes {
+	attrs := templ.Attributes{
+		"data-kanban-card":          true,
+		"data-kanban-current-state": card.State,
+	}
+	if card.IssueID != "" {
+		attrs["data-kanban-issue-id"] = card.IssueID
+	}
+	if kanbanIntegrationEnabled(data) && card.Movable {
+		attrs["draggable"] = "true"
+		attrs["data-kanban-action"] = "move"
+	} else if !card.Movable {
+		attrs["aria-disabled"] = "true"
+	}
+	return attrs
+}
+
+func issueRepository(identifier string) string {
+	repo, _, ok := strings.Cut(strings.TrimSpace(identifier), "#")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(repo)
+}
+
+func pullRequestRepository(issue telemetry.Issue) string {
+	if issue.PullRequest != nil {
+		if repository := repositoryFromPullRequestURL(issue.PullRequest.URL); repository != "" {
+			return repository
+		}
+	}
+	return issueRepository(issue.Identifier)
+}
+
+func repositoryFromPullRequestURL(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) < 4 || parts[2] != "pull" {
+		return ""
+	}
+	owner := strings.TrimSpace(parts[0])
+	repo := strings.TrimSpace(parts[1])
+	if owner == "" || repo == "" {
+		return ""
+	}
+	return owner + "/" + repo
+}
+
+func normalizeDashboardState(value string) string {
+	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
 func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {

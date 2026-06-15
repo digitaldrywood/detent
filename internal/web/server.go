@@ -15,6 +15,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hub"
@@ -68,6 +69,7 @@ type Config struct {
 	GlobalConfigSource    func() globalconfig.Config
 	Hostname              func() (string, error)
 	ConfigPathRule        globalconfig.PathRule
+	Kanban                workflowconfig.Kanban
 	RuntimeDBPath         string
 	RuntimeLogPath        string
 	ServerAddress         string
@@ -92,12 +94,14 @@ type Server struct {
 	globalConfigSource func() globalconfig.Config
 	hostname           func() (string, error)
 	configRule         globalconfig.PathRule
+	kanban             workflowconfig.Kanban
 	dbPath             string
 	logPath            string
 	serverAddr         string
 	assets             staticAssets
 	projects           *projectSmallMultipleRecorder
 	snapshots          *snapshotEnrichmentCache
+	kanbanMutations    *kanbanMutationLocks
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -142,12 +146,14 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		globalConfigSource: cfg.globalConfigSource(),
 		hostname:           cfg.hostname(),
 		configRule:         cfg.ConfigPathRule,
+		kanban:             cfg.kanban(),
 		dbPath:             strings.TrimSpace(cfg.RuntimeDBPath),
 		logPath:            strings.TrimSpace(cfg.RuntimeLogPath),
 		serverAddr:         strings.TrimSpace(cfg.ServerAddress),
 		assets:             newStaticAssets(cfg.staticDir()),
 		projects:           newProjectSmallMultipleRecorder(),
 		snapshots:          newSnapshotEnrichmentCache(),
+		kanbanMutations:    newKanbanMutationLocks(),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes()
@@ -209,6 +215,8 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/refresh", s.apiRefresh)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
 	s.echo.GET("/api/v1/usage", s.apiUsage)
+	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove)
+	s.echo.POST("/api/v1/kanban/comment", s.apiKanbanComment)
 	s.echo.GET("/api/v1/*", s.apiIssue)
 }
 
@@ -257,6 +265,7 @@ func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot)
 		DashboardURL:    s.dashboardURL,
 		Snapshot:        snapshot,
 		Projects:        s.projectSmallMultiples(ctx, snapshot),
+		Kanban:          s.dashboardKanbanData(ctx, "", snapshot),
 		Assets:          s.assets.templatePaths(),
 		ActiveNav:       "fleet",
 	}
@@ -289,7 +298,7 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		DashboardURL:    s.dashboardURL,
 		Snapshot:        scopedSnapshot,
 		Projects:        projects,
-		WorkflowStates:  s.projectWorkflowStates(project.ID),
+		Kanban:          s.dashboardKanbanData(ctx, project.ID, scopedSnapshot),
 		Assets:          s.assets.templatePaths(),
 		ActiveNav:       "project",
 		ProjectID:       strings.TrimSpace(project.ID),
@@ -414,6 +423,12 @@ func (cfg Config) dashboardURL() string {
 		return dashboardURL
 	}
 	return "http://localhost:4000"
+}
+
+func (cfg Config) kanban() workflowconfig.Kanban {
+	kanban := cfg.Kanban
+	kanban.Normalize()
+	return kanban
 }
 
 func (cfg Config) pricing() budget.PricingTable {

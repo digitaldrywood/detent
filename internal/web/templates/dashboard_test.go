@@ -588,11 +588,14 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 	todoAt := now.Add(-8 * time.Minute)
 	reviewAt := now.Add(-3 * time.Minute)
 	html := renderDashboard(t, templates.DashboardData{
-		Title:          "Detent",
-		ConnectorName:  "github",
-		ProjectID:      "detent",
-		ProjectName:    "Detent",
-		WorkflowStates: []string{"Backlog", "Todo", "In Progress", "Human Review", "Done"},
+		Title:         "Detent",
+		ConnectorName: "github",
+		ProjectID:     "detent",
+		ProjectName:   "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Backlog", "Todo", "In Progress", "Human Review", "Done"},
+		},
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
 			BoardIssues: []telemetry.Issue{
@@ -683,6 +686,79 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 	reviewIndex := strings.Index(section, `aria-label="Human Review lane"`)
 	if backlogIndex < 0 || todoIndex < 0 || reviewIndex < 0 || backlogIndex >= todoIndex || todoIndex >= reviewIndex {
 		t.Fatalf("kanban lanes are not in configured order: backlog=%d todo=%d review=%d\n%s", backlogIndex, todoIndex, reviewIndex, section)
+	}
+}
+
+func TestDashboardKanbanIntegrationControls(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	data := templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress", "Human Review"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			Pipeline: []telemetry.Issue{
+				{
+					ID:         "I_kw1",
+					Identifier: "digitaldrywood/detent#1",
+					ProjectID:  "detent",
+					Title:      "Movable issue",
+					State:      "Todo",
+					URL:        "https://github.com/digitaldrywood/detent/issues/1",
+					PullRequest: &telemetry.PullRequest{
+						Number: 42,
+						URL:    "https://github.com/digitaldrywood/frontend/pull/42",
+					},
+				},
+				{
+					Identifier: "digitaldrywood/detent#2",
+					ProjectID:  "detent",
+					Title:      "PR only",
+					State:      "Human Review",
+					PullRequest: &telemetry.PullRequest{
+						Number: 43,
+						URL:    "https://github.com/digitaldrywood/detent/pull/43",
+					},
+				},
+			},
+		},
+	}
+
+	html := renderDashboard(t, data)
+	for _, want := range []string{
+		`aria-live="polite"`,
+		`data-kanban-card`,
+		`draggable="true"`,
+		`data-kanban-drop-state="In Progress"`,
+		`data-kanban-status-menu`,
+		`hx-post="/api/v1/kanban/move"`,
+		`hx-post="/api/v1/kanban/comment"`,
+		`name="pr_repository" value="digitaldrywood/frontend"`,
+		`Cannot move PR-only card`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("integration dashboard missing %q:\n%s", want, html)
+		}
+	}
+
+	data.Kanban.Mode = "read_only"
+	html = renderDashboard(t, data)
+	for _, forbidden := range []string{
+		`hx-post="/api/v1/kanban/move"`,
+		`hx-post="/api/v1/kanban/comment"`,
+		`draggable="true"`,
+		`data-kanban-action`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("read-only dashboard rendered %q:\n%s", forbidden, html)
+		}
 	}
 }
 

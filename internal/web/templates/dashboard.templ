@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"strconv"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -778,7 +779,7 @@ templ SnapshotView(data DashboardData) {
 		@projectSmallMultiplesSection(data)
 	}
 	if isProjectDashboard(data) {
-		@projectKanbanSection(projectKanbanBoardView(data))
+		@projectKanbanSection(data, projectKanbanBoardView(data))
 	}
 	@prPipelineSection(data.Snapshot)
 	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
@@ -956,7 +957,7 @@ templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
 	</article>
 }
 
-templ projectKanbanSection(board projectKanbanBoard) {
+templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 	if len(board.AllLanes) > 0 {
 		<section class="dashboard-panel project-kanban min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Project Kanban">
 			<div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
@@ -965,10 +966,18 @@ templ projectKanbanSection(board projectKanbanBoard) {
 						@icon.Kanban(icon.Props{Class: "size-5 shrink-0 text-accent"})
 						@helpHeading2("Project Kanban", helpProjectKanban, "project-kanban")
 					</div>
-					<p class="text-sm text-muted-foreground">Read-only workflow lanes grouped by configured Detent states.</p>
+					if kanbanIntegrationEnabled(data) {
+						<p class="text-sm text-muted-foreground">Workflow lanes grouped by configured Detent states with operator actions enabled.</p>
+					} else {
+						<p class="text-sm text-muted-foreground">Read-only workflow lanes grouped by configured Detent states.</p>
+					}
 				</div>
 				<div class="flex shrink-0 flex-wrap items-center gap-2">
-					<span class="inline-flex min-h-8 items-center rounded-full border border-accent-soft bg-accent-soft px-2.5 py-1 text-xs font-semibold text-accent">Read-only</span>
+					if kanbanIntegrationEnabled(data) {
+						<span class="inline-flex min-h-8 items-center rounded-full border border-success bg-success-soft px-2.5 py-1 text-xs font-semibold text-success">Integration</span>
+					} else {
+						<span class="inline-flex min-h-8 items-center rounded-full border border-accent-soft bg-accent-soft px-2.5 py-1 text-xs font-semibold text-accent">Read-only</span>
+					}
 					<span class="inline-flex min-h-8 items-center rounded-full bg-muted px-2.5 py-1 font-mono text-xs font-medium text-muted-foreground">{ board.TotalLabel } cards</span>
 					if len(board.EmptyLanes) > 0 {
 						<label for="project-kanban-show-empty" class="inline-flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-muted-foreground hover:border-accent hover:text-accent focus-within:ring-2 focus-within:ring-accent">
@@ -981,17 +990,23 @@ templ projectKanbanSection(board projectKanbanBoard) {
 			if len(board.EmptyLanes) > 0 {
 				<input id="project-kanban-show-empty" class="project-kanban-show-empty sr-only" type="checkbox" autocomplete="off" aria-label="Show empty Kanban lanes"/>
 			}
+			if kanbanIntegrationEnabled(data) {
+				<div id="kanban-feedback" role="status" aria-live="polite" class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Ready.</div>
+			}
 			<div class="project-kanban-lanes mt-4 grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-4">
 				for _, lane := range board.AllLanes {
-					@projectKanbanLaneView(lane)
+					@projectKanbanLaneView(data, lane)
 				}
 			</div>
+			if kanbanIntegrationEnabled(data) {
+				@kanbanScript()
+			}
 		</section>
 	}
 }
 
-templ projectKanbanLaneView(lane projectKanbanLane) {
-	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } { projectKanbanLaneAttributes(lane)... }>
+templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
+	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } { projectKanbanLaneAttributesForData(data, lane)... }>
 		<div class="flex min-h-9 items-center justify-between gap-3">
 			<div class="inline-flex min-w-0 items-center gap-2">
 				<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
@@ -1006,15 +1021,15 @@ templ projectKanbanLaneView(lane projectKanbanLane) {
 		} else {
 			<div class="project-kanban-lane-scroll mt-3 grid max-h-[32rem] gap-2 overflow-y-auto pr-1" data-preserve-scroll={ "project-kanban-" + lane.ID }>
 				for _, card := range lane.Cards {
-					@projectKanbanCardView(card)
+					@projectKanbanCardView(data, card)
 				}
 			</div>
 		}
 	</section>
 }
 
-templ projectKanbanCardView(card projectKanbanCard) {
-	<article class="project-kanban-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm" data-project-kanban-card={ card.Identifier }>
+templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
+	<article class="project-kanban-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm" { projectKanbanCardAttributes(data, card)... }>
 		<div class="flex min-w-0 items-start justify-between gap-3">
 			<div class="min-w-0">
 				if card.URL != "" {
@@ -1067,7 +1082,68 @@ templ projectKanbanCardView(card projectKanbanCard) {
 				}
 			</div>
 		}
+		if card.DisabledText != "" && kanbanIntegrationEnabled(data) {
+			<div class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">{ card.DisabledText }</div>
+		}
+		if kanbanIntegrationEnabled(data) {
+			<div class="mt-3 grid gap-2">
+				if card.Movable {
+					@projectKanbanMoveForm(data, card)
+				}
+				@projectKanbanCommentForms(data, card)
+			</div>
+		}
 	</article>
+}
+
+templ projectKanbanMoveForm(data DashboardData, card projectKanbanCard) {
+	<form class="flex min-w-0 items-center gap-2" hx-post="/api/v1/kanban/move" hx-target="#kanban-feedback" hx-swap="outerHTML" data-kanban-move-form>
+		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
+		<input type="hidden" name="issue_id" value={ card.IssueID }/>
+		<input type="hidden" name="current_state" value={ card.Stage }/>
+		if card.PRNumber > 0 {
+			<input type="hidden" name="pr_number" value={ strconv.Itoa(card.PRNumber) }/>
+		}
+		<label class="sr-only" for={ projectKanbanControlID("project-kanban-target", card) }>Target state</label>
+		<select id={ projectKanbanControlID("project-kanban-target", card) } name="target_state" class="min-h-9 min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" data-kanban-status-menu>
+			for _, state := range data.Kanban.States {
+				<option value={ state } selected?={ projectKanbanStateKey(state) == projectKanbanStateKey(card.Stage) }>{ state }</option>
+			}
+		</select>
+		<button type="submit" class="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+			@icon.MoveRight(icon.Props{Class: "size-4"})
+			<span>Move</span>
+		</button>
+	</form>
+}
+
+templ projectKanbanCommentForms(data DashboardData, card projectKanbanCard) {
+	if card.IssueID != "" {
+		@projectKanbanCommentForm(data, card, "issue", "Issue")
+	}
+	if card.PRNumber > 0 && card.PRRepository != "" {
+		@projectKanbanCommentForm(data, card, "pr", "PR")
+	}
+}
+
+templ projectKanbanCommentForm(data DashboardData, card projectKanbanCard, target string, label string) {
+	<form class="grid gap-2" hx-post="/api/v1/kanban/comment" hx-target="#kanban-feedback" hx-swap="outerHTML">
+		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
+		<input type="hidden" name="target" value={ target }/>
+		if target == "issue" {
+			<input type="hidden" name="issue_id" value={ card.IssueID }/>
+		}
+		if target == "pr" {
+			<input type="hidden" name="pr_repository" value={ card.PRRepository }/>
+			<input type="hidden" name="pr_number" value={ strconv.Itoa(card.PRNumber) }/>
+		}
+		<label class="sr-only" for={ projectKanbanControlID("project-kanban-comment-"+target, card) }>Comment</label>
+		<textarea id={ projectKanbanControlID("project-kanban-comment-"+target, card) } name="body" rows="2" class="min-h-16 w-full resize-y rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" placeholder={ label + " comment" }></textarea>
+		<button type="submit" class="inline-flex min-h-9 items-center justify-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+			@icon.MessageSquarePlus(icon.Props{Class: "size-4"})
+			<span>{ label }</span>
+		</button>
+	</form>
 }
 
 templ projectKanbanPillRow(label string, values []string) {
@@ -1300,6 +1376,225 @@ templ prPipelineCardView(card prPipelineCard) {
 			}
 		</div>
 	</article>
+}
+
+templ kanbanBoardSection(data DashboardData) {
+	if len(kanbanLanes(data)) > 0 {
+		<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Kanban board" data-kanban-board>
+			<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+				<div class="min-w-0">
+					<h2 class="text-base font-semibold text-foreground">Kanban board</h2>
+				</div>
+				<span class="inline-flex min-h-9 shrink-0 items-center justify-center rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ data.Kanban.Mode }</span>
+			</div>
+			if kanbanIntegrationEnabled(data) {
+				<div id="kanban-feedback" role="status" aria-live="polite" class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Ready.</div>
+			}
+			<div class="mt-4 grid min-w-0 gap-3 lg:grid-cols-3">
+				for _, lane := range kanbanLanes(data) {
+					@kanbanLaneView(data, lane)
+				}
+			</div>
+			if kanbanIntegrationEnabled(data) {
+				@kanbanScript()
+			}
+		</section>
+	}
+}
+
+templ kanbanLaneView(data DashboardData, lane kanbanLane) {
+	<section class="min-w-0 rounded-md border border-border bg-muted/60 p-3" aria-label={ lane.State + " Kanban lane" } { kanbanLaneAttributes(data, lane)... }>
+		<div class="flex min-h-9 items-center justify-between gap-3">
+			<div class="inline-flex min-w-0 items-center gap-2">
+				<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
+				<h3 class="truncate text-sm font-semibold text-foreground">{ lane.State }</h3>
+			</div>
+			<span class="shrink-0 rounded-full bg-card px-2 py-1 font-mono text-xs font-medium text-muted-foreground">{ lane.CountLabel }</span>
+		</div>
+		if len(lane.Cards) == 0 {
+			<div class="mt-3">
+				@dashboardEmptyState("No cards in this state.", "", lane.DotClass)
+			</div>
+		} else {
+			<div class="mt-3 grid max-h-[28rem] gap-2 overflow-y-auto pr-1" data-preserve-scroll={ "kanban-" + lane.State }>
+				for _, card := range lane.Cards {
+					@kanbanCardView(data, card)
+				}
+			</div>
+		}
+	</section>
+}
+
+templ kanbanCardView(data DashboardData, card kanbanCard) {
+	<article class="min-w-0 rounded-md border border-border bg-card p-3 shadow-sm" { kanbanCardAttributes(data, card)... }>
+		<div class="flex min-w-0 items-start justify-between gap-3">
+			<div class="min-w-0">
+				if card.URL != "" {
+					<a class="block min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer">
+						<span class="font-mono text-xs font-semibold text-accent">{ card.Identifier }</span>
+						<span class="mt-1 line-clamp-2 text-sm font-medium text-foreground">{ card.Title }</span>
+					</a>
+				} else {
+					<span class="font-mono text-xs font-semibold text-accent">{ card.Identifier }</span>
+					<span class="mt-1 line-clamp-2 text-sm font-medium text-foreground">{ card.Title }</span>
+				}
+			</div>
+			<span class="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ card.State }</span>
+		</div>
+		if card.ProjectID != "" || card.PRNumber > 0 {
+			<div class="mt-2 flex flex-wrap gap-2">
+				if card.ProjectID != "" {
+					<span class="inline-flex max-w-full rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">{ card.ProjectID }</span>
+				}
+				if card.PRNumber > 0 {
+					if card.PRURL != "" {
+						<a class="inline-flex max-w-full rounded-full bg-accent-soft px-2 py-1 font-mono text-xs text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.PRURL } target="_blank" rel="noopener noreferrer">PR #{ strconv.Itoa(card.PRNumber) }</a>
+					} else {
+						<span class="inline-flex max-w-full rounded-full bg-accent-soft px-2 py-1 font-mono text-xs text-accent">PR #{ strconv.Itoa(card.PRNumber) }</span>
+					}
+				}
+			</div>
+		}
+		if card.DisabledText != "" {
+			<div class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">{ card.DisabledText }</div>
+		}
+		if kanbanIntegrationEnabled(data) {
+			<div class="mt-3 grid gap-2">
+				if card.Movable {
+					@kanbanMoveForm(data, card)
+				}
+				@kanbanCommentForms(data, card)
+			</div>
+		}
+	</article>
+}
+
+templ kanbanMoveForm(data DashboardData, card kanbanCard) {
+	<form class="flex min-w-0 items-center gap-2" hx-post="/api/v1/kanban/move" hx-target="#kanban-feedback" hx-swap="outerHTML" data-kanban-move-form>
+		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
+		<input type="hidden" name="issue_id" value={ card.IssueID }/>
+		<input type="hidden" name="current_state" value={ card.State }/>
+		if card.PRNumber > 0 {
+			<input type="hidden" name="pr_number" value={ strconv.Itoa(card.PRNumber) }/>
+		}
+		<label class="sr-only" for={ "kanban-target-" + card.IssueID }>Target state</label>
+		<select id={ "kanban-target-" + card.IssueID } name="target_state" class="min-h-9 min-w-0 flex-1 rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" data-kanban-status-menu>
+			for _, state := range data.Kanban.States {
+				<option value={ state } selected?={ normalizeDashboardState(state) == normalizeDashboardState(card.State) }>{ state }</option>
+			}
+		</select>
+		<button type="submit" class="inline-flex min-h-9 shrink-0 items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+			@icon.MoveRight(icon.Props{Class: "size-4"})
+			<span>Move</span>
+		</button>
+	</form>
+}
+
+templ kanbanCommentForms(data DashboardData, card kanbanCard) {
+	if card.IssueID != "" {
+		@kanbanCommentForm(data, card, "issue", "Issue")
+	}
+	if card.PRNumber > 0 && card.PRRepository != "" {
+		@kanbanCommentForm(data, card, "pr", "PR")
+	}
+}
+
+templ kanbanCommentForm(data DashboardData, card kanbanCard, target string, label string) {
+	<form class="grid gap-2" hx-post="/api/v1/kanban/comment" hx-target="#kanban-feedback" hx-swap="outerHTML">
+		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
+		<input type="hidden" name="target" value={ target }/>
+		if target == "issue" {
+			<input type="hidden" name="issue_id" value={ card.IssueID }/>
+		}
+		if target == "pr" {
+			<input type="hidden" name="pr_repository" value={ card.PRRepository }/>
+			<input type="hidden" name="pr_number" value={ strconv.Itoa(card.PRNumber) }/>
+		}
+		<label class="sr-only" for={ "kanban-comment-" + target + "-" + card.Identifier }>Comment</label>
+		<textarea id={ "kanban-comment-" + target + "-" + card.Identifier } name="body" rows="2" class="min-h-16 w-full resize-y rounded-md border border-border bg-background px-2 py-1 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent" placeholder={ label + " comment" }></textarea>
+		<button type="submit" class="inline-flex min-h-9 items-center justify-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-sm font-medium text-foreground hover:bg-muted focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+			@icon.MessageSquarePlus(icon.Props{Class: "size-4"})
+			<span>{ label }</span>
+		</button>
+	</form>
+}
+
+templ kanbanScript() {
+	<script>
+		(function() {
+			if (window.__detentKanbanDragHandlersRegistered) {
+				return;
+			}
+			window.__detentKanbanDragHandlersRegistered = true;
+
+			let draggedIssueID = "";
+			let dropped = false;
+
+			function feedback(message) {
+				const target = document.getElementById("kanban-feedback");
+				if (target) {
+					target.textContent = message;
+				}
+			}
+
+			document.addEventListener("dragstart", function(event) {
+				const card = event.target instanceof Element ? event.target.closest("[data-kanban-card]") : null;
+				if (!card || card.getAttribute("draggable") !== "true") {
+					return;
+				}
+				draggedIssueID = card.dataset.kanbanIssueId || "";
+				dropped = false;
+				if (!draggedIssueID) {
+					event.preventDefault();
+					return;
+				}
+				if (event.dataTransfer) {
+					event.dataTransfer.effectAllowed = "move";
+					event.dataTransfer.setData("text/plain", draggedIssueID);
+				}
+				feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
+			});
+
+			document.addEventListener("dragover", function(event) {
+				if (!draggedIssueID) {
+					return;
+				}
+				const lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
+				if (lane) {
+					event.preventDefault();
+				}
+			});
+
+			document.addEventListener("drop", function(event) {
+				if (!draggedIssueID) {
+					return;
+				}
+				const lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
+				if (!lane) {
+					return;
+				}
+				event.preventDefault();
+				const card = document.querySelector("[data-kanban-card][data-kanban-issue-id='" + CSS.escape(draggedIssueID) + "']");
+				const form = card ? card.querySelector("[data-kanban-move-form]") : null;
+				const select = form ? form.querySelector("[data-kanban-status-menu]") : null;
+				if (!(form instanceof HTMLFormElement) || !(select instanceof HTMLSelectElement)) {
+					feedback("Move cancelled.");
+					return;
+				}
+				select.value = lane.dataset.kanbanDropState || "";
+				dropped = true;
+				form.requestSubmit();
+			});
+
+			document.addEventListener("dragend", function() {
+				if (draggedIssueID && !dropped) {
+					feedback("Move cancelled.");
+				}
+				draggedIssueID = "";
+				dropped = false;
+			});
+		})();
+	</script>
 }
 
 templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt time.Time) {
