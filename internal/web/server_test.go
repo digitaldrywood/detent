@@ -973,6 +973,83 @@ func TestProjectDashboardRouteScopesSnapshot(t *testing.T) {
 	}
 }
 
+func TestProjectDashboardRouteRendersConfiguredKanbanOrder(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 15, 15, 0, 0, time.UTC)
+	stageAt := now.Add(-time.Minute)
+	deps := testDeps(t)
+	mustSetWebProjectWithWorkflowStates(t, deps.Registry, "detent", false,
+		[]string{"Todo", "In Progress", "Human Review"},
+		[]string{"Backlog", "Blocked"},
+		[]string{"Done"},
+	)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Counts:  telemetry.Counts{Queue: 1},
+			},
+		},
+		Pipeline: []telemetry.Issue{
+			{
+				ID:             "review",
+				Identifier:     "digitaldrywood/detent#478",
+				ProjectID:      "detent",
+				Title:          "Render Kanban",
+				State:          "Human Review",
+				StageUpdatedAt: &stageAt,
+			},
+		},
+		Queue: []telemetry.Queued{
+			{
+				Issue: telemetry.Issue{
+					ID:             "todo",
+					Identifier:     "digitaldrywood/detent#477",
+					ProjectID:      "detent",
+					Title:          "Read workflow state",
+					State:          "Todo",
+					StageUpdatedAt: &stageAt,
+				},
+				Attempt: 1,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/projects/detent", nil)
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	body := rec.Body.String()
+	kanbanStart := strings.Index(body, `aria-label="Project Kanban"`)
+	pipelineStart := strings.Index(body, `aria-label="Pull request pipeline"`)
+	if kanbanStart < 0 || pipelineStart < 0 || kanbanStart >= pipelineStart {
+		t.Fatalf("project dashboard missing ordered kanban before PR pipeline: kanban=%d pipeline=%d\n%s", kanbanStart, pipelineStart, body)
+	}
+	kanban := body[kanbanStart:pipelineStart]
+	backlogIndex := strings.Index(kanban, `aria-label="Backlog lane"`)
+	todoIndex := strings.Index(kanban, `aria-label="Todo lane"`)
+	reviewIndex := strings.Index(kanban, `aria-label="Human Review lane"`)
+	doneIndex := strings.Index(kanban, `aria-label="Done lane"`)
+	if backlogIndex < 0 || todoIndex < 0 || reviewIndex < 0 || doneIndex < 0 {
+		t.Fatalf("kanban missing configured lanes: backlog=%d todo=%d review=%d done=%d\n%s", backlogIndex, todoIndex, reviewIndex, doneIndex, kanban)
+	}
+	if backlogIndex >= todoIndex || todoIndex >= reviewIndex || reviewIndex >= doneIndex {
+		t.Fatalf("kanban lanes are not in configured Detent order: backlog=%d todo=%d review=%d done=%d\n%s", backlogIndex, todoIndex, reviewIndex, doneIndex, kanban)
+	}
+}
+
 func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 	t.Parallel()
 
@@ -3024,8 +3101,31 @@ func testDeps(t *testing.T) web.Dependencies {
 func mustSetWebProject(t *testing.T, registry *project.Registry, id string, paused bool) {
 	t.Helper()
 
+	mustSetWebProjectWithWorkflowStates(t, registry, id, paused, nil, nil, nil)
+}
+
+func mustSetWebProjectWithWorkflowStates(
+	t *testing.T,
+	registry *project.Registry,
+	id string,
+	paused bool,
+	active []string,
+	observed []string,
+	terminal []string,
+) {
+	t.Helper()
+
 	workflowCfg := workflowconfig.Default()
 	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	if active != nil {
+		workflowCfg.Tracker.ActiveStates = append([]string(nil), active...)
+	}
+	if observed != nil {
+		workflowCfg.Tracker.ObservedStates = append([]string(nil), observed...)
+	}
+	if terminal != nil {
+		workflowCfg.Tracker.TerminalStates = append([]string(nil), terminal...)
+	}
 	trackedProject, err := project.New(project.Config{
 		Project: globalconfig.Project{ID: id, Paused: paused},
 		Workflow: workflowconfig.Workflow{

@@ -215,11 +215,25 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 		Description:    issue.Description,
 		State:          issue.State,
 		Labels:         append([]string(nil), issue.Labels...),
+		Assignees:      append([]string(nil), issue.Assignees...),
+		BlockedBy:      telemetryBlockedRefs(issue.BlockedBy),
 		PullRequest:    telemetryPullRequest(issue, quietDuration, pollInterval),
 		CreatedAt:      timePointerFromPtr(issue.CreatedAt),
 		UpdatedAt:      timePointerFromPtr(issue.UpdatedAt),
 		StageUpdatedAt: timePointerFromPtr(issue.StageUpdatedAt),
 	}
+}
+
+func telemetryBlockedRefs(refs []connector.BlockedRef) []telemetry.BlockedRef {
+	out := make([]telemetry.BlockedRef, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, telemetry.BlockedRef{
+			ID:         ref.ID,
+			Identifier: ref.Identifier,
+			State:      ref.State,
+		})
+	}
+	return out
 }
 
 func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, pollInterval time.Duration) *telemetry.PullRequest {

@@ -289,6 +289,7 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		DashboardURL:    s.dashboardURL,
 		Snapshot:        scopedSnapshot,
 		Projects:        projects,
+		WorkflowStates:  s.projectWorkflowStates(project.ID),
 		Assets:          s.assets.templatePaths(),
 		ActiveNav:       "project",
 		ProjectID:       strings.TrimSpace(project.ID),

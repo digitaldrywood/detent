@@ -580,6 +580,100 @@ func TestDashboardRendersBoundedPRPipelineLanes(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	todoAt := now.Add(-8 * time.Minute)
+	reviewAt := now.Add(-3 * time.Minute)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:          "Detent",
+		ConnectorName:  "github",
+		ProjectID:      "detent",
+		ProjectName:    "Detent",
+		WorkflowStates: []string{"Backlog", "Todo", "In Progress", "Human Review", "Done"},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Pipeline: []telemetry.Issue{
+				{
+					ID:             "review",
+					Identifier:     "digitaldrywood/detent#478",
+					ProjectID:      "detent",
+					Title:          "Render per-project Kanban board",
+					State:          "Human Review",
+					Labels:         []string{"enhancement", "ui"},
+					Assignees:      []string{"release-captain"},
+					BlockedBy:      []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#415", State: "Done"}},
+					StageUpdatedAt: &reviewAt,
+					PullRequest: &telemetry.PullRequest{
+						Number:           512,
+						URL:              "https://github.com/digitaldrywood/detent/pull/512",
+						CIStatus:         "success",
+						CodexReviewState: "P2",
+					},
+				},
+			},
+			Queue: []telemetry.Queued{
+				{
+					Issue: telemetry.Issue{
+						ID:             "todo",
+						Identifier:     "digitaldrywood/detent#477",
+						ProjectID:      "detent",
+						Title:          "Read workflow state",
+						StageUpdatedAt: &todoAt,
+					},
+					Attempt: 1,
+				},
+			},
+		},
+	})
+
+	if !strings.Contains(html, `id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML"`) {
+		t.Fatalf("dashboard snapshot must keep morph swap:\n%s", html)
+	}
+
+	section := dashboardSection(t, html, `aria-label="Project Kanban"`, `aria-label="Pull request pipeline"`)
+	for _, want := range []string{
+		"Project Kanban",
+		"Read-only",
+		`id="project-kanban-show-empty"`,
+		`data-project-kanban-empty-lane`,
+		`data-preserve-scroll="project-kanban-human-review"`,
+		`href="https://github.com/digitaldrywood/detent/pull/512"`,
+		"#512",
+		"Render per-project Kanban board",
+		"CI pass",
+		"Codex P2",
+		"enhancement",
+		"ui",
+		"release-captain",
+		"digitaldrywood/detent#415 Done",
+		"No linked PR",
+		"Read workflow state",
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("project kanban missing %q:\n%s", want, section)
+		}
+	}
+	for _, forbidden := range []string{
+		`draggable=`,
+		`hx-post=`,
+		`data-kanban-drop`,
+		`Comment`,
+	} {
+		if strings.Contains(section, forbidden) {
+			t.Fatalf("project kanban rendered mutation affordance %q:\n%s", forbidden, section)
+		}
+	}
+
+	backlogIndex := strings.Index(section, `aria-label="Backlog lane"`)
+	todoIndex := strings.Index(section, `aria-label="Todo lane"`)
+	reviewIndex := strings.Index(section, `aria-label="Human Review lane"`)
+	if backlogIndex < 0 || todoIndex < 0 || reviewIndex < 0 || backlogIndex >= todoIndex || todoIndex >= reviewIndex {
+		t.Fatalf("kanban lanes are not in configured order: backlog=%d todo=%d review=%d\n%s", backlogIndex, todoIndex, reviewIndex, section)
+	}
+}
+
 func TestDashboardPreservesSnapshotScrollContainersAcrossSSEMorph(t *testing.T) {
 	t.Parallel()
 

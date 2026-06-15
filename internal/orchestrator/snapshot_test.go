@@ -152,6 +152,8 @@ func TestStateSnapshotPopulated(t *testing.T) {
 			Title:      "Pipeline PR",
 			State:      "Human Review",
 			Labels:     []string{"enhancement"},
+			Assignees:  []string{"release-captain"},
+			BlockedBy:  []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415", State: "Done"}},
 			UpdatedAt:  &pipelineUpdatedAt,
 			PullRequest: &connector.PullRequest{
 				Number:            142,
@@ -227,6 +229,12 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	pipeline := snapshot.Pipeline[0]
 	if pipeline.ID != "i-pr" || pipeline.State != "Human Review" || pipeline.UpdatedAt == nil || !pipeline.UpdatedAt.Equal(pipelineUpdatedAt) {
 		t.Fatalf("Pipeline[0] = %#v", pipeline)
+	}
+	if len(pipeline.Assignees) != 1 || pipeline.Assignees[0] != "release-captain" {
+		t.Fatalf("Pipeline[0].Assignees = %#v, want release-captain", pipeline.Assignees)
+	}
+	if len(pipeline.BlockedBy) != 1 || pipeline.BlockedBy[0].Identifier != "digitaldrywood/detent#415" || pipeline.BlockedBy[0].State != "Done" {
+		t.Fatalf("Pipeline[0].BlockedBy = %#v, want dependency ref", pipeline.BlockedBy)
 	}
 	if pipeline.PullRequest == nil || pipeline.PullRequest.Number != 142 || pipeline.PullRequest.CIStatus != "pending" || pipeline.PullRequest.CodexReviewState != "P2" {
 		t.Fatalf("Pipeline[0].PullRequest = %#v", pipeline.PullRequest)

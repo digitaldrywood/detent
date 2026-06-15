@@ -77,6 +77,8 @@ type Issue struct {
 	Description    string       `json:"description,omitempty"`
 	State          string       `json:"state,omitempty"`
 	Labels         []string     `json:"labels,omitempty"`
+	Assignees      []string     `json:"assignees,omitempty"`
+	BlockedBy      []BlockedRef `json:"blocked_by,omitempty"`
 	PullRequest    *PullRequest `json:"pull_request,omitempty"`
 	Owner          string       `json:"owner,omitempty"`
 	LeaseRenewedAt *time.Time   `json:"lease_renewed_at,omitempty"`
@@ -85,6 +87,12 @@ type Issue struct {
 	CreatedAt      *time.Time   `json:"created_at,omitempty"`
 	UpdatedAt      *time.Time   `json:"updated_at,omitempty"`
 	StageUpdatedAt *time.Time   `json:"stage_updated_at,omitempty"`
+}
+
+type BlockedRef struct {
+	ID         string `json:"id,omitempty"`
+	Identifier string `json:"identifier"`
+	State      string `json:"state,omitempty"`
 }
 
 type PullRequest struct {

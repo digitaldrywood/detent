@@ -7,6 +7,7 @@ import (
 	"sync"
 	"time"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -153,6 +154,83 @@ func trackerProjectURL(trackedProject *projectpkg.Project) string {
 		return slug
 	}
 	return ""
+}
+
+func (s *Server) projectWorkflowStates(projectID string) []string {
+	if s.registry == nil {
+		return nil
+	}
+	trackedProject, ok := s.registry.Get(projectpkg.ID(strings.TrimSpace(projectID)))
+	if !ok || trackedProject == nil {
+		return nil
+	}
+	return configuredWorkflowStates(trackedProject.Workflow().Config)
+}
+
+func configuredWorkflowStates(cfg workflowconfig.Config) []string {
+	configured := make([]string, 0, len(cfg.Tracker.ActiveStates)+len(cfg.Tracker.ObservedStates)+len(cfg.Tracker.TerminalStates))
+	configured = append(configured, cfg.Tracker.ActiveStates...)
+	configured = append(configured, cfg.Tracker.ObservedStates...)
+	configured = append(configured, cfg.Tracker.TerminalStates...)
+	seen := map[string]string{}
+	for _, state := range configured {
+		display := strings.Join(strings.Fields(strings.TrimSpace(state)), " ")
+		if display == "" {
+			continue
+		}
+		key := workflowStateKey(display)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = display
+	}
+
+	states := make([]string, 0, len(seen))
+	for _, state := range detentWorkflowStateOrder() {
+		key := workflowStateKey(state)
+		display, ok := seen[key]
+		if !ok {
+			continue
+		}
+		states = append(states, display)
+		delete(seen, key)
+	}
+	for _, state := range configured {
+		display := strings.Join(strings.Fields(strings.TrimSpace(state)), " ")
+		key := workflowStateKey(display)
+		if display == "" {
+			continue
+		}
+		if _, ok := seen[key]; !ok {
+			continue
+		}
+		states = append(states, display)
+		delete(seen, key)
+	}
+	return states
+}
+
+func detentWorkflowStateOrder() []string {
+	return []string{
+		"Backlog",
+		"Todo",
+		"In Progress",
+		"Blocked",
+		"Human Review",
+		"Rework",
+		"Merging",
+		"Done",
+		"Cancelled",
+		"Canceled",
+		"Closed",
+		"Duplicate",
+	}
+}
+
+func workflowStateKey(state string) string {
+	state = strings.ToLower(strings.TrimSpace(state))
+	replacer := strings.NewReplacer(" ", "", "-", "", "_", "")
+	return replacer.Replace(state)
 }
 
 func projectSmallMultipleIDs(projects []templates.ProjectSmallMultiple) []string {

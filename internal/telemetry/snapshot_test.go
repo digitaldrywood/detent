@@ -48,6 +48,9 @@ func TestSnapshotJSONShape(t *testing.T) {
 					State:      "In Progress",
 					Title:      "Port hub",
 					URL:        "https://example.com/issues/1",
+					Labels:     []string{"enhancement"},
+					Assignees:  []string{"release-captain"},
+					BlockedBy:  []telemetry.BlockedRef{{Identifier: "DD-0", State: "Done"}},
 				},
 				ProcessIdentity: "4242",
 				SessionID:       "thread-1",
@@ -230,6 +233,14 @@ func TestSnapshotJSONShape(t *testing.T) {
 	running := got["running"].([]any)[0].(map[string]any)
 	if running["issue_id"] != "issue-1" || running["identifier"] != "DD-1" {
 		t.Fatalf("running row = %#v", running)
+	}
+	assignees := running["assignees"].([]any)
+	if len(assignees) != 1 || assignees[0] != "release-captain" {
+		t.Fatalf("running assignees = %#v", assignees)
+	}
+	blockers := running["blocked_by"].([]any)
+	if len(blockers) != 1 || blockers[0].(map[string]any)["identifier"] != "DD-0" || blockers[0].(map[string]any)["state"] != "Done" {
+		t.Fatalf("running blockers = %#v", blockers)
 	}
 	if running["process_identity"] != "4242" {
 		t.Fatalf("running process identity = %#v", running)
