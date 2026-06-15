@@ -32,8 +32,8 @@ func TestClientGraphQLSendsBearerRequest(t *testing.T) {
 		if got := r.Header.Get("Content-Type"); got != "application/json" {
 			t.Fatalf("Content-Type = %q, want application/json", got)
 		}
-		if got := r.Header.Get("X-GitHub-Api-Version"); got != "2022-11-28" {
-			t.Fatalf("X-GitHub-Api-Version = %q, want 2022-11-28", got)
+		if got := r.Header.Get("X-GitHub-Api-Version"); got != "2026-03-10" {
+			t.Fatalf("X-GitHub-Api-Version = %q, want 2026-03-10", got)
 		}
 
 		var payload map[string]any

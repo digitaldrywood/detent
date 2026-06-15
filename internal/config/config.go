@@ -23,6 +23,9 @@ const (
 	TrackerLinear = "linear"
 	TrackerMemory = "memory"
 
+	GitHubStatusSourceProjectV2  = "project_v2"
+	GitHubStatusSourceIssueField = "issue_field"
+
 	DependencyReadinessTerminal         = "terminal"
 	DependencyReadinessTerminalOrMerged = "terminal_or_merged"
 
@@ -75,7 +78,10 @@ type Tracker struct {
 	GitHubAppPrivateKey        string                `yaml:"github_app_private_key"`
 	GitHubAppPrivateKeyPath    string                `yaml:"github_app_private_key_path"`
 	GitHubAppInstallationID    string                `yaml:"github_app_installation_id"`
+	GitHubStatusSource         string                `yaml:"github_status_source"`
 	ProjectSlug                string                `yaml:"project_slug"`
+	Repository                 string                `yaml:"repository"`
+	StatusField                string                `yaml:"status_field"`
 	WriteProbeIssue            string                `yaml:"write_probe_issue,omitempty"`
 	Assignee                   string                `yaml:"assignee"`
 	ActiveStates               []string              `yaml:"active_states"`
@@ -490,6 +496,8 @@ func Default() Config {
 			HTTPMaxIdleConnsPerHost:    32,
 			HTTPIdleConnTimeoutMS:      90000,
 			GitHubGraphQLWarnRemaining: 500,
+			GitHubStatusSource:         GitHubStatusSourceProjectV2,
+			StatusField:                "Status",
 			ActiveStates:               []string{"Todo", "In Progress"},
 			ObservedStates:             []string{"Backlog", "Human Review", "Blocked"},
 			TerminalStates:             []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"},
@@ -637,6 +645,12 @@ func (c *Config) normalize() {
 	if c.Tracker.Kind == TrackerGitHub && c.Tracker.Endpoint == defaultLinearEndpoint {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
+	c.Tracker.GitHubStatusSource = normalizeGitHubStatusSource(c.Tracker.GitHubStatusSource)
+	c.Tracker.Repository = strings.TrimSpace(c.Tracker.Repository)
+	c.Tracker.StatusField = strings.TrimSpace(c.Tracker.StatusField)
+	if c.Tracker.StatusField == "" {
+		c.Tracker.StatusField = "Status"
+	}
 	c.Tracker.WriteProbeIssue = strings.TrimSpace(c.Tracker.WriteProbeIssue)
 	c.Tracker.Claims.Normalize()
 	c.Tracker.DependencyAutoUnblock.Normalize()
@@ -662,7 +676,7 @@ func (c *Config) validateTracker(problems *[]string) {
 		validateRequired("tracker.project_slug", c.Tracker.ProjectSlug, " for linear", problems)
 	case TrackerGitHub:
 		c.Tracker.validateGitHubAuth(problems)
-		validateRequired("tracker.project_slug", c.Tracker.ProjectSlug, " for github", problems)
+		c.Tracker.validateGitHubStatusSource(problems)
 	case TrackerMemory:
 	default:
 		*problems = append(*problems, "tracker.kind must be one of github, linear, memory")
@@ -680,6 +694,23 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.github_graphql_warn_remaining", c.Tracker.GitHubGraphQLWarnRemaining, problems)
 	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
+}
+
+func (t *Tracker) validateGitHubStatusSource(problems *[]string) {
+	switch t.GitHubStatusSource {
+	case GitHubStatusSourceProjectV2:
+		validateRequired("tracker.project_slug", t.ProjectSlug, " for github project_v2", problems)
+	case GitHubStatusSourceIssueField:
+		validateRequired("tracker.repository", t.Repository, " for github issue_field", problems)
+		if strings.TrimSpace(t.StatusField) == "" {
+			*problems = append(*problems, "tracker.status_field is required for github issue_field")
+		}
+		if strings.TrimSpace(t.Repository) != "" && !validRepositoryName(t.Repository) {
+			*problems = append(*problems, "tracker.repository must be owner/name")
+		}
+	default:
+		*problems = append(*problems, "tracker.github_status_source must be one of project_v2, issue_field")
+	}
 }
 
 func (t *Tracker) validateGitHubAuth(problems *[]string) {
@@ -706,6 +737,22 @@ func (t *Tracker) hasGitHubAppCredentials() bool {
 	return strings.TrimSpace(t.GitHubAppID) != "" &&
 		strings.TrimSpace(t.GitHubAppInstallationID) != "" &&
 		(strings.TrimSpace(t.GitHubAppPrivateKey) != "" || strings.TrimSpace(t.GitHubAppPrivateKeyPath) != "")
+}
+
+func normalizeGitHubStatusSource(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", GitHubStatusSourceProjectV2, "projectv2", "project":
+		return GitHubStatusSourceProjectV2
+	case GitHubStatusSourceIssueField, "issuefield", "issues":
+		return GitHubStatusSourceIssueField
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func validRepositoryName(value string) bool {
+	owner, repo, ok := strings.Cut(strings.TrimSpace(value), "/")
+	return ok && strings.TrimSpace(owner) != "" && strings.TrimSpace(repo) != "" && !strings.Contains(repo, "/")
 }
 
 func (w *Workspace) validate(problems *[]string) {

@@ -22,6 +22,12 @@ query DetentGitHubAuthenticate($projectId: ID!) {
 }`
 
 const (
+	GitHubStatusSourceProjectV2   = "project_v2"
+	GitHubStatusSourceIssueField  = "issue_field"
+	defaultGitHubIssueStatusField = "Status"
+)
+
+const (
 	graphQLQueryAuthenticate    = "authenticate"
 	graphQLQueryCandidateIssues = "candidate_issues"
 	graphQLQueryObservedStatus  = "observed_status"
@@ -48,7 +54,10 @@ type Config struct {
 	GitHubAppPrivateKey     string
 	GitHubAppPrivateKeyPath string
 	GitHubAppInstallationID string
+	GitHubStatusSource      string
 	ProjectSlug             string
+	Repository              string
+	StatusField             string
 	ActiveStates            []string
 	ObservedStates          []string
 	TerminalStates          []string
@@ -65,15 +74,20 @@ type Config struct {
 
 type Connector struct {
 	client         *Client
+	statusSource   string
 	projectID      string
+	repository     pullRequestRepo
+	statusField    string
 	activeStates   []string
 	observedStates []string
 	terminalStates []string
 	stateMap       map[string]string
 	priorityMap    map[string]*int
 	statusCache    *statusCache
+	issueFields    *issueFieldCache
 	projectCache   *projectCache
 	mu             sync.RWMutex
+	writeMu        sync.Mutex
 	instanceLogin  string
 }
 
@@ -109,15 +123,25 @@ func NewConnector(cfg Config) (*Connector, error) {
 		return nil, err
 	}
 
+	statusField := strings.TrimSpace(cfg.StatusField)
+	if statusField == "" {
+		statusField = defaultGitHubIssueStatusField
+	}
+	repository, _ := pullRequestRepoFromName(cfg.Repository)
+
 	return &Connector{
 		client:         client,
+		statusSource:   normalizeGitHubStatusSource(cfg.GitHubStatusSource),
 		projectID:      strings.TrimSpace(cfg.ProjectSlug),
+		repository:     repository,
+		statusField:    statusField,
 		activeStates:   normalizeStateList(cfg.ActiveStates, []string{"Todo", "In Progress"}),
 		observedStates: normalizeStateList(cfg.ObservedStates, nil),
 		terminalStates: normalizeStateList(cfg.TerminalStates, []string{"Done", "Cancelled", "Canceled", "Closed"}),
 		stateMap:       cloneStateMap(cfg.StateMap),
 		priorityMap:    clonePriorityMapWithDefault(cfg.PriorityMap),
 		statusCache:    newStatusCache(githubCacheTTL, cfg.Now),
+		issueFields:    newIssueFieldCache(githubCacheTTL, cfg.Now),
 		projectCache:   newProjectCache(githubCacheTTL, cfg.Now),
 	}, nil
 }
@@ -153,6 +177,9 @@ func (c *Connector) Close() error {
 }
 
 func (c *Connector) Authenticate(ctx context.Context) error {
+	if c.usesIssueFieldStatus() {
+		return c.authenticateIssueField(ctx)
+	}
 	if c.projectID == "" {
 		return ErrMissingProject
 	}
@@ -181,6 +208,21 @@ func (c *Connector) Authenticate(ctx context.Context) error {
 	c.mu.Unlock()
 
 	return nil
+}
+
+func normalizeGitHubStatusSource(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", GitHubStatusSourceProjectV2, "projectv2", "project":
+		return GitHubStatusSourceProjectV2
+	case GitHubStatusSourceIssueField, "issuefield", "issues":
+		return GitHubStatusSourceIssueField
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
+}
+
+func (c *Connector) usesIssueFieldStatus() bool {
+	return c != nil && c.statusSource == GitHubStatusSourceIssueField
 }
 
 func (c *Connector) InstanceLogin() string {

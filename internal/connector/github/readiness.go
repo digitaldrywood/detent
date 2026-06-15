@@ -91,11 +91,19 @@ func (c githubReadinessChecker) Check(ctx context.Context, cfg ReadinessConfig) 
 	if hasGitHubAppCredentials(c.cfg, c.cfg.LookupEnv) {
 		checks = append(checks, c.appInstallationCheck(ctx, cfg))
 	}
-	checks = append(checks,
-		c.projectAccessCheck(ctx),
-		c.statusOptionsCheck(ctx, cfg.StatusStates),
-		c.projectItemsReadCheck(ctx, cfg.ReadStates),
-	)
+	if c.connector.usesIssueFieldStatus() {
+		checks = append(checks,
+			c.issueFieldAccessCheck(ctx),
+			c.issueFieldStatusOptionsCheck(ctx, cfg.StatusStates),
+			c.issueFieldIssuesReadCheck(ctx, cfg.ReadStates),
+		)
+	} else {
+		checks = append(checks,
+			c.projectAccessCheck(ctx),
+			c.statusOptionsCheck(ctx, cfg.StatusStates),
+			c.projectItemsReadCheck(ctx, cfg.ReadStates),
+		)
+	}
 	checks = append(checks, c.repositoryChecks(ctx, cfg.Repositories, cfg)...)
 
 	probe, hasProbe, probeCheck := c.resolveWriteProbe(ctx, cfg)
@@ -283,6 +291,72 @@ func (c githubReadinessChecker) readProjectItemsSample(ctx context.Context, stat
 		}
 	}
 	return count, nil
+}
+
+func (c githubReadinessChecker) issueFieldAccessCheck(ctx context.Context) ReadinessCheck {
+	metadata, err := c.connector.resolveIssueStatusMetadata(ctx)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue field access",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot read issue field %q for repository %s/%s: %v", c.connector.statusField, c.connector.repository.Owner, c.connector.repository.Name, err),
+			Hint:   "Grant Issue Fields organization read permission and Issues repository read permission.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue field access",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("read %s issue field %q", metadata.DataType, metadata.Name),
+	}
+}
+
+func (c githubReadinessChecker) issueFieldStatusOptionsCheck(ctx context.Context, states []string) ReadinessCheck {
+	states = uniqueNonBlank(states)
+	if len(states) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub issue field Status mappings",
+			Status: ReadinessOK,
+			Detail: "skipped because no tracker states are configured",
+		}
+	}
+	if err := c.connector.verifyIssueFieldStatusOptions(ctx, states); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue field Status mappings",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot resolve required Status options for issue field %q: %v", c.connector.statusField, err),
+			Hint:   "Add the missing organization issue-field options or fix tracker.state_map.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue field Status mappings",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("resolved %d configured Status option(s) on issue field %q", len(states), c.connector.statusField),
+	}
+}
+
+func (c githubReadinessChecker) issueFieldIssuesReadCheck(ctx context.Context, states []string) ReadinessCheck {
+	states = uniqueNonBlank(states)
+	if len(states) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub issue field issue read",
+			Status: ReadinessOK,
+			Detail: "skipped because no active or observed tracker states are configured",
+		}
+	}
+	issues, err := c.connector.fetchIssueFieldIssuesByStates(ctx, states, 5)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue field issue read",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot read issues for configured issue-field states in %s/%s: %v", c.connector.repository.Owner, c.connector.repository.Name, err),
+			Hint:   "Grant Issues repository read permission and confirm issue field search is available.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue field issue read",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("read issues for %d configured state(s); sampled %d issue(s)", len(states), len(issues)),
+	}
 }
 
 func (c githubReadinessChecker) repositoryChecks(ctx context.Context, repositories []string, cfg ReadinessConfig) []ReadinessCheck {
@@ -679,7 +753,11 @@ func (c githubReadinessChecker) issueParentsReadCheck(ctx context.Context, probe
 func (c githubReadinessChecker) writeChecks(ctx context.Context, cfg ReadinessConfig, probe readinessProbeIssue, hasProbe bool) []ReadinessCheck {
 	checks := []ReadinessCheck{}
 	if cfg.RequireProjectStatusWrite {
-		checks = append(checks, c.projectStatusWriteCheck(ctx, probe, hasProbe))
+		if c.connector.usesIssueFieldStatus() {
+			checks = append(checks, c.issueFieldStatusWriteCheck(ctx, probe, hasProbe))
+		} else {
+			checks = append(checks, c.projectStatusWriteCheck(ctx, probe, hasProbe))
+		}
 	}
 	if cfg.RequireIssueComments {
 		checks = append(checks, c.issueCommentWriteCheck(ctx, probe, hasProbe))
@@ -739,6 +817,42 @@ func (c githubReadinessChecker) projectStatusWriteCheck(ctx context.Context, pro
 		Name:   "GitHub project status update",
 		Status: ReadinessOK,
 		Detail: "reapplied existing Status value on the write probe item",
+	}
+}
+
+func (c githubReadinessChecker) issueFieldStatusWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
+	if !hasProbe {
+		return unprovenWriteCheck("GitHub issue field Status update")
+	}
+	statusName, err := c.connector.fetchIssueFieldStatus(ctx, probe.Ref)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue field Status update",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token cannot read current issue field %q for probe issue: %v", c.connector.statusField, err),
+			Hint:   "Use a scratch issue that has the configured issue field visible to the token.",
+		}
+	}
+	if strings.TrimSpace(statusName) == "" {
+		return ReadinessCheck{
+			Name:   "GitHub issue field Status update",
+			Status: ReadinessWarn,
+			Detail: "write probe issue has no current issue field Status value; issue-field update was not executed",
+			Hint:   "Set the scratch issue Status field, then rerun detent doctor.",
+		}
+	}
+	if err := c.connector.setIssueStatusField(ctx, probe.Ref, statusName); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub issue field Status update",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("token cannot update issue field %q: %v", c.connector.statusField, err),
+			Hint:   "Grant Issues repository write permission and Issue Fields organization read permission.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub issue field Status update",
+		Status: ReadinessOK,
+		Detail: "reapplied existing issue field Status value on the write probe issue",
 	}
 }
 

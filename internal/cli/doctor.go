@@ -1995,7 +1995,10 @@ func defaultDoctorAutoPromoteConnector(cfg workflowconfig.Config) (doctorAutoPro
 		GitHubAppPrivateKey:     cfg.Tracker.GitHubAppPrivateKey,
 		GitHubAppPrivateKeyPath: cfg.Tracker.GitHubAppPrivateKeyPath,
 		GitHubAppInstallationID: cfg.Tracker.GitHubAppInstallationID,
+		GitHubStatusSource:      cfg.Tracker.GitHubStatusSource,
 		ProjectSlug:             cfg.Tracker.ProjectSlug,
+		Repository:              cfg.Tracker.Repository,
+		StatusField:             cfg.Tracker.StatusField,
 		ActiveStates:            cfg.Tracker.ActiveStates,
 		ObservedStates:          cfg.Tracker.ObservedStates,
 		TerminalStates:          cfg.Tracker.TerminalStates,
@@ -2046,7 +2049,10 @@ func doctorGitHubConnectorConfig(cfg workflowconfig.Config) ghconnector.Config {
 		GitHubAppPrivateKey:     cfg.Tracker.GitHubAppPrivateKey,
 		GitHubAppPrivateKeyPath: cfg.Tracker.GitHubAppPrivateKeyPath,
 		GitHubAppInstallationID: cfg.Tracker.GitHubAppInstallationID,
+		GitHubStatusSource:      cfg.Tracker.GitHubStatusSource,
 		ProjectSlug:             cfg.Tracker.ProjectSlug,
+		Repository:              cfg.Tracker.Repository,
+		StatusField:             cfg.Tracker.StatusField,
 		ActiveStates:            cfg.Tracker.ActiveStates,
 		ObservedStates:          cfg.Tracker.ObservedStates,
 		TerminalStates:          cfg.Tracker.TerminalStates,
@@ -2212,6 +2218,9 @@ func doctorGitHubRepositories(
 	sourceRoot string,
 ) []string {
 	repositories := []string{}
+	if strings.TrimSpace(cfg.Tracker.Repository) != "" {
+		repositories = append(repositories, cfg.Tracker.Repository)
+	}
 	if repo, ok := doctorGitHubRepositoryFromProbe(cfg.Tracker.WriteProbeIssue); ok {
 		repositories = append(repositories, repo)
 	}

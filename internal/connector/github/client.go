@@ -20,7 +20,7 @@ import (
 
 const (
 	DefaultGraphQLEndpoint = "https://api.github.com/graphql"
-	gitHubAPIVersion       = "2022-11-28"
+	gitHubAPIVersion       = "2026-03-10"
 	maxErrorBodyBytes      = 1000
 )
 

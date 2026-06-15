@@ -29,7 +29,10 @@ type Config struct {
 	GitHubAppPrivateKey     string
 	GitHubAppPrivateKeyPath string
 	GitHubAppInstallationID string
+	GitHubStatusSource      string
 	ProjectSlug             string
+	Repository              string
+	StatusField             string
 	ActiveStates            []string
 	ObservedStates          []string
 	TerminalStates          []string
@@ -58,7 +61,10 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
 			GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
 			GitHubAppInstallationID: cfg.GitHubAppInstallationID,
+			GitHubStatusSource:      cfg.GitHubStatusSource,
 			ProjectSlug:             cfg.ProjectSlug,
+			Repository:              cfg.Repository,
+			StatusField:             cfg.StatusField,
 			ActiveStates:            cfg.ActiveStates,
 			ObservedStates:          cfg.ObservedStates,
 			TerminalStates:          cfg.TerminalStates,

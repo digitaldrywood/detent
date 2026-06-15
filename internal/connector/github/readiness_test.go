@@ -80,6 +80,89 @@ func TestReadinessProjectStatusWriteReportsMissingProjectWrite(t *testing.T) {
 	}
 }
 
+func TestReadinessIssueFieldCheckUsesBoardlessStatusSource(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/orgs/digitaldrywood/issue-fields?per_page=100",
+			body:   `[{"id":10,"node_id":"IFSS_status","name":"Status","data_type":"single_select","options":[{"id":1,"name":"Todo","color":"gray"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			body:   `{"total_count":0,"items":[]}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceIssueField,
+		Repository:         "digitaldrywood/detent",
+		StatusField:        "Status",
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.Check(context.Background(), ReadinessConfig{
+		StatusStates: []string{"Todo"},
+		ReadStates:   []string{"Todo"},
+	})
+	if len(got) != 5 {
+		t.Fatalf("checks len = %d, want auth, access, mappings, read, repository warning: %#v", len(got), got)
+	}
+	for _, check := range got {
+		if strings.Contains(check.Name, "project") {
+			t.Fatalf("check name = %q, want no ProjectV2 checks in issue_field mode", check.Name)
+		}
+	}
+	if got[1].Name != "GitHub issue field access" || got[1].Status != ReadinessOK {
+		t.Fatalf("issue field access check = %#v, want OK", got[1])
+	}
+	if got[2].Name != "GitHub issue field Status mappings" || got[2].Status != ReadinessOK {
+		t.Fatalf("issue field mappings check = %#v, want OK", got[2])
+	}
+	if got[3].Name != "GitHub issue field issue read" || got[3].Status != ReadinessOK {
+		t.Fatalf("issue field read check = %#v, want OK", got[3])
+	}
+}
+
+func TestReadinessIssueFieldStatusWriteReappliesProbeValue(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values?per_page=100",
+			body:   `[{"issue_field_id":10,"node_id":"IFV_1","data_type":"single_select","single_select_option":{"id":1,"name":"Todo","color":"gray"}}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/orgs/digitaldrywood/issue-fields?per_page=100",
+			body:   `[{"id":10,"node_id":"IFSS_status","name":"Status","data_type":"single_select","options":[{"id":1,"name":"Todo","color":"gray"}]}]`,
+		},
+		{
+			method: http.MethodPost,
+			path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values",
+			body:   `[{"issue_field_id":10,"node_id":"IFV_1","data_type":"single_select","single_select_option":{"id":1,"name":"Todo","color":"gray"}}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceIssueField,
+		Repository:         "digitaldrywood/detent",
+		StatusField:        "Status",
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.issueFieldStatusWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessOK, got)
+	}
+	if !strings.Contains(got.Detail, "reapplied existing issue field Status value") {
+		t.Fatalf("Detail = %q, want issue field write proof", got.Detail)
+	}
+}
+
 func TestReadinessIssueCommentReportsMissingAccess(t *testing.T) {
 	t.Parallel()
 
