@@ -1253,6 +1253,54 @@ func TestCheckDoctorGitHub(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorGitHubScopesSkipAppBackedWorkflows(t *testing.T) {
+	t.Parallel()
+
+	boardlessWorkflow := validDoctorWorkflow("/repo")
+	boardlessWorkflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	boardlessWorkflow.Tracker.APIKey = "$GITHUB_TOKEN"
+	boardlessWorkflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceIssueField
+	boardlessWorkflow.Tracker.ProjectSlug = ""
+	boardlessWorkflow.Tracker.Repository = "digitaldrywood/detent"
+
+	appWorkflow := githubAppWorkflow()
+	workflows := map[string]workflowconfig.Config{
+		"boardless.md": boardlessWorkflow,
+		"projectv2.md": appWorkflow,
+	}
+	cfg := &globalconfig.Config{Projects: []globalconfig.Project{
+		{ID: "boardless", Workflow: "boardless.md"},
+		{ID: "projectv2", Workflow: "projectv2.md"},
+	}}
+
+	got := checkDoctorGitHub(context.Background(), cfg, RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"}, doctorDeps{
+		lookupEnv: mapLookup(map[string]string{
+			"APP_ID":           "12345",
+			"INSTALLATION_ID":  "67890",
+			"PRIVATE_KEY_PATH": ".detent/github-app.pem",
+		}),
+		loadWorkflow: func(path string) (workflowconfig.Workflow, error) {
+			workflow, ok := workflows[path]
+			if !ok {
+				t.Fatalf("unexpected workflow path %q", path)
+			}
+			return workflowconfig.Workflow{Config: workflow}, nil
+		},
+		githubScopes: func(context.Context, string) ([]string, error) {
+			return []string{"repo", "read:org"}, nil
+		},
+	})
+	if got.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorOK, got)
+	}
+	if !strings.Contains(got.Detail, "repo, read:org") {
+		t.Fatalf("Detail = %q, want boardless PAT scopes", got.Detail)
+	}
+	if strings.Contains(got.Detail, "read:project") || strings.Contains(got.Detail, ", project") {
+		t.Fatalf("Detail = %q, want no ProjectV2 PAT scopes for app-backed workflow", got.Detail)
+	}
+}
+
 func TestExpandDoctorWorkspacePath(t *testing.T) {
 	t.Parallel()
 

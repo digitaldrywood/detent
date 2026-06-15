@@ -2685,6 +2685,9 @@ func doctorRequiredGitHubScopes(cfg *globalconfig.Config, deps doctorDeps) []str
 		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 			continue
 		}
+		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
+			continue
+		}
 		if workflow.Config.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceIssueField {
 			add(requiredIssueFieldGitHubScopes)
 			continue
