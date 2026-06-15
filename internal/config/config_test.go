@@ -265,6 +265,57 @@ Ticket prompt {{ issue.title }}
 	}
 }
 
+func TestParseWorkflowGitHubIssueFieldTracker(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`---
+tracker:
+  kind: github
+  api_key: $GITHUB_TOKEN
+  github_status_source: issue_field
+  repository: digitaldrywood/detent
+  active_states:
+    - Todo
+---
+Prompt
+`)
+
+	workflow, err := ParseWorkflow(raw)
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	cfg := workflow.Config
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if cfg.Tracker.GitHubStatusSource != GitHubStatusSourceIssueField {
+		t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, GitHubStatusSourceIssueField)
+	}
+	if cfg.Tracker.Repository != "digitaldrywood/detent" {
+		t.Fatalf("Repository = %q, want digitaldrywood/detent", cfg.Tracker.Repository)
+	}
+	if cfg.Tracker.StatusField != "Status" {
+		t.Fatalf("StatusField = %q, want Status", cfg.Tracker.StatusField)
+	}
+	if cfg.Tracker.ProjectSlug != "" {
+		t.Fatalf("ProjectSlug = %q, want empty for issue_field source", cfg.Tracker.ProjectSlug)
+	}
+}
+
+func TestValidateGitHubProjectV2StillRequiresProjectSlug(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Tracker.Kind = TrackerGitHub
+	cfg.Tracker.APIKey = "token"
+	cfg.Tracker.ProjectSlug = ""
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "tracker.project_slug") {
+		t.Fatalf("Validate() error = %v, want project_slug requirement", err)
+	}
+}
+
 func TestParseWorkflowDefaults(t *testing.T) {
 	t.Parallel()
 

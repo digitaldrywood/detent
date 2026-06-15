@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -128,6 +129,9 @@ func (c *Connector) Provision(ctx context.Context) error {
 }
 
 func (c *Connector) EnsureStateOptions(ctx context.Context) error {
+	if c.usesIssueFieldStatus() {
+		return c.EnsureIssueFieldStateOptions(ctx)
+	}
 	if c.projectID == "" {
 		return ErrMissingProject
 	}
@@ -152,6 +156,31 @@ func (c *Connector) EnsureStateOptions(ctx context.Context) error {
 		c.statusCache.Clear(c.projectID)
 	}
 
+	return nil
+}
+
+func (c *Connector) EnsureIssueFieldStateOptions(ctx context.Context) error {
+	if !validPullRequestRepo(c.repository) {
+		return ErrMissingRepository
+	}
+
+	metadata, err := c.resolveIssueStatusMetadata(ctx)
+	if err != nil {
+		if !errors.Is(err, ErrStatusFieldNotFound) {
+			return err
+		}
+		_, err := c.createIssueStatusField(ctx, c.repository.Owner, c.requiredStatusOptions())
+		return err
+	}
+
+	options := issueFieldOptionsWithRequiredOrder(metadata.OptionsByName, c.requiredStatusOptions())
+	if issueFieldOptionsEqual(metadata.OptionsByName, options) {
+		return nil
+	}
+	if _, err := c.updateIssueFieldOptions(ctx, metadata.Org, metadata.FieldID, options); err != nil {
+		return fmt.Errorf("ensure github issue field status options: %w", err)
+	}
+	c.issueFields.Clear(metadata.Org, metadata.Name)
 	return nil
 }
 

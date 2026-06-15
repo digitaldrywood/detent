@@ -14,6 +14,7 @@ var (
 	ErrInvalidResponse            = errors.New("github response is invalid")
 	ErrMissingAppConfig           = errors.New("github app configuration is incomplete")
 	ErrMissingProject             = errors.New("github project is required")
+	ErrMissingRepository          = errors.New("github repository is required")
 	ErrMissingToken               = errors.New("github token is required")
 	ErrNotFound                   = errors.New("github resource not found")
 	ErrAssigneeNotFound           = errors.New("github assignee not found")

@@ -737,6 +737,16 @@ type projectField struct {
 }
 
 func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	if c.usesIssueFieldStatus() {
+		issues, err := c.fetchIssueFieldIssuesByStates(ctx, c.activeStates, 0)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.attachPullRequests(ctx, issues); err != nil {
+			return nil, err
+		}
+		return issues, nil
+	}
 	if c.projectID == "" {
 		return nil, ErrMissingProject
 	}
@@ -757,6 +767,23 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 	wantedStates := normalizedStateSet(stateNames)
 	if len(wantedStates) == 0 {
 		return []connector.Issue{}, nil
+	}
+	if c.usesIssueFieldStatus() {
+		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, 0)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
+			if err := c.populateBlockerReasons(ctx, issues); err != nil {
+				return nil, err
+			}
+		}
+		if attachPullRequestsForStates(wantedStates) {
+			if err := c.attachPullRequests(ctx, issues); err != nil {
+				return nil, err
+			}
+		}
+		return issues, nil
 	}
 	if c.projectID == "" {
 		return nil, ErrMissingProject
@@ -790,6 +817,23 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 	if len(wantedStates) == 0 {
 		return []connector.Issue{}, nil
 	}
+	if c.usesIssueFieldStatus() {
+		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, limit)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
+			if err := c.populateBlockerReasons(ctx, issues); err != nil {
+				return nil, err
+			}
+		}
+		if attachPullRequestsForStates(wantedStates) {
+			if err := c.attachPullRequests(ctx, issues); err != nil {
+				return nil, err
+			}
+		}
+		return issues, nil
+	}
 	if c.projectID == "" {
 		return nil, ErrMissingProject
 	}
@@ -815,6 +859,9 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 }
 
 func (c *Connector) VerifyStatusOptions(ctx context.Context, stateNames []string) error {
+	if c.usesIssueFieldStatus() {
+		return c.verifyIssueFieldStatusOptions(ctx, stateNames)
+	}
 	seen := map[string]struct{}{}
 	for _, stateName := range stateNames {
 		stateName = strings.TrimSpace(stateName)
@@ -844,6 +891,29 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 	ids := uniqueNonBlank(issueIDs)
 	if len(ids) == 0 {
 		return []connector.Issue{}, nil
+	}
+	if c.usesIssueFieldStatus() {
+		refs, err := c.issueRefsForIDs(ctx, ids, graphQLQueryRunningStates)
+		if err != nil {
+			return nil, err
+		}
+
+		issues := make([]connector.Issue, 0, len(ids))
+		for _, id := range ids {
+			ref, ok := refs[id]
+			if !ok {
+				continue
+			}
+			issue, ok, err := c.fetchIssueFieldIssueByRef(ctx, ref)
+			if err != nil {
+				return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
+			}
+			if ok {
+				issues = append(issues, issue)
+			}
+		}
+		sortIssuesByRequestedIDs(issues, ids)
+		return issues, nil
 	}
 	if c.projectID == "" {
 		return nil, ErrMissingProject
@@ -1202,6 +1272,9 @@ func (c *Connector) fetchIssueRefsByID(ctx context.Context, ids []string, queryT
 }
 
 func (c *Connector) fetchIssueByRef(ctx context.Context, ref issueRef) (connector.Issue, bool, error) {
+	if c.usesIssueFieldStatus() {
+		return c.fetchIssueFieldIssueByRef(ctx, ref)
+	}
 	issue, err := c.fetchRESTIssue(ctx, ref)
 	if err != nil {
 		return connector.Issue{}, false, err
@@ -1340,6 +1413,24 @@ func (c *Connector) CloseIssue(ctx context.Context, issueID string) error {
 }
 
 func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateName string) error {
+	if c.usesIssueFieldStatus() {
+		ref, ok, err := c.issueRefForID(ctx, strings.TrimSpace(issueID), graphQLQueryIssueLookup)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrStatusUpdateFailed
+		}
+		currentStatus, err := c.fetchIssueFieldStatus(ctx, ref)
+		if err != nil {
+			return err
+		}
+		if c.terminalStatusUpdateBlocked(currentStatus, stateName) {
+			return nil
+		}
+		githubState := c.detentToGitHubState(stateName)
+		return c.setIssueStatusField(ctx, ref, githubState)
+	}
 	if c.projectID == "" {
 		return ErrMissingProject
 	}
@@ -1409,6 +1500,9 @@ func (c *Connector) SetAssignee(ctx context.Context, issueID string, login strin
 }
 
 func (c *Connector) SetField(ctx context.Context, issueID string, fieldName string, value string) error {
+	if c.usesIssueFieldStatus() {
+		return c.setIssueFieldValueByName(ctx, issueID, fieldName, value)
+	}
 	if c.projectID == "" {
 		return ErrMissingProject
 	}
