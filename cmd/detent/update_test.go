@@ -169,6 +169,25 @@ func TestUpdateCommandFromReleasePassesOptionWithoutPrompt(t *testing.T) {
 	}
 }
 
+func TestDefaultUpdateConfigUsesResolvedVersionInfo(t *testing.T) {
+	t.Parallel()
+
+	cfg := defaultUpdateConfig("/tmp/detent", versionInfo{Version: "v0.4.0"}, "linux", "amd64")
+
+	if cfg.CurrentVersion != "v0.4.0" {
+		t.Fatalf("CurrentVersion = %q, want v0.4.0", cfg.CurrentVersion)
+	}
+	if cfg.ExecutablePath != "/tmp/detent" {
+		t.Fatalf("ExecutablePath = %q, want /tmp/detent", cfg.ExecutablePath)
+	}
+	if cfg.GOOS != "linux" {
+		t.Fatalf("GOOS = %q, want linux", cfg.GOOS)
+	}
+	if cfg.GOARCH != "amd64" {
+		t.Fatalf("GOARCH = %q, want amd64", cfg.GOARCH)
+	}
+}
+
 func TestSelectGoInstallActionParsesReleaseChoice(t *testing.T) {
 	t.Parallel()
 

@@ -97,12 +97,16 @@ func newDefaultUpdateRunner(context.Context) (updateRunner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("resolve current executable: %w", err)
 	}
-	return detentupdate.NewService(detentupdate.Config{
-		CurrentVersion: version,
+	return detentupdate.NewService(defaultUpdateConfig(executable, currentVersionInfo(), runtime.GOOS, runtime.GOARCH)), nil
+}
+
+func defaultUpdateConfig(executable string, info versionInfo, goos string, goarch string) detentupdate.Config {
+	return detentupdate.Config{
+		CurrentVersion: info.Version,
 		ExecutablePath: executable,
-		GOOS:           runtime.GOOS,
-		GOARCH:         runtime.GOARCH,
-	}), nil
+		GOOS:           goos,
+		GOARCH:         goarch,
+	}
 }
 
 func confirmUpdate(cmd *cobra.Command) func(detentupdate.Status) (bool, error) {
