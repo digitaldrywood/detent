@@ -93,6 +93,11 @@ func TestReadinessIssueFieldCheckUsesBoardlessStatusSource(t *testing.T) {
 			method: http.MethodGet,
 			body:   `{"total_count":0,"items":[]}`,
 		},
+		{
+			method: http.MethodGet,
+			path:   "/rate_limit",
+			body:   `{"resources":{"core":{"limit":5000,"used":100,"remaining":4900,"reset":1781560800},"graphql":{"limit":5000,"used":20,"remaining":4980,"reset":1781560800}}}`,
+		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		GitHubStatusSource: GitHubStatusSourceIssueField,
@@ -105,8 +110,8 @@ func TestReadinessIssueFieldCheckUsesBoardlessStatusSource(t *testing.T) {
 		StatusStates: []string{"Todo"},
 		ReadStates:   []string{"Todo"},
 	})
-	if len(got) != 5 {
-		t.Fatalf("checks len = %d, want auth, access, mappings, read, repository warning: %#v", len(got), got)
+	if len(got) != 6 {
+		t.Fatalf("checks len = %d, want auth, access, mappings, read, repository warning, rate limit: %#v", len(got), got)
 	}
 	for _, check := range got {
 		if strings.Contains(check.Name, "project") {
@@ -121,6 +126,12 @@ func TestReadinessIssueFieldCheckUsesBoardlessStatusSource(t *testing.T) {
 	}
 	if got[3].Name != "GitHub issue field issue read" || got[3].Status != ReadinessOK {
 		t.Fatalf("issue field read check = %#v, want OK", got[3])
+	}
+	if got[5].Name != "GitHub API rate limit" || got[5].Status != ReadinessOK {
+		t.Fatalf("rate limit check = %#v, want OK", got[5])
+	}
+	if !strings.Contains(got[5].Detail, "REST core remaining 4900/5000") || !strings.Contains(got[5].Detail, "GraphQL remaining 4980/5000") {
+		t.Fatalf("rate limit detail = %q, want REST and GraphQL visibility", got[5].Detail)
 	}
 }
 
@@ -318,6 +329,60 @@ func TestReadinessGitHubAppInstallationReportsMissingPermissions(t *testing.T) {
 		if !strings.Contains(got.Detail, want) {
 			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
 		}
+	}
+}
+
+func TestReadinessGitHubAppInstallationIssueFieldModeSkipsProjectsPermission(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
+	privateKey := testPrivateKeyPEM(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/987/access_tokens" {
+			t.Fatalf("path = %s, want installation token path", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		response := map[string]any{
+			"token":                "installation-token",
+			"expires_at":           now.Add(time.Hour).Format(time.RFC3339),
+			"repository_selection": "all",
+			"permissions": map[string]string{
+				"issues": "read",
+			},
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("Encode() error = %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	checker := githubReadinessChecker{cfg: Config{
+		Endpoint:                server.URL + "/graphql",
+		HTTPClient:              server.Client(),
+		GitHubAppID:             "123",
+		GitHubAppInstallationID: "987",
+		GitHubAppPrivateKey:     privateKey,
+		Now:                     func() time.Time { return now },
+	}}
+
+	got := checker.appInstallationCheck(context.Background(), ReadinessConfig{
+		RequireIssueFieldRead:        true,
+		RequireIssueFieldStatusWrite: true,
+		RequireIssueComments:         true,
+		RequirePullRequestRead:       true,
+		RequirePullRequestChecks:     true,
+		Repositories:                 []string{"digitaldrywood/detent"},
+	})
+	if got.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessFail, got)
+	}
+	for _, want := range []string{"Issue Fields: read", "Issues: write"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+	if strings.Contains(got.Detail, "Projects") {
+		t.Fatalf("Detail = %q, want no Projects permission requirement in issue_field mode", got.Detail)
 	}
 }
 

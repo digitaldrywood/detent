@@ -32,6 +32,8 @@ type ReadinessConfig struct {
 	Repositories                  []string
 	StatusStates                  []string
 	ReadStates                    []string
+	RequireProjectRead            bool
+	RequireIssueFieldRead         bool
 	RequireIssueCommentsRead      bool
 	RequireDependencyMetadataRead bool
 	RequireIssueChildrenRead      bool
@@ -40,6 +42,7 @@ type ReadinessConfig struct {
 	RequirePullRequestReviews     bool
 	RequirePullRequestChecks      bool
 	RequireProjectStatusWrite     bool
+	RequireIssueFieldStatusWrite  bool
 	RequireIssueComments          bool
 	RequireAssigneeWrite          bool
 	RequireIssueClose             bool
@@ -112,6 +115,7 @@ func (c githubReadinessChecker) Check(ctx context.Context, cfg ReadinessConfig) 
 	}
 	checks = append(checks, c.probeReadChecks(ctx, cfg, probe, hasProbe)...)
 	checks = append(checks, c.writeChecks(ctx, cfg, probe, hasProbe)...)
+	checks = append(checks, c.rateLimitCheck(ctx))
 	return checks
 }
 
@@ -753,11 +757,10 @@ func (c githubReadinessChecker) issueParentsReadCheck(ctx context.Context, probe
 func (c githubReadinessChecker) writeChecks(ctx context.Context, cfg ReadinessConfig, probe readinessProbeIssue, hasProbe bool) []ReadinessCheck {
 	checks := []ReadinessCheck{}
 	if cfg.RequireProjectStatusWrite {
-		if c.connector.usesIssueFieldStatus() {
-			checks = append(checks, c.issueFieldStatusWriteCheck(ctx, probe, hasProbe))
-		} else {
-			checks = append(checks, c.projectStatusWriteCheck(ctx, probe, hasProbe))
-		}
+		checks = append(checks, c.projectStatusWriteCheck(ctx, probe, hasProbe))
+	}
+	if cfg.RequireIssueFieldStatusWrite {
+		checks = append(checks, c.issueFieldStatusWriteCheck(ctx, probe, hasProbe))
 	}
 	if cfg.RequireIssueComments {
 		checks = append(checks, c.issueCommentWriteCheck(ctx, probe, hasProbe))
@@ -772,6 +775,70 @@ func (c githubReadinessChecker) writeChecks(ctx context.Context, cfg ReadinessCo
 		checks = append(checks, c.issueCloseWriteCheck(ctx, probe, hasProbe))
 	}
 	return checks
+}
+
+type restRateLimitResponse struct {
+	Resources struct {
+		Core    restRateLimitResource `json:"core"`
+		GraphQL restRateLimitResource `json:"graphql"`
+	} `json:"resources"`
+}
+
+type restRateLimitResource struct {
+	Limit     int64 `json:"limit"`
+	Used      int64 `json:"used"`
+	Remaining int64 `json:"remaining"`
+	Reset     int64 `json:"reset"`
+}
+
+func (c githubReadinessChecker) rateLimitCheck(ctx context.Context) ReadinessCheck {
+	var response restRateLimitResponse
+	if err := c.connector.client.REST(ctx, http.MethodGet, "/rate_limit", nil, &response); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub API rate limit",
+			Status: ReadinessWarn,
+			Detail: "rate-limit endpoint could not be read: " + err.Error(),
+			Hint:   "Rerun detent doctor when GitHub API access is available.",
+		}
+	}
+	details := []string{}
+	if response.Resources.Core.Limit > 0 {
+		details = append(details, rateLimitResourceDetail("REST core", response.Resources.Core))
+	}
+	if response.Resources.GraphQL.Limit > 0 {
+		details = append(details, rateLimitResourceDetail("GraphQL", response.Resources.GraphQL))
+	}
+	if len(details) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub API rate limit",
+			Status: ReadinessWarn,
+			Detail: "rate-limit endpoint returned no REST core or GraphQL resource details",
+			Hint:   "Check GitHub API compatibility and rerun detent doctor.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub API rate limit",
+		Status: ReadinessOK,
+		Detail: strings.Join(details, "; "),
+	}
+}
+
+func rateLimitResourceDetail(name string, resource restRateLimitResource) string {
+	return fmt.Sprintf(
+		"%s remaining %d/%d; used %d; resets %s",
+		name,
+		resource.Remaining,
+		resource.Limit,
+		resource.Used,
+		rateLimitResetDetail(resource.Reset),
+	)
+}
+
+func rateLimitResetDetail(reset int64) string {
+	if reset <= 0 {
+		return "unknown"
+	}
+	return time.Unix(reset, 0).UTC().Format(time.RFC3339)
 }
 
 func (c githubReadinessChecker) projectStatusWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
@@ -1052,15 +1119,20 @@ func unprovenWriteCheck(name string) ReadinessCheck {
 
 func missingInstallationPermissions(details InstallationTokenDetails, cfg ReadinessConfig) []string {
 	var missing []string
-	projectLevel := "read"
-	if cfg.RequireProjectStatusWrite || len(cfg.ProjectFieldWrites) > 0 {
-		projectLevel = "write"
+	if cfg.RequireProjectRead || cfg.RequireProjectStatusWrite || len(cfg.ProjectFieldWrites) > 0 {
+		projectLevel := "read"
+		if cfg.RequireProjectStatusWrite || len(cfg.ProjectFieldWrites) > 0 {
+			projectLevel = "write"
+		}
+		if !hasAnyPermission(details.Permissions, []string{"organization_projects", "repository_projects", "projects"}, projectLevel) {
+			missing = append(missing, "Projects: "+projectLevel)
+		}
 	}
-	if !hasAnyPermission(details.Permissions, []string{"organization_projects", "repository_projects", "projects"}, projectLevel) {
-		missing = append(missing, "Projects: "+projectLevel)
+	if cfg.RequireIssueFieldRead && !hasAnyPermission(details.Permissions, []string{"organization_issue_fields", "issue_fields"}, "read") {
+		missing = append(missing, "Issue Fields: read")
 	}
 	issueLevel := "read"
-	if cfg.RequireIssueComments || cfg.RequireAssigneeWrite || cfg.RequireIssueClose {
+	if cfg.RequireIssueFieldStatusWrite || cfg.RequireIssueComments || cfg.RequireAssigneeWrite || cfg.RequireIssueClose {
 		issueLevel = "write"
 	}
 	if !permissionAllows(details.Permissions["issues"], issueLevel) {

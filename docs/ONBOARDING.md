@@ -14,9 +14,12 @@ Use these placeholders consistently:
 | `<repo-name>` | GitHub repository name. |
 | `<source-root>` | Local checkout of `<repo-owner>/<repo-name>`. |
 | `<worktree-root>` | Directory where Detent will create issue worktrees. |
+| `<github-mode>` | `project_v2` for GitHub ProjectV2-backed status, or `issue_field` for boardless repository issue-field status. |
 | `<project-owner>` | GitHub org or user that owns the ProjectV2 board. |
 | `<project-number>` | ProjectV2 number shown by `gh project list`. |
 | `<project-node-id>` | ProjectV2 node id, starting with `PVT_`. |
+| `<status-field-name>` | Organization issue field Detent uses as status in boardless mode, usually `Status`. |
+| `<write-probe-issue>` | Scratch issue reference such as `<repo-owner>/<repo-name>#123` for doctor write probes. |
 | `<detent-project-id>` | Local `global.yaml` project id, such as `api`. |
 
 ## Start Here — Determine The Mode
@@ -98,18 +101,28 @@ rg -n 'id: <detent-project-id>|workflow: .*<repo-name>|workdir: .*<repo-name>' \
    detent --format pretty config path
    ```
 
-2. **Confirm GitHub CLI auth and scopes.** Detent needs a token that can read
-   the repo, org, and ProjectV2 board, plus write ProjectV2 status fields. For
-   first-time auth, request every required scope:
+2. **Confirm GitHub CLI auth and scopes.** Detent needs GitHub auth for the
+   selected tracker mode. ProjectV2 mode needs repository, organization, and
+   ProjectV2 read/write scopes. Boardless issue-field mode needs repository
+   issue access plus organization issue-field read access; classic PATs use
+   `repo` and `read:org`.
+
+   For ProjectV2 mode, request:
 
    ```sh
    gh auth login --scopes "repo,read:org,read:project,project"
    ```
 
-   If any scope check fails for existing auth, refresh the token:
+   If any ProjectV2 scope check fails for existing auth, refresh the token:
 
    ```sh
    gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"
+   ```
+
+   For boardless issue-field mode with a classic PAT, request:
+
+   ```sh
+   gh auth login --scopes "repo,read:org"
    ```
 
    In a remote or headless shell, avoid launching a remote GUI browser while
@@ -128,15 +141,23 @@ rg -n 'id: <detent-project-id>|workflow: .*<repo-name>|workdir: .*<repo-name>' \
    gh auth status
    gh auth status 2>&1 | rg '\brepo\b'
    gh auth status 2>&1 | rg '\bread:org\b'
+   # ProjectV2 mode only:
    gh auth status 2>&1 | rg '\bread:project\b'
    gh auth status 2>&1 | rg "(^|[[:space:],'\"])project([[:space:],'\"]|$)"
+   # ProjectV2 mode only:
    gh project list --owner <project-owner> --format json --limit 1
+   # Boardless mode:
+   gh api /orgs/<repo-owner>/issue-fields --jq '.[] | select(.name == "<status-field-name>")'
    ```
 
    `gh project list` verifies the `read:project` board discovery path. Defer
    write `project` verification until the first intentional ProjectV2 mutation,
    such as creating or linking a board, creating fields, or editing the status
-   of a real existing item.
+   of a real existing item. The issue-field discovery command verifies
+   organization issue-field read access for boardless mode. Fine-grained PATs
+   and GitHub Apps should grant Issue Fields organization read, Issues
+   repository read/write when status moves or comments are enabled, Pull
+   requests read/checks read for PR gates, and selected repository access.
 
 3. **Confirm Codex is installed and signed in.** Detent dispatches agents
    through the Codex app-server. Verify:
@@ -163,6 +184,11 @@ ProjectV2 is GraphQL-backed, so `gh project list`, `field-list`, `item-list`,
 as Detent's GitHub connector. When `github_token: gh` is configured, the
 operator shell, Detent, and spawned Codex agents all use the same `gh` user
 token and therefore the same user-token GraphQL bucket.
+
+Boardless issue-field mode uses REST for field discovery and issue-field value
+writes. GitHub still reports REST and GraphQL budgets separately, and
+`detent doctor` surfaces both so operators can see whether boardless work is
+healthy without spending ProjectV2 GraphQL inventory budget.
 
 GitHub's documented primary GraphQL limit for user-backed tokens is 5,000
 points per hour. GitHub App installation tokens receive their own
@@ -411,11 +437,28 @@ recommendation, and default-if-silent. Record answers in
    rg '^DETENT_ONBOARDING_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-1. **Board.** Ask: "Reuse an existing ProjectV2 board or create a new one?"
-   List the boards from `$ONBOARDING_DIR/projects.json`.
-   Recommendation source: matching board title, owner, item count, and whether
-   the board already has repo work. Default if silent: reuse the strongest
-   matching board; if none match, create `<repo-name>`. Verify:
+1. **GitHub status source.** Ask: "Use the current/default ProjectV2 board mode
+   or boardless issue-field mode?" Recommend ProjectV2 when the team already
+   plans and ranks work on a GitHub Project board, or when preserving an
+   existing Detent setup is more important than reducing setup. Recommend
+   boardless issue-field mode when the repository already uses GitHub Issues as
+   the source of truth and the Detent dashboard should be the Kanban surface.
+   Default if silent: ProjectV2 for existing Detent installs, boardless for a
+   new project with no matching board. Verify:
+
+   ```sh
+   printf '%s\n' \
+     'GITHUB_MODE=<project_v2|issue_field>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^GITHUB_MODE=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+2. **ProjectV2 board.** Ask this only when `GITHUB_MODE=project_v2`: "Reuse an
+   existing ProjectV2 board or create a new one?" List the boards from
+   `$ONBOARDING_DIR/projects.json`. Recommendation source: matching board title,
+   owner, item count, and whether the board already has repo work. Default if
+   silent: reuse the strongest matching board; if none match, create
+   `<repo-name>`. Verify:
 
    ```sh
    printf '%s\n' \
@@ -427,7 +470,37 @@ recommendation, and default-if-silent. Record answers in
    rg '^BOARD_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-2. **Scheduling.** Ask: "What `global.yaml` `priority` from 1-4 and `weight`
+3. **Boardless issue field.** Ask this only when `GITHUB_MODE=issue_field`:
+   "Which organization issue field should Detent use for status?" Recommend
+   `Status` unless inspection found a different single-select workflow field.
+   Confirm that GitHub issue fields are issue-only: linked PR cards derive
+   status from the linked issue, and PR-only cards cannot be moved by
+   issue-field status writes. Verify:
+
+   ```sh
+   printf '%s\n' \
+     'STATUS_FIELD_NAME=<status-field-name>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   gh api /orgs/<repo-owner>/issue-fields \
+     --jq '.[] | select(.name == "<status-field-name>") | {name,data_type,options}'
+   rg '^STATUS_FIELD_NAME=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+4. **Kanban interaction.** Ask: "Should Detent's Kanban be read-only or allow
+   GitHub mutations from the dashboard?" Recommend `read_only`. Use
+   `integration` only in a Detent release that supports it and only when trusted
+   operators should move cards and post issue or PR comments from Detent.
+   Integration mode requires doctor to prove ProjectV2 status write or
+   issue-field status write, plus issue/PR comment write. Verify:
+
+   ```sh
+   printf '%s\n' \
+     'KANBAN_MODE=<read_only|integration>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^KANBAN_MODE=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+5. **Scheduling.** Ask: "What `global.yaml` `priority` from 1-4 and `weight`
    should this project receive?" Show `$ONBOARDING_DIR/global-projects.txt`.
    Disambiguate this from the board `Priority` field: `global.yaml` `priority`
    ranks projects on the host; the board `Priority` field ranks issues inside
@@ -443,7 +516,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^GLOBAL_(PRIORITY|WEIGHT)=' "$ONBOARDING_DIR/answers.env"
    ```
 
-3. **Dispatch label ordering.** Ask: "When two issues have the same board
+6. **Dispatch label ordering.** Ask: "When two issues have the same board
    `Priority`, should labels break the tie before age?" Show the label counts
    from `$ONBOARDING_DIR/issue-counts.json` and recommend an ordered list from
    labels that represent work type or risk, such as `bug`, `regression`, then
@@ -458,7 +531,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^DISPATCH_PRIORITY_BY_LABEL=' "$ONBOARDING_DIR/answers.env"
    ```
 
-4. **Instance name.** Ask: "What optional instance name should appear in
+7. **Instance name.** Ask: "What optional instance name should appear in
    Detent browser tabs and the navbar?" Recommendation source: the short
    hostname, existing `global.identity.name`, and any operator naming
    convention for this host. Default if silent: the short hostname. Verify:
@@ -471,7 +544,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^INSTANCE_NAME=' "$ONBOARDING_DIR/answers.env"
    ```
 
-5. **Authorization filters.** Ask: "Should Detent consider all board items or
+8. **Authorization filters.** Ask: "Should Detent consider all board items or
    only items matching a filter?" Offer `none`, `labels.include`,
    `labels.exclude`, `assignee_in`, `author_in`, and `priority_in`.
    Recommendation source: live counts in `$ONBOARDING_DIR/issue-counts.json`
@@ -490,7 +563,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^AUTHORIZATION_' "$ONBOARDING_DIR/answers.env"
    ```
 
-6. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
+9. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
    localhost-only, a private/Tailscale IP, or all interfaces?" Recommendation
    source: the operator's access path, whether SSH tunnels or VPN/Tailscale are
    expected, the host firewall, and any known private interface addresses.
@@ -507,7 +580,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^DASHBOARD_' "$ONBOARDING_DIR/answers.env"
    ```
 
-7. **Validation gate.** Ask: "Use the detected command, a custom command, or a
+10. **Validation gate.** Ask: "Use the detected command, a custom command, or a
    human review label gate? If this is a command gate, should auto-promotion
    require an automated GitHub PR review from a bot?" Recommendation source:
    `$ONBOARDING_DIR/gate.txt`, detected manifests, task runners, CI workflow
@@ -527,7 +600,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^GATE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-8. **Concurrency.** Ask: "How many agents may this project run at once?"
+11. **Concurrency.** Ask: "How many agents may this project run at once?"
    Recommendation source: host capacity, existing `global.yaml` projects, and
    the repo's gate cost. Default if silent: `agent.max_concurrent_agents: 5`
    for an active code repo, lower for expensive gates. State that
@@ -555,7 +628,7 @@ recommendation, and default-if-silent. Record answers in
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-9. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
+12. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
    it auto-promote to `Merging` after the human-defined criteria are true?"
    Recommendation source: repo risk, issue labels, review requirements, and how
    much trust the human wants to delegate. Default if silent:
@@ -583,7 +656,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-10. **Dependency waiting policy.** Ask: "Should dependency-waiting issues stay
+13. **Dependency waiting policy.** Ask: "Should dependency-waiting issues stay
    in `Todo` and be gated by Detent, or should they sit in `Blocked` and be
    auto-unblocked when dependencies clear?" Default if silent:
    `tracker.dependency_auto_unblock.enabled: false`. Use the `Blocked`
@@ -603,7 +676,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^DEPENDENCY_AUTO_UNBLOCK_' "$ONBOARDING_DIR/answers.env"
    ```
 
-11. **Prompt body.** Ask: "Use the template prompt or add repo-specific
+14. **Prompt body.** Ask: "Use the template prompt or add repo-specific
    instructions?" Recommendation source: `CLAUDE.md`, `AGENTS.md`,
    `CONTRIBUTING.md`, README development commands, manifests, and CI workflows
    in `<source-root>`. Default if silent: template prompt plus any repo
@@ -629,7 +702,7 @@ recommendation, and default-if-silent. Record answers in
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-12. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
+15. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe
@@ -645,10 +718,14 @@ recommendation, and default-if-silent. Record answers in
    rg '^(INTAKE_GH_FLAGS|INITIAL_STATUS|ENABLE_AUTO_ADD)=' "$ONBOARDING_DIR/answers.env"
    ```
 
-## Phase 3 — Create Or Adopt The Board
+## Phase 3 — Create Or Adopt The Status Source
+
+Run the ProjectV2 steps only when `GITHUB_MODE=project_v2`. When
+`GITHUB_MODE=issue_field`, skip board creation/linking and run the boardless
+issue-field verification step instead.
 
 1. **Adopt an existing board when the answer says reuse.** Record the number
-   and node id for later commands. Verify:
+   and node id for later commands. Skip when `GITHUB_MODE=issue_field`. Verify:
 
    ```sh
    gh project view <project-number> --owner <project-owner> --format json \
@@ -656,8 +733,9 @@ recommendation, and default-if-silent. Record answers in
    jq -e '.id | startswith("PVT_")' "$ONBOARDING_DIR/project.json"
    ```
 
-2. **Create a board when the answer says create.** GitHub creates the default
-   `Status` field; Detent still needs you to create the board itself. Verify:
+2. **Create a board when the answer says create.** Skip when
+   `GITHUB_MODE=issue_field`. GitHub creates the default `Status` field; Detent
+   still needs you to create the board itself. Verify:
 
    ```sh
    gh project create --owner <project-owner> --title "<project-title>" --format json \
@@ -665,11 +743,11 @@ recommendation, and default-if-silent. Record answers in
    jq -e '.number and (.id | startswith("PVT_"))' "$ONBOARDING_DIR/project.json"
    ```
 
-3. **Ensure the `Priority` field exists.** Detent can add missing options
-   inside an existing field, but it never creates the field. Reused boards can
-   already have this field, so check before creating it. If `Priority` exists
-   but is not a single-select field, stop and ask the human to rename the
-   conflicting field or choose another board. Verify:
+3. **Ensure the `Priority` field exists.** Skip when `GITHUB_MODE=issue_field`.
+   Detent can add missing options inside an existing field, but it never
+   creates the field. Reused boards can already have this field, so check before
+   creating it. If `Priority` exists but is not a single-select field, stop and
+   ask the human to rename the conflicting field or choose another board. Verify:
 
    ```sh
    PROJECT_NUMBER="$(jq -r '.number' "$ONBOARDING_DIR/project.json")"
@@ -692,25 +770,26 @@ recommendation, and default-if-silent. Record answers in
      | jq -e '.fields[] | select(.name == "Priority" and (.options | type == "array"))'
    ```
 
-4. **Link the repository to the board.** This keeps the project discoverable
-   from the repo. Verify:
+4. **Link the repository to the board.** Skip when `GITHUB_MODE=issue_field`.
+   This keeps the project discoverable from the repo. Verify:
 
    ```sh
    gh project link "$PROJECT_NUMBER" --owner <project-owner> --repo <repo-name>
    gh project view "$PROJECT_NUMBER" --owner <project-owner> --format json --jq '.url'
    ```
 
-5. **Confirm required fields.** Detent auto-provisions missing `Status` and
-   `Priority` options on first run, but never the board or fields themselves.
-   Verify:
+5. **Confirm required ProjectV2 fields.** Skip when `GITHUB_MODE=issue_field`.
+   Detent auto-provisions missing `Status` and `Priority` options on first run,
+   but never the board or fields themselves. Verify:
 
    ```sh
    gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json \
      | jq -e '[.fields[].name] as $names | all(["Status","Priority"][]; . as $want | $names | index($want))'
    ```
 
-6. **Clean up inherited statuses before first Detent dispatch.** Reused boards
-   often carry status options and stale item placements from a predecessor
+6. **Clean up inherited ProjectV2 statuses before first Detent dispatch.** Skip
+   when `GITHUB_MODE=issue_field`. Reused boards often carry status options and
+   stale item placements from a predecessor
    orchestrator. Inventory the board before the first Detent start so the
    operator can distinguish intentional custom lanes from old active or
    terminal columns. Verify:
@@ -820,6 +899,33 @@ recommendation, and default-if-silent. Record answers in
    done
    ```
 
+7. **Verify the boardless issue field when selected.** Run this only when
+   `GITHUB_MODE=issue_field`. Detent needs an organization-level single-select
+   issue field and options matching the configured workflow states. Issue
+   fields are issue-only, so linked PR cards will use their linked issue's
+   status. Verify:
+
+   ```sh
+   STATUS_FIELD_NAME="<status-field-name>"
+   gh api /orgs/<repo-owner>/issue-fields > "$ONBOARDING_DIR/issue-fields.json"
+   jq --arg name "$STATUS_FIELD_NAME" -e '.[] | select(.name == $name)' \
+     "$ONBOARDING_DIR/issue-fields.json" > "$ONBOARDING_DIR/issue-field.json"
+   jq -e '.data_type == "single_select"' "$ONBOARDING_DIR/issue-field.json"
+   jq -r '.options[].name' "$ONBOARDING_DIR/issue-field.json" \
+     > "$ONBOARDING_DIR/issue-field-status-options.txt"
+   printf '%s\n' \
+     Backlog Todo 'In Progress' Blocked 'Human Review' Rework Merging Done Cancelled \
+     > "$ONBOARDING_DIR/detent-status-options.txt"
+   sort "$ONBOARDING_DIR/detent-status-options.txt" > "$ONBOARDING_DIR/detent-status-options.sorted.txt"
+   sort "$ONBOARDING_DIR/issue-field-status-options.txt" > "$ONBOARDING_DIR/issue-field-status-options.sorted.txt"
+   comm -23 "$ONBOARDING_DIR/detent-status-options.sorted.txt" "$ONBOARDING_DIR/issue-field-status-options.sorted.txt"
+   ```
+
+   If the `comm` output is not empty, add the missing issue-field options in
+   GitHub before starting Detent, or change the workflow states to match the
+   existing options. Do not create or link a GitHub ProjectV2 board for this
+   mode.
+
 ## Phase 4 — Author WORKFLOW.md
 
 1. **Fetch the canonical template.** Read the existing file first if one is
@@ -833,20 +939,65 @@ recommendation, and default-if-silent. Record answers in
    rg -n '^tracker:|^workspace:|^agent:' <source-root>/WORKFLOW.md
    ```
 
-2. **Substitute the board and workspace answers.** Use the ProjectV2 node id as
-   `tracker.project_slug`; use absolute paths for `workspace.source_root` and
-   `workspace.root`. Verify:
+2. **Substitute the tracker and workspace answers.** In ProjectV2 mode, use the
+   ProjectV2 node id as `tracker.project_slug`. In boardless mode, remove
+   `project_slug` and configure the repository issue field. In both modes, use
+   absolute paths for `workspace.source_root` and `workspace.root`. Verify the
+   selected tracker block:
 
-   ```sh
-   PROJECT_NODE_ID="$(jq -r '.id' "$ONBOARDING_DIR/project.json")"
-   perl -0pi -e "s/project_slug: \"?PVT_[^\"\\n]+\"?/project_slug: \"$PROJECT_NODE_ID\"/" <source-root>/WORKFLOW.md
-   perl -0pi -e 's#(?m)^  source_root: .*$#  source_root: <source-root>#' <source-root>/WORKFLOW.md
-   perl -0pi -e 's#(?m)^  root: .*$#  root: <worktree-root>#' <source-root>/WORKFLOW.md
-   rg -n "project_slug: \"$PROJECT_NODE_ID\"|source_root: <source-root>|root: <worktree-root>" \
-     <source-root>/WORKFLOW.md
+   ProjectV2 tracker snippet:
+
+   ```yaml
+   tracker:
+     kind: github
+     github_status_source: project_v2
+     project_slug: <project-node-id>
+     write_probe_issue: <write-probe-issue>
    ```
 
-3. **Set the dashboard bind from the interview.** This writes the default
+   Boardless issue-field tracker snippet:
+
+   ```yaml
+   tracker:
+     kind: github
+     github_status_source: issue_field
+     repository: <repo-owner>/<repo-name>
+     status_field: <status-field-name>
+     write_probe_issue: <write-probe-issue>
+   ```
+
+   ```sh
+   # ProjectV2 mode:
+   PROJECT_NODE_ID="$(jq -r '.id' "$ONBOARDING_DIR/project.json")"
+   rg -n 'github_status_source: project_v2|project_slug: <project-node-id>|write_probe_issue:' <source-root>/WORKFLOW.md
+
+   # Boardless mode:
+   rg -n 'github_status_source: issue_field|repository: <repo-owner>/<repo-name>|status_field: <status-field-name>|write_probe_issue:' <source-root>/WORKFLOW.md
+
+   # Both modes:
+   perl -0pi -e 's#(?m)^  source_root: .*$#  source_root: <source-root>#' <source-root>/WORKFLOW.md
+   perl -0pi -e 's#(?m)^  root: .*$#  root: <worktree-root>#' <source-root>/WORKFLOW.md
+   rg -n 'source_root: <source-root>|root: <worktree-root>' <source-root>/WORKFLOW.md
+   ```
+
+3. **Set Kanban interaction mode when supported.** Do not add this block to
+   current releases unless the Detent binary supports Kanban interaction
+   configuration. When supported, keep `read_only` as the default and enable
+   `integration` only for trusted operators after doctor proves status write and
+   issue/PR comment write. Verify:
+
+   ```yaml
+   server:
+     kanban:
+       mode: read_only
+       # mode: integration
+   ```
+
+   ```sh
+   rg -n 'kanban:|mode: read_only|mode: integration' <source-root>/WORKFLOW.md || true
+   ```
+
+4. **Set the dashboard bind from the interview.** This writes the default
    `server.host` used when Detent starts without an explicit `--host`. Service
    managers can still override it in `ExecStart` with the same selected host.
    Verify:
@@ -856,7 +1007,7 @@ recommendation, and default-if-silent. Record answers in
    rg -n '^server:|host: <dashboard-host>|port:' <source-root>/WORKFLOW.md
    ```
 
-4. **Set the gate from the interview.** For command gates, include the command
+5. **Set the gate from the interview.** For command gates, include the command
    and whether an automated GitHub PR review is required for auto-promotion.
    For human gates, include the approval label. Verify:
 
@@ -882,7 +1033,7 @@ recommendation, and default-if-silent. Record answers in
      approval_label: <approval-label>
    ```
 
-5. **Set dispatch ordering, review policy, dependency waiting policy, and
+6. **Set dispatch ordering, review policy, dependency waiting policy, and
    concurrency.** Keep `Merging: 1`. Use the dispatch label ordering, review
    policy, and dependency policy selected by the human. Verify:
 
@@ -958,7 +1109,7 @@ recommendation, and default-if-silent. Record answers in
    `Blocked` is an observed/display state and dependency completion will not
    move issues back to `Todo`.
 
-6. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
+7. **Write the prompt body.** Keep the `## Codex Workpad` instruction, include
    repo authority files discovered in Phase 2, and state the validation gate.
    Verify:
 
@@ -967,7 +1118,7 @@ recommendation, and default-if-silent. Record answers in
      | rg 'Codex Workpad|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|<gate-command>|<repo-owner>/<repo-name>'
    ```
 
-7. **Check the workflow contract before registration.** This is a structural
+8. **Check the workflow contract before registration.** This is a structural
    check; `detent doctor` in Phase 5 is the full preflight. Verify:
 
    ```sh
@@ -1024,10 +1175,12 @@ recommendation, and default-if-silent. Record answers in
 
 3. **Set or preserve runtime keys in `global.yaml`.** For local onboarding,
    prefer `github_token: gh` so Detent resolves the token from `gh auth token`
-   at startup. This shares the operator's GraphQL budget with Detent and spawned
-   agents; for production or high-volume boards, prefer GitHub App installation
-   authentication in `WORKFLOW.md`. Set `instance_name` to the interview answer
-   or the short hostname on new installs. For existing installs, preserve
+   at startup. In ProjectV2 mode this shares the operator's GraphQL budget with
+   Detent and spawned agents; in boardless mode it still shares REST issue-field
+   and comment write limits. For production or high-volume projects, prefer
+   GitHub App installation authentication in `WORKFLOW.md`. Set `instance_name`
+   to the interview answer or the short hostname on new installs. For existing
+   installs, preserve
    `env`, `log_level`, `github_token`, `port`, and `instance_name` unless the
    human selected different values. Use a non-4000 port if another Detent
    instance is already running; keep the dashboard host in `WORKFLOW.md`
@@ -1065,7 +1218,13 @@ recommendation, and default-if-silent. Record answers in
    `github_app_private_key` or `github_app_private_key_path`.
 
 4. **Run preflight until every check passes.** Fix every `FAIL`; do not
-   dispatch work from a failed doctor run. Verify:
+   dispatch work from a failed doctor run. In ProjectV2 mode, confirm doctor
+   reports project access, Status option discovery, repository issue/PR access,
+   write probes when configured, and rate-limit visibility. In boardless mode,
+   confirm repository access, issue field discovery, option discovery, issue
+   reads by field value, optional issue-field write probe, issue/PR comment
+   write when integration-capable features are configured, and rate-limit
+   visibility. Verify:
 
    ```sh
    detent doctor
@@ -1108,20 +1267,26 @@ recommendation, and default-if-silent. Record answers in
 
 ## Phase 6 — Issue Intake
 
-1. **Confirm the selected initial status option exists.** If this fails on a
-   fresh board, start Detent once with no dispatchable items so it can
-   auto-provision missing options, then repeat this verification. Verify:
+1. **Confirm the selected initial status option exists.** In ProjectV2 mode, if
+   this fails on a fresh board, start Detent once with no dispatchable items so
+   it can auto-provision missing options, then repeat this verification.
+   Verify:
 
    ```sh
+   # ProjectV2 mode:
    gh project field-list <project-number> --owner <project-owner> --format json \
      --jq '.fields[] | select(.name == "Status") | .options[].name' | rg -x '<initial-status>'
+
+   # Boardless mode:
+   jq -r '.options[].name' "$ONBOARDING_DIR/issue-field.json" | rg -x '<initial-status>'
    ```
 
-2. **Bulk-add issues by the selected filter and set initial `Status`.** Use
-   the exact `gh issue list` flags from the intake answer. Use `Backlog` for
-   broad intake and `Todo` only for work that should dispatch immediately.
-   This verifies the write `project` scope if no earlier board creation,
-   linking, field creation, or item edit has already done so.
+2. **ProjectV2 intake: bulk-add issues by the selected filter and set initial
+   `Status`.** Run only when `GITHUB_MODE=project_v2`. Use the exact
+   `gh issue list` flags from the intake answer. Use `Backlog` for broad intake
+   and `Todo` only for work that should dispatch immediately. This verifies the
+   write `project` scope if no earlier board creation, linking, field creation,
+   or item edit has already done so.
    `gh project item-add` and `gh project item-edit` are GraphQL mutations, so
    do not start a broad intake when the budget warning from Phase 1 is still
    unresolved. Verify with one cached inventory after the mutations finish:
@@ -1150,9 +1315,33 @@ recommendation, and default-if-silent. Record answers in
      "$ONBOARDING_DIR/project-items.after-intake.json"
    ```
 
-3. **Optionally enable auto-add.** This is a **human UI step** because GitHub's
+3. **Boardless intake: set initial issue-field Status on selected issues.** Run
+   only when `GITHUB_MODE=issue_field`. Use `Backlog` for broad intake and
+   `Todo` only for work that should dispatch immediately. Issue-field writes
+   can trigger notifications and secondary rate limits, so keep broad edits
+   deliberate and use `detent doctor` to prove the write probe first. Verify:
+
+   ```sh
+   STATUS_FIELD_ID="$(jq -r '.id' "$ONBOARDING_DIR/issue-field.json")"
+   gh issue list --repo <repo-owner>/<repo-name> --state open <chosen-gh-issue-list-flags> \
+     --limit 1000 --json number --jq '.[].number' |
+   while IFS= read -r issue_number; do
+     jq -n --argjson field_id "$STATUS_FIELD_ID" --arg value "<initial-status>" \
+       '{issue_field_values: [{field_id: $field_id, value: $value}]}' |
+     gh api --method POST \
+       "/repos/<repo-owner>/<repo-name>/issues/${issue_number}/issue-field-values" \
+       --input - >/dev/null
+   done
+
+   gh issue list --repo <repo-owner>/<repo-name> --state open <chosen-gh-issue-list-flags> \
+     --limit 1000 --json number,url > "$ONBOARDING_DIR/issues.after-intake.json"
+   jq '. | length' "$ONBOARDING_DIR/issues.after-intake.json"
+   ```
+
+4. **Optionally enable ProjectV2 auto-add.** Run only when
+   `GITHUB_MODE=project_v2`. This is a **human UI step** because GitHub's
    built-in ProjectV2 auto-add workflows are not configurable through the API.
-   Click: Project → ⋯ → Workflows → Auto-add to project. Configure the same
+   Click: Project -> ... -> Workflows -> Auto-add to project. Configure the same
    repo and filter chosen in the interview. Verify:
 
    ```sh
@@ -1199,17 +1388,24 @@ recommendation, and default-if-silent. Record answers in
    curl -fsS http://<tailscale-or-private-ip>:<port>/api/v1/state
    ```
 
-2. **Check the GraphQL budget before smoke dispatch.** This is the last stop
-   before Detent and the spawned agent start spending GraphQL budget for
-   polling, workpad, status, PR, and review work. Verify:
+2. **Check rate-limit budget before smoke dispatch.** In ProjectV2 mode, this
+   is the last stop before Detent and the spawned agent start spending GraphQL
+   budget for polling, workpad, status, PR, and review work. In boardless mode,
+   review REST core and GraphQL visibility from `detent doctor`; issue-field
+   polling and status writes are REST-backed, while PR relationship checks can
+   still use GraphQL. Verify:
 
    ```sh
+   # ProjectV2 mode:
    gh api rate_limit --jq '.resources.graphql | {limit, used, remaining, reset}' \
      > "$ONBOARDING_DIR/graphql-rate-limit.before-smoke.json"
    jq -r '"graphql remaining=\(.remaining) reset=\(.reset)"' \
      "$ONBOARDING_DIR/graphql-rate-limit.before-smoke.json"
    jq -e '.remaining >= 500' "$ONBOARDING_DIR/graphql-rate-limit.before-smoke.json" \
      || printf 'WARNING: low GitHub GraphQL budget; defer smoke dispatch or use GitHub App auth\n'
+
+   # Boardless mode:
+   detent doctor --port 0 | rg 'GitHub API rate limit|GitHub issue field'
    ```
 
 3. **Move one real issue to `Todo`.** Use a real issue that matches the
@@ -1217,6 +1413,7 @@ recommendation, and default-if-silent. Record answers in
    edit; switch to the local Detent API in the next step. Verify:
 
    ```sh
+   # ProjectV2 mode:
    gh project field-list <project-number> --owner <project-owner> --format json \
      > "$ONBOARDING_DIR/project-fields.smoke.json"
    TODO_OPTION_ID="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id' "$ONBOARDING_DIR/project-fields.smoke.json")"
@@ -1234,12 +1431,20 @@ recommendation, and default-if-silent. Record answers in
      --project-id "$PROJECT_NODE_ID" \
      --field-id "$STATUS_FIELD_ID" \
      --single-select-option-id "$TODO_OPTION_ID"
+
+   # Boardless mode:
+   STATUS_FIELD_ID="$(jq -r '.id' "$ONBOARDING_DIR/issue-field.json")"
+   jq -n --argjson field_id "$STATUS_FIELD_ID" --arg value "Todo" \
+     '{issue_field_values: [{field_id: $field_id, value: $value}]}' |
+   gh api --method POST \
+     "/repos/<repo-owner>/<repo-name>/issues/<issue-number>/issue-field-values" \
+     --input -
    ```
 
 4. **Verify the issue dispatches locally.** Onboarding is not complete until
    the issue appears under Running on the dashboard. Once it does, stop
-   operator GitHub ProjectV2 polling; the spawned agent owns GitHub work from
-   here. Verify:
+   operator ProjectV2 or issue-field polling; the spawned agent owns GitHub
+   work from here. Verify:
 
    ```sh
    curl -fsS http://127.0.0.1:<port>/api/v1/state \
@@ -1308,11 +1513,42 @@ changing `global.yaml` or `WORKFLOW.md`.
 
 ## Appendix
 
+### ProjectV2 And Boardless Migration Notes
+
+Existing ProjectV2 workflows remain valid. Leaving
+`tracker.github_status_source` unset keeps `project_v2` as the default
+compatibility path, and `tracker.project_slug` remains required only for that
+mode. Choose this path when humans still use the GitHub Project board as the
+source of truth for planning, ranking, and status changes.
+
+Switch to boardless issue-field mode only after the repository has an
+organization issue `Status` field with options matching the Detent workflow.
+Change `WORKFLOW.md` to:
+
+```yaml
+tracker:
+  kind: github
+  github_status_source: issue_field
+  repository: <repo-owner>/<repo-name>
+  status_field: <status-field-name>
+```
+
+Detent does not automatically migrate ProjectV2 item statuses into issue
+fields. Copy existing statuses manually or with a one-off script outside
+Detent, then run `detent doctor --port 0` and fix repository access, issue
+field discovery, option discovery, write-probe, comment-write, and rate-limit
+checks before dispatching. GitHub issue fields apply to issues only, so linked
+PR cards derive status from the linked issue.
+
 ### Interview Answers To Config Keys
 
 | Interview answer | Config or system target |
 | --- | --- |
-| Board node id | `tracker.project_slug` in `WORKFLOW.md`. |
+| GitHub status source | `tracker.github_status_source: project_v2` or `issue_field` in `WORKFLOW.md`. |
+| Board node id | `tracker.project_slug` in `WORKFLOW.md` for ProjectV2 mode only. |
+| Boardless repository | `tracker.repository` in `WORKFLOW.md` for issue-field mode. |
+| Boardless issue field | `tracker.status_field` in `WORKFLOW.md`; defaults to `Status` when omitted. |
+| Kanban interaction | Keep read-only by default; use integration only in supporting releases after doctor proves write permissions. |
 | Project scheduling priority | `projects[].priority` in `global.yaml`. |
 | Project scheduling weight | `projects[].weight` in `global.yaml`. |
 | Dispatch label ordering | `agent.dispatch_priority_by_label` in `WORKFLOW.md`. |
@@ -1327,7 +1563,7 @@ changing `global.yaml` or `WORKFLOW.md`.
 | Criteria-based auto-promote | `agent.auto_promote.enabled`, `quiet_seconds`, `optout_label`, and `allowed_issue_labels` in `WORKFLOW.md`. |
 | Prompt body | Markdown body after the closing frontmatter `---` in `WORKFLOW.md`. |
 | Intake filter | `gh issue list` flags and optional GitHub Project auto-add workflow. |
-| Initial issue status | ProjectV2 `Status` field value, usually `Backlog` or `Todo`. |
+| Initial issue status | ProjectV2 or issue-field `Status` value, usually `Backlog` or `Todo`. |
 
 ### What A Good Detent Issue Looks Like
 
