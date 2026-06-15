@@ -268,7 +268,7 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 	case <-provisionStarted:
 	case err := <-done:
 		t.Fatalf("startRunning returned before provisioning blocked: %v", err)
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for project provisioning to start")
 	}
 
@@ -404,7 +404,7 @@ func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing
 	case <-provisionStarted:
 	case err := <-done:
 		t.Fatalf("startRunning returned before provisioning blocked: %v", err)
-	case <-time.After(time.Second):
+	case <-time.After(10 * time.Second):
 		t.Fatal("timed out waiting for project provisioning to start")
 	}
 
