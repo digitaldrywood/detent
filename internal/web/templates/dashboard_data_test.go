@@ -2,6 +2,7 @@ package templates
 
 import (
 	"strconv"
+	"strings"
 	"testing"
 	"time"
 
@@ -641,6 +642,178 @@ func TestAgentTimelineRows(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
+	backlogAt := now.Add(-7 * time.Minute)
+	todoAt := now.Add(-6 * time.Minute)
+	runningAt := now.Add(-5 * time.Minute)
+	blockedAt := now.Add(-4 * time.Minute)
+	reviewAt := now.Add(-3 * time.Minute)
+	doneAt := now.Add(-2 * time.Minute)
+
+	board := projectKanbanBoardView(DashboardData{
+		WorkflowStates: []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Merging", "Done", "Cancelled"},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:             "backlog",
+					Identifier:     "digitaldrywood/detent#10",
+					ProjectID:      "detent",
+					Title:          "Backlog issue",
+					State:          "Backlog",
+					StageUpdatedAt: &backlogAt,
+				},
+				{
+					ID:         "todo",
+					Identifier: "digitaldrywood/detent#11",
+					ProjectID:  "detent",
+					Title:      "Stale board issue",
+					State:      "Backlog",
+				},
+			},
+			Pipeline: []telemetry.Issue{
+				{
+					ID:             "review",
+					Identifier:     "digitaldrywood/detent#12",
+					ProjectID:      "detent",
+					Title:          "Review lane PR",
+					State:          "Human Review",
+					Labels:         []string{"enhancement", "stage:s6"},
+					Assignees:      []string{"alice"},
+					BlockedBy:      []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#10", State: "Done"}},
+					StageUpdatedAt: &reviewAt,
+					PullRequest: &telemetry.PullRequest{
+						Number:           142,
+						URL:              "https://github.com/digitaldrywood/detent/pull/142",
+						CIStatus:         "success",
+						CodexReviewState: "clean",
+					},
+				},
+				{
+					ID:             "done",
+					Identifier:     "digitaldrywood/detent#15",
+					ProjectID:      "detent",
+					Title:          "Done lane PR",
+					State:          "Done",
+					StageUpdatedAt: &doneAt,
+					PullRequest: &telemetry.PullRequest{
+						Number: 145,
+						State:  "MERGED",
+					},
+				},
+			},
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "running",
+						Identifier: "digitaldrywood/detent#13",
+						ProjectID:  "detent",
+						Title:      "Running issue",
+						State:      "In Progress",
+						Labels:     []string{"bug"},
+						Assignees:  []string{"bob"},
+					},
+					StartedAt: runningAt,
+				},
+			},
+			Queue: []telemetry.Queued{
+				{
+					Issue: telemetry.Issue{
+						ID:             "todo",
+						Identifier:     "digitaldrywood/detent#11",
+						ProjectID:      "detent",
+						Title:          "Todo issue",
+						StageUpdatedAt: &todoAt,
+					},
+					Attempt: 1,
+				},
+			},
+			Blocked: []telemetry.Blocked{
+				{
+					Issue: telemetry.Issue{
+						ID:         "blocked",
+						Identifier: "digitaldrywood/detent#14",
+						ProjectID:  "detent",
+						Title:      "Blocked issue",
+						State:      "Blocked",
+						BlockedBy:  []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#401", State: "In Progress"}},
+					},
+					BlockedAt: &blockedAt,
+				},
+			},
+		},
+	})
+
+	if board.TotalLabel != "6" {
+		t.Fatalf("TotalLabel = %q, want 6", board.TotalLabel)
+	}
+	if board.EmptyCountLabel != "2" {
+		t.Fatalf("EmptyCountLabel = %q, want 2", board.EmptyCountLabel)
+	}
+
+	got := collectKanbanCards(board.Lanes)
+	want := []kanbanCardSnapshot{
+		{Lane: "Backlog", IssueNumber: "#10", Title: "Backlog issue", TimeInStage: "7m 0s", Metadata: "No linked PR"},
+		{Lane: "Todo", IssueNumber: "#11", Title: "Todo issue", TimeInStage: "6m 0s", Metadata: "No linked PR"},
+		{Lane: "In Progress", IssueNumber: "#13", Title: "Running issue", TimeInStage: "5m 0s", Labels: "bug", Assignees: "bob", Metadata: "No linked PR"},
+		{Lane: "Blocked", IssueNumber: "#14", Title: "Blocked issue", TimeInStage: "4m 0s", Blockers: "digitaldrywood/detent#401 In Progress", Metadata: "No linked PR"},
+		{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", URL: "https://github.com/digitaldrywood/detent/pull/142", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", Labels: "enhancement, stage:s6", Assignees: "alice", Blockers: "digitaldrywood/detent#10 Done", Metadata: "PR #142"},
+		{Lane: "Done", IssueNumber: "#145", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #145"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("kanban card %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+
+	gotEmpty := collectKanbanLaneTitles(board.EmptyLanes)
+	wantEmpty := []string{"Merging", "Cancelled"}
+	if len(gotEmpty) != len(wantEmpty) {
+		t.Fatalf("empty lanes len = %d, want %d; got %#v", len(gotEmpty), len(wantEmpty), gotEmpty)
+	}
+	for i, wantTitle := range wantEmpty {
+		if gotEmpty[i] != wantTitle {
+			t.Fatalf("empty lane %d = %q, want %q; got %#v", i, gotEmpty[i], wantTitle, gotEmpty)
+		}
+	}
+}
+
+func TestProjectKanbanBoardDoesNotTreatCompletedSessionsAsCurrentDone(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 13, 15, 0, 0, 0, time.UTC)
+	board := projectKanbanBoardView(DashboardData{
+		WorkflowStates: []string{"Todo", "Done"},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Completed: []telemetry.Completed{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-396",
+						Identifier: "digitaldrywood/detent#396",
+						Title:      "Completed session only",
+					},
+					CompletedAt: now,
+					FinalState:  "Done",
+				},
+			},
+		},
+	})
+
+	if len(board.Lanes) != 0 {
+		t.Fatalf("visible lanes len = %d, want 0; lanes = %#v", len(board.Lanes), board.Lanes)
+	}
+	if got := collectKanbanLaneTitles(board.EmptyLanes); len(got) != 2 || got[0] != "Todo" || got[1] != "Done" {
+		t.Fatalf("empty lanes = %#v, want Todo and Done", got)
+	}
+}
+
 func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 	t.Parallel()
 
@@ -906,6 +1079,50 @@ func collectPipelineCards(lanes []prPipelineLane) []pipelineCardSnapshot {
 				WaitDetail:       card.WaitDetail,
 			})
 		}
+	}
+	return out
+}
+
+type kanbanCardSnapshot struct {
+	Lane             string
+	IssueNumber      string
+	Title            string
+	URL              string
+	CIStatus         string
+	CodexReviewState string
+	TimeInStage      string
+	Labels           string
+	Assignees        string
+	Blockers         string
+	Metadata         string
+}
+
+func collectKanbanCards(lanes []projectKanbanLane) []kanbanCardSnapshot {
+	out := []kanbanCardSnapshot{}
+	for _, lane := range lanes {
+		for _, card := range lane.Cards {
+			out = append(out, kanbanCardSnapshot{
+				Lane:             lane.Title,
+				IssueNumber:      card.IssueNumber,
+				Title:            card.Title,
+				URL:              card.URL,
+				CIStatus:         card.CIStatus,
+				CodexReviewState: card.CodexReviewState,
+				TimeInStage:      card.TimeInStage,
+				Labels:           strings.Join(card.Labels, ", "),
+				Assignees:        strings.Join(card.Assignees, ", "),
+				Blockers:         strings.Join(card.Blockers, ", "),
+				Metadata:         card.PullRequestLabel,
+			})
+		}
+	}
+	return out
+}
+
+func collectKanbanLaneTitles(lanes []projectKanbanLane) []string {
+	out := make([]string, 0, len(lanes))
+	for _, lane := range lanes {
+		out = append(out, lane.Title)
 	}
 	return out
 }

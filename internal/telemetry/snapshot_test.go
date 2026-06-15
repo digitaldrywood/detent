@@ -40,6 +40,14 @@ func TestSnapshotJSONShape(t *testing.T) {
 			Blocked:   3,
 			Completed: 4,
 		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "issue-board",
+				Identifier: "DD-BOARD",
+				State:      "Backlog",
+				Title:      "Board issue",
+			},
+		},
 		Running: []telemetry.Running{
 			{
 				Issue: telemetry.Issue{
@@ -48,6 +56,9 @@ func TestSnapshotJSONShape(t *testing.T) {
 					State:      "In Progress",
 					Title:      "Port hub",
 					URL:        "https://example.com/issues/1",
+					Labels:     []string{"enhancement"},
+					Assignees:  []string{"release-captain"},
+					BlockedBy:  []telemetry.BlockedRef{{Identifier: "DD-0", State: "Done"}},
 				},
 				ProcessIdentity: "4242",
 				SessionID:       "thread-1",
@@ -184,6 +195,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 		"dashboard_url",
 		"refresh",
 		"counts",
+		"board_issues",
 		"running",
 		"queue",
 		"blocked",
@@ -230,6 +242,14 @@ func TestSnapshotJSONShape(t *testing.T) {
 	running := got["running"].([]any)[0].(map[string]any)
 	if running["issue_id"] != "issue-1" || running["identifier"] != "DD-1" {
 		t.Fatalf("running row = %#v", running)
+	}
+	assignees := running["assignees"].([]any)
+	if len(assignees) != 1 || assignees[0] != "release-captain" {
+		t.Fatalf("running assignees = %#v", assignees)
+	}
+	blockers := running["blocked_by"].([]any)
+	if len(blockers) != 1 || blockers[0].(map[string]any)["identifier"] != "DD-0" || blockers[0].(map[string]any)["state"] != "Done" {
+		t.Fatalf("running blockers = %#v", blockers)
 	}
 	if running["process_identity"] != "4242" {
 		t.Fatalf("running process identity = %#v", running)
@@ -378,6 +398,10 @@ func TestBoardStateCountsAggregateSnapshotStates(t *testing.T) {
 	t.Parallel()
 
 	snapshot := telemetry.Snapshot{
+		BoardIssues: []telemetry.Issue{
+			{ID: "backlog", State: "Backlog"},
+			{ID: "todo", State: "Backlog"},
+		},
 		Pipeline: []telemetry.Issue{
 			{ID: "review", State: "Human Review"},
 			{ID: "done", State: "Done"},
@@ -403,6 +427,7 @@ func TestBoardStateCountsAggregateSnapshotStates(t *testing.T) {
 		{State: "Review", Count: 1},
 		{State: "Merging", Count: 1},
 		{State: "Done", Count: 2},
+		{State: "Backlog", Count: 1},
 		{State: "Rework", Count: 1},
 		{State: "Blocked", Count: 1},
 	}

@@ -33,6 +33,7 @@ type DashboardData struct {
 	ConnectorName    string
 	Snapshot         telemetry.Snapshot
 	Projects         []ProjectSmallMultiple
+	WorkflowStates   []string
 	Assets           AssetPaths
 	ActiveNav        string
 	ProjectID        string
@@ -222,6 +223,53 @@ type prPipelineCard struct {
 	WaitDetail       string
 	Stage            string
 	StageAt          time.Time
+}
+
+type projectKanbanBoard struct {
+	AllLanes        []projectKanbanLane
+	Lanes           []projectKanbanLane
+	EmptyLanes      []projectKanbanLane
+	TotalLabel      string
+	EmptyCountLabel string
+}
+
+type projectKanbanLane struct {
+	ID         string
+	Title      string
+	CountLabel string
+	DotClass   string
+	Empty      bool
+	Cards      []projectKanbanCard
+}
+
+type projectKanbanCard struct {
+	IssueNumber      string
+	Identifier       string
+	ProjectID        string
+	Title            string
+	URL              string
+	PullRequestLabel string
+	CIStatus         string
+	CIClass          string
+	CodexReviewState string
+	CodexReviewClass string
+	TimeInStage      string
+	TimeInStageTitle string
+	WaitDetail       string
+	Stage            string
+	StageAt          time.Time
+	Labels           []string
+	Assignees        []string
+	Blockers         []string
+	HasPullRequest   bool
+}
+
+type projectKanbanIssueCard struct {
+	issue   telemetry.Issue
+	state   string
+	stageAt time.Time
+	rank    int
+	index   int
 }
 
 func DashboardShellDataFromDashboard(data DashboardData) DashboardShellData {
@@ -824,6 +872,385 @@ func activityValue(value string, fallback string) string {
 		return fallback
 	}
 	return value
+}
+
+func projectKanbanBoardView(data DashboardData) projectKanbanBoard {
+	cardsByState := projectKanbanCardsByState(data)
+	states := projectKanbanStateOrder(data.WorkflowStates, cardsByState)
+	allLanes := make([]projectKanbanLane, 0, len(states))
+	visibleLanes := make([]projectKanbanLane, 0, len(states))
+	emptyLanes := make([]projectKanbanLane, 0, len(states))
+	total := 0
+	for _, state := range states {
+		cards := cardsByState[projectKanbanStateKey(state)]
+		lane := projectKanbanLane{
+			ID:         projectKanbanLaneID(state),
+			Title:      state,
+			CountLabel: formatCount(len(cards)),
+			DotClass:   boardStateDotClass(state),
+			Empty:      len(cards) == 0,
+			Cards:      cards,
+		}
+		allLanes = append(allLanes, lane)
+		if lane.Empty {
+			emptyLanes = append(emptyLanes, lane)
+			continue
+		}
+		total += len(cards)
+		visibleLanes = append(visibleLanes, lane)
+	}
+	return projectKanbanBoard{
+		AllLanes:        allLanes,
+		Lanes:           visibleLanes,
+		EmptyLanes:      emptyLanes,
+		TotalLabel:      formatCount(total),
+		EmptyCountLabel: formatCount(len(emptyLanes)),
+	}
+}
+
+func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCard {
+	issues := projectKanbanIssues(data.Snapshot)
+	configured := projectKanbanConfiguredStateMap(data.WorkflowStates)
+	cardsByState := map[string][]projectKanbanCard{}
+	for _, entry := range issues {
+		state := projectKanbanDisplayState(entry.state, configured)
+		card := projectKanbanCardForIssue(entry.issue, state, entry.stageAt, pipelineNow(data.Snapshot))
+		cardsByState[projectKanbanStateKey(state)] = append(cardsByState[projectKanbanStateKey(state)], card)
+	}
+	for key := range cardsByState {
+		cards := cardsByState[key]
+		sort.SliceStable(cards, func(i, j int) bool {
+			left := cards[i].StageAt
+			right := cards[j].StageAt
+			if left.IsZero() || right.IsZero() {
+				return !left.IsZero() && right.IsZero()
+			}
+			if !left.Equal(right) {
+				return left.Before(right)
+			}
+			return cards[i].Identifier < cards[j].Identifier
+		})
+		cardsByState[key] = cards
+	}
+	return cardsByState
+}
+
+func projectKanbanIssues(snapshot telemetry.Snapshot) []projectKanbanIssueCard {
+	byIssue := map[string]projectKanbanIssueCard{}
+	nextIndex := 0
+	appendIssue := func(issue telemetry.Issue, state string, stageAt time.Time, rank int) {
+		state = strings.TrimSpace(state)
+		if state == "" {
+			return
+		}
+		key := projectKanbanIssueKey(issue)
+		if key == "" {
+			key = "anonymous:" + strconv.Itoa(nextIndex)
+		}
+		current, ok := byIssue[key]
+		if ok && rank < current.rank {
+			return
+		}
+		byIssue[key] = projectKanbanIssueCard{
+			issue:   issue,
+			state:   state,
+			stageAt: stageAt.UTC(),
+			rank:    rank,
+			index:   nextIndex,
+		}
+		nextIndex++
+	}
+
+	for _, issue := range snapshot.BoardIssues {
+		appendIssue(issue, issueState(issue, ""), projectKanbanIssueStageTime(issue, time.Time{}), 5)
+	}
+	for _, issue := range snapshot.Pipeline {
+		appendIssue(issue, issueState(issue, ""), pipelineIssueStageTime(issue), 10)
+	}
+	for _, row := range snapshot.Queue {
+		appendIssue(row.Issue, issueState(row.Issue, "Todo"), projectKanbanIssueStageTime(row.Issue, time.Time{}), 20)
+	}
+	for _, row := range snapshot.Running {
+		appendIssue(row.Issue, issueState(row.Issue, "In Progress"), projectKanbanIssueStageTime(row.Issue, row.StartedAt), 30)
+	}
+	for _, row := range snapshot.Blocked {
+		stageAt := projectKanbanIssueStageTime(row.Issue, time.Time{})
+		if row.BlockedAt != nil {
+			stageAt = *row.BlockedAt
+		}
+		appendIssue(row.Issue, issueState(row.Issue, "Blocked"), stageAt, 40)
+	}
+
+	issues := make([]projectKanbanIssueCard, 0, len(byIssue))
+	for _, issue := range byIssue {
+		issues = append(issues, issue)
+	}
+	sort.SliceStable(issues, func(i, j int) bool {
+		return issues[i].index < issues[j].index
+	})
+	return issues
+}
+
+func projectKanbanIssueStageTime(issue telemetry.Issue, fallback time.Time) time.Time {
+	if stageAt := pipelineIssueStageTime(issue); !stageAt.IsZero() {
+		return stageAt
+	}
+	return fallback.UTC()
+}
+
+func projectKanbanIssueKey(issue telemetry.Issue) string {
+	scope := strings.TrimSpace(issue.ProjectID)
+	prefix := ""
+	if scope != "" {
+		prefix = "project:" + scope + ":"
+	}
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		return prefix + "id:" + id
+	}
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		return prefix + "identifier:" + identifier
+	}
+	return ""
+}
+
+func projectKanbanStateOrder(configuredStates []string, cardsByState map[string][]projectKanbanCard) []string {
+	configured := projectKanbanConfiguredStateMap(configuredStates)
+	ordered := make([]string, 0, len(configured)+len(cardsByState))
+	seen := map[string]struct{}{}
+	for _, state := range detentKanbanStateOrder() {
+		key := projectKanbanStateKey(state)
+		display, ok := configured[key]
+		if !ok {
+			continue
+		}
+		ordered = append(ordered, display)
+		seen[key] = struct{}{}
+	}
+	for _, state := range configuredStates {
+		display := projectKanbanStateTitle(state)
+		key := projectKanbanStateKey(display)
+		if display == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		ordered = append(ordered, display)
+		seen[key] = struct{}{}
+	}
+
+	extras := make([]string, 0, len(cardsByState))
+	for key, cards := range cardsByState {
+		if len(cards) == 0 {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		extras = append(extras, cards[0].Stage)
+	}
+	sort.SliceStable(extras, func(i, j int) bool {
+		return strings.ToLower(extras[i]) < strings.ToLower(extras[j])
+	})
+	for _, state := range extras {
+		key := projectKanbanStateKey(state)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		ordered = append(ordered, state)
+		seen[key] = struct{}{}
+	}
+	return ordered
+}
+
+func detentKanbanStateOrder() []string {
+	return []string{
+		"Backlog",
+		"Todo",
+		"In Progress",
+		"Blocked",
+		"Human Review",
+		"Rework",
+		"Merging",
+		"Done",
+		"Cancelled",
+		"Canceled",
+		"Closed",
+		"Duplicate",
+	}
+}
+
+func projectKanbanConfiguredStateMap(states []string) map[string]string {
+	out := map[string]string{}
+	for _, state := range states {
+		display := projectKanbanStateTitle(state)
+		if display == "" {
+			continue
+		}
+		key := projectKanbanStateKey(display)
+		if _, ok := out[key]; ok {
+			continue
+		}
+		out[key] = display
+	}
+	return out
+}
+
+func projectKanbanDisplayState(state string, configured map[string]string) string {
+	display := projectKanbanStateTitle(state)
+	if display == "" {
+		return ""
+	}
+	key := projectKanbanStateKey(display)
+	if configuredDisplay, ok := configured[key]; ok {
+		return configuredDisplay
+	}
+	for _, alias := range projectKanbanStateAliases(key) {
+		if configuredDisplay, ok := configured[alias]; ok {
+			return configuredDisplay
+		}
+	}
+	switch key {
+	case "running":
+		return "In Progress"
+	case "review", "inreview":
+		return "Human Review"
+	case "complete", "completed", "closed":
+		return "Done"
+	case "canceled":
+		return "Cancelled"
+	default:
+		return display
+	}
+}
+
+func projectKanbanStateAliases(key string) []string {
+	switch key {
+	case "running":
+		return []string{"inprogress"}
+	case "review", "inreview":
+		return []string{"humanreview"}
+	case "complete", "completed", "closed":
+		return []string{"done"}
+	case "canceled":
+		return []string{"cancelled"}
+	default:
+		return nil
+	}
+}
+
+func projectKanbanStateTitle(state string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(state)), " ")
+}
+
+func projectKanbanStateKey(state string) string {
+	state = strings.ToLower(strings.TrimSpace(state))
+	replacer := strings.NewReplacer(" ", "", "-", "", "_", "")
+	return replacer.Replace(state)
+}
+
+func projectKanbanLaneID(state string) string {
+	key := projectKanbanStateKey(state)
+	if key == "" {
+		return "unknown"
+	}
+	var builder strings.Builder
+	lastDash := false
+	for _, r := range strings.ToLower(strings.TrimSpace(state)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+			lastDash = false
+			continue
+		}
+		if builder.Len() > 0 && !lastDash {
+			builder.WriteByte('-')
+			lastDash = true
+		}
+	}
+	id := strings.Trim(builder.String(), "-")
+	if id == "" {
+		return key
+	}
+	return id
+}
+
+func projectKanbanCardForIssue(issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
+	card := projectKanbanCard{
+		IssueNumber:      issueNumber(issue),
+		Identifier:       issueIdentifier(issue),
+		ProjectID:        strings.TrimSpace(issue.ProjectID),
+		Title:            issueTitle(issue),
+		URL:              prPipelineURL(issue),
+		PullRequestLabel: projectKanbanPullRequestLabel(issue),
+		TimeInStage:      prPipelineAge(stageAt, now),
+		TimeInStageTitle: prPipelineAgeTitle(state, stageAt, now),
+		WaitDetail:       prPipelineWaitDetail(issue),
+		Stage:            chartText(state, "n/a"),
+		StageAt:          stageAt.UTC(),
+		Labels:           uniqueStrings(issue.Labels),
+		Assignees:        uniqueStrings(issue.Assignees),
+		Blockers:         projectKanbanBlockerLabels(issue.BlockedBy),
+		HasPullRequest:   issue.PullRequest != nil,
+	}
+	if issue.PullRequest != nil {
+		ciStatus := prPipelineCIStatus(issue, projectKanbanLaneID(state))
+		codexReview := prPipelineCodexReviewState(issue)
+		card.CIStatus = ciStatus
+		card.CIClass = prPipelineCIClass(ciStatus)
+		card.CodexReviewState = codexReview
+		card.CodexReviewClass = prPipelineCodexReviewClass(codexReview)
+	}
+	return card
+}
+
+func projectKanbanPullRequestLabel(issue telemetry.Issue) string {
+	if issue.PullRequest == nil {
+		return "No linked PR"
+	}
+	if issue.PullRequest.Number > 0 {
+		return "PR #" + strconv.Itoa(issue.PullRequest.Number)
+	}
+	return "Linked PR"
+}
+
+func projectKanbanBlockerLabels(refs []telemetry.BlockedRef) []string {
+	labels := make([]string, 0, len(refs))
+	for _, ref := range refs {
+		label := strings.TrimSpace(ref.Identifier)
+		if label == "" {
+			label = strings.TrimSpace(ref.ID)
+		}
+		if label == "" {
+			continue
+		}
+		if state := strings.TrimSpace(ref.State); state != "" {
+			label += " " + state
+		}
+		labels = append(labels, label)
+	}
+	return uniqueStrings(labels)
+}
+
+func projectKanbanLaneClass(lane projectKanbanLane) string {
+	class := "project-kanban-lane grid min-h-[16rem] min-w-0 content-start rounded-md border border-border bg-muted/60 p-3"
+	if lane.Empty {
+		class += " project-kanban-empty-lane"
+	}
+	return class
+}
+
+func projectKanbanLaneAttributes(lane projectKanbanLane) templ.Attributes {
+	if !lane.Empty {
+		return nil
+	}
+	return templ.Attributes{"data-project-kanban-empty-lane": true}
+}
+
+func projectKanbanEmptyToggleLabel(board projectKanbanBoard) string {
+	if len(board.EmptyLanes) == 1 {
+		return "Show 1 empty state"
+	}
+	return "Show " + formatCount(len(board.EmptyLanes)) + " empty states"
 }
 
 func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {

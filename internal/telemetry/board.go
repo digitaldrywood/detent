@@ -69,6 +69,9 @@ func BoardStateCounts(snapshot Snapshot) []BoardStateCount {
 		}
 	}
 
+	for _, issue := range snapshot.BoardIssues {
+		addIssueState(issue, "", 5, false)
+	}
 	for _, issue := range snapshot.Pipeline {
 		addIssueState(issue, "", 10, false)
 	}

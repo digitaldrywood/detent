@@ -23,13 +23,14 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 			LastRefreshAt:       timePointer(s.LastRefreshAt),
 			NextRefreshAt:       timePointer(s.NextRefreshAt),
 		},
-		Pipeline:   pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval),
-		Running:    runningSnapshots(s.Running, s.Claimed, now),
-		Queue:      queueSnapshots(s.Retry, s.Claimed, now),
-		Blocked:    blockedSnapshots(s.Blocked, s.Claimed, now),
-		Completed:  completedSnapshots(s.Completed, s.Claimed, now),
-		RateLimits: cloneRateLimits(s.RateLimits),
-		Tokens:     tokensFromCodexTotals(s.liveCodexTotals()),
+		BoardIssues: issueSnapshots(s.BoardIssues, s.AutoPromoteQuietDuration, s.PollInterval),
+		Pipeline:    pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval),
+		Running:     runningSnapshots(s.Running, s.Claimed, now),
+		Queue:       queueSnapshots(s.Retry, s.Claimed, now),
+		Blocked:     blockedSnapshots(s.Blocked, s.Claimed, now),
+		Completed:   completedSnapshots(s.Completed, s.Claimed, now),
+		RateLimits:  cloneRateLimits(s.RateLimits),
+		Tokens:      tokensFromCodexTotals(s.liveCodexTotals()),
 		Budget: telemetry.Budget{
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
 		},
@@ -66,6 +67,10 @@ func instanceSnapshot(cfg Config) telemetry.Instance {
 }
 
 func pipelineSnapshots(issues []connector.Issue, quietDuration time.Duration, pollInterval time.Duration) []telemetry.Issue {
+	return issueSnapshots(issues, quietDuration, pollInterval)
+}
+
+func issueSnapshots(issues []connector.Issue, quietDuration time.Duration, pollInterval time.Duration) []telemetry.Issue {
 	out := make([]telemetry.Issue, 0, len(issues))
 	for _, issue := range issues {
 		out = append(out, telemetryIssue(issue, quietDuration, pollInterval))
@@ -215,11 +220,25 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 		Description:    issue.Description,
 		State:          issue.State,
 		Labels:         append([]string(nil), issue.Labels...),
+		Assignees:      append([]string(nil), issue.Assignees...),
+		BlockedBy:      telemetryBlockedRefs(issue.BlockedBy),
 		PullRequest:    telemetryPullRequest(issue, quietDuration, pollInterval),
 		CreatedAt:      timePointerFromPtr(issue.CreatedAt),
 		UpdatedAt:      timePointerFromPtr(issue.UpdatedAt),
 		StageUpdatedAt: timePointerFromPtr(issue.StageUpdatedAt),
 	}
+}
+
+func telemetryBlockedRefs(refs []connector.BlockedRef) []telemetry.BlockedRef {
+	out := make([]telemetry.BlockedRef, 0, len(refs))
+	for _, ref := range refs {
+		out = append(out, telemetry.BlockedRef{
+			ID:         ref.ID,
+			Identifier: ref.Identifier,
+			State:      ref.State,
+		})
+	}
+	return out
 }
 
 func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, pollInterval time.Duration) *telemetry.PullRequest {

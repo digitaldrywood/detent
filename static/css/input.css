@@ -113,7 +113,8 @@
   }
 
   .dashboard-agent-scroll,
-  .pr-pipeline-lane-scroll {
+  .pr-pipeline-lane-scroll,
+  .project-kanban-lane-scroll {
     overscroll-behavior: contain;
     scrollbar-gutter: stable;
   }
@@ -302,5 +303,15 @@
 
   .dashboard-project-order-controls button:disabled {
     opacity: 0.35;
+  }
+}
+
+@layer utilities {
+  .project-kanban-empty-lane {
+    display: none;
+  }
+
+  .project-kanban-show-empty:checked ~ .project-kanban-lanes .project-kanban-empty-lane {
+    display: grid;
   }
 }

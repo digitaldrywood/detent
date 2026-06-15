@@ -35,6 +35,9 @@ func TestStateSnapshotEmpty(t *testing.T) {
 	if len(snapshot.Completed) != 0 {
 		t.Fatalf("Completed = %#v, want empty", snapshot.Completed)
 	}
+	if len(snapshot.BoardIssues) != 0 {
+		t.Fatalf("BoardIssues = %#v, want empty", snapshot.BoardIssues)
+	}
 }
 
 func TestStateSnapshotIncludesInstanceIdentityAndScope(t *testing.T) {
@@ -145,6 +148,15 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	state := newState(normalizeConfig(Config{}))
 	state.LastRefreshAt = now.Add(-30 * time.Second)
 	state.NextRefreshAt = now.Add(30 * time.Second)
+	state.BoardIssues = []connector.Issue{
+		{
+			ID:             "i-board",
+			Identifier:     "ISS-BOARD",
+			Title:          "Backlog board issue",
+			State:          "Backlog",
+			StageUpdatedAt: &pipelineUpdatedAt,
+		},
+	}
 	state.Pipeline = []connector.Issue{
 		{
 			ID:         "i-pr",
@@ -152,6 +164,8 @@ func TestStateSnapshotPopulated(t *testing.T) {
 			Title:      "Pipeline PR",
 			State:      "Human Review",
 			Labels:     []string{"enhancement"},
+			Assignees:  []string{"release-captain"},
+			BlockedBy:  []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415", State: "Done"}},
 			UpdatedAt:  &pipelineUpdatedAt,
 			PullRequest: &connector.PullRequest{
 				Number:            142,
@@ -221,12 +235,26 @@ func TestStateSnapshotPopulated(t *testing.T) {
 		t.Fatalf("Counts = %#v, want %#v", snapshot.Counts, wantCounts)
 	}
 
+	if len(snapshot.BoardIssues) != 1 {
+		t.Fatalf("BoardIssues len = %d, want 1", len(snapshot.BoardIssues))
+	}
+	boardIssue := snapshot.BoardIssues[0]
+	if boardIssue.ID != "i-board" || boardIssue.State != "Backlog" || boardIssue.StageUpdatedAt == nil || !boardIssue.StageUpdatedAt.Equal(pipelineUpdatedAt) {
+		t.Fatalf("BoardIssues[0] = %#v", boardIssue)
+	}
+
 	if len(snapshot.Pipeline) != 1 {
 		t.Fatalf("Pipeline len = %d, want 1", len(snapshot.Pipeline))
 	}
 	pipeline := snapshot.Pipeline[0]
 	if pipeline.ID != "i-pr" || pipeline.State != "Human Review" || pipeline.UpdatedAt == nil || !pipeline.UpdatedAt.Equal(pipelineUpdatedAt) {
 		t.Fatalf("Pipeline[0] = %#v", pipeline)
+	}
+	if len(pipeline.Assignees) != 1 || pipeline.Assignees[0] != "release-captain" {
+		t.Fatalf("Pipeline[0].Assignees = %#v, want release-captain", pipeline.Assignees)
+	}
+	if len(pipeline.BlockedBy) != 1 || pipeline.BlockedBy[0].Identifier != "digitaldrywood/detent#415" || pipeline.BlockedBy[0].State != "Done" {
+		t.Fatalf("Pipeline[0].BlockedBy = %#v, want dependency ref", pipeline.BlockedBy)
 	}
 	if pipeline.PullRequest == nil || pipeline.PullRequest.Number != 142 || pipeline.PullRequest.CIStatus != "pending" || pipeline.PullRequest.CodexReviewState != "P2" {
 		t.Fatalf("Pipeline[0].PullRequest = %#v", pipeline.PullRequest)
