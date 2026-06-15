@@ -316,6 +316,25 @@ func TestValidateGitHubProjectV2StillRequiresProjectSlug(t *testing.T) {
 	}
 }
 
+func TestValidateGitHubIssueFieldRequiresRepository(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Tracker.Kind = TrackerGitHub
+	cfg.Tracker.APIKey = "token"
+	cfg.Tracker.GitHubStatusSource = GitHubStatusSourceIssueField
+	cfg.Tracker.ProjectSlug = ""
+	cfg.Tracker.Repository = ""
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "tracker.repository") {
+		t.Fatalf("Validate() error = %v, want repository requirement", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "tracker.project_slug") {
+		t.Fatalf("Validate() error = %v, want no project_slug requirement in issue_field mode", err)
+	}
+}
+
 func TestParseWorkflowDefaults(t *testing.T) {
 	t.Parallel()
 

@@ -50,15 +50,17 @@ advance when a gate is cleared.
 
 ## What is this
 
-Detent is board-driven agentic work orchestration, shipped as a single Go
-binary, with code as its first proven domain. Today it watches a GitHub Projects
-board, and for every code issue you mark ready it creates an isolated Git
-worktree, dispatches a Codex coding agent against a workflow contract you wrote,
-runs your validation gate, opens a pull request, waits for review, and merges
-through a serialized train — with all of it live on a web dashboard and a
-terminal UI. The same board-to-gated-review-to-done shape is the trajectory for
-non-code work: validation gates are now pluggable, while non-git or non-PR
-deliverables remain follow-up work described in
+Detent is status-driven agentic work orchestration, shipped as a single Go
+binary, with code as its first proven domain. Today it can use a GitHub
+ProjectV2 board as the source of truth, or it can run boardless from a
+repository's GitHub issue `Status` field while Detent supplies the Kanban view.
+For every code issue you mark ready it creates an isolated Git worktree,
+dispatches a Codex coding agent against a workflow contract you wrote, runs
+your validation gate, opens a pull request, waits for review, and merges through
+a serialized train — with all of it live on a web dashboard and a terminal UI.
+The same status-to-gated-review-to-done shape is the trajectory for non-code
+work: validation gates are now pluggable, while non-git or non-PR deliverables
+remain follow-up work described in
 [Execution Seams](docs/execution-seams.md).
 
 It is a **system, not an agent.** You specify the work — the issues, acceptance
@@ -77,7 +79,8 @@ agent-executable [Project Onboarding](docs/ONBOARDING.md) runbook.
 
 ## How it works
 
-The board is the state machine; board status drives everything.
+Configured GitHub status is the state machine; ProjectV2 board status or the
+boardless issue field drives everything.
 
 1. **You write the contract.** Each project has a `WORKFLOW.md`: the tracker
    binding, board states, the agent prompt, the validation gate, and the review
@@ -232,11 +235,12 @@ Requirements:
 - The [OpenAI Codex CLI](https://github.com/openai/codex) installed and signed
   in, so `codex app-server` runs on the host that dispatches agents. Detent
   drives every agent through this app-server. Verify with `codex --version`.
-- The [GitHub CLI](https://cli.github.com) (`gh`) for authentication and board
+- The [GitHub CLI](https://cli.github.com) (`gh`) for authentication and GitHub
   lookups (optional but assumed throughout this guide).
-- A GitHub token with access to the target ProjectV2 board. For organization
-  projects, `repo`, `read:org`, `read:project`, and write `project` scopes are
-  usually required.
+- A GitHub token for the selected tracker mode. ProjectV2 mode usually needs
+  `repo`, `read:org`, `read:project`, and write `project`. Boardless
+  issue-field mode needs repository issue access plus organization issue-field
+  read access; classic PATs use `repo` and `read:org`.
 
 macOS and Linux hosts can install the latest release with the shell installer:
 
@@ -360,12 +364,15 @@ packaging tail.
 
 ## Quick Start
 
-The quickest production-shaped setup is one GitHub ProjectV2 board and one
-local repository checkout.
+The quickest compatibility setup is one GitHub ProjectV2 board and one local
+repository checkout. New projects can also run boardless: Detent reads and
+writes a repository's organization-level GitHub issue `Status` field and shows
+workflow visibility in Detent's own Kanban/dashboard surface.
 
-1. Authenticate GitHub access:
+1. Authenticate GitHub access for the mode you want:
 
 ```sh
+# ProjectV2-backed board mode.
 gh auth login --scopes "repo,read:org,read:project,project"
 # For existing auth:
 gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"
@@ -374,10 +381,26 @@ gh auth status 2>&1 | rg '\brepo\b'
 gh auth status 2>&1 | rg '\bread:org\b'
 gh auth status 2>&1 | rg '\bread:project\b'
 gh auth status 2>&1 | rg "(^|[[:space:],'\"])project([[:space:],'\"]|$)"
+
+# Boardless issue-field mode with a classic PAT.
+gh auth login --scopes "repo,read:org"
+gh auth status 2>&1 | rg '\brepo\b'
+gh auth status 2>&1 | rg '\bread:org\b'
 ```
 
-2. Find the GitHub ProjectV2 node id. Use the `id` field, which starts with
-   `PVT_`, as `tracker.project_slug`:
+Fine-grained PATs and GitHub Apps should grant Issues repository read/write
+when Detent will move work or post comments, Pull requests read/checks read for
+PR gates, and Issue Fields organization read for boardless status discovery.
+Issue-field writes use the issue field values API and require issue or pull
+request repository write permission plus push access to the repository. If
+Kanban integration mode is enabled in a release that supports it, comment
+submission also requires issue/PR comment write.
+
+2. Choose the GitHub status source.
+
+For the current/default compatibility path, use a GitHub ProjectV2 board. Find
+the node id and use the `id` field, which starts with `PVT_`, as
+`tracker.project_slug`:
 
 ```sh
 gh project list --owner <org-or-user> --format json --limit 20
@@ -394,12 +417,24 @@ GitHub uses single-select option order as board column order; Detent keeps the
 known status options in canonical board order and leaves extra custom options
 after the required Detent states.
 
-3. Create a `WORKFLOW.md` in the repository you want Detent to work on:
+For boardless mode, create or reuse an organization-level single-select issue
+field named `Status` and make sure it is available to the repository. GitHub
+issue fields are issue-only: linked PR cards in Detent derive status from the
+linked issue, not from a PR field. Discover the field and options with:
+
+```sh
+gh api /orgs/<org>/issue-fields --jq '.[] | select(.name == "Status")'
+```
+
+3. Create a `WORKFLOW.md` in the repository you want Detent to work on.
+
+ProjectV2-backed board mode:
 
 ```markdown
 ---
 tracker:
   kind: github
+  github_status_source: project_v2
   project_slug: PVT_replace_with_project_id
   write_probe_issue: owner/repo#123
   http_max_idle_conns: 100
@@ -488,6 +523,56 @@ scoped to the issue, run the project validation gate, and prepare the work for
 human review.
 ```
 
+Boardless issue-field mode:
+
+```markdown
+---
+tracker:
+  kind: github
+  github_status_source: issue_field
+  repository: owner/repo
+  status_field: Status
+  write_probe_issue: owner/repo#123
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+    - Merging
+  observed_states:
+    - Backlog
+    - Human Review
+    - Blocked
+  terminal_states:
+    - Done
+    - Cancelled
+  state_map:
+    Cancelled: Done
+workspace:
+  root: /absolute/path/to/detent-workspaces
+  source_root: /absolute/path/to/project-checkout
+agent:
+  max_concurrent_agents_by_state:
+    Merging: 1
+gate:
+  kind: command
+  run: make check
+---
+You are working on {{ issue.identifier }}: {{ issue.title }}.
+```
+
+Kanban display is read-only by default. Keep that default for observers,
+shared dashboards, and initial rollout. In a Detent release that includes
+Kanban integration mode, enable integration only when operators are allowed to
+move cards and post issue or PR comments from Detent, and only after
+`detent doctor` proves issue-field status write and issue/PR comment write:
+
+```yaml
+server:
+  kanban:
+    mode: read_only
+    # mode: integration
+```
+
 `workspace.source_root` is the checked-out repository Detent uses for
 `git worktree add`; `workspace.root` is where per-issue worktrees are created.
 If `workspace.source_root` is omitted, Detent falls back to the project
@@ -563,16 +648,21 @@ port: 4000
    ```
 
 `detent doctor` is a preflight check: config resolution, the SQLite database,
-the `codex` binary, GitHub auth mode, GitHub ProjectV2 and repository
-readiness, git, and whether the server port is free. Before starting Detent, fix
-any `FAIL` (missing `github_token: gh` or an unauthenticated `codex` are the
-usual culprits). Configure `tracker.write_probe_issue` with a scratch issue on
-the project board when you want doctor to prove ProjectV2 and issue write
-capabilities instead of reporting WARN for unproven writes. If Detent is already
-running on the configured port, the server-port check can fail because the live
-service owns the port; use `detent doctor --port 0` for the same config,
-toolchain, token, and database preflight without the port collision, then verify
-the live service with `/health`.
+the `codex` binary, GitHub auth mode, GitHub tracker readiness, git, and
+whether the server port is free. In ProjectV2 mode it checks project access,
+Status options, board item reads, repository issue/PR access, write probes, and
+rate-limit visibility. In boardless mode it checks repository access, issue
+field discovery, Status option discovery, issue reads by field value, optional
+issue-field write probes, issue/PR comment write when integration-capable
+features are configured, and REST/GraphQL rate-limit visibility. Before
+starting Detent, fix any `FAIL` (missing `github_token: gh` or an
+unauthenticated `codex` are the usual culprits). Configure
+`tracker.write_probe_issue` with a scratch issue when you want doctor to prove
+write capabilities instead of reporting WARN for unproven writes. If Detent is
+already running on the configured port, the server-port check can fail because
+the live service owns the port; use `detent doctor --port 0` for the same
+config, toolchain, token, and database preflight without the port collision,
+then verify the live service with `/health`.
 
 For Detent dogfood/self-tests that need a running server, start an isolated mock
 runtime instead of stopping or reusing the live process on `127.0.0.1:4000`:
@@ -642,15 +732,20 @@ repo is a real, working instance of this setup to copy from.
    platform installer from [Install](#install). Verify: `detent version`.
 
 2. **Install and authenticate the GitHub CLI.** Install
-   [`gh`](https://cli.github.com), then:
+   [`gh`](https://cli.github.com), then choose scopes for the tracker mode:
 
    ```sh
+   # ProjectV2-backed board mode.
    gh auth login --scopes "repo,read:org,read:project,project"
    # For existing auth:
    gh auth refresh -h github.com --scopes "repo,read:org,read:project,project"
+
+   # Boardless issue-field mode.
+   gh auth login --scopes "repo,read:org"
    ```
 
-   Verify each required scope independently:
+   Verify the required classic PAT scopes independently. Boardless mode does
+   not require `read:project` or `project`.
 
    ```sh
    gh auth status 2>&1 | rg '\brepo\b'
@@ -666,8 +761,9 @@ repo is a real, working instance of this setup to copy from.
    [OpenAI Codex CLI](https://github.com/openai/codex) and sign in. Detent
    dispatches every agent through `codex app-server`. Verify: `codex --version`.
 
-4. **Choose the GitHub ProjectV2 board** Detent will drive and get its node id
-   (starts with `PVT_`):
+4. **Choose the GitHub status source.** For the current/default compatibility
+   path, choose the GitHub ProjectV2 board Detent will drive and get its node
+   id (starts with `PVT_`):
 
    ```sh
    gh project list --owner <org-or-user> --format json --limit 50
@@ -679,6 +775,13 @@ repo is a real, working instance of this setup to copy from.
    `Priority` options on first run. The option names must match your
    `WORKFLOW.md` states, and Detent keeps known `Status` options in canonical
    board order.
+
+   For boardless mode, skip ProjectV2 board creation and instead confirm the
+   repository's organization has a single-select issue field named `Status`:
+
+   ```sh
+   gh api /orgs/<org>/issue-fields --jq '.[] | select(.name == "Status")'
+   ```
 
 5. **Clone the repository you want Detent to work on** (its checkout becomes
    `workspace.source_root`):
@@ -697,7 +800,10 @@ repo is a real, working instance of this setup to copy from.
      -o <source-root>/WORKFLOW.md
    ```
 
-   Set `tracker.project_slug` (your `PVT_` id), `workspace.source_root`
+   For ProjectV2 mode, set `tracker.project_slug` (your `PVT_` id). For
+   boardless mode, set `tracker.github_status_source: issue_field`,
+   `tracker.repository: <repo-owner>/<repo-name>`, and optionally
+   `tracker.status_field`. In both modes, set `workspace.source_root`
    (`<source-root>`), `workspace.root` (a worktrees directory), and the prompt
    body. The full field reference is in [Quick Start](#quick-start).
 
@@ -765,19 +871,29 @@ repo is a real, working instance of this setup to copy from.
 ### Connectors
 
 Detent isolates tracker integration behind a connector interface. The current
-production connector is GitHub Projects. A memory connector is available for
-local development, and the connector boundary is where GitLab and Jira support
-will land later.
+production connector is GitHub. It supports the current ProjectV2-backed board
+mode and boardless issue-field mode. A memory connector is available for local
+development, and the connector boundary is where GitLab and Jira support will
+land later.
 
 GitHub configuration lives in each project's `WORKFLOW.md` frontmatter. The
-`project_slug` value is the GitHub ProjectV2 node id. Detent reads issue
-state, priority, labels, blockers, and assignment from the board, then writes
-comments and state transitions back through the connector.
+default `github_status_source: project_v2` mode uses `project_slug` as the
+GitHub ProjectV2 node id. Detent reads issue state, priority, labels, blockers,
+and assignment from the board, then writes comments and state transitions back
+through the connector. Boardless `github_status_source: issue_field` mode uses
+`repository: owner/name` and an organization issue field such as
+`status_field: Status`; Detent reads issues by issue-field value and updates
+that field for state transitions.
 Set `tracker.write_probe_issue` to a scratch issue already present on that
-ProjectV2 board if `detent doctor` should prove write operations by replaying
-existing values and sending non-mutating validation probes. Without a probe
-issue, doctor reports required write capabilities as WARN instead of inferring
-that broad token scopes are enough.
+ProjectV2 board or in the boardless repository if `detent doctor` should prove
+write operations by replaying existing values and sending non-mutating
+validation probes. Without a probe issue, doctor reports required write
+capabilities as WARN instead of inferring that broad token scopes are enough.
+
+GitHub issue fields apply to issues, not pull requests. Detent still displays
+linked PR state and can comment on PRs through GitHub's shared issue-comment
+endpoints, but boardless status comes from the linked issue. A PR-only card
+without a linked issue is not movable by an issue-field status update.
 
 The GitHub connector uses one pooled keep-alive HTTP client for GraphQL and
 GitHub App REST token requests. Tune `tracker.http_max_idle_conns`,
@@ -832,11 +948,11 @@ Codex/ChatGPT/Claude GitHub PR review. If automated PR review is required and
 the PR head changes after a review, request or wait for a fresh automated review
 before expecting auto-promotion.
 
-### Set up the board
+### Set up status
 
-You bring the board; Detent fills in the rest.
+You choose where GitHub status lives; Detent fills in the rest.
 
-- **You create** a GitHub **Projects v2** board (org or user) and point
+- **ProjectV2 mode:** create a GitHub **Projects v2** board (org or user) and point
   `tracker.project_slug` at its node id — the `PVT_…` id from
   `gh project list --owner <org-or-user> --format json`. The board has a default
   **`Status`** field; add a **`Priority`** single-select if you rank work.
@@ -849,12 +965,45 @@ You bring the board; Detent fills in the rest.
   status options are preserved after the configured Detent states. It provisions
   the options, not the board or the fields themselves, so create the board (and
   the `Priority` field if used) first.
+- **Boardless issue-field mode:** create or reuse an organization issue field,
+  normally a single-select `Status` field, and make it available to the
+  repository. Configure `tracker.github_status_source: issue_field`,
+  `tracker.repository: owner/name`, and optionally `tracker.status_field` when
+  the field is not named `Status`. Detent's Kanban/dashboard view becomes the
+  board surface; no GitHub ProjectV2 board or `tracker.project_slug` is needed.
 - **Blank `Status` values are not `Backlog`.** In the current release, an issue
-  with no Project `Status` value is not dispatchable through the board state
+  with no configured `Status` value is not dispatchable through the state
   machine. Put unready work in the `Backlog` option explicitly.
 - **Detent reads** status, priority, labels, blockers, assignees, and linked
   pull requests from each issue, and **writes back** status transitions and a
   `## Codex Workpad` comment as the agent works.
+
+### Kanban Modes
+
+Boardless projects use Detent's own dashboard as the day-to-day board. Keep
+Kanban in `read_only` mode by default: operators can inspect lanes, linked PRs,
+CI, review state, blockers, labels, and assignees without granting dashboard
+write access. Enable `integration` mode only in a release that supports it and
+only for trusted operators who should move cards and post comments from the
+dashboard. Integration mode needs the same GitHub write permissions that
+`detent doctor` probes: ProjectV2 status write in ProjectV2 mode, issue-field
+status write in boardless mode, and issue/PR comment write for comment forms.
+
+### Migration Notes
+
+Existing users do not need to migrate. Leaving
+`tracker.github_status_source` unset keeps ProjectV2 as the source of truth,
+and existing `tracker.project_slug` workflows remain valid. This is the
+compatibility path when the GitHub Project board is where humans already plan,
+rank, and move work.
+
+To switch a repository to boardless mode, create the organization issue
+`Status` field and options, copy current issue statuses from the ProjectV2 board
+manually or with a one-off script outside Detent, then change the workflow to
+`github_status_source: issue_field` with `repository: owner/name`. Detent does
+not automatically migrate ProjectV2 items to issue fields. After the switch,
+run `detent doctor --port 0` and fix field discovery, option discovery,
+write-probe, comment-write, and rate-limit checks before dispatching.
 
 ### Dependency workflows
 
@@ -871,16 +1020,17 @@ the wait should be visible on the board.
   your team wants dependency-waiting issues to sit in a waiting column. Detent
   only moves issues that have explicit `Depends on:` or `Blocked by:` references.
   When all blockers are terminal, closed, or have a merged linked PR under the
-  configured `readiness` rule, Detent updates the ProjectV2 `Status` to
-  `target_state` and posts an audit comment. Without
+  configured `readiness` rule, Detent updates the configured GitHub status
+  source to `target_state` and posts an audit comment. Without
   `tracker.dependency_auto_unblock.enabled: true`, a `Blocked` issue is observed
   for display but will not be moved back to `Todo`. Human blockers without
   explicit dependency references stay blocked.
 
 Before you dispatch anything, run **`detent doctor`** — it checks config
 resolution, the database, the `codex` binary, GitHub auth mode, configured
-ProjectV2 access, repository issue/PR access, required write proofs, git, and
-the server port. A clean pre-start `doctor` clears Detent's direct preflight.
+tracker access, repository issue/PR access, required write proofs, rate-limit
+visibility, git, and the server port. A clean pre-start `doctor` clears
+Detent's direct preflight.
 When a running Detent process already owns the configured port,
 `detent doctor --port 0` validates the config, database, tools, and token
 without treating the live listener as a blocker; pair it with `/health` on the

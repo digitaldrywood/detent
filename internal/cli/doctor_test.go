@@ -920,6 +920,68 @@ func TestCheckDoctorProjectBuildsGitHubReadinessInventory(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorProjectBuildsGitHubIssueFieldReadinessInventory(t *testing.T) {
+	t.Parallel()
+
+	workflow := validDoctorWorkflow("/repo")
+	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceIssueField
+	workflow.Tracker.ProjectSlug = ""
+	workflow.Tracker.Repository = "digitaldrywood/detent"
+	workflow.Tracker.StatusField = "Status"
+	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+	workflow.Tracker.ObservedStates = []string{"Backlog", "Human Review", "Blocked"}
+	workflow.Tracker.TerminalStates = []string{"Done", "Cancelled"}
+	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
+	var gotConnector ghconnector.Config
+	var gotReadiness ghconnector.ReadinessConfig
+
+	checks := checkDoctorProject(context.Background(), globalconfig.Project{
+		ID:       "alpha",
+		Workflow: "WORKFLOW.md",
+	}, doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: workflow}, nil
+		},
+		gitWorkTree: func(context.Context, string) error {
+			return nil
+		},
+		gitRemoteURL: func(context.Context, string) (string, error) {
+			return "git@github.com:digitaldrywood/detent.git", nil
+		},
+		githubReadiness: func(_ context.Context, connectorCfg ghconnector.Config, readinessCfg ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+			gotConnector = connectorCfg
+			gotReadiness = readinessCfg
+			return []ghconnector.ReadinessCheck{{Name: "GitHub issue field access", Status: ghconnector.ReadinessOK, Detail: "read Status"}}, nil
+		},
+	}, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"})
+
+	if gotConnector.ProjectSlug != "" {
+		t.Fatalf("connector ProjectSlug = %q, want empty in issue_field mode", gotConnector.ProjectSlug)
+	}
+	if gotConnector.Repository != "digitaldrywood/detent" {
+		t.Fatalf("connector Repository = %q, want digitaldrywood/detent", gotConnector.Repository)
+	}
+	if gotConnector.GitHubStatusSource != workflowconfig.GitHubStatusSourceIssueField {
+		t.Fatalf("connector GitHubStatusSource = %q, want issue_field", gotConnector.GitHubStatusSource)
+	}
+	if gotReadiness.RequireProjectRead || gotReadiness.RequireProjectStatusWrite {
+		t.Fatalf("project requirements = %#v, want no ProjectV2 requirements in issue_field mode", gotReadiness)
+	}
+	if !gotReadiness.RequireIssueFieldRead || !gotReadiness.RequireIssueFieldStatusWrite {
+		t.Fatalf("issue-field requirements = %#v, want issue-field read and status write", gotReadiness)
+	}
+	if !gotReadiness.RequireIssueComments {
+		t.Fatalf("RequireIssueComments = false, want comment write probe for integration-capable workflow")
+	}
+	if len(gotReadiness.Repositories) != 1 || gotReadiness.Repositories[0] != "digitaldrywood/detent" {
+		t.Fatalf("Repositories = %#v, want digitaldrywood/detent", gotReadiness.Repositories)
+	}
+	if len(checks) < 3 || checks[len(checks)-1].Status != doctorOK {
+		t.Fatalf("checks = %#v, want readiness OK check appended", checks)
+	}
+}
+
 func TestCheckDoctorRuntimeSettingsReportsSources(t *testing.T) {
 	t.Parallel()
 
@@ -1129,6 +1191,23 @@ func TestCheckDoctorGitHub(t *testing.T) {
 			wantDetail: "PROJECT_TOKEN has classic PAT scopes",
 		},
 		{
+			name: "boardless workflow token does not require project scopes",
+			cfg: &globalconfig.Config{Projects: []globalconfig.Project{
+				{ID: "alpha", Workflow: "WORKFLOW.md"},
+			}},
+			workflow: func() workflowconfig.Config {
+				cfg := githubWorkflow
+				cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceIssueField
+				cfg.Tracker.ProjectSlug = ""
+				cfg.Tracker.Repository = "digitaldrywood/detent"
+				return cfg
+			}(),
+			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
+			scopes:     []string{"repo", "read:org"},
+			want:       doctorOK,
+			wantDetail: "GITHUB_TOKEN has classic PAT scopes: repo, read:org",
+		},
+		{
 			name:       "environment token has required scopes",
 			token:      RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"},
 			scopes:     []string{"workflow", "project", "read:project", "read:org", "repo"},
@@ -1171,6 +1250,54 @@ func TestCheckDoctorGitHub(t *testing.T) {
 				t.Fatalf("Hint = %q, want containing %q", got.Hint, tt.wantHint)
 			}
 		})
+	}
+}
+
+func TestCheckDoctorGitHubScopesSkipAppBackedWorkflows(t *testing.T) {
+	t.Parallel()
+
+	boardlessWorkflow := validDoctorWorkflow("/repo")
+	boardlessWorkflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	boardlessWorkflow.Tracker.APIKey = "$GITHUB_TOKEN"
+	boardlessWorkflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceIssueField
+	boardlessWorkflow.Tracker.ProjectSlug = ""
+	boardlessWorkflow.Tracker.Repository = "digitaldrywood/detent"
+
+	appWorkflow := githubAppWorkflow()
+	workflows := map[string]workflowconfig.Config{
+		"boardless.md": boardlessWorkflow,
+		"projectv2.md": appWorkflow,
+	}
+	cfg := &globalconfig.Config{Projects: []globalconfig.Project{
+		{ID: "boardless", Workflow: "boardless.md"},
+		{ID: "projectv2", Workflow: "projectv2.md"},
+	}}
+
+	got := checkDoctorGitHub(context.Background(), cfg, RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"}, doctorDeps{
+		lookupEnv: mapLookup(map[string]string{
+			"APP_ID":           "12345",
+			"INSTALLATION_ID":  "67890",
+			"PRIVATE_KEY_PATH": ".detent/github-app.pem",
+		}),
+		loadWorkflow: func(path string) (workflowconfig.Workflow, error) {
+			workflow, ok := workflows[path]
+			if !ok {
+				t.Fatalf("unexpected workflow path %q", path)
+			}
+			return workflowconfig.Workflow{Config: workflow}, nil
+		},
+		githubScopes: func(context.Context, string) ([]string, error) {
+			return []string{"repo", "read:org"}, nil
+		},
+	})
+	if got.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorOK, got)
+	}
+	if !strings.Contains(got.Detail, "repo, read:org") {
+		t.Fatalf("Detail = %q, want boardless PAT scopes", got.Detail)
+	}
+	if strings.Contains(got.Detail, "read:project") || strings.Contains(got.Detail, ", project") {
+		t.Fatalf("Detail = %q, want no ProjectV2 PAT scopes for app-backed workflow", got.Detail)
 	}
 }
 

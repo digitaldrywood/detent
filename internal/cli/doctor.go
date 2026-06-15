@@ -53,7 +53,10 @@ const (
 	doctorFail doctorStatus = "FAIL"
 )
 
-var requiredGitHubScopes = []string{"repo", "read:org", "read:project", "project"}
+var (
+	requiredProjectV2GitHubScopes  = []string{"repo", "read:org", "read:project", "project"}
+	requiredIssueFieldGitHubScopes = []string{"repo", "read:org"}
+)
 
 const (
 	doctorAutoPromoteSampleLimit           = 5
@@ -2074,6 +2077,8 @@ func doctorGitHubReadinessConfig(
 		Repositories:                  doctorGitHubRepositories(ctx, project, cfg, deps, sourceRoot),
 		StatusStates:                  doctorRequiredGitHubStatusStates(cfg),
 		ReadStates:                    doctorRequiredGitHubReadStates(cfg),
+		RequireProjectRead:            doctorRequiresProjectRead(cfg),
+		RequireIssueFieldRead:         doctorRequiresIssueFieldRead(cfg),
 		RequireIssueCommentsRead:      doctorRequiresIssueCommentsRead(cfg),
 		RequireDependencyMetadataRead: doctorRequiresDependencyMetadataRead(cfg),
 		RequireIssueChildrenRead:      doctorRequiresIssueChildrenRead(cfg),
@@ -2082,6 +2087,7 @@ func doctorGitHubReadinessConfig(
 		RequirePullRequestReviews:     doctorRequiresPullRequestReviewsRead(cfg),
 		RequirePullRequestChecks:      doctorRequiresPullRequestChecksRead(cfg),
 		RequireProjectStatusWrite:     doctorRequiresProjectStatusWrite(cfg),
+		RequireIssueFieldStatusWrite:  doctorRequiresIssueFieldStatusWrite(cfg),
 		RequireIssueComments:          doctorRequiresIssueCommentWrite(cfg),
 		RequireAssigneeWrite:          doctorRequiresAssigneeWrite(cfg),
 		RequireIssueClose:             doctorRequiresIssueClose(cfg),
@@ -2132,10 +2138,26 @@ func doctorRequiredGitHubReadStates(cfg workflowconfig.Config) []string {
 	return uniqueDoctorStrings(append(append([]string{}, cfg.Tracker.ActiveStates...), cfg.Tracker.ObservedStates...))
 }
 
-func doctorRequiresProjectStatusWrite(cfg workflowconfig.Config) bool {
+func doctorRequiresProjectRead(cfg workflowconfig.Config) bool {
+	return cfg.Tracker.GitHubStatusSource != workflowconfig.GitHubStatusSourceIssueField
+}
+
+func doctorRequiresIssueFieldRead(cfg workflowconfig.Config) bool {
+	return cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceIssueField
+}
+
+func doctorRequiresStatusWrite(cfg workflowconfig.Config) bool {
 	return len(cfg.Tracker.ActiveStates) > 0 ||
 		cfg.Agent.AutoPromote.Enabled ||
 		cfg.Tracker.DependencyAutoUnblock.Enabled
+}
+
+func doctorRequiresProjectStatusWrite(cfg workflowconfig.Config) bool {
+	return doctorRequiresProjectRead(cfg) && doctorRequiresStatusWrite(cfg)
+}
+
+func doctorRequiresIssueFieldStatusWrite(cfg workflowconfig.Config) bool {
+	return doctorRequiresIssueFieldRead(cfg) && doctorRequiresStatusWrite(cfg)
 }
 
 func doctorRequiresIssueCommentWrite(cfg workflowconfig.Config) bool {
@@ -2193,6 +2215,9 @@ func doctorRequiresPullRequestChecksRead(cfg workflowconfig.Config) bool {
 }
 
 func doctorRequiredProjectFieldWrites(cfg workflowconfig.Config) []ghconnector.ReadinessProjectFieldWrite {
+	if cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceIssueField {
+		return nil
+	}
 	if !cfg.Tracker.Claims.Enabled {
 		return nil
 	}
@@ -2567,7 +2592,8 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token Runt
 			Detail: fmt.Sprintf("%s did not expose classic OAuth scopes; treating as fine-grained or resource-scoped token and relying on operation checks", source),
 		}
 	}
-	missing := missingGitHubScopes(scopes)
+	requiredScopes := doctorRequiredGitHubScopes(cfg, deps)
+	missing := missingGitHubScopes(scopes, requiredScopes)
 	if len(missing) > 0 {
 		return doctorCheck{
 			Name:   "GitHub token",
@@ -2580,7 +2606,7 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token Runt
 	return doctorCheck{
 		Name:   "GitHub token",
 		Status: doctorOK,
-		Detail: fmt.Sprintf("%s has classic PAT scopes: %s; operation checks still verify resource access", source, strings.Join(requiredGitHubScopes, ", ")),
+		Detail: fmt.Sprintf("%s has classic PAT scopes: %s; operation checks still verify resource access", source, strings.Join(requiredScopes, ", ")),
 	}
 }
 
@@ -2640,7 +2666,51 @@ func validEnvName(name string) bool {
 	return true
 }
 
-func missingGitHubScopes(scopes []string) []string {
+func doctorRequiredGitHubScopes(cfg *globalconfig.Config, deps doctorDeps) []string {
+	if cfg == nil {
+		return append([]string{}, requiredProjectV2GitHubScopes...)
+	}
+	required := []string{}
+	add := func(scopes []string) {
+		for _, scope := range scopes {
+			scope = strings.TrimSpace(scope)
+			if scope == "" || doctorStringSliceContains(required, scope) {
+				continue
+			}
+			required = append(required, scope)
+		}
+	}
+	for _, project := range cfg.Projects {
+		workflow, err := deps.loadWorkflow(project.Workflow)
+		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
+			continue
+		}
+		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
+			continue
+		}
+		if workflow.Config.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceIssueField {
+			add(requiredIssueFieldGitHubScopes)
+			continue
+		}
+		add(requiredProjectV2GitHubScopes)
+	}
+	if len(required) == 0 {
+		return append([]string{}, requiredProjectV2GitHubScopes...)
+	}
+	return required
+}
+
+func doctorStringSliceContains(values []string, want string) bool {
+	want = strings.TrimSpace(want)
+	for _, value := range values {
+		if strings.TrimSpace(value) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func missingGitHubScopes(scopes []string, requiredScopes []string) []string {
 	have := make(map[string]struct{}, len(scopes))
 	for _, scope := range scopes {
 		scope = strings.ToLower(strings.TrimSpace(scope))
@@ -2650,7 +2720,7 @@ func missingGitHubScopes(scopes []string) []string {
 	}
 
 	var missing []string
-	for _, scope := range requiredGitHubScopes {
+	for _, scope := range requiredScopes {
 		if !hasEffectiveGitHubScope(have, scope) {
 			missing = append(missing, scope)
 		}
