@@ -377,6 +377,21 @@ func isProjectDashboard(data DashboardData) bool {
 	return strings.TrimSpace(data.ProjectID) != ""
 }
 
+func projectExternalURL(data DashboardData) string {
+	if !isProjectDashboard(data) {
+		return ""
+	}
+	return strings.TrimSpace(data.Snapshot.Project.URL)
+}
+
+func projectExternalLinkLabel(data DashboardData) string {
+	name := projectDisplayName(data)
+	if name == "" {
+		return "Open project issues"
+	}
+	return "Open " + name + " issues"
+}
+
 func chartEndpoint(data DashboardData) string {
 	if id := strings.TrimSpace(data.ProjectID); id != "" {
 		return "/api/v1/projects/" + url.PathEscape(id) + "/timeseries"
