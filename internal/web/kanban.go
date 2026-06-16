@@ -20,8 +20,14 @@ import (
 )
 
 type kanbanMutationLocks struct {
-	mu    sync.Mutex
-	locks map[string]*sync.Mutex
+	mu     sync.Mutex
+	locks  map[string]*sync.Mutex
+	states map[string]kanbanPendingState
+}
+
+type kanbanPendingState struct {
+	snapshot string
+	current  string
 }
 
 type kanbanActionTarget struct {
@@ -49,7 +55,10 @@ type kanbanCommentRequest struct {
 }
 
 func newKanbanMutationLocks() *kanbanMutationLocks {
-	return &kanbanMutationLocks{locks: map[string]*sync.Mutex{}}
+	return &kanbanMutationLocks{
+		locks:  map[string]*sync.Mutex{},
+		states: map[string]kanbanPendingState{},
+	}
 }
 
 func (l *kanbanMutationLocks) withLock(key string, fn func() error) error {
@@ -76,6 +85,58 @@ func (l *kanbanMutationLocks) lockFor(key string) *sync.Mutex {
 	return lock
 }
 
+func (l *kanbanMutationLocks) cardState(key string, issueID string, snapshotState string) string {
+	stateKey := kanbanMutationStateKey(key, issueID)
+	if stateKey == "" {
+		return snapshotState
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	pending, ok := l.states[stateKey]
+	if !ok {
+		return snapshotState
+	}
+	switch {
+	case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.snapshot):
+		return pending.current
+	case normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.current):
+		delete(l.states, stateKey)
+		return snapshotState
+	default:
+		delete(l.states, stateKey)
+		return snapshotState
+	}
+}
+
+func (l *kanbanMutationLocks) noteCardState(key string, issueID string, snapshotState string, currentState string) {
+	stateKey := kanbanMutationStateKey(key, issueID)
+	if stateKey == "" || strings.TrimSpace(currentState) == "" {
+		return
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if pending, ok := l.states[stateKey]; ok && normalizeKanbanState(snapshotState) == normalizeKanbanState(pending.snapshot) {
+		snapshotState = pending.snapshot
+	}
+	l.states[stateKey] = kanbanPendingState{
+		snapshot: strings.TrimSpace(snapshotState),
+		current:  strings.TrimSpace(currentState),
+	}
+}
+
+func kanbanMutationStateKey(key string, issueID string) string {
+	key = strings.TrimSpace(key)
+	issueID = strings.TrimSpace(issueID)
+	if key == "" || issueID == "" {
+		return ""
+	}
+	return key + "\x00" + issueID
+}
+
 func (s *Server) apiKanbanMove(c echo.Context) error {
 	req, response, status := parseKanbanMoveRequest(c)
 	if response != "" {
@@ -98,30 +159,48 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	if !kanbanStateAllowed(target.workflow, req.targetState) {
 		return kanbanFeedback(c, http.StatusBadRequest, "Target state is not configured for this board.")
 	}
-	currentState := req.currentState
-	if ok, current := s.kanbanCardFresh(req.projectID, req.issueID, req.currentState); !ok {
-		message := "Card is stale; refresh and retry."
-		if current != "" {
-			message = fmt.Sprintf("Card is stale; current state is %s.", current)
-		}
-		return kanbanFeedback(c, http.StatusConflict, message)
-	} else if strings.TrimSpace(current) != "" {
-		currentState = current
-	}
-	if !target.workflow.KanbanTransitionAllowed(currentState, req.targetState) {
-		return kanbanFeedback(c, http.StatusUnprocessableEntity, fmt.Sprintf("Move from %s to %s is not allowed by the Kanban transition policy.", currentState, req.targetState))
-	}
-
+	var feedback string
+	var feedbackStatus int
 	err := s.kanbanMutations.withLock(target.key, func() error {
+		currentState := req.currentState
+		ok, current, snapshotState := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
+		if !ok {
+			feedback = "Card is stale; refresh and retry."
+			if current != "" {
+				feedback = fmt.Sprintf("Card is stale; current state is %s.", current)
+			}
+			feedbackStatus = http.StatusConflict
+			return nil
+		}
+		if strings.TrimSpace(current) != "" {
+			currentState = current
+		}
+		if !target.workflow.KanbanTransitionAllowed(currentState, req.targetState) {
+			feedback = fmt.Sprintf("Move from %s to %s is not allowed by the Kanban transition policy.", currentState, req.targetState)
+			feedbackStatus = http.StatusUnprocessableEntity
+			return nil
+		}
+
 		if target.kanban.IssueStateFieldID > 0 {
 			setter, ok := target.connector.(connector.IssueFieldSetter)
 			if !ok {
 				return connector.ErrNotImplemented
 			}
-			return setter.SetIssueField(c.Request().Context(), req.issueID, target.kanban.IssueStateFieldID, mappedKanbanState(target.workflow, req.targetState))
+			if err := setter.SetIssueField(c.Request().Context(), req.issueID, target.kanban.IssueStateFieldID, mappedKanbanState(target.workflow, req.targetState)); err != nil {
+				return err
+			}
+			s.kanbanMutations.noteCardState(target.key, req.issueID, snapshotState, req.targetState)
+			return nil
 		}
-		return target.connector.UpdateIssueState(c.Request().Context(), req.issueID, req.targetState)
+		if err := target.connector.UpdateIssueState(c.Request().Context(), req.issueID, req.targetState); err != nil {
+			return err
+		}
+		s.kanbanMutations.noteCardState(target.key, req.issueID, snapshotState, req.targetState)
+		return nil
 	})
+	if feedback != "" {
+		return kanbanFeedback(c, feedbackStatus, feedback)
+	}
 	if err != nil {
 		s.logger.WarnContext(c.Request().Context(), "kanban move failed", "project", req.projectID, "issue_id", req.issueID, "target_state", req.targetState, "error", err)
 		return kanbanFeedback(c, http.StatusBadGateway, "Move failed: "+err.Error())
@@ -268,23 +347,27 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 	}
 }
 
-func (s *Server) kanbanCardFresh(projectID string, issueID string, currentState string) (bool, string) {
+func (s *Server) kanbanCardFresh(lockKey string, projectID string, issueID string, currentState string) (bool, string, string) {
 	currentState = strings.TrimSpace(currentState)
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return false, ""
+		return false, "", ""
 	}
 	for _, issue := range snapshotKanbanIssues(snapshot) {
 		if !sameKanbanIssue(issue, projectID, issueID, snapshot.Project.ID) {
 			continue
 		}
-		state := strings.TrimSpace(issue.State)
-		if currentState == "" || normalizeKanbanState(state) == normalizeKanbanState(currentState) {
-			return true, state
+		snapshotState := strings.TrimSpace(issue.State)
+		state := snapshotState
+		if s.kanbanMutations != nil {
+			state = s.kanbanMutations.cardState(lockKey, issueID, snapshotState)
 		}
-		return false, state
+		if currentState == "" || normalizeKanbanState(state) == normalizeKanbanState(currentState) {
+			return true, state, snapshotState
+		}
+		return false, state, snapshotState
 	}
-	return false, ""
+	return false, "", ""
 }
 
 func (s *Server) kanbanCommentTargetKnown(req kanbanCommentRequest) bool {

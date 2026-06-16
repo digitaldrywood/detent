@@ -1012,14 +1012,13 @@ func (c Config) KanbanAllowedTransitionTargets(source string) []string {
 	}
 
 	states := c.KanbanStateNames()
-	if len(states) == 0 {
-		return nil
-	}
-
 	kanban := c.Server.Kanban
 	kanban.Normalize()
 	if targets, ok := kanbanTransitionTargetsForSource(kanban.AllowedTransitions, source); ok {
 		return filterKanbanTransitionTargets(source, targets, states)
+	}
+	if len(states) == 0 {
+		return nil
 	}
 	if c.defaultKanbanTransitionRestricted(source) {
 		return filterKanbanTransitionTargets(source, defaultKanbanExceptionTargets(states), states)
@@ -1560,9 +1559,13 @@ func filterKanbanTransitionTargets(source string, targets []string, states []str
 		if key == "" || sameKanbanPolicyState(source, target) {
 			continue
 		}
-		display, ok := stateDisplayByKey[key]
-		if !ok {
-			continue
+		display := cleanKanbanPolicyState(target)
+		if len(stateDisplayByKey) > 0 {
+			var ok bool
+			display, ok = stateDisplayByKey[key]
+			if !ok {
+				continue
+			}
 		}
 		if _, ok := seen[key]; ok {
 			continue

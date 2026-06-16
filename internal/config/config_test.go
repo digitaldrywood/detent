@@ -596,6 +596,29 @@ func TestKanbanTransitionPolicyAllowsConfiguredOverrides(t *testing.T) {
 	}
 }
 
+func TestKanbanTransitionPolicyAllowsConfiguredOverridesWithoutStateLists(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Tracker.ActiveStates = nil
+	cfg.Tracker.ObservedStates = nil
+	cfg.Tracker.TerminalStates = nil
+	cfg.Server.Kanban.AllowedTransitions = map[string][]string{
+		"In Progress": {"Blocked"},
+	}
+	cfg.Server.Kanban.Normalize()
+
+	if got, want := cfg.KanbanAllowedTransitionTargets("In Progress"), []string{"Blocked"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("KanbanAllowedTransitionTargets(In Progress) = %#v, want %#v", got, want)
+	}
+	if !cfg.KanbanTransitionAllowed("In Progress", "Blocked") {
+		t.Fatal("KanbanTransitionAllowed(In Progress, Blocked) = false, want explicit override")
+	}
+	if cfg.KanbanTransitionAllowed("In Progress", "Human Review") {
+		t.Fatal("KanbanTransitionAllowed(In Progress, Human Review) = true, want configured source allowlist")
+	}
+}
+
 func TestValidateKanbanTransitionsRejectsBlankNames(t *testing.T) {
 	t.Parallel()
 

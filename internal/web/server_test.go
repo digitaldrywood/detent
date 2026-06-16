@@ -668,21 +668,112 @@ func TestKanbanMoveSerializesMutationsPerProject(t *testing.T) {
 	}
 	close(release)
 
+	statuses := map[int]int{}
 	for range 2 {
 		select {
 		case status := <-results:
-			if status != http.StatusOK {
-				t.Fatalf("status = %d, want %d", status, http.StatusOK)
-			}
+			statuses[status]++
 		case <-time.After(time.Second):
 			t.Fatal("mutation request did not finish")
 		}
 	}
+	if statuses[http.StatusOK] != 1 || statuses[http.StatusConflict] != 1 {
+		t.Fatalf("statuses = %#v, want one OK and one conflict", statuses)
+	}
 	if got := actionConnector.maxActiveMoves(); got != 1 {
 		t.Fatalf("max active moves = %d, want 1", got)
 	}
-	if got := actionConnector.stateUpdates(); len(got) != 2 {
-		t.Fatalf("state updates len = %d, want 2; updates = %#v", len(got), got)
+	if got := actionConnector.stateUpdates(); len(got) != 1 {
+		t.Fatalf("state updates len = %d, want 1; updates = %#v", len(got), got)
+	}
+}
+
+func TestKanbanMoveRejectsConcurrentTransitionFromStaleSource(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	started := make(chan struct{}, 1)
+	release := make(chan struct{})
+	actionConnector := &kanbanActionConnector{
+		name:        "github",
+		moveStarted: started,
+		releaseMove: release,
+	}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"In Progress": {"Blocked", "Human Review"},
+			"Blocked":     {"Cancelled"},
+		},
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Running: []telemetry.Running{{
+			Issue: telemetry.Issue{
+				ID:         "I_kw1",
+				Identifier: "digitaldrywood/detent#1",
+				ProjectID:  "detent",
+				Title:      "Serialized card",
+				State:      "In Progress",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	firstForm := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw1"},
+		"current_state": {"In Progress"},
+		"target_state":  {"Blocked"},
+	}
+	secondForm := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw1"},
+		"current_state": {"In Progress"},
+		"target_state":  {"Human Review"},
+	}
+	results := make(chan int, 2)
+	go func() {
+		rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", firstForm)
+		results <- rec.Code
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("first mutation did not start")
+	}
+
+	go func() {
+		rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", secondForm)
+		results <- rec.Code
+	}()
+	select {
+	case <-started:
+		t.Fatal("second mutation started before first completed")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+
+	statuses := map[int]int{}
+	for range 2 {
+		select {
+		case status := <-results:
+			statuses[status]++
+		case <-time.After(time.Second):
+			t.Fatal("mutation request did not finish")
+		}
+	}
+	if statuses[http.StatusOK] != 1 || statuses[http.StatusConflict] != 1 {
+		t.Fatalf("statuses = %#v, want one OK and one conflict", statuses)
+	}
+	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw1", state: "Blocked"}}; !equalStateUpdates(got, want) {
+		t.Fatalf("state updates = %#v, want %#v", got, want)
 	}
 }
 
