@@ -277,6 +277,12 @@ type projectKanbanCard struct {
 	DisabledText     string
 }
 
+type projectKanbanCompactChip struct {
+	Label string
+	Title string
+	Class string
+}
+
 type projectKanbanIssueCard struct {
 	issue   telemetry.Issue
 	state   string
@@ -1417,6 +1423,50 @@ func projectKanbanIssueNumber(issue telemetry.Issue) string {
 		return identifier[index:]
 	}
 	return identifier
+}
+
+func projectKanbanCompactChips(card projectKanbanCard) []projectKanbanCompactChip {
+	chips := []projectKanbanCompactChip{
+		{
+			Label: chartText(card.TimeInStage, "n/a"),
+			Title: strings.TrimSpace(card.TimeInStageTitle),
+			Class: "border-border bg-muted text-muted-foreground",
+		},
+	}
+	if card.HasPullRequest {
+		chips = append(chips,
+			newProjectKanbanCompactChip("CI "+chartText(card.CIStatus, "n/a"), "Continuous integration status", card.CIClass),
+			newProjectKanbanCompactChip("Codex "+chartText(card.CodexReviewState, "n/a"), "Codex review state", card.CodexReviewClass),
+		)
+	}
+	if len(card.Blockers) > 0 {
+		chips = append(chips, newProjectKanbanCompactChip(projectKanbanCountLabel(len(card.Blockers), "blocker", "blockers"), strings.Join(card.Blockers, ", "), "border-danger-soft bg-danger-soft text-danger"))
+	}
+	if len(card.Assignees) > 0 {
+		chips = append(chips, newProjectKanbanCompactChip(projectKanbanCountLabel(len(card.Assignees), "assignee", "assignees"), strings.Join(card.Assignees, ", "), "border-border bg-muted text-muted-foreground"))
+	}
+	if len(card.Labels) > 0 {
+		chips = append(chips, newProjectKanbanCompactChip(projectKanbanCountLabel(len(card.Labels), "label", "labels"), strings.Join(card.Labels, ", "), "border-border bg-muted text-muted-foreground"))
+	}
+	if strings.TrimSpace(card.WaitDetail) != "" {
+		chips = append(chips, newProjectKanbanCompactChip("Waits", card.WaitDetail, "border-warning-soft bg-warning-soft text-warning"))
+	}
+	return chips
+}
+
+func newProjectKanbanCompactChip(label string, title string, class string) projectKanbanCompactChip {
+	return projectKanbanCompactChip{
+		Label: strings.TrimSpace(label),
+		Title: strings.TrimSpace(title),
+		Class: strings.TrimSpace(class),
+	}
+}
+
+func projectKanbanCountLabel(count int, singular string, plural string) string {
+	if count == 1 {
+		return "1 " + singular
+	}
+	return strconv.Itoa(count) + " " + plural
 }
 
 func kanbanCardFromIssue(issue telemetry.Issue) kanbanCard {

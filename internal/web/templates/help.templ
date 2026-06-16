@@ -191,8 +191,10 @@ templ helpScript() {
 		})();
 
 		(() => {
-			const selector = "[data-preserve-scroll]"
+			const scrollSelector = "[data-preserve-scroll]"
+			const detailsSelector = "details[data-preserve-details]"
 			const positions = new Map()
+			const detailsOpen = new Map()
 
 			function snapshotTarget(event) {
 				const detailTarget = event.detail && event.detail.target
@@ -206,8 +208,12 @@ templ helpScript() {
 				return element.dataset.preserveScroll || element.id || ""
 			}
 
+			function detailsKey(element) {
+				return element.dataset.preserveDetails || element.id || ""
+			}
+
 			function rememberScroll(root) {
-				root.querySelectorAll(selector).forEach((element) => {
+				root.querySelectorAll(scrollSelector).forEach((element) => {
 					const key = scrollKey(element)
 					if (!key) return
 					positions.set(key, {
@@ -217,9 +223,28 @@ templ helpScript() {
 				})
 			}
 
+			function rememberDetails(root) {
+				root.querySelectorAll(detailsSelector).forEach((element) => {
+					if (!(element instanceof HTMLDetailsElement)) return
+					const key = detailsKey(element)
+					if (!key) return
+					detailsOpen.set(key, element.open)
+				})
+			}
+
+			function restoreDetails(root) {
+				root.querySelectorAll(detailsSelector).forEach((element) => {
+					if (!(element instanceof HTMLDetailsElement)) return
+					const key = detailsKey(element)
+					const open = key ? detailsOpen.get(key) : undefined
+					if (open === undefined) return
+					element.open = open
+				})
+			}
+
 			function restoreScroll(root) {
 				requestAnimationFrame(() => {
-					root.querySelectorAll(selector).forEach((element) => {
+					root.querySelectorAll(scrollSelector).forEach((element) => {
 						const key = scrollKey(element)
 						const position = key ? positions.get(key) : null
 						if (!position) return
@@ -231,12 +256,16 @@ templ helpScript() {
 
 			document.addEventListener("htmx:beforeSwap", (event) => {
 				const target = snapshotTarget(event)
-				if (target) rememberScroll(target)
+				if (!target) return
+				rememberScroll(target)
+				rememberDetails(target)
 			})
 
 			document.addEventListener("htmx:afterSettle", (event) => {
 				const target = snapshotTarget(event)
-				if (target) restoreScroll(target)
+				if (!target) return
+				restoreDetails(target)
+				restoreScroll(target)
 			})
 		})();
 
