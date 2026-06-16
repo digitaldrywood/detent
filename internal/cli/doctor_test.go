@@ -1301,6 +1301,38 @@ func TestCheckDoctorGitHubScopesSkipAppBackedWorkflows(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorGitHubScopesLabelModeRequiresRepoOnly(t *testing.T) {
+	t.Parallel()
+
+	workflow := validDoctorWorkflow("/repo")
+	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflow.Tracker.APIKey = "$GITHUB_TOKEN"
+	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+	workflow.Tracker.ProjectSlug = ""
+	workflow.Tracker.Repository = "digitaldrywood/detent"
+	cfg := &globalconfig.Config{Projects: []globalconfig.Project{{ID: "detent", Workflow: "workflow.md"}}}
+
+	got := checkDoctorGitHub(context.Background(), cfg, RuntimeSecret{Value: "token", Source: "GITHUB_TOKEN"}, doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: workflow}, nil
+		},
+		githubScopes: func(context.Context, string) ([]string, error) {
+			return []string{"repo"}, nil
+		},
+	})
+	if got.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorOK, got)
+	}
+	if !strings.Contains(got.Detail, "repo") {
+		t.Fatalf("Detail = %q, want repo scope", got.Detail)
+	}
+	for _, forbidden := range []string{"read:org", "read:project", ", project"} {
+		if strings.Contains(got.Detail, forbidden) {
+			t.Fatalf("Detail = %q, want no %s scope requirement in label mode", got.Detail, forbidden)
+		}
+	}
+}
+
 func TestExpandDoctorWorkspacePath(t *testing.T) {
 	t.Parallel()
 

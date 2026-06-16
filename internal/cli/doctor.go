@@ -56,6 +56,7 @@ const (
 var (
 	requiredProjectV2GitHubScopes  = []string{"repo", "read:org", "read:project", "project"}
 	requiredIssueFieldGitHubScopes = []string{"repo", "read:org"}
+	requiredLabelGitHubScopes      = []string{"repo"}
 )
 
 const (
@@ -2002,6 +2003,7 @@ func defaultDoctorAutoPromoteConnector(cfg workflowconfig.Config) (doctorAutoPro
 		ProjectSlug:             cfg.Tracker.ProjectSlug,
 		Repository:              cfg.Tracker.Repository,
 		StatusField:             cfg.Tracker.StatusField,
+		StatusLabelPrefix:       cfg.Tracker.StatusLabelPrefix,
 		ActiveStates:            cfg.Tracker.ActiveStates,
 		ObservedStates:          cfg.Tracker.ObservedStates,
 		TerminalStates:          cfg.Tracker.TerminalStates,
@@ -2056,6 +2058,7 @@ func doctorGitHubConnectorConfig(cfg workflowconfig.Config) ghconnector.Config {
 		ProjectSlug:             cfg.Tracker.ProjectSlug,
 		Repository:              cfg.Tracker.Repository,
 		StatusField:             cfg.Tracker.StatusField,
+		StatusLabelPrefix:       cfg.Tracker.StatusLabelPrefix,
 		ActiveStates:            cfg.Tracker.ActiveStates,
 		ObservedStates:          cfg.Tracker.ObservedStates,
 		TerminalStates:          cfg.Tracker.TerminalStates,
@@ -2088,6 +2091,7 @@ func doctorGitHubReadinessConfig(
 		RequirePullRequestChecks:      doctorRequiresPullRequestChecksRead(cfg),
 		RequireProjectStatusWrite:     doctorRequiresProjectStatusWrite(cfg),
 		RequireIssueFieldStatusWrite:  doctorRequiresIssueFieldStatusWrite(cfg),
+		RequireLabelStatusWrite:       doctorRequiresLabelStatusWrite(cfg),
 		RequireIssueComments:          doctorRequiresIssueCommentWrite(cfg),
 		RequireAssigneeWrite:          doctorRequiresAssigneeWrite(cfg),
 		RequireIssueClose:             doctorRequiresIssueClose(cfg),
@@ -2139,11 +2143,15 @@ func doctorRequiredGitHubReadStates(cfg workflowconfig.Config) []string {
 }
 
 func doctorRequiresProjectRead(cfg workflowconfig.Config) bool {
-	return cfg.Tracker.GitHubStatusSource != workflowconfig.GitHubStatusSourceIssueField
+	return cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceProjectV2
 }
 
 func doctorRequiresIssueFieldRead(cfg workflowconfig.Config) bool {
 	return cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceIssueField
+}
+
+func doctorRequiresLabelRead(cfg workflowconfig.Config) bool {
+	return cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceLabel
 }
 
 func doctorRequiresStatusWrite(cfg workflowconfig.Config) bool {
@@ -2158,6 +2166,10 @@ func doctorRequiresProjectStatusWrite(cfg workflowconfig.Config) bool {
 
 func doctorRequiresIssueFieldStatusWrite(cfg workflowconfig.Config) bool {
 	return doctorRequiresIssueFieldRead(cfg) && doctorRequiresStatusWrite(cfg)
+}
+
+func doctorRequiresLabelStatusWrite(cfg workflowconfig.Config) bool {
+	return doctorRequiresLabelRead(cfg) && doctorRequiresStatusWrite(cfg)
 }
 
 func doctorRequiresIssueCommentWrite(cfg workflowconfig.Config) bool {
@@ -2215,7 +2227,7 @@ func doctorRequiresPullRequestChecksRead(cfg workflowconfig.Config) bool {
 }
 
 func doctorRequiredProjectFieldWrites(cfg workflowconfig.Config) []ghconnector.ReadinessProjectFieldWrite {
-	if cfg.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceIssueField {
+	if !doctorRequiresProjectRead(cfg) {
 		return nil
 	}
 	if !cfg.Tracker.Claims.Enabled {
@@ -2688,11 +2700,14 @@ func doctorRequiredGitHubScopes(cfg *globalconfig.Config, deps doctorDeps) []str
 		if trackerHasGitHubAppCredentials(workflow.Config.Tracker, deps.lookupEnv) {
 			continue
 		}
-		if workflow.Config.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceIssueField {
+		switch workflow.Config.Tracker.GitHubStatusSource {
+		case workflowconfig.GitHubStatusSourceIssueField:
 			add(requiredIssueFieldGitHubScopes)
-			continue
+		case workflowconfig.GitHubStatusSourceLabel:
+			add(requiredLabelGitHubScopes)
+		default:
+			add(requiredProjectV2GitHubScopes)
 		}
-		add(requiredProjectV2GitHubScopes)
 	}
 	if len(required) == 0 {
 		return append([]string{}, requiredProjectV2GitHubScopes...)

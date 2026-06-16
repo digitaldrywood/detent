@@ -129,6 +129,9 @@ func (c *Connector) Provision(ctx context.Context) error {
 }
 
 func (c *Connector) EnsureStateOptions(ctx context.Context) error {
+	if c.usesLabelStatus() {
+		return c.EnsureLabelStateOptions(ctx)
+	}
 	if c.usesIssueFieldStatus() {
 		return c.EnsureIssueFieldStateOptions(ctx)
 	}

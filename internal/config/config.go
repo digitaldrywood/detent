@@ -25,6 +25,7 @@ const (
 
 	GitHubStatusSourceProjectV2  = "project_v2"
 	GitHubStatusSourceIssueField = "issue_field"
+	GitHubStatusSourceLabel      = "label"
 
 	DependencyReadinessTerminal         = "terminal"
 	DependencyReadinessTerminalOrMerged = "terminal_or_merged"
@@ -85,6 +86,7 @@ type Tracker struct {
 	ProjectSlug                string                `yaml:"project_slug"`
 	Repository                 string                `yaml:"repository"`
 	StatusField                string                `yaml:"status_field"`
+	StatusLabelPrefix          string                `yaml:"status_label_prefix,omitempty"`
 	WriteProbeIssue            string                `yaml:"write_probe_issue,omitempty"`
 	Assignee                   string                `yaml:"assignee"`
 	ActiveStates               []string              `yaml:"active_states"`
@@ -507,6 +509,7 @@ func Default() Config {
 			GitHubGraphQLWarnRemaining: 500,
 			GitHubStatusSource:         GitHubStatusSourceProjectV2,
 			StatusField:                "Status",
+			StatusLabelPrefix:          "detent:",
 			ActiveStates:               []string{"Todo", "In Progress"},
 			ObservedStates:             []string{"Backlog", "Human Review", "Blocked"},
 			TerminalStates:             []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"},
@@ -661,6 +664,10 @@ func (c *Config) normalize() {
 	if c.Tracker.StatusField == "" {
 		c.Tracker.StatusField = "Status"
 	}
+	c.Tracker.StatusLabelPrefix = strings.TrimSpace(c.Tracker.StatusLabelPrefix)
+	if c.Tracker.StatusLabelPrefix == "" {
+		c.Tracker.StatusLabelPrefix = "detent:"
+	}
 	c.Tracker.WriteProbeIssue = strings.TrimSpace(c.Tracker.WriteProbeIssue)
 	c.Tracker.Claims.Normalize()
 	c.Tracker.DependencyAutoUnblock.Normalize()
@@ -719,8 +726,16 @@ func (t *Tracker) validateGitHubStatusSource(problems *[]string) {
 		if strings.TrimSpace(t.Repository) != "" && !validRepositoryName(t.Repository) {
 			*problems = append(*problems, "tracker.repository must be owner/name")
 		}
+	case GitHubStatusSourceLabel:
+		validateRequired("tracker.repository", t.Repository, " for github label", problems)
+		if strings.TrimSpace(t.Repository) != "" && !validRepositoryName(t.Repository) {
+			*problems = append(*problems, "tracker.repository must be owner/name")
+		}
+		if strings.TrimSpace(t.StatusLabelPrefix) == "" {
+			*problems = append(*problems, "tracker.status_label_prefix is required for github label")
+		}
 	default:
-		*problems = append(*problems, "tracker.github_status_source must be one of project_v2, issue_field")
+		*problems = append(*problems, "tracker.github_status_source must be one of project_v2, issue_field, label")
 	}
 }
 
@@ -756,6 +771,8 @@ func normalizeGitHubStatusSource(value string) string {
 		return GitHubStatusSourceProjectV2
 	case GitHubStatusSourceIssueField, "issuefield", "issues":
 		return GitHubStatusSourceIssueField
+	case GitHubStatusSourceLabel, "labels", "issue_label", "issue_labels":
+		return GitHubStatusSourceLabel
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
 	}

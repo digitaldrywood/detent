@@ -880,6 +880,7 @@ func defaultConnectorFactory(cfg workflowconfig.Config) (connector.Connector, er
 		ProjectSlug:             cfg.Tracker.ProjectSlug,
 		Repository:              cfg.Tracker.Repository,
 		StatusField:             cfg.Tracker.StatusField,
+		StatusLabelPrefix:       cfg.Tracker.StatusLabelPrefix,
 		ActiveStates:            cfg.Tracker.ActiveStates,
 		ObservedStates:          cfg.Tracker.ObservedStates,
 		TerminalStates:          cfg.Tracker.TerminalStates,

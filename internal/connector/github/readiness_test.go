@@ -386,6 +386,56 @@ func TestReadinessGitHubAppInstallationIssueFieldModeSkipsProjectsPermission(t *
 	}
 }
 
+func TestReadinessGitHubAppInstallationLabelModeSkipsProjectAndIssueFieldPermissions(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 13, 12, 0, 0, 0, time.UTC)
+	privateKey := testPrivateKeyPEM(t)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/app/installations/987/access_tokens" {
+			t.Fatalf("path = %s, want installation token path", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+		response := map[string]any{
+			"token":                "installation-token",
+			"expires_at":           now.Add(time.Hour).Format(time.RFC3339),
+			"repository_selection": "all",
+			"permissions": map[string]string{
+				"issues": "read",
+			},
+		}
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			t.Fatalf("Encode() error = %v", err)
+		}
+	}))
+	t.Cleanup(server.Close)
+	checker := githubReadinessChecker{cfg: Config{
+		Endpoint:                server.URL + "/graphql",
+		HTTPClient:              server.Client(),
+		GitHubAppID:             "123",
+		GitHubAppInstallationID: "987",
+		GitHubAppPrivateKey:     privateKey,
+		Now:                     func() time.Time { return now },
+	}}
+
+	got := checker.appInstallationCheck(context.Background(), ReadinessConfig{
+		RequireLabelStatusWrite: true,
+		Repositories:            []string{"digitaldrywood/detent"},
+	})
+	if got.Status != ReadinessFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessFail, got)
+	}
+	if !strings.Contains(got.Detail, "Issues: write") {
+		t.Fatalf("Detail = %q, want Issues write requirement", got.Detail)
+	}
+	for _, forbidden := range []string{"Projects", "Issue Fields"} {
+		if strings.Contains(got.Detail, forbidden) {
+			t.Fatalf("Detail = %q, want no %s permission requirement in label mode", got.Detail, forbidden)
+		}
+	}
+}
+
 func TestReadinessUnconfiguredProbeIssueWarns(t *testing.T) {
 	t.Parallel()
 

@@ -134,6 +134,22 @@ func TestFactoryGitHubIssueFieldConnectorRequiresRepositoryForPolling(t *testing
 	}
 }
 
+func TestFactoryGitHubLabelConnectorRequiresRepositoryForPolling(t *testing.T) {
+	t.Parallel()
+
+	c, err := NewFromConfig(Config{
+		Kind:               "github",
+		GitHubStatusSource: githubconnector.GitHubStatusSourceLabel,
+	})
+	if err != nil {
+		t.Fatalf("NewFromConfig() error = %v", err)
+	}
+
+	if _, err := c.FetchCandidateIssues(context.Background()); !errors.Is(err, githubconnector.ErrMissingRepository) {
+		t.Fatalf("FetchCandidateIssues() error = %v, want ErrMissingRepository", err)
+	}
+}
+
 func TestFactoryGitHubConnectorImplementsAuthenticator(t *testing.T) {
 	t.Parallel()
 

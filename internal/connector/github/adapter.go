@@ -225,6 +225,48 @@ query DetentGitHubIssueTrackedIssues($issueId: ID!, $after: String) {
   rateLimit { limit used remaining cost resetAt }
 }`
 
+const issueSubIssuesLabelQuery = `
+query DetentGitHubIssueSubIssuesLabel($issueId: ID!, $after: String) {
+  node(id: $issueId) {
+    ... on Issue {
+      subIssues(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          number
+          title
+          state
+          url
+          labels(first: 20) { nodes { name } }
+          repository { nameWithOwner }
+        }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
+const issueTrackedIssuesLabelQuery = `
+query DetentGitHubIssueTrackedIssuesLabel($issueId: ID!, $after: String) {
+  node(id: $issueId) {
+    ... on Issue {
+      trackedIssues(first: 100, after: $after) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          id
+          number
+          title
+          state
+          url
+          labels(first: 20) { nodes { name } }
+          repository { nameWithOwner }
+        }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}`
+
 const issueParentsQuery = `
 query DetentGitHubIssueParents(
   $issueId: ID!
@@ -380,6 +422,73 @@ fragment DetentGitHubIssueParent on Issue {
           }
         }
       }
+    }
+  }
+}`
+
+const issueParentsLabelQuery = `
+query DetentGitHubIssueParentsLabel(
+  $issueId: ID!
+  $trackedInAfter: String
+  $linkedIssuesFirst: Int!
+) {
+  node(id: $issueId) {
+    ... on Issue {
+      id
+      number
+      repository { nameWithOwner }
+      parent {
+        ...DetentGitHubIssueParentLabel
+      }
+      trackedInIssues(first: 100, after: $trackedInAfter) {
+        pageInfo { hasNextPage endCursor }
+        nodes {
+          ...DetentGitHubIssueParentLabel
+        }
+      }
+    }
+  }
+  rateLimit { limit used remaining cost resetAt }
+}
+
+fragment DetentGitHubIssueParentLabel on Issue {
+  __typename
+  id
+  number
+  title
+  body
+  state
+  stateReason
+  url
+  createdAt
+  updatedAt
+  author { login }
+  assignees(first: 100) { nodes { id login } }
+  labels(first: 20) { nodes { name } }
+  repository { nameWithOwner }
+  closedByPullRequestsReferences(first: 5) { nodes { number url state repository { nameWithOwner } } }
+  subIssues(first: $linkedIssuesFirst) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      number
+      title
+      state
+      url
+      labels(first: 20) { nodes { name } }
+      repository { nameWithOwner }
+    }
+  }
+  trackedIssues(first: $linkedIssuesFirst) {
+    pageInfo { hasNextPage endCursor }
+    nodes {
+      id
+      number
+      title
+      state
+      url
+      labels(first: 20) { nodes { name } }
+      repository { nameWithOwner }
     }
   }
 }`
@@ -557,6 +666,7 @@ type linkedIssue struct {
 	Title        string                  `json:"title"`
 	State        string                  `json:"state"`
 	URL          string                  `json:"url"`
+	Labels       nodeConnection[label]   `json:"labels"`
 	Repository   repository              `json:"repository"`
 	ProjectItems *projectItemsConnection `json:"projectItems"`
 }
@@ -643,6 +753,7 @@ type restIssue struct {
 	User        *actor         `json:"user"`
 	Assignees   []restAssignee `json:"assignees"`
 	Labels      []label        `json:"labels"`
+	PullRequest *struct{}      `json:"pull_request"`
 }
 
 type restIssueSearchResponse struct {
@@ -737,6 +848,16 @@ type projectField struct {
 }
 
 func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	if c.usesLabelStatus() {
+		issues, err := c.fetchLabelIssuesByStates(ctx, c.activeStates, 0)
+		if err != nil {
+			return nil, err
+		}
+		if err := c.attachPullRequests(ctx, issues); err != nil {
+			return nil, err
+		}
+		return issues, nil
+	}
 	if c.usesIssueFieldStatus() {
 		issues, err := c.fetchIssueFieldIssuesByStates(ctx, c.activeStates, 0)
 		if err != nil {
@@ -767,6 +888,23 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 	wantedStates := normalizedStateSet(stateNames)
 	if len(wantedStates) == 0 {
 		return []connector.Issue{}, nil
+	}
+	if c.usesLabelStatus() {
+		issues, err := c.fetchLabelIssuesByStates(ctx, stateNames, 0)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
+			if err := c.populateBlockerReasons(ctx, issues); err != nil {
+				return nil, err
+			}
+		}
+		if attachPullRequestsForStates(wantedStates) {
+			if err := c.attachPullRequests(ctx, issues); err != nil {
+				return nil, err
+			}
+		}
+		return issues, nil
 	}
 	if c.usesIssueFieldStatus() {
 		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, 0)
@@ -817,6 +955,23 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 	if len(wantedStates) == 0 {
 		return []connector.Issue{}, nil
 	}
+	if c.usesLabelStatus() {
+		issues, err := c.fetchLabelIssuesByStates(ctx, stateNames, limit)
+		if err != nil {
+			return nil, err
+		}
+		if _, ok := wantedStates[normalizeStateName("Blocked")]; ok {
+			if err := c.populateBlockerReasons(ctx, issues); err != nil {
+				return nil, err
+			}
+		}
+		if attachPullRequestsForStates(wantedStates) {
+			if err := c.attachPullRequests(ctx, issues); err != nil {
+				return nil, err
+			}
+		}
+		return issues, nil
+	}
 	if c.usesIssueFieldStatus() {
 		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, limit)
 		if err != nil {
@@ -859,6 +1014,9 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 }
 
 func (c *Connector) VerifyStatusOptions(ctx context.Context, stateNames []string) error {
+	if c.usesLabelStatus() {
+		return c.verifyLabelStatusOptions(ctx, stateNames)
+	}
 	if c.usesIssueFieldStatus() {
 		return c.verifyIssueFieldStatusOptions(ctx, stateNames)
 	}
@@ -891,6 +1049,29 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 	ids := uniqueNonBlank(issueIDs)
 	if len(ids) == 0 {
 		return []connector.Issue{}, nil
+	}
+	if c.usesLabelStatus() {
+		refs, err := c.issueRefsForIDs(ctx, ids, graphQLQueryRunningStates)
+		if err != nil {
+			return nil, err
+		}
+
+		issues := make([]connector.Issue, 0, len(ids))
+		for _, id := range ids {
+			ref, ok := refs[id]
+			if !ok {
+				continue
+			}
+			issue, ok, err := c.fetchLabelIssueByRef(ctx, ref)
+			if err != nil {
+				return nil, fmt.Errorf("fetch github issue states by ids: %w", err)
+			}
+			if ok {
+				issues = append(issues, issue)
+			}
+		}
+		sortIssuesByRequestedIDs(issues, ids)
+		return issues, nil
 	}
 	if c.usesIssueFieldStatus() {
 		refs, err := c.issueRefsForIDs(ctx, ids, graphQLQueryRunningStates)
@@ -980,7 +1161,8 @@ func (c *Connector) FetchIssueParents(ctx context.Context, issueID string) ([]co
 		var response struct {
 			Node *issueParentsNode `json:"node"`
 		}
-		if err := c.client.GraphQLWithType(ctx, graphQLQueryIssueParents, issueParentsQuery, map[string]any{
+		query := issueParentsQuery
+		variables := map[string]any{
 			"issueId":                           issueID,
 			"trackedInAfter":                    after,
 			"projectItemsFirst":                 projectItemsPerIssue,
@@ -988,7 +1170,16 @@ func (c *Connector) FetchIssueParents(ctx context.Context, issueID string) ([]co
 			"linkedIssuesFirst":                 linkedIssuePageSize,
 			"linkedProjectItemsFirst":           linkedIssueProjectItemsPageSize,
 			"linkedProjectItemFieldValuesFirst": linkedIssueProjectItemFieldValuesPageSize,
-		}, &response); err != nil {
+		}
+		if c.usesLabelStatus() {
+			query = issueParentsLabelQuery
+			variables = map[string]any{
+				"issueId":           issueID,
+				"trackedInAfter":    after,
+				"linkedIssuesFirst": linkedIssuePageSize,
+			}
+		}
+		if err := c.client.GraphQLWithType(ctx, graphQLQueryIssueParents, query, variables, &response); err != nil {
 			return nil, fmt.Errorf("fetch github issue parents: %w", err)
 		}
 		if response.Node == nil {
@@ -1055,11 +1246,18 @@ func (c *Connector) appendBodyReferencedIssueParents(
 			if !ok || sameIssueRef(ref, childRef) {
 				continue
 			}
-			issue, ok, err := c.fetchProjectIssueByRef(ctx, ref)
+			var issue connector.Issue
+			var found bool
+			var err error
+			if c.usesLabelStatus() || c.usesIssueFieldStatus() {
+				issue, found, err = c.fetchIssueByRef(ctx, ref)
+			} else {
+				issue, found, err = c.fetchProjectIssueByRef(ctx, ref)
+			}
 			if err != nil {
 				return nil, err
 			}
-			if !ok || !githubEpicIssue(issue) {
+			if !found || !githubEpicIssue(issue) {
 				continue
 			}
 			if !bodyReferencesIssue(issue.Description, issueRepo(issue.Identifier), childIdentifier) {
@@ -1113,12 +1311,18 @@ func (c *Connector) FetchIssueChildren(ctx context.Context, issueID string) ([]c
 
 	seen := map[string]struct{}{}
 	children := []connector.BlockedRef{}
-	subIssues, err := c.fetchLinkedIssueRefs(ctx, issueID, issueSubIssuesQuery, "subIssues")
+	subIssuesQuery := issueSubIssuesQuery
+	trackedIssuesQuery := issueTrackedIssuesQuery
+	if c.usesLabelStatus() {
+		subIssuesQuery = issueSubIssuesLabelQuery
+		trackedIssuesQuery = issueTrackedIssuesLabelQuery
+	}
+	subIssues, err := c.fetchLinkedIssueRefs(ctx, issueID, subIssuesQuery, "subIssues")
 	if err != nil {
 		return nil, err
 	}
 	children = appendUniqueLinkedIssueRefs(children, seen, subIssues)
-	trackedIssues, err := c.fetchLinkedIssueRefs(ctx, issueID, issueTrackedIssuesQuery, "trackedIssues")
+	trackedIssues, err := c.fetchLinkedIssueRefs(ctx, issueID, trackedIssuesQuery, "trackedIssues")
 	if err != nil {
 		return nil, err
 	}
@@ -1272,6 +1476,9 @@ func (c *Connector) fetchIssueRefsByID(ctx context.Context, ids []string, queryT
 }
 
 func (c *Connector) fetchIssueByRef(ctx context.Context, ref issueRef) (connector.Issue, bool, error) {
+	if c.usesLabelStatus() {
+		return c.fetchLabelIssueByRef(ctx, ref)
+	}
 	if c.usesIssueFieldStatus() {
 		return c.fetchIssueFieldIssueByRef(ctx, ref)
 	}
@@ -1462,6 +1669,30 @@ func (c *Connector) CloseIssue(ctx context.Context, issueID string) error {
 }
 
 func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateName string) error {
+	if c.usesLabelStatus() {
+		ref, ok, err := c.issueRefForID(ctx, strings.TrimSpace(issueID), graphQLQueryIssueLookup)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrStatusUpdateFailed
+		}
+		issue, err := c.fetchRESTIssue(ctx, ref)
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(issue.ID) == "" {
+			return ErrStatusUpdateFailed
+		}
+		currentStatus := c.labelStatusFromLabels(issue.Labels)
+		if currentStatus == "" {
+			currentStatus = c.githubIssueStateToDetentState(issue.State)
+		}
+		if c.terminalStatusUpdateBlocked(currentStatus, stateName) {
+			return nil
+		}
+		return c.updateIssueStatusLabel(ctx, ref, issue, stateName)
+	}
 	if c.usesIssueFieldStatus() {
 		ref, ok, err := c.issueRefForID(ctx, strings.TrimSpace(issueID), graphQLQueryIssueLookup)
 		if err != nil {
@@ -2218,6 +2449,13 @@ func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNod
 	if issue.TypeName != "Issue" {
 		return connector.Issue{}, false, nil
 	}
+	if c.usesLabelStatus() {
+		statusName := c.labelStatusFromLabels(issue.Labels)
+		if statusName == "" {
+			statusName = c.githubIssueStateToDetentState(issue.State)
+		}
+		return c.buildIssue(issue, statusName, "", nil, map[string]string{c.statusField: statusName}), true, nil
+	}
 	stateName, priorityName, statusUpdatedAt, fields, ok, err := c.resolveIssueProjectFields(ctx, issue.ID, issue.ProjectItems)
 	if err != nil {
 		return connector.Issue{}, false, err
@@ -2365,6 +2603,13 @@ func (c *Connector) appendLinkedChildIssues(
 }
 
 func (c *Connector) linkedChildIssueState(child linkedIssue) string {
+	if c.usesLabelStatus() {
+		statusName := c.labelStatusFromLabels(child.Labels)
+		if statusName != "" {
+			return c.githubToDetentState(statusName)
+		}
+		return c.githubIssueStateToDetentState(child.State)
+	}
 	state := c.githubIssueStateToDetentState(child.State)
 	if stateName, _, _, _, ok := c.projectFields(child.ID, child.ProjectItems); ok {
 		if stateName = strings.TrimSpace(stateName); stateName != "" {
