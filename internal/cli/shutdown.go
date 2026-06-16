@@ -122,6 +122,7 @@ type runningShutdownConfig struct {
 	DashboardURL       string
 	Output             io.Writer
 	Logger             *slog.Logger
+	TerminalDashboard  bool
 	DrainTimeout       time.Duration
 	DrainTimeoutSource func() time.Duration
 	ProgressInterval   time.Duration
@@ -156,11 +157,12 @@ func runWithShutdown(ctx context.Context, cfg runningShutdownConfig, serve shutd
 			return unexpectedShutdownServeError(err)
 		case <-ctx.Done():
 			cancelServe()
-			if err := waitForServeExit(context.Background(), serveErrs); err != nil {
+			if err := loggedWaitForServeExit(context.Background(), cfg, serveErrs); err != nil {
 				return err
 			}
 			return ctx.Err()
 		case request := <-cfg.Controller.Requests():
+			shutdownLogger(cfg).Debug("shutdown request received", "operation", "shutdown_request", "request", request.String())
 			switch request {
 			case ShutdownRequestDrain:
 				machine = machine.Apply(shutdownstate.EventDrainRequested)
@@ -181,7 +183,9 @@ func runDrainShutdown(
 	machine shutdownstate.Machine,
 ) error {
 	startedAt := shutdownNow(cfg)
+	inventoryStarted := logShutdownBoundaryBegin(shutdownLogger(cfg), "initial_running_session_inventory")
 	sessions := shutdownRunningSessions(ctx, cfg.Registry, startedAt)
+	logShutdownBoundaryEnd(shutdownLogger(cfg), "initial_running_session_inventory", inventoryStarted, nil, "sessions", len(sessions))
 	writeShutdownBanner(shutdownOutput(cfg), sessions)
 	shutdownLogger(cfg).Info("shutdown requested", "sessions", len(sessions))
 
@@ -190,8 +194,8 @@ func runDrainShutdown(
 		hardTimeout = defaultShutdownHardTimeout
 	}
 	drainCtx, cancelDrain := context.WithTimeout(ctx, hardTimeout)
-	if err := runShutdownStep(drainCtx, func(stepCtx context.Context) error {
-		return drainProjects(stepCtx, cfg.Registry)
+	if err := runLoggedShutdownStep(drainCtx, cfg, "drain_projects", func(stepCtx context.Context) error {
+		return drainProjects(stepCtx, cfg.Registry, shutdownLogger(cfg))
 	}); err != nil {
 		shutdownLogger(cfg).Warn("drain projects during shutdown failed", "error", err)
 	}
@@ -233,11 +237,12 @@ func runDrainShutdown(
 			return unexpectedShutdownServeError(err)
 		case <-ctx.Done():
 			cancelServe()
-			if err := waitForServeExit(context.Background(), serveErrs); err != nil {
+			if err := loggedWaitForServeExit(context.Background(), cfg, serveErrs); err != nil {
 				return err
 			}
 			return ctx.Err()
 		case request := <-cfg.Controller.Requests():
+			shutdownLogger(cfg).Debug("shutdown request received", "operation", "shutdown_request", "request", request.String())
 			if request == ShutdownRequestForce {
 				machine = machine.Apply(shutdownstate.EventForceRequested)
 				return runForceShutdown(ctx, cfg, cancelServe, serveErrs, machine, "forced")
@@ -278,7 +283,9 @@ func runForceShutdownWithDeadline(
 	hardTimeout time.Duration,
 ) error {
 	startedAt := shutdownNow(cfg)
+	inventoryStarted := logShutdownBoundaryBegin(shutdownLogger(cfg), "force_running_session_inventory")
 	sessions := shutdownRunningSessions(ctx, cfg.Registry, startedAt)
+	logShutdownBoundaryEnd(shutdownLogger(cfg), "force_running_session_inventory", inventoryStarted, nil, "sessions", len(sessions))
 	if result == "drain timeout" {
 		fmt.Fprintf(shutdownOutput(cfg), "drain timeout reached — interrupting %d %s\n", len(sessions), shutdownSessionNoun(len(sessions)))
 	} else {
@@ -287,8 +294,8 @@ func runForceShutdownWithDeadline(
 
 	forceCtx, cancel := context.WithTimeout(context.Background(), hardTimeout)
 	defer cancel()
-	if err := runShutdownStep(forceCtx, func(stepCtx context.Context) error {
-		return forceProjects(stepCtx, cfg.Registry)
+	if err := runLoggedShutdownStep(forceCtx, cfg, "force_projects", func(stepCtx context.Context) error {
+		return forceProjects(stepCtx, cfg.Registry, shutdownLogger(cfg))
 	}); err != nil {
 		shutdownLogger(cfg).Warn("force shutdown cleanup failed", "error", err)
 	}
@@ -315,14 +322,16 @@ func completeShutdown(
 	}
 	stopCtx, cancel := context.WithTimeout(ctx, hardTimeout)
 	defer cancel()
-	if err := runShutdownStep(stopCtx, func(stepCtx context.Context) error {
-		return stopProjects(stepCtx, cfg.Registry)
+	if err := runLoggedShutdownStep(stopCtx, cfg, "stop_projects", func(stepCtx context.Context) error {
+		return stopProjects(stepCtx, cfg.Registry, shutdownLogger(cfg))
 	}); err != nil {
 		shutdownLogger(cfg).Warn("stop projects during shutdown failed", "error", err)
 	}
 
+	cancelStarted := logShutdownBoundaryBegin(shutdownLogger(cfg), "serve_cancel", "component", "serve")
 	cancelServe()
-	if err := waitForServeExit(stopCtx, serveErrs); err != nil {
+	logShutdownBoundaryEnd(shutdownLogger(cfg), "serve_cancel", cancelStarted, nil, "component", "serve")
+	if err := loggedWaitForServeExit(stopCtx, cfg, serveErrs); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
 			shutdownLogger(cfg).Warn("serve did not exit before shutdown deadline", "error", err)
 			return returnErr
@@ -333,6 +342,13 @@ func completeShutdown(
 	result := shutdownResultLabel(machine)
 	shutdownLogger(cfg).Info("shutdown complete ("+result+")", "duration", shutdownNow(cfg).Sub(startedAt))
 	return returnErr
+}
+
+func runLoggedShutdownStep(ctx context.Context, cfg runningShutdownConfig, operation string, step func(context.Context) error, attrs ...any) error {
+	started := logShutdownBoundaryBegin(shutdownLogger(cfg), operation, attrs...)
+	err := runShutdownStep(ctx, step)
+	logShutdownBoundaryEnd(shutdownLogger(cfg), operation, started, err, attrs...)
+	return err
 }
 
 func runShutdownStep(ctx context.Context, step func(context.Context) error) error {
@@ -363,7 +379,7 @@ func shutdownResultLabel(machine shutdownstate.Machine) string {
 	}
 }
 
-func drainProjects(ctx context.Context, registry *project.Registry) error {
+func drainProjects(ctx context.Context, registry *project.Registry, logger *slog.Logger) error {
 	if registry == nil {
 		return nil
 	}
@@ -375,14 +391,21 @@ func drainProjects(ctx context.Context, registry *project.Registry) error {
 		if orch == nil {
 			continue
 		}
-		if err := orch.Drain(ctx); err != nil && !errors.Is(err, orchestrator.ErrStopped) {
+		operationStarted := logShutdownBoundaryBegin(logger, "orchestrator_drain", "component", "orchestrator", "project_id", trackedProject.ID())
+		err := orch.Drain(ctx)
+		if errors.Is(err, orchestrator.ErrStopped) {
+			logShutdownBoundaryEndResult(logger, "orchestrator_drain", operationStarted, "stopped", nil, "component", "orchestrator", "project_id", trackedProject.ID())
+			continue
+		}
+		logShutdownBoundaryEnd(logger, "orchestrator_drain", operationStarted, err, "component", "orchestrator", "project_id", trackedProject.ID())
+		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func forceProjects(ctx context.Context, registry *project.Registry) error {
+func forceProjects(ctx context.Context, registry *project.Registry, logger *slog.Logger) error {
 	if registry == nil {
 		return nil
 	}
@@ -394,14 +417,21 @@ func forceProjects(ctx context.Context, registry *project.Registry) error {
 		if orch == nil {
 			continue
 		}
-		if err := orch.ForceQuit(ctx); err != nil && !errors.Is(err, orchestrator.ErrStopped) {
+		operationStarted := logShutdownBoundaryBegin(logger, "orchestrator_force_quit", "component", "orchestrator", "project_id", trackedProject.ID())
+		err := orch.ForceQuit(ctx)
+		if errors.Is(err, orchestrator.ErrStopped) {
+			logShutdownBoundaryEndResult(logger, "orchestrator_force_quit", operationStarted, "stopped", nil, "component", "orchestrator", "project_id", trackedProject.ID())
+			continue
+		}
+		logShutdownBoundaryEnd(logger, "orchestrator_force_quit", operationStarted, err, "component", "orchestrator", "project_id", trackedProject.ID())
+		if err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func stopProjects(ctx context.Context, registry *project.Registry) error {
+func stopProjects(ctx context.Context, registry *project.Registry, logger *slog.Logger) error {
 	if registry == nil {
 		return nil
 	}
@@ -409,7 +439,14 @@ func stopProjects(ctx context.Context, registry *project.Registry) error {
 		if !trackedProject.Running() {
 			continue
 		}
-		if err := trackedProject.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
+		operationStarted := logShutdownBoundaryBegin(logger, "project_stop", "component", "project", "project_id", trackedProject.ID())
+		err := trackedProject.Stop(ctx)
+		if errors.Is(err, project.ErrNotRunning) {
+			logShutdownBoundaryEndResult(logger, "project_stop", operationStarted, "not_running", nil, "component", "project", "project_id", trackedProject.ID())
+			continue
+		}
+		logShutdownBoundaryEnd(logger, "project_stop", operationStarted, err, "component", "project", "project_id", trackedProject.ID())
+		if err != nil {
 			return err
 		}
 	}
@@ -450,12 +487,17 @@ func shutdownDrainTimeoutForConfig(cfg runningShutdownConfig) time.Duration {
 }
 
 func publishShutdownSnapshot(ctx context.Context, cfg runningShutdownConfig, now time.Time) {
+	started := logShutdownBoundaryBegin(shutdownLogger(cfg), "shutdown_snapshot_publish")
 	if cfg.Registry == nil || cfg.SnapshotHub == nil {
+		logShutdownBoundaryEndResult(shutdownLogger(cfg), "shutdown_snapshot_publish", started, "skipped", nil)
 		return
 	}
 	if err := publishSnapshotOnce(ctx, cfg.Registry, cfg.SnapshotHub, now, nil, cfg.LifetimeSource, cfg.DashboardURL); err != nil {
+		logShutdownBoundaryEnd(shutdownLogger(cfg), "shutdown_snapshot_publish", started, err)
 		shutdownLogger(cfg).Warn("publish shutdown telemetry snapshot failed", "error", err)
+		return
 	}
+	logShutdownBoundaryEnd(shutdownLogger(cfg), "shutdown_snapshot_publish", started, nil)
 }
 
 func shutdownDrainTimeout(registry *project.Registry) time.Duration {
@@ -574,6 +616,9 @@ func defaultShutdownString(value string, fallback string) string {
 }
 
 func shutdownOutput(cfg runningShutdownConfig) io.Writer {
+	if cfg.TerminalDashboard {
+		return io.Discard
+	}
 	if cfg.Output == nil {
 		return io.Discard
 	}
@@ -606,9 +651,71 @@ func waitForServeExit(ctx context.Context, serveErrs <-chan error) error {
 	}
 }
 
+func loggedWaitForServeExit(ctx context.Context, cfg runningShutdownConfig, serveErrs <-chan error) error {
+	started := logShutdownBoundaryBegin(shutdownLogger(cfg), "wait_for_serve_exit", "component", "serve")
+	err := waitForServeExit(ctx, serveErrs)
+	logShutdownBoundaryEnd(shutdownLogger(cfg), "wait_for_serve_exit", started, err, "component", "serve")
+	return err
+}
+
 func unexpectedShutdownServeError(err error) error {
 	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, http.ErrServerClosed) {
 		return nil
 	}
 	return err
+}
+
+func (request ShutdownRequest) String() string {
+	switch request {
+	case ShutdownRequestDrain:
+		return "drain"
+	case ShutdownRequestForce:
+		return "force"
+	default:
+		return "unknown"
+	}
+}
+
+func logShutdownBoundaryBegin(logger *slog.Logger, operation string, attrs ...any) time.Time {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	started := time.Now()
+	args := shutdownLogArgs(operation, append([]any{"phase", "begin"}, attrs...)...)
+	logger.Debug("shutdown boundary begin", args...)
+	return started
+}
+
+func logShutdownBoundaryEnd(logger *slog.Logger, operation string, started time.Time, err error, attrs ...any) {
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	logShutdownBoundaryEndResult(logger, operation, started, result, err, attrs...)
+}
+
+func logShutdownBoundaryEndResult(logger *slog.Logger, operation string, started time.Time, result string, err error, attrs ...any) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if result == "" {
+		result = "ok"
+	}
+	args := shutdownLogArgs(operation,
+		"phase", "end",
+		"duration", time.Since(started),
+		"result", result,
+	)
+	if err != nil {
+		args = append(args, "error", err)
+	}
+	args = append(args, attrs...)
+	logger.Debug("shutdown boundary end", args...)
+}
+
+func shutdownLogArgs(operation string, attrs ...any) []any {
+	args := make([]any, 0, 2+len(attrs))
+	args = append(args, "operation", operation)
+	args = append(args, attrs...)
+	return args
 }

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"log/slog"
 	"strings"
 	"testing"
 	"time"
@@ -164,6 +165,119 @@ func TestRunWithShutdownZeroSessionsExitsGracefully(t *testing.T) {
 	}
 	if got := output.String(); !strings.Contains(got, "shutdown requested — no agent sessions in flight") {
 		t.Fatalf("output missing zero-session notice:\n%s", got)
+	}
+}
+
+func TestRunWithShutdownTerminalDashboardSuppressesPlainOutput(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	started := make(chan struct{})
+	var output bytes.Buffer
+	errs := make(chan error, 1)
+
+	go func() {
+		errs <- runWithShutdown(context.Background(), runningShutdownConfig{
+			Controller:        controller,
+			Registry:          projectpkg.NewRegistry(),
+			SnapshotHub:       hub.New[telemetry.Snapshot](),
+			Output:            &output,
+			TerminalDashboard: true,
+			HardTimeout:       time.Second,
+			Now: func() time.Time {
+				return time.Date(2026, 6, 16, 16, 0, 0, 0, time.UTC)
+			},
+		}, func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("server did not start")
+	}
+	controller.RequestDrain()
+
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("runWithShutdown() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shutdown")
+	}
+	if got := output.String(); got != "" {
+		t.Fatalf("terminal dashboard shutdown wrote plain output:\n%s", got)
+	}
+}
+
+func TestRunWithShutdownZeroSessionsLogsCleanupBoundaries(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	started := make(chan struct{})
+	var logs bytes.Buffer
+	errs := make(chan error, 1)
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+
+	go func() {
+		errs <- runWithShutdown(context.Background(), runningShutdownConfig{
+			Controller:       controller,
+			Registry:         projectpkg.NewRegistry(),
+			SnapshotHub:      hub.New[telemetry.Snapshot](),
+			Output:           io.Discard,
+			Logger:           logger,
+			DrainTimeout:     time.Hour,
+			ProgressInterval: time.Hour,
+			HardTimeout:      time.Second,
+			Now: func() time.Time {
+				return time.Date(2026, 6, 16, 16, 0, 0, 0, time.UTC)
+			},
+		}, func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("server did not start")
+	}
+	start := time.Now()
+	controller.RequestDrain()
+
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("runWithShutdown() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shutdown")
+	}
+	if elapsed := time.Since(start); elapsed >= shutdownDrainPollInterval {
+		t.Fatalf("zero-session shutdown waited %s, want less than %s", elapsed, shutdownDrainPollInterval)
+	}
+
+	got := logs.String()
+	for _, want := range []string{
+		"operation=initial_running_session_inventory",
+		"operation=drain_projects",
+		"operation=shutdown_snapshot_publish",
+		"operation=stop_projects",
+		"operation=serve_cancel",
+		"operation=wait_for_serve_exit",
+		"sessions=0",
+		"duration=",
+		"result=ok",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("debug logs missing %q:\n%s", want, got)
+		}
 	}
 }
 

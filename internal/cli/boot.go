@@ -167,8 +167,12 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 	defer func() {
 		stop()
+		closeStarted := logShutdownBoundaryBegin(logger, "runtime_store_close", "component", "runtime_store")
 		if err := runtimeStore.Close(); err != nil {
+			logShutdownBoundaryEnd(logger, "runtime_store_close", closeStarted, err, "component", "runtime_store")
 			logger.Warn("close runtime store failed", "error", err)
+		} else {
+			logShutdownBoundaryEnd(logger, "runtime_store_close", closeStarted, nil, "component", "runtime_store")
 		}
 	}()
 
@@ -214,7 +218,9 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		stop()
 		select {
 		case globalWatcherDone := <-globalWatcherStarted:
+			waitStarted := logShutdownBoundaryBegin(logger, "global_config_watcher_wait", "component", "global_config_watcher")
 			waitGlobalConfigWatcher(globalWatcherDone)
+			logShutdownBoundaryEnd(logger, "global_config_watcher_wait", waitStarted, nil, "component", "global_config_watcher")
 		default:
 		}
 	}()
@@ -271,13 +277,14 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		}
 		return runStartupAndServe(runCtx, startProjects, func(ctx context.Context) error {
 			return runWithShutdown(ctx, runningShutdownConfig{
-				Controller:     cfg.Shutdown,
-				Registry:       manager.Registry(),
-				SnapshotHub:    snapshotHub,
-				LifetimeSource: runtimeStore,
-				DashboardURL:   displayURL,
-				Output:         cfg.Output,
-				Logger:         logger,
+				Controller:        cfg.Shutdown,
+				Registry:          manager.Registry(),
+				SnapshotHub:       snapshotHub,
+				LifetimeSource:    runtimeStore,
+				DashboardURL:      displayURL,
+				Output:            cfg.Output,
+				Logger:            logger,
+				TerminalDashboard: true,
 				DrainTimeoutSource: func() time.Duration {
 					return shutdownDrainTimeout(manager.Registry())
 				},
@@ -364,6 +371,7 @@ func startOnboarding(ctx context.Context, cfg BootConfig) error {
 }
 
 func serve(ctx context.Context, server *web.Server, listener net.Listener) error {
+	logger := slog.Default()
 	errs := make(chan error, 1)
 	go func() {
 		errs <- server.StartListener(listener)
@@ -371,15 +379,23 @@ func serve(ctx context.Context, server *web.Server, listener net.Listener) error
 
 	select {
 	case <-ctx.Done():
+		contextStarted := logShutdownBoundaryBegin(logger, "serve_context_done", "component", "serve")
+		logShutdownBoundaryEnd(logger, "serve_context_done", contextStarted, nil, "component", "serve")
 		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
+		shutdownStarted := logShutdownBoundaryBegin(logger, "web_server_shutdown", "component", "web_server", "timeout", 5*time.Second)
 		if err := server.Shutdown(shutdownCtx); err != nil {
+			logShutdownBoundaryEnd(logger, "web_server_shutdown", shutdownStarted, err, "component", "web_server", "timeout", 5*time.Second)
 			return err
 		}
+		logShutdownBoundaryEnd(logger, "web_server_shutdown", shutdownStarted, nil, "component", "web_server", "timeout", 5*time.Second)
+		waitStarted := logShutdownBoundaryBegin(logger, "web_server_listener_wait", "component", "web_server")
 		err := <-errs
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
+			logShutdownBoundaryEnd(logger, "web_server_listener_wait", waitStarted, err, "component", "web_server")
 			return err
 		}
+		logShutdownBoundaryEnd(logger, "web_server_listener_wait", waitStarted, nil, "component", "web_server")
 		return ctx.Err()
 	case err := <-errs:
 		if errors.Is(err, http.ErrServerClosed) {
@@ -517,6 +533,7 @@ func shouldLaunchTerminalDashboard(cfg BootConfig) bool {
 
 func requestTerminalShutdownInterrupt(controller *ShutdownController, hardExit func(int)) bool {
 	request, handled := controller.RequestInterruptKind()
+	slog.Default().Debug("shutdown interrupt request", "operation", "shutdown_interrupt_request", "source", "terminal_dashboard", "request", request.String(), "handled", handled)
 	if !handled {
 		return false
 	}

@@ -536,14 +536,18 @@ func (p *Project) Wait(ctx context.Context) error {
 }
 
 func (p *Project) waitDone(ctx context.Context, done <-chan struct{}) error {
+	started := logProjectShutdownBoundaryBegin(p.logger, "project_wait_done", "component", "project", "project_id", p.id)
 	select {
 	case <-done:
 		p.mu.Lock()
 		defer p.mu.Unlock()
 
+		logProjectShutdownBoundaryEnd(p.logger, "project_wait_done", started, p.runErr, "component", "project", "project_id", p.id)
 		return p.runErr
 	case <-ctx.Done():
-		return ctx.Err()
+		err := ctx.Err()
+		logProjectShutdownBoundaryEnd(p.logger, "project_wait_done", started, err, "component", "project", "project_id", p.id)
+		return err
 	}
 }
 
@@ -551,10 +555,20 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	watcherCtx, stopWatcher := context.WithCancel(ctx)
 	watcherDone := p.startWorkflowWatcher(watcherCtx)
 
+	runStarted := logProjectShutdownBoundaryBegin(p.logger, "orchestrator_run", "component", "orchestrator", "project_id", p.id)
 	err := orch.Run(ctx)
+	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
+		logProjectShutdownBoundaryEndResult(p.logger, "orchestrator_run", runStarted, "canceled", nil, "component", "orchestrator", "project_id", p.id)
+	} else {
+		logProjectShutdownBoundaryEnd(p.logger, "orchestrator_run", runStarted, err, "component", "orchestrator", "project_id", p.id)
+	}
+	watcherStarted := logProjectShutdownBoundaryBegin(p.logger, "workflow_watcher_stop", "component", "workflow_watcher", "project_id", p.id)
 	stopWatcher()
 	if watcherDone != nil {
 		<-watcherDone
+		logProjectShutdownBoundaryEnd(p.logger, "workflow_watcher_stop", watcherStarted, nil, "component", "workflow_watcher", "project_id", p.id)
+	} else {
+		logProjectShutdownBoundaryEndResult(p.logger, "workflow_watcher_stop", watcherStarted, "skipped", nil, "component", "workflow_watcher", "project_id", p.id)
 	}
 	if errors.Is(err, context.Canceled) && ctx.Err() != nil {
 		err = nil
@@ -579,6 +593,50 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 	}
 
 	close(done)
+}
+
+func logProjectShutdownBoundaryBegin(logger *slog.Logger, operation string, attrs ...any) time.Time {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	started := time.Now()
+	args := projectShutdownLogArgs(operation, append([]any{"phase", "begin"}, attrs...)...)
+	logger.Debug("shutdown boundary begin", args...)
+	return started
+}
+
+func logProjectShutdownBoundaryEnd(logger *slog.Logger, operation string, started time.Time, err error, attrs ...any) {
+	result := "ok"
+	if err != nil {
+		result = "error"
+	}
+	logProjectShutdownBoundaryEndResult(logger, operation, started, result, err, attrs...)
+}
+
+func logProjectShutdownBoundaryEndResult(logger *slog.Logger, operation string, started time.Time, result string, err error, attrs ...any) {
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if result == "" {
+		result = "ok"
+	}
+	args := projectShutdownLogArgs(operation,
+		"phase", "end",
+		"duration", time.Since(started),
+		"result", result,
+	)
+	if err != nil {
+		args = append(args, "error", err)
+	}
+	args = append(args, attrs...)
+	logger.Debug("shutdown boundary end", args...)
+}
+
+func projectShutdownLogArgs(operation string, attrs ...any) []any {
+	args := make([]any, 0, 2+len(attrs))
+	args = append(args, "operation", operation)
+	args = append(args, attrs...)
+	return args
 }
 
 func (p *Project) startWorkflowWatcher(ctx context.Context) <-chan struct{} {
