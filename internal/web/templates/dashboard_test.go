@@ -683,8 +683,14 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 	for _, want := range []string{
 		"Project Kanban",
 		"Read-only",
-		`id="project-kanban-show-empty"`,
+		`data-project-kanban-visibility-key="project:detent`,
+		`data-project-kanban-visibility-menu`,
+		`data-project-kanban-visibility-checkbox`,
+		`name="visible_lane" value="in-progress"`,
+		`data-project-kanban-visibility-action="all"`,
+		`data-project-kanban-visibility-action="active"`,
 		`data-project-kanban-empty-lane`,
+		`data-project-kanban-lane-visible="false"`,
 		`data-preserve-scroll="project-kanban-human-review"`,
 		`href="https://github.com/digitaldrywood/detent/pull/512"`,
 		"#512",
@@ -708,6 +714,8 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 		`hx-post=`,
 		`data-kanban-drop`,
 		`Comment`,
+		`id="project-kanban-show-empty"`,
+		`Show 2 empty states`,
 	} {
 		if strings.Contains(section, forbidden) {
 			t.Fatalf("project kanban rendered mutation affordance %q:\n%s", forbidden, section)
@@ -861,6 +869,90 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 				t.Fatalf("card %q rendered expanded metadata by default marker %q:\n%s", title, forbidden, card)
 			}
 		}
+	}
+}
+
+func TestDashboardProjectKanbanVisibilityControllerSurvivesHTMXSwaps(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboard(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo", "Done"},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "todo",
+					Identifier: "digitaldrywood/detent#496",
+					Title:      "Fix empty-lane toggle",
+					State:      "Todo",
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`detent.ui.projectKanban.visibleLanes.`,
+		`localStorage`,
+		`htmx:afterSwap`,
+		`htmx:afterSettle`,
+		`data-project-kanban-lane-visible`,
+		`data-project-kanban-visibility-key`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing persistent kanban visibility controller %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardProjectKanbanVisibilityKeyIgnoresLiveExtraLanes(t *testing.T) {
+	t.Parallel()
+
+	baseHTML := renderDashboard(t, templates.DashboardData{
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo", "Done"},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "todo",
+					Identifier: "digitaldrywood/detent#496",
+					Title:      "Todo card",
+					State:      "Todo",
+				},
+			},
+		},
+	})
+	extraLaneHTML := renderDashboard(t, templates.DashboardData{
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo", "Done", "Escalated"},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "escalated",
+					Identifier: "digitaldrywood/detent#497",
+					Title:      "Escalated card",
+					State:      "Escalated",
+				},
+			},
+		},
+	})
+
+	baseKey := projectKanbanVisibilityKeyFromHTML(t, baseHTML)
+	extraLaneKey := projectKanbanVisibilityKeyFromHTML(t, extraLaneHTML)
+	if baseKey != "project:detent" || extraLaneKey != baseKey {
+		t.Fatalf("visibility key should remain scoped to project: base=%q extra=%q", baseKey, extraLaneKey)
 	}
 }
 
@@ -2046,4 +2138,20 @@ func compactKanbanCardSection(t *testing.T, html string, title string) string {
 		t.Fatalf("card title %q missing article close:\n%s", title, html[titleIndex:])
 	}
 	return html[startIndex : titleIndex+endIndex+len(`</article>`)]
+}
+
+func projectKanbanVisibilityKeyFromHTML(t *testing.T, html string) string {
+	t.Helper()
+
+	const attr = `data-project-kanban-visibility-key="`
+	start := strings.Index(html, attr)
+	if start < 0 {
+		t.Fatalf("project kanban visibility key missing:\n%s", html)
+	}
+	start += len(attr)
+	end := strings.Index(html[start:], `"`)
+	if end < 0 {
+		t.Fatalf("project kanban visibility key unterminated:\n%s", html[start:])
+	}
+	return html[start : start+end]
 }

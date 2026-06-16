@@ -149,6 +149,7 @@ templ DashboardShell(data DashboardShellData) {
 					{ children... }
 				}
 			}
+			@projectKanbanVisibilityScript()
 		</body>
 	</html>
 }
@@ -1106,7 +1107,7 @@ templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
 
 templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 	if len(board.AllLanes) > 0 {
-		<section id="project-kanban" class="dashboard-panel project-kanban scroll-mt-3 min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Project Kanban" tabindex="-1">
+		<section id="project-kanban" class="dashboard-panel project-kanban scroll-mt-3 min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Project Kanban" tabindex="-1" data-project-kanban-board data-project-kanban-visibility-key={ projectKanbanVisibilityKey(data, board) }>
 			<div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
 				<div class="min-w-0">
 					<div class="inline-flex min-w-0 items-center gap-2">
@@ -1126,17 +1127,9 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 						<span class="inline-flex min-h-8 items-center rounded-full border border-accent-soft bg-accent-soft px-2.5 py-1 text-xs font-semibold text-accent">Read-only</span>
 					}
 					<span class="inline-flex min-h-8 items-center rounded-full bg-muted px-2.5 py-1 font-mono text-xs font-medium text-muted-foreground">{ board.TotalLabel } cards</span>
-					if len(board.EmptyLanes) > 0 {
-						<label for="project-kanban-show-empty" class="inline-flex min-h-8 cursor-pointer items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-muted-foreground hover:border-accent hover:text-accent focus-within:ring-2 focus-within:ring-accent">
-							@icon.Eye(icon.Props{Class: "size-3.5 shrink-0"})
-							<span>{ projectKanbanEmptyToggleLabel(board) }</span>
-						</label>
-					}
+					@projectKanbanVisibilityDropdown(board)
 				</div>
 			</div>
-			if len(board.EmptyLanes) > 0 {
-				<input id="project-kanban-show-empty" class="project-kanban-show-empty sr-only" type="checkbox" autocomplete="off" aria-label="Show empty Kanban lanes"/>
-			}
 			if kanbanIntegrationEnabled(data) {
 				<div id="kanban-feedback" role="status" aria-live="polite" class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Ready.</div>
 			}
@@ -1152,6 +1145,202 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 	}
 }
 
+templ projectKanbanVisibilityDropdown(board projectKanbanBoard) {
+	<details class="relative" data-project-kanban-visibility-menu>
+		<summary class="inline-flex min-h-8 cursor-pointer list-none items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+			@icon.Eye(icon.Props{Class: "size-3.5 shrink-0"})
+			<span>Lane visibility</span>
+			<span class="rounded-full bg-muted px-1.5 py-0.5 font-mono" data-project-kanban-visibility-count>{ projectKanbanVisibilityCountLabel(board) }</span>
+		</summary>
+		<div class="absolute right-0 z-50 mt-2 w-[14rem] rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-sm">
+			<div class="grid grid-cols-2 gap-1 border-b border-border pb-2">
+				<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="all">All lanes</button>
+				<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="active">Active only</button>
+			</div>
+			<div class="mt-2 grid gap-1">
+				for _, lane := range board.AllLanes {
+					<label class="flex min-h-8 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted">
+						<input class="size-4 shrink-0 accent-accent disabled:opacity-50" type="checkbox" name="visible_lane" value={ lane.ID } checked?={ lane.DefaultVisible } disabled?={ lane.DefaultVisible } data-project-kanban-visibility-checkbox data-project-kanban-visibility-default={ projectKanbanBool(lane.DefaultVisible) } autocomplete="off"/>
+						<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
+						<span class="min-w-0 flex-1 truncate">{ lane.Title }</span>
+						<span class="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">{ lane.CountLabel }</span>
+					</label>
+				}
+			</div>
+		</div>
+	</details>
+}
+
+templ projectKanbanVisibilityScript() {
+	<script>
+		(function() {
+			const storagePrefix = "detent.ui.projectKanban.visibleLanes.";
+			const storageVersion = 1;
+
+			function visibilityStorage() {
+				try {
+					return window.localStorage;
+				} catch (error) {
+					return null;
+				}
+			}
+
+			function boards() {
+				return Array.from(document.querySelectorAll("[data-project-kanban-board][data-project-kanban-visibility-key]"));
+			}
+
+			function storageKey(board) {
+				return storagePrefix + (board.dataset.projectKanbanVisibilityKey || "default");
+			}
+
+			function boardLanes(board) {
+				return Array.from(board.querySelectorAll("[data-project-kanban-lane]"));
+			}
+
+			function laneID(lane) {
+				return lane.dataset.projectKanbanLane || "";
+			}
+
+			function laneEmpty(lane) {
+				return lane.dataset.projectKanbanLaneEmpty === "true";
+			}
+
+			function savedLaneIDs(board) {
+				const store = visibilityStorage();
+				if (!store) {
+					return new Set();
+				}
+				let parsed = null;
+				try {
+					parsed = JSON.parse(store.getItem(storageKey(board)) || "");
+				} catch (error) {
+					return new Set();
+				}
+				if (!parsed || parsed.v !== storageVersion || !Array.isArray(parsed.lanes)) {
+					return new Set();
+				}
+				return new Set(parsed.lanes.filter(function(id) {
+					return typeof id === "string" && id.trim() !== "";
+				}));
+			}
+
+			function saveLaneIDs(board, ids) {
+				const store = visibilityStorage();
+				if (!store) {
+					return;
+				}
+				const values = Array.from(ids).filter(Boolean);
+				if (values.length === 0) {
+					store.removeItem(storageKey(board));
+					return;
+				}
+				store.setItem(storageKey(board), JSON.stringify({ v: storageVersion, lanes: values }));
+			}
+
+			function checkboxLaneID(checkbox) {
+				return checkbox.value || "";
+			}
+
+			function applyBoard(board) {
+				const saved = savedLaneIDs(board);
+				let visibleCount = 0;
+				const lanes = boardLanes(board);
+				lanes.forEach(function(lane) {
+					const id = laneID(lane);
+					const visible = !laneEmpty(lane) || saved.has(id);
+					lane.dataset.projectKanbanLaneVisible = visible ? "true" : "false";
+					if (visible) {
+						visibleCount += 1;
+					}
+				});
+				board.querySelectorAll("[data-project-kanban-visibility-checkbox]").forEach(function(input) {
+					if (!(input instanceof HTMLInputElement)) {
+						return;
+					}
+					const defaultVisible = input.dataset.projectKanbanVisibilityDefault === "true";
+					input.checked = defaultVisible || saved.has(checkboxLaneID(input));
+					input.disabled = defaultVisible;
+					input.setAttribute("aria-disabled", defaultVisible ? "true" : "false");
+				});
+				const count = board.querySelector("[data-project-kanban-visibility-count]");
+				if (count) {
+					count.textContent = visibleCount + "/" + lanes.length;
+				}
+			}
+
+			function applyBoards() {
+				boards().forEach(applyBoard);
+			}
+
+			function updateCheckbox(checkbox) {
+				const board = checkbox.closest("[data-project-kanban-board]");
+				if (!board) {
+					return;
+				}
+				const saved = savedLaneIDs(board);
+				const id = checkboxLaneID(checkbox);
+				if (!id) {
+					return;
+				}
+				if (checkbox.checked) {
+					saved.add(id);
+				} else {
+					saved.delete(id);
+				}
+				saveLaneIDs(board, saved);
+				applyBoard(board);
+			}
+
+			function updateAction(button) {
+				const board = button.closest("[data-project-kanban-board]");
+				if (!board) {
+					return;
+				}
+				const saved = new Set();
+				if (button.dataset.projectKanbanVisibilityAction === "all") {
+					boardLanes(board).forEach(function(lane) {
+						const id = laneID(lane);
+						if (id) {
+							saved.add(id);
+						}
+					});
+				}
+				saveLaneIDs(board, saved);
+				applyBoard(board);
+			}
+
+			document.addEventListener("change", function(event) {
+				const input = event.target instanceof Element ? event.target.closest("[data-project-kanban-visibility-checkbox]") : null;
+				if (input instanceof HTMLInputElement) {
+					updateCheckbox(input);
+				}
+			});
+
+			document.addEventListener("click", function(event) {
+				const button = event.target instanceof Element ? event.target.closest("[data-project-kanban-visibility-action]") : null;
+				if (button instanceof HTMLButtonElement) {
+					event.preventDefault();
+					updateAction(button);
+				}
+			});
+
+			document.addEventListener("htmx:afterSwap", applyBoards);
+			document.addEventListener("htmx:afterSettle", applyBoards);
+			window.addEventListener("storage", function(event) {
+				if (event.key && event.key.indexOf(storagePrefix) === 0) {
+					applyBoards();
+				}
+			});
+
+			if (document.readyState === "loading") {
+				document.addEventListener("DOMContentLoaded", applyBoards);
+			} else {
+				applyBoards();
+			}
+		})();
+	</script>
+}
+
 templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } { projectKanbanLaneAttributesForData(data, lane)... }>
 		<div class="flex min-h-9 items-center justify-between gap-3">
@@ -1163,7 +1352,7 @@ templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 		</div>
 		if len(lane.Cards) == 0 {
 			<div class="mt-3">
-				@dashboardEmptyState("No issues in this state.", "This configured state is hidden until empty lanes are shown.", lane.DotClass)
+				@dashboardEmptyState("No issues in this state.", "This configured state stays hidden unless this lane is pinned visible.", lane.DotClass)
 			</div>
 		} else {
 			<div class="project-kanban-lane-scroll mt-3 grid max-h-[32rem] gap-2 overflow-y-auto pr-1" data-preserve-scroll={ "project-kanban-" + lane.ID }>

@@ -307,11 +307,7 @@
 }
 
 @layer utilities {
-  .project-kanban-empty-lane {
+  .project-kanban-lane[data-project-kanban-lane-visible="false"] {
     display: none;
-  }
-
-  .project-kanban-show-empty:checked ~ .project-kanban-lanes .project-kanban-empty-lane {
-    display: grid;
   }
 }
