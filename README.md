@@ -207,12 +207,23 @@ others as their automation terms allow.
 
 ## Install
 
-Use the release-asset installers for Windows and Linux first. They download the
-latest GitHub Release asset, verify the SHA-256 checksum, install the `detent`
-binary, and record installer metadata so `detent update` can safely manage the
-binary later. These paths do not require Homebrew or Go.
+On Windows, use the package manager that already manages your developer tools.
+Use Winget when the Detent package is available from the Windows Package Manager
+community source:
 
-Install the latest Windows release with PowerShell:
+```powershell
+winget install --id DigitalDrywood.Detent --source winget
+```
+
+Use Scoop when you want a user-local install managed from a Scoop bucket:
+
+```powershell
+scoop bucket add digitaldrywood https://github.com/digitaldrywood/scoop-bucket
+scoop install detent
+```
+
+Use the PowerShell installer for bootstrap, CI images, or machines where you do
+not want to configure a Windows package manager first:
 
 ```powershell
 irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | iex
@@ -221,7 +232,8 @@ irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | i
 The PowerShell installer downloads the Windows release archive, verifies the
 SHA-256 checksum, installs `detent.exe` to `%LOCALAPPDATA%\detent\bin`, and
 adds that directory to the user PATH. Set `DETENT_INSTALL_DIR` to override the
-install directory.
+install directory. Winget and Scoop installs also expose `detent.exe` on PATH;
+verify any Windows install with `detent --version`.
 
 Install the latest Linux release with the shell installer:
 
@@ -263,15 +275,14 @@ Use the shell installer for a user-local install without sudo, for Linux
 distributions that do not use `.deb` or `.rpm`, or for bootstrap scripts that
 should fall back to `go install` when a release asset is unavailable.
 
-Fallback options:
-
-Homebrew on macOS or Linux:
+Use Homebrew on macOS or Linux when you already manage CLI tools with Homebrew:
 
 ```sh
 brew install digitaldrywood/tap/detent
 ```
 
-Go on any platform:
+Use Go on any platform when you want to build from source instead of using a
+release archive:
 
 ```sh
 go install github.com/digitaldrywood/detent/cmd/detent@latest
@@ -287,12 +298,19 @@ Release-installer installs can update with `detent update`; use
 `detent update --yes` for non-interactive automation and
 `detent update --format json` for machine-readable status. The legacy
 `detent update --json` flag remains supported. On Windows, replacement is
-staged and completes after the running `detent.exe` exits. Homebrew installs
-delegate to `brew upgrade digitaldrywood/tap/detent`. Native Linux packages are
-owned by the system package manager; install a newer `.deb` with `sudo apt
-install ./detent_<version>_linux_<arch>.deb`, or a newer `.rpm` with `sudo rpm
--Uvh ./detent_<version>_linux_<arch>.rpm` or the distro wrapper you normally
-use. Go-installed binaries offer an
+staged and completes after the running `detent.exe` exits. Package-manager
+installs should be upgraded by the package manager:
+
+```sh
+winget upgrade --id DigitalDrywood.Detent
+scoop update detent
+brew upgrade digitaldrywood/tap/detent
+```
+
+Native Linux packages are owned by the system package manager; install a newer
+`.deb` with `sudo apt install ./detent_<version>_linux_<arch>.deb`, or a newer
+`.rpm` with `sudo rpm -Uvh ./detent_<version>_linux_<arch>.rpm` or the distro
+wrapper you normally use. Go-installed binaries offer an
 interactive choice: run
 `go install github.com/digitaldrywood/detent/cmd/detent@latest`, switch to the
 checksum-verified release binary, or abort. `detent update --yes` runs the Go
@@ -397,7 +415,13 @@ git tag v0.1.0 && git push origin v0.1.0
 ```
 
 Tags matching `v*` trigger the release workflow, which runs GoReleaser and
-publishes the GitHub Release archives and checksums.
+publishes the GitHub Release archives, checksums, Homebrew formula, and Windows
+package-manager manifests. Scoop publishing targets
+`digitaldrywood/scoop-bucket`; Winget publishing pushes to the
+`digitaldrywood/winget-pkgs` fork and opens a pull request against
+`microsoft/winget-pkgs`. GoReleaser generates the manifests during snapshots and
+skips publishing when `SCOOP_BUCKET_GITHUB_TOKEN` or `WINGET_GITHUB_TOKEN` is
+not configured.
 
 CI also runs `GoReleaser Snapshot` on every push to `main` so the current
 merge head remains release-package validated. Pull requests run that snapshot

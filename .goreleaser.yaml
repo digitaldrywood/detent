@@ -91,6 +91,59 @@ nfpms:
           mode: 0644
           mtime: "{{ .CommitDate }}"
 
+scoops:
+  - name: detent
+    ids:
+      - detent
+    repository:
+      owner: digitaldrywood
+      name: scoop-bucket
+      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+    url_template: "https://github.com/digitaldrywood/detent/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    homepage: https://github.com/digitaldrywood/detent
+    description: Agent orchestrator for tracker-backed work queues
+    license: MIT
+    commit_msg_template: "scoop: update detent to {{ .Tag }}"
+    skip_upload: "{{ if index .Env \"SCOOP_BUCKET_GITHUB_TOKEN\" }}false{{ else }}true{{ end }}"
+
+winget:
+  - name: Detent
+    package_name: Detent
+    package_identifier: DigitalDrywood.Detent
+    publisher: Digital Drywood
+    publisher_url: https://github.com/digitaldrywood
+    publisher_support_url: https://github.com/digitaldrywood/detent/issues
+    copyright: Copyright (c) Digital Drywood contributors
+    path: manifests/d/DigitalDrywood/Detent/{{ .Version }}
+    repository:
+      owner: digitaldrywood
+      name: winget-pkgs
+      branch: detent-{{ .Version }}
+      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+      pull_request:
+        enabled: true
+        base:
+          owner: microsoft
+          name: winget-pkgs
+          branch: master
+    commit_msg_template: "{{ .PackageIdentifier }}: {{ .Tag }}"
+    ids:
+      - detent
+    skip_upload: "{{ if index .Env \"WINGET_GITHUB_TOKEN\" }}false{{ else }}true{{ end }}"
+    url_template: "https://github.com/digitaldrywood/detent/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
+    short_description: Agent orchestrator for tracker-backed work queues
+    description: Detent is status-driven agentic work orchestration for tracker-backed work queues.
+    homepage: https://github.com/digitaldrywood/detent
+    license: MIT
+    license_url: https://github.com/digitaldrywood/detent/blob/{{ .Tag }}/LICENSE
+    release_notes_url: https://github.com/digitaldrywood/detent/releases/tag/{{ .Tag }}
+    installation_notes: Installs detent.exe on PATH. Verify the release with detent --version.
+    tags:
+      - agent
+      - automation
+      - cli
+      - github
+
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
   algorithm: sha256
