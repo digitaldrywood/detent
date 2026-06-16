@@ -98,7 +98,7 @@ scoops:
     repository:
       owner: digitaldrywood
       name: scoop-bucket
-      token: "{{ .Env.SCOOP_BUCKET_GITHUB_TOKEN }}"
+      token: "{{ index .Env \"SCOOP_BUCKET_GITHUB_TOKEN\" }}"
     url_template: "https://github.com/digitaldrywood/detent/releases/download/{{ .Tag }}/{{ .ArtifactName }}"
     homepage: https://github.com/digitaldrywood/detent
     description: Agent orchestrator for tracker-backed work queues
@@ -119,7 +119,7 @@ winget:
       owner: digitaldrywood
       name: winget-pkgs
       branch: detent-{{ .Version }}
-      token: "{{ .Env.WINGET_GITHUB_TOKEN }}"
+      token: "{{ index .Env \"WINGET_GITHUB_TOKEN\" }}"
       pull_request:
         enabled: true
         base:
