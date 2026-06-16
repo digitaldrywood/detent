@@ -148,11 +148,23 @@ func trackerProjectURL(trackedProject *projectpkg.Project) string {
 	if trackedProject == nil {
 		return ""
 	}
-	slug := strings.TrimSpace(trackedProject.Workflow().Config.Tracker.ProjectSlug)
+	tracker := trackedProject.Workflow().Config.Tracker
+	slug := strings.TrimSpace(tracker.ProjectSlug)
 	if strings.HasPrefix(slug, "http://") || strings.HasPrefix(slug, "https://") {
 		return slug
 	}
+	if repoIssuesURL := githubRepositoryIssuesURL(tracker.Repository); repoIssuesURL != "" {
+		return repoIssuesURL
+	}
 	return ""
+}
+
+func githubRepositoryIssuesURL(repository string) string {
+	owner, name, ok := strings.Cut(strings.TrimSpace(repository), "/")
+	if !ok || owner == "" || name == "" || strings.Contains(name, "/") {
+		return ""
+	}
+	return "https://github.com/" + owner + "/" + name + "/issues"
 }
 
 func projectSmallMultipleIDs(projects []templates.ProjectSmallMultiple) []string {

@@ -21,6 +21,11 @@ templ Dashboard(data DashboardData) {
 					@dashboardMobileSidebarTrigger()
 					@dashboardPageHeading(dashboardHeading(data))
 					<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+						if projectExternalURL(data) != "" {
+							<a class="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ projectExternalURL(data) } target="_blank" rel="noopener noreferrer" title={ projectExternalLinkLabel(data) } aria-label={ projectExternalLinkLabel(data) }>
+								@icon.ExternalLink(icon.Props{Class: "size-4"})
+							</a>
+						}
 						<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
 						@dashboardTopbarDivider()
 						<span class="truncate">{ connectorName(data) }</span>

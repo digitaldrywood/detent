@@ -1385,6 +1385,38 @@ func TestProjectDashboardRouteScopesSnapshot(t *testing.T) {
 	}
 }
 
+func TestProjectDashboardRouteLinksGitHubRepositoryIssues(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetWebGitHubLabelProject(t, deps.Registry, "detent", "digitaldrywood/detent")
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{{
+			Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent", http.StatusOK)
+	for _, want := range []string{
+		`href="https://github.com/digitaldrywood/detent/issues"`,
+		`target="_blank"`,
+		`aria-label="Open Detent issues"`,
+		`data-lucide="icon"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("project dashboard missing GitHub issues link marker %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestProjectDashboardRouteRendersConfiguredKanbanOrder(t *testing.T) {
 	t.Parallel()
 
@@ -3514,6 +3546,31 @@ func mustSetWebProject(t *testing.T, registry *project.Registry, id string, paus
 	t.Helper()
 
 	mustSetWebProjectWithWorkflowStates(t, registry, id, paused, nil, nil, nil)
+}
+
+func mustSetWebGitHubLabelProject(t *testing.T, registry *project.Registry, id string, repository string) {
+	t.Helper()
+
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflowCfg.Tracker.APIKey = "$GITHUB_TOKEN"
+	workflowCfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+	workflowCfg.Tracker.Repository = repository
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{ID: id},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "github"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
 }
 
 func mustSetWebProjectWithWorkflowStates(
