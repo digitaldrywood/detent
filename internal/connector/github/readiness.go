@@ -43,6 +43,7 @@ type ReadinessConfig struct {
 	RequirePullRequestChecks      bool
 	RequireProjectStatusWrite     bool
 	RequireIssueFieldStatusWrite  bool
+	RequireLabelStatusWrite       bool
 	RequireIssueComments          bool
 	RequireAssigneeWrite          bool
 	RequireIssueClose             bool
@@ -94,7 +95,12 @@ func (c githubReadinessChecker) Check(ctx context.Context, cfg ReadinessConfig) 
 	if hasGitHubAppCredentials(c.cfg, c.cfg.LookupEnv) {
 		checks = append(checks, c.appInstallationCheck(ctx, cfg))
 	}
-	if c.connector.usesIssueFieldStatus() {
+	if c.connector.usesLabelStatus() {
+		checks = append(checks,
+			c.labelStatusOptionsCheck(ctx, cfg.StatusStates),
+			c.labelIssuesReadCheck(ctx, cfg.ReadStates),
+		)
+	} else if c.connector.usesIssueFieldStatus() {
 		checks = append(checks,
 			c.issueFieldAccessCheck(ctx),
 			c.issueFieldStatusOptionsCheck(ctx, cfg.StatusStates),
@@ -360,6 +366,55 @@ func (c githubReadinessChecker) issueFieldIssuesReadCheck(ctx context.Context, s
 		Name:   "GitHub issue field issue read",
 		Status: ReadinessOK,
 		Detail: fmt.Sprintf("read issues for %d configured state(s); sampled %d issue(s)", len(states), len(issues)),
+	}
+}
+
+func (c githubReadinessChecker) labelStatusOptionsCheck(ctx context.Context, states []string) ReadinessCheck {
+	states = uniqueNonBlank(states)
+	if len(states) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub status label mappings",
+			Status: ReadinessOK,
+			Detail: "skipped because no tracker states are configured",
+		}
+	}
+	if err := c.connector.verifyLabelStatusOptions(ctx, states); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub status label mappings",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot resolve required status labels in %s/%s: %v", c.connector.repository.Owner, c.connector.repository.Name, err),
+			Hint:   "Run Detent provisioning or create the missing repository labels, then rerun detent doctor.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub status label mappings",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("resolved %d configured status label(s) with prefix %q", len(states), c.connector.statusLabelPrefix),
+	}
+}
+
+func (c githubReadinessChecker) labelIssuesReadCheck(ctx context.Context, states []string) ReadinessCheck {
+	states = uniqueNonBlank(states)
+	if len(states) == 0 {
+		return ReadinessCheck{
+			Name:   "GitHub status label issue read",
+			Status: ReadinessOK,
+			Detail: "skipped because no active or observed tracker states are configured",
+		}
+	}
+	issues, err := c.connector.fetchLabelIssuesByStates(ctx, states, 5)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub status label issue read",
+			Status: ReadinessFail,
+			Detail: fmt.Sprintf("cannot read issues for configured status labels in %s/%s: %v", c.connector.repository.Owner, c.connector.repository.Name, err),
+			Hint:   "Grant Issues repository read permission and confirm status labels exist.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub status label issue read",
+		Status: ReadinessOK,
+		Detail: fmt.Sprintf("read issues for %d configured label state(s); sampled %d issue(s)", len(states), len(issues)),
 	}
 }
 
@@ -648,7 +703,7 @@ func (c githubReadinessChecker) resolveWriteProbe(ctx context.Context, cfg Readi
 			Name:   "GitHub write probe target",
 			Status: ReadinessFail,
 			Detail: probeID + ": " + err.Error(),
-			Hint:   "Set tracker.write_probe_issue to a scratch issue that belongs to the configured ProjectV2 board.",
+			Hint:   "Set tracker.write_probe_issue to a scratch issue in the configured repository.",
 		}
 		return readinessProbeIssue{}, false, &check
 	}
@@ -668,6 +723,8 @@ func (cfg ReadinessConfig) requiresProbeIssue() bool {
 
 func (cfg ReadinessConfig) requiresWriteProbe() bool {
 	return cfg.RequireProjectStatusWrite ||
+		cfg.RequireLabelStatusWrite ||
+		cfg.RequireIssueFieldStatusWrite ||
 		cfg.RequireIssueComments ||
 		cfg.RequireAssigneeWrite ||
 		cfg.RequireIssueClose ||
@@ -761,6 +818,9 @@ func (c githubReadinessChecker) writeChecks(ctx context.Context, cfg ReadinessCo
 	}
 	if cfg.RequireIssueFieldStatusWrite {
 		checks = append(checks, c.issueFieldStatusWriteCheck(ctx, probe, hasProbe))
+	}
+	if cfg.RequireLabelStatusWrite {
+		checks = append(checks, c.labelStatusWriteCheck(ctx, probe, hasProbe))
 	}
 	if cfg.RequireIssueComments {
 		checks = append(checks, c.issueCommentWriteCheck(ctx, probe, hasProbe))
@@ -920,6 +980,43 @@ func (c githubReadinessChecker) issueFieldStatusWriteCheck(ctx context.Context, 
 		Name:   "GitHub issue field Status update",
 		Status: ReadinessOK,
 		Detail: "reapplied existing issue field Status value on the write probe issue",
+	}
+}
+
+func (c githubReadinessChecker) labelStatusWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool) ReadinessCheck {
+	if !hasProbe {
+		return unprovenWriteCheck("GitHub status label update")
+	}
+	issue, err := c.connector.fetchRESTIssue(ctx, probe.Ref)
+	if err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub status label update",
+			Status: ReadinessFail,
+			Detail: "token cannot read current labels for probe issue: " + err.Error(),
+			Hint:   "Grant Issues repository read permission for the probe issue repository.",
+		}
+	}
+	statusName := c.connector.labelStatusFromLabels(issue.Labels)
+	if strings.TrimSpace(statusName) == "" {
+		return ReadinessCheck{
+			Name:   "GitHub status label update",
+			Status: ReadinessWarn,
+			Detail: "write probe issue has no current Detent status label; label update was not executed",
+			Hint:   "Set one configured status label on the scratch issue, then rerun detent doctor.",
+		}
+	}
+	if err := c.connector.updateIssueStatusLabel(ctx, probe.Ref, issue, statusName); err != nil {
+		return ReadinessCheck{
+			Name:   "GitHub status label update",
+			Status: ReadinessFail,
+			Detail: "token cannot update status labels: " + err.Error(),
+			Hint:   "Grant Issues repository write permission for the probe issue repository.",
+		}
+	}
+	return ReadinessCheck{
+		Name:   "GitHub status label update",
+		Status: ReadinessOK,
+		Detail: "reapplied existing status label on the write probe issue",
 	}
 }
 
@@ -1132,7 +1229,7 @@ func missingInstallationPermissions(details InstallationTokenDetails, cfg Readin
 		missing = append(missing, "Issue Fields: read")
 	}
 	issueLevel := "read"
-	if cfg.RequireIssueFieldStatusWrite || cfg.RequireIssueComments || cfg.RequireAssigneeWrite || cfg.RequireIssueClose {
+	if cfg.RequireIssueFieldStatusWrite || cfg.RequireLabelStatusWrite || cfg.RequireIssueComments || cfg.RequireAssigneeWrite || cfg.RequireIssueClose {
 		issueLevel = "write"
 	}
 	if !permissionAllows(details.Permissions["issues"], issueLevel) {

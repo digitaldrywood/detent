@@ -302,6 +302,44 @@ Prompt
 	}
 }
 
+func TestParseWorkflowGitHubLabelTracker(t *testing.T) {
+	t.Parallel()
+
+	raw := []byte(`---
+tracker:
+  kind: github
+  api_key: $GITHUB_TOKEN
+  github_status_source: label
+  repository: digitaldrywood/detent
+  status_label_prefix: "detent:"
+  active_states:
+    - Todo
+---
+Prompt
+`)
+
+	workflow, err := ParseWorkflow(raw)
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	cfg := workflow.Config
+	if err := cfg.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+	if cfg.Tracker.GitHubStatusSource != GitHubStatusSourceLabel {
+		t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, GitHubStatusSourceLabel)
+	}
+	if cfg.Tracker.Repository != "digitaldrywood/detent" {
+		t.Fatalf("Repository = %q, want digitaldrywood/detent", cfg.Tracker.Repository)
+	}
+	if cfg.Tracker.StatusLabelPrefix != "detent:" {
+		t.Fatalf("StatusLabelPrefix = %q, want detent:", cfg.Tracker.StatusLabelPrefix)
+	}
+	if cfg.Tracker.ProjectSlug != "" {
+		t.Fatalf("ProjectSlug = %q, want empty for label source", cfg.Tracker.ProjectSlug)
+	}
+}
+
 func TestValidateGitHubProjectV2StillRequiresProjectSlug(t *testing.T) {
 	t.Parallel()
 
@@ -332,6 +370,35 @@ func TestValidateGitHubIssueFieldRequiresRepository(t *testing.T) {
 	}
 	if err != nil && strings.Contains(err.Error(), "tracker.project_slug") {
 		t.Fatalf("Validate() error = %v, want no project_slug requirement in issue_field mode", err)
+	}
+}
+
+func TestValidateGitHubLabelRequiresRepository(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Tracker.Kind = TrackerGitHub
+	cfg.Tracker.APIKey = "token"
+	cfg.Tracker.GitHubStatusSource = GitHubStatusSourceLabel
+	cfg.Tracker.ProjectSlug = ""
+	cfg.Tracker.Repository = ""
+
+	err := cfg.Validate()
+	if err == nil || !strings.Contains(err.Error(), "tracker.repository") {
+		t.Fatalf("Validate() error = %v, want repository requirement", err)
+	}
+	if err != nil && strings.Contains(err.Error(), "tracker.project_slug") {
+		t.Fatalf("Validate() error = %v, want no project_slug requirement in label mode", err)
+	}
+}
+
+func TestNormalizeGitHubLabelStatusSourceAliases(t *testing.T) {
+	t.Parallel()
+
+	for _, value := range []string{"label", "labels", "issue_label", "issue_labels"} {
+		if got := normalizeGitHubStatusSource(value); got != GitHubStatusSourceLabel {
+			t.Fatalf("normalizeGitHubStatusSource(%q) = %q, want %q", value, got, GitHubStatusSourceLabel)
+		}
 	}
 }
 

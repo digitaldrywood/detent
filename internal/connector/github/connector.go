@@ -22,9 +22,11 @@ query DetentGitHubAuthenticate($projectId: ID!) {
 }`
 
 const (
-	GitHubStatusSourceProjectV2   = "project_v2"
-	GitHubStatusSourceIssueField  = "issue_field"
-	defaultGitHubIssueStatusField = "Status"
+	GitHubStatusSourceProjectV2    = "project_v2"
+	GitHubStatusSourceIssueField   = "issue_field"
+	GitHubStatusSourceLabel        = "label"
+	defaultGitHubIssueStatusField  = "Status"
+	defaultGitHubStatusLabelPrefix = "detent:"
 )
 
 const (
@@ -58,6 +60,7 @@ type Config struct {
 	ProjectSlug             string
 	Repository              string
 	StatusField             string
+	StatusLabelPrefix       string
 	ActiveStates            []string
 	ObservedStates          []string
 	TerminalStates          []string
@@ -73,22 +76,23 @@ type Config struct {
 }
 
 type Connector struct {
-	client         *Client
-	statusSource   string
-	projectID      string
-	repository     pullRequestRepo
-	statusField    string
-	activeStates   []string
-	observedStates []string
-	terminalStates []string
-	stateMap       map[string]string
-	priorityMap    map[string]*int
-	statusCache    *statusCache
-	issueFields    *issueFieldCache
-	projectCache   *projectCache
-	mu             sync.RWMutex
-	writeMu        sync.Mutex
-	instanceLogin  string
+	client            *Client
+	statusSource      string
+	projectID         string
+	repository        pullRequestRepo
+	statusField       string
+	statusLabelPrefix string
+	activeStates      []string
+	observedStates    []string
+	terminalStates    []string
+	stateMap          map[string]string
+	priorityMap       map[string]*int
+	statusCache       *statusCache
+	issueFields       *issueFieldCache
+	projectCache      *projectCache
+	mu                sync.RWMutex
+	writeMu           sync.Mutex
+	instanceLogin     string
 }
 
 func NewConnector(cfg Config) (*Connector, error) {
@@ -127,22 +131,27 @@ func NewConnector(cfg Config) (*Connector, error) {
 	if statusField == "" {
 		statusField = defaultGitHubIssueStatusField
 	}
+	statusLabelPrefix := strings.TrimSpace(cfg.StatusLabelPrefix)
+	if statusLabelPrefix == "" {
+		statusLabelPrefix = defaultGitHubStatusLabelPrefix
+	}
 	repository, _ := pullRequestRepoFromName(cfg.Repository)
 
 	return &Connector{
-		client:         client,
-		statusSource:   normalizeGitHubStatusSource(cfg.GitHubStatusSource),
-		projectID:      strings.TrimSpace(cfg.ProjectSlug),
-		repository:     repository,
-		statusField:    statusField,
-		activeStates:   normalizeStateList(cfg.ActiveStates, []string{"Todo", "In Progress"}),
-		observedStates: normalizeStateList(cfg.ObservedStates, nil),
-		terminalStates: normalizeStateList(cfg.TerminalStates, []string{"Done", "Cancelled", "Canceled", "Closed"}),
-		stateMap:       cloneStateMap(cfg.StateMap),
-		priorityMap:    clonePriorityMapWithDefault(cfg.PriorityMap),
-		statusCache:    newStatusCache(githubCacheTTL, cfg.Now),
-		issueFields:    newIssueFieldCache(githubCacheTTL, cfg.Now),
-		projectCache:   newProjectCache(githubCacheTTL, cfg.Now),
+		client:            client,
+		statusSource:      normalizeGitHubStatusSource(cfg.GitHubStatusSource),
+		projectID:         strings.TrimSpace(cfg.ProjectSlug),
+		repository:        repository,
+		statusField:       statusField,
+		statusLabelPrefix: statusLabelPrefix,
+		activeStates:      normalizeStateList(cfg.ActiveStates, []string{"Todo", "In Progress"}),
+		observedStates:    normalizeStateList(cfg.ObservedStates, nil),
+		terminalStates:    normalizeStateList(cfg.TerminalStates, []string{"Done", "Cancelled", "Canceled", "Closed"}),
+		stateMap:          cloneStateMap(cfg.StateMap),
+		priorityMap:       clonePriorityMapWithDefault(cfg.PriorityMap),
+		statusCache:       newStatusCache(githubCacheTTL, cfg.Now),
+		issueFields:       newIssueFieldCache(githubCacheTTL, cfg.Now),
+		projectCache:      newProjectCache(githubCacheTTL, cfg.Now),
 	}, nil
 }
 
@@ -177,7 +186,7 @@ func (c *Connector) Close() error {
 }
 
 func (c *Connector) Authenticate(ctx context.Context) error {
-	if c.usesIssueFieldStatus() {
+	if c.usesIssueFieldStatus() || c.usesLabelStatus() {
 		return c.authenticateIssueField(ctx)
 	}
 	if c.projectID == "" {
@@ -216,6 +225,8 @@ func normalizeGitHubStatusSource(value string) string {
 		return GitHubStatusSourceProjectV2
 	case GitHubStatusSourceIssueField, "issuefield", "issues":
 		return GitHubStatusSourceIssueField
+	case GitHubStatusSourceLabel, "labels", "issue_label", "issue_labels":
+		return GitHubStatusSourceLabel
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
 	}
@@ -223,6 +234,10 @@ func normalizeGitHubStatusSource(value string) string {
 
 func (c *Connector) usesIssueFieldStatus() bool {
 	return c != nil && c.statusSource == GitHubStatusSourceIssueField
+}
+
+func (c *Connector) usesLabelStatus() bool {
+	return c != nil && c.statusSource == GitHubStatusSourceLabel
 }
 
 func (c *Connector) InstanceLogin() string {
