@@ -232,8 +232,7 @@ irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | i
 The PowerShell installer downloads the Windows release archive, verifies the
 SHA-256 checksum, installs `detent.exe` to `%LOCALAPPDATA%\detent\bin`, and
 adds that directory to the user PATH. Set `DETENT_INSTALL_DIR` to override the
-install directory. Winget and Scoop installs also expose `detent.exe` on PATH;
-verify any Windows install with `detent --version`.
+install directory. Winget and Scoop installs also expose `detent.exe` on PATH; verify any Windows install with `detent --version`.
 
 Install the latest Linux release with the shell installer:
 
