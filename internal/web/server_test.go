@@ -312,6 +312,161 @@ func TestKanbanMoveRoutesProjectV2AndIssueFieldUpdates(t *testing.T) {
 	}
 }
 
+func TestKanbanMoveRejectsDefaultRestrictedActiveTransitions(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:         "I_progress",
+					Identifier: "digitaldrywood/detent#1",
+					ProjectID:  "detent",
+					Title:      "Active card",
+					State:      "In Progress",
+				},
+			},
+			{
+				Issue: telemetry.Issue{
+					ID:         "I_rework",
+					Identifier: "digitaldrywood/detent#2",
+					ProjectID:  "detent",
+					Title:      "Rework card",
+					State:      "Rework",
+				},
+			},
+			{
+				Issue: telemetry.Issue{
+					ID:         "I_merging",
+					Identifier: "digitaldrywood/detent#3",
+					ProjectID:  "detent",
+					Title:      "Merging card",
+					State:      "Merging",
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rejections := []struct {
+		name    string
+		issueID string
+		source  string
+		target  string
+	}{
+		{
+			name:    "in progress to human review",
+			issueID: "I_progress",
+			source:  "In Progress",
+			target:  "Human Review",
+		},
+		{
+			name:    "rework to done",
+			issueID: "I_rework",
+			source:  "Rework",
+			target:  "Done",
+		},
+		{
+			name:    "merging to done",
+			issueID: "I_merging",
+			source:  "Merging",
+			target:  "Done",
+		},
+	}
+	for _, tt := range rejections {
+		t.Run(tt.name, func(t *testing.T) {
+			form := url.Values{
+				"project_id":    {"detent"},
+				"issue_id":      {tt.issueID},
+				"current_state": {tt.source},
+				"target_state":  {tt.target},
+			}
+			rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+			if rec.Code != http.StatusUnprocessableEntity {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusUnprocessableEntity, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "transition policy") {
+				t.Fatalf("body missing transition policy feedback: %s", rec.Body.String())
+			}
+		})
+	}
+	if got := actionConnector.stateUpdates(); len(got) != 0 {
+		t.Fatalf("state updates = %#v, want none before allowed move", got)
+	}
+
+	form := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_progress"},
+		"current_state": {"In Progress"},
+		"target_state":  {"Blocked"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_progress", state: "Blocked"}}; !equalStateUpdates(got, want) {
+		t.Fatalf("state updates = %#v, want %#v", got, want)
+	}
+}
+
+func TestKanbanMoveAllowsConfiguredTransitionOverrides(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"In Progress": {"Human Review"},
+		},
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Running: []telemetry.Running{{
+			Issue: telemetry.Issue{
+				ID:         "I_kw1",
+				Identifier: "digitaldrywood/detent#1",
+				ProjectID:  "detent",
+				Title:      "Override card",
+				State:      "In Progress",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw1"},
+		"current_state": {"In Progress"},
+		"target_state":  {"Human Review"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw1", state: "Human Review"}}; !equalStateUpdates(got, want) {
+		t.Fatalf("state updates = %#v, want %#v", got, want)
+	}
+}
+
 func TestKanbanActionsRouteCommentsToIssuesAndPullRequests(t *testing.T) {
 	t.Parallel()
 

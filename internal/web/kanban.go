@@ -98,12 +98,18 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	if !kanbanStateAllowed(target.workflow, req.targetState) {
 		return kanbanFeedback(c, http.StatusBadRequest, "Target state is not configured for this board.")
 	}
+	currentState := req.currentState
 	if ok, current := s.kanbanCardFresh(req.projectID, req.issueID, req.currentState); !ok {
 		message := "Card is stale; refresh and retry."
 		if current != "" {
 			message = fmt.Sprintf("Card is stale; current state is %s.", current)
 		}
 		return kanbanFeedback(c, http.StatusConflict, message)
+	} else if strings.TrimSpace(current) != "" {
+		currentState = current
+	}
+	if !target.workflow.KanbanTransitionAllowed(currentState, req.targetState) {
+		return kanbanFeedback(c, http.StatusUnprocessableEntity, fmt.Sprintf("Move from %s to %s is not allowed by the Kanban transition policy.", currentState, req.targetState))
 	}
 
 	err := s.kanbanMutations.withLock(target.key, func() error {
@@ -253,10 +259,12 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 	if strings.TrimSpace(projectID) == "" {
 		mode = workflowconfig.KanbanModeReadOnly
 	}
+	states := kanbanStateNames(target.workflow, snapshot)
 	return templates.KanbanData{
-		Mode:      mode,
-		ProjectID: strings.TrimSpace(projectID),
-		States:    kanbanStateNames(target.workflow, snapshot),
+		Mode:               mode,
+		ProjectID:          strings.TrimSpace(projectID),
+		States:             states,
+		AllowedTransitions: kanbanAllowedTransitions(target.workflow, states),
 	}
 }
 
@@ -366,13 +374,23 @@ func kanbanStateNames(cfg workflowconfig.Config, snapshot telemetry.Snapshot) []
 			states = append(states, value)
 		}
 	}
-	add(cfg.Tracker.ObservedStates...)
-	add(cfg.Tracker.ActiveStates...)
-	add(cfg.Tracker.TerminalStates...)
+	add(cfg.KanbanStateNames()...)
 	for _, issue := range snapshotKanbanIssues(snapshot) {
 		add(issue.State)
 	}
 	return states
+}
+
+func kanbanAllowedTransitions(cfg workflowconfig.Config, states []string) map[string][]string {
+	out := make(map[string][]string, len(states))
+	for _, state := range states {
+		state = strings.TrimSpace(state)
+		if state == "" {
+			continue
+		}
+		out[state] = cfg.KanbanAllowedTransitionTargets(state)
+	}
+	return out
 }
 
 func snapshotKanbanIssues(snapshot telemetry.Snapshot) []telemetry.Issue {

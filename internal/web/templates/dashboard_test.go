@@ -795,6 +795,58 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 	}
 }
 
+func TestDashboardKanbanIntegrationFiltersMoveTargets(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress", "Blocked", "Human Review", "Cancelled"},
+			AllowedTransitions: map[string][]string{
+				"In Progress": {"Blocked", "Cancelled"},
+			},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			Pipeline: []telemetry.Issue{
+				{
+					ID:         "I_kw1",
+					Identifier: "digitaldrywood/detent#1",
+					ProjectID:  "detent",
+					Title:      "Active issue",
+					State:      "In Progress",
+				},
+			},
+		},
+	})
+
+	section := dashboardSection(t, html, `aria-label="Project Kanban"`, `aria-label="Pull request pipeline"`)
+	for _, want := range []string{
+		`data-kanban-allowed-targets="blocked cancelled"`,
+		`data-kanban-drop-key="blocked"`,
+		`data-kanban-drop-key="cancelled"`,
+		`value="Blocked"`,
+		`value="Cancelled"`,
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("integration dashboard missing allowed move marker %q:\n%s", want, section)
+		}
+	}
+
+	form := dashboardSection(t, section, `data-kanban-move-form`, `</form>`)
+	if strings.Contains(form, `value="Human Review"`) {
+		t.Fatalf("move form rendered disallowed target:\n%s", form)
+	}
+	if strings.Contains(form, `<option value="In Progress"`) {
+		t.Fatalf("move form rendered current state as target:\n%s", form)
+	}
+}
+
 func TestDashboardPreservesSnapshotScrollContainersAcrossSSEMorph(t *testing.T) {
 	t.Parallel()
 
