@@ -686,6 +686,21 @@ func projectDashboardPath(projectID string) string {
 	return "/projects/" + url.PathEscape(projectID)
 }
 
+func projectKanbanPath(projectID string) string {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return "/"
+	}
+	return "/projects/" + url.PathEscape(projectID) + "/kanban"
+}
+
+func projectKanbanEventsPath(data DashboardShellData) string {
+	if id := strings.TrimSpace(data.ProjectID); id != "" {
+		return "/events?project=" + url.QueryEscape(id) + "&view=kanban"
+	}
+	return "/events?view=kanban"
+}
+
 func projectSmallMultiplesGridClass(cards []projectSmallMultipleCard) string {
 	if len(cards) <= 1 {
 		return "mt-4 grid min-w-0 gap-2"
@@ -1359,12 +1374,12 @@ func projectKanbanLaneID(state string) string {
 
 func projectKanbanCardForIssue(issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
 	card := projectKanbanCard{
-		IssueNumber:      issueNumber(issue),
+		IssueNumber:      projectKanbanIssueNumber(issue),
 		IssueID:          strings.TrimSpace(issue.ID),
 		Identifier:       issueIdentifier(issue),
 		ProjectID:        strings.TrimSpace(issue.ProjectID),
 		Title:            issueTitle(issue),
-		URL:              prPipelineURL(issue),
+		URL:              strings.TrimSpace(issue.URL),
 		PullRequestLabel: projectKanbanPullRequestLabel(issue),
 		TimeInStage:      prPipelineAge(stageAt, now),
 		TimeInStageTitle: prPipelineAgeTitle(state, stageAt, now),
@@ -1392,6 +1407,15 @@ func projectKanbanCardForIssue(issue telemetry.Issue, state string, stageAt time
 		card.DisabledText = "Cannot move PR-only card"
 	}
 	return card
+}
+
+func projectKanbanIssueNumber(issue telemetry.Issue) string {
+	identifier := issueIdentifier(issue)
+	index := strings.LastIndex(identifier, "#")
+	if index >= 0 && index < len(identifier)-1 {
+		return identifier[index:]
+	}
+	return identifier
 }
 
 func kanbanCardFromIssue(issue telemetry.Issue) kanbanCard {

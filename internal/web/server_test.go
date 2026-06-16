@@ -1494,10 +1494,205 @@ func TestProjectDashboardRouteRendersConfiguredKanbanOrder(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanRouteRendersOnlyLiveBoard(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 16, 14, 0, 0, 0, time.UTC)
+	stageAt := now.Add(-12 * time.Minute)
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, &kanbanActionConnector{name: "github"})
+	mustSetWebProject(t, deps.Registry, "pyroapex", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Counts:  telemetry.Counts{Queue: 1},
+			},
+			{
+				Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"},
+				Counts:  telemetry.Counts{Queue: 1},
+			},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:             "I_kw490",
+				Identifier:     "digitaldrywood/detent#490",
+				URL:            "https://github.com/digitaldrywood/detent/issues/490",
+				ProjectID:      "detent",
+				Title:          "Add a live Kanban-only board view",
+				State:          "Todo",
+				StageUpdatedAt: &stageAt,
+				PullRequest: &telemetry.PullRequest{
+					Number:           701,
+					URL:              "https://github.com/digitaldrywood/detent/pull/701",
+					CIStatus:         "pass",
+					CodexReviewState: "approved",
+				},
+			},
+			{
+				ID:         "I_pyro12",
+				Identifier: "digitaldrywood/pyroapex#12",
+				URL:        "https://github.com/digitaldrywood/pyroapex/issues/12",
+				ProjectID:  "pyroapex",
+				Title:      "Pyro Apex migration",
+				State:      "Todo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+	for _, want := range []string{
+		`aria-label="Project Kanban"`,
+		`sse-connect="/events?project=detent&amp;view=kanban"`,
+		`sse-swap="snapshot"`,
+		`hx-swap="morph:innerHTML"`,
+		`href="/projects/detent"`,
+		`href="https://github.com/digitaldrywood/detent/issues/490"`,
+		`href="https://github.com/digitaldrywood/detent/pull/701"`,
+		`data-kanban-action="move"`,
+		`id="project-kanban-show-empty"`,
+		"Add a live Kanban-only board view",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("Kanban page missing %q:\n%s", want, body)
+		}
+	}
+	for _, forbidden := range []string{
+		`aria-label="Dashboard health"`,
+		`aria-label="Pull request pipeline"`,
+		`data-detent-charts`,
+		`data-tui-sidebar-layout`,
+		"digitaldrywood/pyroapex#12",
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("Kanban page rendered forbidden %q:\n%s", forbidden, body)
+		}
+	}
+}
+
+func TestProjectKanbanRouteHidesMutationControlsInReadOnlyMode(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 16, 14, 30, 0, 0, time.UTC)
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeReadOnly,
+	}, &kanbanActionConnector{name: "github"})
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "I_kw490",
+				Identifier: "digitaldrywood/detent#490",
+				URL:        "https://github.com/digitaldrywood/detent/issues/490",
+				ProjectID:  "detent",
+				Title:      "Read-only board card",
+				State:      "Todo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
+	if !strings.Contains(body, "Read-only") {
+		t.Fatalf("Kanban page missing read-only mode label:\n%s", body)
+	}
+	for _, forbidden := range []string{
+		"/api/v1/kanban/",
+		"data-kanban-action",
+		`id="kanban-feedback"`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("read-only Kanban page rendered mutation UI %q:\n%s", forbidden, body)
+		}
+	}
+}
+
+func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 16, 15, 0, 0, 0, time.UTC)
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeReadOnly,
+	}, &kanbanActionConnector{name: "github"})
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	addr := startWebServer(t, server)
+	conn, body, reader := openRawEventStream(t, addr, "/events?project=detent&view=kanban")
+	defer conn.Close()
+	defer body.Close()
+
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "I_kw490",
+				Identifier: "digitaldrywood/detent#490",
+				URL:        "https://github.com/digitaldrywood/detent/issues/490",
+				ProjectID:  "detent",
+				Title:      "SSE board card",
+				State:      "Todo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	event := readRawSSEEvent(t, conn, reader)
+	if event.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", event.name)
+	}
+	for _, want := range []string{
+		`aria-label="Project Kanban"`,
+		`data-project-kanban-card="digitaldrywood/detent#490"`,
+		"SSE board card",
+	} {
+		if !strings.Contains(event.data, want) {
+			t.Fatalf("Kanban snapshot event missing %q:\n%s", want, event.data)
+		}
+	}
+	for _, forbidden := range []string{
+		`aria-label="Dashboard health"`,
+		`aria-label="Pull request pipeline"`,
+		"Running issues",
+	} {
+		if strings.Contains(event.data, forbidden) {
+			t.Fatalf("Kanban snapshot event rendered forbidden %q:\n%s", forbidden, event.data)
+		}
+	}
+}
+
 func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 	t.Parallel()
 
-	projectID := "digitaldrywood/detent"
+	projectID := "digitaldrywood/kanban"
+	escapedProjectID := "digitaldrywood%2Fkanban"
 	now := time.Date(2026, 6, 12, 15, 30, 0, 0, time.UTC)
 	deps := testDeps(t)
 	mustSetWebProject(t, deps.Registry, projectID, false)
@@ -1511,7 +1706,7 @@ func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 			},
 		},
 		Running: []telemetry.Running{
-			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "digitaldrywood/detent#377", ProjectID: projectID}},
+			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "digitaldrywood/kanban#377", ProjectID: projectID}},
 		},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
@@ -1523,27 +1718,38 @@ func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/projects/digitaldrywood%2Fdetent", nil)
+	req := httptest.NewRequest(http.MethodGet, "/projects/"+escapedProjectID, nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	for _, want := range []string{
-		`href="/projects/digitaldrywood%2Fdetent"`,
-		`sse-connect="/events?project=digitaldrywood%2Fdetent"`,
-		`data-chart-endpoint="/api/v1/projects/digitaldrywood%2Fdetent/timeseries"`,
-		"digitaldrywood/detent#377",
+		`href="/projects/digitaldrywood%2Fkanban"`,
+		`sse-connect="/events?project=digitaldrywood%2Fkanban"`,
+		`data-chart-endpoint="/api/v1/projects/digitaldrywood%2Fkanban/timeseries"`,
+		"digitaldrywood/kanban#377",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("project dashboard missing %q:\n%s", want, rec.Body.String())
 		}
 	}
 
-	state := requestJSON(t, server, http.MethodGet, "/api/v1/projects/digitaldrywood%2Fdetent/state", http.StatusOK)
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/"+escapedProjectID+"/kanban", http.StatusOK)
+	for _, want := range []string{
+		`href="/projects/digitaldrywood%2Fkanban"`,
+		`sse-connect="/events?project=digitaldrywood%2Fkanban&amp;view=kanban"`,
+		"digitaldrywood/kanban#377",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("project Kanban route missing %q:\n%s", want, body)
+		}
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/projects/"+escapedProjectID+"/state", http.StatusOK)
 	if got := nestedString(t, state, "counts", "running"); got != "1" {
 		t.Fatalf("counts.running = %s, want 1", got)
 	}
-	series := requestJSON(t, server, http.MethodGet, "/api/v1/projects/digitaldrywood%2Fdetent/timeseries", http.StatusOK)
+	series := requestJSON(t, server, http.MethodGet, "/api/v1/projects/"+escapedProjectID+"/timeseries", http.StatusOK)
 	if series["scope"] != "project" || series["project_id"] != projectID {
 		t.Fatalf("series scope/project_id = %#v/%#v; payload = %#v", series["scope"], series["project_id"], series)
 	}
