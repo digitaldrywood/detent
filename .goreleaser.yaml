@@ -60,6 +60,37 @@ brews:
     test: |
       system "#{bin}/detent", "--version"
 
+nfpms:
+  - id: detent-linux-packages
+    ids:
+      - detent
+    package_name: detent
+    file_name_template: "{{ .ProjectName }}_{{ .Version }}_{{ .Os }}_{{ .Arch }}{{ .ConventionalExtension }}"
+    vendor: Digital Drywood
+    homepage: https://github.com/digitaldrywood/detent
+    maintainer: Cory LaNou <cory@lanou.com>
+    description: Agent orchestrator for tracker-backed work queues
+    license: MIT
+    bindir: /usr/bin
+    section: utils
+    priority: optional
+    release: "1"
+    mtime: "{{ .CommitDate }}"
+    formats:
+      - deb
+      - rpm
+    contents:
+      - src: LICENSE
+        dst: /usr/share/doc/detent/copyright
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+      - src: README.md
+        dst: /usr/share/doc/detent/README.md
+        file_info:
+          mode: 0644
+          mtime: "{{ .CommitDate }}"
+
 checksum:
   name_template: "{{ .ProjectName }}_{{ .Version }}_checksums.txt"
   algorithm: sha256

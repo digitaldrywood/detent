@@ -240,6 +240,29 @@ installer:
 ./install.sh
 ```
 
+Use a native Linux package when you want apt, dnf, rpm, or another system
+package workflow to own the binary, removal, and upgrades:
+
+```sh
+DETENT_VERSION=0.5.2 # release version without leading v
+DETENT_ARCH=amd64 # or arm64
+curl -LO "https://github.com/digitaldrywood/detent/releases/download/v${DETENT_VERSION}/detent_${DETENT_VERSION}_linux_${DETENT_ARCH}.deb"
+sudo apt install "./detent_${DETENT_VERSION}_linux_${DETENT_ARCH}.deb"
+detent --version
+```
+
+```sh
+DETENT_VERSION=0.5.2 # release version without leading v
+DETENT_ARCH=amd64 # or arm64
+curl -LO "https://github.com/digitaldrywood/detent/releases/download/v${DETENT_VERSION}/detent_${DETENT_VERSION}_linux_${DETENT_ARCH}.rpm"
+sudo rpm -Uvh "./detent_${DETENT_VERSION}_linux_${DETENT_ARCH}.rpm"
+detent --version
+```
+
+Use the shell installer for a user-local install without sudo, for Linux
+distributions that do not use `.deb` or `.rpm`, or for bootstrap scripts that
+should fall back to `go install` when a release asset is unavailable.
+
 Fallback options:
 
 Homebrew on macOS or Linux:
@@ -265,7 +288,11 @@ Release-installer installs can update with `detent update`; use
 `detent update --format json` for machine-readable status. The legacy
 `detent update --json` flag remains supported. On Windows, replacement is
 staged and completes after the running `detent.exe` exits. Homebrew installs
-delegate to `brew upgrade digitaldrywood/tap/detent`. Go-installed binaries offer an
+delegate to `brew upgrade digitaldrywood/tap/detent`. Native Linux packages are
+owned by the system package manager; install a newer `.deb` with `sudo apt
+install ./detent_<version>_linux_<arch>.deb`, or a newer `.rpm` with `sudo rpm
+-Uvh ./detent_<version>_linux_<arch>.rpm` or the distro wrapper you normally
+use. Go-installed binaries offer an
 interactive choice: run
 `go install github.com/digitaldrywood/detent/cmd/detent@latest`, switch to the
 checksum-verified release binary, or abort. `detent update --yes` runs the Go
