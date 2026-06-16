@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
@@ -60,6 +61,7 @@ func handleShutdownSignal(controller shutdownInterruptRequester, cancelRoot cont
 	if controller != nil {
 		request, handled = controller.RequestInterruptKind()
 	}
+	slog.Default().Debug("shutdown interrupt request", "operation", "shutdown_interrupt_request", "source", "signal", "request", request.String(), "handled", handled)
 	writeSignalShutdownNotice(noticeOut, request)
 	if request == cli.ShutdownRequestForce {
 		hardExitSignal(hardExit)
