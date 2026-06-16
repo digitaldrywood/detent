@@ -788,6 +788,68 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanCompactChipsSummarizeSecondaryMetadata(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		card projectKanbanCard
+		want []string
+	}{
+		{
+			name: "issue-only",
+			card: projectKanbanCard{
+				TimeInStage: "5m 0s",
+			},
+			want: []string{"5m 0s"},
+		},
+		{
+			name: "pr-linked",
+			card: projectKanbanCard{
+				HasPullRequest:   true,
+				CIStatus:         "pass",
+				CodexReviewState: "clean",
+				TimeInStage:      "4m 0s",
+			},
+			want: []string{"4m 0s", "CI pass", "Codex clean"},
+		},
+		{
+			name: "blocked",
+			card: projectKanbanCard{
+				TimeInStage: "3m 0s",
+				Blockers:    []string{"digitaldrywood/detent#415 Todo"},
+			},
+			want: []string{"3m 0s", "1 blocker"},
+		},
+		{
+			name: "review",
+			card: projectKanbanCard{
+				HasPullRequest:   true,
+				CIStatus:         "pass",
+				CodexReviewState: "P2",
+				TimeInStage:      "2m 0s",
+				Labels:           []string{"enhancement", "ui"},
+				Assignees:        []string{"release-captain"},
+			},
+			want: []string{"2m 0s", "CI pass", "Codex P2", "1 assignee", "2 labels"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := projectKanbanCompactChipLabels(projectKanbanCompactChips(tt.card))
+			if len(got) != len(tt.want) {
+				t.Fatalf("compact chips len = %d, want %d; got %#v", len(got), len(tt.want), got)
+			}
+			for i := range tt.want {
+				if got[i] != tt.want[i] {
+					t.Fatalf("compact chip %d = %q, want %q; got %#v", i, got[i], tt.want[i], got)
+				}
+			}
+		})
+	}
+}
+
 func TestProjectKanbanBoardDoesNotTreatCompletedSessionsAsCurrentDone(t *testing.T) {
 	t.Parallel()
 
@@ -1121,6 +1183,14 @@ func collectKanbanCards(lanes []projectKanbanLane) []kanbanCardSnapshot {
 				Metadata:         card.PullRequestLabel,
 			})
 		}
+	}
+	return out
+}
+
+func projectKanbanCompactChipLabels(chips []projectKanbanCompactChip) []string {
+	out := make([]string, 0, len(chips))
+	for _, chip := range chips {
+		out = append(out, chip.Label)
 	}
 	return out
 }

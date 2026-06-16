@@ -722,6 +722,147 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 16, 13, 0, 0, 0, time.UTC)
+	issueOnlyAt := now.Add(-5 * time.Minute)
+	prLinkedAt := now.Add(-4 * time.Minute)
+	blockedAt := now.Add(-3 * time.Minute)
+	reviewAt := now.Add(-2 * time.Minute)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo", "Blocked", "Human Review"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:             "issue-only",
+					Identifier:     "digitaldrywood/detent#500",
+					ProjectID:      "detent",
+					URL:            "https://github.com/digitaldrywood/detent/issues/500",
+					Title:          "Issue-only compact card",
+					State:          "Todo",
+					StageUpdatedAt: &issueOnlyAt,
+				},
+				{
+					ID:             "pr-linked",
+					Identifier:     "digitaldrywood/detent#501",
+					ProjectID:      "detent",
+					URL:            "https://github.com/digitaldrywood/detent/issues/501",
+					Title:          "PR-linked compact card",
+					State:          "Todo",
+					StageUpdatedAt: &prLinkedAt,
+					PullRequest: &telemetry.PullRequest{
+						Number:           601,
+						URL:              "https://github.com/digitaldrywood/detent/pull/601",
+						CIStatus:         "success",
+						CodexReviewState: "clean",
+					},
+				},
+			},
+			Pipeline: []telemetry.Issue{
+				{
+					ID:             "review",
+					Identifier:     "digitaldrywood/detent#503",
+					ProjectID:      "detent",
+					URL:            "https://github.com/digitaldrywood/detent/issues/503",
+					Title:          "Review compact card",
+					State:          "Human Review",
+					Labels:         []string{"enhancement", "ui"},
+					Assignees:      []string{"release-captain"},
+					StageUpdatedAt: &reviewAt,
+					PullRequest: &telemetry.PullRequest{
+						Number:           603,
+						URL:              "https://github.com/digitaldrywood/detent/pull/603",
+						CIStatus:         "success",
+						CodexReviewState: "P2",
+					},
+				},
+			},
+			Blocked: []telemetry.Blocked{
+				{
+					Issue: telemetry.Issue{
+						ID:             "blocked",
+						Identifier:     "digitaldrywood/detent#502",
+						ProjectID:      "detent",
+						URL:            "https://github.com/digitaldrywood/detent/issues/502",
+						Title:          "Blocked compact card",
+						State:          "Blocked",
+						BlockedBy:      []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#415", State: "Todo"}},
+						StageUpdatedAt: &blockedAt,
+					},
+					BlockedAt: &blockedAt,
+				},
+			},
+		},
+	})
+
+	section := dashboardSection(t, html, `aria-label="Project Kanban"`, `aria-label="Pull request pipeline"`)
+	for _, want := range []string{
+		"project-kanban-card-compact",
+		`data-kanban-card-details`,
+		`data-kanban-card-expanded`,
+		`aria-label="Kanban card #500 Issue-only compact card"`,
+		`aria-label="Kanban card #501 PR-linked compact card"`,
+		`aria-label="Kanban card #502 Blocked compact card"`,
+		`aria-label="Kanban card #503 Review compact card"`,
+		`aria-label="Show details for #500"`,
+		`href="https://github.com/digitaldrywood/detent/issues/501"`,
+		`href="https://github.com/digitaldrywood/detent/pull/601"`,
+		"#500",
+		"#501",
+		"#502",
+		"#503",
+		"PR #601",
+		"PR #603",
+		"CI pass",
+		"Codex clean",
+		"Codex P2",
+		"1 blocker",
+		"1 assignee",
+		"2 labels",
+		"digitaldrywood/detent#415 Todo",
+		"release-captain",
+		"enhancement",
+		"ui",
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("compact project kanban missing %q:\n%s", want, section)
+		}
+	}
+
+	for _, title := range []string{
+		"Issue-only compact card",
+		"PR-linked compact card",
+		"Blocked compact card",
+		"Review compact card",
+	} {
+		card := compactKanbanCardSection(t, section, title)
+		firstDetails := strings.Index(card, `data-kanban-card-details`)
+		if firstDetails < 0 {
+			t.Fatalf("card %q missing details disclosure:\n%s", title, card)
+		}
+		defaultView := card[:firstDetails]
+		for _, forbidden := range []string{
+			`<textarea`,
+			`name="target_state"`,
+			`>Labels<`,
+			`>Assignees<`,
+			`>Blockers<`,
+		} {
+			if strings.Contains(defaultView, forbidden) {
+				t.Fatalf("card %q rendered expanded metadata by default marker %q:\n%s", title, forbidden, card)
+			}
+		}
+	}
+}
+
 func TestDashboardKanbanIntegrationControls(t *testing.T) {
 	t.Parallel()
 
@@ -1861,4 +2002,22 @@ func dashboardSection(t *testing.T, html string, start string, end string) strin
 		t.Fatalf("section end %q after %q missing:\n%s", end, start, html[startIndex:])
 	}
 	return html[startIndex : startIndex+endIndex]
+}
+
+func compactKanbanCardSection(t *testing.T, html string, title string) string {
+	t.Helper()
+
+	titleIndex := strings.Index(html, title)
+	if titleIndex < 0 {
+		t.Fatalf("card title %q missing:\n%s", title, html)
+	}
+	startIndex := strings.LastIndex(html[:titleIndex], `<article`)
+	if startIndex < 0 {
+		t.Fatalf("card title %q missing enclosing article:\n%s", title, html)
+	}
+	endIndex := strings.Index(html[titleIndex:], `</article>`)
+	if endIndex < 0 {
+		t.Fatalf("card title %q missing article close:\n%s", title, html[titleIndex:])
+	}
+	return html[startIndex : titleIndex+endIndex+len(`</article>`)]
 }
