@@ -107,7 +107,7 @@ func Settings(data SettingsData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</section><section class=\"rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between\"><div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 7, "</section><section id=\"settings-projects\" class=\"scroll-mt-3 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" tabindex=\"-1\"><div class=\"flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between\"><div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}

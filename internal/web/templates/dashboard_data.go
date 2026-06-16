@@ -435,6 +435,41 @@ func sidebarStaticNavActive(data DashboardShellData, id string) bool {
 	return strings.TrimSpace(data.ActiveNav) == id
 }
 
+func projectSidebarNavVisible(data DashboardShellData) bool {
+	return strings.TrimSpace(data.ProjectID) != ""
+}
+
+func projectSidebarOverviewPath(data DashboardShellData) string {
+	return projectDashboardPath(data.ProjectID)
+}
+
+func projectSidebarSectionPath(data DashboardShellData, sectionID string) string {
+	base := projectSidebarOverviewPath(data)
+	sectionID = strings.Trim(strings.TrimSpace(sectionID), "#")
+	if sectionID == "" {
+		return base
+	}
+	return base + "#" + url.PathEscape(sectionID)
+}
+
+func projectSidebarOverviewActive(data DashboardShellData) bool {
+	activeNav := strings.TrimSpace(data.ActiveNav)
+	return projectSidebarNavVisible(data) && (activeNav == "" || activeNav == "project")
+}
+
+func projectSidebarViewAttributes(data DashboardShellData, view string) templ.Attributes {
+	attrs := templ.Attributes{
+		"data-dashboard-view-nav": true,
+		"data-dashboard-view":     strings.TrimSpace(view),
+	}
+	if strings.TrimSpace(view) == "overview" {
+		if projectSidebarOverviewActive(data) {
+			attrs["aria-current"] = "location"
+		}
+	}
+	return attrs
+}
+
 func staticSidebarNav(activeNav string) string {
 	switch strings.TrimSpace(activeNav) {
 	case "reports":

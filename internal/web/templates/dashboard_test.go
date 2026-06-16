@@ -646,6 +646,39 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 		t.Fatalf("dashboard snapshot must keep morph swap:\n%s", html)
 	}
 
+	for _, want := range []string{
+		`aria-label="Project views"`,
+		`data-dashboard-view="overview"`,
+		`data-dashboard-view="kanban"`,
+		`data-dashboard-view="runs"`,
+		`data-dashboard-view="configuration"`,
+		`data-dashboard-view="diagnostics"`,
+		`href="/projects/detent#project-kanban"`,
+		`href="/projects/detent#running-issues"`,
+		`href="/settings#settings-projects"`,
+		`href="/projects/detent#dashboard-diagnostics"`,
+		`id="project-kanban"`,
+		`id="running-issues"`,
+		`id="dashboard-diagnostics"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("project navigation missing %q:\n%s", want, html)
+		}
+	}
+	overviewIndex := strings.Index(html, `data-dashboard-view="overview"`)
+	if overviewIndex < 0 {
+		t.Fatalf("project overview nav missing:\n%s", html)
+	}
+	overviewNav := html[max(0, overviewIndex-256):min(len(html), overviewIndex+256)]
+	for _, want := range []string{
+		`data-tui-sidebar-active="true"`,
+		`aria-current="location"`,
+	} {
+		if !strings.Contains(overviewNav, want) {
+			t.Fatalf("project overview nav missing active marker %q:\n%s", want, overviewNav)
+		}
+	}
+
 	section := dashboardSection(t, html, `aria-label="Project Kanban"`, `aria-label="Pull request pipeline"`)
 	for _, want := range []string{
 		"Project Kanban",
