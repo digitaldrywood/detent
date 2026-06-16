@@ -118,10 +118,105 @@ jobs:
       - name: Build command
         run: go build ./cmd/detent
 
+  installer-smoke:
+    name: Installer Smoke (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Smoke release installer
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          export DETENT_INSTALL_DIR="$RUNNER_TEMP/detent/bin"
+          export DETENT_STATE_DIR="$RUNNER_TEMP/detent/state"
+          export DETENT_INSTALL_LOCK="$DETENT_STATE_DIR/install.lock"
+          export DETENT_INSTALL_MODE=release
+
+          output="$(sh ./install.sh)"
+          printf '%s\n' "$output"
+          grep -F "Verified checksum for detent_" <<< "$output"
+          grep -F "Installed Detent at $DETENT_INSTALL_DIR/detent" <<< "$output"
+          grep -F "Add $DETENT_INSTALL_DIR to PATH before running detent" <<< "$output"
+
+          test -x "$DETENT_INSTALL_DIR/detent"
+          grep -F "binary=$DETENT_INSTALL_DIR/detent" "$DETENT_INSTALL_LOCK"
+          grep -F "installed_at=" "$DETENT_INSTALL_LOCK"
+
+          "$DETENT_INSTALL_DIR/detent" version
+          "$DETENT_INSTALL_DIR/detent" update --check --json > "$RUNNER_TEMP/detent/update-check.json"
+          "$DETENT_INSTALL_DIR/detent" update --yes --json > "$RUNNER_TEMP/detent/update-yes.json"
+          jq -e '.install_source == "release" and .action == "up_to_date" and .update_available == false' "$RUNNER_TEMP/detent/update-check.json"
+          jq -e '.install_source == "release" and .action == "up_to_date" and .update_available == false' "$RUNNER_TEMP/detent/update-yes.json"
+
+      - name: Smoke release installer
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $root = Join-Path $env:RUNNER_TEMP 'detent'
+          $env:DETENT_INSTALL_DIR = Join-Path $root 'bin'
+          $env:DETENT_STATE_DIR = Join-Path $root 'state'
+          $env:DETENT_INSTALL_LOCK = Join-Path $env:DETENT_STATE_DIR 'install.lock'
+          $env:DETENT_INSTALL_MODE = 'release'
+
+          $output = powershell.exe -NoProfile -ExecutionPolicy Bypass -File .\install.ps1 2>&1
+          $exitCode = $LASTEXITCODE
+          $output | ForEach-Object { Write-Host $_ }
+          if ($exitCode -ne 0) {
+            throw "install.ps1 failed with exit code $exitCode"
+          }
+          if (-not ($output -match 'Verified checksum for detent_.*_windows_.*\.zip')) {
+            throw 'install.ps1 did not report checksum verification'
+          }
+
+          $binary = Join-Path $env:DETENT_INSTALL_DIR 'detent.exe'
+          if (-not ($output -match [regex]::Escape("Installed Detent at $binary"))) {
+            throw 'install.ps1 did not report the requested install directory'
+          }
+          if (-not ($output -match [regex]::Escape("Added $env:DETENT_INSTALL_DIR to the user PATH"))) {
+            throw 'install.ps1 did not report PATH guidance'
+          }
+          if (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+            throw "detent.exe was not installed at $binary"
+          }
+
+          $lock = Get-Content -LiteralPath $env:DETENT_INSTALL_LOCK -Raw
+          if ($lock -notmatch [regex]::Escape("binary=$binary")) {
+            throw 'install lock did not record the installed binary path'
+          }
+          if ($lock -notmatch 'installed_at=') {
+            throw 'install lock did not record installed_at'
+          }
+
+          & $binary version
+          $checkRaw = & $binary update --check --json
+          if ($LASTEXITCODE -ne 0) {
+            throw "detent update --check failed with exit code $LASTEXITCODE"
+          }
+          $yesRaw = & $binary update --yes --json
+          if ($LASTEXITCODE -ne 0) {
+            throw "detent update --yes failed with exit code $LASTEXITCODE"
+          }
+          $checkJSON = $checkRaw -join "`n"
+          $yesJSON = $yesRaw -join "`n"
+          $check = $checkJSON | ConvertFrom-Json
+          $yes = $yesJSON | ConvertFrom-Json
+          if ($check.install_source -ne 'release' -or $check.action -ne 'up_to_date' -or $check.update_available) {
+            throw "unexpected update --check status: $checkJSON"
+          }
+          if ($yes.install_source -ne 'release' -or $yes.action -ne 'up_to_date' -or $yes.update_available) {
+            throw "unexpected update --yes status: $yesJSON"
+          }
+
   goreleaser-snapshot:
     name: GoReleaser Snapshot
     runs-on: ubuntu-latest
-    needs: [lint, verify, test-cover, windows-core]
+    needs: [lint, verify, test-cover, windows-core, installer-smoke]
     steps:
       - name: Decide release packaging policy
         id: policy

@@ -189,6 +189,7 @@ verify_checksum() {
 	if [ "$actual" != "$expected" ]; then
 		abort "Checksum mismatch for $asset_name: expected $expected, got $actual"
 	fi
+	printf 'Verified checksum for %s\n' "$asset_name"
 }
 
 install_release() {
@@ -331,3 +332,7 @@ install_binary
 
 cleanup_lock=false
 echo "Installed Detent at $target"
+case ":${PATH:-}:" in
+	*":$install_dir:"*) ;;
+	*) printf 'Add %s to PATH before running detent: export PATH="%s:$PATH"\n' "$install_dir" "$install_dir" ;;
+esac
