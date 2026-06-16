@@ -982,6 +982,85 @@ func TestCheckDoctorProjectBuildsGitHubIssueFieldReadinessInventory(t *testing.T
 	}
 }
 
+func TestDoctorGitHubReadinessRequiresKanbanIntegrationWrites(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name              string
+		mode              string
+		statusSource      string
+		projectSlug       string
+		repository        string
+		wantProjectStatus bool
+		wantIssueStatus   bool
+		wantLabelStatus   bool
+		wantIssueComments bool
+	}{
+		{
+			name:         "read only",
+			mode:         workflowconfig.KanbanModeReadOnly,
+			statusSource: workflowconfig.GitHubStatusSourceProjectV2,
+			projectSlug:  "PVT_1",
+			repository:   "digitaldrywood/detent",
+		},
+		{
+			name:              "project v2 integration",
+			mode:              workflowconfig.KanbanModeIntegration,
+			statusSource:      workflowconfig.GitHubStatusSourceProjectV2,
+			projectSlug:       "PVT_1",
+			repository:        "digitaldrywood/detent",
+			wantProjectStatus: true,
+			wantIssueComments: true,
+		},
+		{
+			name:              "issue field integration",
+			mode:              workflowconfig.KanbanModeIntegration,
+			statusSource:      workflowconfig.GitHubStatusSourceIssueField,
+			repository:        "digitaldrywood/detent",
+			wantIssueStatus:   true,
+			wantIssueComments: true,
+		},
+		{
+			name:              "label integration",
+			mode:              workflowconfig.KanbanModeIntegration,
+			statusSource:      workflowconfig.GitHubStatusSourceLabel,
+			repository:        "digitaldrywood/detent",
+			wantLabelStatus:   true,
+			wantIssueComments: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflow := validDoctorWorkflow("/repo")
+			workflow.Tracker.Kind = workflowconfig.TrackerGitHub
+			workflow.Tracker.GitHubStatusSource = tt.statusSource
+			workflow.Tracker.ProjectSlug = tt.projectSlug
+			workflow.Tracker.Repository = tt.repository
+			workflow.Tracker.ActiveStates = nil
+			workflow.Tracker.ObservedStates = []string{"Todo", "In Progress"}
+			workflow.Tracker.TerminalStates = nil
+			workflow.Server.Kanban.Mode = tt.mode
+
+			got := doctorGitHubReadinessConfig(context.Background(), globalconfig.Project{}, workflow, doctorDeps{}, RuntimeSecret{}, "/repo")
+			if got.RequireProjectStatusWrite != tt.wantProjectStatus {
+				t.Fatalf("RequireProjectStatusWrite = %v, want %v", got.RequireProjectStatusWrite, tt.wantProjectStatus)
+			}
+			if got.RequireIssueFieldStatusWrite != tt.wantIssueStatus {
+				t.Fatalf("RequireIssueFieldStatusWrite = %v, want %v", got.RequireIssueFieldStatusWrite, tt.wantIssueStatus)
+			}
+			if got.RequireLabelStatusWrite != tt.wantLabelStatus {
+				t.Fatalf("RequireLabelStatusWrite = %v, want %v", got.RequireLabelStatusWrite, tt.wantLabelStatus)
+			}
+			if got.RequireIssueComments != tt.wantIssueComments {
+				t.Fatalf("RequireIssueComments = %v, want %v", got.RequireIssueComments, tt.wantIssueComments)
+			}
+		})
+	}
+}
+
 func TestCheckDoctorRuntimeSettingsReportsSources(t *testing.T) {
 	t.Parallel()
 
