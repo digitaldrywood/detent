@@ -21,6 +21,8 @@ const (
 	throughputTrendWindow    = 10 * time.Minute
 	defaultThroughputWindow  = time.Minute
 	prPipelineDoneTodayLimit = 10
+	kanbanActionDialogID     = "kanban-action-dialog"
+	kanbanDialogContentID    = "kanban-dialog-content"
 )
 
 type DashboardData struct {
@@ -69,6 +71,30 @@ type KanbanData struct {
 	ProjectID          string
 	States             []string
 	AllowedTransitions map[string][]string
+}
+
+type KanbanMoveDialogData struct {
+	ProjectID    string
+	IssueID      string
+	Identifier   string
+	Title        string
+	CurrentState string
+	TargetState  string
+	PRNumber     int
+	States       []string
+	Error        string
+}
+
+type KanbanCommentDialogData struct {
+	ProjectID    string
+	Target       string
+	IssueID      string
+	PRRepository string
+	PRNumber     int
+	Identifier   string
+	Title        string
+	Body         string
+	Error        string
 }
 
 type rateLimitRow struct {
@@ -1129,6 +1155,100 @@ func kanbanProjectID(data DashboardData) string {
 	return strings.TrimSpace(data.ProjectID)
 }
 
+func kanbanDialogTargetSelector() string {
+	return "#" + kanbanDialogContentID
+}
+
+func projectKanbanMoveDialogPath(data DashboardData, card projectKanbanCard) string {
+	values := kanbanMoveDialogValues(kanbanProjectID(data), card.IssueID, card.Identifier, card.Title, card.Stage, "", card.PRNumber)
+	return "/api/v1/kanban/move?" + values.Encode()
+}
+
+func projectKanbanCommentDialogPath(data DashboardData, card projectKanbanCard, target string) string {
+	values := kanbanCommentDialogValues(kanbanProjectID(data), target, card.IssueID, card.PRRepository, card.Identifier, card.Title, card.PRNumber)
+	return "/api/v1/kanban/comment?" + values.Encode()
+}
+
+func kanbanMoveDialogPath(data DashboardData, card kanbanCard) string {
+	values := kanbanMoveDialogValues(kanbanProjectID(data), card.IssueID, card.Identifier, card.Title, card.State, "", card.PRNumber)
+	return "/api/v1/kanban/move?" + values.Encode()
+}
+
+func kanbanCommentDialogPath(data DashboardData, card kanbanCard, target string) string {
+	values := kanbanCommentDialogValues(kanbanProjectID(data), target, card.IssueID, card.PRRepository, card.Identifier, card.Title, card.PRNumber)
+	return "/api/v1/kanban/comment?" + values.Encode()
+}
+
+func kanbanMoveDialogValues(projectID string, issueID string, identifier string, title string, currentState string, targetState string, prNumber int) url.Values {
+	values := url.Values{}
+	addQueryValue(values, "project_id", projectID)
+	addQueryValue(values, "issue_id", issueID)
+	addQueryValue(values, "identifier", identifier)
+	addQueryValue(values, "title", title)
+	addQueryValue(values, "current_state", currentState)
+	addQueryValue(values, "target_state", targetState)
+	if prNumber > 0 {
+		values.Set("pr_number", strconv.Itoa(prNumber))
+	}
+	return values
+}
+
+func kanbanCommentDialogValues(projectID string, target string, issueID string, prRepository string, identifier string, title string, prNumber int) url.Values {
+	values := url.Values{}
+	addQueryValue(values, "project_id", projectID)
+	addQueryValue(values, "target", target)
+	addQueryValue(values, "identifier", identifier)
+	addQueryValue(values, "title", title)
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "issue":
+		addQueryValue(values, "issue_id", issueID)
+	case "pr":
+		addQueryValue(values, "pr_repository", prRepository)
+		if prNumber > 0 {
+			values.Set("pr_number", strconv.Itoa(prNumber))
+		}
+	}
+	return values
+}
+
+func addQueryValue(values url.Values, key string, value string) {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		values.Set(key, value)
+	}
+}
+
+func kanbanDialogCardLabel(identifier string, title string) string {
+	identifier = strings.TrimSpace(identifier)
+	title = strings.TrimSpace(title)
+	switch {
+	case identifier != "" && title != "":
+		return identifier + " / " + title
+	case title != "":
+		return title
+	case identifier != "":
+		return identifier
+	default:
+		return "selected card"
+	}
+}
+
+func kanbanMoveDialogTargetState(data KanbanMoveDialogData) string {
+	if target := strings.TrimSpace(data.TargetState); target != "" {
+		return target
+	}
+	return strings.TrimSpace(data.CurrentState)
+}
+
+func kanbanCommentTargetLabel(target string) string {
+	switch strings.ToLower(strings.TrimSpace(target)) {
+	case "pr":
+		return "PR"
+	default:
+		return "issue"
+	}
+}
+
 func kanbanLanes(data DashboardData) []kanbanLane {
 	states := kanbanStates(data)
 	cardsByState := make(map[string][]kanbanCard, len(states))
@@ -1379,6 +1499,21 @@ func projectKanbanLaneID(state string) string {
 	return id
 }
 
+func projectKanbanControlID(prefix string, card projectKanbanCard) string {
+	parts := []string{projectKanbanLaneID(prefix)}
+	for _, value := range []string{card.Identifier, card.IssueID, card.IssueNumber} {
+		part := projectKanbanLaneID(value)
+		if part != "unknown" {
+			parts = append(parts, part)
+			break
+		}
+	}
+	if len(parts) == 1 {
+		parts = append(parts, "card")
+	}
+	return strings.Join(parts, "-")
+}
+
 func projectKanbanCardForIssue(issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
 	card := projectKanbanCard{
 		IssueNumber:      projectKanbanIssueNumber(issue),
@@ -1558,17 +1693,6 @@ func projectKanbanCardAttributes(data DashboardData, card projectKanbanCard) tem
 		attrs["aria-disabled"] = "true"
 	}
 	return attrs
-}
-
-func projectKanbanControlID(prefix string, card projectKanbanCard) string {
-	id := projectKanbanLaneID(card.Identifier)
-	if id == "" {
-		id = projectKanbanLaneID(card.IssueID)
-	}
-	if id == "" {
-		id = "card"
-	}
-	return prefix + "-" + id
 }
 
 func projectKanbanEmptyToggleLabel(board projectKanbanBoard) string {

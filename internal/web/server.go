@@ -215,7 +215,9 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/refresh", s.apiRefresh)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
 	s.echo.GET("/api/v1/usage", s.apiUsage)
+	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog)
 	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove)
+	s.echo.GET("/api/v1/kanban/comment", s.apiKanbanCommentDialog)
 	s.echo.POST("/api/v1/kanban/comment", s.apiKanbanComment)
 	s.echo.GET("/api/v1/*", s.apiIssue)
 }
