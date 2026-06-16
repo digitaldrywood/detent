@@ -807,6 +807,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 	for _, want := range []string{
 		"project-kanban-card-compact",
 		`data-kanban-card-details`,
+		`data-preserve-details="project-kanban-details-digitaldrywood-detent-500"`,
 		`data-kanban-card-expanded`,
 		`aria-label="Kanban card #500 Issue-only compact card"`,
 		`aria-label="Kanban card #501 PR-linked compact card"`,
@@ -1078,6 +1079,12 @@ func TestDashboardPreservesSnapshotScrollContainersAcrossSSEMorph(t *testing.T) 
 		`document.addEventListener("htmx:afterSettle"`,
 		"scrollTop",
 		"scrollLeft",
+		`detailsSelector = "details[data-preserve-details]"`,
+		"detailsOpen",
+		"rememberDetails",
+		"restoreDetails",
+		"HTMLDetailsElement",
+		"element.open = open",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing scroll preservation marker %q:\n%s", want, html)
