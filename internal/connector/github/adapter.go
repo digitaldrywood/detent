@@ -3374,8 +3374,33 @@ func branchMatchesIssuePrefix(branchName string, prefix string) bool {
 				return true
 			}
 		}
+		if number := issueNumberFromBranchPrefix(legacyPrefix); number != "" {
+			if branchName == "detent/"+number {
+				return true
+			}
+			for _, suffix := range []string{"_", "-", "/"} {
+				if strings.HasPrefix(branchName, "detent/"+number+suffix) {
+					return true
+				}
+			}
+		}
 	}
 	return false
+}
+
+func issueNumberFromBranchPrefix(prefix string) string {
+	prefix = strings.TrimSpace(prefix)
+	index := strings.LastIndexAny(prefix, "_-")
+	if index < 0 || index == len(prefix)-1 {
+		return ""
+	}
+	number := prefix[index+1:]
+	for _, r := range number {
+		if r < '0' || r > '9' {
+			return ""
+		}
+	}
+	return number
 }
 
 func actorLogin(actor *actor) string {

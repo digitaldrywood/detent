@@ -894,6 +894,8 @@ func TestBranchMatchesIssuePrefixAcceptsCurrentAgentBranchShape(t *testing.T) {
 		"detent/digitaldrywood_detent_506",
 		"detent/digitaldrywood_detent_506-fix",
 		"detent/detent-digitaldrywood_detent_506-6bd1bec3c6d3",
+		"detent/506",
+		"detent/506-fix",
 	} {
 		if !branchMatchesIssuePrefix(branch, prefix) {
 			t.Fatalf("branchMatchesIssuePrefix(%q, %q) = false, want true", branch, prefix)
