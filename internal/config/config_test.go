@@ -116,6 +116,14 @@ gate:
 server:
   host: 0.0.0.0
   port: 4001
+  kanban:
+    mode: integration
+    allowed_transitions:
+      In Progress:
+        - Blocked
+        - Cancelled
+      QA:
+        - Done
 observability:
   dashboard_enabled: false
   refresh_ms: 2000
@@ -247,6 +255,16 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Gate.Kind != gate.KindHumanReview || cfg.Gate.ApprovalLabel != "approved-by-human" || cfg.Gate.Run != "" {
 		t.Fatalf("Gate = %#v, want human_review with approved-by-human label", cfg.Gate)
+	}
+	if cfg.Server.Kanban.Mode != KanbanModeIntegration {
+		t.Fatalf("Server.Kanban.Mode = %q, want %q", cfg.Server.Kanban.Mode, KanbanModeIntegration)
+	}
+	wantTransitions := map[string][]string{
+		"In Progress": {"Blocked", "Cancelled"},
+		"QA":          {"Done"},
+	}
+	if !reflect.DeepEqual(cfg.Server.Kanban.AllowedTransitions, wantTransitions) {
+		t.Fatalf("Server.Kanban.AllowedTransitions = %#v, want %#v", cfg.Server.Kanban.AllowedTransitions, wantTransitions)
 	}
 	if cfg.Codex.Shell != "bash" {
 		t.Fatalf("Codex.Shell = %q, want bash", cfg.Codex.Shell)
@@ -498,6 +516,129 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Gate.Kind != gate.KindCommand || cfg.Gate.Run != gate.DefaultCommand {
 		t.Fatalf("Gate = %#v, want default command gate", cfg.Gate)
+	}
+}
+
+func TestKanbanTransitionPolicyRestrictsActiveExecutionDefaults(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "Rework", "Merging"}
+	cfg.Tracker.ObservedStates = []string{"Backlog", "Blocked", "Human Review"}
+	cfg.Tracker.TerminalStates = []string{"Done", "Cancelled"}
+
+	tests := []struct {
+		name   string
+		source string
+		target string
+		want   bool
+	}{
+		{
+			name:   "todo can move into execution",
+			source: "Todo",
+			target: "In Progress",
+			want:   true,
+		},
+		{
+			name:   "in progress can move to blocked",
+			source: "In Progress",
+			target: "Blocked",
+			want:   true,
+		},
+		{
+			name:   "in progress cannot bypass review",
+			source: "In Progress",
+			target: "Human Review",
+			want:   false,
+		},
+		{
+			name:   "rework cannot move straight to done",
+			source: "Rework",
+			target: "Done",
+			want:   false,
+		},
+		{
+			name:   "merging can move to cancelled",
+			source: "Merging",
+			target: "Cancelled",
+			want:   true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := cfg.KanbanTransitionAllowed(tt.source, tt.target); got != tt.want {
+				t.Fatalf("KanbanTransitionAllowed(%q, %q) = %v, want %v", tt.source, tt.target, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestKanbanTransitionPolicyAllowsConfiguredOverrides(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "Rework", "Merging"}
+	cfg.Tracker.ObservedStates = []string{"Backlog", "Blocked", "Human Review"}
+	cfg.Tracker.TerminalStates = []string{"Done", "Cancelled"}
+	cfg.Server.Kanban.AllowedTransitions = map[string][]string{
+		"In Progress": {"Blocked", "Human Review"},
+	}
+	cfg.Server.Kanban.Normalize()
+
+	if !cfg.KanbanTransitionAllowed("In Progress", "Human Review") {
+		t.Fatal("KanbanTransitionAllowed(In Progress, Human Review) = false, want configured override")
+	}
+	if cfg.KanbanTransitionAllowed("In Progress", "Done") {
+		t.Fatal("KanbanTransitionAllowed(In Progress, Done) = true, want configured source allowlist")
+	}
+}
+
+func TestKanbanTransitionPolicyAllowsConfiguredOverridesWithoutStateLists(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Tracker.ActiveStates = nil
+	cfg.Tracker.ObservedStates = nil
+	cfg.Tracker.TerminalStates = nil
+	cfg.Server.Kanban.AllowedTransitions = map[string][]string{
+		"In Progress": {"Blocked"},
+	}
+	cfg.Server.Kanban.Normalize()
+
+	if got, want := cfg.KanbanAllowedTransitionTargets("In Progress"), []string{"Blocked"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("KanbanAllowedTransitionTargets(In Progress) = %#v, want %#v", got, want)
+	}
+	if !cfg.KanbanTransitionAllowed("In Progress", "Blocked") {
+		t.Fatal("KanbanTransitionAllowed(In Progress, Blocked) = false, want explicit override")
+	}
+	if cfg.KanbanTransitionAllowed("In Progress", "Human Review") {
+		t.Fatal("KanbanTransitionAllowed(In Progress, Human Review) = true, want configured source allowlist")
+	}
+}
+
+func TestValidateKanbanTransitionsRejectsBlankNames(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Server.Kanban.AllowedTransitions = map[string][]string{
+		"":            {"Blocked"},
+		"In Progress": {""},
+	}
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want transition validation errors")
+	}
+	for _, want := range []string{
+		"server.kanban.allowed_transitions source states must not be blank",
+		"server.kanban.allowed_transitions target states must not be blank",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() error = %v, want %q", err, want)
+		}
 	}
 }
 

@@ -65,9 +65,10 @@ type Budget = telemetry.Budget
 type RateLimits = telemetry.RateLimits
 
 type KanbanData struct {
-	Mode      string
-	ProjectID string
-	States    []string
+	Mode               string
+	ProjectID          string
+	States             []string
+	AllowedTransitions map[string][]string
 }
 
 type rateLimitRow struct {
@@ -1482,6 +1483,7 @@ func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLa
 	}
 	if kanbanIntegrationEnabled(data) {
 		attrs["data-kanban-drop-state"] = lane.Title
+		attrs["data-kanban-drop-key"] = projectKanbanStateKey(lane.Title)
 	}
 	return attrs
 }
@@ -1498,9 +1500,10 @@ func projectKanbanCardAttributes(data DashboardData, card projectKanbanCard) tem
 	if card.IssueID != "" {
 		attrs["data-kanban-issue-id"] = card.IssueID
 	}
-	if card.Movable {
+	if projectKanbanCardCanMove(data, card) {
 		attrs["draggable"] = "true"
 		attrs["data-kanban-action"] = "move"
+		attrs["data-kanban-allowed-targets"] = projectKanbanMoveTargetKeys(data, card.Stage)
 	} else {
 		attrs["aria-disabled"] = "true"
 	}
@@ -1529,6 +1532,7 @@ func kanbanLaneAttributes(data DashboardData, lane kanbanLane) templ.Attributes 
 	attrs := templ.Attributes{}
 	if kanbanIntegrationEnabled(data) {
 		attrs["data-kanban-drop-state"] = lane.State
+		attrs["data-kanban-drop-key"] = projectKanbanStateKey(lane.State)
 	}
 	return attrs
 }
@@ -1541,13 +1545,107 @@ func kanbanCardAttributes(data DashboardData, card kanbanCard) templ.Attributes 
 	if card.IssueID != "" {
 		attrs["data-kanban-issue-id"] = card.IssueID
 	}
-	if kanbanIntegrationEnabled(data) && card.Movable {
+	if kanbanCardCanMove(data, card) {
 		attrs["draggable"] = "true"
 		attrs["data-kanban-action"] = "move"
-	} else if !card.Movable {
+		attrs["data-kanban-allowed-targets"] = kanbanMoveTargetKeys(data, card.State)
+	} else {
 		attrs["aria-disabled"] = "true"
 	}
 	return attrs
+}
+
+func projectKanbanCardCanMove(data DashboardData, card projectKanbanCard) bool {
+	return kanbanIntegrationEnabled(data) && card.Movable && len(projectKanbanMoveTargetStates(data, card.Stage)) > 0
+}
+
+func kanbanCardCanMove(data DashboardData, card kanbanCard) bool {
+	return kanbanIntegrationEnabled(data) && card.Movable && len(kanbanMoveTargetStates(data, card.State)) > 0
+}
+
+func projectKanbanMoveDisabledText(data DashboardData, card projectKanbanCard) string {
+	if card.DisabledText != "" {
+		return card.DisabledText
+	}
+	if kanbanIntegrationEnabled(data) && card.Movable && len(projectKanbanMoveTargetStates(data, card.Stage)) == 0 {
+		return "No allowed moves from " + card.Stage
+	}
+	return ""
+}
+
+func kanbanMoveDisabledText(data DashboardData, card kanbanCard) string {
+	if card.DisabledText != "" {
+		return card.DisabledText
+	}
+	if kanbanIntegrationEnabled(data) && card.Movable && len(kanbanMoveTargetStates(data, card.State)) == 0 {
+		return "No allowed moves from " + card.State
+	}
+	return ""
+}
+
+func projectKanbanMoveTargetStates(data DashboardData, source string) []string {
+	return kanbanMoveTargets(data.Kanban, source)
+}
+
+func kanbanMoveTargetStates(data DashboardData, source string) []string {
+	return kanbanMoveTargets(data.Kanban, source)
+}
+
+func projectKanbanMoveTargetKeys(data DashboardData, source string) string {
+	return kanbanMoveTargetKeyList(data.Kanban, source)
+}
+
+func kanbanMoveTargetKeys(data DashboardData, source string) string {
+	return kanbanMoveTargetKeyList(data.Kanban, source)
+}
+
+func kanbanMoveTargets(data KanbanData, source string) []string {
+	sourceKey := projectKanbanStateKey(source)
+	if sourceKey == "" {
+		return nil
+	}
+	if data.AllowedTransitions == nil {
+		return kanbanMoveTargetsFromStates(data.States, source)
+	}
+	for configuredSource, targets := range data.AllowedTransitions {
+		if projectKanbanStateKey(configuredSource) != sourceKey {
+			continue
+		}
+		return kanbanMoveTargetsFromStates(targets, source)
+	}
+	return nil
+}
+
+func kanbanMoveTargetsFromStates(states []string, source string) []string {
+	sourceKey := projectKanbanStateKey(source)
+	targets := make([]string, 0, len(states))
+	seen := map[string]struct{}{}
+	for _, state := range states {
+		state = projectKanbanStateTitle(state)
+		key := projectKanbanStateKey(state)
+		if key == "" || key == sourceKey {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		targets = append(targets, state)
+	}
+	return targets
+}
+
+func kanbanMoveTargetKeyList(data KanbanData, source string) string {
+	targets := kanbanMoveTargets(data, source)
+	keys := make([]string, 0, len(targets))
+	for _, target := range targets {
+		key := projectKanbanStateKey(target)
+		if key == "" {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	return strings.Join(keys, " ")
 }
 
 func issueRepository(identifier string) string {

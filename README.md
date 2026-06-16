@@ -640,7 +640,18 @@ server:
   kanban:
     mode: read_only
     # mode: integration
+    # allowed_transitions:
+    #   In Progress: [Blocked, Cancelled]
+    #   Rework: [Blocked, Cancelled]
+    #   Merging: [Blocked, Cancelled]
+    #   QA: [Blocked, Human Review]
 ```
+
+When `allowed_transitions` is omitted, integration mode keeps a conservative
+default for manual moves from execution states: active work such as
+`In Progress`, `Rework`, and `Merging` can only move to configured exception
+states such as `Blocked` or `Cancelled`. Add source-specific entries to allow a
+project workflow to expose extra manual moves without changing Detent's UI code.
 
 `workspace.source_root` is the checked-out repository Detent uses for
 `git worktree add`; `workspace.root` is where per-issue worktrees are created.

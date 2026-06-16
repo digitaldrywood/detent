@@ -310,8 +310,9 @@ type Server struct {
 }
 
 type Kanban struct {
-	Mode              string `yaml:"mode,omitempty"`
-	IssueStateFieldID int    `yaml:"issue_state_field_id,omitempty"`
+	Mode               string              `yaml:"mode,omitempty"`
+	IssueStateFieldID  int                 `yaml:"issue_state_field_id,omitempty"`
+	AllowedTransitions map[string][]string `yaml:"allowed_transitions,omitempty"`
 }
 
 type Observability struct {
@@ -968,6 +969,7 @@ func (k *Kanban) Normalize() {
 	if k.Mode == "" {
 		k.Mode = KanbanModeReadOnly
 	}
+	k.AllowedTransitions = normalizeKanbanTransitions(k.AllowedTransitions)
 }
 
 func (k Kanban) Validate(prefix string) []string {
@@ -982,7 +984,69 @@ func (k Kanban) Validate(prefix string) []string {
 	if k.IssueStateFieldID < 0 {
 		problems = append(problems, prefix+".issue_state_field_id must be greater than 0 when set")
 	}
+	validateKanbanTransitions(prefix+".allowed_transitions", k.AllowedTransitions, &problems)
 	return problems
+}
+
+func (c Config) KanbanTransitionAllowed(source string, target string) bool {
+	source = strings.TrimSpace(source)
+	target = strings.TrimSpace(target)
+	if source == "" || target == "" {
+		return false
+	}
+	if sameKanbanPolicyState(source, target) {
+		return false
+	}
+	for _, allowed := range c.KanbanAllowedTransitionTargets(source) {
+		if sameKanbanPolicyState(allowed, target) {
+			return true
+		}
+	}
+	return false
+}
+
+func (c Config) KanbanAllowedTransitionTargets(source string) []string {
+	source = strings.TrimSpace(source)
+	if source == "" {
+		return nil
+	}
+
+	states := c.KanbanStateNames()
+	kanban := c.Server.Kanban
+	kanban.Normalize()
+	if targets, ok := kanbanTransitionTargetsForSource(kanban.AllowedTransitions, source); ok {
+		return filterKanbanTransitionTargets(source, targets, states)
+	}
+	if len(states) == 0 {
+		return nil
+	}
+	if c.defaultKanbanTransitionRestricted(source) {
+		return filterKanbanTransitionTargets(source, defaultKanbanExceptionTargets(states), states)
+	}
+	return filterKanbanTransitionTargets(source, states, states)
+}
+
+func (c Config) KanbanStateNames() []string {
+	states := make([]string, 0, len(c.Tracker.ObservedStates)+len(c.Tracker.ActiveStates)+len(c.Tracker.TerminalStates))
+	seen := map[string]struct{}{}
+	add := func(values ...string) {
+		for _, value := range values {
+			value = cleanKanbanPolicyState(value)
+			if value == "" {
+				continue
+			}
+			key := kanbanPolicyStateKey(value)
+			if _, ok := seen[key]; ok {
+				continue
+			}
+			seen[key] = struct{}{}
+			states = append(states, value)
+		}
+	}
+	add(c.Tracker.ObservedStates...)
+	add(c.Tracker.ActiveStates...)
+	add(c.Tracker.TerminalStates...)
+	return states
 }
 
 func (s *Server) Normalize() {
@@ -1314,6 +1378,36 @@ func validateStateLimits(field string, limits map[string]int, problems *[]string
 	}
 }
 
+func validateKanbanTransitions(field string, transitions map[string][]string, problems *[]string) {
+	sourceBlank := false
+	targetBlank := false
+	for source, targets := range transitions {
+		if strings.TrimSpace(source) == "" {
+			if !sourceBlank {
+				*problems = append(*problems, field+" source states must not be blank")
+				sourceBlank = true
+			}
+			continue
+		}
+		seenTargets := map[string]struct{}{}
+		for _, target := range targets {
+			if strings.TrimSpace(target) == "" {
+				if !targetBlank {
+					*problems = append(*problems, field+" target states must not be blank")
+					targetBlank = true
+				}
+				continue
+			}
+			key := kanbanPolicyStateKey(target)
+			if _, ok := seenTargets[key]; ok {
+				*problems = append(*problems, field+" target states must be unique per source")
+				return
+			}
+			seenTargets[key] = struct{}{}
+		}
+	}
+}
+
 func validateStateMap(field string, value StringOrMap, problems *[]string) {
 	if !value.IsMap {
 		return
@@ -1364,4 +1458,132 @@ func validateWorkspaceRelativePath(field string, path string, problems *[]string
 	if !pathsafe.IsWorkspaceRelative(path) {
 		*problems = append(*problems, field+" must be a relative path inside the workspace")
 	}
+}
+
+func normalizeKanbanTransitions(transitions map[string][]string) map[string][]string {
+	if transitions == nil {
+		return nil
+	}
+
+	normalized := make(map[string][]string, len(transitions))
+	targetKeysBySource := make(map[string]map[string]struct{}, len(transitions))
+	displaySourceByKey := make(map[string]string, len(transitions))
+	for source, targets := range transitions {
+		source = cleanKanbanPolicyState(source)
+		sourceKey := kanbanPolicyStateKey(source)
+		displaySource := source
+		if existing, ok := displaySourceByKey[sourceKey]; ok {
+			displaySource = existing
+		} else {
+			displaySourceByKey[sourceKey] = displaySource
+		}
+		if _, ok := targetKeysBySource[sourceKey]; !ok {
+			targetKeysBySource[sourceKey] = map[string]struct{}{}
+		}
+		for _, target := range targets {
+			target = cleanKanbanPolicyState(target)
+			targetKey := kanbanPolicyStateKey(target)
+			if _, ok := targetKeysBySource[sourceKey][targetKey]; ok {
+				continue
+			}
+			targetKeysBySource[sourceKey][targetKey] = struct{}{}
+			normalized[displaySource] = append(normalized[displaySource], target)
+		}
+		if _, ok := normalized[displaySource]; !ok {
+			normalized[displaySource] = []string{}
+		}
+	}
+	return normalized
+}
+
+func (c Config) defaultKanbanTransitionRestricted(source string) bool {
+	if defaultKanbanExecutionState(source) {
+		return true
+	}
+	for _, active := range c.Tracker.ActiveStates {
+		if !sameKanbanPolicyState(active, source) {
+			continue
+		}
+		return !sameKanbanPolicyState(active, "Todo")
+	}
+	return false
+}
+
+func defaultKanbanExecutionState(state string) bool {
+	switch kanbanPolicyStateKey(state) {
+	case "in progress", "rework", "merging":
+		return true
+	default:
+		return false
+	}
+}
+
+func defaultKanbanExceptionTargets(states []string) []string {
+	targets := make([]string, 0, 2)
+	for _, state := range states {
+		switch kanbanPolicyStateKey(state) {
+		case "blocked", "cancelled", "canceled":
+			targets = append(targets, state)
+		}
+	}
+	return targets
+}
+
+func kanbanTransitionTargetsForSource(transitions map[string][]string, source string) ([]string, bool) {
+	sourceKey := kanbanPolicyStateKey(source)
+	for configuredSource, targets := range transitions {
+		if kanbanPolicyStateKey(configuredSource) == sourceKey {
+			return append([]string(nil), targets...), true
+		}
+	}
+	return nil, false
+}
+
+func filterKanbanTransitionTargets(source string, targets []string, states []string) []string {
+	stateDisplayByKey := make(map[string]string, len(states))
+	for _, state := range states {
+		state = cleanKanbanPolicyState(state)
+		if state == "" {
+			continue
+		}
+		key := kanbanPolicyStateKey(state)
+		if _, ok := stateDisplayByKey[key]; !ok {
+			stateDisplayByKey[key] = state
+		}
+	}
+
+	allowed := make([]string, 0, len(targets))
+	seen := map[string]struct{}{}
+	for _, target := range targets {
+		key := kanbanPolicyStateKey(target)
+		if key == "" || sameKanbanPolicyState(source, target) {
+			continue
+		}
+		display := cleanKanbanPolicyState(target)
+		if len(stateDisplayByKey) > 0 {
+			var ok bool
+			display, ok = stateDisplayByKey[key]
+			if !ok {
+				continue
+			}
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		allowed = append(allowed, display)
+	}
+	return allowed
+}
+
+func sameKanbanPolicyState(left string, right string) bool {
+	return kanbanPolicyStateKey(left) == kanbanPolicyStateKey(right)
+}
+
+func cleanKanbanPolicyState(state string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(state)), " ")
+}
+
+func kanbanPolicyStateKey(state string) string {
+	return strings.ToLower(cleanKanbanPolicyState(state))
 }
