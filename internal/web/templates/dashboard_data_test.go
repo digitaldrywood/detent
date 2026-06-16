@@ -882,6 +882,44 @@ func TestProjectKanbanBoardDoesNotTreatCompletedSessionsAsCurrentDone(t *testing
 	}
 }
 
+func TestProjectKanbanBoardMarksOnlyNonEmptyLanesVisibleByDefault(t *testing.T) {
+	t.Parallel()
+
+	board := projectKanbanBoardView(DashboardData{
+		Kanban: KanbanData{
+			States: []string{"Todo", "In Progress", "Done"},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "todo",
+					Identifier: "digitaldrywood/detent#496",
+					Title:      "Fix empty-lane toggle",
+					State:      "Todo",
+				},
+			},
+		},
+	})
+
+	got := map[string]bool{}
+	for _, lane := range board.AllLanes {
+		got[lane.Title] = lane.DefaultVisible
+	}
+	want := map[string]bool{
+		"Todo":        true,
+		"In Progress": false,
+		"Done":        false,
+	}
+	if len(got) != len(want) {
+		t.Fatalf("default visible lanes len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for state, wantVisible := range want {
+		if got[state] != wantVisible {
+			t.Fatalf("%s DefaultVisible = %t, want %t; got %#v", state, got[state], wantVisible, got)
+		}
+	}
+}
+
 func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 	t.Parallel()
 

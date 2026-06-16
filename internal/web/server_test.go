@@ -1958,7 +1958,9 @@ func TestProjectKanbanRouteRendersOnlyLiveBoard(t *testing.T) {
 		`href="https://github.com/digitaldrywood/detent/issues/490"`,
 		`href="https://github.com/digitaldrywood/detent/pull/701"`,
 		`data-kanban-action="move"`,
-		`id="project-kanban-show-empty"`,
+		`data-project-kanban-visibility-key="project:detent`,
+		`data-project-kanban-visibility-menu`,
+		`data-project-kanban-visibility-checkbox`,
 		"Add a live Kanban-only board view",
 	} {
 		if !strings.Contains(body, want) {
@@ -2718,6 +2720,81 @@ func TestServerEventsStreamsPublishedSnapshots(t *testing.T) {
 	}
 	if !strings.Contains(event.data, "4") {
 		t.Fatalf("snapshot event missing running count:\n%s", event.data)
+	}
+}
+
+func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeReadOnly,
+	}, deps.Connector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 16, 12, 0, 0, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{
+					ID:          "detent",
+					DisplayName: "Detent",
+				},
+			},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "todo",
+				Identifier: "digitaldrywood/detent#496",
+				ProjectID:  "detent",
+				Title:      "Fix empty-lane toggle",
+				State:      "Todo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	ts := httptest.NewServer(server.Handler())
+	t.Cleanup(ts.Close)
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	t.Cleanup(cancel)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/events?project=detent", nil)
+	if err != nil {
+		t.Fatalf("NewRequestWithContext() error = %v", err)
+	}
+	resp, err := ts.Client().Do(req)
+	if err != nil {
+		t.Fatalf("Do() error = %v", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		body, readErr := io.ReadAll(resp.Body)
+		if readErr != nil {
+			t.Fatalf("ReadAll() error = %v", readErr)
+		}
+		t.Fatalf("status = %d, want %d; body = %s", resp.StatusCode, http.StatusOK, string(body))
+	}
+
+	event := readSSEEvent(t, resp.Body)
+	if event.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", event.name)
+	}
+	for _, want := range []string{
+		`data-project-kanban-visibility-key="project:detent`,
+		`data-project-kanban-visibility-checkbox`,
+		`name="visible_lane" value="done"`,
+		`data-project-kanban-lane-visible="false"`,
+	} {
+		if !strings.Contains(event.data, want) {
+			t.Fatalf("snapshot event missing %q:\n%s", want, event.data)
+		}
+	}
+	if strings.Contains(event.data, `project-kanban-show-empty`) {
+		t.Fatalf("snapshot event rendered transient empty-lane toggle:\n%s", event.data)
 	}
 }
 

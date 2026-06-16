@@ -267,12 +267,13 @@ type projectKanbanBoard struct {
 }
 
 type projectKanbanLane struct {
-	ID         string
-	Title      string
-	CountLabel string
-	DotClass   string
-	Empty      bool
-	Cards      []projectKanbanCard
+	ID             string
+	Title          string
+	CountLabel     string
+	DotClass       string
+	Empty          bool
+	DefaultVisible bool
+	Cards          []projectKanbanCard
 }
 
 type projectKanbanCard struct {
@@ -1015,12 +1016,13 @@ func projectKanbanBoardView(data DashboardData) projectKanbanBoard {
 	for _, state := range states {
 		cards := cardsByState[projectKanbanStateKey(state)]
 		lane := projectKanbanLane{
-			ID:         projectKanbanLaneID(state),
-			Title:      state,
-			CountLabel: formatCount(len(cards)),
-			DotClass:   boardStateDotClass(state),
-			Empty:      len(cards) == 0,
-			Cards:      cards,
+			ID:             projectKanbanLaneID(state),
+			Title:          state,
+			CountLabel:     formatCount(len(cards)),
+			DotClass:       boardStateDotClass(state),
+			Empty:          len(cards) == 0,
+			DefaultVisible: len(cards) > 0,
+			Cards:          cards,
 		}
 		allLanes = append(allLanes, lane)
 		if lane.Empty {
@@ -1662,7 +1664,10 @@ func projectKanbanLaneClass(lane projectKanbanLane) string {
 }
 
 func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLane) templ.Attributes {
-	attrs := templ.Attributes{}
+	attrs := templ.Attributes{
+		"data-project-kanban-lane-empty":   projectKanbanBool(lane.Empty),
+		"data-project-kanban-lane-visible": projectKanbanBool(lane.DefaultVisible),
+	}
 	if lane.Empty {
 		attrs["data-project-kanban-empty-lane"] = true
 	}
@@ -1671,6 +1676,24 @@ func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLa
 		attrs["data-kanban-drop-key"] = projectKanbanStateKey(lane.Title)
 	}
 	return attrs
+}
+
+func projectKanbanVisibilityKey(data DashboardData, _ projectKanbanBoard) string {
+	scope := kanbanProjectID(data)
+	if scope == "" {
+		scope = projectDisplayName(data)
+	}
+	if scope == "" {
+		scope = "fleet"
+	}
+	return "project:" + url.QueryEscape(scope)
+}
+
+func projectKanbanBool(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
 }
 
 func projectKanbanCardAttributes(data DashboardData, card projectKanbanCard) templ.Attributes {
@@ -1695,11 +1718,8 @@ func projectKanbanCardAttributes(data DashboardData, card projectKanbanCard) tem
 	return attrs
 }
 
-func projectKanbanEmptyToggleLabel(board projectKanbanBoard) string {
-	if len(board.EmptyLanes) == 1 {
-		return "Show 1 empty state"
-	}
-	return "Show " + formatCount(len(board.EmptyLanes)) + " empty states"
+func projectKanbanVisibilityCountLabel(board projectKanbanBoard) string {
+	return formatCount(len(board.Lanes)) + "/" + formatCount(len(board.AllLanes))
 }
 
 func kanbanLaneAttributes(data DashboardData, lane kanbanLane) templ.Attributes {
