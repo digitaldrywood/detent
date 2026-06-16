@@ -882,6 +882,25 @@ func TestConnectorFetchIssuesByStatesLimitStopsAfterSample(t *testing.T) {
 	}
 }
 
+func TestBranchMatchesIssuePrefixAcceptsCurrentAgentBranchShape(t *testing.T) {
+	t.Parallel()
+
+	prefix := detentIssueBranchPrefix("digitaldrywood/detent#506")
+	if prefix != "detent/digitaldrywood_detent_506" {
+		t.Fatalf("detentIssueBranchPrefix() = %q, want detent/digitaldrywood_detent_506", prefix)
+	}
+
+	for _, branch := range []string{
+		"detent/digitaldrywood_detent_506",
+		"detent/digitaldrywood_detent_506-fix",
+		"detent/detent-digitaldrywood_detent_506-6bd1bec3c6d3",
+	} {
+		if !branchMatchesIssuePrefix(branch, prefix) {
+			t.Fatalf("branchMatchesIssuePrefix(%q, %q) = false, want true", branch, prefix)
+		}
+	}
+}
+
 func TestConnectorFetchCandidateIssuesLimitsPullRequestPagination(t *testing.T) {
 	t.Parallel()
 

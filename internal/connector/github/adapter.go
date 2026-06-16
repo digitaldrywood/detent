@@ -3368,6 +3368,13 @@ func branchMatchesIssuePrefix(branchName string, prefix string) bool {
 			return true
 		}
 	}
+	if legacyPrefix, ok := strings.CutPrefix(prefix, "detent/"); ok {
+		for _, suffix := range []string{"_", "-", "/"} {
+			if strings.HasPrefix(branchName, "detent/detent-"+legacyPrefix+suffix) {
+				return true
+			}
+		}
+	}
 	return false
 }
 

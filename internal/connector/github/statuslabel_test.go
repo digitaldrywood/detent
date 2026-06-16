@@ -57,6 +57,56 @@ func TestConnectorFetchCandidateIssuesUsesStatusLabels(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Ahuman-review&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_506","number":506,"title":"Shutdown diagnostics","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/506","assignees":[],"labels":[{"name":"detent:human-review"},{"name":"bug"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[{"number":508,"html_url":"https://github.com/digitaldrywood/detent/pull/508","state":"open","head":{"ref":"detent/detent-digitaldrywood_detent_506-6bd1bec3c6d3","sha":"sha-508"}}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-508/check-runs?per_page=100",
+			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-508/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/508/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+	})
+
+	got, err := c.FetchIssuesByStatesLimit(context.Background(), []string{"Human Review"}, 1)
+	if err != nil {
+		t.Fatalf("FetchIssuesByStatesLimit() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStatesLimit() len = %d, want 1", len(got))
+	}
+	if got[0].PRNumber == nil || *got[0].PRNumber != 508 {
+		t.Fatalf("PRNumber = %v, want 508", got[0].PRNumber)
+	}
+	if got[0].PullRequest == nil || got[0].PullRequest.Number != 508 || got[0].PullRequest.CIStatus != "pass" {
+		t.Fatalf("PullRequest = %#v, want hydrated PR 508", got[0].PullRequest)
+	}
+}
+
 func TestConnectorUpdateIssueStateReplacesStatusLabels(t *testing.T) {
 	t.Parallel()
 
