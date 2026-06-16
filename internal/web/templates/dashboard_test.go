@@ -909,13 +909,18 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 	html := renderDashboard(t, data)
 	for _, want := range []string{
 		`aria-live="polite"`,
+		`id="kanban-action-dialog"`,
+		`id="kanban-dialog-content"`,
 		`data-kanban-card`,
 		`draggable="true"`,
 		`data-kanban-drop-state="In Progress"`,
-		`data-kanban-status-menu`,
-		`hx-post="/api/v1/kanban/move"`,
-		`hx-post="/api/v1/kanban/comment"`,
-		`name="pr_repository" value="digitaldrywood/frontend"`,
+		`data-tui-dialog-trigger`,
+		`data-tui-dialog-target="kanban-action-dialog"`,
+		`hx-get="/api/v1/kanban/move?`,
+		`hx-get="/api/v1/kanban/comment?`,
+		`hx-target="#kanban-dialog-content"`,
+		`data-kanban-drag-move-form`,
+		`pr_repository=digitaldrywood%2Ffrontend`,
 		`Cannot move PR-only card`,
 	} {
 		if !strings.Contains(html, want) {
@@ -928,6 +933,8 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 	for _, forbidden := range []string{
 		`hx-post="/api/v1/kanban/move"`,
 		`hx-post="/api/v1/kanban/comment"`,
+		`hx-get="/api/v1/kanban/move`,
+		`hx-get="/api/v1/kanban/comment`,
 		`draggable="true"`,
 		`data-kanban-action`,
 	} {
@@ -969,23 +976,35 @@ func TestDashboardKanbanIntegrationFiltersMoveTargets(t *testing.T) {
 
 	section := dashboardSection(t, html, `aria-label="Project Kanban"`, `aria-label="Pull request pipeline"`)
 	for _, want := range []string{
-		`data-kanban-allowed-targets="blocked cancelled"`,
 		`data-kanban-drop-key="blocked"`,
 		`data-kanban-drop-key="cancelled"`,
-		`value="Blocked"`,
-		`value="Cancelled"`,
 	} {
 		if !strings.Contains(section, want) {
 			t.Fatalf("integration dashboard missing allowed move marker %q:\n%s", want, section)
 		}
 	}
 
-	form := dashboardSection(t, section, `data-kanban-move-form`, `</form>`)
-	if strings.Contains(form, `value="Human Review"`) {
-		t.Fatalf("move form rendered disallowed target:\n%s", form)
+	card := compactKanbanCardSection(t, section, "Active issue")
+	for _, want := range []string{
+		`data-kanban-allowed-targets="blocked cancelled"`,
+		`hx-get="/api/v1/kanban/move?`,
+		`current_state=In+Progress`,
+		`data-kanban-drag-move-form`,
+		`data-kanban-drag-target-state`,
+	} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("integration card missing allowed move marker %q:\n%s", want, card)
+		}
 	}
-	if strings.Contains(form, `<option value="In Progress"`) {
-		t.Fatalf("move form rendered current state as target:\n%s", form)
+	for _, forbidden := range []string{
+		`data-kanban-allowed-targets="blocked cancelled humanreview"`,
+		`data-kanban-allowed-targets="blocked cancelled inprogress"`,
+		`<option`,
+		`hx-post="/api/v1/kanban/move"`,
+	} {
+		if strings.Contains(card, forbidden) {
+			t.Fatalf("integration card rendered disallowed move marker %q:\n%s", forbidden, card)
+		}
 	}
 }
 

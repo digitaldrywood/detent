@@ -235,6 +235,158 @@ func TestKanbanActionsRejectReadOnlyMode(t *testing.T) {
 	}
 }
 
+func TestKanbanDialogFragmentRoutesRenderForms(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kw1",
+			Identifier: "digitaldrywood/detent#1",
+			ProjectID:  "detent",
+			Title:      "Dialog card",
+			State:      "Todo",
+			PullRequest: &telemetry.PullRequest{
+				Number: 42,
+				URL:    "https://github.com/digitaldrywood/frontend/pull/42",
+			},
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	tests := []struct {
+		name string
+		path string
+		want []string
+	}{
+		{
+			name: "move",
+			path: "/api/v1/kanban/move?project_id=detent&issue_id=I_kw1&current_state=Todo&target_state=In+Progress&pr_number=42&identifier=digitaldrywood%2Fdetent%231&title=Dialog+card",
+			want: []string{
+				"Move card",
+				`hx-post="/api/v1/kanban/move"`,
+				`name="kanban_dialog" value="true"`,
+				`name="target_state"`,
+				`value="In Progress"`,
+			},
+		},
+		{
+			name: "issue comment",
+			path: "/api/v1/kanban/comment?project_id=detent&target=issue&issue_id=I_kw1&identifier=digitaldrywood%2Fdetent%231&title=Dialog+card",
+			want: []string{
+				"Comment on issue",
+				`hx-post="/api/v1/kanban/comment"`,
+				`name="kanban_dialog" value="true"`,
+				`name="target" value="issue"`,
+				`<textarea`,
+			},
+		},
+		{
+			name: "pull request comment",
+			path: "/api/v1/kanban/comment?project_id=detent&target=pr&pr_repository=digitaldrywood%2Ffrontend&pr_number=42&identifier=digitaldrywood%2Fdetent%231&title=Dialog+card",
+			want: []string{
+				"Comment on PR",
+				`name="target" value="pr"`,
+				`name="pr_repository" value="digitaldrywood/frontend"`,
+				`name="pr_number" value="42"`,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, tt.path, nil)
+			req.Header.Set("HX-Request", "true")
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(rec.Body.String(), want) {
+					t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+				}
+			}
+		})
+	}
+}
+
+func TestKanbanDialogValidationErrorsRenderInsideDialog(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kw1",
+			Identifier: "digitaldrywood/detent#1",
+			ProjectID:  "detent",
+			Title:      "Dialog card",
+			State:      "Todo",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	moveForm := url.Values{
+		"kanban_dialog": {"true"},
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw1"},
+		"current_state": {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", moveForm)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("move status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Header().Get("HX-Retarget") != "#kanban-dialog-content" {
+		t.Fatalf("move HX-Retarget = %q, want #kanban-dialog-content", rec.Header().Get("HX-Retarget"))
+	}
+	for _, want := range []string{"Target state is required.", `hx-post="/api/v1/kanban/move"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("move dialog body missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+
+	commentForm := url.Values{
+		"kanban_dialog": {"true"},
+		"project_id":    {"detent"},
+		"target":        {"issue"},
+		"issue_id":      {"I_kw1"},
+	}
+	rec = performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/comment", commentForm)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("comment status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Header().Get("HX-Retarget") != "#kanban-dialog-content" {
+		t.Fatalf("comment HX-Retarget = %q, want #kanban-dialog-content", rec.Header().Get("HX-Retarget"))
+	}
+	for _, want := range []string{"Comment body is required.", `hx-post="/api/v1/kanban/comment"`} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("comment dialog body missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
 func TestKanbanMoveRoutesProjectV2AndIssueFieldUpdates(t *testing.T) {
 	t.Parallel()
 
