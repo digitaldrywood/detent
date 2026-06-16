@@ -680,6 +680,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 				{
 					ID:             "review",
 					Identifier:     "digitaldrywood/detent#12",
+					URL:            "https://github.com/digitaldrywood/detent/issues/12",
 					ProjectID:      "detent",
 					Title:          "Review lane PR",
 					State:          "Human Review",
@@ -697,6 +698,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 				{
 					ID:             "done",
 					Identifier:     "digitaldrywood/detent#15",
+					URL:            "https://github.com/digitaldrywood/detent/issues/15",
 					ProjectID:      "detent",
 					Title:          "Done lane PR",
 					State:          "Done",
@@ -762,8 +764,8 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 		{Lane: "Todo", IssueNumber: "#11", Title: "Todo issue", TimeInStage: "6m 0s", Metadata: "No linked PR"},
 		{Lane: "In Progress", IssueNumber: "#13", Title: "Running issue", TimeInStage: "5m 0s", Labels: "bug", Assignees: "bob", Metadata: "No linked PR"},
 		{Lane: "Blocked", IssueNumber: "#14", Title: "Blocked issue", TimeInStage: "4m 0s", Blockers: "digitaldrywood/detent#401 In Progress", Metadata: "No linked PR"},
-		{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", URL: "https://github.com/digitaldrywood/detent/pull/142", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", Labels: "enhancement, stage:s6", Assignees: "alice", Blockers: "digitaldrywood/detent#10 Done", Metadata: "PR #142"},
-		{Lane: "Done", IssueNumber: "#145", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #145"},
+		{Lane: "Human Review", IssueNumber: "#12", Title: "Review lane PR", URL: "https://github.com/digitaldrywood/detent/issues/12", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", Labels: "enhancement, stage:s6", Assignees: "alice", Blockers: "digitaldrywood/detent#10 Done", Metadata: "PR #142"},
+		{Lane: "Done", IssueNumber: "#15", Title: "Done lane PR", URL: "https://github.com/digitaldrywood/detent/issues/15", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #145"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)

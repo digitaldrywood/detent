@@ -229,9 +229,13 @@ func (s *Server) dashboard(c echo.Context) error {
 
 func (s *Server) projectDashboard(c echo.Context) error {
 	ctx := c.Request().Context()
-	data, ok := s.projectDashboardData(ctx, projectRouteParam(c), s.latestSnapshot(ctx))
+	projectID, kanbanOnly := projectKanbanRouteParam(c)
+	data, ok := s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx))
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
+	}
+	if kanbanOnly {
+		return render(c, templates.ProjectKanbanPage(data))
 	}
 	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 	return render(c, templates.Dashboard(data))
@@ -246,7 +250,28 @@ func dashboardSidebarCollapsed(r *http.Request) bool {
 }
 
 func projectRouteParam(c echo.Context) string {
-	projectID := strings.Trim(strings.TrimSpace(c.Param("*")), "/")
+	return cleanProjectRouteParam(c.Param("*"))
+}
+
+func projectKanbanRouteParam(c echo.Context) (string, bool) {
+	projectID := strings.Trim(strings.TrimSpace(projectEscapedRouteParam(c)), "/")
+	if !strings.HasSuffix(projectID, "/kanban") {
+		return cleanProjectRouteParam(projectID), false
+	}
+	return cleanProjectRouteParam(strings.Trim(strings.TrimSuffix(projectID, "/kanban"), "/")), true
+}
+
+func projectEscapedRouteParam(c echo.Context) string {
+	const projectsPrefix = "/projects/"
+	path := c.Request().URL.EscapedPath()
+	if strings.HasPrefix(path, projectsPrefix) {
+		return strings.TrimPrefix(path, projectsPrefix)
+	}
+	return c.Param("*")
+}
+
+func cleanProjectRouteParam(projectID string) string {
+	projectID = strings.Trim(strings.TrimSpace(projectID), "/")
 	if unescaped, err := url.PathUnescape(projectID); err == nil {
 		return strings.Trim(strings.TrimSpace(unescaped), "/")
 	}
