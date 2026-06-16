@@ -162,6 +162,9 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 	if result.err != nil {
 		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", result.err, result.stdout, result.stderr)
 	}
+	if !strings.Contains(result.stdout, "Verified checksum for "+archiveName) {
+		t.Fatalf("install stdout = %q, want checksum verification", result.stdout)
+	}
 
 	binary := filepath.Join(installDir, "detent")
 	if _, err := os.Stat(binary); err != nil {
@@ -173,6 +176,41 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 	}
 	if stdout != "release-ok\n" {
 		t.Fatalf("installed release binary stdout = %q, want release-ok", stdout)
+	}
+}
+
+func TestInstallScriptReportsPathGuidanceWhenInstallDirIsMissingFromPath(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	tmp := t.TempDir()
+	source := filepath.Join(tmp, "source-detent")
+	if err := os.WriteFile(source, []byte("#!/usr/bin/env sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	installDir := filepath.Join(tmp, "bin")
+	stateDir := filepath.Join(tmp, "state")
+	env := append(os.Environ(),
+		"HOME="+tmp,
+		"PATH=/usr/bin:/bin",
+		"DETENT_INSTALL_SOURCE="+source,
+		"DETENT_INSTALL_DIR="+installDir,
+		"DETENT_STATE_DIR="+stateDir,
+		"DETENT_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
+	)
+
+	result := runInstall(t, root, env)
+	if result.err != nil {
+		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", result.err, result.stdout, result.stderr)
+	}
+	want := fmt.Sprintf("Add %s to PATH before running detent: export PATH=\"%s:$PATH\"", installDir, installDir)
+	if !strings.Contains(result.stdout, want) {
+		t.Fatalf("install stdout = %q, want PATH guidance %q", result.stdout, want)
 	}
 }
 

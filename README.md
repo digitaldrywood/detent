@@ -207,6 +207,11 @@ others as their automation terms allow.
 
 ## Install
 
+Use the release-asset installers for Windows and Linux first. They download the
+latest GitHub Release asset, verify the SHA-256 checksum, install the `detent`
+binary, and record installer metadata so `detent update` can safely manage the
+binary later. These paths do not require Homebrew or Go.
+
 Install the latest Windows release with PowerShell:
 
 ```powershell
@@ -215,19 +220,72 @@ irm https://raw.githubusercontent.com/digitaldrywood/detent/main/install.ps1 | i
 
 The PowerShell installer downloads the Windows release archive, verifies the
 SHA-256 checksum, installs `detent.exe` to `%LOCALAPPDATA%\detent\bin`, and
-adds that directory to the user PATH.
+adds that directory to the user PATH. Set `DETENT_INSTALL_DIR` to override the
+install directory.
 
-Install with Homebrew on macOS or Linux:
+Install the latest Linux release with the shell installer:
+
+```sh
+curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh
+```
+
+The shell installer downloads the Linux release archive, verifies the SHA-256
+checksum, installs `detent` to `/usr/local/bin` when writable or
+`$HOME/.local/bin` otherwise, and prints PATH guidance when the chosen install
+directory is not already on PATH. Set `DETENT_INSTALL_DIR` to override the
+install directory. Source checkouts can also run the repository-local shell
+installer:
+
+```sh
+./install.sh
+```
+
+Fallback options:
+
+Homebrew on macOS or Linux:
 
 ```sh
 brew install digitaldrywood/tap/detent
 ```
 
-Install with Go on any platform:
+Go on any platform:
 
 ```sh
 go install github.com/digitaldrywood/detent/cmd/detent@latest
 ```
+
+After installing, check for updates with:
+
+```sh
+detent update --check
+```
+
+Release-installer installs can update with `detent update`; use
+`detent update --yes` for non-interactive automation and
+`detent update --format json` for machine-readable status. The legacy
+`detent update --json` flag remains supported. On Windows, replacement is
+staged and completes after the running `detent.exe` exits. Homebrew installs
+delegate to `brew upgrade digitaldrywood/tap/detent`. Go-installed binaries offer an
+interactive choice: run
+`go install github.com/digitaldrywood/detent/cmd/detent@latest`, switch to the
+checksum-verified release binary, or abort. `detent update --yes` runs the Go
+install command for go-installed binaries; `detent update --from-release`
+switches the detected Go-installed binary to the release asset and pins future
+updates to release-binary management. Source builds still print the recommended
+command instead of overwriting the binary.
+
+CI runs the `Installer Smoke` job on Ubuntu and Windows against the current
+GitHub Release assets. The job runs `install.sh` and `install.ps1` in release
+mode, checks checksum output, confirms the requested install directory and
+installer lock metadata, then runs `detent update --check` and
+`detent update --yes` from the release-installer install.
+
+Release self-updates verify SHA256 checksums fetched from GitHub releases. The
+checksum verifier supports detached minisign signature assets named
+`<checksum>.minisig`, but enforcement is gated until the binary embeds the
+pinned minisign public key for the release stream. Until that release signing
+key is provisioned in #337, update integrity still depends on GitHub TLS plus
+the published checksum file.
 
 Requirements:
 
@@ -241,45 +299,6 @@ Requirements:
   `repo`, `read:org`, `read:project`, and write `project`. Boardless
   issue-field mode needs repository issue access plus organization issue-field
   read access; classic PATs use `repo` and `read:org`.
-
-macOS and Linux hosts can install the latest release with the shell installer:
-
-```sh
-curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent/main/install.sh | sh
-```
-
-Source checkouts can also run the repository-local shell installer:
-
-```sh
-./install.sh
-```
-
-After installing, check for updates with:
-
-```sh
-detent update --check
-```
-
-Release-installer installs can update with `detent update`; use
-`detent update --yes` for non-interactive automation and
-`detent update --format json` for machine-readable status. The legacy
-`detent update --json` flag remains supported. On Windows, replacement is staged and completes
-after the running `detent.exe` exits. Homebrew installs delegate to
-`brew upgrade digitaldrywood/tap/detent`. Go-installed binaries offer an
-interactive choice: run
-`go install github.com/digitaldrywood/detent/cmd/detent@latest`, switch to the
-checksum-verified release binary, or abort. `detent update --yes` runs the Go
-install command for go-installed binaries; `detent update --from-release`
-switches the detected Go-installed binary to the release asset and pins future
-updates to release-binary management. Source builds still print the recommended
-command instead of overwriting the binary.
-
-Release self-updates verify SHA256 checksums fetched from GitHub releases. The
-checksum verifier supports detached minisign signature assets named
-`<checksum>.minisig`, but enforcement is gated until the binary embeds the
-pinned minisign public key for the release stream. Until that release signing
-key is provisioned in #337, update integrity still depends on GitHub TLS plus
-the published checksum file.
 
 ## CLI exit codes
 
