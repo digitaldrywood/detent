@@ -647,6 +647,71 @@ templ DashboardSidebarContent(data DashboardShellData) {
 			}
 		}
 	}
+	if projectSidebarNavVisible(data) {
+		@sidebar.Separator()
+		@sidebar.Group(sidebar.GroupProps{
+			Attributes: templ.Attributes{
+				"aria-label": "Project views",
+			},
+		}) {
+			@sidebar.GroupLabel() {
+				<span>Project views</span>
+			}
+			@sidebar.Menu() {
+				@sidebar.MenuItem() {
+					@sidebar.MenuButton(sidebar.MenuButtonProps{
+						Href:       projectSidebarOverviewPath(data),
+						IsActive:   projectSidebarOverviewActive(data),
+						Tooltip:    "Project overview",
+						Attributes: projectSidebarViewAttributes(data, "overview"),
+					}) {
+						@icon.LayoutDashboard(icon.Props{Class: "size-4 shrink-0"})
+						<span>Overview</span>
+					}
+				}
+				@sidebar.MenuItem() {
+					@sidebar.MenuButton(sidebar.MenuButtonProps{
+						Href:       projectSidebarSectionPath(data, "project-kanban"),
+						Tooltip:    "Project Kanban",
+						Attributes: projectSidebarViewAttributes(data, "kanban"),
+					}) {
+						@icon.Kanban(icon.Props{Class: "size-4 shrink-0"})
+						<span>Kanban</span>
+					}
+				}
+				@sidebar.MenuItem() {
+					@sidebar.MenuButton(sidebar.MenuButtonProps{
+						Href:       projectSidebarSectionPath(data, "running-issues"),
+						Tooltip:    "Project runs",
+						Attributes: projectSidebarViewAttributes(data, "runs"),
+					}) {
+						@icon.Activity(icon.Props{Class: "size-4 shrink-0"})
+						<span>Runs</span>
+					}
+				}
+				@sidebar.MenuItem() {
+					@sidebar.MenuButton(sidebar.MenuButtonProps{
+						Href:       "/settings#settings-projects",
+						Tooltip:    "Project configuration",
+						Attributes: projectSidebarViewAttributes(data, "configuration"),
+					}) {
+						@icon.SlidersHorizontal(icon.Props{Class: "size-4 shrink-0"})
+						<span>Configuration</span>
+					}
+				}
+				@sidebar.MenuItem() {
+					@sidebar.MenuButton(sidebar.MenuButtonProps{
+						Href:       projectSidebarSectionPath(data, "dashboard-diagnostics"),
+						Tooltip:    "Project diagnostics",
+						Attributes: projectSidebarViewAttributes(data, "diagnostics"),
+					}) {
+						@icon.Gauge(icon.Props{Class: "size-4 shrink-0"})
+						<span>Diagnostics</span>
+					}
+				}
+			}
+		}
+	}
 	@sidebar.Separator()
 	@sidebar.Group() {
 		@sidebar.Menu() {
@@ -684,8 +749,8 @@ templ dashboardProjectOrderControls(item sidebarProjectItem) {
 			Class:   "size-6 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring",
 			Attributes: templ.Attributes{
 				"data-dashboard-project-move": "up",
-				"data-project-id":              item.ID,
-				"aria-label":                   "Move " + item.Name + " up",
+				"data-project-id":             item.ID,
+				"aria-label":                  "Move " + item.Name + " up",
 			},
 		}) {
 			@icon.ArrowUp(icon.Props{Class: "size-3.5"})
@@ -696,8 +761,8 @@ templ dashboardProjectOrderControls(item sidebarProjectItem) {
 			Class:   "size-6 text-muted-foreground hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:ring-sidebar-ring",
 			Attributes: templ.Attributes{
 				"data-dashboard-project-move": "down",
-				"data-project-id":              item.ID,
-				"aria-label":                   "Move " + item.Name + " down",
+				"data-project-id":             item.ID,
+				"aria-label":                  "Move " + item.Name + " down",
 			},
 		}) {
 			@icon.ArrowDown(icon.Props{Class: "size-3.5"})
@@ -789,7 +854,7 @@ templ SnapshotView(data DashboardData) {
 	@prPipelineSection(data.Snapshot)
 	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
-			<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+			<section id="running-issues" class="dashboard-panel scroll-mt-3 min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" tabindex="-1">
 				<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 					<div class="min-w-0">
 						@helpHeading2("Running issues", helpRunning, "running-issues")
@@ -964,7 +1029,7 @@ templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
 
 templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 	if len(board.AllLanes) > 0 {
-		<section class="dashboard-panel project-kanban min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Project Kanban">
+		<section id="project-kanban" class="dashboard-panel project-kanban scroll-mt-3 min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Project Kanban" tabindex="-1">
 			<div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
 				<div class="min-w-0">
 					<div class="inline-flex min-w-0 items-center gap-2">
@@ -1224,7 +1289,7 @@ templ LiveTick(timestamp time.Time) {
 }
 
 templ dashboardHealth(data DashboardData) {
-	<section class="flex flex-wrap items-center gap-2 rounded-md border border-border bg-card p-3 shadow-sm" aria-label="Dashboard health">
+	<section id="dashboard-diagnostics" class="scroll-mt-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-card p-3 shadow-sm" aria-label="Dashboard health" tabindex="-1">
 		<span class={ "inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + runtimeStatusClass(data.Snapshot) } aria-label="Runtime status">
 			<span class="h-2 w-2 rounded-full bg-current"></span>
 			<span>{ runtimeStatusLabel(data.Snapshot) }</span>
