@@ -2155,7 +2155,8 @@ func doctorRequiresLabelRead(cfg workflowconfig.Config) bool {
 }
 
 func doctorRequiresStatusWrite(cfg workflowconfig.Config) bool {
-	return len(cfg.Tracker.ActiveStates) > 0 ||
+	return doctorKanbanIntegrationEnabled(cfg) ||
+		len(cfg.Tracker.ActiveStates) > 0 ||
 		cfg.Agent.AutoPromote.Enabled ||
 		cfg.Tracker.DependencyAutoUnblock.Enabled
 }
@@ -2173,9 +2174,16 @@ func doctorRequiresLabelStatusWrite(cfg workflowconfig.Config) bool {
 }
 
 func doctorRequiresIssueCommentWrite(cfg workflowconfig.Config) bool {
-	return cfg.Agent.AutoPromote.Enabled ||
+	return doctorKanbanIntegrationEnabled(cfg) ||
+		cfg.Agent.AutoPromote.Enabled ||
 		cfg.Tracker.DependencyAutoUnblock.Enabled ||
 		doctorRequiresIssueClose(cfg)
+}
+
+func doctorKanbanIntegrationEnabled(cfg workflowconfig.Config) bool {
+	kanban := cfg.Server.Kanban
+	kanban.Normalize()
+	return kanban.Mode == workflowconfig.KanbanModeIntegration
 }
 
 func doctorRequiresIssueCommentsRead(cfg workflowconfig.Config) bool {
