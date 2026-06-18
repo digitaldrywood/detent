@@ -2018,6 +2018,98 @@ func TestRunDoctorCheckTimesOutUnresponsiveJob(t *testing.T) {
 	if checks[0].Name != "slow check" || !strings.Contains(checks[0].Detail, "timed out after 20ms") {
 		t.Fatalf("check = %#v, want timeout detail", checks[0])
 	}
+	if !strings.Contains(checks[0].Hint, "detent doctor --timeout 30s --port 0") {
+		t.Fatalf("Hint = %q, want retry command", checks[0].Hint)
+	}
+}
+
+func TestRunDoctorCheckTimeoutReportsCurrentInnerCheck(t *testing.T) {
+	t.Parallel()
+
+	checks := runDoctorCheck(context.Background(), doctorCheckJob{
+		Name:    "Project alpha checks",
+		Current: func() string { return "Project alpha GitHub readiness" },
+		Run: func(context.Context) []doctorCheck {
+			select {}
+		},
+	}, 20*time.Millisecond)
+
+	if len(checks) != 1 {
+		t.Fatalf("checks len = %d, want 1", len(checks))
+	}
+	for _, want := range []string{"timed out after 20ms", "Project alpha GitHub readiness"} {
+		if !strings.Contains(checks[0].Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", checks[0].Detail, want)
+		}
+	}
+}
+
+func TestDoctorProjectCheckJobTimeoutReportsCurrentInnerCheck(t *testing.T) {
+	t.Parallel()
+
+	workflow := validDoctorDependencyWorkflow(false)
+	releaseReadiness := make(chan struct{})
+	t.Cleanup(func() {
+		close(releaseReadiness)
+	})
+	jobs := doctorProjectCheckJobs(globalconfig.Config{
+		Projects: []globalconfig.Project{{ID: "alpha", Workflow: "WORKFLOW.md"}},
+	}, doctorDeps{
+		loadWorkflow: func(string) (workflowconfig.Workflow, error) {
+			return workflowconfig.Workflow{Config: workflow}, nil
+		},
+		gitWorkTree: func(context.Context, string) error {
+			return nil
+		},
+		gitRemoteURL: func(context.Context, string) (string, error) {
+			return "https://github.com/digitaldrywood/detent", nil
+		},
+		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			return &fakeDoctorAutoPromoteConnector{}, nil
+		},
+		githubReadiness: func(context.Context, ghconnector.Config, ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+			<-releaseReadiness
+			return nil, nil
+		},
+	}, RuntimeSecret{Value: "token", Source: "github_token"})
+	if len(jobs) != 1 {
+		t.Fatalf("jobs len = %d, want 1", len(jobs))
+	}
+
+	checks := runDoctorCheck(context.Background(), jobs[0], 20*time.Millisecond)
+
+	if len(checks) != 1 {
+		t.Fatalf("checks len = %d, want 1", len(checks))
+	}
+	for _, want := range []string{"Project alpha checks", "Project alpha GitHub readiness", "timed out after 20ms"} {
+		if !strings.Contains(checks[0].Name+" "+checks[0].Detail, want) {
+			t.Fatalf("timeout check = %#v, want containing %q", checks[0], want)
+		}
+	}
+}
+
+func TestDoctorNormalizedTimeoutDefaultsToLiveReadinessBudget(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name    string
+		timeout time.Duration
+		want    time.Duration
+	}{
+		{name: "zero uses default", want: 30 * time.Second},
+		{name: "negative uses default", timeout: -time.Second, want: 30 * time.Second},
+		{name: "positive is preserved", timeout: 250 * time.Millisecond, want: 250 * time.Millisecond},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := doctorNormalizedTimeout(tt.timeout); got != tt.want {
+				t.Fatalf("doctorNormalizedTimeout(%s) = %s, want %s", tt.timeout, got, tt.want)
+			}
+		})
+	}
 }
 
 func validDoctorWorkflow(sourceRoot string) workflowconfig.Config {
