@@ -670,6 +670,9 @@ func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue
 		merged.URL = refreshed.URL
 	}
 	merged.Closed = refreshed.Closed
+	if refreshed.ClosedReason != "" {
+		merged.ClosedReason = refreshed.ClosedReason
+	}
 	if refreshed.PRNumber != nil {
 		merged.PRNumber = refreshed.PRNumber
 	}
@@ -1449,12 +1452,13 @@ func (o *Orchestrator) completeTerminalRunning(
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
-	finalState := strings.TrimSpace(running.Issue.State)
+	issue := o.ensureClosedCompletedRunningIssueDone(ctx, issueID, running.Issue)
+	finalState := strings.TrimSpace(issue.State)
 	if finalState == "" {
 		finalState = FinalStateCompleted
 	}
 	state.Completed[issueID] = Completed{
-		Issue:       cloneIssue(running.Issue),
+		Issue:       cloneIssue(issue),
 		StartedAt:   running.StartedAt,
 		CompletedAt: completedAt,
 		FinalState:  finalState,
@@ -1464,7 +1468,28 @@ func (o *Orchestrator) completeTerminalRunning(
 	if diffStatsPresent(running.DiffStats) {
 		state.DiffStats[issueID] = running.DiffStats
 	}
-	o.reapWorkspace(ctx, state, running.Issue, workspaceReapReason(running.Issue, o.cfg.TerminalStates))
+	o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates))
+}
+
+func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context, issueID string, issue connector.Issue) connector.Issue {
+	if !issue.Closed || !closedReasonCompleted(issue.ClosedReason) {
+		return issue
+	}
+	targetState := doneStateName(o.cfg.TerminalStates)
+	if strings.TrimSpace(targetState) == "" {
+		return issue
+	}
+	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+		if o.logger != nil {
+			o.logger.Warn("mark closed completed running issue done failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
+		}
+		return issue
+	}
+	if o.logger != nil {
+		o.logger.Info("marked closed completed running issue done", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState)
+	}
+	issue.State = targetState
+	return issue
 }
 
 func terminalCompletedAt(issue connector.Issue, terminalStates []string, fallback time.Time) time.Time {

@@ -107,6 +107,78 @@ func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(
 	}
 }
 
+func TestConnectorFetchLabelIssuesPrefersCanonicalDoneOverCancelledAlias(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Adone&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_485","number":485,"title":"Installer packages","body":"","state":"closed","state_reason":"completed","html_url":"https://github.com/digitaldrywood/detent/issues/485","assignees":[],"labels":[{"name":"detent:done"},{"name":"release"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		TerminalStates:     []string{"Done", "Cancelled"},
+		StateMap:           map[string]string{"Cancelled": "Done"},
+	})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Done"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+	if got[0].State != "Done" {
+		t.Fatalf("State = %q, want Done", got[0].State)
+	}
+	if !got[0].Closed || got[0].ClosedReason != "completed" {
+		t.Fatalf("closed metadata = (%v, %q), want closed completed", got[0].Closed, got[0].ClosedReason)
+	}
+}
+
+func TestConnectorFetchLabelIssueStateByIDMapsClosedCompletedToDone(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_487","number":487,"repository":{"nameWithOwner":"digitaldrywood/detent"}}]}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/487",
+			body:   `{"node_id":"I_487","number":487,"title":"Windows packages","body":"","state":"closed","state_reason":"completed","html_url":"https://github.com/digitaldrywood/detent/issues/487","assignees":[],"labels":[{"name":"release"}]}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		TerminalStates:     []string{"Done", "Cancelled"},
+		StateMap:           map[string]string{"Cancelled": "Done"},
+	})
+
+	got, err := c.FetchIssueStatesByIDs(context.Background(), []string{"I_487"})
+	if err != nil {
+		t.Fatalf("FetchIssueStatesByIDs() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() len = %d, want 1", len(got))
+	}
+	if got[0].State != "Done" {
+		t.Fatalf("State = %q, want Done", got[0].State)
+	}
+	if !got[0].Closed || got[0].ClosedReason != "completed" {
+		t.Fatalf("closed metadata = (%v, %q), want closed completed", got[0].Closed, got[0].ClosedReason)
+	}
+}
+
 func TestConnectorUpdateIssueStateReplacesStatusLabels(t *testing.T) {
 	t.Parallel()
 
