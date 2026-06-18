@@ -17,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -37,7 +38,7 @@ var ErrDoctorFailed = errors.New("doctor found failed checks")
 
 const (
 	doctorCommandTimeout = 5 * time.Second
-	doctorCheckTimeout   = 5 * time.Second
+	doctorCheckTimeout   = 30 * time.Second
 )
 
 var (
@@ -121,13 +122,31 @@ type doctorOutputReport struct {
 }
 
 type doctorCheckJob struct {
-	Name string
-	Run  func(context.Context) []doctorCheck
+	Name    string
+	Current func() string
+	Run     func(context.Context) []doctorCheck
 }
 
 type doctorCheckResult struct {
 	Index  int
 	Checks []doctorCheck
+}
+
+type doctorCheckProgress struct {
+	mu      sync.Mutex
+	current string
+}
+
+func (p *doctorCheckProgress) Set(current string) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.current = strings.TrimSpace(current)
+}
+
+func (p *doctorCheckProgress) Current() string {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.current
 }
 
 type doctorConfig struct {
@@ -399,10 +418,25 @@ func runDoctorCheck(ctx context.Context, job doctorCheckJob, timeout time.Durati
 		return []doctorCheck{{
 			Name:   job.Name,
 			Status: doctorFail,
-			Detail: fmt.Sprintf("timed out after %s: %v", timeout, checkCtx.Err()),
-			Hint:   "Rerun detent doctor; if this repeats, check network access, GitHub availability, local subprocesses, and SQLite locks.",
+			Detail: doctorTimeoutDetail(job, timeout, checkCtx.Err()),
+			Hint:   doctorTimeoutHint(),
 		}}
 	}
+}
+
+func doctorTimeoutDetail(job doctorCheckJob, timeout time.Duration, err error) string {
+	current := ""
+	if job.Current != nil {
+		current = strings.TrimSpace(job.Current())
+	}
+	if current != "" && current != strings.TrimSpace(job.Name) {
+		return fmt.Sprintf("timed out after %s while running %s: %v", timeout, current, err)
+	}
+	return fmt.Sprintf("timed out after %s: %v", timeout, err)
+}
+
+func doctorTimeoutHint() string {
+	return "Rerun detent doctor --timeout 30s --port 0; if this repeats, check network access, GitHub availability, local subprocesses, and SQLite locks."
 }
 
 func doctorNormalizedTimeout(timeout time.Duration) time.Duration {
@@ -628,10 +662,12 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 	jobs := make([]doctorCheckJob, 0, len(cfg.Projects))
 	for _, project := range cfg.Projects {
 		id := doctorProjectID(project)
+		progress := &doctorCheckProgress{}
 		jobs = append(jobs, doctorCheckJob{
-			Name: "Project " + id + " checks",
+			Name:    "Project " + id + " checks",
+			Current: progress.Current,
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return checkDoctorProject(jobCtx, project, deps, githubToken)
+				return checkDoctorProjectWithProgress(jobCtx, project, deps, githubToken, progress.Set)
 			},
 		})
 	}
@@ -639,12 +675,29 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 }
 
 func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps doctorDeps, githubToken RuntimeSecret) []doctorCheck {
+	return checkDoctorProjectWithProgress(ctx, project, deps, githubToken, nil)
+}
+
+func checkDoctorProjectWithProgress(
+	ctx context.Context,
+	project globalconfig.Project,
+	deps doctorDeps,
+	githubToken RuntimeSecret,
+	setCurrent func(string),
+) []doctorCheck {
 	id := doctorProjectID(project)
+	setDoctorCurrentCheck := func(name string) {
+		if setCurrent != nil {
+			setCurrent(name)
+		}
+	}
+	workflowCheckName := "Project " + id + " workflow"
+	setDoctorCurrentCheck(workflowCheckName)
 	workflow, err := deps.loadWorkflow(project.Workflow)
 	if err != nil {
 		return []doctorCheck{
 			{
-				Name:   "Project " + id + " workflow",
+				Name:   workflowCheckName,
 				Status: doctorFail,
 				Detail: fmt.Sprintf("%s: %v", project.Workflow, err),
 				Hint:   "Fix the WORKFLOW.md path or YAML frontmatter.",
@@ -661,7 +714,7 @@ func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps 
 	if err := workflow.Config.Validate(); err != nil {
 		return []doctorCheck{
 			{
-				Name:   "Project " + id + " workflow",
+				Name:   workflowCheckName,
 				Status: doctorFail,
 				Detail: fmt.Sprintf("%s: %v", project.Workflow, err),
 				Hint:   "Fix invalid WORKFLOW.md frontmatter.",
@@ -677,23 +730,28 @@ func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps 
 
 	checks := []doctorCheck{
 		{
-			Name:   "Project " + id + " workflow",
+			Name:   workflowCheckName,
 			Status: doctorOK,
 			Detail: doctorWorkflowDetail(project.Workflow, project, workflow.Config),
 		},
 	}
 	if workflow.Config.Agent.AutoPromote.Enabled {
+		setDoctorCurrentCheck("Project " + id + " auto-promote")
 		checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
 	}
 	if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub {
+		setDoctorCurrentCheck("Project " + id + " dependency auto-unblock")
 		checks = append(checks, checkDoctorDependencyAutoUnblock(ctx, id, workflow.Config, deps))
+		setDoctorCurrentCheck("Project " + id + " blocked recovery")
 		checks = append(checks, checkDoctorBlockedRecovery(ctx, id, workflow.Config, deps))
 	}
 
+	sourceRepoCheckName := "Project " + id + " source repo"
+	setDoctorCurrentCheck(sourceRepoCheckName)
 	sourceRoot := projectSourceRoot(project, workflow.Config)
 	if sourceRoot == "" {
 		return append(checks, doctorCheck{
-			Name:   "Project " + id + " source repo",
+			Name:   sourceRepoCheckName,
 			Status: doctorFail,
 			Detail: "source root is not configured",
 			Hint:   "Set workspace.source_root, project workdir, or workspace.root to an existing git checkout.",
@@ -702,7 +760,7 @@ func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps 
 	expandedSourceRoot, err := expandDoctorWorkspacePath(sourceRoot)
 	if err != nil {
 		return append(checks, doctorCheck{
-			Name:   "Project " + id + " source repo",
+			Name:   sourceRepoCheckName,
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s: %v", sourceRoot, err),
 			Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
@@ -710,18 +768,19 @@ func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps 
 	}
 	if err := deps.gitWorkTree(ctx, expandedSourceRoot); err != nil {
 		return append(checks, doctorCheck{
-			Name:   "Project " + id + " source repo",
+			Name:   sourceRepoCheckName,
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s: %v", expandedSourceRoot, err),
 			Hint:   "Set workspace.source_root or project workdir to an existing git checkout.",
 		})
 	}
 	checks = append(checks, doctorCheck{
-		Name:   "Project " + id + " source repo",
+		Name:   sourceRepoCheckName,
 		Status: doctorOK,
 		Detail: expandedSourceRoot + " is a git worktree",
 	})
 	if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub {
+		setDoctorCurrentCheck("Project " + id + " GitHub readiness")
 		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot)...)
 	}
 	return checks
