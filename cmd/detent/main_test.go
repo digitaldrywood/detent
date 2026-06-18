@@ -475,9 +475,53 @@ func TestHandleShutdownSignalHardExitsOnForceInterrupt(t *testing.T) {
 	}
 }
 
+func TestHandleShutdownSignalSuppressesHandledNotices(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	interrupts := &shutdownInterruptStub{
+		requests: []cli.ShutdownRequest{
+			cli.ShutdownRequestDrain,
+			cli.ShutdownRequestForce,
+		},
+		suppressNotices: true,
+	}
+	var output bytes.Buffer
+	var exits []int
+
+	if done := handleShutdownSignal(interrupts, cancel, &output, func(code int) {
+		exits = append(exits, code)
+	}); done {
+		t.Fatal("first interrupt stopped signal loop")
+	}
+	if got := output.String(); got != "" {
+		t.Fatalf("first interrupt wrote suppressed notice:\n%s", got)
+	}
+	select {
+	case <-ctx.Done():
+		t.Fatal("first interrupt canceled root context")
+	default:
+	}
+
+	if done := handleShutdownSignal(interrupts, cancel, &output, func(code int) {
+		exits = append(exits, code)
+	}); !done {
+		t.Fatal("force interrupt did not stop signal loop")
+	}
+	if got := output.String(); got != "" {
+		t.Fatalf("force interrupt wrote suppressed notice:\n%s", got)
+	}
+	if len(exits) != 1 || exits[0] != cli.ExitGeneral {
+		t.Fatalf("force interrupt exit codes = %v, want [%d]", exits, cli.ExitGeneral)
+	}
+}
+
 type shutdownInterruptStub struct {
-	requests []cli.ShutdownRequest
-	calls    int
+	requests        []cli.ShutdownRequest
+	suppressNotices bool
+	calls           int
 }
 
 func (s *shutdownInterruptStub) RequestInterruptKind() (cli.ShutdownRequest, bool) {
@@ -488,6 +532,10 @@ func (s *shutdownInterruptStub) RequestInterruptKind() (cli.ShutdownRequest, boo
 	request := s.requests[s.calls]
 	s.calls++
 	return request, request != 0
+}
+
+func (s *shutdownInterruptStub) SignalNoticesSuppressed() bool {
+	return s.suppressNotices
 }
 
 func collectCommandsWithoutExamples(cmd *cobra.Command, missing *[]string) {

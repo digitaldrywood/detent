@@ -39,9 +39,10 @@ const (
 )
 
 type ShutdownController struct {
-	requests          chan ShutdownRequest
-	active            atomic.Bool
-	shutdownRequested atomic.Bool
+	requests                chan ShutdownRequest
+	active                  atomic.Bool
+	shutdownRequested       atomic.Bool
+	signalNoticesSuppressed atomic.Bool
 }
 
 func NewShutdownController() *ShutdownController {
@@ -73,6 +74,10 @@ func (c *ShutdownController) Active() bool {
 	return c != nil && c.active.Load()
 }
 
+func (c *ShutdownController) SignalNoticesSuppressed() bool {
+	return c != nil && c.signalNoticesSuppressed.Load()
+}
+
 func (c *ShutdownController) RequestInterrupt() bool {
 	_, handled := c.RequestInterruptKind()
 	return handled
@@ -99,6 +104,17 @@ func (c *ShutdownController) activate() func() {
 	return func() {
 		c.active.Store(false)
 		c.shutdownRequested.Store(false)
+	}
+}
+
+func (c *ShutdownController) suppressSignalNotices(suppress bool) func() {
+	if c == nil {
+		return func() {}
+	}
+	previous := c.signalNoticesSuppressed.Load()
+	c.signalNoticesSuppressed.Store(suppress)
+	return func() {
+		c.signalNoticesSuppressed.Store(previous)
 	}
 }
 
@@ -142,6 +158,8 @@ func runWithShutdown(ctx context.Context, cfg runningShutdownConfig, serve shutd
 	}
 	deactivate := cfg.Controller.activate()
 	defer deactivate()
+	restoreSignalNotices := cfg.Controller.suppressSignalNotices(cfg.TerminalDashboard)
+	defer restoreSignalNotices()
 
 	serveCtx, cancelServe := context.WithCancel(ctx)
 	defer cancelServe()

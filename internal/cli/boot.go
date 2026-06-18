@@ -161,6 +161,12 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 
 	logger := slog.Default()
+	if useDashboard {
+		logger.Info("resolved global config", "path", cfg.Global.Path, "rule", cfg.ConfigPathRule)
+		for _, warning := range cfg.Runtime.Warnings {
+			logger.Warn(warning.Detail, "check", warning.Name, "hint", warning.Hint)
+		}
+	}
 	runtimeStore, err := openRuntimeStore(runCtx, cfg)
 	if err != nil {
 		return err
@@ -494,8 +500,7 @@ func serveWithTerminalDashboard(ctx context.Context, server *web.Server, listene
 		errs <- serve(runCtx, server, listener)
 	}()
 	go func() {
-		_, err := tea.NewProgram(model, tea.WithAltScreen(), tea.WithContext(runCtx), tea.WithoutSignalHandler()).Run()
-		errs <- err
+		errs <- runTerminalDashboardProgram(runCtx, tea.NewProgram(model, terminalDashboardProgramOptions()...))
 	}()
 
 	first := <-errs
@@ -521,9 +526,44 @@ func terminalDashboardError(first error, second error) error {
 }
 
 func unexpectedTerminalDashboardError(err error) error {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, http.ErrServerClosed) {
+	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, http.ErrServerClosed) || errors.Is(err, tea.ErrProgramKilled) {
 		return nil
 	}
+	return err
+}
+
+type terminalDashboardProgram interface {
+	Run() (tea.Model, error)
+	Kill()
+}
+
+func terminalDashboardProgramOptions() []tea.ProgramOption {
+	return []tea.ProgramOption{
+		tea.WithOutput(newTerminalDashboardOutputFilter(os.Stdout)),
+		tea.WithoutSignalHandler(),
+		tea.WithoutBracketedPaste(),
+	}
+}
+
+func runTerminalDashboardProgram(ctx context.Context, program terminalDashboardProgram) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if program == nil {
+		return nil
+	}
+
+	done := make(chan struct{})
+	go func() {
+		select {
+		case <-ctx.Done():
+			program.Kill()
+		case <-done:
+		}
+	}()
+
+	_, err := program.Run()
+	close(done)
 	return err
 }
 
