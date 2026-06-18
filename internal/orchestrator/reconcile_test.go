@@ -231,6 +231,71 @@ func TestTickReapsTerminalRunningIssue(t *testing.T) {
 	}
 }
 
+func TestTickMarksClosedCompletedRunningIssueDoneBeforeReaping(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 16, 13, 43, 15, 0, time.UTC)
+	startedAt := now.Add(-15 * time.Minute)
+	closedAt := now.Add(-46 * time.Second)
+	issue := connector.Issue{
+		ID:         "issue-closed-completed",
+		Identifier: "digitaldrywood/detent#487",
+		Title:      "Windows package managers",
+		State:      "Merging",
+		URL:        "https://github.com/digitaldrywood/detent/issues/487",
+	}
+	closed := cloneIssue(issue)
+	closed.State = "Done"
+	closed.Closed = true
+	closed.ClosedReason = "completed"
+	closed.StageUpdatedAt = &closedAt
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress", "Human Review", "Rework", "Merging"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:     cloneIssue(issue),
+		StartedAt: startedAt,
+		Tokens:    CodexTotals{TotalTokens: 42, RuntimeSeconds: 90},
+		cancel:    cancel,
+	}
+
+	tracker := &runningStateConnector{issues: []connector.Issue{closed}}
+	reaper := &cleanupSweepReaper{}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		reaper:    reaper,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.updates, []statusUpdate{{issueID: issue.ID, state: "Done"}}; !slices.Equal(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	completed, ok := state.Completed[issue.ID]
+	if !ok {
+		t.Fatalf("Completed[%q] missing", issue.ID)
+	}
+	if completed.FinalState != "Done" || completed.Issue.State != "Done" {
+		t.Fatalf("completed state = (%q, %q), want Done/Done", completed.Issue.State, completed.FinalState)
+	}
+	if len(reaper.issues) != 1 || reaper.issues[0].State != "Done" {
+		t.Fatalf("reaped issues = %#v, want Done issue", reaper.issues)
+	}
+	select {
+	case <-runCtx.Done():
+	default:
+		t.Fatal("running context was not cancelled")
+	}
+}
+
 func TestTickCompletesTerminalRunningIssueDuringWorkspaceCleanupSweep(t *testing.T) {
 	t.Parallel()
 
@@ -439,6 +504,7 @@ type runningStateConnector struct {
 	issuesByState []connector.Issue
 	err           error
 	requestedIDs  []string
+	updates       []statusUpdate
 }
 
 func (c *runningStateConnector) Name() string {
@@ -465,7 +531,8 @@ func (c *runningStateConnector) CreateComment(context.Context, string, string) e
 	return nil
 }
 
-func (c *runningStateConnector) UpdateIssueState(context.Context, string, string) error {
+func (c *runningStateConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
+	c.updates = append(c.updates, statusUpdate{issueID: issueID, state: state})
 	return nil
 }
 

@@ -2987,12 +2987,29 @@ func (c *Connector) githubToDetentState(githubState string) string {
 	if githubState == "" {
 		return ""
 	}
+	if state := c.configuredDetentState(githubState); state != "" {
+		return state
+	}
 	for detentState, mapped := range c.stateMap {
-		if mapped == githubState {
-			return detentState
+		if normalizeStateName(mapped) == normalizeStateName(githubState) {
+			return strings.TrimSpace(detentState)
 		}
 	}
 	return githubState
+}
+
+func (c *Connector) configuredDetentState(stateName string) string {
+	stateName = normalizeStateName(stateName)
+	if stateName == "" {
+		return ""
+	}
+	for _, candidate := range c.configuredStatusStates() {
+		candidate = strings.TrimSpace(candidate)
+		if normalizeStateName(candidate) == stateName {
+			return candidate
+		}
+	}
+	return ""
 }
 
 func (c *Connector) githubIssueStateToDetentState(state string) string {
