@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"io"
@@ -14,6 +15,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -153,6 +156,10 @@ func TestTerminalDashboardError(t *testing.T) {
 			second: context.Canceled,
 			want:   context.Canceled,
 		},
+		{
+			name:  "terminal program killed during shutdown is clean",
+			first: tea.ErrProgramKilled,
+		},
 	}
 
 	for _, tt := range tests {
@@ -201,6 +208,52 @@ func TestResolveBootConfigUsesWorkflowRefForServerHost(t *testing.T) {
 
 	if got.Host != "127.0.0.8" {
 		t.Fatalf("Host = %q, want ref-backed host", got.Host)
+	}
+}
+
+func TestRunTerminalDashboardProgramKillsOnContextCancel(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	program := newTerminalDashboardProgramProbe()
+	errs := make(chan error, 1)
+	go func() {
+		errs <- runTerminalDashboardProgram(ctx, program)
+	}()
+
+	select {
+	case <-program.started:
+	case <-time.After(time.Second):
+		t.Fatal("program did not start")
+	}
+	cancel()
+
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("runTerminalDashboardProgram() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for terminal dashboard program to exit")
+	}
+	if !program.killCalled() {
+		t.Fatal("terminal dashboard program was not killed")
+	}
+}
+
+func TestTerminalDashboardProgramOptionsDoNotUseAltScreen(t *testing.T) {
+	t.Parallel()
+
+	var output bytes.Buffer
+	opts := append(terminalDashboardProgramOptions(),
+		tea.WithInput(nil),
+		tea.WithOutput(&output),
+	)
+	if _, err := tea.NewProgram(terminalDashboardOptionModel{}, opts...).Run(); err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if got := output.String(); strings.Contains(got, "\x1b[?1049") {
+		t.Fatalf("terminal dashboard output used alt-screen escape sequences:\n%q", got)
 	}
 }
 
@@ -619,6 +672,56 @@ Boot workflow.
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
+}
+
+type terminalDashboardProgramProbe struct {
+	started chan struct{}
+	killed  chan struct{}
+	once    sync.Once
+	mu      sync.Mutex
+	killSet bool
+}
+
+func newTerminalDashboardProgramProbe() *terminalDashboardProgramProbe {
+	return &terminalDashboardProgramProbe{
+		started: make(chan struct{}),
+		killed:  make(chan struct{}),
+	}
+}
+
+func (p *terminalDashboardProgramProbe) Run() (tea.Model, error) {
+	close(p.started)
+	<-p.killed
+	return nil, nil
+}
+
+func (p *terminalDashboardProgramProbe) Kill() {
+	p.mu.Lock()
+	p.killSet = true
+	p.mu.Unlock()
+	p.once.Do(func() {
+		close(p.killed)
+	})
+}
+
+func (p *terminalDashboardProgramProbe) killCalled() bool {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.killSet
+}
+
+type terminalDashboardOptionModel struct{}
+
+func (terminalDashboardOptionModel) Init() tea.Cmd {
+	return tea.Quit
+}
+
+func (terminalDashboardOptionModel) Update(tea.Msg) (tea.Model, tea.Cmd) {
+	return terminalDashboardOptionModel{}, nil
+}
+
+func (terminalDashboardOptionModel) View() string {
+	return "detent"
 }
 
 func writeBootGlobalConfig(t *testing.T, path string, projects []globalconfig.Project) {

@@ -20,6 +20,10 @@ type shutdownInterruptRequester interface {
 	RequestInterruptKind() (cli.ShutdownRequest, bool)
 }
 
+type signalNoticeSuppressor interface {
+	SignalNoticesSuppressed() bool
+}
+
 func notifyShutdownRequests(controller *cli.ShutdownController, cancelRoot context.CancelFunc, noticeOut io.Writer, hardExit func(int)) func() {
 	if controller == nil {
 		return func() {}
@@ -62,7 +66,9 @@ func handleShutdownSignal(controller shutdownInterruptRequester, cancelRoot cont
 		request, handled = controller.RequestInterruptKind()
 	}
 	slog.Default().Debug("shutdown interrupt request", "operation", "shutdown_interrupt_request", "source", "signal", "request", request.String(), "handled", handled)
-	writeSignalShutdownNotice(noticeOut, request)
+	if !handled || !signalNoticesSuppressed(controller) {
+		writeSignalShutdownNotice(noticeOut, request)
+	}
 	if request == cli.ShutdownRequestForce {
 		hardExitSignal(hardExit)
 		return true
@@ -74,6 +80,11 @@ func handleShutdownSignal(controller shutdownInterruptRequester, cancelRoot cont
 		cancelRoot()
 	}
 	return true
+}
+
+func signalNoticesSuppressed(controller shutdownInterruptRequester) bool {
+	suppressor, ok := controller.(signalNoticeSuppressor)
+	return ok && suppressor.SignalNoticesSuppressed()
 }
 
 func hardExitSignal(hardExit func(int)) {

@@ -587,7 +587,7 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 	backlogAt := now.Add(-9 * time.Minute)
 	todoAt := now.Add(-8 * time.Minute)
 	reviewAt := now.Add(-3 * time.Minute)
-	html := renderDashboard(t, templates.DashboardData{
+	html := renderProjectKanbanPage(t, templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
 		ProjectID:     "detent",
@@ -642,7 +642,7 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 		},
 	})
 
-	if !strings.Contains(html, `id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML"`) {
+	if !strings.Contains(html, `id="snapshot" class="sse-surface grid min-w-0 content-start" sse-swap="snapshot" hx-swap="morph:innerHTML"`) {
 		t.Fatalf("dashboard snapshot must keep morph swap:\n%s", html)
 	}
 
@@ -653,44 +653,59 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 		`data-dashboard-view="runs"`,
 		`data-dashboard-view="configuration"`,
 		`data-dashboard-view="diagnostics"`,
-		`href="/projects/detent#project-kanban"`,
-		`href="/projects/detent#running-issues"`,
-		`href="/settings#settings-projects"`,
-		`href="/projects/detent#dashboard-diagnostics"`,
+		`href="/projects/detent/kanban"`,
+		`href="/projects/detent/runs"`,
+		`href="/projects/detent/configuration"`,
+		`href="/projects/detent/diagnostics"`,
 		`id="project-kanban"`,
-		`id="running-issues"`,
-		`id="dashboard-diagnostics"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("project navigation missing %q:\n%s", want, html)
 		}
 	}
-	overviewIndex := strings.Index(html, `data-dashboard-view="overview"`)
-	if overviewIndex < 0 {
-		t.Fatalf("project overview nav missing:\n%s", html)
+	if strings.Contains(html, `href="/projects/detent#project-kanban"`) {
+		t.Fatalf("project navigation still links Kanban to dashboard anchor:\n%s", html)
 	}
-	overviewNav := html[max(0, overviewIndex-256):min(len(html), overviewIndex+256)]
+	kanbanIndex := strings.Index(html, `data-dashboard-view="kanban"`)
+	if kanbanIndex < 0 {
+		t.Fatalf("project Kanban nav missing:\n%s", html)
+	}
+	kanbanNav := html[max(0, kanbanIndex-256):min(len(html), kanbanIndex+256)]
 	for _, want := range []string{
 		`data-tui-sidebar-active="true"`,
-		`aria-current="location"`,
+		`aria-current="page"`,
 	} {
-		if !strings.Contains(overviewNav, want) {
-			t.Fatalf("project overview nav missing active marker %q:\n%s", want, overviewNav)
+		if !strings.Contains(kanbanNav, want) {
+			t.Fatalf("project Kanban nav missing active marker %q:\n%s", want, kanbanNav)
 		}
 	}
 
-	section := dashboardSection(t, html, `aria-label="Project Kanban"`, `aria-label="Pull request pipeline"`)
+	section := projectKanbanSection(t, html)
 	for _, want := range []string{
 		"Project Kanban",
 		"Read-only",
 		`data-project-kanban-visibility-key="project:detent`,
 		`data-project-kanban-visibility-menu`,
+		`data-preserve-details="project-kanban-visibility-project-detent"`,
 		`data-project-kanban-visibility-checkbox`,
 		`name="visible_lane" value="in-progress"`,
 		`data-project-kanban-visibility-action="all"`,
 		`data-project-kanban-visibility-action="active"`,
+		`data-project-kanban-visibility-close`,
+		`aria-label="Close lane visibility"`,
+		`data-project-kanban-lane-title="Todo"`,
+		`data-project-kanban-lane-pinned="false"`,
+		`data-project-kanban-pin-toggle`,
+		`data-project-kanban-pin-active="false"`,
+		`data-project-kanban-pin-icon="unpinned"`,
+		`data-project-kanban-pin-icon="pinned"`,
+		`aria-label="Pin Todo lane"`,
 		`data-project-kanban-empty-lane`,
 		`data-project-kanban-lane-visible="false"`,
+		`[grid-template-columns:repeat(auto-fill,minmax(14rem,16rem))]`,
+		"Todo (1)",
+		"In Progress (0)",
+		"Human Review (1)",
 		`data-preserve-scroll="project-kanban-human-review"`,
 		`href="https://github.com/digitaldrywood/detent/pull/512"`,
 		"#512",
@@ -738,7 +753,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 	prLinkedAt := now.Add(-4 * time.Minute)
 	blockedAt := now.Add(-3 * time.Minute)
 	reviewAt := now.Add(-2 * time.Minute)
-	html := renderDashboard(t, templates.DashboardData{
+	html := renderProjectKanbanPage(t, templates.DashboardData{
 		Title:       "Detent",
 		ProjectID:   "detent",
 		ProjectName: "Detent",
@@ -811,9 +826,12 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 		},
 	})
 
-	section := dashboardSection(t, html, `aria-label="Project Kanban"`, `aria-label="Pull request pipeline"`)
+	section := projectKanbanSection(t, html)
 	for _, want := range []string{
 		"project-kanban-card-compact",
+		`project-kanban-lane grid min-h-[12rem] min-w-0 content-start rounded-md border border-border bg-muted/60 p-2`,
+		`project-kanban-lane-scroll mt-2 grid max-h-[32rem] gap-1.5 overflow-y-auto pr-1`,
+		`project-kanban-card project-kanban-card-compact min-w-0 rounded-md border border-border bg-card p-1.5`,
 		`data-kanban-card-details`,
 		`data-preserve-details="project-kanban-details-digitaldrywood-detent-500"`,
 		`data-kanban-card-expanded`,
@@ -875,7 +893,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 func TestDashboardProjectKanbanVisibilityControllerSurvivesHTMXSwaps(t *testing.T) {
 	t.Parallel()
 
-	html := renderDashboard(t, templates.DashboardData{
+	html := renderProjectKanbanPage(t, templates.DashboardData{
 		Title:       "Detent",
 		ProjectID:   "detent",
 		ProjectName: "Detent",
@@ -900,6 +918,18 @@ func TestDashboardProjectKanbanVisibilityControllerSurvivesHTMXSwaps(t *testing.
 		`localStorage`,
 		`htmx:afterSwap`,
 		`htmx:afterSettle`,
+		`htmx:sseBeforeMessage`,
+		`function visibilitySnapshotTarget(event)`,
+		`details[data-preserve-details][open]`,
+		`function closeVisibilityMenusExcept(activeMenu)`,
+		`[data-project-kanban-visibility-close]`,
+		`function toggleLanePin(button)`,
+		`[data-project-kanban-pin-toggle]`,
+		`data-project-kanban-lane-pinned`,
+		`aria-pressed`,
+		`event.key === "Escape"`,
+		`document.addEventListener("toggle"`,
+		`event.preventDefault()`,
 		`data-project-kanban-lane-visible`,
 		`data-project-kanban-visibility-key`,
 	} {
@@ -912,7 +942,7 @@ func TestDashboardProjectKanbanVisibilityControllerSurvivesHTMXSwaps(t *testing.
 func TestDashboardProjectKanbanVisibilityKeyIgnoresLiveExtraLanes(t *testing.T) {
 	t.Parallel()
 
-	baseHTML := renderDashboard(t, templates.DashboardData{
+	baseHTML := renderProjectKanbanPage(t, templates.DashboardData{
 		ProjectID:   "detent",
 		ProjectName: "Detent",
 		Kanban: templates.KanbanData{
@@ -930,7 +960,7 @@ func TestDashboardProjectKanbanVisibilityKeyIgnoresLiveExtraLanes(t *testing.T) 
 			},
 		},
 	})
-	extraLaneHTML := renderDashboard(t, templates.DashboardData{
+	extraLaneHTML := renderProjectKanbanPage(t, templates.DashboardData{
 		ProjectID:   "detent",
 		ProjectName: "Detent",
 		Kanban: templates.KanbanData{
@@ -998,7 +1028,7 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 		},
 	}
 
-	html := renderDashboard(t, data)
+	html := renderProjectKanbanPage(t, data)
 	for _, want := range []string{
 		`aria-live="polite"`,
 		`id="kanban-action-dialog"`,
@@ -1021,7 +1051,7 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 	}
 
 	data.Kanban.Mode = "read_only"
-	html = renderDashboard(t, data)
+	html = renderProjectKanbanPage(t, data)
 	for _, forbidden := range []string{
 		`hx-post="/api/v1/kanban/move"`,
 		`hx-post="/api/v1/kanban/comment"`,
@@ -1040,7 +1070,7 @@ func TestDashboardKanbanIntegrationFiltersMoveTargets(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
-	html := renderDashboard(t, templates.DashboardData{
+	html := renderProjectKanbanPage(t, templates.DashboardData{
 		Title:       "Detent",
 		ProjectID:   "detent",
 		ProjectName: "Detent",
@@ -1066,7 +1096,7 @@ func TestDashboardKanbanIntegrationFiltersMoveTargets(t *testing.T) {
 		},
 	})
 
-	section := dashboardSection(t, html, `aria-label="Project Kanban"`, `aria-label="Pull request pipeline"`)
+	section := projectKanbanSection(t, html)
 	for _, want := range []string{
 		`data-kanban-drop-key="blocked"`,
 		`data-kanban-drop-key="cancelled"`,
@@ -1238,6 +1268,9 @@ func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
 		`data-tui-sidebar-target="dashboard-sidebar"`,
 		`href="/projects/detent"`,
 		`href="/settings"`,
+		`function applyProjectSidebarActiveState()`,
+		`window.addEventListener("hashchange", applyProjectSidebarActiveState)`,
+		`[data-dashboard-view-nav], [data-dashboard-static-nav]`,
 		`data-tui-sidebar-active="true" aria-current="page"`,
 		`data-shell-test-child`,
 	} {
@@ -2093,6 +2126,16 @@ func renderDashboard(t *testing.T, data templates.DashboardData) string {
 	return buf.String()
 }
 
+func renderProjectKanbanPage(t *testing.T, data templates.DashboardData) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := templates.ProjectKanbanPage(data).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	return buf.String()
+}
+
 func renderDashboardShell(t *testing.T, data templates.DashboardShellData) string {
 	t.Helper()
 
@@ -2118,6 +2161,20 @@ func dashboardSection(t *testing.T, html string, start string, end string) strin
 	endIndex := strings.Index(html[startIndex:], end)
 	if endIndex < 0 {
 		t.Fatalf("section end %q after %q missing:\n%s", end, start, html[startIndex:])
+	}
+	return html[startIndex : startIndex+endIndex]
+}
+
+func projectKanbanSection(t *testing.T, html string) string {
+	t.Helper()
+
+	startIndex := strings.Index(html, `aria-label="Project Kanban"`)
+	if startIndex < 0 {
+		t.Fatalf("project Kanban section missing:\n%s", html)
+	}
+	endIndex := strings.Index(html[startIndex:], `<script>`)
+	if endIndex < 0 {
+		return html[startIndex:]
 	}
 	return html[startIndex : startIndex+endIndex]
 }

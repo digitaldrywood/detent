@@ -288,6 +288,83 @@ func TestSidebarProjectItemsUseAttentionFirstDefaultOrder(t *testing.T) {
 	}
 }
 
+func TestProjectSidebarViewActiveStates(t *testing.T) {
+	t.Parallel()
+
+	views := []string{"overview", "kanban", "runs", "configuration", "diagnostics"}
+	tests := []struct {
+		name      string
+		activeNav string
+		wantView  string
+	}{
+		{name: "default", wantView: "overview"},
+		{name: "project", activeNav: "project", wantView: "overview"},
+		{name: "kanban", activeNav: "kanban", wantView: "kanban"},
+		{name: "runs", activeNav: "runs", wantView: "runs"},
+		{name: "settings", activeNav: "settings", wantView: "configuration"},
+		{name: "configuration", activeNav: "configuration", wantView: "configuration"},
+		{name: "diagnostics", activeNav: "diagnostics", wantView: "diagnostics"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			data := DashboardShellData{ProjectID: "detent", ActiveNav: tt.activeNav}
+			for _, view := range views {
+				want := view == tt.wantView
+				if got := projectSidebarViewActive(data, view); got != want {
+					t.Fatalf("projectSidebarViewActive(%q, %q) = %t, want %t", tt.activeNav, view, got, want)
+				}
+			}
+		})
+	}
+
+	if projectSidebarViewActive(DashboardShellData{ActiveNav: "runs"}, "runs") {
+		t.Fatalf("projectSidebarViewActive() must be false without project context")
+	}
+}
+
+func TestSidebarStaticNavActiveRespectsProjectContext(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		data       DashboardShellData
+		id         string
+		wantActive bool
+	}{
+		{
+			name:       "global settings",
+			data:       DashboardShellData{ActiveNav: "settings"},
+			id:         "settings",
+			wantActive: true,
+		},
+		{
+			name:       "project settings belongs to configuration",
+			data:       DashboardShellData{ActiveNav: "settings", ProjectID: "detent"},
+			id:         "settings",
+			wantActive: false,
+		},
+		{
+			name:       "project reports stays static",
+			data:       DashboardShellData{ActiveNav: "reports", ProjectID: "detent"},
+			id:         "reports",
+			wantActive: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := sidebarStaticNavActive(tt.data, tt.id); got != tt.wantActive {
+				t.Fatalf("sidebarStaticNavActive(%q) = %t, want %t", tt.id, got, tt.wantActive)
+			}
+		})
+	}
+}
+
 func TestProjectSmallMultiplesGridClass(t *testing.T) {
 	t.Parallel()
 

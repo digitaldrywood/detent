@@ -55,6 +55,8 @@ type snapshotMsg struct {
 
 type subscriptionClosedMsg struct{}
 
+type shutdownInterruptMsg struct{}
+
 func NewModel(ctx context.Context, snapshots *hub.Hub[telemetry.Snapshot], opts ...Option) (Model, error) {
 	if snapshots == nil {
 		return Model{}, ErrNilHub
@@ -120,18 +122,24 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, waitForSnapshot(m.updates)
 	case subscriptionClosedMsg:
 		return m, nil
+	case shutdownInterruptMsg:
+		if m.interrupt != nil {
+			m.interrupt()
+		}
+		return m, nil
 	case tea.KeyMsg:
 		switch msg.String() {
 		case "ctrl+c":
 			if m.interrupt != nil {
 				m.interrupts++
+				notice := shutdownForceNotice
 				if m.interrupts == 1 {
-					m.shutdownNote = shutdownDrainNotice
-				} else {
-					m.shutdownNote = shutdownForceNotice
+					notice = shutdownDrainNotice
 				}
-				m.interrupt()
-				return m, nil
+				m.shutdownNote = notice
+				return m, tea.Sequence(tea.Println("Shutdown: "+notice), func() tea.Msg {
+					return shutdownInterruptMsg{}
+				})
 			}
 			m.Close()
 			return m, tea.Quit

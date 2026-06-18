@@ -44,68 +44,69 @@ templ Dashboard(data DashboardData) {
 			<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
 				@SnapshotView(data)
 			</div>
-			@dashboardCharts(data)
+			if !isProjectDashboard(data) {
+				@dashboardCharts(data)
+			}
 		</div>
 	}
 }
 
 templ ProjectKanbanPage(data DashboardData) {
-	@ProjectKanbanShell(DashboardShellDataFromDashboard(data)) {
-		<div class="mx-auto grid min-h-screen w-full max-w-[100rem] content-start gap-3 px-3 py-3 sm:px-4 lg:px-6">
-			<header class="min-w-0 border-b border-border py-2">
-				<div class="flex min-w-0 flex-wrap items-center gap-x-3 gap-y-2">
-					<a class="inline-flex min-h-8 min-w-0 items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1 text-sm font-semibold text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ projectDashboardPath(data.ProjectID) }>
-						@icon.LayoutDashboard(icon.Props{Class: "size-4 shrink-0"})
-						<span class="truncate">{ projectDisplayName(data) }</span>
-					</a>
-					<span class="inline-flex min-h-8 items-center gap-1 rounded-full border border-accent-soft bg-accent-soft px-2.5 py-1 text-xs font-semibold text-accent">
-						@icon.Kanban(icon.Props{Class: "size-3.5 shrink-0"})
-						<span>Kanban</span>
-					</span>
-					<div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
-						<span class="truncate">{ connectorName(data) }</span>
-						@dashboardTopbarDivider()
-						<span id="live-tick" class="sse-tick min-w-0 truncate font-mono" sse-swap="tick" hx-swap="innerHTML settle:120ms">{ generatedAtLabel(data.Snapshot) }</span>
-					</div>
-				</div>
-			</header>
-			<div id="snapshot" class="sse-surface grid min-w-0 gap-3" sse-swap="snapshot" hx-swap="morph:innerHTML">
-				@ProjectKanbanSnapshot(data)
+	@DashboardShell(ProjectKanbanShellDataFromDashboard(data)) {
+		<div id="snapshot" class="sse-surface grid min-w-0 content-start" sse-swap="snapshot" hx-swap="morph:innerHTML">
+			@ProjectKanbanSnapshot(data)
+		</div>
+	}
+}
+
+templ ProjectKanbanSnapshot(data DashboardData) {
+	@projectKanbanSection(data, projectKanbanBoardView(data))
+}
+
+templ ProjectRunsPage(data DashboardData) {
+	@DashboardShell(ProjectRunsShellDataFromDashboard(data)) {
+		<div class="mx-auto grid w-full max-w-7xl content-start gap-4 sm:gap-5">
+			@projectDetailHeader(data, "Runs")
+			<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
+				@ProjectRunsSnapshot(data)
 			</div>
 		</div>
 	}
 }
 
-templ ProjectKanbanShell(data DashboardShellData) {
-	<!DOCTYPE html>
-	<html lang="en">
-		<head>
-			<meta charset="utf-8"/>
-			<meta name="viewport" content="width=device-width, initial-scale=1"/>
-			<meta name="color-scheme" content="light dark"/>
-			<meta name="application-name" content={ applicationName(data.ApplicationName) }/>
-			<title>{ pageTitle(data) }</title>
-			<script>
-				document.documentElement.classList.toggle("dark", Boolean(window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches))
-			</script>
-			@helpScript()
-			<link rel="icon" type="image/svg+xml" href={ faviconPath(data.Assets) }/>
-			<link rel="stylesheet" href={ stylesheetPath(data.Assets) }/>
-			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
-			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
-			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
-		</head>
-		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">
-			@helpTooltipHost()
-			<main class="min-h-screen bg-background" hx-ext="sse, morph" sse-connect={ projectKanbanEventsPath(data) }>
-				{ children... }
-			</main>
-		</body>
-	</html>
+templ ProjectDiagnosticsPage(data DashboardData) {
+	@DashboardShell(ProjectDiagnosticsShellDataFromDashboard(data)) {
+		<div class="mx-auto grid w-full max-w-7xl content-start gap-4 sm:gap-5">
+			@projectDetailHeader(data, "Diagnostics")
+			<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
+				@ProjectDiagnosticsSnapshot(data)
+			</div>
+			@dashboardCharts(data)
+		</div>
+	}
 }
 
-templ ProjectKanbanSnapshot(data DashboardData) {
-	@projectKanbanSection(data, projectKanbanBoardView(data))
+templ projectDetailHeader(data DashboardData, title string) {
+	<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+		<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+			@dashboardMobileSidebarTrigger()
+			<div class="min-w-0">
+				<h1 class="truncate text-sm font-semibold text-foreground">{ projectDisplayName(data) } / { title }</h1>
+			</div>
+			<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+				if projectExternalURL(data) != "" {
+					<a class="inline-flex size-8 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ projectExternalURL(data) } target="_blank" rel="noopener noreferrer" title={ projectExternalLinkLabel(data) } aria-label={ projectExternalLinkLabel(data) }>
+						@icon.ExternalLink(icon.Props{Class: "size-4"})
+					</a>
+				}
+				<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
+				@dashboardTopbarDivider()
+				<span class="truncate">{ connectorName(data) }</span>
+				@dashboardTopbarDivider()
+				<span id="live-tick" class="sse-tick min-w-0 truncate font-mono" sse-swap="tick" hx-swap="innerHTML settle:120ms">{ generatedAtLabel(data.Snapshot) }</span>
+			</div>
+		</div>
+	</header>
 }
 
 templ DashboardShell(data DashboardShellData) {
@@ -199,6 +200,84 @@ templ dashboardSidebarFilterScript() {
 					entry.hidden = query !== "" && !name.includes(query);
 				});
 			});
+		})();
+	</script>
+}
+
+templ dashboardSidebarActiveScript() {
+	<script>
+		(function() {
+			function sidebarContent() {
+				return document.getElementById("dashboard-sidebar-live");
+			}
+
+			function projectViewForLocation() {
+				const path = window.location.pathname;
+				if (path.endsWith("/kanban")) {
+					return "kanban";
+				}
+				if (path.endsWith("/runs")) {
+					return "runs";
+				}
+				if (path.endsWith("/diagnostics")) {
+					return "diagnostics";
+				}
+				if (path.endsWith("/configuration") || (path === "/settings" && new URLSearchParams(window.location.search).get("project"))) {
+					return "configuration";
+				}
+				if (!path.startsWith("/projects/")) {
+					return "";
+				}
+				if (window.location.hash === "#running-issues") {
+					return "runs";
+				}
+				if (window.location.hash === "#dashboard-diagnostics") {
+					return "diagnostics";
+				}
+				return "overview";
+			}
+
+			function setActive(link, active) {
+				if (!(link instanceof HTMLElement)) {
+					return;
+				}
+				if (active) {
+					link.dataset.tuiSidebarActive = "true";
+					link.setAttribute("aria-current", "page");
+					return;
+				}
+				link.removeAttribute("data-tui-sidebar-active");
+				link.removeAttribute("aria-current");
+			}
+
+			function applyProjectSidebarActiveState() {
+				const view = projectViewForLocation();
+				if (!view) {
+					return;
+				}
+				const root = sidebarContent();
+				if (!root) {
+					return;
+				}
+				root.querySelectorAll("[data-dashboard-view-nav], [data-dashboard-static-nav]").forEach(function(link) {
+					setActive(link, false);
+				});
+				setActive(root.querySelector("[data-dashboard-view='" + view + "']"), true);
+			}
+
+			document.addEventListener("click", function(event) {
+				const link = event.target instanceof Element ? event.target.closest("[data-dashboard-view-nav]") : null;
+				if (link) {
+					window.requestAnimationFrame(applyProjectSidebarActiveState);
+				}
+			});
+			window.addEventListener("hashchange", applyProjectSidebarActiveState);
+			document.addEventListener("htmx:afterSettle", applyProjectSidebarActiveState);
+			if (document.readyState === "loading") {
+				document.addEventListener("DOMContentLoaded", applyProjectSidebarActiveState);
+			} else {
+				applyProjectSidebarActiveState();
+			}
 		})();
 	</script>
 }
@@ -647,6 +726,7 @@ templ dashboardSidebar(data DashboardShellData) {
 		@dashboardProjectOrderFooter()
 	}
 	@dashboardSidebarFilterScript()
+	@dashboardSidebarActiveScript()
 	@dashboardSidebarProjectOrderScript()
 }
 
@@ -749,7 +829,8 @@ templ DashboardSidebarContent(data DashboardShellData) {
 				}
 				@sidebar.MenuItem() {
 					@sidebar.MenuButton(sidebar.MenuButtonProps{
-						Href:       projectSidebarSectionPath(data, "project-kanban"),
+						Href:       projectSidebarKanbanPath(data),
+						IsActive:   projectSidebarKanbanActive(data),
 						Tooltip:    "Project Kanban",
 						Attributes: projectSidebarViewAttributes(data, "kanban"),
 					}) {
@@ -757,31 +838,34 @@ templ DashboardSidebarContent(data DashboardShellData) {
 						<span>Kanban</span>
 					}
 				}
-				@sidebar.MenuItem() {
-					@sidebar.MenuButton(sidebar.MenuButtonProps{
-						Href:       projectSidebarSectionPath(data, "running-issues"),
-						Tooltip:    "Project runs",
-						Attributes: projectSidebarViewAttributes(data, "runs"),
+					@sidebar.MenuItem() {
+						@sidebar.MenuButton(sidebar.MenuButtonProps{
+							Href:       projectSidebarRunsPath(data),
+							IsActive:   projectSidebarRunsActive(data),
+							Tooltip:    "Project runs",
+							Attributes: projectSidebarViewAttributes(data, "runs"),
 					}) {
 						@icon.Activity(icon.Props{Class: "size-4 shrink-0"})
 						<span>Runs</span>
 					}
 				}
-				@sidebar.MenuItem() {
-					@sidebar.MenuButton(sidebar.MenuButtonProps{
-						Href:       "/settings#settings-projects",
-						Tooltip:    "Project configuration",
-						Attributes: projectSidebarViewAttributes(data, "configuration"),
+					@sidebar.MenuItem() {
+						@sidebar.MenuButton(sidebar.MenuButtonProps{
+							Href:       projectSidebarConfigurationPath(data),
+							IsActive:   projectSidebarConfigurationActive(data),
+							Tooltip:    "Project configuration",
+							Attributes: projectSidebarViewAttributes(data, "configuration"),
 					}) {
 						@icon.SlidersHorizontal(icon.Props{Class: "size-4 shrink-0"})
 						<span>Configuration</span>
 					}
 				}
-				@sidebar.MenuItem() {
-					@sidebar.MenuButton(sidebar.MenuButtonProps{
-						Href:       projectSidebarSectionPath(data, "dashboard-diagnostics"),
-						Tooltip:    "Project diagnostics",
-						Attributes: projectSidebarViewAttributes(data, "diagnostics"),
+					@sidebar.MenuItem() {
+						@sidebar.MenuButton(sidebar.MenuButtonProps{
+							Href:       projectSidebarDiagnosticsPath(data),
+							IsActive:   projectSidebarDiagnosticsActive(data),
+							Tooltip:    "Project diagnostics",
+							Attributes: projectSidebarViewAttributes(data, "diagnostics"),
 					}) {
 						@icon.Gauge(icon.Props{Class: "size-4 shrink-0"})
 						<span>Diagnostics</span>
@@ -795,10 +879,10 @@ templ DashboardSidebarContent(data DashboardShellData) {
 		@sidebar.Menu() {
 			@sidebar.MenuItem() {
 				@sidebar.MenuButton(sidebar.MenuButtonProps{
-					Href:       "/reports",
+					Href:       sidebarReportsPath(data),
 					IsActive:   sidebarStaticNavActive(data, "reports"),
 					Tooltip:    "Reports",
-					Attributes: sidebarAriaCurrent(sidebarStaticNavActive(data, "reports")),
+					Attributes: sidebarStaticNavAttributes(data, "reports"),
 				}) {
 					@icon.ChartNoAxesCombined(icon.Props{Class: "size-4 shrink-0"})
 					<span>Reports</span>
@@ -806,10 +890,10 @@ templ DashboardSidebarContent(data DashboardShellData) {
 			}
 			@sidebar.MenuItem() {
 				@sidebar.MenuButton(sidebar.MenuButtonProps{
-					Href:       "/settings",
+					Href:       sidebarSettingsPath(data),
 					IsActive:   sidebarStaticNavActive(data, "settings"),
 					Tooltip:    "Settings",
-					Attributes: sidebarAriaCurrent(sidebarStaticNavActive(data, "settings")),
+					Attributes: sidebarStaticNavAttributes(data, "settings"),
 				}) {
 					@icon.Settings(icon.Props{Class: "size-4 shrink-0"})
 					<span>Settings</span>
@@ -906,8 +990,16 @@ templ dashboardCharts(data DashboardData) {
 }
 
 templ SnapshotView(data DashboardData) {
+	if isProjectDashboard(data) {
+		@ProjectOverviewSnapshot(data)
+	} else {
+		@FleetSnapshot(data)
+	}
+}
+
+templ ProjectOverviewSnapshot(data DashboardData) {
 	@dashboardHealth(data)
-	if isProjectDashboard(data) && data.ProjectPaused {
+	if data.ProjectPaused {
 		<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm" aria-label="Paused project">
 			<div class="flex items-start gap-3">
 				<span class="mt-1 h-2.5 w-2.5 rounded-full bg-warning"></span>
@@ -921,94 +1013,63 @@ templ SnapshotView(data DashboardData) {
 	if data.Snapshot.GeneratedAt.IsZero() {
 		@snapshotLoading()
 	}
+	@statStrip(data.Snapshot)
+	@projectOverviewSummarySection(data)
+}
+
+templ ProjectRunsSnapshot(data DashboardData) {
+	if data.Snapshot.GeneratedAt.IsZero() {
+		@snapshotLoading()
+	}
+	@statStrip(data.Snapshot)
+	@agentActivityTimeline(data.Snapshot)
+	@prPipelineSection(data.Snapshot)
+	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)] lg:gap-5">
+		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
+			@runningIssuesSection(data)
+			<section class="dashboard-section-grid grid min-w-0 gap-4 xl:grid-cols-2">
+				@retryQueueSection(data.Snapshot)
+				@blockedSessionsSection(data.Snapshot)
+			</section>
+			@recentSessionsSection(data.Snapshot)
+		</div>
+	</section>
+}
+
+templ ProjectDiagnosticsSnapshot(data DashboardData) {
+	@dashboardHealth(data)
+	if data.Snapshot.GeneratedAt.IsZero() {
+		@snapshotLoading()
+	}
+	@statStrip(data.Snapshot)
+	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
+			@boardHealthSection(data.Snapshot)
+			@cycleTimeSection(data.Snapshot.CycleTime)
+			@budgetCard(data.Snapshot)
+		</div>
+		<aside class="dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5">
+			@throughputCard(data)
+			@rateLimitsCard(data.Snapshot.RateLimits)
+			@graphQLBudgetCard(data)
+			@tokenCard(data)
+			@lifetimeCard(data.Snapshot.LifetimeTotals)
+		</aside>
+	</section>
+}
+
+templ FleetSnapshot(data DashboardData) {
+	@dashboardHealth(data)
+	if data.Snapshot.GeneratedAt.IsZero() {
+		@snapshotLoading()
+	}
 	@agentActivityTimeline(data.Snapshot)
 	@statStrip(data.Snapshot)
-	if !isProjectDashboard(data) {
-		@projectSmallMultiplesSection(data)
-	}
-	if isProjectDashboard(data) {
-		@projectKanbanSection(data, projectKanbanBoardView(data))
-	}
+	@projectSmallMultiplesSection(data)
 	@prPipelineSection(data.Snapshot)
 	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
-			<section id="running-issues" class="dashboard-panel scroll-mt-3 min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" tabindex="-1">
-				<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
-					<div class="min-w-0">
-						@helpHeading2("Running issues", helpRunning, "running-issues")
-						<p class="text-sm text-muted-foreground">Active Codex sessions and their latest known activity.</p>
-					</div>
-					<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ formatCount(runningCount(data.Snapshot)) }</span>
-				</div>
-				if len(data.Snapshot.Running) == 0 {
-					<div class="mt-4">
-						if runningCount(data.Snapshot) > 0 {
-							@dashboardEmptyState("Running session details are unavailable.", "The summary count is live, but detailed agent rows have not arrived in this snapshot.", "bg-accent")
-						} else {
-							@dashboardEmptyState("No active issue sessions.", "New agent sessions will appear as Detent dispatches work.", "bg-accent")
-						}
-					</div>
-				} else {
-					<div class="mt-4 grid gap-3 sm:hidden">
-						for i, row := range data.Snapshot.Running {
-							@runningIssueMobileCard(row, i, data.Snapshot.GeneratedAt)
-						}
-					</div>
-					<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
-						<div class="overflow-x-auto" data-preserve-scroll="running-issues">
-							<table class="dashboard-table w-full min-w-[76rem] table-fixed border-collapse text-sm">
-								<thead class="bg-muted/70">
-									<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
-										<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
-										<th class="w-[9rem] px-3 py-3 font-medium">State</th>
-										<th class="w-[10rem] px-3 py-3 font-medium">
-											@helpInlineLabel("Runtime / turns", helpAgeTurn, "running-table", "")
-										</th>
-										<th class="px-3 py-3 font-medium">
-											@helpInlineLabel("Codex update", helpEvent, "running-table", "")
-										</th>
-										<th class="w-[8rem] px-3 py-3 font-medium">
-											@helpInlineLabel("Diff", helpDiff, "running-table", "")
-										</th>
-										<th class="w-[10rem] px-3 py-3 font-medium">
-											@helpInlineLabel("Tokens", helpTokens, "running-table", "")
-										</th>
-										<th class="w-[9rem] px-3 py-3 font-medium">
-											@helpInlineLabel("Session", helpSession, "running-table", "")
-										</th>
-									</tr>
-								</thead>
-								<tbody>
-									for i, row := range data.Snapshot.Running {
-										<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
-											<td class="px-3 py-4 align-top">
-												@issueCell(row.Issue, "running", i, true)
-											</td>
-											<td class="px-3 py-4 align-top">
-												<span class="inline-flex rounded-full bg-accent-soft px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
-											</td>
-											<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
-											<td class="px-3 py-4 align-top">
-												@runningActivityCell(row, "running", i, data.Snapshot.GeneratedAt)
-											</td>
-											<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ formatDiffStat(row) }</td>
-											<td class="px-3 py-4 align-top">
-												<div class="grid gap-1 font-mono">
-													<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
-													<span class="text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
-												</div>
-											</td>
-											<td class="px-3 py-4 align-top">
-												@sessionCopyButton(row.SessionID)
-											</td>
-										</tr>
-									}
-								</tbody>
-							</table>
-						</div>
-					</div>
-				}
-			</section>
+			@runningIssuesSection(data)
 			<section class="dashboard-section-grid grid min-w-0 gap-4 xl:grid-cols-2">
 				@retryQueueSection(data.Snapshot)
 				@blockedSessionsSection(data.Snapshot)
@@ -1027,6 +1088,120 @@ templ SnapshotView(data DashboardData) {
 		@boardHealthSection(data.Snapshot)
 		@cycleTimeSection(data.Snapshot.CycleTime)
 		@budgetCard(data.Snapshot)
+	</section>
+}
+
+templ projectOverviewSummarySection(data DashboardData) {
+	<section class="grid min-w-0 gap-3 sm:grid-cols-2 xl:grid-cols-4" aria-label="Project overview links">
+		for _, card := range projectOverviewCards(data) {
+			@projectOverviewCardView(card)
+		}
+	</section>
+}
+
+templ projectOverviewCardView(card projectOverviewCard) {
+	<a class="dashboard-card group grid min-w-0 gap-3 rounded-md border border-border bg-card p-4 shadow-sm transition-colors hover:border-accent hover:bg-muted/40 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.Href } aria-label={ card.Title }>
+		<div class="flex min-w-0 items-start justify-between gap-3">
+			<div class="inline-flex min-w-0 items-center gap-2">
+				<span class="inline-flex size-8 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground group-hover:text-accent">
+					if card.ID == "kanban" {
+						@icon.Kanban(icon.Props{Class: "size-4"})
+					} else if card.ID == "runs" {
+						@icon.Activity(icon.Props{Class: "size-4"})
+					} else if card.ID == "diagnostics" {
+						@icon.Gauge(icon.Props{Class: "size-4"})
+					} else {
+						@icon.ChartNoAxesCombined(icon.Props{Class: "size-4"})
+					}
+				</span>
+				<span class="truncate text-sm font-semibold text-foreground">{ card.Title }</span>
+			</div>
+			<span class={ "mt-3 h-2.5 w-2.5 shrink-0 rounded-full " + card.DotClass }></span>
+		</div>
+		<div class="min-w-0">
+			<div class="truncate font-mono text-2xl font-semibold text-foreground">{ card.Value }</div>
+			<div class="mt-1 truncate text-sm text-muted-foreground">{ card.Detail }</div>
+		</div>
+	</a>
+}
+
+templ runningIssuesSection(data DashboardData) {
+	<section id="running-issues" class="dashboard-panel scroll-mt-3 min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" tabindex="-1">
+		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+			<div class="min-w-0">
+				@helpHeading2("Running issues", helpRunning, "running-issues")
+				<p class="text-sm text-muted-foreground">Active Codex sessions and their latest known activity.</p>
+			</div>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ formatCount(runningCount(data.Snapshot)) }</span>
+		</div>
+		if len(data.Snapshot.Running) == 0 {
+			<div class="mt-4">
+				if runningCount(data.Snapshot) > 0 {
+					@dashboardEmptyState("Running session details are unavailable.", "The summary count is live, but detailed agent rows have not arrived in this snapshot.", "bg-accent")
+				} else {
+					@dashboardEmptyState("No active issue sessions.", "New agent sessions will appear as Detent dispatches work.", "bg-accent")
+				}
+			</div>
+		} else {
+			<div class="mt-4 grid gap-3 sm:hidden">
+				for i, row := range data.Snapshot.Running {
+					@runningIssueMobileCard(row, i, data.Snapshot.GeneratedAt)
+				}
+			</div>
+			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
+				<div class="overflow-x-auto" data-preserve-scroll="running-issues">
+					<table class="dashboard-table w-full min-w-[76rem] table-fixed border-collapse text-sm">
+						<thead class="bg-muted/70">
+							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
+								<th class="w-[9rem] px-3 py-3 font-medium">State</th>
+								<th class="w-[10rem] px-3 py-3 font-medium">
+									@helpInlineLabel("Runtime / turns", helpAgeTurn, "running-table", "")
+								</th>
+								<th class="px-3 py-3 font-medium">
+									@helpInlineLabel("Codex update", helpEvent, "running-table", "")
+								</th>
+								<th class="w-[8rem] px-3 py-3 font-medium">
+									@helpInlineLabel("Diff", helpDiff, "running-table", "")
+								</th>
+								<th class="w-[10rem] px-3 py-3 font-medium">
+									@helpInlineLabel("Tokens", helpTokens, "running-table", "")
+								</th>
+								<th class="w-[9rem] px-3 py-3 font-medium">
+									@helpInlineLabel("Session", helpSession, "running-table", "")
+								</th>
+							</tr>
+						</thead>
+						<tbody>
+							for i, row := range data.Snapshot.Running {
+								<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
+									<td class="px-3 py-4 align-top">
+										@issueCell(row.Issue, "running", i, true)
+									</td>
+									<td class="px-3 py-4 align-top">
+										<span class="inline-flex rounded-full bg-accent-soft px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
+									</td>
+									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
+									<td class="px-3 py-4 align-top">
+										@runningActivityCell(row, "running", i, data.Snapshot.GeneratedAt)
+									</td>
+									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ formatDiffStat(row) }</td>
+									<td class="px-3 py-4 align-top">
+										<div class="grid gap-1 font-mono">
+											<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
+											<span class="text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
+										</div>
+									</td>
+									<td class="px-3 py-4 align-top">
+										@sessionCopyButton(row.SessionID)
+									</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			</div>
+		}
 	</section>
 }
 
@@ -1127,13 +1302,13 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 						<span class="inline-flex min-h-8 items-center rounded-full border border-accent-soft bg-accent-soft px-2.5 py-1 text-xs font-semibold text-accent">Read-only</span>
 					}
 					<span class="inline-flex min-h-8 items-center rounded-full bg-muted px-2.5 py-1 font-mono text-xs font-medium text-muted-foreground">{ board.TotalLabel } cards</span>
-					@projectKanbanVisibilityDropdown(board)
+					@projectKanbanVisibilityDropdown(board, projectKanbanVisibilityKey(data, board))
 				</div>
 			</div>
 			if kanbanIntegrationEnabled(data) {
 				<div id="kanban-feedback" role="status" aria-live="polite" class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Ready.</div>
 			}
-			<div class="project-kanban-lanes mt-4 grid min-w-0 gap-3 md:grid-cols-2 xl:grid-cols-4">
+			<div class="project-kanban-lanes mt-3 grid min-w-0 items-start justify-start gap-2 [grid-template-columns:repeat(auto-fill,minmax(14rem,16rem))]">
 				for _, lane := range board.AllLanes {
 					@projectKanbanLaneView(data, lane)
 				}
@@ -1145,19 +1320,24 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 	}
 }
 
-templ projectKanbanVisibilityDropdown(board projectKanbanBoard) {
-	<details class="relative" data-project-kanban-visibility-menu>
+templ projectKanbanVisibilityDropdown(board projectKanbanBoard, visibilityKey string) {
+	<details class="relative" data-project-kanban-visibility-menu data-preserve-details={ projectKanbanVisibilityDetailsID(visibilityKey) }>
 		<summary class="inline-flex min-h-8 cursor-pointer list-none items-center gap-1.5 rounded-md border border-border bg-card px-2.5 py-1 text-xs font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
 			@icon.Eye(icon.Props{Class: "size-3.5 shrink-0"})
 			<span>Lane visibility</span>
 			<span class="rounded-full bg-muted px-1.5 py-0.5 font-mono" data-project-kanban-visibility-count>{ projectKanbanVisibilityCountLabel(board) }</span>
 		</summary>
 		<div class="absolute right-0 z-50 mt-2 w-[14rem] rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-sm">
-			<div class="grid grid-cols-2 gap-1 border-b border-border pb-2">
-				<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="all">All lanes</button>
-				<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="active">Active only</button>
+			<div class="mb-2 flex items-center justify-between gap-2 border-b border-border pb-2">
+				<div class="grid min-w-0 flex-1 grid-cols-2 gap-1">
+					<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="all">All lanes</button>
+					<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="active">Active only</button>
+				</div>
+				<button type="button" class="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-close aria-label="Close lane visibility">
+					@icon.X(icon.Props{Class: "size-4"})
+				</button>
 			</div>
-			<div class="mt-2 grid gap-1">
+			<div class="grid gap-1">
 				for _, lane := range board.AllLanes {
 					<label class="flex min-h-8 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted">
 						<input class="size-4 shrink-0 accent-accent disabled:opacity-50" type="checkbox" name="visible_lane" value={ lane.ID } checked?={ lane.DefaultVisible } disabled?={ lane.DefaultVisible } data-project-kanban-visibility-checkbox data-project-kanban-visibility-default={ projectKanbanBool(lane.DefaultVisible) } autocomplete="off"/>
@@ -1205,6 +1385,10 @@ templ projectKanbanVisibilityScript() {
 				return lane.dataset.projectKanbanLaneEmpty === "true";
 			}
 
+			function laneTitle(lane) {
+				return lane.dataset.projectKanbanLaneTitle || "lane";
+			}
+
 			function savedLaneIDs(board) {
 				const store = visibilityStorage();
 				if (!store) {
@@ -1241,14 +1425,34 @@ templ projectKanbanVisibilityScript() {
 				return checkbox.value || "";
 			}
 
+			function updatePinButton(button, pinned, title) {
+				button.dataset.projectKanbanPinActive = pinned ? "true" : "false";
+				button.setAttribute("aria-pressed", pinned ? "true" : "false");
+				button.setAttribute("aria-label", (pinned ? "Unpin " : "Pin ") + title + " lane");
+				button.title = pinned ? "Unpin lane" : "Pin lane";
+				button.querySelectorAll("[data-project-kanban-pin-icon]").forEach(function(icon) {
+					if (!(icon instanceof HTMLElement)) {
+						return;
+					}
+					icon.hidden = icon.dataset.projectKanbanPinIcon !== (pinned ? "pinned" : "unpinned");
+				});
+			}
+
 			function applyBoard(board) {
 				const saved = savedLaneIDs(board);
 				let visibleCount = 0;
 				const lanes = boardLanes(board);
 				lanes.forEach(function(lane) {
 					const id = laneID(lane);
-					const visible = !laneEmpty(lane) || saved.has(id);
+					const pinned = saved.has(id);
+					const visible = !laneEmpty(lane) || pinned;
 					lane.dataset.projectKanbanLaneVisible = visible ? "true" : "false";
+					lane.dataset.projectKanbanLanePinned = pinned ? "true" : "false";
+					lane.querySelectorAll("[data-project-kanban-pin-toggle]").forEach(function(button) {
+						if (button instanceof HTMLButtonElement) {
+							updatePinButton(button, pinned, laneTitle(lane));
+						}
+					});
 					if (visible) {
 						visibleCount += 1;
 					}
@@ -1291,6 +1495,26 @@ templ projectKanbanVisibilityScript() {
 				applyBoard(board);
 			}
 
+			function toggleLanePin(button) {
+				const lane = button.closest("[data-project-kanban-lane]");
+				const board = button.closest("[data-project-kanban-board]");
+				if (!lane || !board) {
+					return;
+				}
+				const id = laneID(lane);
+				if (!id) {
+					return;
+				}
+				const saved = savedLaneIDs(board);
+				if (saved.has(id)) {
+					saved.delete(id);
+				} else {
+					saved.add(id);
+				}
+				saveLaneIDs(board, saved);
+				applyBoard(board);
+			}
+
 			function updateAction(button) {
 				const board = button.closest("[data-project-kanban-board]");
 				if (!board) {
@@ -1309,6 +1533,40 @@ templ projectKanbanVisibilityScript() {
 				applyBoard(board);
 			}
 
+			function visibilitySnapshotTarget(event) {
+				const detailTarget = event.detail && event.detail.target;
+				const target = detailTarget instanceof Element ? detailTarget : event.target;
+				if (!(target instanceof Element)) {
+					return null;
+				}
+				if (target.id === "snapshot") {
+					return target;
+				}
+				return target.closest("#snapshot");
+			}
+
+			function snapshotHasOpenPreservedDetails(target) {
+				return Boolean(target && target.querySelector("details[data-preserve-details][open]"));
+			}
+
+			function visibilityMenus() {
+				return Array.from(document.querySelectorAll("[data-project-kanban-visibility-menu]"));
+			}
+
+			function closeVisibilityMenu(menu) {
+				if (menu instanceof HTMLDetailsElement) {
+					menu.open = false;
+				}
+			}
+
+			function closeVisibilityMenusExcept(activeMenu) {
+				visibilityMenus().forEach(function(menu) {
+					if (menu !== activeMenu) {
+						closeVisibilityMenu(menu);
+					}
+				});
+			}
+
 			document.addEventListener("change", function(event) {
 				const input = event.target instanceof Element ? event.target.closest("[data-project-kanban-visibility-checkbox]") : null;
 				if (input instanceof HTMLInputElement) {
@@ -1317,10 +1575,55 @@ templ projectKanbanVisibilityScript() {
 			});
 
 			document.addEventListener("click", function(event) {
-				const button = event.target instanceof Element ? event.target.closest("[data-project-kanban-visibility-action]") : null;
+				const target = event.target instanceof Element ? event.target : null;
+				const close = target ? target.closest("[data-project-kanban-visibility-close]") : null;
+				if (close instanceof HTMLButtonElement) {
+					event.preventDefault();
+					closeVisibilityMenu(close.closest("[data-project-kanban-visibility-menu]"));
+					return;
+				}
+				const pin = target ? target.closest("[data-project-kanban-pin-toggle]") : null;
+				if (pin instanceof HTMLButtonElement) {
+					event.preventDefault();
+					toggleLanePin(pin);
+					return;
+				}
+				const button = target ? target.closest("[data-project-kanban-visibility-action]") : null;
 				if (button instanceof HTMLButtonElement) {
 					event.preventDefault();
 					updateAction(button);
+					return;
+				}
+				const menu = target ? target.closest("[data-project-kanban-visibility-menu]") : null;
+				if (!menu) {
+					closeVisibilityMenusExcept(null);
+				}
+			});
+
+			document.addEventListener("keydown", function(event) {
+				if (event.key === "Escape") {
+					closeVisibilityMenusExcept(null);
+				}
+			});
+
+			document.addEventListener("toggle", function(event) {
+				const menu = event.target instanceof Element ? event.target.closest("[data-project-kanban-visibility-menu]") : null;
+				if (menu instanceof HTMLDetailsElement && menu.open) {
+					closeVisibilityMenusExcept(menu);
+				}
+			}, true);
+
+			document.addEventListener("htmx:beforeSwap", function(event) {
+				const target = visibilitySnapshotTarget(event);
+				if (snapshotHasOpenPreservedDetails(target)) {
+					event.preventDefault();
+				}
+			});
+
+			document.addEventListener("htmx:sseBeforeMessage", function(event) {
+				const target = visibilitySnapshotTarget(event);
+				if (snapshotHasOpenPreservedDetails(target)) {
+					event.preventDefault();
 				}
 			});
 
@@ -1342,20 +1645,25 @@ templ projectKanbanVisibilityScript() {
 }
 
 templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
-	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } { projectKanbanLaneAttributesForData(data, lane)... }>
-		<div class="flex min-h-9 items-center justify-between gap-3">
-			<div class="inline-flex min-w-0 items-center gap-2">
-				<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
-				<h3 class="truncate text-sm font-semibold text-foreground">{ lane.Title }</h3>
-			</div>
-			<span class="shrink-0 rounded-full bg-card px-2 py-1 font-mono text-xs font-medium text-muted-foreground">{ lane.CountLabel }</span>
+	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } data-project-kanban-lane-title={ lane.Title } { projectKanbanLaneAttributesForData(data, lane)... }>
+		<div class="flex min-h-7 min-w-0 items-center gap-1.5">
+			<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
+			<h3 class="min-w-0 flex-1 truncate text-xs font-semibold text-foreground">{ lane.Title } ({ lane.CountLabel })</h3>
+			<button type="button" class="inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent aria-pressed:border-accent-soft aria-pressed:bg-accent-soft aria-pressed:text-accent" data-project-kanban-pin-toggle data-project-kanban-pin-active="false" aria-pressed="false" aria-label={ "Pin " + lane.Title + " lane" } title="Pin lane">
+				<span data-project-kanban-pin-icon="unpinned">
+					@icon.PinOff(icon.Props{Class: "size-3.5"})
+				</span>
+				<span data-project-kanban-pin-icon="pinned" hidden>
+					@icon.Pin(icon.Props{Class: "size-3.5"})
+				</span>
+			</button>
 		</div>
 		if len(lane.Cards) == 0 {
-			<div class="mt-3">
+			<div class="mt-2">
 				@dashboardEmptyState("No issues in this state.", "This configured state stays hidden unless this lane is pinned visible.", lane.DotClass)
 			</div>
 		} else {
-			<div class="project-kanban-lane-scroll mt-3 grid max-h-[32rem] gap-2 overflow-y-auto pr-1" data-preserve-scroll={ "project-kanban-" + lane.ID }>
+			<div class="project-kanban-lane-scroll mt-2 grid max-h-[32rem] gap-1.5 overflow-y-auto pr-1" data-preserve-scroll={ "project-kanban-" + lane.ID }>
 				for _, card := range lane.Cards {
 					@projectKanbanCardView(data, card)
 				}
@@ -1365,8 +1673,8 @@ templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 }
 
 templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
-	<article class="project-kanban-card project-kanban-card-compact min-w-0 rounded-md border border-border bg-card p-2 shadow-sm transition-colors hover:border-accent" aria-label={ "Kanban card " + card.IssueNumber + " " + card.Title } { projectKanbanCardAttributes(data, card)... }>
-		<div class="flex min-w-0 items-center gap-2">
+	<article class="project-kanban-card project-kanban-card-compact min-w-0 rounded-md border border-border bg-card p-1.5 shadow-sm transition-colors hover:border-accent" aria-label={ "Kanban card " + card.IssueNumber + " " + card.Title } { projectKanbanCardAttributes(data, card)... }>
+		<div class="flex min-w-0 items-center gap-1.5">
 			<div class="min-w-0 flex-1">
 				if card.URL != "" {
 					<a class="flex min-w-0 items-baseline gap-1.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open issue " + card.IssueNumber + ": " + card.Title }>
@@ -1380,12 +1688,12 @@ templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 					</div>
 				}
 			</div>
-			<div class="flex max-w-[52%] shrink-0 items-center justify-end gap-1">
-				<span class="inline-flex h-6 max-w-[7rem] items-center truncate rounded-full bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
+			<div class="flex max-w-[45%] shrink-0 items-center justify-end gap-1">
+				<span class="inline-flex h-5 max-w-[6rem] items-center truncate rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
 				@projectKanbanPullRequestSignal(card)
 			</div>
 		</div>
-		<div class="mt-1.5 flex min-w-0 flex-wrap items-center gap-1 text-[11px]">
+		<div class="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-[11px]">
 			for _, chip := range projectKanbanCompactChips(card) {
 				@projectKanbanCompactChipView(chip)
 			}
@@ -1400,22 +1708,22 @@ templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 templ projectKanbanPullRequestSignal(card projectKanbanCard) {
 	if card.HasPullRequest {
 		if card.PRURL != "" {
-			<a class="inline-flex h-6 max-w-[6rem] items-center truncate rounded-full bg-accent-soft px-1.5 py-0.5 font-mono text-xs font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.PRURL } target="_blank" rel="noopener noreferrer" aria-label={ "Open " + card.PullRequestLabel }>{ card.PullRequestLabel }</a>
+			<a class="inline-flex h-5 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.PRURL } target="_blank" rel="noopener noreferrer" aria-label={ "Open " + card.PullRequestLabel }>{ card.PullRequestLabel }</a>
 		} else {
-			<span class="inline-flex h-6 max-w-[6rem] items-center truncate rounded-full bg-accent-soft px-1.5 py-0.5 font-mono text-xs font-medium text-accent">{ card.PullRequestLabel }</span>
+			<span class="inline-flex h-5 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent">{ card.PullRequestLabel }</span>
 		}
 	} else {
-		<span class="inline-flex h-6 items-center rounded-full border border-border bg-muted px-1.5 py-0.5 text-xs font-medium text-muted-foreground">No PR</span>
+		<span class="inline-flex h-5 items-center rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">No PR</span>
 	}
 }
 
 templ projectKanbanCompactChipView(chip projectKanbanCompactChip) {
-	<span class={ "inline-flex h-5 max-w-full items-center truncate rounded-full border px-1.5 py-0.5 font-medium " + chip.Class } title={ chip.Title }>{ chip.Label }</span>
+	<span class={ "inline-flex h-4 max-w-full items-center truncate rounded-sm border px-1 py-0 font-medium " + chip.Class } title={ chip.Title }>{ chip.Label }</span>
 }
 
 templ projectKanbanCardDetails(data DashboardData, card projectKanbanCard) {
-	<details class="group mt-1.5 border-t border-border pt-1.5" data-kanban-card-details data-preserve-details={ projectKanbanControlID("project-kanban-details", card) }>
-		<summary class="flex min-h-7 cursor-pointer list-none items-center justify-between gap-2 rounded-md px-1.5 py-1 text-xs font-medium text-muted-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-label={ "Show details for " + card.IssueNumber }>
+	<details class="group mt-1 border-t border-border pt-1" data-kanban-card-details data-preserve-details={ projectKanbanControlID("project-kanban-details", card) }>
+		<summary class="flex min-h-6 cursor-pointer list-none items-center justify-between gap-2 rounded-sm px-1 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-label={ "Show details for " + card.IssueNumber }>
 			<span class="inline-flex min-w-0 items-center gap-1.5">
 				@icon.ListPlus(icon.Props{Class: "size-3.5 shrink-0"})
 				<span class="truncate">Details</span>

@@ -231,13 +231,30 @@ func (s *Server) dashboard(c echo.Context) error {
 
 func (s *Server) projectDashboard(c echo.Context) error {
 	ctx := c.Request().Context()
-	projectID, kanbanOnly := projectKanbanRouteParam(c)
+	projectID, view := projectRouteViewParam(c)
 	data, ok := s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx))
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
 	}
-	if kanbanOnly {
+	switch view {
+	case "kanban":
+		data.ActiveNav = "kanban"
+		data.Title = s.projectPageTitle(data, "Kanban")
 		return render(c, templates.ProjectKanbanPage(data))
+	case "runs":
+		data.ActiveNav = "runs"
+		data.Title = s.projectPageTitle(data, "Runs")
+		return render(c, templates.ProjectRunsPage(data))
+	case "diagnostics":
+		data.ActiveNav = "diagnostics"
+		data.Title = s.projectPageTitle(data, "Diagnostics")
+		return render(c, templates.ProjectDiagnosticsPage(data))
+	case "configuration":
+		settingsData := s.settingsData(ctx, projectID)
+		settingsData.ActiveNav = "configuration"
+		settingsData.Title = s.projectPageTitle(data, "Configuration")
+		settingsData.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+		return render(c, templates.Settings(settingsData))
 	}
 	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 	return render(c, templates.Dashboard(data))
@@ -255,12 +272,26 @@ func projectRouteParam(c echo.Context) string {
 	return cleanProjectRouteParam(c.Param("*"))
 }
 
-func projectKanbanRouteParam(c echo.Context) (string, bool) {
-	projectID := strings.Trim(strings.TrimSpace(projectEscapedRouteParam(c)), "/")
-	if !strings.HasSuffix(projectID, "/kanban") {
-		return cleanProjectRouteParam(projectID), false
+func (s *Server) projectPageTitle(data templates.DashboardData, title string) string {
+	name := strings.TrimSpace(data.ProjectName)
+	if name == "" {
+		name = strings.TrimSpace(data.ProjectID)
 	}
-	return cleanProjectRouteParam(strings.Trim(strings.TrimSuffix(projectID, "/kanban"), "/")), true
+	if name == "" {
+		name = "Project"
+	}
+	return instancePageTitle(s.instanceName(), name+" "+strings.TrimSpace(title)+" - Detent")
+}
+
+func projectRouteViewParam(c echo.Context) (string, string) {
+	projectID := strings.Trim(strings.TrimSpace(projectEscapedRouteParam(c)), "/")
+	for _, view := range []string{"kanban", "runs", "diagnostics", "configuration"} {
+		suffix := "/" + view
+		if strings.HasSuffix(projectID, suffix) {
+			return cleanProjectRouteParam(strings.Trim(strings.TrimSuffix(projectID, suffix), "/")), view
+		}
+	}
+	return cleanProjectRouteParam(projectID), "overview"
 }
 
 func projectEscapedRouteParam(c echo.Context) string {
@@ -352,6 +383,18 @@ func (s *Server) dashboardProject(selectedProjectID string, projects []templates
 		}, true
 	}
 	return templates.ProjectSmallMultiple{}, false
+}
+
+func (s *Server) sidebarProjectContext(selectedProjectID string, projects []templates.ProjectSmallMultiple, snapshot telemetry.Snapshot) (string, string, bool) {
+	project, ok := s.dashboardProject(selectedProjectID, projects, snapshot)
+	if !ok {
+		return "", "", false
+	}
+	name := strings.TrimSpace(project.Name)
+	if name == "" {
+		name = strings.TrimSpace(project.ID)
+	}
+	return strings.TrimSpace(project.ID), name, true
 }
 
 func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {

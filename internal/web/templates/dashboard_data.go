@@ -195,6 +195,7 @@ type sidebarProjectItem struct {
 	CountLabel   string
 	DefaultIndex int
 	Active       bool
+	Current      bool
 }
 
 type agentTimelineRow struct {
@@ -304,6 +305,15 @@ type projectKanbanCard struct {
 	DisabledText     string
 }
 
+type projectOverviewCard struct {
+	ID       string
+	Title    string
+	Href     string
+	Value    string
+	Detail   string
+	DotClass string
+}
+
 type projectKanbanCompactChip struct {
 	Label string
 	Title string
@@ -357,6 +367,27 @@ func DashboardShellDataFromDashboard(data DashboardData) DashboardShellData {
 		SidebarCollapsed:       data.SidebarCollapsed,
 		IncludeDashboardCharts: true,
 	}
+}
+
+func ProjectKanbanShellDataFromDashboard(data DashboardData) DashboardShellData {
+	shell := DashboardShellDataFromDashboard(data)
+	shell.ActiveNav = "kanban"
+	shell.IncludeDashboardCharts = false
+	return shell
+}
+
+func ProjectRunsShellDataFromDashboard(data DashboardData) DashboardShellData {
+	shell := DashboardShellDataFromDashboard(data)
+	shell.ActiveNav = "runs"
+	shell.IncludeDashboardCharts = false
+	return shell
+}
+
+func ProjectDiagnosticsShellDataFromDashboard(data DashboardData) DashboardShellData {
+	shell := DashboardShellDataFromDashboard(data)
+	shell.ActiveNav = "diagnostics"
+	shell.IncludeDashboardCharts = true
+	return shell
 }
 
 func pageTitle(data DashboardShellData) string {
@@ -434,11 +465,25 @@ func chartEndpoint(data DashboardData) string {
 }
 
 func eventsPath(data DashboardShellData) string {
-	if id := strings.TrimSpace(data.ProjectID); id != "" {
-		return "/events?project=" + url.QueryEscape(id)
-	}
 	if activeNav := staticSidebarNav(data.ActiveNav); activeNav != "" {
-		return "/events?nav=" + url.QueryEscape(activeNav)
+		values := url.Values{"nav": []string{activeNav}}
+		if id := strings.TrimSpace(data.ProjectID); id != "" {
+			values.Set("project", id)
+		}
+		return "/events?" + values.Encode()
+	}
+	if id := strings.TrimSpace(data.ProjectID); id != "" {
+		switch strings.TrimSpace(data.ActiveNav) {
+		case "kanban":
+			return projectKanbanEventsPath(data)
+		case "runs":
+			return projectRunsEventsPath(data)
+		case "diagnostics":
+			return projectDiagnosticsEventsPath(data)
+		case "configuration":
+			return projectConfigurationEventsPath(data)
+		}
+		return "/events?project=" + url.QueryEscape(id)
 	}
 	return "/events"
 }
@@ -466,6 +511,9 @@ func sidebarFleetActive(data DashboardShellData) bool {
 }
 
 func sidebarStaticNavActive(data DashboardShellData, id string) bool {
+	if strings.TrimSpace(id) == "settings" && projectSidebarNavVisible(data) {
+		return false
+	}
 	return strings.TrimSpace(data.ActiveNav) == id
 }
 
@@ -477,13 +525,35 @@ func projectSidebarOverviewPath(data DashboardShellData) string {
 	return projectDashboardPath(data.ProjectID)
 }
 
-func projectSidebarSectionPath(data DashboardShellData, sectionID string) string {
-	base := projectSidebarOverviewPath(data)
-	sectionID = strings.Trim(strings.TrimSpace(sectionID), "#")
-	if sectionID == "" {
-		return base
+func projectSidebarKanbanPath(data DashboardShellData) string {
+	return projectKanbanPath(data.ProjectID)
+}
+
+func projectSidebarRunsPath(data DashboardShellData) string {
+	return projectRunsPath(data.ProjectID)
+}
+
+func projectSidebarDiagnosticsPath(data DashboardShellData) string {
+	return projectDiagnosticsPath(data.ProjectID)
+}
+
+func projectSidebarConfigurationPath(data DashboardShellData) string {
+	return projectConfigurationPath(data.ProjectID)
+}
+
+func sidebarReportsPath(data DashboardShellData) string {
+	return sidebarStaticPath(data, "/reports")
+}
+
+func sidebarSettingsPath(data DashboardShellData) string {
+	return sidebarStaticPath(data, "/settings")
+}
+
+func sidebarStaticPath(data DashboardShellData, path string) string {
+	if id := strings.TrimSpace(data.ProjectID); id != "" {
+		return path + "?project=" + url.QueryEscape(id)
 	}
-	return base + "#" + url.PathEscape(sectionID)
+	return path
 }
 
 func projectSidebarOverviewActive(data DashboardShellData) bool {
@@ -491,15 +561,47 @@ func projectSidebarOverviewActive(data DashboardShellData) bool {
 	return projectSidebarNavVisible(data) && (activeNav == "" || activeNav == "project")
 }
 
+func projectSidebarKanbanActive(data DashboardShellData) bool {
+	return projectSidebarNavVisible(data) && strings.TrimSpace(data.ActiveNav) == "kanban"
+}
+
+func projectSidebarRunsActive(data DashboardShellData) bool {
+	return projectSidebarNavVisible(data) && strings.TrimSpace(data.ActiveNav) == "runs"
+}
+
+func projectSidebarConfigurationActive(data DashboardShellData) bool {
+	activeNav := strings.TrimSpace(data.ActiveNav)
+	return projectSidebarNavVisible(data) && (activeNav == "configuration" || activeNav == "settings")
+}
+
+func projectSidebarDiagnosticsActive(data DashboardShellData) bool {
+	return projectSidebarNavVisible(data) && strings.TrimSpace(data.ActiveNav) == "diagnostics"
+}
+
+func projectSidebarViewActive(data DashboardShellData, view string) bool {
+	switch strings.TrimSpace(view) {
+	case "overview":
+		return projectSidebarOverviewActive(data)
+	case "kanban":
+		return projectSidebarKanbanActive(data)
+	case "runs":
+		return projectSidebarRunsActive(data)
+	case "configuration":
+		return projectSidebarConfigurationActive(data)
+	case "diagnostics":
+		return projectSidebarDiagnosticsActive(data)
+	default:
+		return false
+	}
+}
+
 func projectSidebarViewAttributes(data DashboardShellData, view string) templ.Attributes {
 	attrs := templ.Attributes{
 		"data-dashboard-view-nav": true,
 		"data-dashboard-view":     strings.TrimSpace(view),
 	}
-	if strings.TrimSpace(view) == "overview" {
-		if projectSidebarOverviewActive(data) {
-			attrs["aria-current"] = "location"
-		}
+	if projectSidebarViewActive(data, view) {
+		attrs["aria-current"] = "page"
 	}
 	return attrs
 }
@@ -522,6 +624,14 @@ func sidebarAriaCurrent(active bool) templ.Attributes {
 	return templ.Attributes{"aria-current": "page"}
 }
 
+func sidebarStaticNavAttributes(data DashboardShellData, id string) templ.Attributes {
+	attrs := templ.Attributes{
+		"data-dashboard-static-nav": strings.TrimSpace(id),
+	}
+	maps.Copy(attrs, sidebarAriaCurrent(sidebarStaticNavActive(data, id)))
+	return attrs
+}
+
 func sidebarProjectItemAttributes(item sidebarProjectItem) templ.Attributes {
 	attrs := templ.Attributes{
 		"data-dashboard-project-entry": true,
@@ -534,7 +644,7 @@ func sidebarProjectItemAttributes(item sidebarProjectItem) templ.Attributes {
 
 func sidebarProjectButtonAttributes(item sidebarProjectItem) templ.Attributes {
 	attrs := templ.Attributes{}
-	maps.Copy(attrs, sidebarAriaCurrent(item.Active))
+	maps.Copy(attrs, sidebarAriaCurrent(item.Current))
 	return attrs
 }
 
@@ -659,6 +769,7 @@ func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {
 			continue
 		}
 		status := projectSmallMultipleStatus(project)
+		active := strings.TrimSpace(data.ProjectID) == id
 		items = append(items, sidebarProjectItem{
 			ID:           id,
 			Name:         projectSmallMultipleName(project),
@@ -668,7 +779,8 @@ func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {
 			BadgeClass:   status.BadgeClass,
 			CountLabel:   formatCount(project.Running),
 			DefaultIndex: len(items),
-			Active:       strings.TrimSpace(data.ProjectID) == id,
+			Active:       active,
+			Current:      false,
 		})
 	}
 	return items
@@ -728,11 +840,56 @@ func projectKanbanPath(projectID string) string {
 	return "/projects/" + url.PathEscape(projectID) + "/kanban"
 }
 
+func projectRunsPath(projectID string) string {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return "/"
+	}
+	return "/projects/" + url.PathEscape(projectID) + "/runs"
+}
+
+func projectDiagnosticsPath(projectID string) string {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return "/"
+	}
+	return "/projects/" + url.PathEscape(projectID) + "/diagnostics"
+}
+
+func projectConfigurationPath(projectID string) string {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return "/settings"
+	}
+	return "/projects/" + url.PathEscape(projectID) + "/configuration"
+}
+
 func projectKanbanEventsPath(data DashboardShellData) string {
 	if id := strings.TrimSpace(data.ProjectID); id != "" {
 		return "/events?project=" + url.QueryEscape(id) + "&view=kanban"
 	}
 	return "/events?view=kanban"
+}
+
+func projectRunsEventsPath(data DashboardShellData) string {
+	if id := strings.TrimSpace(data.ProjectID); id != "" {
+		return "/events?project=" + url.QueryEscape(id) + "&view=runs"
+	}
+	return "/events?view=runs"
+}
+
+func projectDiagnosticsEventsPath(data DashboardShellData) string {
+	if id := strings.TrimSpace(data.ProjectID); id != "" {
+		return "/events?project=" + url.QueryEscape(id) + "&view=diagnostics"
+	}
+	return "/events?view=diagnostics"
+}
+
+func projectConfigurationEventsPath(data DashboardShellData) string {
+	if id := strings.TrimSpace(data.ProjectID); id != "" {
+		return "/events?project=" + url.QueryEscape(id) + "&view=configuration"
+	}
+	return "/events?view=configuration"
 }
 
 func projectSmallMultiplesGridClass(cards []projectSmallMultipleCard) string {
@@ -1039,6 +1196,82 @@ func projectKanbanBoardView(data DashboardData) projectKanbanBoard {
 		TotalLabel:      formatCount(total),
 		EmptyCountLabel: formatCount(len(emptyLanes)),
 	}
+}
+
+func projectOverviewCards(data DashboardData) []projectOverviewCard {
+	board := projectKanbanBoardView(data)
+	return []projectOverviewCard{
+		{
+			ID:       "kanban",
+			Title:    "Kanban",
+			Href:     projectKanbanPath(data.ProjectID),
+			Value:    board.TotalLabel + " cards",
+			Detail:   projectOverviewKanbanDetail(board),
+			DotClass: "bg-accent",
+		},
+		{
+			ID:       "runs",
+			Title:    "Runs",
+			Href:     projectRunsPath(data.ProjectID),
+			Value:    formatCount(runningCount(data.Snapshot)) + " running",
+			Detail:   projectOverviewRunsDetail(data.Snapshot),
+			DotClass: projectOverviewRunsDotClass(data.Snapshot),
+		},
+		{
+			ID:       "diagnostics",
+			Title:    "Diagnostics",
+			Href:     projectDiagnosticsPath(data.ProjectID),
+			Value:    runtimeStatusLabel(data.Snapshot),
+			Detail:   projectOverviewDiagnosticsDetail(data.Snapshot),
+			DotClass: projectOverviewDiagnosticsDotClass(data.Snapshot),
+		},
+		{
+			ID:       "reports",
+			Title:    "Reports",
+			Href:     sidebarReportsPath(DashboardShellDataFromDashboard(data)),
+			Value:    budgetSpendTodayLabel(data.Snapshot.Budget),
+			Detail:   formatTokens(data.Snapshot.Tokens) + " tracked",
+			DotClass: "bg-success",
+		},
+	}
+}
+
+func projectOverviewKanbanDetail(board projectKanbanBoard) string {
+	if len(board.AllLanes) == 0 {
+		return "No workflow lanes"
+	}
+	return formatCount(len(board.Lanes)) + " active / " + formatCount(len(board.AllLanes)) + " lanes"
+}
+
+func projectOverviewRunsDetail(snapshot telemetry.Snapshot) string {
+	return formatCount(queueCount(snapshot)) + " queued / " + formatCount(blockedCount(snapshot)) + " blocked"
+}
+
+func projectOverviewRunsDotClass(snapshot telemetry.Snapshot) string {
+	if blockedCount(snapshot) > 0 {
+		return "bg-danger"
+	}
+	if queueCount(snapshot) > 0 {
+		return "bg-warning"
+	}
+	if runningCount(snapshot) > 0 {
+		return "bg-accent"
+	}
+	return "bg-muted-foreground"
+}
+
+func projectOverviewDiagnosticsDetail(snapshot telemetry.Snapshot) string {
+	return rateLimitName(snapshot.RateLimits) + " / " + budgetStatus(snapshot.Budget)
+}
+
+func projectOverviewDiagnosticsDotClass(snapshot telemetry.Snapshot) string {
+	if strings.Contains(runtimeStatusClass(snapshot), "danger") {
+		return "bg-danger"
+	}
+	if strings.Contains(runtimeStatusClass(snapshot), "warning") {
+		return "bg-warning"
+	}
+	return "bg-success"
 }
 
 func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCard {
@@ -1656,7 +1889,7 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef) []string {
 }
 
 func projectKanbanLaneClass(lane projectKanbanLane) string {
-	class := "project-kanban-lane grid min-h-[16rem] min-w-0 content-start rounded-md border border-border bg-muted/60 p-3"
+	class := "project-kanban-lane grid min-h-[12rem] min-w-0 content-start rounded-md border border-border bg-muted/60 p-2"
 	if lane.Empty {
 		class += " project-kanban-empty-lane"
 	}
@@ -1666,6 +1899,7 @@ func projectKanbanLaneClass(lane projectKanbanLane) string {
 func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLane) templ.Attributes {
 	attrs := templ.Attributes{
 		"data-project-kanban-lane-empty":   projectKanbanBool(lane.Empty),
+		"data-project-kanban-lane-pinned":  "false",
 		"data-project-kanban-lane-visible": projectKanbanBool(lane.DefaultVisible),
 	}
 	if lane.Empty {
@@ -1687,6 +1921,14 @@ func projectKanbanVisibilityKey(data DashboardData, _ projectKanbanBoard) string
 		scope = "fleet"
 	}
 	return "project:" + url.QueryEscape(scope)
+}
+
+func projectKanbanVisibilityDetailsID(visibilityKey string) string {
+	key := projectKanbanLaneID(visibilityKey)
+	if key == "unknown" {
+		key = "default"
+	}
+	return "project-kanban-visibility-" + key
 }
 
 func projectKanbanBool(value bool) string {

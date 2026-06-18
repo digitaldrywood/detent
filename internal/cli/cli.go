@@ -365,9 +365,11 @@ detent --format json config path`),
 			boot.StdoutTTY = stdoutTTY
 			boot.Output = cmd.OutOrStdout()
 			boot.Shutdown = opts.shutdown
-			slog.Info("resolved global config", "path", boot.Global.Path, "rule", boot.ConfigPathRule)
-			for _, warning := range boot.Runtime.Warnings {
-				slog.Warn(warning.Detail, "check", warning.Name, "hint", warning.Hint)
+			if !shouldLaunchTerminalDashboard(boot) {
+				slog.Info("resolved global config", "path", boot.Global.Path, "rule", boot.ConfigPathRule)
+				for _, warning := range boot.Runtime.Warnings {
+					slog.Warn(warning.Detail, "check", warning.Name, "hint", warning.Hint)
+				}
 			}
 			return opts.boot(cmd.Context(), boot)
 		},

@@ -305,8 +305,18 @@ func TestModelRequestsInterruptOnCtrlC(t *testing.T) {
 		interrupts <- struct{}{}
 	}
 
-	if _, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC}); cmd != nil {
-		t.Fatal("Update(ctrl+c) returned command")
+	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("Update(ctrl+c) did not return persistent shutdown notice command")
+	}
+	select {
+	case <-interrupts:
+		t.Fatal("interrupt handler was called before shutdown notice command could run")
+	default:
+	}
+	_, cmd = next.(Model).Update(shutdownInterruptMsg{})
+	if cmd != nil {
+		t.Fatal("Update(shutdown interrupt) returned command")
 	}
 	select {
 	case <-interrupts:
@@ -331,29 +341,42 @@ func TestModelShowsShutdownNoticeOnCtrlC(t *testing.T) {
 	}
 
 	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if cmd != nil {
-		t.Fatal("Update(first ctrl+c) returned command")
+	if cmd == nil {
+		t.Fatal("Update(first ctrl+c) did not return persistent shutdown notice command")
 	}
 	got := next.(Model)
-	if interrupts != 1 {
-		t.Fatalf("interrupts = %d, want 1", interrupts)
+	if interrupts != 0 {
+		t.Fatalf("interrupts = %d before notice command runs, want 0", interrupts)
 	}
 	view := stripANSI(got.View())
 	if !strings.Contains(view, "Shutdown: "+shutdownDrainNotice) {
 		t.Fatalf("View() missing shutdown notice:\n%s", view)
 	}
-
-	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if cmd != nil {
-		t.Fatal("Update(second ctrl+c) returned command")
+	if next, cmd = got.Update(shutdownInterruptMsg{}); cmd != nil {
+		t.Fatal("Update(first shutdown interrupt) returned command")
 	}
 	got = next.(Model)
-	if interrupts != 2 {
-		t.Fatalf("interrupts = %d, want 2", interrupts)
+	if interrupts != 1 {
+		t.Fatalf("interrupts = %d, want 1", interrupts)
+	}
+
+	next, cmd = got.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("Update(second ctrl+c) did not return persistent force shutdown notice command")
+	}
+	got = next.(Model)
+	if interrupts != 1 {
+		t.Fatalf("interrupts = %d before force notice command runs, want 1", interrupts)
 	}
 	view = stripANSI(got.View())
 	if !strings.Contains(view, "Shutdown: "+shutdownForceNotice) {
 		t.Fatalf("View() missing force shutdown notice:\n%s", view)
+	}
+	if _, cmd = got.Update(shutdownInterruptMsg{}); cmd != nil {
+		t.Fatal("Update(second shutdown interrupt) returned command")
+	}
+	if interrupts != 2 {
+		t.Fatalf("interrupts = %d, want 2", interrupts)
 	}
 }
 
@@ -366,8 +389,8 @@ func TestModelShowsShutdownNoticeBeforeSnapshot(t *testing.T) {
 	}
 
 	next, cmd := model.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
-	if cmd != nil {
-		t.Fatal("Update(ctrl+c) returned command")
+	if cmd == nil {
+		t.Fatal("Update(ctrl+c) did not return persistent shutdown notice command")
 	}
 
 	view := stripANSI(next.(Model).View())

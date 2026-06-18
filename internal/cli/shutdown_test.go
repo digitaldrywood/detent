@@ -214,6 +214,53 @@ func TestRunWithShutdownTerminalDashboardSuppressesPlainOutput(t *testing.T) {
 	}
 }
 
+func TestRunWithShutdownTerminalDashboardSuppressesSignalNotices(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	started := make(chan struct{})
+	suppressed := make(chan bool, 1)
+	errs := make(chan error, 1)
+
+	go func() {
+		errs <- runWithShutdown(context.Background(), runningShutdownConfig{
+			Controller:        controller,
+			Registry:          projectpkg.NewRegistry(),
+			SnapshotHub:       hub.New[telemetry.Snapshot](),
+			Output:            io.Discard,
+			TerminalDashboard: true,
+			HardTimeout:       time.Second,
+		}, func(ctx context.Context) error {
+			suppressed <- controller.SignalNoticesSuppressed()
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("server did not start")
+	}
+	if got := <-suppressed; !got {
+		t.Fatal("signal notices were not suppressed while terminal dashboard was running")
+	}
+	controller.RequestDrain()
+
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("runWithShutdown() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shutdown")
+	}
+	if controller.SignalNoticesSuppressed() {
+		t.Fatal("signal notices remained suppressed after shutdown runner exited")
+	}
+}
+
 func TestRunWithShutdownZeroSessionsLogsCleanupBoundaries(t *testing.T) {
 	t.Parallel()
 

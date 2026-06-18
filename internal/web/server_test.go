@@ -1614,6 +1614,8 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 		path         string
 		activeHref   string
 		sseConnect   string
+		reportsHref  string
+		settingsHref string
 		inactiveHref []string
 	}{
 		{
@@ -1621,6 +1623,8 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			path:         "/",
 			activeHref:   "/",
 			sseConnect:   `sse-connect="/events"`,
+			reportsHref:  "/reports",
+			settingsHref: "/settings",
 			inactiveHref: []string{"/reports", "/settings"},
 		},
 		{
@@ -1628,6 +1632,8 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			path:         "/reports",
 			activeHref:   "/reports",
 			sseConnect:   `sse-connect="/events?nav=reports"`,
+			reportsHref:  "/reports",
+			settingsHref: "/settings",
 			inactiveHref: []string{"/", "/settings"},
 		},
 		{
@@ -1635,13 +1641,53 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			path:         "/projects/detent",
 			activeHref:   "/projects/detent",
 			sseConnect:   `sse-connect="/events?project=detent"`,
-			inactiveHref: []string{"/", "/reports", "/settings"},
+			reportsHref:  "/reports?project=detent",
+			settingsHref: "/settings?project=detent",
+			inactiveHref: []string{"/", "/reports?project=detent", "/settings?project=detent"},
+		},
+		{
+			name:         "project kanban",
+			path:         "/projects/detent/kanban",
+			activeHref:   "/projects/detent/kanban",
+			sseConnect:   `sse-connect="/events?project=detent&amp;view=kanban"`,
+			reportsHref:  "/reports?project=detent",
+			settingsHref: "/settings?project=detent",
+			inactiveHref: []string{"/", "/reports?project=detent", "/settings?project=detent", "/projects/detent"},
+		},
+		{
+			name:         "project runs",
+			path:         "/projects/detent/runs",
+			activeHref:   "/projects/detent/runs",
+			sseConnect:   `sse-connect="/events?project=detent&amp;view=runs"`,
+			reportsHref:  "/reports?project=detent",
+			settingsHref: "/settings?project=detent",
+			inactiveHref: []string{"/", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/configuration", "/projects/detent/diagnostics"},
+		},
+		{
+			name:         "project configuration",
+			path:         "/projects/detent/configuration",
+			activeHref:   "/projects/detent/configuration",
+			sseConnect:   `sse-connect="/events?project=detent&amp;view=configuration"`,
+			reportsHref:  "/reports?project=detent",
+			settingsHref: "/settings?project=detent",
+			inactiveHref: []string{"/", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/runs", "/projects/detent/diagnostics"},
+		},
+		{
+			name:         "project diagnostics",
+			path:         "/projects/detent/diagnostics",
+			activeHref:   "/projects/detent/diagnostics",
+			sseConnect:   `sse-connect="/events?project=detent&amp;view=diagnostics"`,
+			reportsHref:  "/reports?project=detent",
+			settingsHref: "/settings?project=detent",
+			inactiveHref: []string{"/", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/runs", "/projects/detent/configuration"},
 		},
 		{
 			name:         "settings",
 			path:         "/settings",
 			activeHref:   "/settings",
 			sseConnect:   `sse-connect="/events?nav=settings"`,
+			reportsHref:  "/reports",
+			settingsHref: "/settings",
 			inactiveHref: []string{"/", "/reports"},
 		},
 	}
@@ -1670,8 +1716,8 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 				`/static/js/templui/dialog.min.js`,
 				`/static/js/templui/popover.min.js`,
 				`href="/"`,
-				`href="/reports"`,
-				`href="/settings"`,
+				`href="` + tt.reportsHref + `"`,
+				`href="` + tt.settingsHref + `"`,
 				`href="/projects/detent"`,
 				`Detent - active, 3 running`,
 				tt.sseConnect,
@@ -1686,6 +1732,28 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			for _, href := range tt.inactiveHref {
 				assertInactiveSidebarLink(t, body, href)
 			}
+			if strings.HasPrefix(tt.name, "project") {
+				for _, want := range []string{
+					`href="/projects/detent/kanban"`,
+					`href="/projects/detent/runs"`,
+					`href="/projects/detent/configuration"`,
+					`href="/projects/detent/diagnostics"`,
+					`data-dashboard-view="kanban"`,
+				} {
+					if !strings.Contains(body, want) {
+						t.Fatalf("%s missing project Kanban sidebar marker %q:\n%s", tt.path, want, body)
+					}
+				}
+				if strings.Contains(body, `href="/projects/detent#project-kanban"`) {
+					t.Fatalf("%s rendered project Kanban as in-page dashboard anchor:\n%s", tt.path, body)
+				}
+				switch tt.name {
+				case "project":
+					assertInactiveSidebarLink(t, body, "/projects/detent/kanban")
+				case "project kanban":
+					assertActiveSidebarLink(t, body, "/projects/detent/kanban")
+				}
+			}
 			if tt.path != "/" {
 				for _, forbidden := range []string{
 					"dashboard-nav flex min-w-0 items-center gap-4",
@@ -1695,6 +1763,80 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 						t.Fatalf("%s rendered old top nav marker %q:\n%s", tt.path, forbidden, body)
 					}
 				}
+			}
+		})
+	}
+}
+
+func TestStaticPagesPreserveProjectSidebarContext(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Counts:  telemetry.Counts{Running: 3},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	tests := []struct {
+		name       string
+		path       string
+		activeHref string
+		sseConnect string
+	}{
+		{
+			name:       "reports",
+			path:       "/reports?project=detent",
+			activeHref: "/reports?project=detent",
+			sseConnect: `sse-connect="/events?nav=reports&amp;project=detent"`,
+		},
+		{
+			name:       "settings",
+			path:       "/settings?project=detent",
+			activeHref: "/projects/detent/configuration",
+			sseConnect: `sse-connect="/events?nav=settings&amp;project=detent"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			body := requestHTML(t, server.Handler(), http.MethodGet, tt.path, http.StatusOK)
+			for _, want := range []string{
+				tt.sseConnect,
+				`aria-label="Project views"`,
+				`href="/projects/detent"`,
+				`href="/projects/detent/kanban"`,
+				`href="/projects/detent/runs"`,
+				`href="/projects/detent/configuration"`,
+				`href="/projects/detent/diagnostics"`,
+				`href="/reports?project=detent"`,
+				`href="/settings?project=detent"`,
+				`data-dashboard-view="kanban"`,
+			} {
+				if !strings.Contains(body, want) {
+					t.Fatalf("%s missing project-context sidebar marker %q:\n%s", tt.path, want, body)
+				}
+			}
+			assertSharedDashboardShellOnce(t, body, tt.path)
+			assertSingleCurrentSidebarItem(t, body)
+			assertActiveSidebarLink(t, body, tt.activeHref)
+			if tt.name == "settings" {
+				assertInactiveSidebarLink(t, body, "/settings?project=detent")
 			}
 		})
 	}
@@ -1753,32 +1895,26 @@ func TestProjectDashboardRouteScopesSnapshot(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/projects/detent", nil)
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
-	}
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/runs", http.StatusOK)
 	for _, want := range []string{
 		"Detent",
 		`href="/projects/detent"`,
+		`href="/projects/detent/runs"`,
 		`aria-current="page"`,
-		`sse-connect="/events?project=detent"`,
-		`data-chart-endpoint="/api/v1/projects/detent/timeseries"`,
+		`sse-connect="/events?project=detent&amp;view=runs"`,
 		"digitaldrywood/detent#377",
 		"42,000",
 	} {
-		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("project dashboard missing %q:\n%s", want, rec.Body.String())
+		if !strings.Contains(body, want) {
+			t.Fatalf("project dashboard missing %q:\n%s", want, body)
 		}
 	}
 	for _, forbidden := range []string{
 		"digitaldrywood/pyroapex#12",
 		"88,000",
 	} {
-		if strings.Contains(rec.Body.String(), forbidden) {
-			t.Fatalf("project dashboard rendered forbidden %q:\n%s", forbidden, rec.Body.String())
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("project dashboard rendered forbidden %q:\n%s", forbidden, body)
 		}
 	}
 }
@@ -1866,20 +2002,12 @@ func TestProjectDashboardRouteRendersConfiguredKanbanOrder(t *testing.T) {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/projects/detent", nil)
-	server.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want 200; body = %s", rec.Code, rec.Body.String())
-	}
-	body := rec.Body.String()
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
 	kanbanStart := strings.Index(body, `aria-label="Project Kanban"`)
-	pipelineStart := strings.Index(body, `aria-label="Pull request pipeline"`)
-	if kanbanStart < 0 || pipelineStart < 0 || kanbanStart >= pipelineStart {
-		t.Fatalf("project dashboard missing ordered kanban before PR pipeline: kanban=%d pipeline=%d\n%s", kanbanStart, pipelineStart, body)
+	if kanbanStart < 0 {
+		t.Fatalf("project Kanban page missing Kanban section:\n%s", body)
 	}
-	kanban := body[kanbanStart:pipelineStart]
+	kanban := body[kanbanStart:]
 	backlogIndex := strings.Index(kanban, `aria-label="Backlog lane"`)
 	todoIndex := strings.Index(kanban, `aria-label="Todo lane"`)
 	reviewIndex := strings.Index(kanban, `aria-label="Human Review lane"`)
@@ -1889,6 +2017,246 @@ func TestProjectDashboardRouteRendersConfiguredKanbanOrder(t *testing.T) {
 	}
 	if backlogIndex >= todoIndex || todoIndex >= reviewIndex || reviewIndex >= doneIndex {
 		t.Fatalf("kanban lanes are not in configured Detent order: backlog=%d todo=%d review=%d done=%d\n%s", backlogIndex, todoIndex, reviewIndex, doneIndex, kanban)
+	}
+}
+
+func TestProjectDashboardRoutesSplitOverviewAndDetailPages(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 18, 14, 0, 0, 0, time.UTC)
+	stageAt := now.Add(-10 * time.Minute)
+	startedAt := now.Add(-15 * time.Minute)
+	completedAt := now.Add(-2 * time.Minute)
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeReadOnly,
+	}, &kanbanActionConnector{name: "github"})
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Counts:  telemetry.Counts{Running: 1, Queue: 1, Blocked: 1, Completed: 1},
+				Tokens:  telemetry.Tokens{Total: 42_000},
+			},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:             "todo",
+				Identifier:     "digitaldrywood/detent#500",
+				URL:            "https://github.com/digitaldrywood/detent/issues/500",
+				ProjectID:      "detent",
+				Title:          "Todo issue",
+				State:          "Todo",
+				StageUpdatedAt: &stageAt,
+			},
+		},
+		Pipeline: []telemetry.Issue{
+			{
+				ID:             "review",
+				Identifier:     "digitaldrywood/detent#501",
+				URL:            "https://github.com/digitaldrywood/detent/issues/501",
+				ProjectID:      "detent",
+				Title:          "Review issue",
+				State:          "Human Review",
+				StageUpdatedAt: &stageAt,
+				PullRequest: &telemetry.PullRequest{
+					Number:   701,
+					URL:      "https://github.com/digitaldrywood/detent/pull/701",
+					CIStatus: "pass",
+				},
+			},
+		},
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:         "running",
+					Identifier: "digitaldrywood/detent#502",
+					ProjectID:  "detent",
+					Title:      "Running issue",
+					State:      "In Progress",
+				},
+				SessionID:   "session-running",
+				StartedAt:   startedAt,
+				TurnCount:   2,
+				LastEvent:   "turn_started",
+				LastMessage: "working",
+			},
+		},
+		Queue: []telemetry.Queued{
+			{
+				Issue: telemetry.Issue{
+					ID:         "queued",
+					Identifier: "digitaldrywood/detent#503",
+					ProjectID:  "detent",
+					Title:      "Queued issue",
+					State:      "Todo",
+				},
+				Attempt: 1,
+			},
+		},
+		Blocked: []telemetry.Blocked{
+			{
+				Issue: telemetry.Issue{
+					ID:         "blocked",
+					Identifier: "digitaldrywood/detent#504",
+					ProjectID:  "detent",
+					Title:      "Blocked issue",
+					State:      "Blocked",
+				},
+				Error:     "waiting on dependency",
+				BlockedAt: &stageAt,
+			},
+		},
+		Completed: []telemetry.Completed{
+			{
+				Issue: telemetry.Issue{
+					ID:         "completed",
+					Identifier: "digitaldrywood/detent#505",
+					ProjectID:  "detent",
+					Title:      "Completed issue",
+				},
+				StartedAt:   startedAt,
+				CompletedAt: completedAt,
+				FinalState:  "Done",
+			},
+		},
+		RateLimits: &telemetry.RateLimits{
+			LimitName: "Codex",
+			Primary: &telemetry.RateLimitBucket{
+				Remaining:      800,
+				Used:           200,
+				Limit:          1_000,
+				ResetInSeconds: 3_600,
+			},
+		},
+		CycleTime: telemetry.CycleTimeReport{
+			Available:      true,
+			AverageSeconds: int64(45 * time.Minute / time.Second),
+			Issues: []telemetry.CycleTimeIssue{
+				{Key: "digitaldrywood/detent#505", DurationSeconds: int64(45 * time.Minute / time.Second)},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	overview := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent", http.StatusOK)
+	for _, want := range []string{
+		`sse-connect="/events?project=detent"`,
+		`aria-label="Project overview links"`,
+		`href="/projects/detent/kanban"`,
+		`href="/projects/detent/runs"`,
+		`href="/projects/detent/diagnostics"`,
+		`href="/reports?project=detent"`,
+		"Kanban",
+		"Runs",
+		"Diagnostics",
+		"Reports",
+	} {
+		if !strings.Contains(overview, want) {
+			t.Fatalf("project overview missing %q:\n%s", want, overview)
+		}
+	}
+	assertActiveSidebarLink(t, overview, "/projects/detent")
+	for _, forbidden := range []string{
+		`id="project-kanban"`,
+		`aria-label="Project Kanban"`,
+		`aria-label="Agent activity timeline"`,
+		`aria-label="Pull request pipeline"`,
+		`id="running-issues"`,
+		`aria-label="Board health"`,
+		`data-detent-charts`,
+	} {
+		if strings.Contains(overview, forbidden) {
+			t.Fatalf("project overview rendered detail section %q:\n%s", forbidden, overview)
+		}
+	}
+
+	runs := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/runs", http.StatusOK)
+	for _, want := range []string{
+		`sse-connect="/events?project=detent&amp;view=runs"`,
+		`aria-label="Agent activity timeline"`,
+		`aria-label="Pull request pipeline"`,
+		`id="running-issues"`,
+		"Retry queue",
+		"Blocked sessions",
+		"Recent sessions",
+		"digitaldrywood/detent#502",
+		"digitaldrywood/detent#503",
+		"digitaldrywood/detent#504",
+		"digitaldrywood/detent#505",
+	} {
+		if !strings.Contains(runs, want) {
+			t.Fatalf("project runs route missing %q:\n%s", want, runs)
+		}
+	}
+	assertActiveSidebarLink(t, runs, "/projects/detent/runs")
+	for _, forbidden := range []string{
+		`aria-label="Project Kanban"`,
+		`aria-label="Board health"`,
+		`data-detent-charts`,
+	} {
+		if strings.Contains(runs, forbidden) {
+			t.Fatalf("project runs route rendered forbidden detail %q:\n%s", forbidden, runs)
+		}
+	}
+
+	diagnostics := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
+	for _, want := range []string{
+		`sse-connect="/events?project=detent&amp;view=diagnostics"`,
+		`aria-label="Dashboard health"`,
+		`aria-label="Board health"`,
+		`aria-label="Cycle time"`,
+		"Budget",
+		"Rate limits",
+		`data-detent-charts`,
+		`data-chart-endpoint="/api/v1/projects/detent/timeseries"`,
+	} {
+		if !strings.Contains(diagnostics, want) {
+			t.Fatalf("project diagnostics route missing %q:\n%s", want, diagnostics)
+		}
+	}
+	assertActiveSidebarLink(t, diagnostics, "/projects/detent/diagnostics")
+	for _, forbidden := range []string{
+		`aria-label="Project Kanban"`,
+		`aria-label="Agent activity timeline"`,
+		`aria-label="Pull request pipeline"`,
+		`id="running-issues"`,
+	} {
+		if strings.Contains(diagnostics, forbidden) {
+			t.Fatalf("project diagnostics route rendered forbidden detail %q:\n%s", forbidden, diagnostics)
+		}
+	}
+
+	configuration := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/configuration", http.StatusOK)
+	for _, want := range []string{
+		`sse-connect="/events?project=detent&amp;view=configuration"`,
+		`id="settings-projects"`,
+		"Global config",
+		"Projects",
+		"Runtime paths",
+		`data-dashboard-view="configuration"`,
+	} {
+		if !strings.Contains(configuration, want) {
+			t.Fatalf("project configuration route missing %q:\n%s", want, configuration)
+		}
+	}
+	assertActiveSidebarLink(t, configuration, "/projects/detent/configuration")
+	assertInactiveSidebarLink(t, configuration, "/settings?project=detent")
+	for _, forbidden := range []string{
+		`aria-label="Project Kanban"`,
+		`aria-label="Agent activity timeline"`,
+		`data-detent-charts`,
+	} {
+		if strings.Contains(configuration, forbidden) {
+			t.Fatalf("project configuration route rendered forbidden detail %q:\n%s", forbidden, configuration)
+		}
 	}
 }
 
@@ -1950,28 +2318,47 @@ func TestProjectKanbanRouteRendersOnlyLiveBoard(t *testing.T) {
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/kanban", http.StatusOK)
 	for _, want := range []string{
+		`data-tui-sidebar-layout`,
+		`id="dashboard-sidebar"`,
+		`id="dashboard-sidebar-live"`,
 		`aria-label="Project Kanban"`,
 		`sse-connect="/events?project=detent&amp;view=kanban"`,
 		`sse-swap="snapshot"`,
 		`hx-swap="morph:innerHTML"`,
-		`href="/projects/detent"`,
 		`href="https://github.com/digitaldrywood/detent/issues/490"`,
 		`href="https://github.com/digitaldrywood/detent/pull/701"`,
 		`data-kanban-action="move"`,
 		`data-project-kanban-visibility-key="project:detent`,
 		`data-project-kanban-visibility-menu`,
+		`data-preserve-details="project-kanban-visibility-project-detent"`,
 		`data-project-kanban-visibility-checkbox`,
+		`data-project-kanban-visibility-close`,
+		`data-project-kanban-pin-toggle`,
+		`data-project-kanban-pin-icon="unpinned"`,
+		`data-project-kanban-pin-icon="pinned"`,
+		`detent.ui.projectKanban.visibleLanes.`,
+		`function visibilitySnapshotTarget(event)`,
+		`function toggleLanePin(button)`,
+		`htmx:sseBeforeMessage`,
+		`details[data-preserve-details][open]`,
+		`event.key === "Escape"`,
+		`href="/projects/detent"`,
+		`href="/projects/detent/kanban"`,
+		`data-dashboard-view="kanban"`,
 		"Add a live Kanban-only board view",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("Kanban page missing %q:\n%s", want, body)
 		}
 	}
+	assertSingleCurrentSidebarItem(t, body)
+	assertActiveSidebarLink(t, body, "/projects/detent/kanban")
+	assertInactiveSidebarLink(t, body, "/projects/detent")
 	for _, forbidden := range []string{
 		`aria-label="Dashboard health"`,
 		`aria-label="Pull request pipeline"`,
 		`data-detent-charts`,
-		`data-tui-sidebar-layout`,
+		`id="live-tick"`,
 		"digitaldrywood/pyroapex#12",
 	} {
 		if strings.Contains(body, forbidden) {
@@ -2086,6 +2473,21 @@ func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 			t.Fatalf("Kanban snapshot event rendered forbidden %q:\n%s", forbidden, event.data)
 		}
 	}
+
+	sidebarEvent := readRawSSEEvent(t, conn, reader)
+	if sidebarEvent.name != "sidebar" {
+		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
+	}
+	for _, want := range []string{
+		`href="/projects/detent/kanban"`,
+		`data-dashboard-view="kanban"`,
+		`data-tui-sidebar-active="true"`,
+		`aria-current="page"`,
+	} {
+		if !strings.Contains(sidebarEvent.data, want) {
+			t.Fatalf("Kanban sidebar event missing %q:\n%s", want, sidebarEvent.data)
+		}
+	}
 }
 
 func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
@@ -2126,18 +2528,29 @@ func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
 	for _, want := range []string{
 		`href="/projects/digitaldrywood%2Fkanban"`,
 		`sse-connect="/events?project=digitaldrywood%2Fkanban"`,
-		`data-chart-endpoint="/api/v1/projects/digitaldrywood%2Fkanban/timeseries"`,
-		"digitaldrywood/kanban#377",
+		`href="/projects/digitaldrywood%2Fkanban/runs"`,
+		`href="/projects/digitaldrywood%2Fkanban/diagnostics"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("project dashboard missing %q:\n%s", want, rec.Body.String())
 		}
 	}
+	runsBody := requestHTML(t, server.Handler(), http.MethodGet, "/projects/"+escapedProjectID+"/runs", http.StatusOK)
+	for _, want := range []string{
+		`sse-connect="/events?project=digitaldrywood%2Fkanban&amp;view=runs"`,
+		`href="/projects/digitaldrywood%2Fkanban/runs"`,
+		"digitaldrywood/kanban#377",
+	} {
+		if !strings.Contains(runsBody, want) {
+			t.Fatalf("project runs route missing %q:\n%s", want, runsBody)
+		}
+	}
 
 	body := requestHTML(t, server.Handler(), http.MethodGet, "/projects/"+escapedProjectID+"/kanban", http.StatusOK)
 	for _, want := range []string{
-		`href="/projects/digitaldrywood%2Fkanban"`,
 		`sse-connect="/events?project=digitaldrywood%2Fkanban&amp;view=kanban"`,
+		`href="/projects/digitaldrywood%2Fkanban"`,
+		`href="/projects/digitaldrywood%2Fkanban/kanban"`,
 		"digitaldrywood/kanban#377",
 	} {
 		if !strings.Contains(body, want) {
@@ -2762,7 +3175,7 @@ func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
 	t.Cleanup(ts.Close)
 	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 	t.Cleanup(cancel)
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/events?project=detent", nil)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, ts.URL+"/events?project=detent&view=kanban", nil)
 	if err != nil {
 		t.Fatalf("NewRequestWithContext() error = %v", err)
 	}
@@ -2785,7 +3198,10 @@ func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
 	}
 	for _, want := range []string{
 		`data-project-kanban-visibility-key="project:detent`,
+		`data-preserve-details="project-kanban-visibility-project-detent"`,
 		`data-project-kanban-visibility-checkbox`,
+		`data-project-kanban-pin-toggle`,
+		`data-project-kanban-lane-pinned="false"`,
 		`name="visible_lane" value="done"`,
 		`data-project-kanban-lane-visible="false"`,
 	} {
@@ -2890,6 +3306,87 @@ func TestServerEventsPreservesStaticSidebarNavigation(t *testing.T) {
 	assertActiveSidebarLink(t, sidebarEvent.data, "/reports")
 	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
 	assertInactiveSidebarLink(t, sidebarEvent.data, "/settings")
+}
+
+func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		path         string
+		activeHref   string
+		inactiveHref []string
+	}{
+		{
+			name:         "reports",
+			path:         "/events?nav=reports&project=detent",
+			activeHref:   "/reports?project=detent",
+			inactiveHref: []string{"/projects/detent/kanban", "/settings?project=detent"},
+		},
+		{
+			name:         "settings",
+			path:         "/events?nav=settings&project=detent",
+			activeHref:   "/projects/detent/configuration",
+			inactiveHref: []string{"/reports?project=detent", "/settings?project=detent"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			mustSetWebProject(t, deps.Registry, "detent", false)
+			server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			addr := startWebServer(t, server)
+			conn, body, reader := openRawEventStream(t, addr, tt.path)
+			defer conn.Close()
+			defer body.Close()
+
+			if err := deps.Hub.Publish(telemetry.Snapshot{
+				GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
+				Projects: []telemetry.ProjectSnapshot{
+					{
+						Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+						Counts:  telemetry.Counts{Running: 7},
+					},
+				},
+			}); err != nil {
+				t.Fatalf("Publish() error = %v", err)
+			}
+
+			snapshotEvent := readRawSSEEvent(t, conn, reader)
+			if snapshotEvent.name != "snapshot" {
+				t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
+			}
+			sidebarEvent := readRawSSEEvent(t, conn, reader)
+			if sidebarEvent.name != "sidebar" {
+				t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
+			}
+			for _, want := range []string{
+				`aria-label="Project views"`,
+				`href="/projects/detent"`,
+				`href="/projects/detent/kanban"`,
+				`href="/projects/detent/runs"`,
+				`href="/projects/detent/configuration"`,
+				`href="/projects/detent/diagnostics"`,
+				`href="/reports?project=detent"`,
+				`href="/settings?project=detent"`,
+			} {
+				if !strings.Contains(sidebarEvent.data, want) {
+					t.Fatalf("sidebar event missing project-context marker %q:\n%s", want, sidebarEvent.data)
+				}
+			}
+			assertActiveSidebarLink(t, sidebarEvent.data, tt.activeHref)
+			for _, href := range tt.inactiveHref {
+				assertInactiveSidebarLink(t, sidebarEvent.data, href)
+			}
+		})
+	}
 }
 
 func TestServerEventsEnrichesSnapshotOncePerPublish(t *testing.T) {

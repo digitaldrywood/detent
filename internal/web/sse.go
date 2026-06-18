@@ -17,10 +17,13 @@ import (
 )
 
 const (
-	sseEventSnapshot = "snapshot"
-	sseEventSidebar  = "sidebar"
-	sseEventTick     = "tick"
-	sseViewKanban    = "kanban"
+	sseEventSnapshot     = "snapshot"
+	sseEventSidebar      = "sidebar"
+	sseEventTick         = "tick"
+	sseViewKanban        = "kanban"
+	sseViewRuns          = "runs"
+	sseViewDiagnostics   = "diagnostics"
+	sseViewConfiguration = "configuration"
 )
 
 func staticSidebarNav(value string) string {
@@ -78,20 +81,28 @@ func (s *Server) events(c echo.Context) error {
 				if scopedData, ok := s.projectDashboardData(ctx, selectedProjectID, snapshot); ok {
 					data = scopedData
 				}
-			} else if selectedNav != "" {
+			}
+			if selectedNav != "" {
 				data.ActiveNav = selectedNav
 			}
 			snapshotComponent := templates.SnapshotView(data)
 			if selectedView == sseViewKanban && selectedProjectID != "" {
+				data.ActiveNav = "kanban"
 				snapshotComponent = templates.ProjectKanbanSnapshot(data)
+			} else if selectedView == sseViewRuns && selectedProjectID != "" {
+				data.ActiveNav = "runs"
+				snapshotComponent = templates.ProjectRunsSnapshot(data)
+			} else if selectedView == sseViewDiagnostics && selectedProjectID != "" {
+				data.ActiveNav = "diagnostics"
+				snapshotComponent = templates.ProjectDiagnosticsSnapshot(data)
+			} else if selectedView == sseViewConfiguration && selectedProjectID != "" {
+				data.ActiveNav = "configuration"
 			}
 			if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, snapshotComponent); err != nil {
 				return err
 			}
-			if selectedView != sseViewKanban {
-				if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data))); err != nil {
-					return err
-				}
+			if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data))); err != nil {
+				return err
 			}
 			flusher.Flush()
 		case now := <-ticker.C:

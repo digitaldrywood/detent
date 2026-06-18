@@ -12,15 +12,17 @@ import (
 )
 
 func (s *Server) settings(c echo.Context) error {
-	data := s.settingsData(c.Request().Context())
+	data := s.settingsData(c.Request().Context(), c.QueryParam("project"))
 	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 	return render(c, templates.Settings(data))
 }
 
-func (s *Server) settingsData(ctx context.Context) templates.SettingsData {
+func (s *Server) settingsData(ctx context.Context, selectedProjectID string) templates.SettingsData {
 	instanceName := s.instanceName()
 	globalConfig := s.currentGlobalConfig()
 	snapshot := s.latestSnapshot(ctx)
+	sidebarProjects := s.projectSmallMultiples(ctx, snapshot)
+	projectID, projectName, _ := s.sidebarProjectContext(selectedProjectID, sidebarProjects, snapshot)
 	return templates.SettingsData{
 		Title:           instancePageTitle(instanceName, "Detent settings"),
 		ApplicationName: applicationName(instanceName),
@@ -37,8 +39,10 @@ func (s *Server) settingsData(ctx context.Context) templates.SettingsData {
 			ServerAddress: s.serverAddr,
 		},
 		Assets:          s.assets.templatePaths(),
-		SidebarProjects: s.projectSmallMultiples(ctx, snapshot),
+		SidebarProjects: sidebarProjects,
 		ActiveNav:       "settings",
+		ProjectID:       projectID,
+		ProjectName:     projectName,
 	}
 }
 
