@@ -1747,9 +1747,10 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 				if strings.Contains(body, `href="/projects/detent#project-kanban"`) {
 					t.Fatalf("%s rendered project Kanban as in-page dashboard anchor:\n%s", tt.path, body)
 				}
-				if tt.name == "project" {
+				switch tt.name {
+				case "project":
 					assertInactiveSidebarLink(t, body, "/projects/detent/kanban")
-				} else if tt.name == "project kanban" {
+				case "project kanban":
 					assertActiveSidebarLink(t, body, "/projects/detent/kanban")
 				}
 			}

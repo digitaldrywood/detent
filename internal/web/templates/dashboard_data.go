@@ -525,15 +525,6 @@ func projectSidebarOverviewPath(data DashboardShellData) string {
 	return projectDashboardPath(data.ProjectID)
 }
 
-func projectSidebarSectionPath(data DashboardShellData, sectionID string) string {
-	base := projectSidebarOverviewPath(data)
-	sectionID = strings.Trim(strings.TrimSpace(sectionID), "#")
-	if sectionID == "" {
-		return base
-	}
-	return base + "#" + url.PathEscape(sectionID)
-}
-
 func projectSidebarKanbanPath(data DashboardShellData) string {
 	return projectKanbanPath(data.ProjectID)
 }
@@ -556,13 +547,6 @@ func sidebarReportsPath(data DashboardShellData) string {
 
 func sidebarSettingsPath(data DashboardShellData) string {
 	return sidebarStaticPath(data, "/settings")
-}
-
-func sidebarSettingsProjectsPath(data DashboardShellData) string {
-	if id := strings.TrimSpace(data.ProjectID); id != "" {
-		return projectConfigurationPath(id)
-	}
-	return sidebarSettingsPath(data) + "#settings-projects"
 }
 
 func sidebarStaticPath(data DashboardShellData, path string) string {

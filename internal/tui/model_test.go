@@ -314,7 +314,7 @@ func TestModelRequestsInterruptOnCtrlC(t *testing.T) {
 		t.Fatal("interrupt handler was called before shutdown notice command could run")
 	default:
 	}
-	next, cmd = next.(Model).Update(shutdownInterruptMsg{})
+	_, cmd = next.(Model).Update(shutdownInterruptMsg{})
 	if cmd != nil {
 		t.Fatal("Update(shutdown interrupt) returned command")
 	}
@@ -372,7 +372,7 @@ func TestModelShowsShutdownNoticeOnCtrlC(t *testing.T) {
 	if !strings.Contains(view, "Shutdown: "+shutdownForceNotice) {
 		t.Fatalf("View() missing force shutdown notice:\n%s", view)
 	}
-	if next, cmd = got.Update(shutdownInterruptMsg{}); cmd != nil {
+	if _, cmd = got.Update(shutdownInterruptMsg{}); cmd != nil {
 		t.Fatal("Update(second shutdown interrupt) returned command")
 	}
 	if interrupts != 2 {
