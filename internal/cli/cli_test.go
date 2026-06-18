@@ -15,6 +15,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	"github.com/digitaldrywood/detent/internal/cli"
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/project"
 )
@@ -231,6 +232,50 @@ func TestDevRuntimeCommandBuildsIsolatedBootConfig(t *testing.T) {
 	}
 	if got.Isolated.DBMode != "file" || got.Isolated.TrackerMode != "memory" {
 		t.Fatalf("isolated metadata = %#v, want file DB and memory tracker", got.Isolated)
+	}
+}
+
+func TestDevRuntimeCommandBuildsKanbanDemoBootConfig(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--port", "0",
+		"dev-runtime",
+		"--home", home,
+		"--demo", "kanban",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Isolated == nil {
+		t.Fatal("Isolated = nil, want isolated runtime metadata")
+	}
+	if got.Isolated.Demo != "kanban" {
+		t.Fatalf("Isolated.Demo = %q, want kanban", got.Isolated.Demo)
+	}
+	if got.Isolated.FixturePath != "" {
+		t.Fatalf("FixturePath = %q, want no external fixture for built-in demo", got.Isolated.FixturePath)
+	}
+	workflow, err := workflowconfig.LoadWorkflow(got.WorkflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+	if workflow.Config.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {
+		t.Fatalf("Kanban mode = %q, want integration", workflow.Config.Server.Kanban.Mode)
+	}
+	if !workflow.Config.KanbanTransitionAllowed("Backlog", "Todo") {
+		t.Fatal("KanbanTransitionAllowed(Backlog, Todo) = false, want demo override")
 	}
 }
 

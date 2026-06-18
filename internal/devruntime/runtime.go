@@ -17,6 +17,7 @@ import (
 
 const (
 	TrackerMemory = "memory"
+	DemoKanban    = "kanban"
 
 	defaultProjectID    = "dogfood"
 	defaultInstanceName = "detent-dev-runtime"
@@ -26,10 +27,12 @@ const (
 )
 
 var (
-	ErrUnsupportedTracker = errors.New("unsupported isolated runtime tracker")
-	ErrLiveDatabase       = errors.New("isolated runtime refuses the live Detent database")
-	ErrLivePort           = errors.New("isolated runtime refuses the live Detent port")
-	ErrInvalidPort        = errors.New("isolated runtime port must be greater than or equal to 0")
+	ErrUnsupportedTracker  = errors.New("unsupported isolated runtime tracker")
+	ErrLiveDatabase        = errors.New("isolated runtime refuses the live Detent database")
+	ErrLivePort            = errors.New("isolated runtime refuses the live Detent port")
+	ErrInvalidPort         = errors.New("isolated runtime port must be greater than or equal to 0")
+	ErrUnsupportedDemo     = errors.New("unsupported isolated runtime demo")
+	ErrDemoFixtureConflict = errors.New("isolated runtime demo cannot be combined with a fixture")
 )
 
 type Config struct {
@@ -37,6 +40,7 @@ type Config struct {
 	DBPath              string
 	TrackerMode         string
 	FixturePath         string
+	Demo                string
 	Port                int
 	AllowLiveDatabase   bool
 	AllowProductionPort bool
@@ -52,6 +56,7 @@ type Runtime struct {
 	DBMode        string
 	TrackerMode   string
 	FixturePath   string
+	Demo          string
 	Port          int
 	Global        globalconfig.Config
 	Issues        []connector.Issue
@@ -71,6 +76,10 @@ func Build(cfg Config) (Runtime, error) {
 	}
 	if trackerMode != TrackerMemory {
 		return Runtime{}, fmt.Errorf("%w: %s", ErrUnsupportedTracker, trackerMode)
+	}
+	demo, err := runtimeDemo(cfg.Demo)
+	if err != nil {
+		return Runtime{}, err
 	}
 
 	home, err := runtimeHome(cfg.Home)
@@ -93,7 +102,7 @@ func Build(cfg Config) (Runtime, error) {
 		}
 	}
 
-	issues, fixturePath, err := runtimeIssues(cfg.FixturePath)
+	issues, fixturePath, err := runtimeIssues(cfg.FixturePath, demo)
 	if err != nil {
 		return Runtime{}, err
 	}
@@ -105,6 +114,7 @@ func Build(cfg Config) (Runtime, error) {
 		SourceRoot:    sourceRoot,
 		Port:          cfg.Port,
 		Issues:        issues,
+		Demo:          demo,
 	}); err != nil {
 		return Runtime{}, err
 	}
@@ -126,10 +136,21 @@ func Build(cfg Config) (Runtime, error) {
 		DBMode:        dbMode(dbPath),
 		TrackerMode:   trackerMode,
 		FixturePath:   fixturePath,
+		Demo:          demo,
 		Port:          cfg.Port,
 		Global:        global,
 		Issues:        append([]connector.Issue(nil), issues...),
 	}, nil
+}
+
+func runtimeDemo(value string) (string, error) {
+	value = strings.ToLower(strings.TrimSpace(value))
+	switch value {
+	case "", DemoKanban:
+		return value, nil
+	default:
+		return "", fmt.Errorf("%w: %s", ErrUnsupportedDemo, value)
+	}
 }
 
 func runtimeHome(path string) (string, error) {
@@ -249,8 +270,14 @@ type fixtureFile struct {
 	Issues []connector.Issue `yaml:"issues"`
 }
 
-func runtimeIssues(path string) ([]connector.Issue, string, error) {
+func runtimeIssues(path string, demo string) ([]connector.Issue, string, error) {
 	path = strings.TrimSpace(path)
+	if demo != "" && path != "" {
+		return nil, "", ErrDemoFixtureConflict
+	}
+	if demo == DemoKanban {
+		return kanbanDemoIssues(), "", nil
+	}
 	if path == "" {
 		return defaultIssues(), "", nil
 	}
@@ -271,6 +298,207 @@ func runtimeIssues(path string) ([]connector.Issue, string, error) {
 		return nil, "", fmt.Errorf("resolve isolated runtime fixture: %w", err)
 	}
 	return fixture.Issues, absolute, nil
+}
+
+func kanbanDemoIssues() []connector.Issue {
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	at := func(hoursAgo int) *time.Time {
+		value := now.Add(-time.Duration(hoursAgo) * time.Hour)
+		return &value
+	}
+	fields := func(state string, owner string) map[string]string {
+		return map[string]string{
+			"Status": state,
+			"Owner":  owner,
+		}
+	}
+	return []connector.Issue{
+		{
+			ID:             "kanban-demo-backlog",
+			Identifier:     "digitaldrywood/detent#9511",
+			Title:          "Kanban demo backlog intake",
+			Description:    "Issue-only card for evaluating Backlog to Todo moves.",
+			State:          "Backlog",
+			URL:            "https://github.test/digitaldrywood/detent/issues/9511",
+			Labels:         []string{"enhancement", "operator-demo"},
+			AssigneeID:     "operator-a",
+			Assignees:      []string{"operator-a"},
+			Fields:         fields("Backlog", "operations"),
+			UpdatedAt:      at(72),
+			StageUpdatedAt: at(72),
+		},
+		{
+			ID:             "kanban-demo-todo",
+			Identifier:     "digitaldrywood/detent#9512",
+			Title:          "Kanban demo todo ready card",
+			Description:    "Issue-only Todo card with labels and assignees.",
+			State:          "Todo",
+			URL:            "https://github.test/digitaldrywood/detent/issues/9512",
+			Labels:         []string{"ui", "good-first-demo"},
+			AssigneeID:     "operator-b",
+			Assignees:      []string{"operator-b", "operator-c"},
+			Fields:         fields("Todo", "product"),
+			UpdatedAt:      at(8),
+			StageUpdatedAt: at(8),
+		},
+		{
+			ID:             "kanban-demo-progress",
+			Identifier:     "digitaldrywood/detent#9513",
+			Title:          "Kanban demo implementation in progress",
+			State:          "In Progress",
+			URL:            "https://github.test/digitaldrywood/detent/issues/9513",
+			Labels:         []string{"enhancement", "backend"},
+			AssigneeID:     "agent-one",
+			Assignees:      []string{"agent-one"},
+			Fields:         fields("In Progress", "agents"),
+			UpdatedAt:      at(3),
+			StageUpdatedAt: at(3),
+			PullRequest: &connector.PullRequest{
+				Number:           9513,
+				URL:              "https://github.test/digitaldrywood/detent/pull/9513",
+				BranchName:       "detent/kanban-demo-progress",
+				State:            "OPEN",
+				CIStatus:         "pending",
+				RunningChecks:    []string{"make check"},
+				CheckRunCount:    1,
+				CodexReviewState: "CLEAN",
+			},
+		},
+		{
+			ID:             "kanban-demo-blocked",
+			Identifier:     "digitaldrywood/detent#9514",
+			Title:          "Kanban demo blocked dependency",
+			State:          "Blocked",
+			URL:            "https://github.test/digitaldrywood/detent/issues/9514",
+			Labels:         []string{"blocked", "needs-dependency"},
+			AssigneeID:     "operator-d",
+			Assignees:      []string{"operator-d"},
+			BlockedBy:      []connector.BlockedRef{{ID: "kanban-demo-todo", Identifier: "digitaldrywood/detent#9512", State: "Todo"}},
+			BlockerReason:  "Depends on the Todo demo card before work can continue.",
+			Fields:         fields("Blocked", "operations"),
+			UpdatedAt:      at(28),
+			StageUpdatedAt: at(28),
+		},
+		{
+			ID:             "kanban-demo-review",
+			Identifier:     "digitaldrywood/detent#9515",
+			Title:          "Kanban demo human review candidate",
+			State:          "Human Review",
+			URL:            "https://github.test/digitaldrywood/detent/issues/9515",
+			Labels:         []string{"enhancement", "requires-human-review"},
+			AssigneeID:     "reviewer-a",
+			Assignees:      []string{"reviewer-a"},
+			Fields:         fields("Human Review", "review"),
+			UpdatedAt:      at(2),
+			StageUpdatedAt: at(2),
+			PullRequest: &connector.PullRequest{
+				Number:                 9515,
+				URL:                    "https://github.test/digitaldrywood/detent/pull/9515",
+				BranchName:             "detent/kanban-demo-review",
+				State:                  "OPEN",
+				MergeableState:         "clean",
+				CIStatus:               "success",
+				CheckRunCount:          4,
+				StatusContextCount:     1,
+				CodexReviewState:       "CLEAN",
+				CodexReviewSubmittedAt: at(1),
+			},
+		},
+		{
+			ID:             "kanban-demo-rework",
+			Identifier:     "digitaldrywood/detent#9516",
+			Title:          "Kanban demo rework finding",
+			State:          "Rework",
+			URL:            "https://github.test/digitaldrywood/detent/issues/9516",
+			Labels:         []string{"bug", "codex-review:p1"},
+			AssigneeID:     "agent-two",
+			Assignees:      []string{"agent-two"},
+			Fields:         fields("Rework", "agents"),
+			UpdatedAt:      at(10),
+			StageUpdatedAt: at(10),
+			PullRequest: &connector.PullRequest{
+				Number:           9516,
+				URL:              "https://github.test/digitaldrywood/detent/pull/9516",
+				BranchName:       "detent/kanban-demo-rework",
+				State:            "OPEN",
+				MergeableState:   "dirty",
+				CIStatus:         "failure",
+				CheckRunCount:    3,
+				CodexReviewState: "P1",
+				CodexReviewFindings: []connector.PullRequestFinding{{
+					Body: "P1 demo finding for operator review",
+					URL:  "https://github.test/digitaldrywood/detent/pull/9516#discussion_r1",
+					Path: "internal/demo.go",
+					Line: 37,
+				}},
+			},
+		},
+		{
+			ID:             "kanban-demo-merging",
+			Identifier:     "digitaldrywood/detent#9517",
+			Title:          "Kanban demo merging train",
+			State:          "Merging",
+			URL:            "https://github.test/digitaldrywood/detent/issues/9517",
+			Labels:         []string{"release-readiness", "merge-train"},
+			AssigneeID:     "merger-a",
+			Assignees:      []string{"merger-a"},
+			Fields:         fields("Merging", "release"),
+			UpdatedAt:      at(1),
+			StageUpdatedAt: at(1),
+			PullRequest: &connector.PullRequest{
+				Number:            9517,
+				URL:               "https://github.test/digitaldrywood/detent/pull/9517",
+				BranchName:        "detent/kanban-demo-merging",
+				State:             "OPEN",
+				MergeableState:    "clean",
+				CIStatus:          "pending",
+				CIDurationSeconds: 780,
+				CheckRunCount:     5,
+				RunningChecks:     []string{"release-smoke"},
+				CodexReviewState:  "CLEAN",
+				SlowChecks:        []connector.PullRequestCheck{{Name: "go test -race", Status: "completed", Conclusion: "success", DurationSeconds: 620}},
+			},
+		},
+		{
+			ID:             "kanban-demo-done",
+			Identifier:     "digitaldrywood/detent#9518",
+			Title:          "Kanban demo completed PR",
+			State:          "Done",
+			URL:            "https://github.test/digitaldrywood/detent/issues/9518",
+			Closed:         true,
+			ClosedReason:   "completed",
+			Labels:         []string{"enhancement", "shipped"},
+			AssigneeID:     "operator-e",
+			Assignees:      []string{"operator-e"},
+			Fields:         fields("Done", "release"),
+			UpdatedAt:      at(24),
+			StageUpdatedAt: at(24),
+			PullRequest: &connector.PullRequest{
+				Number:           9518,
+				URL:              "https://github.test/digitaldrywood/detent/pull/9518",
+				BranchName:       "detent/kanban-demo-done",
+				State:            "MERGED",
+				MergeableState:   "clean",
+				CIStatus:         "success",
+				CodexReviewState: "CLEAN",
+			},
+		},
+		{
+			ID:             "kanban-demo-cancelled",
+			Identifier:     "digitaldrywood/detent#9519",
+			Title:          "Kanban demo cancelled request",
+			State:          "Cancelled",
+			URL:            "https://github.test/digitaldrywood/detent/issues/9519",
+			Closed:         true,
+			ClosedReason:   "not_planned",
+			Labels:         []string{"cancelled", "operator-demo"},
+			AssigneeID:     "operator-f",
+			Assignees:      []string{"operator-f"},
+			Fields:         fields("Cancelled", "operations"),
+			UpdatedAt:      at(48),
+			StageUpdatedAt: at(48),
+		},
+	}
 }
 
 func defaultIssues() []connector.Issue {
@@ -371,6 +599,7 @@ type workflowInput struct {
 	SourceRoot    string
 	Port          int
 	Issues        []connector.Issue
+	Demo          string
 }
 
 type workflowFrontmatter struct {
@@ -420,18 +649,44 @@ type workflowGate struct {
 }
 
 type workflowServer struct {
-	Host string `yaml:"host"`
-	Port *int   `yaml:"port"`
+	Host   string          `yaml:"host"`
+	Port   *int            `yaml:"port"`
+	Kanban *workflowKanban `yaml:"kanban,omitempty"`
+}
+
+type workflowKanban struct {
+	Mode               string              `yaml:"mode,omitempty"`
+	AllowedTransitions map[string][]string `yaml:"allowed_transitions,omitempty"`
 }
 
 func writeWorkflow(path string, input workflowInput) error {
 	port := input.Port
+	activeStates := []string{"Todo", "In Progress", "Rework", "Merging"}
+	observedStates := []string{"Backlog", "Human Review", "Blocked", "Merging", "Done"}
+	terminalStates := []string{"Done", "Cancelled", "Canceled"}
+	autoPromote := workflowAutoPromote{
+		Enabled:      true,
+		QuietSeconds: 0,
+		OptoutLabel:  "requires-human-review",
+	}
+	var kanban *workflowKanban
+	body := "Isolated mock Detent runtime for dogfood-safe e2e validation.\n"
+	if input.Demo == DemoKanban {
+		activeStates = nil
+		observedStates = []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled"}
+		autoPromote.Enabled = false
+		kanban = &workflowKanban{
+			Mode:               "integration",
+			AllowedTransitions: kanbanDemoAllowedTransitions(),
+		}
+		body = "Isolated Kanban demo runtime for dogfood-safe board evaluation.\n"
+	}
 	frontmatter := workflowFrontmatter{
 		Tracker: workflowTracker{
 			Kind:           input.TrackerMode,
-			ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
-			ObservedStates: []string{"Backlog", "Human Review", "Blocked", "Merging", "Done"},
-			TerminalStates: []string{"Done", "Cancelled", "Canceled"},
+			ActiveStates:   activeStates,
+			ObservedStates: observedStates,
+			TerminalStates: terminalStates,
 			StateMap:       map[string]string{},
 			Issues:         append([]connector.Issue(nil), input.Issues...),
 		},
@@ -444,11 +699,7 @@ func writeWorkflow(path string, input workflowInput) error {
 		Agent: workflowAgent{
 			MaxConcurrentAgents:        2,
 			MaxConcurrentAgentsByState: map[string]int{"Merging": 1},
-			AutoPromote: workflowAutoPromote{
-				Enabled:      true,
-				QuietSeconds: 0,
-				OptoutLabel:  "requires-human-review",
-			},
+			AutoPromote:                autoPromote,
 		},
 		Gate: workflowGate{
 			Kind:                   "command",
@@ -456,19 +707,35 @@ func writeWorkflow(path string, input workflowInput) error {
 			RequireAutomatedReview: true,
 		},
 		Server: workflowServer{
-			Host: defaultHost,
-			Port: &port,
+			Host:   defaultHost,
+			Port:   &port,
+			Kanban: kanban,
 		},
 	}
 	raw, err := yaml.Marshal(frontmatter)
 	if err != nil {
 		return fmt.Errorf("marshal isolated workflow: %w", err)
 	}
-	content := "---\n" + string(raw) + "---\nIsolated mock Detent runtime for dogfood-safe e2e validation.\n"
+	content := "---\n" + string(raw) + "---\n" + body
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		return fmt.Errorf("write isolated workflow: %w", err)
 	}
 	return nil
+}
+
+func kanbanDemoAllowedTransitions() map[string][]string {
+	return map[string][]string{
+		"Backlog":      {"Todo", "Cancelled"},
+		"Todo":         {"In Progress", "Blocked", "Cancelled"},
+		"In Progress":  {"Blocked", "Human Review", "Rework", "Cancelled"},
+		"Blocked":      {"Todo", "In Progress", "Rework", "Cancelled"},
+		"Human Review": {"Rework", "Merging", "Blocked", "Cancelled"},
+		"Rework":       {"In Progress", "Human Review", "Blocked", "Cancelled"},
+		"Merging":      {"Done", "Blocked", "Rework", "Cancelled"},
+		"Done":         {},
+		"Cancelled":    {"Backlog"},
+		"Canceled":     {},
+	}
 }
 
 func globalConfig(path string, workflowPath string, sourceRoot string, port int) globalconfig.Config {

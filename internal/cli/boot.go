@@ -908,6 +908,7 @@ func bootBanner(version string, displayURL string, isolated *IsolatedRuntimeInfo
 		writeBootBannerLine(&out, "DB", isolated.DBPath)
 		writeBootBannerLine(&out, "DB mode", isolated.DBMode)
 		writeBootBannerLine(&out, "Tracker", isolated.TrackerMode)
+		writeBootBannerLine(&out, "Demo", isolated.Demo)
 		writeBootBannerLine(&out, "Fixture", isolated.FixturePath)
 	}
 	return out.String()

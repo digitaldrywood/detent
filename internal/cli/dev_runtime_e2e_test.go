@@ -5,7 +5,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
+	"net/url"
 	"strings"
 	"sync"
 	"testing"
@@ -41,6 +43,77 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 	if !strings.Contains(body, `"status":"running"`) {
 		t.Fatalf("state response missing running status:\n%s", body)
 	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for isolated runtime to stop")
+	}
+}
+
+func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
+	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoKanban})
+	if err != nil {
+		t.Fatalf("devruntime.Build() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	output := &lockedBuffer{}
+	done := make(chan error, 1)
+	go func() {
+		done <- startRunning(ctx, devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output))
+	}()
+	t.Cleanup(cancel)
+
+	dashboardURL := waitForIsolatedRuntimeURL(t, output, done)
+	if banner := output.String(); !strings.Contains(banner, "Demo: kanban") {
+		t.Fatalf("isolated runtime banner missing demo name:\n%s", banner)
+	}
+	waitForDashboard(t, dashboardURL+"/health", done)
+	postRuntimeRefresh(t, dashboardURL, done)
+
+	pageURL := dashboardURL + "/projects/dogfood/kanban"
+	body := waitForDashboardCondition(t, pageURL, done, "kanban demo mutation controls", func(body string) bool {
+		return strings.Contains(body, "Kanban demo backlog intake") &&
+			strings.Contains(body, `data-kanban-action="move"`) &&
+			strings.Contains(body, `hx-get="/api/v1/kanban/comment?`) &&
+			strings.Contains(body, `data-kanban-drop-state="Todo"`)
+	})
+	for _, want := range []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("kanban page missing lane %q:\n%s", want, body)
+		}
+	}
+
+	postRuntimeKanbanForm(t, dashboardURL+"/api/v1/kanban/move", done, url.Values{
+		"project_id":    {"dogfood"},
+		"issue_id":      {"kanban-demo-backlog"},
+		"current_state": {"Backlog"},
+		"target_state":  {"Todo"},
+	})
+	postRuntimeRefresh(t, dashboardURL, done)
+	waitForDashboardCondition(t, pageURL, done, "backlog card moved to todo", func(body string) bool {
+		return strings.Contains(body, `data-kanban-issue-id="kanban-demo-backlog"`) &&
+			strings.Contains(body, `data-kanban-current-state="Todo"`)
+	})
+
+	postRuntimeKanbanForm(t, dashboardURL+"/api/v1/kanban/comment", done, url.Values{
+		"project_id": {"dogfood"},
+		"target":     {"issue"},
+		"issue_id":   {"kanban-demo-backlog"},
+		"body":       {"Safe demo issue comment"},
+	})
+	postRuntimeKanbanForm(t, dashboardURL+"/api/v1/kanban/comment", done, url.Values{
+		"project_id":    {"dogfood"},
+		"target":        {"pr"},
+		"pr_repository": {"digitaldrywood/detent"},
+		"pr_number":     {"9515"},
+		"body":          {"Safe demo PR comment"},
+	})
 
 	cancel()
 	select {
@@ -123,6 +196,45 @@ func postRuntimeRefresh(t *testing.T, url string, done <-chan error) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out posting runtime refresh to %s", url)
+}
+
+func postRuntimeKanbanForm(t *testing.T, rawURL string, done <-chan error, form url.Values) {
+	t.Helper()
+
+	client := http.Client{Timeout: time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for ctx.Err() == nil {
+		select {
+		case err := <-done:
+			t.Fatalf("isolated runtime stopped before Kanban action: %v", err)
+		default:
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
+		if err != nil {
+			t.Fatalf("NewRequestWithContext() error = %v", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := client.Do(req)
+		if err == nil {
+			body, readErr := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if readErr != nil {
+				t.Fatalf("ReadAll() error = %v", readErr)
+			}
+			if closeErr != nil {
+				t.Fatalf("Body.Close() error = %v", closeErr)
+			}
+			if resp.StatusCode == http.StatusOK {
+				return
+			}
+			t.Fatalf("Kanban action status = %d, want 200; body = %s", resp.StatusCode, string(body))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out posting Kanban action to %s", rawURL)
 }
 
 func boardStateCountFromBody(t *testing.T, body string, state string) int {

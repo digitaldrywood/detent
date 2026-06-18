@@ -630,7 +630,8 @@ func kanbanAllowedTransitions(cfg workflowconfig.Config, states []string) map[st
 }
 
 func snapshotKanbanIssues(snapshot telemetry.Snapshot) []telemetry.Issue {
-	issues := make([]telemetry.Issue, 0, len(snapshot.Pipeline)+len(snapshot.Running)+len(snapshot.Queue)+len(snapshot.Blocked)+len(snapshot.Completed))
+	issues := make([]telemetry.Issue, 0, len(snapshot.BoardIssues)+len(snapshot.Pipeline)+len(snapshot.Running)+len(snapshot.Queue)+len(snapshot.Blocked)+len(snapshot.Completed))
+	issues = append(issues, snapshot.BoardIssues...)
 	issues = append(issues, snapshot.Pipeline...)
 	for _, row := range snapshot.Running {
 		issues = append(issues, row.Issue)
