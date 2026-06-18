@@ -972,6 +972,7 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 		"add-project",
 		"--id", " detent ",
 		"--workflow", paths.workflowPath,
+		"--workflow-ref", " origin/main ",
 		"--workdir", paths.workdirPath,
 		"--weight", "5",
 		"--priority", "50",
@@ -994,6 +995,7 @@ func TestAddProjectWritesConfigAndSignalsManager(t *testing.T) {
 	want := globalconfig.Project{
 		ID:            "detent",
 		Workflow:      paths.workflowPath,
+		WorkflowRef:   "origin/main",
 		Workdir:       paths.workdirPath,
 		Weight:        5,
 		Priority:      50,
@@ -1024,6 +1026,7 @@ func TestAddProjectCommandEmitsJSONResult(t *testing.T) {
 		"add-project",
 		"--id", "detent",
 		"--workflow", paths.workflowPath,
+		"--workflow-ref", "origin/main",
 		"--workdir", paths.workdirPath,
 		"--weight", "5",
 		"--paused",
@@ -1034,17 +1037,21 @@ func TestAddProjectCommandEmitsJSONResult(t *testing.T) {
 	}
 
 	var got struct {
-		ID       string `json:"id"`
-		Workflow string `json:"workflow"`
-		Workdir  string `json:"workdir"`
-		Weight   int    `json:"weight"`
-		Paused   bool   `json:"paused"`
+		ID          string `json:"id"`
+		Workflow    string `json:"workflow"`
+		WorkflowRef string `json:"workflow_ref"`
+		Workdir     string `json:"workdir"`
+		Weight      int    `json:"weight"`
+		Paused      bool   `json:"paused"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("add-project output is not JSON: %v\n%s", err, stdout.String())
 	}
 	if got.ID != "detent" || got.Workflow != paths.workflowPath || got.Workdir != paths.workdirPath {
 		t.Fatalf("project = %#v, want detent project", got)
+	}
+	if got.WorkflowRef != "origin/main" {
+		t.Fatalf("workflow_ref = %q, want origin/main", got.WorkflowRef)
 	}
 	if got.Weight != 5 || !got.Paused {
 		t.Fatalf("project weight/paused = %d/%v, want 5/true", got.Weight, got.Paused)

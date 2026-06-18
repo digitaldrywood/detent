@@ -126,6 +126,7 @@ type configPathResult struct {
 type projectResult struct {
 	ID            string `json:"id"`
 	Workflow      string `json:"workflow"`
+	WorkflowRef   string `json:"workflow_ref,omitempty"`
 	Workdir       string `json:"workdir"`
 	Weight        int    `json:"weight"`
 	Priority      int    `json:"priority"`
@@ -662,6 +663,7 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 				return err
 			}
 			cfg.ID = strings.TrimSpace(cfg.ID)
+			cfg.WorkflowRef = strings.TrimSpace(cfg.WorkflowRef)
 			cfg.CredentialRef = strings.TrimSpace(cfg.CredentialRef)
 			if err := validateProjectFlags(cfg); err != nil {
 				return err
@@ -691,6 +693,7 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&cfg.ID, "id", "", "project id")
 	cmd.Flags().StringVar(&cfg.Workflow, "workflow", "", "project workflow path")
+	cmd.Flags().StringVar(&cfg.WorkflowRef, "workflow-ref", "", "git ref for loading the workflow")
 	cmd.Flags().StringVar(&cfg.Workdir, "workdir", "", "project worktree root")
 	cmd.Flags().IntVar(&cfg.Weight, "weight", 1, "project scheduling weight")
 	cmd.Flags().IntVar(&cfg.Priority, "priority", 0, "project dispatch priority")
@@ -892,6 +895,7 @@ func newProjectResult(project globalconfig.Project) projectResult {
 	return projectResult{
 		ID:            project.ID,
 		Workflow:      project.Workflow,
+		WorkflowRef:   project.WorkflowRef,
 		Workdir:       project.Workdir,
 		Weight:        project.Weight,
 		Priority:      project.Priority,

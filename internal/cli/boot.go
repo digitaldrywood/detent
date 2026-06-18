@@ -65,7 +65,7 @@ func resolveBootConfig(ctx context.Context, configPath string, host string, flag
 			Global:         cfg,
 			ConfigPathRule: resolution.Rule,
 			Runtime:        runtime,
-			Host:           bootHost(host, workflowPath),
+			Host:           bootHost(ctx, host, firstGlobalProject(cfg)),
 			Port:           &resolvedPort,
 			Version:        opts.version,
 			Build:          opts.build,
@@ -97,7 +97,7 @@ func resolveBootConfig(ctx context.Context, configPath string, host string, flag
 			ConfigPathRule: resolution.Rule,
 			Runtime:        runtime,
 			WorkflowPath:   workflowPath,
-			Host:           bootHost(host, workflowPath),
+			Host:           bootHost(ctx, host, firstGlobalProject(cfg)),
 			Port:           &resolvedPort,
 			Version:        opts.version,
 			Build:          opts.build,
@@ -784,23 +784,26 @@ func firstWorkflowPath(cfg BootConfig) string {
 }
 
 func firstGlobalWorkflowPath(cfg globalconfig.Config) string {
-	if len(cfg.Projects) == 0 {
-		return ""
-	}
-	return cfg.Projects[0].Workflow
+	return firstGlobalProject(cfg).Workflow
 }
 
-func bootHost(host string, workflowPath string) string {
+func firstGlobalProject(cfg globalconfig.Config) globalconfig.Project {
+	if len(cfg.Projects) == 0 {
+		return globalconfig.Project{}
+	}
+	return cfg.Projects[0]
+}
+
+func bootHost(ctx context.Context, host string, cfg globalconfig.Project) string {
 	resolvedHost := strings.TrimSpace(host)
 	if resolvedHost != "" {
 		return resolvedHost
 	}
 
-	workflowPath = strings.TrimSpace(workflowPath)
-	if workflowPath == "" {
+	if strings.TrimSpace(cfg.Workflow) == "" {
 		return ""
 	}
-	workflow, err := workflowconfig.LoadWorkflow(workflowPath)
+	workflow, err := project.LoadWorkflowContext(ctx, cfg)
 	if err != nil {
 		return ""
 	}
