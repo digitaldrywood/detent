@@ -45,7 +45,7 @@ func withRunnerFactory(
 	githubTokenSource ...func() string,
 ) project.Factory {
 	return func(cfg globalconfig.Project) (*project.Project, error) {
-		workflow, err := workflowconfig.LoadWorkflow(cfg.Workflow)
+		workflow, err := project.LoadWorkflow(cfg)
 		if err != nil {
 			return nil, fmt.Errorf("load project workflow %s: %w", cfg.ID, err)
 		}

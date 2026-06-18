@@ -714,6 +714,7 @@ detent init
 detent add-project \
   --id <id> \
   --workflow /absolute/path/to/project-checkout/WORKFLOW.md \
+  --workflow-ref origin/main \
   --workdir /absolute/path/to/project-checkout
 ```
 
@@ -1217,6 +1218,7 @@ global:
 projects:
   - id: detent
     workflow: /absolute/path/to/detent/WORKFLOW.md
+    workflow_ref: origin/main
     workdir: /absolute/path/to/detent
     weight: 2
     priority: 1
@@ -1233,12 +1235,20 @@ larger dispatch share in weighted and fair-share scheduling modes. Project
 priority is a rank: `1` is highest, `4` is lowest, and `0` or an omitted value
 means no explicit priority.
 
+Set `projects[].workflow_ref` when the workflow file should be read from a git
+ref in the configured source checkout instead of the checkout's working-tree
+copy. `workflow` may be an absolute path under `workdir` or a repository
+relative path such as `WORKFLOW.md`. When the ref advances, Detent reloads the
+workflow content from that ref; when `workflow_ref` is omitted, Detent keeps
+reading the working-tree file.
+
 Use the project administration commands to edit `global.yaml`:
 
 ```sh
 detent add-project \
   --id <id> \
   --workflow <WORKFLOW.md> \
+  --workflow-ref origin/main \
   --workdir <dir> \
   --weight 1 \
   --priority 3
@@ -1540,7 +1550,7 @@ Structured command objects:
 | `detent version` | `{"version":"v0.1.0","commit":"abc1234","build_date":"2026-06-13T00:00:00Z","go_version":"go1.26.4","os":"linux","arch":"amd64"}` |
 | `detent update` | The update status object, including `current_version`, `latest_version`, `latest_tag`, `update_available`, `install_source`, `action`, `message`, and `command` when present. |
 | `detent init` | `{"status":"ok","path":"/path/global.yaml","rule":"--config"}` |
-| `detent add-project` | `{"id":"api","workflow":"/repo/WORKFLOW.md","workdir":"/repo","weight":1,"priority":0,"paused":false,"credential_ref":"github"}` |
+| `detent add-project` | `{"id":"api","workflow":"/repo/WORKFLOW.md","workflow_ref":"origin/main","workdir":"/repo","weight":1,"priority":0,"paused":false,"credential_ref":"github"}` |
 | `detent pause api` / `detent unpause api` | `{"status":"ok","project":"api","paused":true}` |
 | `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
 | `detent remove-project api` | `{"status":"ok","project":"api","removed":true}` |

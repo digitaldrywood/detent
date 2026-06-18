@@ -32,6 +32,7 @@ import (
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	projectpkg "github.com/digitaldrywood/detent/internal/project"
 )
 
 var ErrDoctorFailed = errors.New("doctor found failed checks")
@@ -310,7 +311,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	}
 	if global != nil {
 		boot.Global = *global
-		boot.Host = bootHost(cfg.Host, firstGlobalWorkflowPath(*global))
+		boot.Host = bootHost(ctx, cfg.Host, firstGlobalProject(*global))
 		writeDoctorProgressStart(progressOut, "Global config reload")
 		check := checkDoctorConfigReload(*global)
 		writeDoctorProgressDone(progressOut, check)
@@ -693,7 +694,7 @@ func checkDoctorProjectWithProgress(
 	}
 	workflowCheckName := "Project " + id + " workflow"
 	setDoctorCurrentCheck(workflowCheckName)
-	workflow, err := deps.loadWorkflow(project.Workflow)
+	workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
 	if err != nil {
 		return []doctorCheck{
 			{
@@ -2628,8 +2629,8 @@ func checkDoctorBinary(ctx context.Context, deps doctorDeps, binary string, name
 }
 
 func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token RuntimeSecret, deps doctorDeps) doctorCheck {
-	hasGitHubProject := doctorHasGitHubProject(cfg, deps)
-	requiresRuntimeToken := doctorRequiresRuntimeGitHubToken(cfg, deps)
+	hasGitHubProject := doctorHasGitHubProject(ctx, cfg, deps)
+	requiresRuntimeToken := doctorRequiresRuntimeGitHubToken(ctx, cfg, deps)
 	if cfg != nil && !hasGitHubProject {
 		return doctorCheck{
 			Name:   "GitHub token",
@@ -2671,7 +2672,7 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token Runt
 			Detail: fmt.Sprintf("%s did not expose classic OAuth scopes; treating as fine-grained or resource-scoped token and relying on operation checks", source),
 		}
 	}
-	requiredScopes := doctorRequiredGitHubScopes(cfg, deps)
+	requiredScopes := doctorRequiredGitHubScopes(ctx, cfg, deps)
 	missing := missingGitHubScopes(scopes, requiredScopes)
 	if len(missing) > 0 {
 		return doctorCheck{
@@ -2689,10 +2690,10 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token Runt
 	}
 }
 
-func doctorHasGitHubProject(cfg *globalconfig.Config, deps doctorDeps) bool {
+func doctorHasGitHubProject(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps) bool {
 	if cfg != nil {
 		for _, project := range cfg.Projects {
-			workflow, err := deps.loadWorkflow(project.Workflow)
+			workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
 			if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 				continue
 			}
@@ -2702,12 +2703,12 @@ func doctorHasGitHubProject(cfg *globalconfig.Config, deps doctorDeps) bool {
 	return false
 }
 
-func doctorRequiresRuntimeGitHubToken(cfg *globalconfig.Config, deps doctorDeps) bool {
+func doctorRequiresRuntimeGitHubToken(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps) bool {
 	if cfg == nil {
 		return true
 	}
 	for _, project := range cfg.Projects {
-		workflow, err := deps.loadWorkflow(project.Workflow)
+		workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
 		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 			continue
 		}
@@ -2745,7 +2746,7 @@ func validEnvName(name string) bool {
 	return true
 }
 
-func doctorRequiredGitHubScopes(cfg *globalconfig.Config, deps doctorDeps) []string {
+func doctorRequiredGitHubScopes(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps) []string {
 	if cfg == nil {
 		return append([]string{}, requiredProjectV2GitHubScopes...)
 	}
@@ -2760,7 +2761,7 @@ func doctorRequiredGitHubScopes(cfg *globalconfig.Config, deps doctorDeps) []str
 		}
 	}
 	for _, project := range cfg.Projects {
-		workflow, err := deps.loadWorkflow(project.Workflow)
+		workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
 		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 			continue
 		}
@@ -2780,6 +2781,13 @@ func doctorRequiredGitHubScopes(cfg *globalconfig.Config, deps doctorDeps) []str
 		return append([]string{}, requiredProjectV2GitHubScopes...)
 	}
 	return required
+}
+
+func loadDoctorProjectWorkflow(ctx context.Context, project globalconfig.Project, deps doctorDeps) (workflowconfig.Workflow, error) {
+	if strings.TrimSpace(project.WorkflowRef) == "" {
+		return deps.loadWorkflow(project.Workflow)
+	}
+	return projectpkg.LoadWorkflowContext(ctx, project)
 }
 
 func doctorStringSliceContains(values []string, want string) bool {

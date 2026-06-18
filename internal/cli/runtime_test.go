@@ -3,6 +3,10 @@ package cli
 import (
 	"context"
 	"errors"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -103,6 +107,97 @@ func TestResolveRuntimeSettingsPrecedence(t *testing.T) {
 				t.Fatalf("Port = %#v, want %#v", got.Port, tt.wantPort)
 			}
 		})
+	}
+}
+
+func TestResolveRuntimeSettingsUsesWorkflowRefForServerPort(t *testing.T) {
+	t.Parallel()
+
+	repo := initRuntimeWorkflowRepo(t)
+	writeRuntimeWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), 4109)
+	commitRuntimeWorkflowRepo(t, repo, "initial workflow")
+	updateRuntimeWorkflowRef(t, repo, "origin/main", "HEAD")
+	writeRuntimeWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), 4999)
+
+	cfg := globalconfig.Config{
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 1,
+			Scheduling:          globalconfig.SchedulingWeighted,
+		},
+		Projects: []globalconfig.Project{
+			{
+				ID:          "detent",
+				Workflow:    "WORKFLOW.md",
+				WorkflowRef: "origin/main",
+				Workdir:     repo,
+				Weight:      1,
+			},
+		},
+	}
+
+	got, err := resolveRuntimeSettings(context.Background(), runtimeInput{
+		Config: &cfg,
+	}, runtimeDeps{lookupEnv: mapLookup(nil)})
+	if err != nil {
+		t.Fatalf("resolveRuntimeSettings() error = %v", err)
+	}
+
+	if got.Port.Value != 4109 {
+		t.Fatalf("Port.Value = %d, want 4109", got.Port.Value)
+	}
+	if got.Port.Source != runtimeSourceWorkflow {
+		t.Fatalf("Port.Source = %q, want %q", got.Port.Source, runtimeSourceWorkflow)
+	}
+}
+
+func TestResolveRuntimePortUsesOnlyFirstGlobalProjectWorkflowPort(t *testing.T) {
+	t.Parallel()
+
+	secondPort := 4555
+	firstWorkflow := workflowconfig.Default()
+	firstWorkflow.Server.Port = nil
+	secondWorkflow := workflowconfig.Default()
+	secondWorkflow.Server.Port = &secondPort
+	calls := []string{}
+
+	cfg := globalconfig.Config{
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 1,
+			Scheduling:          globalconfig.SchedulingWeighted,
+		},
+		Projects: []globalconfig.Project{
+			{ID: "first", Workflow: "first.md", Weight: 1},
+			{ID: "second", Workflow: "second.md", Weight: 1},
+		},
+	}
+
+	got, err := resolveRuntimePort(context.Background(), runtimeInput{
+		Config: &cfg,
+	}, runtimeDeps{
+		lookupEnv: mapLookup(nil),
+		loadWorkflow: func(path string) (workflowconfig.Workflow, error) {
+			calls = append(calls, path)
+			switch path {
+			case "first.md":
+				return workflowconfig.Workflow{Config: firstWorkflow}, nil
+			case "second.md":
+				return workflowconfig.Workflow{Config: secondWorkflow}, nil
+			default:
+				return workflowconfig.Workflow{}, errors.New("unexpected workflow path")
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveRuntimePort() error = %v", err)
+	}
+	if got.Value != defaultWebPort {
+		t.Fatalf("Port.Value = %d, want %d", got.Value, defaultWebPort)
+	}
+	if got.Source != runtimeSourceDefault {
+		t.Fatalf("Port.Source = %q, want %q", got.Source, runtimeSourceDefault)
+	}
+	if strings.Join(calls, ",") != "first.md" {
+		t.Fatalf("loadWorkflow calls = %#v, want [first.md]", calls)
 	}
 }
 
@@ -468,6 +563,65 @@ func githubAppWorkflow() workflowconfig.Config {
 	cfg.Tracker.GitHubAppInstallationID = "$INSTALLATION_ID"
 	cfg.Tracker.GitHubAppPrivateKeyPath = "$PRIVATE_KEY_PATH"
 	return cfg
+}
+
+func initRuntimeWorkflowRepo(t *testing.T) string {
+	t.Helper()
+
+	root := t.TempDir()
+	runRuntimeWorkflowCommand(t, "", "git", "init", root)
+	runRuntimeWorkflowGit(t, root, "config", "user.email", "detent@example.com")
+	runRuntimeWorkflowGit(t, root, "config", "user.name", "Detent Test")
+	return root
+}
+
+func writeRuntimeWorkflow(t *testing.T, path string, port int) {
+	t.Helper()
+
+	content := `---
+tracker:
+  kind: memory
+server:
+  port: ` + strconv.Itoa(port) + `
+---
+Runtime workflow.
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+}
+
+func commitRuntimeWorkflowRepo(t *testing.T, repo string, message string) {
+	t.Helper()
+
+	runRuntimeWorkflowGit(t, repo, "add", "WORKFLOW.md")
+	runRuntimeWorkflowGit(t, repo, "commit", "-m", message)
+}
+
+func updateRuntimeWorkflowRef(t *testing.T, repo string, ref string, value string) {
+	t.Helper()
+
+	runRuntimeWorkflowGit(t, repo, "update-ref", "refs/remotes/"+ref, value)
+}
+
+func runRuntimeWorkflowGit(t *testing.T, repo string, args ...string) string {
+	t.Helper()
+
+	return runRuntimeWorkflowCommand(t, repo, "git", args...)
+}
+
+func runRuntimeWorkflowCommand(t *testing.T, dir string, name string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command(name, args...)
+	if dir != "" {
+		cmd.Dir = dir
+	}
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("%s %s error = %v\n%s", name, strings.Join(args, " "), err, output)
+	}
+	return string(output)
 }
 
 func mapLookup(values map[string]string) func(string) string {

@@ -75,6 +75,7 @@ type Settings struct {
 type Project struct {
 	ID            string            `yaml:"id"`
 	Workflow      string            `yaml:"workflow"`
+	WorkflowRef   string            `yaml:"workflow_ref,omitempty"`
 	Workdir       string            `yaml:"workdir"`
 	Weight        int               `yaml:"weight"`
 	Priority      int               `yaml:"priority"`
@@ -324,7 +325,14 @@ func (c Config) Validate(opts ...Option) error {
 		if strings.TrimSpace(project.ID) == "" {
 			problems = append(problems, prefix+".id: must not be blank")
 		}
-		problems = append(problems, projectPathErrors(project.Workflow, prefix+".workflow", readOptions, wantFile)...)
+		if strings.TrimSpace(project.Workflow) == "" {
+			problems = append(problems, prefix+".workflow: must not be blank")
+		} else if strings.TrimSpace(project.WorkflowRef) == "" {
+			problems = append(problems, projectPathErrors(project.Workflow, prefix+".workflow", readOptions, wantFile)...)
+		}
+		if strings.ContainsAny(project.WorkflowRef, "\r\n") {
+			problems = append(problems, prefix+".workflow_ref: must be a single line")
+		}
 		problems = append(problems, projectPathErrors(project.Workdir, prefix+".workdir", readOptions, wantDirectory)...)
 		if project.Weight <= 0 {
 			problems = append(problems, prefix+".weight: must be a positive integer")
@@ -676,7 +684,13 @@ func projectErrors(value any, index int, opts options) []string {
 	var problems []string
 	problems = append(problems, prefixErrors(requiredErrors(project, []string{"id", "workflow", "workdir", "weight", "priority"}), prefix)...)
 	problems = append(problems, stringErrors(project, "id", prefix)...)
-	problems = append(problems, pathErrors(project, "workflow", prefix, opts, wantFile)...)
+	problems = append(problems, stringErrors(project, "workflow_ref", prefix)...)
+	problems = append(problems, singleLineStringErrors(project, "workflow_ref", prefix)...)
+	if strings.TrimSpace(projectStringValue(project, "workflow_ref")) == "" {
+		problems = append(problems, pathErrors(project, "workflow", prefix, opts, wantFile)...)
+	} else {
+		problems = append(problems, stringErrors(project, "workflow", prefix)...)
+	}
 	problems = append(problems, pathErrors(project, "workdir", prefix, opts, wantDirectory)...)
 	problems = append(problems, positiveIntegerError(project["weight"], prefix+".weight")...)
 	problems = append(problems, integerError(project["priority"], prefix+".priority")...)
@@ -741,6 +755,34 @@ func stringErrors(attrs map[string]any, field string, prefix string) []string {
 		return []string{prefix + "." + field + ": must not be blank"}
 	}
 	return nil
+}
+
+func singleLineStringErrors(attrs map[string]any, field string, prefix string) []string {
+	value, ok := attrs[field]
+	if !ok || value == nil {
+		return nil
+	}
+
+	text, ok := value.(string)
+	if !ok {
+		return nil
+	}
+	if strings.ContainsAny(text, "\r\n") {
+		return []string{prefix + "." + field + ": must be a single line"}
+	}
+	return nil
+}
+
+func projectStringValue(attrs map[string]any, field string) string {
+	value, ok := attrs[field]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
 }
 
 type pathExpectation int
@@ -1030,20 +1072,26 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		if err != nil {
 			return nil, err
 		}
+		workflowRef, err := optionalString(project["workflow_ref"], prefix+".workflow_ref")
+		if err != nil {
+			return nil, err
+		}
 		workdir, err := stringValue(project["workdir"], prefix+".workdir")
 		if err != nil {
 			return nil, err
 		}
 		if !opts.projectPathLiterals {
-			expandedWorkflow, err := expandPath(workflow, opts)
-			if err != nil {
-				return nil, fmt.Errorf("%s.workflow: expand path: %w", prefix, err)
+			if strings.TrimSpace(workflowRef) == "" {
+				expandedWorkflow, err := expandPath(workflow, opts)
+				if err != nil {
+					return nil, fmt.Errorf("%s.workflow: expand path: %w", prefix, err)
+				}
+				workflow = expandedWorkflow
 			}
 			expandedWorkdir, err := expandPath(workdir, opts)
 			if err != nil {
 				return nil, fmt.Errorf("%s.workdir: expand path: %w", prefix, err)
 			}
-			workflow = expandedWorkflow
 			workdir = expandedWorkdir
 		}
 		id, err := stringValue(project["id"], prefix+".id")
@@ -1073,7 +1121,8 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 
 		out = append(out, Project{
 			ID:            strings.TrimSpace(id),
-			Workflow:      workflow,
+			Workflow:      strings.TrimSpace(workflow),
+			WorkflowRef:   strings.TrimSpace(workflowRef),
 			Workdir:       workdir,
 			Weight:        weight,
 			Priority:      priority,

@@ -14,6 +14,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	projectpkg "github.com/digitaldrywood/detent/internal/project"
 )
 
 const (
@@ -197,10 +198,30 @@ func resolveRuntimePort(ctx context.Context, input runtimeInput, deps runtimeDep
 	if input.Config != nil && input.Config.Port != nil {
 		return RuntimeIntValue{Value: *input.Config.Port, Source: runtimeSourceConfig}, nil
 	}
+	if input.Config != nil {
+		if port, ok := globalWorkflowServerPort(ctx, *input.Config, deps); ok {
+			return RuntimeIntValue{Value: port, Source: runtimeSourceWorkflow}, nil
+		}
+	}
 	if port, ok := workflowServerPort(ctx, input.Workflow, deps); ok {
 		return RuntimeIntValue{Value: port, Source: runtimeSourceWorkflow}, nil
 	}
 	return RuntimeIntValue{Value: defaultWebPort, Source: runtimeSourceDefault}, nil
+}
+
+func globalWorkflowServerPort(ctx context.Context, cfg globalconfig.Config, deps runtimeDeps) (int, bool) {
+	if err := ctx.Err(); err != nil {
+		return 0, false
+	}
+	project := firstGlobalProject(cfg)
+	if strings.TrimSpace(project.Workflow) == "" {
+		return 0, false
+	}
+	workflow, err := loadRuntimeProjectWorkflow(ctx, project, deps)
+	if err != nil || workflow.Config.Server.Port == nil {
+		return 0, false
+	}
+	return *workflow.Config.Server.Port, true
 }
 
 func workflowServerPort(ctx context.Context, path string, deps runtimeDeps) (int, bool) {
@@ -223,7 +244,7 @@ func resolveRuntimeGitHubToken(ctx context.Context, cfg *globalconfig.Config, de
 		return RuntimeSecret{Value: token, Source: "GITHUB_TOKEN", Required: true}, nil, nil
 	}
 
-	token, requiresRuntimeToken := trackerGitHubToken(cfg, deps)
+	token, requiresRuntimeToken := trackerGitHubToken(ctx, cfg, deps)
 	if token.Value == "" && !requiresRuntimeToken {
 		return RuntimeSecret{Required: false}, nil, nil
 	}
@@ -266,14 +287,14 @@ func resolveConfiguredGitHubToken(ctx context.Context, token string, deps runtim
 	return RuntimeSecret{Value: strings.TrimSpace(token), Source: "github_token", Required: true}, nil
 }
 
-func trackerGitHubToken(cfg *globalconfig.Config, deps runtimeDeps) (RuntimeSecret, bool) {
+func trackerGitHubToken(ctx context.Context, cfg *globalconfig.Config, deps runtimeDeps) (RuntimeSecret, bool) {
 	if cfg == nil {
 		return RuntimeSecret{}, false
 	}
 
 	requiresRuntimeToken := false
 	for _, project := range cfg.Projects {
-		workflow, err := deps.loadWorkflow(project.Workflow)
+		workflow, err := loadRuntimeProjectWorkflow(ctx, project, deps)
 		if err != nil || workflow.Config.Tracker.Kind != workflowconfig.TrackerGitHub {
 			continue
 		}
@@ -289,6 +310,13 @@ func trackerGitHubToken(cfg *globalconfig.Config, deps runtimeDeps) (RuntimeSecr
 		requiresRuntimeToken = true
 	}
 	return RuntimeSecret{}, requiresRuntimeToken
+}
+
+func loadRuntimeProjectWorkflow(ctx context.Context, project globalconfig.Project, deps runtimeDeps) (workflowconfig.Workflow, error) {
+	if strings.TrimSpace(project.WorkflowRef) == "" {
+		return deps.loadWorkflow(project.Workflow)
+	}
+	return projectpkg.LoadWorkflowContext(ctx, project)
 }
 
 func trackerHasGitHubAppCredentials(tracker workflowconfig.Tracker, lookupEnv func(string) string) bool {

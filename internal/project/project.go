@@ -111,7 +111,7 @@ type Project struct {
 }
 
 func Load(cfg globalconfig.Project, deps Dependencies) (*Project, error) {
-	workflow, err := workflowconfig.LoadWorkflow(cfg.Workflow)
+	workflow, err := LoadWorkflow(cfg)
 	if err != nil {
 		return nil, fmt.Errorf("load project workflow: %w", err)
 	}
@@ -997,6 +997,11 @@ func resolveWorkflowWatcherFactory(
 ) WorkflowWatcherFactory {
 	if deps.WorkflowWatcherFactory != nil {
 		return deps.WorkflowWatcherFactory
+	}
+	if strings.TrimSpace(project.WorkflowRef) != "" {
+		return func(string) (WorkflowWatcher, error) {
+			return newGitRefWorkflowWatcher(project, 0, logger)
+		}
 	}
 	return func(path string) (WorkflowWatcher, error) {
 		return configwatcher.New(path,

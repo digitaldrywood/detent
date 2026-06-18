@@ -250,6 +250,7 @@ global:
 projects:
   - id: detent
     workflow: `+paths.workflow+`
+    workflow_ref: origin/main
     workdir: `+paths.workdir+`
     weight: 1
     priority: 0
@@ -274,6 +275,42 @@ projects:
 	}
 	if cfg.InstanceName != "buildbox" {
 		t.Fatalf("InstanceName = %q, want buildbox", cfg.InstanceName)
+	}
+	if cfg.Projects[0].WorkflowRef != "origin/main" {
+		t.Fatalf("Project.WorkflowRef = %q, want origin/main", cfg.Projects[0].WorkflowRef)
+	}
+}
+
+func TestReadAllowsRefBackedRelativeWorkflow(t *testing.T) {
+	t.Parallel()
+
+	paths := createProjectFiles(t)
+	configPath := filepath.Join(paths.root, "global.yaml")
+	writeFile(t, configPath, `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+projects:
+  - id: detent
+    workflow: WORKFLOW.md
+    workflow_ref: origin/main
+    workdir: `+paths.workdir+`
+    weight: 1
+    priority: 0
+`)
+
+	cfg, err := Read(configPath, WithHome(paths.home))
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	got := cfg.Projects[0]
+	if got.Workflow != "WORKFLOW.md" {
+		t.Fatalf("Project.Workflow = %q, want WORKFLOW.md", got.Workflow)
+	}
+	if got.WorkflowRef != "origin/main" {
+		t.Fatalf("Project.WorkflowRef = %q, want origin/main", got.WorkflowRef)
 	}
 }
 
@@ -702,6 +739,7 @@ global:
 projects:
   - id: 123
     workflow: 456
+    workflow_ref: 789
     workdir: 789
     weight: 0
     priority: high
@@ -719,6 +757,7 @@ projects:
 				"global.startup.max_spawn_per_second: must be a positive integer",
 				"projects[0].id: must be a string",
 				"projects[0].workflow: must be a string",
+				"projects[0].workflow_ref: must be a string",
 				"projects[0].workdir: must be a string",
 				"projects[0].weight: must be a positive integer",
 				"projects[0].priority: must be an integer",
