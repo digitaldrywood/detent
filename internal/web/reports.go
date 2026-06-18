@@ -19,7 +19,7 @@ func (s *Server) reports(c echo.Context) error {
 	}
 
 	ctx := c.Request().Context()
-	data, err := s.reportsData(ctx, from, to)
+	data, err := s.reportsData(ctx, from, to, c.QueryParam("project"))
 	if err != nil {
 		s.logger.Error("usage reports page failed", slog.Any("error", err))
 		return c.JSON(http.StatusInternalServerError, errorResponse("usage_reports_failed", "Usage reports failed"))
@@ -45,7 +45,7 @@ func reportsDateRange(c echo.Context) (time.Time, time.Time, *apiErrorResponse, 
 	return from, to, nil, 0
 }
 
-func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time) (templates.ReportsData, error) {
+func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time, selectedProjectID string) (templates.ReportsData, error) {
 	day, err := s.usageReportData(ctx, store.UsageReportByDay, from, to)
 	if err != nil {
 		return templates.ReportsData{}, err
@@ -69,6 +69,8 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time) 
 
 	instanceName := s.instanceName()
 	snapshot := s.latestSnapshot(ctx)
+	projects := s.projectSmallMultiples(ctx, snapshot)
+	projectID, projectName, _ := s.sidebarProjectContext(selectedProjectID, projects, snapshot)
 	return templates.ReportsData{
 		Title:           instancePageTitle(instanceName, "Detent reports"),
 		ApplicationName: applicationName(instanceName),
@@ -81,8 +83,10 @@ func (s *Server) reportsData(ctx context.Context, from time.Time, to time.Time) 
 		PR:              pr,
 		Model:           model,
 		Assets:          s.assets.templatePaths(),
-		Projects:        s.projectSmallMultiples(ctx, snapshot),
+		Projects:        projects,
 		ActiveNav:       "reports",
+		ProjectID:       projectID,
+		ProjectName:     projectName,
 	}, nil
 }
 

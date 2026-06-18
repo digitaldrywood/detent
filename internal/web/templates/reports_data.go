@@ -24,6 +24,8 @@ type ReportsData struct {
 	Assets           AssetPaths
 	Projects         []ProjectSmallMultiple
 	ActiveNav        string
+	ProjectID        string
+	ProjectName      string
 	SidebarCollapsed bool
 }
 
@@ -89,6 +91,8 @@ func reportsDashboardShellData(data ReportsData) DashboardShellData {
 		Projects:         data.Projects,
 		Assets:           data.Assets,
 		ActiveNav:        activeNav,
+		ProjectID:        data.ProjectID,
+		ProjectName:      data.ProjectName,
 		SidebarCollapsed: data.SidebarCollapsed,
 	}
 }
