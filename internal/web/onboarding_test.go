@@ -181,7 +181,7 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		"dependency_auto_unblock:\n    enabled: false\n    source_states:\n      - Blocked\n    target_state: Todo\n    readiness: terminal_or_merged",
 		"source_root: " + sourceRoot,
 		"codex:\n  command: codex app-server",
-		"gate:\n  kind: command\n  run: make check",
+		"gate:\n  kind: command\n  run: make check\n  ci_failure_action: skip",
 		"hooks:\n  timeout_ms: 60000",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"dispatch_priority_by_label:\n    - bug\n    - regression\n    - enhancement",

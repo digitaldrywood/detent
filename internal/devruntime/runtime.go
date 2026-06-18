@@ -646,6 +646,7 @@ type workflowGate struct {
 	Kind                   string `yaml:"kind"`
 	Run                    string `yaml:"run"`
 	RequireAutomatedReview bool   `yaml:"require_automated_review"`
+	CIFailureAction        string `yaml:"ci_failure_action"`
 }
 
 type workflowServer struct {
@@ -705,6 +706,7 @@ func writeWorkflow(path string, input workflowInput) error {
 			Kind:                   "command",
 			Run:                    "true",
 			RequireAutomatedReview: true,
+			CIFailureAction:        "skip",
 		},
 		Server: workflowServer{
 			Host:   defaultHost,

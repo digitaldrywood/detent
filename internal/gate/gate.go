@@ -11,6 +11,9 @@ const (
 
 	DefaultCommand       = "make check"
 	DefaultApprovalLabel = "human-approved"
+
+	CIFailureActionSkip   = "skip"
+	CIFailureActionRework = "rework"
 )
 
 type Config struct {
@@ -18,6 +21,7 @@ type Config struct {
 	Run                    string `yaml:"run"`
 	ApprovalLabel          string `yaml:"approval_label"`
 	RequireAutomatedReview *bool  `yaml:"require_automated_review"`
+	CIFailureAction        string `yaml:"ci_failure_action"`
 }
 
 type Summary struct {
@@ -75,6 +79,7 @@ func DefaultConfig() Config {
 		Run:                    DefaultCommand,
 		ApprovalLabel:          DefaultApprovalLabel,
 		RequireAutomatedReview: new(true),
+		CIFailureAction:        CIFailureActionSkip,
 	}
 }
 
@@ -82,6 +87,7 @@ func Effective(cfg Config) Config {
 	cfg.Kind = NormalizeKind(cfg.Kind)
 	cfg.Run = strings.TrimSpace(cfg.Run)
 	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
+	cfg.CIFailureAction = NormalizeCIFailureAction(cfg.CIFailureAction)
 
 	if cfg.Kind == "" {
 		cfg.Kind = KindCommand
@@ -101,6 +107,9 @@ func Effective(cfg Config) Config {
 	if cfg.ApprovalLabel == "" {
 		cfg.ApprovalLabel = DefaultApprovalLabel
 	}
+	if cfg.CIFailureAction == "" {
+		cfg.CIFailureAction = CIFailureActionSkip
+	}
 	return cfg
 }
 
@@ -115,13 +124,30 @@ func NormalizeKind(kind string) string {
 	}
 }
 
+func NormalizeCIFailureAction(action string) string {
+	switch strings.ToLower(strings.TrimSpace(action)) {
+	case "", CIFailureActionSkip:
+		return CIFailureActionSkip
+	case CIFailureActionRework:
+		return CIFailureActionRework
+	default:
+		return strings.ToLower(strings.TrimSpace(action))
+	}
+}
+
 func Validate(prefix string, cfg Config) []string {
+	var problems []string
 	switch NormalizeKind(cfg.Kind) {
 	case KindCommand, KindHumanReview:
-		return nil
 	default:
-		return []string{prefix + ".kind must be one of command, human_review"}
+		problems = append(problems, prefix+".kind must be one of command, human_review")
 	}
+	switch NormalizeCIFailureAction(cfg.CIFailureAction) {
+	case CIFailureActionSkip, CIFailureActionRework:
+	default:
+		problems = append(problems, prefix+".ci_failure_action must be one of skip, rework")
+	}
+	return problems
 }
 
 func Instructions(cfg Config) string {
@@ -157,9 +183,10 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	if missingPullRequest(summary) {
 		return decision(ActionSkip, ReasonMissingPullRequest)
 	}
-	if normalizedCIStatus(summary.CIStatus) != "green" {
-		out := decision(ActionSkip, ReasonCINotGreen)
-		out.CIStatus = normalizedCIStatus(summary.CIStatus)
+	ciStatus := normalizedCIStatus(summary.CIStatus)
+	if ciStatus != "green" {
+		out := decision(ciFailureAction(cfg, summary.CIStatus), ReasonCINotGreen)
+		out.CIStatus = ciStatus
 		return out
 	}
 	if automatedReviewHasP1(summary.ReviewState) || len(summary.P1Findings) > 0 {
@@ -209,6 +236,26 @@ func normalizedCIStatus(status string) string {
 		return "red"
 	default:
 		return strings.ToLower(strings.TrimSpace(status))
+	}
+}
+
+func ciFailureAction(cfg Config, status string) Action {
+	if cfg.CIFailureAction == CIFailureActionRework && definitiveCIFailure(status) {
+		return ActionRework
+	}
+	return ActionSkip
+}
+
+func definitiveCIFailure(status string) bool {
+	switch normalizedCIStatus(status) {
+	case "red":
+		return true
+	}
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "cancelled", "canceled", "error":
+		return true
+	default:
+		return false
 	}
 }
 

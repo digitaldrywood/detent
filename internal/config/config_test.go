@@ -780,6 +780,32 @@ Prompt
 	}
 }
 
+func TestParseWorkflowCommandGateCIFailureAction(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+gate:
+  kind: command
+  run: make check
+  ci_failure_action: rework
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	cfg := workflow.Config.Gate
+	if cfg.CIFailureAction != gate.CIFailureActionRework {
+		t.Fatalf("Gate.CIFailureAction = %q, want %q", cfg.CIFailureAction, gate.CIFailureActionRework)
+	}
+}
+
 func TestParseWorkflowAgentRoutesCanUseLegacyCodexBackend(t *testing.T) {
 	t.Parallel()
 
@@ -1223,11 +1249,13 @@ tracker:
   kind: memory
 gate:
   kind: checklist
+  ci_failure_action: bounce
 ---
 Prompt
 `,
 			want: []string{
 				"gate.kind must be one of command, human_review",
+				"gate.ci_failure_action must be one of skip, rework",
 			},
 		},
 	}

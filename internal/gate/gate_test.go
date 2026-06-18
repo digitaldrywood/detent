@@ -17,27 +17,32 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 		{
 			name: "omitted gate defaults to make check command",
 			cfg:  Config{},
-			want: Config{Kind: KindCommand, Run: DefaultCommand, ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true)},
+			want: Config{Kind: KindCommand, Run: DefaultCommand, ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionSkip},
 		},
 		{
 			name: "command keeps custom run",
 			cfg:  Config{Kind: " command ", Run: " make verify "},
-			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true)},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionSkip},
 		},
 		{
 			name: "command can disable automated review requirement",
 			cfg:  Config{Kind: KindCommand, Run: "make verify", RequireAutomatedReview: new(false)},
-			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(false)},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(false), CIFailureAction: CIFailureActionSkip},
+		},
+		{
+			name: "command can route failed ci to rework",
+			cfg:  Config{Kind: KindCommand, Run: "make verify", CIFailureAction: " Rework "},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionRework},
 		},
 		{
 			name: "human review normalizes alias and approval label",
 			cfg:  Config{Kind: "human-review", Run: "make check", ApprovalLabel: " Human-Approved "},
-			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: "human-approved"},
+			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: "human-approved", CIFailureAction: CIFailureActionSkip},
 		},
 		{
 			name: "human review gets default approval label",
 			cfg:  Config{Kind: KindHumanReview},
-			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: DefaultApprovalLabel},
+			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: DefaultApprovalLabel, CIFailureAction: CIFailureActionSkip},
 		},
 	}
 
@@ -87,6 +92,33 @@ func TestEvaluate(t *testing.T) {
 				CIStatus:       "red",
 			},
 			want: Decision{Action: ActionSkip, Reason: ReasonCINotGreen, CIStatus: "red"},
+		},
+		{
+			name: "command gate reworks red ci when configured",
+			cfg:  Config{Kind: KindCommand, CIFailureAction: CIFailureActionRework},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "fail",
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonCINotGreen, CIStatus: "red"},
+		},
+		{
+			name: "command gate reworks cancelled ci when configured",
+			cfg:  Config{Kind: KindCommand, CIFailureAction: CIFailureActionRework},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "cancelled",
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonCINotGreen, CIStatus: "cancelled"},
+		},
+		{
+			name: "command gate skips pending ci when rework is configured",
+			cfg:  Config{Kind: KindCommand, CIFailureAction: CIFailureActionRework},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "pending",
+			},
+			want: Decision{Action: ActionSkip, Reason: ReasonCINotGreen, CIStatus: "pending"},
 		},
 		{
 			name: "command gate waits for automated review",
@@ -201,6 +233,7 @@ func configsEqual(left Config, right Config) bool {
 	return left.Kind == right.Kind &&
 		left.Run == right.Run &&
 		left.ApprovalLabel == right.ApprovalLabel &&
+		left.CIFailureAction == right.CIFailureAction &&
 		boolPointerEqual(left.RequireAutomatedReview, right.RequireAutomatedReview)
 }
 
