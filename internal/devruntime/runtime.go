@@ -662,7 +662,7 @@ type workflowKanban struct {
 
 func writeWorkflow(path string, input workflowInput) error {
 	port := input.Port
-	activeStates := []string{"Todo", "In Progress", "Rework", "Merging"}
+	activeStates := []string{"Todo", "In Progress", "Rework"}
 	observedStates := []string{"Backlog", "Human Review", "Blocked", "Merging", "Done"}
 	terminalStates := []string{"Done", "Cancelled", "Canceled"}
 	autoPromote := workflowAutoPromote{
