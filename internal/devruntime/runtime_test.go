@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
@@ -115,6 +116,9 @@ func TestBuildKanbanDemoCreatesIntegrationWorkflow(t *testing.T) {
 	if workflow.Config.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {
 		t.Fatalf("Kanban mode = %q, want integration", workflow.Config.Server.Kanban.Mode)
 	}
+	if got := workflow.Config.Tracker.ActiveStates; !slices.Equal(got, []string{"Cancelled"}) {
+		t.Fatalf("ActiveStates = %#v, want terminal-only demo state", got)
+	}
 	if !workflow.Config.KanbanTransitionAllowed("Backlog", "Todo") {
 		t.Fatal("KanbanTransitionAllowed(Backlog, Todo) = false, want explicit demo transition")
 	}
@@ -126,10 +130,17 @@ func TestBuildKanbanDemoCreatesIntegrationWorkflow(t *testing.T) {
 	}
 
 	states := map[string]int{}
+	activeStates := stateSet(workflow.Config.Tracker.ActiveStates)
+	terminalStates := stateSet(workflow.Config.Tracker.TerminalStates)
 	var issueOnly, linkedPR, ciPass, ciPending, ciFail, reviewClean, reviewFinding bool
 	var labels, assignees, blockers, waitMetadata bool
 	for _, issue := range workflow.Config.Tracker.Issues {
 		states[issue.State]++
+		if _, active := activeStates[strings.ToLower(issue.State)]; active {
+			if _, terminal := terminalStates[strings.ToLower(issue.State)]; !terminal {
+				t.Fatalf("demo issue %q in state %q would be dispatchable", issue.ID, issue.State)
+			}
+		}
 		issueOnly = issueOnly || issue.PullRequest == nil
 		labels = labels || len(issue.Labels) > 0
 		assignees = assignees || len(issue.Assignees) > 0
@@ -176,6 +187,17 @@ func TestBuildKanbanDemoCreatesIntegrationWorkflow(t *testing.T) {
 			t.Fatalf("demo fixture missing %s coverage", name)
 		}
 	}
+}
+
+func stateSet(states []string) map[string]struct{} {
+	out := make(map[string]struct{}, len(states))
+	for _, state := range states {
+		state = strings.ToLower(strings.TrimSpace(state))
+		if state != "" {
+			out[state] = struct{}{}
+		}
+	}
+	return out
 }
 
 func TestBuildRejectsUnsafeRuntimeInputs(t *testing.T) {

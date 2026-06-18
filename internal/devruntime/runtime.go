@@ -672,7 +672,7 @@ func writeWorkflow(path string, input workflowInput) error {
 	var kanban *workflowKanban
 	body := "Isolated mock Detent runtime for dogfood-safe e2e validation.\n"
 	if input.Demo == DemoKanban {
-		activeStates = nil
+		activeStates = []string{"Cancelled"}
 		observedStates = []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled"}
 		autoPromote.Enabled = false
 		kanban = &workflowKanban{
