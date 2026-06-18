@@ -13,6 +13,7 @@ import (
 	"time"
 
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 )
 
 func TestLoadWorkflowUsesWorkingTreeWhenWorkflowRefUnset(t *testing.T) {
@@ -111,31 +112,56 @@ func TestGitRefWorkflowWatcherReloadsWhenRefAdvances(t *testing.T) {
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
-	updates, err := watcher.Watch(ctx)
-	if err != nil {
-		t.Fatalf("Watch() error = %v", err)
+	updates := make(chan configwatcher.Update, 1)
+
+	lastRevision, lastErr := watcher.seed(ctx, updates)
+	if lastErr != "" {
+		t.Fatalf("seed() error = %s", lastErr)
 	}
+	if lastRevision == "" {
+		t.Fatal("seed() revision = empty")
+	}
+	assertNoWorkflowSourceUpdate(t, updates)
 
 	writeWorkflowSourceFile(t, filepath.Join(repo, "WORKFLOW.md"), "second")
 	commitWorkflowSourceRepo(t, repo, "second workflow")
 	updateWorkflowSourceRef(t, repo, "origin/main", "HEAD")
 
-	deadline := time.After(time.Second)
-	for {
-		select {
-		case update, ok := <-updates:
-			if !ok {
-				t.Fatal("updates closed before ref advance")
-			}
-			if update.Err != nil {
-				t.Fatalf("workflow update error = %v", update.Err)
-			}
-			if got := strings.TrimSpace(update.Workflow.Prompt); got == "second" {
-				return
-			}
-		case <-deadline:
-			t.Fatal("timed out waiting for workflow ref reload")
-		}
+	lastRevision, lastErr = watcher.reload(ctx, updates, lastRevision, lastErr)
+	if lastErr != "" {
+		t.Fatalf("reload() error = %s", lastErr)
+	}
+	if lastRevision == "" {
+		t.Fatal("reload() revision = empty")
+	}
+	update := readWorkflowSourceUpdate(t, updates)
+	if update.Err != nil {
+		t.Fatalf("workflow update error = %v", update.Err)
+	}
+	if got := strings.TrimSpace(update.Workflow.Prompt); got != "second" {
+		t.Fatalf("Prompt = %q, want second", got)
+	}
+}
+
+func assertNoWorkflowSourceUpdate(t *testing.T, updates <-chan configwatcher.Update) {
+	t.Helper()
+
+	select {
+	case update := <-updates:
+		t.Fatalf("unexpected workflow update: %#v", update)
+	default:
+	}
+}
+
+func readWorkflowSourceUpdate(t *testing.T, updates <-chan configwatcher.Update) configwatcher.Update {
+	t.Helper()
+
+	select {
+	case update := <-updates:
+		return update
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for workflow update")
+		return configwatcher.Update{}
 	}
 }
 

@@ -150,6 +150,57 @@ func TestResolveRuntimeSettingsUsesWorkflowRefForServerPort(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimePortUsesOnlyFirstGlobalProjectWorkflowPort(t *testing.T) {
+	t.Parallel()
+
+	secondPort := 4555
+	firstWorkflow := workflowconfig.Default()
+	firstWorkflow.Server.Port = nil
+	secondWorkflow := workflowconfig.Default()
+	secondWorkflow.Server.Port = &secondPort
+	calls := []string{}
+
+	cfg := globalconfig.Config{
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 1,
+			Scheduling:          globalconfig.SchedulingWeighted,
+		},
+		Projects: []globalconfig.Project{
+			{ID: "first", Workflow: "first.md", Weight: 1},
+			{ID: "second", Workflow: "second.md", Weight: 1},
+		},
+	}
+
+	got, err := resolveRuntimePort(context.Background(), runtimeInput{
+		Config: &cfg,
+	}, runtimeDeps{
+		lookupEnv: mapLookup(nil),
+		loadWorkflow: func(path string) (workflowconfig.Workflow, error) {
+			calls = append(calls, path)
+			switch path {
+			case "first.md":
+				return workflowconfig.Workflow{Config: firstWorkflow}, nil
+			case "second.md":
+				return workflowconfig.Workflow{Config: secondWorkflow}, nil
+			default:
+				return workflowconfig.Workflow{}, errors.New("unexpected workflow path")
+			}
+		},
+	})
+	if err != nil {
+		t.Fatalf("resolveRuntimePort() error = %v", err)
+	}
+	if got.Value != defaultWebPort {
+		t.Fatalf("Port.Value = %d, want %d", got.Value, defaultWebPort)
+	}
+	if got.Source != runtimeSourceDefault {
+		t.Fatalf("Port.Source = %q, want %q", got.Source, runtimeSourceDefault)
+	}
+	if strings.Join(calls, ",") != "first.md" {
+		t.Fatalf("loadWorkflow calls = %#v, want [first.md]", calls)
+	}
+}
+
 func TestResolveRuntimeSettingsGitHubTokenPrecedence(t *testing.T) {
 	t.Parallel()
 

@@ -213,14 +213,15 @@ func globalWorkflowServerPort(ctx context.Context, cfg globalconfig.Config, deps
 	if err := ctx.Err(); err != nil {
 		return 0, false
 	}
-	for _, project := range cfg.Projects {
-		workflow, err := loadRuntimeProjectWorkflow(ctx, project, deps)
-		if err != nil || workflow.Config.Server.Port == nil {
-			continue
-		}
-		return *workflow.Config.Server.Port, true
+	project := firstGlobalProject(cfg)
+	if strings.TrimSpace(project.Workflow) == "" {
+		return 0, false
 	}
-	return 0, false
+	workflow, err := loadRuntimeProjectWorkflow(ctx, project, deps)
+	if err != nil || workflow.Config.Server.Port == nil {
+		return 0, false
+	}
+	return *workflow.Config.Server.Port, true
 }
 
 func workflowServerPort(ctx context.Context, path string, deps runtimeDeps) (int, bool) {

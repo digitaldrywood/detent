@@ -183,9 +183,7 @@ func (w *gitRefWorkflowWatcher) run(ctx context.Context, updates chan<- configwa
 	ticker := time.NewTicker(w.interval)
 	defer ticker.Stop()
 
-	lastRevision := ""
-	lastErr := ""
-	lastRevision, lastErr = w.reload(ctx, updates, lastRevision, lastErr)
+	lastRevision, lastErr := w.seed(ctx, updates)
 	for {
 		select {
 		case <-ctx.Done():
@@ -194,6 +192,16 @@ func (w *gitRefWorkflowWatcher) run(ctx context.Context, updates chan<- configwa
 			lastRevision, lastErr = w.reload(ctx, updates, lastRevision, lastErr)
 		}
 	}
+}
+
+func (w *gitRefWorkflowWatcher) seed(ctx context.Context, updates chan<- configwatcher.Update) (string, string) {
+	_, revision, err := w.source.load(ctx)
+	if err != nil {
+		message := err.Error()
+		w.send(ctx, updates, configwatcher.Update{Path: w.source.displayPath(), Err: err, At: time.Now()})
+		return "", message
+	}
+	return revision, ""
 }
 
 func (w *gitRefWorkflowWatcher) reload(
