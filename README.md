@@ -579,6 +579,7 @@ gate:
   kind: command
   run: make check
   require_automated_review: true
+  ci_failure_action: skip
 server:
   host: 127.0.0.1
   port: 4000
@@ -625,6 +626,7 @@ agent:
 gate:
   kind: command
   run: make check
+  ci_failure_action: skip
 ---
 You are working on {{ issue.identifier }}: {{ issue.title }}.
 ```
@@ -679,7 +681,10 @@ current-head automated PR review before auto-promotion. Set
 auto-promote from `Human Review` after a linked open PR, green CI, no P1 bot
 review findings, and the quiet period. The quiet period resets on observed
 issue updates, Project status updates, automated PR review submission, and
-linked PR activity such as a fresh push to the PR head. Use
+linked PR activity such as a fresh push to the PR head. Set
+`ci_failure_action: rework` when failed or cancelled current-head CI should move
+a `Human Review` item back to `Rework`; the default `skip` parks it in
+`Human Review`, and pending CI stays parked. Use
 `kind: human_review` with `approval_label` only when the workflow explicitly
 requires a human approval label to promote.
 
@@ -1029,6 +1034,9 @@ of that state is controlled by the workflow:
 - `gate.kind: command` with `require_automated_review: false` keeps the linked
   PR, green CI, no-P1, and quiet-period checks but does not require a bot PR
   review to exist.
+- `gate.ci_failure_action: rework` routes failed or cancelled current-head CI
+  from `Human Review` back to `Rework`; the default `skip` leaves the item
+  parked while CI is not green.
 - `gate.kind: human_review` requires a linked open PR plus the configured
   `approval_label` on the issue.
 

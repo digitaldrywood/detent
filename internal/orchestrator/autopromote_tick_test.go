@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 )
 
 func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
@@ -98,6 +99,33 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 				"reason: p1_findings",
 				"Unsafe migration.",
 				"https://github.test/digitaldrywood/detent/pull/43#pullrequestreview-1",
+			},
+		},
+		{
+			name: "routes failing ci to rework when configured",
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				Gate: gate.Config{
+					Kind:            gate.KindCommand,
+					CIFailureAction: gate.CIFailureActionRework,
+				},
+			},
+			issue: autoPromoteTickIssue("issue-red-ci", []string{"bug"}, &connector.PullRequest{
+				Number:   48,
+				URL:      "https://github.test/digitaldrywood/detent/pull/48",
+				State:    "OPEN",
+				CIStatus: "fail",
+			}),
+			wantUpdates: []autoPromoteTickUpdate{{
+				issueID: "issue-red-ci",
+				state:   "Rework",
+			}},
+			wantCommentFragments: []string{
+				"Auto-promote routed this issue from Human Review to Rework: current-head CI is failing.",
+				"reason: ci_not_green",
+				"ci_status: red",
+				"https://github.test/digitaldrywood/detent/pull/48",
 			},
 		},
 		{

@@ -100,7 +100,7 @@ func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
 				ApprovalLabel: "Approved-By-Human",
 			},
 		},
-		Prompt: "Gate {{ gate.kind }} label={{ gate.approval_label }} run={{ gate.run }}",
+		Prompt: "Gate {{ gate.kind }} label={{ gate.approval_label }} run={{ gate.run }} ci={{ gate.ci_failure_action }}",
 	}, connector.Issue{
 		Identifier: "digitaldrywood/detent#266",
 		Title:      "Gate prompt",
@@ -110,7 +110,7 @@ func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"Gate human_review label=approved-by-human run=",
+		"Gate human_review label=approved-by-human run= ci=skip",
 		"## Validation gate",
 		"Keep the pull request in Human Review until a human applies label `approved-by-human`",
 	} {

@@ -435,6 +435,7 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("gate:\n")
 	b.WriteString("  kind: command\n")
 	b.WriteString("  run: make check\n")
+	b.WriteString("  ci_failure_action: skip\n")
 	b.WriteString("hooks:\n")
 	b.WriteString("  timeout_ms: 60000\n")
 	b.WriteString("---\n\n")

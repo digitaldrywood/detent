@@ -214,7 +214,11 @@ func autoPromoteComment(
 	case autoPromoteMergingState:
 		b.WriteString("Auto-promoted this issue from Human Review to Merging.")
 	case autoPromoteReworkState:
-		b.WriteString("Auto-promote routed this issue from Human Review to Rework.")
+		b.WriteString("Auto-promote routed this issue from Human Review to Rework")
+		if decision.Reason == AutoPromoteReasonCINotGreen {
+			b.WriteString(": current-head CI is failing")
+		}
+		b.WriteString(".")
 	default:
 		return ""
 	}

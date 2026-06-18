@@ -182,6 +182,7 @@ func gateAssigns(cfg gate.Config) map[string]any {
 		"run":                      effective.Run,
 		"approval_label":           effective.ApprovalLabel,
 		"require_automated_review": requireAutomatedReview(effective),
+		"ci_failure_action":        effective.CIFailureAction,
 	}
 }
 

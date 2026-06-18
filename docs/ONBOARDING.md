@@ -1007,12 +1007,13 @@ issue-field verification step instead.
    rg -n '^server:|host: <dashboard-host>|port:' <source-root>/WORKFLOW.md
    ```
 
-5. **Set the gate from the interview.** For command gates, include the command
-   and whether an automated GitHub PR review is required for auto-promotion.
-   For human gates, include the approval label. Verify:
+5. **Set the gate from the interview.** For command gates, include the command,
+   whether an automated GitHub PR review is required for auto-promotion, and
+   whether failed current-head CI parks in `Human Review` or routes to
+   `Rework`. For human gates, include the approval label. Verify:
 
    ```sh
-   rg -n '^gate:|kind: <command|human_review>|run: <gate-command>|require_automated_review: <true|false>|approval_label: <label>' \
+   rg -n '^gate:|kind: <command|human_review>|run: <gate-command>|require_automated_review: <true|false>|ci_failure_action: <skip|rework>|approval_label: <label>' \
      <source-root>/WORKFLOW.md
    ```
 
@@ -1023,6 +1024,7 @@ issue-field verification step instead.
      kind: command
      run: <gate-command>
      require_automated_review: <true|false>
+     ci_failure_action: <skip|rework>
    ```
 
    Human review gate shape:
@@ -1086,7 +1088,10 @@ issue-field verification step instead.
    `require_automated_review: true`, it also requires a current-head automated
    GitHub PR review. With `require_automated_review: false`, bot PR review is
    not required to exist, but any observed P1 bot findings still route the item
-   to `Rework`. The quiet period resets on observed issue updates, Project
+   to `Rework`. With `ci_failure_action: rework`, failed or cancelled
+   current-head CI also routes the item to `Rework`; the default `skip` leaves
+   non-green CI parked in `Human Review`. Pending CI stays parked. The quiet
+   period resets on observed issue updates, Project
    status updates, automated PR review submission, and linked PR activity such
    as a fresh push to the PR head. `detent doctor --port 0` reports sampled
    `Human Review` candidates and reasons such as `automated_review_missing`
@@ -1556,6 +1561,7 @@ PR cards derive status from the linked issue.
 | Dashboard bind | `server.host` in `WORKFLOW.md`, or `--host` in the startup command or service `ExecStart`. |
 | Validation command | `gate.kind: command` and `gate.run` in `WORKFLOW.md`. |
 | Automated PR review requirement | `gate.kind: command` and `gate.require_automated_review` in `WORKFLOW.md`. |
+| Failed CI recovery | `gate.kind: command` and `gate.ci_failure_action` in `WORKFLOW.md`. |
 | Human validation label | `gate.kind: human_review` and `gate.approval_label` in `WORKFLOW.md`. |
 | Per-project concurrency | `agent.max_concurrent_agents` in `WORKFLOW.md`. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `WORKFLOW.md`. |
