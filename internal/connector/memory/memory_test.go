@@ -279,6 +279,27 @@ func TestConnectorMutationsMatchElixirMemoryAdapter(t *testing.T) {
 	}
 }
 
+func TestConnectorCapturesIssueAndPullRequestComments(t *testing.T) {
+	t.Parallel()
+
+	c := New(Config{})
+
+	if err := c.CreateComment(context.Background(), "issue-1", "issue comment"); err != nil {
+		t.Fatalf("CreateComment() error = %v", err)
+	}
+	if err := c.CreatePullRequestComment(context.Background(), "digitaldrywood/detent", 42, "pr comment"); err != nil {
+		t.Fatalf("CreatePullRequestComment() error = %v", err)
+	}
+
+	want := []Event{
+		{Kind: EventKindComment, IssueID: "issue-1", Body: "issue comment"},
+		{Kind: EventKindPullRequestComment, Repository: "digitaldrywood/detent", PRNumber: 42, Body: "pr comment"},
+	}
+	if got := c.Events(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Events() = %#v, want %#v", got, want)
+	}
+}
+
 func TestConnectorStatefulMutationsUpdateFixtureState(t *testing.T) {
 	t.Parallel()
 

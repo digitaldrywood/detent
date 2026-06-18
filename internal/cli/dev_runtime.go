@@ -24,6 +24,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	var dbPath string
 	var trackerMode string
 	var fixturePath string
+	var demo string
 	var allowLiveDB bool
 	var allowProductionPort bool
 
@@ -51,6 +52,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 				DBPath:              dbPath,
 				TrackerMode:         trackerMode,
 				FixturePath:         fixturePath,
+				Demo:                demo,
 				Port:                runtimePort,
 				AllowLiveDatabase:   allowLiveDB,
 				AllowProductionPort: allowProductionPort,
@@ -66,6 +68,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	cmd.Flags().StringVar(&dbPath, "db", "", "isolated SQLite path or :memory:; relative paths are resolved inside --home")
 	cmd.Flags().StringVar(&trackerMode, "tracker", devruntime.TrackerMemory, "isolated tracker backend")
 	cmd.Flags().StringVar(&fixturePath, "fixture", "", "YAML fixture with mock issues and pull requests")
+	cmd.Flags().StringVar(&demo, "demo", "", "built-in isolated demo fixture (kanban)")
 	cmd.Flags().BoolVar(&allowLiveDB, "allow-live-db", false, "allow --db to point at the operator's live ~/.detent/detent.db")
 	cmd.Flags().BoolVar(&allowProductionPort, "allow-production-port", false, "allow binding the isolated runtime to the live dogfood port")
 	return cmd
@@ -116,6 +119,7 @@ func devRuntimeIsolationInfo(runtime devruntime.Runtime) *IsolatedRuntimeInfo {
 		DBMode:        runtime.DBMode,
 		TrackerMode:   runtime.TrackerMode,
 		FixturePath:   runtime.FixturePath,
+		Demo:          runtime.Demo,
 	}
 }
 
@@ -138,6 +142,10 @@ func devRuntimeError(err error) error {
 		return WrapValidation(hintedError(err, err.Error(), exampleHint(devRuntimeExampleCommand), devRuntimeExampleCommand))
 	case errors.Is(err, devruntime.ErrLiveDatabase):
 		return WrapValidation(hintedError(err, err.Error(), "Use the default :memory: DB or a path under --home for isolated tests.", "detent dev-runtime --db :memory:"))
+	case errors.Is(err, devruntime.ErrUnsupportedDemo):
+		return WrapValidation(hintedError(err, err.Error(), "Use --demo kanban or omit --demo.", "detent dev-runtime --demo kanban --port 0"))
+	case errors.Is(err, devruntime.ErrDemoFixtureConflict):
+		return WrapValidation(hintedError(err, err.Error(), "Use either --demo kanban or --fixture, not both.", "detent dev-runtime --demo kanban --port 0"))
 	default:
 		return err
 	}

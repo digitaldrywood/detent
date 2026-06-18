@@ -12,21 +12,24 @@ import (
 )
 
 const (
-	EventKindComment        EventKind = "memory_tracker_comment"
-	EventKindStateUpdate    EventKind = "memory_tracker_state_update"
-	EventKindAssigneeUpdate EventKind = "memory_tracker_assignee_update"
-	EventKindFieldUpdate    EventKind = "memory_tracker_field_update"
-	EventKindClose          EventKind = "memory_tracker_close"
+	EventKindComment            EventKind = "memory_tracker_comment"
+	EventKindPullRequestComment EventKind = "memory_tracker_pull_request_comment"
+	EventKindStateUpdate        EventKind = "memory_tracker_state_update"
+	EventKindAssigneeUpdate     EventKind = "memory_tracker_assignee_update"
+	EventKindFieldUpdate        EventKind = "memory_tracker_field_update"
+	EventKindClose              EventKind = "memory_tracker_close"
 )
 
 type EventKind string
 
 type Event struct {
-	Kind    EventKind
-	IssueID string
-	Body    string
-	State   string
-	Login   string
+	Kind       EventKind
+	IssueID    string
+	Repository string
+	PRNumber   int
+	Body       string
+	State      string
+	Login      string
 
 	FieldName  string
 	FieldValue string
@@ -44,9 +47,11 @@ type Config struct {
 type Connector struct {
 	issues    []connector.Issue
 	eventSink EventSink
+	events    []Event
 	stateful  bool
 	now       func() time.Time
 	mu        sync.RWMutex
+	eventMu   sync.RWMutex
 }
 
 var _ connector.Connector = (*Connector)(nil)
@@ -55,6 +60,7 @@ var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
+var _ connector.PullRequestCommenter = (*Connector)(nil)
 
 func New(cfg Config) *Connector {
 	now := cfg.Now
@@ -198,6 +204,18 @@ func (c *Connector) CreateComment(_ context.Context, issueID string, body string
 	return nil
 }
 
+func (c *Connector) CreatePullRequestComment(_ context.Context, repository string, number int, body string) error {
+	c.send(Event{Kind: EventKindPullRequestComment, Repository: strings.TrimSpace(repository), PRNumber: number, Body: body})
+	return nil
+}
+
+func (c *Connector) Events() []Event {
+	c.eventMu.RLock()
+	defer c.eventMu.RUnlock()
+
+	return append([]Event(nil), c.events...)
+}
+
 func (c *Connector) CloseIssue(_ context.Context, issueID string) error {
 	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
 		issue.Closed = true
@@ -264,6 +282,10 @@ func (c *Connector) applyIssue(issueID string, update func(*connector.Issue, tim
 }
 
 func (c *Connector) send(event Event) {
+	c.eventMu.Lock()
+	c.events = append(c.events, event)
+	c.eventMu.Unlock()
+
 	if c.eventSink == nil {
 		return
 	}

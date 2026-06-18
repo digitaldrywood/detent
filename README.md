@@ -748,12 +748,7 @@ For Detent dogfood/self-tests that need a running server, start an isolated mock
 runtime instead of stopping or reusing the live process on `127.0.0.1:4000`:
 
 ```sh
-detent dev-runtime \
-  --port 0 \
-  --home "$(mktemp -d)" \
-  --db ':memory:' \
-  --tracker memory \
-  --fixture testdata/dogfood/autopromote.yaml
+detent dev-runtime --port 0
 ```
 
 The command prints `Mode: isolated dev runtime`, the selected dashboard URL,
@@ -762,6 +757,29 @@ config/workspace home, an in-memory SQLite database, a stateful fixture-backed
 memory tracker, and a fake runner; it does not call GitHub or mutate a real
 ProjectV2 board. It refuses the live dogfood port and live
 `~/.detent/detent.db` unless explicitly overridden.
+
+Use the built-in Kanban demo when you want to evaluate the operator board and
+mutation dialogs without a GitHub token, a real ProjectV2 board, or production
+database state:
+
+```sh
+detent dev-runtime --demo kanban --port 0
+```
+
+The Kanban demo keeps the runtime isolated on the memory tracker, enables
+Kanban integration mode for the generated demo workflow, and includes explicit
+`server.kanban.allowed_transitions` such as `Backlog -> Todo` so drag/drop
+moves can be exercised without weakening production defaults. Demo cards cover
+Backlog, Todo, In Progress, Blocked, Human Review, Rework, Merging, Done, and
+Cancelled states, including issue-only cards, linked PR cards, CI pass,
+pending, and failure states, Codex review clean and finding states, labels,
+assignees, blockers, and wait metadata. Issue and PR comments are captured by
+the memory connector with no external side effects.
+
+Use the normal live runtime, `detent` with your global config, only when you
+intend to operate on the configured tracker and ProjectV2 board. Use
+`detent dev-runtime --fixture <path>` for focused fixture validation such as
+autopromote behavior, and use `--demo kanban` for safe board exploration.
 
 6. Start Detent:
 
