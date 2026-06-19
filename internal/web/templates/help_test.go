@@ -95,6 +95,8 @@ func TestHelpScriptUsesStableSharedPopoverUtility(t *testing.T) {
 		"aria-describedby",
 		`document.addEventListener("htmx:afterSettle"`,
 		"activeHelpTrigger",
+		"!document.documentElement.contains(activeHelpTrigger)",
+		`hideHelpTooltip("", true)`,
 		"openHelpTooltip(activeHelpTrigger)",
 		"Escape",
 	} {

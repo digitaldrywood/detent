@@ -464,8 +464,7 @@ templ helpScript() {
 			document.addEventListener("htmx:afterSettle", () => {
 				if (!activeHelpTrigger) return
 				if (!document.documentElement.contains(activeHelpTrigger)) {
-					activeHelpTrigger = null
-					currentHelpTerm = ""
+					hideHelpTooltip("", true)
 					return
 				}
 				openHelpTooltip(activeHelpTrigger)
