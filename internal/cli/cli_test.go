@@ -264,6 +264,9 @@ func TestDevRuntimeCommandBuildsKanbanDemoBootConfig(t *testing.T) {
 	if got.Isolated.Demo != "kanban" {
 		t.Fatalf("Isolated.Demo = %q, want kanban", got.Isolated.Demo)
 	}
+	if got.Host != "0.0.0.0" {
+		t.Fatalf("Host = %q, want demo wildcard host", got.Host)
+	}
 	if got.Isolated.FixturePath != "" {
 		t.Fatalf("FixturePath = %q, want no external fixture for built-in demo", got.Isolated.FixturePath)
 	}
@@ -276,6 +279,62 @@ func TestDevRuntimeCommandBuildsKanbanDemoBootConfig(t *testing.T) {
 	}
 	if !workflow.Config.KanbanTransitionAllowed("Backlog", "Todo") {
 		t.Fatal("KanbanTransitionAllowed(Backlog, Todo) = false, want demo override")
+	}
+}
+
+func TestDevRuntimeCommandKeepsExplicitHostForDemo(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--host", "127.0.0.1",
+		"--port", "0",
+		"dev-runtime",
+		"--home", home,
+		"--demo", "kanban",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Host != "127.0.0.1" {
+		t.Fatalf("Host = %q, want explicit demo host", got.Host)
+	}
+}
+
+func TestDevRuntimeCommandDefaultsNonDemoHostToLoopback(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--port", "0",
+		"dev-runtime",
+		"--home", home,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Host != "127.0.0.1" {
+		t.Fatalf("Host = %q, want non-demo loopback host", got.Host)
 	}
 }
 
@@ -308,6 +367,9 @@ func TestDevRuntimeCommandBuildsScreenshotsDemoBootConfig(t *testing.T) {
 	}
 	if got.Isolated.Demo != "screenshots" || got.Isolated.DemoClock != "play" {
 		t.Fatalf("isolated demo metadata = %#v, want screenshots play", got.Isolated)
+	}
+	if got.Host != "0.0.0.0" {
+		t.Fatalf("Host = %q, want demo wildcard host", got.Host)
 	}
 	if got.Isolated.ManifestPath != "/api/v1/demo/scenarios" {
 		t.Fatalf("ManifestPath = %q, want demo scenario endpoint", got.Isolated.ManifestPath)

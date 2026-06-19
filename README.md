@@ -772,6 +772,13 @@ database state:
 detent dev-runtime --demo kanban --port 0
 ```
 
+Demo runtimes bind to `0.0.0.0` when `--host` is omitted so the selected
+random port can be reached from trusted network interfaces. From another
+machine on Tailscale, replace the local banner host with the Tailscale
+hostname, for example
+`http://prometheus:<port>/projects/dogfood/kanban`. Pass
+`--host 127.0.0.1` for a local-only demo run.
+
 The Kanban demo keeps the runtime isolated on the memory tracker, enables
 Kanban integration mode for the generated demo workflow, and includes explicit
 `server.kanban.allowed_transitions` such as `Backlog -> Todo` so drag/drop
@@ -790,7 +797,8 @@ recording, or visual e2e baselines:
 detent dev-runtime --demo screenshots --port 0
 ```
 
-The screenshots demo uses the same isolation model as the Kanban demo: memory
+The screenshots demo uses the same isolation model and demo bind default as the
+Kanban demo: memory
 tracker, fake runner, isolated home, isolated database, isolated workspaces,
 fake `https://github.test/...` URLs, no GitHub calls, no real ProjectV2
 mutation, and no live dogfood port by default. It freezes demo time at

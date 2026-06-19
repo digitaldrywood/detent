@@ -17,7 +17,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 )
 
-const devRuntimeExampleCommand = "detent dev-runtime --port 0"
+const (
+	devRuntimeDemoHost       = "0.0.0.0"
+	devRuntimeExampleCommand = "detent dev-runtime --port 0"
+)
 
 func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command {
 	var home string
@@ -82,6 +85,9 @@ func devRuntimeBootConfig(runtime devruntime.Runtime, host string, opts options,
 	runtimeHost := strings.TrimSpace(host)
 	if runtimeHost == "" {
 		runtimeHost = defaultWebHost
+		if runtime.Demo != "" {
+			runtimeHost = devRuntimeDemoHost
+		}
 	}
 	return BootConfig{
 		Mode:           BootModeRunning,
