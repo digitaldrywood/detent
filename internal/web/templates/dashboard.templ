@@ -2415,6 +2415,23 @@ templ kanbanScript() {
 				return key !== "" && allowedTargetKeys(card).includes(key);
 			}
 
+			function dragImageOffset(position, start, size) {
+				if (position <= 0 || size <= 0) {
+					return Math.max(0, size / 2);
+				}
+				return Math.min(Math.max(position - start, 0), size);
+			}
+
+			function setCardDragImage(event, card) {
+				if (!event.dataTransfer) {
+					return;
+				}
+				const rect = card.getBoundingClientRect();
+				const offsetX = dragImageOffset(event.clientX, rect.left, rect.width);
+				const offsetY = dragImageOffset(event.clientY, rect.top, rect.height);
+				event.dataTransfer.setDragImage(card, Math.round(offsetX), Math.round(offsetY));
+			}
+
 			function setDropTargetState(card) {
 				document.querySelectorAll("[data-kanban-drop-state]").forEach(function(lane) {
 					if (!(lane instanceof HTMLElement)) {
@@ -2467,6 +2484,7 @@ templ kanbanScript() {
 					event.dataTransfer.effectAllowed = "move";
 					event.dataTransfer.setData("text/plain", draggedIssueID);
 				}
+				setCardDragImage(event, card);
 				setDropTargetState(card);
 				feedback("Moving " + (card.dataset.kanbanCurrentState || "card") + ".");
 			});
