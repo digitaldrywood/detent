@@ -697,9 +697,9 @@ Use `tracker.authorization.labels.*`, `projects[].authorization`, and
 labels such as `documentation`, `bug`, or `enhancement`.
 
 Kanban display is read-only by default. Keep that default for observers,
-shared dashboards, and initial rollout. In a Detent release that includes
-Kanban integration mode, enable integration only when operators are allowed to
-move cards and post issue or PR comments from Detent, and only after
+shared dashboards, the top-level `/kanban` fleet board, and initial rollout.
+Project-specific Kanban pages can use integration mode when operators are
+allowed to move cards and post issue or PR comments from Detent, and only after
 `detent doctor` proves ProjectV2 status write, issue-field status write, or
 status-label update for the selected status source, plus issue/PR comment
 write:
@@ -853,19 +853,24 @@ detent dev-runtime --demo kanban --demo-project demo-project --port 0
 Demo runtimes bind to `0.0.0.0` when `--host` is omitted so the selected
 random port can be reached from trusted network interfaces. From another
 machine on Tailscale, replace the local banner host with the Tailscale
-hostname. With the override above, open
-`http://prometheus:<port>/projects/demo-project/kanban`. Pass
-`--host 127.0.0.1` for a local-only demo run.
+hostname. With the override above, open `http://prometheus:<port>/kanban` for
+the mixed-project board or
+`http://prometheus:<port>/projects/demo-project/kanban` for the generated
+project's interactive board. Pass `--host 127.0.0.1` for a local-only demo run.
 
-The Kanban demo keeps the runtime isolated on the memory tracker, enables
-Kanban integration mode for the generated demo workflow, and includes explicit
-`server.kanban.allowed_transitions` such as `Backlog -> Todo` so drag/drop
-moves can be exercised without weakening production defaults. Demo cards cover
-Backlog, Todo, In Progress, Blocked, Human Review, Rework, Merging, Done, and
-Cancelled states, including issue-only cards, linked PR cards, CI pass,
-pending, and failure states, Codex review clean and finding states, labels,
-assignees, blockers, and wait metadata. Issue and PR comments are captured by
-the memory connector with no external side effects.
+The Kanban demo keeps the runtime isolated on the memory tracker, seeds at
+least four projects with one or two cards each, and mixes configured project
+colors with deterministic automatic colors. The fleet `/kanban` board is
+read-only and shows cards across those projects; project-specific pages such as
+`/projects/demo-project/kanban` enable integration mode for the generated demo
+workflow. The demo includes explicit `server.kanban.allowed_transitions` such
+as `Backlog -> Todo` so drag/drop moves can be exercised without weakening
+production defaults. Demo cards cover Backlog, Todo, In Progress, Blocked,
+Human Review, Rework, Merging, Done, and Cancelled states, including
+issue-only cards, linked PR cards, CI pass, pending, and failure states, Codex
+review clean and finding states, labels, assignees, blockers, and wait
+metadata. Issue and PR comments are captured by the memory connector with no
+external side effects.
 
 Use the screenshots demo when you need deterministic pages, HTMX fragments, API
 responses, reports, and SSE payloads for documentation screenshots, video
@@ -896,6 +901,7 @@ normal page route:
 ```ts
 const scenarios = [
   ["fleet-healthy-parallel-work", "/"],
+  ["fleet-kanban-multiproject", "/kanban"],
   ["kanban-full-integration", "/projects/dogfood/kanban"],
   ["reports-normal-window", "/reports"],
 ];
@@ -1419,14 +1425,15 @@ larger dispatch share in weighted and fair-share scheduling modes. Project
 priority is a rank: `1` is highest, `4` is lowest, and `0` or an omitted value
 means no explicit priority.
 
-Set `projects[].color` to an opaque CSS hex color in `#RGB` or `#RRGGBB`
-form when a project needs a fixed visual marker. The board and sidebar keep
-the project name or ID visible and use color only as an additional compact
-marker. Projects without a configured color receive a deterministic automatic
-color from a curated categorical palette based on the project ID, so colors
-remain stable across restarts and do not depend on project order. When there
-are more projects than palette entries, Detent deterministically reuses palette
-colors; labels and project IDs remain the primary identifiers.
+Set optional `projects[].color` to an opaque CSS hex color in `#RGB` or
+`#RRGGBB` form when a project needs a fixed visual marker. The sidebar,
+project cards, and top-level multi-project Kanban board keep the project name
+or ID visible and use color only as an additional compact marker. Projects
+without a configured color receive a deterministic automatic color from a
+curated categorical palette based on the project ID, so colors remain stable
+across restarts and do not depend on project order. When there are more
+projects than palette entries, Detent deterministically reuses palette colors;
+labels and project IDs remain the primary identifiers.
 
 Set `projects[].workflow_ref` when the workflow file should be read from a git
 ref in the configured source checkout instead of the checkout's working-tree
@@ -1652,8 +1659,11 @@ Useful endpoints:
 | Route | Purpose |
 | --- | --- |
 | `/` | Web dashboard. |
+| `/kanban` | Read-only fleet Kanban board across all registered projects. The sidebar link appears only when more than one project is registered. |
+| `/projects/<id>` | Project-scoped dashboard overview. |
+| `/projects/<id>/kanban` | Project-scoped Kanban board; read-only or integration mode follows that project's workflow config. |
 | `/health` | Server health and configured dependency checks. |
-| `/events` | Server-sent dashboard updates. |
+| `/events` | Server-sent dashboard updates. Use `?view=kanban` for the fleet board and `?project=<id>&view=kanban` for a project board. |
 | `/api/v1/state` | JSON telemetry snapshot. |
 | `/api/v1/timeseries?window=10m&bucket=1m` | Fleet chart samples for running agents, tokens/sec, and completions. |
 | `/api/v1/projects/<id>/state` | Project-scoped JSON telemetry snapshot. |

@@ -562,7 +562,22 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^GLOBAL_(PRIORITY|WEIGHT)=' "$ONBOARDING_DIR/answers.env"
    ```
 
-7. **Dispatch label ordering.** Ask: "When two issues have the same configured
+7. **Project color.** Ask: "Should this project have a fixed dashboard color,
+   or should Detent assign one automatically?" Show
+   `$ONBOARDING_DIR/global-projects.txt` so existing colors are discoverable.
+   Explain that `projects[].color` is optional, accepts opaque CSS hex values
+   such as `#1192e8`, and missing colors are deterministic from the project ID.
+   Colors appear in the sidebar and the top-level multi-project `/kanban`
+   board, but project names and IDs remain visible. Verify:
+
+   ```sh
+   printf '%s\n' \
+     'PROJECT_COLOR=<#RRGGBB-or-empty>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^PROJECT_COLOR=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+8. **Dispatch label ordering.** Ask: "When two issues have the same configured
    `Priority`, should labels break the tie before age?" Show the label counts
    from `$ONBOARDING_DIR/issue-counts.json` and recommend an ordered list from
    labels that represent work type or risk, such as `bug`, `regression`, then
@@ -579,7 +594,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^DISPATCH_PRIORITY_BY_LABEL=' "$ONBOARDING_DIR/answers.env"
    ```
 
-8. **Instance name.** Ask: "What optional instance name should appear in
+9. **Instance name.** Ask: "What optional instance name should appear in
    Detent browser tabs and the navbar?" Recommendation source: the short
    hostname, existing `global.identity.name`, and any operator naming
    convention for this host. Default if silent: the short hostname. Verify:
@@ -592,7 +607,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^INSTANCE_NAME=' "$ONBOARDING_DIR/answers.env"
    ```
 
-9. **Authorization filters.** Ask: "Should Detent consider all board items or
+10. **Authorization filters.** Ask: "Should Detent consider all board items or
    only items matching a filter?" Offer `none`, `labels.include`,
    `labels.exclude`, `assignee_in`, `author_in`, and `priority_in`.
    Recommendation source: live counts in `$ONBOARDING_DIR/issue-counts.json`
@@ -614,7 +629,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^AUTHORIZATION_' "$ONBOARDING_DIR/answers.env"
    ```
 
-10. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
+11. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
    localhost-only, a private/Tailscale IP, or all interfaces?" Recommendation
    source: the operator's access path, whether SSH tunnels or VPN/Tailscale are
    expected, the host firewall, and any known private interface addresses.
@@ -631,7 +646,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^DASHBOARD_' "$ONBOARDING_DIR/answers.env"
    ```
 
-11. **Validation gate.** Ask: "Use the detected command, a custom command, or a
+12. **Validation gate.** Ask: "Use the detected command, a custom command, or a
    human review label gate? If this is a command gate, should auto-promotion
    require an automated GitHub PR review from a bot?" Recommendation source:
    `$ONBOARDING_DIR/gate.txt`, detected manifests, task runners, CI workflow
@@ -1990,6 +2005,7 @@ comment-write, and rate-limit checks before dispatching.
 | Kanban interaction | Keep read-only by default; use integration only in supporting releases after doctor proves write permissions. |
 | Project scheduling priority | `projects[].priority` in `global.yaml`. |
 | Project scheduling weight | `projects[].weight` in `global.yaml`. |
+| Project color | Optional `projects[].color` in `global.yaml`; missing colors are deterministic and appear in the sidebar and multi-project Kanban. |
 | Dispatch label ordering | `agent.dispatch_priority_by_label` in `WORKFLOW.md`. |
 | Authorization filters | `tracker.authorization` in `WORKFLOW.md`; optionally `projects[].authorization` in `global.yaml` for host-level scoping. |
 | Dashboard bind | `server.host` in `WORKFLOW.md`, or `--host` in the startup command or service `ExecStart`. |

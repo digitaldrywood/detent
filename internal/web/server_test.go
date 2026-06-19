@@ -234,6 +234,7 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	}
 	assertManifestContainsScenarios(t, manifest, []string{
 		"fleet-healthy-parallel-work",
+		"fleet-kanban-multiproject",
 		"kanban-full-integration",
 		"reports-normal-window",
 		"onboarding-write-success",
@@ -2571,6 +2572,90 @@ func TestProjectKanbanRouteHidesMutationControlsInReadOnlyMode(t *testing.T) {
 	}
 }
 
+func TestFleetKanbanRouteRendersAllProjectsReadOnly(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 16, 14, 45, 0, 0, time.UTC)
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, &kanbanActionConnector{name: "github"})
+	mustSetWebProject(t, deps.Registry, "docs-site", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent", Color: "#1192e8"},
+				Counts:  telemetry.Counts{Queue: 1},
+			},
+			{
+				Project: telemetry.Project{ID: "docs-site", DisplayName: "Docs Site"},
+				Counts:  telemetry.Counts{Running: 1},
+			},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "I_kw542",
+				Identifier: "digitaldrywood/detent#542",
+				URL:        "https://github.com/digitaldrywood/detent/issues/542",
+				ProjectID:  "detent",
+				Title:      "Add top-level multi-project Kanban board",
+				State:      "Todo",
+			},
+			{
+				ID:         "I_docs12",
+				Identifier: "digitaldrywood/docs-site#12",
+				URL:        "https://github.com/digitaldrywood/docs-site/issues/12",
+				ProjectID:  "docs-site",
+				Title:      "Document fleet Kanban",
+				State:      "In Progress",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{StaticDir: t.TempDir()}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTML(t, server.Handler(), http.MethodGet, "/kanban", http.StatusOK)
+	for _, want := range []string{
+		`aria-label="Fleet Kanban"`,
+		`sse-connect="/events?view=kanban"`,
+		`data-project-kanban-visibility-key="fleet"`,
+		`data-project-kanban-card="digitaldrywood/detent#542"`,
+		`data-project-kanban-card="digitaldrywood/docs-site#12"`,
+		`data-project-color="#1192e8"`,
+		`href="/projects/detent/kanban"`,
+		`href="/projects/docs-site/kanban"`,
+		`aria-label="Open detent Kanban"`,
+		`aria-label="Open docs-site Kanban"`,
+		"Add top-level multi-project Kanban board",
+		"Document fleet Kanban",
+		"Read-only",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("fleet Kanban page missing %q:\n%s", want, body)
+		}
+	}
+	assertSingleCurrentSidebarItem(t, body)
+	assertActiveSidebarLink(t, body, "/kanban")
+	assertInactiveSidebarLink(t, body, "/")
+	for _, forbidden := range []string{
+		`data-kanban-action="move"`,
+		`hx-post="/api/v1/kanban/move"`,
+		`id="kanban-feedback"`,
+		`aria-label="Dashboard health"`,
+		`data-detent-charts`,
+	} {
+		if strings.Contains(body, forbidden) {
+			t.Fatalf("fleet Kanban page rendered forbidden %q:\n%s", forbidden, body)
+		}
+	}
+}
+
 func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -2645,6 +2730,95 @@ func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 			t.Fatalf("Kanban sidebar event missing %q:\n%s", want, sidebarEvent.data)
 		}
 	}
+}
+
+func TestFleetKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 16, 15, 15, 0, 0, time.UTC)
+	deps := testDeps(t)
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	mustSetWebProject(t, deps.Registry, "docs-site", false)
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	addr := startWebServer(t, server)
+	conn, body, reader := openRawEventStream(t, addr, "/events?view=kanban")
+	defer conn.Close()
+	defer body.Close()
+
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent", Color: "#1192e8"}},
+			{Project: telemetry.Project{ID: "docs-site", DisplayName: "Docs Site"}},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "I_kw542",
+				Identifier: "digitaldrywood/detent#542",
+				URL:        "https://github.com/digitaldrywood/detent/issues/542",
+				ProjectID:  "detent",
+				Title:      "Fleet SSE board card",
+				State:      "Todo",
+			},
+			{
+				ID:         "I_docs12",
+				Identifier: "digitaldrywood/docs-site#12",
+				URL:        "https://github.com/digitaldrywood/docs-site/issues/12",
+				ProjectID:  "docs-site",
+				Title:      "Docs SSE board card",
+				State:      "In Progress",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	event := readRawSSEEvent(t, conn, reader)
+	if event.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", event.name)
+	}
+	for _, want := range []string{
+		`aria-label="Fleet Kanban"`,
+		`data-project-kanban-visibility-key="fleet"`,
+		`data-project-kanban-card="digitaldrywood/detent#542"`,
+		`data-project-kanban-card="digitaldrywood/docs-site#12"`,
+		"Fleet SSE board card",
+		"Docs SSE board card",
+	} {
+		if !strings.Contains(event.data, want) {
+			t.Fatalf("fleet Kanban snapshot event missing %q:\n%s", want, event.data)
+		}
+	}
+	for _, forbidden := range []string{
+		`aria-label="Dashboard health"`,
+		`aria-label="Pull request pipeline"`,
+		"Running issues",
+		`data-kanban-action`,
+	} {
+		if strings.Contains(event.data, forbidden) {
+			t.Fatalf("fleet Kanban snapshot event rendered forbidden %q:\n%s", forbidden, event.data)
+		}
+	}
+
+	sidebarEvent := readRawSSEEvent(t, conn, reader)
+	if sidebarEvent.name != "sidebar" {
+		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
+	}
+	for _, want := range []string{
+		`href="/kanban"`,
+		`data-dashboard-static-nav="kanban"`,
+		`data-tui-sidebar-active="true"`,
+		`aria-current="page"`,
+	} {
+		if !strings.Contains(sidebarEvent.data, want) {
+			t.Fatalf("fleet Kanban sidebar event missing %q:\n%s", want, sidebarEvent.data)
+		}
+	}
+	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
 }
 
 func TestProjectRoutesAllowEscapedSlashIDs(t *testing.T) {
