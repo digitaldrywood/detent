@@ -357,6 +357,7 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		ID:          project.ID,
 		DisplayName: project.Name,
 		URL:         project.URL,
+		Color:       project.Color,
 	})
 	name := strings.TrimSpace(project.Name)
 	if name == "" {
@@ -394,9 +395,10 @@ func (s *Server) dashboardProject(selectedProjectID string, projects []templates
 	}
 	if projectSnapshot, ok := projectSnapshotForID(snapshot, selectedProjectID); ok {
 		return templates.ProjectSmallMultiple{
-			ID:   projectID(projectSnapshot.Project),
-			Name: strings.TrimSpace(projectSnapshot.Project.DisplayName),
-			URL:  strings.TrimSpace(projectSnapshot.Project.URL),
+			ID:    projectID(projectSnapshot.Project),
+			Name:  strings.TrimSpace(projectSnapshot.Project.DisplayName),
+			URL:   strings.TrimSpace(projectSnapshot.Project.URL),
+			Color: strings.TrimSpace(projectSnapshot.Project.Color),
 		}, true
 	}
 	return templates.ProjectSmallMultiple{}, false

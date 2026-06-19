@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -162,6 +163,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 					ID:         "quiet",
 					Name:       "Quiet",
 					QueueCount: 1,
+					Color:      "#1192e8",
 					Samples: []ProjectSmallMultipleSample{
 						{At: now.Add(-time.Minute), ThroughputTokensPerSecond: 0.5, SpendUSD: 1, QueueDepth: 1},
 					},
@@ -170,6 +172,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 					ID:                        "busy",
 					Name:                      "Busy",
 					URL:                       "https://github.com/digitaldrywood/detent",
+					Color:                     "#a63f7a",
 					Running:                   2,
 					QueueCount:                3,
 					Blocked:                   1,
@@ -196,6 +199,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 				Name:            "Busy",
 				Href:            "/projects/busy",
 				ExternalURL:     "https://github.com/digitaldrywood/detent",
+				ProjectColor:    "#a63f7a",
 				ActivityLabel:   "2 running / 3 queued / 1 blocked",
 				ThroughputLabel: "7.3 tps",
 				SpendLabel:      "$12.50",
@@ -220,6 +224,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 				ID:              "detent",
 				Name:            "detent",
 				Href:            "/projects/detent",
+				ProjectColor:    projectcolor.ColorForID("detent"),
 				ActivityLabel:   "1 running / 0 queued / 0 blocked",
 				ThroughputLabel: "0 tps",
 				SpendLabel:      "$0.00",
@@ -247,6 +252,7 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 				first.Name != tt.wantFirst.Name ||
 				first.Href != tt.wantFirst.Href ||
 				first.ExternalURL != tt.wantFirst.ExternalURL ||
+				first.ProjectColor != tt.wantFirst.ProjectColor ||
 				first.ActivityLabel != tt.wantFirst.ActivityLabel ||
 				first.ThroughputLabel != tt.wantFirst.ThroughputLabel ||
 				first.SpendLabel != tt.wantFirst.SpendLabel ||
@@ -260,6 +266,62 @@ func TestProjectSmallMultipleCards(t *testing.T) {
 				t.Fatalf("charts must include sparkline points: %#v", first)
 			}
 		})
+	}
+}
+
+func TestProjectColorMarkersUseConfiguredAndAutomaticColors(t *testing.T) {
+	t.Parallel()
+
+	projects := []ProjectSmallMultiple{
+		{ID: "detent", Name: "Detent", Color: "#1192e8", Running: 1},
+		{ID: "docs-site", Name: "Docs", QueueCount: 1},
+	}
+	cards := projectSmallMultipleCards(DashboardData{Projects: projects})
+	items := sidebarProjectItems(DashboardShellData{Projects: projects})
+
+	want := map[string]string{
+		"detent":    "#1192e8",
+		"docs-site": projectcolor.ColorForID("docs-site"),
+	}
+	for _, card := range cards {
+		if card.ProjectColor != want[card.ID] {
+			t.Fatalf("projectSmallMultipleCards() color for %s = %q, want %q; cards = %#v", card.ID, card.ProjectColor, want[card.ID], cards)
+		}
+	}
+	for _, item := range items {
+		if item.ProjectColor != want[item.ID] {
+			t.Fatalf("sidebarProjectItems() color for %s = %q, want %q; items = %#v", item.ID, item.ProjectColor, want[item.ID], items)
+		}
+	}
+}
+
+func TestProjectKanbanCardsUseProjectColors(t *testing.T) {
+	t.Parallel()
+
+	board := projectKanbanBoardView(DashboardData{
+		Projects: []ProjectSmallMultiple{
+			{ID: "detent", Color: "#1192e8"},
+			{ID: "docs-site"},
+		},
+		Kanban: KanbanData{States: []string{"Todo"}},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{ID: "detent-issue", Identifier: "digitaldrywood/detent#1", ProjectID: "detent", Title: "Detent work", State: "Todo"},
+				{ID: "docs-issue", Identifier: "digitaldrywood/docs-site#2", ProjectID: "docs-site", Title: "Docs work", State: "Todo"},
+			},
+		},
+	})
+
+	got := collectKanbanCards(board.Lanes)
+	if len(got) != 2 {
+		t.Fatalf("kanban cards len = %d, want 2; got %#v", len(got), got)
+	}
+	cards := board.Lanes[0].Cards
+	if cards[0].ProjectID != "detent" || cards[0].ProjectColor != "#1192e8" {
+		t.Fatalf("first card project marker = %q/%q, want detent/#1192e8", cards[0].ProjectID, cards[0].ProjectColor)
+	}
+	if cards[1].ProjectID != "docs-site" || cards[1].ProjectColor != projectcolor.ColorForID("docs-site") {
+		t.Fatalf("second card project marker = %q/%q, want docs-site/%q", cards[1].ProjectID, cards[1].ProjectColor, projectcolor.ColorForID("docs-site"))
 	}
 }
 
@@ -939,7 +1001,7 @@ func TestProjectKanbanCardForIssueCopiesDescriptionPreview(t *testing.T) {
 		State:       "Todo",
 	}
 
-	card := projectKanbanCardForIssue(issue, "Todo", now.Add(-time.Minute), now)
+	card := projectKanbanCardForIssue(DashboardData{}, issue, "Todo", now.Add(-time.Minute), now)
 
 	if card.Description != "Titles need their own line. Hover should show enough issue context for triage." {
 		t.Fatalf("Description = %q", card.Description)

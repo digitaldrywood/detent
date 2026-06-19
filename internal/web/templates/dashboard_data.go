@@ -13,6 +13,7 @@ import (
 	"github.com/a-h/templ"
 
 	"github.com/digitaldrywood/detent/internal/buildinfo"
+	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 )
@@ -146,6 +147,7 @@ type ProjectSmallMultiple struct {
 	ID                        string
 	Name                      string
 	URL                       string
+	Color                     string
 	Paused                    bool
 	Running                   int
 	QueueCount                int
@@ -173,6 +175,7 @@ type projectSmallMultipleCard struct {
 	Name            string
 	Href            string
 	ExternalURL     string
+	ProjectColor    string
 	ActivityLabel   string
 	RunningLabel    string
 	QueueLabel      string
@@ -191,6 +194,7 @@ type sidebarProjectItem struct {
 	Href         string
 	StatusLabel  string
 	DotClass     string
+	ProjectColor string
 	BadgeClass   string
 	CountLabel   string
 	DefaultIndex int
@@ -281,6 +285,7 @@ type projectKanbanCard struct {
 	IssueNumber      string
 	Identifier       string
 	ProjectID        string
+	ProjectColor     string
 	Title            string
 	Description      string
 	URL              string
@@ -340,6 +345,7 @@ type kanbanCard struct {
 	IssueID      string
 	Identifier   string
 	ProjectID    string
+	ProjectColor string
 	Title        string
 	URL          string
 	State        string
@@ -735,6 +741,7 @@ func projectSmallMultipleCards(data DashboardData) []projectSmallMultipleCard {
 			Name:            name,
 			Href:            projectDashboardPath(project.ID),
 			ExternalURL:     strings.TrimSpace(project.URL),
+			ProjectColor:    projectColorForProject(project),
 			ActivityLabel:   projectSmallMultipleActivityLabel(project),
 			RunningLabel:    formatCount(project.Running) + " running",
 			QueueLabel:      formatCount(project.QueueCount) + " queued",
@@ -777,6 +784,7 @@ func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {
 			Href:         projectDashboardPath(id),
 			StatusLabel:  status.Label,
 			DotClass:     status.DotClass,
+			ProjectColor: projectColorForProject(project),
 			BadgeClass:   status.BadgeClass,
 			CountLabel:   formatCount(project.Running),
 			DefaultIndex: len(items),
@@ -822,6 +830,42 @@ func projectSmallMultipleStatus(project ProjectSmallMultiple) projectStatusView 
 		return projectStatusView{Rank: 2, Label: "queued", DotClass: "bg-warning", BadgeClass: "bg-warning-soft text-warning"}
 	default:
 		return projectStatusView{Rank: 3, Label: "idle", DotClass: "bg-muted-foreground", BadgeClass: "bg-muted text-muted-foreground"}
+	}
+}
+
+func projectColorForProject(project ProjectSmallMultiple) string {
+	return projectcolor.ColorFor(project.ID, project.Color)
+}
+
+func projectColorForID(projectID string, projects []ProjectSmallMultiple) string {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return ""
+	}
+	for _, project := range projects {
+		if strings.TrimSpace(project.ID) == projectID {
+			return projectColorForProject(project)
+		}
+	}
+	return projectcolor.ColorForID(projectID)
+}
+
+func projectColorStyle(color string) string {
+	color, ok := projectcolor.Normalize(color)
+	if !ok {
+		return ""
+	}
+	return "background-color: " + color
+}
+
+func projectColorAttributes(color string) templ.Attributes {
+	color, ok := projectcolor.Normalize(color)
+	if !ok {
+		return nil
+	}
+	return templ.Attributes{
+		"data-project-color": color,
+		"style":              projectColorStyle(color),
 	}
 }
 
@@ -1281,7 +1325,7 @@ func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCar
 	cardsByState := map[string][]projectKanbanCard{}
 	for _, entry := range issues {
 		state := projectKanbanDisplayState(entry.state, configured)
-		card := projectKanbanCardForIssue(entry.issue, state, entry.stageAt, pipelineNow(data.Snapshot))
+		card := projectKanbanCardForIssue(data, entry.issue, state, entry.stageAt, pipelineNow(data.Snapshot))
 		cardsByState[projectKanbanStateKey(state)] = append(cardsByState[projectKanbanStateKey(state)], card)
 	}
 	for key := range cardsByState {
@@ -1501,7 +1545,7 @@ func kanbanLanes(data DashboardData) []kanbanLane {
 			states = append(states, state)
 			cardsByState[key] = []kanbanCard{}
 		}
-		cardsByState[key] = append(cardsByState[key], kanbanCardFromIssue(issue))
+		cardsByState[key] = append(cardsByState[key], kanbanCardFromIssue(data, issue))
 	}
 
 	lanes := make([]kanbanLane, 0, len(states))
@@ -1750,12 +1794,13 @@ func projectKanbanControlID(prefix string, card projectKanbanCard) string {
 	return strings.Join(parts, "-")
 }
 
-func projectKanbanCardForIssue(issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
+func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
 	card := projectKanbanCard{
 		IssueNumber:      projectKanbanIssueNumber(issue),
 		IssueID:          strings.TrimSpace(issue.ID),
 		Identifier:       issueIdentifier(issue),
 		ProjectID:        strings.TrimSpace(issue.ProjectID),
+		ProjectColor:     projectColorForID(issue.ProjectID, data.Projects),
 		Title:            issueTitle(issue),
 		Description:      issueDescriptionPreview(issue),
 		URL:              strings.TrimSpace(issue.URL),
@@ -1841,15 +1886,16 @@ func projectKanbanCountLabel(count int, singular string, plural string) string {
 	return strconv.Itoa(count) + " " + plural
 }
 
-func kanbanCardFromIssue(issue telemetry.Issue) kanbanCard {
+func kanbanCardFromIssue(data DashboardData, issue telemetry.Issue) kanbanCard {
 	card := kanbanCard{
-		IssueID:    strings.TrimSpace(issue.ID),
-		Identifier: issueIdentifier(issue),
-		ProjectID:  strings.TrimSpace(issue.ProjectID),
-		Title:      issueTitle(issue),
-		URL:        strings.TrimSpace(issue.URL),
-		State:      strings.TrimSpace(issue.State),
-		Movable:    strings.TrimSpace(issue.ID) != "",
+		IssueID:      strings.TrimSpace(issue.ID),
+		Identifier:   issueIdentifier(issue),
+		ProjectID:    strings.TrimSpace(issue.ProjectID),
+		ProjectColor: projectColorForID(issue.ProjectID, data.Projects),
+		Title:        issueTitle(issue),
+		URL:          strings.TrimSpace(issue.URL),
+		State:        strings.TrimSpace(issue.State),
+		Movable:      strings.TrimSpace(issue.ID) != "",
 	}
 	if issue.PullRequest != nil {
 		card.PRNumber = issue.PullRequest.Number

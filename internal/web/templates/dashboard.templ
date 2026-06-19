@@ -792,6 +792,7 @@ templ DashboardSidebarContent(data DashboardShellData) {
 								@icon.GripVertical(icon.Props{Class: "size-3.5"})
 							</span>
 						}
+						<span class="inline-flex h-4 w-1.5 shrink-0 rounded-full border border-sidebar-border" aria-label={ item.Name + " project color" } title={ "Project color: " + item.Name } { projectColorAttributes(item.ProjectColor)... }></span>
 						<span class={ "inline-flex size-2.5 shrink-0 rounded-full " + item.DotClass }></span>
 						<span>{ item.Name }</span>
 						@sidebar.MenuBadge(sidebar.MenuBadgeProps{Class: "font-mono " + item.BadgeClass}) {
@@ -1227,9 +1228,12 @@ templ projectSmallMultiplesSection(data DashboardData) {
 templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
 	<article class="dashboard-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm transition-colors hover:border-accent" aria-label={ card.Name + " project" }>
 		<div class="flex min-w-0 items-start justify-between gap-3">
-			<div class="min-w-0">
-				<a class="block truncate text-sm font-semibold text-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.Href }>{ card.Name }</a>
-				<p class="mt-1 truncate font-mono text-xs text-muted-foreground">{ card.ActivityLabel }</p>
+			<div class="flex min-w-0 items-start gap-2">
+				<span class="mt-0.5 h-8 w-1.5 shrink-0 rounded-full border border-border" aria-label={ card.Name + " project color" } title={ "Project color: " + card.Name } { projectColorAttributes(card.ProjectColor)... }></span>
+				<div class="min-w-0">
+					<a class="block truncate text-sm font-semibold text-foreground hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.Href }>{ card.Name }</a>
+					<p class="mt-1 truncate font-mono text-xs text-muted-foreground">{ card.ActivityLabel }</p>
+				</div>
 			</div>
 			<span class="shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent">{ card.ThroughputLabel }</span>
 		</div>
@@ -1676,11 +1680,16 @@ templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 	<article class="project-kanban-card project-kanban-card-compact min-w-0 rounded-md border border-border bg-card p-1.5 shadow-sm transition-colors hover:border-accent" aria-label={ "Kanban card " + card.IssueNumber + " " + card.Title } { projectKanbanCardAttributes(data, card)... }>
 		<div class="grid min-w-0 gap-1">
 			<div class="flex min-w-0 items-center justify-between gap-1.5">
-				if card.URL != "" {
-					<a class="shrink-0 rounded-sm font-mono text-xs font-semibold text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open issue " + card.IssueNumber + ": " + card.Title }>{ card.IssueNumber }</a>
-				} else {
-					<span class="shrink-0 font-mono text-xs font-semibold text-accent">{ card.IssueNumber }</span>
-				}
+				<div class="flex min-w-0 items-center gap-1.5">
+					if card.ProjectID != "" {
+						<span class="h-5 w-1.5 shrink-0 rounded-full border border-border" aria-label={ "Project " + card.ProjectID + " color marker" } title={ "Project " + card.ProjectID } { projectColorAttributes(card.ProjectColor)... }></span>
+					}
+					if card.URL != "" {
+						<a class="shrink-0 rounded-sm font-mono text-xs font-semibold text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open issue " + card.IssueNumber + ": " + card.Title }>{ card.IssueNumber }</a>
+					} else {
+						<span class="shrink-0 font-mono text-xs font-semibold text-accent">{ card.IssueNumber }</span>
+					}
+				</div>
 				<div class="flex min-w-0 flex-1 items-center justify-end gap-1">
 					<span class="inline-flex h-5 max-w-[6rem] items-center truncate rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
 					@projectKanbanPullRequestSignal(card)
@@ -1695,6 +1704,9 @@ templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 			}
 		</div>
 		<div class="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-[11px]">
+			if card.ProjectID != "" {
+				<span class="inline-flex h-4 max-w-full items-center truncate rounded-sm border border-border bg-muted px-1 py-0 font-mono font-medium text-muted-foreground" title={ "Project " + card.ProjectID }>{ card.ProjectID }</span>
+			}
 			for _, chip := range projectKanbanCompactChips(card) {
 				@projectKanbanCompactChipView(chip)
 			}
@@ -2167,7 +2179,10 @@ templ kanbanCardView(data DashboardData, card kanbanCard) {
 		if card.ProjectID != "" || card.PRNumber > 0 {
 			<div class="mt-2 flex flex-wrap gap-2">
 				if card.ProjectID != "" {
-					<span class="inline-flex max-w-full rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">{ card.ProjectID }</span>
+					<span class="inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ "Project " + card.ProjectID }>
+						<span class="h-3 w-1.5 shrink-0 rounded-full border border-border" aria-label={ "Project " + card.ProjectID + " color marker" } { projectColorAttributes(card.ProjectColor)... }></span>
+						<span>{ card.ProjectID }</span>
+					</span>
 				}
 				if card.PRNumber > 0 {
 					if card.PRURL != "" {

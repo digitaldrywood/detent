@@ -1403,6 +1403,7 @@ projects:
     workflow: /absolute/path/to/detent/WORKFLOW.md
     workflow_ref: origin/main
     workdir: /absolute/path/to/detent
+    color: "#1192e8"
     weight: 2
     priority: 1
   - id: website
@@ -1417,6 +1418,15 @@ Project weights are relative scheduling weights. Higher weights receive a
 larger dispatch share in weighted and fair-share scheduling modes. Project
 priority is a rank: `1` is highest, `4` is lowest, and `0` or an omitted value
 means no explicit priority.
+
+Set `projects[].color` to an opaque CSS hex color in `#RGB` or `#RRGGBB`
+form when a project needs a fixed visual marker. The board and sidebar keep
+the project name or ID visible and use color only as an additional compact
+marker. Projects without a configured color receive a deterministic automatic
+color from a curated categorical palette based on the project ID, so colors
+remain stable across restarts and do not depend on project order. When there
+are more projects than palette entries, Detent deterministically reuses palette
+colors; labels and project IDs remain the primary identifiers.
 
 Set `projects[].workflow_ref` when the workflow file should be read from a git
 ref in the configured source checkout instead of the checkout's working-tree

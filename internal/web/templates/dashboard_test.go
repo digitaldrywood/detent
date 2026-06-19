@@ -11,6 +11,7 @@ import (
 
 	"github.com/a-h/templ"
 
+	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -1434,6 +1435,7 @@ func TestDashboardRendersProjectSmallMultiples(t *testing.T) {
 				ID:                        "detent",
 				Name:                      "Detent",
 				URL:                       "https://github.com/digitaldrywood/detent",
+				Color:                     "#1192e8",
 				Running:                   1,
 				QueueCount:                2,
 				Completed:                 3,
@@ -1454,6 +1456,8 @@ func TestDashboardRendersProjectSmallMultiples(t *testing.T) {
 		"1 running / 2 queued / 0 blocked",
 		"4.5 tps",
 		"$6.75",
+		`data-project-color="#1192e8"`,
+		`aria-label="Detent project color"`,
 		`aria-label="Detent throughput sparkline"`,
 		`aria-label="Detent spend sparkline"`,
 		`aria-label="Detent queue depth sparkline"`,
@@ -1464,6 +1468,48 @@ func TestDashboardRendersProjectSmallMultiples(t *testing.T) {
 	}
 	if strings.Contains(html, "md:grid-cols-2 xl:grid-cols-3") {
 		t.Fatalf("single project small multiples should not render multi-column grid:\n%s", html)
+	}
+}
+
+func TestDashboardRendersProjectColorMarkersOnSidebarAndKanban(t *testing.T) {
+	t.Parallel()
+
+	docsColor := projectcolor.ColorForID("docs-site")
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Projects: []templates.ProjectSmallMultiple{
+			{ID: "detent", Name: "Detent", Color: "#1192e8", Running: 1},
+			{ID: "docs-site", Name: "Docs Site", QueueCount: 1},
+		},
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo"},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{ID: "detent-card", Identifier: "digitaldrywood/detent#540", ProjectID: "detent", Title: "Color Detent card", State: "Todo"},
+				{ID: "docs-card", Identifier: "digitaldrywood/docs-site#12", ProjectID: "docs-site", Title: "Color Docs card", State: "Todo"},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`data-project-id="detent"`,
+		`data-project-id="docs-site"`,
+		`data-project-color="#1192e8"`,
+		`data-project-color="` + docsColor + `"`,
+		`aria-label="Detent project color"`,
+		`aria-label="Docs Site project color"`,
+		`aria-label="Project detent color marker"`,
+		`aria-label="Project docs-site color marker"`,
+		`>detent</span>`,
+		`>docs-site</span>`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing project color marker %q:\n%s", want, html)
+		}
 	}
 }
 
