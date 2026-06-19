@@ -36,6 +36,9 @@ Classify the work into one of these modes:
 - `existing-install`: Detent is already installed or a service/dashboard appears
   to be running. Verify the binary, config path, registered projects, service
   health, GitHub auth, Codex auth, and `detent doctor` before proposing changes.
+  If the configured workflow has `tracker.write_probe_issue`, treat
+  `detent doctor` as mutating and defer that check until Phase 2.5 authorizes
+  GitHub mutations.
 - `add-project`: An existing Detent install is present and the target repository
   is not registered yet. Reuse the existing `global.yaml`, preserve current
   runtime settings unless the human chooses otherwise, then create or adopt a
@@ -433,8 +436,9 @@ change.
 ## Phase 2 — Interview The Human
 
 Ask only these decision questions. Present each as question, grounded
-recommendation, and default-if-silent. Record answers in
-`$ONBOARDING_DIR/answers.env`.
+recommendation, and default-if-silent. Defaults are recommendations only; they
+do not authorize GitHub, issue, label, `WORKFLOW.md`, or `global.yaml`
+mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
 
 0. **Mode.** Ask only if inspection did not make the path obvious: "Are we
    doing a new Detent install, verifying an existing install, or adding this
@@ -459,6 +463,9 @@ recommendation, and default-if-silent. Record answers in
    `Status` field, and the Detent dashboard should be the Kanban surface.
    Recommend label mode when the team wants GitHub Issues plus repository
    labels only, with no ProjectV2 board and no organization issue fields.
+   This answer maps to `tracker.github_status_source: project_v2`,
+   `tracker.github_status_source: issue_field`, or
+   `tracker.github_status_source: label` in `WORKFLOW.md`.
    Default if silent: ProjectV2 for existing Detent installs, label mode when
    the operator explicitly asks for issues plus labels only, otherwise
    boardless issue-field mode for a new project with an existing matching issue
@@ -762,12 +769,90 @@ recommendation, and default-if-silent. Record answers in
    rg '^(INTAKE_GH_FLAGS|INITIAL_STATUS|ENABLE_AUTO_ADD)=' "$ONBOARDING_DIR/answers.env"
    ```
 
+## Phase 2.5 — Mutation Authorization
+
+Stop here before Phase 3 or any other command that can create, link, mutate, or
+delete GitHub Projects, issue fields, labels, issues, PRs, `WORKFLOW.md`, or
+`global.yaml`. Show the operator `$ONBOARDING_DIR/recommendations.md` and the
+complete `$ONBOARDING_DIR/answers.env`, then ask: "May I execute the selected
+mutation steps using these exact answers?" Defaults from Phase 2 are still only
+recommendations; an unanswered default must not authorize any external or local
+config mutation.
+
+Record the explicit confirmation only after the operator says yes. This removes
+stale confirmations first and appends the new confirmation as the final
+nonblank line. If any Phase 2 answer changes later, rerun Phase 2.5 and record
+a fresh confirmation.
+
+```sh
+CONFIRMATION_FILE="$(mktemp)"
+rg -v '^MUTATION_CONFIRMED=' "$ONBOARDING_DIR/answers.env" > "$CONFIRMATION_FILE" || true
+mv "$CONFIRMATION_FILE" "$ONBOARDING_DIR/answers.env"
+printf '%s\n' \
+  'MUTATION_CONFIRMED=true' \
+  >> "$ONBOARDING_DIR/answers.env"
+rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+```
+
+Run this gate before every mutating phase and before every one-off mutating
+command:
+
+```sh
+test -f "$ONBOARDING_DIR/answers.env"
+rg '^DETENT_ONBOARDING_MODE=' "$ONBOARDING_DIR/answers.env"
+rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
+GITHUB_MODE="$(
+  awk -F= '/^GITHUB_MODE=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env"
+)"
+case "$GITHUB_MODE" in
+  project_v2)
+    rg '^BOARD_MODE=(reuse|create)$' "$ONBOARDING_DIR/answers.env"
+    rg '^PROJECT_OWNER=' "$ONBOARDING_DIR/answers.env"
+    ;;
+  issue_field)
+    rg '^STATUS_FIELD_NAME=' "$ONBOARDING_DIR/answers.env"
+    ;;
+  label)
+    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
+    ;;
+  *)
+    printf 'Unsupported GITHUB_MODE=%s\n' "$GITHUB_MODE" >&2
+    exit 1
+    ;;
+esac
+```
+
 ## Phase 3 — Create Or Adopt The Status Source
 
 Run the ProjectV2 steps only when `GITHUB_MODE=project_v2`. When
 `GITHUB_MODE=issue_field`, skip board creation/linking and run the boardless
 issue-field verification step instead. When `GITHUB_MODE=label`, skip both
 ProjectV2 and issue-field setup and verify repository status labels.
+
+Before any command in this phase that can mutate GitHub ProjectV2, issue-field,
+or label resources, rerun the Phase 2.5 gate:
+
+```sh
+test -f "$ONBOARDING_DIR/answers.env"
+rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+```
+
+Before any ProjectV2 board mutation such as `gh project create`, `gh project
+link`, `gh project field-create`, or `gh project item-edit`, also run:
+
+```sh
+rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+rg '^BOARD_MODE=(reuse|create)$' "$ONBOARDING_DIR/answers.env"
+rg '^PROJECT_OWNER=' "$ONBOARDING_DIR/answers.env"
+rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+```
 
 1. **Adopt an existing board when the answer says reuse.** Record the number
    and node id for later commands. Run only when `GITHUB_MODE=project_v2`.
@@ -784,6 +869,13 @@ ProjectV2 and issue-field setup and verify repository status labels.
    still needs you to create the board itself. Verify:
 
    ```sh
+   rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   rg '^BOARD_MODE=create$' "$ONBOARDING_DIR/answers.env"
+   rg '^PROJECT_OWNER=' "$ONBOARDING_DIR/answers.env"
+   rg '^PROJECT_TITLE=' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    gh project create --owner <project-owner> --title "<project-title>" --format json \
      > "$ONBOARDING_DIR/project.json"
    jq -e '.number and (.id | startswith("PVT_"))' "$ONBOARDING_DIR/project.json"
@@ -797,6 +889,10 @@ ProjectV2 and issue-field setup and verify repository status labels.
    ask the human to rename the conflicting field or choose another board. Verify:
 
    ```sh
+   rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    PROJECT_NUMBER="$(jq -r '.number' "$ONBOARDING_DIR/project.json")"
    gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json \
      > "$ONBOARDING_DIR/fields.before.json"
@@ -822,6 +918,10 @@ ProjectV2 and issue-field setup and verify repository status labels.
    This keeps the project discoverable from the repo. Verify:
 
    ```sh
+   rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    gh project link "$PROJECT_NUMBER" --owner <project-owner> --repo <repo-name>
    gh project view "$PROJECT_NUMBER" --owner <project-owner> --format json --jq '.url'
    ```
@@ -934,6 +1034,10 @@ ProjectV2 and issue-field setup and verify repository status labels.
    `Backlog`:
 
    ```sh
+   rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    STATUS_FIELD_ID="$(gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json --jq '.fields[] | select(.name == "Status") | .id')"
    BACKLOG_OPTION_ID="$(gh project field-list "$PROJECT_NUMBER" --owner <project-owner> --format json --jq '.fields[] | select(.name == "Status") | .options[] | select(.name == "Backlog") | .id')"
    jq -r --arg re "$LEGACY_STATUS_REGEX" \
@@ -972,8 +1076,16 @@ ProjectV2 and issue-field setup and verify repository status labels.
 
    If the `comm` output is not empty, add the missing issue-field options in
    GitHub before starting Detent, or change the workflow states to match the
-   existing options. Do not create or link a GitHub ProjectV2 board for this
-   mode.
+   existing options. Before any issue-field creation or option update, rerun:
+
+   ```sh
+   rg '^GITHUB_MODE=issue_field$' "$ONBOARDING_DIR/answers.env"
+   rg '^STATUS_FIELD_NAME=' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Do not create or link a GitHub ProjectV2 board for this mode.
 
 8. **Verify repository status labels when selected.** Run this only when
    `GITHUB_MODE=label`. Detent needs one repository label for each effective
@@ -995,7 +1107,17 @@ ProjectV2 and issue-field setup and verify repository status labels.
    Create or verify the labels before the first `detent doctor` run so doctor
    can prove readiness instead of reporting missing label mappings. Detent's
    default `tracker.auto_provision: true` creates the same missing labels on
-   project start, but onboarding should still verify them before dispatching.
+   project start, so the first start can mutate repository labels. Before
+   creating labels manually or starting Detent with auto-provision enabled,
+   rerun:
+
+   ```sh
+   rg '^GITHUB_MODE=label$' "$ONBOARDING_DIR/answers.env"
+   rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+   ```
+
    Verify:
 
    ```sh
@@ -1044,6 +1166,15 @@ ProjectV2 and issue-field setup and verify repository status labels.
    or organization issue field for this mode.
 
 ## Phase 4 — Author WORKFLOW.md
+
+Before writing, overwriting, or editing `<source-root>/WORKFLOW.md`, rerun:
+
+```sh
+test -f "$ONBOARDING_DIR/answers.env"
+rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+```
 
 1. **Fetch the canonical template.** Read the existing file first if one is
    present; this runbook is for from-zero repositories, so do not overwrite a
@@ -1107,7 +1238,7 @@ ProjectV2 and issue-field setup and verify repository status labels.
    # Label mode:
    rg -n 'github_status_source: label|repository: <repo-owner>/<repo-name>|status_label_prefix: "<status-label-prefix>"|write_probe_issue:' <source-root>/WORKFLOW.md
 
-   # Both modes:
+   # All modes:
    perl -0pi -e 's#(?m)^  source_root: .*$#  source_root: <source-root>#' <source-root>/WORKFLOW.md
    perl -0pi -e 's#(?m)^  root: .*$#  root: <worktree-root>#' <source-root>/WORKFLOW.md
    rg -n 'source_root: <source-root>|root: <worktree-root>' <source-root>/WORKFLOW.md
@@ -1266,6 +1397,16 @@ ProjectV2 and issue-field setup and verify repository status labels.
 
 ## Phase 5 — Register The Project
 
+Before running `detent init`, `detent add-project`, mutating `global.yaml`, or
+running `detent doctor` with configured write probes, rerun:
+
+```sh
+test -f "$ONBOARDING_DIR/answers.env"
+rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+```
+
 1. **Create global config only when needed.** Use the resolved path Detent
    reports. For `add-project`, read and preserve the existing config; do not
    reinitialize or overwrite runtime keys unless the human selected that change.
@@ -1290,6 +1431,9 @@ ProjectV2 and issue-field setup and verify repository status labels.
    `weight` are the scheduling answers from Phase 2. Verify:
 
    ```sh
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    GLOBAL_CONFIG="$(
      detent --format pretty config path | awk '/^path:/ {print $2}'
    )"
@@ -1413,6 +1557,18 @@ ProjectV2 and issue-field setup and verify repository status labels.
 
 ## Phase 6 — Issue Intake
 
+Before adding issues to a ProjectV2 board, setting issue-field values, changing
+status labels, or enabling ProjectV2 auto-add, rerun:
+
+```sh
+test -f "$ONBOARDING_DIR/answers.env"
+rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+rg '^INTAKE_GH_FLAGS=' "$ONBOARDING_DIR/answers.env"
+rg '^INITIAL_STATUS=' "$ONBOARDING_DIR/answers.env"
+rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+```
+
 1. **Confirm the selected initial status option exists.** In ProjectV2 mode, if
    this fails on a fresh board, start Detent once with no dispatchable items so
    it can auto-provision missing options, then repeat this verification.
@@ -1443,6 +1599,10 @@ ProjectV2 and issue-field setup and verify repository status labels.
    unresolved. Verify with one cached inventory after the mutations finish:
 
    ```sh
+   rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    PROJECT_NODE_ID="$(gh project view <project-number> --owner <project-owner> --format json --jq '.id')"
    gh project field-list <project-number> --owner <project-owner> --format json \
      > "$ONBOARDING_DIR/project-fields.intake.json"
@@ -1473,6 +1633,11 @@ ProjectV2 and issue-field setup and verify repository status labels.
    deliberate and use `detent doctor` to prove the write probe first. Verify:
 
    ```sh
+   rg '^GITHUB_MODE=issue_field$' "$ONBOARDING_DIR/answers.env"
+   rg '^STATUS_FIELD_NAME=' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    STATUS_FIELD_ID="$(jq -r '.id' "$ONBOARDING_DIR/issue-field.json")"
    gh issue list --repo <repo-owner>/<repo-name> --state open <chosen-gh-issue-list-flags> \
      --limit 1000 --json number --jq '.[].number' |
@@ -1497,6 +1662,11 @@ ProjectV2 and issue-field setup and verify repository status labels.
    start with `STATUS_LABEL_PREFIX`. Verify:
 
    ```sh
+   rg '^GITHUB_MODE=label$' "$ONBOARDING_DIR/answers.env"
+   rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    STATUS_LABEL_PREFIX="<status-label-prefix>"
    STATUS_LABEL="${STATUS_LABEL_PREFIX}<initial-status-slug>"
    gh issue list --repo <repo-owner>/<repo-name> --state open <chosen-gh-issue-list-flags> \
@@ -1533,6 +1703,10 @@ ProjectV2 and issue-field setup and verify repository status labels.
    repo and filter chosen in the interview. Verify:
 
    ```sh
+   rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    gh project item-list <project-number> --owner <project-owner> \
      --query 'repo:<repo-owner>/<repo-name> is:issue is:open' \
      --format json > "$ONBOARDING_DIR/project-items.auto-add.json"
@@ -1541,6 +1715,16 @@ ProjectV2 and issue-field setup and verify repository status labels.
 
 ## Phase 7 — Smoke Test
 
+Before starting Detent, restarting a service, hot-reloading a running process,
+or moving a smoke-test issue to `Todo`, rerun:
+
+```sh
+test -f "$ONBOARDING_DIR/answers.env"
+rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+```
+
 1. **Start Detent or hot-reload the running process.** Use the configured port,
    not `4000` when another Detent instance owns that port. Use the dashboard
    host chosen in Phase 2: `127.0.0.1` for SSH tunnels, a private/Tailscale IP
@@ -1548,6 +1732,9 @@ ProjectV2 and issue-field setup and verify repository status labels.
    it exposes every interface. Verify:
 
    ```sh
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    detent --host <dashboard-host> --port <port>
    ```
 
@@ -1605,6 +1792,10 @@ ProjectV2 and issue-field setup and verify repository status labels.
 
    ```sh
    # ProjectV2 mode:
+   rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    gh project field-list <project-number> --owner <project-owner> --format json \
      > "$ONBOARDING_DIR/project-fields.smoke.json"
    TODO_OPTION_ID="$(jq -r '.fields[] | select(.name == "Status") | .options[] | select(.name == "Todo") | .id' "$ONBOARDING_DIR/project-fields.smoke.json")"
@@ -1624,6 +1815,11 @@ ProjectV2 and issue-field setup and verify repository status labels.
      --single-select-option-id "$TODO_OPTION_ID"
 
    # Boardless issue-field mode:
+   rg '^GITHUB_MODE=issue_field$' "$ONBOARDING_DIR/answers.env"
+   rg '^STATUS_FIELD_NAME=' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    STATUS_FIELD_ID="$(jq -r '.id' "$ONBOARDING_DIR/issue-field.json")"
    jq -n --argjson field_id "$STATUS_FIELD_ID" --arg value "Todo" \
      '{issue_field_values: [{field_id: $field_id, value: $value}]}' |
@@ -1632,6 +1828,11 @@ ProjectV2 and issue-field setup and verify repository status labels.
      --input -
 
    # Label mode:
+   rg '^GITHUB_MODE=label$' "$ONBOARDING_DIR/answers.env"
+   rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
+   rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+   awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+
    STATUS_LABEL_PREFIX="<status-label-prefix>"
    TODO_STATUS_LABEL="${STATUS_LABEL_PREFIX}todo"
    gh api repos/<repo-owner>/<repo-name>/issues/<issue-number>/labels \
@@ -1673,6 +1874,16 @@ ProjectV2 and issue-field setup and verify repository status labels.
 
 Use this checklist after editing an existing Detent setup, especially after
 changing `global.yaml` or `WORKFLOW.md`.
+
+Before any closeout command that edits config, restarts a service, reruns
+write-probe preflight, or moves issues, rerun:
+
+```sh
+test -f "$ONBOARDING_DIR/answers.env"
+rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
+```
 
 1. **Verify the binary you are about to run.** After pulling, rebuilding, or
    installing updates, confirm the expected version, commit, and build date:
