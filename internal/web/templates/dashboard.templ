@@ -762,6 +762,19 @@ templ DashboardSidebarContent(data DashboardShellData) {
 					<span>Fleet</span>
 				}
 			}
+			if fleetKanbanNavVisible(data) {
+				@sidebar.MenuItem() {
+					@sidebar.MenuButton(sidebar.MenuButtonProps{
+						Href:       "/kanban",
+						IsActive:   fleetKanbanNavActive(data),
+						Tooltip:    "Fleet Kanban",
+						Attributes: fleetKanbanNavAttributes(data),
+					}) {
+						@icon.Kanban(icon.Props{Class: "size-4 shrink-0"})
+						<span>Kanban</span>
+					}
+				}
+			}
 		}
 		if sidebarFilterVisible(data) {
 			<label class="grid gap-1 px-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden">
@@ -1286,18 +1299,14 @@ templ projectSmallMultipleCardView(card projectSmallMultipleCard) {
 
 templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 	if len(board.AllLanes) > 0 {
-		<section id="project-kanban" class="dashboard-panel project-kanban scroll-mt-3 min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Project Kanban" tabindex="-1" data-project-kanban-board data-project-kanban-visibility-key={ projectKanbanVisibilityKey(data, board) }>
+		<section id={ projectKanbanSectionID(data) } class="dashboard-panel project-kanban scroll-mt-3 min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label={ projectKanbanSectionLabel(data) } tabindex="-1" data-project-kanban-board data-project-kanban-visibility-key={ projectKanbanVisibilityKey(data, board) }>
 			<div class="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
 				<div class="min-w-0">
 					<div class="inline-flex min-w-0 items-center gap-2">
 						@icon.Kanban(icon.Props{Class: "size-5 shrink-0 text-accent"})
-						@helpHeading2("Project Kanban", helpProjectKanban, "project-kanban")
+						@helpHeading2(projectKanbanSectionLabel(data), helpProjectKanban, projectKanbanSectionID(data))
 					</div>
-					if kanbanIntegrationEnabled(data) {
-						<p class="text-sm text-muted-foreground">Workflow lanes grouped by configured Detent states with operator actions enabled.</p>
-					} else {
-						<p class="text-sm text-muted-foreground">Read-only workflow lanes grouped by configured Detent states.</p>
-					}
+					<p class="text-sm text-muted-foreground">{ projectKanbanSectionDescription(data) }</p>
 				</div>
 				<div class="flex shrink-0 flex-wrap items-center gap-2">
 					if kanbanIntegrationEnabled(data) {
@@ -1705,7 +1714,9 @@ templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 		</div>
 		<div class="mt-1 flex min-w-0 max-w-full flex-wrap items-center gap-1 text-[11px]">
 			if card.ProjectID != "" {
-				<span class="inline-flex h-4 min-w-0 max-w-full items-center truncate rounded-sm border border-border bg-muted px-1 py-0 font-mono font-medium text-muted-foreground" title={ "Project " + card.ProjectID }>{ card.ProjectID }</span>
+				<a class="inline-flex h-4 min-w-0 max-w-full items-center truncate rounded-sm border border-border bg-muted px-1 py-0 font-mono font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ projectKanbanPath(card.ProjectID) } title={ "Project " + card.ProjectID } aria-label={ "Open " + card.ProjectID + " Kanban" }>
+					<span>{ card.ProjectID }</span>
+				</a>
 			}
 			for _, chip := range projectKanbanCompactChips(card) {
 				@projectKanbanCompactChipView(chip)

@@ -91,7 +91,7 @@ func (s *Server) events(c echo.Context) error {
 				data.ActiveNav = selectedNav
 			}
 			snapshotComponent := templates.SnapshotView(data)
-			if selectedView == sseViewKanban && selectedProjectID != "" {
+			if selectedView == sseViewKanban && (selectedProjectID == "" || data.ProjectID != "") {
 				data.ActiveNav = "kanban"
 				snapshotComponent = templates.ProjectKanbanSnapshot(data)
 			} else if selectedView == sseViewRuns && selectedProjectID != "" {

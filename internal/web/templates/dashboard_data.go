@@ -472,6 +472,9 @@ func chartEndpoint(data DashboardData) string {
 }
 
 func eventsPath(data DashboardShellData) string {
+	if strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) == "kanban" {
+		return "/events?view=kanban"
+	}
 	if activeNav := staticSidebarNav(data.ActiveNav); activeNav != "" {
 		values := url.Values{"nav": []string{activeNav}}
 		if id := strings.TrimSpace(data.ProjectID); id != "" {
@@ -514,7 +517,25 @@ func sidebarFilterVisible(data DashboardShellData) bool {
 }
 
 func sidebarFleetActive(data DashboardShellData) bool {
-	return strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) != "reports" && strings.TrimSpace(data.ActiveNav) != "settings"
+	activeNav := strings.TrimSpace(data.ActiveNav)
+	return strings.TrimSpace(data.ProjectID) == "" && activeNav != "kanban" && activeNav != "reports" && activeNav != "settings"
+}
+
+func fleetKanbanNavVisible(data DashboardShellData) bool {
+	return len(data.Projects) > 1
+}
+
+func fleetKanbanNavActive(data DashboardShellData) bool {
+	return strings.TrimSpace(data.ProjectID) == "" && strings.TrimSpace(data.ActiveNav) == "kanban"
+}
+
+func fleetKanbanNavAttributes(data DashboardShellData) templ.Attributes {
+	attrs := templ.Attributes{
+		"data-dashboard-static-nav": "kanban",
+		"aria-label":                "Fleet Kanban",
+	}
+	maps.Copy(attrs, sidebarAriaCurrent(fleetKanbanNavActive(data)))
+	return attrs
 }
 
 func sidebarStaticNavActive(data DashboardShellData, id string) bool {
@@ -1288,6 +1309,30 @@ func projectOverviewKanbanDetail(board projectKanbanBoard) string {
 	return formatCount(len(board.Lanes)) + " active / " + formatCount(len(board.AllLanes)) + " lanes"
 }
 
+func projectKanbanSectionID(data DashboardData) string {
+	if isProjectDashboard(data) {
+		return "project-kanban"
+	}
+	return "fleet-kanban"
+}
+
+func projectKanbanSectionLabel(data DashboardData) string {
+	if isProjectDashboard(data) {
+		return "Project Kanban"
+	}
+	return "Fleet Kanban"
+}
+
+func projectKanbanSectionDescription(data DashboardData) string {
+	if kanbanIntegrationEnabled(data) {
+		return "Workflow lanes grouped by configured Detent states with operator actions enabled."
+	}
+	if isProjectDashboard(data) {
+		return "Read-only workflow lanes grouped by configured Detent states."
+	}
+	return "Read-only workflow lanes across registered projects."
+}
+
 func projectOverviewRunsDetail(snapshot telemetry.Snapshot) string {
 	return formatCount(queueCount(snapshot)) + " queued / " + formatCount(blockedCount(snapshot)) + " blocked"
 }
@@ -1963,10 +2008,8 @@ func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLa
 func projectKanbanVisibilityKey(data DashboardData, _ projectKanbanBoard) string {
 	scope := kanbanProjectID(data)
 	if scope == "" {
-		scope = projectDisplayName(data)
-	}
-	if scope == "" {
 		scope = "fleet"
+		return scope
 	}
 	return "project:" + url.QueryEscape(scope)
 }

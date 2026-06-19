@@ -130,6 +130,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "fleet-draining-shutdown", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "draining"},
 		{ID: "fleet-dense-multiproject", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "dense"},
 		{ID: "fleet-degraded-telemetry", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "degraded"},
+		{ID: "fleet-kanban-multiproject", Route: "/kanban", WaitSelector: "#fleet-kanban", Page: "fleet-kanban", Variant: "dense-kanban", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "project-active-overview", Route: "/projects/dogfood", WaitSelector: "#snapshot", Page: "project", Variant: "healthy", ProjectID: demoPrimaryProjectID},
 		{ID: "project-paused-overview", Route: "/projects/mobile-client", WaitSelector: "#snapshot", Page: "project", Variant: "paused", ProjectID: "mobile-client"},
 		{ID: "project-empty-overview", Route: "/projects/agent-lab", WaitSelector: "#snapshot", Page: "project", Variant: "project-empty", ProjectID: "agent-lab"},
@@ -209,6 +210,8 @@ func demoKeySelectors(def demoScenario) []string {
 	switch def.Page {
 	case "fleet":
 		return []string{"#snapshot", "[aria-label=\"Dashboard health\"]", "[aria-label=\"Project overview\"]"}
+	case "fleet-kanban":
+		return []string{"#fleet-kanban", "[data-project-kanban-card]", "[data-project-kanban-visibility-menu]"}
 	case "kanban":
 		return []string{"#project-kanban", "[data-kanban-card]", "[data-project-kanban-visibility-menu]"}
 	case "reports":
@@ -264,6 +267,14 @@ func (s *Server) demoDashboard(c echo.Context, scenario demoScenario) error {
 	data := s.demoDashboardData(c.Request().Context(), scenario)
 	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 	return render(c, templates.Dashboard(data))
+}
+
+func (s *Server) demoFleetKanban(c echo.Context, scenario demoScenario) error {
+	data := s.demoDashboardData(c.Request().Context(), scenario)
+	data.ActiveNav = "kanban"
+	data.Title = instancePageTitle(s.instanceName(), "Kanban - Detent")
+	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	return render(c, templates.ProjectKanbanPage(data))
 }
 
 func (s *Server) demoProjectDashboard(c echo.Context, scenario demoScenario, view string) error {
@@ -1277,6 +1288,8 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 
 func demoSSEViewForScenario(scenario demoScenario) string {
 	switch scenario.Page {
+	case "fleet-kanban":
+		return sseViewKanban
 	case "kanban":
 		return sseViewKanban
 	case "runs":

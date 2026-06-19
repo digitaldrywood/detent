@@ -202,6 +202,7 @@ func (s *Server) registerRoutes() {
 	}
 
 	s.echo.GET("/", s.dashboard)
+	s.echo.GET("/kanban", s.fleetKanban)
 	s.echo.GET("/projects/*", s.projectDashboard)
 	s.echo.GET("/settings", s.settings)
 	s.echo.GET("/reports", s.reports)
@@ -236,6 +237,20 @@ func (s *Server) dashboard(c echo.Context) error {
 	data := s.dashboardData(ctx, s.latestSnapshot(ctx))
 	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 	return render(c, templates.Dashboard(data))
+}
+
+func (s *Server) fleetKanban(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		return s.demoFleetKanban(c, scenario)
+	}
+	ctx := c.Request().Context()
+	data := s.dashboardData(ctx, s.latestSnapshot(ctx))
+	data.ActiveNav = "kanban"
+	data.Title = instancePageTitle(s.instanceName(), "Kanban - Detent")
+	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	return render(c, templates.ProjectKanbanPage(data))
 }
 
 func (s *Server) projectDashboard(c echo.Context) error {

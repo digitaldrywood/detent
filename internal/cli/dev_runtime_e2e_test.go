@@ -78,6 +78,24 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	waitForDashboard(t, dashboardURL+"/health", done)
 	postRuntimeRefresh(t, dashboardURL, done)
 
+	fleetBody := waitForDashboardCondition(t, dashboardURL+"/kanban", done, "fleet kanban demo board", func(body string) bool {
+		return strings.Contains(body, `aria-label="Fleet Kanban"`) &&
+			strings.Contains(body, `data-project-kanban-visibility-key="fleet"`) &&
+			strings.Contains(body, `href="/projects/`+projectID+`/kanban"`) &&
+			strings.Contains(body, `href="/projects/docs-site/kanban"`) &&
+			strings.Contains(body, "Kanban demo backlog intake") &&
+			strings.Contains(body, "Kanban demo todo ready card")
+	})
+	for _, forbidden := range []string{
+		`data-kanban-action="move"`,
+		`hx-post="/api/v1/kanban/move"`,
+		`id="kanban-feedback"`,
+	} {
+		if strings.Contains(fleetBody, forbidden) {
+			t.Fatalf("fleet kanban demo rendered mutation affordance %q:\n%s", forbidden, fleetBody)
+		}
+	}
+
 	pageURL := dashboardURL + "/projects/" + projectID + "/kanban"
 	body := waitForDashboardCondition(t, pageURL, done, "kanban demo mutation controls", func(body string) bool {
 		return strings.Contains(body, "Kanban demo backlog intake") &&

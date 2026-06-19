@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"regexp"
 	"strconv"
 	"strings"
 	"testing"
@@ -743,6 +744,140 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 	reviewIndex := strings.Index(section, `aria-label="Human Review lane"`)
 	if backlogIndex < 0 || todoIndex < 0 || reviewIndex < 0 || backlogIndex >= todoIndex || todoIndex >= reviewIndex {
 		t.Fatalf("kanban lanes are not in configured order: backlog=%d todo=%d review=%d\n%s", backlogIndex, todoIndex, reviewIndex, section)
+	}
+}
+
+func TestDashboardRendersFleetKanbanNavForMultiProjectOnly(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		activeNav  string
+		projects   []templates.ProjectSmallMultiple
+		wantKanban bool
+		wantActive bool
+	}{
+		{
+			name:      "multi project shows fleet kanban",
+			activeNav: "fleet",
+			projects: []templates.ProjectSmallMultiple{
+				{ID: "detent", Name: "Detent"},
+				{ID: "docs-site", Name: "Docs Site"},
+			},
+			wantKanban: true,
+		},
+		{
+			name:      "multi project fleet kanban active",
+			activeNav: "kanban",
+			projects: []templates.ProjectSmallMultiple{
+				{ID: "detent", Name: "Detent"},
+				{ID: "docs-site", Name: "Docs Site"},
+			},
+			wantKanban: true,
+			wantActive: true,
+		},
+		{
+			name:      "single project hides fleet kanban",
+			activeNav: "fleet",
+			projects: []templates.ProjectSmallMultiple{
+				{ID: "detent", Name: "Detent"},
+			},
+		},
+		{
+			name:       "empty project list hides fleet kanban",
+			activeNav:  "fleet",
+			wantKanban: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			html := renderDashboard(t, templates.DashboardData{
+				Title:     "Detent",
+				ActiveNav: tt.activeNav,
+				Projects:  tt.projects,
+			})
+			hasKanban := strings.Contains(html, `href="/kanban"`)
+			if hasKanban != tt.wantKanban {
+				t.Fatalf("fleet Kanban nav visible = %t, want %t:\n%s", hasKanban, tt.wantKanban, html)
+			}
+			if !tt.wantKanban {
+				return
+			}
+			if !strings.Contains(html, `aria-label="Fleet Kanban"`) {
+				t.Fatalf("fleet Kanban nav missing aria label:\n%s", html)
+			}
+			if tt.wantActive {
+				assertActiveSidebarLink(t, html, "/kanban")
+				assertInactiveSidebarLink(t, html, "/")
+				return
+			}
+			assertInactiveSidebarLink(t, html, "/kanban")
+			assertActiveSidebarLink(t, html, "/")
+		})
+	}
+}
+
+func TestDashboardRendersFleetKanbanReadOnlyBoard(t *testing.T) {
+	t.Parallel()
+
+	docsColor := projectcolor.ColorForID("docs-site")
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:     "Detent / Kanban",
+		ActiveNav: "kanban",
+		Projects: []templates.ProjectSmallMultiple{
+			{ID: "detent", Name: "Detent", Color: "#1192e8", Running: 1},
+			{ID: "docs-site", Name: "Docs Site", QueueCount: 1},
+		},
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo", "In Progress"},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{ID: "detent-card", Identifier: "digitaldrywood/detent#542", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/542", Title: "Add fleet Kanban", State: "Todo"},
+				{ID: "docs-card", Identifier: "digitaldrywood/docs-site#12", ProjectID: "docs-site", URL: "https://github.com/digitaldrywood/docs-site/issues/12", Title: "Document fleet board", State: "In Progress"},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`aria-label="Fleet Kanban"`,
+		`sse-connect="/events?view=kanban"`,
+		`data-project-kanban-visibility-key="fleet"`,
+		`data-preserve-details="project-kanban-visibility-fleet"`,
+		`data-project-kanban-visibility-menu`,
+		`data-project-kanban-card="digitaldrywood/detent#542"`,
+		`data-project-kanban-card="digitaldrywood/docs-site#12"`,
+		`data-project-color="#1192e8"`,
+		`data-project-color="` + docsColor + `"`,
+		`aria-label="Project detent color marker"`,
+		`aria-label="Project docs-site color marker"`,
+		`aria-label="Open detent Kanban"`,
+		`aria-label="Open docs-site Kanban"`,
+		`href="/projects/detent/kanban"`,
+		`href="/projects/docs-site/kanban"`,
+		`>detent</span>`,
+		`>docs-site</span>`,
+		"Add fleet Kanban",
+		"Document fleet board",
+		"Read-only",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("fleet Kanban missing %q:\n%s", want, html)
+		}
+	}
+	for _, forbidden := range []string{
+		`data-kanban-action`,
+		`hx-post="/api/v1/kanban/move"`,
+		`hx-post="/api/v1/kanban/comment"`,
+		`id="kanban-feedback"`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("fleet Kanban rendered mutation affordance %q:\n%s", forbidden, html)
+		}
 	}
 }
 
@@ -2292,6 +2427,32 @@ func renderDashboardShell(t *testing.T, data templates.DashboardShellData) strin
 		t.Fatalf("Render() error = %v", err)
 	}
 	return buf.String()
+}
+
+func assertActiveSidebarLink(t *testing.T, body string, href string) {
+	t.Helper()
+
+	if !sidebarLinkActive(body, href) {
+		t.Fatalf("body missing active sidebar link %q:\n%s", href, body)
+	}
+}
+
+func assertInactiveSidebarLink(t *testing.T, body string, href string) {
+	t.Helper()
+
+	if sidebarLinkActive(body, href) {
+		t.Fatalf("body rendered inactive sidebar link %q as active:\n%s", href, body)
+	}
+}
+
+func sidebarLinkActive(body string, href string) bool {
+	pattern := `<a[^>]*href="` + regexp.QuoteMeta(href) + `"[^>]*>`
+	for _, link := range regexp.MustCompile(pattern).FindAllString(body, -1) {
+		if strings.Contains(link, `data-tui-sidebar-active="true"`) && strings.Contains(link, `aria-current="page"`) {
+			return true
+		}
+	}
+	return false
 }
 
 func dashboardSection(t *testing.T, html string, start string, end string) string {
