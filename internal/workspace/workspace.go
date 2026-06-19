@@ -418,6 +418,9 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 	if exists {
 		if isDir {
 			if l.isSourceWorktree(ctx, path) {
+				if err := l.ensureExpectedBranch(ctx, path, branch); err != nil {
+					return false, err
+				}
 				return false, nil
 			}
 			if l.isGitWorkspace(ctx, path) {
@@ -462,6 +465,23 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 
 	_, err = l.runGit(ctx, "worktree", "add", "-b", branch, path, "HEAD")
 	return err
+}
+
+func (l *LocalGit) ensureExpectedBranch(ctx context.Context, path string, branch string) error {
+	branch = strings.TrimSpace(branch)
+	if !l.autoBranch || branch == "" {
+		return nil
+	}
+
+	output, err := runGitAt(ctx, path, "branch", "--show-current")
+	if err != nil {
+		return fmt.Errorf("inspect workspace branch: %w", err)
+	}
+	current := strings.TrimSpace(output)
+	if current == branch {
+		return nil
+	}
+	return fmt.Errorf("workspace path is on branch %q, want %q: %s", current, branch, path)
 }
 
 func (l *LocalGit) branchExists(ctx context.Context, branch string) (bool, error) {
