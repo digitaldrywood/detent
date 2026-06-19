@@ -1049,6 +1049,7 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 		`hx-get="/api/v1/kanban/comment?`,
 		`hx-target="#kanban-dialog-content"`,
 		`data-kanban-drag-move-form`,
+		`event.dataTransfer.setDragImage(card`,
 		`pr_repository=digitaldrywood%2Ffrontend`,
 		`Cannot move PR-only card`,
 	} {
