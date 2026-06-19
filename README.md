@@ -53,8 +53,9 @@ advance when a gate is cleared.
 Detent is status-driven agentic work orchestration, shipped as a single Go
 binary, with code as its first proven domain. Today it can use a GitHub
 ProjectV2 board as the source of truth, or it can run boardless from a
-repository's GitHub issue `Status` field while Detent supplies the Kanban view.
-For every code issue you mark ready it creates an isolated Git worktree,
+repository's GitHub issue `Status` field or repository status labels while
+Detent supplies the Kanban view. For every code issue you mark ready it creates
+an isolated Git worktree,
 dispatches a Codex coding agent against a workflow contract you wrote, runs
 your validation gate, opens a pull request, waits for review, and merges through
 a serialized train — with all of it live on a web dashboard and a terminal UI.
@@ -79,8 +80,8 @@ agent-executable [Project Onboarding](docs/ONBOARDING.md) runbook.
 
 ## How it works
 
-Configured GitHub status is the state machine; ProjectV2 board status or the
-boardless issue field drives everything.
+Configured GitHub status is the state machine; ProjectV2 board status, the
+boardless issue field, or repository status labels drive everything.
 
 1. **You write the contract.** Each project has a `WORKFLOW.md`: the tracker
    binding, board states, the agent prompt, the validation gate, and the review
@@ -435,8 +436,9 @@ packaging tail.
 
 The quickest compatibility setup is one GitHub ProjectV2 board and one local
 repository checkout. New projects can also run boardless: Detent reads and
-writes a repository's organization-level GitHub issue `Status` field and shows
-workflow visibility in Detent's own Kanban/dashboard surface.
+writes either a repository's organization-level GitHub issue `Status` field or
+repository status labels, then shows workflow visibility in Detent's own
+Kanban/dashboard surface.
 
 1. Authenticate GitHub access for the mode you want:
 
@@ -455,15 +457,20 @@ gh auth status 2>&1 | rg "(^|[[:space:],'\"])project([[:space:],'\"]|$)"
 gh auth login --scopes "repo,read:org"
 gh auth status 2>&1 | rg '\brepo\b'
 gh auth status 2>&1 | rg '\bread:org\b'
+
+# Boardless label mode with a classic PAT.
+gh auth login --scopes "repo"
+gh auth status 2>&1 | rg '\brepo\b'
 ```
 
 Fine-grained PATs and GitHub Apps should grant Issues repository read/write
 when Detent will move work or post comments, Pull requests read/checks read for
-PR gates, and Issue Fields organization read for boardless status discovery.
-Issue-field writes use the issue field values API and require issue or pull
-request repository write permission plus push access to the repository. If
-Kanban integration mode is enabled in a release that supports it, comment
-submission also requires issue/PR comment write.
+PR gates, Issue Fields organization read for issue-field status discovery, and
+repository label access for label mode. Issue-field writes use the issue field
+values API and require issue or pull request repository write permission plus
+push access to the repository. Label mode uses repository label reads/writes and
+issue label updates. If Kanban integration mode is enabled in a release that
+supports it, comment submission also requires issue/PR comment write.
 
 2. Choose the GitHub status source.
 
@@ -486,13 +493,25 @@ GitHub uses single-select option order as board column order; Detent keeps the
 known status options in canonical board order and leaves extra custom options
 after the required Detent states.
 
-For boardless mode, create or reuse an organization-level single-select issue
+For issue-field mode, create or reuse an organization-level single-select issue
 field named `Status` and make sure it is available to the repository. GitHub
 issue fields are issue-only: linked PR cards in Detent derive status from the
 linked issue, not from a PR field. Discover the field and options with:
 
 ```sh
 gh api /orgs/<org>/issue-fields --jq '.[] | select(.name == "Status")'
+```
+
+For label mode, create or reuse repository labels for the effective Detent
+states. Detent applies `tracker.state_map`, slugifies the resulting state name,
+and prefixes it with `tracker.status_label_prefix`, which defaults to
+`detent:`. With the default release flow, the required labels are
+`detent:backlog`, `detent:todo`, `detent:in-progress`, `detent:blocked`,
+`detent:human-review`, `detent:rework`, `detent:merging`, and `detent:done`.
+Discover existing labels with:
+
+```sh
+gh api repos/<owner>/<repo>/labels --paginate --jq '.[].name'
 ```
 
 3. Create a `WORKFLOW.md` in the repository you want Detent to work on.
@@ -631,11 +650,56 @@ gate:
 You are working on {{ issue.identifier }}: {{ issue.title }}.
 ```
 
+Boardless label mode:
+
+```markdown
+---
+tracker:
+  kind: github
+  github_status_source: label
+  repository: owner/repo
+  status_label_prefix: "detent:"
+  write_probe_issue: owner/repo#123
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+    - Merging
+  observed_states:
+    - Backlog
+    - Human Review
+    - Blocked
+  terminal_states:
+    - Done
+    - Cancelled
+  state_map:
+    Cancelled: Done
+workspace:
+  root: /absolute/path/to/detent-workspaces
+  source_root: /absolute/path/to/project-checkout
+agent:
+  max_concurrent_agents_by_state:
+    Merging: 1
+gate:
+  kind: command
+  run: make check
+  ci_failure_action: skip
+---
+You are working on {{ issue.identifier }}: {{ issue.title }}.
+```
+
+In label mode, the `detent:*` labels are tracker state, not workstream filters.
+Use `tracker.authorization.labels.*`, `projects[].authorization`, and
+`agent.dispatch_priority_by_label` for selecting or ranking work by ordinary
+labels such as `documentation`, `bug`, or `enhancement`.
+
 Kanban display is read-only by default. Keep that default for observers,
 shared dashboards, and initial rollout. In a Detent release that includes
 Kanban integration mode, enable integration only when operators are allowed to
 move cards and post issue or PR comments from Detent, and only after
-`detent doctor` proves issue-field status write and issue/PR comment write:
+`detent doctor` proves ProjectV2 status write, issue-field status write, or
+status-label update for the selected status source, plus issue/PR comment
+write:
 
 ```yaml
 server:
@@ -737,10 +801,14 @@ port: 4000
 the `codex` binary, GitHub auth mode, GitHub tracker readiness, git, and
 whether the server port is free. In ProjectV2 mode it checks project access,
 Status options, board item reads, repository issue/PR access, write probes, and
-rate-limit visibility. In boardless mode it checks repository access, issue
+rate-limit visibility. In issue-field mode it checks repository access, issue
 field discovery, Status option discovery, issue reads by field value, optional
 issue-field write probes, issue/PR comment write when integration-capable
-features are configured, and REST/GraphQL rate-limit visibility. Before
+features are configured, and REST/GraphQL rate-limit visibility. In label mode
+it checks repository access, status label mappings, issue reads by configured
+status labels, optional status-label write probes, issue/PR comment write when
+integration-capable features are configured, and REST/GraphQL rate-limit
+visibility. Before
 starting Detent, fix any `FAIL` (missing `github_token: gh` or an
 unauthenticated `codex` are the usual culprits). Configure
 `tracker.write_probe_issue` with a scratch issue when you want doctor to prove
@@ -903,10 +971,14 @@ repo is a real, working instance of this setup to copy from.
 
    # Boardless issue-field mode.
    gh auth login --scopes "repo,read:org"
+
+   # Boardless label mode.
+   gh auth login --scopes "repo"
    ```
 
-   Verify the required classic PAT scopes independently. Boardless mode does
-   not require `read:project` or `project`.
+   Verify the required classic PAT scopes independently. Boardless issue-field
+   and label modes do not require `read:project` or `project`; label mode also
+   does not require `read:org` unless another workflow setting needs it.
 
    ```sh
    gh auth status 2>&1 | rg '\brepo\b'
@@ -937,11 +1009,20 @@ repo is a real, working instance of this setup to copy from.
    `WORKFLOW.md` states, and Detent keeps known `Status` options in canonical
    board order.
 
-   For boardless mode, skip ProjectV2 board creation and instead confirm the
-   repository's organization has a single-select issue field named `Status`:
+   For boardless issue-field mode, skip ProjectV2 board creation and instead
+   confirm the repository's organization has a single-select issue field named
+   `Status`:
 
    ```sh
    gh api /orgs/<org>/issue-fields --jq '.[] | select(.name == "Status")'
+   ```
+
+   For boardless label mode, skip ProjectV2 board creation and organization
+   issue-field setup, then confirm the repository has status labels with the
+   configured prefix:
+
+   ```sh
+   gh api repos/<owner>/<repo>/labels --paginate --jq '.[].name' | rg '^detent:'
    ```
 
 5. **Clone the repository you want Detent to work on** (its checkout becomes
@@ -962,11 +1043,14 @@ repo is a real, working instance of this setup to copy from.
    ```
 
    For ProjectV2 mode, set `tracker.project_slug` (your `PVT_` id). For
-   boardless mode, set `tracker.github_status_source: issue_field`,
-   `tracker.repository: <repo-owner>/<repo-name>`, and optionally
-   `tracker.status_field`. In both modes, set `workspace.source_root`
-   (`<source-root>`), `workspace.root` (a worktrees directory), and the prompt
-   body. The full field reference is in [Quick Start](#quick-start).
+   boardless issue-field mode, set `tracker.github_status_source:
+   issue_field`, `tracker.repository: <repo-owner>/<repo-name>`, and optionally
+   `tracker.status_field`. For boardless label mode, set
+   `tracker.github_status_source: label`, `tracker.repository:
+   <repo-owner>/<repo-name>`, and `tracker.status_label_prefix`. In every mode,
+   set `workspace.source_root` (`<source-root>`), `workspace.root` (a worktrees
+   directory), and the prompt body. The full field reference is in
+   [Quick Start](#quick-start).
 
    Interactive alternative: when Detent starts without a resolved `global.yaml`
    and without a `WORKFLOW.md` in the current directory, it serves the
@@ -1022,10 +1106,12 @@ repo is a real, working instance of this setup to copy from.
    Use `--host 0.0.0.0` only when every host interface is trusted for dashboard
    access; it is not limited to Tailscale.
 
-10. **Dispatch work.** Move a board issue to `Todo`. Detent claims it, creates
-    an isolated worktree, dispatches an agent, and the issue appears under
-    Running on the dashboard. Drive the rest with the board (`Todo` →
-    `In Progress` → `Human Review` → `Merging` → `Done`).
+10. **Dispatch work.** Move an issue to `Todo` through the configured status
+    source: ProjectV2 `Status`, issue-field `Status`, or the `detent:todo`
+    status label. Detent claims it, creates an isolated worktree, dispatches an
+    agent, and the issue appears under Running on the dashboard. Drive the rest
+    through the configured status source (`Todo` → `In Progress` →
+    `Human Review` → `Merging` → `Done`).
 
 ## Concepts
 
@@ -1033,9 +1119,9 @@ repo is a real, working instance of this setup to copy from.
 
 Detent isolates tracker integration behind a connector interface. The current
 production connector is GitHub. It supports the current ProjectV2-backed board
-mode and boardless issue-field mode. A memory connector is available for local
-development, and the connector boundary is where GitLab and Jira support will
-land later.
+mode, boardless issue-field mode, and boardless label mode. A memory connector
+is available for local development, and the connector boundary is where GitLab
+and Jira support will land later.
 
 GitHub configuration lives in each project's `WORKFLOW.md` frontmatter. The
 default `github_status_source: project_v2` mode uses `project_slug` as the
@@ -1044,17 +1130,24 @@ and assignment from the board, then writes comments and state transitions back
 through the connector. Boardless `github_status_source: issue_field` mode uses
 `repository: owner/name` and an organization issue field such as
 `status_field: Status`; Detent reads issues by issue-field value and updates
-that field for state transitions.
+that field for state transitions. Boardless `github_status_source: label` mode
+uses `repository: owner/name` and repository labels named by
+`status_label_prefix`; Detent reads issues by configured status labels and
+updates state by replacing the previous status label with the target one.
 Set `tracker.write_probe_issue` to a scratch issue already present on that
 ProjectV2 board or in the boardless repository if `detent doctor` should prove
 write operations by replaying existing values and sending non-mutating
-validation probes. Without a probe issue, doctor reports required write
-capabilities as WARN instead of inferring that broad token scopes are enough.
+validation probes. In label mode, the probe issue must already have one
+configured status label so doctor can reapply it. Without a probe issue, doctor
+reports required write capabilities as WARN instead of inferring that broad
+token scopes are enough.
 
-GitHub issue fields apply to issues, not pull requests. Detent still displays
-linked PR state and can comment on PRs through GitHub's shared issue-comment
-endpoints, but boardless status comes from the linked issue. A PR-only card
-without a linked issue is not movable by an issue-field status update.
+GitHub issue fields apply to issues, not pull requests. In issue-field mode,
+boardless status comes from the linked issue. In label mode, Detent treats
+repository issues with configured status labels as work items. Detent still
+displays linked PR state and can comment on PRs through GitHub's shared
+issue-comment endpoints, but a PR-only card without a linked issue is not
+dispatchable through issue-field or label status.
 
 The GitHub connector uses one pooled keep-alive HTTP client for GraphQL and
 GitHub App REST token requests. Tune `tracker.http_max_idle_conns`,
@@ -1135,9 +1228,19 @@ You choose where GitHub status lives; Detent fills in the rest.
   `tracker.repository: owner/name`, and optionally `tracker.status_field` when
   the field is not named `Status`. Detent's Kanban/dashboard view becomes the
   board surface; no GitHub ProjectV2 board or `tracker.project_slug` is needed.
-- **Blank `Status` values are not `Backlog`.** In the current release, an issue
-  with no configured `Status` value is not dispatchable through the state
-  machine. Put unready work in the `Backlog` option explicitly.
+- **Boardless label mode:** create or reuse repository labels for every
+  effective Detent state. Configure `tracker.github_status_source: label`,
+  `tracker.repository: owner/name`, and optionally
+  `tracker.status_label_prefix` when the prefix is not `detent:`. The label name
+  is the prefix plus the slugified mapped state: `In Progress` becomes
+  `detent:in-progress`. The issue should have exactly one configured status
+  label at a time. Detent's Kanban/dashboard view becomes the board surface; no
+  GitHub ProjectV2 board, `tracker.project_slug`, or organization issue field
+  is needed.
+- **Blank `Status` values and missing status labels are not `Backlog`.** In the
+  current release, an issue with no configured issue-field value or status label
+  is not dispatchable through the state machine. Put unready work in the
+  `Backlog` option or `detent:backlog` label explicitly.
 - **Detent reads** status, priority, labels, blockers, assignees, and linked
   pull requests from each issue, and **writes back** status transitions and a
   `## Codex Workpad` comment as the agent works.
@@ -1151,7 +1254,8 @@ write access. Enable `integration` mode only in a release that supports it and
 only for trusted operators who should move cards and post comments from the
 dashboard. Integration mode needs the same GitHub write permissions that
 `detent doctor` probes: ProjectV2 status write in ProjectV2 mode, issue-field
-status write in boardless mode, and issue/PR comment write for comment forms.
+status write in issue-field mode, status-label update in label mode, and
+issue/PR comment write for comment forms.
 
 ### Migration Notes
 
@@ -1161,12 +1265,22 @@ and existing `tracker.project_slug` workflows remain valid. This is the
 compatibility path when the GitHub Project board is where humans already plan,
 rank, and move work.
 
-To switch a repository to boardless mode, create the organization issue
-`Status` field and options, copy current issue statuses from the ProjectV2 board
-manually or with a one-off script outside Detent, then change the workflow to
-`github_status_source: issue_field` with `repository: owner/name`. Detent does
-not automatically migrate ProjectV2 items to issue fields. After the switch,
-run `detent doctor --port 0` and fix field discovery, option discovery,
+To switch a repository to boardless issue-field mode, create the organization
+issue `Status` field and options, copy current issue statuses from the
+ProjectV2 board manually or with a one-off script outside Detent, then change
+the workflow to `github_status_source: issue_field` with `repository:
+owner/name`. Detent does not automatically migrate ProjectV2 items to issue
+fields. After the switch, run `detent doctor --port 0` and fix field discovery,
+option discovery, write-probe, comment-write, and rate-limit checks before
+dispatching.
+
+To switch a repository to boardless label mode, create status labels matching
+the effective workflow states, copy current issue statuses by applying exactly
+one configured status label per issue, then change the workflow to
+`github_status_source: label` with `repository: owner/name` and
+`status_label_prefix: "detent:"`. Detent does not automatically migrate
+ProjectV2 items or issue-field values into labels. After the switch, run
+`detent doctor --port 0` and fix label mapping, issue reads by label,
 write-probe, comment-write, and rate-limit checks before dispatching.
 
 ### Dependency workflows
