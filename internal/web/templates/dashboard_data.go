@@ -1937,7 +1937,7 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef) []string {
 }
 
 func projectKanbanLaneClass(lane projectKanbanLane) string {
-	class := "project-kanban-lane grid min-h-[12rem] min-w-0 content-start rounded-md border border-border bg-muted/60 p-2"
+	class := "project-kanban-lane grid min-h-[12rem] w-full min-w-0 max-w-full content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2"
 	if lane.Empty {
 		class += " project-kanban-empty-lane"
 	}
