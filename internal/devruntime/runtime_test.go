@@ -53,6 +53,42 @@ func TestBuildCreatesIsolatedRuntimeDefaults(t *testing.T) {
 	if len(workflow.Config.Tracker.Issues) < 4 {
 		t.Fatalf("fixture issues = %d, want default dogfood coverage", len(workflow.Config.Tracker.Issues))
 	}
+	if len(runtime.Global.Projects) != 1 {
+		t.Fatalf("global projects = %d, want 1", len(runtime.Global.Projects))
+	}
+	if runtime.Global.Projects[0].ID != defaultProjectID {
+		t.Fatalf("global project ID = %q, want %q", runtime.Global.Projects[0].ID, defaultProjectID)
+	}
+}
+
+func TestBuildUsesCustomDemoProjectID(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := Build(Config{Home: t.TempDir(), Demo: DemoKanban, DemoProjectID: "demo-project", Port: 0})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if len(runtime.Global.Projects) != 1 {
+		t.Fatalf("global projects = %d, want 1", len(runtime.Global.Projects))
+	}
+	if runtime.Global.Projects[0].ID != "demo-project" {
+		t.Fatalf("global project ID = %q, want demo-project", runtime.Global.Projects[0].ID)
+	}
+}
+
+func TestBuildKeepsScreenshotsDemoProjectIDDeterministic(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := Build(Config{Home: t.TempDir(), Demo: DemoScreenshots, DemoProjectID: "demo-project", Port: 0})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if len(runtime.Global.Projects) == 0 {
+		t.Fatal("global projects = 0, want screenshot fleet config")
+	}
+	if runtime.Global.Projects[0].ID != defaultProjectID {
+		t.Fatalf("primary screenshot project ID = %q, want %q", runtime.Global.Projects[0].ID, defaultProjectID)
+	}
 }
 
 func TestBuildLoadsFixtureIssues(t *testing.T) {
