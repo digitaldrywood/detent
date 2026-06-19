@@ -8,6 +8,7 @@ import (
 	"time"
 
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -64,6 +65,7 @@ func projectSmallMultiplesFromSnapshot(snapshot telemetry.Snapshot) []templates.
 			ID:          projectID(snapshot.Project),
 			Name:        strings.TrimSpace(snapshot.Project.DisplayName),
 			URL:         strings.TrimSpace(snapshot.Project.URL),
+			Color:       snapshotProjectColor(snapshot.Project.Color),
 			Running:     snapshot.Counts.Running,
 			QueueCount:  snapshot.Counts.Queue,
 			Blocked:     snapshot.Counts.Blocked,
@@ -78,6 +80,7 @@ func projectSmallMultipleFromSnapshot(project telemetry.ProjectSnapshot) templat
 		ID:                        projectID(project.Project),
 		Name:                      strings.TrimSpace(project.Project.DisplayName),
 		URL:                       strings.TrimSpace(project.Project.URL),
+		Color:                     snapshotProjectColor(project.Project.Color),
 		Running:                   project.Counts.Running,
 		QueueCount:                project.Counts.Queue,
 		Blocked:                   project.Counts.Blocked,
@@ -115,6 +118,7 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			ID:     id,
 			Name:   id,
 			URL:    trackerProjectURL(trackedProject),
+			Color:  configuredProjectColor(trackedProject.Config().Color),
 			Paused: trackedProject.Paused(),
 		}
 	}
@@ -132,6 +136,9 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 			if strings.TrimSpace(projects[i].URL) == "" {
 				projects[i].URL = configuredProject.URL
 			}
+			if strings.TrimSpace(configuredProject.Color) != "" {
+				projects[i].Color = configuredProject.Color
+			}
 		}
 	}
 	for id, configuredProject := range configured {
@@ -142,6 +149,22 @@ func (s *Server) addConfiguredProjectMultiples(projects []templates.ProjectSmall
 		seen[id] = struct{}{}
 	}
 	return projects
+}
+
+func configuredProjectColor(value string) string {
+	color, ok := projectcolor.Normalize(value)
+	if !ok {
+		return ""
+	}
+	return color
+}
+
+func snapshotProjectColor(value string) string {
+	color, ok := projectcolor.Normalize(value)
+	if !ok {
+		return ""
+	}
+	return color
 }
 
 func trackerProjectURL(trackedProject *projectpkg.Project) string {

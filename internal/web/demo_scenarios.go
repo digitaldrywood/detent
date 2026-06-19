@@ -13,6 +13,7 @@ import (
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
@@ -364,6 +365,7 @@ func (s *Server) demoProjectDashboardData(ctx context.Context, scenario demoScen
 		ID:          project.ID,
 		DisplayName: project.Name,
 		URL:         project.URL,
+		Color:       project.Color,
 	})
 	instanceName := s.instanceName()
 	return templates.DashboardData{
@@ -1022,6 +1024,7 @@ func demoProject(id string, name string, url string, paused bool, running int, q
 		ID:                        id,
 		Name:                      name,
 		URL:                       url,
+		Color:                     projectcolor.ColorForID(id),
 		Paused:                    paused,
 		Running:                   running,
 		QueueCount:                queue,
@@ -1056,7 +1059,7 @@ func demoProjectSnapshots(projects []templates.ProjectSmallMultiple) []telemetry
 	out := make([]telemetry.ProjectSnapshot, 0, len(projects))
 	for _, project := range projects {
 		out = append(out, telemetry.ProjectSnapshot{
-			Project: telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL},
+			Project: telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL, Color: project.Color},
 			Counts:  telemetry.Counts{Running: project.Running, Queue: project.QueueCount, Blocked: project.Blocked, Completed: project.Completed},
 			Tokens:  telemetry.Tokens{Total: project.TotalTokens},
 			Throughput: telemetry.TokenThroughput{

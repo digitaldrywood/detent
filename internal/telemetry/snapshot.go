@@ -40,6 +40,7 @@ type Project struct {
 	ID          string `json:"id,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
 	URL         string `json:"url,omitempty"`
+	Color       string `json:"color,omitempty"`
 }
 
 type Instance struct {

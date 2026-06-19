@@ -68,11 +68,11 @@ func TestBuildUsesCustomDemoProjectID(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Build() error = %v", err)
 	}
-	if len(runtime.Global.Projects) != 1 {
-		t.Fatalf("global projects = %d, want 1", len(runtime.Global.Projects))
+	if len(runtime.Global.Projects) < 4 {
+		t.Fatalf("global projects = %d, want at least 4 demo projects", len(runtime.Global.Projects))
 	}
 	if runtime.Global.Projects[0].ID != "demo-project" {
-		t.Fatalf("global project ID = %q, want demo-project", runtime.Global.Projects[0].ID)
+		t.Fatalf("primary demo project ID = %q, want demo-project", runtime.Global.Projects[0].ID)
 	}
 }
 
@@ -142,63 +142,89 @@ func TestBuildKanbanDemoCreatesIntegrationWorkflow(t *testing.T) {
 		t.Fatalf("TrackerMode = %q FixturePath = %q, want memory demo without external fixture", runtime.TrackerMode, runtime.FixturePath)
 	}
 
-	workflow, err := workflowconfig.LoadWorkflow(runtime.WorkflowPath)
-	if err != nil {
-		t.Fatalf("LoadWorkflow() error = %v", err)
+	if len(runtime.Global.Projects) < 4 {
+		t.Fatalf("global projects = %d, want at least 4 Kanban demo projects", len(runtime.Global.Projects))
 	}
-	if workflow.Config.Tracker.Kind != workflowconfig.TrackerMemory {
-		t.Fatalf("workflow tracker = %q, want memory", workflow.Config.Tracker.Kind)
+	if runtime.Global.Projects[0].Color != "#1192e8" {
+		t.Fatalf("primary project color = %q, want configured #1192e8", runtime.Global.Projects[0].Color)
 	}
-	if workflow.Config.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {
-		t.Fatalf("Kanban mode = %q, want integration", workflow.Config.Server.Kanban.Mode)
+	hasAutomaticColorProject := false
+	for _, project := range runtime.Global.Projects {
+		if strings.TrimSpace(project.Color) == "" {
+			hasAutomaticColorProject = true
+			break
+		}
 	}
-	if got := workflow.Config.Tracker.ActiveStates; !slices.Equal(got, []string{"Cancelled"}) {
-		t.Fatalf("ActiveStates = %#v, want terminal-only demo state", got)
-	}
-	if !workflow.Config.KanbanTransitionAllowed("Backlog", "Todo") {
-		t.Fatal("KanbanTransitionAllowed(Backlog, Todo) = false, want explicit demo transition")
-	}
-	if workflow.Config.KanbanTransitionAllowed("Done", "Todo") {
-		t.Fatal("KanbanTransitionAllowed(Done, Todo) = true, want terminal demo lane without active move")
-	}
-	if workflow.Config.Agent.AutoPromote.Enabled {
-		t.Fatal("AutoPromote.Enabled = true, want stable demo board")
+	if !hasAutomaticColorProject {
+		t.Fatalf("Kanban demo projects = %#v, want at least one automatic color", runtime.Global.Projects)
 	}
 
 	states := map[string]int{}
-	activeStates := stateSet(workflow.Config.Tracker.ActiveStates)
-	terminalStates := stateSet(workflow.Config.Tracker.TerminalStates)
 	var issueOnly, linkedPR, ciPass, ciPending, ciFail, reviewClean, reviewFinding bool
 	var labels, assignees, blockers, waitMetadata bool
-	for _, issue := range workflow.Config.Tracker.Issues {
-		states[issue.State]++
-		if _, active := activeStates[strings.ToLower(issue.State)]; active {
-			if _, terminal := terminalStates[strings.ToLower(issue.State)]; !terminal {
-				t.Fatalf("demo issue %q in state %q would be dispatchable", issue.ID, issue.State)
+	issueCountsByProject := map[string]int{}
+	for _, project := range runtime.Global.Projects {
+		workflow, err := workflowconfig.LoadWorkflow(project.Workflow)
+		if err != nil {
+			t.Fatalf("LoadWorkflow(%s) error = %v", project.Workflow, err)
+		}
+		if workflow.Config.Tracker.Kind != workflowconfig.TrackerMemory {
+			t.Fatalf("workflow tracker = %q, want memory", workflow.Config.Tracker.Kind)
+		}
+		if workflow.Config.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {
+			t.Fatalf("Kanban mode = %q, want integration", workflow.Config.Server.Kanban.Mode)
+		}
+		if got := workflow.Config.Tracker.ActiveStates; !slices.Equal(got, []string{"Cancelled"}) {
+			t.Fatalf("ActiveStates = %#v, want terminal-only demo state", got)
+		}
+		if !workflow.Config.KanbanTransitionAllowed("Backlog", "Todo") {
+			t.Fatal("KanbanTransitionAllowed(Backlog, Todo) = false, want explicit demo transition")
+		}
+		if workflow.Config.KanbanTransitionAllowed("Done", "Todo") {
+			t.Fatal("KanbanTransitionAllowed(Done, Todo) = true, want terminal demo lane without active move")
+		}
+		if workflow.Config.Agent.AutoPromote.Enabled {
+			t.Fatal("AutoPromote.Enabled = true, want stable demo board")
+		}
+		if len(workflow.Config.Tracker.Issues) == 0 || len(workflow.Config.Tracker.Issues) > 2 {
+			t.Fatalf("project %s demo issues = %d, want 1-2", project.ID, len(workflow.Config.Tracker.Issues))
+		}
+		issueCountsByProject[project.ID] = len(workflow.Config.Tracker.Issues)
+		activeStates := stateSet(workflow.Config.Tracker.ActiveStates)
+		terminalStates := stateSet(workflow.Config.Tracker.TerminalStates)
+		for _, issue := range workflow.Config.Tracker.Issues {
+			states[issue.State]++
+			if _, active := activeStates[strings.ToLower(issue.State)]; active {
+				if _, terminal := terminalStates[strings.ToLower(issue.State)]; !terminal {
+					t.Fatalf("demo issue %q in state %q would be dispatchable", issue.ID, issue.State)
+				}
 			}
+			issueOnly = issueOnly || issue.PullRequest == nil
+			labels = labels || len(issue.Labels) > 0
+			assignees = assignees || len(issue.Assignees) > 0
+			blockers = blockers || len(issue.BlockedBy) > 0 || strings.TrimSpace(issue.BlockerReason) != ""
+			if issue.PullRequest == nil {
+				continue
+			}
+			linkedPR = true
+			switch strings.ToLower(strings.TrimSpace(issue.PullRequest.CIStatus)) {
+			case "success", "pass":
+				ciPass = true
+			case "pending", "in_progress":
+				ciPending = true
+			case "failure", "fail":
+				ciFail = true
+			}
+			reviewClean = reviewClean || strings.EqualFold(issue.PullRequest.CodexReviewState, "CLEAN")
+			reviewFinding = reviewFinding || strings.EqualFold(issue.PullRequest.CodexReviewState, "P1") || len(issue.PullRequest.CodexReviewFindings) > 0
+			waitMetadata = waitMetadata ||
+				issue.PullRequest.CIDurationSeconds > 0 ||
+				len(issue.PullRequest.SlowChecks) > 0 ||
+				len(issue.PullRequest.RunningChecks) > 0
 		}
-		issueOnly = issueOnly || issue.PullRequest == nil
-		labels = labels || len(issue.Labels) > 0
-		assignees = assignees || len(issue.Assignees) > 0
-		blockers = blockers || len(issue.BlockedBy) > 0 || strings.TrimSpace(issue.BlockerReason) != ""
-		if issue.PullRequest == nil {
-			continue
-		}
-		linkedPR = true
-		switch strings.ToLower(strings.TrimSpace(issue.PullRequest.CIStatus)) {
-		case "success", "pass":
-			ciPass = true
-		case "pending", "in_progress":
-			ciPending = true
-		case "failure", "fail":
-			ciFail = true
-		}
-		reviewClean = reviewClean || strings.EqualFold(issue.PullRequest.CodexReviewState, "CLEAN")
-		reviewFinding = reviewFinding || strings.EqualFold(issue.PullRequest.CodexReviewState, "P1") || len(issue.PullRequest.CodexReviewFindings) > 0
-		waitMetadata = waitMetadata ||
-			issue.PullRequest.CIDurationSeconds > 0 ||
-			len(issue.PullRequest.SlowChecks) > 0 ||
-			len(issue.PullRequest.RunningChecks) > 0
+	}
+	if len(issueCountsByProject) < 4 {
+		t.Fatalf("project issue coverage = %#v, want at least 4 projects with cards", issueCountsByProject)
 	}
 	for _, state := range []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled"} {
 		if states[state] == 0 {

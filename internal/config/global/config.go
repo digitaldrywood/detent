@@ -12,6 +12,7 @@ import (
 	"gopkg.in/yaml.v3"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	"github.com/digitaldrywood/detent/internal/projectcolor"
 	"github.com/digitaldrywood/detent/internal/selector"
 )
 
@@ -77,6 +78,7 @@ type Project struct {
 	Workflow      string            `yaml:"workflow"`
 	WorkflowRef   string            `yaml:"workflow_ref,omitempty"`
 	Workdir       string            `yaml:"workdir"`
+	Color         string            `yaml:"color,omitempty"`
 	Weight        int               `yaml:"weight"`
 	Priority      int               `yaml:"priority"`
 	Paused        bool              `yaml:"paused,omitempty"`
@@ -332,6 +334,11 @@ func (c Config) Validate(opts ...Option) error {
 		}
 		if strings.ContainsAny(project.WorkflowRef, "\r\n") {
 			problems = append(problems, prefix+".workflow_ref: must be a single line")
+		}
+		if strings.TrimSpace(project.Color) != "" {
+			if _, ok := projectcolor.Normalize(project.Color); !ok {
+				problems = append(problems, prefix+".color: must be an opaque CSS hex color like #1192e8")
+			}
 		}
 		problems = append(problems, projectPathErrors(project.Workdir, prefix+".workdir", readOptions, wantDirectory)...)
 		if project.Weight <= 0 {
@@ -686,6 +693,7 @@ func projectErrors(value any, index int, opts options) []string {
 	problems = append(problems, stringErrors(project, "id", prefix)...)
 	problems = append(problems, stringErrors(project, "workflow_ref", prefix)...)
 	problems = append(problems, singleLineStringErrors(project, "workflow_ref", prefix)...)
+	problems = append(problems, projectColorErrors(project, prefix)...)
 	if strings.TrimSpace(projectStringValue(project, "workflow_ref")) == "" {
 		problems = append(problems, pathErrors(project, "workflow", prefix, opts, wantFile)...)
 	} else {
@@ -921,6 +929,25 @@ func credentialRefErrors(attrs map[string]any, prefix string) []string {
 	return nil
 }
 
+func projectColorErrors(attrs map[string]any, prefix string) []string {
+	value, ok := attrs["color"]
+	if !ok || value == nil {
+		return nil
+	}
+
+	text, ok := value.(string)
+	if !ok {
+		return []string{prefix + ".color: must be a string"}
+	}
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	if _, ok := projectcolor.Normalize(text); !ok {
+		return []string{prefix + ".color: must be an opaque CSS hex color like #1192e8"}
+	}
+	return nil
+}
+
 func duplicateProjectIDErrors(projects []any) []string {
 	counts := make(map[string]int)
 	for _, item := range projects {
@@ -1080,6 +1107,17 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		if err != nil {
 			return nil, err
 		}
+		color, err := optionalString(project["color"], prefix+".color")
+		if err != nil {
+			return nil, err
+		}
+		if color != "" {
+			normalized, ok := projectcolor.Normalize(color)
+			if !ok {
+				return nil, fmt.Errorf("%s.color: must be an opaque CSS hex color like #1192e8", prefix)
+			}
+			color = normalized
+		}
 		if !opts.projectPathLiterals {
 			if strings.TrimSpace(workflowRef) == "" {
 				expandedWorkflow, err := expandPath(workflow, opts)
@@ -1124,6 +1162,7 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 			Workflow:      strings.TrimSpace(workflow),
 			WorkflowRef:   strings.TrimSpace(workflowRef),
 			Workdir:       workdir,
+			Color:         color,
 			Weight:        weight,
 			Priority:      priority,
 			Paused:        paused,

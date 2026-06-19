@@ -265,11 +265,14 @@ func TestDevRuntimeCommandBuildsKanbanDemoBootConfig(t *testing.T) {
 	if got.Isolated.Demo != "kanban" {
 		t.Fatalf("Isolated.Demo = %q, want kanban", got.Isolated.Demo)
 	}
-	if len(got.Global.Projects) != 1 {
-		t.Fatalf("Global projects = %d, want 1", len(got.Global.Projects))
+	if len(got.Global.Projects) < 4 {
+		t.Fatalf("Global projects = %d, want at least 4 Kanban demo projects", len(got.Global.Projects))
 	}
 	if got.Global.Projects[0].ID != "demo-project" {
 		t.Fatalf("Global project ID = %q, want demo-project", got.Global.Projects[0].ID)
+	}
+	if got.Global.Projects[0].Color != "#1192e8" {
+		t.Fatalf("Global project color = %q, want #1192e8", got.Global.Projects[0].Color)
 	}
 	if got.Host != "0.0.0.0" {
 		t.Fatalf("Host = %q, want demo wildcard host", got.Host)

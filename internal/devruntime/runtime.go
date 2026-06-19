@@ -115,19 +115,30 @@ func Build(cfg Config) (Runtime, error) {
 	}
 
 	workflowPath := filepath.Join(home, "WORKFLOW.md")
-	if err := writeWorkflow(workflowPath, workflowInput{
-		TrackerMode:   trackerMode,
-		WorkspaceRoot: workspaceRoot,
-		SourceRoot:    sourceRoot,
-		Port:          cfg.Port,
-		Issues:        issues,
-		Demo:          demo,
-	}); err != nil {
-		return Runtime{}, err
+	var demoProjects []globalconfig.Project
+	if demo == DemoKanban {
+		demoProjects, err = writeKanbanDemoWorkflows(home, workflowPath, trackerMode, workspaceRoot, sourceRoot, cfg.Port, demoProjectID, issues)
+		if err != nil {
+			return Runtime{}, err
+		}
+	} else {
+		if err := writeWorkflow(workflowPath, workflowInput{
+			TrackerMode:   trackerMode,
+			WorkspaceRoot: workspaceRoot,
+			SourceRoot:    sourceRoot,
+			Port:          cfg.Port,
+			Issues:        issues,
+			Demo:          demo,
+		}); err != nil {
+			return Runtime{}, err
+		}
 	}
 
 	configPath := filepath.Join(home, "global.yaml")
 	global := globalConfig(configPath, workflowPath, sourceRoot, cfg.Port, demo, demoProjectID)
+	if len(demoProjects) > 0 {
+		global.Projects = demoProjects
+	}
 	if err := globalconfig.Write(configPath, global); err != nil {
 		return Runtime{}, fmt.Errorf("write isolated global config: %w", err)
 	}
@@ -833,6 +844,90 @@ func kanbanDemoAllowedTransitions() map[string][]string {
 		"Cancelled":    {"Backlog"},
 		"Canceled":     {},
 	}
+}
+
+type kanbanDemoProjectSeed struct {
+	ID           string
+	Color        string
+	IssueIndexes []int
+}
+
+func writeKanbanDemoWorkflows(
+	home string,
+	primaryWorkflowPath string,
+	trackerMode string,
+	workspaceRoot string,
+	sourceRoot string,
+	port int,
+	primaryProjectID string,
+	issues []connector.Issue,
+) ([]globalconfig.Project, error) {
+	seeds := kanbanDemoProjectSeeds(primaryProjectID)
+	projects := make([]globalconfig.Project, 0, len(seeds))
+	for index, seed := range seeds {
+		workflowPath := primaryWorkflowPath
+		if index > 0 {
+			workflowPath = filepath.Join(home, projectWorkflowFilename(seed.ID))
+		}
+		if err := writeWorkflow(workflowPath, workflowInput{
+			TrackerMode:   trackerMode,
+			WorkspaceRoot: workspaceRoot,
+			SourceRoot:    sourceRoot,
+			Port:          port,
+			Issues:        kanbanDemoProjectIssues(issues, seed.IssueIndexes),
+			Demo:          DemoKanban,
+		}); err != nil {
+			return nil, err
+		}
+		projects = append(projects, globalconfig.Project{
+			ID:       seed.ID,
+			Workflow: workflowPath,
+			Workdir:  sourceRoot,
+			Color:    seed.Color,
+			Weight:   max(10, 100-(index*10)),
+			Priority: 100 - index,
+		})
+	}
+	return projects, nil
+}
+
+func kanbanDemoProjectSeeds(primaryProjectID string) []kanbanDemoProjectSeed {
+	return []kanbanDemoProjectSeed{
+		{ID: primaryProjectID, Color: "#1192e8", IssueIndexes: []int{0, 4}},
+		{ID: "docs-site", IssueIndexes: []int{1, 2}},
+		{ID: "billing-api", Color: "#a63f7a", IssueIndexes: []int{3, 5}},
+		{ID: "release-train", IssueIndexes: []int{6, 7}},
+		{ID: "agent-lab", IssueIndexes: []int{8}},
+	}
+}
+
+func kanbanDemoProjectIssues(issues []connector.Issue, indexes []int) []connector.Issue {
+	out := make([]connector.Issue, 0, len(indexes))
+	for _, index := range indexes {
+		if index < 0 || index >= len(issues) {
+			continue
+		}
+		out = append(out, issues[index])
+	}
+	return out
+}
+
+func projectWorkflowFilename(projectID string) string {
+	var builder strings.Builder
+	for _, r := range strings.ToLower(strings.TrimSpace(projectID)) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			builder.WriteRune(r)
+			continue
+		}
+		if builder.Len() > 0 {
+			builder.WriteByte('-')
+		}
+	}
+	name := strings.Trim(builder.String(), "-")
+	if name == "" {
+		name = "project"
+	}
+	return "WORKFLOW-" + name + ".md"
 }
 
 func globalConfig(path string, workflowPath string, sourceRoot string, port int, demo string, projectID string) globalconfig.Config {

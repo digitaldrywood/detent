@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/projectcolor"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -295,6 +296,7 @@ func startupProjectSnapshots(projects []globalconfig.Project) []telemetry.Projec
 			Project: telemetry.Project{
 				ID:          id,
 				DisplayName: id,
+				Color:       projectcolor.ColorFor(id, cfg.Color),
 			},
 		})
 	}
@@ -367,6 +369,7 @@ func projectSnapshotMetadata(trackedProject *project.Project) telemetry.Project 
 		ID:          id,
 		DisplayName: id,
 		URL:         projectURLFromWorkflow(workflow.Config),
+		Color:       projectcolor.ColorFor(id, cfg.Color),
 	}
 }
 

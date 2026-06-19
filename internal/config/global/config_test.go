@@ -252,6 +252,7 @@ projects:
     workflow: `+paths.workflow+`
     workflow_ref: origin/main
     workdir: `+paths.workdir+`
+    color: "#1192e8"
     weight: 1
     priority: 0
 `)
@@ -278,6 +279,9 @@ projects:
 	}
 	if cfg.Projects[0].WorkflowRef != "origin/main" {
 		t.Fatalf("Project.WorkflowRef = %q, want origin/main", cfg.Projects[0].WorkflowRef)
+	}
+	if cfg.Projects[0].Color != "#1192e8" {
+		t.Fatalf("Project.Color = %q, want #1192e8", cfg.Projects[0].Color)
 	}
 }
 
@@ -363,6 +367,7 @@ func TestWriteRoundTripsConfig(t *testing.T) {
 				ID:            "detent",
 				Workflow:      paths.workflowPath,
 				Workdir:       paths.workdirPath,
+				Color:         "#1192e8",
 				Weight:        5,
 				Priority:      2,
 				Paused:        true,
@@ -741,6 +746,7 @@ projects:
     workflow: 456
     workflow_ref: 789
     workdir: 789
+    color: []
     weight: 0
     priority: high
     paused: maybe
@@ -759,6 +765,7 @@ projects:
 				"projects[0].workflow: must be a string",
 				"projects[0].workflow_ref: must be a string",
 				"projects[0].workdir: must be a string",
+				"projects[0].color: must be a string",
 				"projects[0].weight: must be a positive integer",
 				"projects[0].priority: must be an integer",
 				"projects[0].paused: must be a boolean",
@@ -797,6 +804,25 @@ projects:
 				"projects[0].workdir: is required",
 				"projects[0].weight: is required",
 				"projects[0].priority: is required",
+			},
+		},
+		{
+			name: "invalid project color",
+			raw: `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+projects:
+  - id: detent
+    workflow: ` + paths.workflow + `
+    workdir: ` + paths.workdir + `
+    color: "1192e8"
+    weight: 5
+    priority: 50
+`,
+			want: []string{
+				"projects[0].color: must be an opaque CSS hex color like #1192e8",
 			},
 		},
 		{
@@ -933,6 +959,15 @@ func TestBuildReturnsErrorsForDecodedConfigMismatches(t *testing.T) {
 			},
 			opts: options{home: paths.home, relativeTo: paths.root},
 			want: "projects[0].paused: must be a boolean",
+		},
+		{
+			name: "project color mismatch",
+			mutate: func(attrs map[string]any) {
+				project := attrs["projects"].([]any)[0].(map[string]any)
+				project["color"] = "#fffff"
+			},
+			opts: options{home: paths.home, relativeTo: paths.root},
+			want: "projects[0].color: must be an opaque CSS hex color like #1192e8",
 		},
 		{
 			name: "project path expansion mismatch",
