@@ -463,6 +463,9 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    `Status` field, and the Detent dashboard should be the Kanban surface.
    Recommend label mode when the team wants GitHub Issues plus repository
    labels only, with no ProjectV2 board and no organization issue fields.
+   This answer maps to `tracker.github_status_source: project_v2`,
+   `tracker.github_status_source: issue_field`, or
+   `tracker.github_status_source: label` in `WORKFLOW.md`.
    Default if silent: ProjectV2 for existing Detent installs, label mode when
    the operator explicitly asks for issues plus labels only, otherwise
    boardless issue-field mode for a new project with an existing matching issue

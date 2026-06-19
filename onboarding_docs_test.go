@@ -14,6 +14,8 @@ func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
 
 	assertContains(t, onboarding, "## Phase 2.5")
 	assertContains(t, onboarding, "MUTATION_CONFIRMED=true")
+	assertContains(t, onboarding, "rg -v '^MUTATION_CONFIRMED='")
+	assertContains(t, onboarding, "last == \"MUTATION_CONFIRMED=true\"")
 	assertContains(t, onboarding, "GITHUB_MODE=<project_v2|issue_field|label>")
 	assertContains(t, onboarding, "tracker.github_status_source: label")
 	assertContains(t, onboarding, "rg '^GITHUB_MODE=project_v2$'")
