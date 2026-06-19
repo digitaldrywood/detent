@@ -291,6 +291,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	prompt, err := BuildPrompt(workflow, req.Issue, PromptOptions{
 		Attempt:         &attempt,
 		WorkspacePath:   info.Path,
+		Branch:          info.Branch,
 		AvailableSkills: availableSkills,
 	})
 	if err != nil {

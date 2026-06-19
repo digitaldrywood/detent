@@ -460,6 +460,46 @@ func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 	}
 }
 
+func TestLocalGitCreateRejectsReusedWorktreeOnUnexpectedBranch(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	info, err := backend.Create(context.Background(), Issue{Identifier: "DD-REUSE"})
+	if err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+
+	runGit(t, source, "branch", "detent/other")
+	runGit(t, info.Path, "switch", "detent/other")
+
+	_, err = backend.Create(context.Background(), Issue{Identifier: "DD-REUSE"})
+	if err == nil {
+		t.Fatal("second Create() error = nil, want branch mismatch")
+	}
+	for _, want := range []string{
+		"workspace path is on branch",
+		"detent/other",
+		"detent/dd-reuse",
+		info.Path,
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("second Create() error = %q, want %q", err, want)
+		}
+	}
+}
+
 func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 	t.Parallel()
 	skipWindows(t)
