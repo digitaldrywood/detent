@@ -57,9 +57,9 @@ The execution edge still carries these code/git/PR assumptions.
 - The CI lint job keeps the project-pinned golangci-lint version and caches its
   binary so cache hits avoid a per-run `go install` without changing lint
   coverage.
-- Moving `GoReleaser Snapshot` off every PR or making it path-based is a
-  release-policy decision because it trades release-package coverage for merge
-  latency.
+- `GoReleaser Snapshot` runs on every push to `main` and on PRs only when
+  release packaging inputs change, preserving release-package coverage without
+  charging docs-only and routine code PRs the full snapshot cost.
 
 ## Still Git/PR Coupled
 
