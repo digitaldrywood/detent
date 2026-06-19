@@ -56,7 +56,9 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 }
 
 func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
-	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoKanban})
+	const projectID = "demo-project"
+
+	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoKanban, DemoProjectID: projectID})
 	if err != nil {
 		t.Fatalf("devruntime.Build() error = %v", err)
 	}
@@ -76,12 +78,13 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	waitForDashboard(t, dashboardURL+"/health", done)
 	postRuntimeRefresh(t, dashboardURL, done)
 
-	pageURL := dashboardURL + "/projects/dogfood/kanban"
+	pageURL := dashboardURL + "/projects/" + projectID + "/kanban"
 	body := waitForDashboardCondition(t, pageURL, done, "kanban demo mutation controls", func(body string) bool {
 		return strings.Contains(body, "Kanban demo backlog intake") &&
 			strings.Contains(body, `data-kanban-action="move"`) &&
 			strings.Contains(body, `hx-get="/api/v1/kanban/comment?`) &&
-			strings.Contains(body, `data-kanban-drop-state="Todo"`)
+			strings.Contains(body, `data-kanban-drop-state="Todo"`) &&
+			strings.Contains(body, `name="project_id" value="`+projectID+`"`)
 	})
 	for _, want := range []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled"} {
 		if !strings.Contains(body, want) {
@@ -90,7 +93,7 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	}
 
 	postRuntimeKanbanForm(t, dashboardURL+"/api/v1/kanban/move", done, url.Values{
-		"project_id":    {"dogfood"},
+		"project_id":    {projectID},
 		"issue_id":      {"kanban-demo-backlog"},
 		"current_state": {"Backlog"},
 		"target_state":  {"Todo"},
@@ -102,13 +105,13 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	})
 
 	postRuntimeKanbanForm(t, dashboardURL+"/api/v1/kanban/comment", done, url.Values{
-		"project_id": {"dogfood"},
+		"project_id": {projectID},
 		"target":     {"issue"},
 		"issue_id":   {"kanban-demo-backlog"},
 		"body":       {"Safe demo issue comment"},
 	})
 	postRuntimeKanbanForm(t, dashboardURL+"/api/v1/kanban/comment", done, url.Values{
-		"project_id":    {"dogfood"},
+		"project_id":    {projectID},
 		"target":        {"pr"},
 		"pr_repository": {"digitaldrywood/detent"},
 		"pr_number":     {"9515"},

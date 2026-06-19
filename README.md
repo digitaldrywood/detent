@@ -843,11 +843,18 @@ database state:
 detent dev-runtime --demo kanban --port 0
 ```
 
+Pass `--demo-project` to choose the generated project ID when you want generic
+demo URLs and labels instead of the default dogfood-safe ID:
+
+```sh
+detent dev-runtime --demo kanban --demo-project demo-project --port 0
+```
+
 Demo runtimes bind to `0.0.0.0` when `--host` is omitted so the selected
 random port can be reached from trusted network interfaces. From another
 machine on Tailscale, replace the local banner host with the Tailscale
-hostname, for example
-`http://prometheus:<port>/projects/dogfood/kanban`. Pass
+hostname. With the override above, open
+`http://prometheus:<port>/projects/demo-project/kanban`. Pass
 `--host 127.0.0.1` for a local-only demo run.
 
 The Kanban demo keeps the runtime isolated on the memory tracker, enables
@@ -875,7 +882,9 @@ fake `https://github.test/...` URLs, no GitHub calls, no real ProjectV2
 mutation, and no live dogfood port by default. It freezes demo time at
 `2026-06-15T12:00:00Z` unless started with `--demo-clock play`, which advances
 SSE ticks and visible running-work counters for video capture. The boot banner
-prints the scenario manifest location:
+prints the scenario manifest location. Screenshots mode intentionally keeps the
+primary project fixed at `dogfood` so page routes and visual baselines remain
+deterministic:
 
 ```text
 Scenario manifest: /api/v1/demo/scenarios

@@ -251,6 +251,7 @@ func TestDevRuntimeCommandBuildsKanbanDemoBootConfig(t *testing.T) {
 		"dev-runtime",
 		"--home", home,
 		"--demo", "kanban",
+		"--demo-project", "demo-project",
 	})
 
 	if err := cmd.Execute(); err != nil {
@@ -263,6 +264,12 @@ func TestDevRuntimeCommandBuildsKanbanDemoBootConfig(t *testing.T) {
 	}
 	if got.Isolated.Demo != "kanban" {
 		t.Fatalf("Isolated.Demo = %q, want kanban", got.Isolated.Demo)
+	}
+	if len(got.Global.Projects) != 1 {
+		t.Fatalf("Global projects = %d, want 1", len(got.Global.Projects))
+	}
+	if got.Global.Projects[0].ID != "demo-project" {
+		t.Fatalf("Global project ID = %q, want demo-project", got.Global.Projects[0].ID)
 	}
 	if got.Host != "0.0.0.0" {
 		t.Fatalf("Host = %q, want demo wildcard host", got.Host)

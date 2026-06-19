@@ -29,6 +29,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	var fixturePath string
 	var demo string
 	var demoClock string
+	var demoProjectID string
 	var allowLiveDB bool
 	var allowProductionPort bool
 
@@ -58,6 +59,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 				FixturePath:         fixturePath,
 				Demo:                demo,
 				DemoClock:           demoClock,
+				DemoProjectID:       demoProjectID,
 				Port:                runtimePort,
 				AllowLiveDatabase:   allowLiveDB,
 				AllowProductionPort: allowProductionPort,
@@ -75,6 +77,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	cmd.Flags().StringVar(&fixturePath, "fixture", "", "YAML fixture with mock issues and pull requests")
 	cmd.Flags().StringVar(&demo, "demo", "", "built-in isolated demo fixture (kanban, screenshots)")
 	cmd.Flags().StringVar(&demoClock, "demo-clock", "frozen", "demo clock mode for screenshots fixtures (frozen, play)")
+	cmd.Flags().StringVar(&demoProjectID, "demo-project", "", "generated primary project ID for isolated demos; screenshots stays dogfood")
 	cmd.Flags().BoolVar(&allowLiveDB, "allow-live-db", false, "allow --db to point at the operator's live ~/.detent/detent.db")
 	cmd.Flags().BoolVar(&allowProductionPort, "allow-production-port", false, "allow binding the isolated runtime to the live dogfood port")
 	return cmd

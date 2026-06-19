@@ -43,6 +43,7 @@ type Config struct {
 	FixturePath         string
 	Demo                string
 	DemoClock           string
+	DemoProjectID       string
 	Port                int
 	AllowLiveDatabase   bool
 	AllowProductionPort bool
@@ -60,6 +61,7 @@ type Runtime struct {
 	FixturePath   string
 	Demo          string
 	DemoClock     string
+	DemoProjectID string
 	Port          int
 	Global        globalconfig.Config
 	Issues        []connector.Issue
@@ -85,6 +87,7 @@ func Build(cfg Config) (Runtime, error) {
 		return Runtime{}, err
 	}
 	demoClock := runtimeDemoClock(cfg.DemoClock)
+	demoProjectID := runtimeDemoProjectID(demo, cfg.DemoProjectID)
 
 	home, err := runtimeHome(cfg.Home)
 	if err != nil {
@@ -124,7 +127,7 @@ func Build(cfg Config) (Runtime, error) {
 	}
 
 	configPath := filepath.Join(home, "global.yaml")
-	global := globalConfig(configPath, workflowPath, sourceRoot, cfg.Port, demo)
+	global := globalConfig(configPath, workflowPath, sourceRoot, cfg.Port, demo, demoProjectID)
 	if err := globalconfig.Write(configPath, global); err != nil {
 		return Runtime{}, fmt.Errorf("write isolated global config: %w", err)
 	}
@@ -142,6 +145,7 @@ func Build(cfg Config) (Runtime, error) {
 		FixturePath:   fixturePath,
 		Demo:          demo,
 		DemoClock:     demoClock,
+		DemoProjectID: demoProjectID,
 		Port:          cfg.Port,
 		Global:        global,
 		Issues:        append([]connector.Issue(nil), issues...),
@@ -164,6 +168,17 @@ func runtimeDemoClock(value string) string {
 		return "play"
 	}
 	return "frozen"
+}
+
+func runtimeDemoProjectID(demo string, value string) string {
+	if demo == DemoScreenshots {
+		return defaultProjectID
+	}
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return defaultProjectID
+	}
+	return value
 }
 
 func runtimeHome(path string) (string, error) {
@@ -820,9 +835,9 @@ func kanbanDemoAllowedTransitions() map[string][]string {
 	}
 }
 
-func globalConfig(path string, workflowPath string, sourceRoot string, port int, demo string) globalconfig.Config {
+func globalConfig(path string, workflowPath string, sourceRoot string, port int, demo string, projectID string) globalconfig.Config {
 	projects := []globalconfig.Project{{
-		ID:       defaultProjectID,
+		ID:       projectID,
 		Workflow: workflowPath,
 		Workdir:  sourceRoot,
 		Weight:   1,
