@@ -39,8 +39,11 @@ repository and existing global.yaml, then walk me through the board, workflow,
 registration, issue intake, and smoke-test decisions.
 
 Present findings with evidence, ask only the next necessary human decisions, and
-do not mutate GitHub Projects, overwrite WORKFLOW.md or global.yaml, or dispatch
-agents until the runbook says to verify and I confirm the risky action.
+do not create, link, mutate, or delete GitHub Projects, issue fields, labels,
+issues, PRs, `WORKFLOW.md`, or `global.yaml`, or dispatch agents, until Phase 2
+answers are recorded in `answers.env` and I explicitly confirm the mutation
+step. Defaults are recommendations only; never execute a defaulted GitHub or
+config mutation without my confirmation.
 ```
 
 A **detent** is the catch that holds a moving part at a fixed position until it
