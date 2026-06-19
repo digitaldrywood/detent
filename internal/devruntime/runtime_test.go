@@ -76,6 +76,34 @@ func TestBuildUsesCustomDemoProjectID(t *testing.T) {
 	}
 }
 
+func TestBuildKanbanDemoAvoidsPrimaryProjectIDCollisions(t *testing.T) {
+	t.Parallel()
+
+	for _, projectID := range []string{"docs-site", "billing-api", "release-train", "agent-lab"} {
+		t.Run(projectID, func(t *testing.T) {
+			t.Parallel()
+
+			runtime, err := Build(Config{Home: t.TempDir(), Demo: DemoKanban, DemoProjectID: projectID, Port: 0})
+			if err != nil {
+				t.Fatalf("Build() error = %v", err)
+			}
+			if len(runtime.Global.Projects) < 4 {
+				t.Fatalf("global projects = %d, want at least 4 demo projects", len(runtime.Global.Projects))
+			}
+			if runtime.Global.Projects[0].ID != projectID {
+				t.Fatalf("primary demo project ID = %q, want %q", runtime.Global.Projects[0].ID, projectID)
+			}
+			seen := map[string]struct{}{}
+			for _, project := range runtime.Global.Projects {
+				if _, ok := seen[project.ID]; ok {
+					t.Fatalf("duplicate project ID %q in %#v", project.ID, runtime.Global.Projects)
+				}
+				seen[project.ID] = struct{}{}
+			}
+		})
+	}
+}
+
 func TestBuildKeepsScreenshotsDemoProjectIDDeterministic(t *testing.T) {
 	t.Parallel()
 

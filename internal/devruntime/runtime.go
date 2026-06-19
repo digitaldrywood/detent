@@ -892,13 +892,21 @@ func writeKanbanDemoWorkflows(
 }
 
 func kanbanDemoProjectSeeds(primaryProjectID string) []kanbanDemoProjectSeed {
-	return []kanbanDemoProjectSeed{
+	seeds := []kanbanDemoProjectSeed{
 		{ID: primaryProjectID, Color: "#1192e8", IssueIndexes: []int{0, 4}},
+	}
+	for _, seed := range []kanbanDemoProjectSeed{
 		{ID: "docs-site", IssueIndexes: []int{1, 2}},
 		{ID: "billing-api", Color: "#a63f7a", IssueIndexes: []int{3, 5}},
 		{ID: "release-train", IssueIndexes: []int{6, 7}},
 		{ID: "agent-lab", IssueIndexes: []int{8}},
+	} {
+		if seed.ID == primaryProjectID {
+			continue
+		}
+		seeds = append(seeds, seed)
 	}
+	return seeds
 }
 
 func kanbanDemoProjectIssues(issues []connector.Issue, indexes []int) []connector.Issue {
