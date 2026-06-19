@@ -126,6 +126,57 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	}
 }
 
+func TestStartScreenshotsDemoServesScenarioManifestAndUsage(t *testing.T) {
+	runtime, err := devruntime.Build(devruntime.Config{Home: t.TempDir(), Port: 0, Demo: devruntime.DemoScreenshots})
+	if err != nil {
+		t.Fatalf("devruntime.Build() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	output := &lockedBuffer{}
+	done := make(chan error, 1)
+	go func() {
+		done <- startRunning(ctx, devRuntimeBootConfig(runtime, "127.0.0.1", defaultOptions(), output))
+	}()
+	t.Cleanup(cancel)
+
+	dashboardURL := waitForIsolatedRuntimeURL(t, output, done)
+	if banner := output.String(); !strings.Contains(banner, "Demo: screenshots") || !strings.Contains(banner, "Scenario manifest: /api/v1/demo/scenarios") {
+		t.Fatalf("isolated runtime banner missing screenshots metadata:\n%s", banner)
+	}
+	waitForDashboard(t, dashboardURL+"/health", done)
+
+	manifest := waitForDashboard(t, dashboardURL+"/api/v1/demo/scenarios", done)
+	if !strings.Contains(manifest, "fleet-healthy-parallel-work") || !strings.Contains(manifest, "reports-normal-window") {
+		t.Fatalf("scenario manifest missing required scenarios:\n%s", manifest)
+	}
+
+	state := waitForDashboardHeader(t, dashboardURL+"/api/v1/state", done, "fleet-healthy-parallel-work")
+	if !strings.Contains(state, `"status":"running"`) || !strings.Contains(state, `"issue_id":"demo-running-core"`) {
+		t.Fatalf("scenario state response missing demo running issue:\n%s", state)
+	}
+
+	usage := waitForDashboardHeader(t, dashboardURL+"/api/v1/usage?by=project", done, "api-usage-populated")
+	if !strings.Contains(usage, `"events":84`) || !strings.Contains(usage, `"bucket":"billing-api"`) {
+		t.Fatalf("scenario usage response missing seeded ledger data:\n%s", usage)
+	}
+
+	onboarding := waitForDashboardHeader(t, dashboardURL+"/onboarding", done, "onboarding-write-success")
+	if !strings.Contains(onboarding, "Wrote WORKFLOW.md") {
+		t.Fatalf("onboarding scenario did not render success state:\n%s", onboarding)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for isolated runtime to stop")
+	}
+}
+
 type lockedBuffer struct {
 	mu  sync.Mutex
 	buf bytes.Buffer
@@ -164,6 +215,49 @@ func waitForIsolatedRuntimeURL(t *testing.T, output *lockedBuffer, done <-chan e
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
+}
+
+func waitForDashboardHeader(t *testing.T, rawURL string, done <-chan error, scenario string) string {
+	t.Helper()
+
+	client := http.Client{Timeout: time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	var lastErr error
+	for ctx.Err() == nil {
+		select {
+		case err := <-done:
+			t.Fatalf("isolated runtime stopped before dashboard response: %v", err)
+		default:
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, rawURL, nil)
+		if err != nil {
+			t.Fatalf("NewRequestWithContext() error = %v", err)
+		}
+		req.Header.Set("X-Detent-Demo-Scenario", scenario)
+		resp, err := client.Do(req)
+		if err == nil {
+			body, readErr := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if readErr != nil {
+				t.Fatalf("ReadAll() error = %v", readErr)
+			}
+			if closeErr != nil {
+				t.Fatalf("Body.Close() error = %v", closeErr)
+			}
+			if resp.StatusCode == http.StatusOK {
+				return string(body)
+			}
+			lastErr = errors.New(resp.Status)
+		} else {
+			lastErr = err
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out fetching %s with scenario %s: %v", rawURL, scenario, lastErr)
+	return ""
 }
 
 func postRuntimeRefresh(t *testing.T, url string, done <-chan error) {

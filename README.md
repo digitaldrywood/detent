@@ -782,10 +782,59 @@ pending, and failure states, Codex review clean and finding states, labels,
 assignees, blockers, and wait metadata. Issue and PR comments are captured by
 the memory connector with no external side effects.
 
+Use the screenshots demo when you need deterministic pages, HTMX fragments, API
+responses, reports, and SSE payloads for documentation screenshots, video
+recording, or visual e2e baselines:
+
+```sh
+detent dev-runtime --demo screenshots --port 0
+```
+
+The screenshots demo uses the same isolation model as the Kanban demo: memory
+tracker, fake runner, isolated home, isolated database, isolated workspaces,
+fake `https://github.test/...` URLs, no GitHub calls, no real ProjectV2
+mutation, and no live dogfood port by default. It freezes demo time at
+`2026-06-15T12:00:00Z` unless started with `--demo-clock play`, which advances
+SSE ticks and visible running-work counters for video capture. The boot banner
+prints the scenario manifest location:
+
+```text
+Scenario manifest: /api/v1/demo/scenarios
+```
+
+Select a scenario with `X-Detent-Demo-Scenario`; the visible URL stays on the
+normal page route:
+
+```ts
+const scenarios = [
+  ["fleet-healthy-parallel-work", "/"],
+  ["kanban-full-integration", "/projects/dogfood/kanban"],
+  ["reports-normal-window", "/reports"],
+];
+
+for (const [scenario, route] of scenarios) {
+  await page.setExtraHTTPHeaders({ "X-Detent-Demo-Scenario": scenario });
+  await page.goto(`${baseURL}${route}`);
+  await page.waitForLoadState("networkidle");
+  await expect(page).toHaveScreenshot(`${scenario}.png`);
+}
+```
+
+For visual comparisons, keep the screenshot environment stable: browser,
+viewport, fonts, OS rendering, device scale factor, and generated assets should
+match the baseline environment. The manifest includes each scenario ID, route,
+required header, recommended viewport, screenshot name, and wait selector. A
+quick JSON smoke check looks like this:
+
+```sh
+curl -H 'X-Detent-Demo-Scenario: fleet-healthy-parallel-work' "$DETENT_URL/api/v1/state"
+```
+
 Use the normal live runtime, `detent` with your global config, only when you
 intend to operate on the configured tracker and ProjectV2 board. Use
 `detent dev-runtime --fixture <path>` for focused fixture validation such as
-autopromote behavior, and use `--demo kanban` for safe board exploration.
+autopromote behavior, `--demo kanban` for safe board exploration, and
+`--demo screenshots` for deterministic page-addressable screenshots.
 
 6. Start Detent:
 

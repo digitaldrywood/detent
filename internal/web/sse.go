@@ -38,6 +38,11 @@ func staticSidebarNav(value string) string {
 }
 
 func (s *Server) events(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		return s.demoEvents(c, scenario)
+	}
 	flusher, ok := c.Response().Writer.(http.Flusher)
 	if !ok {
 		return echo.NewHTTPError(http.StatusInternalServerError, "streaming unsupported")

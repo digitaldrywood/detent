@@ -25,6 +25,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	var trackerMode string
 	var fixturePath string
 	var demo string
+	var demoClock string
 	var allowLiveDB bool
 	var allowProductionPort bool
 
@@ -53,6 +54,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 				TrackerMode:         trackerMode,
 				FixturePath:         fixturePath,
 				Demo:                demo,
+				DemoClock:           demoClock,
 				Port:                runtimePort,
 				AllowLiveDatabase:   allowLiveDB,
 				AllowProductionPort: allowProductionPort,
@@ -68,7 +70,8 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	cmd.Flags().StringVar(&dbPath, "db", "", "isolated SQLite path or :memory:; relative paths are resolved inside --home")
 	cmd.Flags().StringVar(&trackerMode, "tracker", devruntime.TrackerMemory, "isolated tracker backend")
 	cmd.Flags().StringVar(&fixturePath, "fixture", "", "YAML fixture with mock issues and pull requests")
-	cmd.Flags().StringVar(&demo, "demo", "", "built-in isolated demo fixture (kanban)")
+	cmd.Flags().StringVar(&demo, "demo", "", "built-in isolated demo fixture (kanban, screenshots)")
+	cmd.Flags().StringVar(&demoClock, "demo-clock", "frozen", "demo clock mode for screenshots fixtures (frozen, play)")
 	cmd.Flags().BoolVar(&allowLiveDB, "allow-live-db", false, "allow --db to point at the operator's live ~/.detent/detent.db")
 	cmd.Flags().BoolVar(&allowProductionPort, "allow-production-port", false, "allow binding the isolated runtime to the live dogfood port")
 	return cmd
@@ -110,6 +113,10 @@ func devRuntimeBootConfig(runtime devruntime.Runtime, host string, opts options,
 }
 
 func devRuntimeIsolationInfo(runtime devruntime.Runtime) *IsolatedRuntimeInfo {
+	manifestPath := ""
+	if runtime.Demo == devruntime.DemoScreenshots {
+		manifestPath = "/api/v1/demo/scenarios"
+	}
 	return &IsolatedRuntimeInfo{
 		Home:          runtime.Home,
 		ConfigPath:    runtime.ConfigPath,
@@ -120,6 +127,8 @@ func devRuntimeIsolationInfo(runtime devruntime.Runtime) *IsolatedRuntimeInfo {
 		TrackerMode:   runtime.TrackerMode,
 		FixturePath:   runtime.FixturePath,
 		Demo:          runtime.Demo,
+		DemoClock:     runtime.DemoClock,
+		ManifestPath:  manifestPath,
 	}
 }
 
@@ -143,9 +152,9 @@ func devRuntimeError(err error) error {
 	case errors.Is(err, devruntime.ErrLiveDatabase):
 		return WrapValidation(hintedError(err, err.Error(), "Use the default :memory: DB or a path under --home for isolated tests.", "detent dev-runtime --db :memory:"))
 	case errors.Is(err, devruntime.ErrUnsupportedDemo):
-		return WrapValidation(hintedError(err, err.Error(), "Use --demo kanban or omit --demo.", "detent dev-runtime --demo kanban --port 0"))
+		return WrapValidation(hintedError(err, err.Error(), "Use --demo kanban, --demo screenshots, or omit --demo.", "detent dev-runtime --demo screenshots --port 0"))
 	case errors.Is(err, devruntime.ErrDemoFixtureConflict):
-		return WrapValidation(hintedError(err, err.Error(), "Use either --demo kanban or --fixture, not both.", "detent dev-runtime --demo kanban --port 0"))
+		return WrapValidation(hintedError(err, err.Error(), "Use either --demo or --fixture, not both.", "detent dev-runtime --demo screenshots --port 0"))
 	default:
 		return err
 	}

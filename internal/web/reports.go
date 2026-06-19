@@ -13,6 +13,11 @@ import (
 )
 
 func (s *Server) reports(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		return s.demoReports(c, scenario)
+	}
 	from, to, response, status := reportsDateRange(c)
 	if response != nil {
 		return c.JSON(status, response)

@@ -174,8 +174,6 @@ func TestTerminalDashboardError(t *testing.T) {
 }
 
 func TestResolveBootConfigUsesWorkflowRefForServerHost(t *testing.T) {
-	t.Parallel()
-
 	repo := initRuntimeWorkflowRepo(t)
 	writeBootHostWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), "127.0.0.8")
 	commitRuntimeWorkflowRepo(t, repo, "initial workflow")

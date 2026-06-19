@@ -25,6 +25,15 @@ type Refresher interface {
 type RefreshResponse = orchestrator.RefreshResponse
 
 func (s *Server) apiState(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		if scenario.ID == "api-state-no-snapshot" {
+			return c.JSON(http.StatusOK, snapshotErrorResponse(demoBaseTime, "snapshot_unavailable", "Snapshot unavailable"))
+		}
+		snapshot := demoSnapshotForScenario(scenario)
+		return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, demoBaseTime), s.instanceName()))
+	}
 	now := apiNow()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
@@ -56,6 +65,18 @@ func projectAPIParam(c echo.Context, suffix string) (string, bool) {
 }
 
 func (s *Server) apiProjectState(c echo.Context, projectID string) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		snapshot := demoSnapshotForScenario(scenario)
+		projects := demoProjectsForVariant(scenario.Variant)
+		project, ok := demoProjectByID(projects, projectID)
+		if !ok {
+			return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
+		}
+		scoped := projectScopedSnapshotForProject(snapshot, telemetry.Project{ID: project.ID, DisplayName: project.Name, URL: project.URL})
+		return c.JSON(http.StatusOK, stateResponse(scoped, generatedAt(scoped, demoBaseTime), s.instanceName()))
+	}
 	now := apiNow()
 	snapshot, ok := s.hub.Latest()
 	if !ok {
@@ -81,6 +102,15 @@ func (s *Server) apiTimeSeries(c echo.Context) error {
 	if response != nil {
 		return c.JSON(status, response)
 	}
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		if scenario.Variant == "invalid-query" {
+			return c.JSON(http.StatusBadRequest, errorResponse("invalid_duration", "window must be a duration such as 10m or 30s"))
+		}
+		projects := demoProjectsForVariant(scenario.Variant)
+		return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, "", demoBaseTime, window, bucket))
+	}
 
 	snapshot := s.latestSnapshot(c.Request().Context())
 	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
@@ -91,6 +121,15 @@ func (s *Server) apiProjectTimeSeries(c echo.Context, projectID string) error {
 	window, bucket, response, status := timeSeriesQuery(c)
 	if response != nil {
 		return c.JSON(status, response)
+	}
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		projects := demoProjectsForVariant(scenario.Variant)
+		if _, ok := demoProjectByID(projects, projectID); !ok {
+			return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
+		}
+		return c.JSON(http.StatusOK, projectTimeSeriesResponse(projects, projectID, demoBaseTime, window, bucket))
 	}
 
 	snapshot := s.latestSnapshot(c.Request().Context())
@@ -103,6 +142,15 @@ func (s *Server) apiProjectTimeSeries(c echo.Context, projectID string) error {
 }
 
 func (s *Server) apiIssue(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		payload, found := issueResponse(issueIdentifier(c), demoSnapshotForScenario(scenario))
+		if !found {
+			return c.JSON(http.StatusNotFound, errorResponse("issue_not_found", "Issue not found"))
+		}
+		return c.JSON(http.StatusOK, payload)
+	}
 	snapshot, ok := s.hub.Latest()
 	if !ok {
 		return c.JSON(http.StatusNotFound, errorResponse("issue_not_found", "Issue not found"))
@@ -118,6 +166,11 @@ func (s *Server) apiIssue(c echo.Context) error {
 }
 
 func (s *Server) apiRefresh(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		return s.demoRefresh(c, scenario)
+	}
 	if s.refresher == nil {
 		return c.JSON(http.StatusServiceUnavailable, errorResponse("orchestrator_unavailable", "Orchestrator is unavailable"))
 	}
@@ -140,6 +193,16 @@ func (s *Server) apiUsage(c echo.Context) error {
 	query, response, status := usageReportQuery(c)
 	if response != nil {
 		return c.JSON(status, response)
+	}
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		if scenario.Variant == "invalid-date-range" {
+			return c.JSON(http.StatusBadRequest, errorResponse("invalid_date_range", "from must be on or before to"))
+		}
+		if scenario.Variant == "reports-empty" {
+			return c.JSON(http.StatusOK, usageReportResponse(store.UsageReport{By: query.By}, s.pricing))
+		}
 	}
 
 	report, err := s.store.UsageReport(c.Request().Context(), query)

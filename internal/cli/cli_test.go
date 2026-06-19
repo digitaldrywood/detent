@@ -279,6 +279,44 @@ func TestDevRuntimeCommandBuildsKanbanDemoBootConfig(t *testing.T) {
 	}
 }
 
+func TestDevRuntimeCommandBuildsScreenshotsDemoBootConfig(t *testing.T) {
+	t.Parallel()
+
+	home := t.TempDir()
+	booted := make(chan cli.BootConfig, 1)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithBootFunc(func(_ context.Context, cfg cli.BootConfig) error {
+		booted <- cfg
+		return nil
+	}))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--port", "0",
+		"dev-runtime",
+		"--home", home,
+		"--demo", "screenshots",
+		"--demo-clock", "play",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	got := <-booted
+	if got.Isolated == nil {
+		t.Fatal("Isolated = nil, want isolated runtime metadata")
+	}
+	if got.Isolated.Demo != "screenshots" || got.Isolated.DemoClock != "play" {
+		t.Fatalf("isolated demo metadata = %#v, want screenshots play", got.Isolated)
+	}
+	if got.Isolated.ManifestPath != "/api/v1/demo/scenarios" {
+		t.Fatalf("ManifestPath = %q, want demo scenario endpoint", got.Isolated.ManifestPath)
+	}
+	if len(got.Global.Projects) < 8 {
+		t.Fatalf("Global projects = %d, want screenshot fleet config", len(got.Global.Projects))
+	}
+}
+
 func TestConfigPathCommandPrintsResolvedPathAndRule(t *testing.T) {
 	t.Parallel()
 

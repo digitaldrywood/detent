@@ -171,6 +171,11 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
+	if cfg.Isolated != nil && cfg.Isolated.Demo == "screenshots" {
+		if err := web.SeedDemoUsageEvents(runCtx, runtimeStore); err != nil {
+			return err
+		}
+	}
 	defer func() {
 		stop()
 		closeStarted := logShutdownBoundaryBegin(logger, "runtime_store_close", "component", "runtime_store")
@@ -248,6 +253,10 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		RuntimeDBPath:      runtimeStorePath(cfg),
 		RuntimeLogPath:     runtimeLogPath(cfg),
 		ServerAddress:      listener.Addr().String(),
+		Demo: web.DemoConfig{
+			Mode:  isolatedDemo(cfg),
+			Clock: isolatedDemoClock(cfg),
+		},
 	}, web.Dependencies{
 		Hub:       snapshotHub,
 		Store:     runtimeStore,
@@ -922,6 +931,20 @@ func printBootBanner(cfg BootConfig, displayURL string) error {
 	return err
 }
 
+func isolatedDemo(cfg BootConfig) string {
+	if cfg.Isolated == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Isolated.Demo)
+}
+
+func isolatedDemoClock(cfg BootConfig) string {
+	if cfg.Isolated == nil {
+		return ""
+	}
+	return strings.TrimSpace(cfg.Isolated.DemoClock)
+}
+
 func bootBanner(version string, displayURL string, isolated *IsolatedRuntimeInfo) string {
 	version = strings.TrimSpace(version)
 	if version == "" {
@@ -952,6 +975,8 @@ func bootBanner(version string, displayURL string, isolated *IsolatedRuntimeInfo
 		writeBootBannerLine(&out, "DB mode", isolated.DBMode)
 		writeBootBannerLine(&out, "Tracker", isolated.TrackerMode)
 		writeBootBannerLine(&out, "Demo", isolated.Demo)
+		writeBootBannerLine(&out, "Demo clock", isolated.DemoClock)
+		writeBootBannerLine(&out, "Scenario manifest", isolated.ManifestPath)
 		writeBootBannerLine(&out, "Fixture", isolated.FixturePath)
 	}
 	return out.String()

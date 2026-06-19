@@ -16,8 +16,9 @@ import (
 )
 
 const (
-	TrackerMemory = "memory"
-	DemoKanban    = "kanban"
+	TrackerMemory   = "memory"
+	DemoKanban      = "kanban"
+	DemoScreenshots = "screenshots"
 
 	defaultProjectID    = "dogfood"
 	defaultInstanceName = "detent-dev-runtime"
@@ -41,6 +42,7 @@ type Config struct {
 	TrackerMode         string
 	FixturePath         string
 	Demo                string
+	DemoClock           string
 	Port                int
 	AllowLiveDatabase   bool
 	AllowProductionPort bool
@@ -57,6 +59,7 @@ type Runtime struct {
 	TrackerMode   string
 	FixturePath   string
 	Demo          string
+	DemoClock     string
 	Port          int
 	Global        globalconfig.Config
 	Issues        []connector.Issue
@@ -81,6 +84,7 @@ func Build(cfg Config) (Runtime, error) {
 	if err != nil {
 		return Runtime{}, err
 	}
+	demoClock := runtimeDemoClock(cfg.DemoClock)
 
 	home, err := runtimeHome(cfg.Home)
 	if err != nil {
@@ -120,7 +124,7 @@ func Build(cfg Config) (Runtime, error) {
 	}
 
 	configPath := filepath.Join(home, "global.yaml")
-	global := globalConfig(configPath, workflowPath, sourceRoot, cfg.Port)
+	global := globalConfig(configPath, workflowPath, sourceRoot, cfg.Port, demo)
 	if err := globalconfig.Write(configPath, global); err != nil {
 		return Runtime{}, fmt.Errorf("write isolated global config: %w", err)
 	}
@@ -137,6 +141,7 @@ func Build(cfg Config) (Runtime, error) {
 		TrackerMode:   trackerMode,
 		FixturePath:   fixturePath,
 		Demo:          demo,
+		DemoClock:     demoClock,
 		Port:          cfg.Port,
 		Global:        global,
 		Issues:        append([]connector.Issue(nil), issues...),
@@ -146,11 +151,19 @@ func Build(cfg Config) (Runtime, error) {
 func runtimeDemo(value string) (string, error) {
 	value = strings.ToLower(strings.TrimSpace(value))
 	switch value {
-	case "", DemoKanban:
+	case "", DemoKanban, DemoScreenshots:
 		return value, nil
 	default:
 		return "", fmt.Errorf("%w: %s", ErrUnsupportedDemo, value)
 	}
+}
+
+func runtimeDemoClock(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "play" {
+		return "play"
+	}
+	return "frozen"
 }
 
 func runtimeHome(path string) (string, error) {
@@ -277,6 +290,9 @@ func runtimeIssues(path string, demo string) ([]connector.Issue, string, error) 
 	}
 	if demo == DemoKanban {
 		return kanbanDemoIssues(), "", nil
+	}
+	if demo == DemoScreenshots {
+		return screenshotDemoIssues(), "", nil
 	}
 	if path == "" {
 		return defaultIssues(), "", nil
@@ -501,6 +517,67 @@ func kanbanDemoIssues() []connector.Issue {
 	}
 }
 
+func screenshotDemoIssues() []connector.Issue {
+	issues := append([]connector.Issue(nil), kanbanDemoIssues()...)
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	at := func(hoursAgo int) *time.Time {
+		value := now.Add(-time.Duration(hoursAgo) * time.Hour)
+		return &value
+	}
+	issues = append(issues,
+		connector.Issue{
+			ID:             "screenshots-docs-run",
+			Identifier:     "digitaldrywood/docs-site#6401",
+			Title:          "Document screenshot scenario loading contract",
+			Description:    "Docs project card used by screenshot demos.",
+			State:          "Todo",
+			URL:            "https://github.test/digitaldrywood/docs-site/issues/6401",
+			Labels:         []string{"documentation", "demo"},
+			Assignees:      []string{"writer-a"},
+			UpdatedAt:      at(5),
+			StageUpdatedAt: at(5),
+		},
+		connector.Issue{
+			ID:             "screenshots-billing-blocked",
+			Identifier:     "digitaldrywood/billing-api#6402",
+			Title:          "Unblock budget ledger export fixture",
+			Description:    "Billing project blocked card used by screenshot demos.",
+			State:          "Blocked",
+			URL:            "https://github.test/digitaldrywood/billing-api/issues/6402",
+			Labels:         []string{"observability", "blocked"},
+			Assignees:      []string{"backend-a"},
+			BlockerReason:  "Depends on the usage export schema review.",
+			UpdatedAt:      at(14),
+			StageUpdatedAt: at(14),
+		},
+		connector.Issue{
+			ID:             "screenshots-release-merge",
+			Identifier:     "digitaldrywood/release-train#6403",
+			Title:          "Promote release train demo package",
+			Description:    "Release train card with a linked PR for pipeline screenshots.",
+			State:          "Merging",
+			URL:            "https://github.test/digitaldrywood/release-train/issues/6403",
+			Labels:         []string{"release", "merge-train"},
+			Assignees:      []string{"release-a"},
+			UpdatedAt:      at(1),
+			StageUpdatedAt: at(1),
+			PullRequest: &connector.PullRequest{
+				Number:            6403,
+				URL:               "https://github.test/digitaldrywood/release-train/pull/6403",
+				BranchName:        "detent/release-train-demo-package",
+				State:             "OPEN",
+				MergeableState:    "clean",
+				CIStatus:          "pending",
+				CheckRunCount:     8,
+				RunningChecks:     []string{"release-snapshot"},
+				CIDurationSeconds: 540,
+				CodexReviewState:  "CLEAN",
+			},
+		},
+	)
+	return issues
+}
+
 func defaultIssues() []connector.Issue {
 	reviewedAt := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
 	updatedAt := reviewedAt
@@ -672,7 +749,7 @@ func writeWorkflow(path string, input workflowInput) error {
 	}
 	var kanban *workflowKanban
 	body := "Isolated mock Detent runtime for dogfood-safe e2e validation.\n"
-	if input.Demo == DemoKanban {
+	if input.Demo == DemoKanban || input.Demo == DemoScreenshots {
 		activeStates = []string{"Cancelled"}
 		observedStates = []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled"}
 		autoPromote.Enabled = false
@@ -681,6 +758,9 @@ func writeWorkflow(path string, input workflowInput) error {
 			AllowedTransitions: kanbanDemoAllowedTransitions(),
 		}
 		body = "Isolated Kanban demo runtime for dogfood-safe board evaluation.\n"
+		if input.Demo == DemoScreenshots {
+			body = "Isolated screenshot demo runtime for deterministic dashboard, API, and documentation capture.\n"
+		}
 	}
 	frontmatter := workflowFrontmatter{
 		Tracker: workflowTracker{
@@ -740,7 +820,17 @@ func kanbanDemoAllowedTransitions() map[string][]string {
 	}
 }
 
-func globalConfig(path string, workflowPath string, sourceRoot string, port int) globalconfig.Config {
+func globalConfig(path string, workflowPath string, sourceRoot string, port int, demo string) globalconfig.Config {
+	projects := []globalconfig.Project{{
+		ID:       defaultProjectID,
+		Workflow: workflowPath,
+		Workdir:  sourceRoot,
+		Weight:   1,
+		Priority: 1,
+	}}
+	if demo == DemoScreenshots {
+		projects = screenshotDemoProjects(workflowPath, sourceRoot)
+	}
 	return globalconfig.Config{
 		Path:         path,
 		APIVersion:   globalconfig.APIVersion,
@@ -755,14 +845,24 @@ func globalConfig(path string, workflowPath string, sourceRoot string, port int)
 				"max_spawn_per_second": 100,
 			},
 		},
-		Projects: []globalconfig.Project{{
-			ID:       defaultProjectID,
+		Projects: projects,
+	}
+}
+
+func screenshotDemoProjects(workflowPath string, sourceRoot string) []globalconfig.Project {
+	ids := []string{defaultProjectID, "docs-site", "billing-api", "mobile-client", "infra-platform", "release-train", "observability-console", "agent-lab"}
+	projects := make([]globalconfig.Project, 0, len(ids))
+	for i, id := range ids {
+		projects = append(projects, globalconfig.Project{
+			ID:       id,
 			Workflow: workflowPath,
 			Workdir:  sourceRoot,
-			Weight:   1,
-			Priority: 1,
-		}},
+			Weight:   max(10, 120-(i*10)),
+			Priority: 100 - i,
+			Paused:   id == "mobile-client",
+		})
 	}
+	return projects
 }
 
 func dbMode(path string) string {

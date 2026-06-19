@@ -12,6 +12,11 @@ import (
 )
 
 func (s *Server) settings(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		return s.demoSettings(c, scenario, c.QueryParam("project"))
+	}
 	data := s.settingsData(c.Request().Context(), c.QueryParam("project"))
 	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 	return render(c, templates.Settings(data))

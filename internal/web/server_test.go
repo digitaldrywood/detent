@@ -187,6 +187,163 @@ func TestServerRoutes(t *testing.T) {
 	}
 }
 
+func TestDemoScenarioHeadersAreGatedToScreenshotsMode(t *testing.T) {
+	t.Parallel()
+
+	normal, err := web.NewServer(web.Config{}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	body := requestHTMLWithHeaders(t, normal.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{
+		web.DemoScenarioHeader: "fleet-healthy-parallel-work",
+	})
+	if !strings.Contains(body, "Detent") {
+		t.Fatalf("normal server did not ignore demo scenario header:\n%s", body)
+	}
+	requestJSONWithHeaders(t, normal, http.MethodGet, "/api/v1/demo/scenarios", http.StatusNotFound, nil)
+
+	demo, err := web.NewServer(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	payload := requestJSONWithHeaders(t, demo, http.MethodGet, "/", http.StatusNotFound, map[string]string{
+		web.DemoScenarioHeader: "missing-scenario",
+	})
+	if nestedString(t, payload, "error", "code") != "demo_scenario_not_found" {
+		t.Fatalf("unknown scenario payload = %#v", payload)
+	}
+}
+
+func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
+	t.Parallel()
+
+	backend := openWebTestStore(t)
+	if err := web.SeedDemoUsageEvents(context.Background(), backend); err != nil {
+		t.Fatalf("SeedDemoUsageEvents() error = %v", err)
+	}
+	deps := testDeps(t)
+	deps.Store = backend
+	server, err := web.NewServer(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	manifest := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/demo/scenarios", http.StatusOK, nil)
+	if manifest["header"] != web.DemoScenarioHeader || manifest["clock"] != "frozen" {
+		t.Fatalf("manifest metadata = %#v", manifest)
+	}
+	assertManifestContainsScenarios(t, manifest, []string{
+		"fleet-healthy-parallel-work",
+		"kanban-full-integration",
+		"reports-normal-window",
+		"onboarding-write-success",
+		"api-state-full-snapshot",
+	})
+	assertManifestOmitsScenarios(t, manifest, []string{"events-frozen", "events-play"})
+
+	page := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/", http.StatusOK, map[string]string{
+		web.DemoScenarioHeader: "fleet-healthy-parallel-work",
+	})
+	for _, want := range []string{"Implement page-addressable screenshot scenarios", "detent-core", "GraphQL"} {
+		if !strings.Contains(page, want) {
+			t.Fatalf("fleet scenario page missing %q:\n%s", want, page)
+		}
+	}
+
+	state := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/state", http.StatusOK, map[string]string{
+		web.DemoScenarioHeader: "fleet-healthy-parallel-work",
+	})
+	if state["status"] != "running" {
+		t.Fatalf("state status = %#v, want running", state["status"])
+	}
+	counts := state["counts"].(map[string]any)
+	if counts["running"] != float64(3) || counts["retrying"] != float64(3) || counts["blocked"] != float64(2) {
+		t.Fatalf("state counts = %#v", counts)
+	}
+
+	usage := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/usage?by=project", http.StatusOK, map[string]string{
+		web.DemoScenarioHeader: "api-usage-populated",
+	})
+	totals := usage["totals"].(map[string]any)
+	if totals["events"].(float64) == 0 {
+		t.Fatalf("usage totals = %#v, want seeded ledger events", totals)
+	}
+}
+
+func TestDemoScenarioEventsPreserveProjectSubview(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+	addr := startWebServer(t, server)
+	conn, body, reader := openRawEventStreamWithHeaders(t, addr, "/events?project=dogfood&view=kanban", map[string]string{
+		web.DemoScenarioHeader: "kanban-full-integration",
+	})
+	defer conn.Close()
+	defer body.Close()
+
+	event := readRawSSEEvent(t, conn, reader)
+	if event.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", event.name)
+	}
+	for _, want := range []string{`id="project-kanban"`, "Project Kanban", "Integration"} {
+		if !strings.Contains(event.data, want) {
+			t.Fatalf("demo Kanban SSE event missing %q:\n%s", want, event.data)
+		}
+	}
+	if strings.Contains(event.data, "Fleet grid") {
+		t.Fatalf("demo Kanban SSE event rendered fleet snapshot:\n%s", event.data)
+	}
+}
+
+func TestDemoScenarioKanbanFragments(t *testing.T) {
+	t.Parallel()
+
+	server, err := web.NewServer(web.Config{Demo: web.DemoConfig{Mode: "screenshots"}}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	body := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/api/v1/kanban/move", http.StatusOK, map[string]string{
+		web.DemoScenarioHeader: "api-kanban-move-read-only",
+	})
+	if !strings.Contains(body, "Kanban integration mode is not enabled") {
+		t.Fatalf("read-only dialog body = %s", body)
+	}
+
+	rec := performDemoForm(t, server.Handler(), "/api/v1/kanban/move", "api-kanban-move-success", nil)
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Moved card to In Progress") {
+		t.Fatalf("move success status = %d body = %s", rec.Code, rec.Body.String())
+	}
+
+	rec = performDemoForm(t, server.Handler(), "/api/v1/kanban/comment", "api-kanban-comment-connector-failure", nil)
+	if rec.Code != http.StatusBadGateway || !strings.Contains(rec.Body.String(), "demo connector failure") {
+		t.Fatalf("comment failure status = %d body = %s", rec.Code, rec.Body.String())
+	}
+}
+
+func TestSeedDemoUsageEventsPopulatesUsageReports(t *testing.T) {
+	t.Parallel()
+
+	backend := openWebTestStore(t)
+	ctx := context.Background()
+	if err := web.SeedDemoUsageEvents(ctx, backend); err != nil {
+		t.Fatalf("SeedDemoUsageEvents() error = %v", err)
+	}
+	report, err := backend.UsageReport(ctx, store.UsageReportQuery{By: store.UsageReportByProject})
+	if err != nil {
+		t.Fatalf("UsageReport() error = %v", err)
+	}
+	if report.Totals.Events == 0 || report.Totals.TotalTokens == 0 {
+		t.Fatalf("usage totals = %#v, want seeded usage", report.Totals)
+	}
+	if len(report.Rows) < 3 {
+		t.Fatalf("usage rows = %d, want multiple projects", len(report.Rows))
+	}
+}
+
 func TestKanbanActionsRejectReadOnlyMode(t *testing.T) {
 	t.Parallel()
 
@@ -4951,6 +5108,27 @@ func requestJSON(t *testing.T, server *web.Server, method string, path string, w
 	return payload
 }
 
+func requestJSONWithHeaders(t *testing.T, server *web.Server, method string, path string, wantStatus int, headers map[string]string) map[string]any {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, nil)
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != wantStatus {
+		t.Fatalf("%s %s status = %d, want %d; body = %s", method, path, rec.Code, wantStatus, rec.Body.String())
+	}
+
+	var payload map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("Unmarshal(%s %s) error = %v; body = %s", method, path, err, rec.Body.String())
+	}
+	return payload
+}
+
 func requestHTML(t *testing.T, handler http.Handler, method string, path string, wantStatus int) string {
 	t.Helper()
 
@@ -4962,6 +5140,81 @@ func requestHTML(t *testing.T, handler http.Handler, method string, path string,
 		t.Fatalf("%s %s status = %d, want %d; body = %s", method, path, rec.Code, wantStatus, rec.Body.String())
 	}
 	return rec.Body.String()
+}
+
+func requestHTMLWithHeaders(t *testing.T, handler http.Handler, method string, path string, wantStatus int, headers map[string]string) string {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(method, path, nil)
+	for key, value := range headers {
+		req.Header.Set(key, value)
+	}
+	handler.ServeHTTP(rec, req)
+
+	if rec.Code != wantStatus {
+		t.Fatalf("%s %s status = %d, want %d; body = %s", method, path, rec.Code, wantStatus, rec.Body.String())
+	}
+	return rec.Body.String()
+}
+
+func assertManifestContainsScenarios(t *testing.T, manifest map[string]any, ids []string) {
+	t.Helper()
+
+	scenarios, ok := manifest["scenarios"].([]any)
+	if !ok {
+		t.Fatalf("manifest scenarios = %T, want list: %#v", manifest["scenarios"], manifest)
+	}
+	seen := map[string]struct{}{}
+	for _, raw := range scenarios {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("manifest scenario entry = %T, want object", raw)
+		}
+		id, ok := entry["id"].(string)
+		if !ok || id == "" {
+			t.Fatalf("manifest scenario id = %#v", entry["id"])
+		}
+		seen[id] = struct{}{}
+		if entry["route"] == "" || entry["wait_selector"] == "" || entry["screenshot_name"] == "" {
+			t.Fatalf("manifest scenario missing route/wait/screenshot fields: %#v", entry)
+		}
+		headers, ok := entry["headers"].(map[string]any)
+		if !ok || headers[web.DemoScenarioHeader] != id {
+			t.Fatalf("manifest scenario headers = %#v, want %s=%s", entry["headers"], web.DemoScenarioHeader, id)
+		}
+	}
+	for _, id := range ids {
+		if _, ok := seen[id]; !ok {
+			t.Fatalf("manifest missing scenario %q", id)
+		}
+	}
+}
+
+func assertManifestOmitsScenarios(t *testing.T, manifest map[string]any, ids []string) {
+	t.Helper()
+
+	scenarios, ok := manifest["scenarios"].([]any)
+	if !ok {
+		t.Fatalf("manifest scenarios = %T, want list: %#v", manifest["scenarios"], manifest)
+	}
+	seen := map[string]struct{}{}
+	for _, raw := range scenarios {
+		entry, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("manifest scenario entry = %T, want object", raw)
+		}
+		id, ok := entry["id"].(string)
+		if !ok || id == "" {
+			t.Fatalf("manifest scenario id = %#v", entry["id"])
+		}
+		seen[id] = struct{}{}
+	}
+	for _, id := range ids {
+		if _, ok := seen[id]; ok {
+			t.Fatalf("manifest includes non-screenshot stream scenario %q", id)
+		}
+	}
 }
 
 func nestedString(t *testing.T, payload map[string]any, keys ...string) string {
@@ -5269,6 +5522,18 @@ func performForm(t *testing.T, handler http.Handler, method string, path string,
 	return rec
 }
 
+func performDemoForm(t *testing.T, handler http.Handler, path string, scenario string, form url.Values) *httptest.ResponseRecorder {
+	t.Helper()
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, path, strings.NewReader(form.Encode()))
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	req.Header.Set("HX-Request", "true")
+	req.Header.Set(web.DemoScenarioHeader, scenario)
+	handler.ServeHTTP(rec, req)
+	return rec
+}
+
 func equalStateUpdates(left, right []kanbanStateUpdate) bool {
 	if len(left) != len(right) {
 		return false
@@ -5393,6 +5658,16 @@ func startWebServer(t *testing.T, server *web.Server) string {
 func openRawEventStream(t *testing.T, addr string, paths ...string) (net.Conn, io.ReadCloser, *bufio.Reader) {
 	t.Helper()
 
+	path := "/events"
+	if len(paths) > 0 {
+		path = paths[0]
+	}
+	return openRawEventStreamWithHeaders(t, addr, path, nil)
+}
+
+func openRawEventStreamWithHeaders(t *testing.T, addr string, path string, headers map[string]string) (net.Conn, io.ReadCloser, *bufio.Reader) {
+	t.Helper()
+
 	conn, err := net.Dial("tcp", addr)
 	if err != nil {
 		t.Fatalf("Dial() error = %v", err)
@@ -5404,11 +5679,15 @@ func openRawEventStream(t *testing.T, addr string, paths ...string) (net.Conn, i
 		}
 	})
 
-	path := "/events"
-	if len(paths) > 0 {
-		path = paths[0]
+	var request strings.Builder
+	request.WriteString("GET " + path + " HTTP/1.1\r\n")
+	request.WriteString("Host: " + addr + "\r\n")
+	request.WriteString("Accept: text/event-stream\r\n")
+	for key, value := range headers {
+		request.WriteString(key + ": " + value + "\r\n")
 	}
-	if _, err := io.WriteString(conn, "GET "+path+" HTTP/1.1\r\nHost: "+addr+"\r\nAccept: text/event-stream\r\n\r\n"); err != nil {
+	request.WriteString("\r\n")
+	if _, err := io.WriteString(conn, request.String()); err != nil {
 		t.Fatalf("WriteString() error = %v", err)
 	}
 	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {

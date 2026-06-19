@@ -191,6 +191,8 @@ type IsolatedRuntimeInfo struct {
 	TrackerMode   string
 	FixturePath   string
 	Demo          string
+	DemoClock     string
+	ManifestPath  string
 }
 
 type BootFunc func(context.Context, BootConfig) error
