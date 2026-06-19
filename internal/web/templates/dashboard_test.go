@@ -831,9 +831,9 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 	section := projectKanbanSection(t, html)
 	for _, want := range []string{
 		"project-kanban-card-compact",
-		`project-kanban-lane grid min-h-[12rem] min-w-0 content-start rounded-md border border-border bg-muted/60 p-2`,
-		`project-kanban-lane-scroll mt-2 grid max-h-[32rem] gap-1.5 overflow-y-auto pr-1`,
-		`project-kanban-card project-kanban-card-compact min-w-0 rounded-md border border-border bg-card p-1.5`,
+		`project-kanban-lane grid min-h-[12rem] w-full min-w-0 max-w-full content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
+		`project-kanban-lane-scroll mt-2 grid min-w-0 max-w-full max-h-[32rem] gap-1.5 overflow-x-hidden overflow-y-auto pr-1`,
+		`project-kanban-card project-kanban-card-compact w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-1.5`,
 		`data-kanban-card-details`,
 		`data-preserve-details="project-kanban-details-digitaldrywood-detent-500"`,
 		`data-kanban-card-expanded`,
@@ -894,6 +894,95 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 			if strings.Contains(defaultView, forbidden) {
 				t.Fatalf("card %q rendered expanded metadata by default marker %q:\n%s", title, forbidden, card)
 			}
+		}
+	}
+}
+
+func TestDashboardProjectKanbanControlsStayInsideLane(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 19, 16, 0, 0, 0, time.UTC)
+	stageUpdatedAt := now.Add(-7 * time.Minute)
+	longProjectID := "detent-super-long-project-id-with-extra-segments"
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "Blocked"},
+			AllowedTransitions: map[string][]string{
+				"Todo": {"Blocked"},
+			},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:          "dense",
+					Identifier:  "digitaldrywood/detent#543",
+					ProjectID:   longProjectID,
+					URL:         "https://github.com/digitaldrywood/detent/issues/543",
+					Title:       "Dense layout card with metadata",
+					Description: "Compact Kanban card should constrain long metadata without widening its lane.",
+					State:       "Todo",
+					Labels: []string{
+						"release-readiness-with-long-label",
+						"layout-regression-that-should-wrap",
+					},
+					Assignees: []string{"release-captain-with-long-handle"},
+					BlockedBy: []telemetry.BlockedRef{
+						{Identifier: "digitaldrywood/detent#542-with-extra-context", State: "Human Review"},
+					},
+					StageUpdatedAt: &stageUpdatedAt,
+					PullRequest: &telemetry.PullRequest{
+						Number:           1543,
+						URL:              "https://github.com/digitaldrywood/detent/pull/1543",
+						CIStatus:         "success-with-extra-detail",
+						CodexReviewState: "p2-with-extra-detail",
+					},
+				},
+			},
+		},
+	})
+
+	section := projectKanbanSection(t, html)
+	for _, want := range []string{
+		`project-kanban-lanes mt-3 grid min-w-0 max-w-full items-start justify-start gap-2 overflow-x-hidden [grid-template-columns:repeat(auto-fill,minmax(14rem,16rem))]`,
+		`project-kanban-lane grid min-h-[12rem] w-full min-w-0 max-w-full content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
+		`flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden`,
+		`min-w-0 flex-1 basis-0 truncate text-xs font-semibold text-foreground`,
+		`inline-flex size-7 flex-none items-center justify-center`,
+		`project-kanban-empty-lane`,
+		`dashboard-empty-state min-w-0 max-w-full overflow-hidden`,
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("project Kanban compact lane contract missing %q:\n%s", want, section)
+		}
+	}
+
+	card := compactKanbanCardSection(t, section, "Dense layout card with metadata")
+	for _, want := range []string{
+		`project-kanban-card project-kanban-card-compact w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-1.5`,
+		`flex w-full min-w-0 max-w-full items-center justify-between gap-1.5 overflow-hidden`,
+		`flex min-w-0 flex-1 basis-0 items-center gap-1.5 overflow-hidden`,
+		`flex min-w-0 max-w-full flex-1 basis-0 items-center justify-end gap-1 overflow-hidden`,
+		`inline-flex h-5 min-w-0 max-w-[6rem] items-center truncate`,
+		`inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate`,
+		`mt-1 flex min-w-0 max-w-full flex-wrap items-center gap-1 text-[11px]`,
+		`inline-flex h-4 min-w-0 max-w-full items-center truncate`,
+		`group mt-1 min-w-0 max-w-full overflow-hidden border-t border-border pt-1`,
+		`mt-2 grid min-w-0 max-w-full gap-2 text-xs`,
+		`flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden`,
+		`flex min-w-0 max-w-full flex-wrap gap-1.5 overflow-hidden`,
+		`mt-3 flex min-w-0 max-w-full flex-wrap items-center gap-1.5`,
+		longProjectID,
+		"release-readiness-with-long-label",
+		"release-captain-with-long-handle",
+		"digitaldrywood/detent#542-with-extra-context Human Review",
+	} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("project Kanban compact card contract missing %q:\n%s", want, card)
 		}
 	}
 }

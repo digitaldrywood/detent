@@ -1312,7 +1312,7 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 			if kanbanIntegrationEnabled(data) {
 				<div id="kanban-feedback" role="status" aria-live="polite" class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Ready.</div>
 			}
-			<div class="project-kanban-lanes mt-3 grid min-w-0 items-start justify-start gap-2 [grid-template-columns:repeat(auto-fill,minmax(14rem,16rem))]">
+			<div class="project-kanban-lanes mt-3 grid min-w-0 max-w-full items-start justify-start gap-2 overflow-x-hidden [grid-template-columns:repeat(auto-fill,minmax(14rem,16rem))]">
 				for _, lane := range board.AllLanes {
 					@projectKanbanLaneView(data, lane)
 				}
@@ -1650,10 +1650,10 @@ templ projectKanbanVisibilityScript() {
 
 templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } data-project-kanban-lane-title={ lane.Title } { projectKanbanLaneAttributesForData(data, lane)... }>
-		<div class="flex min-h-7 min-w-0 items-center gap-1.5">
+		<div class="flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden">
 			<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
-			<h3 class="min-w-0 flex-1 truncate text-xs font-semibold text-foreground">{ lane.Title } ({ lane.CountLabel })</h3>
-			<button type="button" class="inline-flex size-7 shrink-0 items-center justify-center rounded-md border border-transparent text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent aria-pressed:border-accent-soft aria-pressed:bg-accent-soft aria-pressed:text-accent" data-project-kanban-pin-toggle data-project-kanban-pin-active="false" aria-pressed="false" aria-label={ "Pin " + lane.Title + " lane" } title="Pin lane">
+			<h3 class="min-w-0 flex-1 basis-0 truncate text-xs font-semibold text-foreground">{ lane.Title } ({ lane.CountLabel })</h3>
+			<button type="button" class="inline-flex size-7 flex-none items-center justify-center rounded-md border border-transparent text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent aria-pressed:border-accent-soft aria-pressed:bg-accent-soft aria-pressed:text-accent" data-project-kanban-pin-toggle data-project-kanban-pin-active="false" aria-pressed="false" aria-label={ "Pin " + lane.Title + " lane" } title="Pin lane">
 				<span data-project-kanban-pin-icon="unpinned">
 					@icon.PinOff(icon.Props{Class: "size-3.5"})
 				</span>
@@ -1663,11 +1663,11 @@ templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 			</button>
 		</div>
 		if len(lane.Cards) == 0 {
-			<div class="mt-2">
+			<div class="mt-2 min-w-0 max-w-full overflow-hidden">
 				@dashboardEmptyState("No issues in this state.", "This configured state stays hidden unless this lane is pinned visible.", lane.DotClass)
 			</div>
 		} else {
-			<div class="project-kanban-lane-scroll mt-2 grid max-h-[32rem] gap-1.5 overflow-y-auto pr-1" data-preserve-scroll={ "project-kanban-" + lane.ID }>
+			<div class="project-kanban-lane-scroll mt-2 grid min-w-0 max-w-full max-h-[32rem] gap-1.5 overflow-x-hidden overflow-y-auto pr-1" data-preserve-scroll={ "project-kanban-" + lane.ID }>
 				for _, card := range lane.Cards {
 					@projectKanbanCardView(data, card)
 				}
@@ -1677,10 +1677,10 @@ templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 }
 
 templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
-	<article class="project-kanban-card project-kanban-card-compact min-w-0 rounded-md border border-border bg-card p-1.5 shadow-sm transition-colors hover:border-accent" aria-label={ "Kanban card " + card.IssueNumber + " " + card.Title } { projectKanbanCardAttributes(data, card)... }>
-		<div class="grid min-w-0 gap-1">
-			<div class="flex min-w-0 items-center justify-between gap-1.5">
-				<div class="flex min-w-0 items-center gap-1.5">
+	<article class="project-kanban-card project-kanban-card-compact w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-1.5 shadow-sm transition-colors hover:border-accent" aria-label={ "Kanban card " + card.IssueNumber + " " + card.Title } { projectKanbanCardAttributes(data, card)... }>
+		<div class="grid w-full min-w-0 max-w-full gap-1 overflow-hidden">
+			<div class="flex w-full min-w-0 max-w-full items-center justify-between gap-1.5 overflow-hidden">
+				<div class="flex min-w-0 flex-1 basis-0 items-center gap-1.5 overflow-hidden">
 					if card.ProjectID != "" {
 						<span class="h-5 w-1.5 shrink-0 rounded-full border border-border" aria-label={ "Project " + card.ProjectID + " color marker" } title={ "Project " + card.ProjectID } { projectColorAttributes(card.ProjectColor)... }></span>
 					}
@@ -1690,22 +1690,22 @@ templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 						<span class="shrink-0 font-mono text-xs font-semibold text-accent">{ card.IssueNumber }</span>
 					}
 				</div>
-				<div class="flex min-w-0 flex-1 items-center justify-end gap-1">
-					<span class="inline-flex h-5 max-w-[6rem] items-center truncate rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
+				<div class="flex min-w-0 max-w-full flex-1 basis-0 items-center justify-end gap-1 overflow-hidden">
+					<span class="inline-flex h-5 min-w-0 max-w-[6rem] items-center truncate rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
 					@projectKanbanPullRequestSignal(card)
 				</div>
 			</div>
 			if card.URL != "" {
-				<a class="block min-w-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open issue " + card.IssueNumber + ": " + card.Title }>
+				<a class="block w-full min-w-0 max-w-full overflow-hidden rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open issue " + card.IssueNumber + ": " + card.Title }>
 					<span class="line-clamp-2 break-words text-[13px] font-normal leading-snug text-foreground">{ card.Title }</span>
 				</a>
 			} else {
 				<span class="line-clamp-2 break-words text-[13px] font-normal leading-snug text-foreground">{ card.Title }</span>
 			}
 		</div>
-		<div class="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-[11px]">
+		<div class="mt-1 flex min-w-0 max-w-full flex-wrap items-center gap-1 text-[11px]">
 			if card.ProjectID != "" {
-				<span class="inline-flex h-4 max-w-full items-center truncate rounded-sm border border-border bg-muted px-1 py-0 font-mono font-medium text-muted-foreground" title={ "Project " + card.ProjectID }>{ card.ProjectID }</span>
+				<span class="inline-flex h-4 min-w-0 max-w-full items-center truncate rounded-sm border border-border bg-muted px-1 py-0 font-mono font-medium text-muted-foreground" title={ "Project " + card.ProjectID }>{ card.ProjectID }</span>
 			}
 			for _, chip := range projectKanbanCompactChips(card) {
 				@projectKanbanCompactChipView(chip)
@@ -1721,30 +1721,30 @@ templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 templ projectKanbanPullRequestSignal(card projectKanbanCard) {
 	if card.HasPullRequest {
 		if card.PRURL != "" {
-			<a class="inline-flex h-5 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.PRURL } target="_blank" rel="noopener noreferrer" aria-label={ "Open " + card.PullRequestLabel }>{ card.PullRequestLabel }</a>
+			<a class="inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.PRURL } target="_blank" rel="noopener noreferrer" aria-label={ "Open " + card.PullRequestLabel }>{ card.PullRequestLabel }</a>
 		} else {
-			<span class="inline-flex h-5 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent">{ card.PullRequestLabel }</span>
+			<span class="inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent">{ card.PullRequestLabel }</span>
 		}
 	} else {
-		<span class="inline-flex h-5 items-center rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">No PR</span>
+		<span class="inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">No PR</span>
 	}
 }
 
 templ projectKanbanCompactChipView(chip projectKanbanCompactChip) {
-	<span class={ "inline-flex h-4 max-w-full items-center truncate rounded-sm border px-1 py-0 font-medium " + chip.Class } title={ chip.Title }>{ chip.Label }</span>
+	<span class={ "inline-flex h-4 min-w-0 max-w-full items-center truncate rounded-sm border px-1 py-0 font-medium " + chip.Class } title={ chip.Title }>{ chip.Label }</span>
 }
 
 templ projectKanbanCardDetails(data DashboardData, card projectKanbanCard) {
-	<details class="group mt-1 border-t border-border pt-1" data-kanban-card-details data-preserve-details={ projectKanbanControlID("project-kanban-details", card) }>
-		<summary class="flex min-h-6 cursor-pointer list-none items-center justify-between gap-2 rounded-sm px-1 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-label={ "Show details for " + card.IssueNumber }>
-			<span class="inline-flex min-w-0 items-center gap-1.5">
+	<details class="group mt-1 min-w-0 max-w-full overflow-hidden border-t border-border pt-1" data-kanban-card-details data-preserve-details={ projectKanbanControlID("project-kanban-details", card) }>
+		<summary class="flex min-h-6 min-w-0 max-w-full cursor-pointer list-none items-center justify-between gap-2 overflow-hidden rounded-sm px-1 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" aria-label={ "Show details for " + card.IssueNumber }>
+			<span class="inline-flex min-w-0 flex-1 basis-0 items-center gap-1.5">
 				@icon.ListPlus(icon.Props{Class: "size-3.5 shrink-0"})
 				<span class="truncate">Details</span>
 			</span>
 			@icon.ChevronDown(icon.Props{Class: "size-3.5 shrink-0"})
 		</summary>
-		<div class="mt-2 grid gap-2 text-xs" data-kanban-card-expanded>
-			<div class="grid gap-1.5 rounded-md bg-muted/40 p-2">
+		<div class="mt-2 grid min-w-0 max-w-full gap-2 text-xs" data-kanban-card-expanded>
+			<div class="grid min-w-0 max-w-full gap-1.5 overflow-hidden rounded-md bg-muted/40 p-2">
 				@projectKanbanDetailRow("Status", card.Stage, card.Identifier)
 				@projectKanbanDetailRow("Time in stage", card.TimeInStage, card.TimeInStageTitle)
 				if card.ProjectID != "" {
@@ -1763,7 +1763,7 @@ templ projectKanbanCardDetails(data DashboardData, card projectKanbanCard) {
 				}
 			</div>
 			if len(card.Labels) > 0 || len(card.Assignees) > 0 || len(card.Blockers) > 0 {
-				<div class="grid gap-2">
+				<div class="grid min-w-0 max-w-full gap-2">
 					if len(card.Labels) > 0 {
 						@projectKanbanPillRow("Labels", card.Labels)
 					}
@@ -1776,7 +1776,7 @@ templ projectKanbanCardDetails(data DashboardData, card projectKanbanCard) {
 				</div>
 			}
 			if projectKanbanMoveDisabledText(data, card) != "" && kanbanIntegrationEnabled(data) {
-				<div class="rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">{ projectKanbanMoveDisabledText(data, card) }</div>
+				<div class="min-w-0 max-w-full overflow-hidden break-words rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">{ projectKanbanMoveDisabledText(data, card) }</div>
 			}
 		</div>
 	</details>
@@ -1784,7 +1784,7 @@ templ projectKanbanCardDetails(data DashboardData, card projectKanbanCard) {
 
 templ projectKanbanDetailRow(label string, value string, title string) {
 	if value != "" {
-		<div class="flex min-w-0 items-center justify-between gap-2">
+		<div class="flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden">
 			<span class="shrink-0 text-muted-foreground">{ label }</span>
 			<span class="min-w-0 truncate font-mono font-medium text-foreground" title={ title }>{ value }</span>
 		</div>
@@ -1793,7 +1793,7 @@ templ projectKanbanDetailRow(label string, value string, title string) {
 
 templ projectKanbanDetailLink(label string, value string, href string) {
 	if value != "" {
-		<div class="flex min-w-0 items-center justify-between gap-2">
+		<div class="flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden">
 			<span class="shrink-0 text-muted-foreground">{ label }</span>
 			if href != "" {
 				<a class="min-w-0 truncate font-mono font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ href } target="_blank" rel="noopener noreferrer">{ value }</a>
@@ -1805,9 +1805,9 @@ templ projectKanbanDetailLink(label string, value string, href string) {
 }
 
 templ projectKanbanPillRow(label string, values []string) {
-	<div class="grid gap-1">
+	<div class="grid min-w-0 max-w-full gap-1">
 		<span class="text-xs font-medium text-muted-foreground">{ label }</span>
-		<div class="flex min-w-0 flex-wrap gap-1.5">
+		<div class="flex min-w-0 max-w-full flex-wrap gap-1.5 overflow-hidden">
 			for _, value := range values {
 				<span class="inline-flex min-w-0 max-w-full truncate rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ value }>{ value }</span>
 			}
@@ -1816,7 +1816,7 @@ templ projectKanbanPillRow(label string, values []string) {
 }
 
 templ projectKanbanActionButtons(data DashboardData, card projectKanbanCard) {
-	<div class="mt-3 flex flex-wrap items-center gap-1.5" aria-label="Kanban actions">
+	<div class="mt-3 flex min-w-0 max-w-full flex-wrap items-center gap-1.5" aria-label="Kanban actions">
 		if projectKanbanCardCanMove(data, card) {
 			@projectKanbanMoveDialogTrigger(data, card)
 			@projectKanbanDragMoveForm(data, card)
@@ -2022,13 +2022,13 @@ templ statStripItem(label string, term helpTerm, value string, detail string, do
 }
 
 templ dashboardEmptyState(title string, detail string, dotClass string) {
-	<div class="dashboard-empty-state rounded-md border border-dashed border-border bg-muted/60 px-3 py-3 text-left">
-		<div class="flex items-start gap-3">
+	<div class="dashboard-empty-state min-w-0 max-w-full overflow-hidden rounded-md border border-dashed border-border bg-muted/60 px-3 py-3 text-left">
+		<div class="flex min-w-0 items-start gap-3">
 			<span class={ "mt-1.5 h-2 w-2 shrink-0 rounded-full " + dotClass }></span>
-			<div class="min-w-0">
-				<p class="text-sm font-medium text-foreground">{ title }</p>
+			<div class="min-w-0 flex-1">
+				<p class="break-words text-sm font-medium text-foreground">{ title }</p>
 				if detail != "" {
-					<p class="mt-1 text-sm text-muted-foreground">{ detail }</p>
+					<p class="mt-1 break-words text-sm text-muted-foreground">{ detail }</p>
 				}
 			</div>
 		</div>
@@ -2125,7 +2125,7 @@ templ kanbanBoardSection(data DashboardData) {
 			if kanbanIntegrationEnabled(data) {
 				<div id="kanban-feedback" role="status" aria-live="polite" class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Ready.</div>
 			}
-			<div class="mt-4 grid min-w-0 gap-3 lg:grid-cols-3">
+			<div class="mt-4 grid min-w-0 max-w-full gap-3 overflow-x-hidden lg:grid-cols-3">
 				for _, lane := range kanbanLanes(data) {
 					@kanbanLaneView(data, lane)
 				}
@@ -2138,20 +2138,20 @@ templ kanbanBoardSection(data DashboardData) {
 }
 
 templ kanbanLaneView(data DashboardData, lane kanbanLane) {
-	<section class="min-w-0 rounded-md border border-border bg-muted/60 p-3" aria-label={ lane.State + " Kanban lane" } { kanbanLaneAttributes(data, lane)... }>
-		<div class="flex min-h-9 items-center justify-between gap-3">
-			<div class="inline-flex min-w-0 items-center gap-2">
+	<section class="min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-muted/60 p-3" aria-label={ lane.State + " Kanban lane" } { kanbanLaneAttributes(data, lane)... }>
+		<div class="flex min-h-9 min-w-0 max-w-full items-center justify-between gap-3 overflow-hidden">
+			<div class="inline-flex min-w-0 flex-1 basis-0 items-center gap-2 overflow-hidden">
 				<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
-				<h3 class="truncate text-sm font-semibold text-foreground">{ lane.State }</h3>
+				<h3 class="min-w-0 truncate text-sm font-semibold text-foreground">{ lane.State }</h3>
 			</div>
 			<span class="shrink-0 rounded-full bg-card px-2 py-1 font-mono text-xs font-medium text-muted-foreground">{ lane.CountLabel }</span>
 		</div>
 		if len(lane.Cards) == 0 {
-			<div class="mt-3">
+			<div class="mt-3 min-w-0 max-w-full overflow-hidden">
 				@dashboardEmptyState("No cards in this state.", "", lane.DotClass)
 			</div>
 		} else {
-			<div class="mt-3 grid max-h-[28rem] gap-2 overflow-y-auto pr-1" data-preserve-scroll={ "kanban-" + lane.State }>
+			<div class="mt-3 grid min-w-0 max-w-full max-h-[28rem] gap-2 overflow-x-hidden overflow-y-auto pr-1" data-preserve-scroll={ "kanban-" + lane.State }>
 				for _, card := range lane.Cards {
 					@kanbanCardView(data, card)
 				}
@@ -2161,40 +2161,40 @@ templ kanbanLaneView(data DashboardData, lane kanbanLane) {
 }
 
 templ kanbanCardView(data DashboardData, card kanbanCard) {
-	<article class="min-w-0 rounded-md border border-border bg-card p-3 shadow-sm" { kanbanCardAttributes(data, card)... }>
-		<div class="flex min-w-0 items-start justify-between gap-3">
-			<div class="min-w-0">
+	<article class="min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-3 shadow-sm" { kanbanCardAttributes(data, card)... }>
+		<div class="flex min-w-0 max-w-full items-start justify-between gap-3 overflow-hidden">
+			<div class="min-w-0 flex-1 basis-0 overflow-hidden">
 				if card.URL != "" {
-					<a class="block min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer">
-						<span class="font-mono text-xs font-semibold text-accent">{ card.Identifier }</span>
-						<span class="mt-1 line-clamp-2 text-sm font-medium text-foreground">{ card.Title }</span>
+					<a class="block min-w-0 max-w-full overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer">
+						<span class="block min-w-0 truncate font-mono text-xs font-semibold text-accent">{ card.Identifier }</span>
+						<span class="mt-1 line-clamp-2 break-words text-sm font-medium text-foreground">{ card.Title }</span>
 					</a>
 				} else {
-					<span class="font-mono text-xs font-semibold text-accent">{ card.Identifier }</span>
-					<span class="mt-1 line-clamp-2 text-sm font-medium text-foreground">{ card.Title }</span>
+					<span class="block min-w-0 truncate font-mono text-xs font-semibold text-accent">{ card.Identifier }</span>
+					<span class="mt-1 line-clamp-2 break-words text-sm font-medium text-foreground">{ card.Title }</span>
 				}
 			</div>
-			<span class="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ card.State }</span>
+			<span class="min-w-0 max-w-[7rem] shrink-0 truncate rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ card.State }</span>
 		</div>
 		if card.ProjectID != "" || card.PRNumber > 0 {
-			<div class="mt-2 flex flex-wrap gap-2">
+			<div class="mt-2 flex min-w-0 max-w-full flex-wrap gap-2 overflow-hidden">
 				if card.ProjectID != "" {
-					<span class="inline-flex max-w-full items-center gap-1.5 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ "Project " + card.ProjectID }>
+					<span class="inline-flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ "Project " + card.ProjectID }>
 						<span class="h-3 w-1.5 shrink-0 rounded-full border border-border" aria-label={ "Project " + card.ProjectID + " color marker" } { projectColorAttributes(card.ProjectColor)... }></span>
-						<span>{ card.ProjectID }</span>
+						<span class="min-w-0 truncate">{ card.ProjectID }</span>
 					</span>
 				}
 				if card.PRNumber > 0 {
 					if card.PRURL != "" {
-						<a class="inline-flex max-w-full rounded-full bg-accent-soft px-2 py-1 font-mono text-xs text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.PRURL } target="_blank" rel="noopener noreferrer">PR #{ strconv.Itoa(card.PRNumber) }</a>
+						<a class="inline-flex min-w-0 max-w-full truncate rounded-full bg-accent-soft px-2 py-1 font-mono text-xs text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.PRURL } target="_blank" rel="noopener noreferrer">PR #{ strconv.Itoa(card.PRNumber) }</a>
 					} else {
-						<span class="inline-flex max-w-full rounded-full bg-accent-soft px-2 py-1 font-mono text-xs text-accent">PR #{ strconv.Itoa(card.PRNumber) }</span>
+						<span class="inline-flex min-w-0 max-w-full truncate rounded-full bg-accent-soft px-2 py-1 font-mono text-xs text-accent">PR #{ strconv.Itoa(card.PRNumber) }</span>
 					}
 				}
 			</div>
 		}
 		if kanbanMoveDisabledText(data, card) != "" {
-			<div class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">{ kanbanMoveDisabledText(data, card) }</div>
+			<div class="mt-3 min-w-0 max-w-full overflow-hidden break-words rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">{ kanbanMoveDisabledText(data, card) }</div>
 		}
 		if kanbanIntegrationEnabled(data) {
 			@kanbanActionButtons(data, card)
@@ -2203,7 +2203,7 @@ templ kanbanCardView(data DashboardData, card kanbanCard) {
 }
 
 templ kanbanActionButtons(data DashboardData, card kanbanCard) {
-	<div class="mt-3 flex flex-wrap items-center gap-1.5" aria-label="Kanban actions">
+	<div class="mt-3 flex min-w-0 max-w-full flex-wrap items-center gap-1.5" aria-label="Kanban actions">
 		if kanbanCardCanMove(data, card) {
 			@kanbanMoveDialogTrigger(data, card)
 			@kanbanDragMoveForm(data, card)
