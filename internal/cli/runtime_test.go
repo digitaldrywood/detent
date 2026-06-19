@@ -111,8 +111,6 @@ func TestResolveRuntimeSettingsPrecedence(t *testing.T) {
 }
 
 func TestResolveRuntimeSettingsUsesWorkflowRefForServerPort(t *testing.T) {
-	t.Parallel()
-
 	repo := initRuntimeWorkflowRepo(t)
 	writeRuntimeWorkflow(t, filepath.Join(repo, "WORKFLOW.md"), 4109)
 	commitRuntimeWorkflowRepo(t, repo, "initial workflow")

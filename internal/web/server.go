@@ -73,6 +73,7 @@ type Config struct {
 	RuntimeDBPath         string
 	RuntimeLogPath        string
 	ServerAddress         string
+	Demo                  DemoConfig
 }
 
 type Server struct {
@@ -102,6 +103,7 @@ type Server struct {
 	projects           *projectSmallMultipleRecorder
 	snapshots          *snapshotEnrichmentCache
 	kanbanMutations    *kanbanMutationLocks
+	demo               *demoScenarioSet
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -154,6 +156,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		projects:           newProjectSmallMultipleRecorder(),
 		snapshots:          newSnapshotEnrichmentCache(),
 		kanbanMutations:    newKanbanMutationLocks(),
+		demo:               newDemoScenarioSet(cfg.Demo),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes()
@@ -210,6 +213,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/onboarding/agent", s.onboardingAgent)
 	s.echo.POST("/onboarding/write", s.onboardingWrite)
 	s.echo.GET("/api/v1/state", s.apiState)
+	s.echo.GET("/api/v1/demo/scenarios", s.apiDemoScenarios)
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries)
 	s.echo.GET("/api/v1/projects/*", s.apiProject)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh)
@@ -223,6 +227,11 @@ func (s *Server) registerRoutes() {
 }
 
 func (s *Server) dashboard(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		return s.demoDashboard(c, scenario)
+	}
 	ctx := c.Request().Context()
 	data := s.dashboardData(ctx, s.latestSnapshot(ctx))
 	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
@@ -232,6 +241,14 @@ func (s *Server) dashboard(c echo.Context) error {
 func (s *Server) projectDashboard(c echo.Context) error {
 	ctx := c.Request().Context()
 	projectID, view := projectRouteViewParam(c)
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		if strings.TrimSpace(scenario.ProjectID) == "" {
+			scenario.ProjectID = projectID
+		}
+		return s.demoProjectDashboard(c, scenario, view)
+	}
 	data, ok := s.projectDashboardData(ctx, projectID, s.latestSnapshot(ctx))
 	if !ok {
 		return echo.NewHTTPError(http.StatusNotFound, "Project not found")
@@ -406,6 +423,9 @@ func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
 }
 
 func (s *Server) health(c echo.Context) error {
+	if _, _, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	}
 	status := "ok"
 	sessionsRemaining := 0
 	if s.hub != nil {
@@ -414,17 +434,22 @@ func (s *Server) health(c echo.Context) error {
 			sessionsRemaining = snapshot.Shutdown.SessionsRemaining
 		}
 	}
+	checks := map[string]string{
+		"hub":       configuredStatus(s.hub),
+		"store":     configuredStatus(s.store),
+		"registry":  configuredStatus(s.registry),
+		"connector": configuredStatus(s.connector),
+	}
+	if s.demo != nil {
+		checks["demo"] = DemoModeScreenshots
+		checks["demo_clock"] = s.demo.clock
+	}
 	return c.JSON(http.StatusOK, healthResponse{
 		Status:            status,
 		Mode:              string(s.mode),
 		Connector:         s.connectorName(),
 		SessionsRemaining: sessionsRemaining,
-		Checks: map[string]string{
-			"hub":       configuredStatus(s.hub),
-			"store":     configuredStatus(s.store),
-			"registry":  configuredStatus(s.registry),
-			"connector": configuredStatus(s.connector),
-		},
+		Checks:            checks,
 	})
 }
 
@@ -433,6 +458,11 @@ func (s *Server) redirectToOnboarding(c echo.Context) error {
 }
 
 func (s *Server) redirectToDashboard(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok && scenario.Page == "onboarding" {
+		return s.demoOnboarding(c, scenario)
+	}
 	return c.Redirect(http.StatusFound, "/")
 }
 

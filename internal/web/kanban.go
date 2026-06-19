@@ -143,6 +143,26 @@ func kanbanMutationStateKey(key string, issueID string) string {
 }
 
 func (s *Server) apiKanbanMoveDialog(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok && scenario.Page == "api" && strings.HasPrefix(scenario.ID, "api-kanban-move") {
+		switch scenario.Variant {
+		case "kanban-read-only":
+			return render(c, templates.KanbanDialogErrorContent("Kanban integration mode is not enabled."))
+		case "kanban-move-missing-target":
+			return render(c, templates.KanbanDialogErrorContent("Target state is required."))
+		default:
+			return render(c, templates.KanbanMoveDialogContent(templates.KanbanMoveDialogData{
+				ProjectID:    demoPrimaryProjectID,
+				IssueID:      "demo-todo",
+				Identifier:   "digitaldrywood/detent-core#5251",
+				Title:        "Add screenshot manifest smoke test",
+				CurrentState: "Todo",
+				TargetState:  "In Progress",
+				States:       []string{"In Progress", "Blocked", "Cancelled"},
+			}))
+		}
+	}
 	data, response := s.kanbanMoveDialogData(c, "")
 	if response != "" {
 		return render(c, templates.KanbanDialogErrorContent(response))
@@ -151,6 +171,20 @@ func (s *Server) apiKanbanMoveDialog(c echo.Context) error {
 }
 
 func (s *Server) apiKanbanMove(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok && scenario.Page == "api" && strings.HasPrefix(scenario.ID, "api-kanban-move") {
+		switch scenario.Variant {
+		case "kanban-transition-blocked":
+			return kanbanFeedback(c, http.StatusUnprocessableEntity, "Move from Done to Todo is not allowed by the Kanban transition policy.")
+		case "connector-failure":
+			return kanbanFeedback(c, http.StatusBadGateway, "Move failed: demo connector failure")
+		case "kanban-read-only":
+			return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
+		default:
+			return kanbanFeedback(c, http.StatusOK, "Moved card to In Progress.")
+		}
+	}
 	req, response, status := parseKanbanMoveRequest(c)
 	if response != "" {
 		if kanbanDialogForm(c) {
@@ -244,6 +278,33 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 }
 
 func (s *Server) apiKanbanCommentDialog(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok && scenario.Page == "api" && strings.HasPrefix(scenario.ID, "api-kanban-comment") {
+		switch scenario.Variant {
+		case "kanban-comment-invalid-target":
+			return render(c, templates.KanbanDialogErrorContent("Comment target is not available on the current board."))
+		case "kanban-comment-pr":
+			return render(c, templates.KanbanCommentDialogContent(templates.KanbanCommentDialogData{
+				ProjectID:    demoPrimaryProjectID,
+				Target:       "pr",
+				PRRepository: "digitaldrywood/detent-core",
+				PRNumber:     5290,
+				Identifier:   "digitaldrywood/detent-core#5290",
+				Title:        "Review deterministic chart colors",
+				Body:         "Looks good for the screenshot demo.",
+			}))
+		default:
+			return render(c, templates.KanbanCommentDialogContent(templates.KanbanCommentDialogData{
+				ProjectID:  demoPrimaryProjectID,
+				Target:     "issue",
+				IssueID:    "demo-todo",
+				Identifier: "digitaldrywood/detent-core#5251",
+				Title:      "Add screenshot manifest smoke test",
+				Body:       "Please verify the screenshot manifest route.",
+			}))
+		}
+	}
 	data, response := s.kanbanCommentDialogData(c, "")
 	if response != "" {
 		return render(c, templates.KanbanDialogErrorContent(response))
@@ -252,6 +313,18 @@ func (s *Server) apiKanbanCommentDialog(c echo.Context) error {
 }
 
 func (s *Server) apiKanbanComment(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok && scenario.Page == "api" && strings.HasPrefix(scenario.ID, "api-kanban-comment") {
+		switch scenario.Variant {
+		case "kanban-comment-empty-body":
+			return kanbanFeedback(c, http.StatusBadRequest, "Comment body is required.")
+		case "connector-failure":
+			return kanbanFeedback(c, http.StatusBadGateway, "Comment failed: demo connector failure")
+		default:
+			return kanbanFeedback(c, http.StatusOK, "Comment submitted.")
+		}
+	}
 	req, response, status := parseKanbanCommentRequest(c)
 	if response != "" {
 		if kanbanDialogForm(c) {

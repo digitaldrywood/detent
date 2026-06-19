@@ -189,6 +189,38 @@ func TestBuildKanbanDemoCreatesIntegrationWorkflow(t *testing.T) {
 	}
 }
 
+func TestBuildScreenshotsDemoCreatesScenarioRuntime(t *testing.T) {
+	t.Parallel()
+
+	runtime, err := Build(Config{Home: t.TempDir(), Demo: DemoScreenshots, DemoClock: "play", Port: 0})
+	if err != nil {
+		t.Fatalf("Build() error = %v", err)
+	}
+	if runtime.Demo != DemoScreenshots || runtime.DemoClock != "play" {
+		t.Fatalf("Demo = %q clock = %q, want screenshots play", runtime.Demo, runtime.DemoClock)
+	}
+	if len(runtime.Global.Projects) < 8 {
+		t.Fatalf("global projects = %d, want screenshot fleet coverage", len(runtime.Global.Projects))
+	}
+
+	workflow, err := workflowconfig.LoadWorkflow(runtime.WorkflowPath)
+	if err != nil {
+		t.Fatalf("LoadWorkflow() error = %v", err)
+	}
+	if workflow.Config.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {
+		t.Fatalf("Kanban mode = %q, want integration", workflow.Config.Server.Kanban.Mode)
+	}
+	if workflow.Config.Agent.AutoPromote.Enabled {
+		t.Fatal("AutoPromote.Enabled = true, want stable screenshots demo")
+	}
+	if got := workflow.Config.Tracker.ActiveStates; !slices.Equal(got, []string{"Cancelled"}) {
+		t.Fatalf("ActiveStates = %#v, want terminal-only screenshots demo", got)
+	}
+	if len(workflow.Config.Tracker.Issues) <= len(kanbanDemoIssues()) {
+		t.Fatalf("screenshot issues = %d, want more than kanban fixture", len(workflow.Config.Tracker.Issues))
+	}
+}
+
 func stateSet(states []string) map[string]struct{} {
 	out := make(map[string]struct{}, len(states))
 	for _, state := range states {
