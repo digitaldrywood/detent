@@ -770,6 +770,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 					ProjectID:      "detent",
 					URL:            "https://github.com/digitaldrywood/detent/issues/500",
 					Title:          "Issue-only compact card",
+					Description:    "Issue-only summary should appear in the hover preview.",
 					State:          "Todo",
 					StageUpdatedAt: &issueOnlyAt,
 				},
@@ -835,6 +836,11 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 		`data-kanban-card-details`,
 		`data-preserve-details="project-kanban-details-digitaldrywood-detent-500"`,
 		`data-kanban-card-expanded`,
+		`data-help-trigger`,
+		`data-help-term="project-kanban-card-preview-digitaldrywood-detent-500"`,
+		`data-help-title="Issue-only compact card"`,
+		`data-help-description="Issue-only summary should appear in the hover preview."`,
+		`line-clamp-2 break-words text-[13px] font-normal leading-snug text-foreground`,
 		`aria-label="Kanban card #500 Issue-only compact card"`,
 		`aria-label="Kanban card #501 PR-linked compact card"`,
 		`aria-label="Kanban card #502 Blocked compact card"`,
@@ -882,6 +888,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 			`>Labels<`,
 			`>Assignees<`,
 			`>Blockers<`,
+			`truncate text-sm font-medium text-foreground`,
 		} {
 			if strings.Contains(defaultView, forbidden) {
 				t.Fatalf("card %q rendered expanded metadata by default marker %q:\n%s", title, forbidden, card)

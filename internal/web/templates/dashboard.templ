@@ -1674,24 +1674,25 @@ templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 
 templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 	<article class="project-kanban-card project-kanban-card-compact min-w-0 rounded-md border border-border bg-card p-1.5 shadow-sm transition-colors hover:border-accent" aria-label={ "Kanban card " + card.IssueNumber + " " + card.Title } { projectKanbanCardAttributes(data, card)... }>
-		<div class="flex min-w-0 items-center gap-1.5">
-			<div class="min-w-0 flex-1">
+		<div class="grid min-w-0 gap-1">
+			<div class="flex min-w-0 items-center justify-between gap-1.5">
 				if card.URL != "" {
-					<a class="flex min-w-0 items-baseline gap-1.5 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open issue " + card.IssueNumber + ": " + card.Title }>
-						<span class="shrink-0 font-mono text-xs font-semibold text-accent">{ card.IssueNumber }</span>
-						<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={ card.Title }>{ card.Title }</span>
-					</a>
+					<a class="shrink-0 rounded-sm font-mono text-xs font-semibold text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open issue " + card.IssueNumber + ": " + card.Title }>{ card.IssueNumber }</a>
 				} else {
-					<div class="flex min-w-0 items-baseline gap-1.5">
-						<span class="shrink-0 font-mono text-xs font-semibold text-accent">{ card.IssueNumber }</span>
-						<span class="min-w-0 flex-1 truncate text-sm font-medium text-foreground" title={ card.Title }>{ card.Title }</span>
-					</div>
+					<span class="shrink-0 font-mono text-xs font-semibold text-accent">{ card.IssueNumber }</span>
 				}
+				<div class="flex min-w-0 flex-1 items-center justify-end gap-1">
+					<span class="inline-flex h-5 max-w-[6rem] items-center truncate rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
+					@projectKanbanPullRequestSignal(card)
+				</div>
 			</div>
-			<div class="flex max-w-[45%] shrink-0 items-center justify-end gap-1">
-				<span class="inline-flex h-5 max-w-[6rem] items-center truncate rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
-				@projectKanbanPullRequestSignal(card)
-			</div>
+			if card.URL != "" {
+				<a class="block min-w-0 rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open issue " + card.IssueNumber + ": " + card.Title }>
+					<span class="line-clamp-2 break-words text-[13px] font-normal leading-snug text-foreground">{ card.Title }</span>
+				</a>
+			} else {
+				<span class="line-clamp-2 break-words text-[13px] font-normal leading-snug text-foreground">{ card.Title }</span>
+			}
 		</div>
 		<div class="mt-1 flex min-w-0 flex-wrap items-center gap-1 text-[11px]">
 			for _, chip := range projectKanbanCompactChips(card) {

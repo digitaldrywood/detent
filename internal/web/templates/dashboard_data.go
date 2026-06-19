@@ -282,6 +282,7 @@ type projectKanbanCard struct {
 	Identifier       string
 	ProjectID        string
 	Title            string
+	Description      string
 	URL              string
 	PullRequestLabel string
 	CIStatus         string
@@ -1756,6 +1757,7 @@ func projectKanbanCardForIssue(issue telemetry.Issue, state string, stageAt time
 		Identifier:       issueIdentifier(issue),
 		ProjectID:        strings.TrimSpace(issue.ProjectID),
 		Title:            issueTitle(issue),
+		Description:      issueDescriptionPreview(issue),
 		URL:              strings.TrimSpace(issue.URL),
 		PullRequestLabel: projectKanbanPullRequestLabel(issue),
 		TimeInStage:      prPipelineAge(stageAt, now),
@@ -1941,6 +1943,10 @@ func projectKanbanBool(value bool) string {
 func projectKanbanCardAttributes(data DashboardData, card projectKanbanCard) templ.Attributes {
 	attrs := templ.Attributes{
 		"data-project-kanban-card": card.Identifier,
+		"data-help-trigger":        true,
+		"data-help-term":           projectKanbanControlID("project-kanban-card-preview", card),
+		"data-help-title":          card.Title,
+		"data-help-description":    card.Description,
 	}
 	if !kanbanIntegrationEnabled(data) {
 		return attrs
