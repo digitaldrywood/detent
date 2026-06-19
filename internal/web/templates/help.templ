@@ -461,6 +461,16 @@ templ helpScript() {
 				if (event.key === "Escape") hideHelpTooltip("", true)
 			})
 
+			document.addEventListener("htmx:afterSettle", () => {
+				if (!activeHelpTrigger) return
+				if (!document.documentElement.contains(activeHelpTrigger)) {
+					activeHelpTrigger = null
+					currentHelpTerm = ""
+					return
+				}
+				openHelpTooltip(activeHelpTrigger)
+			})
+
 			window.addEventListener("resize", requestHelpPosition)
 			window.addEventListener("scroll", () => hideHelpTooltip("", true), true)
 		})();

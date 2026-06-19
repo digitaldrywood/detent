@@ -927,6 +927,25 @@ func TestProjectKanbanCompactChipsSummarizeSecondaryMetadata(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanCardForIssueCopiesDescriptionPreview(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 16, 14, 0, 0, 0, time.UTC)
+	issue := telemetry.Issue{
+		ID:          "readable-card",
+		Identifier:  "digitaldrywood/detent#525",
+		Title:       "Make compact kanban cards readable",
+		Description: "  Titles need their own line.\nHover should show enough issue context for triage.  ",
+		State:       "Todo",
+	}
+
+	card := projectKanbanCardForIssue(issue, "Todo", now.Add(-time.Minute), now)
+
+	if card.Description != "Titles need their own line. Hover should show enough issue context for triage." {
+		t.Fatalf("Description = %q", card.Description)
+	}
+}
+
 func TestProjectKanbanBoardDoesNotTreatCompletedSessionsAsCurrentDone(t *testing.T) {
 	t.Parallel()
 

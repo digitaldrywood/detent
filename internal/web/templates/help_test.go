@@ -94,6 +94,8 @@ func TestHelpScriptUsesStableSharedPopoverUtility(t *testing.T) {
 		"maxHeight",
 		"aria-describedby",
 		`document.addEventListener("htmx:afterSettle"`,
+		"activeHelpTrigger",
+		"openHelpTooltip(activeHelpTrigger)",
 		"Escape",
 	} {
 		if !strings.Contains(html, want) {
