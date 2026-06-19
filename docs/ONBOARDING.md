@@ -1092,7 +1092,7 @@ ProjectV2 and issue-field setup and verify repository status labels.
      kind: github
      github_status_source: label
      repository: <repo-owner>/<repo-name>
-     status_label_prefix: <status-label-prefix>
+     status_label_prefix: "<status-label-prefix>"
      write_probe_issue: <write-probe-issue>
    ```
 
@@ -1105,7 +1105,7 @@ ProjectV2 and issue-field setup and verify repository status labels.
    rg -n 'github_status_source: issue_field|repository: <repo-owner>/<repo-name>|status_field: <status-field-name>|write_probe_issue:' <source-root>/WORKFLOW.md
 
    # Label mode:
-   rg -n 'github_status_source: label|repository: <repo-owner>/<repo-name>|status_label_prefix: <status-label-prefix>|write_probe_issue:' <source-root>/WORKFLOW.md
+   rg -n 'github_status_source: label|repository: <repo-owner>/<repo-name>|status_label_prefix: "<status-label-prefix>"|write_probe_issue:' <source-root>/WORKFLOW.md
 
    # Both modes:
    perl -0pi -e 's#(?m)^  source_root: .*$#  source_root: <source-root>#' <source-root>/WORKFLOW.md
@@ -1758,7 +1758,7 @@ tracker:
   kind: github
   github_status_source: label
   repository: <repo-owner>/<repo-name>
-  status_label_prefix: <status-label-prefix>
+  status_label_prefix: "<status-label-prefix>"
 ```
 
 Detent does not automatically migrate ProjectV2 item statuses or issue-field

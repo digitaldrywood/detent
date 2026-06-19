@@ -658,7 +658,7 @@ tracker:
   kind: github
   github_status_source: label
   repository: owner/repo
-  status_label_prefix: detent:
+  status_label_prefix: "detent:"
   write_probe_issue: owner/repo#123
   active_states:
     - Todo
@@ -1278,7 +1278,7 @@ To switch a repository to boardless label mode, create status labels matching
 the effective workflow states, copy current issue statuses by applying exactly
 one configured status label per issue, then change the workflow to
 `github_status_source: label` with `repository: owner/name` and
-`status_label_prefix: detent:`. Detent does not automatically migrate
+`status_label_prefix: "detent:"`. Detent does not automatically migrate
 ProjectV2 items or issue-field values into labels. After the switch, run
 `detent doctor --port 0` and fix label mapping, issue reads by label,
 write-probe, comment-write, and rate-limit checks before dispatching.
