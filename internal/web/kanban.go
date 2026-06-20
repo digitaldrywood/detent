@@ -301,6 +301,7 @@ func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID strin
 	if s.kanbanMutations == nil {
 		return snapshot
 	}
+	snapshot = cloneKanbanIssueSlices(snapshot)
 	applySnapshotKanbanIssues(&snapshot, func(issue *telemetry.Issue) {
 		if issue == nil || strings.TrimSpace(issue.ID) == "" || !sameKanbanProject(*issue, projectID, snapshot.Project.ID) {
 			return
@@ -310,6 +311,16 @@ func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID strin
 			issue.State = state
 		}
 	})
+	return snapshot
+}
+
+func cloneKanbanIssueSlices(snapshot telemetry.Snapshot) telemetry.Snapshot {
+	snapshot.BoardIssues = append([]telemetry.Issue(nil), snapshot.BoardIssues...)
+	snapshot.Pipeline = append([]telemetry.Issue(nil), snapshot.Pipeline...)
+	snapshot.Running = append([]telemetry.Running(nil), snapshot.Running...)
+	snapshot.Queue = append([]telemetry.Queued(nil), snapshot.Queue...)
+	snapshot.Blocked = append([]telemetry.Blocked(nil), snapshot.Blocked...)
+	snapshot.Completed = append([]telemetry.Completed(nil), snapshot.Completed...)
 	return snapshot
 }
 

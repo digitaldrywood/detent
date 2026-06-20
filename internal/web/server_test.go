@@ -708,6 +708,58 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	}
 }
 
+func TestKanbanPendingOverlayDoesNotMutateLatestSnapshot(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	deps.Connector = actionConnector
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kw560",
+			Identifier: "digitaldrywood/detent#560",
+			Title:      "Global pending card",
+			State:      "Backlog",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{
+		Kanban: workflowconfig.Kanban{
+			Mode: workflowconfig.KanbanModeIntegration,
+			AllowedTransitions: map[string][]string{
+				"Backlog": {"Todo"},
+			},
+		},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"issue_id":      {"I_kw560"},
+		"current_state": {"Backlog"},
+		"target_state":  {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	requestHTML(t, server.Handler(), http.MethodGet, "/", http.StatusOK)
+
+	latest, ok := deps.Hub.Latest()
+	if !ok {
+		t.Fatal("Hub.Latest() = false, want published snapshot")
+	}
+	if got := latest.BoardIssues[0].State; got != "Backlog" {
+		t.Fatalf("latest BoardIssues[0].State = %q, want Backlog", got)
+	}
+	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw560", state: "Todo"}}; !equalStateUpdates(got, want) {
+		t.Fatalf("state updates = %#v, want %#v", got, want)
+	}
+}
+
 func TestKanbanMoveRejectsDefaultRestrictedActiveTransitions(t *testing.T) {
 	t.Parallel()
 
