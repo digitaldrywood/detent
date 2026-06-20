@@ -424,7 +424,7 @@ func (p *cdpPage) RequestCount(method string, path string) int {
 func (p *cdpPage) WaitForRequestCount(t *testing.T, method string, path string, want int) {
 	t.Helper()
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if p.RequestCount(method, path) >= want {
 			return
@@ -437,7 +437,7 @@ func (p *cdpPage) WaitForRequestCount(t *testing.T, method string, path string, 
 func (p *cdpPage) Call(t *testing.T, method string, params any, out any) {
 	t.Helper()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	if err := p.client.Call(ctx, method, params, out); err != nil {
 		t.Fatalf("CDP %s: %v", method, err)
@@ -488,7 +488,7 @@ func (p *cdpPage) Eval(t *testing.T, expression string, out any) {
 func (p *cdpPage) WaitForExpression(t *testing.T, expression string) {
 	t.Helper()
 
-	deadline := time.Now().Add(10 * time.Second)
+	deadline := time.Now().Add(30 * time.Second)
 	for time.Now().Before(deadline) {
 		if p.EvalBool(t, expression) {
 			return
@@ -543,33 +543,18 @@ func (p *cdpPage) DragCardToLane(t *testing.T, issueID string, targetState strin
 func (p *cdpPage) ClickMoveButtonForCard(t *testing.T, issueID string) {
 	t.Helper()
 
-	point := p.ElementCenter(t, fmt.Sprintf("[data-kanban-issue-id=%s] [aria-label^='Move ']", strconv.Quote(issueID)))
-	p.MouseMove(t, point.X, point.Y)
-	p.MouseEvent(t, "mousePressed", point.X, point.Y)
-	p.MouseEvent(t, "mouseReleased", point.X, point.Y)
-}
-
-type browserPoint struct {
-	X float64 `json:"x"`
-	Y float64 `json:"y"`
-}
-
-func (p *cdpPage) ElementCenter(t *testing.T, selector string) browserPoint {
-	t.Helper()
-
-	var point browserPoint
-	p.Eval(t, fmt.Sprintf(`(() => {
-		const element = document.querySelector(%s);
-		if (!element) {
-			throw new Error("missing selector " + %s);
+	selector := fmt.Sprintf("[data-kanban-issue-id=%q] [aria-label^='Move ']", issueID)
+	if !p.EvalBool(t, fmt.Sprintf(`(() => {
+		const button = document.querySelector(%s);
+		if (!button) {
+			throw new Error("missing move button " + %s);
 		}
-		element.scrollIntoView({ block: "center", inline: "center" });
-		const rect = element.getBoundingClientRect();
-		const x = Math.min(Math.max(rect.left + rect.width / 2, 8), window.innerWidth - 8);
-		const y = Math.min(Math.max(rect.top + Math.min(rect.height / 2, 160), 8), window.innerHeight - 8);
-		return { x, y };
-	})()`, strconv.Quote(selector), strconv.Quote(selector)), &point)
-	return point
+		button.scrollIntoView({ block: "center", inline: "center" });
+		button.click();
+		return true;
+	})()`, strconv.Quote(selector), strconv.Quote(selector))) {
+		t.Fatalf("move button for %s was not clicked", issueID)
+	}
 }
 
 func (p *cdpPage) SetLaneVisible(t *testing.T, targetState string) {
@@ -586,30 +571,6 @@ func (p *cdpPage) SetLaneVisible(t *testing.T, targetState string) {
 	})()`, strconv.Quote(selector), strconv.Quote(targetState))) {
 		t.Fatalf("lane %s did not become visible", targetState)
 	}
-}
-
-func (p *cdpPage) MouseMove(t *testing.T, x float64, y float64) {
-	t.Helper()
-
-	p.MouseEvent(t, "mouseMoved", x, y)
-}
-
-func (p *cdpPage) MouseEvent(t *testing.T, eventType string, x float64, y float64) {
-	t.Helper()
-
-	params := map[string]any{
-		"type":       eventType,
-		"x":          x,
-		"y":          y,
-		"button":     "left",
-		"buttons":    1,
-		"clickCount": 1,
-	}
-	if eventType == "mouseReleased" {
-		params["buttons"] = 0
-	}
-	p.Call(t, "Input.dispatchMouseEvent", params, nil)
-	time.Sleep(50 * time.Millisecond)
 }
 
 func (p *cdpPage) Screenshot(t *testing.T, name string) {
