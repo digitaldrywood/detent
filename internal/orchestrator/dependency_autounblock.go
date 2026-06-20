@@ -68,7 +68,8 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		if !dependencyBlockersReady(blockers, cfg, o.cfg.TerminalStates) {
 			continue
 		}
-		if !o.applyDependencyAutoUnblock(ctx, state, hydrated, blockers, cfg.TargetState, now) {
+		targetState := dependencyAutoUnblockTargetState(state, hydrated, cfg.TargetState)
+		if !o.applyDependencyAutoUnblock(ctx, state, hydrated, blockers, targetState, now) {
 			continue
 		}
 		transitioned[issueID] = struct{}{}
@@ -425,6 +426,57 @@ func dependencyBlockerReady(blocker dependencyBlocker, cfg DependencyAutoUnblock
 
 func pullRequestMerged(pullRequest *connector.PullRequest) bool {
 	return pullRequest != nil && normalizePullRequestState(pullRequest.State) == "merged"
+}
+
+func dependencyAutoUnblockTargetState(state *State, issue connector.Issue, configuredTarget string) string {
+	if dependencyAutoUnblockStarted(state, issue) {
+		return autoPromoteReworkState
+	}
+	return strings.TrimSpace(defaultString(configuredTarget, "Todo"))
+}
+
+func dependencyAutoUnblockStarted(state *State, issue connector.Issue) bool {
+	if dependencyAutoUnblockStartedSignal(issue) {
+		return true
+	}
+	if state == nil {
+		return false
+	}
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" {
+		return false
+	}
+	if _, ok := state.Running[issueID]; ok {
+		return true
+	}
+	if _, ok := state.Claimed[issueID]; ok {
+		return true
+	}
+	if _, ok := state.Retry[issueID]; ok {
+		return true
+	}
+	if _, ok := state.Completed[issueID]; ok {
+		return true
+	}
+	if blocked, ok := state.Blocked[issueID]; ok {
+		return dependencyAutoUnblockStartedSignal(blocked.Issue)
+	}
+	return false
+}
+
+func dependencyAutoUnblockStartedSignal(issue connector.Issue) bool {
+	if strings.TrimSpace(issue.BranchName) != "" {
+		return true
+	}
+	if issue.PRNumber != nil && *issue.PRNumber > 0 {
+		return true
+	}
+	if issue.PullRequest == nil {
+		return false
+	}
+	return issue.PullRequest.Number > 0 ||
+		strings.TrimSpace(issue.PullRequest.URL) != "" ||
+		strings.TrimSpace(issue.PullRequest.BranchName) != ""
 }
 
 func (o *Orchestrator) applyDependencyAutoUnblock(

@@ -675,6 +675,9 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 			if tt.cfg.Tracker.DependencyAutoUnblock.Enabled && !stringSliceContains(tt.connector.verifyStates, "Todo") {
 				t.Fatalf("VerifyStatusOptions states = %#v, want Todo", tt.connector.verifyStates)
 			}
+			if tt.cfg.Tracker.DependencyAutoUnblock.Enabled && !stringSliceContains(tt.connector.verifyStates, "Rework") {
+				t.Fatalf("VerifyStatusOptions states = %#v, want Rework", tt.connector.verifyStates)
+			}
 		})
 	}
 }

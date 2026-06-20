@@ -302,6 +302,71 @@ func TestTickLeavesDependencyBlockedPRIssueBlocked(t *testing.T) {
 	}
 }
 
+func TestTickAutoUnblocksDependencyBlockedPRIssueToRework(t *testing.T) {
+	t.Parallel()
+
+	prNumber := 430
+	waiting := dependencyAutoUnblockIssue("issue-ready-pr-blocked", "Blocked")
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415", State: "Done"}}
+	waiting.PRNumber = &prNumber
+	waiting.PullRequest = &connector.PullRequest{
+		Number:     prNumber,
+		URL:        "https://github.com/digitaldrywood/detent/pull/430",
+		State:      "OPEN",
+		HeadSHA:    "sha-current",
+		BranchName: "detent/digitaldrywood_detent_429",
+	}
+	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 8, 15, 0, time.UTC))
+
+	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Rework"}) {
+		t.Fatalf("updates = %#v, want dependency-unblocked PR issue moved to Rework", got)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "Blocked to Rework") {
+		t.Fatalf("comments = %#v, want dependency auto-unblock comment for Rework", tracker.comments)
+	}
+}
+
+func TestTickAutoUnblocksPreviouslyStartedDependencyIssueToRework(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-ready-started-blocked", "Blocked")
+	waiting.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415", State: "Done"}}
+	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	state := newState(orch.cfg)
+	state.Retry[waiting.ID] = Retry{Issue: waiting, Attempt: 1}
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 8, 20, 0, time.UTC))
+
+	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Rework"}) {
+		t.Fatalf("updates = %#v, want dependency-unblocked started issue moved to Rework", got)
+	}
+}
+
 func TestTickMergesHydratedTextDependenciesWithConnectorRefs(t *testing.T) {
 	t.Parallel()
 

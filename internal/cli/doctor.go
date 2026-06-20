@@ -1333,6 +1333,7 @@ func checkDoctorDependencyAutoUnblockLive(
 		states := append([]string(nil), dependencyCfg.SourceStates...)
 		if dependencyCfg.Enabled {
 			states = append(states, dependencyCfg.TargetState)
+			states = append(states, "Rework")
 		}
 		if len(states) > 0 {
 			if err := verifier.VerifyStatusOptions(ctx, states); err != nil {
@@ -1340,7 +1341,7 @@ func checkDoctorDependencyAutoUnblockLive(
 					Name:   name,
 					Status: doctorFail,
 					Detail: fmt.Sprintf("status option verification failed: %v", err),
-					Hint:   "Ensure dependency auto-unblock source_states and target_state resolve through tracker.state_map to existing GitHub Project Status options.",
+					Hint:   "Ensure dependency auto-unblock source_states, target_state, and Rework resolve through tracker.state_map to existing GitHub Project Status options.",
 				}
 			}
 		}
