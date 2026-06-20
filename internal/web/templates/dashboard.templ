@@ -1897,6 +1897,7 @@ templ projectKanbanMoveDialogTrigger(data DashboardData, card projectKanbanCard)
 
 templ projectKanbanDragMoveForm(data DashboardData, card projectKanbanCard) {
 	<form class="hidden" hx-post="/api/v1/kanban/move" hx-target="#kanban-feedback" hx-swap="outerHTML" data-kanban-drag-move-form>
+		<input type="hidden" name="kanban_drag" value="true"/>
 		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
 		<input type="hidden" name="issue_id" value={ card.IssueID }/>
 		<input type="hidden" name="identifier" value={ card.Identifier }/>
@@ -2284,6 +2285,7 @@ templ kanbanMoveDialogTrigger(data DashboardData, card kanbanCard) {
 
 templ kanbanDragMoveForm(data DashboardData, card kanbanCard) {
 	<form class="hidden" hx-post="/api/v1/kanban/move" hx-target="#kanban-feedback" hx-swap="outerHTML" data-kanban-drag-move-form>
+		<input type="hidden" name="kanban_drag" value="true"/>
 		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
 		<input type="hidden" name="issue_id" value={ card.IssueID }/>
 		<input type="hidden" name="identifier" value={ card.Identifier }/>
@@ -2466,6 +2468,24 @@ templ kanbanScript() {
 				return document.querySelector("[data-kanban-card][data-kanban-issue-id='" + CSS.escape(draggedIssueID) + "']");
 			}
 
+			function markedDraggedCard() {
+				return document.querySelector("[data-kanban-card][data-kanban-dragging='true']");
+			}
+
+			function activeDragIssueID(event) {
+				if (draggedIssueID) {
+					return draggedIssueID;
+				}
+				const markedCard = markedDraggedCard();
+				if (markedCard instanceof HTMLElement && markedCard.dataset.kanbanIssueId) {
+					return markedCard.dataset.kanbanIssueId;
+				}
+				if (!event.dataTransfer || typeof event.dataTransfer.getData !== "function") {
+					return "";
+				}
+				return event.dataTransfer.getData("text/plain") || "";
+			}
+
 			function allowedTargetKeys(card) {
 				if (!(card instanceof HTMLElement)) {
 					return [];
@@ -2529,6 +2549,11 @@ templ kanbanScript() {
 					delete lane.dataset.kanbanDropAllowed;
 					lane.removeAttribute("aria-disabled");
 				});
+				document.querySelectorAll("[data-kanban-card][data-kanban-dragging='true']").forEach(function(card) {
+					if (card instanceof HTMLElement) {
+						delete card.dataset.kanbanDragging;
+					}
+				});
 			}
 
 			function closeActionDialog() {
@@ -2553,6 +2578,7 @@ templ kanbanScript() {
 					event.preventDefault();
 					return;
 				}
+				card.dataset.kanbanDragging = "true";
 				if (event.dataTransfer) {
 					event.dataTransfer.effectAllowed = "move";
 					event.dataTransfer.setData("text/plain", draggedIssueID);
@@ -2563,9 +2589,11 @@ templ kanbanScript() {
 			});
 
 			document.addEventListener("dragover", function(event) {
-				if (!draggedIssueID) {
+				const issueID = activeDragIssueID(event);
+				if (!issueID) {
 					return;
 				}
+				draggedIssueID = issueID;
 				const lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
 				if (!lane) {
 					return;
@@ -2584,9 +2612,11 @@ templ kanbanScript() {
 			});
 
 			document.addEventListener("drop", function(event) {
-				if (!draggedIssueID) {
+				const issueID = activeDragIssueID(event);
+				if (!issueID) {
 					return;
 				}
+				draggedIssueID = issueID;
 				const lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
 				if (!lane) {
 					return;

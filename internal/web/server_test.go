@@ -822,6 +822,78 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	}
 }
 
+func TestKanbanDragMoveSuccessResponseRefreshesProjectBoardWithoutInlineFlash(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Backlog": {"Todo"},
+		},
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kw579",
+			Identifier: "digitaldrywood/detent#579",
+			ProjectID:  "detent",
+			Title:      "Drag feedback card",
+			State:      "Backlog",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"kanban_drag":   {"true"},
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw579"},
+		"current_state": {"Backlog"},
+		"target_state":  {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
+		t.Fatalf("HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	}
+	if rec.Header().Get("HX-Reswap") != "outerHTML" {
+		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
+	}
+	body := rec.Body.String()
+	if !strings.Contains(body, `id="project-kanban"`) {
+		t.Fatalf("response missing project board:\n%s", body)
+	}
+	if got := strings.Count(body, `data-kanban-issue-id="I_kw579"`); got != 1 {
+		t.Fatalf("card render count = %d, want 1:\n%s", got, body)
+	}
+	if feedback := kanbanFeedbackTextFromHTML(t, body); strings.Contains(feedback, "Moved card to Todo.") {
+		t.Fatalf("drag success feedback = %q, want no inline success flash:\n%s", feedback, body)
+	}
+	backlogLane := projectKanbanLaneHTML(t, body, "backlog")
+	if strings.Contains(backlogLane, "Drag feedback card") {
+		t.Fatalf("Backlog lane still contains moved card:\n%s", backlogLane)
+	}
+	todoLane := projectKanbanLaneHTML(t, body, "todo")
+	if !strings.Contains(todoLane, "Drag feedback card") {
+		t.Fatalf("Todo lane missing moved card:\n%s", todoLane)
+	}
+	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw579", state: "Todo"}}; !equalStateUpdates(got, want) {
+		t.Fatalf("state updates = %#v, want %#v", got, want)
+	}
+}
+
 func TestKanbanPendingOverlayDoesNotMutateLatestSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -6042,6 +6114,16 @@ func projectKanbanLaneHTML(t *testing.T, body string, laneID string) string {
 		return rest[:len(marker)+next]
 	}
 	return rest
+}
+
+func kanbanFeedbackTextFromHTML(t *testing.T, body string) string {
+	t.Helper()
+
+	matches := regexp.MustCompile(`<div id="kanban-feedback"[^>]*>([^<]*)</div>`).FindStringSubmatch(body)
+	if len(matches) != 2 {
+		t.Fatalf("missing kanban feedback in:\n%s", body)
+	}
+	return matches[1]
 }
 
 func performForm(t *testing.T, handler http.Handler, method string, path string, form url.Values) *httptest.ResponseRecorder {

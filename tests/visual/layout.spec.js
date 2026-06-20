@@ -156,6 +156,40 @@ test("sidebar active state survives Kanban refreshes", async ({ page }, testInfo
   });
 });
 
+test("direct Kanban drag success does not shift board layout", async ({ page }, testInfo) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, { waitUntil: "domcontentloaded" });
+  await page.request.post(`${kanbanRuntime.url}/api/v1/refresh`);
+  await expect(page.locator("#project-kanban")).toBeVisible();
+  await expect(page.locator("[data-kanban-issue-id='kanban-demo-backlog']")).toBeVisible();
+  await page.waitForFunction(() => Boolean(window.htmx && window.__detentKanbanDragHandlersRegistered));
+  await page.locator("[data-kanban-drop-state='Todo']").evaluate((lane) => {
+    lane.dataset.projectKanbanLaneVisible = "true";
+  });
+  await expect(page.locator("[data-kanban-drop-state='Todo']")).toBeVisible();
+
+  const before = await kanbanDragSuccessMetrics(page);
+  const moveResponse = page.waitForResponse((response) => {
+    const url = new URL(response.url());
+    return url.pathname === "/api/v1/kanban/move" && response.request().method() === "POST";
+  });
+  const accepted = await dragKanbanCardToLane(page, "kanban-demo-backlog", "Todo");
+  expect(accepted).toBe(true);
+  await moveResponse;
+
+  await expect(page.locator("[data-kanban-drop-state='Todo'] [data-kanban-issue-id='kanban-demo-backlog']")).toHaveCount(1);
+  await expect(page.locator("[data-kanban-drop-state='Backlog'] [data-kanban-issue-id='kanban-demo-backlog']")).toHaveCount(0);
+  await expect(page.locator("#kanban-feedback")).not.toContainText("Moved card to Todo.");
+
+  const after = await kanbanDragSuccessMetrics(page);
+  assertNoTopShift("project Kanban board", before.boardTop, after.boardTop);
+  assertNoTopShift("project Kanban lanes", before.lanesTop, after.lanesTop);
+  assertNoTopShift("Todo lane", before.todoTop, after.todoTop);
+  await captureClipAndAttach(page, "#project-kanban", "project-kanban-drag-success-no-flash.png", testInfo, {
+    maxHeight: 430,
+  });
+});
+
 test("project configuration page preserves project color layout", async ({ page }, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
@@ -221,6 +255,25 @@ async function compareClipAndAttach(page, selector, name, testInfo, options) {
     };
   }, options.maxHeight);
   await expect(page).toHaveScreenshot(name, { clip });
+  const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", testInfo.project.name);
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const evidencePath = path.join(evidenceDir, name);
+  await page.screenshot({ path: evidencePath, clip, animations: "disabled", caret: "hide" });
+  await testInfo.attach(name, { path: evidencePath, contentType: "image/png" });
+}
+
+async function captureClipAndAttach(page, selector, name, testInfo, options) {
+  const clip = await page.locator(selector).evaluate((element, maxHeight) => {
+    const box = element.getBoundingClientRect();
+    const x = Math.max(0, box.left);
+    const y = Math.max(0, box.top);
+    return {
+      x,
+      y,
+      width: Math.min(box.width, window.innerWidth - x),
+      height: Math.min(maxHeight, window.innerHeight - y),
+    };
+  }, options.maxHeight);
   const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", testInfo.project.name);
   fs.mkdirSync(evidenceDir, { recursive: true });
   const evidencePath = path.join(evidenceDir, name);
@@ -302,4 +355,69 @@ async function assertProjectKanbanLayout(page, boardSelector, options) {
     expect(lane.width, `${lane.title} lane width`).toBeLessThanOrEqual(289);
   }
   expect(metrics.visibleLeaks).toEqual([]);
+}
+
+async function dragKanbanCardToLane(page, issueID, targetState) {
+  return page.evaluate(
+    ({ issueID, targetState }) => {
+      const card = document.querySelector(`[data-kanban-issue-id="${CSS.escape(issueID)}"]`);
+      const lane = document.querySelector(`[data-kanban-drop-state="${CSS.escape(targetState)}"]`);
+      if (!card) {
+        throw new Error(`missing card ${issueID}`);
+      }
+      if (!lane) {
+        throw new Error(`missing lane ${targetState}`);
+      }
+      card.scrollIntoView({ block: "center", inline: "center" });
+      lane.scrollIntoView({ block: "center", inline: "center" });
+      card.dataset.kanbanDragging = "true";
+      const cardRect = card.getBoundingClientRect();
+      const laneRect = lane.getBoundingClientRect();
+      const data = new DataTransfer();
+      data.effectAllowed = "move";
+      data.setData("text/plain", issueID);
+      function fire(type, target, rect) {
+        const event = new DragEvent(type, {
+          bubbles: true,
+          cancelable: true,
+          dataTransfer: data,
+          clientX: rect.left + Math.min(rect.width / 2, 160),
+          clientY: rect.top + Math.min(rect.height / 2, 160),
+        });
+        target.dispatchEvent(event);
+        return event.defaultPrevented;
+      }
+      fire("dragstart", card, cardRect);
+      const accepted = fire("dragover", lane, laneRect);
+      if (accepted) {
+        fire("drop", lane, laneRect);
+      }
+      fire("dragend", card, cardRect);
+      delete card.dataset.kanbanDragging;
+      return accepted;
+    },
+    { issueID, targetState },
+  );
+}
+
+async function kanbanDragSuccessMetrics(page) {
+  return page.evaluate(() => {
+    function documentTop(selector) {
+      const element = document.querySelector(selector);
+      if (!element) {
+        throw new Error(`missing element ${selector}`);
+      }
+      const rect = element.getBoundingClientRect();
+      return Math.round(rect.top + window.scrollY);
+    }
+    return {
+      boardTop: documentTop("#project-kanban"),
+      lanesTop: documentTop("#project-kanban .project-kanban-lanes"),
+      todoTop: documentTop("[data-kanban-drop-state='Todo']"),
+    };
+  });
+}
+
+function assertNoTopShift(name, before, after) {
+  expect(Math.abs(after - before), name).toBeLessThanOrEqual(1);
 }
