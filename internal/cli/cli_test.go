@@ -37,7 +37,7 @@ func TestRootCommandHelpListsAdminCommands(t *testing.T) {
 	if !strings.HasPrefix(output, "Examples:\n") {
 		t.Fatalf("help output does not lead with examples:\n%s", output)
 	}
-	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "init", "add-project", "pause", "unpause", "promote", "remove-project"} {
+	for _, want := range []string{"detent", "agent orchestrator", "doctor", "dev-runtime", "init", "add-project", "pause", "unpause", "onboarding", "promote", "remove-project"} {
 		if !strings.Contains(output, want) {
 			t.Fatalf("help output missing %q:\n%s", want, output)
 		}

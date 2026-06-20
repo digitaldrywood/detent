@@ -18,12 +18,18 @@ func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
 	assertContains(t, onboarding, "last == \"MUTATION_CONFIRMED=true\"")
 	assertContains(t, onboarding, "GITHUB_MODE=<project_v2|issue_field|label>")
 	assertContains(t, onboarding, "tracker.github_status_source: label")
+	assertContains(t, onboarding, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision`)
+	assertContains(t, onboarding, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation`)
+	assertContains(t, onboarding, "Do not choose label mode for the operator")
 	assertContains(t, onboarding, "rg '^GITHUB_MODE=project_v2$'")
 	assertContains(t, onboarding, "rg '^BOARD_MODE=(reuse|create)$'")
+	assertContains(t, onboarding, "rg '^PROJECT_NUMBER='")
+	assertContains(t, onboarding, "rg '^PROJECT_TITLE='")
 	assertContains(t, onboarding, "rg '^STATUS_LABEL_PREFIX='")
 
 	assertContains(t, readme, "do not create, link, mutate, or delete GitHub Projects, issue fields, labels")
 	assertContainsWords(t, readme, "until Phase 2 answers are recorded in `answers.env`")
+	assertContains(t, readme, "detent onboarding validate-answers")
 	assertContains(t, readme, "Defaults are recommendations only")
 }
 
