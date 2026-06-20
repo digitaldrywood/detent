@@ -42,6 +42,7 @@ test("screenshots manifest includes visual gate scenarios", async ({ request }) 
     expect.arrayContaining([
       "fleet-kanban-multiproject",
       "kanban-full-integration",
+      "kanban-read-only",
       "kanban-dense-overflow",
       "settings-project-context",
       "onboarding-project-selection",
@@ -80,6 +81,29 @@ test("project Kanban keeps action controls inside compact cards", async ({ page 
   await assertSidebarActive(page, "[data-dashboard-view='kanban']");
   await compareClipAndAttach(page, "#project-kanban", "project-kanban-full-integration-desktop.png", testInfo, {
     maxHeight: 430,
+  });
+});
+
+test("project read-only Kanban explains integration setup", async ({ page }, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "kanban-read-only",
+    viewport: desktopViewport,
+  });
+
+  const board = page.locator("#project-kanban");
+  await expect(board).toBeVisible();
+  await expect(board.getByText("This board is currently read-only.")).toBeVisible();
+  await expect(board.getByText("To move cards from Detent, enable Kanban integration in WORKFLOW.md.")).toBeVisible();
+  await expect(board.getByLabel("Kanban integration config snippet")).toHaveValue(
+    "server:\n  kanban:\n    mode: integration",
+  );
+  await expect(board.locator("[data-kanban-action]")).toHaveCount(0);
+  await assertProjectKanbanLayout(page, "#project-kanban", { minLanes: 6 });
+  await assertElementFitsViewport(page, "#project-kanban");
+  await assertSidebarActive(page, "[data-dashboard-view='kanban']");
+  await compareClipAndAttach(page, "#project-kanban", "project-kanban-read-only-guidance-desktop.png", testInfo, {
+    maxHeight: 580,
   });
 });
 

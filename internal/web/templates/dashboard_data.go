@@ -1488,6 +1488,18 @@ func kanbanIntegrationEnabled(data DashboardData) bool {
 	return strings.EqualFold(strings.TrimSpace(data.Kanban.Mode), "integration")
 }
 
+func projectKanbanReadOnlySetupNotice(data DashboardData) bool {
+	return isProjectDashboard(data) && !kanbanIntegrationEnabled(data)
+}
+
+func projectKanbanIntegrationSnippet() string {
+	return "server:\n  kanban:\n    mode: integration"
+}
+
+func projectKanbanStatesConfigured(data DashboardData) bool {
+	return len(data.Kanban.States) > 0
+}
+
 func kanbanFeedbackText(data KanbanData) string {
 	feedback := strings.TrimSpace(data.Feedback)
 	if feedback == "" {
