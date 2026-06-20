@@ -123,6 +123,11 @@ func TestPlanDemoStillCapturesValidatesSelection(t *testing.T) {
 			selection: demoCaptureSelection{AllScenarios: true, ScenarioIDs: []string{"fleet-healthy-parallel-work"}},
 			wantErr:   "--all-scenarios cannot be combined with --scenario",
 		},
+		{
+			name:      "stream scenario",
+			selection: demoCaptureSelection{ScenarioIDs: []string{"events-play"}},
+			wantErr:   `demo capture scenario "events-play" is not browser-capturable`,
+		},
 	}
 
 	for _, tt := range tests {
@@ -134,6 +139,33 @@ func TestPlanDemoStillCapturesValidatesSelection(t *testing.T) {
 				t.Fatalf("planDemoStillCaptures() error = %v, want containing %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestPlanDemoStillCapturesAllScenariosSkipsStreams(t *testing.T) {
+	t.Parallel()
+
+	outDir := filepath.Join(t.TempDir(), "capture")
+	captures, err := planDemoStillCaptures(outDir, demoCaptureTestManifest(), demoCaptureSelection{AllScenarios: true})
+	if err != nil {
+		t.Fatalf("planDemoStillCaptures() error = %v", err)
+	}
+	var got []string
+	for _, capture := range captures {
+		got = append(got, capture.Scenario.ID)
+	}
+	if len(got) == 0 {
+		t.Fatal("all-scenarios returned no captures")
+	}
+	for _, forbidden := range []string{"api-kanban-move-success", "events-play"} {
+		for _, id := range got {
+			if id == forbidden {
+				t.Fatalf("all-scenarios included %q: %#v", forbidden, got)
+			}
+		}
+	}
+	if got[len(got)-1] != "settings-loaded-fleet" {
+		t.Fatalf("last all-scenarios capture = %q, want settings-loaded-fleet in manifest order", got[len(got)-1])
 	}
 }
 
@@ -213,6 +245,12 @@ func demoCaptureTestManifest() []web.DemoScenarioManifest {
 			Route:        "/settings",
 			Method:       "GET",
 			WaitSelector: "main",
+		},
+		web.DemoScenarioManifest{
+			ID:           "events-play",
+			Route:        "/events",
+			Method:       "GET",
+			WaitSelector: "#snapshot",
 		},
 	)
 	return manifest

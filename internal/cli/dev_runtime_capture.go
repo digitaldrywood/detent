@@ -389,7 +389,7 @@ func planDemoStillCaptures(outDir string, manifest []web.DemoScenarioManifest, s
 		}
 	case selection.AllScenarios:
 		for _, scenario := range manifest {
-			if demoCaptureScenarioMethod(scenario) == http.MethodGet {
+			if demoCaptureBrowserCapturableScenario(scenario) {
 				ids = append(ids, scenario.ID)
 			}
 		}
@@ -409,6 +409,9 @@ func planDemoStillCaptures(outDir string, manifest []web.DemoScenarioManifest, s
 		if method := demoCaptureScenarioMethod(scenario); method != http.MethodGet {
 			return nil, fmt.Errorf("demo capture scenario %q uses %s; screenshot capture supports GET scenarios", id, method)
 		}
+		if !demoCaptureBrowserCapturableScenario(scenario) {
+			return nil, fmt.Errorf("demo capture scenario %q is not browser-capturable", id)
+		}
 		name := fmt.Sprintf("%02d-%s.png", i+1, scenario.ID)
 		relativePath := filepath.ToSlash(filepath.Join("stills", demoCaptureVersion, name))
 		captures = append(captures, demoStillCapture{
@@ -418,6 +421,13 @@ func planDemoStillCaptures(outDir string, manifest []web.DemoScenarioManifest, s
 		})
 	}
 	return captures, nil
+}
+
+func demoCaptureBrowserCapturableScenario(scenario web.DemoScenarioManifest) bool {
+	if demoCaptureScenarioMethod(scenario) != http.MethodGet {
+		return false
+	}
+	return strings.TrimSpace(scenario.Route) != "/events"
 }
 
 func demoCaptureScenarioMethod(scenario web.DemoScenarioManifest) string {
@@ -548,7 +558,7 @@ polling:
   interval_ms: 60000
 workspace:
   root: ./terminal/v1/workspaces
-  source_root: ./terminal/v1/source
+  source_root: ./terminal/v1/source/detent-demo
   auto_branch: true
 agent:
   max_concurrent_agents: 1
