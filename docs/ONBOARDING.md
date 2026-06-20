@@ -2076,6 +2076,24 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      --jq '.[] | select(.body | startswith("## Codex Workpad")) | .html_url' | rg .
    ```
 
+6. **Verify cancellation cleanup when testing terminal moves.** Moving an item
+   to `Cancelled` is a Detent workflow transition; Detent does not close the
+   GitHub issue and does not close or comment on linked pull requests. Operators
+   own those repository-record decisions. Detent stops any running agent,
+   releases the dispatch slot and claim lease, records the run as terminal, and
+   reaps Detent-owned workspace resources on the next poll that observes the
+   cancelled terminal state. Confirm the cleanup diagnostic is visible:
+
+   ```sh
+   curl -fsS http://127.0.0.1:<port>/api/v1/state \
+     | jq -e '.events[] | select(.event == "workspace_reap_succeeded" and (.message | contains("reason=cancelled")) and (.message | contains("worktrees=")) and (.message | contains("branches=")) and (.message | contains("processes=")))'
+   ```
+
+   If cleanup fails, Detent records `workspace_reap_failed`, leaves the
+   workspace eligible for a later retry, and includes the cleanup error in the
+   event message. If no workspace reaper is configured for a terminal run,
+   Detent records `workspace_reap_unverified`.
+
 ## Reconfiguration Closeout
 
 Use this checklist after editing an existing Detent setup, especially after

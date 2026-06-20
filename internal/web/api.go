@@ -250,6 +250,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceN
 		Instance:       instanceResponse(snapshot.Instance, instanceName),
 		Projects:       projectsAPIResponse(snapshot),
 		Refresh:        snapshot.Refresh,
+		Events:         recentEventsFromTelemetry(snapshot.Events, nil, "", ""),
 		Counts:         countsResponse(snapshot),
 		Running:        runningEntries(snapshot.Running),
 		Retrying:       retryEntries(snapshot.Queue),
@@ -966,6 +967,7 @@ type stateAPIResponse struct {
 	Instance       instanceAPIResponse         `json:"instance"`
 	Projects       []telemetry.ProjectSnapshot `json:"projects,omitempty"`
 	Refresh        telemetry.Refresh           `json:"refresh"`
+	Events         []recentEventAPIResponse    `json:"events"`
 	Counts         countsAPIResponse           `json:"counts"`
 	Running        []runningAPIResponse        `json:"running"`
 	Retrying       []retryAPIResponse          `json:"retrying"`

@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"slices"
 	"strings"
@@ -1452,6 +1453,13 @@ func (o *Orchestrator) completeTerminalRunning(
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+	if err := o.abandonClaim(ctx, issueID); err != nil {
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(completedAt),
+			Event:   "claim_release_failed",
+			Message: fmt.Sprintf("claim lease release failed for %s: %v", issueLabel(running.Issue), err),
+		})
+	}
 	issue := o.ensureClosedCompletedRunningIssueDone(ctx, issueID, running.Issue)
 	finalState := strings.TrimSpace(issue.State)
 	if finalState == "" {
@@ -1468,7 +1476,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	if diffStatsPresent(running.DiffStats) {
 		state.DiffStats[issueID] = running.DiffStats
 	}
-	o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates))
+	o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), completedAt)
 }
 
 func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context, issueID string, issue connector.Issue) connector.Issue {
