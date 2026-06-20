@@ -34,6 +34,50 @@ func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
 	assertContains(t, readme, "Defaults are recommendations only")
 }
 
+func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+
+	identityIndex := strings.Index(onboarding, "## Phase 0.5")
+	decisionIndex := strings.Index(onboarding, "## Phase 0.6")
+	discoveryIndex := strings.Index(onboarding, "## Phase 1")
+	if identityIndex < 0 {
+		t.Fatal("docs/ONBOARDING.md missing Phase 0.5 identity gate")
+	}
+	if decisionIndex < 0 {
+		t.Fatal("docs/ONBOARDING.md missing Phase 0.6 status-source decision")
+	}
+	if discoveryIndex < 0 {
+		t.Fatal("docs/ONBOARDING.md missing Phase 1 discovery")
+	}
+	if identityIndex > discoveryIndex {
+		t.Fatal("docs/ONBOARDING.md places identity gate after Phase 1 discovery")
+	}
+	if decisionIndex > discoveryIndex {
+		t.Fatal("docs/ONBOARDING.md places status-source decision after Phase 1 discovery")
+	}
+
+	for _, want := range []string{
+		"CUSTOMER_ID=<customer-or-workstream-id>",
+		"DETENT_PROJECT_ID=<local-detent-project-id>",
+		"TARGET_REPOSITORY=<repo-owner>/<repo-name>",
+		"TARGET_SOURCE_ROOT=<absolute-local-checkout-path>",
+		"REFERENCE_REPOSITORIES=<comma-separated-owner/repo-list-or-empty>",
+		"DETENT_ONBOARDING_MODE=<new-install|existing-install|add-project>",
+		"IDENTITY_CONFIRMED=true",
+		`detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`,
+		"wrong target repository",
+	} {
+		assertContains(t, onboarding, want)
+	}
+
+	assertContains(t, readme, "Distinguish reference repositories from the target repository")
+	assertContains(t, readme, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`)
+	assertContains(t, readme, "Ask and record `GITHUB_MODE` explicitly")
+}
+
 func readRepositoryTextFile(t *testing.T, path string) string {
 	t.Helper()
 

@@ -3,9 +3,13 @@ package cli
 import (
 	"bufio"
 	"bytes"
+	"context"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -14,16 +18,29 @@ import (
 )
 
 const (
+	onboardingAnswersPhaseIdentity = "identity"
 	onboardingAnswersPhaseDecision = "decision"
 	onboardingAnswersPhaseMutation = "mutation"
 )
 
+var (
+	onboardingAnswerIdentifierPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+$`)
+	onboardingAnswerRepositoryPattern = regexp.MustCompile(`^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$`)
+)
+
 type onboardingAnswersValidationResult struct {
-	Status            string `json:"status"`
-	Path              string `json:"path"`
-	Phase             string `json:"phase"`
-	GitHubMode        string `json:"github_mode"`
-	MutationConfirmed bool   `json:"mutation_confirmed"`
+	Status                string   `json:"status"`
+	Path                  string   `json:"path"`
+	Phase                 string   `json:"phase"`
+	CustomerID            string   `json:"customer_id"`
+	DetentProjectID       string   `json:"detent_project_id"`
+	TargetRepository      string   `json:"target_repository"`
+	TargetSourceRoot      string   `json:"target_source_root"`
+	ReferenceRepositories []string `json:"reference_repositories"`
+	DetentOnboardingMode  string   `json:"detent_onboarding_mode"`
+	IdentityConfirmed     bool     `json:"identity_confirmed"`
+	GitHubMode            string   `json:"github_mode"`
+	MutationConfirmed     bool     `json:"mutation_confirmed"`
 }
 
 type onboardingAnswers struct {
@@ -67,7 +84,7 @@ func newOnboardingValidateAnswersCommand() *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&answersPath, "answers", "answers.env", "path to onboarding answers.env")
-	cmd.Flags().StringVar(&phase, "phase", onboardingAnswersPhaseMutation, "validation phase: decision or mutation")
+	cmd.Flags().StringVar(&phase, "phase", onboardingAnswersPhaseMutation, "validation phase: identity, decision, or mutation")
 	return cmd
 }
 
@@ -105,7 +122,7 @@ func validateOnboardingAnswersFile(path string, phase string) (onboardingAnswers
 	if len(problems) > 0 {
 		return onboardingAnswersValidationResult{}, NewValidationError(
 			strings.Join(problems, "; "),
-			"Ask the status-source question, record the explicit answer in answers.env, and rerun the validator before any mutation.",
+			onboardingAnswersValidationHint(normalizedPhase),
 			nil,
 		)
 	}
@@ -116,12 +133,14 @@ func normalizeOnboardingAnswersPhase(phase string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(phase)) {
 	case "", onboardingAnswersPhaseMutation:
 		return onboardingAnswersPhaseMutation, nil
+	case onboardingAnswersPhaseIdentity:
+		return onboardingAnswersPhaseIdentity, nil
 	case onboardingAnswersPhaseDecision:
 		return onboardingAnswersPhaseDecision, nil
 	default:
 		return "", NewValidationError(
-			"--phase must be decision or mutation",
-			"Use --phase decision after the status-source answer or --phase mutation before setup changes.",
+			"--phase must be identity, decision, or mutation",
+			"Use --phase identity before repository-specific discovery, --phase decision after the status-source answer, or --phase mutation before setup changes.",
 			nil,
 		)
 	}
@@ -186,6 +205,15 @@ func trimOnboardingAnswerValue(value string) string {
 
 func validateOnboardingAnswers(answers onboardingAnswers, phase string, result *onboardingAnswersValidationResult) []string {
 	problems := append([]string(nil), answers.Problems...)
+	identityProblems := validateOnboardingIdentityAnswers(answers, result)
+	problems = append(problems, identityProblems...)
+	if len(identityProblems) > 0 && strings.TrimSpace(answers.Values["GITHUB_MODE"]) != "" {
+		problems = append(problems, "GITHUB_MODE cannot be set before identity answers are valid")
+	}
+	if phase == onboardingAnswersPhaseIdentity {
+		return problems
+	}
+
 	mode := answers.Values["GITHUB_MODE"]
 	switch mode {
 	case workflowconfig.GitHubStatusSourceProjectV2, workflowconfig.GitHubStatusSourceIssueField, workflowconfig.GitHubStatusSourceLabel:
@@ -197,6 +225,156 @@ func validateOnboardingAnswers(answers onboardingAnswers, phase string, result *
 		problems = append(problems, validateOnboardingMutationAnswers(answers, mode, result)...)
 	}
 	return problems
+}
+
+func validateOnboardingIdentityAnswers(answers onboardingAnswers, result *onboardingAnswersValidationResult) []string {
+	var problems []string
+
+	customerID := strings.TrimSpace(answers.Values["CUSTOMER_ID"])
+	if customerID == "" {
+		problems = append(problems, "CUSTOMER_ID is required")
+	} else if !onboardingAnswerIdentifierPattern.MatchString(customerID) {
+		problems = append(problems, "CUSTOMER_ID must contain only letters, digits, underscore, dot, or hyphen")
+	} else {
+		result.CustomerID = customerID
+	}
+
+	projectID := strings.TrimSpace(answers.Values["DETENT_PROJECT_ID"])
+	if projectID == "" {
+		problems = append(problems, "DETENT_PROJECT_ID is required")
+	} else if !onboardingAnswerIdentifierPattern.MatchString(projectID) {
+		problems = append(problems, "DETENT_PROJECT_ID must contain only letters, digits, underscore, dot, or hyphen")
+	} else {
+		result.DetentProjectID = projectID
+	}
+
+	targetRepository := strings.TrimSpace(answers.Values["TARGET_REPOSITORY"])
+	targetRepositoryValid := false
+	if targetRepository == "" {
+		problems = append(problems, "TARGET_REPOSITORY is required")
+	} else if !onboardingAnswerRepositoryPattern.MatchString(targetRepository) {
+		problems = append(problems, "TARGET_REPOSITORY must look like owner/name")
+	} else {
+		targetRepositoryValid = true
+		result.TargetRepository = targetRepository
+	}
+
+	referenceRepositories, referenceProblems := validateOnboardingReferenceRepositories(answers, targetRepository)
+	problems = append(problems, referenceProblems...)
+	result.ReferenceRepositories = referenceRepositories
+
+	targetSourceRoot := strings.TrimSpace(answers.Values["TARGET_SOURCE_ROOT"])
+	sourceProblems := validateOnboardingTargetSourceRoot(targetSourceRoot, targetRepository, targetRepositoryValid)
+	problems = append(problems, sourceProblems...)
+	if len(sourceProblems) == 0 {
+		result.TargetSourceRoot = targetSourceRoot
+	}
+
+	mode := strings.TrimSpace(answers.Values["DETENT_ONBOARDING_MODE"])
+	switch mode {
+	case "new-install", "existing-install", "add-project":
+		result.DetentOnboardingMode = mode
+	case "":
+		problems = append(problems, "DETENT_ONBOARDING_MODE is required")
+	default:
+		problems = append(problems, "DETENT_ONBOARDING_MODE must be new-install, existing-install, or add-project")
+	}
+
+	result.IdentityConfirmed = answers.Values["IDENTITY_CONFIRMED"] == "true"
+	if !result.IdentityConfirmed {
+		problems = append(problems, "IDENTITY_CONFIRMED must be true")
+	}
+
+	return problems
+}
+
+func validateOnboardingReferenceRepositories(answers onboardingAnswers, targetRepository string) ([]string, []string) {
+	raw, ok := answers.Values["REFERENCE_REPOSITORIES"]
+	if !ok {
+		return nil, []string{"REFERENCE_REPOSITORIES is required"}
+	}
+
+	var repositories []string
+	var problems []string
+	for _, part := range strings.Split(raw, ",") {
+		repository := strings.TrimSpace(part)
+		if repository == "" {
+			continue
+		}
+		if !onboardingAnswerRepositoryPattern.MatchString(repository) {
+			problems = append(problems, "REFERENCE_REPOSITORIES entries must look like owner/name")
+			continue
+		}
+		if targetRepository != "" && strings.EqualFold(repository, targetRepository) {
+			problems = append(problems, "REFERENCE_REPOSITORIES must not include TARGET_REPOSITORY")
+			continue
+		}
+		repositories = append(repositories, repository)
+	}
+	return repositories, problems
+}
+
+func validateOnboardingTargetSourceRoot(path string, targetRepository string, targetRepositoryValid bool) []string {
+	if path == "" {
+		return []string{"TARGET_SOURCE_ROOT is required"}
+	}
+	if !filepath.IsAbs(path) {
+		return []string{"TARGET_SOURCE_ROOT must be absolute"}
+	}
+
+	var problems []string
+	if err := defaultGitWorkTree(context.Background(), path); err != nil {
+		return []string{"TARGET_SOURCE_ROOT must be a git checkout: " + err.Error()}
+	}
+	remote, err := defaultGitRemoteURL(context.Background(), path)
+	if err != nil {
+		return []string{"TARGET_SOURCE_ROOT must have an origin remote: " + err.Error()}
+	}
+	if targetRepositoryValid {
+		repository, ok := gitHubRepositoryFromRemote(remote)
+		if !ok || !strings.EqualFold(repository, targetRepository) {
+			problems = append(problems, "TARGET_SOURCE_ROOT origin remote must match TARGET_REPOSITORY "+targetRepository)
+		}
+	}
+	return problems
+}
+
+func gitHubRepositoryFromRemote(remote string) (string, bool) {
+	remote = strings.TrimSpace(remote)
+	if remote == "" {
+		return "", false
+	}
+
+	if strings.HasPrefix(remote, "git@github.com:") {
+		repository := strings.TrimPrefix(remote, "git@github.com:")
+		return normalizeGitHubRepositoryPath(repository)
+	}
+
+	parsed, err := url.Parse(remote)
+	if err != nil || !strings.EqualFold(parsed.Hostname(), "github.com") {
+		return "", false
+	}
+	return normalizeGitHubRepositoryPath(parsed.Path)
+}
+
+func normalizeGitHubRepositoryPath(path string) (string, bool) {
+	path = strings.Trim(strings.TrimSpace(path), "/")
+	path = strings.TrimSuffix(path, ".git")
+	if !onboardingAnswerRepositoryPattern.MatchString(path) {
+		return "", false
+	}
+	return path, true
+}
+
+func onboardingAnswersValidationHint(phase string) string {
+	switch phase {
+	case onboardingAnswersPhaseIdentity:
+		return "Ask the identity checkpoint questions, record confirmed CUSTOMER_ID, DETENT_PROJECT_ID, TARGET_REPOSITORY, TARGET_SOURCE_ROOT, REFERENCE_REPOSITORIES, DETENT_ONBOARDING_MODE, and IDENTITY_CONFIRMED=true, then rerun the validator before repository-specific discovery."
+	case onboardingAnswersPhaseDecision:
+		return "Complete and validate the identity phase first, then ask the status-source question, record the explicit GITHUB_MODE answer in answers.env, and rerun the validator before discovery recommendations become selected answers."
+	default:
+		return "Complete and validate the identity and status-source answers, record the explicit mutation confirmation in answers.env, and rerun the validator before any mutation."
+	}
 }
 
 func validateOnboardingMutationAnswers(answers onboardingAnswers, mode string, result *onboardingAnswersValidationResult) []string {

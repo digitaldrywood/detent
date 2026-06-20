@@ -24,22 +24,35 @@ present, docs/ONBOARDING.md, CONTRIBUTING.md, build and language manifests,
 .github/workflows, install scripts, and any existing WORKFLOW.md or global.yaml
 examples. Detent can drive any project with a clear workflow and validation
 gate, so use the repository evidence to identify the stack, tools, and commands
-instead of starting from one language. Do not ask setup questions until you have
-gathered local evidence.
+instead of starting from one language. Do not inspect a target repository's
+ProjectV2 boards, labels, issues, WORKFLOW.md, validation commands, or runtime
+docs until the identity gate below is explicit and confirmed.
 
 Use docs/ONBOARDING.md as the interrogation guide. First determine which path
 applies: a new Detent install, an existing Detent install that must be found and
 verified, or a new repository/project being added to an existing Detent install.
+Distinguish reference repositories from the target repository being onboarded.
+Restate the customer/workstream id, Detent project id, target owner/name,
+absolute local source root, reference repositories, onboarding mode, and
+status-source options before repository-specific discovery. Record those
+identity answers in `answers.env`, set `IDENTITY_CONFIRMED=true` only after I
+confirm the restatement, then run
+`detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`.
 
 For an existing install, find and verify the detent binary, config path, running
 service or dashboard, registered projects, GitHub auth, Codex auth, and doctor
 status before recommending changes. For a new install, follow the bootstrap flow
-and verify each step before moving on. For adding a project, inspect the target
-repository and existing global.yaml, then walk me through the board, workflow,
-registration, issue intake, and smoke-test decisions.
+and verify each step before moving on. For adding a project, treat existing
+registered projects as examples only; do not reuse tracker mode, status
+namespace, validation gate, dashboard bind, workspace root, scheduling priority,
+auto-promote policy, review policy, or mutation scope unless I explicitly
+accept that setting for this customer/project.
 
-Present findings with evidence, ask only the next necessary human decisions, and
-do not create, link, mutate, or delete GitHub Projects, issue fields, labels,
+Present findings with evidence and ask only the next necessary human decisions.
+Ask and record `GITHUB_MODE` explicitly after the identity phase and before
+target-specific discovery; never infer ProjectV2, issue-field, or label mode
+from existing projects. Recommendations can cite evidence, but they are not
+selected answers; do not create, link, mutate, or delete GitHub Projects, issue fields, labels,
 issues, PRs, `WORKFLOW.md`, or `global.yaml`, or dispatch agents, until Phase 2
 answers are recorded in `answers.env`, `detent onboarding validate-answers`
 passes for the selected phase, and I explicitly confirm the mutation step.

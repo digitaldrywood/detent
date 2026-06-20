@@ -1,18 +1,20 @@
 # Agent-Executable Project Onboarding
 
 This runbook takes a target repository from zero Detent setup to one dispatched
-issue, or adds a new project to an existing Detent install. It assumes the human
-has named the target repository when project onboarding is needed and that the
-agent will inspect before asking questions. Replace every `<...>` placeholder
-before running a command.
+issue, or adds a new project to an existing Detent install. It starts with an
+identity gate so a reference repository, example setup, current shell directory,
+or existing Detent project cannot become the implicit target. Replace every
+`<...>` placeholder before running a command.
 
 Use these placeholders consistently:
 
 | Placeholder | Meaning |
 | --- | --- |
+| `<customer-id>` | Customer or workstream id being onboarded. |
 | `<repo-owner>` | GitHub owner of the target repository. |
 | `<repo-name>` | GitHub repository name. |
 | `<source-root>` | Local checkout of `<repo-owner>/<repo-name>`. |
+| `<reference-repositories>` | Comma-separated `owner/repo` list used only for docs, examples, or tooling, or empty. |
 | `<worktree-root>` | Directory where Detent will create issue worktrees. |
 | `<github-mode>` | `project_v2` for GitHub ProjectV2-backed status, `issue_field` for boardless repository issue-field status, or `label` for repository issue-label status. |
 | `<project-owner>` | GitHub org or user that owns the ProjectV2 board. |
@@ -25,8 +27,10 @@ Use these placeholders consistently:
 
 ## Start Here — Determine The Mode
 
-Do not assume this is a fresh install. Inspect first, write down the evidence,
-then ask the human to confirm only if the mode is still ambiguous.
+Do not assume this is a fresh install, and do not infer the target project from
+the current directory or a pasted repository URL. You may inspect Detent
+installation evidence before the identity gate, but repository-specific
+discovery waits for Phase 0.5.
 
 Classify the work into one of these modes:
 
@@ -44,7 +48,7 @@ Classify the work into one of these modes:
   runtime settings unless the human chooses otherwise, then create or adopt a
   board, author `WORKFLOW.md`, register the project, and smoke test.
 
-Record the mode evidence before the interview:
+Record only Detent install/mode evidence before the identity interview:
 
 ```sh
 ONBOARDING_DIR="${TMPDIR:-/tmp}/detent-onboarding-<repo-owner>-<repo-name>"
@@ -92,6 +96,11 @@ rg -n 'id: <detent-project-id>|workflow: .*<repo-name>|workdir: .*<repo-name>' \
   "$ONBOARDING_DIR/global-config.before.txt" 2>/dev/null || true
 ```
 
+Treat existing registered projects as examples only. Do not reuse tracker mode,
+status namespace, validation gate, workspace root, dashboard bind, scheduling
+priority or weight, auto-promote policy, review policy, or mutation scope unless
+the operator explicitly accepts that setting for this customer/project.
+
 ## Phase 0 — Preconditions
 
 1. **Confirm Detent is installed or intentionally new.** For `new-install`,
@@ -106,11 +115,16 @@ rg -n 'id: <detent-project-id>|workflow: .*<repo-name>|workdir: .*<repo-name>' \
    ```
 
 2. **Confirm GitHub CLI auth and scopes.** Detent needs GitHub auth for the
-   selected tracker mode. ProjectV2 mode needs repository, organization, and
-   ProjectV2 read/write scopes. Boardless issue-field mode needs repository
-   issue access plus organization issue-field read access; classic PATs use
-   `repo` and `read:org`. Label mode needs repository issue and label
-   read/write access; classic PATs can use `repo`.
+   selected tracker mode. Before the identity gate, verify only the local `gh`
+   auth state and token scopes. Do not list target ProjectV2 boards,
+   organization issue fields, repository labels, or target issues until Phase
+   0.5 identity is confirmed and Phase 2 records `GITHUB_MODE`.
+
+   ProjectV2 mode needs repository, organization, and ProjectV2 read/write
+   scopes. Boardless issue-field mode needs repository issue access plus
+   organization issue-field read access; classic PATs use `repo` and
+   `read:org`. Label mode needs repository issue and label read/write access;
+   classic PATs can use `repo`.
 
    For ProjectV2 mode, request:
 
@@ -155,24 +169,20 @@ rg -n 'id: <detent-project-id>|workflow: .*<repo-name>|workdir: .*<repo-name>' \
    # ProjectV2 mode only:
    gh auth status 2>&1 | rg '\bread:project\b'
    gh auth status 2>&1 | rg "(^|[[:space:],'\"])project([[:space:],'\"]|$)"
-   # ProjectV2 mode only:
-   gh project list --owner <project-owner> --format json --limit 1
-   # Boardless issue-field mode:
-   gh api /orgs/<repo-owner>/issue-fields --jq '.[] | select(.name == "<status-field-name>")'
-   # Label mode:
-   gh api repos/<repo-owner>/<repo-name>/labels --paginate --jq '.[].name'
    ```
 
-   `gh project list` verifies the `read:project` board discovery path. Defer
-   write `project` verification until the first intentional ProjectV2 mutation,
-   such as creating or linking a board, creating fields, or editing the status
-   of a real existing item. The issue-field discovery command verifies
-   organization issue-field read access for boardless mode. The label list
-   command verifies repository label read access for label mode. Fine-grained
-   PATs and GitHub Apps should grant Issue Fields organization read for
-   issue-field mode, repository label access for label mode, Issues repository
-   read/write when status moves or comments are enabled, Pull requests
-   read/checks read for PR gates, and selected repository access.
+   After Phase 0.5 identity confirmation and the explicit Phase 2
+   `GITHUB_MODE` answer, run only the selected mode's target-specific read
+   probe: `gh project list --owner <project-owner> --format json --limit 1`
+   for ProjectV2, `gh api /orgs/<repo-owner>/issue-fields` for issue-field
+   mode, or `gh api repos/<repo-owner>/<repo-name>/labels --paginate` for label
+   mode. Defer write `project` verification until the first intentional
+   ProjectV2 mutation, such as creating or linking a board, creating fields, or
+   editing the status of a real existing item. Fine-grained PATs and GitHub
+   Apps should grant Issue Fields organization read for issue-field mode,
+   repository label access for label mode, Issues repository read/write when
+   status moves or comments are enabled, Pull requests read/checks read for PR
+   gates, and selected repository access.
 
 3. **Confirm Codex is installed and signed in.** Detent dispatches agents
    through the Codex app-server. Verify:
@@ -181,15 +191,144 @@ rg -n 'id: <detent-project-id>|workflow: .*<repo-name>|workdir: .*<repo-name>' \
    codex --version
    ```
 
-4. **Confirm the target checkout exists when project work is in scope.** If
-   `<source-root>` does not exist, clone it from the repository named by the
-   human. For `existing-install` without project changes, record the existing
-   registered checkouts from `global.yaml` instead. Verify:
+4. **Stop before target-specific discovery.** Do not inspect target ProjectV2
+   boards, organization issue fields, repository labels, issues, `WORKFLOW.md`,
+   validation commands, deployment docs, or local target checkout contents until
+   Phase 0.5 identity answers are explicit and confirmed.
 
-   ```sh
-   git -C <source-root> remote get-url origin
-   git -C <source-root> rev-parse --show-toplevel
-   ```
+## Phase 0.5 — Identity Gate
+
+Before Phase 1 repository-specific discovery, create and validate a
+customer/project identity record in `$ONBOARDING_DIR/answers.env`. This is an
+operator decision checkpoint, not a recommendation. Recommendations can cite
+evidence later, but they must not become selected answers.
+
+Ask for and record these answers:
+
+```sh
+printf '%s\n' \
+  'CUSTOMER_ID=<customer-or-workstream-id>' \
+  'DETENT_PROJECT_ID=<local-detent-project-id>' \
+  'TARGET_REPOSITORY=<repo-owner>/<repo-name>' \
+  'TARGET_SOURCE_ROOT=<absolute-local-checkout-path>' \
+  'REFERENCE_REPOSITORIES=<comma-separated-owner/repo-list-or-empty>' \
+  'DETENT_ONBOARDING_MODE=<new-install|existing-install|add-project>' \
+  > "$ONBOARDING_DIR/answers.env"
+```
+
+Present the interpretation back to the operator before inspecting target
+resources:
+
+```text
+I will onboard project `<detent-project-id>` for customer/workstream
+`<customer-id>`. The target repository is `<repo-owner>/<repo-name>` at
+`<source-root>`. The following repositories are references only and will not be
+registered as the target: `<reference-repositories>`. The onboarding mode is
+`<new-install|existing-install|add-project>`. Is that correct?
+```
+
+Only after the operator confirms, append the identity confirmation:
+
+```sh
+printf '%s\n' \
+  'IDENTITY_CONFIRMED=true' \
+  >> "$ONBOARDING_DIR/answers.env"
+```
+
+Validate the identity gate:
+
+```sh
+test -f "$ONBOARDING_DIR/answers.env"
+rg '^CUSTOMER_ID=[A-Za-z0-9_.-]+$' "$ONBOARDING_DIR/answers.env"
+rg '^DETENT_PROJECT_ID=[A-Za-z0-9_.-]+$' "$ONBOARDING_DIR/answers.env"
+rg '^TARGET_REPOSITORY=[^/]+/[^/]+$' "$ONBOARDING_DIR/answers.env"
+rg '^TARGET_SOURCE_ROOT=/' "$ONBOARDING_DIR/answers.env"
+rg '^REFERENCE_REPOSITORIES=' "$ONBOARDING_DIR/answers.env"
+rg '^DETENT_ONBOARDING_MODE=(new-install|existing-install|add-project)$' "$ONBOARDING_DIR/answers.env"
+rg '^IDENTITY_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity
+```
+
+The CLI validator rejects missing customer/workstream id, missing Detent project
+id, malformed target repository, missing or relative target source root, a
+target source root that is not a git checkout for the target repository, missing
+reference repository separation, missing onboarding mode, missing
+`IDENTITY_CONFIRMED=true`, and `GITHUB_MODE` answers recorded before identity is
+valid.
+
+If `<source-root>` does not exist, clone the confirmed target repository there
+before validation:
+
+```sh
+git clone "https://github.com/<repo-owner>/<repo-name>.git" <source-root>
+```
+
+Confirm the target checkout only after identity is validated:
+
+```sh
+git -C <source-root> remote get-url origin
+git -C <source-root> rev-parse --show-toplevel
+```
+
+Do not use a reference or tooling repository as the target. A wrong target repository failure example looks like this: the operator mentions
+`digitaldrywood/detent-orchestration` as an example config and
+`customer/api` as the actual project, but the agent runs issue, label, board,
+or validation discovery against `digitaldrywood/detent-orchestration`. Stop,
+rewrite `TARGET_REPOSITORY=customer/api`, verify `TARGET_SOURCE_ROOT` points to
+that checkout, and rerun `detent onboarding validate-answers --phase identity`
+before discovery resumes.
+
+For repeated customer onboarding, a reviewable manifest may carry the same
+answers in addition to `answers.env`:
+
+```yaml
+apiVersion: detent.dev/onboarding/v1
+kind: OnboardingAnswers
+customer:
+  id: <customer-or-workstream-id>
+  display_name: <human-readable-name>
+project:
+  id: <local-detent-project-id>
+  repository: <repo-owner>/<repo-name>
+  source_root: <absolute-local-checkout-path>
+references:
+  repositories:
+    - <owner>/<repo-used-only-for-docs-or-examples>
+detent:
+  mode: add-project
+tracker:
+  github_status_source: <project_v2|issue_field|label>
+mutation:
+  confirmed: false
+```
+
+## Phase 0.6 — Status Source Decision
+
+After identity is confirmed and before target-specific discovery, ask the
+GitHub status-source question. This is separate from identity confirmation, and
+it must still be an explicit operator answer.
+
+Ask: "Use ProjectV2 board mode, boardless issue-field mode, or repository label
+mode?" Explain that this answer maps to `tracker.github_status_source:
+project_v2`, `tracker.github_status_source: issue_field`, or
+`tracker.github_status_source: label` in `WORKFLOW.md`. Do not choose label
+mode for the operator, and do not infer ProjectV2, issue-field, or label mode
+from existing registered projects.
+
+Record and validate the explicit answer:
+
+```sh
+printf '%s\n' \
+  'GITHUB_MODE=<project_v2|issue_field|label>' \
+  >> "$ONBOARDING_DIR/answers.env"
+rg '^GITHUB_MODE=' "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision
+```
+
+Hard stop: do not inspect target ProjectV2 boards, organization issue fields,
+repository labels, target issues, `WORKFLOW.md`, validation commands, or
+deployment docs until this `GITHUB_MODE` answer is recorded and
+`detent onboarding validate-answers --phase decision` passes.
 
 ## GitHub GraphQL Rate-Budget Discipline
 
@@ -241,11 +380,12 @@ prints status and priority counts from cached data.
 
 ## Phase 1 — Discover And Recommend
 
-Do not ask questions in this phase. Inspect the actual setup, write one
-grounded recommendation per Phase 2 question, then interview the human. For an
-existing install, include the mode evidence, current config path, registered
-project table, and service health in the recommendations before asking what to
-change.
+Do not ask questions in this phase. First re-run the identity and decision
+validators, then inspect only the confirmed target setup and selected status
+source. Write one grounded recommendation per remaining Phase 2 question, then
+interview the human. For an existing install, include the mode evidence, current
+config path, registered project table, and service health in the
+recommendations before asking what to change.
 
 1. **Create an onboarding notes directory.** Keep all discovery artifacts in
    one place so recommendations can cite evidence. Verify:
@@ -254,21 +394,30 @@ change.
    ONBOARDING_DIR="${TMPDIR:-/tmp}/detent-onboarding-<repo-owner>-<repo-name>"
    mkdir -p "$ONBOARDING_DIR"
    test -d "$ONBOARDING_DIR"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision
    ```
 
-2. **Record the initial GitHub GraphQL budget.** Use the REST rate-limit
-   endpoint before the first ProjectV2 discovery command. If the remaining
-   budget is low, record the warning in the recommendation and avoid
-   GraphQL-heavy board inventory until reset or GitHub App auth is available.
-   Verify:
+2. **Record the initial GitHub GraphQL budget for ProjectV2 mode.** Use the
+   REST rate-limit endpoint before the first ProjectV2 discovery command. For
+   `GITHUB_MODE=issue_field` or `GITHUB_MODE=label`, record a skipped artifact
+   and do not spend GraphQL budget on board discovery. If the remaining budget
+   is low, record the warning in the recommendation and avoid GraphQL-heavy
+   board inventory until reset or GitHub App auth is available. Verify:
 
    ```sh
-   gh api rate_limit --jq '.resources.graphql | {limit, used, remaining, reset}' \
-     > "$ONBOARDING_DIR/graphql-rate-limit.before-discovery.json"
-   jq -r '"graphql remaining=\(.remaining) reset=\(.reset)"' \
-     "$ONBOARDING_DIR/graphql-rate-limit.before-discovery.json"
-   jq -e '.remaining >= 1000' "$ONBOARDING_DIR/graphql-rate-limit.before-discovery.json" \
-     || printf 'WARNING: low GitHub GraphQL budget; avoid ProjectV2 inventory loops before reset\n'
+   GITHUB_MODE="$(awk -F= '/^GITHUB_MODE=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+   if test "$GITHUB_MODE" = "project_v2"; then
+     gh api rate_limit --jq '.resources.graphql | {limit, used, remaining, reset}' \
+       > "$ONBOARDING_DIR/graphql-rate-limit.before-discovery.json"
+     jq -r '"graphql remaining=\(.remaining) reset=\(.reset)"' \
+       "$ONBOARDING_DIR/graphql-rate-limit.before-discovery.json"
+     jq -e '.remaining >= 1000' "$ONBOARDING_DIR/graphql-rate-limit.before-discovery.json" \
+       || printf 'WARNING: low GitHub GraphQL budget; avoid ProjectV2 inventory loops before reset\n'
+   else
+     printf '{"skipped":true,"reason":"GITHUB_MODE=%s"}\n' "$GITHUB_MODE" \
+       > "$ONBOARDING_DIR/graphql-rate-limit.before-discovery.json"
+   fi
    ```
 
 3. **Inspect the validation surface.** Prefer a repo-local release gate over an
@@ -338,27 +487,35 @@ change.
    jq -e '.total >= 0' "$ONBOARDING_DIR/issue-counts.json"
    ```
 
-6. **Inspect existing ProjectV2 boards.** Recommend reuse when a board clearly
-   belongs to this repo or workstream; otherwise recommend creating a new board
-   named after the repo or product. This is the ProjectV2 read verification.
-   Verify:
+6. **Inspect existing ProjectV2 boards only for ProjectV2 mode.** Recommend
+   reuse when a board clearly belongs to this repo or workstream; otherwise
+   recommend creating a new board named after the repo or product. Skip this
+   step for `GITHUB_MODE=issue_field` and `GITHUB_MODE=label`. This is the
+   ProjectV2 read verification. Verify:
 
    ```sh
-   gh project list --owner <project-owner> --format json --limit 50 \
-     > "$ONBOARDING_DIR/projects.json"
+   GITHUB_MODE="$(awk -F= '/^GITHUB_MODE=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
+   if test "$GITHUB_MODE" = "project_v2"; then
+     gh project list --owner <project-owner> --format json --limit 50 \
+       > "$ONBOARDING_DIR/projects.json"
+   else
+     printf '{"projects":[],"skipped":true,"reason":"GITHUB_MODE=%s"}\n' "$GITHUB_MODE" \
+       > "$ONBOARDING_DIR/projects.json"
+   fi
    jq -e '.projects | length >= 0' "$ONBOARDING_DIR/projects.json"
    ```
 
-7. **Inspect priority counts for reuse candidates.** `priority_in` depends on
-   the ProjectV2 `Priority` field, so gather counts from the strongest reuse
-   candidate with one paginated inventory pass saved to a local artifact. Do
-   not repeatedly call `gh project item-list --limit 1000`. For a new board,
-   record an empty count table and recommend no `priority_in` filter until
-   issues have been added and ranked. Verify:
+7. **Inspect priority counts for ProjectV2 reuse candidates.** `priority_in`
+   depends on the ProjectV2 `Priority` field, so gather counts from the
+   strongest reuse candidate with one paginated inventory pass saved to a local
+   artifact. Do not repeatedly call `gh project item-list --limit 1000`. For a
+   new board or non-ProjectV2 mode, record an empty count table and recommend no
+   `priority_in` filter until issues have been added and ranked. Verify:
 
    ```sh
+   GITHUB_MODE="$(awk -F= '/^GITHUB_MODE=/ {value=$2} END {print value}' "$ONBOARDING_DIR/answers.env")"
    REUSE_PROJECT_NODE_ID="<reuse-candidate-project-node-id-or-empty>"
-   if test -n "$REUSE_PROJECT_NODE_ID"; then
+   if test "$GITHUB_MODE" = "project_v2" && test -n "$REUSE_PROJECT_NODE_ID"; then
      PRIORITY_QUERY='
        query($project: ID!, $after: String) {
          node(id: $project) {
@@ -440,48 +597,21 @@ recommendation, and default-if-silent. Defaults are recommendations only; they
 do not authorize GitHub, issue, label, `WORKFLOW.md`, or `global.yaml`
 mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
 
-0. **Mode.** Ask only if inspection did not make the path obvious: "Are we
-   doing a new Detent install, verifying an existing install, or adding this
-   repository as a new project to an existing install?" Show
-   `$ONBOARDING_DIR/mode-evidence.txt` and `$ONBOARDING_DIR/global-projects.txt`
-   when present. Default if silent: use the mode with the strongest evidence.
-   Verify:
+0. **Mode.** `DETENT_ONBOARDING_MODE` was selected in Phase 0.5. If discovery
+   shows the chosen mode is wrong, stop, update the identity answers, present
+   the full interpretation again, and rerun
+   `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`.
+   Do not infer mode from an existing registered project or carry it forward as
+   a default.
 
-   ```sh
-   printf '%s\n' \
-     'DETENT_ONBOARDING_MODE=<new-install|existing-install|add-project>' \
-     >> "$ONBOARDING_DIR/answers.env"
-   rg '^DETENT_ONBOARDING_MODE=' "$ONBOARDING_DIR/answers.env"
-   ```
-
-1. **GitHub status source.** Ask: "Use the current/default ProjectV2 board
-   mode, boardless issue-field mode, or repository label mode?" Recommend
-   ProjectV2 when the team already plans and ranks work on a GitHub Project
-   board, or when preserving an existing Detent setup is more important than
-   reducing setup. Recommend boardless issue-field mode when the repository
-   already uses GitHub Issues as the source of truth, has an organization issue
-   `Status` field, and the Detent dashboard should be the Kanban surface.
-   Recommend label mode when the team wants GitHub Issues plus repository
-   labels only, with no ProjectV2 board and no organization issue fields.
-   This answer maps to `tracker.github_status_source: project_v2`,
-   `tracker.github_status_source: issue_field`, or
-   `tracker.github_status_source: label` in `WORKFLOW.md`.
-   Default if silent: ProjectV2 for existing Detent installs, label mode when
-   the operator explicitly asks for issues plus labels only, otherwise
-   boardless issue-field mode for a new project with an existing matching issue
-   field. Verify:
-
-   ```sh
-   printf '%s\n' \
-     'GITHUB_MODE=<project_v2|issue_field|label>' \
-     >> "$ONBOARDING_DIR/answers.env"
-   rg '^GITHUB_MODE=' "$ONBOARDING_DIR/answers.env"
-   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision
-   ```
-
-   Hard stop: do not inspect your recommendation as if it selected the mode,
-   and do not continue to Phase 3, issue-field, label, `WORKFLOW.md`, or
-   `global.yaml` mutation without this explicit `GITHUB_MODE` answer.
+1. **GitHub status source.** `GITHUB_MODE` was selected in Phase 0.6. If
+   discovery shows the chosen status source is wrong, stop, update the explicit
+   answer, rerun
+   `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision`,
+   and repeat Phase 1 for the selected mode. Do not inspect your recommendation
+   as if it selected the mode, and do not continue to Phase 3, issue-field,
+   label, `WORKFLOW.md`, or `global.yaml` mutation without this explicit
+   `GITHUB_MODE` answer.
 
 2. **ProjectV2 board.** Ask this only when `GITHUB_MODE=project_v2`: "Reuse an
    existing ProjectV2 board or create a new one?" List the boards from
