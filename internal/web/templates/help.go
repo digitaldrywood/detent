@@ -80,7 +80,7 @@ var helpDefinitions = map[helpTerm]helpEntry{
 	helpLifetimeTotals:      {Label: "Lifetime totals", Description: "All-time local usage totals for tokens, sessions, runtime, and runs. Use them for capacity planning and sanity checks across restarts."},
 	helpModelBuckets:        {Label: "Model split", Description: "Token usage grouped by model. It shows which models drive cost and volume when a report window looks expensive."},
 	helpPrimaryRateBucket:   {Label: "Primary rate bucket", Description: "The main Codex API quota bucket for requests or tokens. When remaining capacity is low, agents may throttle until the reset."},
-	helpProjectKanban:       {Label: "Project Kanban", Description: "Read-only project board grouped by configured Detent workflow states. Empty configured lanes stay hidden unless pinned in lane visibility."},
+	helpProjectKanban:       {Label: "Project Kanban", Description: "Project board grouped by configured Detent workflow states. Empty configured lanes stay hidden unless pinned in lane visibility."},
 	helpProjectMultiples:    {Label: "Projects", Description: "Compact per-project throughput, spend, and queue depth. Use it to compare active repositories sharing the same Detent process."},
 	helpPRPipeline:          {Label: "PR pipeline", Description: "Pull requests currently waiting for human review, merging, or marked done by the tracker today. Watch this lane to see whether the merge train is moving."},
 	helpProjectedSpend:      {Label: "Projected spend", Description: "Estimated additional USD for active work if it continues at the current pace. Use it before letting a busy queue keep running."},

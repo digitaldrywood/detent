@@ -3797,6 +3797,98 @@ func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
 	}
 }
 
+func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeReadOnly,
+	}, actionConnector)
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 20, 15, 0, 0, 0, time.UTC),
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{
+					ID:          "detent",
+					DisplayName: "Detent",
+				},
+			},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "todo",
+				Identifier: "digitaldrywood/detent#565",
+				ProjectID:  "detent",
+				Title:      "Live reload Kanban mode",
+				State:      "Todo",
+			},
+		},
+	}
+	if err := deps.Hub.Publish(snapshot); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	addr := startWebServer(t, server)
+	conn, body, reader := openRawEventStream(t, addr, "/events?project=detent&view=kanban")
+	defer conn.Close()
+	defer body.Close()
+
+	event := readRawSSEEvent(t, conn, reader)
+	if event.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", event.name)
+	}
+	for _, want := range []string{
+		"Read-only",
+		"Read-only workflow lanes grouped by configured Detent states.",
+		"Live reload Kanban mode",
+	} {
+		if !strings.Contains(event.data, want) {
+			t.Fatalf("initial snapshot event missing %q:\n%s", want, event.data)
+		}
+	}
+	if strings.Contains(event.data, `hx-get="/api/v1/kanban/move?`) {
+		t.Fatalf("initial read-only snapshot rendered move controls:\n%s", event.data)
+	}
+	sidebarEvent := readRawSSEEvent(t, conn, reader)
+	if sidebarEvent.name != "sidebar" {
+		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
+	}
+
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(snapshot); err != nil {
+		t.Fatalf("republish snapshot error = %v", err)
+	}
+
+	event = readRawSSEEvent(t, conn, reader)
+	if event.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", event.name)
+	}
+	for _, want := range []string{
+		"Integration",
+		"Workflow lanes grouped by configured Detent states with operator actions enabled.",
+		`hx-get="/api/v1/kanban/move?`,
+		`hx-get="/api/v1/kanban/comment?`,
+		`draggable="true"`,
+		`data-kanban-drop-state="In Progress"`,
+		`data-kanban-allowed-targets=`,
+	} {
+		if !strings.Contains(event.data, want) {
+			t.Fatalf("reloaded snapshot event missing %q:\n%s", want, event.data)
+		}
+	}
+	if strings.Contains(event.data, "Read-only") {
+		t.Fatalf("reloaded snapshot event kept read-only UI:\n%s", event.data)
+	}
+}
+
 func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 	t.Parallel()
 

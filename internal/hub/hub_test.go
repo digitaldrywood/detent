@@ -83,6 +83,34 @@ func TestHubLatestReturnsLastEvent(t *testing.T) {
 	}
 }
 
+func TestHubRepublishFansOutLastEvent(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[string]()
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	if err := events.Republish(); err != nil {
+		t.Fatalf("Republish() before Publish error = %v", err)
+	}
+	assertNoEvent(t, sub.C())
+
+	if err := events.Publish("ready"); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	if got := receive(t, sub.C()); got != "ready" {
+		t.Fatalf("published event = %q, want ready", got)
+	}
+	if err := events.Republish(); err != nil {
+		t.Fatalf("Republish() error = %v", err)
+	}
+	if got := receive(t, sub.C()); got != "ready" {
+		t.Fatalf("republished event = %q, want ready", got)
+	}
+}
+
 func TestHubDropsOldestForSlowSubscriber(t *testing.T) {
 	t.Parallel()
 
@@ -178,6 +206,9 @@ func TestHubCloseClosesSubscribersAndRejectsOperations(t *testing.T) {
 	if err := events.Publish("ignored"); !errors.Is(err, hub.ErrClosed) {
 		t.Fatalf("Publish() error = %v, want %v", err, hub.ErrClosed)
 	}
+	if err := events.Republish(); !errors.Is(err, hub.ErrClosed) {
+		t.Fatalf("Republish() error = %v, want %v", err, hub.ErrClosed)
+	}
 	if _, err := events.Subscribe(context.Background()); !errors.Is(err, hub.ErrClosed) {
 		t.Fatalf("Subscribe() error = %v, want %v", err, hub.ErrClosed)
 	}
@@ -249,4 +280,14 @@ func receive[T any](t *testing.T, ch <-chan T) T {
 
 	var zero T
 	return zero
+}
+
+func assertNoEvent[T any](t *testing.T, ch <-chan T) {
+	t.Helper()
+
+	select {
+	case got := <-ch:
+		t.Fatalf("unexpected event = %#v", got)
+	case <-time.After(25 * time.Millisecond):
+	}
 }

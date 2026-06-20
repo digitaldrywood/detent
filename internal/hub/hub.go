@@ -105,6 +105,23 @@ func (h *Hub[T]) Publish(value T) error {
 	return nil
 }
 
+func (h *Hub[T]) Republish() error {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+
+	if h.closed {
+		return ErrClosed
+	}
+	if !h.hasLast {
+		return nil
+	}
+	for sub := range h.subscribers {
+		sendLatest(sub.ch, h.last)
+	}
+
+	return nil
+}
+
 func (h *Hub[T]) Latest() (T, bool) {
 	h.mu.Lock()
 	defer h.mu.Unlock()
