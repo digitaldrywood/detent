@@ -496,7 +496,46 @@ func (s *Server) kanbanMoveDialogData(c echo.Context, message string) (templates
 	if len(data.States) == 0 && data.CurrentState == "" {
 		data.States = kanbanStateNames(target.workflow, s.latestSnapshot(c.Request().Context()))
 	}
+	if data.TargetState == "" {
+		data.TargetState = kanbanMoveDialogDefaultTarget(data.CurrentState, data.States)
+	}
 	return data, ""
+}
+
+func kanbanMoveDialogDefaultTarget(source string, allowedTargets []string) string {
+	if len(allowedTargets) == 0 {
+		return ""
+	}
+	preferred := kanbanMoveDialogPreferredTarget(source)
+	if preferred != "" {
+		for _, target := range allowedTargets {
+			target = strings.TrimSpace(target)
+			if normalizeKanbanState(target) == normalizeKanbanState(preferred) {
+				return target
+			}
+		}
+	}
+	for _, target := range allowedTargets {
+		if target = strings.TrimSpace(target); target != "" {
+			return target
+		}
+	}
+	return ""
+}
+
+func kanbanMoveDialogPreferredTarget(source string) string {
+	switch normalizeKanbanState(source) {
+	case "backlog", "blocked":
+		return "Todo"
+	case "todo", "rework":
+		return "In Progress"
+	case "in progress":
+		return "Human Review"
+	case "human review":
+		return "Merging"
+	default:
+		return ""
+	}
 }
 
 func (s *Server) kanbanCommentDialogData(c echo.Context, message string) (templates.KanbanCommentDialogData, string) {

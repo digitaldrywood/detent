@@ -1373,6 +1373,64 @@ func TestDashboardKanbanIntegrationFiltersMoveTargets(t *testing.T) {
 	}
 }
 
+func TestDashboardKanbanDragDropPropagatesTargetState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC)
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress", "Blocked"},
+			AllowedTransitions: map[string][]string{
+				"Todo": {"In Progress"},
+			},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			Pipeline: []telemetry.Issue{
+				{
+					ID:         "I_kw1",
+					Identifier: "digitaldrywood/detent#1",
+					ProjectID:  "detent",
+					Title:      "Drag target card",
+					State:      "Todo",
+				},
+			},
+		},
+	})
+
+	card := compactKanbanCardSection(t, html, "Drag target card")
+	for _, want := range []string{
+		`data-kanban-allowed-targets="inprogress"`,
+		`data-kanban-drag-move-form`,
+		`name="target_state" value="" data-kanban-drag-target-state`,
+		`hx-get="/api/v1/kanban/move"`,
+		`name="current_state" value="Todo"`,
+	} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("drag card missing %q:\n%s", want, card)
+		}
+	}
+
+	for _, want := range []string{
+		`const targetState = form ? form.querySelector("[data-kanban-drag-target-state]") : null;`,
+		`targetState.value = lane.dataset.kanbanDropState || "";`,
+		`feedback("Move blocked by transition policy.");`,
+		`lane.dataset.kanbanDropAllowed = allowed ? "true" : "false";`,
+		`lane.setAttribute("aria-disabled", allowed ? "false" : "true");`,
+		`openActionDialog();`,
+		`form.requestSubmit();`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("drag script missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestDashboardPreservesSnapshotScrollContainersAcrossSSEMorph(t *testing.T) {
 	t.Parallel()
 
