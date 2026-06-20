@@ -17,6 +17,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
+const projectKanbanFixedLaneClass = `project-kanban-lane grid min-h-[12rem] w-[var(--project-kanban-lane-width,18rem)] min-w-[var(--project-kanban-lane-width,18rem)] max-w-[var(--project-kanban-lane-width,18rem)] basis-[var(--project-kanban-lane-width,18rem)] shrink-0 content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`
+
 func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -859,6 +861,7 @@ func TestDashboardRendersFleetKanbanReadOnlyBoard(t *testing.T) {
 		`aria-label="Open docs-site Kanban"`,
 		`href="/projects/detent/kanban"`,
 		`href="/projects/docs-site/kanban"`,
+		projectKanbanFixedLaneClass,
 		`>detent</span>`,
 		`>docs-site</span>`,
 		"Add fleet Kanban",
@@ -966,7 +969,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 	section := projectKanbanSection(t, html)
 	for _, want := range []string{
 		"project-kanban-card-compact",
-		`project-kanban-lane grid min-h-[12rem] w-72 shrink-0 content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
+		projectKanbanFixedLaneClass,
 		`project-kanban-lane-scroll mt-2 grid auto-rows-max min-w-0 max-w-full max-h-[32rem] gap-1.5 overflow-x-hidden overflow-y-auto pr-1`,
 		`project-kanban-card project-kanban-card-compact w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-1.5`,
 		`data-kanban-card-details`,
@@ -1085,7 +1088,7 @@ func TestDashboardProjectKanbanControlsStayInsideLane(t *testing.T) {
 	for _, want := range []string{
 		`project-kanban-lanes mt-3 flex min-w-0 max-w-full flex-nowrap items-start justify-start gap-3 overflow-x-auto pb-2`,
 		`data-preserve-scroll="project-kanban-lanes"`,
-		`project-kanban-lane grid min-h-[12rem] w-72 shrink-0 content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
+		projectKanbanFixedLaneClass,
 		`flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden`,
 		`min-w-0 shrink truncate text-xs font-semibold text-foreground`,
 		`inline-flex size-6 flex-none items-center justify-center`,

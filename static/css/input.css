@@ -121,6 +121,10 @@
     scrollbar-gutter: stable;
   }
 
+  .project-kanban-lanes {
+    --project-kanban-lane-width: 18rem;
+  }
+
   .help-tip-button {
     align-items: center;
     background: var(--color-muted);
