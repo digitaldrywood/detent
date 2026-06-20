@@ -1334,6 +1334,9 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 					@projectKanbanVisibilityDropdown(board, projectKanbanVisibilityKey(data, board))
 				</div>
 			</div>
+			if projectKanbanReadOnlySetupNotice(data) {
+				@projectKanbanReadOnlyNotice(data)
+			}
 			if kanbanIntegrationEnabled(data) {
 				<div id="kanban-feedback" role="status" aria-live="polite" class={ kanbanFeedbackClass(data.Kanban) }>{ kanbanFeedbackText(data.Kanban) }</div>
 			}
@@ -1347,6 +1350,26 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 			}
 		</section>
 	}
+}
+
+templ projectKanbanReadOnlyNotice(data DashboardData) {
+	<div class="mt-3 grid min-w-0 gap-3 rounded-md border border-warning-soft bg-warning-soft/60 p-3 text-sm text-foreground">
+		<div class="flex min-w-0 items-start gap-3">
+			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-5 shrink-0 text-warning"})
+			<div class="grid min-w-0 gap-2">
+				<p class="font-medium text-foreground">This board is currently read-only.</p>
+				<p class="text-muted-foreground">To move cards from Detent, enable Kanban integration in WORKFLOW.md under the existing server block.</p>
+				<p class="text-muted-foreground">Run <code class="rounded-sm bg-card px-1 py-0.5 font-mono text-xs text-foreground">detent doctor --port 0</code> first and confirm status-label, issue-field, and ProjectV2 write checks pass.</p>
+			</div>
+		</div>
+		<div class="grid min-w-0 gap-1.5">
+			<label class="text-xs font-medium text-muted-foreground" for="project-kanban-integration-snippet">WORKFLOW.md</label>
+			<textarea id="project-kanban-integration-snippet" class="min-h-24 w-full resize-none rounded-md border border-border bg-card px-3 py-2 font-mono text-xs text-foreground" readonly autocomplete="off" aria-label="Kanban integration config snippet">{ projectKanbanIntegrationSnippet() }</textarea>
+		</div>
+		if projectKanbanStatesConfigured(data) {
+			<p class="text-xs text-muted-foreground">Add <code class="rounded-sm bg-card px-1 py-0.5 font-mono text-xs text-foreground">allowed_transitions</code> when you want broad manual status editing instead of conservative defaults.</p>
+		}
+	</div>
 }
 
 templ projectKanbanVisibilityDropdown(board projectKanbanBoard, visibilityKey string) {
