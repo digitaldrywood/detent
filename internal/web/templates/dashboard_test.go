@@ -1086,7 +1086,7 @@ func TestDashboardProjectKanbanControlsStayInsideLane(t *testing.T) {
 		`project-kanban-lanes mt-3 grid min-w-0 max-w-full items-start justify-start gap-2 overflow-x-hidden [grid-template-columns:repeat(auto-fill,minmax(14rem,16rem))]`,
 		`project-kanban-lane grid min-h-[12rem] w-full min-w-0 max-w-full content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
 		`flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden`,
-		`min-w-0 flex-1 basis-0 truncate text-xs font-semibold text-foreground`,
+		`min-w-0 shrink truncate text-xs font-semibold text-foreground`,
 		`inline-flex size-6 flex-none items-center justify-center`,
 		`project-kanban-empty-lane`,
 		`dashboard-empty-state min-w-0 max-w-full overflow-hidden`,

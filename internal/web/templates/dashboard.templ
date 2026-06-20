@@ -1661,7 +1661,7 @@ templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } data-project-kanban-lane-title={ lane.Title } { projectKanbanLaneAttributesForData(data, lane)... }>
 		<div class="flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden">
 			<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
-			<h3 class="min-w-0 flex-1 basis-0 truncate text-xs font-semibold text-foreground">{ lane.Title } ({ lane.CountLabel })</h3>
+			<h3 class="min-w-0 shrink truncate text-xs font-semibold text-foreground">{ lane.Title } ({ lane.CountLabel })</h3>
 			<button type="button" class="inline-flex size-6 flex-none items-center justify-center rounded-md border border-transparent text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent aria-pressed:border-accent-soft aria-pressed:bg-accent-soft aria-pressed:text-accent" data-project-kanban-pin-toggle data-project-kanban-pin-active="false" aria-pressed="false" aria-label={ "Pin " + lane.Title + " lane" } title="Pin lane">
 				<span data-project-kanban-pin-icon="unpinned">
 					@icon.PinOff(icon.Props{Class: "size-3.5"})
