@@ -2468,6 +2468,16 @@ templ kanbanScript() {
 				return document.querySelector("[data-kanban-card][data-kanban-issue-id='" + CSS.escape(draggedIssueID) + "']");
 			}
 
+			function activeDragIssueID(event) {
+				if (draggedIssueID) {
+					return draggedIssueID;
+				}
+				if (!event.dataTransfer || typeof event.dataTransfer.getData !== "function") {
+					return "";
+				}
+				return event.dataTransfer.getData("text/plain") || "";
+			}
+
 			function allowedTargetKeys(card) {
 				if (!(card instanceof HTMLElement)) {
 					return [];
@@ -2565,9 +2575,11 @@ templ kanbanScript() {
 			});
 
 			document.addEventListener("dragover", function(event) {
-				if (!draggedIssueID) {
+				const issueID = activeDragIssueID(event);
+				if (!issueID) {
 					return;
 				}
+				draggedIssueID = issueID;
 				const lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
 				if (!lane) {
 					return;
@@ -2586,9 +2598,11 @@ templ kanbanScript() {
 			});
 
 			document.addEventListener("drop", function(event) {
-				if (!draggedIssueID) {
+				const issueID = activeDragIssueID(event);
+				if (!issueID) {
 					return;
 				}
+				draggedIssueID = issueID;
 				const lane = event.target instanceof Element ? event.target.closest("[data-kanban-drop-state]") : null;
 				if (!lane) {
 					return;
