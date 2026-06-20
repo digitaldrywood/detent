@@ -1596,6 +1596,11 @@ func kanbanMoveDialogTargetState(data KanbanMoveDialogData) string {
 	if target := strings.TrimSpace(data.TargetState); target != "" {
 		return target
 	}
+	for _, state := range data.States {
+		if state = strings.TrimSpace(state); state != "" {
+			return state
+		}
+	}
 	return strings.TrimSpace(data.CurrentState)
 }
 

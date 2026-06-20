@@ -491,6 +491,112 @@ func TestKanbanDialogFragmentRoutesRenderForms(t *testing.T) {
 	}
 }
 
+func TestKanbanMoveDialogUsesWorkflowAwareTargetDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name               string
+		currentState       string
+		targetState        string
+		allowedTransitions map[string][]string
+		wantSelected       string
+	}{
+		{
+			name:         "backlog defaults to todo",
+			currentState: "Backlog",
+			allowedTransitions: map[string][]string{
+				"Backlog": {"Blocked", "Todo"},
+			},
+			wantSelected: "Todo",
+		},
+		{
+			name:         "todo defaults to in progress",
+			currentState: "Todo",
+			allowedTransitions: map[string][]string{
+				"Todo": {"Backlog", "In Progress"},
+			},
+			wantSelected: "In Progress",
+		},
+		{
+			name:         "blocked defaults to todo",
+			currentState: "Blocked",
+			allowedTransitions: map[string][]string{
+				"Blocked": {"Cancelled", "Todo"},
+			},
+			wantSelected: "Todo",
+		},
+		{
+			name:         "human review defaults to merging",
+			currentState: "Human Review",
+			allowedTransitions: map[string][]string{
+				"Human Review": {"Blocked", "Merging"},
+			},
+			wantSelected: "Merging",
+		},
+		{
+			name:         "rework defaults to in progress",
+			currentState: "Rework",
+			allowedTransitions: map[string][]string{
+				"Rework": {"Done", "In Progress"},
+			},
+			wantSelected: "In Progress",
+		},
+		{
+			name:         "preferred target falls back to first allowed",
+			currentState: "Todo",
+			allowedTransitions: map[string][]string{
+				"Todo": {"Blocked", "Cancelled"},
+			},
+			wantSelected: "Blocked",
+		},
+		{
+			name:         "explicit target wins",
+			currentState: "Todo",
+			targetState:  "Blocked",
+			allowedTransitions: map[string][]string{
+				"Todo": {"In Progress", "Blocked"},
+			},
+			wantSelected: "Blocked",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			deps := testDeps(t)
+			actionConnector := &kanbanActionConnector{name: "github"}
+			mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+				Mode:               workflowconfig.KanbanModeIntegration,
+				AllowedTransitions: tt.allowedTransitions,
+			}, actionConnector)
+			server, err := web.NewServer(web.Config{}, deps)
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			values := url.Values{
+				"project_id":    {"detent"},
+				"issue_id":      {"I_kw1"},
+				"current_state": {tt.currentState},
+				"identifier":    {"digitaldrywood/detent#1"},
+				"title":         {"Default dialog card"},
+			}
+			if tt.targetState != "" {
+				values.Set("target_state", tt.targetState)
+			}
+			rec := httptest.NewRecorder()
+			req := httptest.NewRequest(http.MethodGet, "/api/v1/kanban/move?"+values.Encode(), nil)
+			req.Header.Set("HX-Request", "true")
+			server.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			assertKanbanDialogSelectedTarget(t, rec.Body.String(), tt.wantSelected)
+		})
+	}
+}
+
 func TestKanbanDialogValidationErrorsRenderInsideDialog(t *testing.T) {
 	t.Parallel()
 
@@ -5847,6 +5953,23 @@ func performForm(t *testing.T, handler http.Handler, method string, path string,
 	req.Header.Set("HX-Request", "true")
 	handler.ServeHTTP(rec, req)
 	return rec
+}
+
+func assertKanbanDialogSelectedTarget(t *testing.T, body string, target string) {
+	t.Helper()
+
+	selectedOptions := regexp.MustCompile(`<option[^>]*\sselected[^>]*>`).FindAllString(body, -1)
+	if len(selectedOptions) != 1 {
+		t.Fatalf("selected options = %#v, want exactly one in:\n%s", selectedOptions, body)
+	}
+	optionPattern := regexp.MustCompile(`<option value="` + regexp.QuoteMeta(target) + `"[^>]*>`)
+	option := optionPattern.FindString(body)
+	if option == "" {
+		t.Fatalf("target option %q missing from dialog:\n%s", target, body)
+	}
+	if !strings.Contains(option, "selected") {
+		t.Fatalf("target option %q is not selected: %s\nbody:\n%s", target, option, body)
+	}
 }
 
 func performDemoForm(t *testing.T, handler http.Handler, path string, scenario string, form url.Values) *httptest.ResponseRecorder {
