@@ -178,11 +178,13 @@ jobs:
         if: steps.policy.outputs.visual == 'true'
         run: npx playwright install --with-deps chromium
 
+      - name: Install visual build generators
+        if: steps.policy.outputs.visual == 'true'
+        run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
+
       - name: Build Detent visual test binary
         if: steps.policy.outputs.visual == 'true'
-        run: |
-          mkdir -p tmp
-          go build -o tmp/detent ./cmd/detent
+        run: make build
 
       - name: Run browser visual gate
         if: steps.policy.outputs.visual == 'true'
