@@ -946,6 +946,38 @@ quick JSON smoke check looks like this:
 curl -H 'X-Detent-Demo-Scenario: fleet-healthy-parallel-work' "$DETENT_URL/api/v1/state"
 ```
 
+Use the capture harness when you need the canonical video-production artifact
+set from one command:
+
+```sh
+detent dev-runtime capture --out ./capture
+```
+
+The harness starts an isolated screenshots demo on an ephemeral local port,
+loads the scenario manifest, captures the canonical still set, and writes a
+deterministic terminal onboarding cast. It does not read or write the operator's
+real `~/.config/detent/global.yaml`. Stable output paths are:
+
+```text
+capture/demo-capture-v1.json
+capture/stills/v1/01-fleet-healthy-parallel-work.png
+capture/stills/v1/02-fleet-kanban-multiproject.png
+capture/stills/v1/03-kanban-full-integration.png
+capture/stills/v1/04-project-active-overview.png
+capture/stills/v1/05-reports-normal-window.png
+capture/stills/v1/06-onboarding-project-selection.png
+capture/terminal/v1/onboarding.cast
+```
+
+By default the browser viewport is `1920x1080` with
+`--device-scale-factor 2`, producing 4K PNGs. Pass `--scenario <id>` one or
+more times for a named subset, `--all-scenarios` for every browser-capturable
+GET scenario in the manifest, `--width`, `--height`, and
+`--device-scale-factor` for alternate framing, or `--demo-clock play` when a
+motion capture needs advancing counters. The PNG capture uses a local
+Chrome-family browser; pass `--browser <path>` or set `DETENT_CAPTURE_BROWSER`
+when auto-detection cannot find one.
+
 The CI browser visual gate runs Playwright when a PR changes UI-sensitive
 paths such as `.github/workflows/ci.yml`, `package.json`, `static/**`,
 `internal/web/**`, `internal/cli/dev_runtime*.go`, `internal/devruntime/**`,
