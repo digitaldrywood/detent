@@ -152,7 +152,8 @@ jobs:
 
       - name: Skip browser visual gate
         if: steps.policy.outputs.visual != 'true'
-        run: echo "Browser visual gate skipped: ${{ steps.policy.outputs.reason }}."
+        run: |
+          echo "Browser visual gate skipped: ${{ steps.policy.outputs.reason }}."
 
       - uses: actions/checkout@v5
         if: steps.policy.outputs.visual == 'true'
