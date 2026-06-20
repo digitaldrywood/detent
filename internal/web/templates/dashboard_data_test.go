@@ -1428,6 +1428,54 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 	}
 }
 
+func TestPRPipelineLanesPreserveTrackerRefreshRows(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC)
+	stageAt := now.Add(-2 * time.Minute)
+	tests := []struct {
+		name  string
+		state string
+	}{
+		{name: "handoff", state: "Handoff"},
+		{name: "pending tracker refresh", state: "Pending Tracker Refresh"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := collectPipelineCards(prPipelineLanes(telemetry.Snapshot{
+				GeneratedAt: now,
+				Pipeline: []telemetry.Issue{
+					{
+						ID:             "issue-550",
+						Identifier:     "digitaldrywood/detent#550",
+						Title:          "Keep tracker row visible",
+						State:          tt.state,
+						StageUpdatedAt: &stageAt,
+						PullRequest: &telemetry.PullRequest{
+							Number:           552,
+							State:            "OPEN",
+							CIStatus:         "success",
+							CodexReviewState: "clean",
+						},
+					},
+				},
+			}))
+			want := []pipelineCardSnapshot{
+				{Lane: "Human Review", IssueNumber: "#552", Title: "Keep tracker row visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s"},
+			}
+			if len(got) != len(want) {
+				t.Fatalf("pipeline cards len = %d, want %d; got %#v", len(got), len(want), got)
+			}
+			if got[0] != want[0] {
+				t.Fatalf("pipeline card = %#v, want %#v", got[0], want[0])
+			}
+		})
+	}
+}
+
 func TestPRPipelineLanesDoNotTreatCompletedSessionAsCurrentDone(t *testing.T) {
 	t.Parallel()
 

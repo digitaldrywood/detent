@@ -2420,7 +2420,7 @@ func prunePRPipelineCards(cardsByLane map[string][]prPipelineCard) {
 
 func prPipelineLaneID(state string) string {
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(state), " ", "")) {
-	case "humanreview", "review", "inreview":
+	case "humanreview", "review", "inreview", "handoff", "pendingtrackerrefresh":
 		return "human-review"
 	case "merging":
 		return "merging"
