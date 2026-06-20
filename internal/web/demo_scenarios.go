@@ -672,6 +672,9 @@ func demoSnapshotForScenario(scenario demoScenario) telemetry.Snapshot {
 	case "handoff-window":
 		snapshot = demoHandoffWindowSnapshot()
 	}
+	if scenario.Variant == "terminal" {
+		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, "demo-cancelled", "digitaldrywood/detent-core#5259", "Cancelled alternate dashboard theme", "Cancelled", 48))
+	}
 	if scenario.ProjectID != "" && scenario.ProjectID != demoPrimaryProjectID && scenario.Variant == "project-empty" {
 		snapshot.Projects = demoProjectSnapshots(demoProjectsForVariant("project-empty"))
 	}
