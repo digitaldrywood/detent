@@ -80,6 +80,7 @@ func newDevRuntimeCommand(host *string, port *int, opts options) *cobra.Command 
 	cmd.Flags().StringVar(&demoProjectID, "demo-project", "", "generated primary project ID for isolated demos; screenshots stays dogfood")
 	cmd.Flags().BoolVar(&allowLiveDB, "allow-live-db", false, "allow --db to point at the operator's live ~/.detent/detent.db")
 	cmd.Flags().BoolVar(&allowProductionPort, "allow-production-port", false, "allow binding the isolated runtime to the live dogfood port")
+	cmd.AddCommand(newDevRuntimeCaptureCommand(opts))
 	return cmd
 }
 

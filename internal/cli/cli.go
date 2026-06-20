@@ -220,6 +220,7 @@ type options struct {
 	lookupEnv     func(string) string
 	ghAuthToken   func(context.Context) (string, error)
 	configureLog  LoggerFunc
+	captureDemo   demoCaptureFunc
 	version       string
 	build         buildinfo.Info
 	stdoutTTY     func() bool
@@ -429,6 +430,7 @@ func defaultOptions() options {
 		signal:      noSignal,
 		lookupEnv:   os.Getenv,
 		ghAuthToken: defaultGHAuthToken,
+		captureDemo: runDemoCapture,
 		stdoutTTY:   stdoutIsTTY,
 	}
 }
