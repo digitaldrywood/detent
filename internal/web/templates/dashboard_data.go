@@ -75,6 +75,8 @@ type KanbanData struct {
 	ProjectID          string
 	States             []string
 	AllowedTransitions map[string][]string
+	Feedback           string
+	FeedbackKind       string
 }
 
 type KanbanMoveDialogData struct {
@@ -1483,6 +1485,26 @@ func projectKanbanIssueKey(issue telemetry.Issue) string {
 
 func kanbanIntegrationEnabled(data DashboardData) bool {
 	return strings.EqualFold(strings.TrimSpace(data.Kanban.Mode), "integration")
+}
+
+func kanbanFeedbackText(data KanbanData) string {
+	feedback := strings.TrimSpace(data.Feedback)
+	if feedback == "" {
+		return "Ready."
+	}
+	return feedback
+}
+
+func kanbanFeedbackClass(data KanbanData) string {
+	class := "mt-3 rounded-md border px-3 py-2 text-sm "
+	switch strings.TrimSpace(data.FeedbackKind) {
+	case "success":
+		return class + "border-success bg-success-soft text-success"
+	case "danger", "error":
+		return class + "border-danger bg-danger-soft text-danger"
+	default:
+		return class + "border-border bg-muted/60 text-muted-foreground"
+	}
 }
 
 func kanbanProjectID(data DashboardData) string {

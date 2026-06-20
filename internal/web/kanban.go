@@ -56,6 +56,7 @@ type kanbanCommentRequest struct {
 
 const (
 	kanbanDialogContentTarget = "#kanban-dialog-content"
+	kanbanProjectBoardTarget  = "#project-kanban"
 	kanbanDialogSucceeded     = "kanbanActionSucceeded"
 )
 
@@ -182,7 +183,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		case "kanban-read-only":
 			return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
 		default:
-			return kanbanFeedback(c, http.StatusOK, "Moved card to In Progress.")
+			return s.demoKanbanMoveSuccess(c, scenario)
 		}
 	}
 	req, response, status := parseKanbanMoveRequest(c)
@@ -273,8 +274,78 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 		s.logger.WarnContext(c.Request().Context(), "kanban move failed", "project", req.projectID, "issue_id", req.issueID, "target_state", req.targetState, "error", err)
 		return kanbanFeedback(c, http.StatusBadGateway, "Move failed: "+err.Error())
 	}
-	s.requestKanbanRefresh(c.Request().Context())
-	return kanbanFeedback(c, http.StatusOK, "Moved card to "+req.targetState+".")
+	return s.kanbanMoveSuccess(c, req, "Moved card to "+req.targetState+".")
+}
+
+func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, message string) error {
+	ctx := c.Request().Context()
+	s.requestKanbanRefresh(ctx)
+	if c.Request().Header.Get("HX-Request") != "true" || strings.TrimSpace(req.projectID) == "" {
+		return kanbanFeedback(c, http.StatusOK, message)
+	}
+
+	data, ok := s.projectDashboardData(ctx, req.projectID, s.latestSnapshot(ctx))
+	if !ok {
+		return kanbanFeedback(c, http.StatusOK, message)
+	}
+	data.Kanban.Feedback = message
+	data.Kanban.FeedbackKind = "success"
+
+	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
+	c.Response().Header().Set("HX-Reswap", "outerHTML")
+	return render(c, templates.ProjectKanbanSnapshot(data))
+}
+
+func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID string, snapshot telemetry.Snapshot) telemetry.Snapshot {
+	if s.kanbanMutations == nil {
+		return snapshot
+	}
+	snapshot = cloneKanbanIssueSlices(snapshot)
+	applySnapshotKanbanIssues(&snapshot, func(issue *telemetry.Issue) {
+		if issue == nil || strings.TrimSpace(issue.ID) == "" || !sameKanbanProject(*issue, projectID, snapshot.Project.ID) {
+			return
+		}
+		state := s.kanbanMutations.cardState(lockKey, issue.ID, issue.State)
+		if strings.TrimSpace(state) != "" {
+			issue.State = state
+		}
+	})
+	return snapshot
+}
+
+func cloneKanbanIssueSlices(snapshot telemetry.Snapshot) telemetry.Snapshot {
+	snapshot.BoardIssues = append([]telemetry.Issue(nil), snapshot.BoardIssues...)
+	snapshot.Pipeline = append([]telemetry.Issue(nil), snapshot.Pipeline...)
+	snapshot.Running = append([]telemetry.Running(nil), snapshot.Running...)
+	snapshot.Queue = append([]telemetry.Queued(nil), snapshot.Queue...)
+	snapshot.Blocked = append([]telemetry.Blocked(nil), snapshot.Blocked...)
+	snapshot.Completed = append([]telemetry.Completed(nil), snapshot.Completed...)
+	return snapshot
+}
+
+func applySnapshotKanbanIssues(snapshot *telemetry.Snapshot, apply func(*telemetry.Issue)) {
+	if snapshot == nil || apply == nil {
+		return
+	}
+	for i := range snapshot.BoardIssues {
+		apply(&snapshot.BoardIssues[i])
+	}
+	for i := range snapshot.Pipeline {
+		apply(&snapshot.Pipeline[i])
+	}
+	for i := range snapshot.Running {
+		apply(&snapshot.Running[i].Issue)
+	}
+	for i := range snapshot.Queue {
+		apply(&snapshot.Queue[i].Issue)
+	}
+	for i := range snapshot.Blocked {
+		apply(&snapshot.Blocked[i].Issue)
+	}
+	for i := range snapshot.Completed {
+		apply(&snapshot.Completed[i].Issue)
+	}
 }
 
 func (s *Server) apiKanbanCommentDialog(c echo.Context) error {

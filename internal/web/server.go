@@ -345,6 +345,9 @@ func cleanProjectRouteParam(projectID string) string {
 
 func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
 	instanceName := s.instanceName()
+	if target, _, _ := s.kanbanActionTarget(""); target.key != "" {
+		snapshot = s.kanbanSnapshotWithPendingStates(target.key, "", snapshot)
+	}
 	return templates.DashboardData{
 		Title:           instancePageTitle(instanceName, "Detent"),
 		ApplicationName: applicationName(instanceName),
@@ -374,6 +377,9 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		URL:         project.URL,
 		Color:       project.Color,
 	})
+	if target, _, _ := s.kanbanActionTarget(project.ID); target.key != "" {
+		scopedSnapshot = s.kanbanSnapshotWithPendingStates(target.key, project.ID, scopedSnapshot)
+	}
 	name := strings.TrimSpace(project.Name)
 	if name == "" {
 		name = strings.TrimSpace(project.ID)
