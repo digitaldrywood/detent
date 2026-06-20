@@ -962,13 +962,14 @@ npx playwright install chromium
 make visual-e2e
 ```
 
-Committed image baselines are authoritative for Ubuntu/Chromium. On non-Linux
-hosts, `make visual-e2e` still runs the browser layout assertions and captures
-evidence, but skips pixel comparison unless `DETENT_VISUAL_STRICT=1` is set.
+Committed image baselines are authoritative for GitHub Actions Ubuntu
+x64/Chromium. On non-Linux hosts, `make visual-e2e` still runs the browser
+layout assertions and captures evidence, but skips pixel comparison unless
+`DETENT_VISUAL_STRICT=1` is set.
 
 Update baselines only when the visual change is intentional. Run the update in
-the same Ubuntu/Chromium environment as CI, then review and commit the changed
-files under `tests/visual/__screenshots__/chromium/`:
+the same Ubuntu x64/Chromium environment as CI, then review and commit the
+changed files under `tests/visual/__screenshots__/chromium/`:
 
 ```sh
 make visual-e2e-update

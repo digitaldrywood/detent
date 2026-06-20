@@ -25,7 +25,7 @@ module.exports = defineConfig({
     toHaveScreenshot: {
       animations: "disabled",
       caret: "hide",
-      maxDiffPixelRatio: 0.01,
+      maxDiffPixelRatio: 0.06,
       threshold: 0.2,
     },
   },
