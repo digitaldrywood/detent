@@ -75,6 +75,7 @@ type KanbanData struct {
 	Mode               string
 	ProjectID          string
 	States             []string
+	TerminalStates     []string
 	AllowedTransitions map[string][]string
 	Feedback           string
 	FeedbackKind       string
@@ -1238,19 +1239,21 @@ func activityValue(value string, fallback string) string {
 func projectKanbanBoardView(data DashboardData) projectKanbanBoard {
 	cardsByState := projectKanbanCardsByState(data)
 	states := projectKanbanStateOrder(data.Kanban.States, cardsByState)
+	terminalStates := projectKanbanTerminalStateSet(data.Kanban.TerminalStates)
 	allLanes := make([]projectKanbanLane, 0, len(states))
 	visibleLanes := make([]projectKanbanLane, 0, len(states))
 	emptyLanes := make([]projectKanbanLane, 0, len(states))
 	total := 0
 	for _, state := range states {
 		cards := cardsByState[projectKanbanStateKey(state)]
+		defaultVisible := len(cards) > 0 && !projectKanbanTerminalState(state, terminalStates)
 		lane := projectKanbanLane{
 			ID:             projectKanbanLaneID(state),
 			Title:          state,
 			CountLabel:     formatCount(len(cards)),
 			DotClass:       boardStateDotClass(state),
 			Empty:          len(cards) == 0,
-			DefaultVisible: len(cards) > 0,
+			DefaultVisible: defaultVisible,
 			Cards:          cards,
 		}
 		allLanes = append(allLanes, lane)
@@ -1259,7 +1262,9 @@ func projectKanbanBoardView(data DashboardData) projectKanbanBoard {
 			continue
 		}
 		total += len(cards)
-		visibleLanes = append(visibleLanes, lane)
+		if lane.DefaultVisible {
+			visibleLanes = append(visibleLanes, lane)
+		}
 	}
 	return projectKanbanBoard{
 		AllLanes:        allLanes,
@@ -1782,6 +1787,45 @@ func detentKanbanStateOrder() []string {
 	}
 }
 
+func projectKanbanTerminalStateSet(states []string) map[string]struct{} {
+	if len(states) == 0 {
+		states = []string{"Done", "Cancelled", "Canceled", "Closed", "Duplicate"}
+	}
+	out := map[string]struct{}{}
+	for _, state := range states {
+		for _, key := range projectKanbanTerminalStateKeys(state) {
+			out[key] = struct{}{}
+		}
+	}
+	return out
+}
+
+func projectKanbanTerminalState(state string, terminals map[string]struct{}) bool {
+	for _, key := range projectKanbanTerminalStateKeys(state) {
+		if _, ok := terminals[key]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func projectKanbanTerminalStateKeys(state string) []string {
+	display := projectKanbanStateTitle(state)
+	if display == "" {
+		return nil
+	}
+	key := projectKanbanStateKey(display)
+	keys := []string{key}
+	keys = append(keys, projectKanbanStateAliases(key)...)
+	switch key {
+	case "cancelled":
+		keys = append(keys, "canceled")
+	case "done":
+		keys = append(keys, "complete", "completed", "closed")
+	}
+	return keys
+}
+
 func projectKanbanConfiguredStateMap(states []string) map[string]string {
 	out := map[string]string{}
 	for _, state := range states {
@@ -2043,9 +2087,10 @@ func projectKanbanLaneClass(lane projectKanbanLane) string {
 
 func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLane) templ.Attributes {
 	attrs := templ.Attributes{
-		"data-project-kanban-lane-empty":   projectKanbanBool(lane.Empty),
-		"data-project-kanban-lane-pinned":  "false",
-		"data-project-kanban-lane-visible": projectKanbanBool(lane.DefaultVisible),
+		"data-project-kanban-lane-empty":           projectKanbanBool(lane.Empty),
+		"data-project-kanban-lane-default-visible": projectKanbanBool(lane.DefaultVisible),
+		"data-project-kanban-lane-pinned":          "false",
+		"data-project-kanban-lane-visible":         projectKanbanBool(lane.DefaultVisible),
 	}
 	if lane.Empty {
 		attrs["data-project-kanban-empty-lane"] = true

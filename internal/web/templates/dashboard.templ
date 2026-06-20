@@ -1392,7 +1392,7 @@ templ projectKanbanVisibilityDropdown(board projectKanbanBoard, visibilityKey st
 			<div class="grid gap-1">
 				for _, lane := range board.AllLanes {
 					<label class="flex min-h-8 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted">
-						<input class="size-4 shrink-0 accent-accent disabled:opacity-50" type="checkbox" name="visible_lane" value={ lane.ID } checked?={ lane.DefaultVisible } disabled?={ lane.DefaultVisible } data-project-kanban-visibility-checkbox data-project-kanban-visibility-default={ projectKanbanBool(lane.DefaultVisible) } autocomplete="off"/>
+						<input class="size-4 shrink-0 accent-accent" type="checkbox" name="visible_lane" value={ lane.ID } checked?={ lane.DefaultVisible } data-project-kanban-visibility-checkbox data-project-kanban-visibility-default={ projectKanbanBool(lane.DefaultVisible) } autocomplete="off"/>
 						<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
 						<span class="min-w-0 flex-1 truncate">{ lane.Title }</span>
 						<span class="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">{ lane.CountLabel }</span>
@@ -1407,7 +1407,7 @@ templ projectKanbanVisibilityScript() {
 	<script>
 		(function() {
 			const storagePrefix = "detent.ui.projectKanban.visibleLanes.";
-			const storageVersion = 1;
+			const storageVersion = 2;
 
 			function visibilityStorage() {
 				try {
@@ -1433,31 +1433,60 @@ templ projectKanbanVisibilityScript() {
 				return lane.dataset.projectKanbanLane || "";
 			}
 
-			function laneEmpty(lane) {
-				return lane.dataset.projectKanbanLaneEmpty === "true";
+			function laneDefaultVisible(lane) {
+				return lane.dataset.projectKanbanLaneDefaultVisible === "true";
 			}
 
 			function laneTitle(lane) {
 				return lane.dataset.projectKanbanLaneTitle || "lane";
 			}
 
-			function savedLaneIDs(board) {
+			function laneIDSet(ids) {
+				return new Set(ids.filter(function(id) {
+					return typeof id === "string" && id.trim() !== "";
+				}));
+			}
+
+			function defaultLaneIDs(board) {
+				const ids = new Set();
+				boardLanes(board).forEach(function(lane) {
+					const id = laneID(lane);
+					if (id && laneDefaultVisible(lane)) {
+						ids.add(id);
+					}
+				});
+				return ids;
+			}
+
+			function storedLaneIDs(board) {
 				const store = visibilityStorage();
 				if (!store) {
-					return new Set();
+					return null;
 				}
 				let parsed = null;
 				try {
 					parsed = JSON.parse(store.getItem(storageKey(board)) || "");
 				} catch (error) {
-					return new Set();
+					return null;
 				}
-				if (!parsed || parsed.v !== storageVersion || !Array.isArray(parsed.lanes)) {
-					return new Set();
+				if (!parsed || !Array.isArray(parsed.lanes)) {
+					return null;
 				}
-				return new Set(parsed.lanes.filter(function(id) {
-					return typeof id === "string" && id.trim() !== "";
-				}));
+				if (parsed.v === storageVersion) {
+					return laneIDSet(parsed.lanes);
+				}
+				if (parsed.v === 1) {
+					const migrated = defaultLaneIDs(board);
+					laneIDSet(parsed.lanes).forEach(function(id) {
+						migrated.add(id);
+					});
+					return migrated;
+				}
+				return null;
+			}
+
+			function visibleLaneIDs(board) {
+				return storedLaneIDs(board) || defaultLaneIDs(board);
 			}
 
 			function saveLaneIDs(board, ids) {
@@ -1466,43 +1495,45 @@ templ projectKanbanVisibilityScript() {
 					return;
 				}
 				const values = Array.from(ids).filter(Boolean);
-				if (values.length === 0) {
-					store.removeItem(storageKey(board));
-					return;
-				}
 				store.setItem(storageKey(board), JSON.stringify({ v: storageVersion, lanes: values }));
+			}
+
+			function resetLaneIDs(board) {
+				const store = visibilityStorage();
+				if (store) {
+					store.removeItem(storageKey(board));
+				}
 			}
 
 			function checkboxLaneID(checkbox) {
 				return checkbox.value || "";
 			}
 
-			function updatePinButton(button, pinned, title) {
-				button.dataset.projectKanbanPinActive = pinned ? "true" : "false";
-				button.setAttribute("aria-pressed", pinned ? "true" : "false");
-				button.setAttribute("aria-label", (pinned ? "Unpin " : "Pin ") + title + " lane");
-				button.title = pinned ? "Unpin lane" : "Pin lane";
+			function updatePinButton(button, visible, title) {
+				button.dataset.projectKanbanPinActive = visible ? "true" : "false";
+				button.setAttribute("aria-pressed", visible ? "true" : "false");
+				button.setAttribute("aria-label", (visible ? "Hide " : "Show ") + title + " lane");
+				button.title = visible ? "Hide lane" : "Show lane";
 				button.querySelectorAll("[data-project-kanban-pin-icon]").forEach(function(icon) {
 					if (!(icon instanceof HTMLElement)) {
 						return;
 					}
-					icon.hidden = icon.dataset.projectKanbanPinIcon !== (pinned ? "pinned" : "unpinned");
+					icon.hidden = icon.dataset.projectKanbanPinIcon !== (visible ? "pinned" : "unpinned");
 				});
 			}
 
 			function applyBoard(board) {
-				const saved = savedLaneIDs(board);
+				const visibleIDs = visibleLaneIDs(board);
 				let visibleCount = 0;
 				const lanes = boardLanes(board);
 				lanes.forEach(function(lane) {
 					const id = laneID(lane);
-					const pinned = saved.has(id);
-					const visible = !laneEmpty(lane) || pinned;
+					const visible = visibleIDs.has(id);
 					lane.dataset.projectKanbanLaneVisible = visible ? "true" : "false";
-					lane.dataset.projectKanbanLanePinned = pinned ? "true" : "false";
+					lane.dataset.projectKanbanLanePinned = visible ? "true" : "false";
 					lane.querySelectorAll("[data-project-kanban-pin-toggle]").forEach(function(button) {
 						if (button instanceof HTMLButtonElement) {
-							updatePinButton(button, pinned, laneTitle(lane));
+							updatePinButton(button, visible, laneTitle(lane));
 						}
 					});
 					if (visible) {
@@ -1513,10 +1544,9 @@ templ projectKanbanVisibilityScript() {
 					if (!(input instanceof HTMLInputElement)) {
 						return;
 					}
-					const defaultVisible = input.dataset.projectKanbanVisibilityDefault === "true";
-					input.checked = defaultVisible || saved.has(checkboxLaneID(input));
-					input.disabled = defaultVisible;
-					input.setAttribute("aria-disabled", defaultVisible ? "true" : "false");
+					input.checked = visibleIDs.has(checkboxLaneID(input));
+					input.disabled = false;
+					input.setAttribute("aria-disabled", "false");
 				});
 				const count = board.querySelector("[data-project-kanban-visibility-count]");
 				if (count) {
@@ -1533,7 +1563,7 @@ templ projectKanbanVisibilityScript() {
 				if (!board) {
 					return;
 				}
-				const saved = savedLaneIDs(board);
+				const saved = visibleLaneIDs(board);
 				const id = checkboxLaneID(checkbox);
 				if (!id) {
 					return;
@@ -1557,7 +1587,7 @@ templ projectKanbanVisibilityScript() {
 				if (!id) {
 					return;
 				}
-				const saved = savedLaneIDs(board);
+				const saved = visibleLaneIDs(board);
 				if (saved.has(id)) {
 					saved.delete(id);
 				} else {
@@ -1580,8 +1610,10 @@ templ projectKanbanVisibilityScript() {
 							saved.add(id);
 						}
 					});
+					saveLaneIDs(board, saved);
+				} else {
+					resetLaneIDs(board);
 				}
-				saveLaneIDs(board, saved);
 				applyBoard(board);
 			}
 

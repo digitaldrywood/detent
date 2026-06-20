@@ -681,6 +681,7 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 		Mode:               mode,
 		ProjectID:          strings.TrimSpace(projectID),
 		States:             states,
+		TerminalStates:     target.workflow.Tracker.TerminalStates,
 		AllowedTransitions: kanbanAllowedTransitions(target.workflow, states),
 	}
 }

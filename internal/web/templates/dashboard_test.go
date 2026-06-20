@@ -1183,6 +1183,12 @@ func TestDashboardProjectKanbanVisibilityControllerSurvivesHTMXSwaps(t *testing.
 		`function closeVisibilityMenusExcept(activeMenu)`,
 		`[data-project-kanban-visibility-close]`,
 		`function toggleLanePin(button)`,
+		`storageVersion = 2`,
+		`function defaultLaneIDs(board)`,
+		`function storedLaneIDs(board)`,
+		`parsed.v === 1`,
+		`function resetLaneIDs(board)`,
+		`data-project-kanban-lane-default-visible`,
 		`[data-project-kanban-pin-toggle]`,
 		`data-project-kanban-lane-pinned`,
 		`aria-pressed`,
@@ -1194,6 +1200,77 @@ func TestDashboardProjectKanbanVisibilityControllerSurvivesHTMXSwaps(t *testing.
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing persistent kanban visibility controller %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardProjectKanbanPopulatedTerminalLaneStartsHiddenAndUsable(t *testing.T) {
+	t.Parallel()
+
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:           "read_only",
+			States:         []string{"Todo", "Done", "Cancelled"},
+			TerminalStates: []string{"Done", "Cancelled"},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "todo",
+					Identifier: "digitaldrywood/detent#496",
+					Title:      "Active work",
+					State:      "Todo",
+				},
+				{
+					ID:         "cancelled",
+					Identifier: "digitaldrywood/detent#584",
+					Title:      "Cancelled work",
+					State:      "Cancelled",
+				},
+			},
+		},
+	})
+	section := projectKanbanSection(t, html)
+
+	cancelledLane := regexp.MustCompile(`<section[^>]*data-project-kanban-lane-title="Cancelled"[^>]*>`).FindString(section)
+	if cancelledLane == "" {
+		t.Fatalf("cancelled lane missing:\n%s", section)
+	}
+	for _, want := range []string{
+		`data-project-kanban-lane-empty="false"`,
+		`data-project-kanban-lane-visible="false"`,
+	} {
+		if !strings.Contains(cancelledLane, want) {
+			t.Fatalf("cancelled lane missing %q:\n%s", want, cancelledLane)
+		}
+	}
+
+	cancelledInput := regexp.MustCompile(`<input[^>]*value="cancelled"[^>]*>`).FindString(section)
+	if cancelledInput == "" {
+		t.Fatalf("cancelled visibility checkbox missing:\n%s", section)
+	}
+	for _, want := range []string{
+		`data-project-kanban-visibility-default="false"`,
+	} {
+		if !strings.Contains(cancelledInput, want) {
+			t.Fatalf("cancelled checkbox missing %q:\n%s", want, cancelledInput)
+		}
+	}
+	for _, forbidden := range []string{`checked`, `disabled`} {
+		if strings.Contains(cancelledInput, forbidden) {
+			t.Fatalf("cancelled checkbox must remain usable and unchecked, found %q:\n%s", forbidden, cancelledInput)
+		}
+	}
+	for _, want := range []string{
+		`<span class="rounded-full bg-muted px-1.5 py-0.5 font-mono" data-project-kanban-visibility-count>1/3</span>`,
+		`Cancelled (1)`,
+		`Cancelled work`,
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("project Kanban missing %q:\n%s", want, section)
 		}
 	}
 }

@@ -412,6 +412,7 @@ func demoKanbanData(scenario demoScenario, projectID string) templates.KanbanDat
 		Mode:               mode,
 		ProjectID:          projectID,
 		States:             states,
+		TerminalStates:     []string{"Done", "Cancelled"},
 		AllowedTransitions: demoKanbanTransitions(states),
 	}
 }
