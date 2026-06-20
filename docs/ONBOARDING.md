@@ -813,9 +813,9 @@ mv "$CONFIRMATION_FILE" "$ONBOARDING_DIR/answers.env"
 printf '%s\n' \
   'MUTATION_CONFIRMED=true' \
   >> "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
-detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 ```
 
 Run this gate before every mutating phase and before every one-off mutating
@@ -826,6 +826,7 @@ detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --pha
 test -f "$ONBOARDING_DIR/answers.env"
 rg '^DETENT_ONBOARDING_MODE=' "$ONBOARDING_DIR/answers.env"
 rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -870,6 +871,7 @@ or label resources, rerun the Phase 2.5 gate:
 ```sh
 test -f "$ONBOARDING_DIR/answers.env"
 rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
@@ -881,6 +883,7 @@ link`, `gh project field-create`, or `gh project item-edit`, also run:
 rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
 rg '^BOARD_MODE=(reuse|create)$' "$ONBOARDING_DIR/answers.env"
 rg '^PROJECT_OWNER=' "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
@@ -904,6 +907,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    rg '^BOARD_MODE=create$' "$ONBOARDING_DIR/answers.env"
    rg '^PROJECT_OWNER=' "$ONBOARDING_DIR/answers.env"
    rg '^PROJECT_TITLE=' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -921,6 +925,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    ```sh
    rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -950,6 +955,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    ```sh
    rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1066,6 +1072,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    ```sh
    rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1112,6 +1119,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```sh
    rg '^GITHUB_MODE=issue_field$' "$ONBOARDING_DIR/answers.env"
    rg '^STATUS_FIELD_NAME=' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
    ```
@@ -1145,6 +1153,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```sh
    rg '^GITHUB_MODE=label$' "$ONBOARDING_DIR/answers.env"
    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
    ```
@@ -1203,6 +1212,7 @@ Before writing, overwriting, or editing `<source-root>/WORKFLOW.md`, rerun:
 ```sh
 test -f "$ONBOARDING_DIR/answers.env"
 rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
@@ -1434,6 +1444,7 @@ running `detent doctor` with configured write probes, rerun:
 ```sh
 test -f "$ONBOARDING_DIR/answers.env"
 rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
@@ -1462,6 +1473,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `weight` are the scheduling answers from Phase 2. Verify:
 
    ```sh
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1596,6 +1608,7 @@ test -f "$ONBOARDING_DIR/answers.env"
 rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
 rg '^INTAKE_GH_FLAGS=' "$ONBOARDING_DIR/answers.env"
 rg '^INITIAL_STATUS=' "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
@@ -1631,6 +1644,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    ```sh
    rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1666,6 +1680,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```sh
    rg '^GITHUB_MODE=issue_field$' "$ONBOARDING_DIR/answers.env"
    rg '^STATUS_FIELD_NAME=' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1695,6 +1710,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```sh
    rg '^GITHUB_MODE=label$' "$ONBOARDING_DIR/answers.env"
    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1735,6 +1751,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
    ```sh
    rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1752,6 +1769,7 @@ or moving a smoke-test issue to `Todo`, rerun:
 ```sh
 test -f "$ONBOARDING_DIR/answers.env"
 rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
@@ -1763,6 +1781,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    it exposes every interface. Verify:
 
    ```sh
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1824,6 +1843,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```sh
    # ProjectV2 mode:
    rg '^GITHUB_MODE=project_v2$' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1848,6 +1868,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    # Boardless issue-field mode:
    rg '^GITHUB_MODE=issue_field$' "$ONBOARDING_DIR/answers.env"
    rg '^STATUS_FIELD_NAME=' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1861,6 +1882,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    # Label mode:
    rg '^GITHUB_MODE=label$' "$ONBOARDING_DIR/answers.env"
    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
+   detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
    rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
    awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 
@@ -1912,6 +1934,7 @@ write-probe preflight, or moves issues, rerun:
 ```sh
 test -f "$ONBOARDING_DIR/answers.env"
 rg '^GITHUB_MODE=(project_v2|issue_field|label)$' "$ONBOARDING_DIR/answers.env"
+detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```

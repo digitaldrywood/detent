@@ -26,6 +26,7 @@ func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
 	assertContains(t, onboarding, "rg '^PROJECT_NUMBER='")
 	assertContains(t, onboarding, "rg '^PROJECT_TITLE='")
 	assertContains(t, onboarding, "rg '^STATUS_LABEL_PREFIX='")
+	assertMutationBlocksUseValidator(t, onboarding)
 
 	assertContains(t, readme, "do not create, link, mutate, or delete GitHub Projects, issue fields, labels")
 	assertContainsWords(t, readme, "until Phase 2 answers are recorded in `answers.env`")
@@ -57,4 +58,34 @@ func assertContainsWords(t *testing.T, text string, want string) {
 	normalizedText := strings.Join(strings.Fields(text), " ")
 	normalizedWant := strings.Join(strings.Fields(want), " ")
 	assertContains(t, normalizedText, normalizedWant)
+}
+
+func assertMutationBlocksUseValidator(t *testing.T, text string) {
+	t.Helper()
+
+	lines := strings.Split(text, "\n")
+	inFence := false
+	fenceStart := 0
+	var block []string
+	for index, line := range lines {
+		if strings.HasPrefix(strings.TrimSpace(line), "```") {
+			if !inFence {
+				inFence = true
+				fenceStart = index + 1
+				block = nil
+				continue
+			}
+			blockText := strings.Join(block, "\n")
+			if strings.Contains(blockText, "rg '^MUTATION_CONFIRMED=true$'") &&
+				!strings.Contains(blockText, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation`) {
+				t.Fatalf("mutation confirmation block starting at line %d missing validate-answers", fenceStart)
+			}
+			inFence = false
+			block = nil
+			continue
+		}
+		if inFence {
+			block = append(block, line)
+		}
+	}
 }
