@@ -401,6 +401,7 @@ detent --format json config path`),
 			return nil
 		}),
 		newConfigCommand(&configPath, opts),
+		newOnboardingCommand(),
 		newPromoteCommand(&configPath, opts),
 		newRemoveProjectCommand(&configPath, opts),
 	)
