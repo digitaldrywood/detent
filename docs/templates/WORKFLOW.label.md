@@ -80,6 +80,14 @@ gate:
 server:
   host: 127.0.0.1
   port: 4000
+  kanban:
+    mode: integration
+    # Use mode: read_only for observer/shared dashboards or until write probes pass.
+    # Optional allowed_transitions expose broader manual status editing.
+    # allowed_transitions:
+    #   In Progress: [Blocked, Cancelled]
+    #   Rework: [Blocked, Cancelled]
+    #   Merging: [Blocked, Cancelled]
 hooks:
   timeout_ms: 60000
 ---

@@ -668,10 +668,12 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
    ```
 
-5. **Kanban interaction.** Ask: "Should Detent's Kanban be read-only or allow
-   GitHub mutations from the dashboard?" Recommend `read_only`. Use
-   `integration` only in a Detent release that supports it and only when trusted
-   operators should move cards and post issue or PR comments from Detent.
+5. **Kanban interaction.** Ask: "Should Detent's project Kanban be read-only or
+   allow GitHub mutations from the dashboard?" Keep fleet `/kanban` read-only.
+   For a project-scoped board on an operator-owned local or private Detent
+   instance, recommend `integration` after `detent doctor` proves the relevant
+   write probes. For a shared observer dashboard, or when write probes are
+   missing or failing, recommend `read_only` until writes are proven.
    Integration mode requires doctor to prove ProjectV2 status write or
    issue-field status write, or status-label update, plus issue/PR comment
    write. Verify:
@@ -1426,19 +1428,31 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
 
 3. **Set Kanban interaction mode when supported.** Do not add this block to
    current releases unless the Detent binary supports Kanban interaction
-   configuration. When supported, keep `read_only` as the default and enable
-   `integration` only for trusted operators after doctor proves status write and
+   configuration. Maintained templates set project boards to `integration` for
+   a trusted operator-owned local or private Detent instance. Keep fleet
+   `/kanban` read-only; this setting only controls `/projects/<id>/kanban`.
+   For a shared observer dashboard, or when write probes are not configured or
+   not passing, set `read_only` until `detent doctor` proves status write and
    issue/PR comment write. Verify:
 
    ```yaml
    server:
      kanban:
-       mode: read_only
-       # mode: integration
+       mode: integration
+       # Use mode: read_only for observer/shared dashboards or until write probes pass.
+       # Optional allowed_transitions expose broader manual status editing.
+       # allowed_transitions:
+       #   In Progress: [Blocked, Cancelled]
+       #   Rework: [Blocked, Cancelled]
+       #   Merging: [Blocked, Cancelled]
    ```
 
+   Apply the recorded Phase 2 answer before running doctor:
+
    ```sh
-   rg -n 'kanban:|mode: read_only|mode: integration' <source-root>/WORKFLOW.md || true
+   KANBAN_MODE="${KANBAN_MODE:?set KANBAN_MODE to read_only or integration from answers.env}"
+   perl -0pi -e "s#(?m)^    mode: (read_only|integration)$#    mode: ${KANBAN_MODE}#" <source-root>/WORKFLOW.md
+   rg -n "kanban:|mode: ${KANBAN_MODE}|allowed_transitions" <source-root>/WORKFLOW.md
    ```
 
 4. **Set the dashboard bind from the interview.** This writes the default
@@ -2183,7 +2197,7 @@ apply to issues only, so linked PR cards derive status from the linked issue.
 | Boardless repository | `tracker.repository` in `WORKFLOW.md` for issue-field and label modes. |
 | Boardless issue field | `tracker.status_field` in `WORKFLOW.md`; defaults to `Status` when omitted. |
 | Status label prefix | `tracker.status_label_prefix` in `WORKFLOW.md`; defaults to `detent:` for label mode. |
-| Kanban interaction | Keep read-only by default; use integration only in supporting releases after doctor proves write permissions. |
+| Kanban interaction | Fleet and observer boards stay read-only; trusted project boards use `integration` after doctor proves write permissions. |
 | Project scheduling priority | `projects[].priority` in `global.yaml`. |
 | Project scheduling weight | `projects[].weight` in `global.yaml`. |
 | Project color | Optional `projects[].color` in `global.yaml`; missing colors are deterministic and appear in the sidebar and multi-project Kanban. |
