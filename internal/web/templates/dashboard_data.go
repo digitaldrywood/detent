@@ -24,6 +24,9 @@ const (
 	prPipelineDoneTodayLimit = 10
 	kanbanActionDialogID     = "kanban-action-dialog"
 	kanbanDialogContentID    = "kanban-dialog-content"
+	handoffVisibilityWindow  = 15 * time.Minute
+	handoffState             = "Handoff"
+	handoffWaitDetail        = "waiting for tracker refresh"
 )
 
 type DashboardData struct {
@@ -1393,6 +1396,8 @@ func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCar
 
 func projectKanbanIssues(snapshot telemetry.Snapshot) []projectKanbanIssueCard {
 	byIssue := map[string]projectKanbanIssueCard{}
+	currentIssues := currentWorkflowIssueKeys(snapshot)
+	now := pipelineNow(snapshot)
 	nextIndex := 0
 	appendIssue := func(issue telemetry.Issue, state string, stageAt time.Time, rank int) {
 		state = strings.TrimSpace(state)
@@ -1435,6 +1440,13 @@ func projectKanbanIssues(snapshot telemetry.Snapshot) []projectKanbanIssueCard {
 			stageAt = *row.BlockedAt
 		}
 		appendIssue(row.Issue, issueState(row.Issue, "Blocked"), stageAt, 40)
+	}
+	for _, row := range snapshot.Completed {
+		issue, stageAt, ok := completedHandoffIssue(row, currentIssues, now)
+		if !ok {
+			continue
+		}
+		appendIssue(issue, handoffState, stageAt, 1)
 	}
 
 	issues := make([]projectKanbanIssueCard, 0, len(byIssue))
@@ -1852,7 +1864,7 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		PullRequestLabel: projectKanbanPullRequestLabel(issue),
 		TimeInStage:      prPipelineAge(stageAt, now),
 		TimeInStageTitle: prPipelineAgeTitle(state, stageAt, now),
-		WaitDetail:       prPipelineWaitDetail(issue),
+		WaitDetail:       workflowWaitDetail(state, issue),
 		Stage:            chartText(state, "n/a"),
 		StageAt:          stageAt.UTC(),
 		Labels:           uniqueStrings(issue.Labels),
@@ -2224,6 +2236,7 @@ func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {
 		"done-today":   {},
 	}
 	seen := map[string]struct{}{}
+	currentIssues := currentWorkflowIssueKeys(snapshot)
 	now := pipelineNow(snapshot)
 
 	for _, issue := range snapshot.Pipeline {
@@ -2245,6 +2258,13 @@ func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {
 			stageAt = *row.BlockedAt
 		}
 		appendPRPipelineCard(cardsByLane, seen, row.Issue, issueState(row.Issue, "Blocked"), stageAt, now)
+	}
+	for _, row := range snapshot.Completed {
+		issue, stageAt, ok := completedHandoffIssue(row, currentIssues, now)
+		if !ok {
+			continue
+		}
+		appendPRPipelineCard(cardsByLane, seen, issue, handoffState, stageAt, now)
 	}
 
 	prunePRPipelineCards(cardsByLane)
@@ -2337,6 +2357,8 @@ func prPipelineLaneID(state string) string {
 	switch strings.ToLower(strings.ReplaceAll(strings.TrimSpace(state), " ", "")) {
 	case "humanreview", "review", "inreview":
 		return "human-review"
+	case "handoff", "pendingtrackerrefresh":
+		return "human-review"
 	case "merging":
 		return "merging"
 	case "done", "complete", "completed", "closed", "cancelled", "canceled":
@@ -2361,10 +2383,21 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 		CodexReviewClass: prPipelineCodexReviewClass(codexReview),
 		TimeInStage:      prPipelineAge(stageAt, now),
 		TimeInStageTitle: prPipelineAgeTitle(state, stageAt, now),
-		WaitDetail:       prPipelineWaitDetail(issue),
+		WaitDetail:       workflowWaitDetail(state, issue),
 		Stage:            chartText(state, "n/a"),
 		StageAt:          stageAt.UTC(),
 	}
+}
+
+func workflowWaitDetail(state string, issue telemetry.Issue) string {
+	parts := []string{}
+	if projectKanbanStateKey(state) == projectKanbanStateKey(handoffState) {
+		parts = append(parts, handoffWaitDetail)
+	}
+	if detail := prPipelineWaitDetail(issue); detail != "" {
+		parts = append(parts, detail)
+	}
+	return strings.Join(parts, " / ")
 }
 
 func prPipelineWaitDetail(issue telemetry.Issue) string {
@@ -2447,6 +2480,85 @@ func pipelineNow(snapshot telemetry.Snapshot) time.Time {
 		}
 	}
 	return latest.UTC()
+}
+
+func currentWorkflowIssueKeys(snapshot telemetry.Snapshot) map[string]struct{} {
+	out := map[string]struct{}{}
+	add := func(issue telemetry.Issue) {
+		key := workflowIssueKey(issue)
+		if key != "" {
+			out[key] = struct{}{}
+		}
+	}
+	for _, issue := range snapshot.BoardIssues {
+		add(issue)
+	}
+	for _, issue := range snapshot.Pipeline {
+		add(issue)
+	}
+	for _, row := range snapshot.Running {
+		add(row.Issue)
+	}
+	for _, row := range snapshot.Queue {
+		add(row.Issue)
+	}
+	for _, row := range snapshot.Blocked {
+		add(row.Issue)
+	}
+	return out
+}
+
+func workflowIssueKey(issue telemetry.Issue) string {
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		return "id:" + id
+	}
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		return "identifier:" + identifier
+	}
+	return ""
+}
+
+func completedHandoffIssue(row telemetry.Completed, currentIssues map[string]struct{}, now time.Time) (telemetry.Issue, time.Time, bool) {
+	if !completedHandoffFinalState(row.FinalState) {
+		return telemetry.Issue{}, time.Time{}, false
+	}
+	if !openLinkedPullRequest(row.PullRequest) {
+		return telemetry.Issue{}, time.Time{}, false
+	}
+	if completedHandoffExpired(row.CompletedAt, now) {
+		return telemetry.Issue{}, time.Time{}, false
+	}
+	if key := workflowIssueKey(row.Issue); key != "" {
+		if _, ok := currentIssues[key]; ok {
+			return telemetry.Issue{}, time.Time{}, false
+		}
+	}
+	issue := row.Issue
+	issue.State = handoffState
+	return issue, row.CompletedAt, true
+}
+
+func completedHandoffFinalState(state string) bool {
+	return strings.EqualFold(strings.TrimSpace(state), "completed")
+}
+
+func completedHandoffExpired(completedAt time.Time, now time.Time) bool {
+	if completedAt.IsZero() || now.IsZero() {
+		return false
+	}
+	return now.UTC().Sub(completedAt.UTC()) > handoffVisibilityWindow
+}
+
+func openLinkedPullRequest(pr *telemetry.PullRequest) bool {
+	if pr == nil {
+		return false
+	}
+	switch strings.ToUpper(strings.TrimSpace(pr.State)) {
+	case "CLOSED", "MERGED":
+		return false
+	default:
+		return pr.Number > 0 || strings.TrimSpace(pr.URL) != ""
+	}
 }
 
 func pipelineIssueStageTime(issue telemetry.Issue) time.Time {
