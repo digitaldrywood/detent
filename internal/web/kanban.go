@@ -529,6 +529,8 @@ func kanbanMoveDialogPreferredTarget(source string) string {
 		return "Todo"
 	case "todo", "rework":
 		return "In Progress"
+	case "in progress":
+		return "Human Review"
 	case "human review":
 		return "Merging"
 	default:

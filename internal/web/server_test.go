@@ -526,6 +526,14 @@ func TestKanbanMoveDialogUsesWorkflowAwareTargetDefaults(t *testing.T) {
 			wantSelected: "Todo",
 		},
 		{
+			name:         "in progress defaults to human review",
+			currentState: "In Progress",
+			allowedTransitions: map[string][]string{
+				"In Progress": {"Blocked", "Human Review"},
+			},
+			wantSelected: "Human Review",
+		},
+		{
 			name:         "human review defaults to merging",
 			currentState: "Human Review",
 			allowedTransitions: map[string][]string{
