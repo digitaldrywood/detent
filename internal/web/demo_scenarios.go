@@ -142,8 +142,8 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "kanban-dense-overflow", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "dense-kanban", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "kanban-transition-blocked", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "transition-blocked", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "kanban-terminal-states", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "terminal", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
-		{ID: "kanban-handoff-window", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "handoff-window", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "runs-active-work", Route: "/projects/dogfood/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "healthy", ProjectID: demoPrimaryProjectID},
+		{ID: "runs-tracker-refresh-gap", Route: "/projects/dogfood/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "tracker-refresh-gap", ProjectID: demoPrimaryProjectID},
 		{ID: "runs-idle", Route: "/projects/agent-lab/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "project-empty", ProjectID: "agent-lab"},
 		{ID: "runs-backoff-heavy", Route: "/projects/dogfood/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "backoff-heavy", ProjectID: demoPrimaryProjectID},
 		{ID: "runs-blocked-heavy", Route: "/projects/billing-api/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "blocked-heavy", ProjectID: "billing-api"},
@@ -669,8 +669,8 @@ func demoSnapshotForScenario(scenario demoScenario) telemetry.Snapshot {
 		snapshot = demoDenseSnapshot()
 	case "hot-path", "model-heavy", "filtered-project":
 		snapshot = demoHotPathSnapshot()
-	case "handoff-window":
-		snapshot = demoHandoffWindowSnapshot()
+	case "tracker-refresh-gap":
+		snapshot = demoTrackerRefreshGapSnapshot()
 	}
 	if scenario.Variant == "terminal" {
 		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, "demo-cancelled", "digitaldrywood/detent-core#5259", "Cancelled alternate dashboard theme", "Cancelled", 48))
@@ -934,13 +934,13 @@ func demoHotPathSnapshot() telemetry.Snapshot {
 	return snapshot
 }
 
-func demoHandoffWindowSnapshot() telemetry.Snapshot {
+func demoTrackerRefreshGapSnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
-	handoff := demoCompleted(demoPrimaryProjectID, "demo-handoff-window", "digitaldrywood/detent-core#5294", "Keep completed implementation visible during tracker refresh", "completed", 3, "gpt-5-codex", 41000)
-	handoff.PullRequest = &telemetry.PullRequest{
+	completed := demoCompleted(demoPrimaryProjectID, "demo-tracker-refresh-gap", "digitaldrywood/detent-core#5294", "Keep completed implementation visible during tracker refresh", "completed", 3, "gpt-5-codex", 41000)
+	completed.PullRequest = &telemetry.PullRequest{
 		Number:             5294,
-		URL:                demoPRURL(handoff.Identifier, 5294),
-		BranchName:         "detent/demo-handoff-window",
+		URL:                demoPRURL(completed.Identifier, 5294),
+		BranchName:         "detent/demo-tracker-refresh-gap",
 		State:              "OPEN",
 		MergeableState:     "clean",
 		CIStatus:           "success",
@@ -949,7 +949,7 @@ func demoHandoffWindowSnapshot() telemetry.Snapshot {
 		CIDurationSeconds:  260,
 		CodexReviewState:   "CLEAN",
 	}
-	snapshot.Completed = append([]telemetry.Completed{handoff}, snapshot.Completed...)
+	snapshot.Completed = append([]telemetry.Completed{completed}, snapshot.Completed...)
 	snapshot.Counts.Completed = len(snapshot.Completed)
 	for i := range snapshot.Projects {
 		if snapshot.Projects[i].Project.ID == demoPrimaryProjectID {

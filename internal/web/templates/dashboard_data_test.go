@@ -687,6 +687,10 @@ func TestAgentTimelineRows(t *testing.T) {
 					ID:         "issue-3",
 					Identifier: "DD-3",
 					Title:      "Completed issue",
+					PullRequest: &telemetry.PullRequest{
+						Number: 3,
+						State:  "OPEN",
+					},
 				},
 				StartedAt:   now.Add(-10 * time.Minute),
 				CompletedAt: now.Add(-2 * time.Minute),
@@ -714,6 +718,9 @@ func TestAgentTimelineRows(t *testing.T) {
 		if rows[i].Identifier != want {
 			t.Fatalf("row %d identifier = %q, want %q; rows = %#v", i, rows[i].Identifier, want, rows)
 		}
+	}
+	if rows[1].Title != "Completed issue" || rows[1].State != "completed" {
+		t.Fatalf("completed open PR timeline row = %#v", rows[1])
 	}
 
 	tests := []struct {
@@ -1040,13 +1047,13 @@ func TestProjectKanbanBoardDoesNotTreatCompletedSessionsAsCurrentDone(t *testing
 	}
 }
 
-func TestProjectKanbanBoardShowsCompletedOpenPRHandoff(t *testing.T) {
+func TestProjectKanbanBoardDoesNotProjectCompletedOpenPRSession(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC)
 	board := projectKanbanBoardView(DashboardData{
 		Kanban: KanbanData{
-			States: []string{"Todo", "Human Review", "Merging", "Done"},
+			States: []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Rework", "Merging", "Done", "Cancelled"},
 		},
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
@@ -1056,7 +1063,7 @@ func TestProjectKanbanBoardShowsCompletedOpenPRHandoff(t *testing.T) {
 						ID:         "issue-550",
 						Identifier: "digitaldrywood/detent#550",
 						URL:        "https://github.com/digitaldrywood/detent/issues/550",
-						Title:      "Keep completed handoff visible",
+						Title:      "Keep completed implementation visible",
 						PullRequest: &telemetry.PullRequest{
 							Number:           552,
 							URL:              "https://github.com/digitaldrywood/detent/pull/552",
@@ -1073,28 +1080,52 @@ func TestProjectKanbanBoardShowsCompletedOpenPRHandoff(t *testing.T) {
 	})
 
 	got := collectKanbanCards(board.Lanes)
-	want := []kanbanCardSnapshot{
-		{
-			Lane:             "Handoff",
-			IssueNumber:      "#550",
-			Title:            "Keep completed handoff visible",
-			URL:              "https://github.com/digitaldrywood/detent/issues/550",
-			CIStatus:         "pass",
-			CodexReviewState: "clean",
-			TimeInStage:      "2m 0s",
-			WaitDetail:       "waiting for tracker refresh",
-			Metadata:         "PR #552",
-		},
+	if len(got) != 0 {
+		t.Fatalf("kanban cards len = %d, want 0; got %#v", len(got), got)
 	}
-	if len(got) != len(want) {
-		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
-	}
-	if got[0] != want[0] {
-		t.Fatalf("kanban card = %#v, want %#v", got[0], want[0])
+	if got := collectKanbanLaneTitles(board.AllLanes); containsString(got, "Handoff") {
+		t.Fatalf("all lanes = %#v, want no unconfigured Handoff lane", got)
 	}
 }
 
-func TestProjectKanbanBoardSuppressesCompletedHandoffWhenTrackerOwnsIssue(t *testing.T) {
+func TestProjectKanbanBoardLeavesConfiguredHandoffLaneEmptyForCompletedSession(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC)
+	board := projectKanbanBoardView(DashboardData{
+		Kanban: KanbanData{
+			States: []string{"Todo", "Handoff", "Done"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Completed: []telemetry.Completed{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-550",
+						Identifier: "digitaldrywood/detent#550",
+						Title:      "Keep completed implementation visible",
+						PullRequest: &telemetry.PullRequest{
+							Number: 552,
+							State:  "OPEN",
+						},
+					},
+					CompletedAt: now.Add(-2 * time.Minute),
+					FinalState:  "completed",
+				},
+			},
+		},
+	})
+
+	got := collectKanbanCards(board.Lanes)
+	if len(got) != 0 {
+		t.Fatalf("kanban cards len = %d, want 0; got %#v", len(got), got)
+	}
+	if got := collectKanbanLaneTitles(board.EmptyLanes); !containsString(got, "Handoff") {
+		t.Fatalf("empty lanes = %#v, want configured Handoff lane", got)
+	}
+}
+
+func TestProjectKanbanBoardUsesTrackerStateWhenCompletedSessionAlsoExists(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC)
@@ -1109,7 +1140,7 @@ func TestProjectKanbanBoardSuppressesCompletedHandoffWhenTrackerOwnsIssue(t *tes
 				{
 					ID:             "issue-550",
 					Identifier:     "digitaldrywood/detent#550",
-					Title:          "Keep completed handoff visible",
+					Title:          "Keep completed implementation visible",
 					State:          "Human Review",
 					StageUpdatedAt: &stageAt,
 					PullRequest: &telemetry.PullRequest{
@@ -1125,7 +1156,7 @@ func TestProjectKanbanBoardSuppressesCompletedHandoffWhenTrackerOwnsIssue(t *tes
 					Issue: telemetry.Issue{
 						ID:         "issue-550",
 						Identifier: "digitaldrywood/detent#550",
-						Title:      "Keep completed handoff visible",
+						Title:      "Keep completed implementation visible",
 						PullRequest: &telemetry.PullRequest{
 							Number:           552,
 							State:            "OPEN",
@@ -1142,7 +1173,7 @@ func TestProjectKanbanBoardSuppressesCompletedHandoffWhenTrackerOwnsIssue(t *tes
 
 	got := collectKanbanCards(board.Lanes)
 	want := []kanbanCardSnapshot{
-		{Lane: "Human Review", IssueNumber: "#550", Title: "Keep completed handoff visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "30s", Metadata: "PR #552"},
+		{Lane: "Human Review", IssueNumber: "#550", Title: "Keep completed implementation visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "30s", Metadata: "PR #552"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
@@ -1152,7 +1183,7 @@ func TestProjectKanbanBoardSuppressesCompletedHandoffWhenTrackerOwnsIssue(t *tes
 	}
 }
 
-func TestCompletedOpenPRHandoffExpires(t *testing.T) {
+func TestCompletedOpenPRSessionDoesNotCreateWorkflowCards(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC)
@@ -1163,29 +1194,22 @@ func TestCompletedOpenPRHandoffExpires(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-550",
 					Identifier: "digitaldrywood/detent#550",
-					Title:      "Keep completed handoff visible",
+					Title:      "Keep completed implementation visible",
 					PullRequest: &telemetry.PullRequest{
 						Number:   552,
 						State:    "OPEN",
 						CIStatus: "success",
 					},
 				},
-				CompletedAt: now.Add(-handoffVisibilityWindow - time.Second),
+				CompletedAt: now.Add(-2 * time.Minute),
 				FinalState:  "completed",
 			},
 		},
 	}
 
-	board := projectKanbanBoardView(DashboardData{
-		Kanban: KanbanData{
-			States: []string{"Todo", "Human Review", "Merging", "Done"},
-		},
-		Snapshot: snapshot,
-	})
-	if got := collectKanbanCards(board.Lanes); len(got) != 0 {
-		t.Fatalf("kanban cards len = %d, want 0; got %#v", len(got), got)
+	if got := projectKanbanIssues(snapshot); len(got) != 0 {
+		t.Fatalf("projectKanbanIssues() len = %d, want 0; got %#v", len(got), got)
 	}
-
 	if got := collectPipelineCards(prPipelineLanes(snapshot)); len(got) != 0 {
 		t.Fatalf("pipeline cards len = %d, want 0; got %#v", len(got), got)
 	}
@@ -1439,7 +1463,7 @@ func TestPRPipelineLanesDoNotTreatCompletedSessionAsCurrentDone(t *testing.T) {
 	}
 }
 
-func TestPRPipelineLanesShowCompletedOpenPRHandoff(t *testing.T) {
+func TestPRPipelineLanesDoNotProjectCompletedOpenPRSession(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC)
@@ -1450,7 +1474,7 @@ func TestPRPipelineLanesShowCompletedOpenPRHandoff(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-550",
 					Identifier: "digitaldrywood/detent#550",
-					Title:      "Keep completed handoff visible",
+					Title:      "Keep completed implementation visible",
 					PullRequest: &telemetry.PullRequest{
 						Number:           552,
 						URL:              "https://github.com/digitaldrywood/detent/pull/552",
@@ -1466,26 +1490,12 @@ func TestPRPipelineLanesShowCompletedOpenPRHandoff(t *testing.T) {
 	}
 
 	got := collectPipelineCards(prPipelineLanes(snapshot))
-	want := []pipelineCardSnapshot{
-		{
-			Lane:             "Human Review",
-			IssueNumber:      "#552",
-			Title:            "Keep completed handoff visible",
-			CIStatus:         "pass",
-			CodexReviewState: "clean",
-			TimeInStage:      "2m 0s",
-			WaitDetail:       "waiting for tracker refresh",
-		},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("pipeline cards len = %d, want %d; got %#v", len(got), len(want), got)
-	}
-	if got[0] != want[0] {
-		t.Fatalf("pipeline card = %#v, want %#v", got[0], want[0])
+	if len(got) != 0 {
+		t.Fatalf("pipeline cards len = %d, want 0; got %#v", len(got), got)
 	}
 }
 
-func TestPRPipelineLanesSuppressCompletedHandoffWhenTrackerOwnsIssue(t *testing.T) {
+func TestPRPipelineLanesUseTrackerStateWhenCompletedSessionAlsoExists(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC)
@@ -1496,7 +1506,7 @@ func TestPRPipelineLanesSuppressCompletedHandoffWhenTrackerOwnsIssue(t *testing.
 			{
 				ID:             "issue-550",
 				Identifier:     "digitaldrywood/detent#550",
-				Title:          "Keep completed handoff visible",
+				Title:          "Keep completed implementation visible",
 				State:          "Merging",
 				StageUpdatedAt: &stageAt,
 				PullRequest: &telemetry.PullRequest{
@@ -1512,7 +1522,7 @@ func TestPRPipelineLanesSuppressCompletedHandoffWhenTrackerOwnsIssue(t *testing.
 				Issue: telemetry.Issue{
 					ID:         "issue-550",
 					Identifier: "digitaldrywood/detent#550",
-					Title:      "Keep completed handoff visible",
+					Title:      "Keep completed implementation visible",
 					PullRequest: &telemetry.PullRequest{
 						Number:           552,
 						State:            "OPEN",
@@ -1528,7 +1538,7 @@ func TestPRPipelineLanesSuppressCompletedHandoffWhenTrackerOwnsIssue(t *testing.
 
 	got := collectPipelineCards(prPipelineLanes(snapshot))
 	want := []pipelineCardSnapshot{
-		{Lane: "Merging", IssueNumber: "#552", Title: "Keep completed handoff visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "30s"},
+		{Lane: "Merging", IssueNumber: "#552", Title: "Keep completed implementation visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "30s"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("pipeline cards len = %d, want %d; got %#v", len(got), len(want), got)
@@ -1676,4 +1686,13 @@ func collectKanbanLaneTitles(lanes []projectKanbanLane) []string {
 		out = append(out, lane.Title)
 	}
 	return out
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
