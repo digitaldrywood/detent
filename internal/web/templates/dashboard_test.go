@@ -1084,6 +1084,7 @@ func TestDashboardProjectKanbanControlsStayInsideLane(t *testing.T) {
 	section := projectKanbanSection(t, html)
 	for _, want := range []string{
 		`project-kanban-lanes mt-3 flex min-w-0 max-w-full flex-nowrap items-start justify-start gap-3 overflow-x-auto pb-2`,
+		`data-preserve-scroll="project-kanban-lanes"`,
 		`project-kanban-lane grid min-h-[12rem] w-72 shrink-0 content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
 		`flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden`,
 		`min-w-0 shrink truncate text-xs font-semibold text-foreground`,

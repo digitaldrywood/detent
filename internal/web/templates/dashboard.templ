@@ -1321,7 +1321,7 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 			if kanbanIntegrationEnabled(data) {
 				<div id="kanban-feedback" role="status" aria-live="polite" class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Ready.</div>
 			}
-			<div class="project-kanban-lanes mt-3 flex min-w-0 max-w-full flex-nowrap items-start justify-start gap-3 overflow-x-auto pb-2">
+			<div class="project-kanban-lanes mt-3 flex min-w-0 max-w-full flex-nowrap items-start justify-start gap-3 overflow-x-auto pb-2" data-preserve-scroll="project-kanban-lanes">
 				for _, lane := range board.AllLanes {
 					@projectKanbanLaneView(data, lane)
 				}
