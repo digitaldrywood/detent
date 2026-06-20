@@ -92,6 +92,8 @@ func TestOnboardingDocsRecommendProjectKanbanIntegrationAfterWriteProbes(t *test
 		"recommend `integration` after `detent doctor` proves the relevant write probes",
 		"shared observer dashboard",
 		"recommend `read_only` until writes are proven",
+		`KANBAN_MODE="${KANBAN_MODE:?set KANBAN_MODE to read_only or integration from answers.env}"`,
+		"mode: ${KANBAN_MODE}",
 	} {
 		assertContainsWords(t, onboarding, want)
 	}

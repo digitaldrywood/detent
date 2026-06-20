@@ -1447,8 +1447,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
        #   Merging: [Blocked, Cancelled]
    ```
 
+   Apply the recorded Phase 2 answer before running doctor:
+
    ```sh
-   rg -n 'kanban:|mode: read_only|mode: integration|allowed_transitions' <source-root>/WORKFLOW.md || true
+   KANBAN_MODE="${KANBAN_MODE:?set KANBAN_MODE to read_only or integration from answers.env}"
+   perl -0pi -e "s#(?m)^    mode: (read_only|integration)$#    mode: ${KANBAN_MODE}#" <source-root>/WORKFLOW.md
+   rg -n "kanban:|mode: ${KANBAN_MODE}|allowed_transitions" <source-root>/WORKFLOW.md
    ```
 
 4. **Set the dashboard bind from the interview.** This writes the default
