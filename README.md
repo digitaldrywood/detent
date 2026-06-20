@@ -525,6 +525,8 @@ and prefixes it with `tracker.status_label_prefix`, which defaults to
 `detent:`. With the default release flow, the required labels are
 `detent:backlog`, `detent:todo`, `detent:in-progress`, `detent:blocked`,
 `detent:human-review`, `detent:rework`, `detent:merging`, and `detent:done`.
+With `tracker.auto_provision` enabled, Detent creates missing repository status
+labels for configured workflow states on startup.
 Discover existing labels with:
 
 ```sh
@@ -1676,6 +1678,11 @@ Useful endpoints:
 | `/kanban` | Read-only fleet Kanban board across all registered projects. The sidebar link appears only when more than one project is registered. |
 | `/projects/<id>` | Project-scoped dashboard overview. |
 | `/projects/<id>/kanban` | Project-scoped Kanban board; read-only or integration mode follows that project's workflow config. |
+| `/projects/<id>/runs` | Project running, retry, blocked, and recent session details. |
+| `/projects/<id>/configuration` | Project workflow and runtime configuration view. |
+| `/projects/<id>/diagnostics` | Project health, board flow, and telemetry diagnostics. |
+| `/settings` | Fleet settings and configuration summary. |
+| `/reports` | Usage reports for spend, tokens, projects, issues, PRs, and models. |
 | `/health` | Server health and configured dependency checks. |
 | `/events` | Server-sent dashboard updates. Use `?view=kanban` for the fleet board and `?project=<id>&view=kanban` for a project board. |
 | `/api/v1/state` | JSON telemetry snapshot. |

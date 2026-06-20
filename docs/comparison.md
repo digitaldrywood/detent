@@ -8,7 +8,7 @@ We build Detent as a self-hosted, board-native agent orchestrator for software d
 |---|---|---|---|---|---|---|
 | Self-hosted, no vendor control plane | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
 | Runs fully local / air-gappable | ✅ | ✅ | ❌ | ❌ | ✅ | ✅ |
-| Board/tracker-native (issue→PR) | ✅ GH Projects | ✅ Linear | ✅ GH Issues | ❌ | ❌ | ❌ |
+| Board/tracker-native (issue→PR) | ✅ GH Projects, issue fields, or labels | ✅ Linear | ✅ GH Issues | ❌ | ❌ | ❌ |
 | Deterministic gated merge train | ✅ | 🟡 per spec | ❌ | ❌ | ❌ | ❌ |
 | Budget / cost caps | ✅ | ❌ | 🟡 | 🟡 | ❌ | ❌ |
 | Multi-project | ✅ | ❌ | ✅ | ✅ | ❌ | ❌ |
@@ -22,7 +22,7 @@ We build Detent as a self-hosted, board-native agent orchestrator for software d
 
 ## What Each One Is
 
-- **Detent**: [digitaldrywood/detent](https://github.com/digitaldrywood/detent) is our single-binary Go orchestrator for GitHub Projects-driven issue-to-PR work.
+- **Detent**: [digitaldrywood/detent](https://github.com/digitaldrywood/detent) is our single-binary Go orchestrator for GitHub-native issue-to-PR work using ProjectV2 or boardless status sources.
 - **OpenAI Symphony**: [openai/symphony](https://github.com/openai/symphony) is our origin point: an Apache-2.0 spec plus Elixir reference implementation for Codex on Linear.
 - **GitHub Copilot coding agent**: [GitHub Copilot cloud agent](https://docs.github.com/en/copilot/concepts/agents/cloud-agent/about-cloud-agent) is GitHub's paid issue/prompt-to-branch-and-PR agent.
 - **Cursor**: [Cursor cloud agents](https://cursor.com/cloud) is an IDE-first agent product with cloud/background agents, automations, and optional self-hosted workers.
@@ -31,6 +31,6 @@ We build Detent as a self-hosted, board-native agent orchestrator for software d
 
 ## Where We're Different
 
-We own the orchestration loop: no Detent vendor control plane, GitHub Projects as the delivery board, deterministic gates, and a serialized merge train. We also care about operating fleets, not just launching one agent: multi-instance ownership, budget checks, local skills, and a single static binary with a setup path we expect to be measured in minutes. Copilot and Cursor have closed much of the "runs near my code" gap and win zero-install inside their platforms, but they do not give us the same board-native release runtime under our control.
+We own the orchestration loop: no Detent vendor control plane, GitHub-native status sources, Detent's own Kanban board, deterministic gates, and a serialized merge train. We also care about operating fleets, not just launching one agent: multi-instance ownership, budget checks, local skills, and a single static binary with a setup path we expect to be measured in minutes. Copilot and Cursor have closed much of the "runs near my code" gap and win zero-install inside their platforms, but they do not give us the same board-native release runtime under our control.
 
-_Last updated: June 2, 2026; verify vendor pricing/models before relying on them._
+_Last updated: June 19, 2026; verify vendor pricing/models before relying on them._

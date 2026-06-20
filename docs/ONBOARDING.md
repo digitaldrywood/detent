@@ -2157,10 +2157,13 @@ tracker:
 ```
 
 Detent does not automatically migrate ProjectV2 item statuses or issue-field
-values into labels. Copy existing statuses by applying exactly one configured
+values into labels. With `tracker.auto_provision` enabled, Detent creates
+missing prefixed status labels on startup, but it does not assign those labels
+to existing issues. Copy existing statuses by applying exactly one configured
 status label per issue, then run `detent doctor --port 0` and fix repository
 access, status label mappings, issue reads by label, write-probe,
-comment-write, and rate-limit checks before dispatching.
+comment-write, and rate-limit checks before dispatching. GitHub status labels
+apply to issues only, so linked PR cards derive status from the linked issue.
 
 ### Interview Answers To Config Keys
 
