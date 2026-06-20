@@ -211,8 +211,22 @@ templ dashboardSidebarActiveScript() {
 				return document.getElementById("dashboard-sidebar-live");
 			}
 
+			function staticNavForLocation() {
+				const path = window.location.pathname;
+				if (path === "/kanban") {
+					return "kanban";
+				}
+				return "";
+			}
+
 			function projectViewForLocation() {
 				const path = window.location.pathname;
+				if (path === "/settings" && new URLSearchParams(window.location.search).get("project")) {
+					return "configuration";
+				}
+				if (!path.startsWith("/projects/")) {
+					return "";
+				}
 				if (path.endsWith("/kanban")) {
 					return "kanban";
 				}
@@ -222,11 +236,8 @@ templ dashboardSidebarActiveScript() {
 				if (path.endsWith("/diagnostics")) {
 					return "diagnostics";
 				}
-				if (path.endsWith("/configuration") || (path === "/settings" && new URLSearchParams(window.location.search).get("project"))) {
+				if (path.endsWith("/configuration")) {
 					return "configuration";
-				}
-				if (!path.startsWith("/projects/")) {
-					return "";
 				}
 				if (window.location.hash === "#running-issues") {
 					return "runs";
@@ -251,8 +262,9 @@ templ dashboardSidebarActiveScript() {
 			}
 
 			function applyProjectSidebarActiveState() {
+				const staticNav = staticNavForLocation();
 				const view = projectViewForLocation();
-				if (!view) {
+				if (!staticNav && !view) {
 					return;
 				}
 				const root = sidebarContent();
@@ -262,6 +274,10 @@ templ dashboardSidebarActiveScript() {
 				root.querySelectorAll("[data-dashboard-view-nav], [data-dashboard-static-nav]").forEach(function(link) {
 					setActive(link, false);
 				});
+				if (staticNav) {
+					setActive(root.querySelector("[data-dashboard-static-nav='" + staticNav + "']"), true);
+					return;
+				}
 				setActive(root.querySelector("[data-dashboard-view='" + view + "']"), true);
 			}
 

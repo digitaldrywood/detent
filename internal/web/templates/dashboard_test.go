@@ -1544,6 +1544,49 @@ func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
 	}
 }
 
+func TestDashboardSidebarActiveScriptDistinguishesFleetKanban(t *testing.T) {
+	t.Parallel()
+
+	html := renderDashboardShell(t, templates.DashboardShellData{
+		Title: "Detent",
+		Projects: []templates.ProjectSmallMultiple{
+			{ID: "detent", Name: "Detent"},
+			{ID: "docs-site", Name: "Docs Site"},
+		},
+		ActiveNav: "kanban",
+	})
+
+	for _, want := range []string{
+		`function staticNavForLocation()`,
+		`if (path === "/kanban")`,
+		`root.querySelector("[data-dashboard-static-nav='" + staticNav + "']")`,
+		`function projectViewForLocation()`,
+		`if (!path.startsWith("/projects/"))`,
+		`if (path.endsWith("/kanban"))`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard sidebar active script missing %q:\n%s", want, html)
+		}
+	}
+
+	projectViewStart := strings.Index(html, `function projectViewForLocation()`)
+	if projectViewStart < 0 {
+		t.Fatalf("dashboard sidebar active script missing projectViewForLocation:\n%s", html)
+	}
+	projectViewEnd := strings.Index(html[projectViewStart:], `function setActive`)
+	if projectViewEnd < 0 {
+		t.Fatalf("dashboard sidebar active script missing setActive after projectViewForLocation:\n%s", html)
+	}
+	projectViewScript := html[projectViewStart : projectViewStart+projectViewEnd]
+	projectGuardIndex := strings.Index(projectViewScript, `if (!path.startsWith("/projects/"))`)
+	kanbanSuffixIndex := strings.Index(projectViewScript, `if (path.endsWith("/kanban"))`)
+	if projectGuardIndex < 0 || kanbanSuffixIndex < 0 || projectGuardIndex > kanbanSuffixIndex {
+		t.Fatalf("project view detection must reject fleet paths before matching /kanban suffix:\n%s", projectViewScript)
+	}
+
+	assertActiveSidebarLink(t, html, "/kanban")
+}
+
 func TestDashboardRendersReadableAgentTimelineForConcurrentSessions(t *testing.T) {
 	t.Parallel()
 
