@@ -797,9 +797,16 @@ detent init
 detent add-project \
   --id <id> \
   --workflow /absolute/path/to/project-checkout/WORKFLOW.md \
-  --workflow-ref origin/main \
   --workdir /absolute/path/to/project-checkout
 ```
+
+For first-time onboarding, leave `--workflow-ref` unset until this
+`WORKFLOW.md` has been merged to the ref Detent should read from.
+`detent doctor` validates the configured ref; setting
+`--workflow-ref origin/main` before `origin/main:WORKFLOW.md` exists will fail
+even when the file exists locally in the working tree. After the first workflow
+merge, add `workflow_ref: origin/main` to the project entry when you want Detent
+to load the workflow from the branch tip instead of the working-tree file.
 
 Edit the resolved `global.yaml` and set the top-level runtime keys:
 
@@ -1423,7 +1430,6 @@ global:
 projects:
   - id: detent
     workflow: /absolute/path/to/detent/WORKFLOW.md
-    workflow_ref: origin/main
     workdir: /absolute/path/to/detent
     color: "#1192e8"
     weight: 2
@@ -1451,12 +1457,15 @@ across restarts and do not depend on project order. When there are more
 projects than palette entries, Detent deterministically reuses palette colors;
 labels and project IDs remain the primary identifiers.
 
-Set `projects[].workflow_ref` when the workflow file should be read from a git
-ref in the configured source checkout instead of the checkout's working-tree
-copy. `workflow` may be an absolute path under `workdir` or a repository
-relative path such as `WORKFLOW.md`. When the ref advances, Detent reloads the
-workflow content from that ref; when `workflow_ref` is omitted, Detent keeps
-reading the working-tree file.
+Set `projects[].workflow_ref` only after the workflow file already exists at
+that git ref, such as after the first `WORKFLOW.md` merge to `origin/main`.
+When set, the workflow file is read from a git ref in the configured source
+checkout instead of the checkout's working-tree copy. `workflow` may be an
+absolute path under `workdir` or a repository relative path such as
+`WORKFLOW.md`. When the ref advances, Detent reloads the workflow content from
+that ref; when `workflow_ref` is omitted, Detent keeps reading the working-tree
+file. If `workflow_ref` points at a ref that does not contain the workflow file,
+`detent doctor` reports a load failure for `<ref>:WORKFLOW.md`.
 
 Use the project administration commands to edit `global.yaml`:
 
@@ -1464,7 +1473,6 @@ Use the project administration commands to edit `global.yaml`:
 detent add-project \
   --id <id> \
   --workflow <WORKFLOW.md> \
-  --workflow-ref origin/main \
   --workdir <dir> \
   --weight 1 \
   --priority 3
@@ -1479,6 +1487,10 @@ These commands persist the global config. A running Detent process watches the
 active `global.yaml`, including symlinked config targets, and reconciles
 supported live-reload fields without a process restart. Invalid edits are
 logged and ignored while the last valid config stays live.
+
+For projects whose workflow file is already present on the target branch, you
+can include `--workflow-ref origin/main` during registration or add
+`workflow_ref: origin/main` to the project entry later.
 
 | Field | Reload behavior |
 | --- | --- |
@@ -1774,7 +1786,7 @@ Structured command objects:
 | `detent version` | `{"version":"v0.1.0","commit":"abc1234","build_date":"2026-06-13T00:00:00Z","go_version":"go1.26.4","os":"linux","arch":"amd64"}` |
 | `detent update` | The update status object, including `current_version`, `latest_version`, `latest_tag`, `update_available`, `install_source`, `action`, `message`, and `command` when present. |
 | `detent init` | `{"status":"ok","path":"/path/global.yaml","rule":"--config"}` |
-| `detent add-project` | `{"id":"api","workflow":"/repo/WORKFLOW.md","workflow_ref":"origin/main","workdir":"/repo","weight":1,"priority":0,"paused":false,"credential_ref":"github"}` |
+| `detent add-project` | `{"id":"api","workflow":"/repo/WORKFLOW.md","workdir":"/repo","weight":1,"priority":0,"paused":false,"credential_ref":"github"}` |
 | `detent pause api` / `detent unpause api` | `{"status":"ok","project":"api","paused":true}` |
 | `detent promote api --priority 1` | `{"status":"ok","project":"api","priority":1}` |
 | `detent remove-project api` | `{"status":"ok","project":"api","removed":true}` |
