@@ -84,6 +84,51 @@ test("project Kanban keeps action controls inside compact cards", async ({ page 
   });
 });
 
+test("active-only Kanban view hides populated terminal lanes", async ({ page }, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "kanban-terminal-states",
+    viewport: desktopViewport,
+  });
+
+  const board = page.locator("#project-kanban");
+  const cancelledLane = board.locator("[data-project-kanban-lane-title='Cancelled']");
+  await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-empty", "false");
+  await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
+  await expect(cancelledLane).toBeHidden();
+  await expect(board.locator("[data-kanban-issue-id='demo-cancelled']")).toBeHidden();
+
+  await board.locator("[data-project-kanban-visibility-menu] summary").click();
+  await expect(board.locator("[data-project-kanban-visibility-count]")).toHaveText("6/9");
+  const cancelledCheckbox = board.locator("[data-project-kanban-visibility-checkbox][value='cancelled']");
+  await expect(cancelledCheckbox).not.toBeChecked();
+  await expect(cancelledCheckbox).toBeEnabled();
+  await expect(cancelledCheckbox.locator("xpath=ancestor::label")).toContainText("1");
+
+  await cancelledCheckbox.check();
+  await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
+  await expect(cancelledLane).toBeVisible();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await expect(board).toBeVisible();
+  await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
+  await expect(cancelledLane).toBeVisible();
+  await board.locator("[data-project-kanban-visibility-menu] summary").click();
+  await expect(cancelledCheckbox).toBeChecked();
+
+  await board.getByRole("button", { name: "Active only" }).click();
+  await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
+  await expect(cancelledLane).toBeHidden();
+  await board.getByRole("button", { name: "All lanes" }).click();
+  await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
+  await expect(cancelledLane).toBeVisible();
+  await board.getByRole("button", { name: "Active only" }).click();
+  await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
+  await expect(cancelledLane).toBeHidden();
+  await captureClipAndAttach(page, "#project-kanban", "project-kanban-active-only-terminal-hidden-desktop.png", testInfo, {
+    maxHeight: 430,
+  });
+});
+
 test("project read-only Kanban explains integration setup", async ({ page }, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,

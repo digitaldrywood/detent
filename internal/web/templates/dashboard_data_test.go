@@ -897,7 +897,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 		t.Fatalf("EmptyCountLabel = %q, want 2", board.EmptyCountLabel)
 	}
 
-	got := collectKanbanCards(board.Lanes)
+	got := collectKanbanCards(board.AllLanes)
 	want := []kanbanCardSnapshot{
 		{Lane: "Backlog", IssueNumber: "#10", Title: "Backlog issue", TimeInStage: "7m 0s", Metadata: "No linked PR"},
 		{Lane: "Todo", IssueNumber: "#11", Title: "Todo issue", TimeInStage: "6m 0s", Metadata: "No linked PR"},
@@ -1191,12 +1191,13 @@ func TestCompletedOpenPRHandoffExpires(t *testing.T) {
 	}
 }
 
-func TestProjectKanbanBoardMarksOnlyNonEmptyLanesVisibleByDefault(t *testing.T) {
+func TestProjectKanbanBoardHidesTerminalLanesByDefault(t *testing.T) {
 	t.Parallel()
 
 	board := projectKanbanBoardView(DashboardData{
 		Kanban: KanbanData{
-			States: []string{"Todo", "In Progress", "Done"},
+			States:         []string{"Todo", "In Progress", "Done", "Cancelled", "Archived"},
+			TerminalStates: []string{"Done", "Cancelled", "Archived"},
 		},
 		Snapshot: telemetry.Snapshot{
 			BoardIssues: []telemetry.Issue{
@@ -1205,6 +1206,24 @@ func TestProjectKanbanBoardMarksOnlyNonEmptyLanesVisibleByDefault(t *testing.T) 
 					Identifier: "digitaldrywood/detent#496",
 					Title:      "Fix empty-lane toggle",
 					State:      "Todo",
+				},
+				{
+					ID:         "done",
+					Identifier: "digitaldrywood/detent#497",
+					Title:      "Completed work",
+					State:      "Done",
+				},
+				{
+					ID:         "cancelled",
+					Identifier: "digitaldrywood/detent#498",
+					Title:      "Cancelled work",
+					State:      "Cancelled",
+				},
+				{
+					ID:         "archived",
+					Identifier: "digitaldrywood/detent#499",
+					Title:      "Archived work",
+					State:      "Archived",
 				},
 			},
 		},
@@ -1218,6 +1237,8 @@ func TestProjectKanbanBoardMarksOnlyNonEmptyLanesVisibleByDefault(t *testing.T) 
 		"Todo":        true,
 		"In Progress": false,
 		"Done":        false,
+		"Cancelled":   false,
+		"Archived":    false,
 	}
 	if len(got) != len(want) {
 		t.Fatalf("default visible lanes len = %d, want %d; got %#v", len(got), len(want), got)
@@ -1226,6 +1247,12 @@ func TestProjectKanbanBoardMarksOnlyNonEmptyLanesVisibleByDefault(t *testing.T) 
 		if got[state] != wantVisible {
 			t.Fatalf("%s DefaultVisible = %t, want %t; got %#v", state, got[state], wantVisible, got)
 		}
+	}
+	if got := collectKanbanLaneTitles(board.Lanes); len(got) != 1 || got[0] != "Todo" {
+		t.Fatalf("visible lanes = %#v, want Todo only", got)
+	}
+	if board.TotalLabel != "4" {
+		t.Fatalf("TotalLabel = %q, want 4", board.TotalLabel)
 	}
 }
 

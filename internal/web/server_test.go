@@ -272,6 +272,20 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 		t.Fatalf("demo cleanup event = %#v, want cancellation reason", cleanupEvents[0])
 	}
 
+	terminalKanban := requestHTMLWithHeaders(t, server.Handler(), http.MethodGet, "/projects/dogfood/kanban", http.StatusOK, map[string]string{
+		web.DemoScenarioHeader: "kanban-terminal-states",
+	})
+	for _, want := range []string{
+		`data-project-kanban-lane-title="Cancelled"`,
+		`data-project-kanban-lane-empty="false"`,
+		`data-project-kanban-lane-visible="false"`,
+		`data-kanban-issue-id="demo-cancelled"`,
+	} {
+		if !strings.Contains(terminalKanban, want) {
+			t.Fatalf("terminal Kanban scenario missing %q:\n%s", want, terminalKanban)
+		}
+	}
+
 	usage := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/usage?by=project", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "api-usage-populated",
 	})
