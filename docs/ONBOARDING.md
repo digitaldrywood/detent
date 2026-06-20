@@ -1347,24 +1347,33 @@ rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"
 ```
 
-1. **Fetch the canonical template.** Read the existing file first if one is
+1. **Fetch the selected mode template.** Read the existing file first if one is
    present; this runbook is for from-zero repositories, so do not overwrite a
-   human-authored contract without explicit approval. Verify:
+   human-authored contract without explicit approval. The maintained templates
+   are `docs/templates/WORKFLOW.project_v2.md`,
+   `docs/templates/WORKFLOW.issue_field.md`, and
+   `docs/templates/WORKFLOW.label.md`. Verify:
 
    ```sh
    test ! -f <source-root>/WORKFLOW.md
-   curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent-orchestration/main/WORKFLOW.md \
+   GITHUB_MODE="$(sed -n 's/^GITHUB_MODE=//p' "$ONBOARDING_DIR/answers.env" | tail -n 1)"
+   case "$GITHUB_MODE" in
+     project_v2|issue_field|label) ;;
+     *) printf 'invalid GITHUB_MODE: %s\n' "$GITHUB_MODE" >&2; exit 1 ;;
+   esac
+   curl -fsSL "https://raw.githubusercontent.com/digitaldrywood/detent/main/docs/templates/WORKFLOW.${GITHUB_MODE}.md" \
      -o <source-root>/WORKFLOW.md
-   rg -n '^tracker:|^workspace:|^agent:' <source-root>/WORKFLOW.md
+   rg -n "github_status_source: ${GITHUB_MODE}|^tracker:|^workspace:|^agent:" <source-root>/WORKFLOW.md
    ```
 
 2. **Substitute the tracker and workspace answers.** In ProjectV2 mode, use the
    ProjectV2 node id as `tracker.project_slug`. In boardless issue-field mode,
-   remove `project_slug` and configure the repository issue field. In label
-   mode, remove `project_slug` and `status_field`, then configure the repository
-   and status-label prefix. In every mode, use absolute paths for
-   `workspace.source_root` and `workspace.root`. Verify the selected tracker
-   block:
+   set the repository and issue field. In label mode, set the repository and
+   status-label prefix. In every mode, set `write_probe_issue` when using write
+   probes, use absolute paths for `workspace.source_root` and `workspace.root`,
+   and leave `tracker.api_key` out unless this workflow intentionally carries a
+   workflow-local token instead of using `github_token: gh` from `global.yaml`.
+   Verify the selected tracker block:
 
    ProjectV2 tracker snippet:
 

@@ -4,6 +4,8 @@ import (
 	"os"
 	"strings"
 	"testing"
+
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 )
 
 func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
@@ -76,6 +78,110 @@ func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	assertContains(t, readme, "Distinguish reference repositories from the target repository")
 	assertContains(t, readme, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`)
 	assertContains(t, readme, "Ask and record `GITHUB_MODE` explicitly")
+}
+
+func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+	staleCanonicalURL := "https://raw.githubusercontent.com/digitaldrywood/detent-orchestration/main/WORKFLOW.md"
+	if strings.Contains(onboarding, staleCanonicalURL) || strings.Contains(readme, staleCanonicalURL) {
+		t.Fatalf("docs still reference stale canonical template URL %q", staleCanonicalURL)
+	}
+
+	for _, path := range []string{
+		"docs/templates/WORKFLOW.project_v2.md",
+		"docs/templates/WORKFLOW.issue_field.md",
+		"docs/templates/WORKFLOW.label.md",
+	} {
+		assertContains(t, onboarding, path)
+		assertContains(t, readme, path)
+	}
+
+	tests := []struct {
+		path             string
+		source           string
+		want             []string
+		unwanted         []string
+		wantProjectSlug  bool
+		wantRepository   bool
+		wantStatusField  string
+		wantStatusPrefix string
+	}{
+		{
+			path:            "docs/templates/WORKFLOW.project_v2.md",
+			source:          workflowconfig.GitHubStatusSourceProjectV2,
+			want:            []string{"github_status_source: project_v2", "project_slug: <project-node-id>"},
+			unwanted:        []string{"repository: <repo-owner>/<repo-name>"},
+			wantProjectSlug: true,
+		},
+		{
+			path:            "docs/templates/WORKFLOW.issue_field.md",
+			source:          workflowconfig.GitHubStatusSourceIssueField,
+			want:            []string{"github_status_source: issue_field", "repository: <repo-owner>/<repo-name>", "status_field: Status"},
+			unwanted:        []string{"project_slug:"},
+			wantRepository:  true,
+			wantStatusField: "Status",
+		},
+		{
+			path:             "docs/templates/WORKFLOW.label.md",
+			source:           workflowconfig.GitHubStatusSourceLabel,
+			want:             []string{"github_status_source: label", "repository: <repo-owner>/<repo-name>", `status_label_prefix: "detent:"`},
+			unwanted:         []string{"project_slug:", "status_field:"},
+			wantRepository:   true,
+			wantStatusPrefix: "detent:",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.source, func(t *testing.T) {
+			t.Parallel()
+
+			content := strings.ReplaceAll(readRepositoryTextFile(t, tt.path), "\r\n", "\n")
+			for _, want := range tt.want {
+				assertContains(t, content, want)
+			}
+			for _, unwanted := range append(tt.unwanted, "endpoint:", "api_key:", "interval_ms: 15000") {
+				if strings.Contains(content, unwanted) {
+					t.Fatalf("%s contains stale or wrong field %q:\n%s", tt.path, unwanted, content)
+				}
+			}
+
+			workflow, err := workflowconfig.ParseWorkflow([]byte(content))
+			if err != nil {
+				t.Fatalf("ParseWorkflow(%s) error = %v", tt.path, err)
+			}
+			cfg := workflow.Config
+			cfg.Tracker.APIKey = "test-token"
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("Validate(%s) error = %v", tt.path, err)
+			}
+
+			if cfg.Tracker.GitHubStatusSource != tt.source {
+				t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, tt.source)
+			}
+			if cfg.Polling.IntervalMS != workflowconfig.DefaultPollingIntervalMS {
+				t.Fatalf("Polling.IntervalMS = %d, want %d", cfg.Polling.IntervalMS, workflowconfig.DefaultPollingIntervalMS)
+			}
+			assertContains(t, content, "max_concurrent_agents_by_state:\n    Merging: 1")
+			if cfg.Agent.MaxConcurrentAgentsByState["merging"] != 1 {
+				t.Fatalf("Merging concurrency = %d, want 1", cfg.Agent.MaxConcurrentAgentsByState["merging"])
+			}
+			if tt.wantProjectSlug && strings.TrimSpace(cfg.Tracker.ProjectSlug) == "" {
+				t.Fatal("ProjectSlug is blank")
+			}
+			if tt.wantRepository && strings.TrimSpace(cfg.Tracker.Repository) == "" {
+				t.Fatal("Repository is blank")
+			}
+			if tt.wantStatusField != "" && cfg.Tracker.StatusField != tt.wantStatusField {
+				t.Fatalf("StatusField = %q, want %q", cfg.Tracker.StatusField, tt.wantStatusField)
+			}
+			if tt.wantStatusPrefix != "" && cfg.Tracker.StatusLabelPrefix != tt.wantStatusPrefix {
+				t.Fatalf("StatusLabelPrefix = %q, want %q", cfg.Tracker.StatusLabelPrefix, tt.wantStatusPrefix)
+			}
+		})
+	}
 }
 
 func readRepositoryTextFile(t *testing.T, path string) string {
