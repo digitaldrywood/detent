@@ -63,33 +63,33 @@ func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{
 			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Ahuman-review&page=1&per_page=100&state=all",
-			body:   `[{"node_id":"I_506","number":506,"title":"Shutdown diagnostics","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/506","assignees":[],"labels":[{"name":"detent:human-review"},{"name":"bug"}]}]`,
+			path:   "/repos/digitaldrywood/digitaldrywood/issues?labels=detent%3Ahuman-review&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_433","number":433,"title":"Human Review issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/digitaldrywood/issues/433","assignees":[],"labels":[{"name":"detent:human-review"},{"name":"bug"}]}]`,
 		},
 		{
 			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
-			body:   `[{"number":508,"html_url":"https://github.com/digitaldrywood/detent/pull/508","state":"open","head":{"ref":"detent/detent-digitaldrywood_detent_506-6bd1bec3c6d3","sha":"sha-508"}}]`,
+			path:   "/repos/digitaldrywood/digitaldrywood/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[{"number":434,"html_url":"https://github.com/digitaldrywood/digitaldrywood/pull/434","state":"open","head":{"ref":"detent/digitaldrywood-digitaldrywood_digitaldrywood_433-a212db2634a4","sha":"sha-434"}}]`,
 		},
 		{
 			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/commits/sha-508/check-runs?per_page=100",
+			path:   "/repos/digitaldrywood/digitaldrywood/commits/sha-434/check-runs?per_page=100",
 			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
 		},
 		{
 			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/commits/sha-508/statuses?per_page=100",
+			path:   "/repos/digitaldrywood/digitaldrywood/commits/sha-434/statuses?per_page=100",
 			body:   `[]`,
 		},
 		{
 			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls/508/reviews?per_page=100",
+			path:   "/repos/digitaldrywood/digitaldrywood/pulls/434/reviews?per_page=100",
 			body:   `[]`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		GitHubStatusSource: GitHubStatusSourceLabel,
-		Repository:         "digitaldrywood/detent",
+		Repository:         "digitaldrywood/digitaldrywood",
 	})
 
 	got, err := c.FetchIssuesByStatesLimit(context.Background(), []string{"Human Review"}, 1)
@@ -99,11 +99,11 @@ func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(
 	if len(got) != 1 {
 		t.Fatalf("FetchIssuesByStatesLimit() len = %d, want 1", len(got))
 	}
-	if got[0].PRNumber == nil || *got[0].PRNumber != 508 {
-		t.Fatalf("PRNumber = %v, want 508", got[0].PRNumber)
+	if got[0].PRNumber == nil || *got[0].PRNumber != 434 {
+		t.Fatalf("PRNumber = %v, want 434", got[0].PRNumber)
 	}
-	if got[0].PullRequest == nil || got[0].PullRequest.Number != 508 || got[0].PullRequest.CIStatus != "pass" {
-		t.Fatalf("PullRequest = %#v, want hydrated PR 508", got[0].PullRequest)
+	if got[0].PullRequest == nil || got[0].PullRequest.Number != 434 || got[0].PullRequest.CIStatus != "pass" {
+		t.Fatalf("PullRequest = %#v, want hydrated PR 434", got[0].PullRequest)
 	}
 }
 

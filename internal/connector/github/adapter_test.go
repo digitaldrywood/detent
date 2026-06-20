@@ -894,11 +894,23 @@ func TestBranchMatchesIssuePrefixAcceptsCurrentAgentBranchShape(t *testing.T) {
 		"detent/digitaldrywood_detent_506",
 		"detent/digitaldrywood_detent_506-fix",
 		"detent/detent-digitaldrywood_detent_506-6bd1bec3c6d3",
+		"detent/digitaldrywood-digitaldrywood_detent_506-6bd1bec3c6d3",
 		"detent/506",
 		"detent/506-fix",
 	} {
 		if !branchMatchesIssuePrefix(branch, prefix) {
 			t.Fatalf("branchMatchesIssuePrefix(%q, %q) = false, want true", branch, prefix)
+		}
+	}
+
+	for _, branch := range []string{
+		"detent/digitaldrywood-digitaldrywood_detent_5060-6bd1bec3c6d3",
+		"detent/digitaldrywood-digitaldrywood_detent_50-6bd1bec3c6d3",
+		"detent/foo-digitaldrywood_detent_506-digitaldrywood_detent_123-6bd1bec3c6d3",
+		"detent/digitaldrywood_detent_5060",
+	} {
+		if branchMatchesIssuePrefix(branch, prefix) {
+			t.Fatalf("branchMatchesIssuePrefix(%q, %q) = true, want false", branch, prefix)
 		}
 	}
 }

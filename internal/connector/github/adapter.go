@@ -3391,6 +3391,9 @@ func branchMatchesIssuePrefix(branchName string, prefix string) bool {
 				return true
 			}
 		}
+		if branchMatchesCurrentDetentPrefix(branchName, legacyPrefix) {
+			return true
+		}
 		if number := issueNumberFromBranchPrefix(legacyPrefix); number != "" {
 			if branchName == "detent/"+number {
 				return true
@@ -3403,6 +3406,18 @@ func branchMatchesIssuePrefix(branchName string, prefix string) bool {
 		}
 	}
 	return false
+}
+
+func branchMatchesCurrentDetentPrefix(branchName string, issueKey string) bool {
+	branchStem, ok := strings.CutPrefix(branchName, "detent/")
+	if !ok {
+		return false
+	}
+	digestSeparator := strings.LastIndex(branchStem, "-")
+	if digestSeparator <= 0 || digestSeparator == len(branchStem)-1 {
+		return false
+	}
+	return strings.HasSuffix(branchStem[:digestSeparator], "-"+issueKey)
 }
 
 func issueNumberFromBranchPrefix(prefix string) string {
