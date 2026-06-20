@@ -265,17 +265,19 @@ func freeTCPPort(t *testing.T) int {
 func (b *cdpBrowser) waitForVersion(t *testing.T, output *lockedBuffer) {
 	t.Helper()
 
-	client := http.Client{Timeout: time.Second}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
+	client := http.Client{Timeout: 2 * time.Second}
+	deadline := time.Now().Add(30 * time.Second)
 	versionURL := fmt.Sprintf("http://127.0.0.1:%d/json/version", b.port)
 	var lastErr error
-	for ctx.Err() == nil {
+	for time.Now().Before(deadline) {
+		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, versionURL, nil)
 		if err != nil {
+			cancel()
 			t.Fatalf("create browser version request: %v", err)
 		}
 		resp, err := client.Do(req)
+		cancel()
 		if err == nil {
 			_, readErr := io.Copy(io.Discard, resp.Body)
 			closeErr := resp.Body.Close()
@@ -300,8 +302,8 @@ func (b *cdpBrowser) waitForVersion(t *testing.T, output *lockedBuffer) {
 func (b *cdpBrowser) NewPage(t *testing.T, pageURL string) *cdpPage {
 	t.Helper()
 
-	client := http.Client{Timeout: 5 * time.Second}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	client := http.Client{Timeout: 10 * time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	newPageURL := fmt.Sprintf("http://127.0.0.1:%d/json/new?%s", b.port, url.QueryEscape(pageURL))
 	req, err := http.NewRequestWithContext(ctx, http.MethodPut, newPageURL, nil)
