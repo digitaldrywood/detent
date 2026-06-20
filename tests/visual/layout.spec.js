@@ -61,7 +61,9 @@ test("fleet Kanban lanes stay fixed width across multiple projects", async ({ pa
   await assertProjectKanbanLayout(page, "#fleet-kanban", { minLanes: 4 });
   await assertElementFitsViewport(page, "#fleet-kanban");
   await assertSidebarActive(page, "[data-dashboard-static-nav='kanban']");
-  await compareAndAttach(board, "fleet-kanban-multiproject-desktop.png", testInfo);
+  await compareClipAndAttach(page, "#fleet-kanban", "fleet-kanban-multiproject-desktop.png", testInfo, {
+    maxHeight: 700,
+  });
 });
 
 test("project Kanban keeps action controls inside compact cards", async ({ page }, testInfo) => {
@@ -76,7 +78,9 @@ test("project Kanban keeps action controls inside compact cards", async ({ page 
   await assertProjectKanbanLayout(page, "#project-kanban", { minLanes: 6 });
   await assertElementFitsViewport(page, "#project-kanban");
   await assertSidebarActive(page, "[data-dashboard-view='kanban']");
-  await compareAndAttach(board, "project-kanban-full-integration-desktop.png", testInfo);
+  await compareClipAndAttach(page, "#project-kanban", "project-kanban-full-integration-desktop.png", testInfo, {
+    maxHeight: 430,
+  });
 });
 
 test("long Kanban issue titles do not inflate lanes", async ({ page }, testInfo) => {
@@ -90,7 +94,9 @@ test("long Kanban issue titles do not inflate lanes", async ({ page }, testInfo)
   await expect(board.locator("[data-project-kanban-card]").first()).toBeVisible();
   await assertProjectKanbanLayout(page, "#project-kanban", { minLanes: 6 });
   await assertElementFitsViewport(page, "#project-kanban");
-  await compareAndAttach(board, "project-kanban-dense-overflow-desktop.png", testInfo);
+  await compareClipAndAttach(page, "#project-kanban", "project-kanban-dense-overflow-desktop.png", testInfo, {
+    maxHeight: 760,
+  });
 });
 
 test("Kanban boards remain contained on narrow screens", async ({ page }, testInfo) => {
@@ -104,7 +110,9 @@ test("Kanban boards remain contained on narrow screens", async ({ page }, testIn
   await expect(board).toBeVisible();
   await assertProjectKanbanLayout(page, "#fleet-kanban", { minLanes: 4 });
   await assertElementFitsViewport(page, "#fleet-kanban");
-  await compareAndAttach(board, "fleet-kanban-multiproject-narrow.png", testInfo);
+  await compareClipAndAttach(page, "#fleet-kanban", "fleet-kanban-multiproject-narrow.png", testInfo, {
+    maxHeight: 740,
+  });
 });
 
 test("sidebar active state survives Kanban refreshes", async ({ page }, testInfo) => {
@@ -117,7 +125,9 @@ test("sidebar active state survives Kanban refreshes", async ({ page }, testInfo
   await page.request.post(`${kanbanRuntime.url}/api/v1/refresh`);
   await page.waitForTimeout(300);
   await assertSidebarActive(page, "[data-dashboard-static-nav='kanban']");
-  await compareAndAttach(page.locator("#fleet-kanban"), "kanban-demo-refresh-active-state.png", testInfo);
+  await compareClipAndAttach(page, "#fleet-kanban", "kanban-demo-refresh-active-state.png", testInfo, {
+    maxHeight: 340,
+  });
 });
 
 test("project configuration page preserves project color layout", async ({ page }, testInfo) => {
@@ -175,11 +185,13 @@ async function compareAndAttach(locator, name, testInfo) {
 async function compareClipAndAttach(page, selector, name, testInfo, options) {
   const clip = await page.locator(selector).evaluate((element, maxHeight) => {
     const box = element.getBoundingClientRect();
+    const x = Math.max(0, box.left);
+    const y = Math.max(0, box.top);
     return {
-      x: Math.max(0, box.left),
-      y: Math.max(0, box.top),
-      width: Math.min(box.width, window.innerWidth - Math.max(0, box.left)),
-      height: Math.min(box.height, maxHeight),
+      x,
+      y,
+      width: Math.min(box.width, window.innerWidth - x),
+      height: Math.min(maxHeight, window.innerHeight - y),
     };
   }, options.maxHeight);
   await expect(page).toHaveScreenshot(name, { clip });
