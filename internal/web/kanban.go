@@ -43,6 +43,7 @@ type kanbanMoveRequest struct {
 	currentState string
 	targetState  string
 	prNumber     int
+	drag         bool
 }
 
 type kanbanCommentRequest struct {
@@ -288,8 +289,10 @@ func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, messag
 	if !ok {
 		return kanbanFeedback(c, http.StatusOK, message)
 	}
-	data.Kanban.Feedback = message
-	data.Kanban.FeedbackKind = "success"
+	if !req.drag {
+		data.Kanban.Feedback = message
+		data.Kanban.FeedbackKind = "success"
+	}
 
 	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
@@ -577,6 +580,7 @@ func parseKanbanMoveRequest(c echo.Context) (kanbanMoveRequest, string, int) {
 		issueID:      strings.TrimSpace(c.FormValue("issue_id")),
 		currentState: strings.TrimSpace(c.FormValue("current_state")),
 		targetState:  strings.TrimSpace(c.FormValue("target_state")),
+		drag:         strings.EqualFold(strings.TrimSpace(c.FormValue("kanban_drag")), "true"),
 	}
 	if value := strings.TrimSpace(c.FormValue("pr_number")); value != "" {
 		number, err := strconv.Atoi(value)

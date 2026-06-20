@@ -430,6 +430,7 @@ func (s *Server) demoKanbanMoveSuccess(c echo.Context, scenario demoScenario) er
 	if req.targetState == "" {
 		req.targetState = "Todo"
 	}
+	message := "Moved card to " + req.targetState + "."
 
 	projectScenario := scenario
 	projectScenario.Page = "kanban"
@@ -437,14 +438,16 @@ func (s *Server) demoKanbanMoveSuccess(c echo.Context, scenario demoScenario) er
 	projectScenario.KanbanMode = workflowconfig.KanbanModeIntegration
 	data, ok := s.demoProjectDashboardData(c.Request().Context(), projectScenario)
 	if !ok {
-		return kanbanFeedback(c, http.StatusOK, "Moved card to "+req.targetState+".")
+		return kanbanFeedback(c, http.StatusOK, message)
 	}
 	applyDemoKanbanMove(&data.Snapshot, req.projectID, req.issueID, req.targetState)
-	data.Kanban.Feedback = "Moved card to " + req.targetState + "."
-	data.Kanban.FeedbackKind = "success"
+	if !req.drag {
+		data.Kanban.Feedback = message
+		data.Kanban.FeedbackKind = "success"
+	}
 
 	if c.Request().Header.Get("HX-Request") != "true" {
-		return c.JSON(http.StatusOK, map[string]any{"ok": true, "message": data.Kanban.Feedback})
+		return c.JSON(http.StatusOK, map[string]any{"ok": true, "message": message})
 	}
 	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
 	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)

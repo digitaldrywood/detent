@@ -1897,6 +1897,7 @@ templ projectKanbanMoveDialogTrigger(data DashboardData, card projectKanbanCard)
 
 templ projectKanbanDragMoveForm(data DashboardData, card projectKanbanCard) {
 	<form class="hidden" hx-post="/api/v1/kanban/move" hx-target="#kanban-feedback" hx-swap="outerHTML" data-kanban-drag-move-form>
+		<input type="hidden" name="kanban_drag" value="true"/>
 		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
 		<input type="hidden" name="issue_id" value={ card.IssueID }/>
 		<input type="hidden" name="identifier" value={ card.Identifier }/>
@@ -2284,6 +2285,7 @@ templ kanbanMoveDialogTrigger(data DashboardData, card kanbanCard) {
 
 templ kanbanDragMoveForm(data DashboardData, card kanbanCard) {
 	<form class="hidden" hx-post="/api/v1/kanban/move" hx-target="#kanban-feedback" hx-swap="outerHTML" data-kanban-drag-move-form>
+		<input type="hidden" name="kanban_drag" value="true"/>
 		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
 		<input type="hidden" name="issue_id" value={ card.IssueID }/>
 		<input type="hidden" name="identifier" value={ card.Identifier }/>

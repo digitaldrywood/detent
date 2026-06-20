@@ -1385,6 +1385,7 @@ func TestDashboardKanbanIntegrationFiltersMoveTargets(t *testing.T) {
 		`hx-post="/api/v1/kanban/move"`,
 		`hx-target="#kanban-feedback"`,
 		`data-kanban-drag-move-form`,
+		`name="kanban_drag" value="true"`,
 		`data-kanban-drag-target-state`,
 	} {
 		if !strings.Contains(card, want) {
@@ -1437,6 +1438,7 @@ func TestDashboardKanbanDragDropPropagatesTargetState(t *testing.T) {
 	for _, want := range []string{
 		`data-kanban-allowed-targets="inprogress"`,
 		`data-kanban-drag-move-form`,
+		`name="kanban_drag" value="true"`,
 		`name="target_state" value="" data-kanban-drag-target-state`,
 		`hx-post="/api/v1/kanban/move"`,
 		`hx-target="#kanban-feedback"`,

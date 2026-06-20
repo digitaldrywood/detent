@@ -59,18 +59,25 @@ func TestStartKanbanDemoBrowserDragDrop(t *testing.T) {
 	assertKanbanCardCount(t, page, "Merging", "kanban-demo-backlog", 0)
 
 	page.SetLaneVisible(t, "Todo")
+	boardTop := page.DocumentTop(t, "#project-kanban")
+	lanesTop := page.DocumentTop(t, "#project-kanban .project-kanban-lanes")
+	todoTop := page.DocumentTop(t, "[data-kanban-drop-state='Todo']")
 	if !page.DragCardToLane(t, "kanban-demo-backlog", "Todo") {
 		t.Fatal("Backlog to Todo drag/drop was rejected, want accepted")
 	}
 	page.WaitForRequestCount(t, http.MethodPost, "/api/v1/kanban/move", initialPosts+1)
-	page.WaitForExpression(t, `document.getElementById("kanban-feedback") && document.getElementById("kanban-feedback").textContent.includes("Moved card to Todo.")`)
 	page.WaitForExpression(t, `(() => {
 		const todo = document.querySelector("[data-kanban-drop-state='Todo']");
 		const backlog = document.querySelector("[data-kanban-drop-state='Backlog']");
+		const feedback = document.getElementById("kanban-feedback");
 		return todo && backlog &&
+			feedback && !feedback.textContent.includes("Moved card to Todo.") &&
 			todo.querySelectorAll("[data-kanban-issue-id='kanban-demo-backlog']").length === 1 &&
 			backlog.querySelectorAll("[data-kanban-issue-id='kanban-demo-backlog']").length === 0;
 	})()`)
+	assertNoDocumentTopShift(t, "project Kanban board", boardTop, page.DocumentTop(t, "#project-kanban"))
+	assertNoDocumentTopShift(t, "project Kanban lanes", lanesTop, page.DocumentTop(t, "#project-kanban .project-kanban-lanes"))
+	assertNoDocumentTopShift(t, "Todo lane", todoTop, page.DocumentTop(t, "[data-kanban-drop-state='Todo']"))
 	page.Screenshot(t, "kanban-drag-after.png")
 	if page.EvalBool(t, `(() => {
 		const dialog = document.getElementById("kanban-action-dialog");
@@ -134,6 +141,18 @@ func assertKanbanCardCount(t *testing.T, page *cdpPage, lane string, issueID str
 	})()`, strconv.Quote(laneSelector), strconv.Quote(cardSelector)))
 	if got != want {
 		t.Fatalf("%s card count for %s = %d, want %d", lane, issueID, got, want)
+	}
+}
+
+func assertNoDocumentTopShift(t *testing.T, name string, before int, after int) {
+	t.Helper()
+
+	delta := after - before
+	if delta < 0 {
+		delta = -delta
+	}
+	if delta > 1 {
+		t.Fatalf("%s document top shifted by %dpx, before=%d after=%d", name, delta, before, after)
 	}
 }
 
@@ -458,6 +477,19 @@ func (p *cdpPage) EvalInt(t *testing.T, expression string) int {
 	var got int
 	p.Eval(t, expression, &got)
 	return got
+}
+
+func (p *cdpPage) DocumentTop(t *testing.T, selector string) int {
+	t.Helper()
+
+	return p.EvalInt(t, fmt.Sprintf(`(() => {
+		const element = document.querySelector(%s);
+		if (!element) {
+			throw new Error("missing element " + %s);
+		}
+		const rect = element.getBoundingClientRect();
+		return Math.round(rect.top + window.scrollY);
+	})()`, strconv.Quote(selector), strconv.Quote(selector)))
 }
 
 func (p *cdpPage) Eval(t *testing.T, expression string, out any) {
