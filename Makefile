@@ -23,7 +23,7 @@ NILAWAY_VERSION ?= v0.0.0-20260612163715-2d8907f431ca
 NILAWAY ?= go run go.uber.org/nilaway/cmd/nilaway@$(NILAWAY_VERSION)
 NILAWAY_INCLUDE_PKGS ?= github.com/digitaldrywood/detent
 
-.PHONY: dev generate css css-watch build test test-race test-cover lint vet check modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
+.PHONY: dev generate css css-watch build test test-race test-cover visual-e2e visual-e2e-update lint vet check modernize-check nilaway-audit release-snapshot sqlc db-migrate setup clean help
 
 dev:
 	@mkdir -p tmp
@@ -84,6 +84,14 @@ test-cover:
 		printf "coverage %.1f%% meets %.1f%% threshold\n", coverage, threshold; \
 	}'
 
+visual-e2e: build
+	@if [ ! -x node_modules/.bin/playwright ]; then npm ci; fi
+	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test
+
+visual-e2e-update: build
+	@if [ ! -x node_modules/.bin/playwright ]; then npm ci; fi
+	DETENT_BINARY="$(CURDIR)/$(BINARY_PATH)" node_modules/.bin/playwright test --update-snapshots
+
 lint:
 	golangci-lint run --timeout=5m
 
@@ -138,6 +146,8 @@ help:
 	@echo "  test         Run Go tests"
 	@echo "  test-race    Run Go tests with the race detector"
 	@echo "  test-cover   Run Go coverage with a $(COVERAGE_THRESHOLD)% minimum"
+	@echo "  visual-e2e   Run Playwright visual layout tests"
+	@echo "  visual-e2e-update  Update Playwright visual baselines"
 	@echo "  lint         Run golangci-lint"
 	@echo "  check        Run the local validation gate, including NilAway"
 	@echo "  modernize-check  Run the Go modernizer diff check"
