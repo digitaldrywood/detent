@@ -41,7 +41,7 @@ func TestStartKanbanDemoBrowserDragDrop(t *testing.T) {
 
 	page := browser.NewPage(t, runtimeURL+"/projects/"+projectID+"/kanban")
 	defer page.Close()
-	page.WaitForExpression(t, `Boolean(window.htmx && document.querySelector("#project-kanban [data-kanban-issue-id='kanban-demo-backlog']") && document.querySelector("[data-kanban-drop-state='Merging']"))`)
+	page.WaitForExpression(t, `Boolean(window.htmx && window.__detentKanbanDragHandlersRegistered === true && document.querySelector("#project-kanban [data-kanban-card][data-kanban-issue-id='kanban-demo-backlog'][draggable='true']") && document.querySelector("[data-kanban-drop-state='Merging']"))`)
 	page.Screenshot(t, "kanban-drag-before.png")
 	page.SetLaneVisible(t, "Merging")
 	page.Screenshot(t, "kanban-drag-target-visible.png")
@@ -127,7 +127,7 @@ func assertKanbanCardCount(t *testing.T, page *cdpPage, lane string, issueID str
 	t.Helper()
 
 	laneSelector := fmt.Sprintf("[data-kanban-drop-state=%q]", lane)
-	cardSelector := fmt.Sprintf("[data-kanban-issue-id=%q]", issueID)
+	cardSelector := fmt.Sprintf("[data-kanban-card][data-kanban-issue-id=%q]", issueID)
 	got := page.EvalInt(t, fmt.Sprintf(`(() => {
 		const lane = document.querySelector(%s);
 		return lane ? lane.querySelectorAll(%s).length : -1;
@@ -543,7 +543,7 @@ func (p *cdpPage) DragCardToLane(t *testing.T, issueID string, targetState strin
 func (p *cdpPage) ClickMoveButtonForCard(t *testing.T, issueID string) {
 	t.Helper()
 
-	selector := fmt.Sprintf("[data-kanban-issue-id=%q] [aria-label^='Move ']", issueID)
+	selector := fmt.Sprintf("[data-kanban-card][data-kanban-issue-id=%q] [aria-label^='Move ']", issueID)
 	if !p.EvalBool(t, fmt.Sprintf(`(() => {
 		const button = document.querySelector(%s);
 		if (!button) {
