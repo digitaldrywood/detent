@@ -138,7 +138,7 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 		t.Run(tt.source, func(t *testing.T) {
 			t.Parallel()
 
-			content := readRepositoryTextFile(t, tt.path)
+			content := strings.ReplaceAll(readRepositoryTextFile(t, tt.path), "\r\n", "\n")
 			for _, want := range tt.want {
 				assertContains(t, content, want)
 			}
