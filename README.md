@@ -947,6 +947,36 @@ quick JSON smoke check looks like this:
 curl -H 'X-Detent-Demo-Scenario: fleet-healthy-parallel-work' "$DETENT_URL/api/v1/state"
 ```
 
+The CI browser visual gate runs Playwright when a PR changes UI-sensitive
+paths such as `.github/workflows/ci.yml`, `package.json`, `static/**`,
+`internal/web/**`, `internal/cli/dev_runtime*.go`, `internal/devruntime/**`,
+Templ inputs, or screenshot/onboarding docs. It builds the PR's Detent binary,
+starts isolated `dev-runtime` instances on port `0`, captures current evidence
+under `tmp/playwright-evidence`, and uploads Playwright reports, traces,
+screenshots, and image diffs when assertions fail.
+
+Run the layout gate locally after installing Playwright's Chromium browser:
+
+```sh
+npx playwright install chromium
+make visual-e2e
+```
+
+Committed image baselines are authoritative for Ubuntu/Chromium. On non-Linux
+hosts, `make visual-e2e` still runs the browser layout assertions and captures
+evidence, but skips pixel comparison unless `DETENT_VISUAL_STRICT=1` is set.
+
+Update baselines only when the visual change is intentional. Run the update in
+the same Ubuntu/Chromium environment as CI, then review and commit the changed
+files under `tests/visual/__screenshots__/chromium/`:
+
+```sh
+make visual-e2e-update
+```
+
+Do not commit `tmp/playwright-evidence`, `tmp/playwright-report`, or
+`tmp/playwright-results`; those are transient review and debugging artifacts.
+
 Use the normal live runtime, `detent` with your global config, only when you
 intend to operate on the configured tracker and ProjectV2 board. Use
 `detent dev-runtime --fixture <path>` for focused fixture validation such as

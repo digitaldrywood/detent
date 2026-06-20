@@ -2,9 +2,12 @@
   "name": "detent",
   "private": true,
   "scripts": {
-    "css": "tailwindcss -i static/css/input.css -o static/css/output.css --minify"
+    "css": "tailwindcss -i static/css/input.css -o static/css/output.css --minify",
+    "test:visual": "playwright test",
+    "test:visual:update": "playwright test --update-snapshots"
   },
   "devDependencies": {
+    "@playwright/test": "^1.61.0",
     "@tailwindcss/cli": "4.3.0",
     "tailwindcss": "4.3.0"
   }
