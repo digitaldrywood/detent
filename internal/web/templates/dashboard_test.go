@@ -1285,6 +1285,8 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 		`data-tui-dialog-target="kanban-action-dialog"`,
 		`hx-get="/api/v1/kanban/move?`,
 		`hx-get="/api/v1/kanban/comment?`,
+		`hx-post="/api/v1/kanban/move"`,
+		`hx-target="#kanban-feedback"`,
 		`hx-target="#kanban-dialog-content"`,
 		`data-kanban-drag-move-form`,
 		`event.dataTransfer.setDragImage(card`,
@@ -1357,6 +1359,8 @@ func TestDashboardKanbanIntegrationFiltersMoveTargets(t *testing.T) {
 		`data-kanban-allowed-targets="blocked cancelled"`,
 		`hx-get="/api/v1/kanban/move?`,
 		`current_state=In+Progress`,
+		`hx-post="/api/v1/kanban/move"`,
+		`hx-target="#kanban-feedback"`,
 		`data-kanban-drag-move-form`,
 		`data-kanban-drag-target-state`,
 	} {
@@ -1368,7 +1372,7 @@ func TestDashboardKanbanIntegrationFiltersMoveTargets(t *testing.T) {
 		`data-kanban-allowed-targets="blocked cancelled humanreview"`,
 		`data-kanban-allowed-targets="blocked cancelled inprogress"`,
 		`<option`,
-		`hx-post="/api/v1/kanban/move"`,
+		`hx-get="/api/v1/kanban/move" hx-target="#kanban-dialog-content" hx-swap="innerHTML" data-kanban-drag-move-form`,
 	} {
 		if strings.Contains(card, forbidden) {
 			t.Fatalf("integration card rendered disallowed move marker %q:\n%s", forbidden, card)
@@ -1411,7 +1415,8 @@ func TestDashboardKanbanDragDropPropagatesTargetState(t *testing.T) {
 		`data-kanban-allowed-targets="inprogress"`,
 		`data-kanban-drag-move-form`,
 		`name="target_state" value="" data-kanban-drag-target-state`,
-		`hx-get="/api/v1/kanban/move"`,
+		`hx-post="/api/v1/kanban/move"`,
+		`hx-target="#kanban-feedback"`,
 		`name="current_state" value="Todo"`,
 	} {
 		if !strings.Contains(card, want) {
@@ -1424,12 +1429,23 @@ func TestDashboardKanbanDragDropPropagatesTargetState(t *testing.T) {
 		`targetState.value = lane.dataset.kanbanDropState || "";`,
 		`feedback("Move blocked by transition policy.");`,
 		`lane.dataset.kanbanDropAllowed = allowed ? "true" : "false";`,
+		`lane.dataset.projectKanbanLaneVisible = "true";`,
+		`lane.dataset.kanbanDropWasVisible = lane.dataset.projectKanbanLaneVisible || "";`,
 		`lane.setAttribute("aria-disabled", allowed ? "false" : "true");`,
-		`openActionDialog();`,
+		`event.dataTransfer.dropEffect = allowed ? "move" : "none";`,
+		`document.body.addEventListener("htmx:responseError"`,
 		`form.requestSubmit();`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("drag script missing %q:\n%s", want, html)
+		}
+	}
+	for _, forbidden := range []string{
+		`openActionDialog();`,
+		`hx-get="/api/v1/kanban/move" hx-target="#kanban-dialog-content" hx-swap="innerHTML" data-kanban-drag-move-form`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("drag script/card rendered dialog submit path %q:\n%s", forbidden, html)
 		}
 	}
 }
