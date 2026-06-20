@@ -310,6 +310,18 @@
   .dashboard-project-order-controls button:disabled {
     opacity: 0.35;
   }
+
+  .project-kanban-lane[data-kanban-drop-allowed="true"] {
+    border-color: var(--color-success);
+    background: color-mix(in oklab, var(--color-success-soft) 68%, transparent);
+    cursor: move;
+  }
+
+  .project-kanban-lane[data-kanban-drop-allowed="false"] {
+    border-color: var(--color-danger);
+    background: color-mix(in oklab, var(--color-danger-soft) 62%, transparent);
+    cursor: not-allowed;
+  }
 }
 
 @layer utilities {
