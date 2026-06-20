@@ -1,6 +1,7 @@
 @import "tailwindcss" source(none);
 
 @source "../../internal/web/templates/**/*.templ";
+@source "../../internal/web/templates/dashboard_data.go";
 @source "../../internal/web/ui/components/**/*.templ";
 
 @custom-variant dark (&:where(.dark, .dark *));
@@ -114,6 +115,7 @@
 
   .dashboard-agent-scroll,
   .pr-pipeline-lane-scroll,
+  .project-kanban-lanes,
   .project-kanban-lane-scroll {
     overscroll-behavior: contain;
     scrollbar-gutter: stable;

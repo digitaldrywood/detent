@@ -704,7 +704,7 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 		`aria-label="Pin Todo lane"`,
 		`data-project-kanban-empty-lane`,
 		`data-project-kanban-lane-visible="false"`,
-		`[grid-template-columns:repeat(auto-fill,minmax(14rem,16rem))]`,
+		`project-kanban-lanes mt-3 flex min-w-0 max-w-full flex-nowrap items-start justify-start gap-3 overflow-x-auto pb-2`,
 		"Todo (1)",
 		"In Progress (0)",
 		"Human Review (1)",
@@ -966,7 +966,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 	section := projectKanbanSection(t, html)
 	for _, want := range []string{
 		"project-kanban-card-compact",
-		`project-kanban-lane grid min-h-[12rem] w-full min-w-0 max-w-full content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
+		`project-kanban-lane grid min-h-[12rem] w-72 shrink-0 content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
 		`project-kanban-lane-scroll mt-2 grid auto-rows-max min-w-0 max-w-full max-h-[32rem] gap-1.5 overflow-x-hidden overflow-y-auto pr-1`,
 		`project-kanban-card project-kanban-card-compact w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-1.5`,
 		`data-kanban-card-details`,
@@ -1083,8 +1083,8 @@ func TestDashboardProjectKanbanControlsStayInsideLane(t *testing.T) {
 
 	section := projectKanbanSection(t, html)
 	for _, want := range []string{
-		`project-kanban-lanes mt-3 grid min-w-0 max-w-full items-start justify-start gap-2 overflow-x-hidden [grid-template-columns:repeat(auto-fill,minmax(14rem,16rem))]`,
-		`project-kanban-lane grid min-h-[12rem] w-full min-w-0 max-w-full content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
+		`project-kanban-lanes mt-3 flex min-w-0 max-w-full flex-nowrap items-start justify-start gap-3 overflow-x-auto pb-2`,
+		`project-kanban-lane grid min-h-[12rem] w-72 shrink-0 content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
 		`flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden`,
 		`min-w-0 shrink truncate text-xs font-semibold text-foreground`,
 		`inline-flex size-6 flex-none items-center justify-center`,
@@ -1093,6 +1093,15 @@ func TestDashboardProjectKanbanControlsStayInsideLane(t *testing.T) {
 	} {
 		if !strings.Contains(section, want) {
 			t.Fatalf("project Kanban compact lane contract missing %q:\n%s", want, section)
+		}
+	}
+	for _, forbidden := range []string{
+		`project-kanban-lanes mt-3 grid min-w-0 max-w-full items-start justify-start gap-2 overflow-x-hidden`,
+		`[grid-template-columns:repeat(auto-fill,minmax(14rem,16rem))]`,
+		`project-kanban-lane grid min-h-[12rem] w-full min-w-0 max-w-full`,
+	} {
+		if strings.Contains(section, forbidden) {
+			t.Fatalf("project Kanban compact lane contract still renders %q:\n%s", forbidden, section)
 		}
 	}
 
