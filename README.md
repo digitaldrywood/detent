@@ -1073,15 +1073,21 @@ repo is a real, working instance of this setup to copy from.
    git clone <repo-url> <source-root>
    ```
 
-6. **Author the project contract.** Copy the canonical example as a starting
-   point, then edit it. For from-zero board creation, interview questions, issue
-   intake, and the first-dispatch smoke test, follow
+6. **Author the project contract.** Copy the mode-specific template as a
+   starting point, then edit it. For from-zero board creation, interview
+   questions, issue intake, and the first-dispatch smoke test, follow
    [Project Onboarding](docs/ONBOARDING.md):
 
    ```sh
-   curl -fsSL https://raw.githubusercontent.com/digitaldrywood/detent-orchestration/main/WORKFLOW.md \
+   GITHUB_MODE="${GITHUB_MODE:?set GITHUB_MODE to project_v2, issue_field, or label}"
+   curl -fsSL "https://raw.githubusercontent.com/digitaldrywood/detent/main/docs/templates/WORKFLOW.${GITHUB_MODE}.md" \
      -o <source-root>/WORKFLOW.md
    ```
+
+   The maintained templates are
+   [`WORKFLOW.project_v2.md`](docs/templates/WORKFLOW.project_v2.md),
+   [`WORKFLOW.issue_field.md`](docs/templates/WORKFLOW.issue_field.md), and
+   [`WORKFLOW.label.md`](docs/templates/WORKFLOW.label.md).
 
    For ProjectV2 mode, set `tracker.project_slug` (your `PVT_` id). For
    boardless issue-field mode, set `tracker.github_status_source:
@@ -1090,8 +1096,10 @@ repo is a real, working instance of this setup to copy from.
    `tracker.github_status_source: label`, `tracker.repository:
    <repo-owner>/<repo-name>`, and `tracker.status_label_prefix`. In every mode,
    set `workspace.source_root` (`<source-root>`), `workspace.root` (a worktrees
-   directory), and the prompt body. The full field reference is in
-   [Quick Start](#quick-start).
+   directory), `write_probe_issue` when using write probes, and the prompt body.
+   Registered projects can use `github_token: gh` in `global.yaml`; leave
+   `tracker.api_key` out of the workflow unless you are intentionally using a
+   workflow-local token. The full field reference is in [Quick Start](#quick-start).
 
    Interactive alternative: when Detent starts without a resolved `global.yaml`
    and without a `WORKFLOW.md` in the current directory, it serves the
