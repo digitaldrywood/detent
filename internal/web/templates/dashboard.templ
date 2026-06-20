@@ -1335,7 +1335,7 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 				</div>
 			</div>
 			if kanbanIntegrationEnabled(data) {
-				<div id="kanban-feedback" role="status" aria-live="polite" class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Ready.</div>
+				<div id="kanban-feedback" role="status" aria-live="polite" class={ kanbanFeedbackClass(data.Kanban) }>{ kanbanFeedbackText(data.Kanban) }</div>
 			}
 			<div class="project-kanban-lanes mt-3 flex min-w-0 max-w-full flex-nowrap items-start justify-start gap-3 overflow-x-auto pb-2" data-preserve-scroll="project-kanban-lanes">
 				for _, lane := range board.AllLanes {
@@ -2150,7 +2150,7 @@ templ kanbanBoardSection(data DashboardData) {
 				<span class="inline-flex min-h-9 shrink-0 items-center justify-center rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ data.Kanban.Mode }</span>
 			</div>
 			if kanbanIntegrationEnabled(data) {
-				<div id="kanban-feedback" role="status" aria-live="polite" class="mt-3 rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">Ready.</div>
+				<div id="kanban-feedback" role="status" aria-live="polite" class={ kanbanFeedbackClass(data.Kanban) }>{ kanbanFeedbackText(data.Kanban) }</div>
 			}
 			<div class="mt-4 grid min-w-0 max-w-full gap-3 overflow-x-hidden lg:grid-cols-3">
 				for _, lane := range kanbanLanes(data) {

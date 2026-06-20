@@ -315,8 +315,19 @@ func TestDemoScenarioKanbanFragments(t *testing.T) {
 	}
 
 	rec := performDemoForm(t, server.Handler(), "/api/v1/kanban/move", "api-kanban-move-success", nil)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Moved card to In Progress") {
+	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Moved card to Todo") {
 		t.Fatalf("move success status = %d body = %s", rec.Code, rec.Body.String())
+	}
+	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
+		t.Fatalf("move success HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	}
+	backlogLane := projectKanbanLaneHTML(t, rec.Body.String(), "backlog")
+	if strings.Contains(backlogLane, "Backlog observability fixture intake") {
+		t.Fatalf("demo Backlog lane still contains moved card:\n%s", backlogLane)
+	}
+	todoLane := projectKanbanLaneHTML(t, rec.Body.String(), "todo")
+	if !strings.Contains(todoLane, "Backlog observability fixture intake") {
+		t.Fatalf("demo Todo lane missing moved card:\n%s", todoLane)
 	}
 
 	rec = performDemoForm(t, server.Handler(), "/api/v1/kanban/comment", "api-kanban-comment-connector-failure", nil)
@@ -619,6 +630,81 @@ func TestKanbanMoveRoutesProjectV2AndIssueFieldUpdates(t *testing.T) {
 				t.Fatalf("issue field updates = %#v, want %#v", got, tt.wantField)
 			}
 		})
+	}
+}
+
+func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+		AllowedTransitions: map[string][]string{
+			"Backlog": {"Todo"},
+		},
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kw559",
+			Identifier: "digitaldrywood/detent#559",
+			ProjectID:  "detent",
+			Title:      "Move regression card",
+			State:      "Backlog",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"kanban_dialog": {"true"},
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw559"},
+		"current_state": {"Backlog"},
+		"target_state":  {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
+		t.Fatalf("HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	}
+	if rec.Header().Get("HX-Reswap") != "outerHTML" {
+		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
+	}
+	for _, want := range []string{
+		`id="project-kanban"`,
+		"Moved card to Todo.",
+		`data-project-kanban-lane="backlog"`,
+		`data-project-kanban-lane="todo"`,
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("response missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+	if got := strings.Count(rec.Body.String(), `data-kanban-issue-id="I_kw559"`); got != 1 {
+		t.Fatalf("card render count = %d, want 1:\n%s", got, rec.Body.String())
+	}
+	backlogLane := projectKanbanLaneHTML(t, rec.Body.String(), "backlog")
+	if strings.Contains(backlogLane, "Move regression card") {
+		t.Fatalf("Backlog lane still contains moved card:\n%s", backlogLane)
+	}
+	todoLane := projectKanbanLaneHTML(t, rec.Body.String(), "todo")
+	if !strings.Contains(todoLane, "Move regression card") {
+		t.Fatalf("Todo lane missing moved card:\n%s", todoLane)
+	}
+	if got, want := actionConnector.stateUpdates(), []kanbanStateUpdate{{issueID: "I_kw559", state: "Todo"}}; !equalStateUpdates(got, want) {
+		t.Fatalf("state updates = %#v, want %#v", got, want)
 	}
 }
 
@@ -5683,6 +5769,21 @@ func mustSetKanbanProject(t *testing.T, registry *project.Registry, id string, k
 	if err := registry.Set(trackedProject); err != nil {
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
+}
+
+func projectKanbanLaneHTML(t *testing.T, body string, laneID string) string {
+	t.Helper()
+
+	marker := `data-project-kanban-lane="` + laneID + `"`
+	start := strings.Index(body, marker)
+	if start < 0 {
+		t.Fatalf("missing project Kanban lane %q in:\n%s", laneID, body)
+	}
+	rest := body[start:]
+	if next := strings.Index(rest[len(marker):], `data-project-kanban-lane="`); next >= 0 {
+		return rest[:len(marker)+next]
+	}
+	return rest
 }
 
 func performForm(t *testing.T, handler http.Handler, method string, path string, form url.Values) *httptest.ResponseRecorder {

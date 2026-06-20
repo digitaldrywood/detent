@@ -416,6 +416,51 @@ func demoKanbanData(scenario demoScenario, projectID string) templates.KanbanDat
 	}
 }
 
+func (s *Server) demoKanbanMoveSuccess(c echo.Context, scenario demoScenario) error {
+	req, _, _ := parseKanbanMoveRequest(c)
+	if req.projectID == "" {
+		req.projectID = strings.TrimSpace(scenario.ProjectID)
+	}
+	if req.projectID == "" {
+		req.projectID = demoPrimaryProjectID
+	}
+	if req.issueID == "" {
+		req.issueID = "demo-backlog"
+	}
+	if req.targetState == "" {
+		req.targetState = "Todo"
+	}
+
+	projectScenario := scenario
+	projectScenario.Page = "kanban"
+	projectScenario.ProjectID = req.projectID
+	projectScenario.KanbanMode = workflowconfig.KanbanModeIntegration
+	data, ok := s.demoProjectDashboardData(c.Request().Context(), projectScenario)
+	if !ok {
+		return kanbanFeedback(c, http.StatusOK, "Moved card to "+req.targetState+".")
+	}
+	applyDemoKanbanMove(&data.Snapshot, req.projectID, req.issueID, req.targetState)
+	data.Kanban.Feedback = "Moved card to " + req.targetState + "."
+	data.Kanban.FeedbackKind = "success"
+
+	if c.Request().Header.Get("HX-Request") != "true" {
+		return c.JSON(http.StatusOK, map[string]any{"ok": true, "message": data.Kanban.Feedback})
+	}
+	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
+	c.Response().Header().Set("HX-Reswap", "outerHTML")
+	return render(c, templates.ProjectKanbanSnapshot(data))
+}
+
+func applyDemoKanbanMove(snapshot *telemetry.Snapshot, projectID string, issueID string, targetState string) {
+	applySnapshotKanbanIssues(snapshot, func(issue *telemetry.Issue) {
+		if issue == nil || !sameKanbanIssue(*issue, projectID, issueID, snapshot.Project.ID) {
+			return
+		}
+		issue.State = targetState
+	})
+}
+
 func demoKanbanTransitions(states []string) map[string][]string {
 	transitions := map[string][]string{
 		"Backlog":      {"Todo", "Cancelled"},

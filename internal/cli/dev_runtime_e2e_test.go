@@ -110,12 +110,25 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 		}
 	}
 
-	postRuntimeKanbanForm(t, dashboardURL+"/api/v1/kanban/move", done, url.Values{
+	moveBody := postRuntimeKanbanForm(t, dashboardURL+"/api/v1/kanban/move", done, url.Values{
 		"project_id":    {projectID},
 		"issue_id":      {"kanban-demo-backlog"},
 		"current_state": {"Backlog"},
 		"target_state":  {"Todo"},
 	})
+	for _, want := range []string{
+		`id="project-kanban"`,
+		"Moved card to Todo.",
+		`data-kanban-issue-id="kanban-demo-backlog"`,
+		`data-kanban-current-state="Todo"`,
+	} {
+		if !strings.Contains(moveBody, want) {
+			t.Fatalf("immediate Kanban move response missing %q:\n%s", want, moveBody)
+		}
+	}
+	if got := strings.Count(moveBody, `data-kanban-issue-id="kanban-demo-backlog"`); got != 1 {
+		t.Fatalf("immediate Kanban move response rendered moved card %d times, want 1:\n%s", got, moveBody)
+	}
 	postRuntimeRefresh(t, dashboardURL, done)
 	waitForDashboardCondition(t, pageURL, done, "backlog card moved to todo", func(body string) bool {
 		return strings.Contains(body, `data-kanban-issue-id="kanban-demo-backlog"`) &&
@@ -313,7 +326,7 @@ func postRuntimeRefresh(t *testing.T, url string, done <-chan error) {
 	t.Fatalf("timed out posting runtime refresh to %s", url)
 }
 
-func postRuntimeKanbanForm(t *testing.T, rawURL string, done <-chan error, form url.Values) {
+func postRuntimeKanbanForm(t *testing.T, rawURL string, done <-chan error, form url.Values) string {
 	t.Helper()
 
 	client := http.Client{Timeout: time.Second}
@@ -332,6 +345,7 @@ func postRuntimeKanbanForm(t *testing.T, rawURL string, done <-chan error, form 
 			t.Fatalf("NewRequestWithContext() error = %v", err)
 		}
 		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		req.Header.Set("HX-Request", "true")
 		resp, err := client.Do(req)
 		if err == nil {
 			body, readErr := io.ReadAll(resp.Body)
@@ -343,13 +357,14 @@ func postRuntimeKanbanForm(t *testing.T, rawURL string, done <-chan error, form 
 				t.Fatalf("Body.Close() error = %v", closeErr)
 			}
 			if resp.StatusCode == http.StatusOK {
-				return
+				return string(body)
 			}
 			t.Fatalf("Kanban action status = %d, want 200; body = %s", resp.StatusCode, string(body))
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out posting Kanban action to %s", rawURL)
+	return ""
 }
 
 func boardStateCountFromBody(t *testing.T, body string, state string) int {
