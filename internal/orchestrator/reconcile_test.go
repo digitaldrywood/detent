@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -228,6 +229,194 @@ func TestTickReapsTerminalRunningIssue(t *testing.T) {
 	}
 	if snapshot.Counts.Completed != 1 || len(snapshot.Completed) != 1 {
 		t.Fatalf("snapshot completed count = %d len = %d, want 1", snapshot.Counts.Completed, len(snapshot.Completed))
+	}
+}
+
+func TestTickCancelledRunningIssueAuditsWorkspaceCleanupAndReleasesLease(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 20, 12, 0, 0, 0, time.UTC)
+	startedAt := now.Add(-10 * time.Minute)
+	cancelledAt := now.Add(-30 * time.Second)
+	issue := connector.Issue{
+		ID:         "issue-cancelled-running",
+		Identifier: "digitaldrywood/detent#586",
+		Title:      "Cancellation audit",
+		State:      "In Progress",
+		URL:        "https://github.com/digitaldrywood/detent/issues/586",
+	}
+	cancelled := cloneIssue(issue)
+	cancelled.State = "Cancelled"
+	cancelled.StageUpdatedAt = &cancelledAt
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		Claiming: ClaimingConfig{
+			Enabled:           true,
+			OwnershipMode:     "field",
+			Owner:             "detent-test",
+			OwnerField:        "Owner",
+			LeaseField:        "Lease",
+			LeaseTTL:          time.Minute,
+			HeartbeatInterval: time.Hour,
+		},
+		ActiveStates:                  []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:                []string{"Human Review"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Hour,
+	})
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:     cloneIssue(issue),
+		StartedAt: startedAt,
+		Tokens:    CodexTotals{TotalTokens: 15, RuntimeSeconds: 90},
+		cancel:    cancel,
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: startedAt, Owner: "detent-test"}
+
+	tracker := &runningStateConnector{issuesByState: []connector.Issue{cancelled}}
+	reaper := &cleanupSweepReaper{result: WorkspaceReapResult{Worktrees: 1, Branches: 1, Processes: 2}}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		reaper:    reaper,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if _, ok := state.Running[issue.ID]; ok {
+		t.Fatalf("Running[%q] present after cancellation cleanup", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after cancellation cleanup", issue.ID)
+	}
+	completed, ok := state.Completed[issue.ID]
+	if !ok {
+		t.Fatalf("Completed[%q] missing after cancellation cleanup", issue.ID)
+	}
+	if completed.FinalState != "Cancelled" {
+		t.Fatalf("Completed[%q].FinalState = %q, want Cancelled", issue.ID, completed.FinalState)
+	}
+	if !completed.CompletedAt.Equal(cancelledAt) {
+		t.Fatalf("Completed[%q].CompletedAt = %v, want %v", issue.ID, completed.CompletedAt, cancelledAt)
+	}
+	select {
+	case <-runCtx.Done():
+	default:
+		t.Fatal("running context was not cancelled")
+	}
+	if !tracker.hasSetField(issue.ID, "Lease", "") {
+		t.Fatalf("SetField(%q, Lease, empty) not recorded; calls = %#v", issue.ID, tracker.setFieldCalls)
+	}
+	if len(reaper.issues) != 1 || reaper.issues[0].ID != issue.ID {
+		t.Fatalf("reaped issues = %#v, want cancelled issue", reaper.issues)
+	}
+
+	event, ok := recentStateEvent(state, "workspace_reap_succeeded")
+	if !ok {
+		t.Fatalf("RecentEvents = %#v, want workspace_reap_succeeded", state.RecentEvents)
+	}
+	for _, want := range []string{
+		"digitaldrywood/detent#586",
+		"reason=cancelled",
+		"worktrees=1",
+		"branches=1",
+		"processes=2",
+	} {
+		if !strings.Contains(event.Message, want) {
+			t.Fatalf("cleanup event message = %q, want %q", event.Message, want)
+		}
+	}
+	snapshot := state.Snapshot(now)
+	if len(snapshot.Events) != 1 || snapshot.Events[0].Event != "workspace_reap_succeeded" {
+		t.Fatalf("snapshot Events = %#v, want cleanup success event", snapshot.Events)
+	}
+}
+
+func TestTickCancelledNonRunningIssueReapsWorkspaceEvenBeforeNextSweep(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 20, 12, 30, 0, 0, time.UTC)
+	cancelled := connector.Issue{
+		ID:         "issue-cancelled-non-running",
+		Identifier: "digitaldrywood/detent#587",
+		Title:      "Cancelled non-running work",
+		State:      "Cancelled",
+	}
+	cfg := normalizeConfig(Config{
+		PollInterval:                  time.Minute,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:                []string{"Human Review"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Hour,
+	})
+	state := newState(cfg)
+	state.LastWorkspaceCleanupAt = now.Add(-time.Minute)
+
+	tracker := &runningStateConnector{issuesByState: []connector.Issue{cancelled}}
+	reaper := &cleanupSweepReaper{result: WorkspaceReapResult{Worktrees: 1}}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		reaper:    reaper,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(reaper.issues) != 1 || reaper.issues[0].ID != cancelled.ID {
+		t.Fatalf("reaped issues = %#v, want cancelled non-running issue before next sweep", reaper.issues)
+	}
+	if event, ok := recentStateEvent(state, "workspace_reap_succeeded"); !ok || !strings.Contains(event.Message, "digitaldrywood/detent#587") {
+		t.Fatalf("RecentEvents = %#v, want cancelled cleanup success event", state.RecentEvents)
+	}
+}
+
+func TestTickWorkspaceCleanupFailureRecordsDiagnosticEvent(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 20, 13, 0, 0, 0, time.UTC)
+	cancelled := connector.Issue{
+		ID:         "issue-cancelled-failure",
+		Identifier: "digitaldrywood/detent#588",
+		Title:      "Cancelled cleanup failure",
+		State:      "Cancelled",
+	}
+	cfg := normalizeConfig(Config{
+		PollInterval:                  time.Minute,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates:                []string{"Human Review"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Hour,
+	})
+	state := newState(cfg)
+	tracker := &runningStateConnector{issuesByState: []connector.Issue{cancelled}}
+	reaper := &cleanupSweepReaper{err: errors.New("remove worktree: permission denied")}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		reaper:    reaper,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if _, ok := state.ReapedWorkspaces[cancelled.ID]; ok {
+		t.Fatalf("ReapedWorkspaces[%q] present after failed cleanup", cancelled.ID)
+	}
+	event, ok := recentStateEvent(state, "workspace_reap_failed")
+	if !ok {
+		t.Fatalf("RecentEvents = %#v, want workspace_reap_failed", state.RecentEvents)
+	}
+	for _, want := range []string{"digitaldrywood/detent#588", "reason=cancelled", "permission denied"} {
+		if !strings.Contains(event.Message, want) {
+			t.Fatalf("cleanup failure event message = %q, want %q", event.Message, want)
+		}
 	}
 }
 
@@ -505,6 +694,7 @@ type runningStateConnector struct {
 	err           error
 	requestedIDs  []string
 	updates       []statusUpdate
+	setFieldCalls []reconcileSetFieldCall
 }
 
 func (c *runningStateConnector) Name() string {
@@ -515,8 +705,8 @@ func (c *runningStateConnector) FetchCandidateIssues(context.Context) ([]connect
 	return []connector.Issue{}, nil
 }
 
-func (c *runningStateConnector) FetchIssuesByStates(context.Context, []string) ([]connector.Issue, error) {
-	return cloneIssues(c.issuesByState), nil
+func (c *runningStateConnector) FetchIssuesByStates(_ context.Context, states []string) ([]connector.Issue, error) {
+	return issuesInStates(c.issuesByState, states), nil
 }
 
 func (c *runningStateConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
@@ -540,15 +730,47 @@ func (c *runningStateConnector) SetAssignee(context.Context, string, string) err
 	return nil
 }
 
-func (c *runningStateConnector) SetField(context.Context, string, string, string) error {
+func (c *runningStateConnector) SetField(_ context.Context, issueID string, field string, value string) error {
+	c.setFieldCalls = append(c.setFieldCalls, reconcileSetFieldCall{issueID: issueID, field: field, value: value})
 	return nil
 }
 
+func (c *runningStateConnector) hasSetField(issueID string, field string, value string) bool {
+	for _, call := range c.setFieldCalls {
+		if call.issueID == issueID && call.field == field && call.value == value {
+			return true
+		}
+	}
+	return false
+}
+
+type reconcileSetFieldCall struct {
+	issueID string
+	field   string
+	value   string
+}
+
 type cleanupSweepReaper struct {
+	result WorkspaceReapResult
+	err    error
 	issues []connector.Issue
 }
 
 func (r *cleanupSweepReaper) ReapWorkspace(_ context.Context, issue connector.Issue) (WorkspaceReapResult, error) {
 	r.issues = append(r.issues, cloneIssue(issue))
-	return WorkspaceReapResult{}, nil
+	return r.result, r.err
+}
+
+func recentStateEvent(state State, event string) (telemetryEvent, bool) {
+	for _, candidate := range state.RecentEvents {
+		if candidate.Event == event {
+			return telemetryEvent{Event: candidate.Event, Message: candidate.Message}, true
+		}
+	}
+	return telemetryEvent{}, false
+}
+
+type telemetryEvent struct {
+	Event   string
+	Message string
 }

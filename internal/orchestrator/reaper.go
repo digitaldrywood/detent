@@ -2,27 +2,38 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"log/slog"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, now time.Time) {
 	if o.reaper == nil {
 		return
 	}
-	if !state.LastWorkspaceCleanupAt.IsZero() && now.Before(state.LastWorkspaceCleanupAt.Add(o.cfg.WorkspaceCleanupSweepInterval)) {
-		return
-	}
-	state.LastWorkspaceCleanupAt = now
 
 	states := cleanupFetchStates(o.cfg)
 	if len(states) == 0 {
 		return
 	}
+	if state.LastWorkspaceCleanupAt.IsZero() || !now.Before(state.LastWorkspaceCleanupAt.Add(o.cfg.WorkspaceCleanupSweepInterval)) {
+		state.LastWorkspaceCleanupAt = now
+		o.reapWorkspaceStates(ctx, state, states, now)
+		return
+	}
 
+	terminalStates := cleanupTerminalFetchStates(o.cfg)
+	if len(terminalStates) == 0 {
+		return
+	}
+	o.reapWorkspaceStates(ctx, state, terminalStates, now)
+}
+
+func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, states []string, now time.Time) {
 	issues, err := o.connector.FetchIssuesByStates(ctx, states)
 	if err != nil {
 		o.logger.Warn("fetch workspace cleanup candidates failed", slog.Any("error", err))
@@ -35,12 +46,16 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 		if o.completeRunningIssueFromWorkspaceCleanup(ctx, state, issue, now) {
 			continue
 		}
-		o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates))
+		o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), now)
 	}
 }
 
 func cleanupFetchStates(cfg Config) []string {
 	return appendUniqueStates(cfg.TerminalStates, cfg.ObservedStates)
+}
+
+func cleanupTerminalFetchStates(cfg Config) []string {
+	return appendUniqueStates(cfg.TerminalStates)
 }
 
 func appendUniqueStates(groups ...[]string) []string {
@@ -103,6 +118,8 @@ func workspaceIssueIdleSince(issue connector.Issue) (time.Time, bool) {
 
 func workspaceReapReason(issue connector.Issue, terminalStates []string) string {
 	switch {
+	case stateIn(issue.State, terminalStates) && workspaceIssueCancelled(issue.State):
+		return "cancelled"
 	case issue.Closed:
 		return "closed"
 	case issue.PullRequest != nil && normalizePullRequestState(issue.PullRequest.State) == "merged":
@@ -111,6 +128,15 @@ func workspaceReapReason(issue connector.Issue, terminalStates []string) string 
 		return "terminal"
 	default:
 		return "idle"
+	}
+}
+
+func workspaceIssueCancelled(state string) bool {
+	switch normalizeState(state) {
+	case "cancelled", "canceled":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -141,8 +167,13 @@ func (o *Orchestrator) completeRunningIssueFromWorkspaceCleanup(ctx context.Cont
 	return true
 }
 
-func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue connector.Issue, reason string) {
+func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue connector.Issue, reason string, now time.Time) {
 	if o.reaper == nil {
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(now),
+			Event:   "workspace_reap_unverified",
+			Message: workspaceReapUnverifiedMessage(issue, reason),
+		})
 		return
 	}
 	if _, ok := state.ReapedWorkspaces[issue.ID]; ok {
@@ -157,12 +188,19 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 			slog.String("reason", reason),
 			slog.Any("error", err),
 		)
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(now),
+			Event:   "workspace_reap_failed",
+			Message: workspaceReapFailedMessage(issue, reason, err),
+		})
 		return
 	}
-	state.ReapedWorkspaces[issue.ID] = time.Now().UTC()
-	if result.Worktrees == 0 && result.Branches == 0 && result.Processes == 0 {
-		return
-	}
+	state.ReapedWorkspaces[issue.ID] = cleanupEventAt(now)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      cleanupEventAt(now),
+		Event:   "workspace_reap_succeeded",
+		Message: workspaceReapSucceededMessage(issue, reason, result),
+	})
 	o.logger.Info(
 		"workspace reaped",
 		slog.String("issue_id", issue.ID),
@@ -172,4 +210,30 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 		slog.Int("branches", result.Branches),
 		slog.Int("processes", result.Processes),
 	)
+}
+
+func cleanupEventAt(now time.Time) time.Time {
+	if now.IsZero() {
+		return time.Now().UTC()
+	}
+	return now.UTC()
+}
+
+func workspaceReapSucceededMessage(issue connector.Issue, reason string, result WorkspaceReapResult) string {
+	return fmt.Sprintf(
+		"workspace cleanup succeeded for %s reason=%s worktrees=%d branches=%d processes=%d",
+		issueLabel(issue),
+		reason,
+		result.Worktrees,
+		result.Branches,
+		result.Processes,
+	)
+}
+
+func workspaceReapFailedMessage(issue connector.Issue, reason string, err error) string {
+	return fmt.Sprintf("workspace cleanup failed for %s reason=%s: %v", issueLabel(issue), reason, err)
+}
+
+func workspaceReapUnverifiedMessage(issue connector.Issue, reason string) string {
+	return fmt.Sprintf("workspace cleanup could not be verified for %s reason=%s: workspace reaper unavailable", issueLabel(issue), reason)
 }

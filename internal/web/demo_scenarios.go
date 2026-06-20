@@ -694,10 +694,16 @@ func demoHealthySnapshot() telemetry.Snapshot {
 		Shutdown:     telemetry.Shutdown{Status: "running"},
 		Refresh:      telemetry.Refresh{PollIntervalSeconds: 60, LastRefreshAt: &lastRefresh, NextRefreshAt: &nextRefresh},
 		Counts:       telemetry.Counts{Running: 3, Queue: 3, Blocked: 2, Completed: 4},
+		Events: []telemetry.ActivityEvent{
+			{
+				At:      now.Add(-3 * time.Minute),
+				Event:   "workspace_reap_succeeded",
+				Message: "workspace cleanup succeeded for digitaldrywood/mobile-client#5243 reason=cancelled worktrees=1 branches=1 processes=0",
+			},
+		},
 		BoardIssues: []telemetry.Issue{
 			demoIssue(demoPrimaryProjectID, "demo-backlog", "digitaldrywood/detent-core#5250", "Backlog observability fixture intake", "Backlog", 72),
 			demoIssue(demoPrimaryProjectID, "demo-todo", "digitaldrywood/detent-core#5251", "Add screenshot manifest smoke test", "Todo", 9),
-			demoIssue(demoPrimaryProjectID, "demo-cancelled", "digitaldrywood/detent-core#5259", "Cancelled alternate dashboard theme", "Cancelled", 48),
 			demoIssue("agent-lab", "agent-lab-todo", "digitaldrywood/agent-lab#111", "Try secondary runner routing", "Todo", 11),
 		},
 		Pipeline: []telemetry.Issue{

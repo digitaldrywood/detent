@@ -744,9 +744,9 @@ If `workspace.source_root` is omitted, Detent falls back to the project
 setups.
 
 `workspace.cleanup_idle_ttl_ms` controls how long non-active observed
-workspaces can sit idle before cleanup. Terminal issues are cleaned immediately
-when observed. `workspace.cleanup_sweep_interval_ms` controls the startup and
-periodic cleanup cadence.
+workspaces can sit idle before cleanup. Terminal issues are cleaned on the next
+poll when observed. `workspace.cleanup_sweep_interval_ms` controls the startup
+and periodic idle cleanup cadence.
 
 `polling.interval_ms` defaults to `120000` and must be at least `60000`.
 Detent work is async, so it does not need sub-minute board scans. Detent polls
@@ -1255,6 +1255,38 @@ The recommended GitHub Project board states are:
 | `Merging` | Final rebase, merge-gate check, CI watch, and merge. |
 | `Done` | Complete. |
 | `Cancelled` | Terminal state mapped to `Done` in the default release flow. |
+
+### Cancellation Lifecycle
+
+Manual `Cancelled` means Detent should stop managing the work item, not that
+GitHub issues or pull requests are automatically closed. On the next poll that
+observes the cancelled terminal state, Detent cancels any running agent context,
+releases the global dispatch slot, clears configured claim lease state, records
+the run as completed with final state `Cancelled`, and asks the workspace
+backend to remove the Detent worktree, prune git worktrees, delete the generated
+`detent/` branch when safe, and reap workspace processes.
+
+Terminal cleanup is attempted on each poll for terminal states so a cancelled
+non-running issue can still clean up an existing Detent workspace without
+waiting for the idle cleanup sweep. The idle sweep interval still controls
+non-terminal observed workspace cleanup.
+
+Detent emits cleanup diagnostics in `/api/v1/state` under `events` and in
+published telemetry snapshots. A successful cleanup records
+`workspace_reap_succeeded` with `worktrees=`, `branches=`, and `processes=`
+counts. Cleanup failures record `workspace_reap_failed`, leave the workspace
+eligible for a later retry, and keep the diagnostic visible in recent events.
+If Detent completes a terminal run but no workspace reaper is configured, it
+records `workspace_reap_unverified`.
+
+Detent does not close the GitHub issue when an item is manually cancelled. The
+configured tracker state is the source of truth; in label mode, the default
+`Cancelled: Done` state map means the repository label is `detent:done`.
+Operators remain responsible for closing the GitHub issue with `not_planned` or
+another reason when that is the desired repository record.
+
+Detent also leaves linked pull requests open. Operators should close, comment
+on, or reuse an open PR explicitly when cancelled work has one.
 
 ### Review gate
 

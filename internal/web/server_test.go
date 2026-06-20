@@ -261,6 +261,16 @@ func TestDemoScenarioManifestPagesAndAPIs(t *testing.T) {
 	if counts["running"] != float64(3) || counts["retrying"] != float64(3) || counts["blocked"] != float64(2) {
 		t.Fatalf("state counts = %#v", counts)
 	}
+	if _, ok := boardStateCountOK(t, state, "Cancelled"); ok {
+		t.Fatalf("demo state includes Cancelled on the active board: %#v", state["board"])
+	}
+	cleanupEvents := state["events"].([]any)
+	if len(cleanupEvents) == 0 || cleanupEvents[0].(map[string]any)["event"] != "workspace_reap_succeeded" {
+		t.Fatalf("demo events = %#v, want cancellation cleanup event", cleanupEvents)
+	}
+	if !strings.Contains(cleanupEvents[0].(map[string]any)["message"].(string), "reason=cancelled") {
+		t.Fatalf("demo cleanup event = %#v, want cancellation reason", cleanupEvents[0])
+	}
 
 	usage := requestJSONWithHeaders(t, server, http.MethodGet, "/api/v1/usage?by=project", http.StatusOK, map[string]string{
 		web.DemoScenarioHeader: "api-usage-populated",
@@ -4501,6 +4511,13 @@ func TestServerAPIRoutes(t *testing.T) {
 	events := hub.New[telemetry.Snapshot]()
 	if err := events.Publish(telemetry.Snapshot{
 		GeneratedAt: generatedAt,
+		Events: []telemetry.ActivityEvent{
+			{
+				At:      generatedAt.Add(-20 * time.Second),
+				Event:   "workspace_reap_succeeded",
+				Message: "workspace cleanup succeeded for digitaldrywood/detent#586 reason=cancelled worktrees=1 branches=1 processes=2",
+			},
+		},
 		Running: []telemetry.Running{
 			{
 				Issue: telemetry.Issue{
@@ -4645,6 +4662,13 @@ func TestServerAPIRoutes(t *testing.T) {
 	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
 	if state["generated_at"] != generatedAt.Format(time.RFC3339) {
 		t.Fatalf("generated_at = %q, want %q", state["generated_at"], generatedAt.Format(time.RFC3339))
+	}
+	cleanupEvents := state["events"].([]any)
+	if len(cleanupEvents) != 1 || cleanupEvents[0].(map[string]any)["event"] != "workspace_reap_succeeded" {
+		t.Fatalf("events = %#v, want workspace cleanup event", cleanupEvents)
+	}
+	if !strings.Contains(cleanupEvents[0].(map[string]any)["message"].(string), "reason=cancelled") {
+		t.Fatalf("cleanup event message = %#v, want cancellation reason", cleanupEvents[0])
 	}
 	if got := nestedString(t, state, "counts", "running"); got != "1" {
 		t.Fatalf("counts.running = %s, want 1", got)
