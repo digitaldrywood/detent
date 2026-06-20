@@ -51,6 +51,7 @@ type restProbeResult struct {
 	StatusCode int
 	Headers    http.Header
 	Body       string
+	FullBody   string
 }
 
 func NewClient(cfg ClientConfig) (*Client, error) {
@@ -237,6 +238,7 @@ func (c *Client) restProbe(ctx context.Context, method string, path string, body
 		StatusCode: resp.StatusCode,
 		Headers:    resp.Header.Clone(),
 		Body:       summarizeBody(raw),
+		FullBody:   string(bytes.TrimSpace(raw)),
 	}, nil
 }
 

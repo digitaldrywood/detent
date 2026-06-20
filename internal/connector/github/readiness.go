@@ -1107,7 +1107,7 @@ func issueCloseWriteProbeCheck(result restProbeResult) ReadinessCheck {
 	}
 
 	detailSuffix := acceptedPermissionsDetail(result.Headers)
-	switch state := issueStateFromProbeBody(result.Body); strings.ToLower(state) {
+	switch state := issueStateFromProbeBody(result.FullBody); strings.ToLower(state) {
 	case "open":
 		return ReadinessCheck{
 			Name:   "GitHub issue close",

@@ -242,7 +242,7 @@ func TestReadinessIssueCloseTreatsOpenHTTP200AsPermissionProof(t *testing.T) {
 		headers: map[string]string{
 			"X-Accepted-GitHub-Permissions": "issues=write",
 		},
-		body: `{"node_id":"I_kw1","number":1,"state":"open"}`,
+		body: `{"node_id":"I_kw1","number":1,"title":"` + strings.Repeat("x", maxErrorBodyBytes) + `","state":"open"}`,
 	}})
 	c := newGitHubTestConnector(t, server, Config{})
 	checker := githubReadinessChecker{connector: c}
