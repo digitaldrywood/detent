@@ -47,6 +47,7 @@ tracker:
   active_states:
     - Todo
     - In Progress
+    - Rework
   state_map:
     Cancelled: Done
   priority_map:
@@ -1145,6 +1146,28 @@ Prompt
 				"tracker.dependency_auto_unblock.source_states state names must not be blank",
 				"tracker.dependency_auto_unblock.target_state is required when tracker.dependency_auto_unblock.enabled is true",
 				"tracker.dependency_auto_unblock.readiness must be one of terminal, terminal_or_merged",
+				"tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true",
+			},
+		},
+		{
+			name: "dependency auto unblock requires active rework",
+			raw: `---
+tracker:
+  kind: memory
+  active_states:
+    - Todo
+    - In Progress
+  dependency_auto_unblock:
+    enabled: true
+    source_states:
+      - Blocked
+    target_state: Todo
+    readiness: terminal_or_merged
+---
+Prompt
+`,
+			want: []string{
+				"tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true",
 			},
 		},
 		{

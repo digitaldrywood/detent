@@ -1291,6 +1291,14 @@ func checkDoctorDependencyAutoUnblock(ctx context.Context, id string, cfg workfl
 			Detail: "live dependency auto-unblock diagnostics skipped for " + cfg.Tracker.Kind + " tracker",
 		}
 	}
+	if cfg.Tracker.DependencyAutoUnblock.Enabled && !doctorStateInList("Rework", cfg.Tracker.ActiveStates) {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "tracker.dependency_auto_unblock.enabled=true but tracker.active_states does not include Rework",
+			Hint:   "Add Rework to tracker.active_states so started dependency-unblocked issues can resume.",
+		}
+	}
 
 	if deps.autoPromoteConnector == nil {
 		deps.autoPromoteConnector = defaultDoctorAutoPromoteConnector

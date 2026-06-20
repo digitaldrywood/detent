@@ -5587,6 +5587,7 @@ func newSettingsTestProject(t *testing.T, cfg globalconfig.Project, worktreeRoot
 	workflowCfg.Tracker.DependencyAutoUnblock.SourceStates = []string{"Blocked", "Waiting"}
 	workflowCfg.Tracker.DependencyAutoUnblock.TargetState = "Todo"
 	workflowCfg.Tracker.DependencyAutoUnblock.Readiness = workflowconfig.DependencyReadinessTerminalOrMerged
+	workflowCfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "Rework"}
 	workflowCfg.Workspace.Root = worktreeRoot
 	workflowCfg.Workspace.SourceRoot = cfg.Workdir
 
