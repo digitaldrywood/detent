@@ -19,14 +19,15 @@ import (
 )
 
 const (
-	throughputTrendWindow    = 10 * time.Minute
-	defaultThroughputWindow  = time.Minute
-	prPipelineDoneTodayLimit = 10
-	kanbanActionDialogID     = "kanban-action-dialog"
-	kanbanDialogContentID    = "kanban-dialog-content"
-	handoffVisibilityWindow  = 15 * time.Minute
-	handoffState             = "Handoff"
-	handoffWaitDetail        = "waiting for tracker refresh"
+	throughputTrendWindow       = 10 * time.Minute
+	defaultThroughputWindow     = time.Minute
+	prPipelineDoneTodayLimit    = 10
+	kanbanActionDialogID        = "kanban-action-dialog"
+	kanbanDialogContentID       = "kanban-dialog-content"
+	projectKanbanLaneWidthClass = "w-[var(--project-kanban-lane-width,18rem)] min-w-[var(--project-kanban-lane-width,18rem)] max-w-[var(--project-kanban-lane-width,18rem)] basis-[var(--project-kanban-lane-width,18rem)] shrink-0"
+	handoffVisibilityWindow     = 15 * time.Minute
+	handoffState                = "Handoff"
+	handoffWaitDetail           = "waiting for tracker refresh"
 )
 
 type DashboardData struct {
@@ -2021,7 +2022,7 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef) []string {
 }
 
 func projectKanbanLaneClass(lane projectKanbanLane) string {
-	class := "project-kanban-lane grid min-h-[12rem] w-72 shrink-0 content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2"
+	class := "project-kanban-lane grid min-h-[12rem] " + projectKanbanLaneWidthClass + " content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2"
 	if lane.Empty {
 		class += " project-kanban-empty-lane"
 	}
