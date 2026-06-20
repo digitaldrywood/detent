@@ -1451,7 +1451,9 @@ func TestDashboardKanbanDragDropPropagatesTargetState(t *testing.T) {
 
 	for _, want := range []string{
 		`const targetState = form ? form.querySelector("[data-kanban-drag-target-state]") : null;`,
+		`function markedDraggedCard()`,
 		`function activeDragIssueID(event)`,
+		`card.dataset.kanbanDragging = "true";`,
 		`const issueID = activeDragIssueID(event);`,
 		`targetState.value = lane.dataset.kanbanDropState || "";`,
 		`feedback("Move blocked by transition policy.");`,

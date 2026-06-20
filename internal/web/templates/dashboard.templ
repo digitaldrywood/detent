@@ -2468,9 +2468,17 @@ templ kanbanScript() {
 				return document.querySelector("[data-kanban-card][data-kanban-issue-id='" + CSS.escape(draggedIssueID) + "']");
 			}
 
+			function markedDraggedCard() {
+				return document.querySelector("[data-kanban-card][data-kanban-dragging='true']");
+			}
+
 			function activeDragIssueID(event) {
 				if (draggedIssueID) {
 					return draggedIssueID;
+				}
+				const markedCard = markedDraggedCard();
+				if (markedCard instanceof HTMLElement && markedCard.dataset.kanbanIssueId) {
+					return markedCard.dataset.kanbanIssueId;
 				}
 				if (!event.dataTransfer || typeof event.dataTransfer.getData !== "function") {
 					return "";
@@ -2541,6 +2549,11 @@ templ kanbanScript() {
 					delete lane.dataset.kanbanDropAllowed;
 					lane.removeAttribute("aria-disabled");
 				});
+				document.querySelectorAll("[data-kanban-card][data-kanban-dragging='true']").forEach(function(card) {
+					if (card instanceof HTMLElement) {
+						delete card.dataset.kanbanDragging;
+					}
+				});
 			}
 
 			function closeActionDialog() {
@@ -2565,6 +2578,7 @@ templ kanbanScript() {
 					event.preventDefault();
 					return;
 				}
+				card.dataset.kanbanDragging = "true";
 				if (event.dataTransfer) {
 					event.dataTransfer.effectAllowed = "move";
 					event.dataTransfer.setData("text/plain", draggedIssueID);

@@ -370,6 +370,7 @@ async function dragKanbanCardToLane(page, issueID, targetState) {
       }
       card.scrollIntoView({ block: "center", inline: "center" });
       lane.scrollIntoView({ block: "center", inline: "center" });
+      card.dataset.kanbanDragging = "true";
       const cardRect = card.getBoundingClientRect();
       const laneRect = lane.getBoundingClientRect();
       const data = new DataTransfer();
@@ -392,6 +393,7 @@ async function dragKanbanCardToLane(page, issueID, targetState) {
         fire("drop", lane, laneRect);
       }
       fire("dragend", card, cardRect);
+      delete card.dataset.kanbanDragging;
       return accepted;
     },
     { issueID, targetState },
