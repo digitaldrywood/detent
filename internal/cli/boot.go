@@ -241,6 +241,7 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		return err
 	}
 	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, runtimeStore, displayURL, defaultSnapshotInterval, time.Now)
+	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)
 	server, err := web.NewServer(web.Config{
 		Mode:               web.ModeRunning,
 		WorkflowPath:       firstWorkflowPath(cfg),
@@ -268,11 +269,15 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		return err
 	}
 
+	onGlobalReload := func(reloaded globalconfig.Config) {
+		globalConfigState.set(reloaded)
+		republishLatestSnapshot(snapshotHub, logger)
+	}
 	startProjects := func(ctx context.Context) error {
 		if err := manager.Start(ctx); err != nil {
 			return err
 		}
-		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, globalConfigState.set)
+		globalWatcherDone := startGlobalConfigWatcher(ctx, cfg.Global, manager, logger, runtimeGitHubToken, onGlobalReload)
 		select {
 		case globalWatcherStarted <- globalWatcherDone:
 		default:

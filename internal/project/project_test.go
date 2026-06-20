@@ -473,9 +473,14 @@ func TestProjectHotReloadsWorkflowFileWithoutRestart(t *testing.T) {
 		t.Fatalf("orchestrator creations after reload = %d, want no restart", orchestratorCreates.Load())
 	}
 
+	reloaded := receiveEvent(t, sub.C())
+	if reloaded.ProjectID != got.ID() || reloaded.Kind != project.EventWorkflowReloaded {
+		t.Fatalf("workflow reload event = %#v, want project workflow reload", reloaded)
+	}
+
 	select {
 	case event := <-sub.C():
-		t.Fatalf("unexpected lifecycle event after hot reload = %#v", event)
+		t.Fatalf("unexpected extra event after hot reload = %#v", event)
 	case <-time.After(25 * time.Millisecond):
 	}
 

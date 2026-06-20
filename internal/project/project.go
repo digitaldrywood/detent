@@ -33,10 +33,11 @@ var (
 )
 
 const (
-	EventStarted  EventKind = "project_started"
-	EventPaused   EventKind = "project_paused"
-	EventStopped  EventKind = "project_stopped"
-	EventUnpaused EventKind = "project_unpaused"
+	EventStarted          EventKind = "project_started"
+	EventPaused           EventKind = "project_paused"
+	EventStopped          EventKind = "project_stopped"
+	EventUnpaused         EventKind = "project_unpaused"
+	EventWorkflowReloaded EventKind = "project_workflow_reloaded"
 )
 
 type ID string
@@ -756,9 +757,18 @@ func (p *Project) handleWorkflowUpdate(ctx context.Context, update configwatcher
 	p.scheduler = projectScheduler
 	p.orchConfig = runtimeConfig
 	p.orchDeps.Connector = projectConnector
+	publishEvents := p.lifecycleEvents
+	id := p.id
 	p.mu.Unlock()
 
 	p.logger.Info("workflow reloaded", "project_id", p.id, "path", update.Path)
+	if publishEvents {
+		p.publish(Event{
+			ProjectID: id,
+			Kind:      EventWorkflowReloaded,
+			At:        time.Now(),
+		})
+	}
 }
 
 func projectOrchestratorConfig(project globalconfig.Project, workflow workflowconfig.Config) orchestrator.Config {

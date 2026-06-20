@@ -222,6 +222,56 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	}
 }
 
+func TestRepublishSnapshotsOnProjectEventsPublishesLatestSnapshot(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[projectpkg.Event]()
+	snapshotHub := hub.New[telemetry.Snapshot](hub.WithBuffer(2))
+	now := time.Date(2026, 6, 20, 15, 30, 0, 0, time.UTC)
+	latest := telemetry.Snapshot{
+		GeneratedAt: now,
+		Counts:      telemetry.Counts{Running: 1},
+	}
+	if err := snapshotHub.Publish(latest); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sub, err := snapshotHub.Subscribe(ctx)
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+	defer sub.Close()
+	receiveSnapshot(t, sub.C())
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		republishSnapshotsOnProjectEvents(ctx, events, snapshotHub, nil)
+	}()
+
+	if err := events.Publish(projectpkg.Event{
+		ProjectID: "alpha",
+		Kind:      projectpkg.EventWorkflowReloaded,
+		At:        now,
+	}); err != nil {
+		t.Fatalf("events.Publish() error = %v", err)
+	}
+
+	republished := receiveSnapshot(t, sub.C())
+	if !republished.GeneratedAt.Equal(now) || republished.Counts.Running != 1 {
+		t.Fatalf("republished snapshot = %#v, want latest snapshot", republished)
+	}
+
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for project event republisher to stop")
+	}
+}
+
 func TestPublishSnapshotOncePreservesPipeline(t *testing.T) {
 	t.Parallel()
 
@@ -586,4 +636,17 @@ func newRefreshProjectWithConnector(t *testing.T, id string, projectConnector co
 		t.Fatalf("project.New() error = %v", err)
 	}
 	return project
+}
+
+func receiveSnapshot(t *testing.T, ch <-chan telemetry.Snapshot) telemetry.Snapshot {
+	t.Helper()
+
+	select {
+	case snapshot := <-ch:
+		return snapshot
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for snapshot")
+	}
+
+	return telemetry.Snapshot{}
 }

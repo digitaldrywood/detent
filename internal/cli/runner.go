@@ -231,6 +231,55 @@ func publishSnapshots(
 	}
 }
 
+func republishSnapshotsOnProjectEvents(
+	ctx context.Context,
+	events *hub.Hub[project.Event],
+	snapshotHub *hub.Hub[telemetry.Snapshot],
+	logger *slog.Logger,
+) {
+	if events == nil || snapshotHub == nil {
+		return
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	sub, err := events.Subscribe(ctx)
+	if err != nil {
+		if ctx.Err() == nil {
+			logger.Warn("subscribe project events for snapshot republish failed", "error", err)
+		}
+		return
+	}
+	defer sub.Close()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case _, ok := <-sub.C():
+			if !ok {
+				return
+			}
+			republishLatestSnapshot(snapshotHub, logger)
+		}
+	}
+}
+
+func republishLatestSnapshot(snapshotHub *hub.Hub[telemetry.Snapshot], logger *slog.Logger) {
+	if snapshotHub == nil {
+		return
+	}
+	if logger == nil {
+		logger = slog.Default()
+	}
+	if err := snapshotHub.Republish(); err != nil {
+		logger.Warn("republish telemetry snapshot failed", "error", err)
+	}
+}
+
 func publishStartupSnapshotOnce(
 	ctx context.Context,
 	cfg globalconfig.Config,
