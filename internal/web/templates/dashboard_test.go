@@ -967,7 +967,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 	for _, want := range []string{
 		"project-kanban-card-compact",
 		`project-kanban-lane grid min-h-[12rem] w-full min-w-0 max-w-full content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
-		`project-kanban-lane-scroll mt-2 grid min-w-0 max-w-full max-h-[32rem] gap-1.5 overflow-x-hidden overflow-y-auto pr-1`,
+		`project-kanban-lane-scroll mt-2 grid auto-rows-max min-w-0 max-w-full max-h-[32rem] gap-1.5 overflow-x-hidden overflow-y-auto pr-1`,
 		`project-kanban-card project-kanban-card-compact w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-1.5`,
 		`data-kanban-card-details`,
 		`data-preserve-details="project-kanban-details-digitaldrywood-detent-500"`,
@@ -1087,7 +1087,7 @@ func TestDashboardProjectKanbanControlsStayInsideLane(t *testing.T) {
 		`project-kanban-lane grid min-h-[12rem] w-full min-w-0 max-w-full content-start overflow-hidden rounded-md border border-border bg-muted/60 p-2`,
 		`flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden`,
 		`min-w-0 flex-1 basis-0 truncate text-xs font-semibold text-foreground`,
-		`inline-flex size-7 flex-none items-center justify-center`,
+		`inline-flex size-6 flex-none items-center justify-center`,
 		`project-kanban-empty-lane`,
 		`dashboard-empty-state min-w-0 max-w-full overflow-hidden`,
 	} {
