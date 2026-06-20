@@ -80,6 +80,54 @@ func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	assertContains(t, readme, "Ask and record `GITHUB_MODE` explicitly")
 }
 
+func TestOnboardingDocsRecommendProjectKanbanIntegrationAfterWriteProbes(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+
+	for _, want := range []string{
+		"Keep fleet `/kanban` read-only",
+		"operator-owned local or private Detent instance",
+		"recommend `integration` after `detent doctor` proves the relevant write probes",
+		"shared observer dashboard",
+		"recommend `read_only` until writes are proven",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+
+	for _, want := range []string{
+		"fleet `/kanban` board stays read-only",
+		"trusted operator project board should use `integration` after `detent doctor` proves writes",
+		"observer or shared dashboard",
+		"server.kanban.mode: integration",
+	} {
+		assertContainsWords(t, readme, want)
+	}
+
+	for _, path := range []string{
+		"docs/templates/WORKFLOW.project_v2.md",
+		"docs/templates/WORKFLOW.issue_field.md",
+		"docs/templates/WORKFLOW.label.md",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			content := readRepositoryTextFile(t, path)
+			assertContains(t, content, "mode: integration")
+			assertContains(t, content, "allowed_transitions")
+
+			workflow, err := workflowconfig.ParseWorkflow([]byte(content))
+			if err != nil {
+				t.Fatalf("ParseWorkflow(%s) error = %v", path, err)
+			}
+			if workflow.Config.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {
+				t.Fatalf("Kanban mode = %q, want %q", workflow.Config.Server.Kanban.Mode, workflowconfig.KanbanModeIntegration)
+			}
+		})
+	}
+}
+
 func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 	t.Parallel()
 

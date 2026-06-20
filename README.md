@@ -712,19 +712,18 @@ Use `tracker.authorization.labels.*`, `projects[].authorization`, and
 `agent.dispatch_priority_by_label` for selecting or ranking work by ordinary
 labels such as `documentation`, `bug`, or `enhancement`.
 
-Kanban display is read-only by default. Keep that default for observers,
-shared dashboards, the top-level `/kanban` fleet board, and initial rollout.
-Project-specific Kanban pages can use integration mode when operators are
-allowed to move cards and post issue or PR comments from Detent, and only after
-`detent doctor` proves ProjectV2 status write, issue-field status write, or
-status-label update for the selected status source, plus issue/PR comment
-write:
+The fleet `/kanban` board stays read-only, as do observer dashboards and
+shared dashboards where users should not mutate GitHub from Detent. For a
+trusted operator project board, set `server.kanban.mode: integration` after
+`detent doctor` proves writes: ProjectV2 status write, issue-field status
+write, or status-label update for the selected status source, plus issue/PR
+comment write:
 
 ```yaml
 server:
   kanban:
-    mode: read_only
-    # mode: integration
+    mode: integration
+    # Use mode: read_only for observer/shared dashboards or until write probes pass.
     # allowed_transitions:
     #   In Progress: [Blocked, Cancelled]
     #   Rework: [Blocked, Cancelled]
@@ -732,8 +731,8 @@ server:
     #   QA: [Blocked, Human Review]
 ```
 
-When `allowed_transitions` is omitted, integration mode keeps a conservative
-default for manual moves from execution states: active work such as
+When `allowed_transitions` is omitted, integration mode keeps conservative
+defaults for manual moves from execution states: active work such as
 `In Progress`, `Rework`, and `Merging` can only move to configured exception
 states such as `Blocked` or `Cancelled`. Add source-specific entries to allow a
 project workflow to expose extra manual moves without changing Detent's UI code.
@@ -1119,6 +1118,9 @@ repo is a real, working instance of this setup to copy from.
    [`WORKFLOW.project_v2.md`](docs/templates/WORKFLOW.project_v2.md),
    [`WORKFLOW.issue_field.md`](docs/templates/WORKFLOW.issue_field.md), and
    [`WORKFLOW.label.md`](docs/templates/WORKFLOW.label.md).
+   They set `server.kanban.mode: integration` for trusted project boards;
+   change that to `read_only` for an observer or shared dashboard, or until
+   doctor write probes pass.
 
    For ProjectV2 mode, set `tracker.project_slug` (your `PVT_` id). For
    boardless issue-field mode, set `tracker.github_status_source:
@@ -1327,15 +1329,14 @@ You choose where GitHub status lives; Detent fills in the rest.
 
 ### Kanban Modes
 
-Boardless projects use Detent's own dashboard as the day-to-day board. Keep
-Kanban in `read_only` mode by default: operators can inspect lanes, linked PRs,
-CI, review state, blockers, labels, and assignees without granting dashboard
-write access. Enable `integration` mode only in a release that supports it and
-only for trusted operators who should move cards and post comments from the
-dashboard. Integration mode needs the same GitHub write permissions that
-`detent doctor` probes: ProjectV2 status write in ProjectV2 mode, issue-field
-status write in issue-field mode, status-label update in label mode, and
-issue/PR comment write for comment forms.
+Boardless projects use Detent's own dashboard as the day-to-day board. The
+fleet `/kanban` board stays read-only because it is a cross-project observer
+surface. A trusted operator project board should use `integration` after
+`detent doctor` proves writes, so operators can move cards and post comments
+from `/projects/<id>/kanban`. Keep `read_only` for an observer or shared
+dashboard, or until doctor proves ProjectV2 status write in ProjectV2 mode,
+issue-field status write in issue-field mode, status-label update in label mode,
+and issue/PR comment write for comment forms.
 
 ### Migration Notes
 
