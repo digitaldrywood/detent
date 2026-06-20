@@ -94,9 +94,11 @@ test("project read-only Kanban explains integration setup", async ({ page }, tes
   const board = page.locator("#project-kanban");
   await expect(board).toBeVisible();
   await expect(board.getByText("This board is currently read-only.")).toBeVisible();
-  await expect(board.getByText("To move cards from Detent, enable Kanban integration in WORKFLOW.md.")).toBeVisible();
+  await expect(
+    board.getByText("To move cards from Detent, enable Kanban integration in WORKFLOW.md under the existing server block."),
+  ).toBeVisible();
   await expect(board.getByLabel("Kanban integration config snippet")).toHaveValue(
-    "server:\n  kanban:\n    mode: integration",
+    "kanban:\n  mode: integration",
   );
   await expect(board.locator("[data-kanban-action]")).toHaveCount(0);
   await assertProjectKanbanLayout(page, "#project-kanban", { minLanes: 6 });

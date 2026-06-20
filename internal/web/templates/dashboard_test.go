@@ -689,14 +689,13 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 		"Project Kanban",
 		"Read-only",
 		"This board is currently read-only.",
-		"To move cards from Detent, enable Kanban integration in WORKFLOW.md.",
+		"To move cards from Detent, enable Kanban integration in WORKFLOW.md under the existing server block.",
 		"Run",
 		"detent doctor --port 0",
 		"first and confirm status-label, issue-field, and ProjectV2 write checks pass.",
 		`aria-label="Kanban integration config snippet"`,
-		`server:
-  kanban:
-    mode: integration`,
+		`kanban:
+  mode: integration`,
 		"Add",
 		"allowed_transitions",
 		"when you want broad manual status editing instead of conservative defaults.",
@@ -886,7 +885,7 @@ func TestDashboardRendersFleetKanbanReadOnlyBoard(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		"This board is currently read-only.",
-		"To move cards from Detent, enable Kanban integration in WORKFLOW.md.",
+		"To move cards from Detent, enable Kanban integration in WORKFLOW.md under the existing server block.",
 		"detent doctor --port 0",
 		`data-kanban-action`,
 		`hx-post="/api/v1/kanban/move"`,
@@ -1314,7 +1313,7 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 	}
 	for _, forbidden := range []string{
 		"This board is currently read-only.",
-		"To move cards from Detent, enable Kanban integration in WORKFLOW.md.",
+		"To move cards from Detent, enable Kanban integration in WORKFLOW.md under the existing server block.",
 		"detent doctor --port 0",
 	} {
 		if strings.Contains(html, forbidden) {

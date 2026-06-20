@@ -1493,7 +1493,7 @@ func projectKanbanReadOnlySetupNotice(data DashboardData) bool {
 }
 
 func projectKanbanIntegrationSnippet() string {
-	return "server:\n  kanban:\n    mode: integration"
+	return "kanban:\n  mode: integration"
 }
 
 func projectKanbanStatesConfigured(data DashboardData) bool {
