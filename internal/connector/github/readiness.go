@@ -2,6 +2,7 @@ package github
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -1040,21 +1041,33 @@ func (c githubReadinessChecker) issueCloseWriteCheck(ctx context.Context, probe 
 	if !hasProbe {
 		return unprovenWriteCheck("GitHub issue close")
 	}
-	return c.invalidWriteProbe(ctx, "GitHub issue close", http.MethodPatch, restIssuePath(probe.Ref), map[string]any{
+	result, err := c.connector.client.restProbe(ctx, http.MethodPatch, restIssuePath(probe.Ref), map[string]any{
 		"state": "detent-doctor-invalid-state",
-	}, "close issues")
+	})
+	if err != nil {
+		return failedWriteProbeCheck("GitHub issue close", "close issues", err)
+	}
+	return issueCloseWriteProbeCheck(result)
 }
 
 func (c githubReadinessChecker) invalidWriteProbe(ctx context.Context, name string, method string, path string, body any, capability string) ReadinessCheck {
 	result, err := c.connector.client.restProbe(ctx, method, path, body)
 	if err != nil {
-		return ReadinessCheck{
-			Name:   name,
-			Status: ReadinessFail,
-			Detail: capability + " permission probe failed: " + err.Error(),
-			Hint:   "Check GitHub credentials and network access, then rerun detent doctor.",
-		}
+		return failedWriteProbeCheck(name, capability, err)
 	}
+	return invalidWriteProbeCheck(name, capability, result)
+}
+
+func failedWriteProbeCheck(name string, capability string, err error) ReadinessCheck {
+	return ReadinessCheck{
+		Name:   name,
+		Status: ReadinessFail,
+		Detail: capability + " permission probe failed: " + err.Error(),
+		Hint:   "Check GitHub credentials and network access, then rerun detent doctor.",
+	}
+}
+
+func invalidWriteProbeCheck(name string, capability string, result restProbeResult) ReadinessCheck {
 	detailSuffix := acceptedPermissionsDetail(result.Headers)
 	switch result.StatusCode {
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
@@ -1086,6 +1099,53 @@ func (c githubReadinessChecker) invalidWriteProbe(ctx context.Context, name stri
 			Hint:   "Grant the required GitHub permission or check GitHub endpoint availability.",
 		}
 	}
+}
+
+func issueCloseWriteProbeCheck(result restProbeResult) ReadinessCheck {
+	if result.StatusCode < http.StatusOK || result.StatusCode >= http.StatusMultipleChoices {
+		return invalidWriteProbeCheck("GitHub issue close", "close issues", result)
+	}
+
+	detailSuffix := acceptedPermissionsDetail(result.Headers)
+	switch state := issueStateFromProbeBody(result.FullBody); strings.ToLower(state) {
+	case "open":
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessOK,
+			Detail: fmt.Sprintf("endpoint accepted auth with HTTP %d%s and ignored the intentionally invalid close state; probe issue remained open", result.StatusCode, detailSuffix),
+		}
+	case "closed":
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, and the response says the probe issue is closed", result.StatusCode, detailSuffix),
+			Hint:   "Inspect the scratch issue before rerunning detent doctor.",
+		}
+	case "":
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, but the response did not include issue state", result.StatusCode, detailSuffix),
+			Hint:   "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.",
+		}
+	default:
+		return ReadinessCheck{
+			Name:   "GitHub issue close",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("permission probe returned HTTP %d%s after sending an intentionally invalid close state, and the response says the probe issue state is %q", result.StatusCode, detailSuffix, state),
+			Hint:   "Inspect the scratch issue and rerun detent doctor with a different write probe target if needed.",
+		}
+	}
+}
+
+func issueStateFromProbeBody(body string) string {
+	var response struct {
+		State string `json:"state"`
+	}
+	if err := json.Unmarshal([]byte(body), &response); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(response.State)
 }
 
 func (c githubReadinessChecker) projectFieldWriteCheck(ctx context.Context, probe readinessProbeIssue, hasProbe bool, field ReadinessProjectFieldWrite) ReadinessCheck {

@@ -232,6 +232,35 @@ func TestReadinessAssigneeReportsMissingAccess(t *testing.T) {
 	}
 }
 
+func TestReadinessIssueCloseTreatsOpenHTTP200AsPermissionProof(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodPatch,
+		path:   "/repos/digitaldrywood/detent/issues/1",
+		status: http.StatusOK,
+		headers: map[string]string{
+			"X-Accepted-GitHub-Permissions": "issues=write",
+		},
+		body: `{"node_id":"I_kw1","number":1,"title":"` + strings.Repeat("x", maxErrorBodyBytes) + `","state":"open"}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.issueCloseWriteCheck(context.Background(), readinessProbeIssue{
+		ID:  "I_kw1",
+		Ref: issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1},
+	}, true)
+	if got.Status != ReadinessOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessOK, got)
+	}
+	for _, want := range []string{"HTTP 200", "issues=write", "remained open"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
 func TestReadinessPullRequestChecksReportsMissingAccess(t *testing.T) {
 	t.Parallel()
 
