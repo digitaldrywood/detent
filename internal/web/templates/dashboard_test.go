@@ -1050,6 +1050,62 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 	}
 }
 
+func TestDashboardProjectKanbanDoesNotRenderClearedBlockersAsActive(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 20, 18, 0, 0, 0, time.UTC)
+	stageUpdatedAt := now.Add(-9 * time.Minute)
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Merging", "Done"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Pipeline: []telemetry.Issue{
+				{
+					ID:             "merging",
+					Identifier:     "digitaldrywood/detent#594",
+					ProjectID:      "detent",
+					URL:            "https://github.com/digitaldrywood/detent/issues/594",
+					Title:          "Merging card with cleared blocker",
+					State:          "Merging",
+					BlockedBy:      []telemetry.BlockedRef{{Identifier: "digitaldrywood/detent#429", State: "Done"}},
+					StageUpdatedAt: &stageUpdatedAt,
+					PullRequest: &telemetry.PullRequest{
+						Number:           595,
+						URL:              "https://github.com/digitaldrywood/detent/pull/595",
+						CIStatus:         "success",
+						CodexReviewState: "clean",
+					},
+				},
+			},
+		},
+	})
+
+	card := compactKanbanCardSection(t, projectKanbanSection(t, html), "Merging card with cleared blocker")
+	for _, forbidden := range []string{
+		"1 blocker",
+		`>Blockers<`,
+		"border-danger-soft bg-danger-soft text-danger",
+	} {
+		if strings.Contains(card, forbidden) {
+			t.Fatalf("cleared blocker rendered as active marker %q:\n%s", forbidden, card)
+		}
+	}
+	for _, want := range []string{
+		`>Cleared blockers<`,
+		"digitaldrywood/detent#429 Done",
+	} {
+		if !strings.Contains(card, want) {
+			t.Fatalf("cleared blocker detail missing %q:\n%s", want, card)
+		}
+	}
+}
+
 func TestDashboardProjectKanbanControlsStayInsideLane(t *testing.T) {
 	t.Parallel()
 

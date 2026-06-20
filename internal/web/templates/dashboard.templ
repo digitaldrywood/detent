@@ -1844,7 +1844,7 @@ templ projectKanbanCardDetails(data DashboardData, card projectKanbanCard) {
 					@projectKanbanDetailRow("Waits", card.WaitDetail, card.WaitDetail)
 				}
 			</div>
-			if len(card.Labels) > 0 || len(card.Assignees) > 0 || len(card.Blockers) > 0 {
+			if len(card.Labels) > 0 || len(card.Assignees) > 0 || len(card.Blockers) > 0 || len(card.ClearedBlockers) > 0 {
 				<div class="grid min-w-0 max-w-full gap-2">
 					if len(card.Labels) > 0 {
 						@projectKanbanPillRow("Labels", card.Labels)
@@ -1854,6 +1854,9 @@ templ projectKanbanCardDetails(data DashboardData, card projectKanbanCard) {
 					}
 					if len(card.Blockers) > 0 {
 						@projectKanbanPillRow("Blockers", card.Blockers)
+					}
+					if len(card.ClearedBlockers) > 0 {
+						@projectKanbanPillRow("Cleared blockers", card.ClearedBlockers)
 					}
 				</div>
 			}
