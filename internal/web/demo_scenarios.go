@@ -142,6 +142,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "kanban-dense-overflow", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "dense-kanban", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "kanban-transition-blocked", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "transition-blocked", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "kanban-terminal-states", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "terminal", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
+		{ID: "kanban-handoff-window", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "handoff-window", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "runs-active-work", Route: "/projects/dogfood/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "healthy", ProjectID: demoPrimaryProjectID},
 		{ID: "runs-idle", Route: "/projects/agent-lab/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "project-empty", ProjectID: "agent-lab"},
 		{ID: "runs-backoff-heavy", Route: "/projects/dogfood/runs", WaitSelector: "#snapshot", Page: "runs", Variant: "backoff-heavy", ProjectID: demoPrimaryProjectID},
@@ -619,6 +620,8 @@ func demoSnapshotForScenario(scenario demoScenario) telemetry.Snapshot {
 		snapshot = demoDenseSnapshot()
 	case "hot-path", "model-heavy", "filtered-project":
 		snapshot = demoHotPathSnapshot()
+	case "handoff-window":
+		snapshot = demoHandoffWindowSnapshot()
 	}
 	if scenario.ProjectID != "" && scenario.ProjectID != demoPrimaryProjectID && scenario.Variant == "project-empty" {
 		snapshot.Projects = demoProjectSnapshots(demoProjectsForVariant("project-empty"))
@@ -870,6 +873,31 @@ func demoHotPathSnapshot() telemetry.Snapshot {
 	snapshot.Projects = demoProjectSnapshots(demoProjectsForVariant("hot-path"))
 	snapshot.Tokens = telemetry.Tokens{Input: 180000, Output: 52000, Total: 232000, RuntimeSeconds: 6400}
 	snapshot.Budget.CurrentSpendUSD = 36.8
+	return snapshot
+}
+
+func demoHandoffWindowSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	handoff := demoCompleted(demoPrimaryProjectID, "demo-handoff-window", "digitaldrywood/detent-core#5294", "Keep completed implementation visible during tracker refresh", "completed", 3, "gpt-5-codex", 41000)
+	handoff.PullRequest = &telemetry.PullRequest{
+		Number:             5294,
+		URL:                demoPRURL(handoff.Identifier, 5294),
+		BranchName:         "detent/demo-handoff-window",
+		State:              "OPEN",
+		MergeableState:     "clean",
+		CIStatus:           "success",
+		CheckRunCount:      5,
+		StatusContextCount: 1,
+		CIDurationSeconds:  260,
+		CodexReviewState:   "CLEAN",
+	}
+	snapshot.Completed = append([]telemetry.Completed{handoff}, snapshot.Completed...)
+	snapshot.Counts.Completed = len(snapshot.Completed)
+	for i := range snapshot.Projects {
+		if snapshot.Projects[i].Project.ID == demoPrimaryProjectID {
+			snapshot.Projects[i].Counts.Completed++
+		}
+	}
 	return snapshot
 }
 
