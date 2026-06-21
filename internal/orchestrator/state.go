@@ -34,6 +34,7 @@ type State struct {
 	ReapedWorkspaces         map[string]time.Time
 	CodexTotals              CodexTotals
 	RateLimits               *telemetry.RateLimits
+	planRework               map[string]struct{}
 	epicTransitionWatch      []connector.Issue
 	pendingEpicParentLookups map[string]connector.Issue
 }
@@ -110,6 +111,7 @@ func newState(cfg Config) State {
 		BudgetRefusals:           map[string]BudgetRefusal{},
 		DiffStats:                map[string]DiffStats{},
 		ReapedWorkspaces:         map[string]time.Time{},
+		planRework:               map[string]struct{}{},
 		pendingEpicParentLookups: map[string]connector.Issue{},
 	}
 }
@@ -139,6 +141,7 @@ func (s State) clone() State {
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
 		CodexTotals:              s.CodexTotals,
 		RateLimits:               cloneRateLimits(s.RateLimits),
+		planRework:               make(map[string]struct{}, len(s.planRework)),
 		epicTransitionWatch:      cloneIssues(s.epicTransitionWatch),
 		pendingEpicParentLookups: cloneIssueMap(s.pendingEpicParentLookups),
 	}
@@ -180,6 +183,7 @@ func (s State) clone() State {
 	}
 	maps.Copy(cloned.DiffStats, s.DiffStats)
 	maps.Copy(cloned.ReapedWorkspaces, s.ReapedWorkspaces)
+	maps.Copy(cloned.planRework, s.planRework)
 
 	return cloned
 }
@@ -226,6 +230,7 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	cloned.BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
 	cloned.ChildIssues = append([]connector.BlockedRef(nil), issue.ChildIssues...)
 	cloned.Labels = cloneStringSlice(issue.Labels)
+	cloned.Comments = cloneIssueComments(issue.Comments)
 	cloned.Assignees = cloneStringSlice(issue.Assignees)
 	cloned.Fields = cloneStringMap(issue.Fields)
 	return cloned
@@ -247,6 +252,13 @@ func cloneStringSlice(values []string) []string {
 		return nil
 	}
 	return append([]string{}, values...)
+}
+
+func cloneIssueComments(comments []connector.IssueComment) []connector.IssueComment {
+	if comments == nil {
+		return nil
+	}
+	return append([]connector.IssueComment{}, comments...)
 }
 
 func cloneStringMap(values map[string]string) map[string]string {

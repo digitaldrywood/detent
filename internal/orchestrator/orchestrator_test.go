@@ -164,10 +164,23 @@ func TestTickPlanReviewGateTransitionsIssues(t *testing.T) {
 			cfg:  gate.PlanConfig{Enabled: true, Review: gate.PlanReviewHuman, Stop: gate.DefaultPlanStop},
 			issue: func() connector.Issue {
 				issue := testIssue("issue-human-plan", "digitaldrywood/detent#522", gate.DefaultPlanStop)
-				issue.Labels = []string{"human-approved"}
+				issue.Labels = []string{"plan-approved"}
 				return issue
 			}(),
 			wantUpdates: []stateUpdateCall{{issueID: "issue-human-plan", state: "In Progress"}},
+		},
+		{
+			name: "automated comment approval advances without pull request",
+			cfg:  gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated, Stop: gate.DefaultPlanStop},
+			issue: func() connector.Issue {
+				issue := testIssue("issue-automated-comment-plan", "digitaldrywood/detent#524", gate.DefaultPlanStop)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Detent Plan Review\n\n- state: approved\n\nThe plan satisfies the acceptance criteria.",
+					URL:  "https://github.test/comment/plan-review-approved",
+				}}
+				return issue
+			}(),
+			wantUpdates: []stateUpdateCall{{issueID: "issue-automated-comment-plan", state: "In Progress"}},
 		},
 		{
 			name: "automated p1 routes to rework with feedback",
@@ -187,6 +200,25 @@ func TestTickPlanReviewGateTransitionsIssues(t *testing.T) {
 				"reason: p1_findings",
 				"Plan omits acceptance criteria.",
 				"https://github.test/comment/plan-review",
+			},
+		},
+		{
+			name: "automated comment p1 routes to rework with feedback",
+			cfg:  gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated, Stop: gate.DefaultPlanStop},
+			issue: func() connector.Issue {
+				issue := testIssue("issue-automated-comment-p1-plan", "digitaldrywood/detent#525", gate.DefaultPlanStop)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Detent Plan Review\n\n- state: P1\n\n### Findings\n\n- Plan omits acceptance criteria.",
+					URL:  "https://github.test/comment/plan-review-comment-p1",
+				}}
+				return issue
+			}(),
+			wantUpdates: []stateUpdateCall{{issueID: "issue-automated-comment-p1-plan", state: "Rework"}},
+			wantCommentFragments: []string{
+				"Plan review routed this issue from Plan Review to Rework.",
+				"reason: p1_findings",
+				"Plan omits acceptance criteria.",
+				"https://github.test/comment/plan-review-comment-p1",
 			},
 		},
 	}
@@ -245,6 +277,54 @@ func TestTickPlanReviewGateTransitionsIssues(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestRejectedPlanReworkDispatchesInPlanMode(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-plan-rework", "digitaldrywood/detent#526", gate.DefaultPlanStop)
+	issue.Comments = []connector.IssueComment{{
+		Body: "## Detent Plan Review\n\n- state: P1\n\n### Findings\n\n- Plan skips acceptance criteria.",
+		URL:  "https://github.test/comment/plan-review-p1",
+	}}
+	tracker := newFakeConnector(issue)
+	tracker.setStateIssues(issue)
+	runner := &staticRunner{
+		result: orchestrator.RunResult{
+			FinalState: orchestrator.FinalStateCompleted,
+			Output:     "## Revised Plan\n- Add acceptance criteria coverage\n",
+		},
+	}
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        5 * time.Millisecond,
+		MaxConcurrentAgents: 1,
+		Plan: gate.PlanConfig{
+			Enabled: true,
+			Review:  gate.PlanReviewAutomated,
+			Stop:    gate.DefaultPlanStop,
+		},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework"},
+		ObservedStates:         []string{"Backlog", "Human Review", "Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Millisecond,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForState(t, orch, func(orchestrator.State) bool {
+		return len(runner.requests()) > 0
+	})
+
+	requests := runner.requests()
+	if got := requests[0].Mode; got != orchestrator.RunModePlan {
+		t.Fatalf("RunRequest.Mode = %q, want plan", got)
 	}
 }
 

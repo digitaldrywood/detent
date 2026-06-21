@@ -1219,7 +1219,7 @@ func (o *Orchestrator) dispatchIssue(
 	request := RunRequest{
 		Issue:           issue,
 		Attempt:         attempt,
-		Mode:            o.dispatchMode(issue),
+		Mode:            o.dispatchMode(state, issue),
 		StartedAt:       now,
 		WorkerHost:      workerHost,
 		SelectorContext: o.selectorContext(),
@@ -1229,10 +1229,24 @@ func (o *Orchestrator) dispatchIssue(
 	return true
 }
 
-func (o *Orchestrator) dispatchMode(issue connector.Issue) string {
+func (o *Orchestrator) dispatchMode(state *State, issue connector.Issue) string {
 	cfg := gate.EffectivePlan(o.cfg.Plan)
-	if cfg.Enabled && normalizeState(issue.State) == "todo" {
+	if !cfg.Enabled {
+		return runpkg.RunModeImplement
+	}
+	switch normalizeState(issue.State) {
+	case "todo":
 		return runpkg.RunModePlan
+	case normalizeState(autoPromoteReworkState):
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID != "" {
+			if _, ok := state.planRework[issueID]; ok {
+				return runpkg.RunModePlan
+			}
+		}
+		if planReviewReworkRequested(issue) {
+			return runpkg.RunModePlan
+		}
 	}
 	return runpkg.RunModeImplement
 }
@@ -1458,6 +1472,7 @@ func (o *Orchestrator) completePlanRunning(
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon completed plan claim failed", "issue_id", issueID, "error", err)
 	}
+	delete(state.planRework, issueID)
 	issue.State = cfg.Stop
 	state.Completed[issueID] = Completed{
 		Issue:       issue,

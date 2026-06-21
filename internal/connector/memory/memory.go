@@ -58,6 +58,7 @@ var _ connector.Connector = (*Connector)(nil)
 var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
+var _ connector.IssueCommentReader = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
@@ -147,6 +148,23 @@ func (c *Connector) FetchIssueStatesByIdentifiers(_ context.Context, identifiers
 	return issues, nil
 }
 
+func (c *Connector) FetchIssueComments(_ context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	wantID := strings.TrimSpace(issue.ID)
+	wantIdentifier := normalizeState(issue.Identifier)
+	for _, candidate := range c.issues {
+		if wantID != "" && strings.TrimSpace(candidate.ID) == wantID {
+			return cloneIssueComments(candidate.Comments), nil
+		}
+		if wantIdentifier != "" && normalizeState(candidate.Identifier) == wantIdentifier {
+			return cloneIssueComments(candidate.Comments), nil
+		}
+	}
+	return []connector.IssueComment{}, nil
+}
+
 func (c *Connector) FetchIssueParents(_ context.Context, issueID string) ([]connector.Issue, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -200,6 +218,10 @@ func (c *Connector) FetchIssueChildren(_ context.Context, issueID string) ([]con
 }
 
 func (c *Connector) CreateComment(_ context.Context, issueID string, body string) error {
+	c.applyIssue(issueID, func(issue *connector.Issue, now time.Time) {
+		issue.Comments = append(issue.Comments, connector.IssueComment{Body: body})
+		issue.UpdatedAt = &now
+	})
 	c.send(Event{Kind: EventKindComment, IssueID: issueID, Body: body})
 	return nil
 }
@@ -371,6 +393,9 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	if issue.Labels != nil {
 		issue.Labels = append([]string(nil), issue.Labels...)
 	}
+	if issue.Comments != nil {
+		issue.Comments = cloneIssueComments(issue.Comments)
+	}
 	if issue.Assignees != nil {
 		issue.Assignees = cloneStringSlice(issue.Assignees)
 	}
@@ -382,6 +407,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	issue.StageUpdatedAt = cloneTime(issue.StageUpdatedAt)
 
 	return issue
+}
+
+func cloneIssueComments(comments []connector.IssueComment) []connector.IssueComment {
+	return append([]connector.IssueComment(nil), comments...)
 }
 
 func cloneStringSlice(values []string) []string {

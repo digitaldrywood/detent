@@ -117,6 +117,7 @@ gate:
 plan:
   enabled: true
   review: both
+  approval_label: Plan-Approved
   stop: " Plan Review "
 server:
   host: 0.0.0.0
@@ -261,8 +262,8 @@ Ticket prompt {{ issue.title }}
 	if cfg.Gate.Kind != gate.KindHumanReview || cfg.Gate.ApprovalLabel != "approved-by-human" || cfg.Gate.Run != "" {
 		t.Fatalf("Gate = %#v, want human_review with approved-by-human label", cfg.Gate)
 	}
-	if !cfg.Plan.Enabled || cfg.Plan.Review != gate.PlanReviewBoth || cfg.Plan.Stop != gate.DefaultPlanStop {
-		t.Fatalf("Plan = %#v, want enabled both review at Plan Review", cfg.Plan)
+	if !cfg.Plan.Enabled || cfg.Plan.Review != gate.PlanReviewBoth || cfg.Plan.ApprovalLabel != gate.DefaultPlanApprovalLabel || cfg.Plan.Stop != gate.DefaultPlanStop {
+		t.Fatalf("Plan = %#v, want enabled both review at Plan Review with plan-approved label", cfg.Plan)
 	}
 	if !stateListContains(cfg.Tracker.ObservedStates, gate.DefaultPlanStop) {
 		t.Fatalf("Tracker.ObservedStates = %#v, want plan stop", cfg.Tracker.ObservedStates)
@@ -528,7 +529,7 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	if cfg.Gate.Kind != gate.KindCommand || cfg.Gate.Run != gate.DefaultCommand {
 		t.Fatalf("Gate = %#v, want default command gate", cfg.Gate)
 	}
-	if cfg.Plan.Enabled || cfg.Plan.Review != gate.PlanReviewHuman || cfg.Plan.Stop != gate.DefaultPlanStop {
+	if cfg.Plan.Enabled || cfg.Plan.Review != gate.PlanReviewHuman || cfg.Plan.ApprovalLabel != gate.DefaultPlanApprovalLabel || cfg.Plan.Stop != gate.DefaultPlanStop {
 		t.Fatalf("Plan = %#v, want disabled human review plan default", cfg.Plan)
 	}
 }

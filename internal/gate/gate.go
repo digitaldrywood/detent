@@ -106,7 +106,7 @@ const (
 	ReasonValidatorRework              Reason = "validator_rework"
 	ReasonValidatorScoreBelowThreshold Reason = "validator_score_below_threshold"
 	ReasonValidatorBlockedSeverity     Reason = "validator_blocked_severity"
-	ReasonPlanDisabled            Reason = "plan_disabled"
+	ReasonPlanDisabled                 Reason = "plan_disabled"
 )
 
 type Decision struct {
@@ -271,7 +271,7 @@ func Instructions(cfg Config) string {
 	}
 }
 
-func EvaluatePlan(cfg PlanConfig, approvalLabel string, labels []string, summary Summary) Decision {
+func EvaluatePlan(cfg PlanConfig, labels []string, summary Summary) Decision {
 	cfg = EffectivePlan(cfg)
 	if !cfg.Enabled {
 		return decision(ActionSkip, ReasonPlanDisabled)
@@ -283,7 +283,7 @@ func EvaluatePlan(cfg PlanConfig, approvalLabel string, labels []string, summary
 		return out
 	}
 
-	humanReady := planHumanReviewEnabled(cfg) && hasApprovalLabel(labels, approvalLabel)
+	humanReady := planHumanReviewEnabled(cfg) && hasApprovalLabel(labels, cfg.ApprovalLabel)
 	automatedReady := planAutomatedReviewEnabled(cfg) && automatedReviewSubmitted(summary.ReviewState)
 	if humanReady || automatedReady {
 		return decision(ActionPass, ReasonReady)

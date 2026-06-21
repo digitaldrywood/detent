@@ -12,6 +12,7 @@ import (
 )
 
 const planImplementationState = "In Progress"
+const planReviewCommentHeading = "detent plan review"
 
 func (o *Orchestrator) reviewPlanIssues(
 	ctx context.Context,
@@ -32,8 +33,7 @@ func (o *Orchestrator) reviewPlanIssues(
 		}
 
 		summary := planReviewSummaryFromIssue(issue)
-		approvalLabel := gate.Effective(o.cfg.AutoPromote.Gate).ApprovalLabel
-		decision := gate.EvaluatePlan(cfg, approvalLabel, issue.Labels, summary)
+		decision := gate.EvaluatePlan(cfg, issue.Labels, summary)
 		targetState := planReviewTargetState(decision.Action)
 		if targetState == "" {
 			o.logPlanReviewDecision(issue, decision, "")
@@ -42,6 +42,7 @@ func (o *Orchestrator) reviewPlanIssues(
 		if !o.applyPlanReviewDecision(ctx, state, issue, summary, decision, targetState, now) {
 			continue
 		}
+		o.trackPlanReviewTransition(state, issueID, targetState)
 		transitioned[issueID] = struct{}{}
 	}
 	if len(transitioned) == 0 {
@@ -51,13 +52,118 @@ func (o *Orchestrator) reviewPlanIssues(
 }
 
 func planReviewSummaryFromIssue(issue connector.Issue) gate.Summary {
-	summary := gate.Summary{}
+	summary := planReviewSummaryFromComments(issue.Comments)
 	if issue.PullRequest == nil || normalizePullRequestState(issue.PullRequest.State) != "open" {
 		return summary
 	}
-	summary.ReviewState = issue.PullRequest.CodexReviewState
-	summary.P1Findings = planReviewFindingsFromPullRequest(issue.PullRequest)
-	return summary
+	return mergePlanReviewSummaries(summary, gate.Summary{
+		ReviewState: issue.PullRequest.CodexReviewState,
+		P1Findings:  planReviewFindingsFromPullRequest(issue.PullRequest),
+	})
+}
+
+func mergePlanReviewSummaries(left gate.Summary, right gate.Summary) gate.Summary {
+	out := left
+	if planReviewStateSeverity(right.ReviewState) > planReviewStateSeverity(out.ReviewState) {
+		out.ReviewState = right.ReviewState
+	}
+	out.P1Findings = append(out.P1Findings, right.P1Findings...)
+	return out
+}
+
+func planReviewSummaryFromComments(comments []connector.IssueComment) gate.Summary {
+	for index := len(comments) - 1; index >= 0; index-- {
+		comment := comments[index]
+		body := strings.TrimSpace(comment.Body)
+		if !planReviewArtifact(body) {
+			continue
+		}
+		state := planReviewCommentState(body)
+		summary := gate.Summary{ReviewState: state}
+		if automatedReviewHasPlanP1(state, body) {
+			summary.ReviewState = "P1"
+			summary.P1Findings = []gate.Finding{{
+				Body: planReviewCommentFindingBody(body),
+				URL:  strings.TrimSpace(comment.URL),
+			}}
+		}
+		return summary
+	}
+	return gate.Summary{}
+}
+
+func planReviewArtifact(body string) bool {
+	for line := range strings.SplitSeq(body, "\n") {
+		heading, ok := planReviewMarkdownHeadingTitle(line)
+		if !ok {
+			continue
+		}
+		return normalizeState(heading) == normalizeState(planReviewCommentHeading)
+	}
+	return false
+}
+
+func planReviewCommentState(body string) string {
+	for line := range strings.SplitSeq(body, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "-"))
+		key, value, ok := strings.Cut(line, ":")
+		if !ok {
+			continue
+		}
+		switch normalizeState(key) {
+		case "state", "reviewstate", "review_state", "result":
+			if state := normalizePlanReviewCommentState(value); state != "" {
+				return state
+			}
+		}
+	}
+	if containsReviewSeverity(body, "P1") {
+		return "P1"
+	}
+	return ""
+}
+
+func normalizePlanReviewCommentState(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "approved", "approve", "pass", "passed", "ready":
+		return "APPROVED"
+	case "commented":
+		return "COMMENTED"
+	case "p1", "priority 1", "priority-1":
+		return "P1"
+	case "p2", "priority 2", "priority-2", "concerns":
+		return "P2"
+	case "changes_requested", "requested_changes", "request changes", "changes requested":
+		return "CHANGES_REQUESTED"
+	default:
+		return strings.ToUpper(strings.TrimSpace(value))
+	}
+}
+
+func automatedReviewHasPlanP1(state string, body string) bool {
+	return strings.EqualFold(strings.TrimSpace(state), "P1") || containsReviewSeverity(body, "P1")
+}
+
+func planReviewCommentFindingBody(body string) string {
+	if findings := planReviewMarkdownSectionText(body, "Findings"); findings != "" {
+		return findings
+	}
+	return body
+}
+
+func planReviewStateSeverity(state string) int {
+	switch strings.ToUpper(strings.TrimSpace(state)) {
+	case "P1":
+		return 4
+	case "CHANGES_REQUESTED", "REQUESTED_CHANGES":
+		return 3
+	case "P2":
+		return 2
+	case "APPROVED", "COMMENTED":
+		return 1
+	default:
+		return 0
+	}
 }
 
 func planReviewFindingsFromPullRequest(pullRequest *connector.PullRequest) []gate.Finding {
@@ -91,6 +197,114 @@ func planReviewTargetState(action gate.Action) string {
 	default:
 		return ""
 	}
+}
+
+func (o *Orchestrator) hydratePlanIssueComments(ctx context.Context, fetched *tickFetchedIssues) bool {
+	cfg := gate.EffectivePlan(o.cfg.Plan)
+	if !cfg.Enabled {
+		return true
+	}
+	reader, ok := o.connector.(connector.IssueCommentReader)
+	if !ok {
+		return true
+	}
+	return o.hydratePlanIssueCommentsFor(ctx, reader, fetched.status, cfg) &&
+		o.hydratePlanIssueCommentsFor(ctx, reader, fetched.candidates, cfg)
+}
+
+func (o *Orchestrator) hydratePlanIssueCommentsFor(
+	ctx context.Context,
+	reader connector.IssueCommentReader,
+	issues []connector.Issue,
+	cfg gate.PlanConfig,
+) bool {
+	for index := range issues {
+		if !planCommentHydrationCandidate(cfg, issues[index]) || len(issues[index].Comments) > 0 {
+			continue
+		}
+		comments, err := reader.FetchIssueComments(ctx, issues[index])
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn("fetch plan issue comments failed", "issue_id", issues[index].ID, "identifier", issues[index].Identifier, "error", err)
+			}
+			return false
+		}
+		issues[index].Comments = comments
+	}
+	return true
+}
+
+func planCommentHydrationCandidate(cfg gate.PlanConfig, issue connector.Issue) bool {
+	state := normalizeState(issue.State)
+	return state == normalizeState(cfg.Stop) || state == normalizeState(autoPromoteReworkState)
+}
+
+func (o *Orchestrator) trackPlanReviewTransition(state *State, issueID string, targetState string) {
+	if state.planRework == nil {
+		state.planRework = map[string]struct{}{}
+	}
+	if normalizeState(targetState) == normalizeState(autoPromoteReworkState) {
+		state.planRework[issueID] = struct{}{}
+		return
+	}
+	delete(state.planRework, issueID)
+}
+
+func planReviewReworkRequested(issue connector.Issue) bool {
+	for _, comment := range issue.Comments {
+		body := strings.ToLower(comment.Body)
+		if strings.Contains(body, "plan review routed this issue") && strings.Contains(body, " to rework") {
+			return true
+		}
+	}
+	return false
+}
+
+func planReviewMarkdownSectionText(body string, title string) string {
+	want := normalizeState(title)
+	inSection := false
+	lines := []string{}
+	for line := range strings.SplitSeq(body, "\n") {
+		heading, ok := planReviewMarkdownHeadingTitle(line)
+		if ok {
+			if inSection {
+				break
+			}
+			inSection = normalizeState(heading) == want
+			continue
+		}
+		if inSection {
+			lines = append(lines, line)
+		}
+	}
+	return strings.TrimSpace(strings.Join(lines, "\n"))
+}
+
+func planReviewMarkdownHeadingTitle(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if !strings.HasPrefix(line, "#") {
+		return "", false
+	}
+	level := 0
+	for level < len(line) && line[level] == '#' {
+		level++
+	}
+	if level == len(line) || line[level] != ' ' {
+		return "", false
+	}
+	return strings.TrimSpace(line[level+1:]), true
+}
+
+func containsReviewSeverity(body string, severity string) bool {
+	body = strings.ToUpper(body)
+	severity = strings.ToUpper(strings.TrimSpace(severity))
+	if severity == "" {
+		return false
+	}
+	return strings.Contains(body, "["+severity+"]") ||
+		strings.Contains(body, severity+" BADGE") ||
+		strings.Contains(body, severity+" FINDING") ||
+		strings.Contains(body, " "+severity+" ")
 }
 
 func (o *Orchestrator) applyPlanReviewDecision(

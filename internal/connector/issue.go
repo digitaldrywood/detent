@@ -27,6 +27,7 @@ type Issue struct {
 	ChildIssues      []BlockedRef      `json:"child_issues,omitempty" yaml:"child_issues,omitempty"`
 	BlockerReason    string            `json:"blocker_reason,omitempty" yaml:"blocker_reason,omitempty"`
 	Labels           []string          `json:"labels" yaml:"labels"`
+	Comments         []IssueComment    `json:"comments,omitempty" yaml:"comments,omitempty"`
 	Fields           map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`
 	AssignedToWorker bool              `json:"assigned_to_worker" yaml:"assigned_to_worker"`
 	CreatedAt        *time.Time        `json:"created_at,omitempty" yaml:"created_at,omitempty"`
@@ -76,6 +77,11 @@ type PullRequestFinding struct {
 	URL  string `json:"url,omitempty" yaml:"url,omitempty"`
 	Path string `json:"path,omitempty" yaml:"path,omitempty"`
 	Line int    `json:"line,omitempty" yaml:"line,omitempty"`
+}
+
+type IssueComment struct {
+	Body string `json:"body,omitempty" yaml:"body,omitempty"`
+	URL  string `json:"url,omitempty" yaml:"url,omitempty"`
 }
 
 func NewIssue() Issue {

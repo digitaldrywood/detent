@@ -132,6 +132,9 @@ func (o *Orchestrator) fetchTickIssues(ctx context.Context) (tickFetchedIssues, 
 	}
 	fetched.status = cloneIssues(statusIssues)
 	fetched.statusOK = true
+	if !o.hydratePlanIssueComments(ctx, &fetched) {
+		return tickFetchedIssues{}, false
+	}
 	return fetched, true
 }
 

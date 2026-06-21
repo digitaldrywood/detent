@@ -469,7 +469,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			output.WriteString(update.Delta)
 		}
 		applyAgentUpdate(&runResult, update)
-		if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, update, runStartedAt); err != nil {
+		eventAt := r.now()
+		progress.apply(update, eventAt)
+		if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt); err != nil {
 			return err
 		}
 		return nil

@@ -86,17 +86,22 @@ func TestEffectivePlanSelectsDefaults(t *testing.T) {
 		{
 			name: "omitted plan config is disabled with default review stop",
 			cfg:  PlanConfig{},
-			want: PlanConfig{Enabled: false, Review: PlanReviewHuman, Stop: DefaultPlanStop},
+			want: PlanConfig{Enabled: false, Review: PlanReviewHuman, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
 		},
 		{
 			name: "enabled plan normalizes review and trims stop",
 			cfg:  PlanConfig{Enabled: true, Review: " Both ", Stop: " Plan Review "},
-			want: PlanConfig{Enabled: true, Review: PlanReviewBoth, Stop: DefaultPlanStop},
+			want: PlanConfig{Enabled: true, Review: PlanReviewBoth, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
 		},
 		{
 			name: "enabled plan defaults review and stop",
 			cfg:  PlanConfig{Enabled: true},
-			want: PlanConfig{Enabled: true, Review: PlanReviewHuman, Stop: DefaultPlanStop},
+			want: PlanConfig{Enabled: true, Review: PlanReviewHuman, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
+		},
+		{
+			name: "enabled plan normalizes approval label",
+			cfg:  PlanConfig{Enabled: true, ApprovalLabel: " Plan-Approved "},
+			want: PlanConfig{Enabled: true, Review: PlanReviewHuman, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
 		},
 	}
 
@@ -391,10 +396,16 @@ func TestEvaluatePlan(t *testing.T) {
 			want: Decision{Action: ActionSkip, Reason: ReasonPlanDisabled},
 		},
 		{
-			name:   "human plan gate passes with approval label",
+			name:   "human plan gate passes with plan approval label",
 			cfg:    PlanConfig{Enabled: true, Review: PlanReviewHuman},
-			labels: []string{" Human-Approved "},
+			labels: []string{" Plan-Approved "},
 			want:   Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name:   "human plan gate ignores final approval label",
+			cfg:    PlanConfig{Enabled: true, Review: PlanReviewHuman, ApprovalLabel: "plan-approved"},
+			labels: []string{"human-approved"},
+			want:   Decision{Action: ActionWait, Reason: ReasonHumanApprovalMissing},
 		},
 		{
 			name: "human plan gate waits without approval label",
@@ -421,7 +432,7 @@ func TestEvaluatePlan(t *testing.T) {
 		{
 			name:   "both plan gate accepts human approval",
 			cfg:    PlanConfig{Enabled: true, Review: PlanReviewBoth},
-			labels: []string{"human-approved"},
+			labels: []string{"plan-approved"},
 			want:   Decision{Action: ActionPass, Reason: ReasonReady},
 		},
 		{
@@ -436,7 +447,7 @@ func TestEvaluatePlan(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := EvaluatePlan(tt.cfg, DefaultApprovalLabel, tt.labels, tt.input)
+			got := EvaluatePlan(tt.cfg, tt.labels, tt.input)
 			if got.Action != tt.want.Action || got.Reason != tt.want.Reason {
 				t.Fatalf("EvaluatePlan() = %#v, want %#v", got, tt.want)
 			}
