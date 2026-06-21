@@ -4541,6 +4541,10 @@ func TestServerAPIRoutes(t *testing.T) {
 					Title:       "REST API",
 					Description: strings.Repeat("api ", 90),
 					State:       "In Progress",
+					PullRequest: &telemetry.PullRequest{
+						Number: 137,
+						URL:    "https://github.com/digitaldrywood/detent/pull/137",
+					},
 				},
 				WorkerHost:    "host-a",
 				WorkspacePath: "/workspaces/DD-37",
@@ -4606,6 +4610,9 @@ func TestServerAPIRoutes(t *testing.T) {
 					ID:         "issue-completed",
 					Identifier: "DD-DONE",
 					URL:        "https://github.com/digitaldrywood/detent/issues/40",
+					PullRequest: &telemetry.PullRequest{
+						Number: 140,
+					},
 				},
 				StartedAt:      startedAt,
 				CompletedAt:    completedAt,
@@ -4714,6 +4721,9 @@ func TestServerAPIRoutes(t *testing.T) {
 	if running["issue_identifier"] != "digitaldrywood/detent#37" || running["issue_title"] != "REST API" {
 		t.Fatalf("running row = %#v", running)
 	}
+	if running["pull_request_url"] != "https://github.com/digitaldrywood/detent/pull/137" || running["pull_request_number"] != float64(137) {
+		t.Fatalf("running PR metadata = %#v/%#v; row = %#v", running["pull_request_url"], running["pull_request_number"], running)
+	}
 	description := running["issue_description"].(string)
 	if len(description) != 250 || !strings.HasSuffix(description, "...") {
 		t.Fatalf("issue_description length = %d, suffix ok = %v", len(description), strings.HasSuffix(description, "..."))
@@ -4765,6 +4775,10 @@ func TestServerAPIRoutes(t *testing.T) {
 	}
 	if len(state["recent_sessions"].([]any)) != 1 {
 		t.Fatalf("recent_sessions = %#v, want one entry", state["recent_sessions"])
+	}
+	recentSession := state["recent_sessions"].([]any)[0].(map[string]any)
+	if recentSession["pull_request_url"] != "https://github.com/digitaldrywood/detent/pull/140" || recentSession["pull_request_number"] != float64(140) {
+		t.Fatalf("recent session PR metadata = %#v/%#v; row = %#v", recentSession["pull_request_url"], recentSession["pull_request_number"], recentSession)
 	}
 	if got := nestedString(t, state, "budget", "today_spend_usd"); got != "1.25" {
 		t.Fatalf("budget.today_spend_usd = %s, want 1.25", got)

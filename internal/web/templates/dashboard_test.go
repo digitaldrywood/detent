@@ -351,6 +351,100 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	}
 }
 
+func TestProjectRunsSnapshotRendersIssueAndPullRequestActions(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 21, 15, 0, 0, 0, time.UTC)
+	html := renderProjectRunsSnapshot(t, templates.DashboardData{
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-only",
+						Identifier: "digitaldrywood/detent#601",
+						URL:        "https://github.com/digitaldrywood/detent/issues/601",
+						Title:      "Issue-only run",
+						State:      "In Progress",
+					},
+					StartedAt: now.Add(-3 * time.Minute),
+				},
+				{
+					Issue: telemetry.Issue{
+						ID:         "pr-only",
+						Identifier: "digitaldrywood/detent#602",
+						Title:      "PR-only run",
+						State:      "Human Review",
+						PullRequest: &telemetry.PullRequest{
+							Number: 702,
+							URL:    "https://github.com/digitaldrywood/detent/pull/702",
+						},
+					},
+					StartedAt: now.Add(-2 * time.Minute),
+				},
+			},
+			Completed: []telemetry.Completed{
+				{
+					Issue: telemetry.Issue{
+						ID:         "issue-plus-pr",
+						Identifier: "digitaldrywood/detent#603",
+						URL:        "https://github.com/digitaldrywood/detent/issues/603",
+						Title:      "Issue plus PR run",
+						PullRequest: &telemetry.PullRequest{
+							Number: 703,
+							URL:    "https://github.com/digitaldrywood/detent/pull/703",
+						},
+					},
+					SessionID:   "thread-issue-plus-pr",
+					StartedAt:   now.Add(-6 * time.Minute),
+					CompletedAt: now.Add(-1 * time.Minute),
+					FinalState:  "Human Review",
+				},
+			},
+		},
+	})
+
+	agentActivity := dashboardSection(t, html, "Agent activity", "PR pipeline")
+	for _, want := range []string{
+		`href="https://github.com/digitaldrywood/detent/issues/601" target="_blank" rel="noopener noreferrer" title="Open issue digitaldrywood/detent#601" aria-label="Open issue digitaldrywood/detent#601"`,
+		`href="https://github.com/digitaldrywood/detent/pull/702" target="_blank" rel="noopener noreferrer" title="Open PR #702" aria-label="Open PR #702"`,
+		`href="https://github.com/digitaldrywood/detent/issues/603" target="_blank" rel="noopener noreferrer" title="Open issue digitaldrywood/detent#603" aria-label="Open issue digitaldrywood/detent#603"`,
+		`href="https://github.com/digitaldrywood/detent/pull/703" target="_blank" rel="noopener noreferrer" title="Open PR #703" aria-label="Open PR #703"`,
+	} {
+		if !strings.Contains(agentActivity, want) {
+			t.Fatalf("agent activity missing %q:\n%s", want, agentActivity)
+		}
+	}
+	for href, wantCount := range map[string]int{
+		`href="https://github.com/digitaldrywood/detent/issues/601"`: 2,
+		`href="https://github.com/digitaldrywood/detent/pull/702"`:   2,
+		`href="https://github.com/digitaldrywood/detent/issues/603"`: 2,
+		`href="https://github.com/digitaldrywood/detent/pull/703"`:   2,
+	} {
+		if got := strings.Count(agentActivity, href); got != wantCount {
+			t.Fatalf("agent activity %s count = %d, want %d:\n%s", href, got, wantCount, agentActivity)
+		}
+	}
+	if strings.Contains(agentActivity, `href="https://github.com/digitaldrywood/detent/issues/602"`) {
+		t.Fatalf("PR-only agent activity row rendered an issue link:\n%s", agentActivity)
+	}
+
+	recentSessions := dashboardTail(t, html, "Recent sessions")
+	for href, wantCount := range map[string]int{
+		`href="https://github.com/digitaldrywood/detent/issues/603"`: 2,
+		`href="https://github.com/digitaldrywood/detent/pull/703"`:   2,
+	} {
+		if got := strings.Count(recentSessions, href); got != wantCount {
+			t.Fatalf("recent sessions %s count = %d, want %d:\n%s", href, got, wantCount, recentSessions)
+		}
+	}
+	if !strings.Contains(recentSessions, `data-copy="https://github.com/digitaldrywood/detent/issues/603"`) {
+		t.Fatalf("recent sessions removed issue copy action:\n%s", recentSessions)
+	}
+}
+
 func TestDashboardRendersBlockedIssueWithCompletedSessionAsCurrentBlocked(t *testing.T) {
 	t.Parallel()
 
@@ -2696,6 +2790,16 @@ func renderDashboard(t *testing.T, data templates.DashboardData) string {
 	return buf.String()
 }
 
+func renderProjectRunsSnapshot(t *testing.T, data templates.DashboardData) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := templates.ProjectRunsSnapshot(data).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	return buf.String()
+}
+
 func renderProjectKanbanPage(t *testing.T, data templates.DashboardData) string {
 	t.Helper()
 
@@ -2759,6 +2863,16 @@ func dashboardSection(t *testing.T, html string, start string, end string) strin
 		t.Fatalf("section end %q after %q missing:\n%s", end, start, html[startIndex:])
 	}
 	return html[startIndex : startIndex+endIndex]
+}
+
+func dashboardTail(t *testing.T, html string, start string) string {
+	t.Helper()
+
+	startIndex := strings.Index(html, start)
+	if startIndex < 0 {
+		t.Fatalf("section start %q missing:\n%s", start, html)
+	}
+	return html[startIndex:]
 }
 
 func projectKanbanSection(t *testing.T, html string) string {
