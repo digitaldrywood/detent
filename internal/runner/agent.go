@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -217,6 +218,7 @@ func routesFromConfig(routes []config.AgentRoute) []Route {
 	for _, route := range routes {
 		out = append(out, Route{
 			Name:       route.Name,
+			Role:       route.Role,
 			BackendID:  route.Backend,
 			Model:      route.Model,
 			ModelField: route.ModelField,
@@ -228,7 +230,11 @@ func routesFromConfig(routes []config.AgentRoute) []Route {
 }
 
 func (r agentRuntime) selectBackend(issue connector.Issue, ctx selector.Context) (RouteSelection, AgentBackend, config.AgentBackend, error) {
-	selection, err := r.router.Route(issue, ctx)
+	return r.selectBackendForRole(issue, ctx, RoleCode)
+}
+
+func (r agentRuntime) selectBackendForRole(issue connector.Issue, ctx selector.Context, role string) (RouteSelection, AgentBackend, config.AgentBackend, error) {
+	selection, err := r.router.RouteForRole(issue, ctx, role)
 	if err != nil {
 		return RouteSelection{}, nil, config.AgentBackend{}, err
 	}
@@ -378,6 +384,179 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	workflow, agentRuntime := r.runtimeSnapshot()
+
+	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	info, err := r.workspace.Create(ctx, workspaceIssue)
+	if err != nil {
+		return gate.ValidatorResult{}, fmt.Errorf("create workspace: %w", err)
+	}
+
+	if err := r.workspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
+		return gate.ValidatorResult{}, fmt.Errorf("workspace before_run: %w", err)
+	}
+
+	afterRunPending := true
+	defer func() {
+		if afterRunPending {
+			r.afterRun(info, workspaceIssue)
+		}
+	}()
+
+	prompt := BuildValidatorPrompt(workflow, req.Issue, ValidatorPromptOptions{
+		WorkspacePath: info.Path,
+		Branch:        info.Branch,
+	})
+	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
+	if err != nil {
+		return gate.ValidatorResult{}, err
+	}
+
+	model := selection.Model
+	if override := strings.TrimSpace(workflow.Config.Gate.Validator.Model); override != "" {
+		model = override
+	}
+
+	startedAt := req.StartedAt
+	if startedAt.IsZero() {
+		startedAt = r.now().UTC()
+	}
+	runStartedAt := r.now()
+	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, model)
+	if err != nil {
+		return gate.ValidatorResult{}, err
+	}
+
+	runReq := RunRequest{
+		Issue:           req.Issue,
+		StartedAt:       req.StartedAt,
+		SelectorContext: req.SelectorContext,
+		OnUsageUpdate:   req.OnUsageUpdate,
+	}
+	runResult := RunResult{FinalState: FinalStateCompleted}
+	progress := newAgentRunProgress()
+	var output strings.Builder
+	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
+		Workspace:         info.Path,
+		Prompt:            prompt,
+		ApprovalPolicy:    stringOrMapValue(backendConfig.Options.ApprovalPolicy),
+		ThreadSandbox:     backendConfig.Options.ThreadSandbox,
+		TurnSandboxPolicy: backendConfig.Options.TurnSandboxPolicy,
+		Model:             model,
+	}, func(update AgentUpdate) error {
+		if update.Type == AgentUpdateMessageDelta {
+			output.WriteString(update.Delta)
+		}
+		applyAgentUpdate(&runResult, update)
+		if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, update, runStartedAt); err != nil {
+			return err
+		}
+		return nil
+	})
+	_ = turnResult
+
+	r.afterRun(info, workspaceIssue)
+	afterRunPending = false
+
+	finishedAt := r.now().UTC()
+	runResult.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
+	if turnErr != nil {
+		runResult.FinalState = FinalStateFailed
+		return gate.ValidatorResult{}, errors.Join(
+			fmt.Errorf("run validator turn: %w", turnErr),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, 1),
+		)
+	}
+
+	validation, err := parseValidatorResult(output.String())
+	if err != nil {
+		runResult.FinalState = FinalStateFailed
+		return gate.ValidatorResult{}, errors.Join(
+			fmt.Errorf("parse validator result: %w", err),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, 1),
+		)
+	}
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, 1); err != nil {
+		return gate.ValidatorResult{}, err
+	}
+	return validation, nil
+}
+
+type validatorJSONResult struct {
+	Verdict    string                 `json:"verdict"`
+	Score      float64                `json:"score"`
+	Confidence float64                `json:"confidence"`
+	TrustScore float64                `json:"trust_score"`
+	Summary    string                 `json:"summary"`
+	Findings   []validatorJSONFinding `json:"findings"`
+}
+
+type validatorJSONFinding struct {
+	Severity string `json:"severity"`
+	Body     string `json:"body"`
+	Message  string `json:"message"`
+	Path     string `json:"path"`
+	Line     int    `json:"line"`
+}
+
+func parseValidatorResult(output string) (gate.ValidatorResult, error) {
+	payload, err := validatorJSONPayload(output)
+	if err != nil {
+		return gate.ValidatorResult{}, err
+	}
+
+	var decoded validatorJSONResult
+	if err := json.Unmarshal([]byte(payload), &decoded); err != nil {
+		return gate.ValidatorResult{}, err
+	}
+
+	score := decoded.Score
+	if score == 0 {
+		switch {
+		case decoded.TrustScore > 0:
+			score = decoded.TrustScore
+		case decoded.Confidence > 0:
+			score = decoded.Confidence
+		}
+	}
+
+	findings := make([]gate.Finding, 0, len(decoded.Findings))
+	for _, finding := range decoded.Findings {
+		body := strings.TrimSpace(finding.Body)
+		if body == "" {
+			body = strings.TrimSpace(finding.Message)
+		}
+		findings = append(findings, gate.Finding{
+			Severity: strings.ToLower(strings.TrimSpace(finding.Severity)),
+			Body:     body,
+			Path:     strings.TrimSpace(finding.Path),
+			Line:     finding.Line,
+		})
+	}
+
+	return gate.ValidatorResult{
+		Submitted: true,
+		Verdict:   strings.TrimSpace(decoded.Verdict),
+		Score:     score,
+		Summary:   strings.TrimSpace(decoded.Summary),
+		Findings:  findings,
+	}, nil
+}
+
+func validatorJSONPayload(output string) (string, error) {
+	output = strings.TrimSpace(output)
+	start := strings.Index(output, "{")
+	end := strings.LastIndex(output, "}")
+	if start < 0 || end < start {
+		return "", errors.New("validator output did not contain a JSON object")
+	}
+	return output[start : end+1], nil
 }
 
 func (r *Runner) ReapWorkspace(ctx context.Context, issue connector.Issue) (WorkspaceReapResult, error) {

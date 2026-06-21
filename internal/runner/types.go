@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -16,6 +17,10 @@ const (
 
 type Backend interface {
 	Run(context.Context, RunRequest) (RunResult, error)
+}
+
+type Validator interface {
+	Validate(context.Context, ValidatorRequest) (gate.ValidatorResult, error)
 }
 
 type WorkspaceReaper interface {
@@ -89,6 +94,13 @@ type RunRequest struct {
 	Attempt         int
 	StartedAt       time.Time
 	WorkerHost      string
+	SelectorContext selector.Context
+	OnUsageUpdate   UsageUpdateHandler
+}
+
+type ValidatorRequest struct {
+	Issue           connector.Issue
+	StartedAt       time.Time
 	SelectorContext selector.Context
 	OnUsageUpdate   UsageUpdateHandler
 }

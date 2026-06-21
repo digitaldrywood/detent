@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/budget"
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -273,6 +274,101 @@ func TestRunnerUsageCostWarnsForUnknownModel(t *testing.T) {
 	}
 	if got := logs.String(); !strings.Contains(got, "usage event model pricing not found") || !strings.Contains(got, "missing-model") {
 		t.Fatalf("log output = %q, want unknown pricing warning", got)
+	}
+}
+
+func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := t.TempDir()
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{
+			Path:   workspacePath,
+			Key:    "digitaldrywood_detent_522",
+			Branch: "detent/digitaldrywood_detent_522",
+		},
+	}
+	validatorBackend := &fakeCodexClient{
+		updates: []AgentUpdate{{
+			Type:  AgentUpdateMessageDelta,
+			Delta: `{"verdict":"pass","score":0.93,"summary":"Acceptance criteria are covered.","findings":[{"severity":"p2","body":"Follow-up polish.","path":"README.md","line":12}]}`,
+		}},
+		result: AgentTurnResult{ThreadID: "validator-thread", TurnID: "validator-turn"},
+	}
+	codeBackend := &fakeCodexClient{}
+
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Gate: gate.Config{
+					Validator: gate.ValidatorConfig{
+						Enabled:  true,
+						Model:    "gpt-5-validator-override",
+						MinScore: 0.8,
+						BlockOn:  []string{"p1"},
+					},
+				},
+				Agents: config.Agents{
+					Backends: []config.AgentBackend{
+						{ID: "codex-code", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server"},
+						{ID: "codex-validator", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server --profile validator"},
+					},
+					Routes: []config.AgentRoute{
+						{Name: "validator", Role: RoleValidator, Backend: "codex-validator", Model: "gpt-5-route-validator"},
+						{Name: "default", Backend: "codex-code", Default: true},
+					},
+				},
+			},
+			Prompt: "Work on {{ issue.identifier }}",
+		},
+		Workspace: workspaceBackend,
+		AgentBackends: map[string]AgentBackend{
+			"codex-code":      codeBackend,
+			"codex-validator": validatorBackend,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Validate(context.Background(), ValidatorRequest{
+		Issue: connector.Issue{
+			ID:          "issue-522",
+			Identifier:  "digitaldrywood/detent#522",
+			Title:       "Add validator gate",
+			Description: "## Acceptance Criteria\n- Validator checks the PR diff.",
+			PullRequest: &connector.PullRequest{
+				URL:        "https://github.test/digitaldrywood/detent/pull/522",
+				BranchName: "detent/digitaldrywood_detent_522",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	if !result.Submitted || result.Verdict != gate.ValidatorVerdictPass || result.Score != 0.93 {
+		t.Fatalf("Validate() result = %#v, want submitted pass score 0.93", result)
+	}
+	if result.Summary != "Acceptance criteria are covered." {
+		t.Fatalf("Summary = %q, want parsed summary", result.Summary)
+	}
+	if len(result.Findings) != 1 || result.Findings[0].Severity != "p2" || result.Findings[0].Path != "README.md" || result.Findings[0].Line != 12 {
+		t.Fatalf("Findings = %#v, want parsed p2 README finding", result.Findings)
+	}
+	if validatorBackend.request.Model != "gpt-5-validator-override" {
+		t.Fatalf("validator model = %q, want gate override", validatorBackend.request.Model)
+	}
+	if validatorBackend.request.Workspace != workspacePath {
+		t.Fatalf("validator workspace = %q, want %q", validatorBackend.request.Workspace, workspacePath)
+	}
+	for _, want := range []string{"validator-agent", "Acceptance Criteria", "git diff", "JSON"} {
+		if !strings.Contains(validatorBackend.request.Prompt, want) {
+			t.Fatalf("validator prompt missing %q:\n%s", want, validatorBackend.request.Prompt)
+		}
+	}
+	if codeBackend.request.Prompt != "" {
+		t.Fatalf("code backend prompt = %q, want unused code backend", codeBackend.request.Prompt)
 	}
 }
 

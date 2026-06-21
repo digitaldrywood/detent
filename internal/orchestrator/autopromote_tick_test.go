@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -250,6 +251,84 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate: gate.Config{
+				Kind: gate.KindCommand,
+				Validator: gate.ValidatorConfig{
+					Enabled:  true,
+					MinScore: 0.8,
+					BlockOn:  []string{"p1"},
+				},
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-validator", []string{"enhancement"}, &connector.PullRequest{
+		Number:                 522,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/522",
+		BranchName:             "detent/digitaldrywood_detent_522",
+		HeadSHA:                "head-validator",
+		State:                  "OPEN",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	validator := &autoPromoteTickValidator{
+		result: gate.ValidatorResult{
+			Submitted: true,
+			Verdict:   gate.ValidatorVerdictPass,
+			Score:     0.91,
+			Summary:   "Acceptance criteria pass.",
+		},
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		validator: validator,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+
+	waitForValidatorRequests(t, validator, 1)
+	waitForValidatorResult(t, orch, issue)
+	if got := tracker.updates; len(got) != 0 {
+		t.Fatalf("updates after scheduling validator = %#v, want none", got)
+	}
+	requests := validator.Requests()
+	if requests[0].Issue.ID != "issue-validator" {
+		t.Fatalf("validator issue = %#v, want issue-validator", requests[0].Issue)
+	}
+
+	orch.tick(context.Background(), &state, now.Add(time.Second))
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: "issue-validator", state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.prComments) != 1 {
+		t.Fatalf("pull request comments = %#v, want validator result comment", tracker.prComments)
+	}
+	for _, fragment := range []string{"Validator verdict: pass", "score: 0.91", "Acceptance criteria pass."} {
+		if !strings.Contains(tracker.prComments[0].body, fragment) {
+			t.Fatalf("pull request comment %q missing %q", tracker.prComments[0].body, fragment)
+		}
+	}
+}
+
 func autoPromoteTickIssue(id string, labels []string, pullRequest *connector.PullRequest) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id
@@ -292,6 +371,7 @@ type autoPromoteTickConnector struct {
 	fetchByStatesRequests [][]string
 	updates               []autoPromoteTickUpdate
 	comments              []autoPromoteTickComment
+	prComments            []autoPromoteTickComment
 }
 
 func (c *autoPromoteTickConnector) Name() string {
@@ -324,6 +404,57 @@ func (c *autoPromoteTickConnector) FetchIssueStatesByIDs(context.Context, []stri
 func (c *autoPromoteTickConnector) CreateComment(_ context.Context, issueID string, body string) error {
 	c.comments = append(c.comments, autoPromoteTickComment{issueID: issueID, body: body})
 	return nil
+}
+
+func (c *autoPromoteTickConnector) CreatePullRequestComment(_ context.Context, repository string, number int, body string) error {
+	c.prComments = append(c.prComments, autoPromoteTickComment{issueID: repository, body: body})
+	return nil
+}
+
+type autoPromoteTickValidator struct {
+	mu       sync.Mutex
+	result   gate.ValidatorResult
+	requests []ValidatorRequest
+	err      error
+}
+
+func (v *autoPromoteTickValidator) Validate(_ context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	v.requests = append(v.requests, req)
+	return v.result, v.err
+}
+
+func (v *autoPromoteTickValidator) Requests() []ValidatorRequest {
+	v.mu.Lock()
+	defer v.mu.Unlock()
+	return append([]ValidatorRequest(nil), v.requests...)
+}
+
+func waitForValidatorRequests(t *testing.T, validator *autoPromoteTickValidator, count int) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if len(validator.Requests()) >= count {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("validator requests = %d, want at least %d", len(validator.Requests()), count)
+}
+
+func waitForValidatorResult(t *testing.T, orch *Orchestrator, issue connector.Issue) {
+	t.Helper()
+
+	deadline := time.Now().Add(time.Second)
+	for time.Now().Before(deadline) {
+		if _, _, ok := orch.validatorStageResult(issue); ok {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("validator result was not recorded")
 }
 
 func (c *autoPromoteTickConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {

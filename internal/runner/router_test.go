@@ -133,6 +133,61 @@ func TestRouterSingleDefaultRouteKeepsIssueModelOverride(t *testing.T) {
 	}
 }
 
+func TestRouterRoutesValidatorRoleWithFallbackDefault(t *testing.T) {
+	t.Parallel()
+
+	router, err := NewRouter([]Route{
+		{
+			Name:      "validator",
+			Role:      RoleValidator,
+			BackendID: "codex-review",
+			Model:     "gpt-5-review",
+		},
+		{
+			Name:      "default",
+			BackendID: "codex-code",
+			Model:     "gpt-5-code",
+			Default:   true,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	got, err := router.RouteForRole(connector.Issue{}, selector.Context{}, RoleValidator)
+	if err != nil {
+		t.Fatalf("RouteForRole(validator) error = %v", err)
+	}
+	if got.BackendID != "codex-review" || got.Model != "gpt-5-review" || got.RouteName != "validator" {
+		t.Fatalf("RouteForRole(validator) = %#v, want validator route", got)
+	}
+
+	code, err := router.Route(connector.Issue{}, selector.Context{})
+	if err != nil {
+		t.Fatalf("Route(code) error = %v", err)
+	}
+	if code.BackendID != "codex-code" || code.Model != "gpt-5-code" || code.RouteName != "default" {
+		t.Fatalf("Route(code) = %#v, want code default", code)
+	}
+
+	fallback, err := NewRouter([]Route{{
+		Name:      "default",
+		BackendID: "codex",
+		Model:     "gpt-5-code",
+		Default:   true,
+	}})
+	if err != nil {
+		t.Fatalf("NewRouter(fallback) error = %v", err)
+	}
+	got, err = fallback.RouteForRole(connector.Issue{}, selector.Context{}, RoleValidator)
+	if err != nil {
+		t.Fatalf("fallback RouteForRole(validator) error = %v", err)
+	}
+	if got.BackendID != "codex" || got.Model != "gpt-5-code" || got.RouteName != "default" {
+		t.Fatalf("fallback RouteForRole(validator) = %#v, want default route", got)
+	}
+}
+
 func TestRouterRejectsInvalidRoutes(t *testing.T) {
 	t.Parallel()
 
@@ -151,10 +206,17 @@ func TestRouterRejectsInvalidRoutes(t *testing.T) {
 			}},
 		},
 		{
-			name: "multiple defaults",
+			name: "multiple code defaults",
 			routes: []Route{
 				{BackendID: "codex", Default: true},
 				{BackendID: "codex-high", Default: true},
+			},
+		},
+		{
+			name: "multiple validator defaults",
+			routes: []Route{
+				{Role: RoleValidator, BackendID: "codex", Default: true},
+				{Role: RoleValidator, BackendID: "codex-high", Default: true},
 			},
 		},
 	}

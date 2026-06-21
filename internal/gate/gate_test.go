@@ -44,6 +44,21 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 			cfg:  Config{Kind: KindHumanReview},
 			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: DefaultApprovalLabel, CIFailureAction: CIFailureActionSkip},
 		},
+		{
+			name: "validator defaults stay disabled with score threshold and p1 blocker",
+			cfg:  Config{Kind: KindCommand, Validator: ValidatorConfig{}},
+			want: Config{
+				Kind:                   KindCommand,
+				Run:                    DefaultCommand,
+				ApprovalLabel:          DefaultApprovalLabel,
+				RequireAutomatedReview: new(true),
+				CIFailureAction:        CIFailureActionSkip,
+				Validator: ValidatorConfig{
+					MinScore: DefaultValidatorMinScore,
+					BlockOn:  []string{"p1"},
+				},
+			},
+		},
 	}
 
 	for _, tt := range tests {
@@ -51,8 +66,10 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 			t.Parallel()
 
 			got := Effective(tt.cfg)
-			if !configsEqual(got, tt.want) {
-				t.Fatalf("Effective() = %#v, want %#v", got, tt.want)
+			want := tt.want
+			want.Validator = effectiveValidatorConfig(want.Validator)
+			if !configsEqual(got, want) {
+				t.Fatalf("Effective() = %#v, want %#v", got, want)
 			}
 		})
 	}
@@ -173,6 +190,113 @@ func TestEvaluate(t *testing.T) {
 			want:  Decision{Action: ActionPass, Reason: ReasonReady},
 		},
 		{
+			name: "validator gate waits for missing validator result",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: readyCommand,
+			opts:  EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want:  Decision{Action: ActionWait, Reason: ReasonValidatorMissing},
+		},
+		{
+			name: "validator gate waits for quiet window before requesting validator",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &recentActivity,
+			},
+			opts: EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewNotQuiet, QuietRemaining: 570 * time.Second},
+		},
+		{
+			name: "validator gate passes above score threshold",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &oldActivity,
+				Validator: ValidatorResult{
+					Submitted: true,
+					Verdict:   ValidatorVerdictPass,
+					Score:     0.91,
+				},
+			},
+			opts: EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want: Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name: "validator gate reworks below score threshold",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &oldActivity,
+				Validator: ValidatorResult{
+					Submitted: true,
+					Verdict:   ValidatorVerdictPass,
+					Score:     0.72,
+				},
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonValidatorScoreBelowThreshold},
+		},
+		{
+			name: "validator gate reworks blocked severity regardless of score",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &oldActivity,
+				Validator: ValidatorResult{
+					Submitted: true,
+					Verdict:   ValidatorVerdictPass,
+					Score:     0.98,
+					Findings:  []Finding{{Severity: "P1", Body: "Acceptance criteria missed."}},
+				},
+			},
+			want: Decision{
+				Action:   ActionRework,
+				Reason:   ReasonValidatorBlockedSeverity,
+				Findings: []Finding{{Severity: "P1", Body: "Acceptance criteria missed."}},
+			},
+		},
+		{
+			name: "validator gate waits on wait verdict",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &oldActivity,
+				Validator: ValidatorResult{
+					Submitted: true,
+					Verdict:   ValidatorVerdictWait,
+					Score:     0.86,
+				},
+			},
+			want: Decision{Action: ActionWait, Reason: ReasonValidatorWait},
+		},
+		{
 			name:  "human review gate waits for approval label",
 			cfg:   Config{Kind: KindHumanReview, ApprovalLabel: "approved-by-human"},
 			input: Summary{PullRequestPresent: true},
@@ -234,7 +358,8 @@ func configsEqual(left Config, right Config) bool {
 		left.Run == right.Run &&
 		left.ApprovalLabel == right.ApprovalLabel &&
 		left.CIFailureAction == right.CIFailureAction &&
-		boolPointerEqual(left.RequireAutomatedReview, right.RequireAutomatedReview)
+		boolPointerEqual(left.RequireAutomatedReview, right.RequireAutomatedReview) &&
+		validatorConfigsEqual(left.Validator, right.Validator)
 }
 
 func boolPointerEqual(left *bool, right *bool) bool {
@@ -242,4 +367,16 @@ func boolPointerEqual(left *bool, right *bool) bool {
 		return left == right
 	}
 	return *left == *right
+}
+
+func validatorConfigsEqual(left ValidatorConfig, right ValidatorConfig) bool {
+	if left.Enabled != right.Enabled || left.Model != right.Model || left.MinScore != right.MinScore || len(left.BlockOn) != len(right.BlockOn) {
+		return false
+	}
+	for i := range left.BlockOn {
+		if left.BlockOn[i] != right.BlockOn[i] {
+			return false
+		}
+	}
+	return true
 }

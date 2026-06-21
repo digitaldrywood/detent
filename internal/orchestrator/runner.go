@@ -8,7 +8,11 @@ const FinalStateCompleted = runner.FinalStateCompleted
 
 type Runner = runner.Backend
 
+type Validator = runner.Validator
+
 type RunRequest = runner.RunRequest
+
+type ValidatorRequest = runner.ValidatorRequest
 
 type RunResult = runner.RunResult
 

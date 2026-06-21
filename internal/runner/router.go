@@ -14,8 +14,14 @@ var (
 	ErrNoMatchingRoute    = errors.New("no matching agent route")
 )
 
+const (
+	RoleCode      = "code"
+	RoleValidator = "validator"
+)
+
 type Route struct {
 	Name       string
+	Role       string
 	BackendID  string
 	Model      string
 	ModelField string
@@ -30,8 +36,8 @@ type RouteSelection struct {
 }
 
 type Router struct {
-	routes       []Route
-	defaultIndex int
+	routes         []Route
+	defaultIndexes map[string]int
 }
 
 func NewRouter(routes []Route) (*Router, error) {
@@ -40,9 +46,10 @@ func NewRouter(routes []Route) (*Router, error) {
 	}
 
 	normalized := make([]Route, len(routes))
-	defaultIndex := -1
+	defaultIndexes := map[string]int{}
 	for index, route := range routes {
 		route.Name = strings.TrimSpace(route.Name)
+		route.Role = normalizeRole(route.Role)
 		route.BackendID = strings.TrimSpace(route.BackendID)
 		route.Model = strings.TrimSpace(route.Model)
 		route.ModelField = strings.TrimSpace(route.ModelField)
@@ -50,27 +57,35 @@ func NewRouter(routes []Route) (*Router, error) {
 			return nil, fmt.Errorf("agent route %d backend is required", index)
 		}
 		if route.Default {
-			if defaultIndex >= 0 {
-				return nil, errors.New("agent routes must not define multiple defaults")
+			if _, ok := defaultIndexes[route.Role]; ok {
+				return nil, errors.New("agent routes must not define multiple defaults for the same role")
 			}
-			defaultIndex = index
+			defaultIndexes[route.Role] = index
 		}
 		normalized[index] = route
 	}
 
 	return &Router{
-		routes:       normalized,
-		defaultIndex: defaultIndex,
+		routes:         normalized,
+		defaultIndexes: defaultIndexes,
 	}, nil
 }
 
 func (r *Router) Route(issue connector.Issue, ctx selector.Context) (RouteSelection, error) {
+	return r.RouteForRole(issue, ctx, RoleCode)
+}
+
+func (r *Router) RouteForRole(issue connector.Issue, ctx selector.Context, role string) (RouteSelection, error) {
 	if r == nil || len(r.routes) == 0 {
 		return RouteSelection{}, ErrMissingAgentRoutes
 	}
 
+	role = normalizeRole(role)
 	for _, route := range r.routes {
 		if route.Default {
+			continue
+		}
+		if route.Role != role {
 			continue
 		}
 		if route.matches(issue, ctx) {
@@ -78,11 +93,24 @@ func (r *Router) Route(issue connector.Issue, ctx selector.Context) (RouteSelect
 		}
 	}
 
-	if r.defaultIndex >= 0 {
-		return r.routes[r.defaultIndex].selection(issue), nil
+	if index, ok := r.defaultIndexes[role]; ok {
+		return r.routes[index].selection(issue), nil
+	}
+	if role != RoleCode {
+		if index, ok := r.defaultIndexes[RoleCode]; ok {
+			return r.routes[index].selection(issue), nil
+		}
 	}
 
 	return RouteSelection{}, ErrNoMatchingRoute
+}
+
+func normalizeRole(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		return RoleCode
+	}
+	return role
 }
 
 func (r Route) matches(issue connector.Issue, ctx selector.Context) bool {

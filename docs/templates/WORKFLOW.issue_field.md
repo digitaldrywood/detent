@@ -77,6 +77,12 @@ gate:
   run: make check
   require_automated_review: true
   ci_failure_action: skip
+  validator:
+    enabled: false
+    model: ""
+    min_score: 0.8
+    block_on:
+      - p1
 server:
   host: 127.0.0.1
   port: 4000

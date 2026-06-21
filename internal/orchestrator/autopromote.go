@@ -22,6 +22,7 @@ type AutoPromoteSummary struct {
 	CIStatus           string
 	ReviewState        string
 	P1Findings         []AutoPromoteFinding
+	Validator          gate.ValidatorResult
 	LastActivityAt     *time.Time
 }
 
@@ -44,16 +45,21 @@ const (
 type AutoPromoteReason string
 
 const (
-	AutoPromoteReasonReady                AutoPromoteReason = "ready"
-	AutoPromoteReasonDisabled             AutoPromoteReason = "disabled"
-	AutoPromoteReasonOptoutLabel          AutoPromoteReason = "optout_label"
-	AutoPromoteReasonLabelNotAllowed      AutoPromoteReason = "label_not_allowed"
-	AutoPromoteReasonMissingPullRequest   AutoPromoteReason = "missing_pull_request"
-	AutoPromoteReasonCINotGreen           AutoPromoteReason = "ci_not_green"
-	AutoPromoteReasonCodexReviewMissing   AutoPromoteReason = "automated_review_missing"
-	AutoPromoteReasonP1Findings           AutoPromoteReason = "p1_findings"
-	AutoPromoteReasonCodexReviewNotQuiet  AutoPromoteReason = "codex_review_not_quiet"
-	AutoPromoteReasonHumanApprovalMissing AutoPromoteReason = "human_approval_missing"
+	AutoPromoteReasonReady                        AutoPromoteReason = "ready"
+	AutoPromoteReasonDisabled                     AutoPromoteReason = "disabled"
+	AutoPromoteReasonOptoutLabel                  AutoPromoteReason = "optout_label"
+	AutoPromoteReasonLabelNotAllowed              AutoPromoteReason = "label_not_allowed"
+	AutoPromoteReasonMissingPullRequest           AutoPromoteReason = "missing_pull_request"
+	AutoPromoteReasonCINotGreen                   AutoPromoteReason = "ci_not_green"
+	AutoPromoteReasonCodexReviewMissing           AutoPromoteReason = "automated_review_missing"
+	AutoPromoteReasonP1Findings                   AutoPromoteReason = "p1_findings"
+	AutoPromoteReasonCodexReviewNotQuiet          AutoPromoteReason = "codex_review_not_quiet"
+	AutoPromoteReasonHumanApprovalMissing         AutoPromoteReason = "human_approval_missing"
+	AutoPromoteReasonValidatorMissing             AutoPromoteReason = "validator_missing"
+	AutoPromoteReasonValidatorWait                AutoPromoteReason = "validator_wait"
+	AutoPromoteReasonValidatorRework              AutoPromoteReason = "validator_rework"
+	AutoPromoteReasonValidatorScoreBelowThreshold AutoPromoteReason = "validator_score_below_threshold"
+	AutoPromoteReasonValidatorBlockedSeverity     AutoPromoteReason = "validator_blocked_severity"
 )
 
 type AutoPromoteDecision struct {
@@ -166,6 +172,7 @@ func gateSummary(summary AutoPromoteSummary) gate.Summary {
 		CIStatus:           summary.CIStatus,
 		ReviewState:        summary.ReviewState,
 		P1Findings:         gateFindings(summary.P1Findings),
+		Validator:          summary.Validator,
 		LastActivityAt:     summary.LastActivityAt,
 	}
 }
@@ -225,6 +232,16 @@ func autoPromoteReasonFromGate(reason gate.Reason) AutoPromoteReason {
 		return AutoPromoteReasonCodexReviewNotQuiet
 	case gate.ReasonHumanApprovalMissing:
 		return AutoPromoteReasonHumanApprovalMissing
+	case gate.ReasonValidatorMissing:
+		return AutoPromoteReasonValidatorMissing
+	case gate.ReasonValidatorWait:
+		return AutoPromoteReasonValidatorWait
+	case gate.ReasonValidatorRework:
+		return AutoPromoteReasonValidatorRework
+	case gate.ReasonValidatorScoreBelowThreshold:
+		return AutoPromoteReasonValidatorScoreBelowThreshold
+	case gate.ReasonValidatorBlockedSeverity:
+		return AutoPromoteReasonValidatorBlockedSeverity
 	default:
 		return AutoPromoteReasonDisabled
 	}

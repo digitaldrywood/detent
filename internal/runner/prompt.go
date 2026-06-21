@@ -42,6 +42,11 @@ type PromptOptions struct {
 	AvailableSkills []skills.Skill
 }
 
+type ValidatorPromptOptions struct {
+	WorkspacePath string
+	Branch        string
+}
+
 func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOptions) (string, error) {
 	template := workflow.Prompt
 	if strings.TrimSpace(template) == "" {
@@ -64,6 +69,57 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	rendered = appendGateBlock(rendered, workflow.Config.Gate)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
 	return appendClosingReferenceInstruction(rendered, issue), nil
+}
+
+func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts ValidatorPromptOptions) string {
+	var b strings.Builder
+	b.WriteString("You are the Detent validator-agent. Review the pull request diff against the issue acceptance criteria and return a structured gate verdict.\n\n")
+	if opts.WorkspacePath != "" {
+		b.WriteString("Workspace: `")
+		b.WriteString(opts.WorkspacePath)
+		b.WriteString("`\n")
+	}
+	if opts.Branch != "" {
+		b.WriteString("Branch: `")
+		b.WriteString(opts.Branch)
+		b.WriteString("`\n")
+	}
+	if issue.PullRequest != nil && strings.TrimSpace(issue.PullRequest.URL) != "" {
+		b.WriteString("Pull request: ")
+		b.WriteString(strings.TrimSpace(issue.PullRequest.URL))
+		b.WriteString("\n")
+	}
+	b.WriteString("\nIssue: ")
+	b.WriteString(issue.Identifier)
+	if strings.TrimSpace(issue.Title) != "" {
+		b.WriteString(" - ")
+		b.WriteString(strings.TrimSpace(issue.Title))
+	}
+	b.WriteString("\n\n")
+	if strings.TrimSpace(issue.Description) != "" {
+		b.WriteString("Issue body and Acceptance Criteria:\n")
+		b.WriteString(strings.TrimSpace(issue.Description))
+		b.WriteString("\n\n")
+	}
+
+	validator := gate.Effective(workflow.Config.Gate).Validator
+	b.WriteString("Review instructions:\n")
+	b.WriteString("- Inspect the PR diff with `git diff` and compare the changes to the issue body, especially any Acceptance Criteria.\n")
+	b.WriteString("- Do not modify files, commit, push, change labels, or transition issue state.\n")
+	b.WriteString("- Use severities p1, p2, p3, or p4 for findings; p1 means the work must not merge.\n")
+	b.WriteString("- Score is a confidence/trust score from 0 to 1 that the implementation satisfies the acceptance criteria.\n")
+	b.WriteString("- Return only JSON with this shape: {\"verdict\":\"pass|wait|rework\",\"score\":0.0,\"summary\":\"...\",\"findings\":[{\"severity\":\"p1|p2|p3|p4\",\"body\":\"...\",\"path\":\"optional\",\"line\":0}]}.\n")
+	if validator.MinScore > 0 {
+		b.WriteString("- The configured minimum score is ")
+		b.WriteString(strconv.FormatFloat(validator.MinScore, 'f', -1, 64))
+		b.WriteString(".\n")
+	}
+	if len(validator.BlockOn) > 0 {
+		b.WriteString("- These severities force rework: ")
+		b.WriteString(strings.Join(validator.BlockOn, ", "))
+		b.WriteString(".\n")
+	}
+	return b.String()
 }
 
 func prependWorkspaceIsolationBlock(prompt string, workspacePath string, branch string) string {
@@ -204,6 +260,12 @@ func gateAssigns(cfg gate.Config) map[string]any {
 		"approval_label":           effective.ApprovalLabel,
 		"require_automated_review": requireAutomatedReview(effective),
 		"ci_failure_action":        effective.CIFailureAction,
+		"validator": map[string]any{
+			"enabled":   effective.Validator.Enabled,
+			"model":     effective.Validator.Model,
+			"min_score": effective.Validator.MinScore,
+			"block_on":  effective.Validator.BlockOn,
+		},
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -104,9 +105,13 @@ type Orchestrator struct {
 	cfg                Config
 	connector          connector.Connector
 	supervisor         *runpkg.Supervisor
+	validator          Validator
 	reaper             WorkspaceReaper
 	logger             *slog.Logger
 	globalDispatchGate scheduler.ProjectDispatchGate
+	validatorMu        sync.Mutex
+	validatorRuns      map[string]struct{}
+	validatorResults   map[string]validatorStageResult
 	stateRequests      chan stateRequest
 	drainRequests      chan drainRequest
 	forceRequests      chan forceRequest
@@ -115,6 +120,11 @@ type Orchestrator struct {
 	runResults         chan runpkg.Completion
 	runUpdates         chan runUpdate
 	done               chan struct{}
+}
+
+type validatorStageResult struct {
+	Result    gate.ValidatorResult
+	Commented bool
 }
 
 type stateRequest struct {
@@ -207,6 +217,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			reaper = candidate
 		}
 	}
+	var validator Validator
+	if candidate, ok := runner.(Validator); ok {
+		validator = candidate
+	}
 
 	logger := deps.Logger
 	if logger == nil {
@@ -226,9 +240,12 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		cfg:                cfg,
 		connector:          deps.Connector,
 		supervisor:         supervisor,
+		validator:          validator,
 		reaper:             reaper,
 		logger:             logger,
 		globalDispatchGate: deps.GlobalDispatchGate,
+		validatorRuns:      map[string]struct{}{},
+		validatorResults:   map[string]validatorStageResult{},
 		stateRequests:      make(chan stateRequest),
 		drainRequests:      make(chan drainRequest),
 		forceRequests:      make(chan forceRequest),

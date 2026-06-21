@@ -618,6 +618,12 @@ gate:
   run: make check
   require_automated_review: true
   ci_failure_action: skip
+  validator:
+    enabled: false
+    model: ""
+    min_score: 0.8
+    block_on:
+      - p1
 server:
   host: 127.0.0.1
   port: 4000
@@ -665,6 +671,12 @@ gate:
   kind: command
   run: make check
   ci_failure_action: skip
+  validator:
+    enabled: false
+    model: ""
+    min_score: 0.8
+    block_on:
+      - p1
 ---
 You are working on {{ issue.identifier }}: {{ issue.title }}.
 ```
@@ -703,6 +715,12 @@ gate:
   kind: command
   run: make check
   ci_failure_action: skip
+  validator:
+    enabled: false
+    model: ""
+    min_score: 0.8
+    block_on:
+      - p1
 ---
 You are working on {{ issue.identifier }}: {{ issue.title }}.
 ```
@@ -769,6 +787,13 @@ a `Human Review` item back to `Rework`; the default `skip` parks it in
 `Human Review`, and pending CI stays parked. Use
 `kind: human_review` with `approval_label` only when the workflow explicitly
 requires a human approval label to promote.
+
+Set `gate.validator.enabled: true` to add a validator-agent review before
+auto-promotion. The validator inspects the PR diff against the issue acceptance
+criteria and returns a structured verdict, score, summary, and severity-tagged
+findings. `gate.validator.model` optionally overrides the selected validator
+route model, `min_score` below threshold routes to `Rework`, and any finding
+severity listed in `block_on` routes to `Rework` regardless of score.
 
 For production, self-hosted, or multi-instance GitHub Projects, prefer GitHub
 App installation authentication instead of a shared personal access token. App
@@ -1334,6 +1359,9 @@ of that state is controlled by the workflow:
 - `gate.ci_failure_action: rework` routes failed or cancelled current-head CI
   from `Human Review` back to `Rework`; the default `skip` leaves the item
   parked while CI is not green.
+- `gate.validator.enabled: true` runs a validator-agent review before
+  auto-promotion; verdicts below `min_score` or with severities in `block_on`
+  route the issue to `Rework`.
 - `gate.kind: human_review` requires a linked open PR plus the configured
   `approval_label` on the issue.
 
@@ -1722,6 +1750,10 @@ omitted, routes can reference the legacy `codex` backend built from the top-leve
 non-default selector match wins, then the single `default` route is used. A
 route can set a fixed `model`, read a model from a ProjectV2 field with
 `model_field`, or fall back to an issue model override when neither is set.
+Routes without `role` are code-agent routes. Set `role: validator` to give the
+validator-agent review its own backend/model route when
+`gate.validator.enabled` is true; if no validator route matches, Detent falls
+back to the code default route.
 
 ```yaml
 agents:
@@ -1760,6 +1792,10 @@ agents:
       protocol: app-server
       command: codex app-server --profile high
   routes:
+    - name: validator
+      role: validator
+      backend: codex-high
+      model: gpt-5-validator
     - name: high-label
       backend: codex-high
       model: gpt-5-codex-high
