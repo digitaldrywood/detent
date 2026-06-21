@@ -41,13 +41,17 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		summary := AutoPromoteSummaryFromIssue(issue)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if decision.Reason == AutoPromoteReasonValidatorMissing {
-			validation, ok := o.runValidatorStage(ctx, issue, now)
+			validation, shouldComment, ok := o.validatorStageResult(issue)
 			if !ok {
+				o.startValidatorStage(ctx, issue, now)
 				o.logAutoPromoteDecision(issue, decision, "")
 				continue
 			}
 			summary.Validator = validation
-			o.commentValidatorResult(ctx, issue, validation)
+			if shouldComment {
+				o.commentValidatorResult(ctx, issue, validation)
+				o.markValidatorResultCommented(issue)
+			}
 			decision = EvaluateAutoPromote(issue, summary, cfg, now)
 		}
 		targetState := autoPromoteTargetState(decision.Action)
@@ -66,7 +70,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 	return transitioned
 }
 
-func (o *Orchestrator) runValidatorStage(ctx context.Context, issue connector.Issue, now time.Time) (gate.ValidatorResult, bool) {
+func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.Issue, now time.Time) {
 	if o.validator == nil {
 		if o.logger != nil {
 			o.logger.Warn(
@@ -76,26 +80,85 @@ func (o *Orchestrator) runValidatorStage(ctx context.Context, issue connector.Is
 				"reason", "validator runner unavailable",
 			)
 		}
-		return gate.ValidatorResult{}, false
+		return
 	}
 
-	result, err := o.validator.Validate(ctx, ValidatorRequest{
-		Issue:           issue,
-		StartedAt:       now.UTC(),
-		SelectorContext: o.cfg.SelectorContext,
-	})
-	if err != nil {
-		if o.logger != nil {
-			o.logger.Warn(
-				"validator stage failed",
-				"issue_id", strings.TrimSpace(issue.ID),
-				"identifier", issue.Identifier,
-				"error", err,
-			)
-		}
-		return gate.ValidatorResult{}, false
+	key := validatorStageKey(issue)
+	if key == "" {
+		return
 	}
-	return result, true
+
+	o.validatorMu.Lock()
+	if o.validatorRuns == nil {
+		o.validatorRuns = map[string]struct{}{}
+	}
+	if o.validatorResults == nil {
+		o.validatorResults = map[string]validatorStageResult{}
+	}
+	if _, ok := o.validatorRuns[key]; ok {
+		o.validatorMu.Unlock()
+		return
+	}
+	if _, ok := o.validatorResults[key]; ok {
+		o.validatorMu.Unlock()
+		return
+	}
+	o.validatorRuns[key] = struct{}{}
+	o.validatorMu.Unlock()
+
+	selectorContext := o.cfg.SelectorContext
+	go func() {
+		result, err := o.validator.Validate(ctx, ValidatorRequest{
+			Issue:           issue,
+			StartedAt:       now.UTC(),
+			SelectorContext: selectorContext,
+		})
+
+		o.validatorMu.Lock()
+		defer o.validatorMu.Unlock()
+		delete(o.validatorRuns, key)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn(
+					"validator stage failed",
+					"issue_id", strings.TrimSpace(issue.ID),
+					"identifier", issue.Identifier,
+					"error", err,
+				)
+			}
+			return
+		}
+		o.validatorResults[key] = validatorStageResult{Result: result}
+	}()
+}
+
+func (o *Orchestrator) validatorStageResult(issue connector.Issue) (gate.ValidatorResult, bool, bool) {
+	key := validatorStageKey(issue)
+	if key == "" {
+		return gate.ValidatorResult{}, false, false
+	}
+	o.validatorMu.Lock()
+	defer o.validatorMu.Unlock()
+	result, ok := o.validatorResults[key]
+	if !ok {
+		return gate.ValidatorResult{}, false, false
+	}
+	return result.Result, !result.Commented, true
+}
+
+func (o *Orchestrator) markValidatorResultCommented(issue connector.Issue) {
+	key := validatorStageKey(issue)
+	if key == "" {
+		return
+	}
+	o.validatorMu.Lock()
+	defer o.validatorMu.Unlock()
+	result, ok := o.validatorResults[key]
+	if !ok {
+		return
+	}
+	result.Commented = true
+	o.validatorResults[key] = result
 }
 
 func (o *Orchestrator) commentValidatorResult(ctx context.Context, issue connector.Issue, result gate.ValidatorResult) {
@@ -166,6 +229,24 @@ func pullRequestNumber(issue connector.Issue) int {
 		return *issue.PRNumber
 	}
 	return 0
+}
+
+func validatorStageKey(issue connector.Issue) string {
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" {
+		return ""
+	}
+	headSHA := ""
+	if issue.PullRequest != nil {
+		headSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+	}
+	if headSHA == "" && issue.PullRequest != nil {
+		headSHA = strings.TrimSpace(issue.PullRequest.BranchName)
+	}
+	if headSHA == "" {
+		headSHA = strings.TrimSpace(issue.BranchName)
+	}
+	return issueID + ":" + headSHA
 }
 
 func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {

@@ -200,6 +200,21 @@ func TestEvaluate(t *testing.T) {
 			want:  Decision{Action: ActionWait, Reason: ReasonValidatorMissing},
 		},
 		{
+			name: "validator gate waits for quiet window before requesting validator",
+			cfg: Config{
+				Kind:      KindCommand,
+				Validator: ValidatorConfig{Enabled: true, MinScore: 0.8, BlockOn: []string{"p1"}},
+			},
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "green",
+				ReviewState:    "COMMENTED",
+				LastActivityAt: &recentActivity,
+			},
+			opts: EvaluationOptions{QuietDuration: 10 * time.Minute},
+			want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewNotQuiet, QuietRemaining: 570 * time.Second},
+		},
+		{
 			name: "validator gate passes above score threshold",
 			cfg: Config{
 				Kind:      KindCommand,

@@ -235,12 +235,12 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	if automatedReviewRequired(cfg) && !automatedReviewSubmitted(summary.ReviewState) {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
 	}
-	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
-		return out
-	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {
 		out := decision(ActionWait, ReasonAutomatedReviewNotQuiet)
 		out.QuietRemaining = remaining
+		return out
+	}
+	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
 		return out
 	}
 	return decision(ActionPass, ReasonReady)
