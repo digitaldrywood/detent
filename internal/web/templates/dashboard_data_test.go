@@ -668,6 +668,10 @@ func TestAgentTimelineRows(t *testing.T) {
 					Identifier: "DD-2",
 					Title:      "Second running issue",
 					State:      "Merging",
+					PullRequest: &telemetry.PullRequest{
+						Number: 22,
+						URL:    "https://github.com/digitaldrywood/detent/pull/22",
+					},
 				},
 				StartedAt: now.Add(-4 * time.Minute),
 			},
@@ -675,6 +679,7 @@ func TestAgentTimelineRows(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-1",
 					Identifier: "DD-1",
+					URL:        "https://github.com/digitaldrywood/detent/issues/1",
 					Title:      "First running issue",
 					State:      "In Progress",
 				},
@@ -686,6 +691,7 @@ func TestAgentTimelineRows(t *testing.T) {
 				Issue: telemetry.Issue{
 					ID:         "issue-3",
 					Identifier: "DD-3",
+					URL:        "https://github.com/digitaldrywood/detent/issues/3",
 					Title:      "Completed issue",
 					PullRequest: &telemetry.PullRequest{
 						Number: 3,
@@ -721,6 +727,18 @@ func TestAgentTimelineRows(t *testing.T) {
 	}
 	if rows[1].Title != "Completed issue" || rows[1].State != "completed" {
 		t.Fatalf("completed open PR timeline row = %#v", rows[1])
+	}
+	if rows[1].IssueURL != "https://github.com/digitaldrywood/detent/issues/3" {
+		t.Fatalf("completed issue URL = %q, want issue URL", rows[1].IssueURL)
+	}
+	if rows[1].PullRequestURL != "https://github.com/digitaldrywood/detent/pull/3" || rows[1].PullRequestNumber != 3 {
+		t.Fatalf("completed PR metadata = %q/%d, want derived PR #3 URL", rows[1].PullRequestURL, rows[1].PullRequestNumber)
+	}
+	if rows[2].IssueURL != "https://github.com/digitaldrywood/detent/issues/1" || rows[2].PullRequestURL != "" {
+		t.Fatalf("issue-only timeline row links = %q/%q", rows[2].IssueURL, rows[2].PullRequestURL)
+	}
+	if rows[3].IssueURL != "" || rows[3].PullRequestURL != "https://github.com/digitaldrywood/detent/pull/22" || rows[3].PullRequestNumber != 22 {
+		t.Fatalf("PR-only timeline row links = %q/%q/%d", rows[3].IssueURL, rows[3].PullRequestURL, rows[3].PullRequestNumber)
 	}
 
 	tests := []struct {

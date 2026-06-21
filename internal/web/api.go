@@ -5,6 +5,8 @@ import (
 	"errors"
 	"log/slog"
 	"net/http"
+	"net/url"
+	"strconv"
 	"strings"
 	"time"
 
@@ -392,28 +394,30 @@ func runningEntries(entries []telemetry.Running) []runningAPIResponse {
 	payload := make([]runningAPIResponse, 0, len(entries))
 	for _, entry := range entries {
 		payload = append(payload, runningAPIResponse{
-			IssueID:          entry.ID,
-			IssueIdentifier:  entry.Identifier,
-			ProjectID:        entry.ProjectID,
-			IssueURL:         optionalString(entry.URL),
-			IssueTitle:       optionalTrimmedString(entry.Title),
-			IssueDescription: issueDescription(entry.Description),
-			BudgetAlert:      false,
-			State:            entry.State,
-			WorkerHost:       optionalString(entry.WorkerHost),
-			WorkspacePath:    optionalString(entry.WorkspacePath),
-			SessionID:        optionalString(entry.SessionID),
-			TurnCount:        entry.TurnCount,
-			LastEvent:        optionalString(entry.LastEvent),
-			LastMessage:      optionalString(entry.LastMessage),
-			StartedAt:        timestampString(entry.StartedAt),
-			LastEventAt:      timestampStringPtr(entry.LastEventAt),
-			RecentEvents:     recentEventsFromTelemetry(entry.RecentEvents, entry.LastEventAt, entry.LastEvent, entry.LastMessage),
-			DiffAdded:        entry.DiffAdded,
-			DiffRemoved:      entry.DiffRemoved,
-			DiffFiles:        entry.DiffFiles,
-			DiffStatus:       diffStatus(entry.DiffStatus),
-			Tokens:           tokenCountsResponse(entry.Tokens),
+			IssueID:           entry.ID,
+			IssueIdentifier:   entry.Identifier,
+			ProjectID:         entry.ProjectID,
+			IssueURL:          optionalString(entry.URL),
+			IssueTitle:        optionalTrimmedString(entry.Title),
+			IssueDescription:  issueDescription(entry.Description),
+			PullRequestURL:    optionalString(pullRequestURL(entry.Issue)),
+			PullRequestNumber: pullRequestNumber(entry.Issue),
+			BudgetAlert:       false,
+			State:             entry.State,
+			WorkerHost:        optionalString(entry.WorkerHost),
+			WorkspacePath:     optionalString(entry.WorkspacePath),
+			SessionID:         optionalString(entry.SessionID),
+			TurnCount:         entry.TurnCount,
+			LastEvent:         optionalString(entry.LastEvent),
+			LastMessage:       optionalString(entry.LastMessage),
+			StartedAt:         timestampString(entry.StartedAt),
+			LastEventAt:       timestampStringPtr(entry.LastEventAt),
+			RecentEvents:      recentEventsFromTelemetry(entry.RecentEvents, entry.LastEventAt, entry.LastEvent, entry.LastMessage),
+			DiffAdded:         entry.DiffAdded,
+			DiffRemoved:       entry.DiffRemoved,
+			DiffFiles:         entry.DiffFiles,
+			DiffStatus:        diffStatus(entry.DiffStatus),
+			Tokens:            tokenCountsResponse(entry.Tokens),
 		})
 	}
 	return payload
@@ -423,18 +427,20 @@ func retryEntries(entries []telemetry.Queued) []retryAPIResponse {
 	payload := make([]retryAPIResponse, 0, len(entries))
 	for _, entry := range entries {
 		payload = append(payload, retryAPIResponse{
-			IssueID:          entry.ID,
-			IssueIdentifier:  entry.Identifier,
-			ProjectID:        entry.ProjectID,
-			IssueURL:         optionalString(entry.URL),
-			IssueTitle:       optionalTrimmedString(entry.Title),
-			IssueDescription: issueDescription(entry.Description),
-			BudgetAlert:      false,
-			Attempt:          entry.Attempt,
-			DueAt:            dueAtString(entry),
-			Error:            optionalString(entry.Error),
-			WorkerHost:       optionalString(entry.WorkerHost),
-			WorkspacePath:    optionalString(entry.WorkspacePath),
+			IssueID:           entry.ID,
+			IssueIdentifier:   entry.Identifier,
+			ProjectID:         entry.ProjectID,
+			IssueURL:          optionalString(entry.URL),
+			IssueTitle:        optionalTrimmedString(entry.Title),
+			IssueDescription:  issueDescription(entry.Description),
+			PullRequestURL:    optionalString(pullRequestURL(entry.Issue)),
+			PullRequestNumber: pullRequestNumber(entry.Issue),
+			BudgetAlert:       false,
+			Attempt:           entry.Attempt,
+			DueAt:             dueAtString(entry),
+			Error:             optionalString(entry.Error),
+			WorkerHost:        optionalString(entry.WorkerHost),
+			WorkspacePath:     optionalString(entry.WorkspacePath),
 		})
 	}
 	return payload
@@ -444,24 +450,26 @@ func blockedEntries(entries []telemetry.Blocked) []blockedAPIResponse {
 	payload := make([]blockedAPIResponse, 0, len(entries))
 	for _, entry := range entries {
 		payload = append(payload, blockedAPIResponse{
-			IssueID:          entry.ID,
-			IssueIdentifier:  entry.Identifier,
-			ProjectID:        entry.ProjectID,
-			IssueURL:         optionalString(entry.URL),
-			IssueTitle:       optionalTrimmedString(entry.Title),
-			IssueDescription: issueDescription(entry.Description),
-			BudgetAlert:      false,
-			State:            entry.State,
-			Error:            optionalString(entry.Error),
-			RecoveryReason:   optionalString(entry.RecoveryReason),
-			RecoveryTarget:   optionalString(entry.RecoveryTarget),
-			WorkerHost:       optionalString(entry.WorkerHost),
-			WorkspacePath:    optionalString(entry.WorkspacePath),
-			SessionID:        optionalString(entry.SessionID),
-			BlockedAt:        timestampStringPtr(entry.BlockedAt),
-			LastEvent:        optionalString(entry.LastEvent),
-			LastMessage:      optionalString(entry.LastMessage),
-			LastEventAt:      timestampStringPtr(entry.LastEventAt),
+			IssueID:           entry.ID,
+			IssueIdentifier:   entry.Identifier,
+			ProjectID:         entry.ProjectID,
+			IssueURL:          optionalString(entry.URL),
+			IssueTitle:        optionalTrimmedString(entry.Title),
+			IssueDescription:  issueDescription(entry.Description),
+			PullRequestURL:    optionalString(pullRequestURL(entry.Issue)),
+			PullRequestNumber: pullRequestNumber(entry.Issue),
+			BudgetAlert:       false,
+			State:             entry.State,
+			Error:             optionalString(entry.Error),
+			RecoveryReason:    optionalString(entry.RecoveryReason),
+			RecoveryTarget:    optionalString(entry.RecoveryTarget),
+			WorkerHost:        optionalString(entry.WorkerHost),
+			WorkspacePath:     optionalString(entry.WorkspacePath),
+			SessionID:         optionalString(entry.SessionID),
+			BlockedAt:         timestampStringPtr(entry.BlockedAt),
+			LastEvent:         optionalString(entry.LastEvent),
+			LastMessage:       optionalString(entry.LastMessage),
+			LastEventAt:       timestampStringPtr(entry.LastEventAt),
 		})
 	}
 	return payload
@@ -471,20 +479,22 @@ func recentSessionEntries(entries []telemetry.Completed) []recentSessionAPIRespo
 	payload := make([]recentSessionAPIResponse, 0, len(entries))
 	for _, entry := range entries {
 		payload = append(payload, recentSessionAPIResponse{
-			IssueID:        entry.ID,
-			Identifier:     entry.Identifier,
-			ProjectID:      entry.ProjectID,
-			IssueURL:       optionalString(entry.URL),
-			StartedAt:      timestampString(entry.StartedAt),
-			CompletedAt:    timestampString(entry.CompletedAt),
-			Turns:          entry.Turns,
-			InputTokens:    entry.Tokens.Input,
-			OutputTokens:   entry.Tokens.Output,
-			TotalTokens:    entry.Tokens.Total,
-			RuntimeSeconds: entry.RuntimeSeconds,
-			FinalState:     optionalString(entry.FinalState),
-			Model:          optionalString(entry.Model),
-			BudgetAlert:    false,
+			IssueID:           entry.ID,
+			Identifier:        entry.Identifier,
+			ProjectID:         entry.ProjectID,
+			IssueURL:          optionalString(entry.URL),
+			PullRequestURL:    optionalString(pullRequestURL(entry.Issue)),
+			PullRequestNumber: pullRequestNumber(entry.Issue),
+			StartedAt:         timestampString(entry.StartedAt),
+			CompletedAt:       timestampString(entry.CompletedAt),
+			Turns:             entry.Turns,
+			InputTokens:       entry.Tokens.Input,
+			OutputTokens:      entry.Tokens.Output,
+			TotalTokens:       entry.Tokens.Total,
+			RuntimeSeconds:    entry.RuntimeSeconds,
+			FinalState:        optionalString(entry.FinalState),
+			Model:             optionalString(entry.Model),
+			BudgetAlert:       false,
 		})
 	}
 	return payload
@@ -892,6 +902,71 @@ func diffStatus(value string) string {
 	return strings.TrimSpace(value)
 }
 
+func pullRequestNumber(issue telemetry.Issue) *int {
+	if issue.PullRequest == nil || issue.PullRequest.Number <= 0 {
+		return nil
+	}
+	number := issue.PullRequest.Number
+	return &number
+}
+
+func pullRequestURL(issue telemetry.Issue) string {
+	if issue.PullRequest == nil {
+		return ""
+	}
+	if prURL := strings.TrimSpace(issue.PullRequest.URL); prURL != "" {
+		return prURL
+	}
+	if issue.PullRequest.Number <= 0 {
+		return ""
+	}
+	baseURL := pullRequestRepositoryBaseURL(issue)
+	if baseURL == "" {
+		return ""
+	}
+	return baseURL + "/pull/" + strconv.Itoa(issue.PullRequest.Number)
+}
+
+func pullRequestRepositoryBaseURL(issue telemetry.Issue) string {
+	if issue.PullRequest != nil {
+		if baseURL := repositoryBaseURLFromRecordURL(issue.PullRequest.URL); baseURL != "" {
+			return baseURL
+		}
+	}
+	if baseURL := repositoryBaseURLFromRecordURL(issue.URL); baseURL != "" {
+		return baseURL
+	}
+	if repository := issueRepository(issue.Identifier); repository != "" {
+		return "https://github.com/" + repository
+	}
+	return ""
+}
+
+func repositoryBaseURLFromRecordURL(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) < 4 || (parts[2] != "issues" && parts[2] != "pull") {
+		return ""
+	}
+	owner := strings.TrimSpace(parts[0])
+	repo := strings.TrimSpace(parts[1])
+	if owner == "" || repo == "" {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/" + owner + "/" + repo
+}
+
+func issueRepository(identifier string) string {
+	repo, _, ok := strings.Cut(strings.TrimSpace(identifier), "#")
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(repo)
+}
+
 func optionalString(value string) *string {
 	if value == "" {
 		return nil
@@ -1011,64 +1086,70 @@ type countsAPIResponse struct {
 }
 
 type runningAPIResponse struct {
-	IssueID          string                   `json:"issue_id"`
-	IssueIdentifier  string                   `json:"issue_identifier"`
-	ProjectID        string                   `json:"project_id,omitempty"`
-	IssueURL         *string                  `json:"issue_url"`
-	IssueTitle       *string                  `json:"issue_title"`
-	IssueDescription *string                  `json:"issue_description"`
-	BudgetAlert      bool                     `json:"budget_alert?"`
-	State            string                   `json:"state"`
-	WorkerHost       *string                  `json:"worker_host"`
-	WorkspacePath    *string                  `json:"workspace_path"`
-	SessionID        *string                  `json:"session_id"`
-	TurnCount        int                      `json:"turn_count"`
-	LastEvent        *string                  `json:"last_event"`
-	LastMessage      *string                  `json:"last_message"`
-	StartedAt        *string                  `json:"started_at"`
-	LastEventAt      *string                  `json:"last_event_at"`
-	RecentEvents     []recentEventAPIResponse `json:"recent_events"`
-	DiffAdded        int                      `json:"diff_added"`
-	DiffRemoved      int                      `json:"diff_removed"`
-	DiffFiles        int                      `json:"diff_files"`
-	DiffStatus       string                   `json:"diff_status"`
-	Tokens           tokenCountsAPIResponse   `json:"tokens"`
+	IssueID           string                   `json:"issue_id"`
+	IssueIdentifier   string                   `json:"issue_identifier"`
+	ProjectID         string                   `json:"project_id,omitempty"`
+	IssueURL          *string                  `json:"issue_url"`
+	IssueTitle        *string                  `json:"issue_title"`
+	IssueDescription  *string                  `json:"issue_description"`
+	PullRequestURL    *string                  `json:"pull_request_url"`
+	PullRequestNumber *int                     `json:"pull_request_number"`
+	BudgetAlert       bool                     `json:"budget_alert?"`
+	State             string                   `json:"state"`
+	WorkerHost        *string                  `json:"worker_host"`
+	WorkspacePath     *string                  `json:"workspace_path"`
+	SessionID         *string                  `json:"session_id"`
+	TurnCount         int                      `json:"turn_count"`
+	LastEvent         *string                  `json:"last_event"`
+	LastMessage       *string                  `json:"last_message"`
+	StartedAt         *string                  `json:"started_at"`
+	LastEventAt       *string                  `json:"last_event_at"`
+	RecentEvents      []recentEventAPIResponse `json:"recent_events"`
+	DiffAdded         int                      `json:"diff_added"`
+	DiffRemoved       int                      `json:"diff_removed"`
+	DiffFiles         int                      `json:"diff_files"`
+	DiffStatus        string                   `json:"diff_status"`
+	Tokens            tokenCountsAPIResponse   `json:"tokens"`
 }
 
 type retryAPIResponse struct {
-	IssueID          string  `json:"issue_id"`
-	IssueIdentifier  string  `json:"issue_identifier"`
-	ProjectID        string  `json:"project_id,omitempty"`
-	IssueURL         *string `json:"issue_url"`
-	IssueTitle       *string `json:"issue_title"`
-	IssueDescription *string `json:"issue_description"`
-	BudgetAlert      bool    `json:"budget_alert?"`
-	Attempt          int     `json:"attempt"`
-	DueAt            *string `json:"due_at"`
-	Error            *string `json:"error"`
-	WorkerHost       *string `json:"worker_host"`
-	WorkspacePath    *string `json:"workspace_path"`
+	IssueID           string  `json:"issue_id"`
+	IssueIdentifier   string  `json:"issue_identifier"`
+	ProjectID         string  `json:"project_id,omitempty"`
+	IssueURL          *string `json:"issue_url"`
+	IssueTitle        *string `json:"issue_title"`
+	IssueDescription  *string `json:"issue_description"`
+	PullRequestURL    *string `json:"pull_request_url"`
+	PullRequestNumber *int    `json:"pull_request_number"`
+	BudgetAlert       bool    `json:"budget_alert?"`
+	Attempt           int     `json:"attempt"`
+	DueAt             *string `json:"due_at"`
+	Error             *string `json:"error"`
+	WorkerHost        *string `json:"worker_host"`
+	WorkspacePath     *string `json:"workspace_path"`
 }
 
 type blockedAPIResponse struct {
-	IssueID          string  `json:"issue_id"`
-	IssueIdentifier  string  `json:"issue_identifier"`
-	ProjectID        string  `json:"project_id,omitempty"`
-	IssueURL         *string `json:"issue_url"`
-	IssueTitle       *string `json:"issue_title"`
-	IssueDescription *string `json:"issue_description"`
-	BudgetAlert      bool    `json:"budget_alert?"`
-	State            string  `json:"state"`
-	Error            *string `json:"error"`
-	RecoveryReason   *string `json:"recovery_reason"`
-	RecoveryTarget   *string `json:"recovery_target"`
-	WorkerHost       *string `json:"worker_host"`
-	WorkspacePath    *string `json:"workspace_path"`
-	SessionID        *string `json:"session_id"`
-	BlockedAt        *string `json:"blocked_at"`
-	LastEvent        *string `json:"last_event"`
-	LastMessage      *string `json:"last_message"`
-	LastEventAt      *string `json:"last_event_at"`
+	IssueID           string  `json:"issue_id"`
+	IssueIdentifier   string  `json:"issue_identifier"`
+	ProjectID         string  `json:"project_id,omitempty"`
+	IssueURL          *string `json:"issue_url"`
+	IssueTitle        *string `json:"issue_title"`
+	IssueDescription  *string `json:"issue_description"`
+	PullRequestURL    *string `json:"pull_request_url"`
+	PullRequestNumber *int    `json:"pull_request_number"`
+	BudgetAlert       bool    `json:"budget_alert?"`
+	State             string  `json:"state"`
+	Error             *string `json:"error"`
+	RecoveryReason    *string `json:"recovery_reason"`
+	RecoveryTarget    *string `json:"recovery_target"`
+	WorkerHost        *string `json:"worker_host"`
+	WorkspacePath     *string `json:"workspace_path"`
+	SessionID         *string `json:"session_id"`
+	BlockedAt         *string `json:"blocked_at"`
+	LastEvent         *string `json:"last_event"`
+	LastMessage       *string `json:"last_message"`
+	LastEventAt       *string `json:"last_event_at"`
 }
 
 type statsAPIResponse struct {
@@ -1107,20 +1188,22 @@ type lifetimeTotalsResponse struct {
 }
 
 type recentSessionAPIResponse struct {
-	IssueID        string  `json:"issue_id"`
-	Identifier     string  `json:"identifier"`
-	ProjectID      string  `json:"project_id,omitempty"`
-	IssueURL       *string `json:"issue_url"`
-	StartedAt      *string `json:"started_at"`
-	CompletedAt    *string `json:"completed_at"`
-	Turns          int     `json:"turns"`
-	InputTokens    int64   `json:"input_tokens"`
-	OutputTokens   int64   `json:"output_tokens"`
-	TotalTokens    int64   `json:"total_tokens"`
-	RuntimeSeconds float64 `json:"runtime_seconds"`
-	FinalState     *string `json:"final_state"`
-	Model          *string `json:"model"`
-	BudgetAlert    bool    `json:"budget_alert?"`
+	IssueID           string  `json:"issue_id"`
+	Identifier        string  `json:"identifier"`
+	ProjectID         string  `json:"project_id,omitempty"`
+	IssueURL          *string `json:"issue_url"`
+	PullRequestURL    *string `json:"pull_request_url"`
+	PullRequestNumber *int    `json:"pull_request_number"`
+	StartedAt         *string `json:"started_at"`
+	CompletedAt       *string `json:"completed_at"`
+	Turns             int     `json:"turns"`
+	InputTokens       int64   `json:"input_tokens"`
+	OutputTokens      int64   `json:"output_tokens"`
+	TotalTokens       int64   `json:"total_tokens"`
+	RuntimeSeconds    float64 `json:"runtime_seconds"`
+	FinalState        *string `json:"final_state"`
+	Model             *string `json:"model"`
+	BudgetAlert       bool    `json:"budget_alert?"`
 }
 
 type budgetAPIResponse struct {

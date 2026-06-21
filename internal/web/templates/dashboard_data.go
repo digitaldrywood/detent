@@ -208,15 +208,18 @@ type sidebarProjectItem struct {
 }
 
 type agentTimelineRow struct {
-	Identifier   string
-	Title        string
-	State        string
-	StartedAt    string
-	EndedAt      string
-	Duration     string
-	StartPercent string
-	EndPercent   string
-	Segments     []agentTimelineSegment
+	Identifier        string
+	Title             string
+	State             string
+	IssueURL          string
+	PullRequestURL    string
+	PullRequestNumber int
+	StartedAt         string
+	EndedAt           string
+	Duration          string
+	StartPercent      string
+	EndPercent        string
+	Segments          []agentTimelineSegment
 }
 
 type agentTimelineSegment struct {
@@ -2306,6 +2309,96 @@ func issueRepository(identifier string) string {
 	return strings.TrimSpace(repo)
 }
 
+func issueURL(issue telemetry.Issue) string {
+	return strings.TrimSpace(issue.URL)
+}
+
+func issueOpenLabel(issue telemetry.Issue) string {
+	return "Open issue " + issueIdentifier(issue)
+}
+
+func pullRequestNumber(issue telemetry.Issue) int {
+	if issue.PullRequest == nil || issue.PullRequest.Number <= 0 {
+		return 0
+	}
+	return issue.PullRequest.Number
+}
+
+func pullRequestURL(issue telemetry.Issue) string {
+	if issue.PullRequest == nil {
+		return ""
+	}
+	if prURL := strings.TrimSpace(issue.PullRequest.URL); prURL != "" {
+		return prURL
+	}
+	if issue.PullRequest.Number <= 0 {
+		return ""
+	}
+	baseURL := pullRequestRepositoryBaseURL(issue)
+	if baseURL == "" {
+		return ""
+	}
+	return baseURL + "/pull/" + strconv.Itoa(issue.PullRequest.Number)
+}
+
+func pullRequestOpenLabel(issue telemetry.Issue) string {
+	return pullRequestOpenLabelForNumber(pullRequestNumber(issue))
+}
+
+func pullRequestOpenLabelForNumber(number int) string {
+	if number > 0 {
+		return "Open PR #" + strconv.Itoa(number)
+	}
+	return "Open linked PR"
+}
+
+func issueActionClass(compact bool) string {
+	base := "issue-external inline-flex shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+	if compact {
+		return base + " h-8 w-8"
+	}
+	return base + " h-10 w-10"
+}
+
+func issueActionIconClass(compact bool) string {
+	if compact {
+		return "size-3.5"
+	}
+	return "size-4"
+}
+
+func pullRequestRepositoryBaseURL(issue telemetry.Issue) string {
+	if issue.PullRequest != nil {
+		if baseURL := repositoryBaseURLFromRecordURL(issue.PullRequest.URL); baseURL != "" {
+			return baseURL
+		}
+	}
+	if baseURL := repositoryBaseURLFromRecordURL(issue.URL); baseURL != "" {
+		return baseURL
+	}
+	if repository := pullRequestRepository(issue); repository != "" {
+		return "https://github.com/" + repository
+	}
+	return ""
+}
+
+func repositoryBaseURLFromRecordURL(rawURL string) string {
+	parsed, err := url.Parse(strings.TrimSpace(rawURL))
+	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
+		return ""
+	}
+	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(parts) < 4 || (parts[2] != "issues" && parts[2] != "pull") {
+		return ""
+	}
+	owner := strings.TrimSpace(parts[0])
+	repo := strings.TrimSpace(parts[1])
+	if owner == "" || repo == "" {
+		return ""
+	}
+	return parsed.Scheme + "://" + parsed.Host + "/" + owner + "/" + repo
+}
+
 func pullRequestRepository(issue telemetry.Issue) string {
 	if issue.PullRequest != nil {
 		if repository := repositoryFromPullRequestURL(issue.PullRequest.URL); repository != "" {
@@ -2965,14 +3058,17 @@ func agentTimelineRows(snapshot telemetry.Snapshot) []agentTimelineRow {
 		segmentTitle := segmentLabel + ": " + state + " from " + timeLabel(entry.start) + " to " + endLabel
 
 		rows = append(rows, agentTimelineRow{
-			Identifier:   identifier,
-			Title:        title,
-			State:        state,
-			StartedAt:    timeLabel(entry.start),
-			EndedAt:      endLabel,
-			Duration:     formatDuration(entry.end.Sub(entry.start).Seconds()),
-			StartPercent: percentLabel(startPercent),
-			EndPercent:   percentLabel(endPercent),
+			Identifier:        identifier,
+			Title:             title,
+			State:             state,
+			IssueURL:          issueURL(entry.issue),
+			PullRequestURL:    pullRequestURL(entry.issue),
+			PullRequestNumber: pullRequestNumber(entry.issue),
+			StartedAt:         timeLabel(entry.start),
+			EndedAt:           endLabel,
+			Duration:          formatDuration(entry.end.Sub(entry.start).Seconds()),
+			StartPercent:      percentLabel(startPercent),
+			EndPercent:        percentLabel(endPercent),
 			Segments: []agentTimelineSegment{
 				{
 					Label: state,

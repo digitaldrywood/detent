@@ -67,6 +67,39 @@ test("fleet Kanban lanes stay fixed width across multiple projects", async ({ pa
   });
 });
 
+test("project runs issue and PR actions stay inside activity rows", async ({ page }, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "runs-tracker-refresh-gap",
+    viewport: desktopViewport,
+  });
+
+  const activity = page.locator('section[aria-label="Agent activity timeline"]');
+  await expect(activity).toBeVisible();
+  await expect(activity.locator('a[aria-label="Open issue digitaldrywood/detent-core#5294"]:visible')).toHaveCount(1);
+  await expect(activity.locator('a[aria-label="Open PR #5294"]:visible')).toHaveCount(1);
+  await assertAgentActivityActionsFit(page);
+  await assertNoDocumentOverflow(page);
+  await captureClipAndAttach(page, 'section[aria-label="Agent activity timeline"]', "project-runs-actions-desktop.png", testInfo, {
+    maxHeight: 430,
+  });
+
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "runs-tracker-refresh-gap",
+    viewport: narrowViewport,
+  });
+
+  await expect(activity).toBeVisible();
+  await expect(activity.locator('a[aria-label="Open issue digitaldrywood/detent-core#5294"]:visible')).toHaveCount(1);
+  await expect(activity.locator('a[aria-label="Open PR #5294"]:visible')).toHaveCount(1);
+  await assertAgentActivityActionsFit(page);
+  await assertElementFitsViewport(page, 'section[aria-label="Agent activity timeline"]');
+  await captureClipAndAttach(page, 'section[aria-label="Agent activity timeline"]', "project-runs-actions-narrow.png", testInfo, {
+    maxHeight: 520,
+  });
+});
+
 test("project Kanban keeps action controls inside compact cards", async ({ page }, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
@@ -400,6 +433,34 @@ async function assertProjectKanbanLayout(page, boardSelector, options) {
     expect(lane.width, `${lane.title} lane width`).toBeLessThanOrEqual(289);
   }
   expect(metrics.visibleLeaks).toEqual([]);
+}
+
+async function assertAgentActivityActionsFit(page) {
+  const metrics = await page.locator('section[aria-label="Agent activity timeline"]').evaluate((section) => {
+    const visibleActions = [];
+    const leaks = [];
+    for (const action of section.querySelectorAll('a[aria-label^="Open "]')) {
+      const style = window.getComputedStyle(action);
+      const rect = action.getBoundingClientRect();
+      if (style.display === "none" || style.visibility === "hidden" || rect.width === 0 || rect.height === 0) {
+        continue;
+      }
+      visibleActions.push(action.getAttribute("aria-label") || "");
+      const container = action.closest(".agent-activity-table-row, article");
+      const containerRect = container?.getBoundingClientRect();
+      if (!containerRect) {
+        leaks.push(`${action.getAttribute("aria-label")} has no row container`);
+        continue;
+      }
+      if (rect.left < containerRect.left - 1 || rect.right > containerRect.right + 1) {
+        leaks.push(`${action.getAttribute("aria-label")} escapes row bounds`);
+      }
+    }
+    return { visibleActions, leaks };
+  });
+
+  expect(metrics.visibleActions.length).toBeGreaterThanOrEqual(2);
+  expect(metrics.leaks).toEqual([]);
 }
 
 async function dragKanbanCardToLane(page, issueID, targetState) {
