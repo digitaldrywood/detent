@@ -314,6 +314,13 @@ func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID strin
 			issue.State = state
 		}
 	})
+	states := kanbanIssueStateIndex(snapshot)
+	applySnapshotKanbanIssues(&snapshot, func(issue *telemetry.Issue) {
+		if issue == nil || len(issue.BlockedBy) == 0 || !sameKanbanProject(*issue, projectID, snapshot.Project.ID) {
+			return
+		}
+		issue.BlockedBy = kanbanBlockedRefsWithCurrentStates(issue.BlockedBy, states)
+	})
 	return snapshot
 }
 
@@ -349,6 +356,47 @@ func applySnapshotKanbanIssues(snapshot *telemetry.Snapshot, apply func(*telemet
 	for i := range snapshot.Completed {
 		apply(&snapshot.Completed[i].Issue)
 	}
+}
+
+func kanbanIssueStateIndex(snapshot telemetry.Snapshot) map[string]string {
+	states := map[string]string{}
+	for _, issue := range snapshotKanbanIssues(snapshot) {
+		state := strings.TrimSpace(issue.State)
+		if state == "" {
+			continue
+		}
+		for _, key := range kanbanIssueStateKeys(issue.ID, issue.Identifier) {
+			states[key] = state
+		}
+	}
+	return states
+}
+
+func kanbanBlockedRefsWithCurrentStates(refs []telemetry.BlockedRef, states map[string]string) []telemetry.BlockedRef {
+	if len(refs) == 0 {
+		return refs
+	}
+	out := append([]telemetry.BlockedRef(nil), refs...)
+	for i := range out {
+		for _, key := range kanbanIssueStateKeys(out[i].ID, out[i].Identifier) {
+			if state := strings.TrimSpace(states[key]); state != "" {
+				out[i].State = state
+				break
+			}
+		}
+	}
+	return out
+}
+
+func kanbanIssueStateKeys(id string, identifier string) []string {
+	keys := []string{}
+	if id = strings.TrimSpace(id); id != "" {
+		keys = append(keys, "id:"+id)
+	}
+	if identifier = strings.ToLower(strings.TrimSpace(identifier)); identifier != "" {
+		keys = append(keys, "identifier:"+identifier)
+	}
+	return keys
 }
 
 func (s *Server) apiKanbanCommentDialog(c echo.Context) error {
@@ -678,12 +726,50 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 	}
 	states := kanbanStateNames(target.workflow, snapshot)
 	return templates.KanbanData{
-		Mode:               mode,
-		ProjectID:          strings.TrimSpace(projectID),
-		States:             states,
-		TerminalStates:     target.workflow.Tracker.TerminalStates,
-		AllowedTransitions: kanbanAllowedTransitions(target.workflow, states),
+		Mode:                    mode,
+		ProjectID:               strings.TrimSpace(projectID),
+		States:                  states,
+		TerminalStates:          target.workflow.Tracker.TerminalStates,
+		TerminalStatesByProject: s.kanbanTerminalStatesByProject(projectID),
+		AllowedTransitions:      kanbanAllowedTransitions(target.workflow, states),
 	}
+}
+
+func (s *Server) kanbanTerminalStatesByProject(projectID string) map[string][]string {
+	if s.registry == nil {
+		return nil
+	}
+
+	out := map[string][]string{}
+	add := func(id string, states []string) {
+		id = strings.TrimSpace(id)
+		if id == "" || len(states) == 0 {
+			return
+		}
+		out[id] = append([]string(nil), states...)
+	}
+
+	projectID = strings.TrimSpace(projectID)
+	if projectID != "" {
+		if trackedProject, ok := s.registry.Get(project.ID(projectID)); ok {
+			add(projectID, trackedProject.Workflow().Config.Tracker.TerminalStates)
+		}
+		if len(out) == 0 {
+			return nil
+		}
+		return out
+	}
+
+	for _, trackedProject := range s.registry.List() {
+		if trackedProject == nil {
+			continue
+		}
+		add(string(trackedProject.ID()), trackedProject.Workflow().Config.Tracker.TerminalStates)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
 }
 
 func (s *Server) kanbanCardFresh(lockKey string, projectID string, issueID string, currentState string) (bool, string, string) {

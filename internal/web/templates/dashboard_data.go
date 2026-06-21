@@ -69,13 +69,14 @@ type Budget = telemetry.Budget
 type RateLimits = telemetry.RateLimits
 
 type KanbanData struct {
-	Mode               string
-	ProjectID          string
-	States             []string
-	TerminalStates     []string
-	AllowedTransitions map[string][]string
-	Feedback           string
-	FeedbackKind       string
+	Mode                    string
+	ProjectID               string
+	States                  []string
+	TerminalStates          []string
+	TerminalStatesByProject map[string][]string
+	AllowedTransitions      map[string][]string
+	Feedback                string
+	FeedbackKind            string
 }
 
 type KanbanMoveDialogData struct {
@@ -306,6 +307,7 @@ type projectKanbanCard struct {
 	Labels           []string
 	Assignees        []string
 	Blockers         []string
+	ClearedBlockers  []string
 	HasPullRequest   bool
 	IssueID          string
 	PRNumber         int
@@ -1924,6 +1926,7 @@ func projectKanbanControlID(prefix string, card projectKanbanCard) string {
 }
 
 func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state string, stageAt time.Time, now time.Time) projectKanbanCard {
+	blockers, clearedBlockers := projectKanbanBlockerLabels(issue.BlockedBy, projectKanbanTerminalStateSetForIssue(data, issue))
 	card := projectKanbanCard{
 		IssueNumber:      projectKanbanIssueNumber(issue),
 		IssueID:          strings.TrimSpace(issue.ID),
@@ -1941,7 +1944,8 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		StageAt:          stageAt.UTC(),
 		Labels:           uniqueStrings(issue.Labels),
 		Assignees:        uniqueStrings(issue.Assignees),
-		Blockers:         projectKanbanBlockerLabels(issue.BlockedBy),
+		Blockers:         blockers,
+		ClearedBlockers:  clearedBlockers,
 		HasPullRequest:   issue.PullRequest != nil,
 		Movable:          strings.TrimSpace(issue.ID) != "",
 	}
@@ -2047,8 +2051,9 @@ func projectKanbanPullRequestLabel(issue telemetry.Issue) string {
 	return "Linked PR"
 }
 
-func projectKanbanBlockerLabels(refs []telemetry.BlockedRef) []string {
-	labels := make([]string, 0, len(refs))
+func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[string]struct{}) ([]string, []string) {
+	active := make([]string, 0, len(refs))
+	cleared := make([]string, 0, len(refs))
 	for _, ref := range refs {
 		label := strings.TrimSpace(ref.Identifier)
 		if label == "" {
@@ -2060,9 +2065,38 @@ func projectKanbanBlockerLabels(refs []telemetry.BlockedRef) []string {
 		if state := strings.TrimSpace(ref.State); state != "" {
 			label += " " + state
 		}
-		labels = append(labels, label)
+		if projectKanbanBlockedRefCleared(ref, terminalStates) {
+			cleared = append(cleared, label)
+			continue
+		}
+		active = append(active, label)
 	}
-	return uniqueStrings(labels)
+	return uniqueStrings(active), uniqueStrings(cleared)
+}
+
+func projectKanbanBlockedRefCleared(ref telemetry.BlockedRef, terminalStates map[string]struct{}) bool {
+	return projectKanbanTerminalState(ref.State, terminalStates)
+}
+
+func projectKanbanTerminalStateSetForIssue(data DashboardData, issue telemetry.Issue) map[string]struct{} {
+	states := data.Kanban.TerminalStates
+	projectID := strings.TrimSpace(issue.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(data.Snapshot.Project.ID)
+	}
+	if projectID != "" {
+		if projectStates, ok := data.Kanban.TerminalStatesByProject[projectID]; ok && len(projectStates) > 0 {
+			states = projectStates
+		} else {
+			for configuredProjectID, projectStates := range data.Kanban.TerminalStatesByProject {
+				if strings.EqualFold(strings.TrimSpace(configuredProjectID), projectID) && len(projectStates) > 0 {
+					states = projectStates
+					break
+				}
+			}
+		}
+	}
+	return projectKanbanTerminalStateSet(states)
 }
 
 func projectKanbanLaneClass(lane projectKanbanLane) string {

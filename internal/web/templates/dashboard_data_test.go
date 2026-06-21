@@ -910,7 +910,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 		{Lane: "Todo", IssueNumber: "#11", Title: "Todo issue", TimeInStage: "6m 0s", Metadata: "No linked PR"},
 		{Lane: "In Progress", IssueNumber: "#13", Title: "Running issue", TimeInStage: "5m 0s", Labels: "bug", Assignees: "bob", Metadata: "No linked PR"},
 		{Lane: "Blocked", IssueNumber: "#14", Title: "Blocked issue", TimeInStage: "4m 0s", Blockers: "digitaldrywood/detent#401 In Progress", Metadata: "No linked PR"},
-		{Lane: "Human Review", IssueNumber: "#12", Title: "Review lane PR", URL: "https://github.com/digitaldrywood/detent/issues/12", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", Labels: "enhancement, stage:s6", Assignees: "alice", Blockers: "digitaldrywood/detent#10 Done", Metadata: "PR #142"},
+		{Lane: "Human Review", IssueNumber: "#12", Title: "Review lane PR", URL: "https://github.com/digitaldrywood/detent/issues/12", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", Labels: "enhancement, stage:s6", Assignees: "alice", ClearedBlockers: "digitaldrywood/detent#10 Done", Metadata: "PR #142"},
 		{Lane: "Done", IssueNumber: "#15", Title: "Done lane PR", URL: "https://github.com/digitaldrywood/detent/issues/15", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #145"},
 	}
 	if len(got) != len(want) {
@@ -1012,6 +1012,105 @@ func TestProjectKanbanCardForIssueCopiesDescriptionPreview(t *testing.T) {
 
 	if card.Description != "Titles need their own line. Hover should show enough issue context for triage." {
 		t.Fatalf("Description = %q", card.Description)
+	}
+}
+
+func TestProjectKanbanCardForIssueOnlyKeepsActiveBlockers(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 20, 17, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name         string
+		state        string
+		blockedBy    []telemetry.BlockedRef
+		wantBlockers []string
+		wantCleared  []string
+	}{
+		{
+			name:  "terminal dependency is cleared",
+			state: "Merging",
+			blockedBy: []telemetry.BlockedRef{
+				{Identifier: "digitaldrywood/detent#429", State: "Done"},
+			},
+			wantCleared: []string{"digitaldrywood/detent#429 Done"},
+		},
+		{
+			name:  "non-terminal dependency stays active",
+			state: "Todo",
+			blockedBy: []telemetry.BlockedRef{
+				{Identifier: "digitaldrywood/detent#430", State: "In Progress"},
+			},
+			wantBlockers: []string{"digitaldrywood/detent#430 In Progress"},
+		},
+		{
+			name:  "unresolved dependency stays active",
+			state: "Blocked",
+			blockedBy: []telemetry.BlockedRef{
+				{Identifier: "digitaldrywood/detent#431"},
+			},
+			wantBlockers: []string{"digitaldrywood/detent#431"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			issue := telemetry.Issue{
+				ID:         "issue",
+				Identifier: "digitaldrywood/detent#594",
+				Title:      "Fix blocker rendering",
+				State:      tt.state,
+				BlockedBy:  tt.blockedBy,
+			}
+			card := projectKanbanCardForIssue(DashboardData{}, issue, tt.state, now.Add(-time.Minute), now)
+			if len(card.Blockers) != len(tt.wantBlockers) {
+				t.Fatalf("Blockers len = %d, want %d; got %#v", len(card.Blockers), len(tt.wantBlockers), card.Blockers)
+			}
+			for i := range tt.wantBlockers {
+				if card.Blockers[i] != tt.wantBlockers[i] {
+					t.Fatalf("Blockers[%d] = %q, want %q; got %#v", i, card.Blockers[i], tt.wantBlockers[i], card.Blockers)
+				}
+			}
+			if len(card.ClearedBlockers) != len(tt.wantCleared) {
+				t.Fatalf("ClearedBlockers len = %d, want %d; got %#v", len(card.ClearedBlockers), len(tt.wantCleared), card.ClearedBlockers)
+			}
+			for i := range tt.wantCleared {
+				if card.ClearedBlockers[i] != tt.wantCleared[i] {
+					t.Fatalf("ClearedBlockers[%d] = %q, want %q; got %#v", i, card.ClearedBlockers[i], tt.wantCleared[i], card.ClearedBlockers)
+				}
+			}
+		})
+	}
+}
+
+func TestProjectKanbanCardForIssueUsesProjectTerminalStates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 20, 19, 0, 0, 0, time.UTC)
+	data := DashboardData{
+		Kanban: KanbanData{
+			TerminalStates: []string{"Done"},
+			TerminalStatesByProject: map[string][]string{
+				"custom": {"Released"},
+			},
+		},
+	}
+
+	card := projectKanbanCardForIssue(data, telemetry.Issue{
+		ID:         "issue",
+		Identifier: "digitaldrywood/custom#594",
+		ProjectID:  "custom",
+		Title:      "Custom terminal dependency",
+		State:      "Merging",
+		BlockedBy: []telemetry.BlockedRef{
+			{Identifier: "digitaldrywood/custom#429", State: "Released"},
+		},
+	}, "Merging", now.Add(-time.Minute), now)
+
+	if len(card.Blockers) != 0 {
+		t.Fatalf("Blockers = %#v, want none for project terminal state", card.Blockers)
+	}
+	if got, want := strings.Join(card.ClearedBlockers, ", "), "digitaldrywood/custom#429 Released"; got != want {
+		t.Fatalf("ClearedBlockers = %q, want %q", got, want)
 	}
 }
 
@@ -1694,6 +1793,7 @@ type kanbanCardSnapshot struct {
 	Labels           string
 	Assignees        string
 	Blockers         string
+	ClearedBlockers  string
 	Metadata         string
 }
 
@@ -1713,6 +1813,7 @@ func collectKanbanCards(lanes []projectKanbanLane) []kanbanCardSnapshot {
 				Labels:           strings.Join(card.Labels, ", "),
 				Assignees:        strings.Join(card.Assignees, ", "),
 				Blockers:         strings.Join(card.Blockers, ", "),
+				ClearedBlockers:  strings.Join(card.ClearedBlockers, ", "),
 				Metadata:         card.PullRequestLabel,
 			})
 		}
