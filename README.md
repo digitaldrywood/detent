@@ -19,7 +19,15 @@ keyboard.
 You are onboarding Detent with me. Treat this as an AI-driven project, not a
 manual README skim.
 
-Start by inspecting this repository. Read README.md, CLAUDE.md or AGENTS.md if
+Treat https://github.com/digitaldrywood/detent as the canonical Detent source
+repository. Do not assume the current working directory is the Detent source
+checkout or the target repository being onboarded. If a local Detent checkout is
+present, inspect it; if not, inspect the repository on GitHub or clone it before
+relying on local files. Keep the Detent source repository separate from any
+target repository being onboarded; Detent may be a reference/source repository,
+not the target.
+
+From the Detent source repository, read README.md, CLAUDE.md or AGENTS.md if
 present, docs/ONBOARDING.md, CONTRIBUTING.md, build and language manifests,
 .github/workflows, install scripts, and any existing WORKFLOW.md or global.yaml
 examples. Detent can drive any project with a clear workflow and validation
@@ -28,16 +36,19 @@ instead of starting from one language. Do not inspect a target repository's
 ProjectV2 boards, labels, issues, WORKFLOW.md, validation commands, or runtime
 docs until the identity gate below is explicit and confirmed.
 
-Use docs/ONBOARDING.md as the interrogation guide. First determine which path
-applies: a new Detent install, an existing Detent install that must be found and
-verified, or a new repository/project being added to an existing Detent install.
-Distinguish reference repositories from the target repository being onboarded.
-Restate the customer/workstream id, Detent project id, target owner/name,
-absolute local source root, reference repositories, onboarding mode, and
-status-source options before repository-specific discovery. Record those
-identity answers in `answers.env`, set `IDENTITY_CONFIRMED=true` only after I
-confirm the restatement, then run
+Use the Detent source repository's docs/ONBOARDING.md as the interrogation
+guide. First determine which path applies: a new Detent install, an existing
+Detent install that must be found and verified, or a new repository/project
+being added to an existing Detent install. Distinguish reference repositories from the target repository being onboarded. Restate the customer/workstream id,
+Detent project id, target owner/name, absolute local source root, reference
+repositories, onboarding mode, and status-source options before
+repository-specific discovery. Record those identity answers in `answers.env`,
+set `IDENTITY_CONFIRMED=true` only after I confirm the restatement, then run
 `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`.
+If the `detent` binary is not installed yet, follow the Detent source README's
+Install path or Bootstrap On A New Machine steps 1-3 first, verify the binary
+with `detent version`, and defer `detent onboarding validate-answers` until the
+binary is available.
 
 For an existing install, find and verify the detent binary, config path, running
 service or dashboard, registered projects, GitHub auth, Codex auth, and doctor
