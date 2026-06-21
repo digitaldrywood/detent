@@ -707,6 +707,9 @@ func (c *Config) validateTracker(problems *[]string) {
 	validateStateMap("tracker.state_map", c.Tracker.StateMap, problems)
 	validatePriorityMap("tracker.priority_map", c.Tracker.PriorityMap, problems)
 	*problems = append(*problems, c.Tracker.DependencyAutoUnblock.Validate("tracker.dependency_auto_unblock")...)
+	if c.Tracker.DependencyAutoUnblock.Enabled && !stateListContains(c.Tracker.ActiveStates, "Rework") {
+		*problems = append(*problems, "tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true")
+	}
 	validatePositive("tracker.http_max_idle_conns", c.Tracker.HTTPMaxIdleConns, problems)
 	validatePositive("tracker.http_max_idle_conns_per_host", c.Tracker.HTTPMaxIdleConnsPerHost, problems)
 	validatePositive("tracker.http_idle_conn_timeout_ms", c.Tracker.HTTPIdleConnTimeoutMS, problems)
@@ -1289,6 +1292,16 @@ func normalizeStateList(states []string) []string {
 
 func normalizeIssueState(state string) string {
 	return strings.ToLower(strings.TrimSpace(state))
+}
+
+func stateListContains(states []string, want string) bool {
+	want = normalizeIssueState(want)
+	for _, state := range states {
+		if normalizeIssueState(state) == want {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeLabel(label string) string {

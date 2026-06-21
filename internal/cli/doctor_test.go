@@ -675,7 +675,27 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 			if tt.cfg.Tracker.DependencyAutoUnblock.Enabled && !stringSliceContains(tt.connector.verifyStates, "Todo") {
 				t.Fatalf("VerifyStatusOptions states = %#v, want Todo", tt.connector.verifyStates)
 			}
+			if tt.cfg.Tracker.DependencyAutoUnblock.Enabled && !stringSliceContains(tt.connector.verifyStates, "Rework") {
+				t.Fatalf("VerifyStatusOptions states = %#v, want Rework", tt.connector.verifyStates)
+			}
 		})
+	}
+}
+
+func TestCheckDoctorDependencyAutoUnblockRequiresActiveRework(t *testing.T) {
+	t.Parallel()
+
+	cfg := validDoctorDependencyWorkflow(true)
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+
+	got := checkDoctorDependencyAutoUnblock(context.Background(), "alpha", cfg, doctorDeps{})
+	if got.Status != doctorFail {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorFail, got)
+	}
+	for _, want := range []string{"tracker.active_states", "Rework"} {
+		if !strings.Contains(got.Detail, want) && !strings.Contains(got.Hint, want) {
+			t.Fatalf("check missing %q:\nDetail: %s\nHint: %s", want, got.Detail, got.Hint)
+		}
 	}
 }
 
@@ -2140,6 +2160,7 @@ func validDoctorDependencyWorkflow(enabled bool) workflowconfig.Config {
 	cfg.Tracker.DependencyAutoUnblock.SourceStates = []string{"Blocked"}
 	cfg.Tracker.DependencyAutoUnblock.TargetState = "Todo"
 	cfg.Tracker.DependencyAutoUnblock.Readiness = workflowconfig.DependencyReadinessTerminalOrMerged
+	cfg.Tracker.ActiveStates = []string{"Todo", "In Progress", "Rework"}
 	return cfg
 }
 
