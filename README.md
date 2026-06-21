@@ -46,8 +46,8 @@ repository-specific discovery. Record those identity answers in `answers.env`,
 set `IDENTITY_CONFIRMED=true` only after I confirm the restatement, then run
 `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`.
 If the `detent` binary is not installed yet, follow the Detent source README's
-Bootstrap On A New Machine or Install path first, verify the binary with
-`detent version`, and defer `detent onboarding validate-answers` until the
+Install path or Bootstrap On A New Machine steps 1-3 first, verify the binary
+with `detent version`, and defer `detent onboarding validate-answers` until the
 binary is available.
 
 For an existing install, find and verify the detent binary, config path, running
