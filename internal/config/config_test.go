@@ -807,6 +807,46 @@ Prompt
 	}
 }
 
+func TestParseWorkflowGateValidatorConfig(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+gate:
+  kind: command
+  validator:
+    enabled: true
+    model: gpt-5-validator
+    min_score: 0.85
+    block_on:
+      - P1
+      - p2
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	validator := workflow.Config.Gate.Validator
+	if !validator.Enabled {
+		t.Fatal("Gate.Validator.Enabled = false, want true")
+	}
+	if validator.Model != "gpt-5-validator" {
+		t.Fatalf("Gate.Validator.Model = %q, want gpt-5-validator", validator.Model)
+	}
+	if validator.MinScore != 0.85 {
+		t.Fatalf("Gate.Validator.MinScore = %v, want 0.85", validator.MinScore)
+	}
+	if got := validator.BlockOn; !reflect.DeepEqual(got, []string{"p1", "p2"}) {
+		t.Fatalf("Gate.Validator.BlockOn = %#v, want p1/p2", got)
+	}
+}
+
 func TestParseWorkflowAgentRoutesCanUseLegacyCodexBackend(t *testing.T) {
 	t.Parallel()
 
@@ -1219,7 +1259,7 @@ Prompt
 				"agents.backends.command is required",
 				"agents.routes.backend must reference a configured backend",
 				"agents.routes.selector.priority_in values must be integers 1 through 4",
-				"agents.routes must not define multiple default routes",
+				"agents.routes must not define multiple default routes for the same role",
 			},
 		},
 		{
@@ -1279,6 +1319,24 @@ Prompt
 			want: []string{
 				"gate.kind must be one of command, human_review",
 				"gate.ci_failure_action must be one of skip, rework",
+			},
+		},
+		{
+			name: "invalid validator config",
+			raw: `---
+tracker:
+  kind: memory
+gate:
+  validator:
+    enabled: true
+    min_score: 1.2
+    block_on:
+      - ""
+---
+Prompt
+`,
+			want: []string{
+				"gate.validator.min_score must be greater than 0 and less than or equal to 1",
 			},
 		},
 	}

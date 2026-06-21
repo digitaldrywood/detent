@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -39,6 +40,16 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 
 		summary := AutoPromoteSummaryFromIssue(issue)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
+		if decision.Reason == AutoPromoteReasonValidatorMissing {
+			validation, ok := o.runValidatorStage(ctx, issue, now)
+			if !ok {
+				o.logAutoPromoteDecision(issue, decision, "")
+				continue
+			}
+			summary.Validator = validation
+			o.commentValidatorResult(ctx, issue, validation)
+			decision = EvaluateAutoPromote(issue, summary, cfg, now)
+		}
 		targetState := autoPromoteTargetState(decision.Action)
 		if targetState == "" {
 			o.logAutoPromoteDecision(issue, decision, "")
@@ -53,6 +64,108 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func (o *Orchestrator) runValidatorStage(ctx context.Context, issue connector.Issue, now time.Time) (gate.ValidatorResult, bool) {
+	if o.validator == nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"validator stage skipped",
+				"issue_id", strings.TrimSpace(issue.ID),
+				"identifier", issue.Identifier,
+				"reason", "validator runner unavailable",
+			)
+		}
+		return gate.ValidatorResult{}, false
+	}
+
+	result, err := o.validator.Validate(ctx, ValidatorRequest{
+		Issue:           issue,
+		StartedAt:       now.UTC(),
+		SelectorContext: o.cfg.SelectorContext,
+	})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"validator stage failed",
+				"issue_id", strings.TrimSpace(issue.ID),
+				"identifier", issue.Identifier,
+				"error", err,
+			)
+		}
+		return gate.ValidatorResult{}, false
+	}
+	return result, true
+}
+
+func (o *Orchestrator) commentValidatorResult(ctx context.Context, issue connector.Issue, result gate.ValidatorResult) {
+	commenter, ok := o.connector.(connector.PullRequestCommenter)
+	if !ok {
+		return
+	}
+	repository := pullRequestRepository(issue)
+	number := pullRequestNumber(issue)
+	if repository == "" || number <= 0 {
+		return
+	}
+	if err := commenter.CreatePullRequestComment(ctx, repository, number, validatorResultComment(result)); err != nil && o.logger != nil {
+		o.logger.Warn(
+			"validator result comment failed",
+			"issue_id", strings.TrimSpace(issue.ID),
+			"identifier", issue.Identifier,
+			"pull_request", number,
+			"error", err,
+		)
+	}
+}
+
+func validatorResultComment(result gate.ValidatorResult) string {
+	var b strings.Builder
+	b.WriteString("Validator verdict: ")
+	b.WriteString(strings.TrimSpace(result.Verdict))
+	if result.Score > 0 {
+		b.WriteString("\n- score: ")
+		b.WriteString(fmt.Sprintf("%.2f", result.Score))
+	}
+	if strings.TrimSpace(result.Summary) != "" {
+		b.WriteString("\n- summary: ")
+		b.WriteString(strings.TrimSpace(result.Summary))
+	}
+	if len(result.Findings) > 0 {
+		b.WriteString("\n\nFindings:")
+		for _, finding := range result.Findings {
+			b.WriteString("\n- ")
+			b.WriteString(autoPromoteFindingText(AutoPromoteFinding{
+				Body: finding.Body,
+				URL:  finding.URL,
+				Path: finding.Path,
+				Line: finding.Line,
+			}))
+		}
+	}
+	return b.String()
+}
+
+func pullRequestRepository(issue connector.Issue) string {
+	if strings.TrimSpace(issue.PRRepository) != "" {
+		return strings.TrimSpace(issue.PRRepository)
+	}
+	identifier := strings.TrimSpace(issue.Identifier)
+	repository, _, ok := strings.Cut(identifier, "#")
+	if ok {
+		return strings.TrimSpace(repository)
+	}
+	return ""
+}
+
+func pullRequestNumber(issue connector.Issue) int {
+	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
+		return issue.PullRequest.Number
+	}
+	if issue.PRNumber != nil {
+		return *issue.PRNumber
+	}
+	return 0
 }
 
 func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {

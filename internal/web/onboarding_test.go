@@ -182,6 +182,7 @@ func TestOnboardingWriteWorkflow(t *testing.T) {
 		"source_root: " + sourceRoot,
 		"codex:\n  command: codex app-server",
 		"gate:\n  kind: command\n  run: make check\n  ci_failure_action: skip",
+		"validator:\n    enabled: false\n    model: \"\"\n    min_score: 0.8\n    block_on:\n      - p1",
 		"hooks:\n  timeout_ms: 60000",
 		"max_concurrent_agents_by_state:\n    Merging: 1",
 		"dispatch_priority_by_label:\n    - bug\n    - regression\n    - enhancement",

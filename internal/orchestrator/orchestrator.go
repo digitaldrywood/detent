@@ -104,6 +104,7 @@ type Orchestrator struct {
 	cfg                Config
 	connector          connector.Connector
 	supervisor         *runpkg.Supervisor
+	validator          Validator
 	reaper             WorkspaceReaper
 	logger             *slog.Logger
 	globalDispatchGate scheduler.ProjectDispatchGate
@@ -207,6 +208,10 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 			reaper = candidate
 		}
 	}
+	var validator Validator
+	if candidate, ok := runner.(Validator); ok {
+		validator = candidate
+	}
 
 	logger := deps.Logger
 	if logger == nil {
@@ -226,6 +231,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		cfg:                cfg,
 		connector:          deps.Connector,
 		supervisor:         supervisor,
+		validator:          validator,
 		reaper:             reaper,
 		logger:             logger,
 		globalDispatchGate: deps.GlobalDispatchGate,

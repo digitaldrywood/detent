@@ -250,6 +250,77 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 10, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate: gate.Config{
+				Kind: gate.KindCommand,
+				Validator: gate.ValidatorConfig{
+					Enabled:  true,
+					MinScore: 0.8,
+					BlockOn:  []string{"p1"},
+				},
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-validator", []string{"enhancement"}, &connector.PullRequest{
+		Number:                 522,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/522",
+		BranchName:             "detent/digitaldrywood_detent_522",
+		State:                  "OPEN",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	validator := &autoPromoteTickValidator{
+		result: gate.ValidatorResult{
+			Submitted: true,
+			Verdict:   gate.ValidatorVerdictPass,
+			Score:     0.91,
+			Summary:   "Acceptance criteria pass.",
+		},
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		validator: validator,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+
+	if len(validator.requests) != 1 {
+		t.Fatalf("validator requests = %d, want 1", len(validator.requests))
+	}
+	if validator.requests[0].Issue.ID != "issue-validator" {
+		t.Fatalf("validator issue = %#v, want issue-validator", validator.requests[0].Issue)
+	}
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: "issue-validator", state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.prComments) != 1 {
+		t.Fatalf("pull request comments = %#v, want validator result comment", tracker.prComments)
+	}
+	for _, fragment := range []string{"Validator verdict: pass", "score: 0.91", "Acceptance criteria pass."} {
+		if !strings.Contains(tracker.prComments[0].body, fragment) {
+			t.Fatalf("pull request comment %q missing %q", tracker.prComments[0].body, fragment)
+		}
+	}
+}
+
 func autoPromoteTickIssue(id string, labels []string, pullRequest *connector.PullRequest) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id
@@ -292,6 +363,7 @@ type autoPromoteTickConnector struct {
 	fetchByStatesRequests [][]string
 	updates               []autoPromoteTickUpdate
 	comments              []autoPromoteTickComment
+	prComments            []autoPromoteTickComment
 }
 
 func (c *autoPromoteTickConnector) Name() string {
@@ -324,6 +396,22 @@ func (c *autoPromoteTickConnector) FetchIssueStatesByIDs(context.Context, []stri
 func (c *autoPromoteTickConnector) CreateComment(_ context.Context, issueID string, body string) error {
 	c.comments = append(c.comments, autoPromoteTickComment{issueID: issueID, body: body})
 	return nil
+}
+
+func (c *autoPromoteTickConnector) CreatePullRequestComment(_ context.Context, repository string, number int, body string) error {
+	c.prComments = append(c.prComments, autoPromoteTickComment{issueID: repository, body: body})
+	return nil
+}
+
+type autoPromoteTickValidator struct {
+	result   gate.ValidatorResult
+	requests []ValidatorRequest
+	err      error
+}
+
+func (v *autoPromoteTickValidator) Validate(_ context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
+	v.requests = append(v.requests, req)
+	return v.result, v.err
 }
 
 func (c *autoPromoteTickConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {

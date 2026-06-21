@@ -1466,12 +1466,13 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    ```
 
 5. **Set the gate from the interview.** For command gates, include the command,
-   whether an automated GitHub PR review is required for auto-promotion, and
+   whether an automated GitHub PR review is required for auto-promotion,
    whether failed current-head CI parks in `Human Review` or routes to
-   `Rework`. For human gates, include the approval label. Verify:
+   `Rework`, and whether the validator-agent review is enabled. For human
+   gates, include the approval label. Verify:
 
    ```sh
-   rg -n '^gate:|kind: <command|human_review>|run: <gate-command>|require_automated_review: <true|false>|ci_failure_action: <skip|rework>|approval_label: <label>' \
+   rg -n '^gate:|kind: <command|human_review>|run: <gate-command>|require_automated_review: <true|false>|ci_failure_action: <skip|rework>|validator:|enabled: <true|false>|min_score: <score>|block_on:|approval_label: <label>' \
      <source-root>/WORKFLOW.md
    ```
 
@@ -1483,6 +1484,12 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      run: <gate-command>
      require_automated_review: <true|false>
      ci_failure_action: <skip|rework>
+     validator:
+       enabled: <true|false>
+       model: ""
+       min_score: 0.8
+       block_on:
+         - p1
    ```
 
    Human review gate shape:
@@ -1551,7 +1558,10 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    non-green CI parked in `Human Review`. Pending CI stays parked. The quiet
    period resets on observed issue updates, Project
    status updates, automated PR review submission, and linked PR activity such
-   as a fresh push to the PR head. `detent doctor --port 0` reports sampled
+   as a fresh push to the PR head. With `gate.validator.enabled: true`, a
+   validator-agent reviews the PR diff against issue acceptance criteria before
+   auto-promotion; scores below `min_score` or findings whose severity appears
+   in `block_on` route the item to `Rework`. `detent doctor --port 0` reports sampled
    `Human Review` candidates and reasons such as `automated_review_missing`
    when that gate is not met.
 
@@ -2225,6 +2235,7 @@ apply to issues only, so linked PR cards derive status from the linked issue.
 | Validation command | `gate.kind: command` and `gate.run` in `WORKFLOW.md`. |
 | Automated PR review requirement | `gate.kind: command` and `gate.require_automated_review` in `WORKFLOW.md`. |
 | Failed CI recovery | `gate.kind: command` and `gate.ci_failure_action` in `WORKFLOW.md`. |
+| Validator-agent review | `gate.validator.enabled`, `gate.validator.min_score`, and `gate.validator.block_on` in `WORKFLOW.md`. |
 | Human validation label | `gate.kind: human_review` and `gate.approval_label` in `WORKFLOW.md`. |
 | Per-project concurrency | `agent.max_concurrent_agents` in `WORKFLOW.md`. |
 | Merge serialization | `agent.max_concurrent_agents_by_state.Merging: 1` in `WORKFLOW.md`. |

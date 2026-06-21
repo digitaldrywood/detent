@@ -9,19 +9,28 @@ const (
 	KindCommand     = "command"
 	KindHumanReview = "human_review"
 
-	DefaultCommand       = "make check"
-	DefaultApprovalLabel = "human-approved"
+	DefaultCommand           = "make check"
+	DefaultApprovalLabel     = "human-approved"
+	DefaultValidatorMinScore = 0.8
 
 	CIFailureActionSkip   = "skip"
 	CIFailureActionRework = "rework"
 )
 
 type Config struct {
-	Kind                   string `yaml:"kind"`
-	Run                    string `yaml:"run"`
-	ApprovalLabel          string `yaml:"approval_label"`
-	RequireAutomatedReview *bool  `yaml:"require_automated_review"`
-	CIFailureAction        string `yaml:"ci_failure_action"`
+	Kind                   string          `yaml:"kind"`
+	Run                    string          `yaml:"run"`
+	ApprovalLabel          string          `yaml:"approval_label"`
+	RequireAutomatedReview *bool           `yaml:"require_automated_review"`
+	CIFailureAction        string          `yaml:"ci_failure_action"`
+	Validator              ValidatorConfig `yaml:"validator"`
+}
+
+type ValidatorConfig struct {
+	Enabled  bool     `yaml:"enabled"`
+	Model    string   `yaml:"model"`
+	MinScore float64  `yaml:"min_score"`
+	BlockOn  []string `yaml:"block_on"`
 }
 
 type Summary struct {
@@ -30,14 +39,24 @@ type Summary struct {
 	CIStatus           string
 	ReviewState        string
 	P1Findings         []Finding
+	Validator          ValidatorResult
 	LastActivityAt     *time.Time
 }
 
 type Finding struct {
-	Body string
-	URL  string
-	Path string
-	Line int
+	Severity string
+	Body     string
+	URL      string
+	Path     string
+	Line     int
+}
+
+type ValidatorResult struct {
+	Submitted bool
+	Verdict   string
+	Score     float64
+	Summary   string
+	Findings  []Finding
 }
 
 type EvaluationOptions struct {
@@ -53,16 +72,27 @@ const (
 	ActionSkip   Action = "skip"
 )
 
+const (
+	ValidatorVerdictPass   = "pass"
+	ValidatorVerdictWait   = "wait"
+	ValidatorVerdictRework = "rework"
+)
+
 type Reason string
 
 const (
-	ReasonReady                   Reason = "ready"
-	ReasonMissingPullRequest      Reason = "missing_pull_request"
-	ReasonCINotGreen              Reason = "ci_not_green"
-	ReasonAutomatedReviewMissing  Reason = "automated_review_missing"
-	ReasonP1Findings              Reason = "p1_findings"
-	ReasonAutomatedReviewNotQuiet Reason = "automated_review_not_quiet"
-	ReasonHumanApprovalMissing    Reason = "human_approval_missing"
+	ReasonReady                        Reason = "ready"
+	ReasonMissingPullRequest           Reason = "missing_pull_request"
+	ReasonCINotGreen                   Reason = "ci_not_green"
+	ReasonAutomatedReviewMissing       Reason = "automated_review_missing"
+	ReasonP1Findings                   Reason = "p1_findings"
+	ReasonAutomatedReviewNotQuiet      Reason = "automated_review_not_quiet"
+	ReasonHumanApprovalMissing         Reason = "human_approval_missing"
+	ReasonValidatorMissing             Reason = "validator_missing"
+	ReasonValidatorWait                Reason = "validator_wait"
+	ReasonValidatorRework              Reason = "validator_rework"
+	ReasonValidatorScoreBelowThreshold Reason = "validator_score_below_threshold"
+	ReasonValidatorBlockedSeverity     Reason = "validator_blocked_severity"
 )
 
 type Decision struct {
@@ -80,6 +110,7 @@ func DefaultConfig() Config {
 		ApprovalLabel:          DefaultApprovalLabel,
 		RequireAutomatedReview: new(true),
 		CIFailureAction:        CIFailureActionSkip,
+		Validator:              effectiveValidatorConfig(ValidatorConfig{}),
 	}
 }
 
@@ -88,6 +119,7 @@ func Effective(cfg Config) Config {
 	cfg.Run = strings.TrimSpace(cfg.Run)
 	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
 	cfg.CIFailureAction = NormalizeCIFailureAction(cfg.CIFailureAction)
+	cfg.Validator = effectiveValidatorConfig(cfg.Validator)
 
 	if cfg.Kind == "" {
 		cfg.Kind = KindCommand
@@ -147,6 +179,7 @@ func Validate(prefix string, cfg Config) []string {
 	default:
 		problems = append(problems, prefix+".ci_failure_action must be one of skip, rework")
 	}
+	problems = append(problems, validateValidator(prefix+".validator", cfg.Validator)...)
 	return problems
 }
 
@@ -163,9 +196,14 @@ func Instructions(cfg Config) string {
 			"Run full `" + cfg.Run + "` in Merging when code changes, conflicts are resolved, or validation state is stale or unknown. " +
 			"Watch current-head CI with REST check-runs polling/backoff, report slow checks, and record merge wait telemetry in the Workpad: quiet-window wait, local merge-gate duration, PR CI duration, slow check names, and whether post-merge main CI is still running."
 		if automatedReviewRequired(cfg) {
-			return instructions + " Automated review is required on the current pull request head before promotion."
+			instructions += " Automated review is required on the current pull request head before promotion."
+		} else {
+			instructions += " Automated review is not required for promotion, but any P1 automated review findings still block promotion."
 		}
-		return instructions + " Automated review is not required for promotion, but any P1 automated review findings still block promotion."
+		if cfg.Validator.Enabled {
+			instructions += " A validator-agent review is required before promotion; its structured verdict, score, and configured blocking severities are part of the gate decision."
+		}
+		return instructions
 	}
 }
 
@@ -196,6 +234,9 @@ func evaluateCommand(cfg Config, summary Summary, now time.Time, opts Evaluation
 	}
 	if automatedReviewRequired(cfg) && !automatedReviewSubmitted(summary.ReviewState) {
 		return decision(ActionWait, ReasonAutomatedReviewMissing)
+	}
+	if out, ok := evaluateValidator(cfg.Validator, summary.Validator); ok {
+		return out
 	}
 	if remaining := quietRemaining(summary, opts, now); remaining > 0 {
 		out := decision(ActionWait, ReasonAutomatedReviewNotQuiet)
@@ -289,6 +330,136 @@ func quietRemaining(summary Summary, opts EvaluationOptions, now time.Time) time
 
 func cloneFindings(findings []Finding) []Finding {
 	return append([]Finding(nil), findings...)
+}
+
+func effectiveValidatorConfig(cfg ValidatorConfig) ValidatorConfig {
+	cfg.Model = strings.TrimSpace(cfg.Model)
+	if cfg.MinScore == 0 {
+		cfg.MinScore = DefaultValidatorMinScore
+	}
+	cfg.BlockOn = normalizeSeverities(cfg.BlockOn)
+	if len(cfg.BlockOn) == 0 {
+		cfg.BlockOn = []string{"p1"}
+	}
+	return cfg
+}
+
+func validateValidator(prefix string, cfg ValidatorConfig) []string {
+	var problems []string
+	invalidScore := false
+	if cfg.MinScore < 0 || cfg.MinScore > 1 {
+		problems = append(problems, prefix+".min_score must be greater than 0 and less than or equal to 1")
+		invalidScore = true
+	}
+	for _, severity := range cfg.BlockOn {
+		if strings.TrimSpace(severity) == "" {
+			problems = append(problems, prefix+".block_on severities must not be blank")
+			break
+		}
+	}
+	cfg = effectiveValidatorConfig(cfg)
+	if !invalidScore && (cfg.MinScore <= 0 || cfg.MinScore > 1) {
+		problems = append(problems, prefix+".min_score must be greater than 0 and less than or equal to 1")
+	}
+	return problems
+}
+
+func normalizeSeverities(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = normalizeSeverity(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeSeverity(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func evaluateValidator(cfg ValidatorConfig, result ValidatorResult) (Decision, bool) {
+	cfg = effectiveValidatorConfig(cfg)
+	if !cfg.Enabled {
+		return Decision{}, false
+	}
+	if !result.Submitted {
+		return decision(ActionWait, ReasonValidatorMissing), true
+	}
+
+	findings := cloneFindings(result.Findings)
+	if validatorHasBlockedSeverity(cfg, findings) {
+		out := decision(ActionRework, ReasonValidatorBlockedSeverity)
+		out.Findings = findings
+		return out, true
+	}
+
+	switch normalizeValidatorVerdict(result.Verdict) {
+	case ValidatorVerdictRework:
+		out := decision(ActionRework, ReasonValidatorRework)
+		out.Findings = findings
+		return out, true
+	case ValidatorVerdictWait:
+		return decision(ActionWait, ReasonValidatorWait), true
+	case ValidatorVerdictPass:
+	default:
+		return decision(ActionWait, ReasonValidatorWait), true
+	}
+
+	if result.Score < cfg.MinScore {
+		out := decision(ActionRework, ReasonValidatorScoreBelowThreshold)
+		out.Findings = findings
+		return out, true
+	}
+
+	return Decision{}, false
+}
+
+func validatorHasBlockedSeverity(cfg ValidatorConfig, findings []Finding) bool {
+	blocked := make(map[string]struct{}, len(cfg.BlockOn))
+	for _, severity := range cfg.BlockOn {
+		blocked[normalizeSeverity(severity)] = struct{}{}
+	}
+	for _, finding := range findings {
+		severity := normalizeSeverity(finding.Severity)
+		if severity == "" {
+			severity = severityFromFindingBody(finding.Body)
+		}
+		if _, ok := blocked[severity]; ok {
+			return true
+		}
+	}
+	return false
+}
+
+func severityFromFindingBody(body string) string {
+	upper := strings.ToUpper(body)
+	for _, severity := range []string{"P0", "P1", "P2", "P3", "P4"} {
+		if strings.Contains(upper, severity) {
+			return strings.ToLower(severity)
+		}
+	}
+	return ""
+}
+
+func normalizeValidatorVerdict(verdict string) string {
+	switch strings.ToLower(strings.TrimSpace(verdict)) {
+	case ValidatorVerdictPass, "passed", "approve", "approved", "ok":
+		return ValidatorVerdictPass
+	case ValidatorVerdictWait, "waiting", "pending", "inconclusive":
+		return ValidatorVerdictWait
+	case ValidatorVerdictRework, "fail", "failed", "failure", "request_changes", "requested_changes", "changes_requested", "needs_work":
+		return ValidatorVerdictRework
+	default:
+		return strings.ToLower(strings.TrimSpace(verdict))
+	}
 }
 
 func normalizeLabel(label string) string {

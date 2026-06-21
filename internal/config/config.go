@@ -182,6 +182,7 @@ type AgentBackendOptions struct {
 
 type AgentRoute struct {
 	Name       string            `yaml:"name"`
+	Role       string            `yaml:"role"`
 	Backend    string            `yaml:"backend"`
 	Model      string            `yaml:"model"`
 	ModelField string            `yaml:"model_field"`
@@ -831,6 +832,7 @@ func (a *Agents) normalize() {
 	for index := range a.Routes {
 		route := &a.Routes[index]
 		route.Name = strings.TrimSpace(route.Name)
+		route.Role = strings.ToLower(strings.TrimSpace(route.Role))
 		route.Backend = strings.TrimSpace(route.Backend)
 		route.Model = strings.TrimSpace(route.Model)
 		route.ModelField = strings.TrimSpace(route.ModelField)
@@ -875,7 +877,7 @@ func (a *Agents) validate(problems *[]string) {
 		backend.Options.validate("agents.backends.options", problems)
 	}
 
-	defaultRoutes := 0
+	defaultRoutes := map[string]int{}
 	for _, route := range a.Routes {
 		if strings.TrimSpace(route.Backend) == "" {
 			*problems = append(*problems, "agents.routes.backend is required")
@@ -883,13 +885,24 @@ func (a *Agents) validate(problems *[]string) {
 			*problems = append(*problems, "agents.routes.backend must reference a configured backend")
 		}
 		if route.Default {
-			defaultRoutes++
+			defaultRoutes[normalizeAgentRouteRole(route.Role)]++
 		}
 		validatePriorityValues("agents.routes.selector.priority_in", route.Selector.PriorityIn, problems)
 	}
-	if defaultRoutes > 1 {
-		*problems = append(*problems, "agents.routes must not define multiple default routes")
+	for _, count := range defaultRoutes {
+		if count > 1 {
+			*problems = append(*problems, "agents.routes must not define multiple default routes for the same role")
+			break
+		}
 	}
+}
+
+func normalizeAgentRouteRole(role string) string {
+	role = strings.ToLower(strings.TrimSpace(role))
+	if role == "" {
+		return "code"
+	}
+	return role
 }
 
 func (o *AgentBackendOptions) validate(prefix string, problems *[]string) {
