@@ -179,6 +179,149 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 	}
 }
 
+func TestInstallScriptAuthenticatesLatestReleaseRequest(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	const token = "ci-token"
+	archiveName := "detent_1.2.3_linux_amd64.tar.gz"
+	archive := detentArchive(t, "#!/usr/bin/env sh\nprintf 'release-ok\\n'\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/latest":
+			if got, want := r.Header.Get("Authorization"), "Bearer "+token; got != want {
+				http.Error(w, "missing authorization", http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			fmt.Fprint(w, `{"tag_name":"v1.2.3"}`)
+		case "/v1.2.3/" + archiveName:
+			w.Header().Set("Content-Type", "application/gzip")
+			_, _ = w.Write(archive)
+		case "/v1.2.3/detent_1.2.3_checksums.txt":
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprintf(w, "%s  %s\n", archiveChecksum(archive), archiveName)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	tmp := t.TempDir()
+	fakeBin := filepath.Join(tmp, "fakebin")
+	if err := os.MkdirAll(fakeBin, 0o755); err != nil {
+		t.Fatalf("MkdirAll(fakebin) error = %v", err)
+	}
+	fakeGo := filepath.Join(fakeBin, "go")
+	if err := os.WriteFile(fakeGo, []byte("#!/usr/bin/env sh\nprintf 'unexpected go install fallback\\n' >&2\nexit 42\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(fake go) error = %v", err)
+	}
+
+	installDir := filepath.Join(tmp, "bin")
+	stateDir := filepath.Join(tmp, "state")
+	env := append(os.Environ(),
+		"HOME="+tmp,
+		"PATH="+fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"),
+		"GITHUB_TOKEN="+token,
+		"DETENT_GITHUB_TOKEN=",
+		"DETENT_VERSION=",
+		"DETENT_GITHUB_API_BASE="+server.URL,
+		"DETENT_RELEASE_DOWNLOAD_BASE="+server.URL,
+		"DETENT_INSTALL_DIR="+installDir,
+		"DETENT_INSTALL_MODE=release",
+		"DETENT_STATE_DIR="+stateDir,
+		"DETENT_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
+		"DETENT_INSTALL_TEST_UNAME_S=Linux",
+		"DETENT_INSTALL_TEST_UNAME_M=x86_64",
+	)
+
+	result := runInstall(t, root, env)
+	if result.err != nil {
+		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", result.err, result.stdout, result.stderr)
+	}
+	if !strings.Contains(result.stdout, "Verified checksum for "+archiveName) {
+		t.Fatalf("install stdout = %q, want checksum verification", result.stdout)
+	}
+}
+
+func TestInstallScriptDoesNotForwardTokenAcrossLatestReleaseRedirect(t *testing.T) {
+	t.Parallel()
+
+	root, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+
+	const token = "ci-token"
+	leaked := make(chan string, 1)
+	redirectTarget := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		select {
+		case leaked <- r.Header.Get("Authorization"):
+		default:
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `{"tag_name":"v1.2.3"}`)
+	}))
+	defer redirectTarget.Close()
+
+	archiveName := "detent_1.2.3_linux_amd64.tar.gz"
+	archive := detentArchive(t, "#!/usr/bin/env sh\nprintf 'release-ok\\n'\n")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/releases/latest":
+			if got, want := r.Header.Get("Authorization"), "Bearer "+token; got != want {
+				http.Error(w, "missing authorization", http.StatusForbidden)
+				return
+			}
+			w.Header().Set("Location", redirectTarget.URL+"/latest")
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusFound)
+			fmt.Fprint(w, `{"tag_name":"v1.2.3"}`)
+		case "/v1.2.3/" + archiveName:
+			w.Header().Set("Content-Type", "application/gzip")
+			_, _ = w.Write(archive)
+		case "/v1.2.3/detent_1.2.3_checksums.txt":
+			w.Header().Set("Content-Type", "text/plain")
+			fmt.Fprintf(w, "%s  %s\n", archiveChecksum(archive), archiveName)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	tmp := t.TempDir()
+	installDir := filepath.Join(tmp, "bin")
+	stateDir := filepath.Join(tmp, "state")
+	env := append(os.Environ(),
+		"HOME="+tmp,
+		"GITHUB_TOKEN="+token,
+		"DETENT_GITHUB_TOKEN=",
+		"DETENT_VERSION=",
+		"DETENT_GITHUB_API_BASE="+server.URL,
+		"DETENT_RELEASE_DOWNLOAD_BASE="+server.URL,
+		"DETENT_INSTALL_DIR="+installDir,
+		"DETENT_INSTALL_MODE=release",
+		"DETENT_STATE_DIR="+stateDir,
+		"DETENT_INSTALL_LOCK="+filepath.Join(stateDir, "install.lock"),
+		"DETENT_INSTALL_TEST_UNAME_S=Linux",
+		"DETENT_INSTALL_TEST_UNAME_M=x86_64",
+	)
+
+	result := runInstall(t, root, env)
+	if result.err != nil {
+		t.Fatalf("install error = %v\nstdout:\n%s\nstderr:\n%s", result.err, result.stdout, result.stderr)
+	}
+	select {
+	case got := <-leaked:
+		t.Fatalf("redirect target received Authorization = %q", got)
+	default:
+	}
+}
+
 func TestInstallScriptReportsPathGuidanceWhenInstallDirIsMissingFromPath(t *testing.T) {
 	t.Parallel()
 

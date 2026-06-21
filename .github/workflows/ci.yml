@@ -239,6 +239,19 @@ jobs:
     steps:
       - uses: actions/checkout@v5
 
+      - name: Resolve release installer version
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag="$(gh release view --repo "$GITHUB_REPOSITORY" --json tagName --jq .tagName)"
+          if [ -z "$tag" ]; then
+            echo "Could not resolve latest Detent release tag" >&2
+            exit 1
+          fi
+          echo "DETENT_VERSION=$tag" >> "$GITHUB_ENV"
+
       - name: Smoke release installer
         if: runner.os == 'Linux'
         shell: bash
@@ -249,8 +262,12 @@ jobs:
           export DETENT_INSTALL_LOCK="$DETENT_STATE_DIR/install.lock"
           export DETENT_INSTALL_MODE=release
 
-          output="$(sh ./install.sh)"
+          output="$(sh ./install.sh 2>&1)"
           printf '%s\n' "$output"
+          if grep -Fq "falling back to go install" <<< "$output"; then
+            echo "Release installer fell back to go install" >&2
+            exit 1
+          fi
           grep -F "Verified checksum for detent_" <<< "$output"
           grep -F "Installed Detent at $DETENT_INSTALL_DIR/detent" <<< "$output"
           grep -F "Add $DETENT_INSTALL_DIR to PATH before running detent" <<< "$output"
@@ -280,6 +297,9 @@ jobs:
           $output | ForEach-Object { Write-Host $_ }
           if ($exitCode -ne 0) {
             throw "install.ps1 failed with exit code $exitCode"
+          }
+          if ($output -match 'falling back to go install') {
+            throw 'Release installer fell back to go install'
           }
           if (-not ($output -match 'Verified checksum for detent_.*_windows_.*\.zip')) {
             throw 'install.ps1 did not report checksum verification'
