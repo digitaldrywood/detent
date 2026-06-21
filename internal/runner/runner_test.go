@@ -259,6 +259,59 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 }
 
+func TestRunnerPlanModeCapturesOutputAndConstrainsPrompt(t *testing.T) {
+	t.Parallel()
+
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-521", Branch: "detent/issue-521"},
+	}
+	codexClient := &fakeCodexClient{
+		updates: []AgentUpdate{
+			{Type: AgentUpdateMessageDelta, ThreadID: "thread-plan", TurnID: "turn-plan", ItemID: "message-plan", Delta: "## Plan\n"},
+			{Type: AgentUpdateMessageDelta, ThreadID: "thread-plan", TurnID: "turn-plan", ItemID: "message-plan", Delta: "- Add tests\n"},
+		},
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Codex: config.Codex{ThreadSandbox: "workspace-write"},
+			},
+			Prompt: "Implement {{ issue.identifier }}",
+		},
+		Workspace:    workspaceBackend,
+		AgentBackend: codexClient,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-521",
+			Identifier: "digitaldrywood/detent#521",
+			Title:      "Plan stop",
+		},
+		Mode: RunModePlan,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.Output != "## Plan\n- Add tests\n" {
+		t.Fatalf("Output = %q, want completed assistant plan", result.Output)
+	}
+	for _, want := range []string{
+		"## Plan approval stop",
+		"Do not modify files",
+		"Do not move tracker state",
+		"structured implementation plan",
+	} {
+		if !strings.Contains(codexClient.request.Prompt, want) {
+			t.Fatalf("plan prompt missing %q:\n%s", want, codexClient.request.Prompt)
+		}
+	}
+}
+
 func TestRunnerUsageCostWarnsForUnknownModel(t *testing.T) {
 	t.Parallel()
 

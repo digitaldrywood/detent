@@ -75,6 +75,47 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 	}
 }
 
+func TestEffectivePlanSelectsDefaults(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  PlanConfig
+		want PlanConfig
+	}{
+		{
+			name: "omitted plan config is disabled with default review stop",
+			cfg:  PlanConfig{},
+			want: PlanConfig{Enabled: false, Review: PlanReviewHuman, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
+		},
+		{
+			name: "enabled plan normalizes review and trims stop",
+			cfg:  PlanConfig{Enabled: true, Review: " Both ", Stop: " Plan Review "},
+			want: PlanConfig{Enabled: true, Review: PlanReviewBoth, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
+		},
+		{
+			name: "enabled plan defaults review and stop",
+			cfg:  PlanConfig{Enabled: true},
+			want: PlanConfig{Enabled: true, Review: PlanReviewHuman, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
+		},
+		{
+			name: "enabled plan normalizes approval label",
+			cfg:  PlanConfig{Enabled: true, ApprovalLabel: " Plan-Approved "},
+			want: PlanConfig{Enabled: true, Review: PlanReviewHuman, ApprovalLabel: DefaultPlanApprovalLabel, Stop: DefaultPlanStop},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := EffectivePlan(tt.cfg); got != tt.want {
+				t.Fatalf("EffectivePlan() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestEvaluate(t *testing.T) {
 	t.Parallel()
 
@@ -324,6 +365,91 @@ func TestEvaluate(t *testing.T) {
 				got.CIStatus != tt.want.CIStatus ||
 				got.QuietRemaining != tt.want.QuietRemaining {
 				t.Fatalf("Evaluate() = %#v, want %#v", got, tt.want)
+			}
+			if len(got.Findings) != len(tt.want.Findings) {
+				t.Fatalf("Findings len = %d, want %d", len(got.Findings), len(tt.want.Findings))
+			}
+			for i := range tt.want.Findings {
+				if got.Findings[i] != tt.want.Findings[i] {
+					t.Fatalf("Findings[%d] = %#v, want %#v", i, got.Findings[i], tt.want.Findings[i])
+				}
+			}
+		})
+	}
+}
+
+func TestEvaluatePlan(t *testing.T) {
+	t.Parallel()
+
+	finding := Finding{Body: "Plan misses rollback steps.", URL: "https://github.test/comment/1"}
+
+	tests := []struct {
+		name   string
+		cfg    PlanConfig
+		labels []string
+		input  Summary
+		want   Decision
+	}{
+		{
+			name: "disabled plan gate skips",
+			cfg:  PlanConfig{},
+			want: Decision{Action: ActionSkip, Reason: ReasonPlanDisabled},
+		},
+		{
+			name:   "human plan gate passes with plan approval label",
+			cfg:    PlanConfig{Enabled: true, Review: PlanReviewHuman},
+			labels: []string{" Plan-Approved "},
+			want:   Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name:   "human plan gate ignores final approval label",
+			cfg:    PlanConfig{Enabled: true, Review: PlanReviewHuman, ApprovalLabel: "plan-approved"},
+			labels: []string{"human-approved"},
+			want:   Decision{Action: ActionWait, Reason: ReasonHumanApprovalMissing},
+		},
+		{
+			name: "human plan gate waits without approval label",
+			cfg:  PlanConfig{Enabled: true, Review: PlanReviewHuman},
+			want: Decision{Action: ActionWait, Reason: ReasonHumanApprovalMissing},
+		},
+		{
+			name:  "automated plan gate passes after automated review",
+			cfg:   PlanConfig{Enabled: true, Review: PlanReviewAutomated},
+			input: Summary{ReviewState: "COMMENTED"},
+			want:  Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name: "automated plan gate waits before review",
+			cfg:  PlanConfig{Enabled: true, Review: PlanReviewAutomated},
+			want: Decision{Action: ActionWait, Reason: ReasonAutomatedReviewMissing},
+		},
+		{
+			name:  "automated plan gate routes p1 findings to rework",
+			cfg:   PlanConfig{Enabled: true, Review: PlanReviewAutomated},
+			input: Summary{ReviewState: "P1", P1Findings: []Finding{finding}},
+			want:  Decision{Action: ActionRework, Reason: ReasonP1Findings, Findings: []Finding{finding}},
+		},
+		{
+			name:   "both plan gate accepts human approval",
+			cfg:    PlanConfig{Enabled: true, Review: PlanReviewBoth},
+			labels: []string{"plan-approved"},
+			want:   Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+		{
+			name:  "both plan gate accepts automated approval",
+			cfg:   PlanConfig{Enabled: true, Review: PlanReviewBoth},
+			input: Summary{ReviewState: "APPROVED"},
+			want:  Decision{Action: ActionPass, Reason: ReasonReady},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := EvaluatePlan(tt.cfg, tt.labels, tt.input)
+			if got.Action != tt.want.Action || got.Reason != tt.want.Reason {
+				t.Fatalf("EvaluatePlan() = %#v, want %#v", got, tt.want)
 			}
 			if len(got.Findings) != len(tt.want.Findings) {
 				t.Fatalf("Findings len = %d, want %d", len(got.Findings), len(tt.want.Findings))

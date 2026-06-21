@@ -795,6 +795,15 @@ findings. `gate.validator.model` optionally overrides the selected validator
 route model, `min_score` below threshold routes to `Rework`, and any finding
 severity listed in `block_on` routes to `Rework` regardless of score.
 
+`plan` controls the optional plan-approval stop before implementation. It is
+disabled by default, preserving the direct dispatch behavior. When enabled, the
+first `Todo` dispatch runs in plan-only mode, posts a `## Detent Plan` issue
+comment, and moves the issue to the configured `stop` such as `Plan Review`.
+`review: human` waits for `approval_label` (`plan-approved` by default),
+`review: automated` waits for a `## Detent Plan Review` issue comment or
+current-head automated review state, and `review: both` accepts either path.
+Blocking P1 plan findings route the issue to `Rework` with feedback.
+
 For production, self-hosted, or multi-instance GitHub Projects, prefer GitHub
 App installation authentication instead of a shared personal access token. App
 installation tokens have a dedicated GraphQL budget per installation and scale

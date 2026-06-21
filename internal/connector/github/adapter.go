@@ -686,6 +686,7 @@ type label struct {
 
 type issueComment struct {
 	Body string `json:"body"`
+	URL  string `json:"url"`
 }
 
 type pullRequest struct {
@@ -819,7 +820,8 @@ type pullRequestCI struct {
 }
 
 type restComment struct {
-	Body string `json:"body"`
+	Body    string `json:"body"`
+	HTMLURL string `json:"html_url"`
 }
 
 type repository struct {
@@ -1569,9 +1571,35 @@ func (c *Connector) fetchIssueComments(ctx context.Context, ref issueRef) ([]iss
 	}
 	comments := make([]issueComment, 0, len(response))
 	for _, comment := range response {
-		comments = append(comments, issueComment(comment))
+		comments = append(comments, issueComment{
+			Body: comment.Body,
+			URL:  comment.HTMLURL,
+		})
 	}
 	return comments, nil
+}
+
+func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
+	ref, ok := issueRefFromIdentifier(issue.Identifier)
+	if !ok {
+		ref, ok = issueRefFromURL(issue.URL)
+	}
+	if !ok {
+		return []connector.IssueComment{}, nil
+	}
+
+	comments, err := c.fetchIssueComments(ctx, ref)
+	if err != nil {
+		return nil, fmt.Errorf("fetch github issue comments: %w", err)
+	}
+	out := make([]connector.IssueComment, 0, len(comments))
+	for _, comment := range comments {
+		out = append(out, connector.IssueComment{
+			Body: comment.Body,
+			URL:  comment.URL,
+		})
+	}
+	return out, nil
 }
 
 func (c *Connector) CreateComment(ctx context.Context, issueID string, body string) error {
@@ -2554,6 +2582,7 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		ChildIssues:      c.linkedChildIssues(issue, repo),
 		BlockerReason:    parseBlockerReason(issue),
 		Labels:           labelNames(issue.Labels),
+		Comments:         connectorIssueComments(issue.Comments.Nodes),
 		Fields:           cloneStringMap(fields),
 		AssignedToWorker: true,
 		CreatedAt:        parseGitHubTime(issue.CreatedAt),
@@ -2561,6 +2590,20 @@ func (c *Connector) buildIssue(issue githubIssueNode, statusName string, priorit
 		StageUpdatedAt:   statusUpdatedAt,
 		ModelOverride:    parseModelOverride(issue.Body),
 	}
+}
+
+func connectorIssueComments(comments []issueComment) []connector.IssueComment {
+	if len(comments) == 0 {
+		return nil
+	}
+	out := make([]connector.IssueComment, 0, len(comments))
+	for _, comment := range comments {
+		out = append(out, connector.IssueComment{
+			Body: comment.Body,
+			URL:  comment.URL,
+		})
+	}
+	return out
 }
 
 func (c *Connector) linkedChildIssues(issue githubIssueNode, fallbackRepo string) []connector.BlockedRef {

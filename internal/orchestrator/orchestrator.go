@@ -57,6 +57,7 @@ type Config struct {
 	Project                       scheduler.ProjectCandidate
 	Claiming                      ClaimingConfig
 	AutoPromote                   AutoPromoteConfig
+	Plan                          gate.PlanConfig
 	DependencyAutoUnblock         DependencyAutoUnblockConfig
 	ActiveStates                  []string
 	ObservedStates                []string
@@ -181,6 +182,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
 			Gate:               gate.Effective(cfg.Gate),
 		}),
+		Plan: gate.EffectivePlan(cfg.Plan),
 		DependencyAutoUnblock: normalizeDependencyAutoUnblockConfig(DependencyAutoUnblockConfig{
 			Enabled:      cfg.Tracker.DependencyAutoUnblock.Enabled,
 			SourceStates: append([]string(nil), cfg.Tracker.DependencyAutoUnblock.SourceStates...),
@@ -418,6 +420,9 @@ func (o *Orchestrator) ForceQuit(ctx context.Context) error {
 
 func (o *Orchestrator) observedStatusFetchStates() []string {
 	states := append([]string{blockedStatusState}, prPipelineFetchStates()...)
+	if cfg := gate.EffectivePlan(o.cfg.Plan); cfg.Enabled {
+		states = append(states, cfg.Stop)
+	}
 	states = append(states, o.cfg.ObservedStates...)
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	if cfg.Enabled {
@@ -1214,6 +1219,7 @@ func (o *Orchestrator) dispatchIssue(
 	request := RunRequest{
 		Issue:           issue,
 		Attempt:         attempt,
+		Mode:            o.dispatchMode(state, issue),
 		StartedAt:       now,
 		WorkerHost:      workerHost,
 		SelectorContext: o.selectorContext(),
@@ -1221,6 +1227,28 @@ func (o *Orchestrator) dispatchIssue(
 	}
 	o.supervisor.Dispatch(runCtx, request, o.runResults)
 	return true
+}
+
+func (o *Orchestrator) dispatchMode(state *State, issue connector.Issue) string {
+	cfg := gate.EffectivePlan(o.cfg.Plan)
+	if !cfg.Enabled {
+		return runpkg.RunModeImplement
+	}
+	switch normalizeState(issue.State) {
+	case "todo":
+		return runpkg.RunModePlan
+	case normalizeState(autoPromoteReworkState):
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID != "" {
+			if _, ok := state.planRework[issueID]; ok {
+				return runpkg.RunModePlan
+			}
+		}
+		if planReviewReworkRequested(issue) {
+			return runpkg.RunModePlan
+		}
+	}
+	return runpkg.RunModeImplement
 }
 
 func (o *Orchestrator) markGlobalProjectIdle() {
@@ -1381,6 +1409,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
+	if event.Request.Mode == runpkg.RunModePlan {
+		o.completePlanRunning(ctx, state, event, running)
+		return
+	}
+
 	finalState := event.Result.FinalState
 	if finalState == "" {
 		finalState = FinalStateCompleted
@@ -1416,6 +1449,53 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
+}
+
+func (o *Orchestrator) completePlanRunning(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) {
+	cfg := gate.EffectivePlan(o.cfg.Plan)
+	issueID := strings.TrimSpace(event.IssueID)
+	issue := cloneIssue(running.Issue)
+	body := planArtifactComment(issue, event.Result.Output)
+	if err := o.connector.CreateComment(ctx, issueID, body); err != nil {
+		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan comment failed: "+err.Error(), false, running.WorkerHost)
+		return
+	}
+	if err := o.connector.UpdateIssueState(ctx, issueID, cfg.Stop); err != nil {
+		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan review transition failed: "+err.Error(), false, running.WorkerHost)
+		return
+	}
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon completed plan claim failed", "issue_id", issueID, "error", err)
+	}
+	delete(state.planRework, issueID)
+	issue.State = cfg.Stop
+	state.Completed[issueID] = Completed{
+		Issue:       issue,
+		StartedAt:   running.StartedAt,
+		CompletedAt: event.CompletedAt,
+		FinalState:  cfg.Stop,
+		Tokens:      event.Result.Tokens,
+	}
+	state.CodexTotals = addCodexTotals(state.CodexTotals, event.Result.Tokens)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		state.DiffStats[issueID] = event.Result.DiffStats
+	}
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "plan_review_created",
+		Message: "created plan artifact for " + issueLabel(issue) + " and moved to " + cfg.Stop,
+	})
 }
 
 func (o *Orchestrator) scheduleRetry(
@@ -1605,6 +1685,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.DispatchPriorityByLabel = normalizeLabels(cfg.DispatchPriorityByLabel)
 	cfg.Claiming = normalizeClaimingConfig(cfg.Claiming)
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
+	cfg.Plan = gate.EffectivePlan(cfg.Plan)
 	cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock)
 	cfg.Authorization.Normalize()
 	cfg.SelectorContext.InstanceLogin = strings.TrimSpace(cfg.SelectorContext.InstanceLogin)

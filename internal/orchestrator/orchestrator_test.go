@@ -12,6 +12,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -75,6 +76,255 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	}
 	if got := tracker.fetchCandidateCalls(); got == 0 {
 		t.Fatal("FetchCandidateIssues() calls = 0, want at least 1")
+	}
+}
+
+func TestRunPlanDispatchPostsPlanAndMovesToPlanReview(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-plan", "digitaldrywood/detent#521", "Todo")
+	tracker := newFakeConnector(issue)
+	runner := &staticRunner{
+		result: orchestrator.RunResult{
+			FinalState: orchestrator.FinalStateCompleted,
+			Output:     "## Plan\n- Add focused tests\n- Implement the plan stop\n",
+		},
+	}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        5 * time.Millisecond,
+		MaxConcurrentAgents: 1,
+		Plan: gate.PlanConfig{
+			Enabled: true,
+			Review:  gate.PlanReviewHuman,
+			Stop:    gate.DefaultPlanStop,
+		},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework"},
+		ObservedStates:         []string{"Backlog", "Human Review", "Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Millisecond,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		completed, ok := state.Completed[issue.ID]
+		return ok && completed.FinalState == gate.DefaultPlanStop
+	})
+
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after plan completion", issue.ID)
+	}
+	comments := tracker.commentCalls()
+	if len(comments) != 1 {
+		t.Fatalf("comments = %#v, want one plan artifact", comments)
+	}
+	for _, want := range []string{
+		"## Detent Plan",
+		"digitaldrywood/detent#521",
+		"## Plan\n- Add focused tests",
+	} {
+		if !strings.Contains(comments[0].body, want) {
+			t.Fatalf("plan comment %q missing %q", comments[0].body, want)
+		}
+	}
+	updates := tracker.stateUpdateCalls()
+	if len(updates) == 0 || updates[len(updates)-1].state != gate.DefaultPlanStop {
+		t.Fatalf("state updates = %#v, want final Plan Review", updates)
+	}
+	requests := runner.requests()
+	if len(requests) != 1 || requests[0].Mode != orchestrator.RunModePlan {
+		t.Fatalf("runner requests = %#v, want one plan-mode request", requests)
+	}
+}
+
+func TestTickPlanReviewGateTransitionsIssues(t *testing.T) {
+	t.Parallel()
+
+	finding := connector.PullRequestFinding{
+		Body: "Plan omits acceptance criteria.",
+		URL:  "https://github.test/comment/plan-review",
+	}
+
+	tests := []struct {
+		name                 string
+		cfg                  gate.PlanConfig
+		issue                connector.Issue
+		wantUpdates          []stateUpdateCall
+		wantCommentFragments []string
+	}{
+		{
+			name: "human approval advances to implementation",
+			cfg:  gate.PlanConfig{Enabled: true, Review: gate.PlanReviewHuman, Stop: gate.DefaultPlanStop},
+			issue: func() connector.Issue {
+				issue := testIssue("issue-human-plan", "digitaldrywood/detent#522", gate.DefaultPlanStop)
+				issue.Labels = []string{"plan-approved"}
+				return issue
+			}(),
+			wantUpdates: []stateUpdateCall{{issueID: "issue-human-plan", state: "In Progress"}},
+		},
+		{
+			name: "automated comment approval advances without pull request",
+			cfg:  gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated, Stop: gate.DefaultPlanStop},
+			issue: func() connector.Issue {
+				issue := testIssue("issue-automated-comment-plan", "digitaldrywood/detent#524", gate.DefaultPlanStop)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Detent Plan Review\n\n- state: approved\n\nThe plan satisfies the acceptance criteria.",
+					URL:  "https://github.test/comment/plan-review-approved",
+				}}
+				return issue
+			}(),
+			wantUpdates: []stateUpdateCall{{issueID: "issue-automated-comment-plan", state: "In Progress"}},
+		},
+		{
+			name: "automated p1 routes to rework with feedback",
+			cfg:  gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated, Stop: gate.DefaultPlanStop},
+			issue: func() connector.Issue {
+				issue := testIssue("issue-automated-plan", "digitaldrywood/detent#523", gate.DefaultPlanStop)
+				issue.PullRequest = &connector.PullRequest{
+					State:               "OPEN",
+					CodexReviewState:    "P1",
+					CodexReviewFindings: []connector.PullRequestFinding{finding},
+				}
+				return issue
+			}(),
+			wantUpdates: []stateUpdateCall{{issueID: "issue-automated-plan", state: "Rework"}},
+			wantCommentFragments: []string{
+				"Plan review routed this issue from Plan Review to Rework.",
+				"reason: p1_findings",
+				"Plan omits acceptance criteria.",
+				"https://github.test/comment/plan-review",
+			},
+		},
+		{
+			name: "automated comment p1 routes to rework with feedback",
+			cfg:  gate.PlanConfig{Enabled: true, Review: gate.PlanReviewAutomated, Stop: gate.DefaultPlanStop},
+			issue: func() connector.Issue {
+				issue := testIssue("issue-automated-comment-p1-plan", "digitaldrywood/detent#525", gate.DefaultPlanStop)
+				issue.Comments = []connector.IssueComment{{
+					Body: "## Detent Plan Review\n\n- state: P1\n\n### Findings\n\n- Plan omits acceptance criteria.",
+					URL:  "https://github.test/comment/plan-review-comment-p1",
+				}}
+				return issue
+			}(),
+			wantUpdates: []stateUpdateCall{{issueID: "issue-automated-comment-p1-plan", state: "Rework"}},
+			wantCommentFragments: []string{
+				"Plan review routed this issue from Plan Review to Rework.",
+				"reason: p1_findings",
+				"Plan omits acceptance criteria.",
+				"https://github.test/comment/plan-review-comment-p1",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			tracker := newFakeConnector()
+			tracker.setStateIssues(tt.issue)
+			cfg := orchestrator.Config{
+				PollInterval:        time.Minute,
+				MaxConcurrentAgents: 1,
+				Plan:                tt.cfg,
+				AutoPromote: orchestrator.AutoPromoteConfig{
+					Gate: gate.Config{ApprovalLabel: gate.DefaultApprovalLabel},
+				},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework"},
+				ObservedStates: []string{"Backlog", "Human Review", "Blocked"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			}
+			orch, err := orchestrator.New(cfg, orchestrator.Dependencies{
+				Connector: tracker,
+				Runner:    &staticRunner{},
+			})
+			if err != nil {
+				t.Fatalf("New() error = %v", err)
+			}
+			stop := runOrchestrator(t, orch)
+			defer stop()
+
+			waitForState(t, orch, func(orchestrator.State) bool {
+				return len(tracker.stateUpdateCalls()) >= len(tt.wantUpdates)
+			})
+
+			if got := tracker.stateUpdateCalls(); !stateUpdatesEqual(got, tt.wantUpdates) {
+				t.Fatalf("state updates = %#v, want %#v", got, tt.wantUpdates)
+			}
+			requests := tracker.fetchByStatesRequests()
+			if len(requests) == 0 || !stateListIncludes(requests[0], gate.DefaultPlanStop) {
+				t.Fatalf("FetchIssuesByStates requests = %#v, want Plan Review included", requests)
+			}
+			comments := tracker.commentCalls()
+			if len(tt.wantCommentFragments) == 0 {
+				if len(comments) != 0 {
+					t.Fatalf("comments = %#v, want none", comments)
+				}
+			} else {
+				if len(comments) != 1 {
+					t.Fatalf("comments = %#v, want one rework feedback comment", comments)
+				}
+				for _, fragment := range tt.wantCommentFragments {
+					if !strings.Contains(comments[0].body, fragment) {
+						t.Fatalf("comment %q missing %q", comments[0].body, fragment)
+					}
+				}
+			}
+		})
+	}
+}
+
+func TestRejectedPlanReworkDispatchesInPlanMode(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-plan-rework", "digitaldrywood/detent#526", gate.DefaultPlanStop)
+	issue.Comments = []connector.IssueComment{{
+		Body: "## Detent Plan Review\n\n- state: P1\n\n### Findings\n\n- Plan skips acceptance criteria.",
+		URL:  "https://github.test/comment/plan-review-p1",
+	}}
+	tracker := newFakeConnector(issue)
+	tracker.setStateIssues(issue)
+	runner := &staticRunner{
+		result: orchestrator.RunResult{
+			FinalState: orchestrator.FinalStateCompleted,
+			Output:     "## Revised Plan\n- Add acceptance criteria coverage\n",
+		},
+	}
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        5 * time.Millisecond,
+		MaxConcurrentAgents: 1,
+		Plan: gate.PlanConfig{
+			Enabled: true,
+			Review:  gate.PlanReviewAutomated,
+			Stop:    gate.DefaultPlanStop,
+		},
+		ActiveStates:           []string{"Todo", "In Progress", "Rework"},
+		ObservedStates:         []string{"Backlog", "Human Review", "Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Millisecond,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForState(t, orch, func(orchestrator.State) bool {
+		return len(runner.requests()) > 0
+	})
+
+	requests := runner.requests()
+	if got := requests[0].Mode; got != orchestrator.RunModePlan {
+		t.Fatalf("RunRequest.Mode = %q, want plan", got)
 	}
 }
 
@@ -1212,12 +1462,24 @@ type fakeConnector struct {
 	fetchByStatesCount  int
 	fetchByStatesLog    [][]string
 	setFields           []setFieldCall
+	comments            []commentCall
+	stateUpdates        []stateUpdateCall
 }
 
 type setFieldCall struct {
 	issueID string
 	field   string
 	value   string
+}
+
+type commentCall struct {
+	issueID string
+	body    string
+}
+
+type stateUpdateCall struct {
+	issueID string
+	state   string
 }
 
 func newFakeConnector(issues ...connector.Issue) *fakeConnector {
@@ -1274,11 +1536,20 @@ func (c *fakeConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) (
 	return cloneIssues(issues), nil
 }
 
-func (c *fakeConnector) CreateComment(context.Context, string, string) error {
+func (c *fakeConnector) CreateComment(_ context.Context, issueID string, body string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.comments = append(c.comments, commentCall{issueID: issueID, body: body})
 	return nil
 }
 
-func (c *fakeConnector) UpdateIssueState(context.Context, string, string) error {
+func (c *fakeConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.stateUpdates = append(c.stateUpdates, stateUpdateCall{issueID: issueID, state: state})
+	c.applyIssueStateLocked(issueID, state)
 	return nil
 }
 
@@ -1331,6 +1602,20 @@ func (c *fakeConnector) setFieldCalls() []setFieldCall {
 	return append([]setFieldCall(nil), c.setFields...)
 }
 
+func (c *fakeConnector) commentCalls() []commentCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]commentCall(nil), c.comments...)
+}
+
+func (c *fakeConnector) stateUpdateCalls() []stateUpdateCall {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]stateUpdateCall(nil), c.stateUpdates...)
+}
+
 func (c *fakeConnector) fetchCandidateCalls() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1361,6 +1646,41 @@ func (c *fakeConnector) setStateIssues(issues ...connector.Issue) {
 	defer c.mu.Unlock()
 
 	c.stateIssues = cloneIssues(issues)
+}
+
+func (c *fakeConnector) applyIssueStateLocked(issueID string, state string) {
+	for i := range c.candidates {
+		if c.candidates[i].ID == issueID {
+			c.candidates[i].State = state
+		}
+	}
+	for i := range c.stateIssues {
+		if c.stateIssues[i].ID == issueID {
+			c.stateIssues[i].State = state
+		}
+	}
+}
+
+func stateUpdatesEqual(got []stateUpdateCall, want []stateUpdateCall) bool {
+	if len(got) != len(want) {
+		return false
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func stateListIncludes(states []string, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	for _, state := range states {
+		if strings.ToLower(strings.TrimSpace(state)) == want {
+			return true
+		}
+	}
+	return false
 }
 
 type parallelFetchConnector struct {
@@ -1461,14 +1781,26 @@ func (c *parallelFetchConnector) releaseFetches() {
 }
 
 type staticRunner struct {
-	calls  atomic.Int64
-	result orchestrator.RunResult
-	err    error
+	calls      atomic.Int64
+	requestMu  sync.Mutex
+	requestLog []orchestrator.RunRequest
+	result     orchestrator.RunResult
+	err        error
 }
 
-func (r *staticRunner) Run(context.Context, orchestrator.RunRequest) (orchestrator.RunResult, error) {
+func (r *staticRunner) Run(_ context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
 	r.calls.Add(1)
+	r.requestMu.Lock()
+	r.requestLog = append(r.requestLog, request)
+	r.requestMu.Unlock()
 	return r.result, r.err
+}
+
+func (r *staticRunner) requests() []orchestrator.RunRequest {
+	r.requestMu.Lock()
+	defer r.requestMu.Unlock()
+
+	return append([]orchestrator.RunRequest(nil), r.requestLog...)
 }
 
 type fakeWorkspaceReaper struct {

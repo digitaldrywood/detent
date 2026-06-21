@@ -46,6 +46,10 @@ type PullRequestCommenter interface {
 	CreatePullRequestComment(context.Context, string, int, string) error
 }
 
+type IssueCommentReader interface {
+	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
+}
+
 type IssueReferenceResolver interface {
 	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
 }

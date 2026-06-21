@@ -265,6 +265,17 @@ func selectorContext(ctx selector.Context, workflow config.Workflow) selector.Co
 	return ctx
 }
 
+func normalizeRunMode(mode string) string {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", RunModeImplement:
+		return RunModeImplement
+	case RunModePlan:
+		return RunModePlan
+	default:
+		return RunModeImplement
+	}
+}
+
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -296,6 +307,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	attempt := req.Attempt
 	prompt, err := BuildPrompt(workflow, req.Issue, PromptOptions{
 		Attempt:         &attempt,
+		PlanOnly:        normalizeRunMode(req.Mode) == RunModePlan,
 		WorkspacePath:   info.Path,
 		Branch:          info.Branch,
 		AvailableSkills: availableSkills,
@@ -330,12 +342,15 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Model:             model,
 	}, func(update AgentUpdate) error {
 		applyAgentUpdate(&result, update)
-		if err := r.publishRunUpdate(ctx, req, info, workspaceIssue, progress, result, update, runStartedAt); err != nil {
+		eventAt := r.now()
+		progress.apply(update, eventAt)
+		if err := r.publishRunUpdate(ctx, req, info, workspaceIssue, progress, result, eventAt, runStartedAt); err != nil {
 			return err
 		}
 		return nil
 	})
 	_ = turnResult
+	result.Output = progress.outputText()
 
 	r.afterRun(info, workspaceIssue)
 	afterRunPending = false
@@ -454,7 +469,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 			output.WriteString(update.Delta)
 		}
 		applyAgentUpdate(&runResult, update)
-		if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, update, runStartedAt); err != nil {
+		eventAt := r.now()
+		progress.apply(update, eventAt)
+		if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt); err != nil {
 			return err
 		}
 		return nil
@@ -725,6 +742,7 @@ type agentRunProgress struct {
 	processIdentity    string
 	turnIDs            map[string]struct{}
 	messages           map[string]string
+	messageOrder       []string
 	lastEventAt        time.Time
 	lastEvent          string
 	lastMessage        string
@@ -762,6 +780,9 @@ func (p *agentRunProgress) apply(update AgentUpdate, eventAt time.Time) {
 		key := update.ItemID
 		if key == "" {
 			key = update.TurnID
+		}
+		if _, ok := p.messages[key]; !ok {
+			p.messageOrder = append(p.messageOrder, key)
 		}
 		p.messages[key] += update.Delta
 		p.lastMessage = strings.TrimSpace(p.messages[key])
@@ -842,6 +863,14 @@ func (p *agentRunProgress) recentActivity() []telemetry.ActivityEvent {
 	return out
 }
 
+func (p *agentRunProgress) outputText() string {
+	var out strings.Builder
+	for _, key := range p.messageOrder {
+		out.WriteString(p.messages[key])
+	}
+	return out.String()
+}
+
 func (r *Runner) publishRunUpdate(
 	ctx context.Context,
 	req RunRequest,
@@ -849,15 +878,13 @@ func (r *Runner) publishRunUpdate(
 	issue workspace.Issue,
 	progress *agentRunProgress,
 	result RunResult,
-	update AgentUpdate,
+	eventAt time.Time,
 	runStartedAt time.Time,
 ) error {
 	if req.OnUsageUpdate == nil {
 		return nil
 	}
 
-	eventAt := r.now()
-	progress.apply(update, eventAt)
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, eventAt)
 	usage := UsageUpdate{
 		SessionID:       progress.sessionID,

@@ -6,6 +6,8 @@ import (
 
 const FinalStateCompleted = runner.FinalStateCompleted
 
+const RunModePlan = runner.RunModePlan
+
 type Runner = runner.Backend
 
 type Validator = runner.Validator

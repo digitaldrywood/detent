@@ -70,6 +70,11 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
+			o.reviewPlanIssues(ctx, state, fetched.status, now),
+		)
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
 			o.autoPromoteHumanReviewIssues(ctx, state, fetched.status, now),
 		)
 	}
@@ -127,6 +132,9 @@ func (o *Orchestrator) fetchTickIssues(ctx context.Context) (tickFetchedIssues, 
 	}
 	fetched.status = cloneIssues(statusIssues)
 	fetched.statusOK = true
+	if !o.hydratePlanIssueComments(ctx, &fetched) {
+		return tickFetchedIssues{}, false
+	}
 	return fetched, true
 }
 

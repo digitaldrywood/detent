@@ -13,6 +13,9 @@ import (
 const (
 	FinalStateCompleted = "completed"
 	FinalStateFailed    = "failed"
+
+	RunModeImplement = "implement"
+	RunModePlan      = "plan"
 )
 
 type Backend interface {
@@ -92,6 +95,7 @@ type AgentTokenUsage struct {
 type RunRequest struct {
 	Issue           connector.Issue
 	Attempt         int
+	Mode            string
 	StartedAt       time.Time
 	WorkerHost      string
 	SelectorContext selector.Context
@@ -107,6 +111,7 @@ type ValidatorRequest struct {
 
 type RunResult struct {
 	FinalState    string
+	Output        string
 	Tokens        CodexTotals
 	DiffStats     DiffStats
 	RateLimits    *telemetry.RateLimits
