@@ -83,6 +83,11 @@ gate:
     min_score: 0.8
     block_on:
       - p1
+plan:
+  enabled: false
+  review: human
+  approval_label: plan-approved
+  stop: "Plan Review"
 server:
   host: 127.0.0.1
   port: 4000

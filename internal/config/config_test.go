@@ -114,6 +114,10 @@ codex:
 gate:
   kind: human_review
   approval_label: Approved-By-Human
+plan:
+  enabled: true
+  review: both
+  stop: " Plan Review "
 server:
   host: 0.0.0.0
   port: 4001
@@ -256,6 +260,12 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Gate.Kind != gate.KindHumanReview || cfg.Gate.ApprovalLabel != "approved-by-human" || cfg.Gate.Run != "" {
 		t.Fatalf("Gate = %#v, want human_review with approved-by-human label", cfg.Gate)
+	}
+	if !cfg.Plan.Enabled || cfg.Plan.Review != gate.PlanReviewBoth || cfg.Plan.Stop != gate.DefaultPlanStop {
+		t.Fatalf("Plan = %#v, want enabled both review at Plan Review", cfg.Plan)
+	}
+	if !stateListContains(cfg.Tracker.ObservedStates, gate.DefaultPlanStop) {
+		t.Fatalf("Tracker.ObservedStates = %#v, want plan stop", cfg.Tracker.ObservedStates)
 	}
 	if cfg.Server.Kanban.Mode != KanbanModeIntegration {
 		t.Fatalf("Server.Kanban.Mode = %q, want %q", cfg.Server.Kanban.Mode, KanbanModeIntegration)
@@ -517,6 +527,31 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Gate.Kind != gate.KindCommand || cfg.Gate.Run != gate.DefaultCommand {
 		t.Fatalf("Gate = %#v, want default command gate", cfg.Gate)
+	}
+	if cfg.Plan.Enabled || cfg.Plan.Review != gate.PlanReviewHuman || cfg.Plan.Stop != gate.DefaultPlanStop {
+		t.Fatalf("Plan = %#v, want disabled human review plan default", cfg.Plan)
+	}
+}
+
+func TestValidatePlanRejectsInvalidConfig(t *testing.T) {
+	t.Parallel()
+
+	cfg := Default()
+	cfg.Plan.Enabled = true
+	cfg.Plan.Review = "committee"
+	cfg.Plan.Stop = " "
+
+	err := cfg.Validate()
+	if err == nil {
+		t.Fatal("Validate() error = nil, want plan validation errors")
+	}
+	for _, want := range []string{
+		"plan.review must be one of human, automated, both",
+		"plan.stop must not be blank when plan.enabled is true",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Validate() error = %v, want %q", err, want)
+		}
 	}
 }
 

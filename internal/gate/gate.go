@@ -11,10 +11,16 @@ const (
 
 	DefaultCommand           = "make check"
 	DefaultApprovalLabel     = "human-approved"
+	DefaultPlanApprovalLabel = "plan-approved"
+	DefaultPlanStop          = "Plan Review"
 	DefaultValidatorMinScore = 0.8
 
 	CIFailureActionSkip   = "skip"
 	CIFailureActionRework = "rework"
+
+	PlanReviewHuman     = "human"
+	PlanReviewAutomated = "automated"
+	PlanReviewBoth      = "both"
 )
 
 type Config struct {
@@ -31,6 +37,13 @@ type ValidatorConfig struct {
 	Model    string   `yaml:"model"`
 	MinScore float64  `yaml:"min_score"`
 	BlockOn  []string `yaml:"block_on"`
+}
+
+type PlanConfig struct {
+	Enabled       bool   `yaml:"enabled"`
+	Review        string `yaml:"review"`
+	ApprovalLabel string `yaml:"approval_label"`
+	Stop          string `yaml:"stop"`
 }
 
 type Summary struct {
@@ -93,6 +106,7 @@ const (
 	ReasonValidatorRework              Reason = "validator_rework"
 	ReasonValidatorScoreBelowThreshold Reason = "validator_score_below_threshold"
 	ReasonValidatorBlockedSeverity     Reason = "validator_blocked_severity"
+	ReasonPlanDisabled            Reason = "plan_disabled"
 )
 
 type Decision struct {
@@ -111,6 +125,14 @@ func DefaultConfig() Config {
 		RequireAutomatedReview: new(true),
 		CIFailureAction:        CIFailureActionSkip,
 		Validator:              effectiveValidatorConfig(ValidatorConfig{}),
+	}
+}
+
+func DefaultPlanConfig() PlanConfig {
+	return PlanConfig{
+		Review:        PlanReviewHuman,
+		ApprovalLabel: DefaultPlanApprovalLabel,
+		Stop:          DefaultPlanStop,
 	}
 }
 
@@ -145,6 +167,22 @@ func Effective(cfg Config) Config {
 	return cfg
 }
 
+func EffectivePlan(cfg PlanConfig) PlanConfig {
+	cfg.Review = NormalizePlanReview(cfg.Review)
+	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
+	cfg.Stop = strings.TrimSpace(cfg.Stop)
+	if cfg.Review == "" {
+		cfg.Review = PlanReviewHuman
+	}
+	if cfg.ApprovalLabel == "" {
+		cfg.ApprovalLabel = DefaultPlanApprovalLabel
+	}
+	if cfg.Stop == "" {
+		cfg.Stop = DefaultPlanStop
+	}
+	return cfg
+}
+
 func NormalizeKind(kind string) string {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case "", KindCommand:
@@ -153,6 +191,19 @@ func NormalizeKind(kind string) string {
 		return KindHumanReview
 	default:
 		return strings.ToLower(strings.TrimSpace(kind))
+	}
+}
+
+func NormalizePlanReview(review string) string {
+	switch strings.ToLower(strings.TrimSpace(review)) {
+	case "", PlanReviewHuman:
+		return PlanReviewHuman
+	case PlanReviewAutomated, "auto":
+		return PlanReviewAutomated
+	case PlanReviewBoth:
+		return PlanReviewBoth
+	default:
+		return strings.ToLower(strings.TrimSpace(review))
 	}
 }
 
@@ -183,6 +234,19 @@ func Validate(prefix string, cfg Config) []string {
 	return problems
 }
 
+func ValidatePlan(prefix string, cfg PlanConfig) []string {
+	var problems []string
+	switch NormalizePlanReview(cfg.Review) {
+	case PlanReviewHuman, PlanReviewAutomated, PlanReviewBoth:
+	default:
+		problems = append(problems, prefix+".review must be one of human, automated, both")
+	}
+	if cfg.Enabled && strings.TrimSpace(cfg.Stop) == "" {
+		problems = append(problems, prefix+".stop must not be blank when plan.enabled is true")
+	}
+	return problems
+}
+
 func Instructions(cfg Config) string {
 	cfg = Effective(cfg)
 	switch cfg.Kind {
@@ -205,6 +269,30 @@ func Instructions(cfg Config) string {
 		}
 		return instructions
 	}
+}
+
+func EvaluatePlan(cfg PlanConfig, approvalLabel string, labels []string, summary Summary) Decision {
+	cfg = EffectivePlan(cfg)
+	if !cfg.Enabled {
+		return decision(ActionSkip, ReasonPlanDisabled)
+	}
+
+	if automatedReviewHasP1(summary.ReviewState) || len(summary.P1Findings) > 0 {
+		out := decision(ActionRework, ReasonP1Findings)
+		out.Findings = cloneFindings(summary.P1Findings)
+		return out
+	}
+
+	humanReady := planHumanReviewEnabled(cfg) && hasApprovalLabel(labels, approvalLabel)
+	automatedReady := planAutomatedReviewEnabled(cfg) && automatedReviewSubmitted(summary.ReviewState)
+	if humanReady || automatedReady {
+		return decision(ActionPass, ReasonReady)
+	}
+
+	if planHumanReviewEnabled(cfg) {
+		return decision(ActionWait, ReasonHumanApprovalMissing)
+	}
+	return decision(ActionWait, ReasonAutomatedReviewMissing)
 }
 
 func Evaluate(cfg Config, labels []string, summary Summary, now time.Time, opts EvaluationOptions) Decision {
@@ -256,6 +344,27 @@ func evaluateHumanReview(cfg Config, labels []string, summary Summary) Decision 
 		}
 	}
 	return decision(ActionWait, ReasonHumanApprovalMissing)
+}
+
+func hasApprovalLabel(labels []string, approvalLabel string) bool {
+	approvalLabel = normalizeLabel(approvalLabel)
+	if approvalLabel == "" {
+		approvalLabel = DefaultApprovalLabel
+	}
+	for _, label := range labels {
+		if normalizeLabel(label) == approvalLabel {
+			return true
+		}
+	}
+	return false
+}
+
+func planHumanReviewEnabled(cfg PlanConfig) bool {
+	return cfg.Review == PlanReviewHuman || cfg.Review == PlanReviewBoth
+}
+
+func planAutomatedReviewEnabled(cfg PlanConfig) bool {
+	return cfg.Review == PlanReviewAutomated || cfg.Review == PlanReviewBoth
 }
 
 func decision(action Action, reason Reason) Decision {

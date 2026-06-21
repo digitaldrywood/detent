@@ -55,19 +55,20 @@ type Workflow struct {
 }
 
 type Config struct {
-	Identity      Identity      `yaml:"identity,omitempty"`
-	Tracker       Tracker       `yaml:"tracker"`
-	Polling       Polling       `yaml:"polling"`
-	Workspace     Workspace     `yaml:"workspace"`
-	Worker        Worker        `yaml:"worker"`
-	Agent         Agent         `yaml:"agent"`
-	Agents        Agents        `yaml:"agents"`
-	Codex         Codex         `yaml:"codex"`
-	Gate          gate.Config   `yaml:"gate"`
-	Server        Server        `yaml:"server"`
-	Observability Observability `yaml:"observability"`
-	Budget        Budget        `yaml:"budget"`
-	Hooks         Hooks         `yaml:"hooks"`
+	Identity      Identity        `yaml:"identity,omitempty"`
+	Tracker       Tracker         `yaml:"tracker"`
+	Polling       Polling         `yaml:"polling"`
+	Workspace     Workspace       `yaml:"workspace"`
+	Worker        Worker          `yaml:"worker"`
+	Agent         Agent           `yaml:"agent"`
+	Agents        Agents          `yaml:"agents"`
+	Codex         Codex           `yaml:"codex"`
+	Gate          gate.Config     `yaml:"gate"`
+	Plan          gate.PlanConfig `yaml:"plan"`
+	Server        Server          `yaml:"server"`
+	Observability Observability   `yaml:"observability"`
+	Budget        Budget          `yaml:"budget"`
+	Hooks         Hooks           `yaml:"hooks"`
 }
 
 type Tracker struct {
@@ -569,6 +570,7 @@ func Default() Config {
 			StallTimeoutMS: 300000,
 		},
 		Gate: gate.DefaultConfig(),
+		Plan: gate.DefaultPlanConfig(),
 		Server: Server{
 			Host:   "127.0.0.1",
 			Kanban: Kanban{Mode: KanbanModeReadOnly},
@@ -614,6 +616,7 @@ func (c *Config) Validate() error {
 	c.Agents.validate(&problems)
 	c.Codex.validate(&problems)
 	problems = append(problems, gate.Validate("gate", c.Gate)...)
+	problems = append(problems, gate.ValidatePlan("plan", c.Plan)...)
 	c.Server.validate(&problems)
 	c.Observability.validate(&problems)
 	c.Budget.validate("budget", &problems)
@@ -683,6 +686,10 @@ func (c *Config) normalize() {
 	c.Agents.normalize()
 	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
 	c.Gate = gate.Effective(c.Gate)
+	c.Plan = gate.EffectivePlan(c.Plan)
+	if c.Plan.Enabled {
+		c.Tracker.ObservedStates = appendStateUnique(c.Tracker.ObservedStates, c.Plan.Stop)
+	}
 	c.Server.Normalize()
 	c.Hooks.Shell = commandshell.Normalize(c.Hooks.Shell)
 }
@@ -1315,6 +1322,14 @@ func stateListContains(states []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func appendStateUnique(states []string, state string) []string {
+	state = strings.TrimSpace(state)
+	if state == "" || stateListContains(states, state) {
+		return states
+	}
+	return append(states, state)
 }
 
 func normalizeLabel(label string) string {

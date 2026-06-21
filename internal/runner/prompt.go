@@ -36,6 +36,7 @@ var (
 
 type PromptOptions struct {
 	Attempt         *int
+	PlanOnly        bool
 	WorkspacePath   string
 	Branch          string
 	AutoBranch      *bool
@@ -60,6 +61,9 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	}
 
 	rendered = prependWorkspaceIsolationBlock(rendered, opts.WorkspacePath, opts.Branch)
+	if opts.PlanOnly {
+		rendered = appendPlanOnlyBlock(rendered)
+	}
 
 	rendered, err = appendLessonsBlock(rendered, workflow.Config.Agent.Lessons, opts.WorkspacePath)
 	if err != nil {
@@ -136,6 +140,14 @@ func prependWorkspaceIsolationBlock(prompt string, workspacePath string, branch 
 		workspacePath, branch)
 
 	return block + "\n\n" + strings.TrimLeft(prompt, " \t\r\n")
+}
+
+func appendPlanOnlyBlock(prompt string) string {
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Plan approval stop\n\n" +
+		"This dispatch is plan-only. Produce a structured implementation plan as a Markdown artifact for issue review. " +
+		"Do not modify files. Do not run mutating commands. Do not commit. Do not push. Do not open or update a pull request. Do not move tracker state. " +
+		"Include acceptance criteria, the intended code and test changes, validation commands, risks, and open questions. " +
+		"If the issue is not ready for implementation, include the unresolved concerns clearly."
 }
 
 func AvailableSkillsBlock(skillList []skills.Skill) string {
