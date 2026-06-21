@@ -81,6 +81,31 @@ download_optional_file() {
 	curl -fsSL "$1" -o "$2" 2>/dev/null
 }
 
+github_api_token() {
+	if [ -n "${DETENT_GITHUB_TOKEN:-}" ]; then
+		printf '%s\n' "$DETENT_GITHUB_TOKEN"
+		return
+	fi
+	if [ -n "${GITHUB_TOKEN:-}" ]; then
+		printf '%s\n' "$GITHUB_TOKEN"
+		return
+	fi
+	printf ''
+}
+
+download_api_file() {
+	token="$(github_api_token)"
+	if [ -n "$token" ]; then
+		curl -fsSL \
+			-H "Accept: application/vnd.github+json" \
+			-H "Authorization: Bearer $token" \
+			-H "X-GitHub-Api-Version: 2022-11-28" \
+			"$1" -o "$2"
+		return
+	fi
+	download_file "$1" "$2"
+}
+
 release_tag() {
 	if [ -n "${DETENT_VERSION:-}" ]; then
 		printf '%s\n' "$DETENT_VERSION"
@@ -88,7 +113,7 @@ release_tag() {
 	fi
 
 	response="$tmp_dir/latest-release.json"
-	if ! download_file "$api_base/releases/latest" "$response"; then
+	if ! download_api_file "$api_base/releases/latest" "$response"; then
 		return 1
 	fi
 
