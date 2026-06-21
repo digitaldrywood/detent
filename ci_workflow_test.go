@@ -13,7 +13,7 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadFile(.github/workflows/ci.yml) error = %v", err)
 	}
-	workflow := string(raw)
+	workflow := strings.ReplaceAll(string(raw), "\r\n", "\n")
 	job := workflowBetween(t, workflow, "  installer-smoke:", "\n  goreleaser-snapshot:")
 
 	for _, want := range []string{
