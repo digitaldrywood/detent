@@ -376,6 +376,97 @@ func TestSnapshotJSONZeroValueSemantics(t *testing.T) {
 	}
 }
 
+func TestRefreshReadinessStatus(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name  string
+		value telemetry.Refresh
+		want  telemetry.RefreshStatus
+		ready bool
+	}{
+		{
+			name: "explicit initializing",
+			value: telemetry.Refresh{
+				Status: telemetry.RefreshStatusInitializing,
+			},
+			want: telemetry.RefreshStatusInitializing,
+		},
+		{
+			name: "explicit ready",
+			value: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &now,
+			},
+			want:  telemetry.RefreshStatusReady,
+			ready: true,
+		},
+		{
+			name: "explicit degraded",
+			value: telemetry.Refresh{
+				Status:    telemetry.RefreshStatusDegraded,
+				LastError: "tracker unavailable",
+			},
+			want: telemetry.RefreshStatusDegraded,
+		},
+		{
+			name: "legacy loaded snapshot infers ready",
+			value: telemetry.Refresh{
+				LastRefreshAt: &now,
+			},
+			want:  telemetry.RefreshStatusReady,
+			ready: true,
+		},
+		{
+			name:  "legacy zero refresh remains initializing",
+			value: telemetry.Refresh{},
+			want:  telemetry.RefreshStatusInitializing,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := tt.value.ReadinessStatus(); got != tt.want {
+				t.Fatalf("ReadinessStatus() = %q, want %q", got, tt.want)
+			}
+			if got := tt.value.Ready(); got != tt.ready {
+				t.Fatalf("Ready() = %v, want %v", got, tt.ready)
+			}
+		})
+	}
+}
+
+func TestRefreshReadinessJSON(t *testing.T) {
+	t.Parallel()
+
+	lastErrorAt := time.Date(2026, 6, 22, 9, 30, 0, 0, time.UTC)
+	data, err := json.Marshal(telemetry.Refresh{
+		Status:      telemetry.RefreshStatusDegraded,
+		LastError:   "tracker unavailable",
+		LastErrorAt: &lastErrorAt,
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	if got["status"] != string(telemetry.RefreshStatusDegraded) {
+		t.Fatalf("status = %#v, want degraded in %s", got["status"], string(data))
+	}
+	if got["last_error"] != "tracker unavailable" {
+		t.Fatalf("last_error = %#v, want tracker unavailable in %s", got["last_error"], string(data))
+	}
+	if got["last_error_at"] != "2026-06-22T09:30:00Z" {
+		t.Fatalf("last_error_at = %#v, want timestamp in %s", got["last_error_at"], string(data))
+	}
+}
+
 func TestProjectSnapshotJSONKeepsZeroThroughput(t *testing.T) {
 	t.Parallel()
 

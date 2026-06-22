@@ -168,6 +168,28 @@ func TestProjectDependenciesUseRuntimeGitHubTokenSource(t *testing.T) {
 	}
 }
 
+func TestStartupSnapshotMarksTrackerStateInitializing(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 0, 0, 0, time.UTC)
+	snapshot := startupSnapshot(context.Background(), globalconfig.Config{
+		Projects: []globalconfig.Project{{ID: "alpha", Color: "#1192e8"}},
+	}, nil, "http://localhost:4101", now)
+
+	if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusInitializing {
+		t.Fatalf("snapshot Refresh status = %q, want %q", got, telemetry.RefreshStatusInitializing)
+	}
+	if snapshot.Refresh.NextRefreshAt == nil || !snapshot.Refresh.NextRefreshAt.Equal(now) {
+		t.Fatalf("snapshot.Refresh.NextRefreshAt = %v, want %v", snapshot.Refresh.NextRefreshAt, now)
+	}
+	if len(snapshot.Projects) != 1 {
+		t.Fatalf("snapshot.Projects len = %d, want 1", len(snapshot.Projects))
+	}
+	if got := snapshot.Projects[0].Refresh.ReadinessStatus(); got != telemetry.RefreshStatusInitializing {
+		t.Fatalf("project Refresh status = %q, want %q", got, telemetry.RefreshStatusInitializing)
+	}
+}
+
 func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	t.Parallel()
 
