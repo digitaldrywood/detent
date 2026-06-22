@@ -227,7 +227,8 @@ func (o *Orchestrator) dispatchTickIssues(
 	planner.pruneBudgetRefusals(state, now)
 	planner.trackBlockedCandidates(state, issues, now)
 	if fetched.statusOK {
-		currentBlockedStatusIssues := issuesInStates(fetched.status, []string{blockedStatusState})
+		currentBlockedStatusIssues := issuesInStates(fetched.candidates, []string{blockedStatusState})
+		currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, issuesInStates(fetched.status, []string{blockedStatusState}))
 		if !transitions.blockedRefreshOK {
 			currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, previous.blockedStatusIssues)
 		}

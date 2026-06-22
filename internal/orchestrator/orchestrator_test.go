@@ -1159,6 +1159,54 @@ func TestRunPublishesBoardIssuesFromCandidatesAndObservedStates(t *testing.T) {
 	}
 }
 
+func TestRunTracksStatusLabelConflictCandidateAsBlocked(t *testing.T) {
+	t.Parallel()
+
+	conflict := testIssue("issue-conflict", "digitaldrywood/detent#606", "Blocked")
+	conflict.Labels = []string{"detent:todo", "detent:in-progress", "bug"}
+	conflict.BlockerReason = "multiple configured Detent status labels: detent:in-progress, detent:todo; remove all but one status label"
+	tracker := newFakeConnector(conflict)
+	runner := &staticRunner{}
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:           5 * time.Millisecond,
+		MaxConcurrentAgents:    1,
+		MaxRetryBackoff:        time.Hour,
+		FailureRetryBaseDelay:  time.Hour,
+		ActiveStates:           []string{"Todo", "In Progress"},
+		ObservedStates:         []string{"Backlog", "Human Review", "Blocked"},
+		TerminalStates:         []string{"Done", "Cancelled"},
+		ContinuationRetryDelay: time.Second,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		_, ok := state.Blocked[conflict.ID]
+		return ok
+	})
+	if got := runner.calls.Load(); got != 0 {
+		t.Fatalf("runner calls = %d, want 0", got)
+	}
+	blocked := state.Blocked[conflict.ID]
+	if !strings.Contains(blocked.Reason, "multiple configured Detent status labels") {
+		t.Fatalf("blocked reason = %q, want status-label conflict", blocked.Reason)
+	}
+	snapshot := state.Snapshot(time.Now())
+	if snapshot.Counts.Blocked != 1 {
+		t.Fatalf("snapshot blocked count = %d, want 1", snapshot.Counts.Blocked)
+	}
+	counts := telemetry.BoardStateCounts(snapshot)
+	if len(counts) != 1 || counts[0].State != "Blocked" || counts[0].Count != 1 {
+		t.Fatalf("board state counts = %#v, want one Blocked issue", counts)
+	}
+}
+
 func TestRunFetchesCandidatesAndObservedStatesConcurrently(t *testing.T) {
 	t.Parallel()
 

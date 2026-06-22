@@ -412,6 +412,14 @@ func (c githubReadinessChecker) labelIssuesReadCheck(ctx context.Context, states
 			Hint:   "Grant Issues repository read permission and confirm status labels exist.",
 		}
 	}
+	if conflicts := c.connector.labelStatusConflictSummaries(issues); len(conflicts) > 0 {
+		return ReadinessCheck{
+			Name:   "GitHub status label issue read",
+			Status: ReadinessWarn,
+			Detail: fmt.Sprintf("read issues for %d configured label state(s); sampled %d issue(s); status label conflicts: %s", len(states), len(issues), strings.Join(conflicts, "; ")),
+			Hint:   "Remove all but one configured status label from each conflicted issue, leaving only the label for the intended workflow state, then rerun detent doctor.",
+		}
+	}
 	return ReadinessCheck{
 		Name:   "GitHub status label issue read",
 		Status: ReadinessOK,
