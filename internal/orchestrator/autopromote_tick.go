@@ -263,6 +263,7 @@ func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 	}
 	summary.PullRequestPresent = true
 	summary.PullRequestURL = strings.TrimSpace(pullRequest.URL)
+	summary.MergeableState = strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
 	summary.CIStatus = pullRequest.CIStatus
 	summary.ReviewState = pullRequest.CodexReviewState
 	summary.P1Findings = autoPromoteFindingsFromPullRequest(pullRequest)
@@ -387,6 +388,14 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 	if decision.CIStatus != "" {
 		attrs = append(attrs, "ci_status", decision.CIStatus)
 	}
+	if issue.PullRequest != nil {
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			attrs = append(attrs, "pull_request", url)
+		}
+		if mergeableState := strings.TrimSpace(issue.PullRequest.MergeableState); mergeableState != "" {
+			attrs = append(attrs, "mergeable_state", mergeableState)
+		}
+	}
 	if decision.QuietRemaining > 0 {
 		attrs = append(attrs, "quiet_remaining", decision.QuietRemaining)
 	}
@@ -395,7 +404,7 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 		o.logger.Info("auto promote decision", attrs...)
 		return
 	}
-	o.logger.Debug("auto promote decision", attrs...)
+	o.logger.Info("auto promote decision", attrs...)
 }
 
 func autoPromoteComment(
@@ -409,8 +418,11 @@ func autoPromoteComment(
 		b.WriteString("Auto-promoted this issue from Human Review to Merging.")
 	case autoPromoteReworkState:
 		b.WriteString("Auto-promote routed this issue from Human Review to Rework")
-		if decision.Reason == AutoPromoteReasonCINotGreen {
+		switch decision.Reason {
+		case AutoPromoteReasonCINotGreen:
 			b.WriteString(": current-head CI is failing")
+		case AutoPromoteReasonMergeConflicts:
+			b.WriteString(": linked PR has merge conflicts")
 		}
 		b.WriteString(".")
 	default:
@@ -423,6 +435,10 @@ func autoPromoteComment(
 	if summary.PullRequestURL != "" {
 		b.WriteString("\n- pull request: ")
 		b.WriteString(summary.PullRequestURL)
+	}
+	if summary.MergeableState != "" {
+		b.WriteString("\n- mergeable_state: ")
+		b.WriteString(summary.MergeableState)
 	}
 	if decision.CIStatus != "" {
 		b.WriteString("\n- ci_status: ")

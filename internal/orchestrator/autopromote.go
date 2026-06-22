@@ -19,6 +19,7 @@ type AutoPromoteConfig struct {
 type AutoPromoteSummary struct {
 	PullRequestPresent bool
 	PullRequestURL     string
+	MergeableState     string
 	CIStatus           string
 	ReviewState        string
 	P1Findings         []AutoPromoteFinding
@@ -50,6 +51,7 @@ const (
 	AutoPromoteReasonOptoutLabel                  AutoPromoteReason = "optout_label"
 	AutoPromoteReasonLabelNotAllowed              AutoPromoteReason = "label_not_allowed"
 	AutoPromoteReasonMissingPullRequest           AutoPromoteReason = "missing_pull_request"
+	AutoPromoteReasonMergeConflicts               AutoPromoteReason = "merge_conflicts"
 	AutoPromoteReasonCINotGreen                   AutoPromoteReason = "ci_not_green"
 	AutoPromoteReasonCodexReviewMissing           AutoPromoteReason = "automated_review_missing"
 	AutoPromoteReasonP1Findings                   AutoPromoteReason = "p1_findings"
@@ -86,6 +88,9 @@ func EvaluateAutoPromote(
 	}
 	if !autoPromoteAllowedIssueLabel(issue, cfg) {
 		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonLabelNotAllowed)
+	}
+	if autoPromoteMergeConflicts(summary.MergeableState) {
+		return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonMergeConflicts)
 	}
 	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateSummary(summary), now, gate.EvaluationOptions{
 		QuietDuration: cfg.QuietDuration,
@@ -163,6 +168,15 @@ func normalizeLabels(labels []string) []string {
 		normalized = append(normalized, label)
 	}
 	return normalized
+}
+
+func autoPromoteMergeConflicts(mergeableState string) bool {
+	switch strings.ToLower(strings.TrimSpace(mergeableState)) {
+	case "dirty", "conflicting":
+		return true
+	default:
+		return false
+	}
 }
 
 func gateSummary(summary AutoPromoteSummary) gate.Summary {
