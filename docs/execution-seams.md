@@ -61,6 +61,35 @@ The execution edge still carries these code/git/PR assumptions.
   release packaging inputs change, preserving release-package coverage without
   charging docs-only and routine code PRs the full snapshot cost.
 
+### Main Branch Protection
+
+The `main` branch must require pull requests and up-to-date validation before
+merge. The expected GitHub branch protection or ruleset setting is
+`required_status_checks.strict: true`; if the repository switches to merge
+queue, the queue must provide equivalent current-base validation before merge.
+
+Required status checks must include every meaningful CI job directly. Do not
+depend on a downstream skipped job to protect an upstream gate. The required
+checks are:
+
+- `Lint`
+- `Verify (ubuntu-latest)`
+- `Verify (macos-latest)`
+- `Verify (windows-latest)`
+- `Test Coverage`
+- `Browser Visual`
+- `Windows Core`
+- `Installer Smoke (ubuntu-latest)`
+- `Installer Smoke (windows-latest)`
+- `GoReleaser Snapshot`
+
+The CI workflow keeps pull request runs cancellable by newer pushes to the same
+PR through `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`.
+Push runs, including consecutive pushes to `main`, use a unique run group and
+must not be cancelled by later pushes. The workflow test in
+`ci_workflow_test.go` checks this section against `.github/workflows/ci.yml` so
+job-name and required-check drift fails in local validation.
+
 ## Still Git/PR Coupled
 
 ### Workspace
