@@ -8,7 +8,6 @@ import (
 	"io"
 	"os"
 	"os/exec"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -151,32 +150,14 @@ func TestLocalTransportCloseExitsAfterTurnErrorBackpressure(t *testing.T) {
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
 
-	started := time.Now()
 	_, err = server.RunTurn(context.Background(), RunTurnRequest{
 		Workspace: t.TempDir(),
 		Prompt:    "fail mid stream",
 	}, nil)
-	elapsed := time.Since(started)
 	if !errors.Is(err, ErrTurnFailed) {
 		t.Fatalf("RunTurn() error = %v, want ErrTurnFailed", err)
 	}
-	promptCloseDeadline := 900 * time.Millisecond
-	if runtime.GOOS == "windows" {
-		promptCloseDeadline = 2 * time.Second
-	}
-	if elapsed > promptCloseDeadline {
-		t.Fatalf("RunTurn() took %s after turn error, want prompt close under %s", elapsed, promptCloseDeadline)
-	}
-
-	transport := capturingFactory.transport
-	if transport == nil {
-		t.Fatal("captured transport is nil")
-	}
-	assertChannelClosed(t, transport.readDone, "readLoop")
-	assertChannelClosed(t, transport.done, "wait")
-	if transport.cmd.ProcessState == nil {
-		t.Fatal("ProcessState is nil, want reaped process")
-	}
+	assertLocalTransportClosed(t, capturingFactory.transport, "turn error backpressure")
 }
 
 func TestLocalTransportCloseDrainsAfterSuccessfulTurnBackpressure(t *testing.T) {
@@ -197,30 +178,54 @@ func TestLocalTransportCloseDrainsAfterSuccessfulTurnBackpressure(t *testing.T) 
 		t.Fatalf("NewAppServer() error = %v", err)
 	}
 
-	started := time.Now()
 	result, err := server.RunTurn(context.Background(), RunTurnRequest{
 		Workspace: t.TempDir(),
 		Prompt:    "complete then drain",
 	}, nil)
-	elapsed := time.Since(started)
 	if err != nil {
+		assertLocalTransportClosed(t, capturingFactory.transport, "successful turn backpressure after RunTurn error")
 		t.Fatalf("RunTurn() error = %v", err)
 	}
 	if result.ThreadID != "thread-1" || result.TurnID != "turn-1" {
 		t.Fatalf("RunTurn() result = %#v, want thread-1 turn-1", result)
 	}
-	if elapsed > 1500*time.Millisecond {
-		t.Fatalf("RunTurn() took %s after completed turn, want prompt close", elapsed)
+	assertLocalTransportClosed(t, capturingFactory.transport, "successful turn backpressure")
+}
+
+func TestLocalTransportPublishReceivedStopsDuringBackpressure(t *testing.T) {
+	t.Parallel()
+
+	transport := &localTransport{
+		received: make(chan transportResult),
+		readStop: make(chan struct{}),
 	}
 
-	transport := capturingFactory.transport
-	if transport == nil {
-		t.Fatal("captured transport is nil")
+	published := make(chan bool, 1)
+	go func() {
+		published <- transport.publishReceived(transportResult{
+			msg: Message{
+				JSONRPC: JSONRPCVersion,
+				Method:  "item/agentMessage/delta",
+				Params:  json.RawMessage(`{"delta":"queued"}`),
+			},
+		})
+	}()
+
+	transport.stopReading()
+
+	select {
+	case got := <-published:
+		if got {
+			t.Fatal("publishReceived() = true, want false after read stop during backpressure")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("publishReceived() stayed blocked after read stop")
 	}
-	assertChannelClosed(t, transport.readDone, "readLoop")
-	assertChannelClosed(t, transport.done, "wait")
-	if transport.cmd.ProcessState == nil {
-		t.Fatal("ProcessState is nil, want reaped process")
+
+	select {
+	case result := <-transport.received:
+		t.Fatalf("received unexpected result after read stop: %#v", result)
+	default:
 	}
 }
 
@@ -538,12 +543,28 @@ func (f *capturingLocalTransportFactory) NewTransport(ctx context.Context) (Tran
 	return transport, nil
 }
 
-func assertChannelClosed(t *testing.T, ch <-chan struct{}, name string) {
+func assertLocalTransportClosed(t *testing.T, transport *localTransport, scenario string) {
+	t.Helper()
+
+	if transport == nil {
+		t.Fatalf("%s: captured transport is nil", scenario)
+	}
+	assertChannelClosed(t, transport.readDone, scenario, "readLoop")
+	assertChannelClosed(t, transport.done, scenario, "wait")
+	if transport.cmd == nil {
+		t.Fatalf("%s: command is nil, want reaped process", scenario)
+	}
+	if transport.cmd.ProcessState == nil {
+		t.Fatalf("%s: ProcessState is nil, want reaped process", scenario)
+	}
+}
+
+func assertChannelClosed(t *testing.T, ch <-chan struct{}, scenario string, name string) {
 	t.Helper()
 
 	select {
 	case <-ch:
-	case <-time.After(100 * time.Millisecond):
-		t.Fatalf("%s did not exit", name)
+	default:
+		t.Fatalf("%s: %s still running after RunTurn returned", scenario, name)
 	}
 }
