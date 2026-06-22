@@ -35,9 +35,7 @@ func TestStartIsolatedRuntimeAutoPromotesFixtureAndStopsOnCancel(t *testing.T) {
 		t.Fatalf("isolated runtime banner missing isolation details:\n%s", banner)
 	}
 	waitForDashboard(t, url+"/health", done)
-	postRuntimeRefresh(t, url, done)
-
-	body := waitForDashboardCondition(t, url+"/api/v1/state", done, "mock issue promoted to Merging", func(body string) bool {
+	body := waitForDashboardConditionWithRefresh(t, url, url+"/api/v1/state", done, "mock issue promoted to Merging", func(body string) bool {
 		return boardStateCountFromBody(t, body, "Merging") == 1
 	})
 	if !strings.Contains(body, `"status":"running"`) {
@@ -339,6 +337,38 @@ func postRuntimeRefresh(t *testing.T, url string, done <-chan error) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("timed out posting runtime refresh to %s", url)
+}
+
+func waitForDashboardConditionWithRefresh(
+	t *testing.T,
+	refreshURL string,
+	conditionURL string,
+	done <-chan error,
+	name string,
+	ok func(string) bool,
+) string {
+	t.Helper()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	defer cancel()
+
+	lastBody := ""
+	nextRefresh := time.Time{}
+	for ctx.Err() == nil {
+		now := time.Now()
+		if !now.Before(nextRefresh) {
+			postRuntimeRefresh(t, refreshURL, done)
+			nextRefresh = now.Add(time.Second)
+		}
+		body := waitForDashboard(t, conditionURL, done)
+		lastBody = body
+		if ok(body) {
+			return body
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for dashboard condition %q at %s; last body:\n%s", name, conditionURL, lastBody)
+	return ""
 }
 
 func postRuntimeKanbanForm(t *testing.T, rawURL string, done <-chan error, form url.Values) string {

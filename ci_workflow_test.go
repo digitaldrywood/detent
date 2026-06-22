@@ -6,14 +6,126 @@ import (
 	"testing"
 )
 
+type requiredStatusCheck struct {
+	name     string
+	jobStart string
+	jobEnd   string
+	markers  []string
+}
+
+var requiredMainStatusChecks = []requiredStatusCheck{
+	{
+		name:     "Lint",
+		jobStart: "  lint:",
+		jobEnd:   "  verify:",
+		markers:  []string{"name: Lint"},
+	},
+	{
+		name:     "Verify (ubuntu-latest)",
+		jobStart: "  verify:",
+		jobEnd:   "  test-cover:",
+		markers:  []string{"name: Verify (${{ matrix.os }})", "os: ubuntu-latest"},
+	},
+	{
+		name:     "Verify (macos-latest)",
+		jobStart: "  verify:",
+		jobEnd:   "  test-cover:",
+		markers:  []string{"name: Verify (${{ matrix.os }})", "os: macos-latest"},
+	},
+	{
+		name:     "Verify (windows-latest)",
+		jobStart: "  verify:",
+		jobEnd:   "  test-cover:",
+		markers:  []string{"name: Verify (${{ matrix.os }})", "os: windows-latest"},
+	},
+	{
+		name:     "Test Coverage",
+		jobStart: "  test-cover:",
+		jobEnd:   "  browser-visual:",
+		markers:  []string{"name: Test Coverage"},
+	},
+	{
+		name:     "Browser Visual",
+		jobStart: "  browser-visual:",
+		jobEnd:   "  windows-core:",
+		markers:  []string{"name: Browser Visual"},
+	},
+	{
+		name:     "Windows Core",
+		jobStart: "  windows-core:",
+		jobEnd:   "  installer-smoke:",
+		markers:  []string{"name: Windows Core"},
+	},
+	{
+		name:     "Installer Smoke (ubuntu-latest)",
+		jobStart: "  installer-smoke:",
+		jobEnd:   "  goreleaser-snapshot:",
+		markers:  []string{"name: Installer Smoke (${{ matrix.os }})", "os: [ubuntu-latest, windows-latest]"},
+	},
+	{
+		name:     "Installer Smoke (windows-latest)",
+		jobStart: "  installer-smoke:",
+		jobEnd:   "  goreleaser-snapshot:",
+		markers:  []string{"name: Installer Smoke (${{ matrix.os }})", "os: [ubuntu-latest, windows-latest]"},
+	},
+	{
+		name:     "GoReleaser Snapshot",
+		jobStart: "  goreleaser-snapshot:",
+		jobEnd:   "",
+		markers:  []string{"name: GoReleaser Snapshot"},
+	},
+}
+
+func TestCIConcurrencyKeepsMainPushRuns(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	concurrency := workflowBetween(t, workflow, "concurrency:\n", "\njobs:")
+	for _, want := range []string{
+		"group: ${{ github.workflow }}-${{ github.event_name == 'pull_request' && format('pr-{0}', github.event.pull_request.number) || github.run_id }}",
+		"cancel-in-progress: ${{ github.event_name == 'pull_request' }}",
+	} {
+		if !strings.Contains(concurrency, want) {
+			t.Fatalf("CI concurrency missing %q", want)
+		}
+	}
+}
+
+func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	docs := readNormalizedFile(t, "docs/execution-seams.md")
+	protection := workflowBetween(t, docs, "### Main Branch Protection\n", "\n## Still Git/PR Coupled")
+
+	for _, want := range []string{
+		"`required_status_checks.strict: true`",
+		"`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`",
+		"`Browser Visual`",
+	} {
+		if !strings.Contains(protection, want) {
+			t.Fatalf("main branch protection docs missing %q", want)
+		}
+	}
+
+	for _, check := range requiredMainStatusChecks {
+		if !strings.Contains(protection, "- `"+check.name+"`") {
+			t.Fatalf("main branch protection docs missing required check %q", check.name)
+		}
+
+		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
+		for _, marker := range check.markers {
+			if !strings.Contains(job, marker) {
+				t.Fatalf("workflow job for required check %q missing %q", check.name, marker)
+			}
+		}
+	}
+}
+
 func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	t.Parallel()
 
-	raw, err := os.ReadFile(".github/workflows/ci.yml")
-	if err != nil {
-		t.Fatalf("ReadFile(.github/workflows/ci.yml) error = %v", err)
-	}
-	workflow := strings.ReplaceAll(string(raw), "\r\n", "\n")
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
 	job := workflowBetween(t, workflow, "  installer-smoke:", "\n  goreleaser-snapshot:")
 
 	for _, want := range []string{
@@ -102,6 +214,16 @@ func TestKanbanBrowserDragDropRunsInVisualGate(t *testing.T) {
 			t.Fatalf("browser visual spec missing %q", want)
 		}
 	}
+}
+
+func readNormalizedFile(t *testing.T, path string) string {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	return strings.ReplaceAll(string(raw), "\r\n", "\n")
 }
 
 func workflowBetween(t *testing.T, content string, startMarker string, endMarker string) string {
