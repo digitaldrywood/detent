@@ -1866,7 +1866,7 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 		if owner, name, ok := splitRepositoryName(issue.PRRepository); ok {
 			linkedPullRequestRepo = pullRequestRepo{Owner: owner, Name: name}
 		}
-		if normalizeStateName(issue.State) == normalizeStateName("Blocked") && pullRequestNumber <= 0 {
+		if normalizeStateName(issue.State) == normalizeStateName("Blocked") && pullRequestNumber <= 0 && !statusLabelConflictIssue(issue) {
 			branchPrefix = ""
 		}
 		if branchPrefix == "" && pullRequestNumber <= 0 {
@@ -2478,11 +2478,7 @@ func (c *Connector) normalizeIssueNode(ctx context.Context, issue githubIssueNod
 		return connector.Issue{}, false, nil
 	}
 	if c.usesLabelStatus() {
-		statusName := c.labelStatusFromLabels(issue.Labels)
-		if statusName == "" {
-			statusName = c.githubIssueStateToDetentState(issue.State)
-		}
-		return c.buildIssue(issue, statusName, "", nil, map[string]string{c.statusField: statusName}), true, nil
+		return c.buildLabelIssue(issue, c.githubIssueStateToDetentState(issue.State)), true, nil
 	}
 	stateName, priorityName, statusUpdatedAt, fields, ok, err := c.resolveIssueProjectFields(ctx, issue.ID, issue.ProjectItems)
 	if err != nil {
@@ -2647,9 +2643,12 @@ func (c *Connector) appendLinkedChildIssues(
 
 func (c *Connector) linkedChildIssueState(child linkedIssue) string {
 	if c.usesLabelStatus() {
-		statusName := c.labelStatusFromLabels(child.Labels)
-		if statusName != "" {
-			return c.githubToDetentState(statusName)
+		resolution := c.labelStatusResolutionFromLabels(child.Labels)
+		if resolution.conflicted() {
+			return labelStatusConflictState
+		}
+		if resolution.Status != "" {
+			return c.githubToDetentState(resolution.Status)
 		}
 		return c.githubIssueStateToDetentState(child.State)
 	}

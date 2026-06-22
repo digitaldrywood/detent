@@ -226,12 +226,16 @@ func (o *Orchestrator) dispatchTickIssues(
 	planner := o.dispatchPlanner()
 	planner.pruneBudgetRefusals(state, now)
 	planner.trackBlockedCandidates(state, issues, now)
+	candidateBlockedStatusIssues := issuesInStates(fetched.candidates, []string{blockedStatusState})
 	if fetched.statusOK {
-		currentBlockedStatusIssues := issuesInStates(fetched.status, []string{blockedStatusState})
+		currentBlockedStatusIssues := candidateBlockedStatusIssues
+		currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, issuesInStates(fetched.status, []string{blockedStatusState}))
 		if !transitions.blockedRefreshOK {
 			currentBlockedStatusIssues = mergeIssueSlices(currentBlockedStatusIssues, previous.blockedStatusIssues)
 		}
 		o.trackBlockedStatusIssues(state, currentBlockedStatusIssues, now)
+	} else {
+		o.upsertBlockedStatusIssues(state, candidateBlockedStatusIssues, now)
 	}
 	o.dispatchReadyIssues(ctx, state, issues, now)
 }

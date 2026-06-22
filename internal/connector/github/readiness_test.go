@@ -174,6 +174,42 @@ func TestReadinessIssueFieldStatusWriteReappliesProbeValue(t *testing.T) {
 	}
 }
 
+func TestReadinessLabelIssueReadReportsStatusLabelConflicts(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Atodo&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_604","number":604,"title":"Todo race","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/604","assignees":[],"labels":[{"name":"detent:todo"},{"name":"detent:in-progress"},{"name":"bug"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Ain-progress&page=1&per_page=100&state=all",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ActiveStates:       []string{"Todo", "In Progress"},
+	})
+	checker := githubReadinessChecker{connector: c}
+
+	got := checker.labelIssuesReadCheck(context.Background(), []string{"Todo", "In Progress"})
+	if got.Status != ReadinessWarn {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, ReadinessWarn, got)
+	}
+	for _, want := range []string{"#604", "detent:todo", "detent:in-progress"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+	if !strings.Contains(got.Hint, "Remove all but one") {
+		t.Fatalf("Hint = %q, want remediation guidance", got.Hint)
+	}
+}
+
 func TestReadinessIssueCommentReportsMissingAccess(t *testing.T) {
 	t.Parallel()
 

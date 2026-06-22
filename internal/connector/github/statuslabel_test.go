@@ -192,14 +192,14 @@ func TestConnectorUpdateIssueStateReplacesStatusLabels(t *testing.T) {
 			body:   `{"node_id":"I_485","number":485,"title":"Installer packages","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/485","assignees":[],"labels":[{"name":"detent:todo"},{"name":"bug"}]}`,
 		},
 		{
-			method: http.MethodDelete,
-			path:   "/repos/digitaldrywood/detent/issues/485/labels/detent:todo",
-			body:   `[{"name":"bug"}]`,
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/485",
+			body:   `{"node_id":"I_485","number":485,"title":"Installer packages","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/485","assignees":[],"labels":[{"name":"detent:todo"},{"name":"bug"}]}`,
 		},
 		{
-			method: http.MethodPost,
+			method: http.MethodPut,
 			path:   "/repos/digitaldrywood/detent/issues/485/labels",
-			body:   `[{"name":"detent:in-progress"}]`,
+			body:   `[{"name":"bug"},{"name":"detent:in-progress"}]`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
@@ -218,8 +218,111 @@ func TestConnectorUpdateIssueStateReplacesStatusLabels(t *testing.T) {
 	}
 	body := requests[3]["body"].(map[string]any)
 	labels := body["labels"].([]any)
-	if !reflect.DeepEqual(labels, []any{"detent:in-progress"}) {
-		t.Fatalf("labels body = %#v, want detent:in-progress", labels)
+	if !reflect.DeepEqual(labels, []any{"bug", "detent:in-progress"}) {
+		t.Fatalf("labels body = %#v, want bug plus detent:in-progress", labels)
+	}
+}
+
+func TestConnectorUpdateIssueStateReplacesStaleStatusLabelRace(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_606","number":606,"repository":{"nameWithOwner":"digitaldrywood/detent"}}]}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/606",
+			body:   `{"node_id":"I_606","number":606,"title":"Race issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/606","assignees":[],"labels":[{"name":"detent:in-progress"},{"name":"detent:todo"},{"name":"bug"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/606",
+			body:   `{"node_id":"I_606","number":606,"title":"Race issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/606","assignees":[],"labels":[{"name":"detent:in-progress"},{"name":"detent:todo"},{"name":"bug"},{"name":"stage:s6"}]}`,
+		},
+		{
+			method: http.MethodPut,
+			path:   "/repos/digitaldrywood/detent/issues/606/labels",
+			body:   `[{"name":"bug"},{"name":"stage:s6"},{"name":"detent:in-progress"}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ActiveStates:       []string{"Todo", "In Progress"},
+	})
+
+	if err := c.UpdateIssueState(context.Background(), "I_606", "In Progress"); err != nil {
+		t.Fatalf("UpdateIssueState() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want 4", len(requests))
+	}
+	body := requests[3]["body"].(map[string]any)
+	labels := body["labels"].([]any)
+	if !reflect.DeepEqual(labels, []any{"bug", "stage:s6", "detent:in-progress"}) {
+		t.Fatalf("labels body = %#v, want latest non-status labels and exactly one status label", labels)
+	}
+}
+
+func TestConnectorFetchCandidateIssuesSurfacesStatusLabelConflict(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Atodo&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_606","number":606,"title":"Race issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/606","assignees":[],"labels":[{"name":"detent:todo"},{"name":"detent:in-progress"},{"name":"bug"}]}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Ain-progress&page=1&per_page=100&state=all",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[{"number":609,"html_url":"https://github.com/digitaldrywood/detent/pull/609","state":"open","head":{"ref":"detent/detent-digitaldrywood_detent_606-97bf7548e359","sha":"sha-609"}}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-609/check-runs?per_page=100",
+			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-609/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/609/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ActiveStates:       []string{"Todo", "In Progress"},
+	})
+
+	got, err := c.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchCandidateIssues() len = %d, want 1", len(got))
+	}
+	if got[0].State != "Blocked" {
+		t.Fatalf("State = %q, want Blocked conflict instead of Todo", got[0].State)
+	}
+	if !strings.Contains(got[0].BlockerReason, "multiple configured Detent status labels") {
+		t.Fatalf("BlockerReason = %q, want explicit status-label conflict", got[0].BlockerReason)
+	}
+	if got[0].PRNumber == nil || *got[0].PRNumber != 609 {
+		t.Fatalf("PRNumber = %v, want linked PR 609", got[0].PRNumber)
 	}
 }
 

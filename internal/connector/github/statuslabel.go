@@ -5,13 +5,26 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
-const repositoryIssuesPageSize = 100
+const (
+	repositoryIssuesPageSize = 100
+	labelStatusConflictState = "Blocked"
+)
+
+type labelStatusResolution struct {
+	Status         string
+	ConflictLabels []string
+}
+
+func (r labelStatusResolution) conflicted() bool {
+	return len(r.ConflictLabels) > 1
+}
 
 func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []string, limit int) ([]connector.Issue, error) {
 	if !validPullRequestRepo(c.repository) {
@@ -55,9 +68,7 @@ func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []s
 				}
 				seen[issue.ID] = struct{}{}
 				c.cacheIssueRef(issue)
-				issues = append(issues, c.buildIssue(issue, externalState, "", nil, map[string]string{
-					c.statusField: externalState,
-				}))
+				issues = append(issues, c.buildLabelIssue(issue, externalState))
 				if limit > 0 && len(issues) >= limit {
 					resolveBlockedByProjectState(issues)
 					return issues, nil
@@ -81,11 +92,7 @@ func (c *Connector) fetchLabelIssueByRef(ctx context.Context, ref issueRef) (con
 		return connector.Issue{}, false, nil
 	}
 	c.cacheIssueRef(issue)
-	statusName := c.labelStatusFromLabels(issue.Labels)
-	if statusName == "" {
-		statusName = c.githubIssueStateToDetentState(issue.State)
-	}
-	return c.buildIssue(issue, statusName, "", nil, map[string]string{c.statusField: statusName}), true, nil
+	return c.buildLabelIssue(issue, c.githubIssueStateToDetentState(issue.State)), true, nil
 }
 
 func (c *Connector) updateIssueStatusLabel(ctx context.Context, ref issueRef, issue githubIssueNode, targetState string) error {
@@ -94,27 +101,39 @@ func (c *Connector) updateIssueStatusLabel(ctx context.Context, ref issueRef, is
 		return ErrStatusUpdateFailed
 	}
 
-	currentLabels := labelNames(issue.Labels)
-	for _, labelName := range currentLabels {
-		if !c.isStatusLabel(labelName) || strings.EqualFold(labelName, targetLabel) {
+	latest, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("fetch latest github status labels: %w", err)
+	}
+	if strings.TrimSpace(latest.ID) == "" {
+		return ErrStatusUpdateFailed
+	}
+	issue = latest
+
+	nextLabels := make([]string, 0, len(issue.Labels.Nodes)+1)
+	seen := map[string]struct{}{}
+	for _, label := range issue.Labels.Nodes {
+		labelName := strings.TrimSpace(label.Name)
+		if labelName == "" || c.isStatusLabel(labelName) {
 			continue
 		}
-		var response []label
-		if err := c.client.REST(ctx, http.MethodDelete, restIssueLabelPath(ref, labelName), nil, &response); err != nil {
-			return fmt.Errorf("remove github status label: %w", err)
+		key := normalizeLabelName(labelName)
+		if _, ok := seen[key]; ok {
+			continue
 		}
+		seen[key] = struct{}{}
+		nextLabels = append(nextLabels, labelName)
 	}
-	if stringSliceContainsFold(currentLabels, targetLabel) {
-		return nil
-	}
+	nextLabels = append(nextLabels, targetLabel)
 
 	var response []label
-	if err := c.client.REST(ctx, http.MethodPost, restIssueLabelsPath(ref), map[string]any{
-		"labels": []string{targetLabel},
+	if err := c.client.REST(ctx, http.MethodPut, restIssueLabelsPath(ref), map[string]any{
+		"labels": nextLabels,
 	}, &response); err != nil {
-		return fmt.Errorf("add github status label: %w", err)
+		return fmt.Errorf("replace github status labels: %w", err)
 	}
-	if len(response) == 0 {
+	resolution := c.labelStatusResolutionFromLabels(nodeConnection[label]{Nodes: response})
+	if len(response) == 0 || resolution.conflicted() || !stringSliceContainsFold(labelNames(nodeConnection[label]{Nodes: response}), targetLabel) {
 		return ErrStatusUpdateFailed
 	}
 	return nil
@@ -199,13 +218,92 @@ func (c *Connector) statusLabelStates(stateNames []string) map[string]string {
 }
 
 func (c *Connector) labelStatusFromLabels(labels nodeConnection[label]) string {
+	return c.labelStatusResolutionFromLabels(labels).Status
+}
+
+func (c *Connector) labelStatusResolutionFromLabels(labels nodeConnection[label]) labelStatusResolution {
+	return c.labelStatusResolutionFromNames(labelNames(labels))
+}
+
+func (c *Connector) labelStatusResolutionFromNames(names []string) labelStatusResolution {
 	statesByLabel := c.statusLabelStates(c.configuredStatusStates())
-	for _, labelName := range labelNames(labels) {
-		if stateName, ok := statesByLabel[normalizeLabelName(labelName)]; ok {
-			return stateName
+	seen := map[string]struct{}{}
+	matches := []string{}
+	statusName := ""
+	for _, labelName := range names {
+		key := normalizeLabelName(labelName)
+		if key == "" {
+			continue
+		}
+		stateName, ok := statesByLabel[key]
+		if !ok {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		matches = append(matches, key)
+		if statusName == "" {
+			statusName = stateName
 		}
 	}
-	return ""
+	if len(matches) <= 1 {
+		return labelStatusResolution{Status: statusName}
+	}
+	sort.Strings(matches)
+	return labelStatusResolution{
+		Status:         statusName,
+		ConflictLabels: matches,
+	}
+}
+
+func (c *Connector) buildLabelIssue(issue githubIssueNode, fallbackStatus string) connector.Issue {
+	resolution := c.labelStatusResolutionFromLabels(issue.Labels)
+	if resolution.conflicted() {
+		return c.buildStatusLabelConflictIssue(issue, resolution.ConflictLabels)
+	}
+	statusName := strings.TrimSpace(resolution.Status)
+	if statusName == "" {
+		statusName = strings.TrimSpace(fallbackStatus)
+	}
+	return c.buildIssue(issue, statusName, "", nil, map[string]string{c.statusField: statusName})
+}
+
+func (c *Connector) buildStatusLabelConflictIssue(issue githubIssueNode, labels []string) connector.Issue {
+	out := c.buildIssue(issue, labelStatusConflictState, "", nil, map[string]string{c.statusField: labelStatusConflictState})
+	out.BlockerReason = labelStatusConflictReason(labels)
+	return out
+}
+
+func labelStatusConflictReason(labels []string) string {
+	return "multiple configured Detent status labels: " + strings.Join(labels, ", ") + "; remove all but one status label"
+}
+
+func statusLabelConflictIssue(issue connector.Issue) bool {
+	return strings.Contains(issue.BlockerReason, "multiple configured Detent status labels")
+}
+
+func (c *Connector) labelStatusConflictSummaries(issues []connector.Issue) []string {
+	summaries := []string{}
+	for _, issue := range issues {
+		resolution := c.labelStatusResolutionFromNames(issue.Labels)
+		if !resolution.conflicted() {
+			continue
+		}
+		summaries = append(summaries, labelStatusConflictReference(issue)+" ("+strings.Join(resolution.ConflictLabels, ", ")+")")
+	}
+	return summaries
+}
+
+func labelStatusConflictReference(issue connector.Issue) string {
+	if _, number, ok := strings.Cut(strings.TrimSpace(issue.Identifier), "#"); ok && strings.TrimSpace(number) != "" {
+		return "#" + strings.TrimSpace(number)
+	}
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		return identifier
+	}
+	return strings.TrimSpace(issue.ID)
 }
 
 func (c *Connector) configuredStatusStates() []string {
@@ -301,8 +399,4 @@ func restRepositoryIssuesByLabelPath(repo pullRequestRepo, labelName string, pag
 
 func restIssueLabelsPath(ref issueRef) string {
 	return restIssuePath(ref) + "/labels"
-}
-
-func restIssueLabelPath(ref issueRef, labelName string) string {
-	return restIssueLabelsPath(ref) + "/" + url.PathEscape(labelName)
 }
