@@ -255,6 +255,12 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 		State:    "OPEN",
 		CIStatus: "success",
 	})
+	conflictingIssue := doctorAutoPromoteIssue("issue-conflicting", &connector.PullRequest{
+		Number:         45,
+		URL:            "https://github.test/pull/45",
+		State:          "OPEN",
+		MergeableState: "dirty",
+	})
 	linkedWithoutMetadata := doctorAutoPromoteIssue("issue-missing-pr", nil)
 	linkedWithoutMetadata.PRNumber = &prNumber
 	readyIssue := doctorAutoPromoteIssue("issue-ready", &connector.PullRequest{
@@ -326,6 +332,15 @@ func TestCheckDoctorAutoPromote(t *testing.T) {
 			},
 			want:        doctorOK,
 			wantDetails: []string{"automated_review_missing=1", "ci_not_green=1"},
+		},
+		{
+			name: "conflicting pull request reports merge conflict reason",
+			cfg:  validDoctorAutoPromoteWorkflow(),
+			connector: &fakeDoctorAutoPromoteConnector{
+				issues: []connector.Issue{conflictingIssue},
+			},
+			want:        doctorOK,
+			wantDetails: []string{"merge_conflicts=1", "issue-conflicting", "PR #45", "mergeable=dirty", "reason=merge_conflicts"},
 		},
 		{
 			name: "ready candidate passes with count",
@@ -438,6 +453,25 @@ func TestCheckDoctorAutoPromoteCandidateDiagnostics(t *testing.T) {
 				LatestCodexReviewCommitSHA:   "head-ready",
 				LatestCodexReviewSubmittedAt: &oldReview,
 				Reason:                       "ready",
+			},
+		},
+		{
+			name: "merge conflict",
+			issue: doctorAutoPromoteIssue("issue-conflicting", &connector.PullRequest{
+				Number:         614,
+				URL:            "https://github.test/pull/614",
+				State:          "OPEN",
+				HeadSHA:        "head-conflicting",
+				MergeableState: "dirty",
+			}),
+			want: doctorAutoPromoteCandidateDiagnostic{
+				IssueID:          "issue-conflicting",
+				IssueIdentifier:  "digitaldrywood/detent#399",
+				PRNumber:         614,
+				PRURL:            "https://github.test/pull/614",
+				PRHeadSHA:        "head-conflicting",
+				PRMergeableState: "dirty",
+				Reason:           "merge_conflicts",
 			},
 		},
 	}

@@ -91,6 +91,7 @@ type doctorAutoPromoteCandidateDiagnostic struct {
 	PRNumber                     int        `json:"pr_number,omitempty"`
 	PRURL                        string     `json:"pr_url,omitempty"`
 	PRHeadSHA                    string     `json:"pr_head_sha,omitempty"`
+	PRMergeableState             string     `json:"pr_mergeable_state,omitempty"`
 	LatestCodexReviewState       string     `json:"latest_codex_review_state,omitempty"`
 	LatestCodexReviewCommitSHA   string     `json:"latest_codex_review_commit_sha,omitempty"`
 	LatestCodexReviewSubmittedAt *time.Time `json:"latest_codex_review_submitted_at,omitempty"`
@@ -979,6 +980,7 @@ func doctorAutoPromoteCandidateDiagnosticFromIssue(
 	}
 	diagnostic.PRURL = strings.TrimSpace(pullRequest.URL)
 	diagnostic.PRHeadSHA = strings.TrimSpace(pullRequest.HeadSHA)
+	diagnostic.PRMergeableState = strings.TrimSpace(pullRequest.MergeableState)
 	diagnostic.LatestCodexReviewState = doctorLatestCodexReviewState(pullRequest)
 	diagnostic.LatestCodexReviewCommitSHA = strings.TrimSpace(pullRequest.LatestCodexReviewCommitSHA)
 	diagnostic.LatestCodexReviewSubmittedAt = doctorLatestCodexReviewSubmittedAt(pullRequest)
@@ -1048,6 +1050,9 @@ func doctorAutoPromoteCandidateSummary(candidate doctorAutoPromoteCandidateDiagn
 	}
 	if candidate.PRHeadSHA != "" {
 		parts = append(parts, "head="+candidate.PRHeadSHA)
+	}
+	if candidate.PRMergeableState != "" {
+		parts = append(parts, "mergeable="+candidate.PRMergeableState)
 	}
 	if candidate.LatestCodexReviewState != "" || candidate.LatestCodexReviewCommitSHA != "" {
 		review := strings.TrimSpace(candidate.LatestCodexReviewState)

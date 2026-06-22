@@ -58,9 +58,10 @@ func EvaluateBlockedRecovery(issue connector.Issue) BlockedRecoveryDecision {
 		return blockedRecoveryDecision(BlockedRecoveryActionNone, BlockedRecoveryReasonPullRequestNotOpen, "")
 	}
 
-	switch strings.ToLower(strings.TrimSpace(pr.MergeableState)) {
-	case "dirty":
+	if autoPromoteMergeConflicts(pr.MergeableState) {
 		return blockedRecoveryDecision(BlockedRecoveryActionRework, BlockedRecoveryReasonMergeConflicts, "linked PR has merge conflicts")
+	}
+	switch strings.ToLower(strings.TrimSpace(pr.MergeableState)) {
 	case "behind":
 		return blockedRecoveryDecision(BlockedRecoveryActionRework, BlockedRecoveryReasonStaleBase, "linked PR branch is behind the base branch")
 	}

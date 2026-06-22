@@ -329,6 +329,55 @@ func TestAutoPromoteWaitsForFreshPullRequestActivityWithoutAutomatedReview(t *te
 	}
 }
 
+func TestEvaluateAutoPromoteRoutesConflictingPullRequestToRework(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name           string
+		mergeableState string
+	}{
+		{
+			name:           "rest dirty state",
+			mergeableState: "dirty",
+		},
+		{
+			name:           "graphql conflicting state",
+			mergeableState: "CONFLICTING",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTestIssue("issue-conflicting", []string{"bug"})
+			issue.PullRequest = &connector.PullRequest{
+				Number:         614,
+				URL:            "https://github.test/digitaldrywood/detent/pull/614",
+				State:          "OPEN",
+				MergeableState: tt.mergeableState,
+			}
+
+			got := EvaluateAutoPromote(issue, AutoPromoteSummaryFromIssue(issue), AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 0,
+				OptoutLabel:   "requires-human-review",
+				Gate: gate.Config{
+					Kind:            gate.KindCommand,
+					CIFailureAction: gate.CIFailureActionRework,
+				},
+			}, now)
+			if got.Action != AutoPromoteActionRework {
+				t.Fatalf("Action = %q, want %q", got.Action, AutoPromoteActionRework)
+			}
+			if string(got.Reason) != "merge_conflicts" {
+				t.Fatalf("Reason = %q, want merge_conflicts", got.Reason)
+			}
+		})
+	}
+}
+
 func autoPromoteTestIssue(id string, labels []string) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id

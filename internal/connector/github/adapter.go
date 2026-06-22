@@ -2072,6 +2072,7 @@ func (c *Connector) attachMatchingPullRequests(
 	candidates []issuePullRequestCandidate,
 	pullRequests []pullRequestNode,
 ) error {
+	hydrated := map[int]pullRequestNode{}
 	for _, pullRequest := range pullRequests {
 		branchName := strings.TrimSpace(pullRequest.HeadRefName)
 		if branchName == "" {
@@ -2085,10 +2086,19 @@ func (c *Connector) attachMatchingPullRequests(
 				continue
 			}
 
-			if err := c.populatePullRequestStatus(ctx, repo, &pullRequest); err != nil {
-				return err
+			hydratedPullRequest, ok := hydrated[pullRequest.Number]
+			if !ok {
+				var err error
+				hydratedPullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, pullRequest.Number)
+				if err != nil {
+					return err
+				}
+				if err := c.populatePullRequestStatus(ctx, repo, &hydratedPullRequest); err != nil {
+					return err
+				}
+				hydrated[pullRequest.Number] = hydratedPullRequest
 			}
-			attachPullRequestToIssue(&issues[candidate.Index], repo, pullRequest)
+			attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
 		}
 	}
 	return nil

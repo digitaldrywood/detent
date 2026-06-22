@@ -467,6 +467,11 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 		},
 		{
 			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/187",
+			body:   `{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","updated_at":"2026-06-05T11:30:00Z","head":{"ref":"detent/digitaldrywood_detent_182_followup","sha":"sha-187"}}`,
+		},
+		{
+			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/commits/sha-187/check-runs?per_page=100",
 			body:   `{"check_runs":[]}`,
 		},
@@ -609,6 +614,11 @@ func TestConnectorFetchCandidateIssuesPaginatesPullRequestStatusRESTEndpoints(t 
 			body:   `[{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}}]`,
 		},
 		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/187",
+			body:   `{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}}`,
+		},
+		{
 			method:  http.MethodGet,
 			path:    "/repos/digitaldrywood/detent/commits/sha-187/check-runs?per_page=100",
 			headers: map[string]string{"Link": `</repos/digitaldrywood/detent/commits/sha-187/check-runs?per_page=100&page=2>; rel="next"`},
@@ -670,7 +680,7 @@ func TestConnectorFetchCandidateIssuesPaginatesPullRequestStatusRESTEndpoints(t 
 	}
 
 	requests := server.requests()
-	if len(requests) != 8 {
+	if len(requests) != 9 {
 		t.Fatalf("request count = %d, want project query plus paged PR REST requests", len(requests))
 	}
 }
@@ -686,6 +696,11 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
 			body:   `[{"number":190,"html_url":"https://github.com/digitaldrywood/detent/pull/190","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-190"}}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/190",
+			body:   `{"number":190,"html_url":"https://github.com/digitaldrywood/detent/pull/190","state":"open","mergeable_state":"dirty","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-190"}}`,
 		},
 		{
 			method: http.MethodGet,
@@ -721,6 +736,9 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	pr := got[0].PullRequest
 	if pr == nil || pr.Number != 190 || pr.CIStatus != "fail" || pr.CodexReviewState != "P1" {
 		t.Fatalf("PullRequest = %#v, want PR 190 with failing CI and P1 review", pr)
+	}
+	if pr.MergeableState != "dirty" {
+		t.Fatalf("MergeableState = %q, want dirty from hydrated PR", pr.MergeableState)
 	}
 	if pr.CIDurationSeconds != 0 {
 		t.Fatalf("CIDurationSeconds = %d, want 0 while checks are running", pr.CIDurationSeconds)

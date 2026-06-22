@@ -130,6 +130,36 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			},
 		},
 		{
+			name: "routes conflicting pull request to rework",
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 0,
+				Gate: gate.Config{
+					Kind:            gate.KindCommand,
+					CIFailureAction: gate.CIFailureActionRework,
+				},
+			},
+			issue: autoPromoteTickIssue("issue-conflicting-pr", []string{"bug"}, &connector.PullRequest{
+				Number:         49,
+				URL:            "https://github.test/digitaldrywood/detent/pull/49",
+				State:          "OPEN",
+				MergeableState: "dirty",
+			}),
+			wantUpdates: []autoPromoteTickUpdate{{
+				issueID: "issue-conflicting-pr",
+				state:   "Rework",
+			}},
+			wantCommentFragments: []string{
+				"Auto-promote routed this issue from Human Review to Rework: linked PR has merge conflicts.",
+				"reason: merge_conflicts",
+				"https://github.test/digitaldrywood/detent/pull/49",
+			},
+			wantLogFragments: []string{
+				"reason=merge_conflicts",
+				"target_state=Rework",
+			},
+		},
+		{
 			name: "waits for quiet period",
 			cfg: AutoPromoteConfig{
 				Enabled:       true,
@@ -248,6 +278,53 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTickAutoPromoteLogsNonTransitionDecisionsAtInfo(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 14, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-missing-review", []string{"bug"}, &connector.PullRequest{
+		Number:     390,
+		URL:        "https://github.test/digitaldrywood/detent/pull/390",
+		BranchName: "detent/detent-digitaldrywood_detent_387-29d3e4765f21",
+		State:      "OPEN",
+		CIStatus:   "pass",
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none", tracker.updates)
+	}
+	for _, fragment := range []string{
+		"level=INFO",
+		"auto promote decision",
+		"action=await_review",
+		"reason=automated_review_missing",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
 	}
 }
 
