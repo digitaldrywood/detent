@@ -192,6 +192,11 @@ func TestConnectorUpdateIssueStateReplacesStatusLabels(t *testing.T) {
 			body:   `{"node_id":"I_485","number":485,"title":"Installer packages","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/485","assignees":[],"labels":[{"name":"detent:todo"},{"name":"bug"}]}`,
 		},
 		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/485",
+			body:   `{"node_id":"I_485","number":485,"title":"Installer packages","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/485","assignees":[],"labels":[{"name":"detent:todo"},{"name":"bug"}]}`,
+		},
+		{
 			method: http.MethodPut,
 			path:   "/repos/digitaldrywood/detent/issues/485/labels",
 			body:   `[{"name":"bug"},{"name":"detent:in-progress"}]`,
@@ -208,10 +213,10 @@ func TestConnectorUpdateIssueStateReplacesStatusLabels(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 3 {
-		t.Fatalf("request count = %d, want 3", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want 4", len(requests))
 	}
-	body := requests[2]["body"].(map[string]any)
+	body := requests[3]["body"].(map[string]any)
 	labels := body["labels"].([]any)
 	if !reflect.DeepEqual(labels, []any{"bug", "detent:in-progress"}) {
 		t.Fatalf("labels body = %#v, want bug plus detent:in-progress", labels)
@@ -231,9 +236,14 @@ func TestConnectorUpdateIssueStateReplacesStaleStatusLabelRace(t *testing.T) {
 			body:   `{"node_id":"I_606","number":606,"title":"Race issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/606","assignees":[],"labels":[{"name":"detent:in-progress"},{"name":"detent:todo"},{"name":"bug"}]}`,
 		},
 		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/606",
+			body:   `{"node_id":"I_606","number":606,"title":"Race issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/606","assignees":[],"labels":[{"name":"detent:in-progress"},{"name":"detent:todo"},{"name":"bug"},{"name":"stage:s6"}]}`,
+		},
+		{
 			method: http.MethodPut,
 			path:   "/repos/digitaldrywood/detent/issues/606/labels",
-			body:   `[{"name":"bug"},{"name":"detent:in-progress"}]`,
+			body:   `[{"name":"bug"},{"name":"stage:s6"},{"name":"detent:in-progress"}]`,
 		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
@@ -247,13 +257,13 @@ func TestConnectorUpdateIssueStateReplacesStaleStatusLabelRace(t *testing.T) {
 	}
 
 	requests := server.requests()
-	if len(requests) != 3 {
-		t.Fatalf("request count = %d, want 3", len(requests))
+	if len(requests) != 4 {
+		t.Fatalf("request count = %d, want 4", len(requests))
 	}
-	body := requests[2]["body"].(map[string]any)
+	body := requests[3]["body"].(map[string]any)
 	labels := body["labels"].([]any)
-	if !reflect.DeepEqual(labels, []any{"bug", "detent:in-progress"}) {
-		t.Fatalf("labels body = %#v, want exactly one status label", labels)
+	if !reflect.DeepEqual(labels, []any{"bug", "stage:s6", "detent:in-progress"}) {
+		t.Fatalf("labels body = %#v, want latest non-status labels and exactly one status label", labels)
 	}
 }
 

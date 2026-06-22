@@ -992,16 +992,8 @@ func (o *Orchestrator) trackBlockedStatusIssues(state *State, issues []connector
 		if issue.ID == "" {
 			continue
 		}
-		recovery := EvaluateBlockedRecovery(issue)
 		seenBlocked[issue.ID] = struct{}{}
-		state.Blocked[issue.ID] = Blocked{
-			Issue:          cloneIssue(issue),
-			Reason:         blockedStatusReason(issue),
-			RecoveryReason: string(recovery.Reason),
-			RecoveryTarget: recovery.TargetState,
-			BlockedAt:      now,
-			Source:         BlockedSourceProjectStatus,
-		}
+		o.setBlockedStatusIssue(state, issue, now)
 	}
 
 	for issueID, blocked := range state.Blocked {
@@ -1011,6 +1003,27 @@ func (o *Orchestrator) trackBlockedStatusIssues(state *State, issues []connector
 		if _, ok := seenBlocked[issueID]; !ok {
 			delete(state.Blocked, issueID)
 		}
+	}
+}
+
+func (o *Orchestrator) upsertBlockedStatusIssues(state *State, issues []connector.Issue, now time.Time) {
+	for _, issue := range issues {
+		if issue.ID == "" {
+			continue
+		}
+		o.setBlockedStatusIssue(state, issue, now)
+	}
+}
+
+func (o *Orchestrator) setBlockedStatusIssue(state *State, issue connector.Issue, now time.Time) {
+	recovery := EvaluateBlockedRecovery(issue)
+	state.Blocked[issue.ID] = Blocked{
+		Issue:          cloneIssue(issue),
+		Reason:         blockedStatusReason(issue),
+		RecoveryReason: string(recovery.Reason),
+		RecoveryTarget: recovery.TargetState,
+		BlockedAt:      now,
+		Source:         BlockedSourceProjectStatus,
 	}
 }
 

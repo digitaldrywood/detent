@@ -1166,6 +1166,7 @@ func TestRunTracksStatusLabelConflictCandidateAsBlocked(t *testing.T) {
 	conflict.Labels = []string{"detent:todo", "detent:in-progress", "bug"}
 	conflict.BlockerReason = "multiple configured Detent status labels: detent:in-progress, detent:todo; remove all but one status label"
 	tracker := newFakeConnector(conflict)
+	tracker.fetchByStatesErr = errors.New("status polling failed")
 	runner := &staticRunner{}
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:           5 * time.Millisecond,
@@ -1512,6 +1513,7 @@ type fakeConnector struct {
 	setFields           []setFieldCall
 	comments            []commentCall
 	stateUpdates        []stateUpdateCall
+	fetchByStatesErr    error
 }
 
 type setFieldCall struct {
@@ -1552,6 +1554,9 @@ func (c *fakeConnector) FetchIssuesByStates(_ context.Context, states []string) 
 
 	c.fetchByStatesCount++
 	c.fetchByStatesLog = append(c.fetchByStatesLog, append([]string(nil), states...))
+	if c.fetchByStatesErr != nil {
+		return nil, c.fetchByStatesErr
+	}
 	wanted := make(map[string]struct{}, len(states))
 	for _, state := range states {
 		wanted[strings.ToLower(strings.TrimSpace(state))] = struct{}{}

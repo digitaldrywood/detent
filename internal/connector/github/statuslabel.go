@@ -101,6 +101,15 @@ func (c *Connector) updateIssueStatusLabel(ctx context.Context, ref issueRef, is
 		return ErrStatusUpdateFailed
 	}
 
+	latest, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("fetch latest github status labels: %w", err)
+	}
+	if strings.TrimSpace(latest.ID) == "" {
+		return ErrStatusUpdateFailed
+	}
+	issue = latest
+
 	nextLabels := make([]string, 0, len(issue.Labels.Nodes)+1)
 	seen := map[string]struct{}{}
 	for _, label := range issue.Labels.Nodes {
