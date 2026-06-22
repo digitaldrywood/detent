@@ -31,6 +31,13 @@ test.afterAll(async () => {
   await Promise.all([screenshotsRuntime?.stop(), kanbanRuntime?.stop()]);
 });
 
+test.afterEach(async ({ page }, testInfo) => {
+  if (testInfo.status === testInfo.expectedStatus) {
+    return;
+  }
+  await attachFailureEvidence(page, testInfo);
+});
+
 test("screenshots manifest includes visual gate scenarios", async ({ request }) => {
   const response = await request.get(`${screenshotsRuntime.url}/api/v1/demo/scenarios`);
   expect(response.ok()).toBeTruthy();
@@ -234,6 +241,37 @@ test("sidebar active state survives Kanban refreshes", async ({ page }, testInfo
   });
 });
 
+test("direct Kanban blocked drag stays client-side", async ({ page }, testInfo) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, { waitUntil: "domcontentloaded" });
+  await page.request.post(`${kanbanRuntime.url}/api/v1/refresh`);
+  await expect(page.locator("#project-kanban")).toBeVisible();
+  await expect(page.locator("[data-kanban-issue-id='kanban-demo-backlog']")).toBeVisible();
+  await page.waitForFunction(() => Boolean(window.htmx && window.__detentKanbanDragHandlersRegistered));
+  await page.locator("[data-kanban-drop-state='Merging']").evaluate((lane) => {
+    lane.dataset.projectKanbanLaneVisible = "true";
+  });
+  await expect(page.locator("[data-kanban-drop-state='Merging']")).toBeVisible();
+
+  const moveRequests = [];
+  page.on("request", (request) => {
+    const url = new URL(request.url());
+    if (url.pathname === "/api/v1/kanban/move" && request.method() === "POST") {
+      moveRequests.push(request.url());
+    }
+  });
+
+  const accepted = await dragKanbanCardToLane(page, "kanban-demo-backlog", "Merging");
+  expect(accepted).toBe(false);
+  await expect(page.locator("#kanban-feedback")).toContainText("Move blocked by transition policy.");
+  expect(moveRequests).toHaveLength(0);
+  await expect(page.locator("[data-kanban-drop-state='Backlog'] [data-kanban-issue-id='kanban-demo-backlog']")).toHaveCount(1);
+  await expect(page.locator("[data-kanban-drop-state='Merging'] [data-kanban-issue-id='kanban-demo-backlog']")).toHaveCount(0);
+  await captureClipAndAttach(page, "#project-kanban", "project-kanban-drag-blocked-client-side.png", testInfo, {
+    maxHeight: 430,
+  });
+});
+
 test("direct Kanban drag success does not shift board layout", async ({ page }, testInfo) => {
   await page.setViewportSize(desktopViewport);
   await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, { waitUntil: "domcontentloaded" });
@@ -266,6 +304,12 @@ test("direct Kanban drag success does not shift board layout", async ({ page }, 
   await captureClipAndAttach(page, "#project-kanban", "project-kanban-drag-success-no-flash.png", testInfo, {
     maxHeight: 430,
   });
+  await expect(page.locator("#kanban-action-dialog")).not.toHaveAttribute("data-tui-dialog-open", "true");
+  await expect(page.locator("#kanban-dialog-content")).toHaveText("");
+
+  await page.locator("[data-kanban-card][data-kanban-issue-id='kanban-demo-backlog'] [aria-label^='Move ']").click();
+  await expect(page.locator("#kanban-action-dialog")).toHaveAttribute("data-tui-dialog-open", "true");
+  await expect(page.locator("#kanban-dialog-content")).toContainText("Move card");
 });
 
 test("project configuration page preserves project color layout", async ({ page }, testInfo) => {
@@ -318,6 +362,32 @@ async function compareAndAttach(locator, name, testInfo) {
   const evidencePath = path.join(evidenceDir, name);
   await locator.screenshot({ path: evidencePath, animations: "disabled", caret: "hide" });
   await testInfo.attach(name, { path: evidencePath, contentType: "image/png" });
+}
+
+async function attachFailureEvidence(page, testInfo) {
+  const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", testInfo.project.name);
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const baseName = artifactName(testInfo.title);
+  const htmlPath = path.join(evidenceDir, `${baseName}.html`);
+  const screenshotPath = path.join(evidenceDir, `${baseName}.png`);
+
+  try {
+    fs.writeFileSync(htmlPath, await page.content());
+    await testInfo.attach(`${baseName}.html`, { path: htmlPath, contentType: "text/html" });
+  } catch (error) {
+    await testInfo.attach(`${baseName}-html-error.txt`, { body: String(error), contentType: "text/plain" });
+  }
+
+  try {
+    await page.screenshot({ path: screenshotPath, animations: "disabled", caret: "hide" });
+    await testInfo.attach(`${baseName}.png`, { path: screenshotPath, contentType: "image/png" });
+  } catch (error) {
+    await testInfo.attach(`${baseName}-screenshot-error.txt`, { body: String(error), contentType: "text/plain" });
+  }
+}
+
+function artifactName(title) {
+  return title.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "failure";
 }
 
 async function compareClipAndAttach(page, selector, name, testInfo, options) {

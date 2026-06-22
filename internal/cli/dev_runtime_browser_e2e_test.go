@@ -1,3 +1,5 @@
+//go:build browser_e2e
+
 package cli
 
 import (
@@ -26,6 +28,10 @@ import (
 	"github.com/digitaldrywood/detent/internal/devruntime"
 )
 
+// TestStartKanbanDemoBrowserDragDrop is a manual diagnostic for the Go CDP
+// harness. CI exercises Kanban drag/drop in the Playwright browser visual gate
+// because browser startup and drag/drop timing need browser-native artifacts
+// instead of ordinary go test coverage failures.
 func TestStartKanbanDemoBrowserDragDrop(t *testing.T) {
 	chromePath := chromeExecutable()
 	if chromePath == "" {
