@@ -244,6 +244,60 @@ func TestPublishSnapshotsPublishesToHub(t *testing.T) {
 	}
 }
 
+func TestPublishSnapshotOnceDoesNotLetPausedProjectsHoldFleetReadiness(t *testing.T) {
+	t.Parallel()
+
+	registry := projectpkg.NewRegistry()
+	mustSetProject(t, registry, startRefreshProject(t, "alpha"))
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	pausedProject, err := projectpkg.New(projectpkg.Config{
+		Project: globalconfig.Project{
+			ID:      "bravo",
+			Workdir: t.TempDir(),
+			Weight:  1,
+			Paused:  true,
+		},
+		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
+	}, projectpkg.Dependencies{})
+	if err != nil {
+		t.Fatalf("project.New() error = %v", err)
+	}
+	mustSetProject(t, registry, pausedProject)
+
+	snapshotHub := hub.New[telemetry.Snapshot]()
+	now := time.Date(2026, 6, 22, 14, 0, 0, 0, time.UTC)
+	if err := publishSnapshotOnce(context.Background(), registry, snapshotHub, now, nil, nil, "http://localhost:4101"); err != nil {
+		t.Fatalf("publishSnapshotOnce() error = %v", err)
+	}
+
+	snapshot, ok := snapshotHub.Latest()
+	if !ok {
+		t.Fatal("snapshotHub.Latest() ok = false, want published snapshot")
+	}
+	if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusReady {
+		t.Fatalf("snapshot Refresh status = %q, want %q", got, telemetry.RefreshStatusReady)
+	}
+	if len(snapshot.Projects) != 2 {
+		t.Fatalf("snapshot.Projects len = %d, want 2", len(snapshot.Projects))
+	}
+
+	var paused telemetry.ProjectSnapshot
+	for _, projectSnapshot := range snapshot.Projects {
+		if projectSnapshot.Project.ID == "bravo" {
+			paused = projectSnapshot
+			break
+		}
+	}
+	if paused.Project.ID == "" {
+		t.Fatalf("paused project snapshot missing: %#v", snapshot.Projects)
+	}
+	if refreshHasSignal(paused.Refresh) {
+		t.Fatalf("paused project Refresh = %#v, want no readiness signal", paused.Refresh)
+	}
+}
+
 func TestRepublishSnapshotsOnProjectEventsPublishesLatestSnapshot(t *testing.T) {
 	t.Parallel()
 

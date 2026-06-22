@@ -371,6 +371,14 @@ func publishSnapshotOnce(
 	for _, trackedProject := range trackedProjects {
 		projectMetadata := projectSnapshotMetadata(trackedProject)
 		if !trackedProject.Running() {
+			if trackedProject.Paused() {
+				merged = mergeSnapshot(merged, telemetry.Snapshot{
+					Project:      projectMetadata,
+					DashboardURL: cleanDashboardURL(dashboardURL),
+					Shutdown:     telemetry.Shutdown{Status: "running"},
+				})
+				continue
+			}
 			nextRefreshAt := now
 			refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &nextRefreshAt}
 			merged = mergeSnapshot(merged, telemetry.Snapshot{
