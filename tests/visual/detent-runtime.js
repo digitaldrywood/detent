@@ -14,6 +14,10 @@ async function startDetentRuntime(name, args) {
   }
 
   const home = fs.mkdtempSync(path.join(os.tmpdir(), `detent-${name}-`));
+  const evidenceDir = path.join(process.cwd(), "tmp", "playwright-evidence", name);
+  fs.mkdirSync(evidenceDir, { recursive: true });
+  const logPath = path.join(evidenceDir, "runtime.log");
+  fs.writeFileSync(logPath, "");
   const child = spawn(binary, ["dev-runtime", "--home", home, "--host", "127.0.0.1", "--port", "0", ...args], {
     cwd: process.cwd(),
     env: { ...process.env, NO_COLOR: "1" },
@@ -27,7 +31,9 @@ async function startDetentRuntime(name, args) {
     }, 30_000);
 
     function handleData(chunk) {
-      output += chunk.toString();
+      const text = chunk.toString();
+      output += text;
+      fs.appendFileSync(logPath, text);
       const match = output.match(/Dashboard:\s+(http:\/\/[^\s]+)/);
       if (match) {
         clearTimeout(timeout);
@@ -50,6 +56,7 @@ async function startDetentRuntime(name, args) {
   return {
     url,
     home,
+    logPath,
     output() {
       return output;
     },

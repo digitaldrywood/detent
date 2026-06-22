@@ -53,6 +53,57 @@ func TestInstallerSmokeUsesAuthenticatedReleaseVersion(t *testing.T) {
 	}
 }
 
+func TestKanbanBrowserDragDropRunsInVisualGate(t *testing.T) {
+	t.Parallel()
+
+	browserTestRaw, err := os.ReadFile("internal/cli/dev_runtime_browser_e2e_test.go")
+	if err != nil {
+		t.Fatalf("ReadFile(internal/cli/dev_runtime_browser_e2e_test.go) error = %v", err)
+	}
+	browserTest := strings.ReplaceAll(string(browserTestRaw), "\r\n", "\n")
+	if !strings.HasPrefix(browserTest, "//go:build browser_e2e\n\n") {
+		t.Fatal("Kanban browser drag/drop Go CDP test must be behind the browser_e2e build tag")
+	}
+	if !strings.Contains(browserTest, "CI exercises Kanban drag/drop in the Playwright browser visual gate") {
+		t.Fatal("Kanban browser drag/drop Go CDP test must document why CI uses the visual gate")
+	}
+
+	workflowRaw, err := os.ReadFile(".github/workflows/ci.yml")
+	if err != nil {
+		t.Fatalf("ReadFile(.github/workflows/ci.yml) error = %v", err)
+	}
+	workflow := strings.ReplaceAll(string(workflowRaw), "\r\n", "\n")
+	visualJob := workflowBetween(t, workflow, "  browser-visual:", "\n  windows-core:")
+	for _, want := range []string{
+		"internal/cli/dev_runtime*.go",
+		"name: Upload browser visual evidence",
+		"tmp/playwright-evidence",
+		"name: Upload browser visual failure artifacts",
+		"tmp/playwright-report",
+		"tmp/playwright-results",
+	} {
+		if !strings.Contains(visualJob, want) {
+			t.Fatalf("browser visual job missing %q", want)
+		}
+	}
+
+	visualSpecRaw, err := os.ReadFile("tests/visual/layout.spec.js")
+	if err != nil {
+		t.Fatalf("ReadFile(tests/visual/layout.spec.js) error = %v", err)
+	}
+	visualSpec := strings.ReplaceAll(string(visualSpecRaw), "\r\n", "\n")
+	for _, want := range []string{
+		`test("direct Kanban blocked drag stays client-side"`,
+		`Move blocked by transition policy.`,
+		`expect(moveRequests).toHaveLength(0)`,
+		`#kanban-action-dialog`,
+	} {
+		if !strings.Contains(visualSpec, want) {
+			t.Fatalf("browser visual spec missing %q", want)
+		}
+	}
+}
+
 func workflowBetween(t *testing.T, content string, startMarker string, endMarker string) string {
 	t.Helper()
 
