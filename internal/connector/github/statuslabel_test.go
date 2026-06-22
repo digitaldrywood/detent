@@ -73,6 +73,11 @@ func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(
 		},
 		{
 			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/digitaldrywood/pulls/434",
+			body:   `{"number":434,"html_url":"https://github.com/digitaldrywood/digitaldrywood/pull/434","state":"open","head":{"ref":"detent/digitaldrywood-digitaldrywood_digitaldrywood_433-a212db2634a4","sha":"sha-434"}}`,
+		},
+		{
+			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/digitaldrywood/commits/sha-434/check-runs?per_page=100",
 			body:   `{"check_runs":[{"status":"completed","conclusion":"success"}]}`,
 		},
@@ -285,6 +290,11 @@ func TestConnectorFetchCandidateIssuesSurfacesStatusLabelConflict(t *testing.T) 
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
 			body:   `[{"number":609,"html_url":"https://github.com/digitaldrywood/detent/pull/609","state":"open","head":{"ref":"detent/detent-digitaldrywood_detent_606-97bf7548e359","sha":"sha-609"}}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/609",
+			body:   `{"number":609,"html_url":"https://github.com/digitaldrywood/detent/pull/609","state":"open","head":{"ref":"detent/detent-digitaldrywood_detent_606-97bf7548e359","sha":"sha-609"}}`,
 		},
 		{
 			method: http.MethodGet,
