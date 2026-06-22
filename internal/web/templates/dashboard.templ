@@ -1040,85 +1040,89 @@ templ ProjectOverviewSnapshot(data DashboardData) {
 			</div>
 		</section>
 	}
-	if data.Snapshot.GeneratedAt.IsZero() {
-		@snapshotLoading()
+	if !snapshotReady(data.Snapshot) {
+		@snapshotReadiness(data.Snapshot)
+	} else {
+		@statStrip(data.Snapshot)
+		@projectOverviewSummarySection(data)
 	}
-	@statStrip(data.Snapshot)
-	@projectOverviewSummarySection(data)
 }
 
 templ ProjectRunsSnapshot(data DashboardData) {
-	if data.Snapshot.GeneratedAt.IsZero() {
-		@snapshotLoading()
+	if !snapshotReady(data.Snapshot) {
+		@snapshotReadiness(data.Snapshot)
+	} else {
+		@statStrip(data.Snapshot)
+		@agentActivityTimeline(data.Snapshot)
+		@prPipelineSection(data.Snapshot)
+		<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)] lg:gap-5">
+			<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
+				@runningIssuesSection(data)
+				<section class="dashboard-section-grid grid min-w-0 gap-4 xl:grid-cols-2">
+					@retryQueueSection(data.Snapshot)
+					@blockedSessionsSection(data.Snapshot)
+				</section>
+				@recentSessionsSection(data.Snapshot)
+			</div>
+		</section>
 	}
-	@statStrip(data.Snapshot)
-	@agentActivityTimeline(data.Snapshot)
-	@prPipelineSection(data.Snapshot)
-	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)] lg:gap-5">
-		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
-			@runningIssuesSection(data)
-			<section class="dashboard-section-grid grid min-w-0 gap-4 xl:grid-cols-2">
-				@retryQueueSection(data.Snapshot)
-				@blockedSessionsSection(data.Snapshot)
-			</section>
-			@recentSessionsSection(data.Snapshot)
-		</div>
-	</section>
 }
 
 templ ProjectDiagnosticsSnapshot(data DashboardData) {
 	@dashboardHealth(data)
-	if data.Snapshot.GeneratedAt.IsZero() {
-		@snapshotLoading()
+	if !snapshotReady(data.Snapshot) {
+		@snapshotReadiness(data.Snapshot)
+	} else {
+		@statStrip(data.Snapshot)
+		<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+			<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
+				@boardHealthSection(data.Snapshot)
+				@cycleTimeSection(data.Snapshot.CycleTime)
+				@budgetCard(data.Snapshot)
+			</div>
+			<aside class="dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5">
+				@throughputCard(data)
+				@rateLimitsCard(data.Snapshot.RateLimits)
+				@graphQLBudgetCard(data)
+				@tokenCard(data)
+				@lifetimeCard(data.Snapshot.LifetimeTotals)
+			</aside>
+		</section>
 	}
-	@statStrip(data.Snapshot)
-	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
-			@boardHealthSection(data.Snapshot)
-			@cycleTimeSection(data.Snapshot.CycleTime)
-			@budgetCard(data.Snapshot)
-		</div>
-		<aside class="dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5">
-			@throughputCard(data)
-			@rateLimitsCard(data.Snapshot.RateLimits)
-			@graphQLBudgetCard(data)
-			@tokenCard(data)
-			@lifetimeCard(data.Snapshot.LifetimeTotals)
-		</aside>
-	</section>
 }
 
 templ FleetSnapshot(data DashboardData) {
 	@dashboardHealth(data)
-	if data.Snapshot.GeneratedAt.IsZero() {
-		@snapshotLoading()
+	if !snapshotReady(data.Snapshot) {
+		@snapshotReadiness(data.Snapshot)
+	} else {
+		@agentActivityTimeline(data.Snapshot)
+		@statStrip(data.Snapshot)
+		@projectSmallMultiplesSection(data)
+		@prPipelineSection(data.Snapshot)
+		<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
+			<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
+				@runningIssuesSection(data)
+				<section class="dashboard-section-grid grid min-w-0 gap-4 xl:grid-cols-2">
+					@retryQueueSection(data.Snapshot)
+					@blockedSessionsSection(data.Snapshot)
+				</section>
+				@recentSessionsSection(data.Snapshot)
+			</div>
+			<aside class="dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5">
+				@throughputCard(data)
+				@rateLimitsCard(data.Snapshot.RateLimits)
+				@graphQLBudgetCard(data)
+				@tokenCard(data)
+				@lifetimeCard(data.Snapshot.LifetimeTotals)
+			</aside>
+		</section>
+		<section class="dashboard-analytics grid min-w-0 gap-4 lg:gap-5" aria-label="Dashboard analytics">
+			@boardHealthSection(data.Snapshot)
+			@cycleTimeSection(data.Snapshot.CycleTime)
+			@budgetCard(data.Snapshot)
+		</section>
 	}
-	@agentActivityTimeline(data.Snapshot)
-	@statStrip(data.Snapshot)
-	@projectSmallMultiplesSection(data)
-	@prPipelineSection(data.Snapshot)
-	<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-		<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
-			@runningIssuesSection(data)
-			<section class="dashboard-section-grid grid min-w-0 gap-4 xl:grid-cols-2">
-				@retryQueueSection(data.Snapshot)
-				@blockedSessionsSection(data.Snapshot)
-			</section>
-			@recentSessionsSection(data.Snapshot)
-		</div>
-		<aside class="dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5">
-			@throughputCard(data)
-			@rateLimitsCard(data.Snapshot.RateLimits)
-			@graphQLBudgetCard(data)
-			@tokenCard(data)
-			@lifetimeCard(data.Snapshot.LifetimeTotals)
-		</aside>
-	</section>
-	<section class="dashboard-analytics grid min-w-0 gap-4 lg:gap-5" aria-label="Dashboard analytics">
-		@boardHealthSection(data.Snapshot)
-		@cycleTimeSection(data.Snapshot.CycleTime)
-		@budgetCard(data.Snapshot)
-	</section>
 }
 
 templ projectOverviewSummarySection(data DashboardData) {
@@ -1330,22 +1334,39 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 					} else {
 						<span class="inline-flex min-h-8 items-center rounded-full border border-accent-soft bg-accent-soft px-2.5 py-1 text-xs font-semibold text-accent">Read-only</span>
 					}
-					<span class="inline-flex min-h-8 items-center rounded-full bg-muted px-2.5 py-1 font-mono text-xs font-medium text-muted-foreground">{ board.TotalLabel } cards</span>
-					@projectKanbanVisibilityDropdown(board, projectKanbanVisibilityKey(data, board))
+					if snapshotReady(data.Snapshot) {
+						<span class="inline-flex min-h-8 items-center rounded-full bg-muted px-2.5 py-1 font-mono text-xs font-medium text-muted-foreground">{ board.TotalLabel } cards</span>
+						@projectKanbanVisibilityDropdown(board, projectKanbanVisibilityKey(data, board))
+					} else if snapshotDegraded(data.Snapshot) {
+						<span class="inline-flex min-h-8 items-center rounded-full border border-danger-soft bg-danger-soft px-2.5 py-1 text-xs font-semibold text-danger">Degraded</span>
+					} else {
+						<span class="inline-flex min-h-8 items-center rounded-full border border-warning-soft bg-warning-soft px-2.5 py-1 text-xs font-semibold text-warning">Loading</span>
+					}
 				</div>
 			</div>
 			if projectKanbanReadOnlySetupNotice(data) {
 				@projectKanbanReadOnlyNotice(data)
 			}
-			if kanbanIntegrationEnabled(data) {
+			if kanbanIntegrationEnabled(data) && snapshotReady(data.Snapshot) {
 				<div id="kanban-feedback" role="status" aria-live="polite" class={ kanbanFeedbackClass(data.Kanban) }>{ kanbanFeedbackText(data.Kanban) }</div>
 			}
-			<div class="project-kanban-lanes mt-3 flex min-w-0 max-w-full flex-nowrap items-start justify-start gap-3 overflow-x-auto pb-2" data-preserve-scroll="project-kanban-lanes">
-				for _, lane := range board.AllLanes {
-					@projectKanbanLaneView(data, lane)
-				}
-			</div>
-			if kanbanIntegrationEnabled(data) {
+			if !snapshotReady(data.Snapshot) {
+				<div class="mt-3">
+					@snapshotReadiness(data.Snapshot)
+				</div>
+				<div class="project-kanban-lanes mt-3 flex min-w-0 max-w-full flex-nowrap items-start justify-start gap-3 overflow-x-auto pb-2" data-preserve-scroll="project-kanban-lanes">
+					for _, lane := range board.AllLanes {
+						@projectKanbanLoadingLaneView(lane)
+					}
+				</div>
+			} else {
+				<div class="project-kanban-lanes mt-3 flex min-w-0 max-w-full flex-nowrap items-start justify-start gap-3 overflow-x-auto pb-2" data-preserve-scroll="project-kanban-lanes">
+					for _, lane := range board.AllLanes {
+						@projectKanbanLaneView(data, lane)
+					}
+				</div>
+			}
+			if kanbanIntegrationEnabled(data) && snapshotReady(data.Snapshot) {
 				@kanbanScript()
 			}
 		</section>
@@ -1756,6 +1777,19 @@ templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 	</section>
 }
 
+templ projectKanbanLoadingLaneView(lane projectKanbanLane) {
+	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } data-project-kanban-lane-title={ lane.Title } data-project-kanban-lane-empty="true" data-project-kanban-lane-default-visible="true" data-project-kanban-lane-pinned="false" data-project-kanban-lane-visible="true">
+		<div class="flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden">
+			<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
+			<h3 class="min-w-0 shrink truncate text-xs font-semibold text-foreground">{ lane.Title } ({ lane.CountLabel })</h3>
+		</div>
+		<div class="mt-3 grid gap-2" aria-hidden="true">
+			<div class="h-16 rounded-md border border-dashed border-border bg-card/70"></div>
+			<div class="h-12 rounded-md border border-dashed border-border bg-card/50"></div>
+		</div>
+	</section>
+}
+
 templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 	<article class="project-kanban-card project-kanban-card-compact w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-1.5 shadow-sm transition-colors hover:border-accent" aria-label={ "Kanban card " + card.IssueNumber + " " + card.Title } { projectKanbanCardAttributes(data, card)... }>
 		<div class="grid w-full min-w-0 max-w-full gap-1 overflow-hidden">
@@ -2060,13 +2094,13 @@ templ dashboardHealth(data DashboardData) {
 	</section>
 }
 
-templ snapshotLoading() {
-	<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm">
+templ snapshotReadiness(snapshot telemetry.Snapshot) {
+	<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm" aria-label="Snapshot readiness">
 		<div class="flex items-start gap-3">
-			<span class="mt-1 h-2.5 w-2.5 rounded-full bg-warning"></span>
+			<span class={ "mt-1 h-2.5 w-2.5 rounded-full " + snapshotReadinessDotClass(snapshot) }></span>
 			<div>
-				<h2 class="text-sm font-semibold">Waiting for first telemetry snapshot.</h2>
-				<p class="mt-1 text-sm text-warning">Live updates will fill this dashboard when Detent publishes the next snapshot.</p>
+				<h2 class="text-sm font-semibold">{ snapshotReadinessTitle(snapshot) }</h2>
+				<p class="mt-1 text-sm text-warning">{ snapshotReadinessDetail(snapshot) }</p>
 			</div>
 		</div>
 	</section>

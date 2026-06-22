@@ -74,6 +74,9 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 		out.Counts = sourceProject.Counts
 		out.Tokens = sourceProject.Tokens
 		out.Throughput = sourceProject.Throughput
+		if projectSnapshotHasRefreshSignal(sourceProject) {
+			out.Refresh = sourceProject.Refresh
+		}
 	} else {
 		out.Counts = telemetry.Counts{
 			Running:   len(out.Running),
@@ -88,6 +91,15 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 		out.TokenTrend = nil
 	}
 	return out
+}
+
+func projectSnapshotHasRefreshSignal(project telemetry.ProjectSnapshot) bool {
+	return project.Refresh.PollIntervalSeconds != 0 ||
+		project.Refresh.Status != "" ||
+		project.Refresh.LastRefreshAt != nil ||
+		project.Refresh.NextRefreshAt != nil ||
+		strings.TrimSpace(project.Refresh.LastError) != "" ||
+		project.Refresh.LastErrorAt != nil
 }
 
 func projectSnapshotForID(snapshot telemetry.Snapshot, selectedProjectID string) (telemetry.ProjectSnapshot, bool) {

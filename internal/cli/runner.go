@@ -306,13 +306,14 @@ func startupSnapshot(
 	now time.Time,
 ) telemetry.Snapshot {
 	nextRefreshAt := now
+	refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &nextRefreshAt}
 	snapshot := telemetry.Snapshot{
 		GeneratedAt:    now,
 		Instance:       startupSnapshotInstance(cfg),
-		Projects:       startupProjectSnapshots(cfg.Projects),
+		Projects:       startupProjectSnapshots(cfg.Projects, refresh),
 		DashboardURL:   cleanDashboardURL(dashboardURL),
 		Shutdown:       telemetry.Shutdown{Status: "running"},
-		Refresh:        telemetry.Refresh{NextRefreshAt: &nextRefreshAt},
+		Refresh:        refresh,
 		LifetimeTotals: lifetimeTotals(ctx, lifetimeSource),
 	}
 	switch len(snapshot.Projects) {
@@ -334,7 +335,7 @@ func startupSnapshotInstance(cfg globalconfig.Config) telemetry.Instance {
 	}
 }
 
-func startupProjectSnapshots(projects []globalconfig.Project) []telemetry.ProjectSnapshot {
+func startupProjectSnapshots(projects []globalconfig.Project, refresh telemetry.Refresh) []telemetry.ProjectSnapshot {
 	out := make([]telemetry.ProjectSnapshot, 0, len(projects))
 	for _, cfg := range projects {
 		id := strings.TrimSpace(cfg.ID)
@@ -347,6 +348,7 @@ func startupProjectSnapshots(projects []globalconfig.Project) []telemetry.Projec
 				DisplayName: id,
 				Color:       projectcolor.ColorFor(id, cfg.Color),
 			},
+			Refresh: refresh,
 		})
 	}
 	return out
@@ -369,12 +371,21 @@ func publishSnapshotOnce(
 	for _, trackedProject := range trackedProjects {
 		projectMetadata := projectSnapshotMetadata(trackedProject)
 		if !trackedProject.Running() {
+			if trackedProject.Paused() {
+				merged = mergeSnapshot(merged, telemetry.Snapshot{
+					Project:      projectMetadata,
+					DashboardURL: cleanDashboardURL(dashboardURL),
+					Shutdown:     telemetry.Shutdown{Status: "running"},
+				})
+				continue
+			}
 			nextRefreshAt := now
+			refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &nextRefreshAt}
 			merged = mergeSnapshot(merged, telemetry.Snapshot{
 				Project:      projectMetadata,
 				DashboardURL: cleanDashboardURL(dashboardURL),
 				Shutdown:     telemetry.Shutdown{Status: "running"},
-				Refresh:      telemetry.Refresh{NextRefreshAt: &nextRefreshAt},
+				Refresh:      refresh,
 			})
 			continue
 		}
@@ -389,6 +400,17 @@ func publishSnapshotOnce(
 				slog.String("project_id", string(trackedProject.ID())),
 				slog.String("error", err.Error()),
 			)
+			lastErrorAt := now
+			merged = mergeSnapshot(merged, telemetry.Snapshot{
+				Project:      projectMetadata,
+				DashboardURL: cleanDashboardURL(dashboardURL),
+				Shutdown:     telemetry.Shutdown{Status: "running"},
+				Refresh: telemetry.Refresh{
+					Status:      telemetry.RefreshStatusDegraded,
+					LastError:   err.Error(),
+					LastErrorAt: &lastErrorAt,
+				},
+			})
 			continue
 		}
 		snapshot := state.Snapshot(now)
@@ -646,6 +668,7 @@ func projectSnapshot(snapshot telemetry.Snapshot) telemetry.ProjectSnapshot {
 		Counts:     snapshot.Counts,
 		Tokens:     snapshot.Tokens,
 		Throughput: snapshot.Throughput,
+		Refresh:    snapshot.Refresh,
 	}
 }
 
@@ -688,13 +711,47 @@ func mergeInstanceValue(current, next string, mixed string) string {
 }
 
 func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {
+	currentHadSignal := refreshHasSignal(current)
+	nextHadSignal := refreshHasSignal(next)
 	if current.PollIntervalSeconds == 0 ||
 		(next.PollIntervalSeconds > 0 && next.PollIntervalSeconds < current.PollIntervalSeconds) {
 		current.PollIntervalSeconds = next.PollIntervalSeconds
 	}
 	current.LastRefreshAt = latestTime(current.LastRefreshAt, next.LastRefreshAt)
 	current.NextRefreshAt = earliestTime(current.NextRefreshAt, next.NextRefreshAt)
+	if strings.TrimSpace(next.LastError) != "" {
+		if strings.TrimSpace(current.LastError) == "" ||
+			current.LastErrorAt == nil ||
+			next.LastErrorAt == nil ||
+			current.LastErrorAt.Before(*next.LastErrorAt) {
+			current.LastError = next.LastError
+		}
+	}
+	current.LastErrorAt = latestTime(current.LastErrorAt, next.LastErrorAt)
+	switch {
+	case !currentHadSignal && nextHadSignal:
+		current.Status = next.ReadinessStatus()
+	case currentHadSignal && !nextHadSignal:
+		current.Status = current.ReadinessStatus()
+	case current.ReadinessStatus() == telemetry.RefreshStatusDegraded || next.ReadinessStatus() == telemetry.RefreshStatusDegraded:
+		current.Status = telemetry.RefreshStatusDegraded
+	case current.ReadinessStatus() == telemetry.RefreshStatusInitializing || next.ReadinessStatus() == telemetry.RefreshStatusInitializing:
+		current.Status = telemetry.RefreshStatusInitializing
+	case currentHadSignal || nextHadSignal:
+		current.Status = telemetry.RefreshStatusReady
+	default:
+		current.Status = ""
+	}
 	return current
+}
+
+func refreshHasSignal(refresh telemetry.Refresh) bool {
+	return refresh.PollIntervalSeconds != 0 ||
+		refresh.Status != "" ||
+		refresh.LastRefreshAt != nil ||
+		refresh.NextRefreshAt != nil ||
+		strings.TrimSpace(refresh.LastError) != "" ||
+		refresh.LastErrorAt != nil
 }
 
 func latestTime(current *time.Time, next *time.Time) *time.Time {

@@ -854,6 +854,234 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanStartupReadinessSuppressesEmptyLaneCopyAndActions(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 0, 0, 0, time.UTC)
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress", "Human Review"},
+			AllowedTransitions: map[string][]string{
+				"Todo": {"In Progress"},
+			},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status: telemetry.RefreshStatusInitializing,
+			},
+		},
+	})
+
+	section := projectKanbanSection(t, html)
+	for _, want := range []string{
+		"Loading tracker state...",
+		`aria-label="Snapshot readiness"`,
+		`data-project-kanban-lane-title="Todo"`,
+		`data-project-kanban-lane-title="In Progress"`,
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("startup project Kanban missing %q:\n%s", want, section)
+		}
+	}
+	for _, forbidden := range []string{
+		"No issues in this state.",
+		`data-kanban-drop-state`,
+		`data-kanban-action`,
+		`hx-post="/api/v1/kanban/move"`,
+		`hx-post="/api/v1/kanban/comment"`,
+		`id="kanban-feedback"`,
+	} {
+		if strings.Contains(section, forbidden) {
+			t.Fatalf("startup project Kanban rendered loaded affordance %q:\n%s", forbidden, section)
+		}
+	}
+}
+
+func TestProjectKanbanLoadedEmptySnapshotRendersEmptyLaneCopy(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 5, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-15 * time.Second)
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo", "In Progress"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &lastRefreshAt,
+			},
+		},
+	})
+
+	section := projectKanbanSection(t, html)
+	for _, want := range []string{
+		"No issues in this state.",
+		`data-project-kanban-empty-lane`,
+		`0 cards`,
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("loaded empty project Kanban missing %q:\n%s", want, section)
+		}
+	}
+	if strings.Contains(section, "Loading tracker state...") {
+		t.Fatalf("loaded empty project Kanban rendered startup state:\n%s", section)
+	}
+}
+
+func TestProjectKanbanLoadedSnapshotRendersCardsWithoutLoadingState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 10, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-20 * time.Second)
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress"},
+			AllowedTransitions: map[string][]string{
+				"Todo": {"In Progress"},
+			},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &lastRefreshAt,
+			},
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "issue-610",
+					Identifier: "digitaldrywood/detent#610",
+					ProjectID:  "detent",
+					URL:        "https://github.com/digitaldrywood/detent/issues/610",
+					Title:      "Show startup loading states",
+					State:      "Todo",
+				},
+			},
+		},
+	})
+
+	section := projectKanbanSection(t, html)
+	for _, want := range []string{
+		`data-project-kanban-card="digitaldrywood/detent#610"`,
+		`data-kanban-action="move"`,
+		`data-kanban-drop-state="Todo"`,
+		"Show startup loading states",
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("loaded project Kanban missing %q:\n%s", want, section)
+		}
+	}
+	for _, forbidden := range []string{
+		"Loading tracker state...",
+	} {
+		if strings.Contains(section, forbidden) {
+			t.Fatalf("loaded project Kanban rendered %q:\n%s", forbidden, section)
+		}
+	}
+}
+
+func TestProjectSnapshotsAvoidEmptyStatesBeforeReadiness(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 15, 0, 0, time.UTC)
+	data := templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo", "In Progress"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status: telemetry.RefreshStatusInitializing,
+			},
+		},
+	}
+
+	for name, html := range map[string]string{
+		"overview": renderDashboard(t, data),
+		"runs":     renderProjectRunsSnapshot(t, data),
+	} {
+		if !strings.Contains(html, "Loading tracker state...") {
+			t.Fatalf("%s missing startup state:\n%s", name, html)
+		}
+		for _, forbidden := range []string{
+			"No active issue sessions.",
+			"No agent activity recorded.",
+			"No issues are currently backing off.",
+			"No blocked sessions.",
+			"No completed sessions recorded.",
+			"No board states recorded.",
+			`>0 cards<`,
+			`>0 running<`,
+		} {
+			if strings.Contains(html, forbidden) {
+				t.Fatalf("%s rendered empty/zero state %q before readiness:\n%s", name, forbidden, html)
+			}
+		}
+	}
+}
+
+func TestProjectSnapshotsRenderFirstRefreshFailureState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 20, 0, 0, time.UTC)
+	lastErrorAt := now.Add(-5 * time.Second)
+	data := templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status:      telemetry.RefreshStatusDegraded,
+				LastError:   "github tracker unavailable",
+				LastErrorAt: &lastErrorAt,
+			},
+		},
+	}
+
+	for name, html := range map[string]string{
+		"kanban":   renderProjectKanbanPage(t, data),
+		"overview": renderDashboard(t, data),
+		"runs":     renderProjectRunsSnapshot(t, data),
+	} {
+		if !strings.Contains(html, "Tracker refresh failed.") || !strings.Contains(html, "github tracker unavailable") {
+			t.Fatalf("%s missing degraded state:\n%s", name, html)
+		}
+		for _, forbidden := range []string{
+			"No issues in this state.",
+			"No active issue sessions.",
+			`>0 cards<`,
+			`id="kanban-feedback"`,
+		} {
+			if strings.Contains(html, forbidden) {
+				t.Fatalf("%s rendered loaded state %q after first refresh failure:\n%s", name, forbidden, html)
+			}
+		}
+	}
+}
+
 func TestDashboardRendersFleetKanbanNavForMultiProjectOnly(t *testing.T) {
 	t.Parallel()
 
@@ -2283,8 +2511,8 @@ func TestDashboardRendersHealthIndicators(t *testing.T) {
 		Title:         "Detent",
 		ConnectorName: "github",
 	})
-	if !strings.Contains(offlineHTML, "Offline") {
-		t.Fatalf("dashboard missing offline status:\n%s", offlineHTML)
+	if !strings.Contains(offlineHTML, "Starting") || !strings.Contains(offlineHTML, "Loading tracker state...") {
+		t.Fatalf("dashboard missing startup status:\n%s", offlineHTML)
 	}
 }
 
@@ -2557,13 +2785,21 @@ func TestDashboardRendersUnknownDiffStatusAsPending(t *testing.T) {
 func TestDashboardRendersEmptyStates(t *testing.T) {
 	t.Parallel()
 
+	now := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-time.Minute)
 	html := renderDashboard(t, templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "memory",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &lastRefreshAt,
+			},
+		},
 	})
 
 	for _, want := range []string{
-		"Waiting for first telemetry snapshot.",
 		"No active issue sessions.",
 		"No issues are currently backing off.",
 		"No blocked sessions.",
@@ -2726,10 +2962,17 @@ func TestDashboardRendersProjectOrderControls(t *testing.T) {
 func TestDashboardDistinguishesMissingRunningDetails(t *testing.T) {
 	t.Parallel()
 
+	now := time.Date(2026, 6, 22, 10, 30, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-time.Minute)
 	html := renderDashboard(t, templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &lastRefreshAt,
+			},
 			Counts: telemetry.Counts{
 				Running: 2,
 			},
@@ -2747,10 +2990,17 @@ func TestDashboardDistinguishesMissingRunningDetails(t *testing.T) {
 func TestDashboardDistinguishesMissingWorkQueueDetails(t *testing.T) {
 	t.Parallel()
 
+	now := time.Date(2026, 6, 22, 10, 35, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-time.Minute)
 	html := renderDashboard(t, templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &lastRefreshAt,
+			},
 			Counts: telemetry.Counts{
 				Queue:     2,
 				Blocked:   1,

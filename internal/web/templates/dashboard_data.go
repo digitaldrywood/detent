@@ -1058,6 +1058,84 @@ func generatedAtLabel(snapshot telemetry.Snapshot) string {
 	return "Updated " + snapshot.GeneratedAt.UTC().Format("Jan 2 15:04:05 UTC")
 }
 
+func snapshotReadinessStatus(snapshot telemetry.Snapshot) telemetry.RefreshStatus {
+	if !snapshotHasRefreshSignal(snapshot.Refresh) && (!snapshot.GeneratedAt.IsZero() || snapshotHasLoadedData(snapshot)) {
+		return telemetry.RefreshStatusReady
+	}
+	return snapshot.Refresh.ReadinessStatus()
+}
+
+func snapshotHasRefreshSignal(refresh telemetry.Refresh) bool {
+	return refresh.PollIntervalSeconds != 0 ||
+		refresh.Status != "" ||
+		refresh.LastRefreshAt != nil ||
+		refresh.NextRefreshAt != nil ||
+		strings.TrimSpace(refresh.LastError) != "" ||
+		refresh.LastErrorAt != nil
+}
+
+func snapshotHasLoadedData(snapshot telemetry.Snapshot) bool {
+	return snapshot.Project != (telemetry.Project{}) ||
+		len(snapshot.Projects) > 0 ||
+		len(snapshot.BoardIssues) > 0 ||
+		len(snapshot.Pipeline) > 0 ||
+		len(snapshot.Running) > 0 ||
+		len(snapshot.Queue) > 0 ||
+		len(snapshot.Blocked) > 0 ||
+		len(snapshot.Completed) > 0 ||
+		snapshot.Counts != (telemetry.Counts{}) ||
+		snapshot.Tokens != (telemetry.Tokens{}) ||
+		snapshot.RateLimits != nil ||
+		snapshot.LifetimeTotals.Available ||
+		snapshot.CycleTime.Available
+}
+
+func snapshotReady(snapshot telemetry.Snapshot) bool {
+	return snapshotReadinessStatus(snapshot) == telemetry.RefreshStatusReady
+}
+
+func snapshotInitializing(snapshot telemetry.Snapshot) bool {
+	return snapshotReadinessStatus(snapshot) == telemetry.RefreshStatusInitializing
+}
+
+func snapshotDegraded(snapshot telemetry.Snapshot) bool {
+	return snapshotReadinessStatus(snapshot) == telemetry.RefreshStatusDegraded
+}
+
+func snapshotReadinessTitle(snapshot telemetry.Snapshot) string {
+	if snapshotDegraded(snapshot) {
+		return "Tracker refresh failed."
+	}
+	return "Loading tracker state..."
+}
+
+func snapshotReadinessDetail(snapshot telemetry.Snapshot) string {
+	if snapshotDegraded(snapshot) {
+		parts := []string{"Detent could not load the first tracker snapshot."}
+		if err := strings.TrimSpace(snapshot.Refresh.LastError); err != "" {
+			parts = append(parts, err)
+		}
+		if snapshot.Refresh.LastErrorAt != nil {
+			parts = append(parts, "Last error at "+timeLabel(*snapshot.Refresh.LastErrorAt)+".")
+		}
+		if snapshot.Refresh.LastRefreshAt != nil {
+			parts = append(parts, "Last successful refresh at "+timeLabel(*snapshot.Refresh.LastRefreshAt)+".")
+		}
+		return strings.Join(parts, " ")
+	}
+	if snapshot.Refresh.NextRefreshAt != nil {
+		return "Detent is waiting for the first successful tracker snapshot. Next refresh is scheduled for " + timeLabel(*snapshot.Refresh.NextRefreshAt) + "."
+	}
+	return "Detent is waiting for the first successful tracker snapshot before showing board counts or empty states."
+}
+
+func snapshotReadinessDotClass(snapshot telemetry.Snapshot) string {
+	if snapshotDegraded(snapshot) {
+		return "bg-danger"
+	}
+	return "bg-warning"
+}
+
 func issueIdentifier(issue telemetry.Issue) string {
 	if issue.Identifier != "" {
 		return issue.Identifier
@@ -3596,8 +3674,11 @@ func budgetDayLabel(day telemetry.BudgetDay) string {
 }
 
 func runtimeStatusLabel(snapshot telemetry.Snapshot) string {
-	if snapshot.GeneratedAt.IsZero() {
-		return "Offline"
+	if snapshotDegraded(snapshot) {
+		return "Degraded"
+	}
+	if snapshotInitializing(snapshot) {
+		return "Starting"
 	}
 	if snapshot.Shutdown.Draining {
 		return "Draining"
@@ -3606,8 +3687,11 @@ func runtimeStatusLabel(snapshot telemetry.Snapshot) string {
 }
 
 func runtimeStatusClass(snapshot telemetry.Snapshot) string {
-	if snapshot.GeneratedAt.IsZero() {
-		return "border-border bg-muted text-muted-foreground"
+	if snapshotDegraded(snapshot) {
+		return "border-danger-soft bg-danger-soft text-danger"
+	}
+	if snapshotInitializing(snapshot) {
+		return "border-warning-soft bg-warning-soft text-warning"
 	}
 	if snapshot.Shutdown.Draining {
 		return "border-warning-soft bg-warning-soft text-warning"
@@ -3616,7 +3700,7 @@ func runtimeStatusClass(snapshot telemetry.Snapshot) string {
 }
 
 func statsStatusLabel(snapshot telemetry.Snapshot) string {
-	if snapshot.GeneratedAt.IsZero() {
+	if !snapshotReady(snapshot) {
 		return "Stats pending"
 	}
 	if snapshot.LifetimeTotals.Available {
@@ -3626,8 +3710,11 @@ func statsStatusLabel(snapshot telemetry.Snapshot) string {
 }
 
 func statsStatusClass(snapshot telemetry.Snapshot) string {
-	if snapshot.GeneratedAt.IsZero() {
-		return "border-border bg-muted text-muted-foreground"
+	if snapshotDegraded(snapshot) {
+		return "border-danger-soft bg-danger-soft text-danger"
+	}
+	if snapshotInitializing(snapshot) {
+		return "border-warning-soft bg-warning-soft text-warning"
 	}
 	if snapshot.LifetimeTotals.Available {
 		return "border-success-soft bg-success-soft text-success"
@@ -3636,8 +3723,8 @@ func statsStatusClass(snapshot telemetry.Snapshot) string {
 }
 
 func statsStatusTitle(snapshot telemetry.Snapshot) string {
-	if snapshot.GeneratedAt.IsZero() {
-		return "Waiting for the first telemetry snapshot."
+	if !snapshotReady(snapshot) {
+		return snapshotReadinessDetail(snapshot)
 	}
 	if snapshot.LifetimeTotals.Available {
 		return "Runtime statistics are available."

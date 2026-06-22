@@ -49,6 +49,7 @@ test("screenshots manifest includes visual gate scenarios", async ({ request }) 
     expect.arrayContaining([
       "fleet-kanban-multiproject",
       "kanban-full-integration",
+      "kanban-startup-loading",
       "kanban-read-only",
       "kanban-dense-overflow",
       "settings-project-context",
@@ -166,6 +167,26 @@ test("active-only Kanban view hides populated terminal lanes", async ({ page }, 
   await expect(cancelledLane).toBeHidden();
   await captureClipAndAttach(page, "#project-kanban", "project-kanban-active-only-terminal-hidden-desktop.png", testInfo, {
     maxHeight: 430,
+  });
+});
+
+test("project Kanban startup loading hides empty states and actions", async ({ page }, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "kanban-startup-loading",
+    viewport: desktopViewport,
+  });
+
+  const board = page.locator("#project-kanban");
+  await expect(board).toBeVisible();
+  await expect(board.getByText("Loading tracker state...")).toBeVisible();
+  await expect(board.getByText("No issues in this state.")).toHaveCount(0);
+  await expect(board.locator("[data-kanban-action]")).toHaveCount(0);
+  await expect(board.locator("[data-kanban-drop-state]")).toHaveCount(0);
+  await assertProjectKanbanLayout(page, "#project-kanban", { minLanes: 6 });
+  await assertElementFitsViewport(page, "#project-kanban");
+  await compareClipAndAttach(page, "#project-kanban", "project-kanban-startup-loading-desktop.png", testInfo, {
+    maxHeight: 520,
   });
 });
 

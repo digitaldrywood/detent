@@ -13,16 +13,22 @@ import (
 // for publishing to the web dashboard. Slices are sorted by issue id so the
 // output is deterministic.
 func (s State) Snapshot(now time.Time) telemetry.Snapshot {
+	refresh := telemetry.Refresh{
+		PollIntervalSeconds: int64(s.PollInterval / time.Second),
+		LastRefreshAt:       timePointer(s.LastRefreshAt),
+		NextRefreshAt:       timePointer(s.NextRefreshAt),
+	}
+	if refresh.LastRefreshAt == nil {
+		refresh.Status = telemetry.RefreshStatusInitializing
+	} else {
+		refresh.Status = telemetry.RefreshStatusReady
+	}
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: now,
 		Instance:    s.Instance,
 		Shutdown:    shutdownSnapshot(s),
 		Events:      cloneActivityEvents(s.RecentEvents),
-		Refresh: telemetry.Refresh{
-			PollIntervalSeconds: int64(s.PollInterval / time.Second),
-			LastRefreshAt:       timePointer(s.LastRefreshAt),
-			NextRefreshAt:       timePointer(s.NextRefreshAt),
-		},
+		Refresh:     refresh,
 		BoardIssues: issueSnapshots(s.BoardIssues, s.AutoPromoteQuietDuration, s.PollInterval),
 		Pipeline:    pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval),
 		Running:     runningSnapshots(s.Running, s.Claimed, now),

@@ -137,6 +137,7 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "project-hot-path", Route: "/projects/billing-api", WaitSelector: "#snapshot", Page: "project", Variant: "hot-path", ProjectID: "billing-api"},
 		{ID: "project-not-found", Route: "/projects/missing-project", WaitSelector: "body", Page: "project", Variant: "not-found", ProjectID: "missing-project", Status: http.StatusNotFound},
 		{ID: "kanban-full-integration", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "healthy", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
+		{ID: "kanban-startup-loading", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "startup-loading", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "kanban-read-only", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "healthy", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "kanban-empty-lanes", Route: "/projects/agent-lab/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "project-empty", ProjectID: "agent-lab", KanbanMode: workflowconfig.KanbanModeIntegration},
 		{ID: "kanban-dense-overflow", Route: "/projects/dogfood/kanban", WaitSelector: "#project-kanban", Page: "kanban", Variant: "dense-kanban", ProjectID: demoPrimaryProjectID, KanbanMode: workflowconfig.KanbanModeIntegration},
@@ -671,6 +672,8 @@ func demoSnapshotForScenario(scenario demoScenario) telemetry.Snapshot {
 		snapshot = demoHotPathSnapshot()
 	case "tracker-refresh-gap":
 		snapshot = demoTrackerRefreshGapSnapshot()
+	case "startup-loading":
+		snapshot = demoStartupLoadingSnapshot()
 	}
 	if scenario.Variant == "terminal" {
 		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, "demo-cancelled", "digitaldrywood/detent-core#5259", "Cancelled alternate dashboard theme", "Cancelled", 48))
@@ -827,6 +830,7 @@ func demoHealthySnapshot() telemetry.Snapshot {
 
 func demoEmptySnapshot() telemetry.Snapshot {
 	now := demoBaseTime
+	lastRefresh := now.Add(-15 * time.Second)
 	nextRefresh := now.Add(time.Minute)
 	return telemetry.Snapshot{
 		GeneratedAt:    now,
@@ -835,10 +839,30 @@ func demoEmptySnapshot() telemetry.Snapshot {
 		Projects:       demoProjectSnapshots(demoProjectsForVariant("project-empty")),
 		DashboardURL:   "http://localhost:0",
 		Shutdown:       telemetry.Shutdown{Status: "running"},
-		Refresh:        telemetry.Refresh{PollIntervalSeconds: 60, NextRefreshAt: &nextRefresh},
+		Refresh:        telemetry.Refresh{PollIntervalSeconds: 60, Status: telemetry.RefreshStatusReady, LastRefreshAt: &lastRefresh, NextRefreshAt: &nextRefresh},
 		LifetimeTotals: telemetry.LifetimeTotals{Available: true},
 		CycleTime:      telemetry.CycleTimeReport{Available: false, DegradedReason: "no completed sessions in the selected window"},
 	}
+}
+
+func demoStartupLoadingSnapshot() telemetry.Snapshot {
+	now := demoBaseTime
+	nextRefresh := now.Add(20 * time.Second)
+	refresh := telemetry.Refresh{PollIntervalSeconds: 60, Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &nextRefresh}
+	snapshot := telemetry.Snapshot{
+		GeneratedAt:    now,
+		Project:        telemetry.Project{DisplayName: "multiple projects"},
+		Instance:       telemetry.Instance{Name: "detent-demo-screenshots", GitHubLogin: "detent-bot", AuthorizationScope: "repo, read:project", AuthorizationConfigured: true},
+		Projects:       demoProjectSnapshots(demoProjectsForVariant("project-empty")),
+		DashboardURL:   "http://localhost:0",
+		Shutdown:       telemetry.Shutdown{Status: "running"},
+		Refresh:        refresh,
+		LifetimeTotals: telemetry.LifetimeTotals{Available: true},
+	}
+	for i := range snapshot.Projects {
+		snapshot.Projects[i].Refresh = refresh
+	}
+	return snapshot
 }
 
 func demoOverloadedSnapshot() telemetry.Snapshot {

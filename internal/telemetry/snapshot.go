@@ -1,6 +1,9 @@
 package telemetry
 
-import "time"
+import (
+	"strings"
+	"time"
+)
 
 type Snapshot struct {
 	GeneratedAt    time.Time         `json:"generated_at"`
@@ -55,12 +58,54 @@ type ProjectSnapshot struct {
 	Counts     Counts          `json:"counts"`
 	Tokens     Tokens          `json:"tokens"`
 	Throughput TokenThroughput `json:"throughput"`
+	Refresh    Refresh         `json:"refresh,omitzero"`
 }
 
+type RefreshStatus string
+
+const (
+	RefreshStatusInitializing RefreshStatus = "initializing"
+	RefreshStatusReady        RefreshStatus = "ready"
+	RefreshStatusDegraded     RefreshStatus = "degraded"
+)
+
 type Refresh struct {
-	PollIntervalSeconds int64      `json:"poll_interval_seconds,omitempty"`
-	LastRefreshAt       *time.Time `json:"last_refresh_at,omitempty"`
-	NextRefreshAt       *time.Time `json:"next_refresh_at,omitempty"`
+	PollIntervalSeconds int64         `json:"poll_interval_seconds,omitempty"`
+	Status              RefreshStatus `json:"status,omitempty"`
+	LastRefreshAt       *time.Time    `json:"last_refresh_at,omitempty"`
+	NextRefreshAt       *time.Time    `json:"next_refresh_at,omitempty"`
+	LastError           string        `json:"last_error,omitempty"`
+	LastErrorAt         *time.Time    `json:"last_error_at,omitempty"`
+}
+
+func (r Refresh) ReadinessStatus() RefreshStatus {
+	switch RefreshStatus(strings.TrimSpace(string(r.Status))) {
+	case RefreshStatusInitializing:
+		return RefreshStatusInitializing
+	case RefreshStatusReady:
+		return RefreshStatusReady
+	case RefreshStatusDegraded:
+		return RefreshStatusDegraded
+	}
+	if strings.TrimSpace(r.LastError) != "" || r.LastErrorAt != nil {
+		return RefreshStatusDegraded
+	}
+	if r.LastRefreshAt != nil {
+		return RefreshStatusReady
+	}
+	return RefreshStatusInitializing
+}
+
+func (r Refresh) Ready() bool {
+	return r.ReadinessStatus() == RefreshStatusReady
+}
+
+func (r Refresh) Initializing() bool {
+	return r.ReadinessStatus() == RefreshStatusInitializing
+}
+
+func (r Refresh) Degraded() bool {
+	return r.ReadinessStatus() == RefreshStatusDegraded
 }
 
 type Counts struct {
