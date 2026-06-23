@@ -47,6 +47,7 @@ type Running struct {
 	StartedAt       time.Time
 	WorkerHost      string
 	ProcessIdentity string
+	WorkspacePath   string
 	SessionID       string
 	TurnCount       int
 	LastEventAt     time.Time

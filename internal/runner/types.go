@@ -123,6 +123,7 @@ type UsageUpdateHandler func(UsageUpdate) error
 type UsageUpdate struct {
 	SessionID       string
 	ProcessIdentity string
+	WorkspacePath   string
 	TurnCount       int
 	LastEventAt     time.Time
 	LastEvent       string

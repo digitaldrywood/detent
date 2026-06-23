@@ -161,6 +161,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if usageUpdates[0].ProcessIdentity != "4242" {
 		t.Fatalf("first usage update ProcessIdentity = %q, want 4242", usageUpdates[0].ProcessIdentity)
 	}
+	if usageUpdates[0].WorkspacePath != workspacePath {
+		t.Fatalf("first usage update WorkspacePath = %q, want %q", usageUpdates[0].WorkspacePath, workspacePath)
+	}
 	if usageUpdates[0].LastEvent != "agent_message_delta" || usageUpdates[0].LastMessage != "hello" {
 		t.Fatalf("first usage update activity = %#v, want agent message", usageUpdates[0])
 	}

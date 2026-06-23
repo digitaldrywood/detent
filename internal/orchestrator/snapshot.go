@@ -100,6 +100,7 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, now
 			Issue:           issue,
 			WorkerHost:      entry.WorkerHost,
 			ProcessIdentity: entry.ProcessIdentity,
+			WorkspacePath:   entry.WorkspacePath,
 			SessionID:       entry.SessionID,
 			StartedAt:       entry.StartedAt,
 			LastEventAt:     lastEventAt,
@@ -231,12 +232,24 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 		State:          issue.State,
 		Labels:         append([]string(nil), issue.Labels...),
 		Assignees:      append([]string(nil), issue.Assignees...),
+		Comments:       telemetryIssueComments(issue.Comments),
 		BlockedBy:      telemetryBlockedRefs(issue.BlockedBy),
 		PullRequest:    telemetryPullRequest(issue, quietDuration, pollInterval),
 		CreatedAt:      timePointerFromPtr(issue.CreatedAt),
 		UpdatedAt:      timePointerFromPtr(issue.UpdatedAt),
 		StageUpdatedAt: timePointerFromPtr(issue.StageUpdatedAt),
 	}
+}
+
+func telemetryIssueComments(comments []connector.IssueComment) []telemetry.IssueComment {
+	out := make([]telemetry.IssueComment, 0, len(comments))
+	for _, comment := range comments {
+		out = append(out, telemetry.IssueComment{
+			Body: comment.Body,
+			URL:  comment.URL,
+		})
+	}
+	return out
 }
 
 func telemetryBlockedRefs(refs []connector.BlockedRef) []telemetry.BlockedRef {

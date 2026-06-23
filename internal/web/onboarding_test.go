@@ -1,6 +1,7 @@
 package web_test
 
 import (
+	"context"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -9,8 +10,13 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -693,6 +699,224 @@ func TestOnboardingWriteMemoryWorkflowSeedsSampleIssue(t *testing.T) {
 	}
 }
 
+func TestOnboardingWriteRunsCloseoutVerifierAfterMutation(t *testing.T) {
+	t.Parallel()
+
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	snapshots := hub.New[telemetry.Snapshot]()
+	beforeRefresh := time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)
+	requestedAt := beforeRefresh.Add(30 * time.Second)
+	afterRefresh := beforeRefresh.Add(time.Minute)
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: beforeRefresh,
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{{
+			Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &beforeRefresh,
+			},
+		}},
+		Refresh: telemetry.Refresh{
+			Status:        telemetry.RefreshStatusReady,
+			LastRefreshAt: &beforeRefresh,
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "issue-todo",
+				Identifier: "digitaldrywood/detent#646",
+				ProjectID:  "detent",
+				State:      "Todo",
+				Labels:     []string{"detent:todo", "enhancement"},
+			},
+			{
+				ID:         "issue-review",
+				Identifier: "digitaldrywood/detent#645",
+				ProjectID:  "detent",
+				State:      "Human Review",
+				Labels:     []string{"detent:human-review"},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Registry = project.NewRegistry()
+	mustSetOnboardingProject(t, deps.Registry, "detent", workflowPath)
+	refresher := &publishSnapshotRefreshProbe{
+		hub: snapshots,
+		response: web.RefreshResponse{
+			Queued:      true,
+			RequestedAt: requestedAt,
+			Operations:  []string{"poll", "reconcile"},
+		},
+		snapshot: telemetry.Snapshot{
+			GeneratedAt: afterRefresh,
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			Projects: []telemetry.ProjectSnapshot{{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Counts:  telemetry.Counts{Running: 1},
+				Refresh: telemetry.Refresh{
+					Status:        telemetry.RefreshStatusReady,
+					LastRefreshAt: &afterRefresh,
+				},
+			}},
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &afterRefresh,
+			},
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "issue-todo",
+					Identifier: "digitaldrywood/detent#646",
+					ProjectID:  "detent",
+					State:      "Todo",
+					Labels:     []string{"detent:todo", "enhancement"},
+				},
+				{
+					ID:         "issue-review",
+					Identifier: "digitaldrywood/detent#645",
+					ProjectID:  "detent",
+					State:      "Human Review",
+					Labels:     []string{"detent:human-review"},
+				},
+			},
+			Running: []telemetry.Running{{
+				Issue: telemetry.Issue{
+					ID:         "issue-running",
+					Identifier: "digitaldrywood/detent#647",
+					ProjectID:  "detent",
+					State:      "In Progress",
+					Labels:     []string{"detent:in-progress"},
+					Comments: []telemetry.IssueComment{{
+						Body: "## Codex Workpad\n\n### Status\nIn Progress",
+					}},
+				},
+				WorkspacePath:   filepath.Join(t.TempDir(), "detent-647"),
+				SessionID:       "session-647",
+				ProcessIdentity: "4242",
+				WorkerHost:      "worker-a",
+			}},
+		},
+	}
+	deps.Refresher = refresher
+	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := validOnboardingForm()
+	form.Set("github_status_source", workflowconfig.GitHubStatusSourceLabel)
+	form.Del("project_slug")
+	form.Set("status_label_prefix", "detent:")
+	rec := httptest.NewRecorder()
+	req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if refresher.calls != 1 {
+		t.Fatalf("refresh calls = %d, want 1", refresher.calls)
+	}
+	for _, want := range []string{
+		"Wrote WORKFLOW.md",
+		"Closeout verifier",
+		"reload: observed project detent",
+		"refresh: advanced",
+		"candidate counts: expected status labels matched",
+		"dispatch: started digitaldrywood/detent#647",
+		"worktree: present",
+		"Workpad: present",
+		"/api/v1/refresh: reflected in project state",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestOnboardingWriteCloseoutVerifierReportsStalledReload(t *testing.T) {
+	t.Parallel()
+
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	snapshots := hub.New[telemetry.Snapshot]()
+	lastRefresh := time.Date(2026, 6, 23, 10, 0, 0, 0, time.UTC)
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: lastRefresh,
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{{
+			Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &lastRefresh,
+			},
+		}},
+		Refresh: telemetry.Refresh{
+			Status:        telemetry.RefreshStatusReady,
+			LastRefreshAt: &lastRefresh,
+		},
+		Running: []telemetry.Running{{
+			Issue: telemetry.Issue{
+				ID:         "issue-active",
+				Identifier: "digitaldrywood/detent#640",
+				ProjectID:  "detent",
+				State:      "In Progress",
+			},
+			WorkspacePath:   "/tmp/detent-640",
+			SessionID:       "session-640",
+			ProcessIdentity: "31337",
+			WorkerHost:      "worker-b",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Registry = project.NewRegistry()
+	mustSetOnboardingProject(t, deps.Registry, "detent", workflowPath)
+	deps.Refresher = &refreshProbe{
+		response: web.RefreshResponse{
+			Queued:      true,
+			RequestedAt: lastRefresh.Add(30 * time.Second),
+			Operations:  []string{"poll", "reconcile"},
+		},
+	}
+	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := validOnboardingForm()
+	form.Set("github_status_source", workflowconfig.GitHubStatusSourceLabel)
+	form.Del("project_slug")
+	form.Set("status_label_prefix", "detent:")
+	rec := httptest.NewRecorder()
+	req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Closeout verifier",
+		"reload: stalled",
+		"refresh: stalled",
+		"dispatch: no new running issue observed",
+		"active agents: digitaldrywood/detent#640 session=session-640 pid=31337 worker=worker-b worktree=/tmp/detent-640",
+		"restart requires operator confirmation",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
 func TestOnboardingWriteDoesNotOverwriteWithoutReplace(t *testing.T) {
 	t.Parallel()
 
@@ -865,4 +1089,44 @@ func onboardingRequest(method string, path string, form url.Values) *http.Reques
 		req.Header.Set("HX-Request", "true")
 	}
 	return req
+}
+
+func mustSetOnboardingProject(t *testing.T, registry *project.Registry, id string, workflowPath string) {
+	t.Helper()
+
+	workflowCfg := workflowconfig.Default()
+	workflowCfg.Tracker.Kind = workflowconfig.TrackerMemory
+	trackedProject, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:       id,
+			Workflow: workflowPath,
+		},
+		Workflow: workflowconfig.Workflow{
+			Config: workflowCfg,
+			Prompt: "Work the issue.",
+		},
+	}, project.Dependencies{
+		Connector: connectorProbe{name: "memory"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	if err := registry.Set(trackedProject); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+}
+
+type publishSnapshotRefreshProbe struct {
+	hub      *hub.Hub[telemetry.Snapshot]
+	response web.RefreshResponse
+	snapshot telemetry.Snapshot
+	calls    int
+}
+
+func (p *publishSnapshotRefreshProbe) RequestRefresh(context.Context) (web.RefreshResponse, error) {
+	p.calls++
+	if err := p.hub.Publish(p.snapshot); err != nil {
+		return web.RefreshResponse{}, err
+	}
+	return p.response, nil
 }

@@ -123,6 +123,7 @@ func (s *Server) onboardingWrite(c echo.Context) error {
 	if len(problems) > 0 {
 		return s.renderOnboardingStep(c, form, problems, templates.OnboardingResult{})
 	}
+	beforeCloseout, beforeCloseoutOK := s.onboardingCloseoutSnapshot()
 
 	content := renderWorkflow(form, workflowSourceRoot(s.workflow))
 	workflow, err := config.ParseWorkflow([]byte(content))
@@ -140,9 +141,15 @@ func (s *Server) onboardingWrite(c echo.Context) error {
 	err = writeWorkflowFile(s.workflow, content, c.FormValue("replace") == "true")
 	switch {
 	case err == nil:
+		closeout := s.runOnboardingCloseout(c.Request().Context(), form, beforeCloseout, beforeCloseoutOK)
 		result := templates.OnboardingResult{
 			Kind:    "success",
 			Message: "Wrote " + workflowDisplayPath(s.workflow) + ".",
+			Details: closeout.details,
+		}
+		if !closeout.ok {
+			result.Kind = "warning"
+			result.Message = "Wrote " + workflowDisplayPath(s.workflow) + ". Closeout verifier needs attention."
 		}
 		return s.renderOnboardingStep(c, form, nil, result)
 	case errors.Is(err, errWorkflowExists):

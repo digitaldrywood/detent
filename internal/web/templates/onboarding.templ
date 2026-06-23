@@ -42,6 +42,7 @@ type OnboardingForm struct {
 type OnboardingResult struct {
 	Kind    string
 	Message string
+	Details []string
 }
 
 type onboardingProgressItem struct {
@@ -458,6 +459,12 @@ templ resultPanel(data OnboardingData) {
 	if data.Result.Kind == "success" {
 		<div class="mt-4 rounded-md border border-success bg-card p-4 text-sm text-success">
 			<strong>{ data.Result.Message }</strong>
+			@resultDetails(data.Result)
+		</div>
+	} else if data.Result.Kind == "warning" {
+		<div class="mt-4 rounded-md border border-warning bg-card p-4 text-sm text-warning">
+			<strong>{ data.Result.Message }</strong>
+			@resultDetails(data.Result)
 		</div>
 	} else if data.Result.Kind == "exists" {
 		<div class="mt-4 rounded-md border border-warning bg-card p-4 text-sm text-warning">
@@ -471,7 +478,18 @@ templ resultPanel(data OnboardingData) {
 	} else if data.Result.Kind == "error" {
 		<div class="mt-4 rounded-md border border-danger bg-card p-4 text-sm text-danger">
 			<strong>{ data.Result.Message }</strong>
+			@resultDetails(data.Result)
 		</div>
+	}
+}
+
+templ resultDetails(result OnboardingResult) {
+	if len(result.Details) > 0 {
+		<ul class="mt-3 list-disc space-y-1 pl-5">
+			for _, detail := range result.Details {
+				<li>{ detail }</li>
+			}
+		</ul>
 	}
 }
 
