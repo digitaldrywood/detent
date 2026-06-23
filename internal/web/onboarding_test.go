@@ -407,6 +407,166 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 	}
 }
 
+func TestOnboardingWriteLabelWorkflowKanbanMode(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name     string
+		edit     func(url.Values)
+		wantMode string
+	}{
+		{
+			name:     "operator default recommends integration",
+			wantMode: workflowconfig.KanbanModeIntegration,
+		},
+		{
+			name: "observer choice stays read only",
+			edit: func(form url.Values) {
+				form.Set("kanban_mode", workflowconfig.KanbanModeReadOnly)
+			},
+			wantMode: workflowconfig.KanbanModeReadOnly,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+			server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			form := validOnboardingForm()
+			form.Set("github_status_source", workflowconfig.GitHubStatusSourceLabel)
+			form.Set("status_label_prefix", "detent:")
+			form.Del("project_slug")
+			if tt.edit != nil {
+				tt.edit(form)
+			}
+
+			rec := httptest.NewRecorder()
+			req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
+
+			server.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			raw, err := os.ReadFile(workflowPath)
+			if err != nil {
+				t.Fatalf("ReadFile() error = %v", err)
+			}
+			content := string(raw)
+			wantContent := "server:\n  kanban:\n    mode: " + tt.wantMode
+			if !strings.Contains(content, wantContent) {
+				t.Fatalf("workflow missing %q:\n%s", wantContent, content)
+			}
+			if !strings.Contains(content, "detent doctor --allow-write-probes") {
+				t.Fatalf("workflow missing write-probe guidance:\n%s", content)
+			}
+
+			workflow, err := workflowconfig.ParseWorkflow(raw)
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			if workflow.Config.Server.Kanban.Mode != tt.wantMode {
+				t.Fatalf("Kanban mode = %q, want %q", workflow.Config.Server.Kanban.Mode, tt.wantMode)
+			}
+		})
+	}
+}
+
+func TestOnboardingAgentStepExplainsKanbanWriteProbeRequirement(t *testing.T) {
+	t.Parallel()
+
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	server, err := web.NewServer(web.Config{Mode: web.ModeOnboarding, WorkflowPath: workflowPath}, web.Dependencies{})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := onboardingRequest(http.MethodPost, "/onboarding/project", url.Values{
+		"tracker_kind":         {"github"},
+		"github_status_source": {workflowconfig.GitHubStatusSourceLabel},
+		"endpoint":             {"https://api.github.com/graphql"},
+		"api_key":              {"$GITHUB_TOKEN"},
+		"repo":                 {"digitaldrywood/detent"},
+		"status_label_prefix":  {"detent:"},
+	})
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, want := range []string{
+		"name=\"kanban_mode\" value=\"integration\" checked",
+		"operator-owned local/private installs",
+		"detent doctor --allow-write-probes",
+		"name=\"kanban_mode\" value=\"read_only\"",
+		"observer/shared dashboards",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
+func TestOnboardingProjectStepPreservesKanbanModeAfterAgentBack(t *testing.T) {
+	t.Parallel()
+
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	server, err := web.NewServer(web.Config{Mode: web.ModeOnboarding, WorkflowPath: workflowPath}, web.Dependencies{})
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := validOnboardingForm()
+	form.Set("github_status_source", workflowconfig.GitHubStatusSourceLabel)
+	form.Set("status_label_prefix", "detent:")
+	form.Set("kanban_mode", workflowconfig.KanbanModeReadOnly)
+	form.Set("delivery_profile", "autonomous_delivery")
+	form.Del("project_slug")
+
+	rec := httptest.NewRecorder()
+	req := onboardingRequest(http.MethodPost, "/onboarding/credentials", form)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, want := range []string{
+		"Configure labels",
+		"name=\"kanban_mode\" value=\"read_only\"",
+		"name=\"delivery_profile\" value=\"autonomous_delivery\"",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+
+	rec = httptest.NewRecorder()
+	req = onboardingRequest(http.MethodPost, "/onboarding/project", form)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("agent status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	for _, want := range []string{
+		"name=\"kanban_mode\" value=\"read_only\" checked",
+		"name=\"delivery_profile\" value=\"autonomous_delivery\" checked",
+	} {
+		if !strings.Contains(rec.Body.String(), want) {
+			t.Fatalf("agent body missing %q:\n%s", want, rec.Body.String())
+		}
+	}
+}
+
 func TestOnboardingWriteWorkflowCanEnableDependencyAutoUnblock(t *testing.T) {
 	t.Parallel()
 
@@ -631,6 +791,13 @@ func TestOnboardingWriteValidatesInput(t *testing.T) {
 				form.Set("polling_interval_ms", "59999")
 			},
 			want: "polling interval must be at least 60000",
+		},
+		{
+			name: "invalid kanban mode",
+			edit: func(form url.Values) {
+				form.Set("kanban_mode", "observer")
+			},
+			want: "kanban mode must be read_only or integration",
 		},
 	}
 

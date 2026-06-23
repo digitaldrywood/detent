@@ -56,6 +56,7 @@ func (s *Server) onboarding(c echo.Context) error {
 		DispatchPriorityState:        defaultDispatchPriorityText,
 		DeliveryProfile:              onboardingprofile.DeliveryProfileConservativeReview,
 		DependencyAutoUnblockEnabled: "false",
+		KanbanMode:                   config.KanbanModeIntegration,
 	}
 	return render(c, templates.OnboardingPage(s.onboardingData(form, nil, templates.OnboardingResult{})))
 }
@@ -204,6 +205,7 @@ func parseOnboardingForm(c echo.Context) templates.OnboardingForm {
 		DispatchPriorityLabel:        strings.TrimSpace(c.FormValue("dispatch_priority_by_label")),
 		DeliveryProfile:              strings.TrimSpace(c.FormValue("delivery_profile")),
 		DependencyAutoUnblockEnabled: onboardingBoolValue(c.FormValue("dependency_auto_unblock_enabled")),
+		KanbanMode:                   strings.TrimSpace(c.FormValue("kanban_mode")),
 	}
 }
 
@@ -331,6 +333,9 @@ func validateAgent(form templates.OnboardingForm) []string {
 			problems = append(problems, "dispatch priority labels must not be blank")
 		}
 	}
+	if _, ok := normalizedOnboardingKanbanMode(form.KanbanMode); !ok {
+		problems = append(problems, "kanban mode must be read_only or integration")
+	}
 	return problems
 }
 
@@ -419,6 +424,9 @@ func applyAgentDefaults(form *templates.OnboardingForm) {
 		form.DependencyAutoUnblockEnabled = "false"
 	}
 	applyDeliveryProfile(form)
+	if strings.TrimSpace(form.KanbanMode) == "" {
+		form.KanbanMode = recommendedOnboardingKanbanMode(*form)
+	}
 }
 
 func applyDeliveryProfile(form *templates.OnboardingForm) {
@@ -536,17 +544,43 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("    min_score: 0.8\n")
 	b.WriteString("    block_on:\n")
 	b.WriteString("      - p1\n")
+	b.WriteString("server:\n")
 	if hasDeliveryProfile {
-		b.WriteString("server:\n")
 		b.WriteString("  host: 127.0.0.1\n")
-		b.WriteString("  kanban:\n")
-		writeScalar(&b, "    ", "mode", settings.KanbanMode)
 	}
+	b.WriteString("  kanban:\n")
+	writeScalar(&b, "    ", "mode", onboardingKanbanMode(form))
+	b.WriteString("    # Integration is recommended for operator-owned local/private installs after mutation authorization and detent doctor --allow-write-probes passes.\n")
+	b.WriteString("    # Use read_only for observer/shared dashboards or until write probes pass.\n")
 	b.WriteString("hooks:\n")
 	b.WriteString("  timeout_ms: 60000\n")
 	b.WriteString("---\n\n")
 	b.WriteString(renderWorkflowPrompt(form))
 	return b.String()
+}
+
+func onboardingKanbanMode(form templates.OnboardingForm) string {
+	if mode, ok := normalizedOnboardingKanbanMode(form.KanbanMode); ok {
+		return mode
+	}
+	return recommendedOnboardingKanbanMode(form)
+}
+
+func recommendedOnboardingKanbanMode(form templates.OnboardingForm) string {
+	if form.TrackerKind == config.TrackerGitHub {
+		return config.KanbanModeIntegration
+	}
+	return config.KanbanModeReadOnly
+}
+
+func normalizedOnboardingKanbanMode(value string) (string, bool) {
+	mode := strings.ToLower(strings.TrimSpace(value))
+	switch mode {
+	case config.KanbanModeReadOnly, config.KanbanModeIntegration:
+		return mode, true
+	default:
+		return "", false
+	}
 }
 
 func onboardingBoolValue(value string) string {
