@@ -1400,11 +1400,11 @@ templ projectKanbanVisibilityDropdown(board projectKanbanBoard, visibilityKey st
 			<span>Lane visibility</span>
 			<span class="rounded-full bg-muted px-1.5 py-0.5 font-mono" data-project-kanban-visibility-count>{ projectKanbanVisibilityCountLabel(board) }</span>
 		</summary>
-		<div class="absolute right-0 z-50 mt-2 w-[14rem] rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-sm">
+		<div class="absolute right-0 z-50 mt-2 w-[18rem] rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-sm">
 			<div class="mb-2 flex items-center justify-between gap-2 border-b border-border pb-2">
 				<div class="grid min-w-0 flex-1 grid-cols-2 gap-1">
 					<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="all">All lanes</button>
-					<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="active">Active only</button>
+					<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="reset">Reset to defaults</button>
 				</div>
 				<button type="button" class="inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-close aria-label="Close lane visibility">
 					@icon.X(icon.Props{Class: "size-4"})
@@ -1412,12 +1412,20 @@ templ projectKanbanVisibilityDropdown(board projectKanbanBoard, visibilityKey st
 			</div>
 			<div class="grid gap-1">
 				for _, lane := range board.AllLanes {
-					<label class="flex min-h-8 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted">
-						<input class="size-4 shrink-0 accent-accent" type="checkbox" name="visible_lane" value={ lane.ID } checked?={ lane.DefaultVisible } data-project-kanban-visibility-checkbox data-project-kanban-visibility-default={ projectKanbanBool(lane.DefaultVisible) } autocomplete="off"/>
-						<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
-						<span class="min-w-0 flex-1 truncate">{ lane.Title }</span>
-						<span class="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">{ lane.CountLabel }</span>
-					</label>
+					<div class="grid gap-1 rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted" data-project-kanban-visibility-row data-project-kanban-visibility-lane={ lane.ID }>
+						<label class="flex min-h-7 cursor-pointer items-center gap-2">
+							<input class="size-4 shrink-0 accent-accent" type="checkbox" name="visible_lane" value={ lane.ID } checked?={ lane.DefaultVisible } data-project-kanban-visibility-checkbox data-project-kanban-visibility-default={ projectKanbanBool(lane.DefaultVisible) } data-project-kanban-visibility-state="default" autocomplete="off"/>
+							<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
+							<span class="min-w-0 flex-1 truncate">{ lane.Title }</span>
+							<span class="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">{ lane.CountLabel }</span>
+						</label>
+						<div class="ml-6 flex min-w-0 items-center justify-between gap-1.5">
+							<span class="min-w-0 truncate text-[11px] text-muted-foreground" data-project-kanban-visibility-status>{ projectKanbanDefaultVisibilityLabel(lane) }</span>
+							<button type="button" class="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-card hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:pointer-events-none disabled:opacity-40" data-project-kanban-visibility-reset value={ lane.ID } aria-label={ "Reset " + lane.Title + " lane to default visibility" } title="Reset lane to default visibility" disabled>
+								@icon.RotateCcw(icon.Props{Class: "size-3.5"})
+							</button>
+						</div>
+					</div>
 				}
 			</div>
 		</div>
@@ -1428,7 +1436,10 @@ templ projectKanbanVisibilityScript() {
 	<script>
 		(function() {
 			const storagePrefix = "detent.ui.projectKanban.visibleLanes.";
-			const storageVersion = 3;
+			const storageVersion = 4;
+			const overrideDefault = "default";
+			const overrideShow = "show";
+			const overrideHide = "hide";
 
 			function visibilityStorage() {
 				try {
@@ -1462,7 +1473,14 @@ templ projectKanbanVisibilityScript() {
 				return lane.dataset.projectKanbanLaneTitle || "lane";
 			}
 
+			function emptyOverrides() {
+				return { show: new Set(), hide: new Set() };
+			}
+
 			function laneIDSet(ids) {
+				if (!Array.isArray(ids)) {
+					return new Set();
+				}
 				return new Set(ids.filter(function(id) {
 					return typeof id === "string" && id.trim() !== "";
 				}));
@@ -1479,59 +1497,152 @@ templ projectKanbanVisibilityScript() {
 				return ids;
 			}
 
-			function storedLaneIDs(board) {
-				const store = visibilityStorage();
-				if (!store) {
-					return null;
-				}
-				let parsed = null;
-				try {
-					parsed = JSON.parse(store.getItem(storageKey(board)) || "");
-				} catch (error) {
-					return null;
-				}
+			function laneByID(board, id) {
+				return boardLanes(board).find(function(lane) {
+					return laneID(lane) === id;
+				}) || null;
+			}
+
+			function normalizedVisibilityOverrides(showIDs, hideIDs) {
+				const overrides = emptyOverrides();
+				laneIDSet(showIDs).forEach(function(id) {
+					overrides.show.add(id);
+				});
+				laneIDSet(hideIDs).forEach(function(id) {
+					if (!overrides.show.has(id)) {
+						overrides.hide.add(id);
+					}
+				});
+				return overrides;
+			}
+
+			function legacyVisibilityOverrides(board, parsed) {
+				const overrides = emptyOverrides();
 				if (!parsed || !Array.isArray(parsed.lanes)) {
-					return null;
+					return overrides;
 				}
-				if (parsed.v === storageVersion) {
-					return laneIDSet(parsed.lanes);
-				}
-				if (parsed.v === 2 || parsed.v === 1) {
-					const migrated = defaultLaneIDs(board);
-					laneIDSet(parsed.lanes).forEach(function(id) {
-						migrated.add(id);
-					});
-					return migrated;
-				}
-				return null;
+				const defaults = defaultLaneIDs(board);
+				laneIDSet(parsed.lanes).forEach(function(id) {
+					if (!defaults.has(id)) {
+						overrides.show.add(id);
+					}
+				});
+				return overrides;
 			}
 
-			function visibleLaneIDs(board) {
-				return storedLaneIDs(board) || defaultLaneIDs(board);
-			}
-
-			function saveLaneIDs(board, ids) {
+			function saveVisibilityOverrides(board, overrides) {
 				const store = visibilityStorage();
 				if (!store) {
 					return;
 				}
-				const values = Array.from(ids).filter(Boolean);
-				store.setItem(storageKey(board), JSON.stringify({ v: storageVersion, lanes: values }));
+				const show = Array.from(overrides.show).filter(Boolean).sort();
+				const hide = Array.from(overrides.hide).filter(function(id) {
+					return Boolean(id) && !overrides.show.has(id);
+				}).sort();
+				if (show.length === 0 && hide.length === 0) {
+					store.removeItem(storageKey(board));
+					return;
+				}
+				store.setItem(storageKey(board), JSON.stringify({ v: storageVersion, show: show, hide: hide }));
 			}
 
-			function resetLaneIDs(board) {
+			function resetVisibilityOverrides(board) {
 				const store = visibilityStorage();
 				if (store) {
 					store.removeItem(storageKey(board));
 				}
 			}
 
+			function storedVisibilityOverrides(board) {
+				const store = visibilityStorage();
+				if (!store) {
+					return emptyOverrides();
+				}
+				const raw = store.getItem(storageKey(board));
+				if (!raw) {
+					return emptyOverrides();
+				}
+				let parsed = null;
+				try {
+					parsed = JSON.parse(raw);
+				} catch (error) {
+					resetVisibilityOverrides(board);
+					return emptyOverrides();
+				}
+				if (!parsed) {
+					return emptyOverrides();
+				}
+				if (parsed.v === storageVersion) {
+					return normalizedVisibilityOverrides(parsed.show, parsed.hide);
+				}
+				if (parsed.v === 3 || parsed.v === 2 || parsed.v === 1) {
+					const migrated = legacyVisibilityOverrides(board, parsed);
+					saveVisibilityOverrides(board, migrated);
+					return migrated;
+				}
+				resetVisibilityOverrides(board);
+				return emptyOverrides();
+			}
+
+			function visibilityOverrides(board) {
+				return storedVisibilityOverrides(board);
+			}
+
+			function laneOverrideState(lane, overrides) {
+				const id = laneID(lane);
+				if (overrides.show.has(id)) {
+					return overrideShow;
+				}
+				if (overrides.hide.has(id)) {
+					return overrideHide;
+				}
+				return overrideDefault;
+			}
+
+			function effectiveLaneVisibility(lane, overrides) {
+				const state = laneOverrideState(lane, overrides);
+				if (state === overrideShow) {
+					return { state: state, visible: true };
+				}
+				if (state === overrideHide) {
+					return { state: state, visible: false };
+				}
+				return { state: state, visible: laneDefaultVisible(lane) };
+			}
+
 			function checkboxLaneID(checkbox) {
 				return checkbox.value || "";
 			}
 
-			function updatePinButton(button, visible, title) {
+			function visibilityStateLabel(state, lane) {
+				if (state === overrideShow) {
+					return "Forced visible";
+				}
+				if (state === overrideHide) {
+					return "Forced hidden";
+				}
+				return laneDefaultVisible(lane) ? "Default visible" : "Default hidden";
+			}
+
+			function visibilityStateTitle(state, lane) {
+				if (state === overrideShow) {
+					return "Forced visible; reset to follow the board default.";
+				}
+				if (state === overrideHide) {
+					return "Forced hidden; reset to follow the board default.";
+				}
+				return laneDefaultVisible(lane) ? "Default-visible lane; no saved override." : "Default-hidden lane; no saved override.";
+			}
+
+			function visibilityRow(board, id) {
+				return Array.from(board.querySelectorAll("[data-project-kanban-visibility-row]")).find(function(row) {
+					return row instanceof HTMLElement && row.dataset.projectKanbanVisibilityLane === id;
+				}) || null;
+			}
+
+			function updatePinButton(button, visible, state, title) {
 				button.dataset.projectKanbanPinActive = visible ? "true" : "false";
+				button.dataset.projectKanbanVisibilityState = state;
 				button.setAttribute("aria-pressed", visible ? "true" : "false");
 				button.setAttribute("aria-label", (visible ? "Hide " : "Show ") + title + " lane");
 				button.title = visible ? "Hide lane" : "Show lane";
@@ -1543,21 +1654,45 @@ templ projectKanbanVisibilityScript() {
 				});
 			}
 
+			function applyVisibilityState(board, lane, state, visible) {
+				const id = laneID(lane);
+				lane.dataset.projectKanbanLaneVisible = visible ? "true" : "false";
+				lane.dataset.projectKanbanLanePinned = state === overrideShow ? "true" : "false";
+				lane.dataset.projectKanbanLaneVisibilityState = state;
+				lane.querySelectorAll("[data-project-kanban-pin-toggle]").forEach(function(button) {
+					if (button instanceof HTMLButtonElement) {
+						updatePinButton(button, visible, state, laneTitle(lane));
+					}
+				});
+				const row = visibilityRow(board, id);
+				if (!(row instanceof HTMLElement)) {
+					return;
+				}
+				row.dataset.projectKanbanVisibilityState = state;
+				row.dataset.projectKanbanVisibilityEffective = visible ? "visible" : "hidden";
+				const label = visibilityStateLabel(state, lane);
+				const title = visibilityStateTitle(state, lane);
+				const status = row.querySelector("[data-project-kanban-visibility-status]");
+				if (status) {
+					status.textContent = label;
+					status.setAttribute("title", title);
+				}
+				const reset = row.querySelector("[data-project-kanban-visibility-reset]");
+				if (reset instanceof HTMLButtonElement) {
+					const disabled = state === overrideDefault;
+					reset.disabled = disabled;
+					reset.setAttribute("aria-disabled", disabled ? "true" : "false");
+				}
+			}
+
 			function applyBoard(board) {
-				const visibleIDs = visibleLaneIDs(board);
+				const overrides = visibilityOverrides(board);
 				let visibleCount = 0;
 				const lanes = boardLanes(board);
 				lanes.forEach(function(lane) {
-					const id = laneID(lane);
-					const visible = visibleIDs.has(id);
-					lane.dataset.projectKanbanLaneVisible = visible ? "true" : "false";
-					lane.dataset.projectKanbanLanePinned = visible ? "true" : "false";
-					lane.querySelectorAll("[data-project-kanban-pin-toggle]").forEach(function(button) {
-						if (button instanceof HTMLButtonElement) {
-							updatePinButton(button, visible, laneTitle(lane));
-						}
-					});
-					if (visible) {
+					const effective = effectiveLaneVisibility(lane, overrides);
+					applyVisibilityState(board, lane, effective.state, effective.visible);
+					if (effective.visible) {
 						visibleCount += 1;
 					}
 				});
@@ -1565,9 +1700,18 @@ templ projectKanbanVisibilityScript() {
 					if (!(input instanceof HTMLInputElement)) {
 						return;
 					}
-					input.checked = visibleIDs.has(checkboxLaneID(input));
+					const lane = laneByID(board, checkboxLaneID(input));
+					if (!lane) {
+						return;
+					}
+					const effective = effectiveLaneVisibility(lane, overrides);
+					input.checked = effective.visible;
 					input.disabled = false;
 					input.setAttribute("aria-disabled", "false");
+					input.dataset.projectKanbanVisibilityState = effective.state;
+					input.dataset.projectKanbanVisibilityEffective = effective.visible ? "visible" : "hidden";
+					input.setAttribute("aria-label", (effective.visible ? "Hide " : "Show ") + laneTitle(lane) + " lane");
+					input.title = visibilityStateTitle(effective.state, lane);
 				});
 				const count = board.querySelector("[data-project-kanban-visibility-count]");
 				if (count) {
@@ -1579,23 +1723,35 @@ templ projectKanbanVisibilityScript() {
 				boards().forEach(applyBoard);
 			}
 
+			function setLaneOverride(board, id, state) {
+				const overrides = visibilityOverrides(board);
+				overrides.show.delete(id);
+				overrides.hide.delete(id);
+				if (state === overrideShow) {
+					overrides.show.add(id);
+				}
+				if (state === overrideHide) {
+					overrides.hide.add(id);
+				}
+				saveVisibilityOverrides(board, overrides);
+				applyBoard(board);
+			}
+
 			function updateCheckbox(checkbox) {
 				const board = checkbox.closest("[data-project-kanban-board]");
 				if (!board) {
 					return;
 				}
-				const saved = visibleLaneIDs(board);
 				const id = checkboxLaneID(checkbox);
-				if (!id) {
+				const lane = laneByID(board, id);
+				if (!id || !lane) {
 					return;
 				}
-				if (checkbox.checked) {
-					saved.add(id);
-				} else {
-					saved.delete(id);
+				let state = overrideDefault;
+				if (checkbox.checked !== laneDefaultVisible(lane)) {
+					state = checkbox.checked ? overrideShow : overrideHide;
 				}
-				saveLaneIDs(board, saved);
-				applyBoard(board);
+				setLaneOverride(board, id, state);
 			}
 
 			function toggleLanePin(button) {
@@ -1608,14 +1764,18 @@ templ projectKanbanVisibilityScript() {
 				if (!id) {
 					return;
 				}
-				const saved = visibleLaneIDs(board);
-				if (saved.has(id)) {
-					saved.delete(id);
-				} else {
-					saved.add(id);
+				const effective = effectiveLaneVisibility(lane, visibilityOverrides(board));
+				setLaneOverride(board, id, effective.visible ? overrideHide : overrideShow);
+			}
+
+			function resetLaneOverride(button) {
+				const board = button.closest("[data-project-kanban-board]");
+				const row = button.closest("[data-project-kanban-visibility-row]");
+				const id = button.value || (row instanceof HTMLElement ? row.dataset.projectKanbanVisibilityLane : "");
+				if (!board || !id) {
+					return;
 				}
-				saveLaneIDs(board, saved);
-				applyBoard(board);
+				setLaneOverride(board, id, overrideDefault);
 			}
 
 			function updateAction(button) {
@@ -1623,17 +1783,18 @@ templ projectKanbanVisibilityScript() {
 				if (!board) {
 					return;
 				}
-				const saved = new Set();
 				if (button.dataset.projectKanbanVisibilityAction === "all") {
+					const overrides = emptyOverrides();
 					boardLanes(board).forEach(function(lane) {
 						const id = laneID(lane);
-						if (id) {
-							saved.add(id);
+						if (id && !laneDefaultVisible(lane)) {
+							overrides.show.add(id);
 						}
 					});
-					saveLaneIDs(board, saved);
-				} else {
-					resetLaneIDs(board);
+					saveVisibilityOverrides(board, overrides);
+				}
+				if (button.dataset.projectKanbanVisibilityAction === "reset") {
+					resetVisibilityOverrides(board);
 				}
 				applyBoard(board);
 			}
@@ -1691,6 +1852,12 @@ templ projectKanbanVisibilityScript() {
 				if (pin instanceof HTMLButtonElement) {
 					event.preventDefault();
 					toggleLanePin(pin);
+					return;
+				}
+				const reset = target ? target.closest("[data-project-kanban-visibility-reset]") : null;
+				if (reset instanceof HTMLButtonElement) {
+					event.preventDefault();
+					resetLaneOverride(reset);
 					return;
 				}
 				const button = target ? target.closest("[data-project-kanban-visibility-action]") : null;
@@ -1778,7 +1945,7 @@ templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 }
 
 templ projectKanbanLoadingLaneView(lane projectKanbanLane) {
-	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } data-project-kanban-lane-title={ lane.Title } data-project-kanban-lane-empty="true" data-project-kanban-lane-default-visible="true" data-project-kanban-lane-pinned="false" data-project-kanban-lane-visible="true">
+	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } data-project-kanban-lane-title={ lane.Title } data-project-kanban-lane-empty="true" data-project-kanban-lane-default-visible="true" data-project-kanban-lane-pinned="false" data-project-kanban-lane-visible="true" data-project-kanban-lane-visibility-state="default">
 		<div class="flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden">
 			<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
 			<h3 class="min-w-0 shrink truncate text-xs font-semibold text-foreground">{ lane.Title } ({ lane.CountLabel })</h3>

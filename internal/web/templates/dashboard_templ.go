@@ -3974,7 +3974,7 @@ func projectKanbanVisibilityDropdown(board projectKanbanBoard, visibilityKey str
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 229, "</span></summary><div class=\"absolute right-0 z-50 mt-2 w-[14rem] rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-sm\"><div class=\"mb-2 flex items-center justify-between gap-2 border-b border-border pb-2\"><div class=\"grid min-w-0 flex-1 grid-cols-2 gap-1\"><button type=\"button\" class=\"min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-project-kanban-visibility-action=\"all\">All lanes</button> <button type=\"button\" class=\"min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-project-kanban-visibility-action=\"active\">Active only</button></div><button type=\"button\" class=\"inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-project-kanban-visibility-close aria-label=\"Close lane visibility\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 229, "</span></summary><div class=\"absolute right-0 z-50 mt-2 w-[18rem] rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-sm\"><div class=\"mb-2 flex items-center justify-between gap-2 border-b border-border pb-2\"><div class=\"grid min-w-0 flex-1 grid-cols-2 gap-1\"><button type=\"button\" class=\"min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-project-kanban-visibility-action=\"all\">All lanes</button> <button type=\"button\" class=\"min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-project-kanban-visibility-action=\"reset\">Reset to defaults</button></div><button type=\"button\" class=\"inline-flex size-8 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-project-kanban-visibility-close aria-label=\"Close lane visibility\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -3987,96 +3987,156 @@ func projectKanbanVisibilityDropdown(board projectKanbanBoard, visibilityKey str
 			return templ_7745c5c3_Err
 		}
 		for _, lane := range board.AllLanes {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 231, "<label class=\"flex min-h-8 cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted\"><input class=\"size-4 shrink-0 accent-accent\" type=\"checkbox\" name=\"visible_lane\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 231, "<div class=\"grid gap-1 rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted\" data-project-kanban-visibility-row data-project-kanban-visibility-lane=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var158 string
 			templ_7745c5c3_Var158, templ_7745c5c3_Err = templ.JoinStringErrs(lane.ID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1416, Col: 102}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1415, Col: 169}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var158))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 232, "\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			if lane.DefaultVisible {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 233, " checked")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 234, " data-project-kanban-visibility-checkbox data-project-kanban-visibility-default=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 232, "\"><label class=\"flex min-h-7 cursor-pointer items-center gap-2\"><input class=\"size-4 shrink-0 accent-accent\" type=\"checkbox\" name=\"visible_lane\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var159 string
-			templ_7745c5c3_Var159, templ_7745c5c3_Err = templ.JoinStringErrs(projectKanbanBool(lane.DefaultVisible))
+			templ_7745c5c3_Var159, templ_7745c5c3_Err = templ.JoinStringErrs(lane.ID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1416, Col: 257}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1417, Col: 103}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var159))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 235, "\" autocomplete=\"off\"> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 233, "\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var160 = []any{"h-2 w-2 shrink-0 rounded-full " + lane.DotClass}
-			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var160...)
+			if lane.DefaultVisible {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 234, " checked")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 235, " data-project-kanban-visibility-checkbox data-project-kanban-visibility-default=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 236, "<span class=\"")
+			var templ_7745c5c3_Var160 string
+			templ_7745c5c3_Var160, templ_7745c5c3_Err = templ.JoinStringErrs(projectKanbanBool(lane.DefaultVisible))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1417, Col: 258}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var160))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var161 string
-			templ_7745c5c3_Var161, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var160).String())
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var161))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 236, "\" data-project-kanban-visibility-state=\"default\" autocomplete=\"off\"> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 237, "\"></span> <span class=\"min-w-0 flex-1 truncate\">")
+			var templ_7745c5c3_Var161 = []any{"h-2 w-2 shrink-0 rounded-full " + lane.DotClass}
+			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var161...)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 237, "<span class=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var162 string
-			templ_7745c5c3_Var162, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
+			templ_7745c5c3_Var162, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var161).String())
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1418, Col: 56}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var162))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 238, "</span> <span class=\"shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 238, "\"></span> <span class=\"min-w-0 flex-1 truncate\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var163 string
-			templ_7745c5c3_Var163, templ_7745c5c3_Err = templ.JoinStringErrs(lane.CountLabel)
+			templ_7745c5c3_Var163, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1419, Col: 114}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1419, Col: 57}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var163))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 239, "</span></label>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 239, "</span> <span class=\"shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-muted-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var164 string
+			templ_7745c5c3_Var164, templ_7745c5c3_Err = templ.JoinStringErrs(lane.CountLabel)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1420, Col: 115}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var164))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 240, "</span></label><div class=\"ml-6 flex min-w-0 items-center justify-between gap-1.5\"><span class=\"min-w-0 truncate text-[11px] text-muted-foreground\" data-project-kanban-visibility-status>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var165 string
+			templ_7745c5c3_Var165, templ_7745c5c3_Err = templ.JoinStringErrs(projectKanbanDefaultVisibilityLabel(lane))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1423, Col: 153}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var165))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 241, "</span> <button type=\"button\" class=\"inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-card hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:pointer-events-none disabled:opacity-40\" data-project-kanban-visibility-reset value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var166 string
+			templ_7745c5c3_Var166, templ_7745c5c3_Err = templ.JoinStringErrs(lane.ID)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1424, Col: 333}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var166))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 242, "\" aria-label=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var167 string
+			templ_7745c5c3_Var167, templ_7745c5c3_Err = templ.JoinStringErrs("Reset " + lane.Title + " lane to default visibility")
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1424, Col: 402}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var167))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 243, "\" title=\"Reset lane to default visibility\" disabled>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = icon.RotateCcw(icon.Props{Class: "size-3.5"}).Render(ctx, templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 244, "</button></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 240, "</div></div></details>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 245, "</div></div></details>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4100,12 +4160,12 @@ func projectKanbanVisibilityScript() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var164 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var164 == nil {
-			templ_7745c5c3_Var164 = templ.NopComponent
+		templ_7745c5c3_Var168 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var168 == nil {
+			templ_7745c5c3_Var168 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 241, "<script>\n\t\t(function() {\n\t\t\tconst storagePrefix = \"detent.ui.projectKanban.visibleLanes.\";\n\t\t\tconst storageVersion = 3;\n\n\t\t\tfunction visibilityStorage() {\n\t\t\t\ttry {\n\t\t\t\t\treturn window.localStorage;\n\t\t\t\t} catch (error) {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction boards() {\n\t\t\t\treturn Array.from(document.querySelectorAll(\"[data-project-kanban-board][data-project-kanban-visibility-key]\"));\n\t\t\t}\n\n\t\t\tfunction storageKey(board) {\n\t\t\t\treturn storagePrefix + (board.dataset.projectKanbanVisibilityKey || \"default\");\n\t\t\t}\n\n\t\t\tfunction boardLanes(board) {\n\t\t\t\treturn Array.from(board.querySelectorAll(\"[data-project-kanban-lane]\"));\n\t\t\t}\n\n\t\t\tfunction laneID(lane) {\n\t\t\t\treturn lane.dataset.projectKanbanLane || \"\";\n\t\t\t}\n\n\t\t\tfunction laneDefaultVisible(lane) {\n\t\t\t\treturn lane.dataset.projectKanbanLaneDefaultVisible === \"true\";\n\t\t\t}\n\n\t\t\tfunction laneTitle(lane) {\n\t\t\t\treturn lane.dataset.projectKanbanLaneTitle || \"lane\";\n\t\t\t}\n\n\t\t\tfunction laneIDSet(ids) {\n\t\t\t\treturn new Set(ids.filter(function(id) {\n\t\t\t\t\treturn typeof id === \"string\" && id.trim() !== \"\";\n\t\t\t\t}));\n\t\t\t}\n\n\t\t\tfunction defaultLaneIDs(board) {\n\t\t\t\tconst ids = new Set();\n\t\t\t\tboardLanes(board).forEach(function(lane) {\n\t\t\t\t\tconst id = laneID(lane);\n\t\t\t\t\tif (id && laneDefaultVisible(lane)) {\n\t\t\t\t\t\tids.add(id);\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t\treturn ids;\n\t\t\t}\n\n\t\t\tfunction storedLaneIDs(board) {\n\t\t\t\tconst store = visibilityStorage();\n\t\t\t\tif (!store) {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t\tlet parsed = null;\n\t\t\t\ttry {\n\t\t\t\t\tparsed = JSON.parse(store.getItem(storageKey(board)) || \"\");\n\t\t\t\t} catch (error) {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t\tif (!parsed || !Array.isArray(parsed.lanes)) {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t\tif (parsed.v === storageVersion) {\n\t\t\t\t\treturn laneIDSet(parsed.lanes);\n\t\t\t\t}\n\t\t\t\tif (parsed.v === 2 || parsed.v === 1) {\n\t\t\t\t\tconst migrated = defaultLaneIDs(board);\n\t\t\t\t\tlaneIDSet(parsed.lanes).forEach(function(id) {\n\t\t\t\t\t\tmigrated.add(id);\n\t\t\t\t\t});\n\t\t\t\t\treturn migrated;\n\t\t\t\t}\n\t\t\t\treturn null;\n\t\t\t}\n\n\t\t\tfunction visibleLaneIDs(board) {\n\t\t\t\treturn storedLaneIDs(board) || defaultLaneIDs(board);\n\t\t\t}\n\n\t\t\tfunction saveLaneIDs(board, ids) {\n\t\t\t\tconst store = visibilityStorage();\n\t\t\t\tif (!store) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst values = Array.from(ids).filter(Boolean);\n\t\t\t\tstore.setItem(storageKey(board), JSON.stringify({ v: storageVersion, lanes: values }));\n\t\t\t}\n\n\t\t\tfunction resetLaneIDs(board) {\n\t\t\t\tconst store = visibilityStorage();\n\t\t\t\tif (store) {\n\t\t\t\t\tstore.removeItem(storageKey(board));\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction checkboxLaneID(checkbox) {\n\t\t\t\treturn checkbox.value || \"\";\n\t\t\t}\n\n\t\t\tfunction updatePinButton(button, visible, title) {\n\t\t\t\tbutton.dataset.projectKanbanPinActive = visible ? \"true\" : \"false\";\n\t\t\t\tbutton.setAttribute(\"aria-pressed\", visible ? \"true\" : \"false\");\n\t\t\t\tbutton.setAttribute(\"aria-label\", (visible ? \"Hide \" : \"Show \") + title + \" lane\");\n\t\t\t\tbutton.title = visible ? \"Hide lane\" : \"Show lane\";\n\t\t\t\tbutton.querySelectorAll(\"[data-project-kanban-pin-icon]\").forEach(function(icon) {\n\t\t\t\t\tif (!(icon instanceof HTMLElement)) {\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\ticon.hidden = icon.dataset.projectKanbanPinIcon !== (visible ? \"pinned\" : \"unpinned\");\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tfunction applyBoard(board) {\n\t\t\t\tconst visibleIDs = visibleLaneIDs(board);\n\t\t\t\tlet visibleCount = 0;\n\t\t\t\tconst lanes = boardLanes(board);\n\t\t\t\tlanes.forEach(function(lane) {\n\t\t\t\t\tconst id = laneID(lane);\n\t\t\t\t\tconst visible = visibleIDs.has(id);\n\t\t\t\t\tlane.dataset.projectKanbanLaneVisible = visible ? \"true\" : \"false\";\n\t\t\t\t\tlane.dataset.projectKanbanLanePinned = visible ? \"true\" : \"false\";\n\t\t\t\t\tlane.querySelectorAll(\"[data-project-kanban-pin-toggle]\").forEach(function(button) {\n\t\t\t\t\t\tif (button instanceof HTMLButtonElement) {\n\t\t\t\t\t\t\tupdatePinButton(button, visible, laneTitle(lane));\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t\tif (visible) {\n\t\t\t\t\t\tvisibleCount += 1;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t\tboard.querySelectorAll(\"[data-project-kanban-visibility-checkbox]\").forEach(function(input) {\n\t\t\t\t\tif (!(input instanceof HTMLInputElement)) {\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tinput.checked = visibleIDs.has(checkboxLaneID(input));\n\t\t\t\t\tinput.disabled = false;\n\t\t\t\t\tinput.setAttribute(\"aria-disabled\", \"false\");\n\t\t\t\t});\n\t\t\t\tconst count = board.querySelector(\"[data-project-kanban-visibility-count]\");\n\t\t\t\tif (count) {\n\t\t\t\t\tcount.textContent = visibleCount + \"/\" + lanes.length;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction applyBoards() {\n\t\t\t\tboards().forEach(applyBoard);\n\t\t\t}\n\n\t\t\tfunction updateCheckbox(checkbox) {\n\t\t\t\tconst board = checkbox.closest(\"[data-project-kanban-board]\");\n\t\t\t\tif (!board) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst saved = visibleLaneIDs(board);\n\t\t\t\tconst id = checkboxLaneID(checkbox);\n\t\t\t\tif (!id) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (checkbox.checked) {\n\t\t\t\t\tsaved.add(id);\n\t\t\t\t} else {\n\t\t\t\t\tsaved.delete(id);\n\t\t\t\t}\n\t\t\t\tsaveLaneIDs(board, saved);\n\t\t\t\tapplyBoard(board);\n\t\t\t}\n\n\t\t\tfunction toggleLanePin(button) {\n\t\t\t\tconst lane = button.closest(\"[data-project-kanban-lane]\");\n\t\t\t\tconst board = button.closest(\"[data-project-kanban-board]\");\n\t\t\t\tif (!lane || !board) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst id = laneID(lane);\n\t\t\t\tif (!id) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst saved = visibleLaneIDs(board);\n\t\t\t\tif (saved.has(id)) {\n\t\t\t\t\tsaved.delete(id);\n\t\t\t\t} else {\n\t\t\t\t\tsaved.add(id);\n\t\t\t\t}\n\t\t\t\tsaveLaneIDs(board, saved);\n\t\t\t\tapplyBoard(board);\n\t\t\t}\n\n\t\t\tfunction updateAction(button) {\n\t\t\t\tconst board = button.closest(\"[data-project-kanban-board]\");\n\t\t\t\tif (!board) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst saved = new Set();\n\t\t\t\tif (button.dataset.projectKanbanVisibilityAction === \"all\") {\n\t\t\t\t\tboardLanes(board).forEach(function(lane) {\n\t\t\t\t\t\tconst id = laneID(lane);\n\t\t\t\t\t\tif (id) {\n\t\t\t\t\t\t\tsaved.add(id);\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t\tsaveLaneIDs(board, saved);\n\t\t\t\t} else {\n\t\t\t\t\tresetLaneIDs(board);\n\t\t\t\t}\n\t\t\t\tapplyBoard(board);\n\t\t\t}\n\n\t\t\tfunction visibilitySnapshotTarget(event) {\n\t\t\t\tconst detailTarget = event.detail && event.detail.target;\n\t\t\t\tconst target = detailTarget instanceof Element ? detailTarget : event.target;\n\t\t\t\tif (!(target instanceof Element)) {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t\tif (target.id === \"snapshot\") {\n\t\t\t\t\treturn target;\n\t\t\t\t}\n\t\t\t\treturn target.closest(\"#snapshot\");\n\t\t\t}\n\n\t\t\tfunction snapshotHasOpenPreservedDetails(target) {\n\t\t\t\treturn Boolean(target && target.querySelector(\"details[data-preserve-details][open]\"));\n\t\t\t}\n\n\t\t\tfunction visibilityMenus() {\n\t\t\t\treturn Array.from(document.querySelectorAll(\"[data-project-kanban-visibility-menu]\"));\n\t\t\t}\n\n\t\t\tfunction closeVisibilityMenu(menu) {\n\t\t\t\tif (menu instanceof HTMLDetailsElement) {\n\t\t\t\t\tmenu.open = false;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction closeVisibilityMenusExcept(activeMenu) {\n\t\t\t\tvisibilityMenus().forEach(function(menu) {\n\t\t\t\t\tif (menu !== activeMenu) {\n\t\t\t\t\t\tcloseVisibilityMenu(menu);\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tdocument.addEventListener(\"change\", function(event) {\n\t\t\t\tconst input = event.target instanceof Element ? event.target.closest(\"[data-project-kanban-visibility-checkbox]\") : null;\n\t\t\t\tif (input instanceof HTMLInputElement) {\n\t\t\t\t\tupdateCheckbox(input);\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"click\", function(event) {\n\t\t\t\tconst target = event.target instanceof Element ? event.target : null;\n\t\t\t\tconst close = target ? target.closest(\"[data-project-kanban-visibility-close]\") : null;\n\t\t\t\tif (close instanceof HTMLButtonElement) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tcloseVisibilityMenu(close.closest(\"[data-project-kanban-visibility-menu]\"));\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst pin = target ? target.closest(\"[data-project-kanban-pin-toggle]\") : null;\n\t\t\t\tif (pin instanceof HTMLButtonElement) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\ttoggleLanePin(pin);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst button = target ? target.closest(\"[data-project-kanban-visibility-action]\") : null;\n\t\t\t\tif (button instanceof HTMLButtonElement) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tupdateAction(button);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst menu = target ? target.closest(\"[data-project-kanban-visibility-menu]\") : null;\n\t\t\t\tif (!menu) {\n\t\t\t\t\tcloseVisibilityMenusExcept(null);\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"keydown\", function(event) {\n\t\t\t\tif (event.key === \"Escape\") {\n\t\t\t\t\tcloseVisibilityMenusExcept(null);\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"toggle\", function(event) {\n\t\t\t\tconst menu = event.target instanceof Element ? event.target.closest(\"[data-project-kanban-visibility-menu]\") : null;\n\t\t\t\tif (menu instanceof HTMLDetailsElement && menu.open) {\n\t\t\t\t\tcloseVisibilityMenusExcept(menu);\n\t\t\t\t}\n\t\t\t}, true);\n\n\t\t\tdocument.addEventListener(\"htmx:beforeSwap\", function(event) {\n\t\t\t\tconst target = visibilitySnapshotTarget(event);\n\t\t\t\tif (snapshotHasOpenPreservedDetails(target)) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"htmx:sseBeforeMessage\", function(event) {\n\t\t\t\tconst target = visibilitySnapshotTarget(event);\n\t\t\t\tif (snapshotHasOpenPreservedDetails(target)) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"htmx:afterSwap\", applyBoards);\n\t\t\tdocument.addEventListener(\"htmx:afterSettle\", applyBoards);\n\t\t\twindow.addEventListener(\"storage\", function(event) {\n\t\t\t\tif (event.key && event.key.indexOf(storagePrefix) === 0) {\n\t\t\t\t\tapplyBoards();\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tif (document.readyState === \"loading\") {\n\t\t\t\tdocument.addEventListener(\"DOMContentLoaded\", applyBoards);\n\t\t\t} else {\n\t\t\t\tapplyBoards();\n\t\t\t}\n\t\t})();\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 246, "<script>\n\t\t(function() {\n\t\t\tconst storagePrefix = \"detent.ui.projectKanban.visibleLanes.\";\n\t\t\tconst storageVersion = 4;\n\t\t\tconst overrideDefault = \"default\";\n\t\t\tconst overrideShow = \"show\";\n\t\t\tconst overrideHide = \"hide\";\n\n\t\t\tfunction visibilityStorage() {\n\t\t\t\ttry {\n\t\t\t\t\treturn window.localStorage;\n\t\t\t\t} catch (error) {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction boards() {\n\t\t\t\treturn Array.from(document.querySelectorAll(\"[data-project-kanban-board][data-project-kanban-visibility-key]\"));\n\t\t\t}\n\n\t\t\tfunction storageKey(board) {\n\t\t\t\treturn storagePrefix + (board.dataset.projectKanbanVisibilityKey || \"default\");\n\t\t\t}\n\n\t\t\tfunction boardLanes(board) {\n\t\t\t\treturn Array.from(board.querySelectorAll(\"[data-project-kanban-lane]\"));\n\t\t\t}\n\n\t\t\tfunction laneID(lane) {\n\t\t\t\treturn lane.dataset.projectKanbanLane || \"\";\n\t\t\t}\n\n\t\t\tfunction laneDefaultVisible(lane) {\n\t\t\t\treturn lane.dataset.projectKanbanLaneDefaultVisible === \"true\";\n\t\t\t}\n\n\t\t\tfunction laneTitle(lane) {\n\t\t\t\treturn lane.dataset.projectKanbanLaneTitle || \"lane\";\n\t\t\t}\n\n\t\t\tfunction emptyOverrides() {\n\t\t\t\treturn { show: new Set(), hide: new Set() };\n\t\t\t}\n\n\t\t\tfunction laneIDSet(ids) {\n\t\t\t\tif (!Array.isArray(ids)) {\n\t\t\t\t\treturn new Set();\n\t\t\t\t}\n\t\t\t\treturn new Set(ids.filter(function(id) {\n\t\t\t\t\treturn typeof id === \"string\" && id.trim() !== \"\";\n\t\t\t\t}));\n\t\t\t}\n\n\t\t\tfunction defaultLaneIDs(board) {\n\t\t\t\tconst ids = new Set();\n\t\t\t\tboardLanes(board).forEach(function(lane) {\n\t\t\t\t\tconst id = laneID(lane);\n\t\t\t\t\tif (id && laneDefaultVisible(lane)) {\n\t\t\t\t\t\tids.add(id);\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t\treturn ids;\n\t\t\t}\n\n\t\t\tfunction laneByID(board, id) {\n\t\t\t\treturn boardLanes(board).find(function(lane) {\n\t\t\t\t\treturn laneID(lane) === id;\n\t\t\t\t}) || null;\n\t\t\t}\n\n\t\t\tfunction normalizedVisibilityOverrides(showIDs, hideIDs) {\n\t\t\t\tconst overrides = emptyOverrides();\n\t\t\t\tlaneIDSet(showIDs).forEach(function(id) {\n\t\t\t\t\toverrides.show.add(id);\n\t\t\t\t});\n\t\t\t\tlaneIDSet(hideIDs).forEach(function(id) {\n\t\t\t\t\tif (!overrides.show.has(id)) {\n\t\t\t\t\t\toverrides.hide.add(id);\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t\treturn overrides;\n\t\t\t}\n\n\t\t\tfunction legacyVisibilityOverrides(board, parsed) {\n\t\t\t\tconst overrides = emptyOverrides();\n\t\t\t\tif (!parsed || !Array.isArray(parsed.lanes)) {\n\t\t\t\t\treturn overrides;\n\t\t\t\t}\n\t\t\t\tconst defaults = defaultLaneIDs(board);\n\t\t\t\tlaneIDSet(parsed.lanes).forEach(function(id) {\n\t\t\t\t\tif (!defaults.has(id)) {\n\t\t\t\t\t\toverrides.show.add(id);\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t\treturn overrides;\n\t\t\t}\n\n\t\t\tfunction saveVisibilityOverrides(board, overrides) {\n\t\t\t\tconst store = visibilityStorage();\n\t\t\t\tif (!store) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst show = Array.from(overrides.show).filter(Boolean).sort();\n\t\t\t\tconst hide = Array.from(overrides.hide).filter(function(id) {\n\t\t\t\t\treturn Boolean(id) && !overrides.show.has(id);\n\t\t\t\t}).sort();\n\t\t\t\tif (show.length === 0 && hide.length === 0) {\n\t\t\t\t\tstore.removeItem(storageKey(board));\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tstore.setItem(storageKey(board), JSON.stringify({ v: storageVersion, show: show, hide: hide }));\n\t\t\t}\n\n\t\t\tfunction resetVisibilityOverrides(board) {\n\t\t\t\tconst store = visibilityStorage();\n\t\t\t\tif (store) {\n\t\t\t\t\tstore.removeItem(storageKey(board));\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction storedVisibilityOverrides(board) {\n\t\t\t\tconst store = visibilityStorage();\n\t\t\t\tif (!store) {\n\t\t\t\t\treturn emptyOverrides();\n\t\t\t\t}\n\t\t\t\tconst raw = store.getItem(storageKey(board));\n\t\t\t\tif (!raw) {\n\t\t\t\t\treturn emptyOverrides();\n\t\t\t\t}\n\t\t\t\tlet parsed = null;\n\t\t\t\ttry {\n\t\t\t\t\tparsed = JSON.parse(raw);\n\t\t\t\t} catch (error) {\n\t\t\t\t\tresetVisibilityOverrides(board);\n\t\t\t\t\treturn emptyOverrides();\n\t\t\t\t}\n\t\t\t\tif (!parsed) {\n\t\t\t\t\treturn emptyOverrides();\n\t\t\t\t}\n\t\t\t\tif (parsed.v === storageVersion) {\n\t\t\t\t\treturn normalizedVisibilityOverrides(parsed.show, parsed.hide);\n\t\t\t\t}\n\t\t\t\tif (parsed.v === 3 || parsed.v === 2 || parsed.v === 1) {\n\t\t\t\t\tconst migrated = legacyVisibilityOverrides(board, parsed);\n\t\t\t\t\tsaveVisibilityOverrides(board, migrated);\n\t\t\t\t\treturn migrated;\n\t\t\t\t}\n\t\t\t\tresetVisibilityOverrides(board);\n\t\t\t\treturn emptyOverrides();\n\t\t\t}\n\n\t\t\tfunction visibilityOverrides(board) {\n\t\t\t\treturn storedVisibilityOverrides(board);\n\t\t\t}\n\n\t\t\tfunction laneOverrideState(lane, overrides) {\n\t\t\t\tconst id = laneID(lane);\n\t\t\t\tif (overrides.show.has(id)) {\n\t\t\t\t\treturn overrideShow;\n\t\t\t\t}\n\t\t\t\tif (overrides.hide.has(id)) {\n\t\t\t\t\treturn overrideHide;\n\t\t\t\t}\n\t\t\t\treturn overrideDefault;\n\t\t\t}\n\n\t\t\tfunction effectiveLaneVisibility(lane, overrides) {\n\t\t\t\tconst state = laneOverrideState(lane, overrides);\n\t\t\t\tif (state === overrideShow) {\n\t\t\t\t\treturn { state: state, visible: true };\n\t\t\t\t}\n\t\t\t\tif (state === overrideHide) {\n\t\t\t\t\treturn { state: state, visible: false };\n\t\t\t\t}\n\t\t\t\treturn { state: state, visible: laneDefaultVisible(lane) };\n\t\t\t}\n\n\t\t\tfunction checkboxLaneID(checkbox) {\n\t\t\t\treturn checkbox.value || \"\";\n\t\t\t}\n\n\t\t\tfunction visibilityStateLabel(state, lane) {\n\t\t\t\tif (state === overrideShow) {\n\t\t\t\t\treturn \"Forced visible\";\n\t\t\t\t}\n\t\t\t\tif (state === overrideHide) {\n\t\t\t\t\treturn \"Forced hidden\";\n\t\t\t\t}\n\t\t\t\treturn laneDefaultVisible(lane) ? \"Default visible\" : \"Default hidden\";\n\t\t\t}\n\n\t\t\tfunction visibilityStateTitle(state, lane) {\n\t\t\t\tif (state === overrideShow) {\n\t\t\t\t\treturn \"Forced visible; reset to follow the board default.\";\n\t\t\t\t}\n\t\t\t\tif (state === overrideHide) {\n\t\t\t\t\treturn \"Forced hidden; reset to follow the board default.\";\n\t\t\t\t}\n\t\t\t\treturn laneDefaultVisible(lane) ? \"Default-visible lane; no saved override.\" : \"Default-hidden lane; no saved override.\";\n\t\t\t}\n\n\t\t\tfunction visibilityRow(board, id) {\n\t\t\t\treturn Array.from(board.querySelectorAll(\"[data-project-kanban-visibility-row]\")).find(function(row) {\n\t\t\t\t\treturn row instanceof HTMLElement && row.dataset.projectKanbanVisibilityLane === id;\n\t\t\t\t}) || null;\n\t\t\t}\n\n\t\t\tfunction updatePinButton(button, visible, state, title) {\n\t\t\t\tbutton.dataset.projectKanbanPinActive = visible ? \"true\" : \"false\";\n\t\t\t\tbutton.dataset.projectKanbanVisibilityState = state;\n\t\t\t\tbutton.setAttribute(\"aria-pressed\", visible ? \"true\" : \"false\");\n\t\t\t\tbutton.setAttribute(\"aria-label\", (visible ? \"Hide \" : \"Show \") + title + \" lane\");\n\t\t\t\tbutton.title = visible ? \"Hide lane\" : \"Show lane\";\n\t\t\t\tbutton.querySelectorAll(\"[data-project-kanban-pin-icon]\").forEach(function(icon) {\n\t\t\t\t\tif (!(icon instanceof HTMLElement)) {\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\ticon.hidden = icon.dataset.projectKanbanPinIcon !== (visible ? \"pinned\" : \"unpinned\");\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tfunction applyVisibilityState(board, lane, state, visible) {\n\t\t\t\tconst id = laneID(lane);\n\t\t\t\tlane.dataset.projectKanbanLaneVisible = visible ? \"true\" : \"false\";\n\t\t\t\tlane.dataset.projectKanbanLanePinned = state === overrideShow ? \"true\" : \"false\";\n\t\t\t\tlane.dataset.projectKanbanLaneVisibilityState = state;\n\t\t\t\tlane.querySelectorAll(\"[data-project-kanban-pin-toggle]\").forEach(function(button) {\n\t\t\t\t\tif (button instanceof HTMLButtonElement) {\n\t\t\t\t\t\tupdatePinButton(button, visible, state, laneTitle(lane));\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t\tconst row = visibilityRow(board, id);\n\t\t\t\tif (!(row instanceof HTMLElement)) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\trow.dataset.projectKanbanVisibilityState = state;\n\t\t\t\trow.dataset.projectKanbanVisibilityEffective = visible ? \"visible\" : \"hidden\";\n\t\t\t\tconst label = visibilityStateLabel(state, lane);\n\t\t\t\tconst title = visibilityStateTitle(state, lane);\n\t\t\t\tconst status = row.querySelector(\"[data-project-kanban-visibility-status]\");\n\t\t\t\tif (status) {\n\t\t\t\t\tstatus.textContent = label;\n\t\t\t\t\tstatus.setAttribute(\"title\", title);\n\t\t\t\t}\n\t\t\t\tconst reset = row.querySelector(\"[data-project-kanban-visibility-reset]\");\n\t\t\t\tif (reset instanceof HTMLButtonElement) {\n\t\t\t\t\tconst disabled = state === overrideDefault;\n\t\t\t\t\treset.disabled = disabled;\n\t\t\t\t\treset.setAttribute(\"aria-disabled\", disabled ? \"true\" : \"false\");\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction applyBoard(board) {\n\t\t\t\tconst overrides = visibilityOverrides(board);\n\t\t\t\tlet visibleCount = 0;\n\t\t\t\tconst lanes = boardLanes(board);\n\t\t\t\tlanes.forEach(function(lane) {\n\t\t\t\t\tconst effective = effectiveLaneVisibility(lane, overrides);\n\t\t\t\t\tapplyVisibilityState(board, lane, effective.state, effective.visible);\n\t\t\t\t\tif (effective.visible) {\n\t\t\t\t\t\tvisibleCount += 1;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t\tboard.querySelectorAll(\"[data-project-kanban-visibility-checkbox]\").forEach(function(input) {\n\t\t\t\t\tif (!(input instanceof HTMLInputElement)) {\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tconst lane = laneByID(board, checkboxLaneID(input));\n\t\t\t\t\tif (!lane) {\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tconst effective = effectiveLaneVisibility(lane, overrides);\n\t\t\t\t\tinput.checked = effective.visible;\n\t\t\t\t\tinput.disabled = false;\n\t\t\t\t\tinput.setAttribute(\"aria-disabled\", \"false\");\n\t\t\t\t\tinput.dataset.projectKanbanVisibilityState = effective.state;\n\t\t\t\t\tinput.dataset.projectKanbanVisibilityEffective = effective.visible ? \"visible\" : \"hidden\";\n\t\t\t\t\tinput.setAttribute(\"aria-label\", (effective.visible ? \"Hide \" : \"Show \") + laneTitle(lane) + \" lane\");\n\t\t\t\t\tinput.title = visibilityStateTitle(effective.state, lane);\n\t\t\t\t});\n\t\t\t\tconst count = board.querySelector(\"[data-project-kanban-visibility-count]\");\n\t\t\t\tif (count) {\n\t\t\t\t\tcount.textContent = visibleCount + \"/\" + lanes.length;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction applyBoards() {\n\t\t\t\tboards().forEach(applyBoard);\n\t\t\t}\n\n\t\t\tfunction setLaneOverride(board, id, state) {\n\t\t\t\tconst overrides = visibilityOverrides(board);\n\t\t\t\toverrides.show.delete(id);\n\t\t\t\toverrides.hide.delete(id);\n\t\t\t\tif (state === overrideShow) {\n\t\t\t\t\toverrides.show.add(id);\n\t\t\t\t}\n\t\t\t\tif (state === overrideHide) {\n\t\t\t\t\toverrides.hide.add(id);\n\t\t\t\t}\n\t\t\t\tsaveVisibilityOverrides(board, overrides);\n\t\t\t\tapplyBoard(board);\n\t\t\t}\n\n\t\t\tfunction updateCheckbox(checkbox) {\n\t\t\t\tconst board = checkbox.closest(\"[data-project-kanban-board]\");\n\t\t\t\tif (!board) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst id = checkboxLaneID(checkbox);\n\t\t\t\tconst lane = laneByID(board, id);\n\t\t\t\tif (!id || !lane) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tlet state = overrideDefault;\n\t\t\t\tif (checkbox.checked !== laneDefaultVisible(lane)) {\n\t\t\t\t\tstate = checkbox.checked ? overrideShow : overrideHide;\n\t\t\t\t}\n\t\t\t\tsetLaneOverride(board, id, state);\n\t\t\t}\n\n\t\t\tfunction toggleLanePin(button) {\n\t\t\t\tconst lane = button.closest(\"[data-project-kanban-lane]\");\n\t\t\t\tconst board = button.closest(\"[data-project-kanban-board]\");\n\t\t\t\tif (!lane || !board) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst id = laneID(lane);\n\t\t\t\tif (!id) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst effective = effectiveLaneVisibility(lane, visibilityOverrides(board));\n\t\t\t\tsetLaneOverride(board, id, effective.visible ? overrideHide : overrideShow);\n\t\t\t}\n\n\t\t\tfunction resetLaneOverride(button) {\n\t\t\t\tconst board = button.closest(\"[data-project-kanban-board]\");\n\t\t\t\tconst row = button.closest(\"[data-project-kanban-visibility-row]\");\n\t\t\t\tconst id = button.value || (row instanceof HTMLElement ? row.dataset.projectKanbanVisibilityLane : \"\");\n\t\t\t\tif (!board || !id) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tsetLaneOverride(board, id, overrideDefault);\n\t\t\t}\n\n\t\t\tfunction updateAction(button) {\n\t\t\t\tconst board = button.closest(\"[data-project-kanban-board]\");\n\t\t\t\tif (!board) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tif (button.dataset.projectKanbanVisibilityAction === \"all\") {\n\t\t\t\t\tconst overrides = emptyOverrides();\n\t\t\t\t\tboardLanes(board).forEach(function(lane) {\n\t\t\t\t\t\tconst id = laneID(lane);\n\t\t\t\t\t\tif (id && !laneDefaultVisible(lane)) {\n\t\t\t\t\t\t\toverrides.show.add(id);\n\t\t\t\t\t\t}\n\t\t\t\t\t});\n\t\t\t\t\tsaveVisibilityOverrides(board, overrides);\n\t\t\t\t}\n\t\t\t\tif (button.dataset.projectKanbanVisibilityAction === \"reset\") {\n\t\t\t\t\tresetVisibilityOverrides(board);\n\t\t\t\t}\n\t\t\t\tapplyBoard(board);\n\t\t\t}\n\n\t\t\tfunction visibilitySnapshotTarget(event) {\n\t\t\t\tconst detailTarget = event.detail && event.detail.target;\n\t\t\t\tconst target = detailTarget instanceof Element ? detailTarget : event.target;\n\t\t\t\tif (!(target instanceof Element)) {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t\tif (target.id === \"snapshot\") {\n\t\t\t\t\treturn target;\n\t\t\t\t}\n\t\t\t\treturn target.closest(\"#snapshot\");\n\t\t\t}\n\n\t\t\tfunction snapshotHasOpenPreservedDetails(target) {\n\t\t\t\treturn Boolean(target && target.querySelector(\"details[data-preserve-details][open]\"));\n\t\t\t}\n\n\t\t\tfunction visibilityMenus() {\n\t\t\t\treturn Array.from(document.querySelectorAll(\"[data-project-kanban-visibility-menu]\"));\n\t\t\t}\n\n\t\t\tfunction closeVisibilityMenu(menu) {\n\t\t\t\tif (menu instanceof HTMLDetailsElement) {\n\t\t\t\t\tmenu.open = false;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction closeVisibilityMenusExcept(activeMenu) {\n\t\t\t\tvisibilityMenus().forEach(function(menu) {\n\t\t\t\t\tif (menu !== activeMenu) {\n\t\t\t\t\t\tcloseVisibilityMenu(menu);\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tdocument.addEventListener(\"change\", function(event) {\n\t\t\t\tconst input = event.target instanceof Element ? event.target.closest(\"[data-project-kanban-visibility-checkbox]\") : null;\n\t\t\t\tif (input instanceof HTMLInputElement) {\n\t\t\t\t\tupdateCheckbox(input);\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"click\", function(event) {\n\t\t\t\tconst target = event.target instanceof Element ? event.target : null;\n\t\t\t\tconst close = target ? target.closest(\"[data-project-kanban-visibility-close]\") : null;\n\t\t\t\tif (close instanceof HTMLButtonElement) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tcloseVisibilityMenu(close.closest(\"[data-project-kanban-visibility-menu]\"));\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst pin = target ? target.closest(\"[data-project-kanban-pin-toggle]\") : null;\n\t\t\t\tif (pin instanceof HTMLButtonElement) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\ttoggleLanePin(pin);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst reset = target ? target.closest(\"[data-project-kanban-visibility-reset]\") : null;\n\t\t\t\tif (reset instanceof HTMLButtonElement) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tresetLaneOverride(reset);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst button = target ? target.closest(\"[data-project-kanban-visibility-action]\") : null;\n\t\t\t\tif (button instanceof HTMLButtonElement) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tupdateAction(button);\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst menu = target ? target.closest(\"[data-project-kanban-visibility-menu]\") : null;\n\t\t\t\tif (!menu) {\n\t\t\t\t\tcloseVisibilityMenusExcept(null);\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"keydown\", function(event) {\n\t\t\t\tif (event.key === \"Escape\") {\n\t\t\t\t\tcloseVisibilityMenusExcept(null);\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"toggle\", function(event) {\n\t\t\t\tconst menu = event.target instanceof Element ? event.target.closest(\"[data-project-kanban-visibility-menu]\") : null;\n\t\t\t\tif (menu instanceof HTMLDetailsElement && menu.open) {\n\t\t\t\t\tcloseVisibilityMenusExcept(menu);\n\t\t\t\t}\n\t\t\t}, true);\n\n\t\t\tdocument.addEventListener(\"htmx:beforeSwap\", function(event) {\n\t\t\t\tconst target = visibilitySnapshotTarget(event);\n\t\t\t\tif (snapshotHasOpenPreservedDetails(target)) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"htmx:sseBeforeMessage\", function(event) {\n\t\t\t\tconst target = visibilitySnapshotTarget(event);\n\t\t\t\tif (snapshotHasOpenPreservedDetails(target)) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"htmx:afterSwap\", applyBoards);\n\t\t\tdocument.addEventListener(\"htmx:afterSettle\", applyBoards);\n\t\t\twindow.addEventListener(\"storage\", function(event) {\n\t\t\t\tif (event.key && event.key.indexOf(storagePrefix) === 0) {\n\t\t\t\t\tapplyBoards();\n\t\t\t\t}\n\t\t\t});\n\n\t\t\tif (document.readyState === \"loading\") {\n\t\t\t\tdocument.addEventListener(\"DOMContentLoaded\", applyBoards);\n\t\t\t} else {\n\t\t\t\tapplyBoards();\n\t\t\t}\n\t\t})();\n\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4129,69 +4189,69 @@ func projectKanbanLaneView(data DashboardData, lane projectKanbanLane) templ.Com
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var165 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var165 == nil {
-			templ_7745c5c3_Var165 = templ.NopComponent
+		templ_7745c5c3_Var169 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var169 == nil {
+			templ_7745c5c3_Var169 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		var templ_7745c5c3_Var166 = []any{projectKanbanLaneClass(lane)}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var166...)
+		var templ_7745c5c3_Var170 = []any{projectKanbanLaneClass(lane)}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var170...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 242, "<section class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 247, "<section class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var167 string
-		templ_7745c5c3_Var167, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var166).String())
+		var templ_7745c5c3_Var171 string
+		templ_7745c5c3_Var171, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var170).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var167))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var171))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 243, "\" aria-label=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 248, "\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var168 string
-		templ_7745c5c3_Var168, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title + " lane")
+		var templ_7745c5c3_Var172 string
+		templ_7745c5c3_Var172, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title + " lane")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1753, Col: 82}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1920, Col: 82}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var168))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 244, "\" data-project-kanban-lane=\"")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var172))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var169 string
-		templ_7745c5c3_Var169, templ_7745c5c3_Err = templ.JoinStringErrs(lane.ID)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1753, Col: 119}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var169))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 249, "\" data-project-kanban-lane=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 245, "\" data-project-kanban-lane-title=\"")
+		var templ_7745c5c3_Var173 string
+		templ_7745c5c3_Var173, templ_7745c5c3_Err = templ.JoinStringErrs(lane.ID)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1920, Col: 119}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var173))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var170 string
-		templ_7745c5c3_Var170, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1753, Col: 165}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var170))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 250, "\" data-project-kanban-lane-title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 246, "\"")
+		var templ_7745c5c3_Var174 string
+		templ_7745c5c3_Var174, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1920, Col: 165}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var174))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 251, "\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4199,68 +4259,68 @@ func projectKanbanLaneView(data DashboardData, lane projectKanbanLane) templ.Com
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 247, "><div class=\"flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 252, "><div class=\"flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var171 = []any{"h-2 w-2 shrink-0 rounded-full " + lane.DotClass}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var171...)
+		var templ_7745c5c3_Var175 = []any{"h-2 w-2 shrink-0 rounded-full " + lane.DotClass}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var175...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 248, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 253, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var172 string
-		templ_7745c5c3_Var172, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var171).String())
+		var templ_7745c5c3_Var176 string
+		templ_7745c5c3_Var176, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var175).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var172))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var176))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 249, "\"></span><h3 class=\"min-w-0 shrink truncate text-xs font-semibold text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 254, "\"></span><h3 class=\"min-w-0 shrink truncate text-xs font-semibold text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var173 string
-		templ_7745c5c3_Var173, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
+		var templ_7745c5c3_Var177 string
+		templ_7745c5c3_Var177, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1756, Col: 89}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1923, Col: 89}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var173))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 250, " (")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var177))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var174 string
-		templ_7745c5c3_Var174, templ_7745c5c3_Err = templ.JoinStringErrs(lane.CountLabel)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1756, Col: 110}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var174))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 255, " (")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 251, ")</h3><button type=\"button\" class=\"inline-flex size-6 flex-none items-center justify-center rounded-md border border-transparent text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent aria-pressed:border-accent-soft aria-pressed:bg-accent-soft aria-pressed:text-accent\" data-project-kanban-pin-toggle data-project-kanban-pin-active=\"false\" aria-pressed=\"false\" aria-label=\"")
+		var templ_7745c5c3_Var178 string
+		templ_7745c5c3_Var178, templ_7745c5c3_Err = templ.JoinStringErrs(lane.CountLabel)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1923, Col: 110}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var178))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var175 string
-		templ_7745c5c3_Var175, templ_7745c5c3_Err = templ.JoinStringErrs("Pin " + lane.Title + " lane")
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1757, Col: 479}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var175))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 256, ")</h3><button type=\"button\" class=\"inline-flex size-6 flex-none items-center justify-center rounded-md border border-transparent text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent aria-pressed:border-accent-soft aria-pressed:bg-accent-soft aria-pressed:text-accent\" data-project-kanban-pin-toggle data-project-kanban-pin-active=\"false\" aria-pressed=\"false\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 252, "\" title=\"Pin lane\"><span data-project-kanban-pin-icon=\"unpinned\">")
+		var templ_7745c5c3_Var179 string
+		templ_7745c5c3_Var179, templ_7745c5c3_Err = templ.JoinStringErrs("Pin " + lane.Title + " lane")
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1924, Col: 479}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var179))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 257, "\" title=\"Pin lane\"><span data-project-kanban-pin-icon=\"unpinned\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4268,7 +4328,7 @@ func projectKanbanLaneView(data DashboardData, lane projectKanbanLane) templ.Com
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 253, "</span> <span data-project-kanban-pin-icon=\"pinned\" hidden>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 258, "</span> <span data-project-kanban-pin-icon=\"pinned\" hidden>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4276,12 +4336,12 @@ func projectKanbanLaneView(data DashboardData, lane projectKanbanLane) templ.Com
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 254, "</span></button></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 259, "</span></button></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(lane.Cards) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 255, "<div class=\"mt-2 min-w-0 max-w-full overflow-hidden\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 260, "<div class=\"mt-2 min-w-0 max-w-full overflow-hidden\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -4289,25 +4349,25 @@ func projectKanbanLaneView(data DashboardData, lane projectKanbanLane) templ.Com
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 256, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 261, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 257, "<div class=\"project-kanban-lane-scroll mt-2 grid auto-rows-max min-w-0 max-w-full max-h-[32rem] gap-1.5 overflow-x-hidden overflow-y-auto pr-1\" data-preserve-scroll=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 262, "<div class=\"project-kanban-lane-scroll mt-2 grid auto-rows-max min-w-0 max-w-full max-h-[32rem] gap-1.5 overflow-x-hidden overflow-y-auto pr-1\" data-preserve-scroll=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var176 string
-			templ_7745c5c3_Var176, templ_7745c5c3_Err = templ.JoinStringErrs("project-kanban-" + lane.ID)
+			var templ_7745c5c3_Var180 string
+			templ_7745c5c3_Var180, templ_7745c5c3_Err = templ.JoinStringErrs("project-kanban-" + lane.ID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1771, Col: 197}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1938, Col: 197}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var176))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var180))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 258, "\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 263, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -4317,12 +4377,12 @@ func projectKanbanLaneView(data DashboardData, lane projectKanbanLane) templ.Com
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 259, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 264, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 260, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 265, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4346,117 +4406,117 @@ func projectKanbanLoadingLaneView(lane projectKanbanLane) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var177 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var177 == nil {
-			templ_7745c5c3_Var177 = templ.NopComponent
+		templ_7745c5c3_Var181 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var181 == nil {
+			templ_7745c5c3_Var181 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		var templ_7745c5c3_Var178 = []any{projectKanbanLaneClass(lane)}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var178...)
+		var templ_7745c5c3_Var182 = []any{projectKanbanLaneClass(lane)}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var182...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 261, "<section class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 266, "<section class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var179 string
-		templ_7745c5c3_Var179, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var178).String())
+		var templ_7745c5c3_Var183 string
+		templ_7745c5c3_Var183, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var182).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var179))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var183))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 262, "\" aria-label=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var180 string
-		templ_7745c5c3_Var180, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title + " lane")
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1781, Col: 82}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var180))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 263, "\" data-project-kanban-lane=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var181 string
-		templ_7745c5c3_Var181, templ_7745c5c3_Err = templ.JoinStringErrs(lane.ID)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1781, Col: 119}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var181))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 264, "\" data-project-kanban-lane-title=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var182 string
-		templ_7745c5c3_Var182, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1781, Col: 165}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var182))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 265, "\" data-project-kanban-lane-empty=\"true\" data-project-kanban-lane-default-visible=\"true\" data-project-kanban-lane-pinned=\"false\" data-project-kanban-lane-visible=\"true\"><div class=\"flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var183 = []any{"h-2 w-2 shrink-0 rounded-full " + lane.DotClass}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var183...)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 266, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 267, "\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var184 string
-		templ_7745c5c3_Var184, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var183).String())
+		templ_7745c5c3_Var184, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title + " lane")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1948, Col: 82}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var184))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 267, "\"></span><h3 class=\"min-w-0 shrink truncate text-xs font-semibold text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 268, "\" data-project-kanban-lane=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var185 string
-		templ_7745c5c3_Var185, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
+		templ_7745c5c3_Var185, templ_7745c5c3_Err = templ.JoinStringErrs(lane.ID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1784, Col: 89}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1948, Col: 119}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var185))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 268, " (")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 269, "\" data-project-kanban-lane-title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var186 string
-		templ_7745c5c3_Var186, templ_7745c5c3_Err = templ.JoinStringErrs(lane.CountLabel)
+		templ_7745c5c3_Var186, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1784, Col: 110}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1948, Col: 165}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var186))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 269, ")</h3></div><div class=\"mt-3 grid gap-2\" aria-hidden=\"true\"><div class=\"h-16 rounded-md border border-dashed border-border bg-card/70\"></div><div class=\"h-12 rounded-md border border-dashed border-border bg-card/50\"></div></div></section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 270, "\" data-project-kanban-lane-empty=\"true\" data-project-kanban-lane-default-visible=\"true\" data-project-kanban-lane-pinned=\"false\" data-project-kanban-lane-visible=\"true\" data-project-kanban-lane-visibility-state=\"default\"><div class=\"flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var187 = []any{"h-2 w-2 shrink-0 rounded-full " + lane.DotClass}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var187...)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 271, "<span class=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var188 string
+		templ_7745c5c3_Var188, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var187).String())
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var188))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 272, "\"></span><h3 class=\"min-w-0 shrink truncate text-xs font-semibold text-foreground\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var189 string
+		templ_7745c5c3_Var189, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1951, Col: 89}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var189))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 273, " (")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var190 string
+		templ_7745c5c3_Var190, templ_7745c5c3_Err = templ.JoinStringErrs(lane.CountLabel)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1951, Col: 110}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var190))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 274, ")</h3></div><div class=\"mt-3 grid gap-2\" aria-hidden=\"true\"><div class=\"h-16 rounded-md border border-dashed border-border bg-card/70\"></div><div class=\"h-12 rounded-md border border-dashed border-border bg-card/50\"></div></div></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4480,25 +4540,25 @@ func projectKanbanCardView(data DashboardData, card projectKanbanCard) templ.Com
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var187 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var187 == nil {
-			templ_7745c5c3_Var187 = templ.NopComponent
+		templ_7745c5c3_Var191 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var191 == nil {
+			templ_7745c5c3_Var191 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 270, "<article class=\"project-kanban-card project-kanban-card-compact w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-1.5 shadow-sm transition-colors hover:border-accent\" aria-label=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 275, "<article class=\"project-kanban-card project-kanban-card-compact w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-1.5 shadow-sm transition-colors hover:border-accent\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var188 string
-		templ_7745c5c3_Var188, templ_7745c5c3_Err = templ.JoinStringErrs("Kanban card " + card.IssueNumber + " " + card.Title)
+		var templ_7745c5c3_Var192 string
+		templ_7745c5c3_Var192, templ_7745c5c3_Err = templ.JoinStringErrs("Kanban card " + card.IssueNumber + " " + card.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1794, Col: 267}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1961, Col: 267}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var188))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var192))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 271, "\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 276, "\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4506,38 +4566,38 @@ func projectKanbanCardView(data DashboardData, card projectKanbanCard) templ.Com
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 272, "><div class=\"grid w-full min-w-0 max-w-full gap-1 overflow-hidden\"><div class=\"flex w-full min-w-0 max-w-full items-center justify-between gap-1.5 overflow-hidden\"><div class=\"flex min-w-0 flex-1 basis-0 items-center gap-1.5 overflow-hidden\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 277, "><div class=\"grid w-full min-w-0 max-w-full gap-1 overflow-hidden\"><div class=\"flex w-full min-w-0 max-w-full items-center justify-between gap-1.5 overflow-hidden\"><div class=\"flex min-w-0 flex-1 basis-0 items-center gap-1.5 overflow-hidden\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if card.ProjectID != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 273, "<span class=\"h-5 w-1.5 shrink-0 rounded-full border border-border\" aria-label=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 278, "<span class=\"h-5 w-1.5 shrink-0 rounded-full border border-border\" aria-label=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var189 string
-			templ_7745c5c3_Var189, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + card.ProjectID + " color marker")
+			var templ_7745c5c3_Var193 string
+			templ_7745c5c3_Var193, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + card.ProjectID + " color marker")
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1799, Col: 131}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1966, Col: 131}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var189))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 274, "\" title=\"")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var193))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var190 string
-			templ_7745c5c3_Var190, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + card.ProjectID)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1799, Col: 169}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var190))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 279, "\" title=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 275, "\"")
+			var templ_7745c5c3_Var194 string
+			templ_7745c5c3_Var194, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + card.ProjectID)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1966, Col: 169}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var194))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 280, "\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -4545,101 +4605,101 @@ func projectKanbanCardView(data DashboardData, card projectKanbanCard) templ.Com
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 276, "></span> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 281, "></span> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
 		if card.URL != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 277, "<a class=\"shrink-0 rounded-sm font-mono text-xs font-semibold text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 282, "<a class=\"shrink-0 rounded-sm font-mono text-xs font-semibold text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var191 templ.SafeURL
-			templ_7745c5c3_Var191, templ_7745c5c3_Err = templ.JoinURLErrs(card.URL)
+			var templ_7745c5c3_Var195 templ.SafeURL
+			templ_7745c5c3_Var195, templ_7745c5c3_Err = templ.JoinURLErrs(card.URL)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1802, Col: 205}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1969, Col: 205}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var191))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 278, "\" target=\"_blank\" rel=\"noopener noreferrer\" aria-label=\"")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var195))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var192 string
-			templ_7745c5c3_Var192, templ_7745c5c3_Err = templ.JoinStringErrs("Open issue " + card.IssueNumber + ": " + card.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1802, Col: 315}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var192))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 283, "\" target=\"_blank\" rel=\"noopener noreferrer\" aria-label=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 279, "\">")
+			var templ_7745c5c3_Var196 string
+			templ_7745c5c3_Var196, templ_7745c5c3_Err = templ.JoinStringErrs("Open issue " + card.IssueNumber + ": " + card.Title)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1969, Col: 315}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var196))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var193 string
-			templ_7745c5c3_Var193, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueNumber)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1802, Col: 336}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var193))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 284, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 280, "</a>")
+			var templ_7745c5c3_Var197 string
+			templ_7745c5c3_Var197, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueNumber)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1969, Col: 336}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var197))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 285, "</a>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 281, "<span class=\"shrink-0 font-mono text-xs font-semibold text-accent\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 286, "<span class=\"shrink-0 font-mono text-xs font-semibold text-accent\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var194 string
-			templ_7745c5c3_Var194, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueNumber)
+			var templ_7745c5c3_Var198 string
+			templ_7745c5c3_Var198, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueNumber)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1804, Col: 91}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1971, Col: 91}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var194))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 282, "</span>")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var198))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 287, "</span>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 283, "</div><div class=\"flex min-w-0 max-w-full flex-1 basis-0 items-center justify-end gap-1 overflow-hidden\"><span class=\"inline-flex h-5 min-w-0 max-w-[6rem] items-center truncate rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground\" title=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 288, "</div><div class=\"flex min-w-0 max-w-full flex-1 basis-0 items-center justify-end gap-1 overflow-hidden\"><span class=\"inline-flex h-5 min-w-0 max-w-[6rem] items-center truncate rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var195 string
-		templ_7745c5c3_Var195, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
+		var templ_7745c5c3_Var199 string
+		templ_7745c5c3_Var199, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1808, Col: 179}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1975, Col: 179}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var195))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 284, "\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var199))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var196 string
-		templ_7745c5c3_Var196, templ_7745c5c3_Err = templ.JoinStringErrs(card.Stage)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1808, Col: 194}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var196))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 289, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 285, "</span>")
+		var templ_7745c5c3_Var200 string
+		templ_7745c5c3_Var200, templ_7745c5c3_Err = templ.JoinStringErrs(card.Stage)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1975, Col: 194}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var200))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 290, "</span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4647,131 +4707,131 @@ func projectKanbanCardView(data DashboardData, card projectKanbanCard) templ.Com
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 286, "</div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 291, "</div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if card.URL != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 287, "<a class=\"block w-full min-w-0 max-w-full overflow-hidden rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var197 templ.SafeURL
-			templ_7745c5c3_Var197, templ_7745c5c3_Err = templ.JoinURLErrs(card.URL)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1813, Col: 163}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var197))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 288, "\" target=\"_blank\" rel=\"noopener noreferrer\" aria-label=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var198 string
-			templ_7745c5c3_Var198, templ_7745c5c3_Err = templ.JoinStringErrs("Open issue " + card.IssueNumber + ": " + card.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1813, Col: 273}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var198))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 289, "\"><span class=\"line-clamp-2 break-words text-[13px] font-normal leading-snug text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var199 string
-			templ_7745c5c3_Var199, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1814, Col: 109}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var199))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 290, "</span></a>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 291, "<span class=\"line-clamp-2 break-words text-[13px] font-normal leading-snug text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var200 string
-			templ_7745c5c3_Var200, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1817, Col: 108}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var200))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 292, "</span>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 293, "</div><div class=\"mt-1 flex min-w-0 max-w-full flex-wrap items-center gap-1 text-[11px]\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		if card.ProjectID != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 294, "<a class=\"inline-flex h-4 min-w-0 max-w-full items-center truncate rounded-sm border border-border bg-muted px-1 py-0 font-mono font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 292, "<a class=\"block w-full min-w-0 max-w-full overflow-hidden rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var201 templ.SafeURL
-			templ_7745c5c3_Var201, templ_7745c5c3_Err = templ.JoinURLErrs(projectKanbanPath(card.ProjectID))
+			templ_7745c5c3_Var201, templ_7745c5c3_Err = templ.JoinURLErrs(card.URL)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1822, Col: 319}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1980, Col: 163}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var201))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 295, "\" title=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 293, "\" target=\"_blank\" rel=\"noopener noreferrer\" aria-label=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var202 string
-			templ_7745c5c3_Var202, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + card.ProjectID)
+			templ_7745c5c3_Var202, templ_7745c5c3_Err = templ.JoinStringErrs("Open issue " + card.IssueNumber + ": " + card.Title)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1822, Col: 357}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1980, Col: 273}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var202))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 296, "\" aria-label=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 294, "\"><span class=\"line-clamp-2 break-words text-[13px] font-normal leading-snug text-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var203 string
-			templ_7745c5c3_Var203, templ_7745c5c3_Err = templ.JoinStringErrs("Open " + card.ProjectID + " Kanban")
+			templ_7745c5c3_Var203, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1822, Col: 409}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1981, Col: 109}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var203))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 297, "\"><span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 295, "</span></a>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 296, "<span class=\"line-clamp-2 break-words text-[13px] font-normal leading-snug text-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var204 string
-			templ_7745c5c3_Var204, templ_7745c5c3_Err = templ.JoinStringErrs(card.ProjectID)
+			templ_7745c5c3_Var204, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1823, Col: 27}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1984, Col: 108}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var204))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 298, "</span></a> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 297, "</span>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 298, "</div><div class=\"mt-1 flex min-w-0 max-w-full flex-wrap items-center gap-1 text-[11px]\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if card.ProjectID != "" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 299, "<a class=\"inline-flex h-4 min-w-0 max-w-full items-center truncate rounded-sm border border-border bg-muted px-1 py-0 font-mono font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var205 templ.SafeURL
+			templ_7745c5c3_Var205, templ_7745c5c3_Err = templ.JoinURLErrs(projectKanbanPath(card.ProjectID))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1989, Col: 319}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var205))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 300, "\" title=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var206 string
+			templ_7745c5c3_Var206, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + card.ProjectID)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1989, Col: 357}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var206))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 301, "\" aria-label=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var207 string
+			templ_7745c5c3_Var207, templ_7745c5c3_Err = templ.JoinStringErrs("Open " + card.ProjectID + " Kanban")
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1989, Col: 409}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var207))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 302, "\"><span>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var208 string
+			templ_7745c5c3_Var208, templ_7745c5c3_Err = templ.JoinStringErrs(card.ProjectID)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1990, Col: 27}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var208))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 303, "</span></a> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -4782,7 +4842,7 @@ func projectKanbanCardView(data DashboardData, card projectKanbanCard) templ.Com
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 299, "</div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 304, "</div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4796,7 +4856,7 @@ func projectKanbanCardView(data DashboardData, card projectKanbanCard) templ.Com
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 300, "</article>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 305, "</article>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4820,77 +4880,77 @@ func projectKanbanPullRequestSignal(card projectKanbanCard) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var205 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var205 == nil {
-			templ_7745c5c3_Var205 = templ.NopComponent
+		templ_7745c5c3_Var209 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var209 == nil {
+			templ_7745c5c3_Var209 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if card.HasPullRequest {
 			if card.PRURL != "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 301, "<a class=\"inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 306, "<a class=\"inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var206 templ.SafeURL
-				templ_7745c5c3_Var206, templ_7745c5c3_Err = templ.JoinURLErrs(card.PRURL)
+				var templ_7745c5c3_Var210 templ.SafeURL
+				templ_7745c5c3_Var210, templ_7745c5c3_Err = templ.JoinURLErrs(card.PRURL)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1840, Col: 287}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2007, Col: 287}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var206))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 302, "\" target=\"_blank\" rel=\"noopener noreferrer\" aria-label=\"")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var210))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var207 string
-				templ_7745c5c3_Var207, templ_7745c5c3_Err = templ.JoinStringErrs("Open " + card.PullRequestLabel)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1840, Col: 376}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var207))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 307, "\" target=\"_blank\" rel=\"noopener noreferrer\" aria-label=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 303, "\">")
+				var templ_7745c5c3_Var211 string
+				templ_7745c5c3_Var211, templ_7745c5c3_Err = templ.JoinStringErrs("Open " + card.PullRequestLabel)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2007, Col: 376}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var211))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var208 string
-				templ_7745c5c3_Var208, templ_7745c5c3_Err = templ.JoinStringErrs(card.PullRequestLabel)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1840, Col: 402}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var208))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 308, "\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 304, "</a>")
+				var templ_7745c5c3_Var212 string
+				templ_7745c5c3_Var212, templ_7745c5c3_Err = templ.JoinStringErrs(card.PullRequestLabel)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2007, Col: 402}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var212))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 309, "</a>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 305, "<span class=\"inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 310, "<span class=\"inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var209 string
-				templ_7745c5c3_Var209, templ_7745c5c3_Err = templ.JoinStringErrs(card.PullRequestLabel)
+				var templ_7745c5c3_Var213 string
+				templ_7745c5c3_Var213, templ_7745c5c3_Err = templ.JoinStringErrs(card.PullRequestLabel)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1842, Col: 187}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2009, Col: 187}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var209))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var213))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 306, "</span>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 311, "</span>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 307, "<span class=\"inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground\">No PR</span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 312, "<span class=\"inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground\">No PR</span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -4915,56 +4975,56 @@ func projectKanbanCompactChipView(chip projectKanbanCompactChip) templ.Component
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var210 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var210 == nil {
-			templ_7745c5c3_Var210 = templ.NopComponent
+		templ_7745c5c3_Var214 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var214 == nil {
+			templ_7745c5c3_Var214 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		var templ_7745c5c3_Var211 = []any{"inline-flex h-4 min-w-0 max-w-full items-center truncate rounded-sm border px-1 py-0 font-medium " + chip.Class}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var211...)
+		var templ_7745c5c3_Var215 = []any{"inline-flex h-4 min-w-0 max-w-full items-center truncate rounded-sm border px-1 py-0 font-medium " + chip.Class}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var215...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 308, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 313, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var212 string
-		templ_7745c5c3_Var212, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var211).String())
+		var templ_7745c5c3_Var216 string
+		templ_7745c5c3_Var216, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var215).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var212))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var216))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 309, "\" title=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 314, "\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var213 string
-		templ_7745c5c3_Var213, templ_7745c5c3_Err = templ.JoinStringErrs(chip.Title)
+		var templ_7745c5c3_Var217 string
+		templ_7745c5c3_Var217, templ_7745c5c3_Err = templ.JoinStringErrs(chip.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1850, Col: 148}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2017, Col: 148}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var213))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 310, "\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var217))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var214 string
-		templ_7745c5c3_Var214, templ_7745c5c3_Err = templ.JoinStringErrs(chip.Label)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1850, Col: 163}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var214))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 315, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 311, "</span>")
+		var templ_7745c5c3_Var218 string
+		templ_7745c5c3_Var218, templ_7745c5c3_Err = templ.JoinStringErrs(chip.Label)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2017, Col: 163}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var218))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 316, "</span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -4988,38 +5048,38 @@ func projectKanbanCardDetails(data DashboardData, card projectKanbanCard) templ.
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var215 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var215 == nil {
-			templ_7745c5c3_Var215 = templ.NopComponent
+		templ_7745c5c3_Var219 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var219 == nil {
+			templ_7745c5c3_Var219 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 312, "<details class=\"group mt-1 min-w-0 max-w-full overflow-hidden border-t border-border pt-1\" data-kanban-card-details data-preserve-details=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 317, "<details class=\"group mt-1 min-w-0 max-w-full overflow-hidden border-t border-border pt-1\" data-kanban-card-details data-preserve-details=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var216 string
-		templ_7745c5c3_Var216, templ_7745c5c3_Err = templ.JoinStringErrs(projectKanbanControlID("project-kanban-details", card))
+		var templ_7745c5c3_Var220 string
+		templ_7745c5c3_Var220, templ_7745c5c3_Err = templ.JoinStringErrs(projectKanbanControlID("project-kanban-details", card))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1854, Col: 195}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2021, Col: 195}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var216))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 313, "\"><summary class=\"flex min-h-6 min-w-0 max-w-full cursor-pointer list-none items-center justify-between gap-2 overflow-hidden rounded-sm px-1 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" aria-label=\"")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var220))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var217 string
-		templ_7745c5c3_Var217, templ_7745c5c3_Err = templ.JoinStringErrs("Show details for " + card.IssueNumber)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1855, Col: 335}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var217))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 318, "\"><summary class=\"flex min-h-6 min-w-0 max-w-full cursor-pointer list-none items-center justify-between gap-2 overflow-hidden rounded-sm px-1 py-0.5 text-xs font-medium text-muted-foreground hover:bg-muted/50 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 314, "\"><span class=\"inline-flex min-w-0 flex-1 basis-0 items-center gap-1.5\">")
+		var templ_7745c5c3_Var221 string
+		templ_7745c5c3_Var221, templ_7745c5c3_Err = templ.JoinStringErrs("Show details for " + card.IssueNumber)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2022, Col: 335}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var221))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 319, "\"><span class=\"inline-flex min-w-0 flex-1 basis-0 items-center gap-1.5\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5027,7 +5087,7 @@ func projectKanbanCardDetails(data DashboardData, card projectKanbanCard) templ.
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 315, "<span class=\"truncate\">Details</span></span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 320, "<span class=\"truncate\">Details</span></span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5035,7 +5095,7 @@ func projectKanbanCardDetails(data DashboardData, card projectKanbanCard) templ.
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 316, "</summary><div class=\"mt-2 grid min-w-0 max-w-full gap-2 text-xs\" data-kanban-card-expanded><div class=\"grid min-w-0 max-w-full gap-1.5 overflow-hidden rounded-md bg-muted/40 p-2\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 321, "</summary><div class=\"mt-2 grid min-w-0 max-w-full gap-2 text-xs\" data-kanban-card-expanded><div class=\"grid min-w-0 max-w-full gap-1.5 overflow-hidden rounded-md bg-muted/40 p-2\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5062,7 +5122,7 @@ func projectKanbanCardDetails(data DashboardData, card projectKanbanCard) templ.
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 317, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 322, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5070,7 +5130,7 @@ func projectKanbanCardDetails(data DashboardData, card projectKanbanCard) templ.
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 318, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 323, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5090,12 +5150,12 @@ func projectKanbanCardDetails(data DashboardData, card projectKanbanCard) templ.
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 319, "</div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 324, "</div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(card.Labels) > 0 || len(card.Assignees) > 0 || len(card.Blockers) > 0 || len(card.ClearedBlockers) > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 320, "<div class=\"grid min-w-0 max-w-full gap-2\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 325, "<div class=\"grid min-w-0 max-w-full gap-2\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5123,31 +5183,31 @@ func projectKanbanCardDetails(data DashboardData, card projectKanbanCard) templ.
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 321, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 326, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
 		if projectKanbanMoveDisabledText(data, card) != "" && kanbanIntegrationEnabled(data) {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 322, "<div class=\"min-w-0 max-w-full overflow-hidden break-words rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 327, "<div class=\"min-w-0 max-w-full overflow-hidden break-words rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var218 string
-			templ_7745c5c3_Var218, templ_7745c5c3_Err = templ.JoinStringErrs(projectKanbanMoveDisabledText(data, card))
+			var templ_7745c5c3_Var222 string
+			templ_7745c5c3_Var222, templ_7745c5c3_Err = templ.JoinStringErrs(projectKanbanMoveDisabledText(data, card))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1898, Col: 191}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2065, Col: 191}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var218))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var222))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 323, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 328, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 324, "</div></details>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 329, "</div></details>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5171,52 +5231,52 @@ func projectKanbanDetailRow(label string, value string, title string) templ.Comp
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var219 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var219 == nil {
-			templ_7745c5c3_Var219 = templ.NopComponent
+		templ_7745c5c3_Var223 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var223 == nil {
+			templ_7745c5c3_Var223 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if value != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 325, "<div class=\"flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden\"><span class=\"shrink-0 text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 330, "<div class=\"flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden\"><span class=\"shrink-0 text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var220 string
-			templ_7745c5c3_Var220, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+			var templ_7745c5c3_Var224 string
+			templ_7745c5c3_Var224, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1907, Col: 55}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2074, Col: 55}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var220))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 326, "</span> <span class=\"min-w-0 truncate font-mono font-medium text-foreground\" title=\"")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var224))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var221 string
-			templ_7745c5c3_Var221, templ_7745c5c3_Err = templ.JoinStringErrs(title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1908, Col: 85}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var221))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 331, "</span> <span class=\"min-w-0 truncate font-mono font-medium text-foreground\" title=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 327, "\">")
+			var templ_7745c5c3_Var225 string
+			templ_7745c5c3_Var225, templ_7745c5c3_Err = templ.JoinStringErrs(title)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2075, Col: 85}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var225))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var222 string
-			templ_7745c5c3_Var222, templ_7745c5c3_Err = templ.JoinStringErrs(value)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1908, Col: 95}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var222))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 332, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 328, "</span></div>")
+			var templ_7745c5c3_Var226 string
+			templ_7745c5c3_Var226, templ_7745c5c3_Err = templ.JoinStringErrs(value)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2075, Col: 95}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var226))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 333, "</span></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5241,80 +5301,80 @@ func projectKanbanDetailLink(label string, value string, href string) templ.Comp
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var223 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var223 == nil {
-			templ_7745c5c3_Var223 = templ.NopComponent
+		templ_7745c5c3_Var227 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var227 == nil {
+			templ_7745c5c3_Var227 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if value != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 329, "<div class=\"flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden\"><span class=\"shrink-0 text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 334, "<div class=\"flex min-w-0 max-w-full items-center justify-between gap-2 overflow-hidden\"><span class=\"shrink-0 text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var224 string
-			templ_7745c5c3_Var224, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+			var templ_7745c5c3_Var228 string
+			templ_7745c5c3_Var228, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1916, Col: 55}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2083, Col: 55}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var224))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var228))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 330, "</span> ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 335, "</span> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if href != "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 331, "<a class=\"min-w-0 truncate font-mono font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 336, "<a class=\"min-w-0 truncate font-mono font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var225 templ.SafeURL
-				templ_7745c5c3_Var225, templ_7745c5c3_Err = templ.JoinURLErrs(href)
+				var templ_7745c5c3_Var229 templ.SafeURL
+				templ_7745c5c3_Var229, templ_7745c5c3_Err = templ.JoinURLErrs(href)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1918, Col: 186}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2085, Col: 186}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var225))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 332, "\" target=\"_blank\" rel=\"noopener noreferrer\">")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var229))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var226 string
-				templ_7745c5c3_Var226, templ_7745c5c3_Err = templ.JoinStringErrs(value)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1918, Col: 238}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var226))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 337, "\" target=\"_blank\" rel=\"noopener noreferrer\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 333, "</a>")
+				var templ_7745c5c3_Var230 string
+				templ_7745c5c3_Var230, templ_7745c5c3_Err = templ.JoinStringErrs(value)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2085, Col: 238}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var230))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 338, "</a>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 334, "<span class=\"min-w-0 truncate font-mono font-medium text-foreground\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 339, "<span class=\"min-w-0 truncate font-mono font-medium text-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var227 string
-				templ_7745c5c3_Var227, templ_7745c5c3_Err = templ.JoinStringErrs(value)
+				var templ_7745c5c3_Var231 string
+				templ_7745c5c3_Var231, templ_7745c5c3_Err = templ.JoinStringErrs(value)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1920, Col: 80}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2087, Col: 80}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var227))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var231))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 335, "</span>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 340, "</span>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 336, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 341, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5339,61 +5399,61 @@ func projectKanbanPillRow(label string, values []string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var228 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var228 == nil {
-			templ_7745c5c3_Var228 = templ.NopComponent
+		templ_7745c5c3_Var232 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var232 == nil {
+			templ_7745c5c3_Var232 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 337, "<div class=\"grid min-w-0 max-w-full gap-1\"><span class=\"text-xs font-medium text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 342, "<div class=\"grid min-w-0 max-w-full gap-1\"><span class=\"text-xs font-medium text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var229 string
-		templ_7745c5c3_Var229, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		var templ_7745c5c3_Var233 string
+		templ_7745c5c3_Var233, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1928, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2095, Col: 65}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var229))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var233))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 338, "</span><div class=\"flex min-w-0 max-w-full flex-wrap gap-1.5 overflow-hidden\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 343, "</span><div class=\"flex min-w-0 max-w-full flex-wrap gap-1.5 overflow-hidden\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		for _, value := range values {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 339, "<span class=\"inline-flex min-w-0 max-w-full truncate rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground\" title=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 344, "<span class=\"inline-flex min-w-0 max-w-full truncate rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground\" title=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var230 string
-			templ_7745c5c3_Var230, templ_7745c5c3_Err = templ.JoinStringErrs(value)
+			var templ_7745c5c3_Var234 string
+			templ_7745c5c3_Var234, templ_7745c5c3_Err = templ.JoinStringErrs(value)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1931, Col: 143}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2098, Col: 143}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var230))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 340, "\">")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var234))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var231 string
-			templ_7745c5c3_Var231, templ_7745c5c3_Err = templ.JoinStringErrs(value)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1931, Col: 153}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var231))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 345, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 341, "</span>")
+			var templ_7745c5c3_Var235 string
+			templ_7745c5c3_Var235, templ_7745c5c3_Err = templ.JoinStringErrs(value)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2098, Col: 153}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var235))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 346, "</span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 342, "</div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 347, "</div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5417,12 +5477,12 @@ func projectKanbanActionButtons(data DashboardData, card projectKanbanCard) temp
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var232 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var232 == nil {
-			templ_7745c5c3_Var232 = templ.NopComponent
+		templ_7745c5c3_Var236 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var236 == nil {
+			templ_7745c5c3_Var236 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 343, "<div class=\"mt-3 flex min-w-0 max-w-full flex-wrap items-center gap-1.5\" aria-label=\"Kanban actions\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 348, "<div class=\"mt-3 flex min-w-0 max-w-full flex-wrap items-center gap-1.5\" aria-label=\"Kanban actions\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5431,7 +5491,7 @@ func projectKanbanActionButtons(data DashboardData, card projectKanbanCard) temp
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 344, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 349, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5444,7 +5504,7 @@ func projectKanbanActionButtons(data DashboardData, card projectKanbanCard) temp
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 345, "</div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 350, "</div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5468,12 +5528,12 @@ func projectKanbanMoveDialogTrigger(data DashboardData, card projectKanbanCard) 
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var233 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var233 == nil {
-			templ_7745c5c3_Var233 = templ.NopComponent
+		templ_7745c5c3_Var237 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var237 == nil {
+			templ_7745c5c3_Var237 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Var234 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_Var238 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 			if !templ_7745c5c3_IsBuffer {
@@ -5485,7 +5545,7 @@ func projectKanbanMoveDialogTrigger(data DashboardData, card projectKanbanCard) 
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Var235 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var239 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -5501,7 +5561,7 @@ func projectKanbanMoveDialogTrigger(data DashboardData, card projectKanbanCard) 
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 346, " <span class=\"sr-only\">Move</span>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 351, " <span class=\"sr-only\">Move</span>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -5518,13 +5578,13 @@ func projectKanbanMoveDialogTrigger(data DashboardData, card projectKanbanCard) 
 					"aria-label": "Move " + card.IssueNumber,
 					"title":      "Move card",
 				},
-			}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var235), templ_7745c5c3_Buffer)
+			}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var239), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var234), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var238), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5548,100 +5608,100 @@ func projectKanbanDragMoveForm(data DashboardData, card projectKanbanCard) templ
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var236 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var236 == nil {
-			templ_7745c5c3_Var236 = templ.NopComponent
+		templ_7745c5c3_Var240 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var240 == nil {
+			templ_7745c5c3_Var240 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 347, "<form class=\"hidden\" hx-post=\"/api/v1/kanban/move\" hx-target=\"#kanban-feedback\" hx-swap=\"outerHTML\" data-kanban-drag-move-form><input type=\"hidden\" name=\"kanban_drag\" value=\"true\"> <input type=\"hidden\" name=\"project_id\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var237 string
-		templ_7745c5c3_Var237, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanProjectID(data))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1970, Col: 70}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var237))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 348, "\"> <input type=\"hidden\" name=\"issue_id\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var238 string
-		templ_7745c5c3_Var238, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueID)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1971, Col: 59}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var238))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 349, "\"> <input type=\"hidden\" name=\"identifier\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var239 string
-		templ_7745c5c3_Var239, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1972, Col: 64}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var239))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 350, "\"> <input type=\"hidden\" name=\"title\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var240 string
-		templ_7745c5c3_Var240, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1973, Col: 54}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var240))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 351, "\"> <input type=\"hidden\" name=\"current_state\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 352, "<form class=\"hidden\" hx-post=\"/api/v1/kanban/move\" hx-target=\"#kanban-feedback\" hx-swap=\"outerHTML\" data-kanban-drag-move-form><input type=\"hidden\" name=\"kanban_drag\" value=\"true\"> <input type=\"hidden\" name=\"project_id\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var241 string
-		templ_7745c5c3_Var241, templ_7745c5c3_Err = templ.JoinStringErrs(card.Stage)
+		templ_7745c5c3_Var241, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanProjectID(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1974, Col: 62}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2137, Col: 70}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var241))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 352, "\"> <input type=\"hidden\" name=\"target_state\" value=\"\" data-kanban-drag-target-state> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 353, "\"> <input type=\"hidden\" name=\"issue_id\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var242 string
+		templ_7745c5c3_Var242, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueID)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2138, Col: 59}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var242))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 354, "\"> <input type=\"hidden\" name=\"identifier\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var243 string
+		templ_7745c5c3_Var243, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2139, Col: 64}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var243))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 355, "\"> <input type=\"hidden\" name=\"title\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var244 string
+		templ_7745c5c3_Var244, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2140, Col: 54}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var244))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 356, "\"> <input type=\"hidden\" name=\"current_state\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var245 string
+		templ_7745c5c3_Var245, templ_7745c5c3_Err = templ.JoinStringErrs(card.Stage)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2141, Col: 62}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var245))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 357, "\"> <input type=\"hidden\" name=\"target_state\" value=\"\" data-kanban-drag-target-state> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if card.PRNumber > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 353, "<input type=\"hidden\" name=\"pr_number\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 358, "<input type=\"hidden\" name=\"pr_number\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var242 string
-			templ_7745c5c3_Var242, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(card.PRNumber))
+			var templ_7745c5c3_Var246 string
+			templ_7745c5c3_Var246, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(card.PRNumber))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1977, Col: 76}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2144, Col: 76}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var242))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var246))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 354, "\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 359, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 355, "</form>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 360, "</form>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5665,9 +5725,9 @@ func projectKanbanCommentDialogTriggers(data DashboardData, card projectKanbanCa
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var243 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var243 == nil {
-			templ_7745c5c3_Var243 = templ.NopComponent
+		templ_7745c5c3_Var247 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var247 == nil {
+			templ_7745c5c3_Var247 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if card.IssueID != "" {
@@ -5702,12 +5762,12 @@ func projectKanbanCommentDialogTrigger(data DashboardData, card projectKanbanCar
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var244 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var244 == nil {
-			templ_7745c5c3_Var244 = templ.NopComponent
+		templ_7745c5c3_Var248 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var248 == nil {
+			templ_7745c5c3_Var248 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Var245 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_Var249 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 			if !templ_7745c5c3_IsBuffer {
@@ -5719,7 +5779,7 @@ func projectKanbanCommentDialogTrigger(data DashboardData, card projectKanbanCar
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Var246 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var250 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -5742,20 +5802,20 @@ func projectKanbanCommentDialogTrigger(data DashboardData, card projectKanbanCar
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 356, " <span class=\"sr-only\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 361, " <span class=\"sr-only\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var247 string
-				templ_7745c5c3_Var247, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+				var templ_7745c5c3_Var251 string
+				templ_7745c5c3_Var251, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2010, Col: 32}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2177, Col: 32}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var247))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var251))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 357, "</span>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 362, "</span>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -5772,13 +5832,13 @@ func projectKanbanCommentDialogTrigger(data DashboardData, card projectKanbanCar
 					"aria-label": title + " " + card.IssueNumber,
 					"title":      label,
 				},
-			}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var246), templ_7745c5c3_Buffer)
+			}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var250), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var245), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var249), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5802,12 +5862,12 @@ func throughputCard(data DashboardData) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var248 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var248 == nil {
-			templ_7745c5c3_Var248 = templ.NopComponent
+		templ_7745c5c3_Var252 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var252 == nil {
+			templ_7745c5c3_Var252 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 358, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 363, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5815,46 +5875,46 @@ func throughputCard(data DashboardData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 359, "<span class=\"shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 364, "<span class=\"shrink-0 rounded-full bg-accent-soft px-2 py-1 font-mono text-xs font-medium text-accent\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var249 string
-		templ_7745c5c3_Var249, templ_7745c5c3_Err = templ.JoinStringErrs(throughputRate(data.Snapshot))
+		var templ_7745c5c3_Var253 string
+		templ_7745c5c3_Var253, templ_7745c5c3_Err = templ.JoinStringErrs(throughputRate(data.Snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2019, Col: 137}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2186, Col: 137}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var249))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 360, "</span></div><div class=\"mt-5 grid gap-2\"><div class=\"break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var253))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var250 string
-		templ_7745c5c3_Var250, templ_7745c5c3_Err = templ.JoinStringErrs(throughputRate(data.Snapshot))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2022, Col: 118}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var250))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 365, "</span></div><div class=\"mt-5 grid gap-2\"><div class=\"break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 361, "</div><div class=\"text-sm text-muted-foreground\">")
+		var templ_7745c5c3_Var254 string
+		templ_7745c5c3_Var254, templ_7745c5c3_Err = templ.JoinStringErrs(throughputRate(data.Snapshot))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2189, Col: 118}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var254))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var251 string
-		templ_7745c5c3_Var251, templ_7745c5c3_Err = templ.JoinStringErrs(throughputWindowLabel(data.Snapshot))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2023, Col: 84}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var251))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 366, "</div><div class=\"text-sm text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 362, "</div></div><div class=\"mt-5\">")
+		var templ_7745c5c3_Var255 string
+		templ_7745c5c3_Var255, templ_7745c5c3_Err = templ.JoinStringErrs(throughputWindowLabel(data.Snapshot))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2190, Col: 84}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var255))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 367, "</div></div><div class=\"mt-5\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5869,7 +5929,7 @@ func throughputCard(data DashboardData) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 363, "</div></section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 368, "</div></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5893,12 +5953,12 @@ func lifetimeCard(totals telemetry.LifetimeTotals) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var252 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var252 == nil {
-			templ_7745c5c3_Var252 = templ.NopComponent
+		templ_7745c5c3_Var256 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var256 == nil {
+			templ_7745c5c3_Var256 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 364, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 369, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -5906,25 +5966,25 @@ func lifetimeCard(totals telemetry.LifetimeTotals) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 365, "<span class=\"shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 370, "<span class=\"shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var253 string
-		templ_7745c5c3_Var253, templ_7745c5c3_Err = templ.JoinStringErrs(lifetimeStatus(totals))
+		var templ_7745c5c3_Var257 string
+		templ_7745c5c3_Var257, templ_7745c5c3_Err = templ.JoinStringErrs(lifetimeStatus(totals))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2039, Col: 124}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2206, Col: 124}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var253))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var257))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 366, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 371, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if !totals.Available {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 367, "<div class=\"mt-4\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 372, "<div class=\"mt-4\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5932,95 +5992,95 @@ func lifetimeCard(totals telemetry.LifetimeTotals) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 368, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 373, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 369, "<div class=\"mt-5 grid gap-3 text-sm\"><div class=\"flex items-center justify-between gap-4\"><span class=\"text-muted-foreground\">Tokens</span> <strong class=\"font-mono font-medium text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var254 string
-			templ_7745c5c3_Var254, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(totals.TotalTokens))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2049, Col: 90}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var254))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 370, "</strong></div><div class=\"flex items-center justify-between gap-4\"><span class=\"text-muted-foreground\">Input / output</span> <strong class=\"font-mono font-medium text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var255 string
-			templ_7745c5c3_Var255, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(totals.InputTokens))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2053, Col: 90}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var255))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 371, " / ")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var256 string
-			templ_7745c5c3_Var256, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(totals.OutputTokens))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2053, Col: 127}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var256))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 372, "</strong></div><div class=\"flex items-center justify-between gap-4\"><span class=\"text-muted-foreground\">Sessions</span> <strong class=\"font-mono font-medium text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var257 string
-			templ_7745c5c3_Var257, templ_7745c5c3_Err = templ.JoinStringErrs(lifetimeSessions(totals))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2057, Col: 85}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var257))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 373, "</strong></div><div class=\"flex items-center justify-between gap-4\"><span class=\"text-muted-foreground\">Runtime</span> <strong class=\"font-mono font-medium text-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 374, "<div class=\"mt-5 grid gap-3 text-sm\"><div class=\"flex items-center justify-between gap-4\"><span class=\"text-muted-foreground\">Tokens</span> <strong class=\"font-mono font-medium text-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var258 string
-			templ_7745c5c3_Var258, templ_7745c5c3_Err = templ.JoinStringErrs(lifetimeRuntime(totals))
+			templ_7745c5c3_Var258, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(totals.TotalTokens))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2061, Col: 84}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2216, Col: 90}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var258))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 374, "</strong></div><div class=\"flex items-center justify-between gap-4\"><span class=\"text-muted-foreground\">Runs</span> <strong class=\"font-mono font-medium text-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 375, "</strong></div><div class=\"flex items-center justify-between gap-4\"><span class=\"text-muted-foreground\">Input / output</span> <strong class=\"font-mono font-medium text-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var259 string
-			templ_7745c5c3_Var259, templ_7745c5c3_Err = templ.JoinStringErrs(lifetimeRuns(totals))
+			templ_7745c5c3_Var259, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(totals.InputTokens))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2065, Col: 81}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2220, Col: 90}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var259))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 375, "</strong></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 376, " / ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var260 string
+			templ_7745c5c3_Var260, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(totals.OutputTokens))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2220, Col: 127}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var260))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 377, "</strong></div><div class=\"flex items-center justify-between gap-4\"><span class=\"text-muted-foreground\">Sessions</span> <strong class=\"font-mono font-medium text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var261 string
+			templ_7745c5c3_Var261, templ_7745c5c3_Err = templ.JoinStringErrs(lifetimeSessions(totals))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2224, Col: 85}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var261))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 378, "</strong></div><div class=\"flex items-center justify-between gap-4\"><span class=\"text-muted-foreground\">Runtime</span> <strong class=\"font-mono font-medium text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var262 string
+			templ_7745c5c3_Var262, templ_7745c5c3_Err = templ.JoinStringErrs(lifetimeRuntime(totals))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2228, Col: 84}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var262))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 379, "</strong></div><div class=\"flex items-center justify-between gap-4\"><span class=\"text-muted-foreground\">Runs</span> <strong class=\"font-mono font-medium text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var263 string
+			templ_7745c5c3_Var263, templ_7745c5c3_Err = templ.JoinStringErrs(lifetimeRuns(totals))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2232, Col: 81}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var263))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 380, "</strong></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 376, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 381, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6044,25 +6104,25 @@ func LiveTick(timestamp time.Time) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var260 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var260 == nil {
-			templ_7745c5c3_Var260 = templ.NopComponent
+		templ_7745c5c3_Var264 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var264 == nil {
+			templ_7745c5c3_Var264 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 377, "<span class=\"font-mono\">Updated ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 382, "<span class=\"font-mono\">Updated ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var261 string
-		templ_7745c5c3_Var261, templ_7745c5c3_Err = templ.JoinStringErrs(timestamp.UTC().Format("15:04:05 UTC"))
+		var templ_7745c5c3_Var265 string
+		templ_7745c5c3_Var265, templ_7745c5c3_Err = templ.JoinStringErrs(timestamp.UTC().Format("15:04:05 UTC"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2073, Col: 73}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2240, Col: 73}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var261))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var265))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 378, "</span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 383, "</span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6086,169 +6146,169 @@ func dashboardHealth(data DashboardData) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var262 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var262 == nil {
-			templ_7745c5c3_Var262 = templ.NopComponent
+		templ_7745c5c3_Var266 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var266 == nil {
+			templ_7745c5c3_Var266 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 379, "<section id=\"dashboard-diagnostics\" class=\"scroll-mt-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-card p-3 shadow-sm\" aria-label=\"Dashboard health\" tabindex=\"-1\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 384, "<section id=\"dashboard-diagnostics\" class=\"scroll-mt-3 flex flex-wrap items-center gap-2 rounded-md border border-border bg-card p-3 shadow-sm\" aria-label=\"Dashboard health\" tabindex=\"-1\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var263 = []any{"inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + runtimeStatusClass(data.Snapshot)}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var263...)
+		var templ_7745c5c3_Var267 = []any{"inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + runtimeStatusClass(data.Snapshot)}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var267...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 380, "<span class=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var264 string
-		templ_7745c5c3_Var264, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var263).String())
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var264))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 381, "\" aria-label=\"Runtime status\"><span class=\"h-2 w-2 rounded-full bg-current\"></span> <span>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var265 string
-		templ_7745c5c3_Var265, templ_7745c5c3_Err = templ.JoinStringErrs(runtimeStatusLabel(data.Snapshot))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2080, Col: 44}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var265))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 382, "</span></span> ")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var266 = []any{"inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + statsStatusClass(data.Snapshot)}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var266...)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 383, "<span class=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var267 string
-		templ_7745c5c3_Var267, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var266).String())
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var267))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 384, "\" aria-label=\"Stats status\" title=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 385, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var268 string
-		templ_7745c5c3_Var268, templ_7745c5c3_Err = templ.JoinStringErrs(statsStatusTitle(data.Snapshot))
+		templ_7745c5c3_Var268, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var267).String())
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2082, Col: 211}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var268))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 385, "\"><span class=\"h-2 w-2 rounded-full bg-current\"></span> <span>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 386, "\" aria-label=\"Runtime status\"><span class=\"h-2 w-2 rounded-full bg-current\"></span> <span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var269 string
-		templ_7745c5c3_Var269, templ_7745c5c3_Err = templ.JoinStringErrs(statsStatusLabel(data.Snapshot))
+		templ_7745c5c3_Var269, templ_7745c5c3_Err = templ.JoinStringErrs(runtimeStatusLabel(data.Snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2084, Col: 42}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2247, Col: 44}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var269))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 386, "</span></span> <span class=\"inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground sm:max-w-[24rem]\" aria-label=\"Instance identity\" title=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 387, "</span></span> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var270 string
-		templ_7745c5c3_Var270, templ_7745c5c3_Err = templ.JoinStringErrs(instanceLabel(data.Snapshot))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2086, Col: 247}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var270))
+		var templ_7745c5c3_Var270 = []any{"inline-flex min-h-8 items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold " + statsStatusClass(data.Snapshot)}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var270...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 387, "\"><span>Instance</span> <span class=\"truncate font-medium text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 388, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var271 string
-		templ_7745c5c3_Var271, templ_7745c5c3_Err = templ.JoinStringErrs(instanceLabel(data.Snapshot))
+		templ_7745c5c3_Var271, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var270).String())
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2088, Col: 84}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var271))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 388, "</span></span> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 389, "\" aria-label=\"Stats status\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var272 = []any{"inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold sm:max-w-[32rem] " + dashboardScopeClass(data)}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var272...)
+		var templ_7745c5c3_Var272 string
+		templ_7745c5c3_Var272, templ_7745c5c3_Err = templ.JoinStringErrs(statsStatusTitle(data.Snapshot))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2249, Col: 211}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var272))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 389, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 390, "\"><span class=\"h-2 w-2 rounded-full bg-current\"></span> <span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var273 string
-		templ_7745c5c3_Var273, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var272).String())
+		templ_7745c5c3_Var273, templ_7745c5c3_Err = templ.JoinStringErrs(statsStatusLabel(data.Snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2251, Col: 42}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var273))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 390, "\" aria-label=\"Dashboard scope\" title=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 391, "</span></span> <span class=\"inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border border-border bg-muted px-3 py-1 text-xs font-semibold text-muted-foreground sm:max-w-[24rem]\" aria-label=\"Instance identity\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var274 string
-		templ_7745c5c3_Var274, templ_7745c5c3_Err = templ.JoinStringErrs(dashboardScopeLabel(data))
+		templ_7745c5c3_Var274, templ_7745c5c3_Err = templ.JoinStringErrs(instanceLabel(data.Snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2090, Col: 230}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2253, Col: 247}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var274))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 391, "\"><span>Scope</span> <span class=\"truncate\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 392, "\"><span>Instance</span> <span class=\"truncate font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var275 string
-		templ_7745c5c3_Var275, templ_7745c5c3_Err = templ.JoinStringErrs(dashboardScopeLabel(data))
+		templ_7745c5c3_Var275, templ_7745c5c3_Err = templ.JoinStringErrs(instanceLabel(data.Snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2092, Col: 53}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2255, Col: 84}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var275))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 392, "</span></span></section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 393, "</span></span> ")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var276 = []any{"inline-flex min-h-8 max-w-full items-center gap-2 rounded-full border px-3 py-1 text-xs font-semibold sm:max-w-[32rem] " + dashboardScopeClass(data)}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var276...)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 394, "<span class=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var277 string
+		templ_7745c5c3_Var277, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var276).String())
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var277))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 395, "\" aria-label=\"Dashboard scope\" title=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var278 string
+		templ_7745c5c3_Var278, templ_7745c5c3_Err = templ.JoinStringErrs(dashboardScopeLabel(data))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2257, Col: 230}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var278))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 396, "\"><span>Scope</span> <span class=\"truncate\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var279 string
+		templ_7745c5c3_Var279, templ_7745c5c3_Err = templ.JoinStringErrs(dashboardScopeLabel(data))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2259, Col: 53}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var279))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 397, "</span></span></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6272,60 +6332,60 @@ func snapshotReadiness(snapshot telemetry.Snapshot) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var276 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var276 == nil {
-			templ_7745c5c3_Var276 = templ.NopComponent
+		templ_7745c5c3_Var280 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var280 == nil {
+			templ_7745c5c3_Var280 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 393, "<section class=\"rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm\" aria-label=\"Snapshot readiness\"><div class=\"flex items-start gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 398, "<section class=\"rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm\" aria-label=\"Snapshot readiness\"><div class=\"flex items-start gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var277 = []any{"mt-1 h-2.5 w-2.5 rounded-full " + snapshotReadinessDotClass(snapshot)}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var277...)
+		var templ_7745c5c3_Var281 = []any{"mt-1 h-2.5 w-2.5 rounded-full " + snapshotReadinessDotClass(snapshot)}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var281...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 394, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 399, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var278 string
-		templ_7745c5c3_Var278, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var277).String())
+		var templ_7745c5c3_Var282 string
+		templ_7745c5c3_Var282, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var281).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var278))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var282))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 395, "\"></span><div><h2 class=\"text-sm font-semibold\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 400, "\"></span><div><h2 class=\"text-sm font-semibold\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var279 string
-		templ_7745c5c3_Var279, templ_7745c5c3_Err = templ.JoinStringErrs(snapshotReadinessTitle(snapshot))
+		var templ_7745c5c3_Var283 string
+		templ_7745c5c3_Var283, templ_7745c5c3_Err = templ.JoinStringErrs(snapshotReadinessTitle(snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2102, Col: 72}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2269, Col: 72}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var279))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 396, "</h2><p class=\"mt-1 text-sm text-warning\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var283))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var280 string
-		templ_7745c5c3_Var280, templ_7745c5c3_Err = templ.JoinStringErrs(snapshotReadinessDetail(snapshot))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2103, Col: 76}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var280))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 401, "</h2><p class=\"mt-1 text-sm text-warning\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 397, "</p></div></div></section>")
+		var templ_7745c5c3_Var284 string
+		templ_7745c5c3_Var284, templ_7745c5c3_Err = templ.JoinStringErrs(snapshotReadinessDetail(snapshot))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2270, Col: 76}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var284))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 402, "</p></div></div></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6349,30 +6409,30 @@ func metricCard(label string, term helpTerm, value string, detail string, border
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var281 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var281 == nil {
-			templ_7745c5c3_Var281 = templ.NopComponent
+		templ_7745c5c3_Var285 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var285 == nil {
+			templ_7745c5c3_Var285 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		var templ_7745c5c3_Var282 = []any{"dashboard-metric-card min-w-0 rounded-md border border-border border-t-2 bg-card p-3 shadow-sm transition-colors hover:bg-muted/40 sm:p-4 " + borderClass}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var282...)
+		var templ_7745c5c3_Var286 = []any{"dashboard-metric-card min-w-0 rounded-md border border-border border-t-2 bg-card p-3 shadow-sm transition-colors hover:bg-muted/40 sm:p-4 " + borderClass}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var286...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 398, "<article class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 403, "<article class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var283 string
-		templ_7745c5c3_Var283, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var282).String())
+		var templ_7745c5c3_Var287 string
+		templ_7745c5c3_Var287, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var286).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var283))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var287))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 399, "\"><div class=\"flex items-start justify-between gap-3\"><div class=\"grid min-w-0 gap-1\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 404, "\"><div class=\"flex items-start justify-between gap-3\"><div class=\"grid min-w-0 gap-1\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6380,55 +6440,55 @@ func metricCard(label string, term helpTerm, value string, detail string, border
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 400, "<span class=\"text-xs text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 405, "<span class=\"text-xs text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var284 string
-		templ_7745c5c3_Var284, templ_7745c5c3_Err = templ.JoinStringErrs(detail)
+		var templ_7745c5c3_Var288 string
+		templ_7745c5c3_Var288, templ_7745c5c3_Err = templ.JoinStringErrs(detail)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2114, Col: 56}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2281, Col: 56}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var284))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 401, "</span></div>")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var288))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var285 = []any{"h-2.5 w-2.5 shrink-0 rounded-full " + dotClass}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var285...)
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 406, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 402, "<span class=\"")
+		var templ_7745c5c3_Var289 = []any{"h-2.5 w-2.5 shrink-0 rounded-full " + dotClass}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var289...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var286 string
-		templ_7745c5c3_Var286, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var285).String())
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 407, "<span class=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var290 string
+		templ_7745c5c3_Var290, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var289).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var286))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var290))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 403, "\"></span></div><div class=\"mt-4 break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 408, "\"></span></div><div class=\"mt-4 break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var287 string
-		templ_7745c5c3_Var287, templ_7745c5c3_Err = templ.JoinStringErrs(value)
+		var templ_7745c5c3_Var291 string
+		templ_7745c5c3_Var291, templ_7745c5c3_Err = templ.JoinStringErrs(value)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2118, Col: 98}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2285, Col: 98}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var287))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var291))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 404, "</div></article>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 409, "</div></article>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6452,12 +6512,12 @@ func statStrip(snapshot telemetry.Snapshot) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var288 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var288 == nil {
-			templ_7745c5c3_Var288 = templ.NopComponent
+		templ_7745c5c3_Var292 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var292 == nil {
+			templ_7745c5c3_Var292 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 405, "<section class=\"dashboard-stat-strip grid min-w-0 gap-2 rounded-md border border-border bg-card p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-6\" aria-label=\"Dashboard statistics\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 410, "<section class=\"dashboard-stat-strip grid min-w-0 gap-2 rounded-md border border-border bg-card p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-6\" aria-label=\"Dashboard statistics\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6485,7 +6545,7 @@ func statStrip(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 406, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 411, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6509,12 +6569,12 @@ func statStripItem(label string, term helpTerm, value string, detail string, dot
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var289 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var289 == nil {
-			templ_7745c5c3_Var289 = templ.NopComponent
+		templ_7745c5c3_Var293 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var293 == nil {
+			templ_7745c5c3_Var293 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 407, "<div class=\"min-w-0 rounded-md bg-muted/60 px-3 py-2\"><div class=\"flex min-w-0 items-center justify-between gap-2\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 412, "<div class=\"min-w-0 rounded-md bg-muted/60 px-3 py-2\"><div class=\"flex min-w-0 items-center justify-between gap-2\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6522,51 +6582,51 @@ func statStripItem(label string, term helpTerm, value string, detail string, dot
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var290 = []any{"h-2 w-2 shrink-0 rounded-full " + dotClass}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var290...)
+		var templ_7745c5c3_Var294 = []any{"h-2 w-2 shrink-0 rounded-full " + dotClass}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var294...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 408, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 413, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var291 string
-		templ_7745c5c3_Var291, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var290).String())
+		var templ_7745c5c3_Var295 string
+		templ_7745c5c3_Var295, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var294).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var291))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var295))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 409, "\"></span></div><div class=\"mt-1 truncate font-mono text-lg font-semibold text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 414, "\"></span></div><div class=\"mt-1 truncate font-mono text-lg font-semibold text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var292 string
-		templ_7745c5c3_Var292, templ_7745c5c3_Err = templ.JoinStringErrs(value)
+		var templ_7745c5c3_Var296 string
+		templ_7745c5c3_Var296, templ_7745c5c3_Err = templ.JoinStringErrs(value)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2139, Col: 84}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2306, Col: 84}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var292))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 410, "</div><div class=\"truncate text-xs text-muted-foreground\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var296))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var293 string
-		templ_7745c5c3_Var293, templ_7745c5c3_Err = templ.JoinStringErrs(detail)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2140, Col: 62}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var293))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 415, "</div><div class=\"truncate text-xs text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 411, "</div></div>")
+		var templ_7745c5c3_Var297 string
+		templ_7745c5c3_Var297, templ_7745c5c3_Err = templ.JoinStringErrs(detail)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2307, Col: 62}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var297))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 416, "</div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6590,70 +6650,70 @@ func dashboardEmptyState(title string, detail string, dotClass string) templ.Com
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var294 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var294 == nil {
-			templ_7745c5c3_Var294 = templ.NopComponent
+		templ_7745c5c3_Var298 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var298 == nil {
+			templ_7745c5c3_Var298 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 412, "<div class=\"dashboard-empty-state min-w-0 max-w-full overflow-hidden rounded-md border border-dashed border-border bg-muted/60 px-3 py-3 text-left\"><div class=\"flex min-w-0 items-start gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 417, "<div class=\"dashboard-empty-state min-w-0 max-w-full overflow-hidden rounded-md border border-dashed border-border bg-muted/60 px-3 py-3 text-left\"><div class=\"flex min-w-0 items-start gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var295 = []any{"mt-1.5 h-2 w-2 shrink-0 rounded-full " + dotClass}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var295...)
+		var templ_7745c5c3_Var299 = []any{"mt-1.5 h-2 w-2 shrink-0 rounded-full " + dotClass}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var299...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 413, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 418, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var296 string
-		templ_7745c5c3_Var296, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var295).String())
+		var templ_7745c5c3_Var300 string
+		templ_7745c5c3_Var300, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var299).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var296))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var300))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 414, "\"></span><div class=\"min-w-0 flex-1\"><p class=\"break-words text-sm font-medium text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 419, "\"></span><div class=\"min-w-0 flex-1\"><p class=\"break-words text-sm font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var297 string
-		templ_7745c5c3_Var297, templ_7745c5c3_Err = templ.JoinStringErrs(title)
+		var templ_7745c5c3_Var301 string
+		templ_7745c5c3_Var301, templ_7745c5c3_Err = templ.JoinStringErrs(title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2149, Col: 70}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2316, Col: 70}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var297))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var301))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 415, "</p>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 420, "</p>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if detail != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 416, "<p class=\"mt-1 break-words text-sm text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 421, "<p class=\"mt-1 break-words text-sm text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var298 string
-			templ_7745c5c3_Var298, templ_7745c5c3_Err = templ.JoinStringErrs(detail)
+			var templ_7745c5c3_Var302 string
+			templ_7745c5c3_Var302, templ_7745c5c3_Err = templ.JoinStringErrs(detail)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2151, Col: 71}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2318, Col: 71}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var298))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var302))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 417, "</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 422, "</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 418, "</div></div></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 423, "</div></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6677,12 +6737,12 @@ func prPipelineSection(snapshot telemetry.Snapshot) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var299 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var299 == nil {
-			templ_7745c5c3_Var299 = templ.NopComponent
+		templ_7745c5c3_Var303 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var303 == nil {
+			templ_7745c5c3_Var303 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 419, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"Pull request pipeline\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 424, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"Pull request pipeline\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6690,20 +6750,20 @@ func prPipelineSection(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 420, "<p class=\"text-sm text-muted-foreground\">Live merge-train lanes for pull requests moving from review to integration.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 425, "<p class=\"text-sm text-muted-foreground\">Live merge-train lanes for pull requests moving from review to integration.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var300 string
-		templ_7745c5c3_Var300, templ_7745c5c3_Err = templ.JoinStringErrs(prPipelineTotalLabel(snapshot))
+		var templ_7745c5c3_Var304 string
+		templ_7745c5c3_Var304, templ_7745c5c3_Err = templ.JoinStringErrs(prPipelineTotalLabel(snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2165, Col: 184}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2332, Col: 184}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var300))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var304))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 421, "</span></div><div class=\"dashboard-section-grid mt-4 grid min-w-0 gap-3 lg:grid-cols-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 426, "</span></div><div class=\"dashboard-section-grid mt-4 grid min-w-0 gap-3 lg:grid-cols-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6713,7 +6773,7 @@ func prPipelineSection(snapshot telemetry.Snapshot) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 422, "</div></section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 427, "</div></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6737,78 +6797,78 @@ func prPipelineLaneView(lane prPipelineLane) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var301 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var301 == nil {
-			templ_7745c5c3_Var301 = templ.NopComponent
+		templ_7745c5c3_Var305 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var305 == nil {
+			templ_7745c5c3_Var305 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 423, "<section class=\"pr-pipeline-lane min-w-0 rounded-md border border-border bg-muted/60 p-3\" aria-label=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var302 string
-		templ_7745c5c3_Var302, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title + " lane")
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2176, Col: 124}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var302))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 424, "\"><div class=\"flex min-h-9 items-center justify-between gap-3\"><div class=\"inline-flex min-w-0 items-center gap-2\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var303 = []any{"h-2 w-2 shrink-0 rounded-full " + lane.DotClass}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var303...)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 425, "<span class=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var304 string
-		templ_7745c5c3_Var304, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var303).String())
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var304))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 426, "\"></span><h3 class=\"truncate text-sm font-semibold text-foreground\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var305 string
-		templ_7745c5c3_Var305, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2180, Col: 75}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var305))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 427, "</h3></div><span class=\"shrink-0 rounded-full bg-card px-2 py-1 font-mono text-xs font-medium text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 428, "<section class=\"pr-pipeline-lane min-w-0 rounded-md border border-border bg-muted/60 p-3\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var306 string
-		templ_7745c5c3_Var306, templ_7745c5c3_Err = templ.JoinStringErrs(lane.CountLabel)
+		templ_7745c5c3_Var306, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title + " lane")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2182, Col: 126}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2343, Col: 124}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var306))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 428, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 429, "\"><div class=\"flex min-h-9 items-center justify-between gap-3\"><div class=\"inline-flex min-w-0 items-center gap-2\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var307 = []any{"h-2 w-2 shrink-0 rounded-full " + lane.DotClass}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var307...)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 430, "<span class=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var308 string
+		templ_7745c5c3_Var308, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var307).String())
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var308))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 431, "\"></span><h3 class=\"truncate text-sm font-semibold text-foreground\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var309 string
+		templ_7745c5c3_Var309, templ_7745c5c3_Err = templ.JoinStringErrs(lane.Title)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2347, Col: 75}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var309))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 432, "</h3></div><span class=\"shrink-0 rounded-full bg-card px-2 py-1 font-mono text-xs font-medium text-muted-foreground\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var310 string
+		templ_7745c5c3_Var310, templ_7745c5c3_Err = templ.JoinStringErrs(lane.CountLabel)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2349, Col: 126}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var310))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 433, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(lane.Cards) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 429, "<div class=\"mt-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 434, "<div class=\"mt-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -6816,25 +6876,25 @@ func prPipelineLaneView(lane prPipelineLane) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 430, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 435, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 431, "<div class=\"pr-pipeline-lane-scroll mt-3 grid auto-rows-max max-h-[24rem] gap-2 overflow-y-auto pr-1\" data-preserve-scroll=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 436, "<div class=\"pr-pipeline-lane-scroll mt-3 grid auto-rows-max max-h-[24rem] gap-2 overflow-y-auto pr-1\" data-preserve-scroll=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var307 string
-			templ_7745c5c3_Var307, templ_7745c5c3_Err = templ.JoinStringErrs("pr-pipeline-" + lane.ID)
+			var templ_7745c5c3_Var311 string
+			templ_7745c5c3_Var311, templ_7745c5c3_Err = templ.JoinStringErrs("pr-pipeline-" + lane.ID)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2189, Col: 152}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2356, Col: 152}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var307))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var311))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 432, "\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 437, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -6844,12 +6904,12 @@ func prPipelineLaneView(lane prPipelineLane) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 433, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 438, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 434, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 439, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -6873,269 +6933,269 @@ func prPipelineCardView(card prPipelineCard) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var308 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var308 == nil {
-			templ_7745c5c3_Var308 = templ.NopComponent
+		templ_7745c5c3_Var312 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var312 == nil {
+			templ_7745c5c3_Var312 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 435, "<article class=\"pr-pipeline-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm\"><div class=\"flex min-w-0 items-start justify-between gap-3\"><div class=\"min-w-0\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 440, "<article class=\"pr-pipeline-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm\"><div class=\"flex min-w-0 items-start justify-between gap-3\"><div class=\"min-w-0\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if card.URL != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 436, "<a class=\"block min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 441, "<a class=\"block min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var309 templ.SafeURL
-			templ_7745c5c3_Var309, templ_7745c5c3_Err = templ.JoinURLErrs(card.URL)
+			var templ_7745c5c3_Var313 templ.SafeURL
+			templ_7745c5c3_Var313, templ_7745c5c3_Err = templ.JoinURLErrs(card.URL)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2203, Col: 119}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var309))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 437, "\" target=\"_blank\" rel=\"noopener noreferrer\"><span class=\"font-mono text-xs font-semibold text-accent\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var310 string
-			templ_7745c5c3_Var310, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueNumber)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2204, Col: 82}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var310))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 438, "</span> <span class=\"mt-1 line-clamp-2 text-sm font-medium text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var311 string
-			templ_7745c5c3_Var311, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2205, Col: 86}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var311))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 439, "</span></a> ")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 440, "<span class=\"font-mono text-xs font-semibold text-accent\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var312 string
-			templ_7745c5c3_Var312, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueNumber)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2208, Col: 81}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var312))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 441, "</span> <span class=\"mt-1 line-clamp-2 text-sm font-medium text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var313 string
-			templ_7745c5c3_Var313, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2209, Col: 85}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2370, Col: 119}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var313))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 442, "</span> ")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		if card.ProjectID != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 443, "<span class=\"mt-2 inline-flex max-w-full rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 442, "\" target=\"_blank\" rel=\"noopener noreferrer\"><span class=\"font-mono text-xs font-semibold text-accent\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var314 string
-			templ_7745c5c3_Var314, templ_7745c5c3_Err = templ.JoinStringErrs(card.ProjectID)
+			templ_7745c5c3_Var314, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueNumber)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2212, Col: 135}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2371, Col: 82}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var314))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 444, "</span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 443, "</span> <span class=\"mt-1 line-clamp-2 text-sm font-medium text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var315 string
+			templ_7745c5c3_Var315, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2372, Col: 86}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var315))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 444, "</span></a> ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 445, "<span class=\"font-mono text-xs font-semibold text-accent\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var316 string
+			templ_7745c5c3_Var316, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueNumber)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2375, Col: 81}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var316))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 446, "</span> <span class=\"mt-1 line-clamp-2 text-sm font-medium text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var317 string
+			templ_7745c5c3_Var317, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2376, Col: 85}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var317))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 447, "</span> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 445, "</div><span class=\"shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground\" title=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
+		if card.ProjectID != "" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 448, "<span class=\"mt-2 inline-flex max-w-full rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var318 string
+			templ_7745c5c3_Var318, templ_7745c5c3_Err = templ.JoinStringErrs(card.ProjectID)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2379, Col: 135}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var318))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 449, "</span>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
 		}
-		var templ_7745c5c3_Var315 string
-		templ_7745c5c3_Var315, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2215, Col: 121}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var315))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 446, "\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var316 string
-		templ_7745c5c3_Var316, templ_7745c5c3_Err = templ.JoinStringErrs(card.Stage)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2215, Col: 136}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var316))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 447, "</span></div><div class=\"mt-3 grid gap-2 text-xs\"><div class=\"flex flex-wrap gap-2\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var317 = []any{"inline-flex min-h-7 items-center rounded-full border px-2 py-1 font-medium " + card.CIClass}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var317...)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 448, "<span class=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var318 string
-		templ_7745c5c3_Var318, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var317).String())
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var318))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 449, "\">CI ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 450, "</div><span class=\"shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var319 string
-		templ_7745c5c3_Var319, templ_7745c5c3_Err = templ.JoinStringErrs(card.CIStatus)
+		templ_7745c5c3_Var319, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2219, Col: 131}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2382, Col: 121}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var319))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 450, "</span> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 451, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var320 = []any{"inline-flex min-h-7 items-center rounded-full border px-2 py-1 font-medium " + card.CodexReviewClass}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var320...)
+		var templ_7745c5c3_Var320 string
+		templ_7745c5c3_Var320, templ_7745c5c3_Err = templ.JoinStringErrs(card.Stage)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2382, Col: 136}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var320))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 451, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 452, "</span></div><div class=\"mt-3 grid gap-2 text-xs\"><div class=\"flex flex-wrap gap-2\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var321 string
-		templ_7745c5c3_Var321, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var320).String())
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var321))
+		var templ_7745c5c3_Var321 = []any{"inline-flex min-h-7 items-center rounded-full border px-2 py-1 font-medium " + card.CIClass}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var321...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 452, "\">Codex ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 453, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var322 string
-		templ_7745c5c3_Var322, templ_7745c5c3_Err = templ.JoinStringErrs(card.CodexReviewState)
+		templ_7745c5c3_Var322, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var321).String())
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2220, Col: 151}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var322))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 453, "</span></div><div class=\"flex min-h-7 items-center justify-between gap-3 rounded-md bg-muted/60 px-2 py-1\"><span class=\"text-muted-foreground\">Time in stage</span> <span class=\"font-mono font-medium text-foreground\" title=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 454, "\">CI ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var323 string
-		templ_7745c5c3_Var323, templ_7745c5c3_Err = templ.JoinStringErrs(card.TimeInStageTitle)
+		templ_7745c5c3_Var323, templ_7745c5c3_Err = templ.JoinStringErrs(card.CIStatus)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2224, Col: 85}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2386, Col: 131}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var323))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 454, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 455, "</span> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var324 string
-		templ_7745c5c3_Var324, templ_7745c5c3_Err = templ.JoinStringErrs(card.TimeInStage)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2224, Col: 106}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var324))
+		var templ_7745c5c3_Var324 = []any{"inline-flex min-h-7 items-center rounded-full border px-2 py-1 font-medium " + card.CodexReviewClass}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var324...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 455, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 456, "<span class=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var325 string
+		templ_7745c5c3_Var325, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var324).String())
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var325))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 457, "\">Codex ")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var326 string
+		templ_7745c5c3_Var326, templ_7745c5c3_Err = templ.JoinStringErrs(card.CodexReviewState)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2387, Col: 151}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var326))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 458, "</span></div><div class=\"flex min-h-7 items-center justify-between gap-3 rounded-md bg-muted/60 px-2 py-1\"><span class=\"text-muted-foreground\">Time in stage</span> <span class=\"font-mono font-medium text-foreground\" title=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var327 string
+		templ_7745c5c3_Var327, templ_7745c5c3_Err = templ.JoinStringErrs(card.TimeInStageTitle)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2391, Col: 85}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var327))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 459, "\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var328 string
+		templ_7745c5c3_Var328, templ_7745c5c3_Err = templ.JoinStringErrs(card.TimeInStage)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2391, Col: 106}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var328))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 460, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if card.WaitDetail != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 456, "<div class=\"flex min-h-7 items-center justify-between gap-3 rounded-md bg-muted/60 px-2 py-1\"><span class=\"text-muted-foreground\">Waits</span> <span class=\"min-w-0 truncate font-mono font-medium text-foreground\" title=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 461, "<div class=\"flex min-h-7 items-center justify-between gap-3 rounded-md bg-muted/60 px-2 py-1\"><span class=\"text-muted-foreground\">Waits</span> <span class=\"min-w-0 truncate font-mono font-medium text-foreground\" title=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var325 string
-			templ_7745c5c3_Var325, templ_7745c5c3_Err = templ.JoinStringErrs(card.WaitDetail)
+			var templ_7745c5c3_Var329 string
+			templ_7745c5c3_Var329, templ_7745c5c3_Err = templ.JoinStringErrs(card.WaitDetail)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2229, Col: 97}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2396, Col: 97}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var325))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 457, "\">")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var329))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var326 string
-			templ_7745c5c3_Var326, templ_7745c5c3_Err = templ.JoinStringErrs(card.WaitDetail)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2229, Col: 117}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var326))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 462, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 458, "</span></div>")
+			var templ_7745c5c3_Var330 string
+			templ_7745c5c3_Var330, templ_7745c5c3_Err = templ.JoinStringErrs(card.WaitDetail)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2396, Col: 117}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var330))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 463, "</span></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 459, "</div></article>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 464, "</div></article>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -7159,67 +7219,67 @@ func kanbanBoardSection(data DashboardData) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var327 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var327 == nil {
-			templ_7745c5c3_Var327 = templ.NopComponent
+		templ_7745c5c3_Var331 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var331 == nil {
+			templ_7745c5c3_Var331 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if len(kanbanLanes(data)) > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 460, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"Kanban board\" data-kanban-board><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\"><h2 class=\"text-base font-semibold text-foreground\">Kanban board</h2></div><span class=\"inline-flex min-h-9 shrink-0 items-center justify-center rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 465, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"Kanban board\" data-kanban-board><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\"><h2 class=\"text-base font-semibold text-foreground\">Kanban board</h2></div><span class=\"inline-flex min-h-9 shrink-0 items-center justify-center rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var328 string
-			templ_7745c5c3_Var328, templ_7745c5c3_Err = templ.JoinStringErrs(data.Kanban.Mode)
+			var templ_7745c5c3_Var332 string
+			templ_7745c5c3_Var332, templ_7745c5c3_Err = templ.JoinStringErrs(data.Kanban.Mode)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2243, Col: 167}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2410, Col: 167}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var328))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var332))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 461, "</span></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 466, "</span></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if kanbanIntegrationEnabled(data) {
-				var templ_7745c5c3_Var329 = []any{kanbanFeedbackClass(data.Kanban)}
-				templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var329...)
+				var templ_7745c5c3_Var333 = []any{kanbanFeedbackClass(data.Kanban)}
+				templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var333...)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 462, "<div id=\"kanban-feedback\" role=\"status\" aria-live=\"polite\" class=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 467, "<div id=\"kanban-feedback\" role=\"status\" aria-live=\"polite\" class=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var330 string
-				templ_7745c5c3_Var330, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var329).String())
+				var templ_7745c5c3_Var334 string
+				templ_7745c5c3_Var334, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var333).String())
 				if templ_7745c5c3_Err != nil {
 					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var330))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var334))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 463, "\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 468, "\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var331 string
-				templ_7745c5c3_Var331, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanFeedbackText(data.Kanban))
+				var templ_7745c5c3_Var335 string
+				templ_7745c5c3_Var335, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanFeedbackText(data.Kanban))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2246, Col: 139}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2413, Col: 139}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var331))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var335))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 464, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 469, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 465, "<div class=\"mt-4 grid min-w-0 max-w-full gap-3 overflow-x-hidden lg:grid-cols-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 470, "<div class=\"mt-4 grid min-w-0 max-w-full gap-3 overflow-x-hidden lg:grid-cols-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -7229,7 +7289,7 @@ func kanbanBoardSection(data DashboardData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 466, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 471, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -7239,7 +7299,7 @@ func kanbanBoardSection(data DashboardData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 467, "</section>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 472, "</section>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -7264,25 +7324,25 @@ func kanbanLaneView(data DashboardData, lane kanbanLane) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var332 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var332 == nil {
-			templ_7745c5c3_Var332 = templ.NopComponent
+		templ_7745c5c3_Var336 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var336 == nil {
+			templ_7745c5c3_Var336 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 468, "<section class=\"min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-muted/60 p-3\" aria-label=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 473, "<section class=\"min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-muted/60 p-3\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var333 string
-		templ_7745c5c3_Var333, templ_7745c5c3_Err = templ.JoinStringErrs(lane.State + " Kanban lane")
+		var templ_7745c5c3_Var337 string
+		templ_7745c5c3_Var337, templ_7745c5c3_Err = templ.JoinStringErrs(lane.State + " Kanban lane")
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2261, Col: 141}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2428, Col: 141}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var333))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var337))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 469, "\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 474, "\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -7290,60 +7350,60 @@ func kanbanLaneView(data DashboardData, lane kanbanLane) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 470, "><div class=\"flex min-h-9 min-w-0 max-w-full items-center justify-between gap-3 overflow-hidden\"><div class=\"inline-flex min-w-0 flex-1 basis-0 items-center gap-2 overflow-hidden\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 475, "><div class=\"flex min-h-9 min-w-0 max-w-full items-center justify-between gap-3 overflow-hidden\"><div class=\"inline-flex min-w-0 flex-1 basis-0 items-center gap-2 overflow-hidden\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var334 = []any{"h-2 w-2 shrink-0 rounded-full " + lane.DotClass}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var334...)
+		var templ_7745c5c3_Var338 = []any{"h-2 w-2 shrink-0 rounded-full " + lane.DotClass}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var338...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 471, "<span class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 476, "<span class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var335 string
-		templ_7745c5c3_Var335, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var334).String())
+		var templ_7745c5c3_Var339 string
+		templ_7745c5c3_Var339, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var338).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var335))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var339))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 472, "\"></span><h3 class=\"min-w-0 truncate text-sm font-semibold text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 477, "\"></span><h3 class=\"min-w-0 truncate text-sm font-semibold text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var336 string
-		templ_7745c5c3_Var336, templ_7745c5c3_Err = templ.JoinStringErrs(lane.State)
+		var templ_7745c5c3_Var340 string
+		templ_7745c5c3_Var340, templ_7745c5c3_Err = templ.JoinStringErrs(lane.State)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2265, Col: 83}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2432, Col: 83}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var336))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 473, "</h3></div><span class=\"shrink-0 rounded-full bg-card px-2 py-1 font-mono text-xs font-medium text-muted-foreground\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var340))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var337 string
-		templ_7745c5c3_Var337, templ_7745c5c3_Err = templ.JoinStringErrs(lane.CountLabel)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2267, Col: 126}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var337))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 478, "</h3></div><span class=\"shrink-0 rounded-full bg-card px-2 py-1 font-mono text-xs font-medium text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 474, "</span></div>")
+		var templ_7745c5c3_Var341 string
+		templ_7745c5c3_Var341, templ_7745c5c3_Err = templ.JoinStringErrs(lane.CountLabel)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2434, Col: 126}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var341))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 479, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(lane.Cards) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 475, "<div class=\"mt-3 min-w-0 max-w-full overflow-hidden\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 480, "<div class=\"mt-3 min-w-0 max-w-full overflow-hidden\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -7351,25 +7411,25 @@ func kanbanLaneView(data DashboardData, lane kanbanLane) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 476, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 481, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 477, "<div class=\"mt-3 grid auto-rows-max min-w-0 max-w-full max-h-[28rem] gap-2 overflow-x-hidden overflow-y-auto pr-1\" data-preserve-scroll=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 482, "<div class=\"mt-3 grid auto-rows-max min-w-0 max-w-full max-h-[28rem] gap-2 overflow-x-hidden overflow-y-auto pr-1\" data-preserve-scroll=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var338 string
-			templ_7745c5c3_Var338, templ_7745c5c3_Err = templ.JoinStringErrs("kanban-" + lane.State)
+			var templ_7745c5c3_Var342 string
+			templ_7745c5c3_Var342, templ_7745c5c3_Err = templ.JoinStringErrs("kanban-" + lane.State)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2274, Col: 163}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2441, Col: 163}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var338))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var342))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 478, "\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 483, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -7379,12 +7439,12 @@ func kanbanLaneView(data DashboardData, lane kanbanLane) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 479, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 484, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 480, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 485, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -7408,12 +7468,12 @@ func kanbanCardView(data DashboardData, card kanbanCard) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var339 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var339 == nil {
-			templ_7745c5c3_Var339 = templ.NopComponent
+		templ_7745c5c3_Var343 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var343 == nil {
+			templ_7745c5c3_Var343 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 481, "<article class=\"min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-3 shadow-sm\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 486, "<article class=\"min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-3 shadow-sm\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -7421,136 +7481,136 @@ func kanbanCardView(data DashboardData, card kanbanCard) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 482, "><div class=\"flex min-w-0 max-w-full items-start justify-between gap-3 overflow-hidden\"><div class=\"min-w-0 flex-1 basis-0 overflow-hidden\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 487, "><div class=\"flex min-w-0 max-w-full items-start justify-between gap-3 overflow-hidden\"><div class=\"min-w-0 flex-1 basis-0 overflow-hidden\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if card.URL != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 483, "<a class=\"block min-w-0 max-w-full overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 488, "<a class=\"block min-w-0 max-w-full overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var340 templ.SafeURL
-			templ_7745c5c3_Var340, templ_7745c5c3_Err = templ.JoinURLErrs(card.URL)
+			var templ_7745c5c3_Var344 templ.SafeURL
+			templ_7745c5c3_Var344, templ_7745c5c3_Err = templ.JoinURLErrs(card.URL)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2288, Col: 146}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var340))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 484, "\" target=\"_blank\" rel=\"noopener noreferrer\"><span class=\"block min-w-0 truncate font-mono text-xs font-semibold text-accent\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var341 string
-			templ_7745c5c3_Var341, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2289, Col: 104}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var341))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 485, "</span> <span class=\"mt-1 line-clamp-2 break-words text-sm font-medium text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var342 string
-			templ_7745c5c3_Var342, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2290, Col: 98}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var342))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 486, "</span></a>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 487, "<span class=\"block min-w-0 truncate font-mono text-xs font-semibold text-accent\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var343 string
-			templ_7745c5c3_Var343, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2293, Col: 103}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var343))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 488, "</span> <span class=\"mt-1 line-clamp-2 break-words text-sm font-medium text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var344 string
-			templ_7745c5c3_Var344, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2294, Col: 97}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2455, Col: 146}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var344))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 489, "</span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 489, "\" target=\"_blank\" rel=\"noopener noreferrer\"><span class=\"block min-w-0 truncate font-mono text-xs font-semibold text-accent\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var345 string
+			templ_7745c5c3_Var345, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2456, Col: 104}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var345))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 490, "</span> <span class=\"mt-1 line-clamp-2 break-words text-sm font-medium text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var346 string
+			templ_7745c5c3_Var346, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2457, Col: 98}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var346))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 491, "</span></a>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 492, "<span class=\"block min-w-0 truncate font-mono text-xs font-semibold text-accent\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var347 string
+			templ_7745c5c3_Var347, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2460, Col: 103}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var347))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 493, "</span> <span class=\"mt-1 line-clamp-2 break-words text-sm font-medium text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var348 string
+			templ_7745c5c3_Var348, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2461, Col: 97}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var348))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 494, "</span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 490, "</div><span class=\"min-w-0 max-w-[7rem] shrink-0 truncate rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 495, "</div><span class=\"min-w-0 max-w-[7rem] shrink-0 truncate rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var345 string
-		templ_7745c5c3_Var345, templ_7745c5c3_Err = templ.JoinStringErrs(card.State)
+		var templ_7745c5c3_Var349 string
+		templ_7745c5c3_Var349, templ_7745c5c3_Err = templ.JoinStringErrs(card.State)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2297, Col: 142}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2464, Col: 142}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var345))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var349))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 491, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 496, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if card.ProjectID != "" || card.PRNumber > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 492, "<div class=\"mt-2 flex min-w-0 max-w-full flex-wrap gap-2 overflow-hidden\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 497, "<div class=\"mt-2 flex min-w-0 max-w-full flex-wrap gap-2 overflow-hidden\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			if card.ProjectID != "" {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 493, "<span class=\"inline-flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground\" title=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 498, "<span class=\"inline-flex min-w-0 max-w-full items-center gap-1.5 overflow-hidden rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground\" title=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var346 string
-				templ_7745c5c3_Var346, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + card.ProjectID)
+				var templ_7745c5c3_Var350 string
+				templ_7745c5c3_Var350, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + card.ProjectID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2302, Col: 194}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2469, Col: 194}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var346))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 494, "\"><span class=\"h-3 w-1.5 shrink-0 rounded-full border border-border\" aria-label=\"")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var350))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var347 string
-				templ_7745c5c3_Var347, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + card.ProjectID + " color marker")
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2303, Col: 131}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var347))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 499, "\"><span class=\"h-3 w-1.5 shrink-0 rounded-full border border-border\" aria-label=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 495, "\"")
+				var templ_7745c5c3_Var351 string
+				templ_7745c5c3_Var351, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + card.ProjectID + " color marker")
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2470, Col: 131}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var351))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 500, "\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -7558,96 +7618,96 @@ func kanbanCardView(data DashboardData, card kanbanCard) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 496, "></span> <span class=\"min-w-0 truncate\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 501, "></span> <span class=\"min-w-0 truncate\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var348 string
-				templ_7745c5c3_Var348, templ_7745c5c3_Err = templ.JoinStringErrs(card.ProjectID)
+				var templ_7745c5c3_Var352 string
+				templ_7745c5c3_Var352, templ_7745c5c3_Err = templ.JoinStringErrs(card.ProjectID)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2304, Col: 53}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2471, Col: 53}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var348))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var352))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 497, "</span></span> ")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 502, "</span></span> ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 			if card.PRNumber > 0 {
 				if card.PRURL != "" {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 498, "<a class=\"inline-flex min-w-0 max-w-full truncate rounded-full bg-accent-soft px-2 py-1 font-mono text-xs text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 503, "<a class=\"inline-flex min-w-0 max-w-full truncate rounded-full bg-accent-soft px-2 py-1 font-mono text-xs text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					var templ_7745c5c3_Var349 templ.SafeURL
-					templ_7745c5c3_Var349, templ_7745c5c3_Err = templ.JoinURLErrs(card.PRURL)
+					var templ_7745c5c3_Var353 templ.SafeURL
+					templ_7745c5c3_Var353, templ_7745c5c3_Err = templ.JoinURLErrs(card.PRURL)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2309, Col: 251}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2476, Col: 251}
 					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var349))
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 499, "\" target=\"_blank\" rel=\"noopener noreferrer\">PR #")
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var353))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					var templ_7745c5c3_Var350 string
-					templ_7745c5c3_Var350, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(card.PRNumber))
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2309, Col: 329}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var350))
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 504, "\" target=\"_blank\" rel=\"noopener noreferrer\">PR #")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 500, "</a>")
+					var templ_7745c5c3_Var354 string
+					templ_7745c5c3_Var354, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(card.PRNumber))
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2476, Col: 329}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var354))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 505, "</a>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				} else {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 501, "<span class=\"inline-flex min-w-0 max-w-full truncate rounded-full bg-accent-soft px-2 py-1 font-mono text-xs text-accent\">PR #")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 506, "<span class=\"inline-flex min-w-0 max-w-full truncate rounded-full bg-accent-soft px-2 py-1 font-mono text-xs text-accent\">PR #")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					var templ_7745c5c3_Var351 string
-					templ_7745c5c3_Var351, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(card.PRNumber))
+					var templ_7745c5c3_Var355 string
+					templ_7745c5c3_Var355, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(card.PRNumber))
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2311, Col: 161}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2478, Col: 161}
 					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var351))
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var355))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 502, "</span>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 507, "</span>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 503, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 508, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
 		if kanbanMoveDisabledText(data, card) != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 504, "<div class=\"mt-3 min-w-0 max-w-full overflow-hidden break-words rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 509, "<div class=\"mt-3 min-w-0 max-w-full overflow-hidden break-words rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var352 string
-			templ_7745c5c3_Var352, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanMoveDisabledText(data, card))
+			var templ_7745c5c3_Var356 string
+			templ_7745c5c3_Var356, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanMoveDisabledText(data, card))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2317, Col: 188}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2484, Col: 188}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var352))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var356))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 505, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 510, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -7658,7 +7718,7 @@ func kanbanCardView(data DashboardData, card kanbanCard) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 506, "</article>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 511, "</article>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -7682,12 +7742,12 @@ func kanbanActionButtons(data DashboardData, card kanbanCard) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var353 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var353 == nil {
-			templ_7745c5c3_Var353 = templ.NopComponent
+		templ_7745c5c3_Var357 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var357 == nil {
+			templ_7745c5c3_Var357 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 507, "<div class=\"mt-3 flex min-w-0 max-w-full flex-wrap items-center gap-1.5\" aria-label=\"Kanban actions\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 512, "<div class=\"mt-3 flex min-w-0 max-w-full flex-wrap items-center gap-1.5\" aria-label=\"Kanban actions\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -7696,7 +7756,7 @@ func kanbanActionButtons(data DashboardData, card kanbanCard) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 508, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 513, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -7709,7 +7769,7 @@ func kanbanActionButtons(data DashboardData, card kanbanCard) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 509, "</div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 514, "</div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -7733,12 +7793,12 @@ func kanbanMoveDialogTrigger(data DashboardData, card kanbanCard) templ.Componen
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var354 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var354 == nil {
-			templ_7745c5c3_Var354 = templ.NopComponent
+		templ_7745c5c3_Var358 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var358 == nil {
+			templ_7745c5c3_Var358 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Var355 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_Var359 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 			if !templ_7745c5c3_IsBuffer {
@@ -7750,7 +7810,7 @@ func kanbanMoveDialogTrigger(data DashboardData, card kanbanCard) templ.Componen
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Var356 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var360 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -7766,7 +7826,7 @@ func kanbanMoveDialogTrigger(data DashboardData, card kanbanCard) templ.Componen
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 510, " <span class=\"sr-only\">Move</span>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 515, " <span class=\"sr-only\">Move</span>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -7783,13 +7843,13 @@ func kanbanMoveDialogTrigger(data DashboardData, card kanbanCard) templ.Componen
 					"aria-label": "Move " + card.Identifier,
 					"title":      "Move card",
 				},
-			}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var356), templ_7745c5c3_Buffer)
+			}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var360), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var355), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var359), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -7813,100 +7873,100 @@ func kanbanDragMoveForm(data DashboardData, card kanbanCard) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var357 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var357 == nil {
-			templ_7745c5c3_Var357 = templ.NopComponent
+		templ_7745c5c3_Var361 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var361 == nil {
+			templ_7745c5c3_Var361 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 511, "<form class=\"hidden\" hx-post=\"/api/v1/kanban/move\" hx-target=\"#kanban-feedback\" hx-swap=\"outerHTML\" data-kanban-drag-move-form><input type=\"hidden\" name=\"kanban_drag\" value=\"true\"> <input type=\"hidden\" name=\"project_id\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var358 string
-		templ_7745c5c3_Var358, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanProjectID(data))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2358, Col: 70}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var358))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 512, "\"> <input type=\"hidden\" name=\"issue_id\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var359 string
-		templ_7745c5c3_Var359, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueID)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2359, Col: 59}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var359))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 513, "\"> <input type=\"hidden\" name=\"identifier\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var360 string
-		templ_7745c5c3_Var360, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2360, Col: 64}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var360))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 514, "\"> <input type=\"hidden\" name=\"title\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var361 string
-		templ_7745c5c3_Var361, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2361, Col: 54}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var361))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 515, "\"> <input type=\"hidden\" name=\"current_state\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 516, "<form class=\"hidden\" hx-post=\"/api/v1/kanban/move\" hx-target=\"#kanban-feedback\" hx-swap=\"outerHTML\" data-kanban-drag-move-form><input type=\"hidden\" name=\"kanban_drag\" value=\"true\"> <input type=\"hidden\" name=\"project_id\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var362 string
-		templ_7745c5c3_Var362, templ_7745c5c3_Err = templ.JoinStringErrs(card.State)
+		templ_7745c5c3_Var362, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanProjectID(data))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2362, Col: 62}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2525, Col: 70}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var362))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 516, "\"> <input type=\"hidden\" name=\"target_state\" value=\"\" data-kanban-drag-target-state> ")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 517, "\"> <input type=\"hidden\" name=\"issue_id\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var363 string
+		templ_7745c5c3_Var363, templ_7745c5c3_Err = templ.JoinStringErrs(card.IssueID)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2526, Col: 59}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var363))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 518, "\"> <input type=\"hidden\" name=\"identifier\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var364 string
+		templ_7745c5c3_Var364, templ_7745c5c3_Err = templ.JoinStringErrs(card.Identifier)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2527, Col: 64}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var364))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 519, "\"> <input type=\"hidden\" name=\"title\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var365 string
+		templ_7745c5c3_Var365, templ_7745c5c3_Err = templ.JoinStringErrs(card.Title)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2528, Col: 54}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var365))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 520, "\"> <input type=\"hidden\" name=\"current_state\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var366 string
+		templ_7745c5c3_Var366, templ_7745c5c3_Err = templ.JoinStringErrs(card.State)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2529, Col: 62}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var366))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 521, "\"> <input type=\"hidden\" name=\"target_state\" value=\"\" data-kanban-drag-target-state> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if card.PRNumber > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 517, "<input type=\"hidden\" name=\"pr_number\" value=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 522, "<input type=\"hidden\" name=\"pr_number\" value=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var363 string
-			templ_7745c5c3_Var363, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(card.PRNumber))
+			var templ_7745c5c3_Var367 string
+			templ_7745c5c3_Var367, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(card.PRNumber))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2365, Col: 76}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2532, Col: 76}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var363))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var367))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 518, "\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 523, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 519, "</form>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 524, "</form>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -7930,9 +7990,9 @@ func kanbanCommentDialogTriggers(data DashboardData, card kanbanCard) templ.Comp
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var364 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var364 == nil {
-			templ_7745c5c3_Var364 = templ.NopComponent
+		templ_7745c5c3_Var368 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var368 == nil {
+			templ_7745c5c3_Var368 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if card.IssueID != "" {
@@ -7952,106 +8012,6 @@ func kanbanCommentDialogTriggers(data DashboardData, card kanbanCard) templ.Comp
 }
 
 func kanbanCommentDialogTrigger(data DashboardData, card kanbanCard, target string, title string, label string) templ.Component {
-	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
-		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
-		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
-			return templ_7745c5c3_CtxErr
-		}
-		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
-		if !templ_7745c5c3_IsBuffer {
-			defer func() {
-				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
-				if templ_7745c5c3_Err == nil {
-					templ_7745c5c3_Err = templ_7745c5c3_BufErr
-				}
-			}()
-		}
-		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var365 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var365 == nil {
-			templ_7745c5c3_Var365 = templ.NopComponent
-		}
-		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Var366 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
-			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
-			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
-			if !templ_7745c5c3_IsBuffer {
-				defer func() {
-					templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
-					if templ_7745c5c3_Err == nil {
-						templ_7745c5c3_Err = templ_7745c5c3_BufErr
-					}
-				}()
-			}
-			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Var367 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
-				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
-				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
-				if !templ_7745c5c3_IsBuffer {
-					defer func() {
-						templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
-						if templ_7745c5c3_Err == nil {
-							templ_7745c5c3_Err = templ_7745c5c3_BufErr
-						}
-					}()
-				}
-				ctx = templ.InitializeContext(ctx)
-				if target == "pr" {
-					templ_7745c5c3_Err = icon.GitPullRequest(icon.Props{Class: "size-4"}).Render(ctx, templ_7745c5c3_Buffer)
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-				} else {
-					templ_7745c5c3_Err = icon.MessageSquarePlus(icon.Props{Class: "size-4"}).Render(ctx, templ_7745c5c3_Buffer)
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 520, " <span class=\"sr-only\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var368 string
-				templ_7745c5c3_Var368, templ_7745c5c3_Err = templ.JoinStringErrs(label)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2398, Col: 32}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var368))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 521, "</span>")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				return nil
-			})
-			templ_7745c5c3_Err = button.Button(button.Props{
-				Size:    button.SizeIcon,
-				Variant: button.VariantGhost,
-				Class:   "size-8 border border-border bg-card text-muted-foreground hover:text-accent",
-				Attributes: templ.Attributes{
-					"hx-get":     kanbanCommentDialogPath(data, card, target),
-					"hx-target":  kanbanDialogTargetSelector(),
-					"hx-swap":    "innerHTML",
-					"aria-label": title + " " + card.Identifier,
-					"title":      label,
-				},
-			}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var367), templ_7745c5c3_Buffer)
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			return nil
-		})
-		templ_7745c5c3_Err = dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var366), templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		return nil
-	})
-}
-
-func KanbanMoveDialogContent(data KanbanMoveDialogData) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -8096,196 +8056,83 @@ func KanbanMoveDialogContent(data KanbanMoveDialogData) templ.Component {
 					}()
 				}
 				ctx = templ.InitializeContext(ctx)
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 522, "Move card")
+				if target == "pr" {
+					templ_7745c5c3_Err = icon.GitPullRequest(icon.Props{Class: "size-4"}).Render(ctx, templ_7745c5c3_Buffer)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+				} else {
+					templ_7745c5c3_Err = icon.MessageSquarePlus(icon.Props{Class: "size-4"}).Render(ctx, templ_7745c5c3_Buffer)
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 525, " <span class=\"sr-only\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var372 string
+				templ_7745c5c3_Var372, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2565, Col: 32}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var372))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 526, "</span>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				return nil
 			})
-			templ_7745c5c3_Err = dialog.Title().Render(templ.WithChildren(ctx, templ_7745c5c3_Var371), templ_7745c5c3_Buffer)
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 523, " ")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Var372 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
-				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
-				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
-				if !templ_7745c5c3_IsBuffer {
-					defer func() {
-						templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
-						if templ_7745c5c3_Err == nil {
-							templ_7745c5c3_Err = templ_7745c5c3_BufErr
-						}
-					}()
-				}
-				ctx = templ.InitializeContext(ctx)
-				var templ_7745c5c3_Var373 string
-				templ_7745c5c3_Var373, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanDialogCardLabel(data.Identifier, data.Title))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2409, Col: 55}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var373))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				return nil
-			})
-			templ_7745c5c3_Err = dialog.Description().Render(templ.WithChildren(ctx, templ_7745c5c3_Var372), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = button.Button(button.Props{
+				Size:    button.SizeIcon,
+				Variant: button.VariantGhost,
+				Class:   "size-8 border border-border bg-card text-muted-foreground hover:text-accent",
+				Attributes: templ.Attributes{
+					"hx-get":     kanbanCommentDialogPath(data, card, target),
+					"hx-target":  kanbanDialogTargetSelector(),
+					"hx-swap":    "innerHTML",
+					"aria-label": title + " " + card.Identifier,
+					"title":      label,
+				},
+			}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var371), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = dialog.Header().Render(templ.WithChildren(ctx, templ_7745c5c3_Var370), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = dialog.Trigger(dialog.TriggerProps{For: kanbanActionDialogID}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var370), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = kanbanDialogError(data.Error).Render(ctx, templ_7745c5c3_Buffer)
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
+		return nil
+	})
+}
+
+func KanbanMoveDialogContent(data KanbanMoveDialogData) templ.Component {
+	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
+			return templ_7745c5c3_CtxErr
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 524, "<form class=\"grid gap-4\" hx-post=\"/api/v1/kanban/move\" hx-target=\"#kanban-feedback\" hx-swap=\"outerHTML\"><input type=\"hidden\" name=\"kanban_dialog\" value=\"true\"> <input type=\"hidden\" name=\"project_id\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var374 string
-		templ_7745c5c3_Var374, templ_7745c5c3_Err = templ.JoinStringErrs(data.ProjectID)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2415, Col: 63}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var374))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 525, "\"> <input type=\"hidden\" name=\"issue_id\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var375 string
-		templ_7745c5c3_Var375, templ_7745c5c3_Err = templ.JoinStringErrs(data.IssueID)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2416, Col: 59}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var375))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 526, "\"> <input type=\"hidden\" name=\"current_state\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var376 string
-		templ_7745c5c3_Var376, templ_7745c5c3_Err = templ.JoinStringErrs(data.CurrentState)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2417, Col: 69}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var376))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 527, "\"> <input type=\"hidden\" name=\"identifier\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var377 string
-		templ_7745c5c3_Var377, templ_7745c5c3_Err = templ.JoinStringErrs(data.Identifier)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2418, Col: 64}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var377))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 528, "\"> <input type=\"hidden\" name=\"title\" value=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var378 string
-		templ_7745c5c3_Var378, templ_7745c5c3_Err = templ.JoinStringErrs(data.Title)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2419, Col: 54}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var378))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 529, "\"> ")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		if data.PRNumber > 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 530, "<input type=\"hidden\" name=\"pr_number\" value=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var379 string
-			templ_7745c5c3_Var379, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(data.PRNumber))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2421, Col: 76}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var379))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 531, "\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 532, "<div class=\"grid gap-2\"><label class=\"text-sm font-medium text-foreground\" for=\"kanban-dialog-target-state\">Target state</label> <select id=\"kanban-dialog-target-state\" name=\"target_state\" class=\"min-h-10 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent\" data-kanban-status-menu>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		for _, state := range data.States {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 533, "<option value=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var380 string
-			templ_7745c5c3_Var380, templ_7745c5c3_Err = templ.JoinStringErrs(state)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2427, Col: 26}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var380))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 534, "\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			if normalizeDashboardState(state) == normalizeDashboardState(kanbanMoveDialogTargetState(data)) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 535, " selected")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
+		templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+		if !templ_7745c5c3_IsBuffer {
+			defer func() {
+				templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+				if templ_7745c5c3_Err == nil {
+					templ_7745c5c3_Err = templ_7745c5c3_BufErr
 				}
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 536, ">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var381 string
-			templ_7745c5c3_Var381, templ_7745c5c3_Err = templ.JoinStringErrs(state)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2427, Col: 143}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var381))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 537, "</option>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
+			}()
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 538, "</select></div>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
+		ctx = templ.InitializeContext(ctx)
+		templ_7745c5c3_Var373 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var373 == nil {
+			templ_7745c5c3_Var373 = templ.NopComponent
 		}
-		templ_7745c5c3_Var382 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		ctx = templ.ClearChildren(ctx)
+		templ_7745c5c3_Var374 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 			if !templ_7745c5c3_IsBuffer {
@@ -8297,7 +8144,7 @@ func KanbanMoveDialogContent(data KanbanMoveDialogData) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Var383 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var375 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -8309,7 +8156,220 @@ func KanbanMoveDialogContent(data KanbanMoveDialogData) templ.Component {
 					}()
 				}
 				ctx = templ.InitializeContext(ctx)
-				templ_7745c5c3_Var384 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 527, "Move card")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				return nil
+			})
+			templ_7745c5c3_Err = dialog.Title().Render(templ.WithChildren(ctx, templ_7745c5c3_Var375), templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 528, " ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Var376 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+				if !templ_7745c5c3_IsBuffer {
+					defer func() {
+						templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+						if templ_7745c5c3_Err == nil {
+							templ_7745c5c3_Err = templ_7745c5c3_BufErr
+						}
+					}()
+				}
+				ctx = templ.InitializeContext(ctx)
+				var templ_7745c5c3_Var377 string
+				templ_7745c5c3_Var377, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanDialogCardLabel(data.Identifier, data.Title))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2576, Col: 55}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var377))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				return nil
+			})
+			templ_7745c5c3_Err = dialog.Description().Render(templ.WithChildren(ctx, templ_7745c5c3_Var376), templ_7745c5c3_Buffer)
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			return nil
+		})
+		templ_7745c5c3_Err = dialog.Header().Render(templ.WithChildren(ctx, templ_7745c5c3_Var374), templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = kanbanDialogError(data.Error).Render(ctx, templ_7745c5c3_Buffer)
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 529, "<form class=\"grid gap-4\" hx-post=\"/api/v1/kanban/move\" hx-target=\"#kanban-feedback\" hx-swap=\"outerHTML\"><input type=\"hidden\" name=\"kanban_dialog\" value=\"true\"> <input type=\"hidden\" name=\"project_id\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var378 string
+		templ_7745c5c3_Var378, templ_7745c5c3_Err = templ.JoinStringErrs(data.ProjectID)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2582, Col: 63}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var378))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 530, "\"> <input type=\"hidden\" name=\"issue_id\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var379 string
+		templ_7745c5c3_Var379, templ_7745c5c3_Err = templ.JoinStringErrs(data.IssueID)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2583, Col: 59}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var379))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 531, "\"> <input type=\"hidden\" name=\"current_state\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var380 string
+		templ_7745c5c3_Var380, templ_7745c5c3_Err = templ.JoinStringErrs(data.CurrentState)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2584, Col: 69}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var380))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 532, "\"> <input type=\"hidden\" name=\"identifier\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var381 string
+		templ_7745c5c3_Var381, templ_7745c5c3_Err = templ.JoinStringErrs(data.Identifier)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2585, Col: 64}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var381))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 533, "\"> <input type=\"hidden\" name=\"title\" value=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var382 string
+		templ_7745c5c3_Var382, templ_7745c5c3_Err = templ.JoinStringErrs(data.Title)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2586, Col: 54}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var382))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 534, "\"> ")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if data.PRNumber > 0 {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 535, "<input type=\"hidden\" name=\"pr_number\" value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var383 string
+			templ_7745c5c3_Var383, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(data.PRNumber))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2588, Col: 76}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var383))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 536, "\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 537, "<div class=\"grid gap-2\"><label class=\"text-sm font-medium text-foreground\" for=\"kanban-dialog-target-state\">Target state</label> <select id=\"kanban-dialog-target-state\" name=\"target_state\" class=\"min-h-10 w-full rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent\" data-kanban-status-menu>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		for _, state := range data.States {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 538, "<option value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var384 string
+			templ_7745c5c3_Var384, templ_7745c5c3_Err = templ.JoinStringErrs(state)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2594, Col: 26}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var384))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 539, "\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			if normalizeDashboardState(state) == normalizeDashboardState(kanbanMoveDialogTargetState(data)) {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 540, " selected")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 541, ">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var385 string
+			templ_7745c5c3_Var385, templ_7745c5c3_Err = templ.JoinStringErrs(state)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2594, Col: 143}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var385))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 542, "</option>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 543, "</select></div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Var386 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+			if !templ_7745c5c3_IsBuffer {
+				defer func() {
+					templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+					if templ_7745c5c3_Err == nil {
+						templ_7745c5c3_Err = templ_7745c5c3_BufErr
+					}
+				}()
+			}
+			ctx = templ.InitializeContext(ctx)
+			templ_7745c5c3_Var387 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
+				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
+				if !templ_7745c5c3_IsBuffer {
+					defer func() {
+						templ_7745c5c3_BufErr := templruntime.ReleaseBuffer(templ_7745c5c3_Buffer)
+						if templ_7745c5c3_Err == nil {
+							templ_7745c5c3_Err = templ_7745c5c3_BufErr
+						}
+					}()
+				}
+				ctx = templ.InitializeContext(ctx)
+				templ_7745c5c3_Var388 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 					templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 					templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 					if !templ_7745c5c3_IsBuffer {
@@ -8321,7 +8381,7 @@ func KanbanMoveDialogContent(data KanbanMoveDialogData) templ.Component {
 						}()
 					}
 					ctx = templ.InitializeContext(ctx)
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 539, "Cancel")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 544, "Cancel")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -8330,21 +8390,21 @@ func KanbanMoveDialogContent(data KanbanMoveDialogData) templ.Component {
 				templ_7745c5c3_Err = button.Button(button.Props{
 					Variant: button.VariantOutline,
 					Type:    button.TypeButton,
-				}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var384), templ_7745c5c3_Buffer)
+				}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var388), templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				return nil
 			})
-			templ_7745c5c3_Err = dialog.Close().Render(templ.WithChildren(ctx, templ_7745c5c3_Var383), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = dialog.Close().Render(templ.WithChildren(ctx, templ_7745c5c3_Var387), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 540, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 545, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Var385 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var389 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -8360,23 +8420,23 @@ func KanbanMoveDialogContent(data KanbanMoveDialogData) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 541, " Move")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 546, " Move")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				return nil
 			})
-			templ_7745c5c3_Err = button.Button(button.Props{Type: button.TypeSubmit}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var385), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = button.Button(button.Props{Type: button.TypeSubmit}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var389), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = dialog.Footer().Render(templ.WithChildren(ctx, templ_7745c5c3_Var382), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = dialog.Footer().Render(templ.WithChildren(ctx, templ_7745c5c3_Var386), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 542, "</form>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 547, "</form>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -8400,12 +8460,12 @@ func KanbanCommentDialogContent(data KanbanCommentDialogData) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var386 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var386 == nil {
-			templ_7745c5c3_Var386 = templ.NopComponent
+		templ_7745c5c3_Var390 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var390 == nil {
+			templ_7745c5c3_Var390 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Var387 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_Var391 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 			if !templ_7745c5c3_IsBuffer {
@@ -8417,7 +8477,7 @@ func KanbanCommentDialogContent(data KanbanCommentDialogData) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Var388 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var392 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -8429,30 +8489,30 @@ func KanbanCommentDialogContent(data KanbanCommentDialogData) templ.Component {
 					}()
 				}
 				ctx = templ.InitializeContext(ctx)
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 543, "Comment on ")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 548, "Comment on ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var389 string
-				templ_7745c5c3_Var389, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanCommentTargetLabel(data.Target))
+				var templ_7745c5c3_Var393 string
+				templ_7745c5c3_Var393, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanCommentTargetLabel(data.Target))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2451, Col: 53}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2618, Col: 53}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var389))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var393))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				return nil
 			})
-			templ_7745c5c3_Err = dialog.Title().Render(templ.WithChildren(ctx, templ_7745c5c3_Var388), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = dialog.Title().Render(templ.WithChildren(ctx, templ_7745c5c3_Var392), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 544, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 549, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Var390 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var394 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -8464,24 +8524,24 @@ func KanbanCommentDialogContent(data KanbanCommentDialogData) templ.Component {
 					}()
 				}
 				ctx = templ.InitializeContext(ctx)
-				var templ_7745c5c3_Var391 string
-				templ_7745c5c3_Var391, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanDialogCardLabel(data.Identifier, data.Title))
+				var templ_7745c5c3_Var395 string
+				templ_7745c5c3_Var395, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanDialogCardLabel(data.Identifier, data.Title))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2454, Col: 55}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2621, Col: 55}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var391))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var395))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				return nil
 			})
-			templ_7745c5c3_Err = dialog.Description().Render(templ.WithChildren(ctx, templ_7745c5c3_Var390), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = dialog.Description().Render(templ.WithChildren(ctx, templ_7745c5c3_Var394), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = dialog.Header().Render(templ.WithChildren(ctx, templ_7745c5c3_Var387), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = dialog.Header().Render(templ.WithChildren(ctx, templ_7745c5c3_Var391), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -8489,144 +8549,144 @@ func KanbanCommentDialogContent(data KanbanCommentDialogData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 545, "<form class=\"grid gap-4\" hx-post=\"/api/v1/kanban/comment\" hx-target=\"#kanban-feedback\" hx-swap=\"outerHTML\"><input type=\"hidden\" name=\"kanban_dialog\" value=\"true\"> <input type=\"hidden\" name=\"project_id\" value=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 550, "<form class=\"grid gap-4\" hx-post=\"/api/v1/kanban/comment\" hx-target=\"#kanban-feedback\" hx-swap=\"outerHTML\"><input type=\"hidden\" name=\"kanban_dialog\" value=\"true\"> <input type=\"hidden\" name=\"project_id\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var392 string
-		templ_7745c5c3_Var392, templ_7745c5c3_Err = templ.JoinStringErrs(data.ProjectID)
+		var templ_7745c5c3_Var396 string
+		templ_7745c5c3_Var396, templ_7745c5c3_Err = templ.JoinStringErrs(data.ProjectID)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2460, Col: 63}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2627, Col: 63}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var392))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 546, "\"> <input type=\"hidden\" name=\"target\" value=\"")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var396))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var393 string
-		templ_7745c5c3_Var393, templ_7745c5c3_Err = templ.JoinStringErrs(data.Target)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2461, Col: 56}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var393))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 551, "\"> <input type=\"hidden\" name=\"target\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 547, "\"> <input type=\"hidden\" name=\"identifier\" value=\"")
+		var templ_7745c5c3_Var397 string
+		templ_7745c5c3_Var397, templ_7745c5c3_Err = templ.JoinStringErrs(data.Target)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2628, Col: 56}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var397))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var394 string
-		templ_7745c5c3_Var394, templ_7745c5c3_Err = templ.JoinStringErrs(data.Identifier)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2462, Col: 64}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var394))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 552, "\"> <input type=\"hidden\" name=\"identifier\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 548, "\"> <input type=\"hidden\" name=\"title\" value=\"")
+		var templ_7745c5c3_Var398 string
+		templ_7745c5c3_Var398, templ_7745c5c3_Err = templ.JoinStringErrs(data.Identifier)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2629, Col: 64}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var398))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var395 string
-		templ_7745c5c3_Var395, templ_7745c5c3_Err = templ.JoinStringErrs(data.Title)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2463, Col: 54}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var395))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 549, "\"> ")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		if data.Target == "issue" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 550, "<input type=\"hidden\" name=\"issue_id\" value=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var396 string
-			templ_7745c5c3_Var396, templ_7745c5c3_Err = templ.JoinStringErrs(data.IssueID)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2465, Col: 60}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var396))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 551, "\"> ")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		if data.Target == "pr" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 552, "<input type=\"hidden\" name=\"pr_repository\" value=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var397 string
-			templ_7745c5c3_Var397, templ_7745c5c3_Err = templ.JoinStringErrs(data.PRRepository)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2468, Col: 70}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var397))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 553, "\"> <input type=\"hidden\" name=\"pr_number\" value=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var398 string
-			templ_7745c5c3_Var398, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(data.PRNumber))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2469, Col: 76}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var398))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 554, "\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 555, "<div class=\"grid gap-2\"><label class=\"text-sm font-medium text-foreground\" for=\"kanban-dialog-comment-body\">Comment</label> <textarea id=\"kanban-dialog-comment-body\" name=\"body\" rows=\"5\" class=\"min-h-32 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent\" placeholder=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 553, "\"> <input type=\"hidden\" name=\"title\" value=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var399 string
-		templ_7745c5c3_Var399, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanCommentTargetLabel(data.Target) + " comment")
+		templ_7745c5c3_Var399, templ_7745c5c3_Err = templ.JoinStringErrs(data.Title)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2473, Col: 347}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2630, Col: 54}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var399))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 556, "\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 554, "\"> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var400 string
-		templ_7745c5c3_Var400, templ_7745c5c3_Err = templ.JoinStringErrs(data.Body)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2473, Col: 361}
+		if data.Target == "issue" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 555, "<input type=\"hidden\" name=\"issue_id\" value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var400 string
+			templ_7745c5c3_Var400, templ_7745c5c3_Err = templ.JoinStringErrs(data.IssueID)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2632, Col: 60}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var400))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 556, "\"> ")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var400))
+		if data.Target == "pr" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 557, "<input type=\"hidden\" name=\"pr_repository\" value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var401 string
+			templ_7745c5c3_Var401, templ_7745c5c3_Err = templ.JoinStringErrs(data.PRRepository)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2635, Col: 70}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var401))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 558, "\"> <input type=\"hidden\" name=\"pr_number\" value=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var402 string
+			templ_7745c5c3_Var402, templ_7745c5c3_Err = templ.JoinStringErrs(strconv.Itoa(data.PRNumber))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2636, Col: 76}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var402))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 559, "\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 560, "<div class=\"grid gap-2\"><label class=\"text-sm font-medium text-foreground\" for=\"kanban-dialog-comment-body\">Comment</label> <textarea id=\"kanban-dialog-comment-body\" name=\"body\" rows=\"5\" class=\"min-h-32 w-full resize-y rounded-md border border-border bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:border-accent focus:outline-none focus:ring-2 focus:ring-accent\" placeholder=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 557, "</textarea></div>")
+		var templ_7745c5c3_Var403 string
+		templ_7745c5c3_Var403, templ_7745c5c3_Err = templ.JoinStringErrs(kanbanCommentTargetLabel(data.Target) + " comment")
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2640, Col: 347}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var403))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Var401 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 561, "\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var404 string
+		templ_7745c5c3_Var404, templ_7745c5c3_Err = templ.JoinStringErrs(data.Body)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2640, Col: 361}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var404))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 562, "</textarea></div>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Var405 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 			if !templ_7745c5c3_IsBuffer {
@@ -8638,7 +8698,7 @@ func KanbanCommentDialogContent(data KanbanCommentDialogData) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Var402 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var406 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -8650,7 +8710,7 @@ func KanbanCommentDialogContent(data KanbanCommentDialogData) templ.Component {
 					}()
 				}
 				ctx = templ.InitializeContext(ctx)
-				templ_7745c5c3_Var403 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+				templ_7745c5c3_Var407 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 					templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 					templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 					if !templ_7745c5c3_IsBuffer {
@@ -8662,7 +8722,7 @@ func KanbanCommentDialogContent(data KanbanCommentDialogData) templ.Component {
 						}()
 					}
 					ctx = templ.InitializeContext(ctx)
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 558, "Cancel")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 563, "Cancel")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
@@ -8671,21 +8731,21 @@ func KanbanCommentDialogContent(data KanbanCommentDialogData) templ.Component {
 				templ_7745c5c3_Err = button.Button(button.Props{
 					Variant: button.VariantOutline,
 					Type:    button.TypeButton,
-				}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var403), templ_7745c5c3_Buffer)
+				}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var407), templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				return nil
 			})
-			templ_7745c5c3_Err = dialog.Close().Render(templ.WithChildren(ctx, templ_7745c5c3_Var402), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = dialog.Close().Render(templ.WithChildren(ctx, templ_7745c5c3_Var406), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 559, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 564, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Var404 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var408 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -8701,23 +8761,23 @@ func KanbanCommentDialogContent(data KanbanCommentDialogData) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 560, " Comment")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 565, " Comment")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				return nil
 			})
-			templ_7745c5c3_Err = button.Button(button.Props{Type: button.TypeSubmit}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var404), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = button.Button(button.Props{Type: button.TypeSubmit}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var408), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = dialog.Footer().Render(templ.WithChildren(ctx, templ_7745c5c3_Var401), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = dialog.Footer().Render(templ.WithChildren(ctx, templ_7745c5c3_Var405), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 561, "</form>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 566, "</form>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -8741,12 +8801,12 @@ func KanbanDialogErrorContent(message string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var405 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var405 == nil {
-			templ_7745c5c3_Var405 = templ.NopComponent
+		templ_7745c5c3_Var409 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var409 == nil {
+			templ_7745c5c3_Var409 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Var406 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_Var410 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 			if !templ_7745c5c3_IsBuffer {
@@ -8758,7 +8818,7 @@ func KanbanDialogErrorContent(message string) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Var407 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var411 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -8770,19 +8830,19 @@ func KanbanDialogErrorContent(message string) templ.Component {
 					}()
 				}
 				ctx = templ.InitializeContext(ctx)
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 562, "Kanban action unavailable")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 567, "Kanban action unavailable")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				return nil
 			})
-			templ_7745c5c3_Err = dialog.Title().Render(templ.WithChildren(ctx, templ_7745c5c3_Var407), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = dialog.Title().Render(templ.WithChildren(ctx, templ_7745c5c3_Var411), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = dialog.Header().Render(templ.WithChildren(ctx, templ_7745c5c3_Var406), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = dialog.Header().Render(templ.WithChildren(ctx, templ_7745c5c3_Var410), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -8790,7 +8850,7 @@ func KanbanDialogErrorContent(message string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Var408 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+		templ_7745c5c3_Var412 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 			templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 			templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 			if !templ_7745c5c3_IsBuffer {
@@ -8802,7 +8862,7 @@ func KanbanDialogErrorContent(message string) templ.Component {
 				}()
 			}
 			ctx = templ.InitializeContext(ctx)
-			templ_7745c5c3_Var409 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+			templ_7745c5c3_Var413 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 				templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 				templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 				if !templ_7745c5c3_IsBuffer {
@@ -8814,7 +8874,7 @@ func KanbanDialogErrorContent(message string) templ.Component {
 					}()
 				}
 				ctx = templ.InitializeContext(ctx)
-				templ_7745c5c3_Var410 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
+				templ_7745c5c3_Var414 := templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 					templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 					templ_7745c5c3_Buffer, templ_7745c5c3_IsBuffer := templruntime.GetBuffer(templ_7745c5c3_W)
 					if !templ_7745c5c3_IsBuffer {
@@ -8826,25 +8886,25 @@ func KanbanDialogErrorContent(message string) templ.Component {
 						}()
 					}
 					ctx = templ.InitializeContext(ctx)
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 563, "Close")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 568, "Close")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 					return nil
 				})
-				templ_7745c5c3_Err = button.Button(button.Props{Variant: button.VariantOutline}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var410), templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = button.Button(button.Props{Variant: button.VariantOutline}).Render(templ.WithChildren(ctx, templ_7745c5c3_Var414), templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				return nil
 			})
-			templ_7745c5c3_Err = dialog.Close().Render(templ.WithChildren(ctx, templ_7745c5c3_Var409), templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = dialog.Close().Render(templ.WithChildren(ctx, templ_7745c5c3_Var413), templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			return nil
 		})
-		templ_7745c5c3_Err = dialog.Footer().Render(templ.WithChildren(ctx, templ_7745c5c3_Var408), templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = dialog.Footer().Render(templ.WithChildren(ctx, templ_7745c5c3_Var412), templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -8868,26 +8928,26 @@ func kanbanDialogError(message string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var411 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var411 == nil {
-			templ_7745c5c3_Var411 = templ.NopComponent
+		templ_7745c5c3_Var415 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var415 == nil {
+			templ_7745c5c3_Var415 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if message != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 564, "<div role=\"alert\" class=\"rounded-md border border-danger bg-danger-soft px-3 py-2 text-sm text-danger\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 569, "<div role=\"alert\" class=\"rounded-md border border-danger bg-danger-soft px-3 py-2 text-sm text-danger\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var412 string
-			templ_7745c5c3_Var412, templ_7745c5c3_Err = templ.JoinStringErrs(message)
+			var templ_7745c5c3_Var416 string
+			templ_7745c5c3_Var416, templ_7745c5c3_Err = templ.JoinStringErrs(message)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2510, Col: 114}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2677, Col: 114}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var412))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var416))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 565, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 570, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -8912,12 +8972,12 @@ func kanbanScript() templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var413 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var413 == nil {
-			templ_7745c5c3_Var413 = templ.NopComponent
+		templ_7745c5c3_Var417 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var417 == nil {
+			templ_7745c5c3_Var417 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 566, "<script>\n\t\t(function() {\n\t\t\tif (window.__detentKanbanDragHandlersRegistered) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\twindow.__detentKanbanDragHandlersRegistered = true;\n\n\t\t\tlet draggedIssueID = \"\";\n\t\t\tlet dropped = false;\n\t\t\tlet blockedDrop = false;\n\n\t\t\tfunction feedback(message) {\n\t\t\t\tconst target = document.getElementById(\"kanban-feedback\");\n\t\t\t\tif (target) {\n\t\t\t\t\ttarget.textContent = message;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction draggedCard() {\n\t\t\t\tif (!draggedIssueID || !window.CSS || typeof CSS.escape !== \"function\") {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t\treturn document.querySelector(\"[data-kanban-card][data-kanban-issue-id='\" + CSS.escape(draggedIssueID) + \"']\");\n\t\t\t}\n\n\t\t\tfunction markedDraggedCard() {\n\t\t\t\treturn document.querySelector(\"[data-kanban-card][data-kanban-dragging='true']\");\n\t\t\t}\n\n\t\t\tfunction activeDragIssueID(event) {\n\t\t\t\tif (draggedIssueID) {\n\t\t\t\t\treturn draggedIssueID;\n\t\t\t\t}\n\t\t\t\tconst markedCard = markedDraggedCard();\n\t\t\t\tif (markedCard instanceof HTMLElement && markedCard.dataset.kanbanIssueId) {\n\t\t\t\t\treturn markedCard.dataset.kanbanIssueId;\n\t\t\t\t}\n\t\t\t\tif (!event.dataTransfer || typeof event.dataTransfer.getData !== \"function\") {\n\t\t\t\t\treturn \"\";\n\t\t\t\t}\n\t\t\t\treturn event.dataTransfer.getData(\"text/plain\") || \"\";\n\t\t\t}\n\n\t\t\tfunction allowedTargetKeys(card) {\n\t\t\t\tif (!(card instanceof HTMLElement)) {\n\t\t\t\t\treturn [];\n\t\t\t\t}\n\t\t\t\treturn (card.dataset.kanbanAllowedTargets || \"\").split(/\\s+/).filter(Boolean);\n\t\t\t}\n\n\t\t\tfunction laneAllowed(card, lane) {\n\t\t\t\tif (!(lane instanceof HTMLElement)) {\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t\tconst key = lane.dataset.kanbanDropKey || \"\";\n\t\t\t\treturn key !== \"\" && allowedTargetKeys(card).includes(key);\n\t\t\t}\n\n\t\t\tfunction dragImageOffset(position, start, size) {\n\t\t\t\tif (position <= 0 || size <= 0) {\n\t\t\t\t\treturn Math.max(0, size / 2);\n\t\t\t\t}\n\t\t\t\treturn Math.min(Math.max(position - start, 0), size);\n\t\t\t}\n\n\t\t\tfunction setCardDragImage(event, card) {\n\t\t\t\tif (!event.dataTransfer) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst rect = card.getBoundingClientRect();\n\t\t\t\tconst offsetX = dragImageOffset(event.clientX, rect.left, rect.width);\n\t\t\t\tconst offsetY = dragImageOffset(event.clientY, rect.top, rect.height);\n\t\t\t\tevent.dataTransfer.setDragImage(card, Math.round(offsetX), Math.round(offsetY));\n\t\t\t}\n\n\t\t\tfunction setDropTargetState(card) {\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-drop-state]\").forEach(function(lane) {\n\t\t\t\t\tif (!(lane instanceof HTMLElement)) {\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tif (lane.dataset.kanbanDropWasVisible === undefined) {\n\t\t\t\t\t\tlane.dataset.kanbanDropWasVisible = lane.dataset.projectKanbanLaneVisible || \"\";\n\t\t\t\t\t}\n\t\t\t\t\tconst allowed = laneAllowed(card, lane);\n\t\t\t\t\tlane.dataset.projectKanbanLaneVisible = \"true\";\n\t\t\t\t\tlane.dataset.kanbanDropAllowed = allowed ? \"true\" : \"false\";\n\t\t\t\t\tlane.setAttribute(\"aria-disabled\", allowed ? \"false\" : \"true\");\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tfunction clearDropTargetState() {\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-drop-state]\").forEach(function(lane) {\n\t\t\t\t\tif (!(lane instanceof HTMLElement)) {\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tif (lane.dataset.kanbanDropWasVisible !== undefined) {\n\t\t\t\t\t\tif (lane.dataset.kanbanDropWasVisible === \"\") {\n\t\t\t\t\t\t\tdelete lane.dataset.projectKanbanLaneVisible;\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tlane.dataset.projectKanbanLaneVisible = lane.dataset.kanbanDropWasVisible;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tdelete lane.dataset.kanbanDropWasVisible;\n\t\t\t\t\t}\n\t\t\t\t\tdelete lane.dataset.kanbanDropAllowed;\n\t\t\t\t\tlane.removeAttribute(\"aria-disabled\");\n\t\t\t\t});\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-card][data-kanban-dragging='true']\").forEach(function(card) {\n\t\t\t\t\tif (card instanceof HTMLElement) {\n\t\t\t\t\t\tdelete card.dataset.kanbanDragging;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tfunction closeActionDialog() {\n\t\t\t\tif (window.tui && window.tui.dialog) {\n\t\t\t\t\twindow.tui.dialog.close(\"kanban-action-dialog\");\n\t\t\t\t}\n\t\t\t\tconst content = document.getElementById(\"kanban-dialog-content\");\n\t\t\t\tif (content) {\n\t\t\t\t\tcontent.replaceChildren();\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tdocument.addEventListener(\"dragstart\", function(event) {\n\t\t\t\tconst card = event.target instanceof Element ? event.target.closest(\"[data-kanban-card]\") : null;\n\t\t\t\tif (!card || card.getAttribute(\"draggable\") !== \"true\") {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tdraggedIssueID = card.dataset.kanbanIssueId || \"\";\n\t\t\t\tdropped = false;\n\t\t\t\tblockedDrop = false;\n\t\t\t\tif (!draggedIssueID) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tcard.dataset.kanbanDragging = \"true\";\n\t\t\t\tif (event.dataTransfer) {\n\t\t\t\t\tevent.dataTransfer.effectAllowed = \"move\";\n\t\t\t\t\tevent.dataTransfer.setData(\"text/plain\", draggedIssueID);\n\t\t\t\t}\n\t\t\t\tsetCardDragImage(event, card);\n\t\t\t\tsetDropTargetState(card);\n\t\t\t\tfeedback(\"Moving \" + (card.dataset.kanbanCurrentState || \"card\") + \".\");\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"dragover\", function(event) {\n\t\t\t\tconst issueID = activeDragIssueID(event);\n\t\t\t\tif (!issueID) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tdraggedIssueID = issueID;\n\t\t\t\tconst lane = event.target instanceof Element ? event.target.closest(\"[data-kanban-drop-state]\") : null;\n\t\t\t\tif (!lane) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst allowed = laneAllowed(draggedCard(), lane);\n\t\t\t\tif (event.dataTransfer) {\n\t\t\t\t\tevent.dataTransfer.dropEffect = allowed ? \"move\" : \"none\";\n\t\t\t\t}\n\t\t\t\tif (allowed) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tblockedDrop = false;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tblockedDrop = true;\n\t\t\t\tfeedback(\"Move blocked by transition policy.\");\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"drop\", function(event) {\n\t\t\t\tconst issueID = activeDragIssueID(event);\n\t\t\t\tif (!issueID) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tdraggedIssueID = issueID;\n\t\t\t\tconst lane = event.target instanceof Element ? event.target.closest(\"[data-kanban-drop-state]\") : null;\n\t\t\t\tif (!lane) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tevent.preventDefault();\n\t\t\t\tconst card = draggedCard();\n\t\t\t\tif (!laneAllowed(card, lane)) {\n\t\t\t\t\tfeedback(\"Move blocked by transition policy.\");\n\t\t\t\t\tdropped = true;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst form = card ? card.querySelector(\"[data-kanban-drag-move-form]\") : null;\n\t\t\t\tconst targetState = form ? form.querySelector(\"[data-kanban-drag-target-state]\") : null;\n\t\t\t\tif (!(form instanceof HTMLFormElement) || !(targetState instanceof HTMLInputElement)) {\n\t\t\t\t\tfeedback(\"Move cancelled.\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\ttargetState.value = lane.dataset.kanbanDropState || \"\";\n\t\t\t\tdropped = true;\n\t\t\t\tform.requestSubmit();\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"dragend\", function() {\n\t\t\t\tif (draggedIssueID && !dropped && !blockedDrop) {\n\t\t\t\t\tfeedback(\"Move cancelled.\");\n\t\t\t\t}\n\t\t\t\tdraggedIssueID = \"\";\n\t\t\t\tdropped = false;\n\t\t\t\tblockedDrop = false;\n\t\t\t\tclearDropTargetState();\n\t\t\t});\n\n\t\t\tdocument.body.addEventListener(\"kanbanActionSucceeded\", closeActionDialog);\n\t\t\tdocument.body.addEventListener(\"htmx:responseError\", function(event) {\n\t\t\t\tconst form = event.detail && event.detail.elt;\n\t\t\t\tif (!(form instanceof HTMLFormElement) || !form.matches(\"[data-kanban-drag-move-form]\")) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst response = event.detail.xhr ? event.detail.xhr.responseText : \"\";\n\t\t\t\tconst target = document.getElementById(\"kanban-feedback\");\n\t\t\t\tif (target && response) {\n\t\t\t\t\ttarget.outerHTML = response;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tfeedback(\"Move failed.\");\n\t\t\t});\n\t\t})();\n\t</script>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 571, "<script>\n\t\t(function() {\n\t\t\tif (window.__detentKanbanDragHandlersRegistered) {\n\t\t\t\treturn;\n\t\t\t}\n\t\t\twindow.__detentKanbanDragHandlersRegistered = true;\n\n\t\t\tlet draggedIssueID = \"\";\n\t\t\tlet dropped = false;\n\t\t\tlet blockedDrop = false;\n\n\t\t\tfunction feedback(message) {\n\t\t\t\tconst target = document.getElementById(\"kanban-feedback\");\n\t\t\t\tif (target) {\n\t\t\t\t\ttarget.textContent = message;\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tfunction draggedCard() {\n\t\t\t\tif (!draggedIssueID || !window.CSS || typeof CSS.escape !== \"function\") {\n\t\t\t\t\treturn null;\n\t\t\t\t}\n\t\t\t\treturn document.querySelector(\"[data-kanban-card][data-kanban-issue-id='\" + CSS.escape(draggedIssueID) + \"']\");\n\t\t\t}\n\n\t\t\tfunction markedDraggedCard() {\n\t\t\t\treturn document.querySelector(\"[data-kanban-card][data-kanban-dragging='true']\");\n\t\t\t}\n\n\t\t\tfunction activeDragIssueID(event) {\n\t\t\t\tif (draggedIssueID) {\n\t\t\t\t\treturn draggedIssueID;\n\t\t\t\t}\n\t\t\t\tconst markedCard = markedDraggedCard();\n\t\t\t\tif (markedCard instanceof HTMLElement && markedCard.dataset.kanbanIssueId) {\n\t\t\t\t\treturn markedCard.dataset.kanbanIssueId;\n\t\t\t\t}\n\t\t\t\tif (!event.dataTransfer || typeof event.dataTransfer.getData !== \"function\") {\n\t\t\t\t\treturn \"\";\n\t\t\t\t}\n\t\t\t\treturn event.dataTransfer.getData(\"text/plain\") || \"\";\n\t\t\t}\n\n\t\t\tfunction allowedTargetKeys(card) {\n\t\t\t\tif (!(card instanceof HTMLElement)) {\n\t\t\t\t\treturn [];\n\t\t\t\t}\n\t\t\t\treturn (card.dataset.kanbanAllowedTargets || \"\").split(/\\s+/).filter(Boolean);\n\t\t\t}\n\n\t\t\tfunction laneAllowed(card, lane) {\n\t\t\t\tif (!(lane instanceof HTMLElement)) {\n\t\t\t\t\treturn false;\n\t\t\t\t}\n\t\t\t\tconst key = lane.dataset.kanbanDropKey || \"\";\n\t\t\t\treturn key !== \"\" && allowedTargetKeys(card).includes(key);\n\t\t\t}\n\n\t\t\tfunction dragImageOffset(position, start, size) {\n\t\t\t\tif (position <= 0 || size <= 0) {\n\t\t\t\t\treturn Math.max(0, size / 2);\n\t\t\t\t}\n\t\t\t\treturn Math.min(Math.max(position - start, 0), size);\n\t\t\t}\n\n\t\t\tfunction setCardDragImage(event, card) {\n\t\t\t\tif (!event.dataTransfer) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst rect = card.getBoundingClientRect();\n\t\t\t\tconst offsetX = dragImageOffset(event.clientX, rect.left, rect.width);\n\t\t\t\tconst offsetY = dragImageOffset(event.clientY, rect.top, rect.height);\n\t\t\t\tevent.dataTransfer.setDragImage(card, Math.round(offsetX), Math.round(offsetY));\n\t\t\t}\n\n\t\t\tfunction setDropTargetState(card) {\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-drop-state]\").forEach(function(lane) {\n\t\t\t\t\tif (!(lane instanceof HTMLElement)) {\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tif (lane.dataset.kanbanDropWasVisible === undefined) {\n\t\t\t\t\t\tlane.dataset.kanbanDropWasVisible = lane.dataset.projectKanbanLaneVisible || \"\";\n\t\t\t\t\t}\n\t\t\t\t\tconst allowed = laneAllowed(card, lane);\n\t\t\t\t\tlane.dataset.projectKanbanLaneVisible = \"true\";\n\t\t\t\t\tlane.dataset.kanbanDropAllowed = allowed ? \"true\" : \"false\";\n\t\t\t\t\tlane.setAttribute(\"aria-disabled\", allowed ? \"false\" : \"true\");\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tfunction clearDropTargetState() {\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-drop-state]\").forEach(function(lane) {\n\t\t\t\t\tif (!(lane instanceof HTMLElement)) {\n\t\t\t\t\t\treturn;\n\t\t\t\t\t}\n\t\t\t\t\tif (lane.dataset.kanbanDropWasVisible !== undefined) {\n\t\t\t\t\t\tif (lane.dataset.kanbanDropWasVisible === \"\") {\n\t\t\t\t\t\t\tdelete lane.dataset.projectKanbanLaneVisible;\n\t\t\t\t\t\t} else {\n\t\t\t\t\t\t\tlane.dataset.projectKanbanLaneVisible = lane.dataset.kanbanDropWasVisible;\n\t\t\t\t\t\t}\n\t\t\t\t\t\tdelete lane.dataset.kanbanDropWasVisible;\n\t\t\t\t\t}\n\t\t\t\t\tdelete lane.dataset.kanbanDropAllowed;\n\t\t\t\t\tlane.removeAttribute(\"aria-disabled\");\n\t\t\t\t});\n\t\t\t\tdocument.querySelectorAll(\"[data-kanban-card][data-kanban-dragging='true']\").forEach(function(card) {\n\t\t\t\t\tif (card instanceof HTMLElement) {\n\t\t\t\t\t\tdelete card.dataset.kanbanDragging;\n\t\t\t\t\t}\n\t\t\t\t});\n\t\t\t}\n\n\t\t\tfunction closeActionDialog() {\n\t\t\t\tif (window.tui && window.tui.dialog) {\n\t\t\t\t\twindow.tui.dialog.close(\"kanban-action-dialog\");\n\t\t\t\t}\n\t\t\t\tconst content = document.getElementById(\"kanban-dialog-content\");\n\t\t\t\tif (content) {\n\t\t\t\t\tcontent.replaceChildren();\n\t\t\t\t}\n\t\t\t}\n\n\t\t\tdocument.addEventListener(\"dragstart\", function(event) {\n\t\t\t\tconst card = event.target instanceof Element ? event.target.closest(\"[data-kanban-card]\") : null;\n\t\t\t\tif (!card || card.getAttribute(\"draggable\") !== \"true\") {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tdraggedIssueID = card.dataset.kanbanIssueId || \"\";\n\t\t\t\tdropped = false;\n\t\t\t\tblockedDrop = false;\n\t\t\t\tif (!draggedIssueID) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tcard.dataset.kanbanDragging = \"true\";\n\t\t\t\tif (event.dataTransfer) {\n\t\t\t\t\tevent.dataTransfer.effectAllowed = \"move\";\n\t\t\t\t\tevent.dataTransfer.setData(\"text/plain\", draggedIssueID);\n\t\t\t\t}\n\t\t\t\tsetCardDragImage(event, card);\n\t\t\t\tsetDropTargetState(card);\n\t\t\t\tfeedback(\"Moving \" + (card.dataset.kanbanCurrentState || \"card\") + \".\");\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"dragover\", function(event) {\n\t\t\t\tconst issueID = activeDragIssueID(event);\n\t\t\t\tif (!issueID) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tdraggedIssueID = issueID;\n\t\t\t\tconst lane = event.target instanceof Element ? event.target.closest(\"[data-kanban-drop-state]\") : null;\n\t\t\t\tif (!lane) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst allowed = laneAllowed(draggedCard(), lane);\n\t\t\t\tif (event.dataTransfer) {\n\t\t\t\t\tevent.dataTransfer.dropEffect = allowed ? \"move\" : \"none\";\n\t\t\t\t}\n\t\t\t\tif (allowed) {\n\t\t\t\t\tevent.preventDefault();\n\t\t\t\t\tblockedDrop = false;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tblockedDrop = true;\n\t\t\t\tfeedback(\"Move blocked by transition policy.\");\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"drop\", function(event) {\n\t\t\t\tconst issueID = activeDragIssueID(event);\n\t\t\t\tif (!issueID) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tdraggedIssueID = issueID;\n\t\t\t\tconst lane = event.target instanceof Element ? event.target.closest(\"[data-kanban-drop-state]\") : null;\n\t\t\t\tif (!lane) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tevent.preventDefault();\n\t\t\t\tconst card = draggedCard();\n\t\t\t\tif (!laneAllowed(card, lane)) {\n\t\t\t\t\tfeedback(\"Move blocked by transition policy.\");\n\t\t\t\t\tdropped = true;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst form = card ? card.querySelector(\"[data-kanban-drag-move-form]\") : null;\n\t\t\t\tconst targetState = form ? form.querySelector(\"[data-kanban-drag-target-state]\") : null;\n\t\t\t\tif (!(form instanceof HTMLFormElement) || !(targetState instanceof HTMLInputElement)) {\n\t\t\t\t\tfeedback(\"Move cancelled.\");\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\ttargetState.value = lane.dataset.kanbanDropState || \"\";\n\t\t\t\tdropped = true;\n\t\t\t\tform.requestSubmit();\n\t\t\t});\n\n\t\t\tdocument.addEventListener(\"dragend\", function() {\n\t\t\t\tif (draggedIssueID && !dropped && !blockedDrop) {\n\t\t\t\t\tfeedback(\"Move cancelled.\");\n\t\t\t\t}\n\t\t\t\tdraggedIssueID = \"\";\n\t\t\t\tdropped = false;\n\t\t\t\tblockedDrop = false;\n\t\t\t\tclearDropTargetState();\n\t\t\t});\n\n\t\t\tdocument.body.addEventListener(\"kanbanActionSucceeded\", closeActionDialog);\n\t\t\tdocument.body.addEventListener(\"htmx:responseError\", function(event) {\n\t\t\t\tconst form = event.detail && event.detail.elt;\n\t\t\t\tif (!(form instanceof HTMLFormElement) || !form.matches(\"[data-kanban-drag-move-form]\")) {\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tconst response = event.detail.xhr ? event.detail.xhr.responseText : \"\";\n\t\t\t\tconst target = document.getElementById(\"kanban-feedback\");\n\t\t\t\tif (target && response) {\n\t\t\t\t\ttarget.outerHTML = response;\n\t\t\t\t\treturn;\n\t\t\t\t}\n\t\t\t\tfeedback(\"Move failed.\");\n\t\t\t});\n\t\t})();\n\t</script>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -8941,12 +9001,12 @@ func runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt tim
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var414 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var414 == nil {
-			templ_7745c5c3_Var414 = templ.NopComponent
+		templ_7745c5c3_Var418 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var418 == nil {
+			templ_7745c5c3_Var418 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 567, "<article class=\"dashboard-card rounded-md border border-border bg-card p-3 shadow-sm\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 572, "<article class=\"dashboard-card rounded-md border border-border bg-card p-3 shadow-sm\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -8954,20 +9014,20 @@ func runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt tim
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 568, "<div class=\"mt-3 grid gap-2 text-sm\"><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">State</span> <span class=\"rounded-full bg-accent-soft px-2 py-1 font-medium text-accent\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 573, "<div class=\"mt-3 grid gap-2 text-sm\"><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">State</span> <span class=\"rounded-full bg-accent-soft px-2 py-1 font-medium text-accent\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var415 string
-		templ_7745c5c3_Var415, templ_7745c5c3_Err = templ.JoinStringErrs(issueState(row.Issue, "Running"))
+		var templ_7745c5c3_Var419 string
+		templ_7745c5c3_Var419, templ_7745c5c3_Err = templ.JoinStringErrs(issueState(row.Issue, "Running"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2745, Col: 114}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2912, Col: 114}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var415))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var419))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 569, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 574, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -8975,20 +9035,20 @@ func runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt tim
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 570, "<span class=\"font-mono text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 575, "<span class=\"font-mono text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var416 string
-		templ_7745c5c3_Var416, templ_7745c5c3_Err = templ.JoinStringErrs(runningRuntime(row, generatedAt))
+		var templ_7745c5c3_Var420 string
+		templ_7745c5c3_Var420, templ_7745c5c3_Err = templ.JoinStringErrs(runningRuntime(row, generatedAt))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2749, Col: 78}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2916, Col: 78}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var416))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var420))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 571, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 576, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -8996,20 +9056,20 @@ func runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt tim
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 572, "<span class=\"font-mono text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 577, "<span class=\"font-mono text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var417 string
-		templ_7745c5c3_Var417, templ_7745c5c3_Err = templ.JoinStringErrs(formatDiffStat(row))
+		var templ_7745c5c3_Var421 string
+		templ_7745c5c3_Var421, templ_7745c5c3_Err = templ.JoinStringErrs(formatDiffStat(row))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2753, Col: 65}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2920, Col: 65}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var417))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var421))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 573, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 578, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9017,20 +9077,20 @@ func runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt tim
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 574, "<span class=\"font-mono text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 579, "<span class=\"font-mono text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var418 string
-		templ_7745c5c3_Var418, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokens(row.Tokens))
+		var templ_7745c5c3_Var422 string
+		templ_7745c5c3_Var422, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokens(row.Tokens))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2757, Col: 70}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2924, Col: 70}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var418))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var422))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 575, "</span></div></div><div class=\"mt-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 580, "</span></div></div><div class=\"mt-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9038,7 +9098,7 @@ func runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt tim
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 576, "</div><div class=\"mt-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 581, "</div><div class=\"mt-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9046,7 +9106,7 @@ func runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt tim
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 577, "</div></article>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 582, "</div></article>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9070,51 +9130,51 @@ func runningActivityCell(row telemetry.Running, prefix string, rowIndex int, gen
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var419 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var419 == nil {
-			templ_7745c5c3_Var419 = templ.NopComponent
+		templ_7745c5c3_Var423 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var423 == nil {
+			templ_7745c5c3_Var423 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 578, "<div class=\"running-activity relative\" data-popover data-running-activity><button type=\"button\" class=\"running-activity-trigger -m-2 grid w-full gap-1 rounded-md p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" aria-describedby=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 583, "<div class=\"running-activity relative\" data-popover data-running-activity><button type=\"button\" class=\"running-activity-trigger -m-2 grid w-full gap-1 rounded-md p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" aria-describedby=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var420 string
-		templ_7745c5c3_Var420, templ_7745c5c3_Err = templ.JoinStringErrs(runningActivityID(prefix, rowIndex))
+		var templ_7745c5c3_Var424 string
+		templ_7745c5c3_Var424, templ_7745c5c3_Err = templ.JoinStringErrs(runningActivityID(prefix, rowIndex))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2778, Col: 57}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2945, Col: 57}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var420))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 579, "\" aria-expanded=\"false\" data-popover-trigger data-running-activity-trigger><span class=\"line-clamp-2 text-foreground\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var424))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var421 string
-		templ_7745c5c3_Var421, templ_7745c5c3_Err = templ.JoinStringErrs(lastCodexUpdate(row))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2783, Col: 68}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var421))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 584, "\" aria-expanded=\"false\" data-popover-trigger data-running-activity-trigger><span class=\"line-clamp-2 text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 580, "</span> <span class=\"font-mono text-xs text-muted-foreground\">")
+		var templ_7745c5c3_Var425 string
+		templ_7745c5c3_Var425, templ_7745c5c3_Err = templ.JoinStringErrs(lastCodexUpdate(row))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2950, Col: 68}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var425))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var422 string
-		templ_7745c5c3_Var422, templ_7745c5c3_Err = templ.JoinStringErrs(lastCodexMeta(row))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2784, Col: 77}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var422))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 585, "</span> <span class=\"font-mono text-xs text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 581, "</span></button>")
+		var templ_7745c5c3_Var426 string
+		templ_7745c5c3_Var426, templ_7745c5c3_Err = templ.JoinStringErrs(lastCodexMeta(row))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2951, Col: 77}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var426))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 586, "</span></button>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9122,7 +9182,7 @@ func runningActivityCell(row telemetry.Running, prefix string, rowIndex int, gen
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 582, "</div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 587, "</div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9146,167 +9206,167 @@ func runningActivityPanel(row telemetry.Running, prefix string, rowIndex int, ge
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var423 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var423 == nil {
-			templ_7745c5c3_Var423 = templ.NopComponent
+		templ_7745c5c3_Var427 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var427 == nil {
+			templ_7745c5c3_Var427 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 583, "<div id=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 588, "<div id=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var424 string
-		templ_7745c5c3_Var424, templ_7745c5c3_Err = templ.JoinStringErrs(runningActivityID(prefix, rowIndex))
+		var templ_7745c5c3_Var428 string
+		templ_7745c5c3_Var428, templ_7745c5c3_Err = templ.JoinStringErrs(runningActivityID(prefix, rowIndex))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2792, Col: 42}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2959, Col: 42}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var424))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 584, "\" class=\"popover-panel running-activity-panel\" aria-hidden=\"true\" data-popover-interactive=\"true\" data-popover-panel data-popover-width=\"448\" data-running-activity-panel role=\"tooltip\"><div class=\"grid gap-4\"><div class=\"grid gap-1\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Latest message</span><p class=\"whitespace-pre-wrap break-words text-sm text-foreground\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var428))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var425 string
-		templ_7745c5c3_Var425, templ_7745c5c3_Err = templ.JoinStringErrs(lastCodexUpdate(row))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2804, Col: 93}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var425))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 589, "\" class=\"popover-panel running-activity-panel\" aria-hidden=\"true\" data-popover-interactive=\"true\" data-popover-panel data-popover-width=\"448\" data-running-activity-panel role=\"tooltip\"><div class=\"grid gap-4\"><div class=\"grid gap-1\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Latest message</span><p class=\"whitespace-pre-wrap break-words text-sm text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 585, "</p><p class=\"font-mono text-xs text-muted-foreground\">")
+		var templ_7745c5c3_Var429 string
+		templ_7745c5c3_Var429, templ_7745c5c3_Err = templ.JoinStringErrs(lastCodexUpdate(row))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2971, Col: 93}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var429))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var426 string
-		templ_7745c5c3_Var426, templ_7745c5c3_Err = templ.JoinStringErrs(lastCodexMeta(row))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2805, Col: 75}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var426))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 586, "</p></div><div class=\"grid gap-2\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Recent activity</span> ")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		if len(runningActivityRows(row)) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 587, "<p class=\"rounded-md border border-dashed border-border bg-muted/60 px-3 py-3 text-sm text-muted-foreground\">No activity recorded.</p>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 588, "<ol class=\"grid gap-2\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			for _, activity := range runningActivityRows(row) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 589, "<li class=\"rounded-md bg-muted/60 px-3 py-2\"><div class=\"flex flex-wrap items-center justify-between gap-2\"><span class=\"font-mono text-xs text-muted-foreground\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var427 string
-				templ_7745c5c3_Var427, templ_7745c5c3_Err = templ.JoinStringErrs(activity.At)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2816, Col: 76}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var427))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 590, "</span> <span class=\"font-mono text-xs font-medium text-accent\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var428 string
-				templ_7745c5c3_Var428, templ_7745c5c3_Err = templ.JoinStringErrs(activity.Event)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2817, Col: 81}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var428))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 591, "</span></div><p class=\"mt-1 whitespace-pre-wrap break-words text-sm text-foreground\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var429 string
-				templ_7745c5c3_Var429, templ_7745c5c3_Err = templ.JoinStringErrs(activity.Message)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2819, Col: 98}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var429))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 592, "</p></li>")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 593, "</ol>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 594, "</div><div class=\"grid gap-2 border-t border-border pt-3\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Turn / tokens / runtime</span><div class=\"grid gap-2 sm:grid-cols-3\"><div class=\"rounded-md bg-muted/60 px-3 py-2\"><span class=\"block text-xs text-muted-foreground\">Turn</span> <strong class=\"font-mono text-sm font-medium text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 590, "</p><p class=\"font-mono text-xs text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var430 string
-		templ_7745c5c3_Var430, templ_7745c5c3_Err = templ.JoinStringErrs(runningTurnLabel(row))
+		templ_7745c5c3_Var430, templ_7745c5c3_Err = templ.JoinStringErrs(lastCodexMeta(row))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2830, Col: 91}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2972, Col: 75}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var430))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 595, "</strong></div><div class=\"rounded-md bg-muted/60 px-3 py-2\"><span class=\"block text-xs text-muted-foreground\">Tokens</span> <strong class=\"font-mono text-sm font-medium text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 591, "</p></div><div class=\"grid gap-2\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Recent activity</span> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var431 string
-		templ_7745c5c3_Var431, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokens(row.Tokens))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2834, Col: 94}
+		if len(runningActivityRows(row)) == 0 {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 592, "<p class=\"rounded-md border border-dashed border-border bg-muted/60 px-3 py-3 text-sm text-muted-foreground\">No activity recorded.</p>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		} else {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 593, "<ol class=\"grid gap-2\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			for _, activity := range runningActivityRows(row) {
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 594, "<li class=\"rounded-md bg-muted/60 px-3 py-2\"><div class=\"flex flex-wrap items-center justify-between gap-2\"><span class=\"font-mono text-xs text-muted-foreground\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var431 string
+				templ_7745c5c3_Var431, templ_7745c5c3_Err = templ.JoinStringErrs(activity.At)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2983, Col: 76}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var431))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 595, "</span> <span class=\"font-mono text-xs font-medium text-accent\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var432 string
+				templ_7745c5c3_Var432, templ_7745c5c3_Err = templ.JoinStringErrs(activity.Event)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2984, Col: 81}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var432))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 596, "</span></div><p class=\"mt-1 whitespace-pre-wrap break-words text-sm text-foreground\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var433 string
+				templ_7745c5c3_Var433, templ_7745c5c3_Err = templ.JoinStringErrs(activity.Message)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2986, Col: 98}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var433))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 597, "</p></li>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 598, "</ol>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var431))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 599, "</div><div class=\"grid gap-2 border-t border-border pt-3\"><span class=\"text-xs font-medium uppercase text-muted-foreground\">Turn / tokens / runtime</span><div class=\"grid gap-2 sm:grid-cols-3\"><div class=\"rounded-md bg-muted/60 px-3 py-2\"><span class=\"block text-xs text-muted-foreground\">Turn</span> <strong class=\"font-mono text-sm font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 596, "</strong> <span class=\"block font-mono text-xs text-muted-foreground\">")
+		var templ_7745c5c3_Var434 string
+		templ_7745c5c3_Var434, templ_7745c5c3_Err = templ.JoinStringErrs(runningTurnLabel(row))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2997, Col: 91}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var434))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var432 string
-		templ_7745c5c3_Var432, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokenBreakdown(row.Tokens))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2835, Col: 100}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var432))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 600, "</strong></div><div class=\"rounded-md bg-muted/60 px-3 py-2\"><span class=\"block text-xs text-muted-foreground\">Tokens</span> <strong class=\"font-mono text-sm font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 597, "</span></div><div class=\"rounded-md bg-muted/60 px-3 py-2\"><span class=\"block text-xs text-muted-foreground\">Runtime</span> <strong class=\"font-mono text-sm font-medium text-foreground\">")
+		var templ_7745c5c3_Var435 string
+		templ_7745c5c3_Var435, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokens(row.Tokens))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3001, Col: 94}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var435))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var433 string
-		templ_7745c5c3_Var433, templ_7745c5c3_Err = templ.JoinStringErrs(runningRuntimeOnly(row, generatedAt))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2839, Col: 106}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var433))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 601, "</strong> <span class=\"block font-mono text-xs text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 598, "</strong></div></div></div></div></div>")
+		var templ_7745c5c3_Var436 string
+		templ_7745c5c3_Var436, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokenBreakdown(row.Tokens))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3002, Col: 100}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var436))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 602, "</span></div><div class=\"rounded-md bg-muted/60 px-3 py-2\"><span class=\"block text-xs text-muted-foreground\">Runtime</span> <strong class=\"font-mono text-sm font-medium text-foreground\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var437 string
+		templ_7745c5c3_Var437, templ_7745c5c3_Err = templ.JoinStringErrs(runningRuntimeOnly(row, generatedAt))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3006, Col: 106}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var437))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 603, "</strong></div></div></div></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9330,12 +9390,12 @@ func boardHealthSection(snapshot telemetry.Snapshot) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var434 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var434 == nil {
-			templ_7745c5c3_Var434 = templ.NopComponent
+		templ_7745c5c3_Var438 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var438 == nil {
+			templ_7745c5c3_Var438 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 599, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"Board health\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 604, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"Board health\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9343,20 +9403,20 @@ func boardHealthSection(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 600, "<p class=\"text-sm text-muted-foreground\">Current issue state distribution and completed session history from the latest snapshot.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 605, "<p class=\"text-sm text-muted-foreground\">Current issue state distribution and completed session history from the latest snapshot.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var435 string
-		templ_7745c5c3_Var435, templ_7745c5c3_Err = templ.JoinStringErrs(boardStateTotalLabel(snapshot))
+		var templ_7745c5c3_Var439 string
+		templ_7745c5c3_Var439, templ_7745c5c3_Err = templ.JoinStringErrs(boardStateTotalLabel(snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2854, Col: 184}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3021, Col: 184}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var435))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var439))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 601, "</span></div><div class=\"mt-5 grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]\"><div class=\"min-w-0\"><div class=\"flex items-center justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 606, "</span></div><div class=\"mt-5 grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_20rem]\"><div class=\"min-w-0\"><div class=\"flex items-center justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9364,25 +9424,25 @@ func boardHealthSection(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 602, "<span class=\"font-mono text-xs text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 607, "<span class=\"font-mono text-xs text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var436 string
-		templ_7745c5c3_Var436, templ_7745c5c3_Err = templ.JoinStringErrs(boardStateTotalLabel(snapshot))
+		var templ_7745c5c3_Var440 string
+		templ_7745c5c3_Var440, templ_7745c5c3_Err = templ.JoinStringErrs(boardStateTotalLabel(snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2860, Col: 91}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3027, Col: 91}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var436))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var440))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 603, " issues</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 608, " issues</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(boardStateRows(snapshot)) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 604, "<div class=\"mt-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 609, "<div class=\"mt-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -9390,12 +9450,12 @@ func boardHealthSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 605, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 610, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 606, "<div class=\"mt-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 611, "<div class=\"mt-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -9403,83 +9463,83 @@ func boardHealthSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 607, "</div><div class=\"mt-4 grid gap-2 sm:grid-cols-2\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 612, "</div><div class=\"mt-4 grid gap-2 sm:grid-cols-2\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, row := range boardStateRows(snapshot) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 608, "<div class=\"flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/60 px-3 py-2\"><span class=\"inline-flex min-w-0 items-center gap-2\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 613, "<div class=\"flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/60 px-3 py-2\"><span class=\"inline-flex min-w-0 items-center gap-2\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var437 = []any{"h-2 w-2 shrink-0 rounded-full " + row.DotClass}
-				templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var437...)
+				var templ_7745c5c3_Var441 = []any{"h-2 w-2 shrink-0 rounded-full " + row.DotClass}
+				templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var441...)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 609, "<span class=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 614, "<span class=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var438 string
-				templ_7745c5c3_Var438, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var437).String())
+				var templ_7745c5c3_Var442 string
+				templ_7745c5c3_Var442, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var441).String())
 				if templ_7745c5c3_Err != nil {
 					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var438))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var442))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 610, "\"></span> <span class=\"truncate text-sm font-medium text-foreground\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 615, "\"></span> <span class=\"truncate text-sm font-medium text-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var439 string
-				templ_7745c5c3_Var439, templ_7745c5c3_Err = templ.JoinStringErrs(row.State)
+				var templ_7745c5c3_Var443 string
+				templ_7745c5c3_Var443, templ_7745c5c3_Err = templ.JoinStringErrs(row.State)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2875, Col: 79}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3042, Col: 79}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var439))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 611, "</span></span> <span class=\"shrink-0 font-mono text-sm text-muted-foreground\">")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var443))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var440 string
-				templ_7745c5c3_Var440, templ_7745c5c3_Err = templ.JoinStringErrs(row.CountLabel)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2877, Col: 87}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var440))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 616, "</span></span> <span class=\"shrink-0 font-mono text-sm text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 612, " / ")
+				var templ_7745c5c3_Var444 string
+				templ_7745c5c3_Var444, templ_7745c5c3_Err = templ.JoinStringErrs(row.CountLabel)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3044, Col: 87}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var444))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var441 string
-				templ_7745c5c3_Var441, templ_7745c5c3_Err = templ.JoinStringErrs(row.Percent)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2877, Col: 105}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var441))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 617, " / ")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 613, "</span></div>")
+				var templ_7745c5c3_Var445 string
+				templ_7745c5c3_Var445, templ_7745c5c3_Err = templ.JoinStringErrs(row.Percent)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3044, Col: 105}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var445))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 618, "</span></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 614, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 619, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 615, "</div><div class=\"min-w-0\"><div class=\"flex items-center justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 620, "</div><div class=\"min-w-0\"><div class=\"flex items-center justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9487,25 +9547,25 @@ func boardHealthSection(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 616, "<span class=\"font-mono text-xs text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 621, "<span class=\"font-mono text-xs text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var442 string
-		templ_7745c5c3_Var442, templ_7745c5c3_Err = templ.JoinStringErrs(boardProgressCount(snapshot))
+		var templ_7745c5c3_Var446 string
+		templ_7745c5c3_Var446, templ_7745c5c3_Err = templ.JoinStringErrs(boardProgressCount(snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2886, Col: 89}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3053, Col: 89}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var442))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var446))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 617, " sessions</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 622, " sessions</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(telemetry.BoardProgressPoints(snapshot)) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 618, "<div class=\"mt-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 623, "<div class=\"mt-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -9513,12 +9573,12 @@ func boardHealthSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 619, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 624, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 620, "<div class=\"mt-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 625, "<div class=\"mt-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -9526,12 +9586,12 @@ func boardHealthSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 621, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 626, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 622, "</div></div></section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 627, "</div></div></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9555,12 +9615,12 @@ func cycleTimeSection(report telemetry.CycleTimeReport) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var443 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var443 == nil {
-			templ_7745c5c3_Var443 = templ.NopComponent
+		templ_7745c5c3_Var447 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var447 == nil {
+			templ_7745c5c3_Var447 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 623, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"Cycle time\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 628, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"Cycle time\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9568,25 +9628,25 @@ func cycleTimeSection(report telemetry.CycleTimeReport) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 624, "<p class=\"text-sm text-muted-foreground\">Completed issue durations from local run history.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 629, "<p class=\"text-sm text-muted-foreground\">Completed issue durations from local run history.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var444 string
-		templ_7745c5c3_Var444, templ_7745c5c3_Err = templ.JoinStringErrs(cycleTimeCountLabel(report))
+		var templ_7745c5c3_Var448 string
+		templ_7745c5c3_Var448, templ_7745c5c3_Err = templ.JoinStringErrs(cycleTimeCountLabel(report))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2909, Col: 183}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3076, Col: 183}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var444))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var448))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 625, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 630, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if !report.Available && report.DegradedReason != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 626, "<div class=\"mt-4\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 631, "<div class=\"mt-4\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -9594,12 +9654,12 @@ func cycleTimeSection(report telemetry.CycleTimeReport) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 627, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 632, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else if len(report.Buckets) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 628, "<div class=\"mt-4\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 633, "<div class=\"mt-4\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -9607,12 +9667,12 @@ func cycleTimeSection(report telemetry.CycleTimeReport) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 629, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 634, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 630, "<div class=\"mt-5 grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]\"><div class=\"min-w-0\"><div class=\"flex items-center justify-between gap-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 635, "<div class=\"mt-5 grid min-w-0 gap-5 lg:grid-cols-[minmax(0,1fr)_18rem]\"><div class=\"min-w-0\"><div class=\"flex items-center justify-between gap-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -9620,20 +9680,20 @@ func cycleTimeSection(report telemetry.CycleTimeReport) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 631, "<span class=\"font-mono text-xs text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 636, "<span class=\"font-mono text-xs text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var445 string
-			templ_7745c5c3_Var445, templ_7745c5c3_Err = templ.JoinStringErrs(cycleTimeCountLabel(report))
+			var templ_7745c5c3_Var449 string
+			templ_7745c5c3_Var449, templ_7745c5c3_Err = templ.JoinStringErrs(cycleTimeCountLabel(report))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2924, Col: 89}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3091, Col: 89}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var445))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var449))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 632, "</span></div><div class=\"mt-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 637, "</span></div><div class=\"mt-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -9641,61 +9701,61 @@ func cycleTimeSection(report telemetry.CycleTimeReport) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 633, "</div></div><div class=\"grid min-w-0 content-start gap-3\"><div class=\"rounded-md bg-muted/60 px-3 py-2\"><span class=\"block text-xs font-medium uppercase text-muted-foreground\">Average</span> <strong class=\"font-mono text-lg font-semibold text-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 638, "</div></div><div class=\"grid min-w-0 content-start gap-3\"><div class=\"rounded-md bg-muted/60 px-3 py-2\"><span class=\"block text-xs font-medium uppercase text-muted-foreground\">Average</span> <strong class=\"font-mono text-lg font-semibold text-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var446 string
-			templ_7745c5c3_Var446, templ_7745c5c3_Err = templ.JoinStringErrs(cycleTimeAverageLabel(report))
+			var templ_7745c5c3_Var450 string
+			templ_7745c5c3_Var450, templ_7745c5c3_Err = templ.JoinStringErrs(cycleTimeAverageLabel(report))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2933, Col: 101}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3100, Col: 101}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var446))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var450))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 634, "</strong></div><div class=\"grid gap-2\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 639, "</strong></div><div class=\"grid gap-2\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, row := range cycleTimeBucketRows(report) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 635, "<div class=\"flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/60 px-3 py-2 text-sm\"><span class=\"truncate font-medium text-foreground\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 640, "<div class=\"flex min-w-0 items-center justify-between gap-3 rounded-md bg-muted/60 px-3 py-2 text-sm\"><span class=\"truncate font-medium text-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var447 string
-				templ_7745c5c3_Var447, templ_7745c5c3_Err = templ.JoinStringErrs(row.Label)
+				var templ_7745c5c3_Var451 string
+				templ_7745c5c3_Var451, templ_7745c5c3_Err = templ.JoinStringErrs(row.Label)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2938, Col: 70}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3105, Col: 70}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var447))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 636, "</span> <span class=\"shrink-0 font-mono text-muted-foreground\">")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var451))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var448 string
-				templ_7745c5c3_Var448, templ_7745c5c3_Err = templ.JoinStringErrs(row.Count)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2939, Col: 74}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var448))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 641, "</span> <span class=\"shrink-0 font-mono text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 637, "</span></div>")
+				var templ_7745c5c3_Var452 string
+				templ_7745c5c3_Var452, templ_7745c5c3_Err = templ.JoinStringErrs(row.Count)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3106, Col: 74}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var452))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 642, "</span></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 638, "</div></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 643, "</div></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 639, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 644, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9719,12 +9779,12 @@ func agentActivityTimeline(snapshot telemetry.Snapshot) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var449 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var449 == nil {
-			templ_7745c5c3_Var449 = templ.NopComponent
+		templ_7745c5c3_Var453 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var453 == nil {
+			templ_7745c5c3_Var453 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 640, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"Agent activity timeline\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 645, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"Agent activity timeline\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9732,26 +9792,26 @@ func agentActivityTimeline(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 641, "<p class=\"text-sm text-muted-foreground\">Live timeline of running and recently completed Codex sessions.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 646, "<p class=\"text-sm text-muted-foreground\">Live timeline of running and recently completed Codex sessions.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var450 string
-		templ_7745c5c3_Var450, templ_7745c5c3_Err = templ.JoinStringErrs(formatCount(len(agentTimelineRows(snapshot))))
+		var templ_7745c5c3_Var454 string
+		templ_7745c5c3_Var454, templ_7745c5c3_Err = templ.JoinStringErrs(formatCount(len(agentTimelineRows(snapshot))))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2956, Col: 199}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3123, Col: 199}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var450))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var454))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 642, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 647, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(agentTimelineRows(snapshot)) == 0 {
 			if runningCount(snapshot)+completedCount(snapshot) > 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 643, "<div class=\"mt-4\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 648, "<div class=\"mt-4\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -9759,12 +9819,12 @@ func agentActivityTimeline(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 644, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 649, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 645, "<div class=\"mt-4\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 650, "<div class=\"mt-4\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -9772,13 +9832,13 @@ func agentActivityTimeline(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 646, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 651, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 647, "<div class=\"mt-4 grid gap-3 sm:hidden\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 652, "<div class=\"mt-4 grid gap-3 sm:hidden\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -9788,38 +9848,38 @@ func agentActivityTimeline(snapshot telemetry.Snapshot) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 648, "</div><div class=\"mt-4 hidden overflow-hidden rounded-md border border-border sm:block\"><div class=\"dashboard-agent-scroll max-h-[32rem] overflow-x-auto overflow-y-auto\" data-preserve-scroll=\"agent-activity\"><div class=\"min-w-[68rem]\"><div class=\"grid grid-cols-[18rem_minmax(0,1fr)_12rem] gap-3 border-b border-border bg-muted/70 px-3 py-3 text-xs font-medium uppercase text-muted-foreground\"><span>Agent</span> <span>Lifespan</span> <span class=\"text-right\">State / runtime</span></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 653, "</div><div class=\"mt-4 hidden overflow-hidden rounded-md border border-border sm:block\"><div class=\"dashboard-agent-scroll max-h-[32rem] overflow-x-auto overflow-y-auto\" data-preserve-scroll=\"agent-activity\"><div class=\"min-w-[68rem]\"><div class=\"grid grid-cols-[18rem_minmax(0,1fr)_12rem] gap-3 border-b border-border bg-muted/70 px-3 py-3 text-xs font-medium uppercase text-muted-foreground\"><span>Agent</span> <span>Lifespan</span> <span class=\"text-right\">State / runtime</span></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, row := range agentTimelineRows(snapshot) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 649, "<div class=\"agent-activity-table-row grid min-h-14 grid-cols-[18rem_minmax(0,1fr)_12rem] items-center gap-3 border-b border-border px-3 py-3 last:border-b-0\"><div class=\"flex min-w-0 items-start gap-2\"><div class=\"min-w-0 flex-1\"><span class=\"block truncate font-medium text-foreground\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 654, "<div class=\"agent-activity-table-row grid min-h-14 grid-cols-[18rem_minmax(0,1fr)_12rem] items-center gap-3 border-b border-border px-3 py-3 last:border-b-0\"><div class=\"flex min-w-0 items-start gap-2\"><div class=\"min-w-0 flex-1\"><span class=\"block truncate font-medium text-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var451 string
-				templ_7745c5c3_Var451, templ_7745c5c3_Err = templ.JoinStringErrs(row.Identifier)
+				var templ_7745c5c3_Var455 string
+				templ_7745c5c3_Var455, templ_7745c5c3_Err = templ.JoinStringErrs(row.Identifier)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2986, Col: 83}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3153, Col: 83}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var451))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 650, "</span> <span class=\"line-clamp-1 text-sm text-muted-foreground\">")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var455))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var452 string
-				templ_7745c5c3_Var452, templ_7745c5c3_Err = templ.JoinStringErrs(row.Title)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2987, Col: 78}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var452))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 655, "</span> <span class=\"line-clamp-1 text-sm text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 651, "</span></div>")
+				var templ_7745c5c3_Var456 string
+				templ_7745c5c3_Var456, templ_7745c5c3_Err = templ.JoinStringErrs(row.Title)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3154, Col: 78}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var456))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 656, "</span></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -9827,162 +9887,162 @@ func agentActivityTimeline(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 652, "</div><div class=\"grid gap-1\"><div class=\"flex items-center justify-between gap-3 font-mono text-xs text-muted-foreground\"><span>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 657, "</div><div class=\"grid gap-1\"><div class=\"flex items-center justify-between gap-3 font-mono text-xs text-muted-foreground\"><span>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var453 string
-				templ_7745c5c3_Var453, templ_7745c5c3_Err = templ.JoinStringErrs(row.StartedAt)
+				var templ_7745c5c3_Var457 string
+				templ_7745c5c3_Var457, templ_7745c5c3_Err = templ.JoinStringErrs(row.StartedAt)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2993, Col: 31}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3160, Col: 31}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var453))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 653, "</span> <span>")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var457))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var454 string
-				templ_7745c5c3_Var454, templ_7745c5c3_Err = templ.JoinStringErrs(row.EndedAt)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2994, Col: 29}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var454))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 658, "</span> <span>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 654, "</span></div><div class=\"relative h-9 overflow-hidden rounded-md bg-muted\" role=\"group\" aria-label=\"")
+				var templ_7745c5c3_Var458 string
+				templ_7745c5c3_Var458, templ_7745c5c3_Err = templ.JoinStringErrs(row.EndedAt)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3161, Col: 29}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var458))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var455 string
-				templ_7745c5c3_Var455, templ_7745c5c3_Err = templ.JoinStringErrs(row.Identifier + " lifespan")
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2996, Col: 125}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var455))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 659, "</span></div><div class=\"relative h-9 overflow-hidden rounded-md bg-muted\" role=\"group\" aria-label=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 655, "\">")
+				var templ_7745c5c3_Var459 string
+				templ_7745c5c3_Var459, templ_7745c5c3_Err = templ.JoinStringErrs(row.Identifier + " lifespan")
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3163, Col: 125}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var459))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 660, "\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				for _, segment := range row.Segments {
-					var templ_7745c5c3_Var456 = []any{"absolute bottom-1 top-1 min-w-1.5 rounded " + segment.Class}
-					templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var456...)
+					var templ_7745c5c3_Var460 = []any{"absolute bottom-1 top-1 min-w-1.5 rounded " + segment.Class}
+					templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var460...)
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 656, "<span class=\"")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					var templ_7745c5c3_Var457 string
-					templ_7745c5c3_Var457, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var456).String())
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var457))
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 657, "\" style=\"")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					var templ_7745c5c3_Var458 string
-					templ_7745c5c3_Var458, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(segment.Style)
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2998, Col: 109}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var458))
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 658, "\" title=\"")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					var templ_7745c5c3_Var459 string
-					templ_7745c5c3_Var459, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2998, Col: 133}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var459))
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 659, "\" aria-label=\"")
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					var templ_7745c5c3_Var460 string
-					templ_7745c5c3_Var460, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2998, Col: 162}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var460))
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 660, "\"><span class=\"sr-only\">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 661, "<span class=\"")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 					var templ_7745c5c3_Var461 string
-					templ_7745c5c3_Var461, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
+					templ_7745c5c3_Var461, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var460).String())
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 2999, Col: 49}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 					}
 					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var461))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 661, "</span></span>")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 662, "\" style=\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var462 string
+					templ_7745c5c3_Var462, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(segment.Style)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3165, Col: 109}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var462))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 663, "\" title=\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var463 string
+					templ_7745c5c3_Var463, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3165, Col: 133}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var463))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 664, "\" aria-label=\"")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var464 string
+					templ_7745c5c3_Var464, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3165, Col: 162}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var464))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 665, "\"><span class=\"sr-only\">")
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					var templ_7745c5c3_Var465 string
+					templ_7745c5c3_Var465, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3166, Col: 49}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var465))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 666, "</span></span>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 662, "</div></div><div class=\"grid justify-items-end gap-1\"><span class=\"rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 667, "</div></div><div class=\"grid justify-items-end gap-1\"><span class=\"rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var462 string
-				templ_7745c5c3_Var462, templ_7745c5c3_Err = templ.JoinStringErrs(row.State)
+				var templ_7745c5c3_Var466 string
+				templ_7745c5c3_Var466, templ_7745c5c3_Err = templ.JoinStringErrs(row.State)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3005, Col: 108}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3172, Col: 108}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var462))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 663, "</span> <span class=\"font-mono text-xs text-muted-foreground\">")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var466))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var463 string
-				templ_7745c5c3_Var463, templ_7745c5c3_Err = templ.JoinStringErrs(row.Duration)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3006, Col: 77}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var463))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 668, "</span> <span class=\"font-mono text-xs text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 664, "</span></div></div>")
+				var templ_7745c5c3_Var467 string
+				templ_7745c5c3_Var467, templ_7745c5c3_Err = templ.JoinStringErrs(row.Duration)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3173, Col: 77}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var467))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 669, "</span></div></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 665, "</div></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 670, "</div></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 666, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 671, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10006,38 +10066,38 @@ func agentActivityMobileCard(row agentTimelineRow) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var464 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var464 == nil {
-			templ_7745c5c3_Var464 = templ.NopComponent
+		templ_7745c5c3_Var468 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var468 == nil {
+			templ_7745c5c3_Var468 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 667, "<article class=\"dashboard-card rounded-md border border-border bg-card p-3 shadow-sm\"><div class=\"flex items-start justify-between gap-3\"><div class=\"min-w-0 flex-1\"><span class=\"block truncate font-medium text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 672, "<article class=\"dashboard-card rounded-md border border-border bg-card p-3 shadow-sm\"><div class=\"flex items-start justify-between gap-3\"><div class=\"min-w-0 flex-1\"><span class=\"block truncate font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var465 string
-		templ_7745c5c3_Var465, templ_7745c5c3_Err = templ.JoinStringErrs(row.Identifier)
+		var templ_7745c5c3_Var469 string
+		templ_7745c5c3_Var469, templ_7745c5c3_Err = templ.JoinStringErrs(row.Identifier)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3021, Col: 77}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3188, Col: 77}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var465))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 668, "</span> <span class=\"line-clamp-2 text-sm text-muted-foreground\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var469))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var466 string
-		templ_7745c5c3_Var466, templ_7745c5c3_Err = templ.JoinStringErrs(row.Title)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3022, Col: 72}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var466))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 673, "</span> <span class=\"line-clamp-2 text-sm text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 669, "</span></div><div class=\"flex shrink-0 items-start gap-1\">")
+		var templ_7745c5c3_Var470 string
+		templ_7745c5c3_Var470, templ_7745c5c3_Err = templ.JoinStringErrs(row.Title)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3189, Col: 72}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var470))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 674, "</span></div><div class=\"flex shrink-0 items-start gap-1\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10045,152 +10105,152 @@ func agentActivityMobileCard(row agentTimelineRow) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 670, "<span class=\"rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 675, "<span class=\"rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var467 string
-		templ_7745c5c3_Var467, templ_7745c5c3_Err = templ.JoinStringErrs(row.State)
+		var templ_7745c5c3_Var471 string
+		templ_7745c5c3_Var471, templ_7745c5c3_Err = templ.JoinStringErrs(row.State)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3026, Col: 103}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3193, Col: 103}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var467))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 671, "</span></div></div><div class=\"mt-3 grid gap-1\"><div class=\"flex items-center justify-between gap-3 font-mono text-xs text-muted-foreground\"><span>")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var471))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var468 string
-		templ_7745c5c3_Var468, templ_7745c5c3_Err = templ.JoinStringErrs(row.StartedAt)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3031, Col: 25}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var468))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 676, "</span></div></div><div class=\"mt-3 grid gap-1\"><div class=\"flex items-center justify-between gap-3 font-mono text-xs text-muted-foreground\"><span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 672, "</span> <span>")
+		var templ_7745c5c3_Var472 string
+		templ_7745c5c3_Var472, templ_7745c5c3_Err = templ.JoinStringErrs(row.StartedAt)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3198, Col: 25}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var472))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var469 string
-		templ_7745c5c3_Var469, templ_7745c5c3_Err = templ.JoinStringErrs(row.EndedAt)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3032, Col: 23}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var469))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 677, "</span> <span>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 673, "</span></div><div class=\"relative h-9 overflow-hidden rounded-md bg-muted\" role=\"group\" aria-label=\"")
+		var templ_7745c5c3_Var473 string
+		templ_7745c5c3_Var473, templ_7745c5c3_Err = templ.JoinStringErrs(row.EndedAt)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3199, Col: 23}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var473))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var470 string
-		templ_7745c5c3_Var470, templ_7745c5c3_Err = templ.JoinStringErrs(row.Identifier + " lifespan")
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3034, Col: 119}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var470))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 678, "</span></div><div class=\"relative h-9 overflow-hidden rounded-md bg-muted\" role=\"group\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 674, "\">")
+		var templ_7745c5c3_Var474 string
+		templ_7745c5c3_Var474, templ_7745c5c3_Err = templ.JoinStringErrs(row.Identifier + " lifespan")
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3201, Col: 119}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var474))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 679, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		for _, segment := range row.Segments {
-			var templ_7745c5c3_Var471 = []any{"absolute bottom-1 top-1 min-w-1.5 rounded " + segment.Class}
-			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var471...)
+			var templ_7745c5c3_Var475 = []any{"absolute bottom-1 top-1 min-w-1.5 rounded " + segment.Class}
+			templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var475...)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 675, "<span class=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var472 string
-			templ_7745c5c3_Var472, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var471).String())
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var472))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 676, "\" style=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var473 string
-			templ_7745c5c3_Var473, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(segment.Style)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3036, Col: 103}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var473))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 677, "\" title=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var474 string
-			templ_7745c5c3_Var474, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3036, Col: 127}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var474))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 678, "\" aria-label=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var475 string
-			templ_7745c5c3_Var475, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3036, Col: 156}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var475))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 679, "\"><span class=\"sr-only\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 680, "<span class=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var476 string
-			templ_7745c5c3_Var476, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
+			templ_7745c5c3_Var476, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var475).String())
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3037, Col: 43}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var476))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 680, "</span></span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 681, "\" style=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var477 string
+			templ_7745c5c3_Var477, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(segment.Style)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3203, Col: 103}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var477))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 682, "\" title=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var478 string
+			templ_7745c5c3_Var478, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3203, Col: 127}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var478))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 683, "\" aria-label=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var479 string
+			templ_7745c5c3_Var479, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3203, Col: 156}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var479))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 684, "\"><span class=\"sr-only\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var480 string
+			templ_7745c5c3_Var480, templ_7745c5c3_Err = templ.JoinStringErrs(segment.Title)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3204, Col: 43}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var480))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 685, "</span></span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 681, "</div></div><div class=\"mt-3 font-mono text-xs text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 686, "</div></div><div class=\"mt-3 font-mono text-xs text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var477 string
-		templ_7745c5c3_Var477, templ_7745c5c3_Err = templ.JoinStringErrs(row.Duration)
+		var templ_7745c5c3_Var481 string
+		templ_7745c5c3_Var481, templ_7745c5c3_Err = templ.JoinStringErrs(row.Duration)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3042, Col: 74}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3209, Col: 74}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var477))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var481))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 682, "</div></article>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 687, "</div></article>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10214,13 +10274,13 @@ func agentTimelineActions(row agentTimelineRow) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var478 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var478 == nil {
-			templ_7745c5c3_Var478 = templ.NopComponent
+		templ_7745c5c3_Var482 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var482 == nil {
+			templ_7745c5c3_Var482 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if row.IssueURL != "" || row.PullRequestURL != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 683, "<div class=\"flex shrink-0 items-center gap-1\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 688, "<div class=\"flex shrink-0 items-center gap-1\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10236,7 +10296,7 @@ func agentTimelineActions(row agentTimelineRow) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 684, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 689, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10261,12 +10321,12 @@ func retryQueueSection(snapshot telemetry.Snapshot) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var479 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var479 == nil {
-			templ_7745c5c3_Var479 = templ.NopComponent
+		templ_7745c5c3_Var483 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var483 == nil {
+			templ_7745c5c3_Var483 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 685, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 690, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10274,26 +10334,26 @@ func retryQueueSection(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 686, "<p class=\"text-sm text-muted-foreground\">Issues waiting for the next retry window.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-warning-soft px-2 py-1 text-sm font-medium text-warning\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 691, "<p class=\"text-sm text-muted-foreground\">Issues waiting for the next retry window.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-warning-soft px-2 py-1 text-sm font-medium text-warning\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var480 string
-		templ_7745c5c3_Var480, templ_7745c5c3_Err = templ.JoinStringErrs(formatCount(queueCount(snapshot)))
+		var templ_7745c5c3_Var484 string
+		templ_7745c5c3_Var484, templ_7745c5c3_Err = templ.JoinStringErrs(formatCount(queueCount(snapshot)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3066, Col: 189}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3233, Col: 189}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var480))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var484))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 687, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 692, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(snapshot.Queue) == 0 {
 			if queueCount(snapshot) > 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 688, "<div class=\"mt-4\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 693, "<div class=\"mt-4\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -10301,12 +10361,12 @@ func retryQueueSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 689, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 694, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 690, "<div class=\"mt-4\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 695, "<div class=\"mt-4\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -10314,13 +10374,13 @@ func retryQueueSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 691, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 696, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 692, "<div class=\"mt-4 grid gap-3 sm:hidden\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 697, "<div class=\"mt-4 grid gap-3 sm:hidden\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10330,7 +10390,7 @@ func retryQueueSection(snapshot telemetry.Snapshot) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 693, "</div><div class=\"mt-4 hidden overflow-hidden rounded-md border border-border sm:block\"><div class=\"overflow-x-auto\" data-preserve-scroll=\"retry-queue\"><table class=\"dashboard-table w-full min-w-[54rem] table-fixed border-collapse text-sm\"><thead class=\"bg-muted/70\"><tr class=\"border-b border-border text-left text-xs font-medium uppercase text-muted-foreground\"><th class=\"w-[24rem] px-3 py-3 font-medium\">Issue</th><th class=\"w-[7rem] px-3 py-3 font-medium\">Attempt</th><th class=\"w-[13rem] px-3 py-3 font-medium\">Due time</th><th class=\"px-3 py-3 font-medium\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 698, "</div><div class=\"mt-4 hidden overflow-hidden rounded-md border border-border sm:block\"><div class=\"overflow-x-auto\" data-preserve-scroll=\"retry-queue\"><table class=\"dashboard-table w-full min-w-[54rem] table-fixed border-collapse text-sm\"><thead class=\"bg-muted/70\"><tr class=\"border-b border-border text-left text-xs font-medium uppercase text-muted-foreground\"><th class=\"w-[24rem] px-3 py-3 font-medium\">Issue</th><th class=\"w-[7rem] px-3 py-3 font-medium\">Attempt</th><th class=\"w-[13rem] px-3 py-3 font-medium\">Due time</th><th class=\"px-3 py-3 font-medium\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10338,12 +10398,12 @@ func retryQueueSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 694, "</th></tr></thead> <tbody>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 699, "</th></tr></thead> <tbody>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for i, row := range snapshot.Queue {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 695, "<tr class=\"border-b border-border transition-colors last:border-b-0 hover:bg-muted/50\"><td class=\"px-3 py-4 align-top\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 700, "<tr class=\"border-b border-border transition-colors last:border-b-0 hover:bg-muted/50\"><td class=\"px-3 py-4 align-top\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -10351,56 +10411,56 @@ func retryQueueSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 696, "</td><td class=\"px-3 py-4 align-top font-mono text-foreground\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 701, "</td><td class=\"px-3 py-4 align-top font-mono text-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var481 string
-				templ_7745c5c3_Var481, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(int64(row.Attempt)))
+				var templ_7745c5c3_Var485 string
+				templ_7745c5c3_Var485, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(int64(row.Attempt)))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3103, Col: 98}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3270, Col: 98}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var481))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 697, "</td><td class=\"px-3 py-4 align-top font-mono text-muted-foreground\">")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var485))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var482 string
-				templ_7745c5c3_Var482, templ_7745c5c3_Err = templ.JoinStringErrs(queuedDueLabel(row))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3104, Col: 94}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var482))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 702, "</td><td class=\"px-3 py-4 align-top font-mono text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 698, "</td><td class=\"px-3 py-4 align-top text-muted-foreground\"><span class=\"line-clamp-3\">")
+				var templ_7745c5c3_Var486 string
+				templ_7745c5c3_Var486, templ_7745c5c3_Err = templ.JoinStringErrs(queuedDueLabel(row))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3271, Col: 94}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var486))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var483 string
-				templ_7745c5c3_Var483, templ_7745c5c3_Err = templ.JoinStringErrs(rowError(row.Error))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3106, Col: 58}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var483))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 703, "</td><td class=\"px-3 py-4 align-top text-muted-foreground\"><span class=\"line-clamp-3\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 699, "</span></td></tr>")
+				var templ_7745c5c3_Var487 string
+				templ_7745c5c3_Var487, templ_7745c5c3_Err = templ.JoinStringErrs(rowError(row.Error))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3273, Col: 58}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var487))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 704, "</span></td></tr>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 700, "</tbody></table></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 705, "</tbody></table></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 701, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 706, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10424,12 +10484,12 @@ func retryQueueMobileCard(row telemetry.Queued, rowIndex int) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var484 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var484 == nil {
-			templ_7745c5c3_Var484 = templ.NopComponent
+		templ_7745c5c3_Var488 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var488 == nil {
+			templ_7745c5c3_Var488 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 702, "<article class=\"dashboard-card rounded-md border border-border bg-card p-3 shadow-sm\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 707, "<article class=\"dashboard-card rounded-md border border-border bg-card p-3 shadow-sm\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10437,46 +10497,46 @@ func retryQueueMobileCard(row telemetry.Queued, rowIndex int) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 703, "<div class=\"mt-3 grid gap-2 text-sm\"><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Attempt</span> <span class=\"font-mono text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 708, "<div class=\"mt-3 grid gap-2 text-sm\"><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Attempt</span> <span class=\"font-mono text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var485 string
-		templ_7745c5c3_Var485, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(int64(row.Attempt)))
+		var templ_7745c5c3_Var489 string
+		templ_7745c5c3_Var489, templ_7745c5c3_Err = templ.JoinStringErrs(formatInt(int64(row.Attempt)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3124, Col: 75}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3291, Col: 75}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var485))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 704, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Due time</span> <span class=\"font-mono text-foreground\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var489))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var486 string
-		templ_7745c5c3_Var486, templ_7745c5c3_Err = templ.JoinStringErrs(queuedDueLabel(row))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3128, Col: 65}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var486))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 709, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Due time</span> <span class=\"font-mono text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 705, "</span></div></div><div class=\"mt-3 rounded-md bg-muted/60 p-3 text-sm text-muted-foreground\"><span class=\"line-clamp-4\">")
+		var templ_7745c5c3_Var490 string
+		templ_7745c5c3_Var490, templ_7745c5c3_Err = templ.JoinStringErrs(queuedDueLabel(row))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3295, Col: 65}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var490))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var487 string
-		templ_7745c5c3_Var487, templ_7745c5c3_Err = templ.JoinStringErrs(rowError(row.Error))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3132, Col: 51}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var487))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 710, "</span></div></div><div class=\"mt-3 rounded-md bg-muted/60 p-3 text-sm text-muted-foreground\"><span class=\"line-clamp-4\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 706, "</span></div></article>")
+		var templ_7745c5c3_Var491 string
+		templ_7745c5c3_Var491, templ_7745c5c3_Err = templ.JoinStringErrs(rowError(row.Error))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3299, Col: 51}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var491))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 711, "</span></div></article>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10500,12 +10560,12 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var488 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var488 == nil {
-			templ_7745c5c3_Var488 = templ.NopComponent
+		templ_7745c5c3_Var492 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var492 == nil {
+			templ_7745c5c3_Var492 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 707, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 712, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10513,26 +10573,26 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 708, "<p class=\"text-sm text-muted-foreground\">Issues paused because Codex requested operator input or approval.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-danger-soft px-2 py-1 text-sm font-medium text-danger\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 713, "<p class=\"text-sm text-muted-foreground\">Issues paused because Codex requested operator input or approval.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-danger-soft px-2 py-1 text-sm font-medium text-danger\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var489 string
-		templ_7745c5c3_Var489, templ_7745c5c3_Err = templ.JoinStringErrs(formatCount(blockedCount(snapshot)))
+		var templ_7745c5c3_Var493 string
+		templ_7745c5c3_Var493, templ_7745c5c3_Err = templ.JoinStringErrs(formatCount(blockedCount(snapshot)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3144, Col: 189}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3311, Col: 189}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var489))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var493))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 709, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 714, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(snapshot.Blocked) == 0 {
 			if blockedCount(snapshot) > 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 710, "<div class=\"mt-4\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 715, "<div class=\"mt-4\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -10540,12 +10600,12 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 711, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 716, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 712, "<div class=\"mt-4\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 717, "<div class=\"mt-4\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -10553,13 +10613,13 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 713, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 718, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 714, "<div class=\"mt-4 grid gap-3 sm:hidden\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 719, "<div class=\"mt-4 grid gap-3 sm:hidden\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10569,7 +10629,7 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 715, "</div><div class=\"mt-4 hidden overflow-hidden rounded-md border border-border sm:block\"><div class=\"overflow-x-auto\" data-preserve-scroll=\"blocked-sessions\"><table class=\"dashboard-table w-full min-w-[68rem] table-fixed border-collapse text-sm\"><thead class=\"bg-muted/70\"><tr class=\"border-b border-border text-left text-xs font-medium uppercase text-muted-foreground\"><th class=\"w-[24rem] px-3 py-3 font-medium\">Issue</th><th class=\"w-[9rem] px-3 py-3 font-medium\">State</th><th class=\"w-[11rem] px-3 py-3 font-medium\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 720, "</div><div class=\"mt-4 hidden overflow-hidden rounded-md border border-border sm:block\"><div class=\"overflow-x-auto\" data-preserve-scroll=\"blocked-sessions\"><table class=\"dashboard-table w-full min-w-[68rem] table-fixed border-collapse text-sm\"><thead class=\"bg-muted/70\"><tr class=\"border-b border-border text-left text-xs font-medium uppercase text-muted-foreground\"><th class=\"w-[24rem] px-3 py-3 font-medium\">Issue</th><th class=\"w-[9rem] px-3 py-3 font-medium\">State</th><th class=\"w-[11rem] px-3 py-3 font-medium\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10577,7 +10637,7 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 716, "</th><th class=\"w-[13rem] px-3 py-3 font-medium\">Blocked time</th><th class=\"px-3 py-3 font-medium\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 721, "</th><th class=\"w-[13rem] px-3 py-3 font-medium\">Blocked time</th><th class=\"px-3 py-3 font-medium\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10585,7 +10645,7 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 717, "</th><th class=\"w-[14rem] px-3 py-3 font-medium\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 722, "</th><th class=\"w-[14rem] px-3 py-3 font-medium\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10593,12 +10653,12 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 718, "</th></tr></thead> <tbody>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 723, "</th></tr></thead> <tbody>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for i, row := range snapshot.Blocked {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 719, "<tr class=\"border-b border-border transition-colors last:border-b-0 hover:bg-muted/50\"><td class=\"px-3 py-4 align-top\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 724, "<tr class=\"border-b border-border transition-colors last:border-b-0 hover:bg-muted/50\"><td class=\"px-3 py-4 align-top\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -10606,20 +10666,20 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 720, "</td><td class=\"px-3 py-4 align-top\"><span class=\"inline-flex rounded-full bg-danger-soft px-2 py-1 font-medium text-danger\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 725, "</td><td class=\"px-3 py-4 align-top\"><span class=\"inline-flex rounded-full bg-danger-soft px-2 py-1 font-medium text-danger\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var490 string
-				templ_7745c5c3_Var490, templ_7745c5c3_Err = templ.JoinStringErrs(issueState(row.Issue, "Blocked"))
+				var templ_7745c5c3_Var494 string
+				templ_7745c5c3_Var494, templ_7745c5c3_Err = templ.JoinStringErrs(issueState(row.Issue, "Blocked"))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3188, Col: 132}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3355, Col: 132}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var490))
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var494))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 721, "</span></td><td class=\"px-3 py-4 align-top\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 726, "</span></td><td class=\"px-3 py-4 align-top\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -10627,69 +10687,69 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 722, "</td><td class=\"px-3 py-4 align-top font-mono text-muted-foreground\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 727, "</td><td class=\"px-3 py-4 align-top font-mono text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var491 string
-				templ_7745c5c3_Var491, templ_7745c5c3_Err = templ.JoinStringErrs(blockedAtLabel(row))
+				var templ_7745c5c3_Var495 string
+				templ_7745c5c3_Var495, templ_7745c5c3_Err = templ.JoinStringErrs(blockedAtLabel(row))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3193, Col: 94}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3360, Col: 94}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var491))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 723, "</td><td class=\"px-3 py-4 align-top\"><div class=\"grid gap-1\"><span class=\"line-clamp-2 text-foreground\">")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var495))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var492 string
-				templ_7745c5c3_Var492, templ_7745c5c3_Err = templ.JoinStringErrs(blockedLastUpdate(row))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3196, Col: 78}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var492))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 728, "</td><td class=\"px-3 py-4 align-top\"><div class=\"grid gap-1\"><span class=\"line-clamp-2 text-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 724, "</span> <span class=\"font-mono text-xs text-muted-foreground\">")
+				var templ_7745c5c3_Var496 string
+				templ_7745c5c3_Var496, templ_7745c5c3_Err = templ.JoinStringErrs(blockedLastUpdate(row))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3363, Col: 78}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var496))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var493 string
-				templ_7745c5c3_Var493, templ_7745c5c3_Err = templ.JoinStringErrs(blockedLastUpdateMeta(row))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3197, Col: 93}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var493))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 729, "</span> <span class=\"font-mono text-xs text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 725, "</span></div></td><td class=\"px-3 py-4 align-top text-muted-foreground\"><span class=\"line-clamp-3\">")
+				var templ_7745c5c3_Var497 string
+				templ_7745c5c3_Var497, templ_7745c5c3_Err = templ.JoinStringErrs(blockedLastUpdateMeta(row))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3364, Col: 93}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var497))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var494 string
-				templ_7745c5c3_Var494, templ_7745c5c3_Err = templ.JoinStringErrs(rowError(row.Error))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3201, Col: 58}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var494))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 730, "</span></div></td><td class=\"px-3 py-4 align-top text-muted-foreground\"><span class=\"line-clamp-3\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 726, "</span></td></tr>")
+				var templ_7745c5c3_Var498 string
+				templ_7745c5c3_Var498, templ_7745c5c3_Err = templ.JoinStringErrs(rowError(row.Error))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3368, Col: 58}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var498))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 731, "</span></td></tr>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 727, "</tbody></table></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 732, "</tbody></table></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 728, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 733, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10713,12 +10773,12 @@ func blockedSessionMobileCard(row telemetry.Blocked, rowIndex int) templ.Compone
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var495 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var495 == nil {
-			templ_7745c5c3_Var495 = templ.NopComponent
+		templ_7745c5c3_Var499 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var499 == nil {
+			templ_7745c5c3_Var499 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 729, "<article class=\"dashboard-card rounded-md border border-border bg-card p-3 shadow-sm\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 734, "<article class=\"dashboard-card rounded-md border border-border bg-card p-3 shadow-sm\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10726,72 +10786,72 @@ func blockedSessionMobileCard(row telemetry.Blocked, rowIndex int) templ.Compone
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 730, "<div class=\"mt-3 grid gap-2 text-sm\"><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">State</span> <span class=\"rounded-full bg-danger-soft px-2 py-1 font-medium text-danger\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var496 string
-		templ_7745c5c3_Var496, templ_7745c5c3_Err = templ.JoinStringErrs(issueState(row.Issue, "Blocked"))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3219, Col: 114}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var496))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 731, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Blocked time</span> <span class=\"font-mono text-foreground\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var497 string
-		templ_7745c5c3_Var497, templ_7745c5c3_Err = templ.JoinStringErrs(blockedAtLabel(row))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3223, Col: 65}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var497))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 732, "</span></div></div><div class=\"mt-3 rounded-md bg-muted/60 p-3\"><span class=\"line-clamp-3 text-sm text-foreground\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var498 string
-		templ_7745c5c3_Var498, templ_7745c5c3_Err = templ.JoinStringErrs(blockedLastUpdate(row))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3227, Col: 78}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var498))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 733, "</span> <span class=\"mt-1 block font-mono text-xs text-muted-foreground\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var499 string
-		templ_7745c5c3_Var499, templ_7745c5c3_Err = templ.JoinStringErrs(blockedLastUpdateMeta(row))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3228, Col: 96}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var499))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 734, "</span></div><div class=\"mt-3 rounded-md bg-muted/60 p-3 text-sm text-muted-foreground\"><span class=\"line-clamp-4\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 735, "<div class=\"mt-3 grid gap-2 text-sm\"><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">State</span> <span class=\"rounded-full bg-danger-soft px-2 py-1 font-medium text-danger\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		var templ_7745c5c3_Var500 string
-		templ_7745c5c3_Var500, templ_7745c5c3_Err = templ.JoinStringErrs(rowError(row.Error))
+		templ_7745c5c3_Var500, templ_7745c5c3_Err = templ.JoinStringErrs(issueState(row.Issue, "Blocked"))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3231, Col: 51}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3386, Col: 114}
 		}
 		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var500))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 735, "</span></div><div class=\"mt-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 736, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Blocked time</span> <span class=\"font-mono text-foreground\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var501 string
+		templ_7745c5c3_Var501, templ_7745c5c3_Err = templ.JoinStringErrs(blockedAtLabel(row))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3390, Col: 65}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var501))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 737, "</span></div></div><div class=\"mt-3 rounded-md bg-muted/60 p-3\"><span class=\"line-clamp-3 text-sm text-foreground\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var502 string
+		templ_7745c5c3_Var502, templ_7745c5c3_Err = templ.JoinStringErrs(blockedLastUpdate(row))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3394, Col: 78}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var502))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 738, "</span> <span class=\"mt-1 block font-mono text-xs text-muted-foreground\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var503 string
+		templ_7745c5c3_Var503, templ_7745c5c3_Err = templ.JoinStringErrs(blockedLastUpdateMeta(row))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3395, Col: 96}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var503))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 739, "</span></div><div class=\"mt-3 rounded-md bg-muted/60 p-3 text-sm text-muted-foreground\"><span class=\"line-clamp-4\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var504 string
+		templ_7745c5c3_Var504, templ_7745c5c3_Err = templ.JoinStringErrs(rowError(row.Error))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3398, Col: 51}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var504))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 740, "</span></div><div class=\"mt-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10799,7 +10859,7 @@ func blockedSessionMobileCard(row telemetry.Blocked, rowIndex int) templ.Compone
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 736, "</div></article>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 741, "</div></article>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10823,12 +10883,12 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var501 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var501 == nil {
-			templ_7745c5c3_Var501 = templ.NopComponent
+		templ_7745c5c3_Var505 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var505 == nil {
+			templ_7745c5c3_Var505 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 737, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 742, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between\"><div class=\"min-w-0\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -10836,26 +10896,26 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 738, "<p class=\"text-sm text-muted-foreground\">Last completed Codex sessions across Detent runs.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 743, "<p class=\"text-sm text-muted-foreground\">Last completed Codex sessions across Detent runs.</p></div><span class=\"inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-success-soft px-2 py-1 text-sm font-medium text-success\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var502 string
-		templ_7745c5c3_Var502, templ_7745c5c3_Err = templ.JoinStringErrs(formatCount(completedCount(snapshot)))
+		var templ_7745c5c3_Var506 string
+		templ_7745c5c3_Var506, templ_7745c5c3_Err = templ.JoinStringErrs(formatCount(completedCount(snapshot)))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3246, Col: 193}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3413, Col: 193}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var502))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var506))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 739, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 744, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(snapshot.Completed) == 0 {
 			if completedCount(snapshot) > 0 {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 740, "<div class=\"mt-4\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 745, "<div class=\"mt-4\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -10863,12 +10923,12 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 741, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 746, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 742, "<div class=\"mt-4\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 747, "<div class=\"mt-4\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -10876,13 +10936,13 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 743, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 748, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 744, "<div class=\"mt-4 grid gap-3 sm:hidden\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 749, "<div class=\"mt-4 grid gap-3 sm:hidden\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10892,7 +10952,7 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 745, "</div><div class=\"mt-4 hidden overflow-hidden rounded-md border border-border sm:block\"><div class=\"overflow-x-auto\" data-preserve-scroll=\"recent-sessions\"><table class=\"dashboard-table w-full min-w-[74rem] table-fixed border-collapse text-sm\"><thead class=\"bg-muted/70\"><tr class=\"border-b border-border text-left text-xs font-medium uppercase text-muted-foreground\"><th class=\"w-[24rem] px-3 py-3 font-medium\">Issue</th><th class=\"w-[13rem] px-3 py-3 font-medium\">Completed</th><th class=\"w-[11rem] px-3 py-3 font-medium\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 750, "</div><div class=\"mt-4 hidden overflow-hidden rounded-md border border-border sm:block\"><div class=\"overflow-x-auto\" data-preserve-scroll=\"recent-sessions\"><table class=\"dashboard-table w-full min-w-[74rem] table-fixed border-collapse text-sm\"><thead class=\"bg-muted/70\"><tr class=\"border-b border-border text-left text-xs font-medium uppercase text-muted-foreground\"><th class=\"w-[24rem] px-3 py-3 font-medium\">Issue</th><th class=\"w-[13rem] px-3 py-3 font-medium\">Completed</th><th class=\"w-[11rem] px-3 py-3 font-medium\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10900,7 +10960,7 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 746, "</th><th class=\"w-[10rem] px-3 py-3 font-medium\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 751, "</th><th class=\"w-[10rem] px-3 py-3 font-medium\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10908,7 +10968,7 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 747, "</th><th class=\"w-[10rem] px-3 py-3 font-medium\">Final state</th><th class=\"w-[11rem] px-3 py-3 font-medium\">Model</th><th class=\"w-[11rem] px-3 py-3 font-medium\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 752, "</th><th class=\"w-[10rem] px-3 py-3 font-medium\">Final state</th><th class=\"w-[11rem] px-3 py-3 font-medium\">Model</th><th class=\"w-[11rem] px-3 py-3 font-medium\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -10916,12 +10976,12 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 748, "</th></tr></thead> <tbody>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 753, "</th></tr></thead> <tbody>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for i, row := range snapshot.Completed {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 749, "<tr class=\"border-b border-border transition-colors last:border-b-0 hover:bg-muted/50\"><td class=\"px-3 py-4 align-top\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 754, "<tr class=\"border-b border-border transition-colors last:border-b-0 hover:bg-muted/50\"><td class=\"px-3 py-4 align-top\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -10929,85 +10989,85 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 750, "</td><td class=\"px-3 py-4 align-top font-mono text-muted-foreground\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var503 string
-				templ_7745c5c3_Var503, templ_7745c5c3_Err = templ.JoinStringErrs(completedAtLabel(row))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3290, Col: 96}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var503))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 751, "</td><td class=\"px-3 py-4 align-top font-mono text-muted-foreground\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var504 string
-				templ_7745c5c3_Var504, templ_7745c5c3_Err = templ.JoinStringErrs(completedRuntime(row))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3291, Col: 96}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var504))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 752, "</td><td class=\"px-3 py-4 align-top\"><div class=\"grid gap-1 font-mono\"><span class=\"font-medium text-foreground\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var505 string
-				templ_7745c5c3_Var505, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokens(row.Tokens))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3294, Col: 79}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var505))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 753, "</span> <span class=\"text-xs text-muted-foreground\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var506 string
-				templ_7745c5c3_Var506, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokenBreakdown(row.Tokens))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3295, Col: 89}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var506))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 754, "</span></div></td><td class=\"px-3 py-4 align-top\"><span class=\"inline-flex rounded-full bg-success-soft px-2 py-1 font-medium text-success\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 755, "</td><td class=\"px-3 py-4 align-top font-mono text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var507 string
-				templ_7745c5c3_Var507, templ_7745c5c3_Err = templ.JoinStringErrs(completedState(row))
+				templ_7745c5c3_Var507, templ_7745c5c3_Err = templ.JoinStringErrs(completedAtLabel(row))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3299, Col: 121}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3457, Col: 96}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var507))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 755, "</span></td><td class=\"px-3 py-4 align-top font-mono text-muted-foreground\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 756, "</td><td class=\"px-3 py-4 align-top font-mono text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var508 string
-				templ_7745c5c3_Var508, templ_7745c5c3_Err = templ.JoinStringErrs(completedModel(row))
+				templ_7745c5c3_Var508, templ_7745c5c3_Err = templ.JoinStringErrs(completedRuntime(row))
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3301, Col: 94}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3458, Col: 96}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var508))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 756, "</td><td class=\"px-3 py-4 align-top\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 757, "</td><td class=\"px-3 py-4 align-top\"><div class=\"grid gap-1 font-mono\"><span class=\"font-medium text-foreground\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var509 string
+				templ_7745c5c3_Var509, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokens(row.Tokens))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3461, Col: 79}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var509))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 758, "</span> <span class=\"text-xs text-muted-foreground\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var510 string
+				templ_7745c5c3_Var510, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokenBreakdown(row.Tokens))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3462, Col: 89}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var510))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 759, "</span></div></td><td class=\"px-3 py-4 align-top\"><span class=\"inline-flex rounded-full bg-success-soft px-2 py-1 font-medium text-success\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var511 string
+				templ_7745c5c3_Var511, templ_7745c5c3_Err = templ.JoinStringErrs(completedState(row))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3466, Col: 121}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var511))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 760, "</span></td><td class=\"px-3 py-4 align-top font-mono text-muted-foreground\">")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var512 string
+				templ_7745c5c3_Var512, templ_7745c5c3_Err = templ.JoinStringErrs(completedModel(row))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3468, Col: 94}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var512))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 761, "</td><td class=\"px-3 py-4 align-top\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -11015,17 +11075,17 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 757, "</td></tr>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 762, "</td></tr>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 758, "</tbody></table></div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 763, "</tbody></table></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 759, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 764, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11049,12 +11109,12 @@ func recentSessionMobileCard(row telemetry.Completed, rowIndex int) templ.Compon
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var509 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var509 == nil {
-			templ_7745c5c3_Var509 = templ.NopComponent
+		templ_7745c5c3_Var513 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var513 == nil {
+			templ_7745c5c3_Var513 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 760, "<article class=\"dashboard-card rounded-md border border-border bg-card p-3 shadow-sm\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 765, "<article class=\"dashboard-card rounded-md border border-border bg-card p-3 shadow-sm\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11062,20 +11122,20 @@ func recentSessionMobileCard(row telemetry.Completed, rowIndex int) templ.Compon
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 761, "<div class=\"mt-3 grid gap-2 text-sm\"><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Completed</span> <span class=\"font-mono text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 766, "<div class=\"mt-3 grid gap-2 text-sm\"><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Completed</span> <span class=\"font-mono text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var510 string
-		templ_7745c5c3_Var510, templ_7745c5c3_Err = templ.JoinStringErrs(completedAtLabel(row))
+		var templ_7745c5c3_Var514 string
+		templ_7745c5c3_Var514, templ_7745c5c3_Err = templ.JoinStringErrs(completedAtLabel(row))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3321, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3488, Col: 67}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var510))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var514))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 762, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 767, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11083,20 +11143,20 @@ func recentSessionMobileCard(row telemetry.Completed, rowIndex int) templ.Compon
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 763, "<span class=\"font-mono text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 768, "<span class=\"font-mono text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var511 string
-		templ_7745c5c3_Var511, templ_7745c5c3_Err = templ.JoinStringErrs(completedRuntime(row))
+		var templ_7745c5c3_Var515 string
+		templ_7745c5c3_Var515, templ_7745c5c3_Err = templ.JoinStringErrs(completedRuntime(row))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3325, Col: 67}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3492, Col: 67}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var511))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var515))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 764, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 769, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11104,46 +11164,46 @@ func recentSessionMobileCard(row telemetry.Completed, rowIndex int) templ.Compon
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 765, "<span class=\"font-mono text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 770, "<span class=\"font-mono text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var512 string
-		templ_7745c5c3_Var512, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokens(row.Tokens))
+		var templ_7745c5c3_Var516 string
+		templ_7745c5c3_Var516, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokens(row.Tokens))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3329, Col: 70}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3496, Col: 70}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var512))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 766, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Final state</span> <span class=\"rounded-full bg-success-soft px-2 py-1 font-medium text-success\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var516))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var513 string
-		templ_7745c5c3_Var513, templ_7745c5c3_Err = templ.JoinStringErrs(completedState(row))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3333, Col: 103}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var513))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 771, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Final state</span> <span class=\"rounded-full bg-success-soft px-2 py-1 font-medium text-success\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 767, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Model</span> <span class=\"font-mono text-foreground\">")
+		var templ_7745c5c3_Var517 string
+		templ_7745c5c3_Var517, templ_7745c5c3_Err = templ.JoinStringErrs(completedState(row))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3500, Col: 103}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var517))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var514 string
-		templ_7745c5c3_Var514, templ_7745c5c3_Err = templ.JoinStringErrs(completedModel(row))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3337, Col: 65}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var514))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 772, "</span></div><div class=\"flex min-h-10 items-center justify-between gap-3\"><span class=\"text-muted-foreground\">Model</span> <span class=\"font-mono text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 768, "</span></div></div><div class=\"mt-3\">")
+		var templ_7745c5c3_Var518 string
+		templ_7745c5c3_Var518, templ_7745c5c3_Err = templ.JoinStringErrs(completedModel(row))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3504, Col: 65}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var518))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 773, "</span></div></div><div class=\"mt-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11151,7 +11211,7 @@ func recentSessionMobileCard(row telemetry.Completed, rowIndex int) templ.Compon
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 769, "</div></article>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 774, "</div></article>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11175,82 +11235,82 @@ func issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails b
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var515 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var515 == nil {
-			templ_7745c5c3_Var515 = templ.NopComponent
+		templ_7745c5c3_Var519 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var519 == nil {
+			templ_7745c5c3_Var519 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 770, "<div class=\"grid gap-2\" data-popover><div class=\"flex min-w-0 items-start gap-2\"><button type=\"button\" class=\"min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" aria-describedby=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 775, "<div class=\"grid gap-2\" data-popover><div class=\"flex min-w-0 items-start gap-2\"><button type=\"button\" class=\"min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" aria-describedby=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var516 string
-		templ_7745c5c3_Var516, templ_7745c5c3_Err = templ.JoinStringErrs(issuePopoverID(prefix, rowIndex))
+		var templ_7745c5c3_Var520 string
+		templ_7745c5c3_Var520, templ_7745c5c3_Err = templ.JoinStringErrs(issuePopoverID(prefix, rowIndex))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3352, Col: 55}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3519, Col: 55}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var516))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 771, "\" aria-expanded=\"false\" data-popover-trigger><span class=\"block truncate font-medium text-foreground\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var520))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var517 string
-		templ_7745c5c3_Var517, templ_7745c5c3_Err = templ.JoinStringErrs(issueIdentifier(issue))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3356, Col: 85}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var517))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 776, "\" aria-expanded=\"false\" data-popover-trigger><span class=\"block truncate font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 772, "</span> <span class=\"line-clamp-1 text-muted-foreground\">")
+		var templ_7745c5c3_Var521 string
+		templ_7745c5c3_Var521, templ_7745c5c3_Err = templ.JoinStringErrs(issueIdentifier(issue))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3523, Col: 85}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var521))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var518 string
-		templ_7745c5c3_Var518, templ_7745c5c3_Err = templ.JoinStringErrs(issueTitle(issue))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3357, Col: 72}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var518))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 777, "</span> <span class=\"line-clamp-1 text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 773, "</span></button> ")
+		var templ_7745c5c3_Var522 string
+		templ_7745c5c3_Var522, templ_7745c5c3_Err = templ.JoinStringErrs(issueTitle(issue))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3524, Col: 72}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var522))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 778, "</span></button> ")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if issueProjectLabel(issue) != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 774, "<span class=\"shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground\" title=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 779, "<span class=\"shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground\" title=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var519 string
-			templ_7745c5c3_Var519, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + issueProjectLabel(issue))
+			var templ_7745c5c3_Var523 string
+			templ_7745c5c3_Var523, templ_7745c5c3_Err = templ.JoinStringErrs("Project " + issueProjectLabel(issue))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3360, Col: 144}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3527, Col: 144}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var519))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 775, "\">")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var523))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var520 string
-			templ_7745c5c3_Var520, templ_7745c5c3_Err = templ.JoinStringErrs(issueProjectLabel(issue))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3360, Col: 173}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var520))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 780, "\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 776, "</span> ")
+			var templ_7745c5c3_Var524 string
+			templ_7745c5c3_Var524, templ_7745c5c3_Err = templ.JoinStringErrs(issueProjectLabel(issue))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3527, Col: 173}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var524))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 781, "</span> ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -11260,7 +11320,7 @@ func issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails b
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 777, " ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 782, " ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -11275,117 +11335,117 @@ func issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails b
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 778, "</div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 783, "</div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if issueDescriptionPreview(issue) != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 779, "<p class=\"line-clamp-2 text-xs text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 784, "<p class=\"line-clamp-2 text-xs text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var521 string
-			templ_7745c5c3_Var521, templ_7745c5c3_Err = templ.JoinStringErrs(issueDescriptionPreview(issue))
+			var templ_7745c5c3_Var525 string
+			templ_7745c5c3_Var525, templ_7745c5c3_Err = templ.JoinStringErrs(issueDescriptionPreview(issue))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3371, Col: 89}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3538, Col: 89}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var521))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var525))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 780, "</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 785, "</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
 		if issueClaimSummary(issue) != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 781, "<p class=\"line-clamp-2 font-mono text-xs text-muted-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var522 string
-			templ_7745c5c3_Var522, templ_7745c5c3_Err = templ.JoinStringErrs(issueClaimSummary(issue))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3374, Col: 93}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var522))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 782, "</p>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		if jsonDetails && issueDetailURL(issue) != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 783, "<a class=\"w-fit text-xs font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var523 templ.SafeURL
-			templ_7745c5c3_Var523, templ_7745c5c3_Err = templ.JoinURLErrs(issueDetailURL(issue))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3377, Col: 189}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var523))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 784, "\">JSON details</a>")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 785, "<div id=\"")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var524 string
-		templ_7745c5c3_Var524, templ_7745c5c3_Err = templ.JoinStringErrs(issuePopoverID(prefix, rowIndex))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3380, Col: 40}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var524))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 786, "\" class=\"popover-panel issue-popover-panel max-w-sm text-foreground\" role=\"tooltip\" aria-hidden=\"true\" data-popover-panel data-popover-width=\"320\"><p class=\"font-medium text-foreground\">")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		var templ_7745c5c3_Var525 string
-		templ_7745c5c3_Var525, templ_7745c5c3_Err = templ.JoinStringErrs(issueTitle(issue))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3387, Col: 61}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var525))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 787, "</p>")
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		if issueDescriptionPreview(issue) != "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 788, "<p class=\"mt-1 text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 786, "<p class=\"line-clamp-2 font-mono text-xs text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var526 string
-			templ_7745c5c3_Var526, templ_7745c5c3_Err = templ.JoinStringErrs(issueDescriptionPreview(issue))
+			templ_7745c5c3_Var526, templ_7745c5c3_Err = templ.JoinStringErrs(issueClaimSummary(issue))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3389, Col: 74}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3541, Col: 93}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var526))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 789, "</p>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 787, "</p>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 790, "</div></div>")
+		if jsonDetails && issueDetailURL(issue) != "" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 788, "<a class=\"w-fit text-xs font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" href=\"")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var527 templ.SafeURL
+			templ_7745c5c3_Var527, templ_7745c5c3_Err = templ.JoinURLErrs(issueDetailURL(issue))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3544, Col: 189}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var527))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 789, "\">JSON details</a>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 790, "<div id=\"")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var528 string
+		templ_7745c5c3_Var528, templ_7745c5c3_Err = templ.JoinStringErrs(issuePopoverID(prefix, rowIndex))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3547, Col: 40}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var528))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 791, "\" class=\"popover-panel issue-popover-panel max-w-sm text-foreground\" role=\"tooltip\" aria-hidden=\"true\" data-popover-panel data-popover-width=\"320\"><p class=\"font-medium text-foreground\">")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		var templ_7745c5c3_Var529 string
+		templ_7745c5c3_Var529, templ_7745c5c3_Err = templ.JoinStringErrs(issueTitle(issue))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3554, Col: 61}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var529))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 792, "</p>")
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		if issueDescriptionPreview(issue) != "" {
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 793, "<p class=\"mt-1 text-muted-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var530 string
+			templ_7745c5c3_Var530, templ_7745c5c3_Err = templ.JoinStringErrs(issueDescriptionPreview(issue))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3556, Col: 74}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var530))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 794, "</p>")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 795, "</div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11409,69 +11469,69 @@ func issueOpenLink(url string, label string, compact bool) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var527 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var527 == nil {
-			templ_7745c5c3_Var527 = templ.NopComponent
+		templ_7745c5c3_Var531 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var531 == nil {
+			templ_7745c5c3_Var531 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		var templ_7745c5c3_Var528 = []any{issueActionClass(compact)}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var528...)
+		var templ_7745c5c3_Var532 = []any{issueActionClass(compact)}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var532...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 791, "<a class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 796, "<a class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var529 string
-		templ_7745c5c3_Var529, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var528).String())
+		var templ_7745c5c3_Var533 string
+		templ_7745c5c3_Var533, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var532).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var529))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var533))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 792, "\" href=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 797, "\" href=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var530 templ.SafeURL
-		templ_7745c5c3_Var530, templ_7745c5c3_Err = templ.JoinURLErrs(url)
+		var templ_7745c5c3_Var534 templ.SafeURL
+		templ_7745c5c3_Var534, templ_7745c5c3_Err = templ.JoinURLErrs(url)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3396, Col: 50}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3563, Col: 50}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var530))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 793, "\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var534))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var531 string
-		templ_7745c5c3_Var531, templ_7745c5c3_Err = templ.JoinStringErrs(label)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3396, Col: 108}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var531))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 798, "\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 794, "\" aria-label=\"")
+		var templ_7745c5c3_Var535 string
+		templ_7745c5c3_Var535, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3563, Col: 108}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var535))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var532 string
-		templ_7745c5c3_Var532, templ_7745c5c3_Err = templ.JoinStringErrs(label)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3396, Col: 129}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var532))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 799, "\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 795, "\">")
+		var templ_7745c5c3_Var536 string
+		templ_7745c5c3_Var536, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3563, Col: 129}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var536))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 800, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11479,20 +11539,20 @@ func issueOpenLink(url string, label string, compact bool) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 796, "<span class=\"sr-only\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 801, "<span class=\"sr-only\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var533 string
-		templ_7745c5c3_Var533, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		var templ_7745c5c3_Var537 string
+		templ_7745c5c3_Var537, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3398, Col: 31}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3565, Col: 31}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var533))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var537))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 797, "</span></a>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 802, "</span></a>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11516,69 +11576,69 @@ func pullRequestOpenLink(url string, label string, compact bool) templ.Component
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var534 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var534 == nil {
-			templ_7745c5c3_Var534 = templ.NopComponent
+		templ_7745c5c3_Var538 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var538 == nil {
+			templ_7745c5c3_Var538 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		var templ_7745c5c3_Var535 = []any{issueActionClass(compact)}
-		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var535...)
+		var templ_7745c5c3_Var539 = []any{issueActionClass(compact)}
+		templ_7745c5c3_Err = templ.RenderCSSItems(ctx, templ_7745c5c3_Buffer, templ_7745c5c3_Var539...)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 798, "<a class=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 803, "<a class=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var536 string
-		templ_7745c5c3_Var536, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var535).String())
+		var templ_7745c5c3_Var540 string
+		templ_7745c5c3_Var540, templ_7745c5c3_Err = templ.JoinStringErrs(templ.CSSClasses(templ_7745c5c3_Var539).String())
 		if templ_7745c5c3_Err != nil {
 			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 1, Col: 0}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var536))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var540))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 799, "\" href=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 804, "\" href=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var537 templ.SafeURL
-		templ_7745c5c3_Var537, templ_7745c5c3_Err = templ.JoinURLErrs(url)
+		var templ_7745c5c3_Var541 templ.SafeURL
+		templ_7745c5c3_Var541, templ_7745c5c3_Err = templ.JoinURLErrs(url)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3403, Col: 50}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3570, Col: 50}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var537))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 800, "\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var541))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var538 string
-		templ_7745c5c3_Var538, templ_7745c5c3_Err = templ.JoinStringErrs(label)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3403, Col: 108}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var538))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 805, "\" target=\"_blank\" rel=\"noopener noreferrer\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 801, "\" aria-label=\"")
+		var templ_7745c5c3_Var542 string
+		templ_7745c5c3_Var542, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3570, Col: 108}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var542))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var539 string
-		templ_7745c5c3_Var539, templ_7745c5c3_Err = templ.JoinStringErrs(label)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3403, Col: 129}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var539))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 806, "\" aria-label=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 802, "\">")
+		var templ_7745c5c3_Var543 string
+		templ_7745c5c3_Var543, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3570, Col: 129}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var543))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 807, "\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11586,20 +11646,20 @@ func pullRequestOpenLink(url string, label string, compact bool) templ.Component
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 803, "<span class=\"sr-only\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 808, "<span class=\"sr-only\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var540 string
-		templ_7745c5c3_Var540, templ_7745c5c3_Err = templ.JoinStringErrs(label)
+		var templ_7745c5c3_Var544 string
+		templ_7745c5c3_Var544, templ_7745c5c3_Err = templ.JoinStringErrs(label)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3405, Col: 31}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3572, Col: 31}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var540))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var544))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 804, "</span></a>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 809, "</span></a>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11623,38 +11683,38 @@ func issueCopyButton(value string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var541 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var541 == nil {
-			templ_7745c5c3_Var541 = templ.NopComponent
+		templ_7745c5c3_Var545 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var545 == nil {
+			templ_7745c5c3_Var545 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 805, "<button type=\"button\" class=\"issue-copy issue-external inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-label=\"Copy issue URL\" data-copy=\"")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 810, "<button type=\"button\" class=\"issue-copy issue-external inline-flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-border bg-card text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-label=\"Copy issue URL\" data-copy=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var542 string
-		templ_7745c5c3_Var542, templ_7745c5c3_Err = templ.JoinStringErrs(value)
+		var templ_7745c5c3_Var546 string
+		templ_7745c5c3_Var546, templ_7745c5c3_Err = templ.JoinStringErrs(value)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3414, Col: 19}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3581, Col: 19}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var542))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 806, "\" title=\"")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var546))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var543 string
-		templ_7745c5c3_Var543, templ_7745c5c3_Err = templ.JoinStringErrs("Copy " + value)
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3415, Col: 25}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var543))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 811, "\" title=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 807, "\" onclick=\"navigator.clipboard.writeText(this.dataset.copy); const label = this.querySelector('[data-copy-label]'); label.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { label.textContent = this.dataset.label }, 1200);\">")
+		var templ_7745c5c3_Var547 string
+		templ_7745c5c3_Var547, templ_7745c5c3_Err = templ.JoinStringErrs("Copy " + value)
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3582, Col: 25}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var547))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 812, "\" onclick=\"navigator.clipboard.writeText(this.dataset.copy); const label = this.querySelector('[data-copy-label]'); label.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { label.textContent = this.dataset.label }, 1200);\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11662,7 +11722,7 @@ func issueCopyButton(value string) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 808, "<span class=\"sr-only\" data-copy-label>Copy issue URL</span></button>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 813, "<span class=\"sr-only\" data-copy-label>Copy issue URL</span></button>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11686,70 +11746,70 @@ func sessionCopyButton(sessionID string) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var544 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var544 == nil {
-			templ_7745c5c3_Var544 = templ.NopComponent
+		templ_7745c5c3_Var548 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var548 == nil {
+			templ_7745c5c3_Var548 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if sessionID == "" {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 809, "<span class=\"font-mono text-muted-foreground\">n/a</span>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 814, "<span class=\"font-mono text-muted-foreground\">n/a</span>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 810, "<button type=\"button\" class=\"inline-flex min-h-10 max-w-full items-center gap-2 rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-label=\"")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 815, "<button type=\"button\" class=\"inline-flex min-h-10 max-w-full items-center gap-2 rounded-md border border-border bg-muted px-3 py-2 font-mono text-xs text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent\" data-label=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var545 string
-			templ_7745c5c3_Var545, templ_7745c5c3_Err = templ.JoinStringErrs(sessionLabel(sessionID))
+			var templ_7745c5c3_Var549 string
+			templ_7745c5c3_Var549, templ_7745c5c3_Err = templ.JoinStringErrs(sessionLabel(sessionID))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3430, Col: 39}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3597, Col: 39}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var545))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 811, "\" data-copy=\"")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var549))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var546 string
-			templ_7745c5c3_Var546, templ_7745c5c3_Err = templ.JoinStringErrs(sessionID)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3431, Col: 24}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var546))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 816, "\" data-copy=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 812, "\" title=\"")
+			var templ_7745c5c3_Var550 string
+			templ_7745c5c3_Var550, templ_7745c5c3_Err = templ.JoinStringErrs(sessionID)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3598, Col: 24}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var550))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var547 string
-			templ_7745c5c3_Var547, templ_7745c5c3_Err = templ.JoinStringErrs("Copy " + sessionID)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3432, Col: 30}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var547))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 817, "\" title=\"")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 813, "\" onclick=\"navigator.clipboard.writeText(this.dataset.copy); const label = this.querySelector('[data-copy-label]'); label.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { label.textContent = this.dataset.label }, 1200);\"><span class=\"truncate\" data-copy-label>")
+			var templ_7745c5c3_Var551 string
+			templ_7745c5c3_Var551, templ_7745c5c3_Err = templ.JoinStringErrs("Copy " + sessionID)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3599, Col: 30}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var551))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var548 string
-			templ_7745c5c3_Var548, templ_7745c5c3_Err = templ.JoinStringErrs(sessionLabel(sessionID))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3435, Col: 67}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var548))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 818, "\" onclick=\"navigator.clipboard.writeText(this.dataset.copy); const label = this.querySelector('[data-copy-label]'); label.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { label.textContent = this.dataset.label }, 1200);\"><span class=\"truncate\" data-copy-label>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 814, "</span> <svg class=\"shrink-0\" width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"9\" y=\"9\" width=\"13\" height=\"13\" rx=\"2\" ry=\"2\"></rect> <path d=\"M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1\"></path></svg></button>")
+			var templ_7745c5c3_Var552 string
+			templ_7745c5c3_Var552, templ_7745c5c3_Err = templ.JoinStringErrs(sessionLabel(sessionID))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3602, Col: 67}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var552))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 819, "</span> <svg class=\"shrink-0\" width=\"13\" height=\"13\" viewBox=\"0 0 24 24\" fill=\"none\" stroke=\"currentColor\" stroke-width=\"2\" stroke-linecap=\"round\" stroke-linejoin=\"round\" aria-hidden=\"true\"><rect x=\"9\" y=\"9\" width=\"13\" height=\"13\" rx=\"2\" ry=\"2\"></rect> <path d=\"M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1\"></path></svg></button>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -11774,12 +11834,12 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var549 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var549 == nil {
-			templ_7745c5c3_Var549 = templ.NopComponent
+		templ_7745c5c3_Var553 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var553 == nil {
+			templ_7745c5c3_Var553 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 815, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 820, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11787,20 +11847,20 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 816, "<span class=\"shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 821, "<span class=\"shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var550 string
-		templ_7745c5c3_Var550, templ_7745c5c3_Err = templ.JoinStringErrs(budgetStatus(snapshot.Budget))
+		var templ_7745c5c3_Var554 string
+		templ_7745c5c3_Var554, templ_7745c5c3_Err = templ.JoinStringErrs(budgetStatus(snapshot.Budget))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3448, Col: 131}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3615, Col: 131}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var550))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var554))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 817, "</span></div><div class=\"mt-5 grid gap-4 text-sm\"><div class=\"grid gap-2\"><div class=\"flex items-center justify-between gap-4\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 822, "</span></div><div class=\"mt-5 grid gap-4 text-sm\"><div class=\"grid gap-2\"><div class=\"flex items-center justify-between gap-4\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11808,33 +11868,33 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 818, "<strong class=\"font-mono font-medium text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 823, "<strong class=\"font-mono font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var551 string
-		templ_7745c5c3_Var551, templ_7745c5c3_Err = templ.JoinStringErrs(budgetSpendTodayLabel(snapshot.Budget))
+		var templ_7745c5c3_Var555 string
+		templ_7745c5c3_Var555, templ_7745c5c3_Err = templ.JoinStringErrs(budgetSpendTodayLabel(snapshot.Budget))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3454, Col: 99}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3621, Col: 99}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var551))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 819, "</strong></div><div class=\"h-2 overflow-hidden rounded-full bg-muted\" aria-label=\"Daily budget usage\"><div class=\"h-full rounded-full bg-accent transition-all\" style=\"")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var555))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var552 string
-		templ_7745c5c3_Var552, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(budgetDailyUsageStyle(snapshot.Budget))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3457, Col: 109}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var552))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 824, "</strong></div><div class=\"h-2 overflow-hidden rounded-full bg-muted\" aria-label=\"Daily budget usage\"><div class=\"h-full rounded-full bg-accent transition-all\" style=\"")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 820, "\"></div></div></div>")
+		var templ_7745c5c3_Var556 string
+		templ_7745c5c3_Var556, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(budgetDailyUsageStyle(snapshot.Budget))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3624, Col: 109}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var556))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 825, "\"></div></div></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -11844,7 +11904,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 821, "<div class=\"grid gap-3\"><div class=\"flex items-center justify-between gap-4\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 826, "<div class=\"grid gap-3\"><div class=\"flex items-center justify-between gap-4\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -11852,20 +11912,20 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 822, "<span class=\"font-mono text-xs text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 827, "<span class=\"font-mono text-xs text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var553 string
-			templ_7745c5c3_Var553, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).PeriodLabel)
+			var templ_7745c5c3_Var557 string
+			templ_7745c5c3_Var557, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).PeriodLabel)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3466, Col: 102}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3633, Col: 102}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var553))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var557))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 823, "</span></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 828, "</span></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -11873,46 +11933,46 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 824, "<div class=\"grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground\"><span>Spend ")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 829, "<div class=\"grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground\"><span>Spend ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var554 string
-			templ_7745c5c3_Var554, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).CurrentLabel)
+			var templ_7745c5c3_Var558 string
+			templ_7745c5c3_Var558, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).CurrentLabel)
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3470, Col: 61}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3637, Col: 61}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var554))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 825, "</span> <span>Cap ")
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var558))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var555 string
-			templ_7745c5c3_Var555, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).CapLabel)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3471, Col: 55}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var555))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 830, "</span> <span>Cap ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 826, "</span> <span>Projected ")
+			var templ_7745c5c3_Var559 string
+			templ_7745c5c3_Var559, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).CapLabel)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3638, Col: 55}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var559))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var556 string
-			templ_7745c5c3_Var556, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).ProjectionLabel)
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3472, Col: 68}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var556))
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 831, "</span> <span>Projected ")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 827, "</span></div></div>")
+			var templ_7745c5c3_Var560 string
+			templ_7745c5c3_Var560, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).ProjectionLabel)
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3639, Col: 68}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var560))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 832, "</span></div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -11923,7 +11983,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 828, "<div class=\"grid gap-2\"><div class=\"flex items-center justify-between gap-4\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 833, "<div class=\"grid gap-2\"><div class=\"flex items-center justify-between gap-4\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -11931,74 +11991,74 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 829, "<span class=\"font-mono text-xs text-muted-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 834, "<span class=\"font-mono text-xs text-muted-foreground\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			var templ_7745c5c3_Var557 string
-			templ_7745c5c3_Var557, templ_7745c5c3_Err = templ.JoinStringErrs(budgetHistoryCount(snapshot.Budget))
+			var templ_7745c5c3_Var561 string
+			templ_7745c5c3_Var561, templ_7745c5c3_Err = templ.JoinStringErrs(budgetHistoryCount(snapshot.Budget))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3482, Col: 97}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3649, Col: 97}
 			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var557))
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var561))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 830, "</span></div><div class=\"grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-border bg-muted px-2 py-2\" aria-label=\"Spend over the last seven days\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 835, "</span></div><div class=\"grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-border bg-muted px-2 py-2\" aria-label=\"Spend over the last seven days\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, bar := range budgetHistoryBars(snapshot.Budget) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 831, "<span class=\"block min-h-1 rounded-t bg-accent opacity-80\" style=\"")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 836, "<span class=\"block min-h-1 rounded-t bg-accent opacity-80\" style=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var558 string
-				templ_7745c5c3_Var558, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(bar.Style)
+				var templ_7745c5c3_Var562 string
+				templ_7745c5c3_Var562, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(bar.Style)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3486, Col: 83}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3653, Col: 83}
 				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var558))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 832, "\" title=\"")
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var562))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var559 string
-				templ_7745c5c3_Var559, templ_7745c5c3_Err = templ.JoinStringErrs(bar.Title)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3486, Col: 103}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var559))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 837, "\" title=\"")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 833, "\"><span class=\"sr-only\">")
+				var templ_7745c5c3_Var563 string
+				templ_7745c5c3_Var563, templ_7745c5c3_Err = templ.JoinStringErrs(bar.Title)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3653, Col: 103}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var563))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				var templ_7745c5c3_Var560 string
-				templ_7745c5c3_Var560, templ_7745c5c3_Err = templ.JoinStringErrs(bar.Title)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3487, Col: 41}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var560))
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 838, "\"><span class=\"sr-only\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 834, "</span></span>")
+				var templ_7745c5c3_Var564 string
+				templ_7745c5c3_Var564, templ_7745c5c3_Err = templ.JoinStringErrs(bar.Title)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3654, Col: 41}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var564))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 839, "</span></span>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 835, "</div></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 840, "</div></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 836, "<div class=\"grid gap-3 border-t border-border pt-3\"><div class=\"flex items-center justify-between gap-4\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 841, "<div class=\"grid gap-3 border-t border-border pt-3\"><div class=\"flex items-center justify-between gap-4\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12006,20 +12066,20 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 837, "<strong class=\"font-mono font-medium text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 842, "<strong class=\"font-mono font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var561 string
-		templ_7745c5c3_Var561, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).ProjectionLabel)
+		var templ_7745c5c3_Var565 string
+		templ_7745c5c3_Var565, templ_7745c5c3_Err = templ.JoinStringErrs(budgetBurnDownView(snapshot).ProjectionLabel)
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3496, Col: 105}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3663, Col: 105}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var561))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var565))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 838, "</strong></div><div class=\"flex items-center justify-between gap-4\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 843, "</strong></div><div class=\"flex items-center justify-between gap-4\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12027,20 +12087,20 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 839, "<strong class=\"font-mono font-medium text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 844, "<strong class=\"font-mono font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var562 string
-		templ_7745c5c3_Var562, templ_7745c5c3_Err = templ.JoinStringErrs(optionalUSD(snapshot.Budget.PerDayMaxUSD))
+		var templ_7745c5c3_Var566 string
+		templ_7745c5c3_Var566, templ_7745c5c3_Err = templ.JoinStringErrs(optionalUSD(snapshot.Budget.PerDayMaxUSD))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3500, Col: 102}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3667, Col: 102}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var562))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var566))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 840, "</strong></div><div class=\"flex items-center justify-between gap-4\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 845, "</strong></div><div class=\"flex items-center justify-between gap-4\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12048,20 +12108,20 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 841, "<strong class=\"font-mono font-medium text-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 846, "<strong class=\"font-mono font-medium text-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var563 string
-		templ_7745c5c3_Var563, templ_7745c5c3_Err = templ.JoinStringErrs(optionalUSD(snapshot.Budget.PerIssueMaxUSD))
+		var templ_7745c5c3_Var567 string
+		templ_7745c5c3_Var567, templ_7745c5c3_Err = templ.JoinStringErrs(optionalUSD(snapshot.Budget.PerIssueMaxUSD))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3504, Col: 104}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3671, Col: 104}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var563))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var567))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 842, "</strong></div></div></div></section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 847, "</strong></div></div></div></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12085,12 +12145,12 @@ func rateLimitsCard(limits *RateLimits) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var564 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var564 == nil {
-			templ_7745c5c3_Var564 = templ.NopComponent
+		templ_7745c5c3_Var568 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var568 == nil {
+			templ_7745c5c3_Var568 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 843, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 848, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12098,25 +12158,25 @@ func rateLimitsCard(limits *RateLimits) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 844, "<span class=\"shrink-0 rounded-full bg-accent-soft px-2 py-1 text-xs font-medium text-accent\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 849, "<span class=\"shrink-0 rounded-full bg-accent-soft px-2 py-1 text-xs font-medium text-accent\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var565 string
-		templ_7745c5c3_Var565, templ_7745c5c3_Err = templ.JoinStringErrs(rateLimitName(limits))
+		var templ_7745c5c3_Var569 string
+		templ_7745c5c3_Var569, templ_7745c5c3_Err = templ.JoinStringErrs(rateLimitName(limits))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3515, Col: 119}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3682, Col: 119}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var565))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var569))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 845, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 850, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
 		if len(rateLimitRows(limits)) == 0 {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 846, "<div class=\"mt-4\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 851, "<div class=\"mt-4\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -12124,17 +12184,17 @@ func rateLimitsCard(limits *RateLimits) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 847, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 852, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		} else {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 848, "<div class=\"mt-5 grid gap-4\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 853, "<div class=\"mt-5 grid gap-4\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			for _, row := range rateLimitRows(limits) {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 849, "<div class=\"grid gap-2\"><div class=\"flex items-center justify-between gap-3\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 854, "<div class=\"grid gap-2\"><div class=\"flex items-center justify-between gap-3\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -12142,82 +12202,82 @@ func rateLimitsCard(limits *RateLimits) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 850, "<span class=\"font-mono text-sm text-muted-foreground\">")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var566 string
-				templ_7745c5c3_Var566, templ_7745c5c3_Err = templ.JoinStringErrs(row.Reset)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3527, Col: 72}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var566))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 851, "</span></div><div class=\"h-2 overflow-hidden rounded-full bg-muted\"><div class=\"h-full rounded-full bg-accent transition-all\" style=\"")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var567 string
-				templ_7745c5c3_Var567, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(percentStyle(row.UsedPercent))
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3530, Col: 102}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var567))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 852, "\"></div></div><div class=\"grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground\"><span>")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var568 string
-				templ_7745c5c3_Var568, templ_7745c5c3_Err = templ.JoinStringErrs(row.Remaining)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3533, Col: 28}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var568))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 853, "</span> <span>")
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				var templ_7745c5c3_Var569 string
-				templ_7745c5c3_Var569, templ_7745c5c3_Err = templ.JoinStringErrs(row.Used)
-				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3534, Col: 23}
-				}
-				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var569))
-				if templ_7745c5c3_Err != nil {
-					return templ_7745c5c3_Err
-				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 854, "</span> <span>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 855, "<span class=\"font-mono text-sm text-muted-foreground\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				var templ_7745c5c3_Var570 string
-				templ_7745c5c3_Var570, templ_7745c5c3_Err = templ.JoinStringErrs(row.Limit)
+				templ_7745c5c3_Var570, templ_7745c5c3_Err = templ.JoinStringErrs(row.Reset)
 				if templ_7745c5c3_Err != nil {
-					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3535, Col: 24}
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3694, Col: 72}
 				}
 				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var570))
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 855, "</span></div></div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 856, "</span></div><div class=\"h-2 overflow-hidden rounded-full bg-muted\"><div class=\"h-full rounded-full bg-accent transition-all\" style=\"")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var571 string
+				templ_7745c5c3_Var571, templ_7745c5c3_Err = templruntime.SanitizeStyleAttributeValues(percentStyle(row.UsedPercent))
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3697, Col: 102}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var571))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 857, "\"></div></div><div class=\"grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground\"><span>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var572 string
+				templ_7745c5c3_Var572, templ_7745c5c3_Err = templ.JoinStringErrs(row.Remaining)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3700, Col: 28}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var572))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 858, "</span> <span>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var573 string
+				templ_7745c5c3_Var573, templ_7745c5c3_Err = templ.JoinStringErrs(row.Used)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3701, Col: 23}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var573))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 859, "</span> <span>")
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				var templ_7745c5c3_Var574 string
+				templ_7745c5c3_Var574, templ_7745c5c3_Err = templ.JoinStringErrs(row.Limit)
+				if templ_7745c5c3_Err != nil {
+					return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3702, Col: 24}
+				}
+				_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var574))
+				if templ_7745c5c3_Err != nil {
+					return templ_7745c5c3_Err
+				}
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 860, "</span></div></div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 856, "</div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 861, "</div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 857, "</section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 862, "</section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12241,13 +12301,13 @@ func graphQLBudgetCard(data DashboardData) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var571 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var571 == nil {
-			templ_7745c5c3_Var571 = templ.NopComponent
+		templ_7745c5c3_Var575 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var575 == nil {
+			templ_7745c5c3_Var575 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
 		if hasGraphQLBudget(data.Snapshot.RateLimits) {
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 858, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"GraphQL budget\"><div class=\"flex items-start justify-between gap-3\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 863, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\" aria-label=\"GraphQL budget\"><div class=\"flex items-start justify-between gap-3\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -12255,72 +12315,72 @@ func graphQLBudgetCard(data DashboardData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 859, "<span class=\"shrink-0 rounded-full bg-warning-soft px-2 py-1 font-mono text-xs font-medium text-warning\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var572 string
-			templ_7745c5c3_Var572, templ_7745c5c3_Err = templ.JoinStringErrs(graphQLBudgetCycleCost(data.Snapshot.RateLimits))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3549, Col: 159}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var572))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 860, "</span></div><div class=\"mt-5 grid gap-3\"><div class=\"grid grid-cols-2 gap-3 text-sm\"><div class=\"grid gap-1\"><span class=\"text-muted-foreground\">Remaining</span> <strong class=\"break-all font-mono text-base font-semibold text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var573 string
-			templ_7745c5c3_Var573, templ_7745c5c3_Err = templ.JoinStringErrs(graphQLBudgetRemaining(data.Snapshot.RateLimits))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3555, Col: 132}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var573))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 861, "</strong></div><div class=\"grid gap-1\"><span class=\"text-muted-foreground\">Reset</span> <strong class=\"font-mono text-base font-semibold text-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var574 string
-			templ_7745c5c3_Var574, templ_7745c5c3_Err = templ.JoinStringErrs(graphQLBudgetReset(data.Snapshot.RateLimits, data.Snapshot.GeneratedAt))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3559, Col: 145}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var574))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 862, "</strong> <span class=\"font-mono text-xs text-muted-foreground\">")
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			var templ_7745c5c3_Var575 string
-			templ_7745c5c3_Var575, templ_7745c5c3_Err = templ.JoinStringErrs(graphQLBudgetResetAt(data.Snapshot.RateLimits))
-			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3560, Col: 108}
-			}
-			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var575))
-			if templ_7745c5c3_Err != nil {
-				return templ_7745c5c3_Err
-			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 863, "</span></div></div><div class=\"flex items-center justify-between gap-3 border-t border-border pt-3 text-sm\"><span class=\"text-muted-foreground\">Cycle queries</span> <strong class=\"font-mono font-medium text-foreground\">")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 864, "<span class=\"shrink-0 rounded-full bg-warning-soft px-2 py-1 font-mono text-xs font-medium text-warning\">")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 			var templ_7745c5c3_Var576 string
-			templ_7745c5c3_Var576, templ_7745c5c3_Err = templ.JoinStringErrs(graphQLBudgetQueryCount(data.Snapshot.RateLimits))
+			templ_7745c5c3_Var576, templ_7745c5c3_Err = templ.JoinStringErrs(graphQLBudgetCycleCost(data.Snapshot.RateLimits))
 			if templ_7745c5c3_Err != nil {
-				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3565, Col: 110}
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3716, Col: 159}
 			}
 			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var576))
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 864, "</strong></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 865, "</span></div><div class=\"mt-5 grid gap-3\"><div class=\"grid grid-cols-2 gap-3 text-sm\"><div class=\"grid gap-1\"><span class=\"text-muted-foreground\">Remaining</span> <strong class=\"break-all font-mono text-base font-semibold text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var577 string
+			templ_7745c5c3_Var577, templ_7745c5c3_Err = templ.JoinStringErrs(graphQLBudgetRemaining(data.Snapshot.RateLimits))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3722, Col: 132}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var577))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 866, "</strong></div><div class=\"grid gap-1\"><span class=\"text-muted-foreground\">Reset</span> <strong class=\"font-mono text-base font-semibold text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var578 string
+			templ_7745c5c3_Var578, templ_7745c5c3_Err = templ.JoinStringErrs(graphQLBudgetReset(data.Snapshot.RateLimits, data.Snapshot.GeneratedAt))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3726, Col: 145}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var578))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 867, "</strong> <span class=\"font-mono text-xs text-muted-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var579 string
+			templ_7745c5c3_Var579, templ_7745c5c3_Err = templ.JoinStringErrs(graphQLBudgetResetAt(data.Snapshot.RateLimits))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3727, Col: 108}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var579))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 868, "</span></div></div><div class=\"flex items-center justify-between gap-3 border-t border-border pt-3 text-sm\"><span class=\"text-muted-foreground\">Cycle queries</span> <strong class=\"font-mono font-medium text-foreground\">")
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			var templ_7745c5c3_Var580 string
+			templ_7745c5c3_Var580, templ_7745c5c3_Err = templ.JoinStringErrs(graphQLBudgetQueryCount(data.Snapshot.RateLimits))
+			if templ_7745c5c3_Err != nil {
+				return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3732, Col: 110}
+			}
+			_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var580))
+			if templ_7745c5c3_Err != nil {
+				return templ_7745c5c3_Err
+			}
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 869, "</strong></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -12330,74 +12390,74 @@ func graphQLBudgetCard(data DashboardData) templ.Component {
 					return templ_7745c5c3_Err
 				}
 			} else {
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 865, "<div class=\"grid gap-2 border-t border-border pt-3\">")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 870, "<div class=\"grid gap-2 border-t border-border pt-3\">")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 				for _, row := range graphQLBudgetContributorRows(data.Snapshot.RateLimits) {
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 866, "<div class=\"grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-sm\"><span class=\"truncate font-mono font-medium text-foreground\">")
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 871, "<div class=\"grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-sm\"><span class=\"truncate font-mono font-medium text-foreground\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					var templ_7745c5c3_Var577 string
-					templ_7745c5c3_Var577, templ_7745c5c3_Err = templ.JoinStringErrs(row.QueryType)
+					var templ_7745c5c3_Var581 string
+					templ_7745c5c3_Var581, templ_7745c5c3_Err = templ.JoinStringErrs(row.QueryType)
 					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3573, Col: 84}
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3740, Col: 84}
 					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var577))
-					if templ_7745c5c3_Err != nil {
-						return templ_7745c5c3_Err
-					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 867, "</span> <span class=\"font-mono text-muted-foreground\">")
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var581))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					var templ_7745c5c3_Var578 string
-					templ_7745c5c3_Var578, templ_7745c5c3_Err = templ.JoinStringErrs(row.Cost)
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3574, Col: 64}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var578))
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 872, "</span> <span class=\"font-mono text-muted-foreground\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 868, "</span> <span class=\"font-mono text-xs text-muted-foreground\">")
+					var templ_7745c5c3_Var582 string
+					templ_7745c5c3_Var582, templ_7745c5c3_Err = templ.JoinStringErrs(row.Cost)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3741, Col: 64}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var582))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					var templ_7745c5c3_Var579 string
-					templ_7745c5c3_Var579, templ_7745c5c3_Err = templ.JoinStringErrs(row.Count)
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3575, Col: 73}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var579))
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 873, "</span> <span class=\"font-mono text-xs text-muted-foreground\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 869, "</span> <span class=\"text-right font-mono text-xs text-muted-foreground\">")
+					var templ_7745c5c3_Var583 string
+					templ_7745c5c3_Var583, templ_7745c5c3_Err = templ.JoinStringErrs(row.Count)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3742, Col: 73}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var583))
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					var templ_7745c5c3_Var580 string
-					templ_7745c5c3_Var580, templ_7745c5c3_Err = templ.JoinStringErrs(row.Percent)
-					if templ_7745c5c3_Err != nil {
-						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3576, Col: 86}
-					}
-					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var580))
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 874, "</span> <span class=\"text-right font-mono text-xs text-muted-foreground\">")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
-					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 870, "</span></div>")
+					var templ_7745c5c3_Var584 string
+					templ_7745c5c3_Var584, templ_7745c5c3_Err = templ.JoinStringErrs(row.Percent)
+					if templ_7745c5c3_Err != nil {
+						return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3743, Col: 86}
+					}
+					_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var584))
+					if templ_7745c5c3_Err != nil {
+						return templ_7745c5c3_Err
+					}
+					templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 875, "</span></div>")
 					if templ_7745c5c3_Err != nil {
 						return templ_7745c5c3_Err
 					}
 				}
-				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 871, "</div>")
+				templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 876, "</div>")
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 872, "</div></section>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 877, "</div></section>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -12422,12 +12482,12 @@ func tokenCard(data DashboardData) templ.Component {
 			}()
 		}
 		ctx = templ.InitializeContext(ctx)
-		templ_7745c5c3_Var581 := templ.GetChildren(ctx)
-		if templ_7745c5c3_Var581 == nil {
-			templ_7745c5c3_Var581 = templ.NopComponent
+		templ_7745c5c3_Var585 := templ.GetChildren(ctx)
+		if templ_7745c5c3_Var585 == nil {
+			templ_7745c5c3_Var585 = templ.NopComponent
 		}
 		ctx = templ.ClearChildren(ctx)
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 873, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 878, "<section class=\"dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5\"><div class=\"flex items-start justify-between gap-3\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12435,46 +12495,46 @@ func tokenCard(data DashboardData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 874, "<span class=\"shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 879, "<span class=\"shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs font-medium text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var582 string
-		templ_7745c5c3_Var582, templ_7745c5c3_Err = templ.JoinStringErrs(tokenRate(data.Snapshot))
+		var templ_7745c5c3_Var586 string
+		templ_7745c5c3_Var586, templ_7745c5c3_Err = templ.JoinStringErrs(tokenRate(data.Snapshot))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3590, Col: 136}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3757, Col: 136}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var582))
-		if templ_7745c5c3_Err != nil {
-			return templ_7745c5c3_Err
-		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 875, "</span></div><div class=\"mt-5 grid gap-2\"><div class=\"break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl\">")
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var586))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var583 string
-		templ_7745c5c3_Var583, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokens(data.Snapshot.Tokens))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3593, Col: 123}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var583))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 880, "</span></div><div class=\"mt-5 grid gap-2\"><div class=\"break-all font-mono text-2xl font-semibold text-foreground sm:text-3xl\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 876, "</div><div class=\"font-mono text-sm text-muted-foreground\">")
+		var templ_7745c5c3_Var587 string
+		templ_7745c5c3_Var587, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokens(data.Snapshot.Tokens))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3760, Col: 123}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var587))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var584 string
-		templ_7745c5c3_Var584, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokenBreakdown(data.Snapshot.Tokens))
-		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3594, Col: 100}
-		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var584))
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 881, "</div><div class=\"font-mono text-sm text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 877, "</div></div><div class=\"mt-5\"><div class=\"mb-2 flex items-center justify-between gap-3 text-sm\">")
+		var templ_7745c5c3_Var588 string
+		templ_7745c5c3_Var588, templ_7745c5c3_Err = templ.JoinStringErrs(formatTokenBreakdown(data.Snapshot.Tokens))
+		if templ_7745c5c3_Err != nil {
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3761, Col: 100}
+		}
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var588))
+		if templ_7745c5c3_Err != nil {
+			return templ_7745c5c3_Err
+		}
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 882, "</div></div><div class=\"mt-5\"><div class=\"mb-2 flex items-center justify-between gap-3 text-sm\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12482,20 +12542,20 @@ func tokenCard(data DashboardData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 878, "<span class=\"font-mono text-xs text-muted-foreground\">")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 883, "<span class=\"font-mono text-xs text-muted-foreground\">")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		var templ_7745c5c3_Var585 string
-		templ_7745c5c3_Var585, templ_7745c5c3_Err = templ.JoinStringErrs(formatDuration(data.Snapshot.Tokens.RuntimeSeconds))
+		var templ_7745c5c3_Var589 string
+		templ_7745c5c3_Var589, templ_7745c5c3_Err = templ.JoinStringErrs(formatDuration(data.Snapshot.Tokens.RuntimeSeconds))
 		if templ_7745c5c3_Err != nil {
-			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3599, Col: 111}
+			return templ.Error{Err: templ_7745c5c3_Err, FileName: `internal/web/templates/dashboard.templ`, Line: 3766, Col: 111}
 		}
-		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var585))
+		_, templ_7745c5c3_Err = templ_7745c5c3_Buffer.WriteString(templ.EscapeString(templ_7745c5c3_Var589))
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 879, "</span></div>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 884, "</span></div>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12509,12 +12569,12 @@ func tokenCard(data DashboardData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 880, " <div class=\"mt-3 flex flex-wrap items-center gap-4 text-xs font-medium text-muted-foreground\"><span class=\"inline-flex items-center gap-2\"><span class=\"h-2 w-2 rounded-full bg-accent\"></span>Input</span> <span class=\"inline-flex items-center gap-2\"><span class=\"h-2 w-2 rounded-full bg-success\"></span>Output</span></div>")
+			templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 885, " <div class=\"mt-3 flex flex-wrap items-center gap-4 text-xs font-medium text-muted-foreground\"><span class=\"inline-flex items-center gap-2\"><span class=\"h-2 w-2 rounded-full bg-accent\"></span>Input</span> <span class=\"inline-flex items-center gap-2\"><span class=\"h-2 w-2 rounded-full bg-success\"></span>Output</span></div>")
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
 		}
-		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 881, "</div></section>")
+		templ_7745c5c3_Err = templruntime.WriteString(templ_7745c5c3_Buffer, 886, "</div></section>")
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

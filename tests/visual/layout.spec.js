@@ -8,6 +8,21 @@ test.describe.configure({ mode: "serial" });
 const desktopViewport = { width: 1440, height: 1100 };
 const narrowViewport = { width: 390, height: 844 };
 
+async function expectProjectKanbanVisibilityStorage(page, key, expected) {
+  const raw = await page.evaluate((storageKey) => {
+    return window.localStorage.getItem(`detent.ui.projectKanban.visibleLanes.${storageKey}`);
+  }, key);
+  if (expected === null) {
+    expect(raw).toBeNull();
+    return;
+  }
+  expect(raw).not.toBeNull();
+  const parsed = JSON.parse(raw);
+  expect(parsed.v).toBe(4);
+  expect([...parsed.show].sort()).toEqual([...expected.show].sort());
+  expect([...parsed.hide].sort()).toEqual([...expected.hide].sort());
+}
+
 let screenshotsRuntime;
 let kanbanRuntime;
 let screenshotManifest;
@@ -125,7 +140,7 @@ test("project Kanban keeps action controls inside compact cards", async ({ page 
   });
 });
 
-test("active-only Kanban view hides populated terminal lanes", async ({ page }, testInfo) => {
+test("project Kanban lane visibility overrides reset to defaults", async ({ page }, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "kanban-terminal-states",
@@ -133,7 +148,9 @@ test("active-only Kanban view hides populated terminal lanes", async ({ page }, 
   });
 
   const board = page.locator("#project-kanban");
+  const todoLane = board.locator("[data-kanban-drop-state='Todo']");
   const cancelledLane = board.locator("[data-project-kanban-lane-title='Cancelled']");
+  await expect(todoLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
   await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-empty", "false");
   await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
   await expect(cancelledLane).toBeHidden();
@@ -141,31 +158,76 @@ test("active-only Kanban view hides populated terminal lanes", async ({ page }, 
 
   await board.locator("[data-project-kanban-visibility-menu] summary").click();
   await expect(board.locator("[data-project-kanban-visibility-count]")).toHaveText("6/9");
+  const defaultHiddenLaneIDs = await board.locator("[data-project-kanban-lane-default-visible='false']").evaluateAll((lanes) => {
+    return lanes.map((lane) => lane.dataset.projectKanbanLane).filter(Boolean).sort();
+  });
+  const todoCheckbox = board.locator("[data-project-kanban-visibility-checkbox][value='todo']");
   const cancelledCheckbox = board.locator("[data-project-kanban-visibility-checkbox][value='cancelled']");
+  const todoReset = board.getByRole("button", { name: "Reset Todo lane to default visibility" });
+  const cancelledReset = board.getByRole("button", { name: "Reset Cancelled lane to default visibility" });
+  await expect(todoCheckbox).toBeChecked();
   await expect(cancelledCheckbox).not.toBeChecked();
   await expect(cancelledCheckbox).toBeEnabled();
   await expect(cancelledCheckbox.locator("xpath=ancestor::label")).toContainText("1");
+  await expect(todoCheckbox.locator("xpath=ancestor::*[@data-project-kanban-visibility-row]")).toContainText("Default visible");
+  await expect(cancelledCheckbox.locator("xpath=ancestor::*[@data-project-kanban-visibility-row]")).toContainText("Default hidden");
+
+  await todoCheckbox.uncheck();
+  await expect(todoLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
+  await expect(todoLane).toBeHidden();
+  await expect(todoCheckbox.locator("xpath=ancestor::*[@data-project-kanban-visibility-row]")).toContainText("Forced hidden");
+  await expectProjectKanbanVisibilityStorage(page, "project:dogfood", { show: [], hide: ["todo"] });
+
+  await todoReset.click();
+  await expect(todoLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
+  await expect(todoLane).toBeVisible();
+  await expect(todoCheckbox).toBeChecked();
+  await expect(todoCheckbox.locator("xpath=ancestor::*[@data-project-kanban-visibility-row]")).toContainText("Default visible");
+  await expectProjectKanbanVisibilityStorage(page, "project:dogfood", null);
 
   await cancelledCheckbox.check();
   await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
   await expect(cancelledLane).toBeVisible();
+  await expect(cancelledCheckbox.locator("xpath=ancestor::*[@data-project-kanban-visibility-row]")).toContainText("Forced visible");
+  await expectProjectKanbanVisibilityStorage(page, "project:dogfood", { show: ["cancelled"], hide: [] });
+
+  await cancelledReset.click();
+  await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
+  await expect(cancelledLane).toBeHidden();
+  await expect(cancelledCheckbox).not.toBeChecked();
+  await expect(cancelledCheckbox.locator("xpath=ancestor::*[@data-project-kanban-visibility-row]")).toContainText("Default hidden");
+  await expectProjectKanbanVisibilityStorage(page, "project:dogfood", null);
+
+  await todoCheckbox.uncheck();
+  await cancelledCheckbox.check();
+  await expect(todoLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
+  await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
+  await expectProjectKanbanVisibilityStorage(page, "project:dogfood", { show: ["cancelled"], hide: ["todo"] });
+
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(board).toBeVisible();
+  await expect(todoLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
   await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
   await expect(cancelledLane).toBeVisible();
   await board.locator("[data-project-kanban-visibility-menu] summary").click();
+  await expect(todoCheckbox).not.toBeChecked();
   await expect(cancelledCheckbox).toBeChecked();
 
-  await board.getByRole("button", { name: "Active only" }).click();
+  await board.getByRole("button", { name: "Reset to defaults" }).click();
+  await expect(todoLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
   await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
   await expect(cancelledLane).toBeHidden();
   await board.getByRole("button", { name: "All lanes" }).click();
+  await expect(todoLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
   await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
   await expect(cancelledLane).toBeVisible();
-  await board.getByRole("button", { name: "Active only" }).click();
+  await expectProjectKanbanVisibilityStorage(page, "project:dogfood", { show: defaultHiddenLaneIDs, hide: [] });
+  await board.getByRole("button", { name: "Reset to defaults" }).click();
+  await expect(todoLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
   await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
   await expect(cancelledLane).toBeHidden();
-  await captureClipAndAttach(page, "#project-kanban", "project-kanban-active-only-terminal-hidden-desktop.png", testInfo, {
+  await expectProjectKanbanVisibilityStorage(page, "project:dogfood", null);
+  await captureClipAndAttach(page, "#project-kanban", "project-kanban-reset-defaults-desktop.png", testInfo, {
     maxHeight: 430,
   });
 });
@@ -175,7 +237,7 @@ test("saved lane visibility keeps populated active lanes visible", async ({ page
   await page.addInitScript(() => {
     window.localStorage.setItem(
       "detent.ui.projectKanban.visibleLanes.project:release-train",
-      JSON.stringify({ v: 2, lanes: ["backlog"] }),
+      JSON.stringify({ v: 3, lanes: ["backlog"] }),
     );
   });
   await page.goto(`${kanbanRuntime.url}/projects/release-train/kanban`, { waitUntil: "domcontentloaded" });
@@ -199,6 +261,7 @@ test("saved lane visibility keeps populated active lanes visible", async ({ page
   await expect(board.locator("[data-project-kanban-visibility-checkbox][value='backlog']")).toBeChecked();
   await expect(board.locator("[data-project-kanban-visibility-checkbox][value='merging']")).toBeChecked();
   await expect(board.locator("[data-project-kanban-visibility-checkbox][value='done']")).not.toBeChecked();
+  await expectProjectKanbanVisibilityStorage(page, "project:release-train", { show: ["backlog"], hide: [] });
 
   await page.evaluate(() => {
     document.dispatchEvent(new Event("htmx:afterSwap"));

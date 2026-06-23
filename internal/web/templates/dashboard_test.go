@@ -799,7 +799,11 @@ func TestDashboardRendersProjectKanbanReadOnlyBoard(t *testing.T) {
 		`data-project-kanban-visibility-checkbox`,
 		`name="visible_lane" value="in-progress"`,
 		`data-project-kanban-visibility-action="all"`,
-		`data-project-kanban-visibility-action="active"`,
+		`data-project-kanban-visibility-action="reset"`,
+		`Reset to defaults`,
+		`data-project-kanban-visibility-row`,
+		`data-project-kanban-visibility-status`,
+		`data-project-kanban-visibility-reset`,
 		`data-project-kanban-visibility-close`,
 		`aria-label="Close lane visibility"`,
 		`data-project-kanban-lane-title="Todo"`,
@@ -1561,12 +1565,22 @@ func TestDashboardProjectKanbanVisibilityControllerSurvivesHTMXSwaps(t *testing.
 		`function closeVisibilityMenusExcept(activeMenu)`,
 		`[data-project-kanban-visibility-close]`,
 		`function toggleLanePin(button)`,
-		`storageVersion = 3`,
+		`storageVersion = 4`,
 		`function defaultLaneIDs(board)`,
-		`function storedLaneIDs(board)`,
-		`parsed.v === 2 || parsed.v === 1`,
-		`function resetLaneIDs(board)`,
+		`function visibilityOverrides(board)`,
+		`function legacyVisibilityOverrides(board, parsed)`,
+		`parsed.v === 3 || parsed.v === 2 || parsed.v === 1`,
+		`function resetVisibilityOverrides(board)`,
+		`function setLaneOverride(board, id, state)`,
+		`function resetLaneOverride(button)`,
+		`show: show`,
+		`hide: hide`,
+		`"default"`,
+		`"show"`,
+		`"hide"`,
 		`data-project-kanban-lane-default-visible`,
+		`data-project-kanban-lane-visibility-state`,
+		`data-project-kanban-visibility-state`,
 		`[data-project-kanban-pin-toggle]`,
 		`data-project-kanban-lane-pinned`,
 		`aria-pressed`,
@@ -1578,6 +1592,91 @@ func TestDashboardProjectKanbanVisibilityControllerSurvivesHTMXSwaps(t *testing.
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing persistent kanban visibility controller %q:\n%s", want, html)
+		}
+	}
+}
+
+func TestDashboardProjectKanbanVisibilityTriStateControls(t *testing.T) {
+	t.Parallel()
+
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:           "read_only",
+			States:         []string{"Todo", "In Progress", "Cancelled"},
+			TerminalStates: []string{"Cancelled"},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "todo",
+					Identifier: "digitaldrywood/detent#496",
+					Title:      "Queued work",
+					State:      "Todo",
+				},
+				{
+					ID:         "started",
+					Identifier: "digitaldrywood/detent#497",
+					Title:      "Active work",
+					State:      "In Progress",
+				},
+				{
+					ID:         "cancelled",
+					Identifier: "digitaldrywood/detent#584",
+					Title:      "Cancelled work",
+					State:      "Cancelled",
+				},
+			},
+		},
+	})
+	section := projectKanbanSection(t, html)
+
+	for _, want := range []string{
+		`data-project-kanban-visibility-action="reset"`,
+		`Reset to defaults`,
+		`data-project-kanban-visibility-row`,
+		`data-project-kanban-visibility-lane="in-progress"`,
+		`data-project-kanban-visibility-status`,
+		`data-project-kanban-visibility-reset`,
+		`aria-label="Reset In Progress lane to default visibility"`,
+		`title="Reset lane to default visibility"`,
+		`Default visible`,
+		`Default hidden`,
+		`name="visible_lane" value="in-progress"`,
+		`data-project-kanban-visibility-default="true"`,
+		`name="visible_lane" value="cancelled"`,
+		`data-project-kanban-visibility-default="false"`,
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("project Kanban visibility controls missing %q:\n%s", want, section)
+		}
+	}
+	for _, forbidden := range []string{
+		`data-project-kanban-visibility-action="active"`,
+		`Active only`,
+	} {
+		if strings.Contains(section, forbidden) {
+			t.Fatalf("project Kanban visibility controls still contain %q:\n%s", forbidden, section)
+		}
+	}
+
+	for _, want := range []string{
+		`storageVersion = 4`,
+		`function visibilityOverrides(board)`,
+		`function saveVisibilityOverrides(board, overrides)`,
+		`function legacyVisibilityOverrides(board, parsed)`,
+		`parsed.v === 3 || parsed.v === 2 || parsed.v === 1`,
+		`function effectiveLaneVisibility(lane, overrides)`,
+		`function setLaneOverride(board, id, state)`,
+		`function resetLaneOverride(button)`,
+		`function resetVisibilityOverrides(board)`,
+		`document.addEventListener("htmx:afterSwap", applyBoards)`,
+		`document.addEventListener("htmx:afterSettle", applyBoards)`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing tri-state visibility script %q:\n%s", want, html)
 		}
 	}
 }
@@ -1644,6 +1743,7 @@ func TestDashboardProjectKanbanPopulatedTerminalLaneStartsHiddenAndUsable(t *tes
 	}
 	for _, want := range []string{
 		`<span class="rounded-full bg-muted px-1.5 py-0.5 font-mono" data-project-kanban-visibility-count>1/3</span>`,
+		`Default hidden`,
 		`Cancelled (1)`,
 		`Cancelled work`,
 	} {
