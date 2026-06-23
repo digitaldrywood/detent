@@ -1012,6 +1012,77 @@ func TestRunDoctorWithProjectScopeSkipsUnrelatedProjectFailures(t *testing.T) {
 	}
 }
 
+func TestRunDoctorWithProjectScopeSkipsUnrelatedProjectPathValidation(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	alphaWorkdir := filepath.Join(root, "alpha")
+	if err := os.MkdirAll(alphaWorkdir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	alphaWorkflow := filepath.Join(alphaWorkdir, "WORKFLOW.md")
+	if err := os.WriteFile(alphaWorkflow, []byte("Alpha workflow.\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	configPath := filepath.Join(root, "global.yaml")
+	raw := strings.Join([]string{
+		"apiVersion: detent/v1",
+		"kind: GlobalConfig",
+		"global:",
+		"  max_concurrent_agents: 1",
+		"  scheduling: weighted",
+		"projects:",
+		"  - id: alpha",
+		"    workflow: " + alphaWorkflow,
+		"    workdir: " + alphaWorkdir,
+		"    weight: 1",
+		"    priority: 0",
+		"  - id: beta",
+		"    workflow: " + filepath.Join(root, "missing-beta", "WORKFLOW.md"),
+		"    workdir: " + filepath.Join(root, "missing-beta"),
+		"    weight: 1",
+		"    priority: 0",
+		"",
+	}, "\n")
+	if err := os.WriteFile(configPath, []byte(raw), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = func(path string) (workflowconfig.Workflow, error) {
+		if strings.Contains(path, "missing-beta") {
+			t.Fatalf("loadWorkflow(%q) called for skipped project", path)
+		}
+		return workflowconfig.Workflow{Config: validDoctorWorkflow(alphaWorkdir)}, nil
+	}
+
+	report := runDoctor(context.Background(), doctorConfig{
+		ConfigPath:   configPath,
+		Output:       io.Discard,
+		CheckTimeout: time.Second,
+		ProjectID:    "alpha",
+		Flags: runtimeFlags{
+			Port: runtimeIntFlag{Value: 0, Set: true},
+		},
+	}, options{
+		resolvePath: func(string) (globalconfig.PathResolution, error) {
+			return globalconfig.PathResolution{Path: configPath, Rule: globalconfig.PathRuleFlag}, nil
+		},
+		stdoutTTY: func() bool { return true },
+	}, deps)
+
+	if report.HasFailures() {
+		t.Fatalf("HasFailures() = true, want scoped doctor to ignore beta path validation: %#v", report.Checks)
+	}
+	if report.Scope.SelectedProject != "alpha" {
+		t.Fatalf("SelectedProject = %q, want alpha", report.Scope.SelectedProject)
+	}
+	if !slices.Equal(report.Scope.SkippedProjects, []string{"beta"}) {
+		t.Fatalf("SkippedProjects = %#v, want beta", report.Scope.SkippedProjects)
+	}
+	assertDoctorMissingCheck(t, report, "Project beta workflow")
+}
+
 func TestRunDoctorWithMissingProjectScopeFails(t *testing.T) {
 	t.Parallel()
 
@@ -2633,6 +2704,11 @@ func successfulDoctorOptionsWithConfig(configPath string, cfg globalconfig.Confi
 		read: func(string) (globalconfig.Config, error) {
 			cfg.Path = configPath
 			return cfg, nil
+		},
+		readProject: func(_ string, projectID string) (globalconfig.Config, []string, error) {
+			scoped, scope, _ := scopeDoctorGlobalConfig(cfg, projectID)
+			scoped.Path = configPath
+			return scoped, scope.SkippedProjects, nil
 		},
 		stdoutTTY: func() bool { return true },
 	}

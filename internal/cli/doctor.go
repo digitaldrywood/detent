@@ -273,17 +273,11 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 
 	report := doctorReport{Scope: doctorScope{SelectedProject: strings.TrimSpace(cfg.ProjectID)}}
 	writeDoctorProgressStart(progressOut, "Config resolution")
-	resolution, global, configCheck := checkDoctorConfig(cfg.ConfigPath, opts)
+	resolution, global, scope, projectScopeCheck, configCheck := checkDoctorConfig(cfg.ConfigPath, cfg.ProjectID, opts)
 	writeDoctorProgressDone(progressOut, configCheck)
+	report.Scope = scope
 	report.Add(configCheck)
 
-	var projectScopeCheck *doctorCheck
-	if global != nil {
-		scopedGlobal, scope, scopeCheck := scopeDoctorGlobalConfig(*global, cfg.ProjectID)
-		global = &scopedGlobal
-		report.Scope = scope
-		projectScopeCheck = scopeCheck
-	}
 	if projectScopeCheck != nil {
 		writeDoctorProgressStart(progressOut, projectScopeCheck.Name)
 		writeDoctorProgressDone(progressOut, *projectScopeCheck)
@@ -552,16 +546,7 @@ func scopeDoctorGlobalConfig(cfg globalconfig.Config, projectID string) (globalc
 		return scoped, scope, nil
 	}
 
-	detail := "project " + projectID + " not found"
-	if len(scope.SkippedProjects) > 0 {
-		detail += "; configured projects: " + strings.Join(scope.SkippedProjects, ", ")
-	}
-	check := doctorCheck{
-		Name:   "Project scope",
-		Status: doctorFail,
-		Detail: detail,
-		Hint:   "Run detent doctor without --project to list host-wide project checks, or pass a configured project id.",
-	}
+	check := missingDoctorProjectScopeCheck(scope)
 	return scoped, scope, &check
 }
 
@@ -638,10 +623,12 @@ func newDoctorOutputReport(report doctorReport) doctorOutputReport {
 	}
 }
 
-func checkDoctorConfig(configPath string, opts options) (globalconfig.PathResolution, *globalconfig.Config, doctorCheck) {
+func checkDoctorConfig(configPath string, projectID string, opts options) (globalconfig.PathResolution, *globalconfig.Config, doctorScope, *doctorCheck, doctorCheck) {
+	projectID = strings.TrimSpace(projectID)
+	scope := doctorScope{SelectedProject: projectID}
 	resolution, err := resolveConfigPathResolution(configPath, opts)
 	if err != nil {
-		return globalconfig.PathResolution{}, nil, doctorCheck{
+		return globalconfig.PathResolution{}, nil, scope, nil, doctorCheck{
 			Name:   "Config resolution",
 			Status: doctorFail,
 			Detail: err.Error(),
@@ -649,9 +636,16 @@ func checkDoctorConfig(configPath string, opts options) (globalconfig.PathResolu
 		}
 	}
 
-	cfg, err := opts.read(resolution.Path)
+	var cfg globalconfig.Config
+	if projectID == "" {
+		cfg, err = opts.read(resolution.Path)
+	} else {
+		var skippedProjects []string
+		cfg, skippedProjects, err = opts.readProject(resolution.Path, projectID)
+		scope.SkippedProjects = skippedProjects
+	}
 	if err != nil {
-		return resolution, nil, doctorCheck{
+		return resolution, nil, scope, nil, doctorCheck{
 			Name:   "Config resolution",
 			Status: doctorFail,
 			Detail: fmt.Sprintf("%s via %s; %v", resolution.Path, resolution.Rule, err),
@@ -659,10 +653,29 @@ func checkDoctorConfig(configPath string, opts options) (globalconfig.PathResolu
 		}
 	}
 
-	return resolution, &cfg, doctorCheck{
+	var projectScopeCheck *doctorCheck
+	if projectID != "" && len(cfg.Projects) == 0 {
+		check := missingDoctorProjectScopeCheck(scope)
+		projectScopeCheck = &check
+	}
+
+	return resolution, &cfg, scope, projectScopeCheck, doctorCheck{
 		Name:   "Config resolution",
 		Status: doctorOK,
 		Detail: fmt.Sprintf("%s via %s; %d project(s)", cfg.Path, resolution.Rule, len(cfg.Projects)),
+	}
+}
+
+func missingDoctorProjectScopeCheck(scope doctorScope) doctorCheck {
+	detail := "project " + scope.SelectedProject + " not found"
+	if len(scope.SkippedProjects) > 0 {
+		detail += "; configured projects: " + strings.Join(scope.SkippedProjects, ", ")
+	}
+	return doctorCheck{
+		Name:   "Project scope",
+		Status: doctorFail,
+		Detail: detail,
+		Hint:   "Run detent doctor without --project to list host-wide project checks, or pass a configured project id.",
 	}
 }
 
@@ -3122,6 +3135,9 @@ func doctorOptions(opts options) options {
 	}
 	if opts.read == nil {
 		opts.read = defaults.read
+	}
+	if opts.readProject == nil {
+		opts.readProject = defaults.readProject
 	}
 	return opts
 }
