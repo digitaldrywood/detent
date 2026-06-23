@@ -1428,7 +1428,7 @@ templ projectKanbanVisibilityScript() {
 	<script>
 		(function() {
 			const storagePrefix = "detent.ui.projectKanban.visibleLanes.";
-			const storageVersion = 2;
+			const storageVersion = 3;
 
 			function visibilityStorage() {
 				try {
@@ -1496,7 +1496,7 @@ templ projectKanbanVisibilityScript() {
 				if (parsed.v === storageVersion) {
 					return laneIDSet(parsed.lanes);
 				}
-				if (parsed.v === 1) {
+				if (parsed.v === 2 || parsed.v === 1) {
 					const migrated = defaultLaneIDs(board);
 					laneIDSet(parsed.lanes).forEach(function(id) {
 						migrated.add(id);
