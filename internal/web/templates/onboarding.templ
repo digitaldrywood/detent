@@ -18,24 +18,25 @@ type PollingData struct {
 }
 
 type OnboardingForm struct {
-	Step                  string
-	TrackerKind           string
-	GitHubStatusSource    string
-	Endpoint              string
-	APIKey                string
-	ProjectSlug           string
-	Repo                  string
-	StatusField           string
-	StatusLabelPrefix     string
-	WorkspaceRoot         string
-	MaxConcurrentAgents   string
-	MaxTurns              string
-	PollingIntervalMS     string
-	MergingConcurrency    string
-	DispatchPriorityState string
-	DispatchPriorityLabel string
-	DeliveryProfile       string
+	Step                         string
+	TrackerKind                  string
+	GitHubStatusSource           string
+	Endpoint                     string
+	APIKey                       string
+	ProjectSlug                  string
+	Repo                         string
+	StatusField                  string
+	StatusLabelPrefix            string
+	WorkspaceRoot                string
+	MaxConcurrentAgents          string
+	MaxTurns                     string
+	PollingIntervalMS            string
+	MergingConcurrency           string
+	DispatchPriorityState        string
+	DispatchPriorityLabel        string
+	DeliveryProfile              string
 	DependencyAutoUnblockEnabled string
+	KanbanMode                   string
 }
 
 type OnboardingResult struct {
@@ -140,8 +141,20 @@ func deliveryProfileExplanation(form OnboardingForm) string {
 	}
 }
 
+func kanbanMode(form OnboardingForm) string {
+	switch form.KanbanMode {
+	case "read_only", "integration":
+		return form.KanbanMode
+	default:
+		if form.TrackerKind == "github" {
+			return "integration"
+		}
+		return "read_only"
+	}
+}
+
 templ OnboardingPage(data OnboardingData) {
-	<!doctype html>
+	<!DOCTYPE html>
 	<html lang="en">
 		<head>
 			<meta charset="utf-8"/>
@@ -288,6 +301,7 @@ templ projectStep(data OnboardingData) {
 		<h2 class="text-xl font-semibold">{ projectStepTitle(data.Form) }</h2>
 		<form class="mt-5 space-y-4" hx-post="/onboarding/project" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@hiddenCredentials(data.Form)
+			@hiddenAgentFields(data.Form)
 			if data.Form.TrackerKind == "memory" {
 				<p class="text-sm text-muted-foreground">Memory projects are created from the generated workflow.</p>
 			} else if githubStatusSource(data.Form) == "issue_field" {
@@ -371,6 +385,14 @@ templ agentStep(data OnboardingData) {
 					<span class="block text-sm text-muted-foreground">Move dependency-waiting Blocked issues back to Todo when blockers clear.</span>
 				</span>
 			</label>
+			<div class="rounded-md border border-border p-3 sm:col-span-2">
+				<span class="block text-sm font-semibold text-foreground">Project Kanban</span>
+				<div class="mt-3 grid gap-2 sm:grid-cols-2">
+					@kanbanModeChoice(data.Form, "integration", "Interactive", "Recommended for operator-owned local/private installs after mutation authorization and write probes pass.")
+					@kanbanModeChoice(data.Form, "read_only", "Read-only", "Conservative option for observer/shared dashboards or until write probes pass.")
+				</div>
+				<p class="mt-3 text-sm text-muted-foreground">Integration requires <code>detent doctor --allow-write-probes</code> to prove status-label updates and issue/PR comment writes.</p>
+			</div>
 			<div class="flex flex-wrap gap-2 pt-2 sm:col-span-2">
 				<button class={ buttonClass() } type="submit">Continue</button>
 				<button class={ secondaryButtonClass() } type="submit" hx-post="/onboarding/credentials">Back</button>
@@ -382,6 +404,16 @@ templ agentStep(data OnboardingData) {
 templ deliveryProfileChoice(data OnboardingData, value string, label string, description string) {
 	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3 hover:bg-muted">
 		<input class="mt-1" type="radio" name="delivery_profile" value={ value } checked?={ selectedDeliveryProfile(data.Form) == value }/>
+		<span>
+			<span class="block text-sm font-semibold text-foreground">{ label }</span>
+			<span class="block text-sm text-muted-foreground">{ description }</span>
+		</span>
+	</label>
+}
+
+templ kanbanModeChoice(form OnboardingForm, value string, label string, description string) {
+	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3 hover:bg-muted">
+		<input class="mt-1" type="radio" name="kanban_mode" value={ value } checked?={ kanbanMode(form) == value }/>
 		<span>
 			<span class="block text-sm font-semibold text-foreground">{ label }</span>
 			<span class="block text-sm text-muted-foreground">{ description }</span>
@@ -410,6 +442,7 @@ templ writeStep(data OnboardingData) {
 			if data.Form.StatusLabelPrefix != "" && githubStatusSource(data.Form) == "label" {
 				<p><span class="font-medium text-foreground">Status label prefix:</span> { data.Form.StatusLabelPrefix }</p>
 			}
+			<p><span class="font-medium text-foreground">Project Kanban:</span> { kanbanMode(data.Form) }</p>
 			<p><span class="font-medium text-foreground">Output:</span> { data.WorkflowPath }</p>
 			<p class="sm:col-span-2">{ deliveryProfileExplanation(data.Form) }</p>
 		</div>
@@ -463,6 +496,10 @@ templ hiddenProject(form OnboardingForm) {
 
 templ hiddenAgent(form OnboardingForm) {
 	@hiddenProject(form)
+	@hiddenAgentFields(form)
+}
+
+templ hiddenAgentFields(form OnboardingForm) {
 	<input type="hidden" name="workspace_root" value={ form.WorkspaceRoot }/>
 	<input type="hidden" name="max_concurrent_agents" value={ form.MaxConcurrentAgents }/>
 	<input type="hidden" name="max_turns" value={ form.MaxTurns }/>
@@ -472,4 +509,5 @@ templ hiddenAgent(form OnboardingForm) {
 	<input type="hidden" name="dispatch_priority_by_label" value={ form.DispatchPriorityLabel }/>
 	<input type="hidden" name="delivery_profile" value={ form.DeliveryProfile }/>
 	<input type="hidden" name="dependency_auto_unblock_enabled" value={ form.DependencyAutoUnblockEnabled }/>
+	<input type="hidden" name="kanban_mode" value={ kanbanMode(form) }/>
 }
