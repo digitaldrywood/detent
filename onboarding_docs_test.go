@@ -122,6 +122,7 @@ func TestOnboardingDocsInferCurrentCheckoutCandidateBeforeRawFields(t *testing.T
 	for _, want := range []string{
 		"`do not assume` means infer a candidate from identity-safe local evidence and confirm it",
 		"`pwd`, `git rev-parse --show-toplevel`, `git remote get-url origin`",
+		"Reuse the existing project id when it is the same target repository or source root",
 		"Current directory is `/home/loganlanou/projects/digitaldrywood/creswoodcorners-phone`",
 		"Detent source checkout is `/home/loganlanou/projects/digitaldrywood/detent`",
 		"Onboarding mode is `add-project`",

@@ -222,12 +222,15 @@ If the current working directory is a GitHub checkout and its git top level is
 not the canonical Detent source checkout, propose that checkout as the target
 candidate. Derive `TARGET_REPOSITORY` from the origin remote and
 `TARGET_SOURCE_ROOT` from `git rev-parse --show-toplevel`. Propose
-`DETENT_PROJECT_ID` from the repo name unless that id collides with an existing
-registered project id; on collision, propose a short non-colliding variant and
-explain the collision. Propose `CUSTOMER_ID` from the owner when that is the
-clearest stable workstream id, or from a repo-name/workstream heuristic when
-the owner is too broad. Explain that `CUSTOMER_ID` is only a stable local
-workstream id, not a billing account or GitHub organization requirement.
+`DETENT_PROJECT_ID` from the repo name. If a registered project already uses
+that id, compare the registered repository, workdir, and workflow path to the
+candidate checkout before minting a new id. Reuse the existing project id when
+it is the same target repository or source root; propose a short non-colliding
+variant only when the id belongs to a different target, and explain the
+collision. Propose `CUSTOMER_ID` from the owner when that is the clearest
+stable workstream id, or from a repo-name/workstream heuristic when the owner
+is too broad. Explain that `CUSTOMER_ID` is only a stable local workstream id,
+not a billing account or GitHub organization requirement.
 
 If the current working directory is the canonical Detent source checkout, do not
 propose Detent as the target unless the operator explicitly says they are

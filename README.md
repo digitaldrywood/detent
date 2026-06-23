@@ -49,9 +49,12 @@ and is not the canonical Detent source checkout, propose it as the target
 candidate. If the current working directory is the Detent source checkout, do
 not propose Detent as the target unless I explicitly say I am onboarding Detent
 itself. Derive the candidate target owner/name from the checkout origin, source
-root from the git top level, Detent project id from the repo name unless that id
-collides with an existing registered project, and customer/workstream id from
-the owner or a repo-name/workstream heuristic. Explain that the
+root from the git top level, Detent project id from the repo name, and
+customer/workstream id from the owner or a repo-name/workstream heuristic. If
+the candidate project id already exists, first compare the registered
+repository, workdir, and workflow path to the current checkout; reuse the
+existing id when it is the same target, and propose a short non-colliding
+variant only when the id belongs to a different target. Explain that the
 customer/workstream id is only a stable local workstream id. Present the
 candidate in human-facing language first, then show the `answers.env`
 representation. Record those identity answers in `answers.env`, set
