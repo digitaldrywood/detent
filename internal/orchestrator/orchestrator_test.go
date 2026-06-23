@@ -81,6 +81,61 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	}
 }
 
+func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-label-complete", "digitaldrywood/detent#638", "Todo")
+	issue.Labels = []string{"detent:todo", "bug"}
+	tracker := newFakeLabelConnector(issue)
+	runner := &staticRunner{
+		result: orchestrator.RunResult{FinalState: orchestrator.FinalStateCompleted},
+		onRun: func(request orchestrator.RunRequest) {
+			tracker.setCandidatePullRequest(request.Issue.ID, &connector.PullRequest{
+				Number:         17,
+				URL:            "https://github.com/digitaldrywood/detent/pull/17",
+				State:          "OPEN",
+				MergeableState: "clean",
+				CIStatus:       "success",
+			})
+		},
+	}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:           5 * time.Millisecond,
+		MaxConcurrentAgents:    1,
+		MaxRetryBackoff:        time.Hour,
+		FailureRetryBaseDelay:  time.Hour,
+		ActiveStates:           []string{"Todo", "In Progress", "Rework"},
+		ObservedStates:         []string{"Human Review"},
+		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay: time.Millisecond,
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    runner,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForStateUpdate(t, tracker, stateUpdateCall{issueID: issue.ID, state: "Human Review"})
+
+	if got := runner.calls.Load(); got != 1 {
+		t.Fatalf("runner calls = %d, want 1", got)
+	}
+	got := tracker.candidateIssue(issue.ID)
+	if got.State != "Human Review" {
+		t.Fatalf("State = %q, want Human Review", got.State)
+	}
+	if count := statusLabelCount(got.Labels, "detent:"); count != 1 {
+		t.Fatalf("detent status label count = %d in %#v, want 1", count, got.Labels)
+	}
+	if !labelListContains(got.Labels, "detent:human-review") {
+		t.Fatalf("Labels = %#v, want detent:human-review", got.Labels)
+	}
+}
+
 func TestRunPlanDispatchPostsPlanAndMovesToPlanReview(t *testing.T) {
 	t.Parallel()
 
@@ -1577,6 +1632,7 @@ type fakeConnector struct {
 	comments            []commentCall
 	stateUpdates        []stateUpdateCall
 	fetchByStatesErr    error
+	statusLabelPrefix   string
 }
 
 type setFieldCall struct {
@@ -1597,6 +1653,10 @@ type stateUpdateCall struct {
 
 func newFakeConnector(issues ...connector.Issue) *fakeConnector {
 	return &fakeConnector{candidates: cloneIssues(issues)}
+}
+
+func newFakeLabelConnector(issues ...connector.Issue) *fakeConnector {
+	return &fakeConnector{candidates: cloneIssues(issues), statusLabelPrefix: "detent:"}
 }
 
 func (c *fakeConnector) Name() string {
@@ -1768,13 +1828,112 @@ func (c *fakeConnector) applyIssueStateLocked(issueID string, state string) {
 	for i := range c.candidates {
 		if c.candidates[i].ID == issueID {
 			c.candidates[i].State = state
+			c.candidates[i].Labels = c.updatedStatusLabels(c.candidates[i].Labels, state)
 		}
 	}
 	for i := range c.stateIssues {
 		if c.stateIssues[i].ID == issueID {
 			c.stateIssues[i].State = state
+			c.stateIssues[i].Labels = c.updatedStatusLabels(c.stateIssues[i].Labels, state)
 		}
 	}
+}
+
+func (c *fakeConnector) updatedStatusLabels(labels []string, state string) []string {
+	if c.statusLabelPrefix == "" {
+		return append([]string(nil), labels...)
+	}
+	next := make([]string, 0, len(labels)+1)
+	for _, label := range labels {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(label)), c.statusLabelPrefix) {
+			continue
+		}
+		next = append(next, label)
+	}
+	next = append(next, c.statusLabelPrefix+statusLabelSlug(state))
+	return next
+}
+
+func statusLabelSlug(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	var b strings.Builder
+	lastSeparator := false
+	for _, r := range value {
+		switch {
+		case r >= 'a' && r <= 'z', r >= '0' && r <= '9':
+			b.WriteRune(r)
+			lastSeparator = false
+		default:
+			if b.Len() == 0 || lastSeparator {
+				continue
+			}
+			b.WriteByte('-')
+			lastSeparator = true
+		}
+	}
+	return strings.Trim(b.String(), "-")
+}
+
+func (c *fakeConnector) candidateIssue(issueID string) connector.Issue {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, issue := range c.candidates {
+		if issue.ID == issueID {
+			return cloneIssues([]connector.Issue{issue})[0]
+		}
+	}
+	return connector.Issue{}
+}
+
+func (c *fakeConnector) setCandidatePullRequest(issueID string, pullRequest *connector.PullRequest) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.candidates {
+		if c.candidates[i].ID == issueID {
+			c.candidates[i].PullRequest = pullRequest
+		}
+	}
+}
+
+func waitForStateUpdate(t *testing.T, tracker *fakeConnector, want stateUpdateCall) {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	for {
+		for _, got := range tracker.stateUpdateCalls() {
+			if got == want {
+				return
+			}
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for state update %#v; got %#v", want, tracker.stateUpdateCalls())
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func statusLabelCount(labels []string, prefix string) int {
+	count := 0
+	for _, label := range labels {
+		if strings.HasPrefix(strings.ToLower(strings.TrimSpace(label)), strings.ToLower(prefix)) {
+			count++
+		}
+	}
+	return count
+}
+
+func labelListContains(labels []string, want string) bool {
+	for _, label := range labels {
+		if strings.EqualFold(strings.TrimSpace(label), strings.TrimSpace(want)) {
+			return true
+		}
+	}
+	return false
 }
 
 func stateUpdatesEqual(got []stateUpdateCall, want []stateUpdateCall) bool {
@@ -2029,6 +2188,7 @@ type staticRunner struct {
 	requestLog []orchestrator.RunRequest
 	result     orchestrator.RunResult
 	err        error
+	onRun      func(orchestrator.RunRequest)
 }
 
 func (r *staticRunner) Run(_ context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
@@ -2036,6 +2196,9 @@ func (r *staticRunner) Run(_ context.Context, request orchestrator.RunRequest) (
 	r.requestMu.Lock()
 	r.requestLog = append(r.requestLog, request)
 	r.requestMu.Unlock()
+	if r.onRun != nil {
+		r.onRun(request)
+	}
 	return r.result, r.err
 }
 
