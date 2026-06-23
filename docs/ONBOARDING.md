@@ -250,8 +250,8 @@ project id when it is the same target repository or source root; use a short
 non-colliding variant only when the id belongs to a different target. The draft
 explains the collision. It proposes `CUSTOMER_ID` from the owner when that is
 the clearest stable workstream id, or from a repo-name/workstream heuristic when
-the owner is too broad. `CUSTOMER_ID` is only a stable local workstream id, not
-a billing account or GitHub organization requirement.
+the owner is too broad. `CUSTOMER_ID` is only a stable local grouping id, not a
+billing account or GitHub organization requirement.
 
 If the current working directory is the canonical Detent source checkout, do not
 propose Detent as the target unless the operator explicitly says they are
@@ -273,14 +273,20 @@ Present the candidate in human-facing language first, then show the
 ```text
 I found a likely target checkout from the current shell:
 
-Customer/workstream: `digitaldrywood`
+Customer/workstream: `creswoodcorners`
 Project id: `creswoodcorners-phone`
 Target repository: `digitaldrywood/creswoodcorners-phone`
 Source checkout: `/home/loganlanou/projects/digitaldrywood/creswoodcorners-phone`
 Reference repositories: `digitaldrywood/detent`
 Onboarding mode: `add-project`
 
-`CUSTOMER_ID` is only a stable local workstream id for this Detent install. I
+customer_id_source=repo_prefix
+customer_id_confidence=medium
+detent_project_id_source=repo_name
+confidence=medium
+Customer/workstream alternatives: `digitaldrywood`
+
+`CUSTOMER_ID` is only a stable local grouping id for this Detent install. I
 will not inspect target labels, issues, boards, `WORKFLOW.md`, validation
 commands, or runtime docs until you confirm this identity and the identity
 validator passes. Is this the target you want to onboard?

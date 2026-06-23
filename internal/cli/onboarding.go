@@ -53,7 +53,12 @@ type onboardingDraftAnswersResult struct {
 	AnswersPath                    string   `json:"answers_path,omitempty"`
 	Written                        bool     `json:"written"`
 	CustomerIDCandidate            string   `json:"customer_id_candidate"`
+	CustomerIDSource               string   `json:"customer_id_source"`
+	CustomerIDConfidence           string   `json:"customer_id_confidence"`
+	CustomerIDReviewRequired       bool     `json:"customer_id_review_required"`
+	CustomerIDAlternatives         []string `json:"customer_id_alternatives"`
 	DetentProjectIDCandidate       string   `json:"detent_project_id_candidate"`
+	DetentProjectIDSource          string   `json:"detent_project_id_source"`
 	TargetRepositoryCandidate      string   `json:"target_repository_candidate"`
 	TargetSourceRootCandidate      string   `json:"target_source_root_candidate"`
 	ReferenceRepositoriesCandidate []string `json:"reference_repositories_candidate"`
@@ -75,10 +80,21 @@ type onboardingAnswers struct {
 type onboardingDraftAnswersConfig struct {
 	AnswersPath      string
 	ConfigPath       string
+	CustomerID       string
+	DetentProjectID  string
 	TargetSourceRoot string
 	DetentSourceRoot string
 	Write            bool
 	Options          options
+}
+
+type onboardingCustomerIDCandidate struct {
+	ID             string
+	Source         string
+	Confidence     string
+	ReviewRequired bool
+	Alternatives   []string
+	Notes          []string
 }
 
 func newOnboardingCommand(configPath *string, opts options) *cobra.Command {
@@ -96,7 +112,9 @@ func newOnboardingCommand(configPath *string, opts options) *cobra.Command {
 
 func newOnboardingDraftAnswersCommand(configPath *string, opts options) *cobra.Command {
 	var answersPath string
+	var customerID string
 	var detentSourceRoot string
+	var detentProjectID string
 	var output string
 	var targetSourceRoot string
 	var write bool
@@ -119,6 +137,8 @@ func newOnboardingDraftAnswersCommand(configPath *string, opts options) *cobra.C
 			}
 			cfg := onboardingDraftAnswersConfig{
 				AnswersPath:      answersPath,
+				CustomerID:       customerID,
+				DetentProjectID:  detentProjectID,
 				TargetSourceRoot: targetSourceRoot,
 				DetentSourceRoot: detentSourceRoot,
 				Write:            write,
@@ -143,6 +163,8 @@ func newOnboardingDraftAnswersCommand(configPath *string, opts options) *cobra.C
 		},
 	}
 	cmd.Flags().StringVar(&answersPath, "answers", "answers.env", "path to onboarding answers.env")
+	cmd.Flags().StringVar(&customerID, "customer-id", "", "explicit customer/workstream id candidate")
+	cmd.Flags().StringVar(&detentProjectID, "detent-project-id", "", "explicit Detent project id candidate")
 	cmd.Flags().StringVar(&targetSourceRoot, "target-source-root", "", "explicit target git checkout root")
 	cmd.Flags().StringVar(&detentSourceRoot, "detent-source-root", "", "explicit Detent source checkout root")
 	cmd.Flags().StringVar(&output, "output", "", "output format: pretty or json")
@@ -217,11 +239,25 @@ func draftOnboardingAnswers(ctx context.Context, cfg onboardingDraftAnswersConfi
 		return onboardingDraftAnswersResult{}, err
 	}
 
+	customerCandidate, err := onboardingCustomerIDFromRepository(targetRepository, cfg.CustomerID)
+	if err != nil {
+		return onboardingDraftAnswersResult{}, err
+	}
+	projectIDCandidate, projectIDSource, err := onboardingDetentProjectIDFromRepository(targetRepository, cfg.DetentProjectID)
+	if err != nil {
+		return onboardingDraftAnswersResult{}, err
+	}
+
 	result := onboardingDraftAnswersResult{
 		Status:                    "draft",
 		AnswersPath:               strings.TrimSpace(cfg.AnswersPath),
-		CustomerIDCandidate:       repositoryOwner(targetRepository),
-		DetentProjectIDCandidate:  repositoryName(targetRepository),
+		CustomerIDCandidate:       customerCandidate.ID,
+		CustomerIDSource:          customerCandidate.Source,
+		CustomerIDConfidence:      customerCandidate.Confidence,
+		CustomerIDReviewRequired:  customerCandidate.ReviewRequired,
+		CustomerIDAlternatives:    customerCandidate.Alternatives,
+		DetentProjectIDCandidate:  projectIDCandidate,
+		DetentProjectIDSource:     projectIDSource,
 		TargetRepositoryCandidate: targetRepository,
 		TargetSourceRootCandidate: targetRoot,
 		ConfigPath:                resolution.Path,
@@ -232,6 +268,7 @@ func draftOnboardingAnswers(ctx context.Context, cfg onboardingDraftAnswersConfi
 			"review all candidates with the operator before setting IDENTITY_CONFIRMED=true",
 		},
 	}
+	result.Notes = append(result.Notes, customerCandidate.Notes...)
 
 	result.ReferenceRepositoriesCandidate = onboardingReferenceRepositoryCandidates(ctx, cfg.DetentSourceRoot, targetRepository, &result.Notes)
 	global, installed, err := readOnboardingDraftConfigEvidence(resolution.Path, opts)
@@ -249,6 +286,9 @@ func draftOnboardingAnswers(ctx context.Context, cfg onboardingDraftAnswersConfi
 		result.Notes = append(result.Notes, "no readable global config was found, so this looks like a new-install candidate")
 	}
 	if containsOnboardingReviewNote(result.Notes) {
+		result.Confidence = "needs-review"
+	}
+	if result.CustomerIDReviewRequired {
 		result.Confidence = "needs-review"
 	}
 	return result, nil
@@ -402,16 +442,150 @@ func repositoryName(repository string) string {
 	return name
 }
 
+func onboardingCustomerIDFromRepository(repository string, override string) (onboardingCustomerIDCandidate, error) {
+	override = strings.TrimSpace(override)
+	owner := repositoryOwner(repository)
+	name := repositoryName(repository)
+	if override != "" {
+		if !onboardingAnswerIdentifierPattern.MatchString(override) {
+			return onboardingCustomerIDCandidate{}, NewValidationError(
+				"--customer-id must contain only letters, digits, underscore, dot, or hyphen",
+				"Pass a stable local customer/workstream id such as --customer-id creswoodcorners.",
+				nil,
+			)
+		}
+		return onboardingCustomerIDCandidate{
+			ID:         override,
+			Source:     "override",
+			Confidence: "explicit",
+			Notes:      []string{fmt.Sprintf("customer id candidate %q came from --customer-id", override)},
+		}, nil
+	}
+
+	prefix, suffix, hasPrefix := repositoryCustomerPrefix(name)
+	if hasPrefix && !strings.EqualFold(prefix, owner) {
+		return onboardingCustomerIDCandidate{
+			ID:           prefix,
+			Source:       "repo_prefix",
+			Confidence:   "medium",
+			Alternatives: onboardingCandidateAlternatives(owner),
+			Notes: []string{
+				fmt.Sprintf("customer id candidate %q came from repository prefix before suffix %q", prefix, suffix),
+			},
+		}, nil
+	}
+
+	if ownerLooksSharedOperator(owner) {
+		return onboardingCustomerIDCandidate{
+			ID:             name,
+			Source:         "repo_name",
+			Confidence:     "needs-review",
+			ReviewRequired: true,
+			Alternatives:   onboardingCandidateAlternatives(owner),
+			Notes: []string{
+				fmt.Sprintf("customer id candidate needs operator review because owner %s looks like a shared operator", owner),
+			},
+		}, nil
+	}
+
+	return onboardingCustomerIDCandidate{
+		ID:         owner,
+		Source:     "owner",
+		Confidence: "medium",
+		Notes:      []string{fmt.Sprintf("customer id candidate %q came from repository owner", owner)},
+	}, nil
+}
+
+func onboardingDetentProjectIDFromRepository(repository string, override string) (string, string, error) {
+	override = strings.TrimSpace(override)
+	if override == "" {
+		return repositoryName(repository), "repo_name", nil
+	}
+	if !onboardingAnswerIdentifierPattern.MatchString(override) {
+		return "", "", NewValidationError(
+			"--detent-project-id must contain only letters, digits, underscore, dot, or hyphen",
+			"Pass a stable local Detent project id such as --detent-project-id phone.",
+			nil,
+		)
+	}
+	return override, "override", nil
+}
+
+func repositoryCustomerPrefix(name string) (string, string, bool) {
+	parts := strings.Split(strings.TrimSpace(name), "-")
+	if len(parts) < 2 {
+		return "", "", false
+	}
+	suffix := strings.ToLower(parts[len(parts)-1])
+	if !repositoryProductSuffix(suffix) {
+		return "", "", false
+	}
+	prefix := strings.Join(parts[:len(parts)-1], "-")
+	if prefix == "" || !onboardingAnswerIdentifierPattern.MatchString(prefix) {
+		return "", "", false
+	}
+	return prefix, suffix, true
+}
+
+func repositoryProductSuffix(suffix string) bool {
+	switch suffix {
+	case "admin", "agent", "api", "app", "backend", "bot", "cli", "dashboard", "docs", "frontend",
+		"hub", "infra", "ios", "mobile", "ops", "phone", "portal", "service", "site", "web",
+		"worker":
+		return true
+	default:
+		return false
+	}
+}
+
+func ownerLooksSharedOperator(owner string) bool {
+	owner = strings.ToLower(strings.TrimSpace(owner))
+	if owner == "digitaldrywood" || owner == "digital-drywood" {
+		return true
+	}
+	for _, marker := range []string{"agency", "consulting", "labs", "studio", "solutions"} {
+		if strings.Contains(owner, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func onboardingCandidateAlternatives(candidates ...string) []string {
+	alternatives := make([]string, 0, len(candidates))
+	seen := make(map[string]bool, len(candidates))
+	for _, candidate := range candidates {
+		candidate = strings.TrimSpace(candidate)
+		if candidate == "" || seen[candidate] {
+			continue
+		}
+		seen[candidate] = true
+		alternatives = append(alternatives, candidate)
+	}
+	return alternatives
+}
+
 func writeOnboardingDraftAnswersPretty(w io.Writer, result onboardingDraftAnswersResult) error {
 	lines := []string{
-		"Draft onboarding identity answers:",
-		"customer_id_candidate: " + result.CustomerIDCandidate,
-		"detent_project_id_candidate: " + result.DetentProjectIDCandidate,
-		"target_repository_candidate: " + result.TargetRepositoryCandidate,
-		"target_source_root_candidate: " + result.TargetSourceRootCandidate,
-		"reference_repositories_candidate: " + strings.Join(result.ReferenceRepositoriesCandidate, ","),
-		"detent_onboarding_mode_candidate: " + result.DetentOnboardingModeCandidate,
-		"confidence: " + result.Confidence,
+		"I found a likely target checkout from the current shell:",
+		"",
+		fmt.Sprintf("Customer/workstream: `%s`", result.CustomerIDCandidate),
+		fmt.Sprintf("Project id: `%s`", result.DetentProjectIDCandidate),
+		fmt.Sprintf("Target repository: `%s`", result.TargetRepositoryCandidate),
+		fmt.Sprintf("Source checkout: `%s`", result.TargetSourceRootCandidate),
+		fmt.Sprintf("Reference repositories: `%s`", strings.Join(result.ReferenceRepositoriesCandidate, ",")),
+		fmt.Sprintf("Onboarding mode: `%s`", result.DetentOnboardingModeCandidate),
+		"",
+		"customer_id_source=" + result.CustomerIDSource,
+		"customer_id_confidence=" + result.CustomerIDConfidence,
+		"detent_project_id_source=" + result.DetentProjectIDSource,
+		"confidence=" + result.Confidence,
+	}
+	if len(result.CustomerIDAlternatives) > 0 {
+		lines = append(lines, "Customer/workstream alternatives: "+onboardingPrettyList(result.CustomerIDAlternatives))
+	}
+	if result.CustomerIDReviewRequired {
+		lines = append(lines, "Customer/workstream requires operator review before identity confirmation.")
 	}
 	if result.ConfigPath != "" {
 		lines = append(lines, "config_path: "+result.ConfigPath)
@@ -422,7 +596,16 @@ func writeOnboardingDraftAnswersPretty(w io.Writer, result onboardingDraftAnswer
 	if result.Written {
 		lines = append(lines, "wrote_answers: "+result.AnswersPath)
 	}
+	lines = append(lines,
+		"",
+		"`CUSTOMER_ID` is only a stable local grouping id for this Detent install.",
+		"I will not inspect target labels, issues, boards, WORKFLOW.md, validation commands, or runtime docs until you confirm this identity and the identity validator passes.",
+		"",
+		"answers.env preview:",
+	)
+	lines = append(lines, strings.Split(strings.TrimSpace(buildOnboardingDraftAnswersContent(nil, result)), "\n")...)
 	if len(result.Notes) > 0 {
+		lines = append(lines, "")
 		lines = append(lines, "notes:")
 		for _, note := range result.Notes {
 			lines = append(lines, "- "+note)
@@ -430,6 +613,16 @@ func writeOnboardingDraftAnswersPretty(w io.Writer, result onboardingDraftAnswer
 	}
 	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
 	return err
+}
+
+func onboardingPrettyList(values []string) string {
+	quoted := make([]string, 0, len(values))
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			quoted = append(quoted, "`"+value+"`")
+		}
+	}
+	return strings.Join(quoted, ", ")
 }
 
 func writeOnboardingDraftAnswers(path string, result onboardingDraftAnswersResult) error {
