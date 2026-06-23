@@ -80,6 +80,31 @@ func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	assertContains(t, readme, "Ask and record `GITHUB_MODE` explicitly")
 }
 
+func TestOnboardingDocsPreserveEarlyLabelStatusSourceDecision(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+
+	for _, want := range []string{
+		"volunteer a status-source answer before identity is confirmed",
+		"preserve it as a pending decision outside `answers.env`",
+		"append `GITHUB_MODE=label` and run the decision validator without asking again",
+		"Do not write `GITHUB_MODE` to `answers.env` until the identity phase passes",
+	} {
+		assertContainsWords(t, readme, want)
+	}
+
+	for _, want := range []string{
+		"If the operator already volunteered a status-source answer before identity validation, do not ask the status-source question again",
+		"After `detent onboarding validate-answers --answers \"$ONBOARDING_DIR/answers.env\" --phase identity` passes, append the pending `GITHUB_MODE` answer",
+		"`GITHUB_MODE=label`",
+		"run `detent onboarding validate-answers --answers \"$ONBOARDING_DIR/answers.env\" --phase decision` without re-asking",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+}
+
 func TestOnboardingDocsRecommendProjectKanbanIntegrationAfterWriteProbes(t *testing.T) {
 	t.Parallel()
 
