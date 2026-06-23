@@ -12,7 +12,9 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/hub"
+	"github.com/digitaldrywood/detent/internal/orchestrator"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -315,15 +317,92 @@ func TestRunWithShutdownZeroSessionsLogsCleanupBoundaries(t *testing.T) {
 		"operation=initial_running_session_inventory",
 		"operation=drain_projects",
 		"operation=shutdown_snapshot_publish",
+		"operation=shutdown_drain_blockers",
 		"operation=stop_projects",
 		"operation=serve_cancel",
 		"operation=wait_for_serve_exit",
 		"sessions=0",
+		"blockers=0",
 		"duration=",
 		"result=ok",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("debug logs missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestRunWithShutdownRunningProjectNoActiveSessionsExitsGracefully(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	registry := projectpkg.NewRegistry()
+	project := newShutdownRuntimeProject(t, "detent", nil, orchestrator.FakeRunner{})
+	if err := registry.Set(project); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	if err := project.Start(context.Background()); err != nil {
+		t.Fatalf("Project.Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := project.Close(); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
+			t.Fatalf("Project.Close() error = %v", err)
+		}
+	})
+
+	started := make(chan struct{})
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	errs := make(chan error, 1)
+
+	go func() {
+		errs <- runWithShutdown(context.Background(), runningShutdownConfig{
+			Controller:       controller,
+			Registry:         registry,
+			SnapshotHub:      hub.New[telemetry.Snapshot](),
+			Output:           io.Discard,
+			Logger:           logger,
+			DrainTimeout:     time.Hour,
+			ProgressInterval: time.Hour,
+			HardTimeout:      time.Second,
+			Now: func() time.Time {
+				return time.Date(2026, 6, 23, 15, 0, 0, 0, time.UTC)
+			},
+		}, func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("server did not start")
+	}
+	start := time.Now()
+	controller.RequestDrain()
+
+	select {
+	case err := <-errs:
+		if err != nil {
+			t.Fatalf("runWithShutdown() error = %v, want nil", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shutdown")
+	}
+	if elapsed := time.Since(start); elapsed >= shutdownDrainPollInterval {
+		t.Fatalf("zero-session shutdown waited %s, want less than %s", elapsed, shutdownDrainPollInterval)
+	}
+	got := logs.String()
+	for _, want := range []string{
+		"operation=shutdown_drain_blockers",
+		"blockers=0",
+		"operation=project_stop",
+		"project_id=detent",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("logs missing %q:\n%s", want, got)
 		}
 	}
 }
@@ -366,6 +445,118 @@ func TestRunWithShutdownZeroSessionsExitsWhenServeIgnoresCancellation(t *testing
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for shutdown")
+	}
+}
+
+func TestRunWithShutdownActiveChildProcessReportsDrainBlockersAndTimesOut(t *testing.T) {
+	t.Parallel()
+
+	controller := NewShutdownController()
+	registry := projectpkg.NewRegistry()
+	runner := &shutdownBlockingRunner{
+		started:  make(chan struct{}, 1),
+		canceled: make(chan struct{}, 1),
+	}
+	project := newShutdownRuntimeProject(t, "detent", []connector.Issue{{
+		ID:               "issue-641",
+		Identifier:       "digitaldrywood/detent#641",
+		Title:            "service restart can hang while draining",
+		State:            "Todo",
+		AssignedToWorker: true,
+	}}, runner)
+	if err := registry.Set(project); err != nil {
+		t.Fatalf("Registry.Set() error = %v", err)
+	}
+	if err := project.Start(context.Background()); err != nil {
+		t.Fatalf("Project.Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := project.Close(); err != nil && !errors.Is(err, projectpkg.ErrNotRunning) {
+			t.Fatalf("Project.Close() error = %v", err)
+		}
+	})
+
+	select {
+	case <-runner.started:
+	case <-time.After(time.Second):
+		t.Fatal("runner did not start")
+	}
+	waitForShutdownSession(t, registry, func(session telemetry.Running) bool {
+		return session.ProcessIdentity == "4242" && session.SessionID == "thread-641-turn-1"
+	})
+
+	started := make(chan struct{})
+	var output bytes.Buffer
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug}))
+	errs := make(chan error, 1)
+
+	go func() {
+		errs <- runWithShutdown(context.Background(), runningShutdownConfig{
+			Controller:       controller,
+			Registry:         registry,
+			SnapshotHub:      hub.New[telemetry.Snapshot](),
+			Output:           &output,
+			Logger:           logger,
+			DrainTimeout:     20 * time.Millisecond,
+			ProgressInterval: 5 * time.Millisecond,
+			HardTimeout:      time.Second,
+			Now: func() time.Time {
+				return time.Date(2026, 6, 23, 15, 0, 0, 0, time.UTC)
+			},
+		}, func(ctx context.Context) error {
+			close(started)
+			<-ctx.Done()
+			return ctx.Err()
+		})
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("server did not start")
+	}
+	controller.RequestDrain()
+
+	select {
+	case err := <-errs:
+		if !errors.Is(err, ErrShutdownTimeout) {
+			t.Fatalf("runWithShutdown() error = %v, want ErrShutdownTimeout", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for shutdown")
+	}
+	select {
+	case <-runner.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("runner was not canceled by forced shutdown")
+	}
+
+	gotOutput := output.String()
+	for _, want := range []string{
+		"shutdown requested — 1 agent session in flight",
+		"#641",
+		"process=4242",
+		"session=thread-641-turn-1",
+		"drain timeout reached — interrupting 1 agent session",
+	} {
+		if !strings.Contains(gotOutput, want) {
+			t.Fatalf("output missing %q:\n%s", want, gotOutput)
+		}
+	}
+
+	gotLogs := logs.String()
+	for _, want := range []string{
+		"operation=shutdown_drain_blockers",
+		"operation=shutdown_drain_timeout",
+		"blockers=1",
+		"process=4242",
+		"session=thread-641-turn-1",
+		"digitaldrywood/detent#641",
+	} {
+		if !strings.Contains(gotLogs, want) {
+			t.Fatalf("logs missing %q:\n%s", want, gotLogs)
+		}
 	}
 }
 
@@ -479,8 +670,8 @@ func TestRunningShutdownConfigComputesDrainTimeoutFromCurrentRegistry(t *testing
 		t.Fatalf("Registry.Set() error = %v", err)
 	}
 
-	if got := shutdownDrainTimeoutForConfig(cfg); got != 0 {
-		t.Fatalf("shutdownDrainTimeoutForConfig() after registry update = %v, want 0", got)
+	if got := shutdownDrainTimeoutForConfig(cfg); got != wantDefault {
+		t.Fatalf("shutdownDrainTimeoutForConfig() after registry update = %v, want %v", got, wantDefault)
 	}
 }
 
@@ -521,6 +712,23 @@ func newShutdownProject(t *testing.T, id string, drainTimeoutMS int) *projectpkg
 	cfg := workflowconfig.Default()
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Agent.Shutdown.DrainTimeoutMS = drainTimeoutMS
+	return newShutdownRuntimeProjectWithConfig(t, id, cfg, orchestrator.FakeRunner{})
+}
+
+func newShutdownRuntimeProject(t *testing.T, id string, issues []connector.Issue, runner orchestrator.Runner) *projectpkg.Project {
+	t.Helper()
+
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerMemory
+	cfg.Tracker.Issues = issues
+	cfg.Polling.IntervalMS = 60000
+	cfg.Agent.MaxConcurrentAgents = 1
+	return newShutdownRuntimeProjectWithConfig(t, id, cfg, runner)
+}
+
+func newShutdownRuntimeProjectWithConfig(t *testing.T, id string, cfg workflowconfig.Config, runner orchestrator.Runner) *projectpkg.Project {
+	t.Helper()
+
 	project, err := projectpkg.New(projectpkg.Config{
 		Project: globalconfig.Project{
 			ID:      id,
@@ -528,9 +736,58 @@ func newShutdownProject(t *testing.T, id string, drainTimeoutMS int) *projectpkg
 			Weight:  1,
 		},
 		Workflow: workflowconfig.Workflow{Config: cfg, Prompt: "Test workflow prompt."},
-	}, projectpkg.Dependencies{})
+	}, projectpkg.Dependencies{Runner: runner})
 	if err != nil {
 		t.Fatalf("project.New() error = %v", err)
 	}
 	return project
+}
+
+type shutdownBlockingRunner struct {
+	started  chan struct{}
+	canceled chan struct{}
+}
+
+func (r *shutdownBlockingRunner) Run(ctx context.Context, request orchestrator.RunRequest) (orchestrator.RunResult, error) {
+	if request.OnUsageUpdate != nil {
+		if err := request.OnUsageUpdate(orchestrator.UsageUpdate{
+			SessionID:       "thread-641-turn-1",
+			ProcessIdentity: "4242",
+			Tokens: orchestrator.CodexTotals{
+				RuntimeSeconds: 12,
+			},
+		}); err != nil {
+			return orchestrator.RunResult{}, err
+		}
+	}
+	select {
+	case r.started <- struct{}{}:
+	default:
+	}
+
+	<-ctx.Done()
+	select {
+	case r.canceled <- struct{}{}:
+	default:
+	}
+	return orchestrator.RunResult{}, ctx.Err()
+}
+
+func waitForShutdownSession(t *testing.T, registry *projectpkg.Registry, ready func(telemetry.Running) bool) telemetry.Running {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	for {
+		for _, session := range shutdownRunningSessions(context.Background(), registry, time.Now()) {
+			if ready(session) {
+				return session
+			}
+		}
+
+		select {
+		case <-deadline:
+			t.Fatal("timed out waiting for shutdown session")
+		case <-time.After(time.Millisecond):
+		}
+	}
 }

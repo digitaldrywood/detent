@@ -38,7 +38,7 @@ const (
 
 	DefaultPollingIntervalMS      = 120000
 	MinPollingIntervalMS          = 60000
-	DefaultShutdownDrainTimeoutMS = 600000
+	DefaultShutdownDrainTimeoutMS = 75000
 
 	defaultCodexProtocol = "app-server"
 
