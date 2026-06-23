@@ -39,11 +39,23 @@ docs until the identity gate below is explicit and confirmed.
 Use the Detent source repository's docs/ONBOARDING.md as the interrogation
 guide. First determine which path applies: a new Detent install, an existing
 Detent install that must be found and verified, or a new repository/project
-being added to an existing Detent install. Distinguish reference repositories from the target repository being onboarded. Restate the customer/workstream id,
-Detent project id, target owner/name, absolute local source root, reference
-repositories, onboarding mode, and status-source options before
-repository-specific discovery. Record those identity answers in `answers.env`,
-set `IDENTITY_CONFIRMED=true` only after I confirm the restatement, then run
+being added to an existing Detent install. Distinguish reference repositories from the target repository being onboarded. In Phase 0.5, infer and restate an
+identity candidate from the current git checkout before asking for raw answer
+fields. Use only identity-safe local evidence first: `pwd`,
+`git rev-parse --show-toplevel`, `git remote get-url origin`, the canonical
+Detent source checkout identity, the installed Detent config path, and
+registered project ids. If the current working directory is a GitHub checkout
+and is not the canonical Detent source checkout, propose it as the target
+candidate. If the current working directory is the Detent source checkout, do
+not propose Detent as the target unless I explicitly say I am onboarding Detent
+itself. Derive the candidate target owner/name from the checkout origin, source
+root from the git top level, Detent project id from the repo name unless that id
+collides with an existing registered project, and customer/workstream id from
+the owner or a repo-name/workstream heuristic. Explain that the
+customer/workstream id is only a stable local workstream id. Present the
+candidate in human-facing language first, then show the `answers.env`
+representation. Record those identity answers in `answers.env`, set
+`IDENTITY_CONFIRMED=true` only after I confirm the restatement, then run
 `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`.
 If I volunteer a status-source answer before identity is confirmed, such as
 "use label for this repo", preserve it as a pending decision outside

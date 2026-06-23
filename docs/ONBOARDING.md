@@ -27,10 +27,13 @@ Use these placeholders consistently:
 
 ## Start Here — Determine The Mode
 
-Do not assume this is a fresh install, and do not infer the target project from
-the current directory or a pasted repository URL. You may inspect Detent
-installation evidence before the identity gate, but repository-specific
-discovery waits for Phase 0.5.
+Do not assume this is a fresh install, and do not silently choose the target
+project from the current directory or a pasted repository URL. In this runbook,
+`do not assume` means infer a candidate from identity-safe local evidence and
+confirm it with the operator; it does not mean ask for raw `answers.env` fields
+first. You may inspect Detent installation evidence and current-checkout
+identity before the identity gate, but repository-specific discovery waits for
+Phase 0.5.
 
 Classify the work into one of these modes:
 
@@ -48,13 +51,17 @@ Classify the work into one of these modes:
   runtime settings unless the human chooses otherwise, then create or adopt a
   board, author `WORKFLOW.md`, register the project, and smoke test.
 
-Record only Detent install/mode evidence before the identity interview:
+Record only Detent install/mode and identity-safe current-checkout evidence
+before the identity interview:
 
 ```sh
 ONBOARDING_DIR="${TMPDIR:-/tmp}/detent-onboarding-<repo-owner>-<repo-name>"
 mkdir -p "$ONBOARDING_DIR"
 
 {
+  pwd
+  git rev-parse --show-toplevel 2>/dev/null || true
+  git remote get-url origin 2>/dev/null || true
   command -v detent || true
   detent version 2>/dev/null || true
   detent --format pretty config path 2>/dev/null || true
@@ -203,7 +210,59 @@ customer/project identity record in `$ONBOARDING_DIR/answers.env`. This is an
 operator decision checkpoint, not a recommendation. Recommendations can cite
 evidence later, but they must not become selected answers.
 
-Ask for and record these answers:
+Infer an identity candidate first when the current shell is already inside a
+GitHub checkout. Use only identity-safe local evidence: `pwd`,
+`git rev-parse --show-toplevel`, `git remote get-url origin`, the canonical
+Detent source checkout identity, the installed Detent config path, and
+registered project ids. Do not inspect target labels, issues, boards,
+`WORKFLOW.md`, validation commands, runtime docs, or other target-specific
+content before this candidate is confirmed and validated.
+
+If the current working directory is a GitHub checkout and its git top level is
+not the canonical Detent source checkout, propose that checkout as the target
+candidate. Derive `TARGET_REPOSITORY` from the origin remote and
+`TARGET_SOURCE_ROOT` from `git rev-parse --show-toplevel`. Propose
+`DETENT_PROJECT_ID` from the repo name unless that id collides with an existing
+registered project id; on collision, propose a short non-colliding variant and
+explain the collision. Propose `CUSTOMER_ID` from the owner when that is the
+clearest stable workstream id, or from a repo-name/workstream heuristic when
+the owner is too broad. Explain that `CUSTOMER_ID` is only a stable local
+workstream id, not a billing account or GitHub organization requirement.
+
+If the current working directory is the canonical Detent source checkout, do not
+propose Detent as the target unless the operator explicitly says they are
+onboarding Detent itself. Ask for the target checkout or clone destination in
+human language instead of asking for raw environment variable names.
+
+Common `add-project` case:
+
+- Current directory is `/home/loganlanou/projects/digitaldrywood/creswoodcorners-phone`.
+- Detent source checkout is `/home/loganlanou/projects/digitaldrywood/detent`.
+- Current checkout origin is `git@github.com:digitaldrywood/creswoodcorners-phone.git`.
+- Existing Detent config is present and does not register `creswoodcorners-phone`.
+- Onboarding mode is `add-project`.
+
+Restate the candidate in human-facing language before showing the
+`answers.env` representation:
+
+```text
+I found a likely target checkout from the current shell:
+
+Customer/workstream: `digitaldrywood`
+Project id: `creswoodcorners-phone`
+Target repository: `digitaldrywood/creswoodcorners-phone`
+Source checkout: `/home/loganlanou/projects/digitaldrywood/creswoodcorners-phone`
+Reference repositories: `digitaldrywood/detent`
+Onboarding mode: `add-project`
+
+`CUSTOMER_ID` is only a stable local workstream id for this Detent install. I
+will not inspect target labels, issues, boards, `WORKFLOW.md`, validation
+commands, or runtime docs until you confirm this identity and the identity
+validator passes. Is this the target you want to onboard?
+```
+
+Only after the operator confirms or edits the human-facing candidate, record the
+answers:
 
 ```sh
 printf '%s\n' \
@@ -216,7 +275,7 @@ printf '%s\n' \
   > "$ONBOARDING_DIR/answers.env"
 ```
 
-Present the interpretation back to the operator before inspecting target
+Present the final interpretation back to the operator before inspecting target
 resources:
 
 ```text
