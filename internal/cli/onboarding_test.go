@@ -715,6 +715,10 @@ func TestOnboardingDiagnoseGateDetectsEnvPollutedFailure(t *testing.T) {
 			name: "dotenv assignments",
 			file: ".env",
 		},
+		{
+			name: "dotenv variant assignments",
+			file: ".env.development",
+		},
 	}
 
 	for _, tt := range tests {

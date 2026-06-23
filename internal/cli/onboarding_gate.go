@@ -197,11 +197,9 @@ func runOnboardingGateCommand(ctx context.Context, sourceRoot string, command st
 }
 
 func onboardingCandidateEnvironmentKeys(sourceRoot string) ([]string, []string, error) {
-	files := []string{
-		filepath.Join(sourceRoot, ".envrc"),
-		filepath.Join(sourceRoot, ".env"),
-		filepath.Join(sourceRoot, ".env.local"),
-		filepath.Join(sourceRoot, ".env.test"),
+	files, err := onboardingCandidateEnvironmentFiles(sourceRoot)
+	if err != nil {
+		return nil, nil, err
 	}
 	seenFiles := make([]string, 0, len(files))
 	seenKeys := map[string]bool{}
@@ -226,6 +224,22 @@ func onboardingCandidateEnvironmentKeys(sourceRoot string) ([]string, []string, 
 	}
 	sort.Strings(keys)
 	return keys, seenFiles, nil
+}
+
+func onboardingCandidateEnvironmentFiles(sourceRoot string) ([]string, error) {
+	entries, err := os.ReadDir(sourceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("read source root %s: %w", sourceRoot, err)
+	}
+	files := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasPrefix(entry.Name(), ".env") {
+			continue
+		}
+		files = append(files, filepath.Join(sourceRoot, entry.Name()))
+	}
+	sort.Strings(files)
+	return files, nil
 }
 
 func parseOnboardingEnvironmentKeys(raw []byte) []string {
