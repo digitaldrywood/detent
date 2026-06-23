@@ -170,6 +170,47 @@ test("active-only Kanban view hides populated terminal lanes", async ({ page }, 
   });
 });
 
+test("saved lane visibility keeps populated active lanes visible", async ({ page }) => {
+  await page.setViewportSize(desktopViewport);
+  await page.addInitScript(() => {
+    window.localStorage.setItem(
+      "detent.ui.projectKanban.visibleLanes.project:release-train",
+      JSON.stringify({ v: 2, lanes: ["backlog"] }),
+    );
+  });
+  await page.goto(`${kanbanRuntime.url}/projects/release-train/kanban`, { waitUntil: "domcontentloaded" });
+  await page.request.post(`${kanbanRuntime.url}/api/v1/refresh`);
+
+  const board = page.locator("#project-kanban");
+  const backlogLane = board.locator("[data-kanban-drop-state='Backlog']");
+  const mergingLane = board.locator("[data-kanban-drop-state='Merging']");
+  const doneLane = board.locator("[data-kanban-drop-state='Done']");
+  await expect(board).toBeVisible();
+  await expect(backlogLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
+  await expect(mergingLane).toHaveAttribute("data-project-kanban-lane-empty", "false");
+  await expect(mergingLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
+  await expect(mergingLane).toBeVisible();
+  await expect(doneLane).toHaveAttribute("data-project-kanban-lane-empty", "false");
+  await expect(doneLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
+  await expect(doneLane).toBeHidden();
+
+  await board.locator("[data-project-kanban-visibility-menu] summary").click();
+  await expect(board.locator("[data-project-kanban-visibility-count]")).toHaveText("2/10");
+  await expect(board.locator("[data-project-kanban-visibility-checkbox][value='backlog']")).toBeChecked();
+  await expect(board.locator("[data-project-kanban-visibility-checkbox][value='merging']")).toBeChecked();
+  await expect(board.locator("[data-project-kanban-visibility-checkbox][value='done']")).not.toBeChecked();
+
+  await page.evaluate(() => {
+    document.dispatchEvent(new Event("htmx:afterSwap"));
+    document.dispatchEvent(new Event("htmx:afterSettle"));
+  });
+  await expect(mergingLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
+  await expect(mergingLane).toBeVisible();
+  await expect(doneLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
+  await expect(doneLane).toBeHidden();
+  await expect(board.locator("[data-project-kanban-visibility-count]")).toHaveText("2/10");
+});
+
 test("project Kanban startup loading hides empty states and actions", async ({ page }, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
