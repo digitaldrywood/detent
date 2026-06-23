@@ -4,23 +4,28 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strings"
 
 	"github.com/spf13/cobra"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
 const (
 	onboardingAnswersPhaseIdentity = "identity"
 	onboardingAnswersPhaseDecision = "decision"
 	onboardingAnswersPhaseMutation = "mutation"
+	onboardingDetentRepository     = "digitaldrywood/detent"
 )
 
 var (
@@ -43,19 +48,105 @@ type onboardingAnswersValidationResult struct {
 	MutationConfirmed     bool     `json:"mutation_confirmed"`
 }
 
+type onboardingDraftAnswersResult struct {
+	Status                         string   `json:"status"`
+	AnswersPath                    string   `json:"answers_path,omitempty"`
+	Written                        bool     `json:"written"`
+	CustomerIDCandidate            string   `json:"customer_id_candidate"`
+	DetentProjectIDCandidate       string   `json:"detent_project_id_candidate"`
+	TargetRepositoryCandidate      string   `json:"target_repository_candidate"`
+	TargetSourceRootCandidate      string   `json:"target_source_root_candidate"`
+	ReferenceRepositoriesCandidate []string `json:"reference_repositories_candidate"`
+	DetentOnboardingModeCandidate  string   `json:"detent_onboarding_mode_candidate"`
+	ConfigPath                     string   `json:"config_path"`
+	ConfigPathRule                 string   `json:"config_path_rule"`
+	ConfigInstalled                bool     `json:"config_installed"`
+	RegisteredProjectIDs           []string `json:"registered_project_ids"`
+	Confidence                     string   `json:"confidence"`
+	Notes                          []string `json:"notes"`
+}
+
 type onboardingAnswers struct {
 	Values       map[string]string
 	LastNonblank string
 	Problems     []string
 }
 
-func newOnboardingCommand() *cobra.Command {
+type onboardingDraftAnswersConfig struct {
+	AnswersPath      string
+	ConfigPath       string
+	TargetSourceRoot string
+	DetentSourceRoot string
+	Write            bool
+	Options          options
+}
+
+func newOnboardingCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "onboarding",
-		Short:   "Validate onboarding setup decisions",
+		Short:   "Draft and validate onboarding setup decisions",
 		Example: `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env"`,
 	}
-	cmd.AddCommand(newOnboardingValidateAnswersCommand())
+	cmd.AddCommand(
+		newOnboardingValidateAnswersCommand(),
+		newOnboardingDraftAnswersCommand(configPath, opts),
+	)
+	return cmd
+}
+
+func newOnboardingDraftAnswersCommand(configPath *string, opts options) *cobra.Command {
+	var answersPath string
+	var detentSourceRoot string
+	var output string
+	var targetSourceRoot string
+	var write bool
+
+	cmd := &cobra.Command{
+		Use:          "draft-answers",
+		Short:        "Draft onboarding identity answers from local evidence",
+		Example:      `detent onboarding draft-answers --output pretty`,
+		Args:         NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			if strings.TrimSpace(output) != "" {
+				if err := cmd.Root().PersistentFlags().Set(outputFormatFlag, output); err != nil {
+					return err
+				}
+			}
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			cfg := onboardingDraftAnswersConfig{
+				AnswersPath:      answersPath,
+				TargetSourceRoot: targetSourceRoot,
+				DetentSourceRoot: detentSourceRoot,
+				Write:            write,
+				Options:          opts,
+			}
+			if configPath != nil {
+				cfg.ConfigPath = *configPath
+			}
+			result, err := draftOnboardingAnswers(cmd.Context(), cfg)
+			if err != nil {
+				return err
+			}
+			if write {
+				if err := writeOnboardingDraftAnswers(result.AnswersPath, result); err != nil {
+					return err
+				}
+				result.Written = true
+			}
+			return out.Write(func(w io.Writer) error {
+				return writeOnboardingDraftAnswersPretty(w, result)
+			}, result)
+		},
+	}
+	cmd.Flags().StringVar(&answersPath, "answers", "answers.env", "path to onboarding answers.env")
+	cmd.Flags().StringVar(&targetSourceRoot, "target-source-root", "", "explicit target git checkout root")
+	cmd.Flags().StringVar(&detentSourceRoot, "detent-source-root", "", "explicit Detent source checkout root")
+	cmd.Flags().StringVar(&output, "output", "", "output format: pretty or json")
+	cmd.Flags().BoolVar(&write, "write", false, "write drafted identity answers to answers.env")
 	return cmd
 }
 
@@ -86,6 +177,333 @@ func newOnboardingValidateAnswersCommand() *cobra.Command {
 	cmd.Flags().StringVar(&answersPath, "answers", "answers.env", "path to onboarding answers.env")
 	cmd.Flags().StringVar(&phase, "phase", onboardingAnswersPhaseMutation, "validation phase: identity, decision, or mutation")
 	return cmd
+}
+
+func draftOnboardingAnswers(ctx context.Context, cfg onboardingDraftAnswersConfig) (onboardingDraftAnswersResult, error) {
+	opts := cfg.Options
+	if opts.resolvePath == nil || opts.read == nil {
+		defaults := defaultOptions()
+		if opts.resolvePath == nil {
+			opts.resolvePath = defaults.resolvePath
+		}
+		if opts.read == nil {
+			opts.read = defaults.read
+		}
+	}
+
+	targetInput := strings.TrimSpace(cfg.TargetSourceRoot)
+	targetExplicit := targetInput != ""
+	if targetInput == "" {
+		wd, err := os.Getwd()
+		if err != nil {
+			return onboardingDraftAnswersResult{}, fmt.Errorf("resolve current directory: %w", err)
+		}
+		targetInput = wd
+	}
+	targetRoot, targetRepository, err := onboardingGitCheckoutEvidence(ctx, targetInput)
+	if err != nil {
+		return onboardingDraftAnswersResult{}, err
+	}
+	if !targetExplicit && strings.EqualFold(targetRepository, onboardingDetentRepository) {
+		return onboardingDraftAnswersResult{}, NewValidationError(
+			"current checkout is the Detent source repository; provide --target-source-root for the repository being onboarded",
+			"Run detent onboarding draft-answers from the target repository, or pass --target-source-root /path/to/target.",
+			nil,
+		)
+	}
+
+	resolution, err := resolveConfigPathResolution(cfg.ConfigPath, opts)
+	if err != nil {
+		return onboardingDraftAnswersResult{}, err
+	}
+
+	result := onboardingDraftAnswersResult{
+		Status:                    "draft",
+		AnswersPath:               strings.TrimSpace(cfg.AnswersPath),
+		CustomerIDCandidate:       repositoryOwner(targetRepository),
+		DetentProjectIDCandidate:  repositoryName(targetRepository),
+		TargetRepositoryCandidate: targetRepository,
+		TargetSourceRootCandidate: targetRoot,
+		ConfigPath:                resolution.Path,
+		ConfigPathRule:            string(resolution.Rule),
+		Confidence:                "medium",
+		Notes: []string{
+			"inferred target repository from the local origin remote",
+			"review all candidates with the operator before setting IDENTITY_CONFIRMED=true",
+		},
+	}
+
+	result.ReferenceRepositoriesCandidate = onboardingReferenceRepositoryCandidates(ctx, cfg.DetentSourceRoot, targetRepository, &result.Notes)
+	global, installed, err := readOnboardingDraftConfigEvidence(resolution.Path, opts)
+	if err != nil {
+		return onboardingDraftAnswersResult{}, err
+	}
+	result.ConfigInstalled = installed
+	if installed {
+		result.RegisteredProjectIDs = onboardingRegisteredProjectIDs(global.Projects)
+		mode, notes := onboardingModeCandidate(global.Projects, result.DetentProjectIDCandidate, targetRoot)
+		result.DetentOnboardingModeCandidate = mode
+		result.Notes = append(result.Notes, notes...)
+	} else {
+		result.DetentOnboardingModeCandidate = "new-install"
+		result.Notes = append(result.Notes, "no readable global config was found, so this looks like a new-install candidate")
+	}
+	if containsOnboardingReviewNote(result.Notes) {
+		result.Confidence = "needs-review"
+	}
+	return result, nil
+}
+
+func onboardingGitCheckoutEvidence(ctx context.Context, path string) (string, string, error) {
+	root, err := defaultGitTopLevel(ctx, path)
+	if err != nil {
+		return "", "", NewValidationError(
+			"target source root must be a git checkout: "+err.Error(),
+			"Run detent onboarding draft-answers from a GitHub checkout, or pass --target-source-root /path/to/target.",
+			nil,
+		)
+	}
+	remote, err := defaultGitRemoteURL(ctx, root)
+	if err != nil {
+		return "", "", NewValidationError(
+			"target source root must have an origin remote: "+err.Error(),
+			"Add a GitHub origin remote or pass a different --target-source-root.",
+			nil,
+		)
+	}
+	repository, ok := gitHubRepositoryFromRemote(remote)
+	if !ok {
+		return "", "", NewValidationError(
+			"target source root origin remote must be a GitHub owner/name repository",
+			"Use a checkout whose origin remote is hosted on github.com.",
+			nil,
+		)
+	}
+	return root, repository, nil
+}
+
+func defaultGitTopLevel(ctx context.Context, path string) (string, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
+	defer cancel()
+
+	cmd := exec.CommandContext(commandCtx, "git", "-C", path, "rev-parse", "--show-toplevel") // #nosec G204 -- onboarding uses fixed git arguments against a local checkout path.
+	output, err := cmd.CombinedOutput()
+	if commandCtx.Err() != nil {
+		return "", commandCtx.Err()
+	}
+	if err != nil {
+		if detail := strings.TrimSpace(string(output)); detail != "" {
+			return "", fmt.Errorf("%w: %s", err, detail)
+		}
+		return "", err
+	}
+	root := strings.TrimSpace(string(output))
+	if root == "" {
+		return "", errors.New("git top-level is blank")
+	}
+	absolute, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("resolve git top-level %s: %w", root, err)
+	}
+	return filepath.Clean(absolute), nil
+}
+
+func onboardingReferenceRepositoryCandidates(ctx context.Context, detentSourceRoot string, targetRepository string, notes *[]string) []string {
+	repository := onboardingDetentRepository
+	if strings.TrimSpace(detentSourceRoot) != "" {
+		_, detected, err := onboardingGitCheckoutEvidence(ctx, detentSourceRoot)
+		if err == nil {
+			repository = detected
+			*notes = append(*notes, "inferred reference repository from --detent-source-root")
+		} else {
+			*notes = append(*notes, "could not inspect --detent-source-root; using canonical Detent source repository")
+		}
+	}
+	if strings.EqualFold(repository, targetRepository) {
+		return nil
+	}
+	return []string{repository}
+}
+
+func readOnboardingDraftConfigEvidence(path string, opts options) (globalconfig.Config, bool, error) {
+	global, err := opts.read(path)
+	if err == nil {
+		return global, true, nil
+	}
+	var missing globalconfig.MissingFileError
+	if errors.As(err, &missing) && errors.Is(missing.Err, os.ErrNotExist) {
+		return globalconfig.Config{}, false, nil
+	}
+	return globalconfig.Config{}, false, fmt.Errorf("read global config evidence %s: %w", path, err)
+}
+
+func onboardingRegisteredProjectIDs(projects []globalconfig.Project) []string {
+	ids := make([]string, 0, len(projects))
+	for _, project := range projects {
+		if id := strings.TrimSpace(project.ID); id != "" {
+			ids = append(ids, id)
+		}
+	}
+	sort.Strings(ids)
+	return ids
+}
+
+func onboardingModeCandidate(projects []globalconfig.Project, candidateProjectID string, targetRoot string) (string, []string) {
+	var notes []string
+	for _, project := range projects {
+		if sameOnboardingPath(project.Workdir, targetRoot) {
+			return "existing-install", []string{"target source root already matches a registered project workdir"}
+		}
+	}
+	if projectIndex(projects, candidateProjectID) >= 0 {
+		notes = append(notes, fmt.Sprintf("project id candidate %q already exists in global config and needs operator review", candidateProjectID))
+	}
+	return "add-project", notes
+}
+
+func sameOnboardingPath(left string, right string) bool {
+	leftAbs, leftErr := cleanOnboardingPath(left)
+	rightAbs, rightErr := cleanOnboardingPath(right)
+	if leftErr != nil || rightErr != nil {
+		return false
+	}
+	return leftAbs == rightAbs
+}
+
+func cleanOnboardingPath(path string) (string, error) {
+	absolute, err := filepath.Abs(strings.TrimSpace(path))
+	if err != nil {
+		return "", err
+	}
+	clean := filepath.Clean(absolute)
+	evaluated, err := filepath.EvalSymlinks(clean)
+	if err == nil {
+		return filepath.Clean(evaluated), nil
+	}
+	return clean, nil
+}
+
+func containsOnboardingReviewNote(notes []string) bool {
+	for _, note := range notes {
+		if strings.Contains(note, "needs operator review") || strings.Contains(note, "could not inspect") {
+			return true
+		}
+	}
+	return false
+}
+
+func repositoryOwner(repository string) string {
+	owner, _, _ := strings.Cut(repository, "/")
+	return owner
+}
+
+func repositoryName(repository string) string {
+	_, name, _ := strings.Cut(repository, "/")
+	return name
+}
+
+func writeOnboardingDraftAnswersPretty(w io.Writer, result onboardingDraftAnswersResult) error {
+	lines := []string{
+		"Draft onboarding identity answers:",
+		"customer_id_candidate: " + result.CustomerIDCandidate,
+		"detent_project_id_candidate: " + result.DetentProjectIDCandidate,
+		"target_repository_candidate: " + result.TargetRepositoryCandidate,
+		"target_source_root_candidate: " + result.TargetSourceRootCandidate,
+		"reference_repositories_candidate: " + strings.Join(result.ReferenceRepositoriesCandidate, ","),
+		"detent_onboarding_mode_candidate: " + result.DetentOnboardingModeCandidate,
+		"confidence: " + result.Confidence,
+	}
+	if result.ConfigPath != "" {
+		lines = append(lines, "config_path: "+result.ConfigPath)
+	}
+	if len(result.RegisteredProjectIDs) > 0 {
+		lines = append(lines, "registered_project_ids: "+strings.Join(result.RegisteredProjectIDs, ","))
+	}
+	if result.Written {
+		lines = append(lines, "wrote_answers: "+result.AnswersPath)
+	}
+	if len(result.Notes) > 0 {
+		lines = append(lines, "notes:")
+		for _, note := range result.Notes {
+			lines = append(lines, "- "+note)
+		}
+	}
+	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
+	return err
+}
+
+func writeOnboardingDraftAnswers(path string, result onboardingDraftAnswersResult) error {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return NewValidationError(
+			"--answers is required when --write is set",
+			`Run detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write.`,
+			nil,
+		)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read existing onboarding answers %s: %w", path, err)
+	}
+	content := buildOnboardingDraftAnswersContent(raw, result)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("create onboarding answers directory %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		return fmt.Errorf("write onboarding answers %s: %w", path, err)
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		return fmt.Errorf("restrict onboarding answers %s: %w", path, err)
+	}
+	return nil
+}
+
+func buildOnboardingDraftAnswersContent(raw []byte, result onboardingDraftAnswersResult) string {
+	replace := map[string]bool{
+		"CUSTOMER_ID":            true,
+		"DETENT_PROJECT_ID":      true,
+		"TARGET_REPOSITORY":      true,
+		"TARGET_SOURCE_ROOT":     true,
+		"REFERENCE_REPOSITORIES": true,
+		"DETENT_ONBOARDING_MODE": true,
+		"IDENTITY_CONFIRMED":     true,
+	}
+	lines := make([]string, 0)
+	scanner := bufio.NewScanner(bytes.NewReader(raw))
+	for scanner.Scan() {
+		line := scanner.Text()
+		if key, ok := onboardingAnswerLineKey(line); ok && replace[key] {
+			continue
+		}
+		lines = append(lines, line)
+	}
+	for len(lines) > 0 && strings.TrimSpace(lines[len(lines)-1]) == "" {
+		lines = lines[:len(lines)-1]
+	}
+	if len(lines) > 0 {
+		lines = append(lines, "")
+	}
+	lines = append(lines,
+		"CUSTOMER_ID="+result.CustomerIDCandidate,
+		"DETENT_PROJECT_ID="+result.DetentProjectIDCandidate,
+		"TARGET_REPOSITORY="+result.TargetRepositoryCandidate,
+		"TARGET_SOURCE_ROOT="+result.TargetSourceRootCandidate,
+		"REFERENCE_REPOSITORIES="+strings.Join(result.ReferenceRepositoriesCandidate, ","),
+		"DETENT_ONBOARDING_MODE="+result.DetentOnboardingModeCandidate,
+		"IDENTITY_CONFIRMED=false",
+	)
+	return strings.Join(lines, "\n") + "\n"
+}
+
+func onboardingAnswerLineKey(line string) (string, bool) {
+	line = strings.TrimSpace(line)
+	if line == "" || strings.HasPrefix(line, "#") {
+		return "", false
+	}
+	line = strings.TrimSpace(strings.TrimPrefix(line, "export "))
+	key, _, ok := strings.Cut(line, "=")
+	key = strings.TrimSpace(key)
+	return key, ok && validOnboardingAnswerKey(key)
 }
 
 func validateOnboardingAnswersFile(path string, phase string) (onboardingAnswersValidationResult, error) {

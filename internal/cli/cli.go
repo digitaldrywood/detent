@@ -402,7 +402,7 @@ detent --format json config path`),
 			return nil
 		}),
 		newConfigCommand(&configPath, opts),
-		newOnboardingCommand(),
+		newOnboardingCommand(&configPath, opts),
 		newPromoteCommand(&configPath, opts),
 		newRemoveProjectCommand(&configPath, opts),
 	)

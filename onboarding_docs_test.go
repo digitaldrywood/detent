@@ -62,6 +62,8 @@ func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	}
 
 	for _, want := range []string{
+		`detent onboarding draft-answers --output pretty`,
+		`detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write`,
 		"CUSTOMER_ID=<customer-or-workstream-id>",
 		"DETENT_PROJECT_ID=<local-detent-project-id>",
 		"TARGET_REPOSITORY=<repo-owner>/<repo-name>",
@@ -75,6 +77,8 @@ func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 		assertContains(t, onboarding, want)
 	}
 
+	assertContains(t, readme, "detent onboarding draft-answers --output pretty")
+	assertContains(t, readme, `detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write`)
 	assertContains(t, readme, "Distinguish reference repositories from the target repository")
 	assertContains(t, readme, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`)
 	assertContains(t, readme, "Ask and record `GITHUB_MODE` explicitly")
