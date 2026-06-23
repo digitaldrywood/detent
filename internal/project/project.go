@@ -51,6 +51,11 @@ type Event struct {
 	Error     string
 }
 
+type RuntimeError struct {
+	Message string
+	At      time.Time
+}
+
 type Config struct {
 	Project  globalconfig.Project
 	Workflow workflowconfig.Workflow
@@ -106,6 +111,7 @@ type Project struct {
 	cancel          context.CancelFunc
 	done            chan struct{}
 	runErr          error
+	runtimeErr      RuntimeError
 	started         bool
 	closed          bool
 	lifecycleEvents bool
@@ -246,6 +252,17 @@ func (p *Project) Events() *hub.Hub[Event] {
 	return p.events
 }
 
+func (p *Project) RuntimeError() RuntimeError {
+	if p == nil {
+		return RuntimeError{}
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	return p.runtimeErr
+}
+
 func (p *Project) Running() bool {
 	p.mu.Lock()
 	defer p.mu.Unlock()
@@ -286,6 +303,7 @@ func (p *Project) start(ctx context.Context, opts startOptions) error {
 
 	if opts.provision {
 		if err := p.provision(ctx); err != nil {
+			p.recordRuntimeError(err)
 			return err
 		}
 	}
@@ -307,10 +325,13 @@ func (p *Project) start(ctx context.Context, opts startOptions) error {
 		orch, err := p.orchFactory(p.orchConfig, p.orchDeps)
 		if err != nil {
 			p.mu.Unlock()
-			return fmt.Errorf("create project orchestrator: %w", err)
+			err := fmt.Errorf("create project orchestrator: %w", err)
+			p.recordRuntimeError(err)
+			return err
 		}
 		if orch == nil {
 			p.mu.Unlock()
+			p.recordRuntimeError(ErrMissingOrchestrator)
 			return ErrMissingOrchestrator
 		}
 		p.orchestrator = orch
@@ -321,6 +342,7 @@ func (p *Project) start(ctx context.Context, opts startOptions) error {
 	p.cancel = cancel
 	p.done = done
 	p.runErr = nil
+	p.runtimeErr = RuntimeError{}
 	p.started = true
 	p.lifecycleEvents = opts.publishEvents
 	p.mu.Unlock()
@@ -581,6 +603,9 @@ func (p *Project) run(ctx context.Context, done chan struct{}, orch *orchestrato
 		p.cancel = nil
 		p.done = nil
 		p.runErr = err
+		if err != nil {
+			p.runtimeErr = RuntimeError{Message: err.Error(), At: time.Now().UTC()}
+		}
 	}
 	p.mu.Unlock()
 
@@ -858,6 +883,17 @@ func (p *Project) publishStopped(err error) {
 		At:        time.Now(),
 		Error:     errorString(err),
 	})
+}
+
+func (p *Project) recordRuntimeError(err error) {
+	if p == nil || err == nil {
+		return
+	}
+
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	p.runtimeErr = RuntimeError{Message: err.Error(), At: time.Now().UTC()}
 }
 
 type workflowUpdater interface {

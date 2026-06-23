@@ -1,10 +1,13 @@
 package project_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"reflect"
 	"slices"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -501,6 +504,267 @@ func TestManagerReconcileProjects(t *testing.T) {
 			assertNoProjectEvent(t, sub.C())
 			assertManagerProjectConfigs(t, manager, tt.wantConfigs)
 		})
+	}
+}
+
+func TestManagerReconcileAddedProjectBeginsPolling(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	alphaRunner := newProjectBlockingRunner()
+	bravoRunner := newProjectBlockingRunner()
+	workflowWithIssue := func(issueID string, title string) workflowconfig.Workflow {
+		workflowCfg := workflowConfigWithMemoryIssue(issueID)
+		workflowCfg.Tracker.Issues[0].State = "Todo"
+		workflowCfg.Tracker.Issues[0].Title = title
+		workflowCfg.Tracker.Issues[0].AssignedToWorker = true
+		return workflowconfig.Workflow{Config: workflowCfg, Prompt: title + "."}
+	}
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			switch cfg.ID {
+			case "alpha":
+				return project.New(project.Config{
+					Project:  cfg,
+					Workflow: workflowWithIssue("issue-alpha", "Run alpha"),
+				}, project.Dependencies{
+					Events: events,
+					Runner: alphaRunner,
+				})
+			case "bravo":
+				return project.New(project.Config{
+					Project:  cfg,
+					Workflow: workflowWithIssue("issue-bravo", "Run bravo"),
+				}, project.Dependencies{
+					Events: events,
+					Runner: bravoRunner,
+				})
+			}
+			return newManagerTestProject(t, cfg, events)
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	drainProjectEvents(t, sub.C(), 1)
+	alphaRequest := receiveRunRequest(t, alphaRunner.started)
+	if alphaRequest.Issue.ID != "issue-alpha" {
+		t.Fatalf("alpha dispatched issue ID = %q, want issue-alpha", alphaRequest.Issue.ID)
+	}
+	t.Cleanup(func() {
+		close(alphaRunner.release)
+		close(bravoRunner.release)
+		for _, item := range manager.Registry().List() {
+			if !item.Running() {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			if err := item.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
+				cancel()
+				t.Fatalf("Stop(%s) error = %v", item.ID(), err)
+			}
+			cancel()
+		}
+	})
+
+	got, err := manager.Reconcile(context.Background(), project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "alpha", Weight: 1},
+			{ID: "bravo", Weight: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	want := project.ReconcileResult{
+		Added:     []project.ID{"bravo"},
+		Unchanged: []project.ID{"alpha"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reconcile() = %#v, want %#v", got, want)
+	}
+	assertProjectEvents(t, sub.C(), []project.Event{{ProjectID: "bravo", Kind: project.EventStarted}})
+	request := receiveRunRequest(t, bravoRunner.started)
+	if request.Issue.ID != "issue-bravo" {
+		t.Fatalf("dispatched issue ID = %q, want issue-bravo", request.Issue.ID)
+	}
+	alpha, ok := manager.Registry().Get("alpha")
+	if !ok {
+		t.Fatal("Registry().Get(alpha) ok = false, want true")
+	}
+	alphaState, err := alpha.Orchestrator().State(context.Background())
+	if err != nil {
+		t.Fatalf("alpha State() error = %v", err)
+	}
+	if _, ok := alphaState.Running["issue-alpha"]; !ok {
+		t.Fatalf("alpha running agents = %#v, want issue-alpha still running", alphaState.Running)
+	}
+}
+
+func TestManagerReconcileRecordsAddedProjectStartFailure(t *testing.T) {
+	t.Parallel()
+
+	provisionErr := errors.New("provision failed")
+	var logs bytes.Buffer
+	logger := slog.New(slog.NewTextHandler(&logs, nil))
+	events := hub.New[project.Event](hub.WithBuffer(8))
+	sub, err := events.Subscribe(context.Background())
+	if err != nil {
+		t.Fatalf("Subscribe() error = %v", err)
+	}
+
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+	}, project.ManagerDependencies{
+		Events: events,
+		Logger: logger,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			if cfg.ID == "bravo" {
+				workflowCfg := workflowConfig("memory")
+				workflowCfg.Tracker.AutoProvision = true
+				return project.New(project.Config{
+					Project:  cfg,
+					Workflow: workflowconfig.Workflow{Config: workflowCfg},
+				}, project.Dependencies{
+					Connector: provisioningConnector{provision: func(context.Context) error {
+						return provisionErr
+					}},
+					Events: events,
+					Runner: blockingRunner{},
+				})
+			}
+			return newManagerTestProject(t, cfg, events)
+		},
+		Sleep: func(context.Context, time.Duration) error {
+			return nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	drainProjectEvents(t, sub.C(), 1)
+	t.Cleanup(func() {
+		for _, item := range manager.Registry().List() {
+			if !item.Running() {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			if err := item.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
+				cancel()
+				t.Fatalf("Stop(%s) error = %v", item.ID(), err)
+			}
+			cancel()
+		}
+	})
+
+	got, err := manager.Reconcile(context.Background(), project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "alpha", Weight: 1},
+			{ID: "bravo", Weight: 1},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Reconcile() error = %v", err)
+	}
+	want := project.ReconcileResult{
+		Added:     []project.ID{"bravo"},
+		Unchanged: []project.ID{"alpha"},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("Reconcile() = %#v, want %#v", got, want)
+	}
+	assertNoProjectEvent(t, sub.C())
+
+	alpha, ok := manager.Registry().Get("alpha")
+	if !ok {
+		t.Fatal("Registry().Get(alpha) ok = false, want true")
+	}
+	if !alpha.Running() {
+		t.Fatal("alpha Running() = false after failed bravo start, want true")
+	}
+	bravo, ok := manager.Registry().Get("bravo")
+	if !ok {
+		t.Fatal("Registry().Get(bravo) ok = false, want failed project retained")
+	}
+	if bravo.Running() {
+		t.Fatal("bravo Running() = true after failed start, want false")
+	}
+
+	gotLogs := logs.String()
+	for _, want := range []string{"project startup failed", "bravo", "provision failed"} {
+		if !strings.Contains(gotLogs, want) {
+			t.Fatalf("logs missing %q:\n%s", want, gotLogs)
+		}
+	}
+}
+
+func TestManagerReconcilePropagatesAddedProjectContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(4))
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+		Startup:  project.StartupConfig{MaxSpawnPerSecond: 1},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			return newManagerTestProject(t, cfg, events)
+		},
+		Sleep: func(ctx context.Context, _ time.Duration) error {
+			return ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		for _, item := range manager.Registry().List() {
+			if !item.Running() {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			if err := item.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
+				cancel()
+				t.Fatalf("Stop(%s) error = %v", item.ID(), err)
+			}
+			cancel()
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = manager.Reconcile(ctx, project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "alpha", Weight: 1},
+			{ID: "bravo", Weight: 1},
+		},
+		Startup: project.StartupConfig{MaxSpawnPerSecond: 1},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Reconcile() error = %v, want %v", err, context.Canceled)
+	}
+	if _, ok := manager.Registry().Get("bravo"); ok {
+		t.Fatal("Registry().Get(bravo) ok = true after canceled reconcile, want false")
 	}
 }
 
@@ -1341,6 +1605,18 @@ func receiveFirstProjectRun(
 		t.Fatal("timed out waiting for first project dispatch")
 	}
 	return ""
+}
+
+func receiveRunRequest(t *testing.T, requests <-chan orchestrator.RunRequest) orchestrator.RunRequest {
+	t.Helper()
+
+	select {
+	case request := <-requests:
+		return request
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for runner request")
+	}
+	return orchestrator.RunRequest{}
 }
 
 func runningProjects(t *testing.T, manager *project.Manager) int {

@@ -379,6 +379,20 @@ func publishSnapshotOnce(
 				})
 				continue
 			}
+			if runtimeErr := trackedProject.RuntimeError(); runtimeErr.Message != "" {
+				lastErrorAt := runtimeErr.At
+				merged = mergeSnapshot(merged, telemetry.Snapshot{
+					Project:      projectMetadata,
+					DashboardURL: cleanDashboardURL(dashboardURL),
+					Shutdown:     telemetry.Shutdown{Status: "running"},
+					Refresh: telemetry.Refresh{
+						Status:      telemetry.RefreshStatusDegraded,
+						LastError:   runtimeErr.Message,
+						LastErrorAt: &lastErrorAt,
+					},
+				})
+				continue
+			}
 			nextRefreshAt := now
 			refresh := telemetry.Refresh{Status: telemetry.RefreshStatusInitializing, NextRefreshAt: &nextRefreshAt}
 			merged = mergeSnapshot(merged, telemetry.Snapshot{
