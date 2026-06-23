@@ -20,10 +20,13 @@ type PollingData struct {
 type OnboardingForm struct {
 	Step                  string
 	TrackerKind           string
+	GitHubStatusSource    string
 	Endpoint              string
 	APIKey                string
 	ProjectSlug           string
 	Repo                  string
+	StatusField           string
+	StatusLabelPrefix     string
 	WorkspaceRoot         string
 	MaxConcurrentAgents   string
 	MaxTurns              string
@@ -72,6 +75,41 @@ func buttonClass() string {
 
 func secondaryButtonClass() string {
 	return "inline-flex items-center justify-center rounded-md border border-border bg-card px-4 py-2 text-sm font-semibold text-foreground hover:bg-muted"
+}
+
+func selectedTrackerChoice(form OnboardingForm) string {
+	if form.TrackerKind == "memory" {
+		return "memory"
+	}
+	switch githubStatusSource(form) {
+	case "issue_field":
+		return "github_issue_field"
+	case "label":
+		return "github_label"
+	default:
+		return "github_project_v2"
+	}
+}
+
+func githubStatusSource(form OnboardingForm) string {
+	if form.GitHubStatusSource == "" {
+		return "project_v2"
+	}
+	return form.GitHubStatusSource
+}
+
+func projectStepTitle(form OnboardingForm) string {
+	if form.TrackerKind == "memory" {
+		return "Pick project"
+	}
+	switch githubStatusSource(form) {
+	case "issue_field":
+		return "Configure issue field"
+	case "label":
+		return "Configure labels"
+	default:
+		return "Pick project"
+	}
 }
 
 templ OnboardingPage(data OnboardingData) {
@@ -171,7 +209,9 @@ templ trackerStep(data OnboardingData) {
 	<div class="rounded-md border border-border bg-card p-5">
 		<h2 class="text-xl font-semibold">Choose tracker</h2>
 		<form class="mt-5 space-y-3" hx-post="/onboarding/tracker" hx-target="#onboarding-step" hx-swap="outerHTML">
-			@trackerChoice(data, "github", "GitHub Projects", "ProjectV2-backed issues and pull requests")
+			@trackerChoice(data, "github_project_v2", "ProjectV2 board", "GitHub ProjectV2-backed issue status")
+			@trackerChoice(data, "github_issue_field", "Organization issue field", "Boardless GitHub issue Status field")
+			@trackerChoice(data, "github_label", "Repository labels", "Boardless repository labels with a status prefix")
 			@trackerChoice(data, "memory", "Memory", "Local sample issues for development")
 			<div class="pt-2">
 				<button class={ buttonClass() } type="submit">Continue</button>
@@ -182,7 +222,7 @@ templ trackerStep(data OnboardingData) {
 
 templ trackerChoice(data OnboardingData, value string, label string, description string) {
 	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3 hover:bg-muted">
-		<input class="mt-1" type="radio" name="tracker_kind" value={ value } checked?={ data.Form.TrackerKind == value }/>
+		<input class="mt-1" type="radio" name="tracker_choice" value={ value } checked?={ selectedTrackerChoice(data.Form) == value }/>
 		<span>
 			<span class="block text-sm font-semibold text-foreground">{ label }</span>
 			<span class="block text-sm text-muted-foreground">{ description }</span>
@@ -217,11 +257,29 @@ templ credentialsStep(data OnboardingData) {
 
 templ projectStep(data OnboardingData) {
 	<div class="rounded-md border border-border bg-card p-5">
-		<h2 class="text-xl font-semibold">Pick project</h2>
+		<h2 class="text-xl font-semibold">{ projectStepTitle(data.Form) }</h2>
 		<form class="mt-5 space-y-4" hx-post="/onboarding/project" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@hiddenCredentials(data.Form)
 			if data.Form.TrackerKind == "memory" {
 				<p class="text-sm text-muted-foreground">Memory projects are created from the generated workflow.</p>
+			} else if githubStatusSource(data.Form) == "issue_field" {
+				<label class="block">
+					<span class="text-sm font-medium">Repository</span>
+					<input class={ fieldClass() } type="text" name="repo" value={ data.Form.Repo } placeholder="owner/repo"/>
+				</label>
+				<label class="block">
+					<span class="text-sm font-medium">Status field</span>
+					<input class={ fieldClass() } type="text" name="status_field" value={ data.Form.StatusField } placeholder="Status"/>
+				</label>
+			} else if githubStatusSource(data.Form) == "label" {
+				<label class="block">
+					<span class="text-sm font-medium">Repository</span>
+					<input class={ fieldClass() } type="text" name="repo" value={ data.Form.Repo } placeholder="owner/repo"/>
+				</label>
+				<label class="block">
+					<span class="text-sm font-medium">Status label prefix</span>
+					<input class={ fieldClass() } type="text" name="status_label_prefix" value={ data.Form.StatusLabelPrefix } placeholder="detent:"/>
+				</label>
 			} else {
 				<label class="block">
 					<span class="text-sm font-medium">ProjectV2 ID</span>
@@ -293,11 +351,20 @@ templ writeStep(data OnboardingData) {
 		<h2 class="text-xl font-semibold">Write WORKFLOW.md</h2>
 		<div class="mt-4 grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
 			<p><span class="font-medium text-foreground">Tracker:</span> { data.Form.TrackerKind }</p>
-			if data.Form.ProjectSlug != "" {
+			if data.Form.ProjectSlug != "" && githubStatusSource(data.Form) == "project_v2" {
 				<p><span class="font-medium text-foreground">ProjectV2:</span> { data.Form.ProjectSlug }</p>
+			}
+			if data.Form.TrackerKind == "github" {
+				<p><span class="font-medium text-foreground">Status source:</span> { githubStatusSource(data.Form) }</p>
 			}
 			if data.Form.Repo != "" {
 				<p><span class="font-medium text-foreground">Repo:</span> { data.Form.Repo }</p>
+			}
+			if data.Form.StatusField != "" && githubStatusSource(data.Form) == "issue_field" {
+				<p><span class="font-medium text-foreground">Status field:</span> { data.Form.StatusField }</p>
+			}
+			if data.Form.StatusLabelPrefix != "" && githubStatusSource(data.Form) == "label" {
+				<p><span class="font-medium text-foreground">Status label prefix:</span> { data.Form.StatusLabelPrefix }</p>
 			}
 			<p><span class="font-medium text-foreground">Output:</span> { data.WorkflowPath }</p>
 		</div>
@@ -332,6 +399,7 @@ templ resultPanel(data OnboardingData) {
 
 templ hiddenTracker(form OnboardingForm) {
 	<input type="hidden" name="tracker_kind" value={ form.TrackerKind }/>
+	<input type="hidden" name="github_status_source" value={ form.GitHubStatusSource }/>
 }
 
 templ hiddenCredentials(form OnboardingForm) {
@@ -344,6 +412,8 @@ templ hiddenProject(form OnboardingForm) {
 	@hiddenCredentials(form)
 	<input type="hidden" name="project_slug" value={ form.ProjectSlug }/>
 	<input type="hidden" name="repo" value={ form.Repo }/>
+	<input type="hidden" name="status_field" value={ form.StatusField }/>
+	<input type="hidden" name="status_label_prefix" value={ form.StatusLabelPrefix }/>
 }
 
 templ hiddenAgent(form OnboardingForm) {

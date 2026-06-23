@@ -29,6 +29,8 @@ const (
 	defaultMaxTurns             = "20"
 	defaultMergingConcurrency   = "1"
 	defaultDispatchPriorityText = "Merging\nRework"
+	defaultStatusField          = "Status"
+	defaultStatusLabelPrefix    = "detent:"
 )
 
 var (
@@ -42,6 +44,9 @@ func (s *Server) onboarding(c echo.Context) error {
 	form := templates.OnboardingForm{
 		Step:                         onboardingStepTracker,
 		TrackerKind:                  config.TrackerGitHub,
+		GitHubStatusSource:           config.GitHubStatusSourceProjectV2,
+		StatusField:                  defaultStatusField,
+		StatusLabelPrefix:            defaultStatusLabelPrefix,
 		WorkspaceRoot:                defaultWorkspaceRoot,
 		MaxConcurrentAgents:          defaultMaxConcurrentAgents,
 		MaxTurns:                     defaultMaxTurns,
@@ -173,12 +178,21 @@ func (s *Server) onboardingData(form templates.OnboardingForm, problems []string
 }
 
 func parseOnboardingForm(c echo.Context) templates.OnboardingForm {
+	trackerKind := strings.TrimSpace(c.FormValue("tracker_kind"))
+	gitHubStatusSource := strings.TrimSpace(c.FormValue("github_status_source"))
+	if choice := strings.TrimSpace(c.FormValue("tracker_choice")); choice != "" {
+		trackerKind, gitHubStatusSource = parseTrackerChoice(choice)
+	}
+
 	return templates.OnboardingForm{
-		TrackerKind:                  strings.TrimSpace(c.FormValue("tracker_kind")),
+		TrackerKind:                  trackerKind,
+		GitHubStatusSource:           gitHubStatusSource,
 		Endpoint:                     strings.TrimSpace(c.FormValue("endpoint")),
 		APIKey:                       strings.TrimSpace(c.FormValue("api_key")),
 		ProjectSlug:                  strings.TrimSpace(c.FormValue("project_slug")),
 		Repo:                         strings.TrimSpace(c.FormValue("repo")),
+		StatusField:                  strings.TrimSpace(c.FormValue("status_field")),
+		StatusLabelPrefix:            strings.TrimSpace(c.FormValue("status_label_prefix")),
 		WorkspaceRoot:                strings.TrimSpace(c.FormValue("workspace_root")),
 		MaxConcurrentAgents:          strings.TrimSpace(c.FormValue("max_concurrent_agents")),
 		MaxTurns:                     strings.TrimSpace(c.FormValue("max_turns")),
@@ -187,6 +201,21 @@ func parseOnboardingForm(c echo.Context) templates.OnboardingForm {
 		DispatchPriorityState:        strings.TrimSpace(c.FormValue("dispatch_priority_by_state")),
 		DispatchPriorityLabel:        strings.TrimSpace(c.FormValue("dispatch_priority_by_label")),
 		DependencyAutoUnblockEnabled: onboardingBoolValue(c.FormValue("dependency_auto_unblock_enabled")),
+	}
+}
+
+func parseTrackerChoice(choice string) (string, string) {
+	switch strings.ToLower(strings.TrimSpace(choice)) {
+	case "github_project_v2":
+		return config.TrackerGitHub, config.GitHubStatusSourceProjectV2
+	case "github_issue_field":
+		return config.TrackerGitHub, config.GitHubStatusSourceIssueField
+	case "github_label":
+		return config.TrackerGitHub, config.GitHubStatusSourceLabel
+	case config.TrackerMemory:
+		return config.TrackerMemory, ""
+	default:
+		return choice, ""
 	}
 }
 
@@ -216,7 +245,14 @@ func validateTracker(form templates.OnboardingForm) []string {
 	switch form.TrackerKind {
 	case "":
 		return []string{"tracker is required"}
-	case config.TrackerGitHub, config.TrackerMemory:
+	case config.TrackerGitHub:
+		switch normalizedOnboardingGitHubStatusSource(form.GitHubStatusSource) {
+		case config.GitHubStatusSourceProjectV2, config.GitHubStatusSourceIssueField, config.GitHubStatusSourceLabel:
+			return nil
+		default:
+			return []string{"github status source must be project_v2, issue_field, or label"}
+		}
+	case config.TrackerMemory:
 		return nil
 	default:
 		return []string{"tracker must be github or memory"}
@@ -247,13 +283,26 @@ func validateProject(form templates.OnboardingForm) []string {
 	}
 
 	var problems []string
-	if strings.TrimSpace(form.ProjectSlug) == "" {
-		problems = append(problems, "project is required")
+	switch normalizedOnboardingGitHubStatusSource(form.GitHubStatusSource) {
+	case config.GitHubStatusSourceProjectV2:
+		if strings.TrimSpace(form.ProjectSlug) == "" {
+			problems = append(problems, "project is required")
+		}
+		if strings.TrimSpace(form.Repo) != "" && !repoPattern.MatchString(form.Repo) {
+			problems = append(problems, "repo must look like owner/name")
+		}
+		problems = append(problems, rejectNewlines("project", form.ProjectSlug)...)
+	case config.GitHubStatusSourceIssueField:
+		if !repoPattern.MatchString(form.Repo) {
+			problems = append(problems, "repo must look like owner/name")
+		}
+		problems = append(problems, rejectNewlines("status field", form.StatusField)...)
+	case config.GitHubStatusSourceLabel:
+		if !repoPattern.MatchString(form.Repo) {
+			problems = append(problems, "repo must look like owner/name")
+		}
+		problems = append(problems, rejectNewlines("status label prefix", form.StatusLabelPrefix)...)
 	}
-	if !repoPattern.MatchString(form.Repo) {
-		problems = append(problems, "repo must look like owner/name")
-	}
-	problems = append(problems, rejectNewlines("project", form.ProjectSlug)...)
 	return problems
 }
 
@@ -325,11 +374,18 @@ func parseHTTPURL(value string) (*url.URL, error) {
 func applyTrackerDefaults(form *templates.OnboardingForm) {
 	switch form.TrackerKind {
 	case config.TrackerGitHub:
+		form.GitHubStatusSource = normalizedOnboardingGitHubStatusSource(form.GitHubStatusSource)
 		if form.Endpoint == "" {
 			form.Endpoint = "https://api.github.com/graphql"
 		}
 		if form.APIKey == "" {
 			form.APIKey = defaultGitHubAPIKey
+		}
+		if form.StatusField == "" {
+			form.StatusField = defaultStatusField
+		}
+		if form.StatusLabelPrefix == "" {
+			form.StatusLabelPrefix = defaultStatusLabelPrefix
 		}
 	case config.TrackerMemory:
 		form.Endpoint = ""
@@ -366,16 +422,23 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("---\n")
 	b.WriteString("tracker:\n")
 	writeScalar(&b, "  ", "kind", form.TrackerKind)
-	if form.Endpoint != "" {
+	switch form.TrackerKind {
+	case config.TrackerGitHub:
 		writeScalar(&b, "  ", "endpoint", form.Endpoint)
-	}
-	if form.APIKey != "" {
 		writeScalar(&b, "  ", "api_key", form.APIKey)
-	}
-	if form.ProjectSlug != "" {
-		writeScalar(&b, "  ", "project_slug", form.ProjectSlug)
-	}
-	if form.TrackerKind == config.TrackerMemory {
+		statusSource := normalizedOnboardingGitHubStatusSource(form.GitHubStatusSource)
+		writeScalar(&b, "  ", "github_status_source", statusSource)
+		switch statusSource {
+		case config.GitHubStatusSourceProjectV2:
+			writeScalar(&b, "  ", "project_slug", form.ProjectSlug)
+		case config.GitHubStatusSourceIssueField:
+			writeScalar(&b, "  ", "repository", form.Repo)
+			writeQuotedScalar(&b, "  ", "status_field", form.StatusField)
+		case config.GitHubStatusSourceLabel:
+			writeScalar(&b, "  ", "repository", form.Repo)
+			writeQuotedScalar(&b, "  ", "status_label_prefix", form.StatusLabelPrefix)
+		}
+	case config.TrackerMemory:
 		b.WriteString("  issues:\n")
 		b.WriteString("    - id: memory-onboarding-1\n")
 		b.WriteString("      identifier: MEM-1\n")
@@ -469,7 +532,27 @@ func renderWorkflowPrompt(form templates.OnboardingForm) string {
 	case config.TrackerMemory:
 		return "You are working on a memory tracker issue `{{ issue.identifier }}`.\n\n" + commonWorkflowPrompt()
 	default:
-		return "You are working on GitHub issue `{{ issue.identifier }}` in ProjectV2 `" + form.ProjectSlug + "`.\n\n" + commonWorkflowPrompt()
+		switch normalizedOnboardingGitHubStatusSource(form.GitHubStatusSource) {
+		case config.GitHubStatusSourceIssueField:
+			return "You are working on GitHub issue `{{ issue.identifier }}` with issue-field status in `" + form.Repo + "`.\n\n" + commonWorkflowPrompt()
+		case config.GitHubStatusSourceLabel:
+			return "You are working on GitHub issue `{{ issue.identifier }}` with status labels in `" + form.Repo + "`.\n\n" + commonWorkflowPrompt()
+		default:
+			return "You are working on GitHub issue `{{ issue.identifier }}` in ProjectV2 `" + form.ProjectSlug + "`.\n\n" + commonWorkflowPrompt()
+		}
+	}
+}
+
+func normalizedOnboardingGitHubStatusSource(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", config.GitHubStatusSourceProjectV2, "projectv2", "project":
+		return config.GitHubStatusSourceProjectV2
+	case config.GitHubStatusSourceIssueField, "issuefield", "issues":
+		return config.GitHubStatusSourceIssueField
+	case config.GitHubStatusSourceLabel, "labels", "issue_label", "issue_labels":
+		return config.GitHubStatusSourceLabel
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
 	}
 }
 
@@ -502,6 +585,10 @@ func writeScalar(b *strings.Builder, indent string, key string, value string) {
 	b.WriteString(": ")
 	b.WriteString(value)
 	b.WriteByte('\n')
+}
+
+func writeQuotedScalar(b *strings.Builder, indent string, key string, value string) {
+	writeScalar(b, indent, key, strconv.Quote(value))
 }
 
 func writeList(b *strings.Builder, indent string, key string, values []string) {

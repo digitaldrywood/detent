@@ -1449,7 +1449,11 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    human-authored contract without explicit approval. The maintained templates
    are `docs/templates/WORKFLOW.project_v2.md`,
    `docs/templates/WORKFLOW.issue_field.md`, and
-   `docs/templates/WORKFLOW.label.md`. Verify:
+   `docs/templates/WORKFLOW.label.md`. The `/onboarding` web wizard can write
+   the same tracker blocks interactively: choose **Repository labels** for
+   `GITHUB_MODE=label`, enter the repository and status label prefix such as
+   `detent:`, and it will generate `tracker.github_status_source: label`
+   without ProjectV2 fields. Verify:
 
    ```sh
    test ! -f <source-root>/WORKFLOW.md

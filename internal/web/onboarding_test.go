@@ -10,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -39,6 +40,9 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"Detent onboarding",
 				"Choose tracker",
 				onboardingStepBadge("tracker"),
+				"ProjectV2 board",
+				"Organization issue field",
+				"Repository labels",
 				"hx-post=\"/onboarding/tracker\"",
 			},
 		},
@@ -46,11 +50,13 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 			name:       "tracker to credentials",
 			method:     http.MethodPost,
 			path:       "/onboarding/tracker",
-			form:       url.Values{"tracker_kind": {"github"}},
+			form:       url.Values{"tracker_choice": {"github_label"}},
 			wantStatus: http.StatusOK,
 			wantContent: []string{
 				"Credentials",
 				onboardingStepBadge("credentials"),
+				"name=\"tracker_kind\" value=\"github\"",
+				"name=\"github_status_source\" value=\"label\"",
 				"name=\"api_key\"",
 				"value=\"$GITHUB_TOKEN\"",
 			},
@@ -142,66 +148,260 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 	}
 }
 
-func onboardingStepBadge(step string) string {
-	return `data-onboarding-step-badge="true"><span class="text-xs font-medium uppercase text-muted-foreground">Step</span> <span class="truncate font-mono text-xs font-semibold text-foreground">` + step + `</span>`
-}
-
-func TestOnboardingWriteWorkflow(t *testing.T) {
+func TestOnboardingGitHubProjectStepIsModeSpecific(t *testing.T) {
 	t.Parallel()
 
 	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
-	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
+	server, err := web.NewServer(web.Config{Mode: web.ModeOnboarding, WorkflowPath: workflowPath}, web.Dependencies{})
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
 
-	form := validOnboardingForm()
-	rec := httptest.NewRecorder()
-	req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
+	tests := []struct {
+		name     string
+		source   string
+		want     []string
+		unwanted []string
+	}{
+		{
+			name:   "project v2",
+			source: workflowconfig.GitHubStatusSourceProjectV2,
+			want: []string{
+				"Pick project",
+				"ProjectV2 ID",
+				"name=\"project_slug\"",
+				"name=\"repo\"",
+			},
+			unwanted: []string{
+				"name=\"status_field\"",
+				"name=\"status_label_prefix\"",
+			},
+		},
+		{
+			name:   "issue field",
+			source: workflowconfig.GitHubStatusSourceIssueField,
+			want: []string{
+				"Configure issue field",
+				"name=\"repo\"",
+				"name=\"status_field\"",
+				"value=\"Status\"",
+			},
+			unwanted: []string{
+				"ProjectV2 ID",
+				"name=\"project_slug\"",
+				"name=\"status_label_prefix\"",
+			},
+		},
+		{
+			name:   "label",
+			source: workflowconfig.GitHubStatusSourceLabel,
+			want: []string{
+				"Configure labels",
+				"name=\"repo\"",
+				"name=\"status_label_prefix\"",
+				"value=\"detent:\"",
+			},
+			unwanted: []string{
+				"ProjectV2 ID",
+				"name=\"project_slug\"",
+				"name=\"status_field\"",
+			},
+		},
+	}
 
-	server.Handler().ServeHTTP(rec, req)
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			rec := httptest.NewRecorder()
+			req := onboardingRequest(http.MethodPost, "/onboarding/credentials", url.Values{
+				"tracker_kind":         {"github"},
+				"github_status_source": {tt.source},
+				"endpoint":             {"https://api.github.com/graphql"},
+				"api_key":              {"$GITHUB_TOKEN"},
+			})
+
+			server.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			for _, want := range tt.want {
+				if !strings.Contains(rec.Body.String(), want) {
+					t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
+				}
+			}
+			for _, unwanted := range tt.unwanted {
+				if strings.Contains(rec.Body.String(), unwanted) {
+					t.Fatalf("body contains %q:\n%s", unwanted, rec.Body.String())
+				}
+			}
+		})
 	}
-	if !strings.Contains(rec.Body.String(), "Wrote WORKFLOW.md") {
-		t.Fatalf("body missing success:\n%s", rec.Body.String())
+}
+
+func onboardingStepBadge(step string) string {
+	return `data-onboarding-step-badge="true"><span class="text-xs font-medium uppercase text-muted-foreground">Step</span> <span class="truncate font-mono text-xs font-semibold text-foreground">` + step + `</span>`
+}
+
+func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		source      string
+		edit        func(url.Values)
+		want        []string
+		unwanted    []string
+		wantProject string
+		wantRepo    string
+		wantField   string
+		wantPrefix  string
+	}{
+		{
+			name:   "project v2",
+			source: workflowconfig.GitHubStatusSourceProjectV2,
+			want: []string{
+				"tracker:\n  kind: github",
+				"  github_status_source: project_v2",
+				"project_slug: PVT_project",
+				"You are working on GitHub issue `{{ issue.identifier }}` in ProjectV2 `PVT_project`.",
+			},
+			unwanted: []string{
+				"repository: digitaldrywood/detent",
+				"status_field:",
+				"status_label_prefix:",
+			},
+			wantProject: "PVT_project",
+		},
+		{
+			name:   "issue field",
+			source: workflowconfig.GitHubStatusSourceIssueField,
+			edit: func(form url.Values) {
+				form.Del("project_slug")
+				form.Set("status_field", "Team: Status #2")
+			},
+			want: []string{
+				"tracker:\n  kind: github",
+				"  github_status_source: issue_field",
+				"repository: digitaldrywood/detent",
+				`status_field: "Team: Status #2"`,
+				"You are working on GitHub issue `{{ issue.identifier }}` with issue-field status in `digitaldrywood/detent`.",
+			},
+			unwanted: []string{
+				"project_slug:",
+				"status_label_prefix:",
+				"ProjectV2",
+			},
+			wantRepo:  "digitaldrywood/detent",
+			wantField: "Team: Status #2",
+		},
+		{
+			name:   "label",
+			source: workflowconfig.GitHubStatusSourceLabel,
+			edit: func(form url.Values) {
+				form.Del("project_slug")
+				form.Set("status_label_prefix", "detent:")
+			},
+			want: []string{
+				"tracker:\n  kind: github",
+				"  github_status_source: label",
+				"repository: digitaldrywood/detent",
+				`status_label_prefix: "detent:"`,
+				"You are working on GitHub issue `{{ issue.identifier }}` with status labels in `digitaldrywood/detent`.",
+			},
+			unwanted: []string{
+				"project_slug:",
+				"status_field:",
+				"ProjectV2",
+			},
+			wantRepo:   "digitaldrywood/detent",
+			wantPrefix: "detent:",
+		},
 	}
 
-	raw, err := os.ReadFile(workflowPath)
-	if err != nil {
-		t.Fatalf("ReadFile() error = %v", err)
-	}
-	content := string(raw)
-	sourceRoot := filepath.Dir(workflowPath)
-	for _, want := range []string{
-		"tracker:\n  kind: github",
-		"api_key: $GITHUB_TOKEN",
-		"project_slug: PVT_project",
-		"dependency_auto_unblock:\n    enabled: false\n    source_states:\n      - Blocked\n    target_state: Todo\n    readiness: terminal_or_merged",
-		"source_root: " + sourceRoot,
-		"codex:\n  command: codex app-server",
-		"gate:\n  kind: command\n  run: make check\n  ci_failure_action: skip",
-		"validator:\n    enabled: false\n    model: \"\"\n    min_score: 0.8\n    block_on:\n      - p1",
-		"hooks:\n  timeout_ms: 60000",
-		"max_concurrent_agents_by_state:\n    Merging: 1",
-		"dispatch_priority_by_label:\n    - bug\n    - regression\n    - enhancement",
-		"You are working on GitHub issue `{{ issue.identifier }}`",
-	} {
-		if !strings.Contains(content, want) {
-			t.Fatalf("workflow missing %q:\n%s", want, content)
-		}
-	}
-	for _, unwanted := range []string{
-		"codex:\n  command: codex app-server\n  shell:",
-		"hooks:\n  shell:",
-		"after_create:",
-		"git clone",
-		"git worktree add",
-	} {
-		if strings.Contains(content, unwanted) {
-			t.Fatalf("workflow contains %q:\n%s", unwanted, content)
-		}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+			server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
+			if err != nil {
+				t.Fatalf("NewServer() error = %v", err)
+			}
+
+			form := validOnboardingForm()
+			form.Set("github_status_source", tt.source)
+			if tt.edit != nil {
+				tt.edit(form)
+			}
+			rec := httptest.NewRecorder()
+			req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
+
+			server.Handler().ServeHTTP(rec, req)
+
+			if rec.Code != http.StatusOK {
+				t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+			}
+			if !strings.Contains(rec.Body.String(), "Wrote WORKFLOW.md") {
+				t.Fatalf("body missing success:\n%s", rec.Body.String())
+			}
+
+			raw, err := os.ReadFile(workflowPath)
+			if err != nil {
+				t.Fatalf("ReadFile() error = %v", err)
+			}
+			content := string(raw)
+			sourceRoot := filepath.Dir(workflowPath)
+			for _, want := range append(tt.want,
+				"api_key: $GITHUB_TOKEN",
+				"dependency_auto_unblock:\n    enabled: false\n    source_states:\n      - Blocked\n    target_state: Todo\n    readiness: terminal_or_merged",
+				"source_root: "+sourceRoot,
+				"codex:\n  command: codex app-server",
+				"gate:\n  kind: command\n  run: make check\n  ci_failure_action: skip",
+				"validator:\n    enabled: false\n    model: \"\"\n    min_score: 0.8\n    block_on:\n      - p1",
+				"hooks:\n  timeout_ms: 60000",
+				"max_concurrent_agents_by_state:\n    Merging: 1",
+				"dispatch_priority_by_label:\n    - bug\n    - regression\n    - enhancement",
+				"You are working on GitHub issue `{{ issue.identifier }}`",
+			) {
+				if !strings.Contains(content, want) {
+					t.Fatalf("workflow missing %q:\n%s", want, content)
+				}
+			}
+			for _, unwanted := range append(tt.unwanted,
+				"codex:\n  command: codex app-server\n  shell:",
+				"hooks:\n  shell:",
+				"after_create:",
+				"git clone",
+				"git worktree add",
+			) {
+				if strings.Contains(content, unwanted) {
+					t.Fatalf("workflow contains %q:\n%s", unwanted, content)
+				}
+			}
+
+			workflow, err := workflowconfig.ParseWorkflow(raw)
+			if err != nil {
+				t.Fatalf("ParseWorkflow() error = %v", err)
+			}
+			cfg := workflow.Config
+			if cfg.Tracker.GitHubStatusSource != tt.source {
+				t.Fatalf("GitHubStatusSource = %q, want %q", cfg.Tracker.GitHubStatusSource, tt.source)
+			}
+			if cfg.Tracker.ProjectSlug != tt.wantProject {
+				t.Fatalf("ProjectSlug = %q, want %q", cfg.Tracker.ProjectSlug, tt.wantProject)
+			}
+			if cfg.Tracker.Repository != tt.wantRepo {
+				t.Fatalf("Repository = %q, want %q", cfg.Tracker.Repository, tt.wantRepo)
+			}
+			if tt.wantField != "" && cfg.Tracker.StatusField != tt.wantField {
+				t.Fatalf("StatusField = %q, want %q", cfg.Tracker.StatusField, tt.wantField)
+			}
+			if tt.wantPrefix != "" && cfg.Tracker.StatusLabelPrefix != tt.wantPrefix {
+				t.Fatalf("StatusLabelPrefix = %q, want %q", cfg.Tracker.StatusLabelPrefix, tt.wantPrefix)
+			}
+		})
 	}
 }
 
