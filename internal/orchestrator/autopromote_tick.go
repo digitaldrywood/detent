@@ -17,21 +17,25 @@ const (
 	autoPromoteReworkState  = "Rework"
 )
 
+type autoPromoteTickResult struct {
+	transitioned map[string]struct{}
+}
+
 func (o *Orchestrator) autoPromoteHumanReviewIssues(
 	ctx context.Context,
 	state *State,
 	issues []connector.Issue,
 	now time.Time,
-) map[string]struct{} {
+) autoPromoteTickResult {
 	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
 	if !cfg.Enabled {
 		if o.logger != nil {
 			o.logger.Debug("auto promote skipped", "reason", AutoPromoteReasonDisabled)
 		}
-		return nil
+		return autoPromoteTickResult{}
 	}
 
-	transitioned := map[string]struct{}{}
+	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
 	for _, issue := range issuesInStates(issues, []string{autoPromoteSourceState}) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
@@ -62,12 +66,19 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
 			continue
 		}
-		transitioned[issueID] = struct{}{}
+		result.transitioned[issueID] = struct{}{}
+		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
 	}
-	if len(transitioned) == 0 {
-		return nil
+	if len(result.transitioned) == 0 {
+		return autoPromoteTickResult{}
 	}
-	return transitioned
+	return result
+}
+
+func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueID string) {
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.Blocked, issueID)
 }
 
 func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.Issue, now time.Time) {
