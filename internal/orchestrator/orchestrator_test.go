@@ -1,8 +1,10 @@
 package orchestrator_test
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"log/slog"
 	"maps"
 	"strings"
 	"sync"
@@ -1084,6 +1086,67 @@ func TestRunReapsIdleObservedWorkspacesWithoutTouchingActiveIssues(t *testing.T)
 	}
 }
 
+func TestRunRetriesTransientStartupCleanupFetchAndDispatchesCandidate(t *testing.T) {
+	t.Parallel()
+
+	candidate := testIssue("issue-cleanup-transient", "digitaldrywood/detent#640", "Todo")
+	transientErr := errors.New("fetch github pull request reviews: github transient error: status 504")
+	tracker := newTransientCleanupConnector(candidate, transientErr)
+	runner := newBlockingRunner()
+	logs := &lockedBuffer{}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:                  time.Hour,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress", "Rework"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		ObservedStates:                []string{"Human Review"},
+		WorkspaceCleanupIdleTTL:       time.Hour,
+		WorkspaceCleanupSweepInterval: time.Hour,
+	}, orchestrator.Dependencies{
+		Connector:       tracker,
+		Runner:          runner,
+		WorkspaceReaper: &fakeWorkspaceReaper{},
+		Logger:          slog.New(slog.NewTextHandler(logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	request := receiveRunRequest(t, runner.started)
+	if request.Issue.ID != candidate.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, candidate.ID)
+	}
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		return recentEventContains(state.RecentEvents, "workspace_cleanup_fetch_failed", "status 504")
+	})
+	if got := state.Snapshot(time.Now()).Refresh.ReadinessStatus(); got != telemetry.RefreshStatusDegraded {
+		t.Fatalf("snapshot Refresh status = %q, want degraded", got)
+	}
+	if got := logs.String(); !strings.Contains(got, "fetch workspace cleanup candidates failed") || !strings.Contains(got, "status 504") {
+		t.Fatalf("logs = %q, want startup cleanup fetch failure", got)
+	}
+
+	if _, err := orch.RequestRefresh(context.Background()); err != nil {
+		t.Fatalf("RequestRefresh() error = %v", err)
+	}
+	tracker.waitForCleanupAttempts(t, 2)
+
+	if got := tracker.cleanupAttempts(); got != 2 {
+		t.Fatalf("cleanup attempts = %d, want transient failure retried once", got)
+	}
+	state = waitForState(t, orch, func(state orchestrator.State) bool {
+		return tracker.cleanupAttempts() >= 2 && state.Snapshot(time.Now()).Refresh.ReadinessStatus() == telemetry.RefreshStatusReady
+	})
+	if state.LastRefreshError != "" || !state.LastRefreshErrorAt.IsZero() {
+		t.Fatalf("refresh error = %q at %v, want cleared after retry", state.LastRefreshError, state.LastRefreshErrorAt)
+	}
+	close(runner.release)
+}
+
 func TestRunFetchesOnlyActionableObservedStates(t *testing.T) {
 	t.Parallel()
 
@@ -1734,6 +1797,133 @@ func stateListIncludes(states []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func recentEventContains(events []telemetry.ActivityEvent, event string, message string) bool {
+	for _, candidate := range events {
+		if candidate.Event == event && strings.Contains(candidate.Message, message) {
+			return true
+		}
+	}
+	return false
+}
+
+type transientCleanupConnector struct {
+	mu                  sync.Mutex
+	candidate           connector.Issue
+	cleanupErr          error
+	cleanupAttemptCount int
+	changed             chan struct{}
+}
+
+func newTransientCleanupConnector(candidate connector.Issue, cleanupErr error) *transientCleanupConnector {
+	return &transientCleanupConnector{
+		candidate:  candidate,
+		cleanupErr: cleanupErr,
+		changed:    make(chan struct{}, 8),
+	}
+}
+
+func (c *transientCleanupConnector) Name() string {
+	return "transient-cleanup"
+}
+
+func (c *transientCleanupConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return cloneIssues([]connector.Issue{c.candidate}), nil
+}
+
+func (c *transientCleanupConnector) FetchIssuesByStates(_ context.Context, states []string) ([]connector.Issue, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if transientCleanupRequest(states) {
+		c.cleanupAttemptCount++
+		c.changed <- struct{}{}
+		if c.cleanupAttemptCount == 1 {
+			return nil, c.cleanupErr
+		}
+	}
+	return nil, nil
+}
+
+func (c *transientCleanupConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, id := range ids {
+		if id == c.candidate.ID {
+			return cloneIssues([]connector.Issue{c.candidate}), nil
+		}
+	}
+	return nil, nil
+}
+
+func (c *transientCleanupConnector) CreateComment(context.Context, string, string) error {
+	return nil
+}
+
+func (c *transientCleanupConnector) UpdateIssueState(context.Context, string, string) error {
+	return nil
+}
+
+func (c *transientCleanupConnector) SetAssignee(context.Context, string, string) error {
+	return nil
+}
+
+func (c *transientCleanupConnector) SetField(context.Context, string, string, string) error {
+	return nil
+}
+
+func (c *transientCleanupConnector) cleanupAttempts() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return c.cleanupAttemptCount
+}
+
+func (c *transientCleanupConnector) waitForCleanupAttempts(t *testing.T, want int) {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	for {
+		if c.cleanupAttempts() >= want {
+			return
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d cleanup attempts; got %d", want, c.cleanupAttempts())
+		case <-c.changed:
+		}
+	}
+}
+
+func transientCleanupRequest(states []string) bool {
+	return stateListIncludes(states, "Done") &&
+		stateListIncludes(states, "Cancelled") &&
+		stateListIncludes(states, "Human Review")
+}
+
+type lockedBuffer struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (b *lockedBuffer) Write(p []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.Write(p)
+}
+
+func (b *lockedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	return b.buf.String()
 }
 
 type parallelFetchConnector struct {

@@ -19,6 +19,8 @@ type State struct {
 	DrainStartedAt           time.Time
 	LastRefreshAt            time.Time
 	NextRefreshAt            time.Time
+	LastRefreshError         string
+	LastRefreshErrorAt       time.Time
 	LastRunningReconcileAt   time.Time
 	LastWorkspaceCleanupAt   time.Time
 	RecentEvents             []telemetry.ActivityEvent
@@ -126,6 +128,8 @@ func (s State) clone() State {
 		DrainStartedAt:           s.DrainStartedAt,
 		LastRefreshAt:            s.LastRefreshAt,
 		NextRefreshAt:            s.NextRefreshAt,
+		LastRefreshError:         s.LastRefreshError,
+		LastRefreshErrorAt:       s.LastRefreshErrorAt,
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
 		RecentEvents:             cloneActivityEvents(s.RecentEvents),

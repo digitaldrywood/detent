@@ -17,8 +17,12 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		PollIntervalSeconds: int64(s.PollInterval / time.Second),
 		LastRefreshAt:       timePointer(s.LastRefreshAt),
 		NextRefreshAt:       timePointer(s.NextRefreshAt),
+		LastError:           s.LastRefreshError,
+		LastErrorAt:         timePointer(s.LastRefreshErrorAt),
 	}
-	if refresh.LastRefreshAt == nil {
+	if refresh.LastError != "" || refresh.LastErrorAt != nil {
+		refresh.Status = telemetry.RefreshStatusDegraded
+	} else if refresh.LastRefreshAt == nil {
 		refresh.Status = telemetry.RefreshStatusInitializing
 	} else {
 		refresh.Status = telemetry.RefreshStatusReady
