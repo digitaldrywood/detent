@@ -237,6 +237,52 @@ func TestOnboardingValidateAnswersCommandAcceptsLabelMode(t *testing.T) {
 	}
 }
 
+func TestOnboardingValidateAnswersCommandExpandsAutonomousDeliveryProfile(t *testing.T) {
+	t.Parallel()
+
+	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
+		"GITHUB_MODE=label",
+		"DELIVERY_PROFILE=autonomous_delivery",
+		"STATUS_LABEL_PREFIX=detent:",
+		"MUTATION_CONFIRMED=true",
+		"",
+	}, "\n"))
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "onboarding", "validate-answers", "--answers", answersPath})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		DeliveryProfile        string            `json:"delivery_profile"`
+		DeliveryProfileAnswers map[string]string `json:"delivery_profile_answers"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.DeliveryProfile != "autonomous_delivery" {
+		t.Fatalf("DeliveryProfile = %q, want autonomous_delivery", got.DeliveryProfile)
+	}
+	want := map[string]string{
+		"KANBAN_MODE":                           "integration",
+		"AUTO_PROMOTE_ENABLED":                  "true",
+		"AUTO_PROMOTE_QUIET_SECONDS":            "0",
+		"GATE_REQUIRE_AUTOMATED_REVIEW":         "false",
+		"AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW": "false",
+		"DEPENDENCY_AUTO_UNBLOCK_ENABLED":       "true",
+		"MERGING_CONCURRENCY":                   "1",
+	}
+	for key, value := range want {
+		if got.DeliveryProfileAnswers[key] != value {
+			t.Fatalf("DeliveryProfileAnswers[%q] = %q, want %q; all answers = %#v", key, got.DeliveryProfileAnswers[key], value, got.DeliveryProfileAnswers)
+		}
+	}
+}
+
 func TestOnboardingDraftAnswersCommandUsesCurrentNonDetentCheckoutAsTarget(t *testing.T) {
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	wantTargetRoot := canonicalOnboardingTestPath(t, targetRoot)

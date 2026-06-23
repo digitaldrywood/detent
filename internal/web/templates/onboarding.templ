@@ -34,6 +34,7 @@ type OnboardingForm struct {
 	MergingConcurrency    string
 	DispatchPriorityState string
 	DispatchPriorityLabel string
+	DeliveryProfile       string
 	DependencyAutoUnblockEnabled string
 }
 
@@ -109,6 +110,33 @@ func projectStepTitle(form OnboardingForm) string {
 		return "Configure labels"
 	default:
 		return "Pick project"
+	}
+}
+
+func selectedDeliveryProfile(form OnboardingForm) string {
+	switch form.DeliveryProfile {
+	case "autonomous_delivery":
+		return "autonomous_delivery"
+	default:
+		return "conservative_review"
+	}
+}
+
+func deliveryProfileLabel(form OnboardingForm) string {
+	switch selectedDeliveryProfile(form) {
+	case "autonomous_delivery":
+		return "Autonomous delivery mode"
+	default:
+		return "Conservative review mode"
+	}
+}
+
+func deliveryProfileExplanation(form OnboardingForm) string {
+	switch selectedDeliveryProfile(form) {
+	case "autonomous_delivery":
+		return "Autonomous delivery mode promotes validated work when gates and CI still apply, keeps Merging serialized, enables dependency auto-unblock, and prefers live reload or project refresh without interrupting running agents."
+	default:
+		return "Conservative review mode keeps Detent parked at Human Review until the operator chooses the next step."
 	}
 }
 
@@ -303,6 +331,11 @@ templ agentStep(data OnboardingData) {
 		<h2 class="text-xl font-semibold">Agent config</h2>
 		<form class="mt-5 grid gap-4 sm:grid-cols-2" hx-post="/onboarding/agent" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@hiddenProject(data.Form)
+			<div class="grid gap-3 sm:col-span-2">
+				<span class="text-sm font-medium">Delivery profile</span>
+				@deliveryProfileChoice(data, "conservative_review", "Conservative review mode", "Stop at Human Review until the operator chooses promotion or merge.")
+				@deliveryProfileChoice(data, "autonomous_delivery", "Autonomous delivery mode", "Promote when linked PRs, gates, and CI pass; keep Merging serialized.")
+			</div>
 			<label class="block sm:col-span-2">
 				<span class="text-sm font-medium">Workspace root</span>
 				<input class={ fieldClass() } type="text" name="workspace_root" value={ data.Form.WorkspaceRoot }/>
@@ -346,11 +379,22 @@ templ agentStep(data OnboardingData) {
 	</div>
 }
 
+templ deliveryProfileChoice(data OnboardingData, value string, label string, description string) {
+	<label class="flex cursor-pointer items-start gap-3 rounded-md border border-border p-3 hover:bg-muted">
+		<input class="mt-1" type="radio" name="delivery_profile" value={ value } checked?={ selectedDeliveryProfile(data.Form) == value }/>
+		<span>
+			<span class="block text-sm font-semibold text-foreground">{ label }</span>
+			<span class="block text-sm text-muted-foreground">{ description }</span>
+		</span>
+	</label>
+}
+
 templ writeStep(data OnboardingData) {
 	<div class="rounded-md border border-border bg-card p-5">
 		<h2 class="text-xl font-semibold">Write WORKFLOW.md</h2>
 		<div class="mt-4 grid gap-3 text-sm text-muted-foreground sm:grid-cols-2">
 			<p><span class="font-medium text-foreground">Tracker:</span> { data.Form.TrackerKind }</p>
+			<p><span class="font-medium text-foreground">Delivery profile:</span> { deliveryProfileLabel(data.Form) }</p>
 			if data.Form.ProjectSlug != "" && githubStatusSource(data.Form) == "project_v2" {
 				<p><span class="font-medium text-foreground">ProjectV2:</span> { data.Form.ProjectSlug }</p>
 			}
@@ -367,6 +411,7 @@ templ writeStep(data OnboardingData) {
 				<p><span class="font-medium text-foreground">Status label prefix:</span> { data.Form.StatusLabelPrefix }</p>
 			}
 			<p><span class="font-medium text-foreground">Output:</span> { data.WorkflowPath }</p>
+			<p class="sm:col-span-2">{ deliveryProfileExplanation(data.Form) }</p>
 		</div>
 		@resultPanel(data)
 		<form class="mt-5 flex flex-wrap gap-2" hx-post="/onboarding/write" hx-target="#onboarding-step" hx-swap="outerHTML">
@@ -425,5 +470,6 @@ templ hiddenAgent(form OnboardingForm) {
 	<input type="hidden" name="merging_concurrency" value={ form.MergingConcurrency }/>
 	<input type="hidden" name="dispatch_priority_by_state" value={ form.DispatchPriorityState }/>
 	<input type="hidden" name="dispatch_priority_by_label" value={ form.DispatchPriorityLabel }/>
+	<input type="hidden" name="delivery_profile" value={ form.DeliveryProfile }/>
 	<input type="hidden" name="dependency_auto_unblock_enabled" value={ form.DependencyAutoUnblockEnabled }/>
 }

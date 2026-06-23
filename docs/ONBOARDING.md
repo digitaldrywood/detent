@@ -771,7 +771,41 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
    ```
 
-5. **Kanban interaction.** Ask: "Should Detent's project Kanban be read-only or
+5. **Operator intent profile.** Ask: "Do you want conservative review mode or
+   autonomous delivery mode?" Use `conservative_review` when the operator wants
+   Detent to stop at `Human Review` until a human chooses the next step. Use
+   `autonomous_delivery` when the operator wants Detent to keep moving Todo
+   issues through PR, CI, merge, and Done as soon as the gates pass. Explain
+   that autonomous delivery still requires linked PRs, green CI, clear gates,
+   and no blocking P1 automated findings; it does not bypass validation. Also
+   explain that onboarding mutation should use live reload or a project-scoped
+   refresh and verify running agents were not interrupted rather than
+   restarting Detent. When a profile supplies a detailed answer below, record
+   the expansion and skip the duplicate low-level question unless the operator
+   intentionally changes profile. Verify:
+
+   ```sh
+   printf '%s\n' \
+     'DELIVERY_PROFILE=<conservative_review|autonomous_delivery>' \
+     >> "$ONBOARDING_DIR/answers.env"
+   rg '^DELIVERY_PROFILE=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Autonomous delivery expands to:
+
+   ```sh
+   printf '%s\n' \
+     'KANBAN_MODE=integration' \
+     'AUTO_PROMOTE_ENABLED=true' \
+     'AUTO_PROMOTE_QUIET_SECONDS=0' \
+     'GATE_REQUIRE_AUTOMATED_REVIEW=false' \
+     'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=false' \
+     'DEPENDENCY_AUTO_UNBLOCK_ENABLED=true' \
+     'MERGING_CONCURRENCY=1' \
+     >> "$ONBOARDING_DIR/answers.env"
+   ```
+
+6. **Kanban interaction.** Ask: "Should Detent's project Kanban be read-only or
    allow GitHub mutations from the dashboard?" Keep fleet `/kanban` read-only.
    For a project-scoped board on an operator-owned local or private Detent
    instance, recommend `integration` after
@@ -789,7 +823,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^KANBAN_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-6. **Scheduling.** Ask: "What `global.yaml` `priority` from 1-4 and `weight`
+7. **Scheduling.** Ask: "What `global.yaml` `priority` from 1-4 and `weight`
    should this project receive?" Show `$ONBOARDING_DIR/global-projects.txt`.
    Disambiguate this from the board `Priority` field: `global.yaml` `priority`
    ranks projects on the host; the board `Priority` field ranks issues inside
@@ -805,7 +839,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^GLOBAL_(PRIORITY|WEIGHT)=' "$ONBOARDING_DIR/answers.env"
    ```
 
-7. **Project color.** Ask: "Should this project have a fixed dashboard color,
+8. **Project color.** Ask: "Should this project have a fixed dashboard color,
    or should Detent assign one automatically?" Show
    `$ONBOARDING_DIR/global-projects.txt` so existing colors are discoverable.
    Explain that `projects[].color` is optional, accepts opaque CSS hex values
@@ -820,7 +854,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^PROJECT_COLOR=' "$ONBOARDING_DIR/answers.env"
    ```
 
-8. **Dispatch label ordering.** Ask: "When two issues have the same configured
+9. **Dispatch label ordering.** Ask: "When two issues have the same configured
    `Priority`, should labels break the tie before age?" Show the label counts
    from `$ONBOARDING_DIR/issue-counts.json` and recommend an ordered list from
    labels that represent work type or risk, such as `bug`, `regression`, then
@@ -837,7 +871,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^DISPATCH_PRIORITY_BY_LABEL=' "$ONBOARDING_DIR/answers.env"
    ```
 
-9. **Instance name.** Ask: "What optional instance name should appear in
+10. **Instance name.** Ask: "What optional instance name should appear in
    Detent browser tabs and the navbar?" Recommendation source: the short
    hostname, existing `global.identity.name`, and any operator naming
    convention for this host. Default if silent: the short hostname. Verify:
@@ -850,7 +884,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^INSTANCE_NAME=' "$ONBOARDING_DIR/answers.env"
    ```
 
-10. **Authorization filters.** Ask: "Should Detent consider all board items or
+11. **Authorization filters.** Ask: "Should Detent consider all board items or
    only items matching a filter?" Offer `none`, `labels.include`,
    `labels.exclude`, `assignee_in`, `author_in`, and `priority_in`.
    Recommendation source: live counts in `$ONBOARDING_DIR/issue-counts.json`
@@ -872,7 +906,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^AUTHORIZATION_' "$ONBOARDING_DIR/answers.env"
    ```
 
-11. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
+12. **Dashboard bind.** Ask: "How should the Detent dashboard bind:
    localhost-only, a private/Tailscale IP, or all interfaces?" Recommendation
    source: the operator's access path, whether SSH tunnels or VPN/Tailscale are
    expected, the host firewall, and any known private interface addresses.
@@ -889,7 +923,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^DASHBOARD_' "$ONBOARDING_DIR/answers.env"
    ```
 
-12. **Validation gate.** Ask: "Use the detected command, a custom command, or a
+13. **Validation gate.** Ask: "Use the detected command, a custom command, or a
    human review label gate? If this is a command gate, should auto-promotion
    require an automated GitHub PR review from a bot?" Recommendation source:
    `$ONBOARDING_DIR/gate.txt`, detected manifests, task runners, CI workflow
@@ -909,7 +943,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^GATE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-12. **Concurrency.** Ask: "How many agents may this project run at once?"
+14. **Concurrency.** Ask: "How many agents may this project run at once?"
    Recommendation source: host capacity, existing `global.yaml` projects, and
    the repo's gate cost. Default if silent: `agent.max_concurrent_agents: 5`
    for an active code repo, lower for expensive gates. State that
@@ -937,7 +971,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-13. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
+15. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
    it auto-promote to `Merging` after the human-defined criteria are true?"
    Recommendation source: repo risk, issue labels, review requirements, and how
    much trust the human wants to delegate. Default if silent:
@@ -965,7 +999,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-14. **Dependency waiting policy.** Ask: "Should dependency-waiting issues stay
+16. **Dependency waiting policy.** Ask: "Should dependency-waiting issues stay
    in `Todo` and be gated by Detent, or should they sit in `Blocked` and be
    auto-unblocked when dependencies clear?" Default if silent:
    `tracker.dependency_auto_unblock.enabled: false`. Use the `Blocked`
@@ -985,7 +1019,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^DEPENDENCY_AUTO_UNBLOCK_' "$ONBOARDING_DIR/answers.env"
    ```
 
-15. **Prompt body.** Ask: "Use the template prompt or add repo-specific
+17. **Prompt body.** Ask: "Use the template prompt or add repo-specific
    instructions?" Recommendation source: `CLAUDE.md`, `AGENTS.md`,
    `CONTRIBUTING.md`, README development commands, manifests, and CI workflows
    in `<source-root>`. Default if silent: template prompt plus any repo
@@ -1011,7 +1045,7 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^PROMPT_MODE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-16. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
+18. **Issue intake.** Ask: "Which issue filter should be bulk-added, should the
    initial `Status` be `Backlog` or `Todo`, and should the human enable the
    auto-add workflow?" Recommendation source: `$ONBOARDING_DIR/issue-counts.json`
    and the authorization answer. Default if silent: bulk-add the narrowest safe

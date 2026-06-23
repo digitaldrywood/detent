@@ -19,6 +19,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
+	onboardingprofile "github.com/digitaldrywood/detent/internal/onboarding"
 )
 
 const (
@@ -34,18 +35,20 @@ var (
 )
 
 type onboardingAnswersValidationResult struct {
-	Status                string   `json:"status"`
-	Path                  string   `json:"path"`
-	Phase                 string   `json:"phase"`
-	CustomerID            string   `json:"customer_id"`
-	DetentProjectID       string   `json:"detent_project_id"`
-	TargetRepository      string   `json:"target_repository"`
-	TargetSourceRoot      string   `json:"target_source_root"`
-	ReferenceRepositories []string `json:"reference_repositories"`
-	DetentOnboardingMode  string   `json:"detent_onboarding_mode"`
-	IdentityConfirmed     bool     `json:"identity_confirmed"`
-	GitHubMode            string   `json:"github_mode"`
-	MutationConfirmed     bool     `json:"mutation_confirmed"`
+	Status                 string            `json:"status"`
+	Path                   string            `json:"path"`
+	Phase                  string            `json:"phase"`
+	CustomerID             string            `json:"customer_id"`
+	DetentProjectID        string            `json:"detent_project_id"`
+	TargetRepository       string            `json:"target_repository"`
+	TargetSourceRoot       string            `json:"target_source_root"`
+	ReferenceRepositories  []string          `json:"reference_repositories"`
+	DetentOnboardingMode   string            `json:"detent_onboarding_mode"`
+	IdentityConfirmed      bool              `json:"identity_confirmed"`
+	GitHubMode             string            `json:"github_mode"`
+	DeliveryProfile        string            `json:"delivery_profile,omitempty"`
+	DeliveryProfileAnswers map[string]string `json:"delivery_profile_answers,omitempty"`
+	MutationConfirmed      bool              `json:"mutation_confirmed"`
 }
 
 type onboardingDraftAnswersResult struct {
@@ -824,6 +827,8 @@ func validateOnboardingAnswers(answers onboardingAnswers, phase string, result *
 		return problems
 	}
 
+	problems = append(problems, validateOnboardingDeliveryProfileAnswers(answers, result)...)
+
 	mode := answers.Values["GITHUB_MODE"]
 	switch mode {
 	case workflowconfig.GitHubStatusSourceProjectV2, workflowconfig.GitHubStatusSourceIssueField, workflowconfig.GitHubStatusSourceLabel:
@@ -833,6 +838,33 @@ func validateOnboardingAnswers(answers onboardingAnswers, phase string, result *
 	}
 	if phase == onboardingAnswersPhaseMutation {
 		problems = append(problems, validateOnboardingMutationAnswers(answers, mode, result)...)
+	}
+	return problems
+}
+
+func validateOnboardingDeliveryProfileAnswers(answers onboardingAnswers, result *onboardingAnswersValidationResult) []string {
+	profile := strings.TrimSpace(answers.Values["DELIVERY_PROFILE"])
+	if profile == "" {
+		return nil
+	}
+	settings, ok := onboardingprofile.DeliveryProfile(profile)
+	if !ok {
+		return []string{"DELIVERY_PROFILE must be conservative_review or autonomous_delivery"}
+	}
+	expansion, _ := onboardingprofile.DeliveryProfileAnswerExpansion(settings.ID)
+	result.DeliveryProfile = settings.ID
+	result.DeliveryProfileAnswers = expansion
+
+	var problems []string
+	for _, key := range onboardingprofile.SortedDeliveryProfileAnswerKeys(expansion) {
+		existing := strings.TrimSpace(answers.Values[key])
+		if existing == "" {
+			answers.Values[key] = expansion[key]
+			continue
+		}
+		if existing != expansion[key] {
+			problems = append(problems, fmt.Sprintf("%s=%s conflicts with DELIVERY_PROFILE=%s, which expands %s=%s", key, existing, settings.ID, key, expansion[key]))
+		}
 	}
 	return problems
 }
