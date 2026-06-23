@@ -80,8 +80,14 @@ type doctorCheck struct {
 
 type doctorReport struct {
 	Checks  []doctorCheck `json:"checks"`
+	Scope   doctorScope   `json:"scope,omitzero"`
 	Summary doctorSummary `json:"summary"`
 	Result  string        `json:"result"`
+}
+
+type doctorScope struct {
+	SelectedProject string   `json:"selected_project,omitempty"`
+	SkippedProjects []string `json:"skipped_projects,omitempty"`
 }
 
 type doctorAutoPromoteCandidateDiagnostic struct {
@@ -119,6 +125,7 @@ type doctorSummary struct {
 
 type doctorOutputReport struct {
 	Checks  []doctorCheck `json:"checks"`
+	Scope   doctorScope   `json:"scope,omitzero"`
 	Summary doctorSummary `json:"summary"`
 	Result  string        `json:"result"`
 }
@@ -154,6 +161,7 @@ func (p *doctorCheckProgress) Current() string {
 type doctorConfig struct {
 	ConfigPath       string
 	Host             string
+	ProjectID        string
 	Flags            runtimeFlags
 	Output           io.Writer
 	CheckTimeout     time.Duration
@@ -203,10 +211,11 @@ func newDoctorCommand(configPath *string, env *string, logLevel *string, host *s
 func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string, host *string, port *int, opts options, deps doctorDeps) *cobra.Command {
 	timeout := doctorCheckTimeout
 	allowWriteProbes := false
+	projectID := ""
 	cmd := &cobra.Command{
 		Use:          "doctor",
 		Short:        "Run preflight health checks",
-		Example:      "detent doctor --config ~/.config/detent/global.yaml",
+		Example:      "detent doctor --config ~/.config/detent/global.yaml\n  detent doctor --project example --port 0",
 		Args:         NoArgs,
 		SilenceUsage: true,
 		RunE: func(cmd *cobra.Command, _ []string) error {
@@ -221,6 +230,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 			report := runDoctor(cmd.Context(), doctorConfig{
 				ConfigPath:       derefString(configPath),
 				Host:             derefString(host),
+				ProjectID:        projectID,
 				Output:           progressOut,
 				CheckTimeout:     timeout,
 				Build:            opts.build,
@@ -244,6 +254,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", doctorCheckTimeout, "per-check timeout")
 	cmd.Flags().BoolVar(&allowWriteProbes, "allow-write-probes", false, "run configured GitHub write probes")
+	cmd.Flags().StringVar(&projectID, "project", "", "limit project checks to the selected project id")
 	cmd.SetContext(withCommandOutputOptions(context.Background(), commandOutputOptions{
 		lookupEnv: opts.lookupEnv,
 		stdoutTTY: opts.stdoutTTY,
@@ -260,11 +271,24 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	timeout := doctorNormalizedTimeout(cfg.CheckTimeout)
 	progressOut := cfg.Output
 
-	var report doctorReport
+	report := doctorReport{Scope: doctorScope{SelectedProject: strings.TrimSpace(cfg.ProjectID)}}
 	writeDoctorProgressStart(progressOut, "Config resolution")
 	resolution, global, configCheck := checkDoctorConfig(cfg.ConfigPath, opts)
 	writeDoctorProgressDone(progressOut, configCheck)
 	report.Add(configCheck)
+
+	var projectScopeCheck *doctorCheck
+	if global != nil {
+		scopedGlobal, scope, scopeCheck := scopeDoctorGlobalConfig(*global, cfg.ProjectID)
+		global = &scopedGlobal
+		report.Scope = scope
+		projectScopeCheck = scopeCheck
+	}
+	if projectScopeCheck != nil {
+		writeDoctorProgressStart(progressOut, projectScopeCheck.Name)
+		writeDoctorProgressDone(progressOut, *projectScopeCheck)
+		report.Add(*projectScopeCheck)
+	}
 
 	workflowPath := ""
 	if global != nil {
@@ -341,7 +365,9 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	if global != nil {
 		globalConfig := *global
 		githubToken := runtime.GitHubToken
-		jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken, cfg.AllowWriteProbes)...)
+		if projectScopeCheck == nil {
+			jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken, cfg.AllowWriteProbes)...)
+		}
 	}
 	jobs = append(jobs,
 		doctorCheckJob{
@@ -505,6 +531,40 @@ func (r doctorReport) withSummary() doctorReport {
 	return r
 }
 
+func scopeDoctorGlobalConfig(cfg globalconfig.Config, projectID string) (globalconfig.Config, doctorScope, *doctorCheck) {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return cfg, doctorScope{}, nil
+	}
+
+	scope := doctorScope{SelectedProject: projectID}
+	scoped := cfg
+	scoped.Projects = nil
+	for _, project := range cfg.Projects {
+		id := doctorProjectID(project)
+		if id == projectID {
+			scoped.Projects = append(scoped.Projects, project)
+			continue
+		}
+		scope.SkippedProjects = append(scope.SkippedProjects, id)
+	}
+	if len(scoped.Projects) > 0 {
+		return scoped, scope, nil
+	}
+
+	detail := "project " + projectID + " not found"
+	if len(scope.SkippedProjects) > 0 {
+		detail += "; configured projects: " + strings.Join(scope.SkippedProjects, ", ")
+	}
+	check := doctorCheck{
+		Name:   "Project scope",
+		Status: doctorFail,
+		Detail: detail,
+		Hint:   "Run detent doctor without --project to list host-wide project checks, or pass a configured project id.",
+	}
+	return scoped, scope, &check
+}
+
 func writeDoctorReport(out io.Writer, report doctorReport, format ...OutputFormat) error {
 	if out == nil {
 		out = io.Discard
@@ -518,6 +578,22 @@ func writeDoctorReport(out io.Writer, report doctorReport, format ...OutputForma
 	}
 	if _, err := fmt.Fprintln(out); err != nil {
 		return err
+	}
+	if report.Scope.SelectedProject != "" {
+		if _, err := fmt.Fprintf(out, "Scope: project %s", report.Scope.SelectedProject); err != nil {
+			return err
+		}
+		if len(report.Scope.SkippedProjects) > 0 {
+			if _, err := fmt.Fprintf(out, " (skipped: %s)", strings.Join(report.Scope.SkippedProjects, ", ")); err != nil {
+				return err
+			}
+		}
+		if _, err := fmt.Fprintln(out); err != nil {
+			return err
+		}
+		if _, err := fmt.Fprintln(out); err != nil {
+			return err
+		}
 	}
 	if _, err := fmt.Fprintf(out, "%-5s  %-28s  %s\n", "STATUS", "CHECK", "DETAIL"); err != nil {
 		return err
@@ -552,6 +628,7 @@ func newDoctorOutputReport(report doctorReport) doctorOutputReport {
 	}
 	return doctorOutputReport{
 		Checks: report.Checks,
+		Scope:  report.Scope,
 		Summary: doctorSummary{
 			OK:   counts[doctorOK],
 			Warn: counts[doctorWarn],
