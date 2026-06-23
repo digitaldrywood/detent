@@ -30,6 +30,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 	snapshot := telemetry.Snapshot{
 		GeneratedAt: now,
 		Instance:    s.Instance,
+		Auth:        telemetryAuthHealth(s.Auth),
 		Shutdown:    shutdownSnapshot(s),
 		Events:      cloneActivityEvents(s.RecentEvents),
 		Refresh:     refresh,
@@ -52,6 +53,22 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed: len(snapshot.Completed),
 	}
 	return snapshot
+}
+
+func telemetryAuthHealth(health connector.AuthHealth) telemetry.AuthHealth {
+	out := telemetry.AuthHealth{
+		Status:    telemetry.AuthStatus(health.Status),
+		LastError: health.LastError,
+	}
+	if !health.LastErrorAt.IsZero() {
+		value := health.LastErrorAt
+		out.LastErrorAt = &value
+	}
+	if !health.LastRecoveredAt.IsZero() {
+		value := health.LastRecoveredAt
+		out.LastRecoveredAt = &value
+	}
+	return out
 }
 
 func shutdownSnapshot(state State) telemetry.Shutdown {

@@ -163,6 +163,13 @@ func (c *Connector) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {
 	return c.client.GraphQLRateLimit()
 }
 
+func (c *Connector) AuthHealth() (connector.AuthHealth, bool) {
+	if c == nil || c.client == nil {
+		return connector.AuthHealth{}, false
+	}
+	return c.client.AuthHealth()
+}
+
 func (c *Connector) ResetGraphQLRateLimitUsage() {
 	c.client.ResetGraphQLRateLimitUsage()
 }
@@ -261,3 +268,4 @@ var _ connector.PullRequestCommenter = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)
 var _ connector.GraphQLRateLimitUsageReporter = (*Connector)(nil)
+var _ connector.AuthHealthReporter = (*Connector)(nil)

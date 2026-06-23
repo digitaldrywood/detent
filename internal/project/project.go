@@ -87,6 +87,7 @@ type Dependencies struct {
 	Events                 *hub.Hub[Event]
 	Logger                 *slog.Logger
 	GitHubToken            string
+	RefreshGitHubToken     func(context.Context) (string, error)
 }
 
 type Project struct {
@@ -911,7 +912,9 @@ func resolveConnectorFactory(deps Dependencies) ConnectorFactory {
 	if deps.ConnectorFactory != nil {
 		return deps.ConnectorFactory
 	}
-	return defaultConnectorFactory
+	return func(cfg workflowconfig.Config) (connector.Connector, error) {
+		return defaultConnectorFactoryWithRefresh(cfg, deps.RefreshGitHubToken)
+	}
 }
 
 func buildConnector(cfg workflowconfig.Config, connectorFactory ConnectorFactory) (connector.Connector, error) {
@@ -968,11 +971,16 @@ func defaultSchedulerFactory(cfg workflowconfig.Config) (scheduler.Scheduler, er
 }
 
 func defaultConnectorFactory(cfg workflowconfig.Config) (connector.Connector, error) {
+	return defaultConnectorFactoryWithRefresh(cfg, nil)
+}
+
+func defaultConnectorFactoryWithRefresh(cfg workflowconfig.Config, refreshGitHubToken func(context.Context) (string, error)) (connector.Connector, error) {
 	return factory.NewFromConfig(factory.Config{
 		Kind:                    cfg.Tracker.Kind,
 		Memory:                  memory.Config{Issues: cfg.Tracker.Issues},
 		Endpoint:                cfg.Tracker.Endpoint,
 		APIKey:                  cfg.Tracker.APIKey,
+		GitHubTokenRefresh:      refreshGitHubToken,
 		HTTPMaxIdleConns:        cfg.Tracker.HTTPMaxIdleConns,
 		HTTPMaxIdleConnsPerHost: cfg.Tracker.HTTPMaxIdleConnsPerHost,
 		HTTPIdleConnTimeoutMS:   cfg.Tracker.HTTPIdleConnTimeoutMS,

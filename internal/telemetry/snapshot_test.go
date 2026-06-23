@@ -30,6 +30,10 @@ func TestSnapshotJSONShape(t *testing.T) {
 			AuthorizationConfigured: true,
 		},
 		DashboardURL: "http://localhost:4101",
+		Auth: telemetry.AuthHealth{
+			Status:    telemetry.AuthStatusRecovered,
+			LastError: "github authentication failed: status 401",
+		},
 		Refresh: telemetry.Refresh{
 			PollIntervalSeconds: 30,
 			NextRefreshAt:       new(generatedAt.Add(30 * time.Second)),
@@ -193,6 +197,7 @@ func TestSnapshotJSONShape(t *testing.T) {
 		"project",
 		"instance",
 		"dashboard_url",
+		"auth",
 		"refresh",
 		"counts",
 		"board_issues",
@@ -228,6 +233,10 @@ func TestSnapshotJSONShape(t *testing.T) {
 	}
 	if got["dashboard_url"] != "http://localhost:4101" {
 		t.Fatalf("dashboard_url = %#v", got["dashboard_url"])
+	}
+	auth := got["auth"].(map[string]any)
+	if auth["status"] != string(telemetry.AuthStatusRecovered) || auth["last_error"] != "github authentication failed: status 401" {
+		t.Fatalf("auth = %#v", auth)
 	}
 	refresh := got["refresh"].(map[string]any)
 	if refresh["poll_interval_seconds"] != float64(30) || refresh["next_refresh_at"] != "2026-05-30T22:15:30Z" {
@@ -308,6 +317,45 @@ func TestSnapshotJSONShape(t *testing.T) {
 	latest := trend[1].(map[string]any)
 	if latest["input_tokens"] != float64(110) || latest["output_tokens"] != float64(220) || latest["total_tokens"] != float64(330) {
 		t.Fatalf("token_trend[1] = %#v", latest)
+	}
+}
+
+func TestProjectSnapshotJSONIncludesAuthHealth(t *testing.T) {
+	t.Parallel()
+
+	failedAt := time.Date(2026, 6, 23, 14, 0, 0, 0, time.UTC)
+	recoveredAt := failedAt.Add(30 * time.Second)
+	project := telemetry.ProjectSnapshot{
+		Project: telemetry.Project{ID: "detent"},
+		Auth: telemetry.AuthHealth{
+			Status:          telemetry.AuthStatusRecovered,
+			LastError:       "github authentication failed: status 401",
+			LastErrorAt:     &failedAt,
+			LastRecoveredAt: &recoveredAt,
+		},
+	}
+
+	data, err := json.Marshal(project)
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+
+	var got map[string]any
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("Unmarshal() error = %v", err)
+	}
+	auth := got["auth"].(map[string]any)
+	if auth["status"] != string(telemetry.AuthStatusRecovered) {
+		t.Fatalf("auth.status = %#v", auth["status"])
+	}
+	if auth["last_error"] != "github authentication failed: status 401" {
+		t.Fatalf("auth.last_error = %#v", auth["last_error"])
+	}
+	if auth["last_error_at"] != "2026-06-23T14:00:00Z" {
+		t.Fatalf("auth.last_error_at = %#v", auth["last_error_at"])
+	}
+	if auth["last_recovered_at"] != "2026-06-23T14:00:30Z" {
+		t.Fatalf("auth.last_recovered_at = %#v", auth["last_recovered_at"])
 	}
 }
 

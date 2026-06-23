@@ -207,11 +207,14 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	}
 	globalDispatchGate := scheduler.NewGlobalDispatchGate(globalScheduler)
 	runtimeGitHubToken := newRuntimeGitHubTokenState(runtimeGlobalGitHubToken(cfg.Runtime.GitHubToken))
+	globalConfigState := newGlobalConfigState(cfg.Global)
+	refreshGitHubToken := runtimeGitHubTokenRefresher(globalConfigState, runtimeGitHubToken)
 	projectFactory := withRunnerFactory(project.Dependencies{
 		Events:             events,
 		Logger:             logger,
 		GlobalDispatchGate: globalDispatchGate,
 		GitHubToken:        runtimeGitHubToken.get(),
+		RefreshGitHubToken: refreshGitHubToken,
 		ConnectorFactory:   cfg.ConnectorFactory,
 		Runner:             cfg.Runner,
 	}, runtimeStore, nil, runtimeGitHubToken.get)
@@ -223,7 +226,6 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err != nil {
 		return err
 	}
-	globalConfigState := newGlobalConfigState(cfg.Global)
 	globalWatcherStarted := make(chan (<-chan struct{}), 1)
 	defer func() {
 		stop()

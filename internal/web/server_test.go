@@ -1574,6 +1574,79 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 	}
 }
 
+func TestAPIStateSurfacesProjectAuthHealth(t *testing.T) {
+	t.Parallel()
+
+	failedAt := time.Date(2026, 6, 23, 14, 0, 0, 0, time.UTC)
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: failedAt,
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "detent"},
+				Auth: telemetry.AuthHealth{
+					Status:      telemetry.AuthStatusStale,
+					LastError:   "github authentication failed: status 401",
+					LastErrorAt: &failedAt,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	projects := state["projects"].([]any)
+	project := projects[0].(map[string]any)
+	auth := project["auth"].(map[string]any)
+	if auth["status"] != string(telemetry.AuthStatusStale) {
+		t.Fatalf("auth.status = %#v", auth["status"])
+	}
+	if auth["last_error"] != "github authentication failed: status 401" {
+		t.Fatalf("auth.last_error = %#v", auth["last_error"])
+	}
+	if auth["last_error_at"] != "2026-06-23T14:00:00Z" {
+		t.Fatalf("auth.last_error_at = %#v", auth["last_error_at"])
+	}
+}
+
+func TestAPIStateSurfacesSingleProjectAuthHealth(t *testing.T) {
+	t.Parallel()
+
+	failedAt := time.Date(2026, 6, 23, 14, 0, 0, 0, time.UTC)
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: failedAt,
+		Project:     telemetry.Project{ID: "detent", DisplayName: "detent"},
+		Auth: telemetry.AuthHealth{
+			Status:      telemetry.AuthStatusStale,
+			LastError:   "github authentication failed: status 401",
+			LastErrorAt: &failedAt,
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	projects := state["projects"].([]any)
+	project := projects[0].(map[string]any)
+	auth := project["auth"].(map[string]any)
+	if auth["status"] != string(telemetry.AuthStatusStale) {
+		t.Fatalf("auth.status = %#v", auth["status"])
+	}
+	if auth["last_error"] != "github authentication failed: status 401" {
+		t.Fatalf("auth.last_error = %#v", auth["last_error"])
+	}
+}
+
 func TestServerUsesHostnameFallbackForInstanceName(t *testing.T) {
 	t.Parallel()
 

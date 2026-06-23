@@ -858,6 +858,61 @@ func TestUpdateRuntimeSwapsConnectorBeforeNextTick(t *testing.T) {
 	close(runner.release)
 }
 
+func TestUpdateRuntimeClearsAuthHealthWhenConnectorHasNoReport(t *testing.T) {
+	t.Parallel()
+
+	failedAt := time.Now().Add(-time.Minute)
+	initialTracker := &authHealthConnector{
+		fakeConnector: newFakeConnector(),
+		health: connector.AuthHealth{
+			Status:      connector.AuthStatusStale,
+			LastError:   "github authentication failed: status 401",
+			LastErrorAt: failedAt,
+		},
+		ok: true,
+	}
+	reloadedTracker := &authHealthConnector{fakeConnector: newFakeConnector()}
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        5 * time.Millisecond,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+	}, orchestrator.Dependencies{
+		Connector: initialTracker,
+		Runner:    &staticRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForState(t, orch, func(state orchestrator.State) bool {
+		return state.Auth.Status == connector.AuthStatusStale
+	})
+
+	updateCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	if err := orch.UpdateRuntime(updateCtx, orchestrator.RuntimeUpdate{
+		Config: orchestrator.Config{
+			PollInterval:        5 * time.Millisecond,
+			MaxConcurrentAgents: 1,
+			ActiveStates:        []string{"Todo"},
+			TerminalStates:      []string{"Done"},
+		},
+		Connector: reloadedTracker,
+	}); err != nil {
+		t.Fatalf("UpdateRuntime() error = %v", err)
+	}
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		return reloadedTracker.fetchCandidateCalls() > 0 && state.Auth == (connector.AuthHealth{})
+	})
+	if state.Auth != (connector.AuthHealth{}) {
+		t.Fatalf("Auth = %#v, want cleared", state.Auth)
+	}
+}
+
 func TestRunDispatchesByStateRankBeforePriorityAndAge(t *testing.T) {
 	t.Parallel()
 
@@ -1668,6 +1723,16 @@ type fakeConnector struct {
 	stateUpdates        []stateUpdateCall
 	fetchByStatesErr    error
 	statusLabelPrefix   string
+}
+
+type authHealthConnector struct {
+	*fakeConnector
+	health connector.AuthHealth
+	ok     bool
+}
+
+func (c *authHealthConnector) AuthHealth() (connector.AuthHealth, bool) {
+	return c.health, c.ok
 }
 
 type setFieldCall struct {

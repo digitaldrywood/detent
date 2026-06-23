@@ -15,6 +15,13 @@ type TokenSource interface {
 	Token(context.Context) (string, error)
 }
 
+type RefreshableTokenSource interface {
+	TokenSource
+	RefreshToken(context.Context) (string, error)
+}
+
+type TokenRefreshFunc func(context.Context) (string, error)
+
 type staticTokenSource string
 
 func StaticTokenSource(token string) TokenSource {
@@ -29,6 +36,53 @@ func (s staticTokenSource) Token(ctx context.Context) (string, error) {
 	if token == "" {
 		return "", ErrMissingToken
 	}
+	return token, nil
+}
+
+type refreshableTokenSource struct {
+	mu      sync.Mutex
+	token   string
+	refresh TokenRefreshFunc
+}
+
+func NewRefreshableTokenSource(token string, refresh TokenRefreshFunc) TokenSource {
+	return &refreshableTokenSource{
+		token:   strings.TrimSpace(token),
+		refresh: refresh,
+	}
+}
+
+func (s *refreshableTokenSource) Token(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	token := strings.TrimSpace(s.token)
+	if token == "" {
+		return "", ErrMissingToken
+	}
+	return token, nil
+}
+
+func (s *refreshableTokenSource) RefreshToken(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	if s.refresh == nil {
+		return "", ErrMissingToken
+	}
+	token, err := s.refresh(ctx)
+	if err != nil {
+		return "", err
+	}
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return "", ErrMissingToken
+	}
+	s.mu.Lock()
+	s.token = token
+	s.mu.Unlock()
 	return token, nil
 }
 

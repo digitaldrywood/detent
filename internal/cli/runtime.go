@@ -416,6 +416,17 @@ func runtimeGlobalGitHubToken(token RuntimeSecret) string {
 	}
 }
 
+func runtimeGitHubTokenRefresher(globalState *globalConfigState, tokenState *runtimeGitHubTokenState) func(context.Context) (string, error) {
+	return func(ctx context.Context) (string, error) {
+		resolved, err := resolveGlobalRuntimeGitHubToken(ctx, globalState.get())
+		if err != nil {
+			return "", err
+		}
+		tokenState.set(resolved)
+		return resolved, nil
+	}
+}
+
 func runtimeGitHubTokenVersion(token string) string {
 	token = strings.TrimSpace(token)
 	if token == "" {
