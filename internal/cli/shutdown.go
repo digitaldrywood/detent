@@ -201,9 +201,11 @@ func runDrainShutdown(
 	machine shutdownstate.Machine,
 ) error {
 	startedAt := shutdownNow(cfg)
+	drainTimeout := shutdownDrainTimeoutForConfig(cfg)
 	inventoryStarted := logShutdownBoundaryBegin(shutdownLogger(cfg), "initial_running_session_inventory")
 	sessions := shutdownRunningSessions(ctx, cfg.Registry, startedAt)
 	logShutdownBoundaryEnd(shutdownLogger(cfg), "initial_running_session_inventory", inventoryStarted, nil, "sessions", len(sessions))
+	logShutdownDrainBlockers(cfg, "initial", sessions, drainTimeout)
 	writeShutdownBanner(shutdownOutput(cfg), sessions)
 	shutdownLogger(cfg).Info("shutdown requested", "sessions", len(sessions))
 
@@ -225,7 +227,6 @@ func runDrainShutdown(
 		return completeShutdown(ctx, cfg, cancelServe, serveErrs, startedAt, machine, nil)
 	}
 
-	drainTimeout := shutdownDrainTimeoutForConfig(cfg)
 	progressInterval := cfg.ProgressInterval
 	if progressInterval <= 0 {
 		progressInterval = defaultShutdownProgressInterval
@@ -267,9 +268,11 @@ func runDrainShutdown(
 			}
 		case <-poll.C:
 		case <-progress.C:
+			logShutdownDrainBlockers(cfg, "progress", sessions, drainTimeout)
 			writeShutdownProgress(shutdownOutput(cfg), sessions)
 		case <-timeout:
 			machine = machine.Apply(shutdownstate.EventDrainTimedOut)
+			logShutdownDrainTimeout(cfg, sessions, drainTimeout)
 			return runForceShutdownWithDeadline(ctx, cfg, cancelServe, serveErrs, machine, "drain timeout", ErrShutdownTimeout, hardTimeout)
 		}
 	}
@@ -498,10 +501,14 @@ func shutdownRunningSessions(ctx context.Context, registry *project.Registry, no
 }
 
 func shutdownDrainTimeoutForConfig(cfg runningShutdownConfig) time.Duration {
+	timeout := cfg.DrainTimeout
 	if cfg.DrainTimeoutSource != nil {
-		return cfg.DrainTimeoutSource()
+		timeout = cfg.DrainTimeoutSource()
 	}
-	return cfg.DrainTimeout
+	if timeout <= 0 {
+		return defaultShutdownDrainTimeout()
+	}
+	return timeout
 }
 
 func publishShutdownSnapshot(ctx context.Context, cfg runningShutdownConfig, now time.Time) {
@@ -521,15 +528,15 @@ func publishShutdownSnapshot(ctx context.Context, cfg runningShutdownConfig, now
 func shutdownDrainTimeout(registry *project.Registry) time.Duration {
 	timeoutMS := workflowconfig.DefaultShutdownDrainTimeoutMS
 	if registry == nil {
-		return time.Duration(timeoutMS) * time.Millisecond
+		return defaultShutdownDrainTimeout()
 	}
 
 	found := false
 	for _, trackedProject := range registry.List() {
 		workflow := trackedProject.Workflow()
 		next := workflow.Config.Agent.Shutdown.DrainTimeoutMS
-		if next == 0 {
-			return 0
+		if next <= 0 {
+			next = workflowconfig.DefaultShutdownDrainTimeoutMS
 		}
 		if !found || next > timeoutMS {
 			timeoutMS = next
@@ -537,6 +544,10 @@ func shutdownDrainTimeout(registry *project.Registry) time.Duration {
 		found = true
 	}
 	return time.Duration(timeoutMS) * time.Millisecond
+}
+
+func defaultShutdownDrainTimeout() time.Duration {
+	return time.Duration(workflowconfig.DefaultShutdownDrainTimeoutMS) * time.Millisecond
 }
 
 func writeShutdownBanner(out io.Writer, sessions []telemetry.Running) {
@@ -551,7 +562,12 @@ func writeShutdownBanner(out io.Writer, sessions []telemetry.Running) {
 
 	fmt.Fprintf(out, "shutdown requested — %d %s in flight\n", count, shutdownSessionNoun(count))
 	for _, session := range sessions {
-		fmt.Fprintf(out, "  %-30s %-14s %8s\n", shutdownIssueLabel(session), defaultShutdownString(session.State, "running"), formatShutdownDuration(session.RuntimeSeconds))
+		details := shutdownSessionDetail(session)
+		if details == "" {
+			fmt.Fprintf(out, "  %-30s %-14s %8s\n", shutdownIssueLabel(session), defaultShutdownString(session.State, "running"), formatShutdownDuration(session.RuntimeSeconds))
+			continue
+		}
+		fmt.Fprintf(out, "  %-30s %-14s %8s  %s\n", shutdownIssueLabel(session), defaultShutdownString(session.State, "running"), formatShutdownDuration(session.RuntimeSeconds), details)
 	}
 	fmt.Fprintln(out, "draining: no new work will be dispatched; waiting for running sessions to finish")
 	fmt.Fprintln(out, "press Ctrl+C again to force quit (sessions will be interrupted and issues re-queued)")
@@ -563,9 +579,75 @@ func writeShutdownProgress(out io.Writer, sessions []telemetry.Running) {
 	}
 	parts := make([]string, 0, len(sessions))
 	for _, session := range sessions {
-		parts = append(parts, fmt.Sprintf("%s (%s)", shutdownIssueNumber(session), formatShutdownDuration(session.RuntimeSeconds)))
+		details := shutdownSessionDetail(session)
+		if details == "" {
+			parts = append(parts, fmt.Sprintf("%s (%s)", shutdownIssueNumber(session), formatShutdownDuration(session.RuntimeSeconds)))
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s (%s, %s)", shutdownIssueNumber(session), formatShutdownDuration(session.RuntimeSeconds), details))
 	}
 	fmt.Fprintf(out, "%d %s remaining — %s\n", len(sessions), shutdownSessionNoun(len(sessions)), strings.Join(parts, ", "))
+}
+
+func logShutdownDrainBlockers(cfg runningShutdownConfig, phase string, sessions []telemetry.Running, timeout time.Duration) {
+	args := shutdownDrainBlockerLogArgs("shutdown_drain_blockers", phase, sessions, timeout)
+	shutdownLogger(cfg).Info("shutdown drain blockers", args...)
+}
+
+func logShutdownDrainTimeout(cfg runningShutdownConfig, sessions []telemetry.Running, timeout time.Duration) {
+	args := shutdownDrainBlockerLogArgs("shutdown_drain_timeout", "timeout", sessions, timeout)
+	shutdownLogger(cfg).Warn("shutdown drain timeout reached", args...)
+}
+
+func shutdownDrainBlockerLogArgs(operation string, phase string, sessions []telemetry.Running, timeout time.Duration) []any {
+	args := []any{
+		"operation", operation,
+		"phase", phase,
+		"blockers", len(sessions),
+	}
+	if timeout > 0 {
+		args = append(args, "timeout", timeout)
+	}
+	if len(sessions) > 0 {
+		args = append(args, "details", strings.Join(shutdownSessionSummaries(sessions), "; "))
+	}
+	return args
+}
+
+func shutdownSessionSummaries(sessions []telemetry.Running) []string {
+	summaries := make([]string, 0, len(sessions))
+	for _, session := range sessions {
+		summaries = append(summaries, shutdownSessionSummary(session))
+	}
+	return summaries
+}
+
+func shutdownSessionSummary(session telemetry.Running) string {
+	parts := []string{defaultShutdownString(session.Identifier, session.ID)}
+	if title := strings.TrimSpace(session.Title); title != "" {
+		parts = append(parts, "title="+title)
+	}
+	if state := strings.TrimSpace(session.State); state != "" {
+		parts = append(parts, "state="+state)
+	}
+	if details := shutdownSessionDetail(session); details != "" {
+		parts = append(parts, details)
+	}
+	return strings.Join(parts, " ")
+}
+
+func shutdownSessionDetail(session telemetry.Running) string {
+	parts := make([]string, 0, 3)
+	if sessionID := strings.TrimSpace(session.SessionID); sessionID != "" {
+		parts = append(parts, "session="+sessionID)
+	}
+	if process := strings.TrimSpace(session.ProcessIdentity); process != "" {
+		parts = append(parts, "process="+process)
+	}
+	if worker := strings.TrimSpace(session.WorkerHost); worker != "" {
+		parts = append(parts, "worker="+worker)
+	}
+	return strings.Join(parts, " ")
 }
 
 func shutdownIssueLabel(session telemetry.Running) string {
