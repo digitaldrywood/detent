@@ -21,8 +21,9 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 		return
 	}
 	if state.LastWorkspaceCleanupAt.IsZero() || !now.Before(state.LastWorkspaceCleanupAt.Add(o.cfg.WorkspaceCleanupSweepInterval)) {
-		state.LastWorkspaceCleanupAt = now
-		o.reapWorkspaceStates(ctx, state, states, now)
+		if o.reapWorkspaceStates(ctx, state, states, now) {
+			state.LastWorkspaceCleanupAt = now
+		}
 		return
 	}
 
@@ -33,12 +34,20 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 	o.reapWorkspaceStates(ctx, state, terminalStates, now)
 }
 
-func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, states []string, now time.Time) {
+func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, states []string, now time.Time) bool {
 	issues, err := o.connector.FetchIssuesByStates(ctx, states)
 	if err != nil {
 		o.logger.Warn("fetch workspace cleanup candidates failed", slog.Any("error", err))
-		return
+		message := workspaceCleanupFetchFailedMessage(states, err)
+		markRefreshError(state, message, cleanupEventAt(now))
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(now),
+			Event:   "workspace_cleanup_fetch_failed",
+			Message: message,
+		})
+		return false
 	}
+	clearRefreshError(state)
 	for _, issue := range issues {
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
@@ -48,6 +57,7 @@ func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, st
 		}
 		o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), now)
 	}
+	return true
 }
 
 func cleanupFetchStates(cfg Config) []string {
@@ -219,6 +229,22 @@ func cleanupEventAt(now time.Time) time.Time {
 	return now.UTC()
 }
 
+func markRefreshError(state *State, message string, at time.Time) {
+	if state == nil {
+		return
+	}
+	state.LastRefreshError = message
+	state.LastRefreshErrorAt = at
+}
+
+func clearRefreshError(state *State) {
+	if state == nil {
+		return
+	}
+	state.LastRefreshError = ""
+	state.LastRefreshErrorAt = time.Time{}
+}
+
 func workspaceReapSucceededMessage(issue connector.Issue, reason string, result WorkspaceReapResult) string {
 	return fmt.Sprintf(
 		"workspace cleanup succeeded for %s reason=%s worktrees=%d branches=%d processes=%d",
@@ -236,4 +262,8 @@ func workspaceReapFailedMessage(issue connector.Issue, reason string, err error)
 
 func workspaceReapUnverifiedMessage(issue connector.Issue, reason string) string {
 	return fmt.Sprintf("workspace cleanup could not be verified for %s reason=%s: workspace reaper unavailable", issueLabel(issue), reason)
+}
+
+func workspaceCleanupFetchFailedMessage(states []string, err error) string {
+	return fmt.Sprintf("workspace cleanup candidate fetch failed for states=%s: %v", strings.Join(states, ","), err)
 }
