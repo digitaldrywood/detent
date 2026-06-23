@@ -308,6 +308,15 @@ After identity is confirmed and before target-specific discovery, ask the
 GitHub status-source question. This is separate from identity confirmation, and
 it must still be an explicit operator answer.
 
+If the operator already volunteered a status-source answer before identity
+validation, do not ask the status-source question again. Keep the volunteered
+answer pending outside `answers.env` until identity validation succeeds. After
+`detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`
+passes, append the pending `GITHUB_MODE` answer and run
+`detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision`
+without re-asking. For an early "use label for this repo" answer, record
+`GITHUB_MODE=label` immediately after the identity gate passes.
+
 Ask: "Use ProjectV2 board mode, boardless issue-field mode, or repository label
 mode?" Explain that this answer maps to `tracker.github_status_source:
 project_v2`, `tracker.github_status_source: issue_field`, or

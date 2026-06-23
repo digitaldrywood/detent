@@ -45,6 +45,15 @@ repositories, onboarding mode, and status-source options before
 repository-specific discovery. Record those identity answers in `answers.env`,
 set `IDENTITY_CONFIRMED=true` only after I confirm the restatement, then run
 `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`.
+If I volunteer a status-source answer before identity is confirmed, such as
+"use label for this repo", preserve it as a pending decision outside
+`answers.env`. Restate it as pending in the conversation. For label mode, say:
+"I have your status-source choice as label mode. I will keep it pending until
+the identity gate validates, then append GITHUB_MODE=label and run the decision
+validator without asking again." Do not write `GITHUB_MODE` to `answers.env`
+until the identity phase passes; after identity validation succeeds, append
+`GITHUB_MODE=label` and run the decision validator without asking again. For
+non-label modes, carry the selected `GITHUB_MODE` value the same way.
 If the `detent` binary is not installed yet, follow the Detent source README's
 Install path or Bootstrap On A New Machine steps 1-3 first, verify the binary
 with `detent version`, and defer `detent onboarding validate-answers` until the
