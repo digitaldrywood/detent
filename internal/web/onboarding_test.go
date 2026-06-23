@@ -93,6 +93,8 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 			wantContent: []string{
 				"Agent config",
 				onboardingStepBadge("agent"),
+				"name=\"delivery_profile\"",
+				"Autonomous delivery mode",
 				"name=\"max_concurrent_agents\"",
 				"name=\"workspace_root\"",
 				"name=\"dependency_auto_unblock_enabled\"",
@@ -430,6 +432,69 @@ func TestOnboardingWriteWorkflowCanEnableDependencyAutoUnblock(t *testing.T) {
 	}
 	if !strings.Contains(string(raw), "dependency_auto_unblock:\n    enabled: true") {
 		t.Fatalf("workflow missing enabled dependency auto-unblock:\n%s", raw)
+	}
+}
+
+func TestOnboardingWriteWorkflowAppliesAutonomousDeliveryProfile(t *testing.T) {
+	t.Parallel()
+
+	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
+	server, err := web.NewServer(web.Config{WorkflowPath: workflowPath}, testDeps(t))
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := validOnboardingForm()
+	form.Set("delivery_profile", "autonomous_delivery")
+	rec := httptest.NewRecorder()
+	req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
+
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "gates and CI still apply") {
+		t.Fatalf("body missing autonomous profile explanation:\n%s", rec.Body.String())
+	}
+	raw, err := os.ReadFile(workflowPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(raw)
+	for _, want := range []string{
+		"dependency_auto_unblock:\n    enabled: true",
+		"max_concurrent_agents_by_state:\n    Merging: 1",
+		"auto_promote:\n    enabled: true\n    quiet_seconds: 0",
+		"gate:\n  kind: command\n  run: make check\n  require_automated_review: false",
+		"server:\n  host: 127.0.0.1\n  kanban:\n    mode: integration",
+		"Autonomous delivery still requires linked PRs, green CI, and clear gates.",
+		"Use live reload or a project-scoped refresh after onboarding changes; do not restart Detent or interrupt running agents unless the operator explicitly authorizes it.",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("workflow missing %q:\n%s", want, content)
+		}
+	}
+
+	workflow, err := workflowconfig.ParseWorkflow(raw)
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	cfg := workflow.Config
+	if !cfg.Agent.AutoPromote.Enabled || cfg.Agent.AutoPromote.QuietSeconds != 0 {
+		t.Fatalf("AutoPromote = %#v, want enabled with no quiet wait", cfg.Agent.AutoPromote)
+	}
+	if !cfg.Tracker.DependencyAutoUnblock.Enabled {
+		t.Fatal("DependencyAutoUnblock.Enabled = false, want true")
+	}
+	if cfg.Agent.MaxConcurrentAgentsByState["merging"] != 1 {
+		t.Fatalf("Merging concurrency = %d, want 1", cfg.Agent.MaxConcurrentAgentsByState["merging"])
+	}
+	if cfg.Server.Kanban.Mode != workflowconfig.KanbanModeIntegration {
+		t.Fatalf("Kanban mode = %q, want integration", cfg.Server.Kanban.Mode)
+	}
+	if cfg.Gate.RequireAutomatedReview == nil || *cfg.Gate.RequireAutomatedReview {
+		t.Fatalf("RequireAutomatedReview = %v, want false", cfg.Gate.RequireAutomatedReview)
 	}
 }
 

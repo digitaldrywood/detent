@@ -13,6 +13,7 @@ import (
 	"github.com/labstack/echo/v4"
 
 	"github.com/digitaldrywood/detent/internal/config"
+	onboardingprofile "github.com/digitaldrywood/detent/internal/onboarding"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
@@ -53,6 +54,7 @@ func (s *Server) onboarding(c echo.Context) error {
 		PollingIntervalMS:            defaultPollingIntervalMS,
 		MergingConcurrency:           defaultMergingConcurrency,
 		DispatchPriorityState:        defaultDispatchPriorityText,
+		DeliveryProfile:              onboardingprofile.DeliveryProfileConservativeReview,
 		DependencyAutoUnblockEnabled: "false",
 	}
 	return render(c, templates.OnboardingPage(s.onboardingData(form, nil, templates.OnboardingResult{})))
@@ -200,6 +202,7 @@ func parseOnboardingForm(c echo.Context) templates.OnboardingForm {
 		MergingConcurrency:           strings.TrimSpace(c.FormValue("merging_concurrency")),
 		DispatchPriorityState:        strings.TrimSpace(c.FormValue("dispatch_priority_by_state")),
 		DispatchPriorityLabel:        strings.TrimSpace(c.FormValue("dispatch_priority_by_label")),
+		DeliveryProfile:              strings.TrimSpace(c.FormValue("delivery_profile")),
 		DependencyAutoUnblockEnabled: onboardingBoolValue(c.FormValue("dependency_auto_unblock_enabled")),
 	}
 }
@@ -415,9 +418,29 @@ func applyAgentDefaults(form *templates.OnboardingForm) {
 	if form.DependencyAutoUnblockEnabled == "" {
 		form.DependencyAutoUnblockEnabled = "false"
 	}
+	applyDeliveryProfile(form)
+}
+
+func applyDeliveryProfile(form *templates.OnboardingForm) {
+	profile := strings.TrimSpace(form.DeliveryProfile)
+	if profile == "" {
+		return
+	}
+	settings, ok := onboardingprofile.DeliveryProfile(profile)
+	if !ok {
+		return
+	}
+	form.DeliveryProfile = settings.ID
+	form.MergingConcurrency = strconv.Itoa(settings.MergingConcurrency)
+	form.DependencyAutoUnblockEnabled = onboardingBool(settings.DependencyAutoUnblockEnabled)
 }
 
 func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
+	settings, hasDeliveryProfile := explicitDeliveryProfile(form.DeliveryProfile)
+	if hasDeliveryProfile {
+		form.MergingConcurrency = strconv.Itoa(settings.MergingConcurrency)
+		form.DependencyAutoUnblockEnabled = onboardingBool(settings.DependencyAutoUnblockEnabled)
+	}
 	var b strings.Builder
 	b.WriteString("---\n")
 	b.WriteString("tracker:\n")
@@ -480,8 +503,13 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	writeList(&b, "  ", "dispatch_priority_by_state", dispatchPriorityStates(form))
 	writeList(&b, "  ", "dispatch_priority_by_label", dispatchPriorityLabels(form))
 	b.WriteString("  auto_promote:\n")
-	b.WriteString("    enabled: false\n")
-	b.WriteString("    quiet_seconds: 600\n")
+	if hasDeliveryProfile {
+		writeScalar(&b, "    ", "enabled", onboardingBool(settings.AutoPromoteEnabled))
+		writeScalar(&b, "    ", "quiet_seconds", strconv.Itoa(settings.AutoPromoteQuietSeconds))
+	} else {
+		b.WriteString("    enabled: false\n")
+		b.WriteString("    quiet_seconds: 600\n")
+	}
 	b.WriteString("    optout_label: requires-human-review\n")
 	b.WriteString("    allowed_issue_labels: []\n")
 	b.WriteString("  skills:\n")
@@ -498,6 +526,9 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("gate:\n")
 	b.WriteString("  kind: command\n")
 	b.WriteString("  run: make check\n")
+	if hasDeliveryProfile {
+		writeScalar(&b, "  ", "require_automated_review", onboardingBool(settings.GateRequireAutomatedReview))
+	}
 	b.WriteString("  ci_failure_action: skip\n")
 	b.WriteString("  validator:\n")
 	b.WriteString("    enabled: false\n")
@@ -505,6 +536,12 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("    min_score: 0.8\n")
 	b.WriteString("    block_on:\n")
 	b.WriteString("      - p1\n")
+	if hasDeliveryProfile {
+		b.WriteString("server:\n")
+		b.WriteString("  host: 127.0.0.1\n")
+		b.WriteString("  kanban:\n")
+		writeScalar(&b, "    ", "mode", settings.KanbanMode)
+	}
 	b.WriteString("hooks:\n")
 	b.WriteString("  timeout_ms: 60000\n")
 	b.WriteString("---\n\n")
@@ -519,6 +556,13 @@ func onboardingBoolValue(value string) string {
 	return "false"
 }
 
+func onboardingBool(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
 func workflowSourceRoot(workflowPath string) string {
 	dir := filepath.Dir(strings.TrimSpace(workflowPath))
 	if dir == "" {
@@ -528,19 +572,40 @@ func workflowSourceRoot(workflowPath string) string {
 }
 
 func renderWorkflowPrompt(form templates.OnboardingForm) string {
+	profilePrompt := deliveryProfileWorkflowPrompt(form)
 	switch form.TrackerKind {
 	case config.TrackerMemory:
-		return "You are working on a memory tracker issue `{{ issue.identifier }}`.\n\n" + commonWorkflowPrompt()
+		return "You are working on a memory tracker issue `{{ issue.identifier }}`.\n\n" + commonWorkflowPrompt() + profilePrompt
 	default:
 		switch normalizedOnboardingGitHubStatusSource(form.GitHubStatusSource) {
 		case config.GitHubStatusSourceIssueField:
-			return "You are working on GitHub issue `{{ issue.identifier }}` with issue-field status in `" + form.Repo + "`.\n\n" + commonWorkflowPrompt()
+			return "You are working on GitHub issue `{{ issue.identifier }}` with issue-field status in `" + form.Repo + "`.\n\n" + commonWorkflowPrompt() + profilePrompt
 		case config.GitHubStatusSourceLabel:
-			return "You are working on GitHub issue `{{ issue.identifier }}` with status labels in `" + form.Repo + "`.\n\n" + commonWorkflowPrompt()
+			return "You are working on GitHub issue `{{ issue.identifier }}` with status labels in `" + form.Repo + "`.\n\n" + commonWorkflowPrompt() + profilePrompt
 		default:
-			return "You are working on GitHub issue `{{ issue.identifier }}` in ProjectV2 `" + form.ProjectSlug + "`.\n\n" + commonWorkflowPrompt()
+			return "You are working on GitHub issue `{{ issue.identifier }}` in ProjectV2 `" + form.ProjectSlug + "`.\n\n" + commonWorkflowPrompt() + profilePrompt
 		}
 	}
+}
+
+func deliveryProfileWorkflowPrompt(form templates.OnboardingForm) string {
+	settings, ok := explicitDeliveryProfile(form.DeliveryProfile)
+	if !ok {
+		return ""
+	}
+	switch settings.ID {
+	case onboardingprofile.DeliveryProfileAutonomousDelivery:
+		return "\n\nAutonomous delivery still requires linked PRs, green CI, and clear gates.\nUse live reload or a project-scoped refresh after onboarding changes; do not restart Detent or interrupt running agents unless the operator explicitly authorizes it."
+	default:
+		return "\n\nConservative review mode keeps Detent parked at Human Review until the operator chooses promotion or merge."
+	}
+}
+
+func explicitDeliveryProfile(value string) (onboardingprofile.DeliveryProfileSettings, bool) {
+	if strings.TrimSpace(value) == "" {
+		return onboardingprofile.DeliveryProfileSettings{}, false
+	}
+	return onboardingprofile.DeliveryProfile(value)
 }
 
 func normalizedOnboardingGitHubStatusSource(value string) string {
