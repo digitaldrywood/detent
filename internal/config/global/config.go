@@ -193,6 +193,25 @@ func Read(path string, opts ...Option) (Config, error) {
 	return Parse(raw, expandedPath, opts...)
 }
 
+func ReadProject(path string, projectID string, opts ...Option) (Config, []string, error) {
+	readOptions := defaultOptions()
+	for _, opt := range opts {
+		opt(&readOptions)
+	}
+
+	expandedPath, err := expandPath(path, readOptions)
+	if err != nil {
+		return Config{}, nil, err
+	}
+
+	raw, err := os.ReadFile(expandedPath)
+	if err != nil {
+		return Config{}, nil, MissingFileError{Path: expandedPath, Err: err}
+	}
+
+	return parseProject(raw, expandedPath, projectID, opts...)
+}
+
 func Write(path string, cfg Config, opts ...Option) error {
 	if strings.TrimSpace(path) == "" {
 		return errors.New("global config path is required")
@@ -261,16 +280,47 @@ func Parse(raw []byte, path string, opts ...Option) (Config, error) {
 		opt(&readOptions)
 	}
 
+	root, err := decodeConfigRoot(raw, path)
+	if err != nil {
+		return Config{}, err
+	}
+
+	return parseConfigRoot(root, path, readOptions, opts...)
+}
+
+func parseProject(raw []byte, path string, projectID string, opts ...Option) (Config, []string, error) {
+	readOptions := defaultOptions()
+	for _, opt := range opts {
+		opt(&readOptions)
+	}
+
+	root, err := decodeConfigRoot(raw, path)
+	if err != nil {
+		return Config{}, nil, err
+	}
+
+	skippedProjects := scopeRawProjects(root, projectID)
+	cfg, err := parseConfigRoot(root, path, readOptions, opts...)
+	if err != nil {
+		return Config{}, skippedProjects, err
+	}
+	return cfg, skippedProjects, nil
+}
+
+func decodeConfigRoot(raw []byte, path string) (map[string]any, error) {
 	var decoded any
 	if err := yaml.Unmarshal(raw, &decoded); err != nil {
-		return Config{}, ParseError{Path: path, Err: err}
+		return nil, ParseError{Path: path, Err: err}
 	}
 
 	root, ok := normalizeYAML(decoded).(map[string]any)
 	if !ok {
-		return Config{}, ValidationError{Path: path, Problems: []string{"root: must be a mapping"}}
+		return nil, ValidationError{Path: path, Problems: []string{"root: must be a mapping"}}
 	}
+	return root, nil
+}
 
+func parseConfigRoot(root map[string]any, path string, readOptions options, opts ...Option) (Config, error) {
 	if problems := validateRaw(root, readOptions); len(problems) > 0 {
 		return Config{}, ValidationError{Path: path, Problems: problems}
 	}
@@ -284,6 +334,45 @@ func Parse(raw []byte, path string, opts ...Option) (Config, error) {
 	}
 
 	return cfg, nil
+}
+
+func scopeRawProjects(root map[string]any, projectID string) []string {
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		return nil
+	}
+	projects, ok := root["projects"].([]any)
+	if !ok {
+		return nil
+	}
+
+	scopedProjects := make([]any, 0, len(projects))
+	skippedProjects := make([]string, 0, len(projects))
+	for _, item := range projects {
+		id := rawProjectID(item)
+		if id == projectID {
+			scopedProjects = append(scopedProjects, item)
+			continue
+		}
+		if id == "" {
+			id = "project"
+		}
+		skippedProjects = append(skippedProjects, id)
+	}
+	root["projects"] = scopedProjects
+	return skippedProjects
+}
+
+func rawProjectID(value any) string {
+	project, ok := value.(map[string]any)
+	if !ok {
+		return ""
+	}
+	id, ok := project["id"].(string)
+	if !ok {
+		return ""
+	}
+	return strings.TrimSpace(id)
 }
 
 func (c Config) Validate(opts ...Option) error {

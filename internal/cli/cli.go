@@ -213,6 +213,7 @@ type Option func(*options)
 type options struct {
 	resolvePath   func(string) (globalconfig.PathResolution, error)
 	read          func(string) (globalconfig.Config, error)
+	readProject   func(string, string) (globalconfig.Config, []string, error)
 	readOrDefault func(string) (globalconfig.Config, error)
 	write         func(string, globalconfig.Config) error
 	boot          BootFunc
@@ -419,6 +420,9 @@ func defaultOptions() options {
 		resolvePath: globalconfig.ResolvePath,
 		read: func(path string) (globalconfig.Config, error) {
 			return globalconfig.Read(path)
+		},
+		readProject: func(path string, projectID string) (globalconfig.Config, []string, error) {
+			return globalconfig.ReadProject(path, projectID)
 		},
 		readOrDefault: func(path string) (globalconfig.Config, error) {
 			return globalconfig.ReadOrDefault(path, globalconfig.WithProjectPathLiterals())
