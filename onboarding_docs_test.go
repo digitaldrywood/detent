@@ -105,6 +105,42 @@ func TestOnboardingDocsPreserveEarlyLabelStatusSourceDecision(t *testing.T) {
 	}
 }
 
+func TestOnboardingDocsInferCurrentCheckoutCandidateBeforeRawFields(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+
+	for _, want := range []string{
+		"infer and restate an identity candidate from the current git checkout",
+		"If the current working directory is a GitHub checkout and is not the canonical Detent source checkout, propose it as the target candidate",
+		"Present the candidate in human-facing language first, then show the `answers.env` representation",
+	} {
+		assertContainsWords(t, readme, want)
+	}
+
+	for _, want := range []string{
+		"`do not assume` means infer a candidate from identity-safe local evidence and confirm it",
+		"`pwd`, `git rev-parse --show-toplevel`, `git remote get-url origin`",
+		"Reuse the existing project id when it is the same target repository or source root",
+		"Current directory is `/home/loganlanou/projects/digitaldrywood/creswoodcorners-phone`",
+		"Detent source checkout is `/home/loganlanou/projects/digitaldrywood/detent`",
+		"Onboarding mode is `add-project`",
+		"Customer/workstream: `digitaldrywood`",
+		"Project id: `creswoodcorners-phone`",
+		"Target repository: `digitaldrywood/creswoodcorners-phone`",
+		"Source checkout: `/home/loganlanou/projects/digitaldrywood/creswoodcorners-phone`",
+		"`CUSTOMER_ID` is only a stable local workstream id",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+
+	assertOrder(t, onboarding, "Customer/workstream:", "CUSTOMER_ID=<customer-or-workstream-id>")
+	assertOrder(t, onboarding, "Project id:", "DETENT_PROJECT_ID=<local-detent-project-id>")
+	assertOrder(t, onboarding, "Target repository:", "TARGET_REPOSITORY=<repo-owner>/<repo-name>")
+	assertOrder(t, onboarding, "Source checkout:", "TARGET_SOURCE_ROOT=<absolute-local-checkout-path>")
+}
+
 func TestOnboardingDocsRecommendProjectKanbanIntegrationAfterWriteProbes(t *testing.T) {
 	t.Parallel()
 
@@ -283,6 +319,22 @@ func assertContainsWords(t *testing.T, text string, want string) {
 	normalizedText := strings.Join(strings.Fields(text), " ")
 	normalizedWant := strings.Join(strings.Fields(want), " ")
 	assertContains(t, normalizedText, normalizedWant)
+}
+
+func assertOrder(t *testing.T, text string, before string, after string) {
+	t.Helper()
+
+	beforeIndex := strings.Index(text, before)
+	if beforeIndex == -1 {
+		t.Fatalf("document missing %q", before)
+	}
+	afterIndex := strings.Index(text, after)
+	if afterIndex == -1 {
+		t.Fatalf("document missing %q", after)
+	}
+	if beforeIndex > afterIndex {
+		t.Fatalf("document places %q after %q", before, after)
+	}
 }
 
 func assertMutationBlocksUseValidator(t *testing.T, text string) {
