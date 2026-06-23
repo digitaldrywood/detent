@@ -533,6 +533,37 @@ func TestRuntimeGlobalGitHubTokenSources(t *testing.T) {
 	}
 }
 
+func TestRuntimeGitHubTokenRefresherUsesCurrentGlobalConfig(t *testing.T) {
+	t.Parallel()
+
+	workflowPath := filepath.Join(t.TempDir(), "workflow.md")
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n---\nPrompt\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	globalState := newGlobalConfigState(globalconfig.Config{})
+	tokenState := newRuntimeGitHubTokenState("")
+	refresh := runtimeGitHubTokenRefresher(globalState, tokenState)
+
+	globalState.set(globalconfig.Config{
+		GitHubToken: "next-token",
+		Projects: []globalconfig.Project{{
+			ID:       "detent",
+			Workflow: workflowPath,
+			Workdir:  ".",
+		}},
+	})
+	got, err := refresh(context.Background())
+	if err != nil {
+		t.Fatalf("refresh() error = %v", err)
+	}
+	if got != "next-token" {
+		t.Fatalf("refresh() = %q, want next-token", got)
+	}
+	if tokenState.get() != "next-token" {
+		t.Fatalf("runtime token state = %q, want next-token", tokenState.get())
+	}
+}
+
 func githubRuntimeConfig(token string) globalconfig.Config {
 	return globalconfig.Config{
 		GitHubToken: token,

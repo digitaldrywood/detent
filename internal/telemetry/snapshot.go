@@ -11,6 +11,7 @@ type Snapshot struct {
 	Instance       Instance          `json:"instance"`
 	Projects       []ProjectSnapshot `json:"projects,omitempty"`
 	DashboardURL   string            `json:"dashboard_url,omitempty"`
+	Auth           AuthHealth        `json:"auth,omitzero"`
 	Shutdown       Shutdown          `json:"shutdown"`
 	Refresh        Refresh           `json:"refresh"`
 	Events         []ActivityEvent   `json:"events,omitempty"`
@@ -58,7 +59,29 @@ type ProjectSnapshot struct {
 	Counts     Counts          `json:"counts"`
 	Tokens     Tokens          `json:"tokens"`
 	Throughput TokenThroughput `json:"throughput"`
+	Auth       AuthHealth      `json:"auth,omitzero"`
 	Refresh    Refresh         `json:"refresh,omitzero"`
+}
+
+type AuthStatus string
+
+const (
+	AuthStatusStale     AuthStatus = "stale"
+	AuthStatusRecovered AuthStatus = "recovered"
+)
+
+type AuthHealth struct {
+	Status          AuthStatus `json:"status,omitempty"`
+	LastError       string     `json:"last_error,omitempty"`
+	LastErrorAt     *time.Time `json:"last_error_at,omitempty"`
+	LastRecoveredAt *time.Time `json:"last_recovered_at,omitempty"`
+}
+
+func (h AuthHealth) IsZero() bool {
+	return h.Status == "" &&
+		strings.TrimSpace(h.LastError) == "" &&
+		h.LastErrorAt == nil &&
+		h.LastRecoveredAt == nil
 }
 
 type RefreshStatus string

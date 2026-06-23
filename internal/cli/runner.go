@@ -682,6 +682,7 @@ func projectSnapshot(snapshot telemetry.Snapshot) telemetry.ProjectSnapshot {
 		Counts:     snapshot.Counts,
 		Tokens:     snapshot.Tokens,
 		Throughput: snapshot.Throughput,
+		Auth:       snapshot.Auth,
 		Refresh:    snapshot.Refresh,
 	}
 }

@@ -74,6 +74,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 		out.Counts = sourceProject.Counts
 		out.Tokens = sourceProject.Tokens
 		out.Throughput = sourceProject.Throughput
+		out.Auth = sourceProject.Auth
 		if projectSnapshotHasRefreshSignal(sourceProject) {
 			out.Refresh = sourceProject.Refresh
 		}

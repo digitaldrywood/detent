@@ -781,6 +781,7 @@ func (o *Orchestrator) markRefresh(state *State, now time.Time) {
 }
 
 func (o *Orchestrator) finishRefresh(state *State, now time.Time) {
+	o.captureConnectorAuthHealth(state)
 	cycle := o.captureConnectorRateLimits(state, now)
 	o.logGraphQLRateLimitCycle(cycle)
 
@@ -791,6 +792,16 @@ func (o *Orchestrator) finishRefresh(state *State, now time.Time) {
 		return
 	}
 	state.NextRefreshAt = time.Time{}
+}
+
+func (o *Orchestrator) captureConnectorAuthHealth(state *State) {
+	if reporter, ok := o.connector.(connector.AuthHealthReporter); ok {
+		if health, ok := reporter.AuthHealth(); ok {
+			state.Auth = health
+			return
+		}
+	}
+	state.Auth = connector.AuthHealth{}
 }
 
 type graphQLRateLimitCycle struct {

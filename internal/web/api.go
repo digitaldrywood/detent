@@ -281,6 +281,7 @@ func projectsAPIResponse(snapshot telemetry.Snapshot) []telemetry.ProjectSnapsho
 			Counts:     snapshot.Counts,
 			Tokens:     snapshot.Tokens,
 			Throughput: snapshot.Throughput,
+			Auth:       snapshot.Auth,
 		},
 	}
 }

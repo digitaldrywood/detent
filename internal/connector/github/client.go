@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
@@ -36,15 +37,17 @@ type ClientConfig struct {
 }
 
 type Client struct {
-	endpoint     string
-	restEndpoint string
-	tokenSource  TokenSource
-	httpClient   HTTPClient
-	logger       *slog.Logger
-	mu           sync.RWMutex
-	rateLimit    connector.GraphQLRateLimit
-	queryCosts   map[string]connector.GraphQLQueryCost
-	hasRateLimit bool
+	endpoint      string
+	restEndpoint  string
+	tokenSource   TokenSource
+	httpClient    HTTPClient
+	logger        *slog.Logger
+	mu            sync.RWMutex
+	rateLimit     connector.GraphQLRateLimit
+	queryCosts    map[string]connector.GraphQLQueryCost
+	hasRateLimit  bool
+	authHealth    connector.AuthHealth
+	hasAuthHealth bool
 }
 
 type restProbeResult struct {
@@ -94,6 +97,10 @@ func (c *Client) GraphQL(ctx context.Context, query string, variables map[string
 }
 
 func (c *Client) GraphQLWithType(ctx context.Context, queryType string, query string, variables map[string]any, out any) error {
+	return c.graphQLWithType(ctx, queryType, query, variables, out, true)
+}
+
+func (c *Client) graphQLWithType(ctx context.Context, queryType string, query string, variables map[string]any, out any, allowTokenRefresh bool) error {
 	token, err := c.tokenSource.Token(ctx)
 	if err != nil {
 		return fmt.Errorf("resolve github token: %w", err)
@@ -149,7 +156,11 @@ func (c *Client) GraphQLWithType(ctx context.Context, queryType string, query st
 	headerRateLimit := c.recordRateLimitFromHeaders(resp.Header, receivedAt)
 
 	if resp.StatusCode != http.StatusOK {
-		return classifyStatus(resp.StatusCode, resp.Header, raw)
+		err := classifyStatus(resp.StatusCode, resp.Header, raw)
+		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
+			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
+		}
+		return err
 	}
 
 	var envelope struct {
@@ -163,7 +174,11 @@ func (c *Client) GraphQLWithType(ctx context.Context, queryType string, query st
 		c.recordGraphQLQueryCostFromHeaders(queryType, headerRateLimit)
 	}
 	if len(envelope.Errors) > 0 {
-		return classifyGraphQLErrors(envelope.Errors)
+		err := classifyGraphQLErrors(envelope.Errors)
+		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
+			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
+		}
+		return err
 	}
 	if out == nil {
 		return nil
@@ -184,6 +199,10 @@ func (c *Client) REST(ctx context.Context, method string, path string, body any,
 }
 
 func (c *Client) restProbe(ctx context.Context, method string, path string, body any) (restProbeResult, error) {
+	return c.restProbeWithTokenRefresh(ctx, method, path, body, true)
+}
+
+func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, path string, body any, allowTokenRefresh bool) (restProbeResult, error) {
 	token, err := c.tokenSource.Token(ctx)
 	if err != nil {
 		return restProbeResult{}, fmt.Errorf("resolve github token: %w", err)
@@ -234,15 +253,26 @@ func (c *Client) restProbe(ctx context.Context, method string, path string, body
 	if err != nil {
 		return restProbeResult{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
-	return restProbeResult{
+	result := restProbeResult{
 		StatusCode: resp.StatusCode,
 		Headers:    resp.Header.Clone(),
 		Body:       summarizeBody(raw),
 		FullBody:   string(bytes.TrimSpace(raw)),
-	}, nil
+	}
+	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
+		err := classifyStatus(resp.StatusCode, resp.Header, raw)
+		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
+			return c.restProbeWithTokenRefresh(ctx, method, path, body, false)
+		}
+	}
+	return result, nil
 }
 
 func (c *Client) rest(ctx context.Context, method string, path string, body any, out any) (http.Header, error) {
+	return c.restWithTokenRefresh(ctx, method, path, body, out, true)
+}
+
+func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path string, body any, out any, allowTokenRefresh bool) (http.Header, error) {
 	token, err := c.tokenSource.Token(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("resolve github token: %w", err)
@@ -296,7 +326,11 @@ func (c *Client) rest(ctx context.Context, method string, path string, body any,
 		return nil, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		return nil, classifyStatus(resp.StatusCode, resp.Header, raw)
+		err := classifyStatus(resp.StatusCode, resp.Header, raw)
+		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
+			return c.restWithTokenRefresh(ctx, method, path, body, out, false)
+		}
+		return nil, err
 	}
 	headers := resp.Header.Clone()
 	if out == nil || resp.StatusCode == http.StatusNoContent {
@@ -309,6 +343,56 @@ func (c *Client) rest(ctx context.Context, method string, path string, body any,
 		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	return headers, nil
+}
+
+func (c *Client) AuthHealth() (connector.AuthHealth, bool) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	return c.authHealth, c.hasAuthHealth
+}
+
+func (c *Client) refreshAfterAuthFailure(ctx context.Context, err error, allowTokenRefresh bool) bool {
+	if !errors.Is(err, ErrAuthenticationFailed) {
+		return false
+	}
+	c.recordAuthFailure(err, time.Now())
+	if !allowTokenRefresh {
+		return false
+	}
+	refresher, ok := c.tokenSource.(RefreshableTokenSource)
+	if !ok {
+		return false
+	}
+	if _, refreshErr := refresher.RefreshToken(ctx); refreshErr != nil {
+		c.logger.WarnContext(ctx, "github token refresh failed", "error", refreshErr)
+		return false
+	}
+	c.recordAuthRecovered(time.Now())
+	return true
+}
+
+func (c *Client) recordAuthFailure(err error, at time.Time) {
+	if err == nil {
+		return
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.authHealth.Status = connector.AuthStatusStale
+	c.authHealth.LastError = err.Error()
+	c.authHealth.LastErrorAt = at
+	c.authHealth.LastRecoveredAt = time.Time{}
+	c.hasAuthHealth = true
+}
+
+func (c *Client) recordAuthRecovered(at time.Time) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.authHealth.Status = connector.AuthStatusRecovered
+	c.authHealth.LastRecoveredAt = at
+	c.hasAuthHealth = true
 }
 
 func (c *Client) GraphQLRateLimit() (connector.GraphQLRateLimit, bool) {

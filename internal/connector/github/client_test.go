@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strconv"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -163,6 +164,156 @@ func TestClientGraphQLClassifiesFailures(t *testing.T) {
 				t.Fatalf("GraphQL() error = %v, want %v", err, tt.want)
 			}
 		})
+	}
+}
+
+func TestClientGraphQLRefreshesTokenAfterAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	source := newRefreshingTokenTestSource("stale-token", "fresh-token")
+	requests := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("Authorization")
+		requests <- token
+		switch token {
+		case "Bearer stale-token":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+		case "Bearer fresh-token":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"octocat"}}}`))
+		default:
+			t.Fatalf("Authorization = %q, want stale then fresh token", token)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: source,
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var got struct {
+		Viewer struct {
+			Login string `json:"login"`
+		} `json:"viewer"`
+	}
+	if err := client.GraphQL(context.Background(), "query { viewer { login } }", nil, &got); err != nil {
+		t.Fatalf("GraphQL() error = %v", err)
+	}
+	if got.Viewer.Login != "octocat" {
+		t.Fatalf("Viewer.Login = %q, want octocat", got.Viewer.Login)
+	}
+	if source.refreshes.Load() != 1 {
+		t.Fatalf("RefreshToken() calls = %d, want 1", source.refreshes.Load())
+	}
+	if first, second := <-requests, <-requests; first != "Bearer stale-token" || second != "Bearer fresh-token" {
+		t.Fatalf("Authorization sequence = %q, %q; want stale then fresh", first, second)
+	}
+	health, ok := client.AuthHealth()
+	if !ok {
+		t.Fatal("AuthHealth() ok = false, want true")
+	}
+	if health.Status != connector.AuthStatusRecovered {
+		t.Fatalf("AuthHealth().Status = %q, want %q", health.Status, connector.AuthStatusRecovered)
+	}
+	if health.LastError == "" || health.LastErrorAt.IsZero() || health.LastRecoveredAt.IsZero() {
+		t.Fatalf("AuthHealth() missing recovery detail: %#v", health)
+	}
+}
+
+func TestClientRESTRefreshesTokenAfterAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	source := newRefreshingTokenTestSource("stale-token", "fresh-token")
+	requests := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("Authorization")
+		requests <- token
+		switch token {
+		case "Bearer stale-token":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+		case "Bearer fresh-token":
+			if r.URL.Path != "/repos/digitaldrywood/detent/issues" {
+				t.Fatalf("path = %s, want REST request path", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"ok":true}`))
+		default:
+			t.Fatalf("Authorization = %q, want stale then fresh token", token)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: source,
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var got struct {
+		OK bool `json:"ok"`
+	}
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues", nil, &got); err != nil {
+		t.Fatalf("REST() error = %v", err)
+	}
+	if !got.OK {
+		t.Fatal("REST() response OK = false, want true")
+	}
+	if source.refreshes.Load() != 1 {
+		t.Fatalf("RefreshToken() calls = %d, want 1", source.refreshes.Load())
+	}
+	if first, second := <-requests, <-requests; first != "Bearer stale-token" || second != "Bearer fresh-token" {
+		t.Fatalf("Authorization sequence = %q, %q; want stale then fresh", first, second)
+	}
+}
+
+func TestClientReportsStaleAuthWhenRefreshFails(t *testing.T) {
+	t.Parallel()
+
+	source := newRefreshingTokenTestSource("stale-token", "")
+	source.refreshErr = errors.New("gh auth token failed")
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+		_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: source,
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.GraphQL(context.Background(), "query { viewer { login } }", nil, nil)
+	if !errors.Is(err, ErrAuthenticationFailed) {
+		t.Fatalf("GraphQL() error = %v, want ErrAuthenticationFailed", err)
+	}
+	health, ok := client.AuthHealth()
+	if !ok {
+		t.Fatal("AuthHealth() ok = false, want true")
+	}
+	if health.Status != connector.AuthStatusStale {
+		t.Fatalf("AuthHealth().Status = %q, want %q", health.Status, connector.AuthStatusStale)
+	}
+	if health.LastError == "" || health.LastErrorAt.IsZero() {
+		t.Fatalf("AuthHealth() missing stale auth detail: %#v", health)
+	}
+	if health.LastRecoveredAt.IsZero() == false {
+		t.Fatalf("AuthHealth().LastRecoveredAt = %v, want zero", health.LastRecoveredAt)
 	}
 }
 
@@ -581,4 +732,39 @@ func TestClientGraphQLRejectsInvalidPayloads(t *testing.T) {
 			}
 		})
 	}
+}
+
+type refreshingTokenTestSource struct {
+	mu           sync.Mutex
+	token        string
+	refreshToken string
+	refreshErr   error
+	refreshes    atomic.Int64
+}
+
+func newRefreshingTokenTestSource(token string, refreshToken string) *refreshingTokenTestSource {
+	return &refreshingTokenTestSource{token: token, refreshToken: refreshToken}
+}
+
+func (s *refreshingTokenTestSource) Token(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.token, nil
+}
+
+func (s *refreshingTokenTestSource) RefreshToken(ctx context.Context) (string, error) {
+	if err := ctx.Err(); err != nil {
+		return "", err
+	}
+	s.refreshes.Add(1)
+	if s.refreshErr != nil {
+		return "", s.refreshErr
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.token = s.refreshToken
+	return s.token, nil
 }

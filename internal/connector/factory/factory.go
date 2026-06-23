@@ -22,6 +22,7 @@ type Config struct {
 	Memory                  memory.Config
 	Endpoint                string
 	APIKey                  string
+	GitHubTokenRefresh      githubconnector.TokenRefreshFunc
 	HTTPMaxIdleConns        int
 	HTTPMaxIdleConnsPerHost int
 	HTTPIdleConnTimeoutMS   int
@@ -50,9 +51,14 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 	case connector.BackendLinear:
 		return unimplementedConnector{name: kind}, nil
 	case connector.BackendGitHub:
+		var tokenSource githubconnector.TokenSource
+		if strings.TrimSpace(cfg.APIKey) != "" && cfg.GitHubTokenRefresh != nil && !cfg.hasGitHubAppCredentials() {
+			tokenSource = githubconnector.NewRefreshableTokenSource(cfg.APIKey, cfg.GitHubTokenRefresh)
+		}
 		return githubconnector.NewConnector(githubconnector.Config{
-			Endpoint: cfg.Endpoint,
-			APIKey:   cfg.APIKey,
+			Endpoint:    cfg.Endpoint,
+			APIKey:      cfg.APIKey,
+			TokenSource: tokenSource,
 			HTTPTransport: githubconnector.HTTPTransportConfig{
 				MaxIdleConns:        cfg.HTTPMaxIdleConns,
 				MaxIdleConnsPerHost: cfg.HTTPMaxIdleConnsPerHost,
@@ -78,6 +84,13 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedBackend, kind)
 	}
+}
+
+func (cfg Config) hasGitHubAppCredentials() bool {
+	return strings.TrimSpace(cfg.GitHubAppID) != "" &&
+		strings.TrimSpace(cfg.GitHubAppInstallationID) != "" &&
+		(strings.TrimSpace(cfg.GitHubAppPrivateKey) != "" ||
+			strings.TrimSpace(cfg.GitHubAppPrivateKeyPath) != "")
 }
 
 type unimplementedConnector struct {

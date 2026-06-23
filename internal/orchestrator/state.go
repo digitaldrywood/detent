@@ -24,6 +24,7 @@ type State struct {
 	LastRunningReconcileAt   time.Time
 	LastWorkspaceCleanupAt   time.Time
 	RecentEvents             []telemetry.ActivityEvent
+	Auth                     connector.AuthHealth
 	BoardIssues              []connector.Issue
 	Pipeline                 []connector.Issue
 	Running                  map[string]Running
@@ -134,6 +135,7 @@ func (s State) clone() State {
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
 		RecentEvents:             cloneActivityEvents(s.RecentEvents),
+		Auth:                     s.Auth,
 		BoardIssues:              cloneIssues(s.BoardIssues),
 		Pipeline:                 cloneIssues(s.Pipeline),
 		Running:                  make(map[string]Running, len(s.Running)),

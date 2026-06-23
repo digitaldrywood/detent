@@ -106,6 +106,36 @@ func TestStateSnapshotCarriesIssueComments(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotIncludesAuthHealth(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 23, 14, 0, 0, 0, time.UTC)
+	failedAt := now.Add(-time.Minute)
+	recoveredAt := now.Add(-30 * time.Second)
+	state := newState(normalizeConfig(Config{}))
+	state.Auth = connector.AuthHealth{
+		Status:          connector.AuthStatusRecovered,
+		LastError:       "github authentication failed: status 401",
+		LastErrorAt:     failedAt,
+		LastRecoveredAt: recoveredAt,
+	}
+
+	snapshot := state.Snapshot(now)
+
+	if snapshot.Auth.Status != telemetry.AuthStatusRecovered {
+		t.Fatalf("snapshot Auth.Status = %q, want %q", snapshot.Auth.Status, telemetry.AuthStatusRecovered)
+	}
+	if snapshot.Auth.LastError != "github authentication failed: status 401" {
+		t.Fatalf("snapshot Auth.LastError = %q", snapshot.Auth.LastError)
+	}
+	if snapshot.Auth.LastErrorAt == nil || !snapshot.Auth.LastErrorAt.Equal(failedAt) {
+		t.Fatalf("snapshot Auth.LastErrorAt = %v, want %v", snapshot.Auth.LastErrorAt, failedAt)
+	}
+	if snapshot.Auth.LastRecoveredAt == nil || !snapshot.Auth.LastRecoveredAt.Equal(recoveredAt) {
+		t.Fatalf("snapshot Auth.LastRecoveredAt = %v, want %v", snapshot.Auth.LastRecoveredAt, recoveredAt)
+	}
+}
+
 func TestStateSnapshotIncludesClaimLeaseState(t *testing.T) {
 	t.Parallel()
 

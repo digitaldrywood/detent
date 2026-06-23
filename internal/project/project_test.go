@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -118,6 +120,75 @@ func TestNewBuildsProjectLifecycleDependencies(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("timed out waiting for orchestrator dependencies")
+	}
+}
+
+func TestProjectGitHubRuntimeTokenRefreshesAfterAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	requests := make(chan string, 2)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := r.Header.Get("Authorization")
+		requests <- token
+		switch token {
+		case "Bearer stale-token":
+			w.WriteHeader(http.StatusUnauthorized)
+			_, _ = w.Write([]byte(`{"message":"Bad credentials"}`))
+		case "Bearer fresh-token":
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`{"data":{"viewer":{"login":"detent-bot"},"node":{"__typename":"ProjectV2","id":"PVT_1"}}}`))
+		default:
+			t.Fatalf("Authorization = %q, want stale then fresh token", token)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	workflowCfg := workflowConfig("github")
+	workflowCfg.Tracker.Endpoint = server.URL
+	workflowCfg.Tracker.ProjectSlug = "PVT_1"
+	var refreshes atomic.Int64
+	got, err := project.New(project.Config{
+		Project: globalconfig.Project{
+			ID:     "detent",
+			Weight: 1,
+		},
+		Workflow: workflowconfig.Workflow{Config: workflowCfg},
+	}, project.Dependencies{
+		GitHubToken: "stale-token",
+		RefreshGitHubToken: func(context.Context) (string, error) {
+			refreshes.Add(1)
+			return "fresh-token", nil
+		},
+		Runner: orchestrator.FakeRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	authenticator, ok := got.Connector().(connector.Authenticator)
+	if !ok {
+		t.Fatalf("Connector() = %T, want connector.Authenticator", got.Connector())
+	}
+	if err := authenticator.Authenticate(context.Background()); err != nil {
+		t.Fatalf("Authenticate() error = %v", err)
+	}
+	if refreshes.Load() != 1 {
+		t.Fatalf("RefreshGitHubToken() calls = %d, want 1", refreshes.Load())
+	}
+	if first, second := <-requests, <-requests; first != "Bearer stale-token" || second != "Bearer fresh-token" {
+		t.Fatalf("Authorization sequence = %q, %q; want stale then fresh", first, second)
+	}
+	reporter, ok := got.Connector().(connector.AuthHealthReporter)
+	if !ok {
+		t.Fatalf("Connector() = %T, want connector.AuthHealthReporter", got.Connector())
+	}
+	health, ok := reporter.AuthHealth()
+	if !ok {
+		t.Fatal("AuthHealth() ok = false, want true")
+	}
+	if health.Status != connector.AuthStatusRecovered {
+		t.Fatalf("AuthHealth().Status = %q, want %q", health.Status, connector.AuthStatusRecovered)
 	}
 }
 
