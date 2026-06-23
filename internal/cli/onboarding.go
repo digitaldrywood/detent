@@ -463,19 +463,18 @@ func onboardingCustomerIDFromRepository(repository string, override string) (onb
 	}
 
 	prefix, suffix, hasPrefix := repositoryCustomerPrefix(name)
-	if hasPrefix && !strings.EqualFold(prefix, owner) {
-		return onboardingCustomerIDCandidate{
-			ID:           prefix,
-			Source:       "repo_prefix",
-			Confidence:   "medium",
-			Alternatives: onboardingCandidateAlternatives(owner),
-			Notes: []string{
-				fmt.Sprintf("customer id candidate %q came from repository prefix before suffix %q", prefix, suffix),
-			},
-		}, nil
-	}
-
 	if ownerLooksSharedOperator(owner) {
+		if hasPrefix && !strings.EqualFold(prefix, owner) {
+			return onboardingCustomerIDCandidate{
+				ID:           prefix,
+				Source:       "repo_prefix",
+				Confidence:   "medium",
+				Alternatives: onboardingCandidateAlternatives(owner),
+				Notes: []string{
+					fmt.Sprintf("customer id candidate %q came from repository prefix before suffix %q", prefix, suffix),
+				},
+			}, nil
+		}
 		return onboardingCustomerIDCandidate{
 			ID:             name,
 			Source:         "repo_name",

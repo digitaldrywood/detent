@@ -335,6 +335,43 @@ func TestOnboardingDraftAnswersCommandPrefersRepoPrefixForSharedOwner(t *testing
 	}
 }
 
+func TestOnboardingDraftAnswersCommandKeepsNormalOwnerForProductSuffixRepo(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/payments-api.git")
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "--config", filepath.Join(t.TempDir(), "global.yaml"), "onboarding", "draft-answers"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		CustomerIDCandidate      string `json:"customer_id_candidate"`
+		CustomerIDSource         string `json:"customer_id_source"`
+		CustomerIDConfidence     string `json:"customer_id_confidence"`
+		CustomerIDReviewRequired bool   `json:"customer_id_review_required"`
+		DetentProjectIDCandidate string `json:"detent_project_id_candidate"`
+		DetentProjectIDSource    string `json:"detent_project_id_source"`
+		Confidence               string `json:"confidence"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.CustomerIDCandidate != "acme" || got.CustomerIDSource != "owner" {
+		t.Fatalf("customer id metadata = %#v, want normal owner candidate", got)
+	}
+	if got.CustomerIDConfidence != "medium" || got.CustomerIDReviewRequired || got.Confidence != "medium" {
+		t.Fatalf("confidence = customer %q review %t overall %q, want medium owner draft", got.CustomerIDConfidence, got.CustomerIDReviewRequired, got.Confidence)
+	}
+	if got.DetentProjectIDCandidate != "payments-api" || got.DetentProjectIDSource != "repo_name" {
+		t.Fatalf("project id metadata = %#v, want repo-name project", got)
+	}
+}
+
 func TestOnboardingDraftAnswersCommandMarksSharedOwnerAmbiguity(t *testing.T) {
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/service.git")
 	t.Chdir(targetRoot)
