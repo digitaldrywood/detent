@@ -73,6 +73,7 @@ type Manager struct {
 	factory  Factory
 	sleep    func(context.Context, time.Duration) error
 	jitter   func(time.Duration) time.Duration
+	logger   *slog.Logger
 
 	running bool
 	spawned bool
@@ -120,6 +121,10 @@ func NewManager(cfg ManagerConfig, deps ManagerDependencies) (*Manager, error) {
 	if jitter == nil {
 		jitter = randomJitter
 	}
+	logger := deps.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 
 	cfg = normalizeManagerConfig(cfg)
 	return &Manager{
@@ -128,6 +133,7 @@ func NewManager(cfg ManagerConfig, deps ManagerDependencies) (*Manager, error) {
 		factory:  factory,
 		sleep:    sleep,
 		jitter:   jitter,
+		logger:   logger,
 	}, nil
 }
 
@@ -359,7 +365,15 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		}
 		didStart, err := m.startPreparedProjectLocked(ctx, preparedProject)
 		if err != nil {
-			return result, errors.Join(err, rollback())
+			if len(result.Removed) > 0 || len(result.Changed) > 0 {
+				return result, errors.Join(err, rollback())
+			}
+			m.logProjectStartupFailure(id, err)
+			if err := m.registry.Set(preparedProject); err != nil {
+				return result, errors.Join(err, rollback())
+			}
+			added[id] = struct{}{}
+			continue
 		}
 		if didStart {
 			started = append(started, startedProject{project: preparedProject})
@@ -685,6 +699,14 @@ func (m *Manager) waitBeforeSpawn(ctx context.Context) error {
 		return nil
 	}
 	return m.sleep(ctx, delay)
+}
+
+func (m *Manager) logProjectStartupFailure(id ID, err error) {
+	logger := m.logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+	logger.Warn("project startup failed", "project_id", id, "error", err)
 }
 
 func spawnDelay(startup StartupConfig, spawned bool, jitter func(time.Duration) time.Duration) time.Duration {
