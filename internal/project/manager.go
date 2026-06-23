@@ -365,7 +365,7 @@ func (m *Manager) Reconcile(ctx context.Context, cfg ManagerConfig) (ReconcileRe
 		}
 		didStart, err := m.startPreparedProjectLocked(ctx, preparedProject)
 		if err != nil {
-			if len(result.Removed) > 0 || len(result.Changed) > 0 {
+			if len(result.Removed) > 0 || len(result.Changed) > 0 || !retainAddedProjectStartFailure(preparedProject, err) {
 				return result, errors.Join(err, rollback())
 			}
 			m.logProjectStartupFailure(id, err)
@@ -707,6 +707,16 @@ func (m *Manager) logProjectStartupFailure(id ID, err error) {
 		logger = slog.Default()
 	}
 	logger.Warn("project startup failed", "project_id", id, "error", err)
+}
+
+func retainAddedProjectStartFailure(project *Project, err error) bool {
+	if project == nil {
+		return false
+	}
+	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
+		return false
+	}
+	return project.RuntimeError().Message != ""
 }
 
 func spawnDelay(startup StartupConfig, spawned bool, jitter func(time.Duration) time.Duration) time.Duration {

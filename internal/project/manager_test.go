@@ -715,6 +715,59 @@ func TestManagerReconcileRecordsAddedProjectStartFailure(t *testing.T) {
 	}
 }
 
+func TestManagerReconcilePropagatesAddedProjectContextCancellation(t *testing.T) {
+	t.Parallel()
+
+	events := hub.New[project.Event](hub.WithBuffer(4))
+	manager, err := project.NewManager(project.ManagerConfig{
+		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
+		Startup:  project.StartupConfig{MaxSpawnPerSecond: 1},
+	}, project.ManagerDependencies{
+		Events: events,
+		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
+			return newManagerTestProject(t, cfg, events)
+		},
+		Sleep: func(ctx context.Context, _ time.Duration) error {
+			return ctx.Err()
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewManager() error = %v", err)
+	}
+	if err := manager.Start(context.Background()); err != nil {
+		t.Fatalf("Start() error = %v", err)
+	}
+	t.Cleanup(func() {
+		for _, item := range manager.Registry().List() {
+			if !item.Running() {
+				continue
+			}
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			if err := item.Stop(ctx); err != nil && !errors.Is(err, project.ErrNotRunning) {
+				cancel()
+				t.Fatalf("Stop(%s) error = %v", item.ID(), err)
+			}
+			cancel()
+		}
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err = manager.Reconcile(ctx, project.ManagerConfig{
+		Projects: []globalconfig.Project{
+			{ID: "alpha", Weight: 1},
+			{ID: "bravo", Weight: 1},
+		},
+		Startup: project.StartupConfig{MaxSpawnPerSecond: 1},
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Reconcile() error = %v, want %v", err, context.Canceled)
+	}
+	if _, ok := manager.Registry().Get("bravo"); ok {
+		t.Fatal("Registry().Get(bravo) ok = true after canceled reconcile, want false")
+	}
+}
+
 func TestManagerReconcileClosesPreparedProjectWhenLaterCreateFails(t *testing.T) {
 	t.Parallel()
 

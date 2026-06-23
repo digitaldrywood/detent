@@ -371,6 +371,14 @@ func publishSnapshotOnce(
 	for _, trackedProject := range trackedProjects {
 		projectMetadata := projectSnapshotMetadata(trackedProject)
 		if !trackedProject.Running() {
+			if trackedProject.Paused() {
+				merged = mergeSnapshot(merged, telemetry.Snapshot{
+					Project:      projectMetadata,
+					DashboardURL: cleanDashboardURL(dashboardURL),
+					Shutdown:     telemetry.Shutdown{Status: "running"},
+				})
+				continue
+			}
 			if runtimeErr := trackedProject.RuntimeError(); runtimeErr.Message != "" {
 				lastErrorAt := runtimeErr.At
 				merged = mergeSnapshot(merged, telemetry.Snapshot{
@@ -382,14 +390,6 @@ func publishSnapshotOnce(
 						LastError:   runtimeErr.Message,
 						LastErrorAt: &lastErrorAt,
 					},
-				})
-				continue
-			}
-			if trackedProject.Paused() {
-				merged = mergeSnapshot(merged, telemetry.Snapshot{
-					Project:      projectMetadata,
-					DashboardURL: cleanDashboardURL(dashboardURL),
-					Shutdown:     telemetry.Shutdown{Status: "running"},
 				})
 				continue
 			}
