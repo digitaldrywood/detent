@@ -11,6 +11,7 @@ import (
 	"testing"
 
 	"github.com/digitaldrywood/detent/internal/cli"
+	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
 )
 
 func TestOnboardingValidateAnswersCommandRejectsMissingGitHubMode(t *testing.T) {
@@ -236,6 +237,204 @@ func TestOnboardingValidateAnswersCommandAcceptsLabelMode(t *testing.T) {
 	}
 }
 
+func TestOnboardingDraftAnswersCommandUsesCurrentNonDetentCheckoutAsTarget(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
+	wantTargetRoot := canonicalOnboardingTestPath(t, targetRoot)
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "--config", filepath.Join(t.TempDir(), "global.yaml"), "onboarding", "draft-answers"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		Status                         string   `json:"status"`
+		CustomerIDCandidate            string   `json:"customer_id_candidate"`
+		DetentProjectIDCandidate       string   `json:"detent_project_id_candidate"`
+		TargetRepositoryCandidate      string   `json:"target_repository_candidate"`
+		TargetSourceRootCandidate      string   `json:"target_source_root_candidate"`
+		ReferenceRepositoriesCandidate []string `json:"reference_repositories_candidate"`
+		DetentOnboardingModeCandidate  string   `json:"detent_onboarding_mode_candidate"`
+		Confidence                     string   `json:"confidence"`
+		Notes                          []string `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.Status != "draft" {
+		t.Fatalf("status = %q, want draft", got.Status)
+	}
+	if got.CustomerIDCandidate != "acme" || got.DetentProjectIDCandidate != "api" {
+		t.Fatalf("identity candidates = %#v, want customer acme and project api", got)
+	}
+	if got.TargetRepositoryCandidate != "acme/api" || got.TargetSourceRootCandidate != wantTargetRoot {
+		t.Fatalf("target candidates = %#v, want current checkout", got)
+	}
+	if len(got.ReferenceRepositoriesCandidate) != 1 || got.ReferenceRepositoriesCandidate[0] != "digitaldrywood/detent" {
+		t.Fatalf("reference repositories = %#v, want Detent source reference", got.ReferenceRepositoriesCandidate)
+	}
+	if got.DetentOnboardingModeCandidate != "new-install" {
+		t.Fatalf("detent onboarding mode = %q, want new-install", got.DetentOnboardingModeCandidate)
+	}
+	if got.Confidence == "" || len(got.Notes) == 0 {
+		t.Fatalf("confidence/notes = %q/%#v, want review guidance", got.Confidence, got.Notes)
+	}
+}
+
+func TestOnboardingDraftAnswersCommandRequiresExplicitTargetFromDetentSourceCheckout(t *testing.T) {
+	sourceRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/detent.git")
+	t.Chdir(sourceRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--config", filepath.Join(t.TempDir(), "global.yaml"), "onboarding", "draft-answers"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want explicit target validation error")
+	}
+	if !strings.Contains(err.Error(), "current checkout is the Detent source repository") ||
+		!strings.Contains(err.Error(), "--target-source-root") {
+		t.Fatalf("Execute() error = %q, want explicit target guidance", err.Error())
+	}
+}
+
+func TestOnboardingDraftAnswersCommandParsesGitHubRemoteFormats(t *testing.T) {
+	t.Chdir(t.TempDir())
+
+	tests := []struct {
+		name       string
+		remote     string
+		repository string
+	}{
+		{name: "ssh", remote: "git@github.com:acme/api.git", repository: "acme/api"},
+		{name: "https", remote: "https://github.com/acme/web.git", repository: "acme/web"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			targetRoot := initOnboardingGitRepository(t, tt.remote)
+			wantTargetRoot := canonicalOnboardingTestPath(t, targetRoot)
+			cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{
+				"--format", "json",
+				"--config", filepath.Join(t.TempDir(), "global.yaml"),
+				"onboarding", "draft-answers",
+				"--target-source-root", targetRoot,
+			})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v", err)
+			}
+
+			var got struct {
+				TargetRepositoryCandidate string `json:"target_repository_candidate"`
+				TargetSourceRootCandidate string `json:"target_source_root_candidate"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+				t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+			}
+			if got.TargetRepositoryCandidate != tt.repository || got.TargetSourceRootCandidate != wantTargetRoot {
+				t.Fatalf("target candidates = %#v, want %s at %s", got, tt.repository, wantTargetRoot)
+			}
+		})
+	}
+}
+
+func TestOnboardingDraftAnswersCommandNotesProjectIDCollision(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
+	otherRoot := initOnboardingGitRepository(t, "https://github.com/acme/other.git")
+	configPath := writeOnboardingGlobalConfig(t, []globalconfig.Project{{
+		ID:          "api",
+		Workflow:    "WORKFLOW.md",
+		WorkflowRef: "origin/main",
+		Workdir:     otherRoot,
+		Weight:      1,
+	}})
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "--config", configPath, "onboarding", "draft-answers"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		DetentProjectIDCandidate      string   `json:"detent_project_id_candidate"`
+		DetentOnboardingModeCandidate string   `json:"detent_onboarding_mode_candidate"`
+		RegisteredProjectIDs          []string `json:"registered_project_ids"`
+		Notes                         []string `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.DetentProjectIDCandidate != "api" || got.DetentOnboardingModeCandidate != "add-project" {
+		t.Fatalf("draft = %#v, want colliding api candidate for add-project", got)
+	}
+	if len(got.RegisteredProjectIDs) != 1 || got.RegisteredProjectIDs[0] != "api" {
+		t.Fatalf("registered project ids = %#v, want api", got.RegisteredProjectIDs)
+	}
+	if !containsSubstring(got.Notes, `project id candidate "api" already exists`) {
+		t.Fatalf("notes = %#v, want project id collision note", got.Notes)
+	}
+}
+
+func TestOnboardingDraftAnswersCommandWritesUnconfirmedAnswers(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
+	wantTargetRoot := canonicalOnboardingTestPath(t, targetRoot)
+	answersPath := filepath.Join(t.TempDir(), "answers.env")
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--format", "json",
+		"--config", filepath.Join(t.TempDir(), "global.yaml"),
+		"onboarding", "draft-answers",
+		"--answers", answersPath,
+		"--write",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	raw, err := os.ReadFile(answersPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(raw)
+	for _, want := range []string{
+		"CUSTOMER_ID=acme",
+		"DETENT_PROJECT_ID=api",
+		"TARGET_REPOSITORY=acme/api",
+		"TARGET_SOURCE_ROOT=" + wantTargetRoot,
+		"REFERENCE_REPOSITORIES=digitaldrywood/detent",
+		"DETENT_ONBOARDING_MODE=new-install",
+		"IDENTITY_CONFIRMED=false",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("answers.env missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, "IDENTITY_CONFIRMED=true") {
+		t.Fatalf("answers.env must not confirm identity:\n%s", content)
+	}
+}
+
 func validIdentityOnboardingAnswers(t *testing.T) string {
 	t.Helper()
 
@@ -269,6 +468,44 @@ func initOnboardingGitRepository(t *testing.T, remote string) string {
 	runGit(t, dir, "init")
 	runGit(t, dir, "remote", "add", "origin", remote)
 	return dir
+}
+
+func writeOnboardingGlobalConfig(t *testing.T, projects []globalconfig.Project) string {
+	t.Helper()
+
+	path := filepath.Join(t.TempDir(), "global.yaml")
+	cfg, err := globalconfig.DefaultAt(path)
+	if err != nil {
+		t.Fatalf("DefaultAt() error = %v", err)
+	}
+	cfg.Projects = projects
+	if err := globalconfig.Write(path, cfg, globalconfig.WithProjectPathLiterals()); err != nil {
+		t.Fatalf("Write() error = %v", err)
+	}
+	return path
+}
+
+func canonicalOnboardingTestPath(t *testing.T, path string) string {
+	t.Helper()
+
+	evaluated, err := filepath.EvalSymlinks(path)
+	if err == nil {
+		return filepath.Clean(evaluated)
+	}
+	absolute, err := filepath.Abs(path)
+	if err != nil {
+		t.Fatalf("Abs() error = %v", err)
+	}
+	return filepath.Clean(absolute)
+}
+
+func containsSubstring(values []string, want string) bool {
+	for _, value := range values {
+		if strings.Contains(value, want) {
+			return true
+		}
+	}
+	return false
 }
 
 func runGit(t *testing.T, dir string, args ...string) {

@@ -210,32 +210,52 @@ customer/project identity record in `$ONBOARDING_DIR/answers.env`. This is an
 operator decision checkpoint, not a recommendation. Recommendations can cite
 evidence later, but they must not become selected answers.
 
-Infer an identity candidate first when the current shell is already inside a
-GitHub checkout. Use only identity-safe local evidence: `pwd`,
-`git rev-parse --show-toplevel`, `git remote get-url origin`, the canonical
-Detent source checkout identity, the installed Detent config path, and
-registered project ids. Do not inspect target labels, issues, boards,
-`WORKFLOW.md`, validation commands, runtime docs, or other target-specific
-content before this candidate is confirmed and validated.
+Draft the first candidate from identity-safe local evidence. Run this from the
+target checkout:
 
-If the current working directory is a GitHub checkout and its git top level is
-not the canonical Detent source checkout, propose that checkout as the target
-candidate. Derive `TARGET_REPOSITORY` from the origin remote and
-`TARGET_SOURCE_ROOT` from `git rev-parse --show-toplevel`. Propose
-`DETENT_PROJECT_ID` from the repo name. If a registered project already uses
-that id, compare the registered repository, workdir, and workflow path to the
-candidate checkout before minting a new id. Reuse the existing project id when
-it is the same target repository or source root; propose a short non-colliding
-variant only when the id belongs to a different target, and explain the
-collision. Propose `CUSTOMER_ID` from the owner when that is the clearest
-stable workstream id, or from a repo-name/workstream heuristic when the owner
-is too broad. Explain that `CUSTOMER_ID` is only a stable local workstream id,
-not a billing account or GitHub organization requirement.
+```sh
+detent onboarding draft-answers --output pretty
+detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write
+```
+
+If you are currently in the Detent source checkout, pass the target explicitly:
+
+```sh
+detent onboarding draft-answers --target-source-root <absolute-local-checkout-path> --output pretty
+detent onboarding draft-answers --target-source-root <absolute-local-checkout-path> --answers "$ONBOARDING_DIR/answers.env" --write
+```
+
+The draft command may inspect only local identity evidence: current working
+directory and git top-level, origin remote and parsed GitHub owner/name,
+canonical Detent source repository evidence, Detent config path and registered
+project ids, and local installed binary/config/service evidence needed to
+recommend `new-install`, `existing-install`, or `add-project`. It must not
+inspect target ProjectV2 boards, organization issue fields, repository labels,
+issues, `WORKFLOW.md`, validation commands, deployment docs, or runtime docs.
+
+The command should infer and restate an identity candidate from the current git
+checkout before asking for raw answer fields. Its local evidence includes
+`pwd`, `git rev-parse --show-toplevel`, `git remote get-url origin`, the
+canonical Detent source checkout identity, the installed Detent config path, and
+registered project ids. If the current working directory is a GitHub checkout
+and its git top level is not the canonical Detent source checkout, it proposes
+that checkout as the target candidate. It derives `TARGET_REPOSITORY` from the
+origin remote and `TARGET_SOURCE_ROOT` from `git rev-parse --show-toplevel`,
+then proposes `DETENT_PROJECT_ID` from the repo name. If a registered project
+already uses that id, compare the registered repository, workdir, and workflow
+path to the candidate checkout before accepting the draft. Reuse the existing
+project id when it is the same target repository or source root; use a short
+non-colliding variant only when the id belongs to a different target. The draft
+explains the collision. It proposes `CUSTOMER_ID` from the owner when that is
+the clearest stable workstream id, or from a repo-name/workstream heuristic when
+the owner is too broad. `CUSTOMER_ID` is only a stable local workstream id, not
+a billing account or GitHub organization requirement.
 
 If the current working directory is the canonical Detent source checkout, do not
 propose Detent as the target unless the operator explicitly says they are
-onboarding Detent itself. Ask for the target checkout or clone destination in
-human language instead of asking for raw environment variable names.
+onboarding Detent itself. Pass `--target-source-root` or ask for the target
+checkout or clone destination in human language instead of asking for raw
+environment variable names.
 
 Common `add-project` case:
 
@@ -245,7 +265,7 @@ Common `add-project` case:
 - Existing Detent config is present and does not register `creswoodcorners-phone`.
 - Onboarding mode is `add-project`.
 
-Restate the candidate in human-facing language before showing the
+Present the candidate in human-facing language first, then show the
 `answers.env` representation:
 
 ```text
@@ -264,8 +284,8 @@ commands, or runtime docs until you confirm this identity and the identity
 validator passes. Is this the target you want to onboard?
 ```
 
-Only after the operator confirms or edits the human-facing candidate, record the
-answers:
+Review and correct the candidate answers before confirmation. The identity
+record must contain these answers:
 
 ```sh
 printf '%s\n' \
@@ -277,6 +297,10 @@ printf '%s\n' \
   'DETENT_ONBOARDING_MODE=<new-install|existing-install|add-project>' \
   > "$ONBOARDING_DIR/answers.env"
 ```
+
+When `draft-answers --write` creates or updates `answers.env`, it leaves
+`IDENTITY_CONFIRMED=false`. Do not change that value until the operator confirms
+the restatement.
 
 Present the final interpretation back to the operator before inspecting target
 resources:
