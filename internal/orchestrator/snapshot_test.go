@@ -74,6 +74,38 @@ func TestStateSnapshotIncludesInstanceIdentityAndScope(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotCarriesIssueComments(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 23, 12, 0, 0, 0, time.UTC)
+	state := newState(normalizeConfig(Config{}))
+	state.Running["issue-1"] = Running{
+		Issue: connector.Issue{
+			ID:         "issue-1",
+			Identifier: "digitaldrywood/detent#1",
+			State:      "In Progress",
+			Comments: []connector.IssueComment{{
+				Body: "## Codex Workpad\n\n### Status\nIn Progress",
+				URL:  "https://github.test/comment/1",
+			}},
+		},
+		StartedAt: now.Add(-time.Minute),
+	}
+
+	snapshot := state.Snapshot(now)
+
+	if len(snapshot.Running) != 1 {
+		t.Fatalf("Running len = %d, want 1", len(snapshot.Running))
+	}
+	comments := snapshot.Running[0].Comments
+	if len(comments) != 1 {
+		t.Fatalf("Running comments = %#v, want one comment", comments)
+	}
+	if comments[0].Body != "## Codex Workpad\n\n### Status\nIn Progress" || comments[0].URL != "https://github.test/comment/1" {
+		t.Fatalf("Running comment = %#v, want Workpad body and URL", comments[0])
+	}
+}
+
 func TestStateSnapshotIncludesClaimLeaseState(t *testing.T) {
 	t.Parallel()
 
@@ -187,6 +219,7 @@ func TestStateSnapshotPopulated(t *testing.T) {
 		StartedAt:       startedAt,
 		WorkerHost:      "host-b",
 		ProcessIdentity: "4242",
+		WorkspacePath:   "/tmp/detent-workspaces/i-2",
 		SessionID:       "thread-2-turn-2",
 		TurnCount:       2,
 		LastEventAt:     now.Add(-10 * time.Second),
@@ -281,6 +314,9 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if snapshot.Running[1].ProcessIdentity != "4242" {
 		t.Fatalf("Running[1].ProcessIdentity = %q, want 4242", snapshot.Running[1].ProcessIdentity)
+	}
+	if snapshot.Running[1].WorkspacePath != "/tmp/detent-workspaces/i-2" {
+		t.Fatalf("Running[1].WorkspacePath = %q, want /tmp/detent-workspaces/i-2", snapshot.Running[1].WorkspacePath)
 	}
 	if snapshot.Running[0].Identifier != "ISS-1" || snapshot.Running[0].Title != "One" {
 		t.Fatalf("Running[0] issue mapping = %#v", snapshot.Running[0].Issue)

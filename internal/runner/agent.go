@@ -889,6 +889,7 @@ func (r *Runner) publishRunUpdate(
 	usage := UsageUpdate{
 		SessionID:       progress.sessionID,
 		ProcessIdentity: progress.processIdentity,
+		WorkspacePath:   info.Path,
 		TurnCount:       progress.turnCount(),
 		LastEventAt:     progress.lastEventAt,
 		LastEvent:       progress.lastEvent,

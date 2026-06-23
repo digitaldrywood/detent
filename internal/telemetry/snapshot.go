@@ -116,24 +116,30 @@ type Counts struct {
 }
 
 type Issue struct {
-	ID             string       `json:"issue_id"`
-	Identifier     string       `json:"identifier,omitempty"`
-	ProjectID      string       `json:"project_id,omitempty"`
-	URL            string       `json:"url,omitempty"`
-	Title          string       `json:"title,omitempty"`
-	Description    string       `json:"description,omitempty"`
-	State          string       `json:"state,omitempty"`
-	Labels         []string     `json:"labels,omitempty"`
-	Assignees      []string     `json:"assignees,omitempty"`
-	BlockedBy      []BlockedRef `json:"blocked_by,omitempty"`
-	PullRequest    *PullRequest `json:"pull_request,omitempty"`
-	Owner          string       `json:"owner,omitempty"`
-	LeaseRenewedAt *time.Time   `json:"lease_renewed_at,omitempty"`
-	LeaseExpiresAt *time.Time   `json:"lease_expires_at,omitempty"`
-	LeaseStale     bool         `json:"lease_stale,omitempty"`
-	CreatedAt      *time.Time   `json:"created_at,omitempty"`
-	UpdatedAt      *time.Time   `json:"updated_at,omitempty"`
-	StageUpdatedAt *time.Time   `json:"stage_updated_at,omitempty"`
+	ID             string         `json:"issue_id"`
+	Identifier     string         `json:"identifier,omitempty"`
+	ProjectID      string         `json:"project_id,omitempty"`
+	URL            string         `json:"url,omitempty"`
+	Title          string         `json:"title,omitempty"`
+	Description    string         `json:"description,omitempty"`
+	State          string         `json:"state,omitempty"`
+	Labels         []string       `json:"labels,omitempty"`
+	Assignees      []string       `json:"assignees,omitempty"`
+	Comments       []IssueComment `json:"comments,omitempty"`
+	BlockedBy      []BlockedRef   `json:"blocked_by,omitempty"`
+	PullRequest    *PullRequest   `json:"pull_request,omitempty"`
+	Owner          string         `json:"owner,omitempty"`
+	LeaseRenewedAt *time.Time     `json:"lease_renewed_at,omitempty"`
+	LeaseExpiresAt *time.Time     `json:"lease_expires_at,omitempty"`
+	LeaseStale     bool           `json:"lease_stale,omitempty"`
+	CreatedAt      *time.Time     `json:"created_at,omitempty"`
+	UpdatedAt      *time.Time     `json:"updated_at,omitempty"`
+	StageUpdatedAt *time.Time     `json:"stage_updated_at,omitempty"`
+}
+
+type IssueComment struct {
+	Body string `json:"body,omitempty"`
+	URL  string `json:"url,omitempty"`
 }
 
 type BlockedRef struct {

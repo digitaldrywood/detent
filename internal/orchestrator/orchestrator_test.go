@@ -654,11 +654,12 @@ func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 	issue := testIssue("issue-live-usage", "digitaldrywood/detent#115", "In Progress")
 	tracker := newFakeConnector(issue)
 	runner := newUsageStreamingRunner(orchestrator.UsageUpdate{
-		SessionID:   "thread-live-turn-live",
-		TurnCount:   1,
-		LastEventAt: lastEventAt,
-		LastEvent:   "agent_message_delta",
-		LastMessage: "editing telemetry",
+		SessionID:     "thread-live-turn-live",
+		WorkspacePath: "/tmp/detent-workspaces/issue-live-usage",
+		TurnCount:     1,
+		LastEventAt:   lastEventAt,
+		LastEvent:     "agent_message_delta",
+		LastMessage:   "editing telemetry",
 		Tokens: orchestrator.CodexTotals{
 			InputTokens:    40,
 			OutputTokens:   12,
@@ -698,6 +699,9 @@ func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 	if running.SessionID != "thread-live-turn-live" || running.LastEvent != "agent_message_delta" || running.LastMessage != "editing telemetry" {
 		t.Fatalf("Running[%q] live activity = %#v", issue.ID, running)
 	}
+	if running.WorkspacePath != "/tmp/detent-workspaces/issue-live-usage" {
+		t.Fatalf("Running[%q].WorkspacePath = %q, want /tmp/detent-workspaces/issue-live-usage", issue.ID, running.WorkspacePath)
+	}
 	if !running.LastEventAt.Equal(lastEventAt) {
 		t.Fatalf("Running[%q].LastEventAt = %v, want %v", issue.ID, running.LastEventAt, lastEventAt)
 	}
@@ -709,6 +713,37 @@ func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 	}
 	if state.CodexTotals.TotalTokens != 0 {
 		t.Fatalf("CodexTotals.TotalTokens = %d, want completed totals only", state.CodexTotals.TotalTokens)
+	}
+
+	close(runner.release)
+}
+
+func TestRunRefreshHydratesRunningIssueComments(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-workpad", "digitaldrywood/detent#646", "Todo")
+	tracker := newFakeConnector(issue)
+	runner := newBlockingRunner()
+	orch := newTestOrchestrator(t, tracker, runner)
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	receiveRunRequest(t, runner.started)
+	tracker.setIssueComments(issue.ID, []connector.IssueComment{{
+		Body: "## Codex Workpad\n\n### Status\nIn Progress",
+		URL:  "https://github.test/comment/646",
+	}})
+	if _, err := orch.RequestRefresh(context.Background()); err != nil {
+		t.Fatalf("RequestRefresh() error = %v", err)
+	}
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		running, ok := state.Running[issue.ID]
+		return ok && len(running.Issue.Comments) == 1
+	})
+	comments := state.Running[issue.ID].Issue.Comments
+	if comments[0].Body != "## Codex Workpad\n\n### Status\nIn Progress" || comments[0].URL != "https://github.test/comment/646" {
+		t.Fatalf("Running[%q].Comments = %#v, want Workpad comment", issue.ID, comments)
 	}
 
 	close(runner.release)
@@ -1712,6 +1747,23 @@ func (c *fakeConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) (
 	return cloneIssues(issues), nil
 }
 
+func (c *fakeConnector) FetchIssueComments(_ context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for _, candidate := range c.candidates {
+		if candidate.ID == issue.ID {
+			return cloneConnectorComments(candidate.Comments), nil
+		}
+	}
+	for _, stateIssue := range c.stateIssues {
+		if stateIssue.ID == issue.ID {
+			return cloneConnectorComments(stateIssue.Comments), nil
+		}
+	}
+	return nil, nil
+}
+
 func (c *fakeConnector) CreateComment(_ context.Context, issueID string, body string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -1790,6 +1842,22 @@ func (c *fakeConnector) stateUpdateCalls() []stateUpdateCall {
 	defer c.mu.Unlock()
 
 	return append([]stateUpdateCall(nil), c.stateUpdates...)
+}
+
+func (c *fakeConnector) setIssueComments(issueID string, comments []connector.IssueComment) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	for i := range c.candidates {
+		if c.candidates[i].ID == issueID {
+			c.candidates[i].Comments = cloneConnectorComments(comments)
+		}
+	}
+	for i := range c.stateIssues {
+		if c.stateIssues[i].ID == issueID {
+			c.stateIssues[i].Comments = cloneConnectorComments(comments)
+		}
+	}
 }
 
 func (c *fakeConnector) fetchCandidateCalls() int {
@@ -2388,10 +2456,15 @@ func cloneIssues(issues []connector.Issue) []connector.Issue {
 		}
 		cloned[i].BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
 		cloned[i].Labels = append([]string(nil), issue.Labels...)
+		cloned[i].Comments = cloneConnectorComments(issue.Comments)
 		if issue.Fields != nil {
 			cloned[i].Fields = make(map[string]string, len(issue.Fields))
 			maps.Copy(cloned[i].Fields, issue.Fields)
 		}
 	}
 	return cloned
+}
+
+func cloneConnectorComments(comments []connector.IssueComment) []connector.IssueComment {
+	return append([]connector.IssueComment(nil), comments...)
 }

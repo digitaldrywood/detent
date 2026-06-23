@@ -639,7 +639,7 @@ func (o *Orchestrator) reconcileRunningIssues(ctx context.Context, state *State,
 		}
 
 		running := state.Running[id]
-		running.Issue = mergeIssueTrackerFields(running.Issue, issue)
+		running.Issue = o.hydrateRunningIssueComments(ctx, mergeIssueTrackerFields(running.Issue, issue))
 		if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 			o.completeTerminalRunning(ctx, state, id, running, terminalCompletedAt(running.Issue, o.cfg.TerminalStates, now), running.Tokens)
 			continue
@@ -662,6 +662,25 @@ func (o *Orchestrator) shouldReconcileRunningIssues(state *State, now time.Time)
 	}
 	interval := max(o.cfg.PollInterval, defaultRunningReconcileInterval)
 	return !now.Before(state.LastRunningReconcileAt.Add(interval))
+}
+
+func (o *Orchestrator) hydrateRunningIssueComments(ctx context.Context, issue connector.Issue) connector.Issue {
+	if len(issue.Comments) > 0 {
+		return issue
+	}
+	reader, ok := o.connector.(connector.IssueCommentReader)
+	if !ok {
+		return issue
+	}
+	comments, err := reader.FetchIssueComments(ctx, issue)
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn("fetch running issue comments failed", "issue_id", issue.ID, "identifier", issue.Identifier, "error", err)
+		}
+		return issue
+	}
+	issue.Comments = comments
+	return issue
 }
 
 func mergeIssueTrackerFields(current, refreshed connector.Issue) connector.Issue {
@@ -1364,6 +1383,9 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	}
 	if event.usage.ProcessIdentity != "" {
 		running.ProcessIdentity = event.usage.ProcessIdentity
+	}
+	if event.usage.WorkspacePath != "" {
+		running.WorkspacePath = event.usage.WorkspacePath
 	}
 	if diffStatsPresent(event.usage.DiffStats) {
 		running.DiffStats = event.usage.DiffStats
