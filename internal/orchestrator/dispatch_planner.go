@@ -193,6 +193,7 @@ func (p dispatchPlanner) markDispatched(
 	delete(state.Retry, issue.ID)
 	delete(state.Blocked, issue.ID)
 	delete(state.BudgetRefusals, issue.ID)
+	delete(state.Completed, issue.ID)
 }
 
 func (a dispatchAction) decision() DispatchDecision {

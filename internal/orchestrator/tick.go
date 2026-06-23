@@ -72,10 +72,11 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 			fetched,
 			o.reviewPlanIssues(ctx, state, fetched.status, now),
 		)
+		autoPromoted := o.autoPromoteHumanReviewIssues(ctx, state, fetched.status, now)
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
-			o.autoPromoteHumanReviewIssues(ctx, state, fetched.status, now),
+			autoPromoted.transitioned,
 		)
 	}
 	state.BoardIssues = boardIssuesFromFetched(fetched)

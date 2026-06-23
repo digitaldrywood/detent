@@ -1228,6 +1228,7 @@ func (o *Orchestrator) dispatchIssue(
 	delete(state.Blocked, issue.ID)
 	delete(state.BudgetRefusals, issue.ID)
 	delete(state.ReapedWorkspaces, issue.ID)
+	delete(state.Completed, issue.ID)
 
 	request := RunRequest{
 		Issue:           issue,

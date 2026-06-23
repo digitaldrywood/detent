@@ -11,6 +11,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 )
 
 func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
@@ -406,6 +407,101 @@ func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteMergingIssueDispatchesAndClearsStaleMemory(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 23, 15, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-promoted-merge", []string{"bug"}, &connector.PullRequest{
+		Number:                 639,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/639",
+		State:                  "OPEN",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 3,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	runner := newWorkerHostRunner()
+	orch := &Orchestrator{
+		cfg:        cfg,
+		connector:  tracker,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+	}
+	state := newState(cfg)
+	state.Completed[issue.ID] = Completed{
+		Issue:       cloneIssue(issue),
+		CompletedAt: now.Add(-5 * time.Minute),
+		FinalState:  "Human Review",
+	}
+	state.Claimed[issue.ID] = Claimed{
+		Issue:     cloneIssue(issue),
+		ClaimedAt: now.Add(-5 * time.Minute),
+	}
+	state.Retry[issue.ID] = Retry{
+		Issue:   cloneIssue(issue),
+		Attempt: 1,
+		DueAt:   now.Add(time.Hour),
+	}
+	runningMerging := dispatchTestIssue("issue-running-merge", "Merging")
+	state.Running[runningMerging.ID] = Running{Issue: runningMerging}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected dispatch while Merging limit is full = %#v", request)
+	default:
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after Merging auto-promote", issue.ID)
+	}
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after Merging auto-promote", issue.ID)
+	}
+
+	orch.tick(context.Background(), &state, now.Add(time.Minute))
+
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected dispatch while Merging limit is full on candidate refresh = %#v", request)
+	default:
+	}
+
+	delete(state.Running, runningMerging.ID)
+	orch.tick(context.Background(), &state, now.Add(2*time.Minute))
+
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != issue.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
+	}
+	if request.Issue.State != "Merging" {
+		t.Fatalf("RunRequest.Issue.State = %q, want Merging", request.Issue.State)
+	}
+	if running := state.Running[issue.ID]; running.cancel != nil {
+		running.cancel()
+	}
+	if _, ok := state.Completed[issue.ID]; ok {
+		t.Fatalf("Completed[%q] present after Merging dispatch", issue.ID)
+	}
+}
+
 func autoPromoteTickIssue(id string, labels []string, pullRequest *connector.PullRequest) connector.Issue {
 	issue := connector.NewIssue()
 	issue.ID = id
@@ -456,7 +552,7 @@ func (c *autoPromoteTickConnector) Name() string {
 }
 
 func (c *autoPromoteTickConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
-	return []connector.Issue{}, nil
+	return issuesInStates(c.stateIssues, []string{"Todo", "In Progress", "Rework", "Merging"}), nil
 }
 
 func (c *autoPromoteTickConnector) FetchIssuesByStates(_ context.Context, states []string) ([]connector.Issue, error) {
@@ -474,8 +570,18 @@ func (c *autoPromoteTickConnector) FetchIssuesByStates(_ context.Context, states
 	return issues, nil
 }
 
-func (c *autoPromoteTickConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
-	return []connector.Issue{}, nil
+func (c *autoPromoteTickConnector) FetchIssueStatesByIDs(_ context.Context, ids []string) ([]connector.Issue, error) {
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		wanted[id] = struct{}{}
+	}
+	issues := make([]connector.Issue, 0, len(c.stateIssues))
+	for _, issue := range c.stateIssues {
+		if _, ok := wanted[issue.ID]; ok {
+			issues = append(issues, cloneIssue(issue))
+		}
+	}
+	return issues, nil
 }
 
 func (c *autoPromoteTickConnector) CreateComment(_ context.Context, issueID string, body string) error {
@@ -536,6 +642,11 @@ func waitForValidatorResult(t *testing.T, orch *Orchestrator, issue connector.Is
 
 func (c *autoPromoteTickConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
 	c.updates = append(c.updates, autoPromoteTickUpdate{issueID: issueID, state: state})
+	for index := range c.stateIssues {
+		if c.stateIssues[index].ID == issueID {
+			c.stateIssues[index].State = state
+		}
+	}
 	return nil
 }
 
