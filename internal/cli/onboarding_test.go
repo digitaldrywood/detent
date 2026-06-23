@@ -702,6 +702,130 @@ func TestOnboardingDraftAnswersCommandWritesUnconfirmedAnswers(t *testing.T) {
 	}
 }
 
+func TestOnboardingDiagnoseGateDetectsEnvPollutedFailure(t *testing.T) {
+	tests := []struct {
+		name string
+		file string
+	}{
+		{
+			name: "envrc exports",
+			file: ".envrc",
+		},
+		{
+			name: "dotenv assignments",
+			file: ".env",
+		},
+		{
+			name: "dotenv variant assignments",
+			file: ".env.development",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
+			writeOnboardingEnvOverrideModule(t, targetRoot)
+			if err := os.WriteFile(filepath.Join(targetRoot, tt.file), []byte(strings.Join([]string{
+				"export PUBLIC_BASE_URL=https://local.example.test",
+				"SUPPORT_PHONE=555-0100",
+				"",
+			}, "\n")), 0o600); err != nil {
+				t.Fatalf("WriteFile(%s) error = %v", tt.file, err)
+			}
+			t.Setenv("PUBLIC_BASE_URL", "https://local.example.test")
+			t.Setenv("SUPPORT_PHONE", "555-0100")
+			t.Setenv("UNRELATED_ENV", "kept")
+
+			cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+			var stdout bytes.Buffer
+			cmd.SetOut(&stdout)
+			cmd.SetErr(&bytes.Buffer{})
+			cmd.SetArgs([]string{
+				"--format", "json",
+				"onboarding", "diagnose-gate",
+				"--source-root", targetRoot,
+				"--command", "go test ./...",
+				"--timeout", "30s",
+			})
+
+			if err := cmd.Execute(); err != nil {
+				t.Fatalf("Execute() error = %v\nstdout:\n%s", err, stdout.String())
+			}
+
+			var got struct {
+				Status                    string   `json:"status"`
+				FailingCommand            string   `json:"failing_command"`
+				RelevantEnvironmentKeys   []string `json:"relevant_environment_keys"`
+				PassingSanitizedCommand   string   `json:"passing_sanitized_command"`
+				RecommendedGateCommand    string   `json:"recommended_gate_command"`
+				CandidateEnvironmentFiles []string `json:"candidate_environment_files"`
+			}
+			if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+				t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+			}
+			if got.Status != "env_polluted" {
+				t.Fatalf("status = %q, want env_polluted: %#v", got.Status, got)
+			}
+			if got.FailingCommand != "go test ./..." {
+				t.Fatalf("failing command = %q, want go test ./...", got.FailingCommand)
+			}
+			for _, want := range []string{"PUBLIC_BASE_URL", "SUPPORT_PHONE"} {
+				if !containsString(got.RelevantEnvironmentKeys, want) {
+					t.Fatalf("relevant environment keys = %#v, want %q", got.RelevantEnvironmentKeys, want)
+				}
+				if !strings.Contains(got.PassingSanitizedCommand, "-u "+want) {
+					t.Fatalf("passing sanitized command = %q, want unset %s", got.PassingSanitizedCommand, want)
+				}
+			}
+			if len(got.RelevantEnvironmentKeys) != 2 {
+				t.Fatalf("relevant environment keys = %#v, want only polluted keys", got.RelevantEnvironmentKeys)
+			}
+			if strings.Contains(got.PassingSanitizedCommand, "UNRELATED_ENV") {
+				t.Fatalf("passing sanitized command includes unrelated key: %q", got.PassingSanitizedCommand)
+			}
+			if got.RecommendedGateCommand != got.PassingSanitizedCommand {
+				t.Fatalf("recommended gate command = %q, want passing sanitized command %q", got.RecommendedGateCommand, got.PassingSanitizedCommand)
+			}
+			if !containsString(got.CandidateEnvironmentFiles, filepath.Join(targetRoot, tt.file)) {
+				t.Fatalf("candidate environment files = %#v, want %s", got.CandidateEnvironmentFiles, filepath.Join(targetRoot, tt.file))
+			}
+		})
+	}
+}
+
+func TestOnboardingDiagnoseGateKeepsPassingCommandRecommended(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
+	writeOnboardingEnvOverrideModule(t, targetRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--format", "json",
+		"onboarding", "diagnose-gate",
+		"--source-root", targetRoot,
+		"--command", "go test ./...",
+		"--timeout", "30s",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v\nstdout:\n%s", err, stdout.String())
+	}
+
+	var got struct {
+		Status                 string `json:"status"`
+		PassingCommand         string `json:"passing_command"`
+		RecommendedGateCommand string `json:"recommended_gate_command"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.Status != "pass" || got.PassingCommand != "go test ./..." || got.RecommendedGateCommand != "go test ./..." {
+		t.Fatalf("diagnostic result = %#v, want passing command recommendation", got)
+	}
+}
+
 func validIdentityOnboardingAnswers(t *testing.T) string {
 	t.Helper()
 
@@ -735,6 +859,34 @@ func initOnboardingGitRepository(t *testing.T, remote string) string {
 	runGit(t, dir, "init")
 	runGit(t, dir, "remote", "add", "origin", remote)
 	return dir
+}
+
+func writeOnboardingEnvOverrideModule(t *testing.T, dir string) {
+	t.Helper()
+
+	if err := os.WriteFile(filepath.Join(dir, "go.mod"), []byte("module example.com/envpolluted\n\ngo 1.26\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile(go.mod) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "config_test.go"), []byte(strings.Join([]string{
+		"package envpolluted",
+		"",
+		"import (",
+		"\t\"os\"",
+		"\t\"testing\"",
+		")",
+		"",
+		"func TestConfigDefaults(t *testing.T) {",
+		"\tif value := os.Getenv(\"PUBLIC_BASE_URL\"); value != \"\" {",
+		"\t\tt.Fatalf(\"PUBLIC_BASE_URL = %q, want empty\", value)",
+		"\t}",
+		"\tif value := os.Getenv(\"SUPPORT_PHONE\"); value != \"\" {",
+		"\t\tt.Fatalf(\"SUPPORT_PHONE = %q, want empty\", value)",
+		"\t}",
+		"}",
+		"",
+	}, "\n")), 0o600); err != nil {
+		t.Fatalf("WriteFile(config_test.go) error = %v", err)
+	}
 }
 
 func writeOnboardingGlobalConfig(t *testing.T, projects []globalconfig.Project) string {

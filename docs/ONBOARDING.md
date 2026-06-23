@@ -553,7 +553,24 @@ recommendations before asking what to change.
        2>/dev/null || true
    } > "$ONBOARDING_DIR/gate.txt"
    test -f "$ONBOARDING_DIR/gate.txt"
+   GATE_COMMAND="$(awk 'BEGIN {found=0} /^make check$/ {print; found=1; exit} /^make test$/ && candidate == "" {candidate=$0} END {if (!found && candidate != "") print candidate}' "$ONBOARDING_DIR/gate.txt")"
+   if test -n "$GATE_COMMAND"; then
+     detent --format json onboarding diagnose-gate \
+       --source-root "$PWD" \
+       --command "$GATE_COMMAND" \
+       > "$ONBOARDING_DIR/gate-diagnostic.json"
+   else
+     printf '{"status":"skipped","detail":"no candidate command"}\n' \
+       > "$ONBOARDING_DIR/gate-diagnostic.json"
+   fi
+   jq -e '.status == "pass" or .status == "env_polluted" or .status == "fail" or .status == "skipped"' \
+     "$ONBOARDING_DIR/gate-diagnostic.json"
    ```
+
+   If the diagnostic reports `status: env_polluted`, record the failing command,
+   `relevant_environment_keys`, and `passing_sanitized_command`. Use
+   `recommended_gate_command` as the gate recommendation because Detent proved it
+   passes with the polluted local environment removed.
 
 4. **Inspect existing global scheduling.** Show the current project table
    before recommending `priority` and `weight`. Recommend `weight: 1` and
@@ -681,7 +698,7 @@ recommendations before asking what to change.
      'scheduling: <priority/weight recommendation, from global-projects.txt>' \
      'authorization: <filter recommendation, from issue-counts.json and priority-counts.json>' \
      'dashboard_bind: <localhost/private-or-tailscale/all-interfaces recommendation>' \
-     'gate: <gate recommendation, from gate.txt>' \
+     'gate: <gate recommendation, from gate-diagnostic.json and gate.txt>' \
      'concurrency: <max agents and Merging cap recommendation>' \
      'review_policy: <hard stop or auto-promote recommendation>' \
      'prompt: <template or repo-specific recommendation, from repo docs>' \
@@ -926,12 +943,15 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
 13. **Validation gate.** Ask: "Use the detected command, a custom command, or a
    human review label gate? If this is a command gate, should auto-promotion
    require an automated GitHub PR review from a bot?" Recommendation source:
-   `$ONBOARDING_DIR/gate.txt`, detected manifests, task runners, CI workflow
-   commands, and the repo's review policy. Default if silent: detected
-   `make check` when present with `require_automated_review: true`; otherwise
-   use the strongest ecosystem-specific command from the repo evidence, or
-   `kind: human_review` with `approval_label: human-approved` when no reliable
-   local command exists. Verify:
+   `$ONBOARDING_DIR/gate-diagnostic.json`, `$ONBOARDING_DIR/gate.txt`, detected
+   manifests, task runners, CI workflow commands, and the repo's review policy.
+   Default if silent: `recommended_gate_command` from
+   `$ONBOARDING_DIR/gate-diagnostic.json` when it reports `pass` or
+   `env_polluted`; otherwise detected `make check` when present with
+   `require_automated_review: true`; otherwise use the strongest
+   ecosystem-specific command from the repo evidence, or `kind: human_review`
+   with `approval_label: human-approved` when no reliable local command exists.
+   Verify:
 
    ```sh
    printf '%s\n' \
