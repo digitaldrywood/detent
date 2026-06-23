@@ -1236,8 +1236,12 @@ repo is a real, working instance of this setup to copy from.
    and without a `WORKFLOW.md` in the current directory, it serves the
    `/onboarding` web wizard. Open `http://localhost:<port>/onboarding` to walk
    through tracker, credentials, project, agent, and write steps for generating
-   `WORKFLOW.md`; then return to the runbook for board creation, global
-   registration, issue intake, and the smoke test.
+   `WORKFLOW.md`. The first step asks for ProjectV2 board, organization issue
+   field, or repository labels; label-mode users should choose **Repository
+   labels**, then enter the repository and status label prefix such as
+   `detent:`. The wizard hides ProjectV2 fields for boardless modes. Then
+   return to the runbook for board creation, global registration, issue intake,
+   and the smoke test.
 
 7. **Create global config and register the project:**
 
