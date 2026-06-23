@@ -2190,10 +2190,11 @@ func projectKanbanLaneClass(lane projectKanbanLane) string {
 
 func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLane) templ.Attributes {
 	attrs := templ.Attributes{
-		"data-project-kanban-lane-empty":           projectKanbanBool(lane.Empty),
-		"data-project-kanban-lane-default-visible": projectKanbanBool(lane.DefaultVisible),
-		"data-project-kanban-lane-pinned":          "false",
-		"data-project-kanban-lane-visible":         projectKanbanBool(lane.DefaultVisible),
+		"data-project-kanban-lane-empty":            projectKanbanBool(lane.Empty),
+		"data-project-kanban-lane-default-visible":  projectKanbanBool(lane.DefaultVisible),
+		"data-project-kanban-lane-pinned":           "false",
+		"data-project-kanban-lane-visible":          projectKanbanBool(lane.DefaultVisible),
+		"data-project-kanban-lane-visibility-state": "default",
 	}
 	if lane.Empty {
 		attrs["data-project-kanban-empty-lane"] = true
@@ -2257,6 +2258,13 @@ func projectKanbanCardAttributes(data DashboardData, card projectKanbanCard) tem
 
 func projectKanbanVisibilityCountLabel(board projectKanbanBoard) string {
 	return formatCount(len(board.Lanes)) + "/" + formatCount(len(board.AllLanes))
+}
+
+func projectKanbanDefaultVisibilityLabel(lane projectKanbanLane) string {
+	if lane.DefaultVisible {
+		return "Default visible"
+	}
+	return "Default hidden"
 }
 
 func kanbanLaneAttributes(data DashboardData, lane kanbanLane) templ.Attributes {
