@@ -1737,6 +1737,13 @@ templ projectKanbanVisibilityScript() {
 				applyBoard(board);
 			}
 
+			function laneOverrideForVisibility(lane, visible) {
+				if (visible === laneDefaultVisible(lane)) {
+					return overrideDefault;
+				}
+				return visible ? overrideShow : overrideHide;
+			}
+
 			function updateCheckbox(checkbox) {
 				const board = checkbox.closest("[data-project-kanban-board]");
 				if (!board) {
@@ -1747,11 +1754,7 @@ templ projectKanbanVisibilityScript() {
 				if (!id || !lane) {
 					return;
 				}
-				let state = overrideDefault;
-				if (checkbox.checked !== laneDefaultVisible(lane)) {
-					state = checkbox.checked ? overrideShow : overrideHide;
-				}
-				setLaneOverride(board, id, state);
+				setLaneOverride(board, id, laneOverrideForVisibility(lane, checkbox.checked));
 			}
 
 			function toggleLanePin(button) {
@@ -1765,7 +1768,7 @@ templ projectKanbanVisibilityScript() {
 					return;
 				}
 				const effective = effectiveLaneVisibility(lane, visibilityOverrides(board));
-				setLaneOverride(board, id, effective.visible ? overrideHide : overrideShow);
+				setLaneOverride(board, id, laneOverrideForVisibility(lane, !effective.visible));
 			}
 
 			function resetLaneOverride(button) {

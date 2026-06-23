@@ -222,6 +222,15 @@ test("project Kanban lane visibility overrides reset to defaults", async ({ page
   await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
   await expect(cancelledLane).toBeVisible();
   await expectProjectKanbanVisibilityStorage(page, "project:dogfood", { show: defaultHiddenLaneIDs, hide: [] });
+  await page.keyboard.press("Escape");
+  await cancelledLane.locator("[data-project-kanban-pin-toggle]").click();
+  await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
+  await expect(cancelledLane).toBeHidden();
+  await expectProjectKanbanVisibilityStorage(page, "project:dogfood", {
+    show: defaultHiddenLaneIDs.filter((id) => id !== "cancelled"),
+    hide: [],
+  });
+  await board.locator("[data-project-kanban-visibility-menu] summary").click();
   await board.getByRole("button", { name: "Reset to defaults" }).click();
   await expect(todoLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
   await expect(cancelledLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
