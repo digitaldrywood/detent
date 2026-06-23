@@ -286,6 +286,227 @@ func TestOnboardingDraftAnswersCommandUsesCurrentNonDetentCheckoutAsTarget(t *te
 	}
 }
 
+func TestOnboardingDraftAnswersCommandPrefersRepoPrefixForSharedOwner(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "--config", filepath.Join(t.TempDir(), "global.yaml"), "onboarding", "draft-answers"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		CustomerIDCandidate       string   `json:"customer_id_candidate"`
+		CustomerIDSource          string   `json:"customer_id_source"`
+		CustomerIDConfidence      string   `json:"customer_id_confidence"`
+		CustomerIDReviewRequired  bool     `json:"customer_id_review_required"`
+		CustomerIDAlternatives    []string `json:"customer_id_alternatives"`
+		DetentProjectIDCandidate  string   `json:"detent_project_id_candidate"`
+		DetentProjectIDSource     string   `json:"detent_project_id_source"`
+		TargetRepositoryCandidate string   `json:"target_repository_candidate"`
+		Confidence                string   `json:"confidence"`
+		Notes                     []string `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.CustomerIDCandidate != "creswoodcorners" {
+		t.Fatalf("customer id candidate = %q, want repo prefix creswoodcorners", got.CustomerIDCandidate)
+	}
+	if got.CustomerIDSource != "repo_prefix" || got.CustomerIDConfidence != "medium" || got.CustomerIDReviewRequired {
+		t.Fatalf("customer id metadata = source %q confidence %q review %t, want repo_prefix medium without ambiguity", got.CustomerIDSource, got.CustomerIDConfidence, got.CustomerIDReviewRequired)
+	}
+	if !containsString(got.CustomerIDAlternatives, "digitaldrywood") {
+		t.Fatalf("customer id alternatives = %#v, want owner alternative", got.CustomerIDAlternatives)
+	}
+	if got.DetentProjectIDCandidate != "creswoodcorners-phone" || got.DetentProjectIDSource != "repo_name" {
+		t.Fatalf("project id metadata = %#v, want repo-name project", got)
+	}
+	if got.TargetRepositoryCandidate != "digitaldrywood/creswoodcorners-phone" || got.Confidence != "medium" {
+		t.Fatalf("draft result = %#v, want medium-confidence target repository draft", got)
+	}
+	if !containsSubstring(got.Notes, `customer id candidate "creswoodcorners" came from repository prefix before suffix "phone"`) {
+		t.Fatalf("notes = %#v, want repo-prefix explanation", got.Notes)
+	}
+}
+
+func TestOnboardingDraftAnswersCommandKeepsNormalOwnerForProductSuffixRepo(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/payments-api.git")
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "--config", filepath.Join(t.TempDir(), "global.yaml"), "onboarding", "draft-answers"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		CustomerIDCandidate      string `json:"customer_id_candidate"`
+		CustomerIDSource         string `json:"customer_id_source"`
+		CustomerIDConfidence     string `json:"customer_id_confidence"`
+		CustomerIDReviewRequired bool   `json:"customer_id_review_required"`
+		DetentProjectIDCandidate string `json:"detent_project_id_candidate"`
+		DetentProjectIDSource    string `json:"detent_project_id_source"`
+		Confidence               string `json:"confidence"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.CustomerIDCandidate != "acme" || got.CustomerIDSource != "owner" {
+		t.Fatalf("customer id metadata = %#v, want normal owner candidate", got)
+	}
+	if got.CustomerIDConfidence != "medium" || got.CustomerIDReviewRequired || got.Confidence != "medium" {
+		t.Fatalf("confidence = customer %q review %t overall %q, want medium owner draft", got.CustomerIDConfidence, got.CustomerIDReviewRequired, got.Confidence)
+	}
+	if got.DetentProjectIDCandidate != "payments-api" || got.DetentProjectIDSource != "repo_name" {
+		t.Fatalf("project id metadata = %#v, want repo-name project", got)
+	}
+}
+
+func TestOnboardingDraftAnswersCommandMarksSharedOwnerAmbiguity(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/service.git")
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "--config", filepath.Join(t.TempDir(), "global.yaml"), "onboarding", "draft-answers"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		CustomerIDCandidate      string   `json:"customer_id_candidate"`
+		CustomerIDSource         string   `json:"customer_id_source"`
+		CustomerIDConfidence     string   `json:"customer_id_confidence"`
+		CustomerIDReviewRequired bool     `json:"customer_id_review_required"`
+		CustomerIDAlternatives   []string `json:"customer_id_alternatives"`
+		Confidence               string   `json:"confidence"`
+		Notes                    []string `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.CustomerIDCandidate != "service" || got.CustomerIDSource != "repo_name" {
+		t.Fatalf("customer id metadata = %#v, want repo-name candidate for shared owner", got)
+	}
+	if got.CustomerIDConfidence != "needs-review" || !got.CustomerIDReviewRequired || got.Confidence != "needs-review" {
+		t.Fatalf("confidence = customer %q review %t overall %q, want needs-review ambiguity", got.CustomerIDConfidence, got.CustomerIDReviewRequired, got.Confidence)
+	}
+	if !containsString(got.CustomerIDAlternatives, "digitaldrywood") {
+		t.Fatalf("customer id alternatives = %#v, want shared owner alternative", got.CustomerIDAlternatives)
+	}
+	if !containsSubstring(got.Notes, "customer id candidate needs operator review because owner digitaldrywood looks like a shared operator") {
+		t.Fatalf("notes = %#v, want shared-owner ambiguity note", got.Notes)
+	}
+}
+
+func TestOnboardingDraftAnswersCommandPrettyExplainsCustomerChoice(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
+	wantTargetRoot := canonicalOnboardingTestPath(t, targetRoot)
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--output", "pretty", "--config", filepath.Join(t.TempDir(), "global.yaml"), "onboarding", "draft-answers"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	output := stdout.String()
+	for _, want := range []string{
+		"I found a likely target checkout from the current shell:",
+		"Customer/workstream: `creswoodcorners`",
+		"customer_id_source=repo_prefix",
+		"customer_id_confidence=medium",
+		"Customer/workstream alternatives: `digitaldrywood`",
+		"`CUSTOMER_ID` is only a stable local grouping id for this Detent install.",
+		"answers.env preview:",
+		"CUSTOMER_ID=creswoodcorners",
+		"DETENT_PROJECT_ID=creswoodcorners-phone",
+		"TARGET_REPOSITORY=digitaldrywood/creswoodcorners-phone",
+		"TARGET_SOURCE_ROOT=" + wantTargetRoot,
+		"IDENTITY_CONFIRMED=false",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("pretty output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestOnboardingDraftAnswersCommandAcceptsIdentityOverrides(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
+	answersPath := filepath.Join(t.TempDir(), "answers.env")
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--format", "json",
+		"--config", filepath.Join(t.TempDir(), "global.yaml"),
+		"onboarding", "draft-answers",
+		"--customer-id", "creswood",
+		"--detent-project-id", "phone",
+		"--answers", answersPath,
+		"--write",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		CustomerIDCandidate      string `json:"customer_id_candidate"`
+		CustomerIDSource         string `json:"customer_id_source"`
+		CustomerIDConfidence     string `json:"customer_id_confidence"`
+		CustomerIDReviewRequired bool   `json:"customer_id_review_required"`
+		DetentProjectIDCandidate string `json:"detent_project_id_candidate"`
+		DetentProjectIDSource    string `json:"detent_project_id_source"`
+		Confidence               string `json:"confidence"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.CustomerIDCandidate != "creswood" || got.CustomerIDSource != "override" || got.CustomerIDConfidence != "explicit" || got.CustomerIDReviewRequired {
+		t.Fatalf("customer override metadata = %#v, want explicit override", got)
+	}
+	if got.DetentProjectIDCandidate != "phone" || got.DetentProjectIDSource != "override" || got.Confidence != "medium" {
+		t.Fatalf("project override metadata = %#v, want explicit project override with medium draft", got)
+	}
+
+	raw, err := os.ReadFile(answersPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(raw)
+	for _, want := range []string{
+		"CUSTOMER_ID=creswood",
+		"DETENT_PROJECT_ID=phone",
+		"TARGET_REPOSITORY=digitaldrywood/creswoodcorners-phone",
+		"IDENTITY_CONFIRMED=false",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("answers.env missing %q:\n%s", want, content)
+		}
+	}
+}
+
 func TestOnboardingDraftAnswersCommandRequiresExplicitTargetFromDetentSourceCheckout(t *testing.T) {
 	sourceRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/detent.git")
 	t.Chdir(sourceRoot)
@@ -502,6 +723,15 @@ func canonicalOnboardingTestPath(t *testing.T, path string) string {
 func containsSubstring(values []string, want string) bool {
 	for _, value := range values {
 		if strings.Contains(value, want) {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}

@@ -136,11 +136,14 @@ func TestOnboardingDocsInferCurrentCheckoutCandidateBeforeRawFields(t *testing.T
 		"Current directory is `/home/loganlanou/projects/digitaldrywood/creswoodcorners-phone`",
 		"Detent source checkout is `/home/loganlanou/projects/digitaldrywood/detent`",
 		"Onboarding mode is `add-project`",
-		"Customer/workstream: `digitaldrywood`",
+		"Customer/workstream: `creswoodcorners`",
 		"Project id: `creswoodcorners-phone`",
 		"Target repository: `digitaldrywood/creswoodcorners-phone`",
 		"Source checkout: `/home/loganlanou/projects/digitaldrywood/creswoodcorners-phone`",
-		"`CUSTOMER_ID` is only a stable local workstream id",
+		"customer_id_source=repo_prefix",
+		"customer_id_confidence=medium",
+		"Customer/workstream alternatives: `digitaldrywood`",
+		"`CUSTOMER_ID` is only a stable local grouping id",
 	} {
 		assertContainsWords(t, onboarding, want)
 	}
