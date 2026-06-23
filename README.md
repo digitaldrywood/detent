@@ -72,9 +72,11 @@ with `detent version`, and defer `detent onboarding validate-answers` until the
 binary is available.
 
 For an existing install, find and verify the detent binary, config path, running
-service or dashboard, registered projects, GitHub auth, Codex auth, and doctor
-status before recommending changes. For a new install, follow the bootstrap flow
-and verify each step before moving on. For adding a project, treat existing
+service or dashboard, registered projects, GitHub auth, Codex auth, and
+read-only doctor status with `detent doctor --port 0` before recommending
+changes. Do not pass `--allow-write-probes` until the mutation gate passes and I
+explicitly confirm mutation. For a new install, follow the bootstrap flow and
+verify each step before moving on. For adding a project, treat existing
 registered projects as examples only; do not reuse tracker mode, status
 namespace, validation gate, dashboard bind, workspace root, scheduling priority,
 auto-promote policy, review policy, or mutation scope unless I explicitly
@@ -765,9 +767,9 @@ labels such as `documentation`, `bug`, or `enhancement`.
 The fleet `/kanban` board stays read-only, as do observer dashboards and
 shared dashboards where users should not mutate GitHub from Detent. For a
 trusted operator project board, set `server.kanban.mode: integration` after
-`detent doctor` proves writes: ProjectV2 status write, issue-field status
-write, or status-label update for the selected status source, plus issue/PR
-comment write:
+`detent doctor --allow-write-probes` proves writes: ProjectV2 status write,
+issue-field status write, or status-label update for the selected status
+source, plus issue/PR comment write:
 
 ```yaml
 server:
@@ -885,29 +887,34 @@ port: 4000
 5. Verify the setup before dispatching:
 
    ```sh
-   detent doctor
+   detent doctor --allow-write-probes
    ```
 
 `detent doctor` is a preflight check: config resolution, the SQLite database,
 the `codex` binary, GitHub auth mode, GitHub tracker readiness, git, and
 whether the server port is free. In ProjectV2 mode it checks project access,
-Status options, board item reads, repository issue/PR access, write probes, and
-rate-limit visibility. In issue-field mode it checks repository access, issue
-field discovery, Status option discovery, issue reads by field value, optional
-issue-field write probes, issue/PR comment write when integration-capable
-features are configured, and REST/GraphQL rate-limit visibility. In label mode
-it checks repository access, status label mappings, issue reads by configured
-status labels, optional status-label write probes, issue/PR comment write when
-integration-capable features are configured, and REST/GraphQL rate-limit
-visibility. Before
+Status options, board item reads, repository issue/PR access, and rate-limit
+visibility. In issue-field mode it checks repository access, issue field
+discovery, Status option discovery, issue reads by field value, and REST/GraphQL
+rate-limit visibility. In label mode it checks repository access, status label
+mappings, issue reads by configured status labels, and REST/GraphQL rate-limit
+visibility. By default doctor is read-only: if a configured workflow would run
+write probes, the report warns that they were skipped. Pass
+`--allow-write-probes` only after the onboarding mutation gate has passed and
+the operator has explicitly confirmed mutation. With that flag, ProjectV2 mode
+also checks write probes; issue-field mode checks optional issue-field write
+probes and issue/PR comment write when integration-capable features are
+configured; label mode checks optional status-label write probes and issue/PR
+comment write when integration-capable features are configured. Before
 starting Detent, fix any `FAIL` (missing `github_token: gh` or an
 unauthenticated `codex` are the usual culprits). Configure
-`tracker.write_probe_issue` with a scratch issue when you want doctor to prove
-write capabilities instead of reporting WARN for unproven writes. If Detent is
+`tracker.write_probe_issue` with a scratch issue when you want
+`detent doctor --allow-write-probes` to prove write capabilities. If Detent is
 already running on the configured port, the server-port check can fail because
 the live service owns the port; use `detent doctor --port 0` for the same
-config, toolchain, token, and database preflight without the port collision,
-then verify the live service with `/health`.
+read-only config, toolchain, token, and database preflight without the port
+collision, or `detent doctor --port 0 --allow-write-probes` after mutation
+authorization to prove writes, then verify the live service with `/health`.
 
 For Detent dogfood/self-tests that need a running server, start an isolated mock
 runtime instead of stopping or reusing the live process on `127.0.0.1:4000`:
@@ -1218,7 +1225,7 @@ repo is a real, working instance of this setup to copy from.
    [`WORKFLOW.label.md`](docs/templates/WORKFLOW.label.md).
    They set `server.kanban.mode: integration` for trusted project boards;
    change that to `read_only` for an observer or shared dashboard, or until
-   doctor write probes pass.
+   write probes pass under `detent doctor --allow-write-probes`.
 
    For ProjectV2 mode, set `tracker.project_slug` (your `PVT_` id). For
    boardless issue-field mode, set `tracker.github_status_source:
@@ -1258,7 +1265,7 @@ repo is a real, working instance of this setup to copy from.
 8. **Verify everything:**
 
    ```sh
-   detent doctor
+   detent doctor --allow-write-probes
    ```
 
    Every check must pass before starting Detent. If Detent is already running on
@@ -1267,7 +1274,7 @@ repo is a real, working instance of this setup to copy from.
    collision, then verify the running service:
 
    ```sh
-   detent doctor --port 0
+   detent doctor --port 0 --allow-write-probes
    curl -fsS http://127.0.0.1:4000/health | jq -e '.status == "ok" and .mode == "running"'
    ```
 
@@ -1319,12 +1326,13 @@ uses `repository: owner/name` and repository labels named by
 `status_label_prefix`; Detent reads issues by configured status labels and
 updates state by replacing the previous status label with the target one.
 Set `tracker.write_probe_issue` to a scratch issue already present on that
-ProjectV2 board or in the boardless repository if `detent doctor` should prove
-write operations by replaying existing values and sending non-mutating
-validation probes. In label mode, the probe issue must already have one
-configured status label so doctor can reapply it. Without a probe issue, doctor
-reports required write capabilities as WARN instead of inferring that broad
-token scopes are enough.
+ProjectV2 board or in the boardless repository if
+`detent doctor --allow-write-probes` should prove write operations by replaying
+existing values and sending validation probes. Plain `detent doctor` is
+read-only and reports that write probes were skipped. In label mode, the probe
+issue must already have one configured status label so doctor can reapply it.
+Without a probe issue, doctor reports required write capabilities as WARN
+instead of inferring that broad token scopes are enough.
 
 GitHub issue fields apply to issues, not pull requests. In issue-field mode,
 boardless status comes from the linked issue. In label mode, Detent treats
@@ -1469,11 +1477,12 @@ You choose where GitHub status lives; Detent fills in the rest.
 Boardless projects use Detent's own dashboard as the day-to-day board. The
 fleet `/kanban` board stays read-only because it is a cross-project observer
 surface. A trusted operator project board should use `integration` after
-`detent doctor` proves writes, so operators can move cards and post comments
-from `/projects/<id>/kanban`. Keep `read_only` for an observer or shared
-dashboard, or until doctor proves ProjectV2 status write in ProjectV2 mode,
-issue-field status write in issue-field mode, status-label update in label mode,
-and issue/PR comment write for comment forms.
+`detent doctor --allow-write-probes` proves writes, so operators can move cards
+and post comments from `/projects/<id>/kanban`. Keep `read_only` for an
+observer or shared dashboard, or until `detent doctor --allow-write-probes`
+proves ProjectV2 status write in ProjectV2 mode, issue-field status write in
+issue-field mode, status-label update in label mode, and issue/PR comment write
+for comment forms.
 
 ### Migration Notes
 
@@ -1488,9 +1497,9 @@ issue `Status` field and options, copy current issue statuses from the
 ProjectV2 board manually or with a one-off script outside Detent, then change
 the workflow to `github_status_source: issue_field` with `repository:
 owner/name`. Detent does not automatically migrate ProjectV2 items to issue
-fields. After the switch, run `detent doctor --port 0` and fix field discovery,
-option discovery, write-probe, comment-write, and rate-limit checks before
-dispatching.
+fields. After the switch, run `detent doctor --port 0 --allow-write-probes` and
+fix field discovery, option discovery, write-probe, comment-write, and
+rate-limit checks before dispatching.
 
 To switch a repository to boardless label mode, create status labels matching
 the effective workflow states, copy current issue statuses by applying exactly
@@ -1498,8 +1507,8 @@ one configured status label per issue, then change the workflow to
 `github_status_source: label` with `repository: owner/name` and
 `status_label_prefix: "detent:"`. Detent does not automatically migrate
 ProjectV2 items or issue-field values into labels. After the switch, run
-`detent doctor --port 0` and fix label mapping, issue reads by label,
-write-probe, comment-write, and rate-limit checks before dispatching.
+`detent doctor --port 0 --allow-write-probes` and fix label mapping, issue reads
+by label, write-probe, comment-write, and rate-limit checks before dispatching.
 
 ### Dependency workflows
 
@@ -1522,17 +1531,19 @@ the wait should be visible on the board.
   for display but will not be moved back to `Todo`. Human blockers without
   explicit dependency references stay blocked.
 
-Before you dispatch anything, run **`detent doctor`** — it checks config
+Before you dispatch anything, run **`detent doctor --allow-write-probes`** after
+mutation authorization — it checks config
 resolution, the database, the `codex` binary, GitHub auth mode, configured
 tracker access, repository issue/PR access, required write proofs, rate-limit
 visibility, git, and the server port. A clean pre-start `doctor` clears
 Detent's direct preflight.
 When a running Detent process already owns the configured port,
-`detent doctor --port 0` validates the config, database, tools, and token
-without treating the live listener as a blocker; pair it with `/health` on the
-actual service before dispatching more work. Do not dispatch from a failed
-doctor run unless the only failure is that expected live-port collision and
-`/health` is green. If Detent runs under a systemd user service, also verify the
+`detent doctor --port 0 --allow-write-probes` validates the config, database,
+tools, token, and write proofs without treating the live listener as a blocker;
+pair it with `/health` on the actual service before dispatching more work. Do
+not dispatch from a failed doctor run unless the only failure is that expected
+live-port collision and `/health` is green. If Detent runs under a systemd user
+service, also verify the
 service PATH resolves every command used by project hooks and validation gates;
 `doctor` checks Detent's direct dependencies, not repo-specific bootstrap tools.
 The onboarding runbook includes the service-context check.

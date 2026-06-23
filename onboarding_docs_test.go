@@ -28,10 +28,16 @@ func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
 	assertContains(t, onboarding, "rg '^PROJECT_NUMBER='")
 	assertContains(t, onboarding, "rg '^PROJECT_TITLE='")
 	assertContains(t, onboarding, "rg '^STATUS_LABEL_PREFIX='")
+	assertContainsWords(t, onboarding, "read-only `detent doctor --port 0` before proposing changes")
+	assertContainsWords(t, onboarding, "Do not pass `--allow-write-probes` during this identity-safe verification")
+	assertContainsWords(t, onboarding, "do not pass `--allow-write-probes` before Phase 2.5")
+	assertContains(t, onboarding, "detent doctor --port 0 --allow-write-probes")
 	assertMutationBlocksUseValidator(t, onboarding)
 
 	assertContains(t, readme, "do not create, link, mutate, or delete GitHub Projects, issue fields, labels")
 	assertContainsWords(t, readme, "until Phase 2 answers are recorded in `answers.env`")
+	assertContainsWords(t, readme, "read-only doctor status with `detent doctor --port 0` before recommending changes")
+	assertContains(t, readme, "Do not pass `--allow-write-probes` until the mutation gate passes")
 	assertContains(t, readme, "detent onboarding validate-answers")
 	assertContains(t, readme, "Defaults are recommendations only")
 }
@@ -154,7 +160,7 @@ func TestOnboardingDocsRecommendProjectKanbanIntegrationAfterWriteProbes(t *test
 	for _, want := range []string{
 		"Keep fleet `/kanban` read-only",
 		"operator-owned local or private Detent instance",
-		"recommend `integration` after `detent doctor` proves the relevant write probes",
+		"recommend `integration` after `detent doctor --allow-write-probes` proves the relevant write probes",
 		"shared observer dashboard",
 		"recommend `read_only` until writes are proven",
 		`KANBAN_MODE="${KANBAN_MODE:?set KANBAN_MODE to read_only or integration from answers.env}"`,
@@ -165,7 +171,7 @@ func TestOnboardingDocsRecommendProjectKanbanIntegrationAfterWriteProbes(t *test
 
 	for _, want := range []string{
 		"fleet `/kanban` board stays read-only",
-		"trusted operator project board should use `integration` after `detent doctor` proves writes",
+		"trusted operator project board should use `integration` after `detent doctor --allow-write-probes` proves writes",
 		"observer or shared dashboard",
 		"server.kanban.mode: integration",
 	} {

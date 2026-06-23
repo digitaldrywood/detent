@@ -152,12 +152,13 @@ func (p *doctorCheckProgress) Current() string {
 }
 
 type doctorConfig struct {
-	ConfigPath   string
-	Host         string
-	Flags        runtimeFlags
-	Output       io.Writer
-	CheckTimeout time.Duration
-	Build        buildinfo.Info
+	ConfigPath       string
+	Host             string
+	Flags            runtimeFlags
+	Output           io.Writer
+	CheckTimeout     time.Duration
+	Build            buildinfo.Info
+	AllowWriteProbes bool
 }
 
 type doctorStore interface {
@@ -201,6 +202,7 @@ func newDoctorCommand(configPath *string, env *string, logLevel *string, host *s
 
 func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string, host *string, port *int, opts options, deps doctorDeps) *cobra.Command {
 	timeout := doctorCheckTimeout
+	allowWriteProbes := false
 	cmd := &cobra.Command{
 		Use:          "doctor",
 		Short:        "Run preflight health checks",
@@ -217,11 +219,12 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 				progressOut = cmd.ErrOrStderr()
 			}
 			report := runDoctor(cmd.Context(), doctorConfig{
-				ConfigPath:   derefString(configPath),
-				Host:         derefString(host),
-				Output:       progressOut,
-				CheckTimeout: timeout,
-				Build:        opts.build,
+				ConfigPath:       derefString(configPath),
+				Host:             derefString(host),
+				Output:           progressOut,
+				CheckTimeout:     timeout,
+				Build:            opts.build,
+				AllowWriteProbes: allowWriteProbes,
 				Flags: runtimeFlags{
 					Env:      runtimeStringFlag{Value: derefString(env), Set: flagChanged(cmd, "env")},
 					LogLevel: runtimeStringFlag{Value: derefString(logLevel), Set: flagChanged(cmd, "log-level")},
@@ -240,6 +243,7 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 		},
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", doctorCheckTimeout, "per-check timeout")
+	cmd.Flags().BoolVar(&allowWriteProbes, "allow-write-probes", false, "run configured GitHub write probes")
 	cmd.SetContext(withCommandOutputOptions(context.Background(), commandOutputOptions{
 		lookupEnv: opts.lookupEnv,
 		stdoutTTY: opts.stdoutTTY,
@@ -337,7 +341,7 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 	if global != nil {
 		globalConfig := *global
 		githubToken := runtime.GitHubToken
-		jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken)...)
+		jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken, cfg.AllowWriteProbes)...)
 	}
 	jobs = append(jobs,
 		doctorCheckJob{
@@ -624,7 +628,7 @@ func checkDoctorDetentExecutable(build buildinfo.Info, deps doctorDeps) doctorCh
 	}
 }
 
-func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret) []doctorCheck {
+func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheck {
 	if len(cfg.Projects) == 0 {
 		return []doctorCheck{
 			{
@@ -638,13 +642,13 @@ func checkDoctorProjects(ctx context.Context, cfg globalconfig.Config, deps doct
 
 	checks := make([]doctorCheck, 0, len(cfg.Projects)*2)
 	for _, project := range cfg.Projects {
-		checks = append(checks, checkDoctorProject(ctx, project, deps, githubToken)...)
+		checks = append(checks, checkDoctorProject(ctx, project, deps, githubToken, allowWriteProbes)...)
 	}
 
 	return checks
 }
 
-func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret) []doctorCheckJob {
+func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheckJob {
 	if len(cfg.Projects) == 0 {
 		return []doctorCheckJob{{
 			Name: "Project workflows",
@@ -669,15 +673,15 @@ func doctorProjectCheckJobs(cfg globalconfig.Config, deps doctorDeps, githubToke
 			Name:    "Project " + id + " checks",
 			Current: progress.Current,
 			Run: func(jobCtx context.Context) []doctorCheck {
-				return checkDoctorProjectWithProgress(jobCtx, project, deps, githubToken, progress.Set)
+				return checkDoctorProjectWithProgress(jobCtx, project, deps, githubToken, allowWriteProbes, progress.Set)
 			},
 		})
 	}
 	return jobs
 }
 
-func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps doctorDeps, githubToken RuntimeSecret) []doctorCheck {
-	return checkDoctorProjectWithProgress(ctx, project, deps, githubToken, nil)
+func checkDoctorProject(ctx context.Context, project globalconfig.Project, deps doctorDeps, githubToken RuntimeSecret, allowWriteProbes bool) []doctorCheck {
+	return checkDoctorProjectWithProgress(ctx, project, deps, githubToken, allowWriteProbes, nil)
 }
 
 func checkDoctorProjectWithProgress(
@@ -685,6 +689,7 @@ func checkDoctorProjectWithProgress(
 	project globalconfig.Project,
 	deps doctorDeps,
 	githubToken RuntimeSecret,
+	allowWriteProbes bool,
 	setCurrent func(string),
 ) []doctorCheck {
 	id := doctorProjectID(project)
@@ -783,7 +788,7 @@ func checkDoctorProjectWithProgress(
 	})
 	if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub {
 		setDoctorCurrentCheck("Project " + id + " GitHub readiness")
-		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot)...)
+		checks = append(checks, checkDoctorGitHubReadiness(ctx, id, project, workflow.Config, deps, githubToken, expandedSourceRoot, allowWriteProbes)...)
 	}
 	return checks
 }
@@ -2093,8 +2098,11 @@ func checkDoctorGitHubReadiness(
 	deps doctorDeps,
 	githubToken RuntimeSecret,
 	sourceRoot string,
+	allowWriteProbes bool,
 ) []doctorCheck {
-	checks, err := deps.githubReadiness(ctx, doctorGitHubConnectorConfig(cfg), doctorGitHubReadinessConfig(ctx, project, cfg, deps, githubToken, sourceRoot))
+	readiness := doctorGitHubReadinessConfig(ctx, project, cfg, deps, githubToken, sourceRoot)
+	readiness, writeProbeCheck := doctorGitHubReadinessWithWriteProbeAuthorization(id, readiness, allowWriteProbes)
+	checks, err := deps.githubReadiness(ctx, doctorGitHubConnectorConfig(cfg), readiness)
 	if err != nil {
 		return []doctorCheck{{
 			Name:   "Project " + id + " GitHub readiness",
@@ -2112,7 +2120,45 @@ func checkDoctorGitHubReadiness(
 			Hint:   check.Hint,
 		})
 	}
+	if writeProbeCheck != nil {
+		out = append(out, *writeProbeCheck)
+	}
 	return out
+}
+
+func doctorGitHubReadinessWithWriteProbeAuthorization(id string, cfg ghconnector.ReadinessConfig, allowWriteProbes bool) (ghconnector.ReadinessConfig, *doctorCheck) {
+	if allowWriteProbes || !doctorGitHubReadinessRequiresWrites(cfg) {
+		return cfg, nil
+	}
+
+	detail := "skipped; rerun detent doctor with --allow-write-probes after mutation authorization"
+	if probe := strings.TrimSpace(cfg.WriteProbeIssue); probe != "" {
+		detail = "skipped for tracker.write_probe_issue " + probe + "; rerun detent doctor with --allow-write-probes after mutation authorization"
+	}
+	check := doctorCheck{
+		Name:   "Project " + id + " GitHub write probes",
+		Status: doctorWarn,
+		Detail: detail,
+		Hint:   `Run detent onboarding validate-answers --phase mutation and get operator confirmation before enabling write probes.`,
+	}
+	cfg.RequireProjectStatusWrite = false
+	cfg.RequireIssueFieldStatusWrite = false
+	cfg.RequireLabelStatusWrite = false
+	cfg.RequireIssueComments = false
+	cfg.RequireAssigneeWrite = false
+	cfg.RequireIssueClose = false
+	cfg.ProjectFieldWrites = nil
+	return cfg, &check
+}
+
+func doctorGitHubReadinessRequiresWrites(cfg ghconnector.ReadinessConfig) bool {
+	return cfg.RequireProjectStatusWrite ||
+		cfg.RequireIssueFieldStatusWrite ||
+		cfg.RequireLabelStatusWrite ||
+		cfg.RequireIssueComments ||
+		cfg.RequireAssigneeWrite ||
+		cfg.RequireIssueClose ||
+		len(cfg.ProjectFieldWrites) > 0
 }
 
 func doctorGitHubConnectorConfig(cfg workflowconfig.Config) ghconnector.Config {

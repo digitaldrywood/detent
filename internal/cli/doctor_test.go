@@ -156,7 +156,7 @@ func TestCheckDoctorProjects(t *testing.T) {
 				gitWorkTree: func(context.Context, string) error {
 					return tt.gitErr
 				},
-			}, RuntimeSecret{})
+			}, RuntimeSecret{}, false)
 			if len(got) != len(tt.wantStatus) {
 				t.Fatalf("len(checks) = %d, want %d: %#v", len(got), len(tt.wantStatus), got)
 			}
@@ -882,7 +882,7 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 			gotPath = path
 			return nil
 		},
-	}, RuntimeSecret{})
+	}, RuntimeSecret{}, false)
 
 	wantPath := filepath.Join(home, "repo")
 	if gotPath != wantPath {
@@ -890,6 +890,138 @@ func TestCheckDoctorProjectsExpandsSourceRootBeforeGit(t *testing.T) {
 	}
 	if len(checks) != 2 || checks[1].Status != doctorOK {
 		t.Fatalf("checks = %#v, want source repo OK", checks)
+	}
+}
+
+func TestRunDoctorSkipsWriteProbesByDefaultForExistingConfiguredProject(t *testing.T) {
+	t.Parallel()
+
+	workflow := validDoctorWorkflow("/repo")
+	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+	workflow.Tracker.Repository = "digitaldrywood/detent"
+	workflow.Tracker.StatusLabelPrefix = "detent:"
+	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+	workflow.Tracker.ObservedStates = []string{"Human Review"}
+	workflow.Tracker.TerminalStates = []string{"Done"}
+	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
+	workflow.Server.Kanban.Mode = workflowconfig.KanbanModeIntegration
+
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	global := globalconfig.Config{
+		Path:       configPath,
+		APIVersion: globalconfig.APIVersion,
+		Kind:       globalconfig.Kind,
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 1,
+			Scheduling:          globalconfig.SchedulingWeighted,
+		},
+		Projects: []globalconfig.Project{{
+			ID:       "existing",
+			Workflow: "WORKFLOW.md",
+			Workdir:  "/repo",
+			Weight:   1,
+		}},
+	}
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+		return workflowconfig.Workflow{Config: workflow}, nil
+	}
+	deps.gitRemoteURL = func(context.Context, string) (string, error) {
+		return "https://github.com/digitaldrywood/detent.git", nil
+	}
+	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+		return &fakeDoctorAutoPromoteConnector{}, nil
+	}
+	var gotReadiness ghconnector.ReadinessConfig
+	deps.githubReadiness = func(_ context.Context, _ ghconnector.Config, readiness ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+		gotReadiness = readiness
+		return []ghconnector.ReadinessCheck{{
+			Name:   "GitHub status label issue read",
+			Status: ghconnector.ReadinessOK,
+			Detail: "read-only checks completed",
+		}}, nil
+	}
+
+	report := runDoctor(context.Background(), doctorConfig{
+		ConfigPath:   configPath,
+		Output:       io.Discard,
+		CheckTimeout: time.Second,
+		Flags: runtimeFlags{
+			Port: runtimeIntFlag{Value: 0, Set: true},
+		},
+	}, successfulDoctorOptionsWithConfig(configPath, global), deps)
+
+	if doctorGitHubReadinessRequiresWrites(gotReadiness) {
+		t.Fatalf("readiness write requirements = %#v, want default doctor to skip write probes", gotReadiness)
+	}
+	assertDoctorCheck(t, report, "Project existing GitHub write probes", doctorWarn, "rerun detent doctor with --allow-write-probes after mutation authorization")
+}
+
+func TestDoctorCommandAllowWriteProbesFlagEnablesWriteReadiness(t *testing.T) {
+	t.Parallel()
+
+	workflow := validDoctorWorkflow("/repo")
+	workflow.Tracker.Kind = workflowconfig.TrackerGitHub
+	workflow.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+	workflow.Tracker.Repository = "digitaldrywood/detent"
+	workflow.Tracker.StatusLabelPrefix = "detent:"
+	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+	workflow.Tracker.WriteProbeIssue = "digitaldrywood/detent#1"
+	workflow.Server.Kanban.Mode = workflowconfig.KanbanModeIntegration
+
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	global := globalconfig.Config{
+		Path:       configPath,
+		APIVersion: globalconfig.APIVersion,
+		Kind:       globalconfig.Kind,
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 1,
+			Scheduling:          globalconfig.SchedulingWeighted,
+		},
+		Projects: []globalconfig.Project{{
+			ID:       "existing",
+			Workflow: "WORKFLOW.md",
+			Workdir:  "/repo",
+			Weight:   1,
+		}},
+	}
+	deps := successfulDoctorDeps()
+	deps.loadWorkflow = func(string) (workflowconfig.Workflow, error) {
+		return workflowconfig.Workflow{Config: workflow}, nil
+	}
+	deps.gitRemoteURL = func(context.Context, string) (string, error) {
+		return "https://github.com/digitaldrywood/detent.git", nil
+	}
+	deps.autoPromoteConnector = func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+		return &fakeDoctorAutoPromoteConnector{}, nil
+	}
+	var gotReadiness ghconnector.ReadinessConfig
+	deps.githubReadiness = func(_ context.Context, _ ghconnector.Config, readiness ghconnector.ReadinessConfig) ([]ghconnector.ReadinessCheck, error) {
+		gotReadiness = readiness
+		return []ghconnector.ReadinessCheck{{
+			Name:   "GitHub status label update",
+			Status: ghconnector.ReadinessOK,
+			Detail: "write probe requested",
+		}}, nil
+	}
+
+	configFlag := configPath
+	envFlag := ""
+	logLevelFlag := ""
+	hostFlag := ""
+	portFlag := 0
+	cmd := newDoctorCommandWithDeps(&configFlag, &envFlag, &logLevelFlag, &hostFlag, &portFlag, successfulDoctorOptionsWithConfig(configPath, global), deps)
+	cmd.SetArgs([]string{"--allow-write-probes"})
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(io.Discard)
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v\n%s", err, stdout.String())
+	}
+	if !gotReadiness.RequireLabelStatusWrite || !gotReadiness.RequireIssueComments {
+		t.Fatalf("readiness write requirements = %#v, want write probes enabled by flag", gotReadiness)
 	}
 }
 
@@ -935,7 +1067,7 @@ func TestCheckDoctorProjectBuildsGitHubReadinessInventory(t *testing.T) {
 			gotReadiness = readinessCfg
 			return []ghconnector.ReadinessCheck{{Name: "GitHub auth path", Status: ghconnector.ReadinessOK, Detail: readinessCfg.AuthPath}}, nil
 		},
-	}, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"})
+	}, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"}, true)
 
 	if gotConnector.APIKey != "token" {
 		t.Fatalf("connector APIKey = %q, want injected runtime token", gotConnector.APIKey)
@@ -1008,7 +1140,7 @@ func TestCheckDoctorProjectBuildsGitHubIssueFieldReadinessInventory(t *testing.T
 			gotReadiness = readinessCfg
 			return []ghconnector.ReadinessCheck{{Name: "GitHub issue field access", Status: ghconnector.ReadinessOK, Detail: "read Status"}}, nil
 		},
-	}, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"})
+	}, RuntimeSecret{Value: "token", Source: "github_token", ResolvedVia: "gh"}, true)
 
 	if gotConnector.ProjectSlug != "" {
 		t.Fatalf("connector ProjectSlug = %q, want empty in issue_field mode", gotConnector.ProjectSlug)
@@ -2125,7 +2257,7 @@ func TestDoctorProjectCheckJobTimeoutReportsCurrentInnerCheck(t *testing.T) {
 			<-releaseReadiness
 			return nil, nil
 		},
-	}, RuntimeSecret{Value: "token", Source: "github_token"})
+	}, RuntimeSecret{Value: "token", Source: "github_token"}, false)
 	if len(jobs) != 1 {
 		t.Fatalf("jobs len = %d, want 1", len(jobs))
 	}
@@ -2277,24 +2409,47 @@ func stringSliceContains(values []string, want string) bool {
 }
 
 func successfulDoctorOptions(configPath string) options {
+	return successfulDoctorOptionsWithConfig(configPath, globalconfig.Config{
+		Path:       configPath,
+		APIVersion: globalconfig.APIVersion,
+		Kind:       globalconfig.Kind,
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 1,
+			Scheduling:          globalconfig.SchedulingWeighted,
+		},
+		Projects: []globalconfig.Project{},
+	})
+}
+
+func successfulDoctorOptionsWithConfig(configPath string, cfg globalconfig.Config) options {
 	return options{
 		resolvePath: func(string) (globalconfig.PathResolution, error) {
 			return globalconfig.PathResolution{Path: configPath, Rule: globalconfig.PathRuleFlag}, nil
 		},
 		read: func(string) (globalconfig.Config, error) {
-			return globalconfig.Config{
-				Path:       configPath,
-				APIVersion: globalconfig.APIVersion,
-				Kind:       globalconfig.Kind,
-				Global: globalconfig.Settings{
-					MaxConcurrentAgents: 1,
-					Scheduling:          globalconfig.SchedulingWeighted,
-				},
-				Projects: []globalconfig.Project{},
-			}, nil
+			cfg.Path = configPath
+			return cfg, nil
 		},
 		stdoutTTY: func() bool { return true },
 	}
+}
+
+func assertDoctorCheck(t *testing.T, report doctorReport, name string, status doctorStatus, detail string) {
+	t.Helper()
+
+	for _, check := range report.Checks {
+		if check.Name != name {
+			continue
+		}
+		if check.Status != status {
+			t.Fatalf("%s status = %s, want %s", name, check.Status, status)
+		}
+		if !strings.Contains(check.Detail, detail) && !strings.Contains(check.Hint, detail) {
+			t.Fatalf("%s missing %q:\nDetail: %s\nHint: %s", name, detail, check.Detail, check.Hint)
+		}
+		return
+	}
+	t.Fatalf("missing doctor check %q in %#v", name, report.Checks)
 }
 
 func successfulDoctorDeps() doctorDeps {
