@@ -76,7 +76,7 @@ func completedActiveReviewTargetState(issue connector.Issue, finalState string, 
 		return ""
 	}
 	switch normalizeState(issue.State) {
-	case normalizeState(autoPromoteSourceState), normalizeState(autoPromoteMergingState):
+	case normalizeState(autoPromoteSourceState), normalizeState(autoPromoteReworkState), normalizeState(autoPromoteMergingState):
 		return ""
 	}
 	if !completedActiveIssueReadyForReview(issue) {
