@@ -126,10 +126,16 @@ query DetentGitHubIssueIdentitiesByID($issueIds: [ID!]!) {
 }`
 
 const issueSubIssuesQuery = `
-query DetentGitHubIssueSubIssues($issueId: ID!, $after: String) {
+query DetentGitHubIssueSubIssues(
+  $issueId: ID!
+  $after: String
+  $linkedIssuesFirst: Int!
+  $linkedProjectItemsFirst: Int!
+  $linkedProjectItemFieldValuesFirst: Int!
+) {
   node(id: $issueId) {
     ... on Issue {
-      subIssues(first: 100, after: $after) {
+      subIssues(first: $linkedIssuesFirst, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -138,7 +144,7 @@ query DetentGitHubIssueSubIssues($issueId: ID!, $after: String) {
           state
           url
           repository { nameWithOwner }
-          projectItems(first: 100) {
+          projectItems(first: $linkedProjectItemsFirst) {
             pageInfo { hasNextPage endCursor }
             nodes {
               id
@@ -149,7 +155,7 @@ query DetentGitHubIssueSubIssues($issueId: ID!, $after: String) {
               priorityValue: fieldValueByName(name: "Priority") {
                 ... on ProjectV2ItemFieldSingleSelectValue { name }
               }
-              fieldValues(first: 100) {
+              fieldValues(first: $linkedProjectItemFieldValuesFirst) {
                 nodes {
                   __typename
                   ... on ProjectV2ItemFieldSingleSelectValue {
@@ -176,10 +182,16 @@ query DetentGitHubIssueSubIssues($issueId: ID!, $after: String) {
 }`
 
 const issueTrackedIssuesQuery = `
-query DetentGitHubIssueTrackedIssues($issueId: ID!, $after: String) {
+query DetentGitHubIssueTrackedIssues(
+  $issueId: ID!
+  $after: String
+  $linkedIssuesFirst: Int!
+  $linkedProjectItemsFirst: Int!
+  $linkedProjectItemFieldValuesFirst: Int!
+) {
   node(id: $issueId) {
     ... on Issue {
-      trackedIssues(first: 100, after: $after) {
+      trackedIssues(first: $linkedIssuesFirst, after: $after) {
         pageInfo { hasNextPage endCursor }
         nodes {
           id
@@ -188,7 +200,7 @@ query DetentGitHubIssueTrackedIssues($issueId: ID!, $after: String) {
           state
           url
           repository { nameWithOwner }
-          projectItems(first: 100) {
+          projectItems(first: $linkedProjectItemsFirst) {
             pageInfo { hasNextPage endCursor }
             nodes {
               id
@@ -199,7 +211,7 @@ query DetentGitHubIssueTrackedIssues($issueId: ID!, $after: String) {
               priorityValue: fieldValueByName(name: "Priority") {
                 ... on ProjectV2ItemFieldSingleSelectValue { name }
               }
-              fieldValues(first: 100) {
+              fieldValues(first: $linkedProjectItemFieldValuesFirst) {
                 nodes {
                   __typename
                   ... on ProjectV2ItemFieldSingleSelectValue {
@@ -285,7 +297,7 @@ query DetentGitHubIssueParents(
       parent {
         ...DetentGitHubIssueParent
       }
-      trackedInIssues(first: 100, after: $trackedInAfter) {
+      trackedInIssues(first: $linkedIssuesFirst, after: $trackedInAfter) {
         pageInfo { hasNextPage endCursor }
         nodes {
           ...DetentGitHubIssueParent
@@ -1390,8 +1402,11 @@ func (c *Connector) fetchLinkedIssuePage(
 		} `json:"node"`
 	}
 	if err := c.client.GraphQLWithType(ctx, graphQLQueryEpicChildren, query, map[string]any{
-		"issueId": issueID,
-		"after":   after,
+		"issueId":                           issueID,
+		"after":                             after,
+		"linkedIssuesFirst":                 linkedIssuePageSize,
+		"linkedProjectItemsFirst":           linkedIssueProjectItemsPageSize,
+		"linkedProjectItemFieldValuesFirst": linkedIssueProjectItemFieldValuesPageSize,
 	}, &response); err != nil {
 		return linkedIssuesConnection{}, fmt.Errorf("fetch github issue children: %w", err)
 	}

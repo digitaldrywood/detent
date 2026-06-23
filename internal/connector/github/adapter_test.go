@@ -191,6 +191,76 @@ func TestProjectStatusQueryFormatsMappedStatuses(t *testing.T) {
 	}
 }
 
+func TestLinkedIssueProjectQueriesStayUnderGitHubNodeLimit(t *testing.T) {
+	t.Parallel()
+
+	const githubStaticNodeLimit = 500000
+	tests := []struct {
+		name     string
+		query    string
+		required []string
+		budget   int
+	}{
+		{
+			name:  "sub issue project fields",
+			query: issueSubIssuesQuery,
+			required: []string{
+				"subIssues(first: $linkedIssuesFirst, after: $after)",
+				"projectItems(first: $linkedProjectItemsFirst)",
+				"fieldValues(first: $linkedProjectItemFieldValuesFirst)",
+			},
+			budget: linkedIssuePageSize * linkedIssueProjectItemsPageSize * linkedIssueProjectItemFieldValuesPageSize,
+		},
+		{
+			name:  "tracked issue project fields",
+			query: issueTrackedIssuesQuery,
+			required: []string{
+				"trackedIssues(first: $linkedIssuesFirst, after: $after)",
+				"projectItems(first: $linkedProjectItemsFirst)",
+				"fieldValues(first: $linkedProjectItemFieldValuesFirst)",
+			},
+			budget: linkedIssuePageSize * linkedIssueProjectItemsPageSize * linkedIssueProjectItemFieldValuesPageSize,
+		},
+		{
+			name:  "tracked in issue project fields",
+			query: issueParentsQuery,
+			required: []string{
+				"trackedInIssues(first: $linkedIssuesFirst, after: $trackedInAfter)",
+				"projectItems(first: $projectItemsFirst)",
+				"fieldValues(first: $projectItemFieldValuesFirst)",
+			},
+			budget: linkedIssuePageSize * projectItemsPerIssue * projectItemFieldValuesPageSize,
+		},
+		{
+			name:  "tracked in issue linked children",
+			query: issueParentsQuery,
+			required: []string{
+				"trackedInIssues(first: $linkedIssuesFirst, after: $trackedInAfter)",
+				"subIssues(first: $linkedIssuesFirst)",
+				"trackedIssues(first: $linkedIssuesFirst)",
+				"projectItems(first: $linkedProjectItemsFirst)",
+				"fieldValues(first: $linkedProjectItemFieldValuesFirst)",
+			},
+			budget: linkedIssuePageSize * linkedIssuePageSize * linkedIssueProjectItemsPageSize * linkedIssueProjectItemFieldValuesPageSize,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if tt.budget >= githubStaticNodeLimit {
+				t.Fatalf("GraphQL static node budget = %d, want < %d", tt.budget, githubStaticNodeLimit)
+			}
+			for _, want := range tt.required {
+				if !strings.Contains(tt.query, want) {
+					t.Fatalf("query missing %q:\n%s", want, tt.query)
+				}
+			}
+		})
+	}
+}
+
 func TestConnectorFetchCandidateIssuesRequestsRateLimitSnapshot(t *testing.T) {
 	t.Parallel()
 
@@ -1463,6 +1533,16 @@ func TestConnectorFetchIssueChildrenPaginatesLinkedIssues(t *testing.T) {
 	if len(requests) != 3 {
 		t.Fatalf("request count = %d, want 3", len(requests))
 	}
+	firstVariables := requests[0]["variables"].(map[string]any)
+	if firstVariables["linkedIssuesFirst"] != float64(linkedIssuePageSize) {
+		t.Fatalf("linkedIssuesFirst = %v, want %d", firstVariables["linkedIssuesFirst"], linkedIssuePageSize)
+	}
+	if firstVariables["linkedProjectItemsFirst"] != float64(linkedIssueProjectItemsPageSize) {
+		t.Fatalf("linkedProjectItemsFirst = %v, want %d", firstVariables["linkedProjectItemsFirst"], linkedIssueProjectItemsPageSize)
+	}
+	if firstVariables["linkedProjectItemFieldValuesFirst"] != float64(linkedIssueProjectItemFieldValuesPageSize) {
+		t.Fatalf("linkedProjectItemFieldValuesFirst = %v, want %d", firstVariables["linkedProjectItemFieldValuesFirst"], linkedIssueProjectItemFieldValuesPageSize)
+	}
 	secondVariables := requests[1]["variables"].(map[string]any)
 	if secondVariables["after"] != "sub-cursor-1" {
 		t.Fatalf("second after = %v, want sub-cursor-1", secondVariables["after"])
@@ -1514,6 +1594,9 @@ func TestConnectorFetchIssueParentsReturnsParentAndTrackedInIssues(t *testing.T)
 		if !strings.Contains(query, want) {
 			t.Fatalf("query missing %q:\n%s", want, query)
 		}
+	}
+	if variables["linkedIssuesFirst"] != float64(linkedIssuePageSize) {
+		t.Fatalf("linkedIssuesFirst = %v, want %d", variables["linkedIssuesFirst"], linkedIssuePageSize)
 	}
 }
 
