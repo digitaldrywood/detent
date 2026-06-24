@@ -178,6 +178,10 @@ func (c *Connector) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage
 	return c.client.FlushGraphQLRateLimitUsage()
 }
 
+func (c *Connector) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
+	return c.client.FlushRESTRateLimitUsage()
+}
+
 func (c *Connector) LiveConnections() int {
 	if c == nil || c.client == nil {
 		return 0
@@ -268,4 +272,5 @@ var _ connector.PullRequestCommenter = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)
 var _ connector.GraphQLRateLimitUsageReporter = (*Connector)(nil)
+var _ connector.RESTRateLimitUsageReporter = (*Connector)(nil)
 var _ connector.AuthHealthReporter = (*Connector)(nil)

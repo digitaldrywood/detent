@@ -83,6 +83,7 @@ type Tracker struct {
 	GitHubAppPrivateKey        string                `yaml:"github_app_private_key"`
 	GitHubAppPrivateKeyPath    string                `yaml:"github_app_private_key_path"`
 	GitHubAppInstallationID    string                `yaml:"github_app_installation_id"`
+	GitHubWebhookSecret        string                `yaml:"github_webhook_secret,omitempty"`
 	GitHubStatusSource         string                `yaml:"github_status_source"`
 	ProjectSlug                string                `yaml:"project_slug"`
 	Repository                 string                `yaml:"repository"`
@@ -664,6 +665,7 @@ func (c *Config) normalize() {
 		c.Tracker.Endpoint = defaultGitHubEndpoint
 	}
 	c.Tracker.GitHubStatusSource = normalizeGitHubStatusSource(c.Tracker.GitHubStatusSource)
+	c.Tracker.GitHubWebhookSecret = strings.TrimSpace(c.Tracker.GitHubWebhookSecret)
 	c.Tracker.Repository = strings.TrimSpace(c.Tracker.Repository)
 	c.Tracker.StatusField = strings.TrimSpace(c.Tracker.StatusField)
 	if c.Tracker.StatusField == "" {

@@ -4,8 +4,6 @@ import (
 	"context"
 	"time"
 
-	"golang.org/x/sync/errgroup"
-
 	"github.com/digitaldrywood/detent/internal/connector"
 )
 
@@ -39,12 +37,16 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 		o.logger.Warn("github graphql polling paused", "remaining", gitHubGraphQLRemaining(state), "pause", pause)
 		return
 	}
+	if pause := o.gitHubRESTPause(state, now); pause > 0 {
+		o.logger.Warn("github rest polling paused", "remaining", gitHubRESTRemaining(state), "pause", pause)
+		return
+	}
 
 	o.refreshActiveRuns(ctx, state, now)
 	if state.Draining {
 		return
 	}
-	fetched, ok := o.fetchTickIssues(ctx)
+	fetched, ok := o.fetchTickIssues(ctx, state)
 	if !ok {
 		return
 	}
@@ -109,34 +111,28 @@ func (o *Orchestrator) refreshActiveRuns(ctx context.Context, state *State, now 
 	o.heartbeatRunningClaims(ctx, state, now)
 }
 
-func (o *Orchestrator) fetchTickIssues(ctx context.Context) (tickFetchedIssues, bool) {
-	var candidateIssues []connector.Issue
-	var candidateErr error
-	var statusIssues []connector.Issue
-	var statusErr error
+func (o *Orchestrator) fetchTickIssues(ctx context.Context, state *State) (tickFetchedIssues, bool) {
 	observedStates := o.observedStatusFetchStates()
 
-	group, groupCtx := errgroup.WithContext(ctx)
-	group.SetLimit(2)
-	group.Go(func() error {
-		candidateIssues, candidateErr = o.connector.FetchCandidateIssues(groupCtx)
-		return candidateErr
-	})
-	group.Go(func() error {
-		statusIssues, statusErr = o.connector.FetchIssuesByStates(groupCtx, observedStates)
-		return nil
-	})
-	if err := group.Wait(); err != nil && candidateErr == nil {
-		candidateErr = err
-	}
-	if candidateErr != nil {
-		o.logger.Warn("fetch candidate issues failed", "error", candidateErr)
+	candidateIssues, err := o.connector.FetchCandidateIssues(ctx)
+	if err != nil {
+		o.logger.Warn("fetch candidate issues failed", "error", err)
 		return tickFetchedIssues{}, false
 	}
 
 	fetched := tickFetchedIssues{
 		candidates: cloneIssues(candidateIssues),
 	}
+	if len(observedStates) == 0 {
+		fetched.statusOK = true
+		return fetched, true
+	}
+	if !tickHasActiveWork(state, candidateIssues) && !o.observedWorkExists(ctx, observedStates) {
+		fetched.statusOK = true
+		return fetched, true
+	}
+
+	statusIssues, statusErr := o.connector.FetchIssuesByStates(ctx, observedStates)
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
 		return fetched, true
@@ -147,6 +143,34 @@ func (o *Orchestrator) fetchTickIssues(ctx context.Context) (tickFetchedIssues, 
 		return tickFetchedIssues{}, false
 	}
 	return fetched, true
+}
+
+func (o *Orchestrator) observedWorkExists(ctx context.Context, observedStates []string) bool {
+	limiter, ok := o.connector.(connector.IssuesByStatesLimiter)
+	if !ok {
+		return true
+	}
+	issues, err := limiter.FetchIssuesByStatesLimit(ctx, observedStates, 1)
+	if err != nil {
+		o.logger.Warn("fetch bounded observed status probe failed", "error", err)
+		return false
+	}
+	return len(issues) > 0
+}
+
+func tickHasActiveWork(state *State, candidates []connector.Issue) bool {
+	if len(candidates) > 0 {
+		return true
+	}
+	if state == nil {
+		return false
+	}
+	return len(state.Running) > 0 ||
+		len(state.Retry) > 0 ||
+		len(state.Blocked) > 0 ||
+		len(state.Pipeline) > 0 ||
+		len(state.epicTransitionWatch) > 0 ||
+		len(state.pendingEpicParentLookups) > 0
 }
 
 func (o *Orchestrator) refreshTransitionSets(

@@ -1416,7 +1416,7 @@ func TestRunTracksStatusLabelConflictCandidateAsBlocked(t *testing.T) {
 	}
 }
 
-func TestRunFetchesCandidatesAndObservedStatesConcurrently(t *testing.T) {
+func TestRunFetchesCandidatesBeforeObservedStates(t *testing.T) {
 	t.Parallel()
 
 	tracker := newParallelFetchConnector()
@@ -1424,8 +1424,9 @@ func TestRunFetchesCandidatesAndObservedStatesConcurrently(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	tracker.waitBothStarted(t)
+	tracker.waitCandidateStarted(t)
 	tracker.releaseFetches()
+	tracker.waitStatusStarted(t)
 
 	waitForState(t, orch, func(state orchestrator.State) bool {
 		return !state.LastRefreshAt.IsZero()
@@ -2249,11 +2250,6 @@ func (c *parallelFetchConnector) FetchCandidateIssues(ctx context.Context) ([]co
 	select {
 	case <-ctx.Done():
 		return nil, ctx.Err()
-	case <-c.statusStarted:
-	}
-	select {
-	case <-ctx.Done():
-		return nil, ctx.Err()
 	case <-c.release:
 		return nil, nil
 	}
@@ -2297,15 +2293,23 @@ func (c *parallelFetchConnector) SetField(context.Context, string, string, strin
 	return nil
 }
 
-func (c *parallelFetchConnector) waitBothStarted(t *testing.T) {
+func (c *parallelFetchConnector) waitCandidateStarted(t *testing.T) {
 	t.Helper()
 
-	for _, ch := range []<-chan struct{}{c.candidateStarted, c.statusStarted} {
-		select {
-		case <-ch:
-		case <-time.After(time.Second):
-			t.Fatal("timed out waiting for candidate and observed status fetches to overlap")
-		}
+	select {
+	case <-c.candidateStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for candidate fetch to start")
+	}
+}
+
+func (c *parallelFetchConnector) waitStatusStarted(t *testing.T) {
+	t.Helper()
+
+	select {
+	case <-c.statusStarted:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for observed status fetch to start")
 	}
 }
 

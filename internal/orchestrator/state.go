@@ -296,7 +296,9 @@ func cloneRateLimits(rateLimits *telemetry.RateLimits) *telemetry.RateLimits {
 	cloned.Secondary = cloneRateLimitBucket(rateLimits.Secondary)
 	cloned.Credits = cloneRateLimitBucket(rateLimits.Credits)
 	cloned.GitHubGraphQL = cloneRateLimitBucket(rateLimits.GitHubGraphQL)
+	cloned.GitHubREST = cloneRateLimitBucket(rateLimits.GitHubREST)
 	cloned.GraphQLCost = cloneGraphQLCost(rateLimits.GraphQLCost)
+	cloned.RESTUsage = cloneRESTUsage(rateLimits.RESTUsage)
 	return &cloned
 }
 
@@ -310,6 +312,12 @@ func mergeRateLimits(current *telemetry.RateLimits, incoming *telemetry.RateLimi
 	}
 	if current != nil && current.GraphQLCost != nil && merged.GraphQLCost == nil {
 		merged.GraphQLCost = cloneGraphQLCost(current.GraphQLCost)
+	}
+	if current != nil && current.GitHubREST != nil && merged.GitHubREST == nil {
+		merged.GitHubREST = cloneRateLimitBucket(current.GitHubREST)
+	}
+	if current != nil && current.RESTUsage != nil && merged.RESTUsage == nil {
+		merged.RESTUsage = cloneRESTUsage(current.RESTUsage)
 	}
 	return merged
 }
@@ -335,6 +343,29 @@ func cloneGraphQLCost(cost *telemetry.GraphQLCost) *telemetry.GraphQLCost {
 	cloned := *cost
 	if len(cost.Contributors) > 0 {
 		cloned.Contributors = append([]telemetry.GraphQLCostContributor(nil), cost.Contributors...)
+	}
+	return &cloned
+}
+
+func cloneRESTUsage(usage *telemetry.RESTUsage) *telemetry.RESTUsage {
+	if usage == nil {
+		return nil
+	}
+
+	cloned := *usage
+	if usage.BackoffUntil != nil {
+		backoffUntil := *usage.BackoffUntil
+		cloned.BackoffUntil = &backoffUntil
+	}
+	if len(usage.Contributors) > 0 {
+		cloned.Contributors = append([]telemetry.RESTUsageContributor(nil), usage.Contributors...)
+		for index := range cloned.Contributors {
+			if usage.Contributors[index].ResetAt == nil {
+				continue
+			}
+			resetAt := *usage.Contributors[index].ResetAt
+			cloned.Contributors[index].ResetAt = &resetAt
+		}
 	}
 	return &cloned
 }

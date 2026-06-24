@@ -842,6 +842,50 @@ func (r registryRefresher) RequestRefresh(ctx context.Context) (web.RefreshRespo
 	return response, nil
 }
 
+func (r registryRefresher) RequestTargetedRefresh(ctx context.Context, target web.RefreshTarget) (web.RefreshResponse, error) {
+	repository := strings.TrimSpace(target.Repository)
+	if repository == "" {
+		return r.RequestRefresh(ctx)
+	}
+
+	var response web.RefreshResponse
+	refreshed := false
+	for _, trackedProject := range r.registry.List() {
+		if !trackedProject.Running() {
+			continue
+		}
+		workflow := trackedProject.Workflow().Config
+		if !strings.EqualFold(strings.TrimSpace(workflow.Tracker.Repository), repository) {
+			continue
+		}
+		orch := trackedProject.Orchestrator()
+		if orch == nil {
+			continue
+		}
+
+		next, err := orch.RequestRefresh(ctx)
+		if err != nil {
+			return web.RefreshResponse{}, err
+		}
+		next.Operations = appendOperations([]string{"target:" + repository}, next.Operations)
+		if !refreshed {
+			response = next
+			refreshed = true
+			continue
+		}
+		response = mergeRefreshResponse(response, next)
+	}
+	if !refreshed {
+		fallback, err := r.RequestRefresh(ctx)
+		if err != nil {
+			return web.RefreshResponse{}, err
+		}
+		fallback.Operations = appendOperations([]string{"target-fallback:" + repository}, fallback.Operations)
+		return fallback, nil
+	}
+	return response, nil
+}
+
 func mergeRefreshResponse(current web.RefreshResponse, next web.RefreshResponse) web.RefreshResponse {
 	current.Queued = current.Queued || next.Queued
 	current.Coalesced = current.Coalesced || next.Coalesced

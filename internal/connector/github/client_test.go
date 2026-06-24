@@ -278,6 +278,147 @@ func TestClientRESTRefreshesTokenAfterAuthFailure(t *testing.T) {
 	}
 }
 
+func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch call := calls.Add(1); call {
+		case 1:
+			if r.URL.Path != "/repos/digitaldrywood/detent/issues" {
+				t.Fatalf("first path = %s, want label issues path", r.URL.Path)
+			}
+			if got := r.URL.Query().Get("labels"); got != "detent:todo" {
+				t.Fatalf("labels query = %q, want detent:todo", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-RateLimit-Limit", "5000")
+			w.Header().Set("X-RateLimit-Used", "121")
+			w.Header().Set("X-RateLimit-Remaining", "4879")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+			w.Header().Set("X-RateLimit-Resource", "core")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		case 2:
+			if r.URL.Path != "/repos/digitaldrywood/detent/issues/666/comments" {
+				t.Fatalf("second path = %s, want issue comments path", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "120")
+			w.Header().Set("X-RateLimit-Limit", "5000")
+			w.Header().Set("X-RateLimit-Used", "122")
+			w.Header().Set("X-RateLimit-Remaining", "4878")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+			w.Header().Set("X-RateLimit-Resource", "core")
+			w.WriteHeader(http.StatusForbidden)
+			_, _ = w.Write([]byte(`{"message":"secondary rate limit"}`))
+		default:
+			t.Fatalf("unexpected REST call %d to %s", call, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var issues []restIssue
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues?labels=detent%3Atodo", nil, &issues); err != nil {
+		t.Fatalf("REST() label issues error = %v", err)
+	}
+	var comments []restComment
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues/666/comments", nil, &comments)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("REST() comments error = %v, want ErrRateLimited", err)
+	}
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/check-runs", nil, nil)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("REST() during backoff error = %v, want ErrRateLimited", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("REST calls = %d, want 2 before local backoff", calls.Load())
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+	if !usage.HasRateLimit {
+		t.Fatal("FlushRESTRateLimitUsage().HasRateLimit = false, want true")
+	}
+	if usage.TotalRequests != 2 || !usage.RateLimited {
+		t.Fatalf("FlushRESTRateLimitUsage() totals = requests %d rate_limited %v, want 2 true", usage.TotalRequests, usage.RateLimited)
+	}
+	if usage.RateLimit.Remaining != 4878 || usage.RateLimit.RetryAfter != 2*time.Minute || usage.RateLimit.Resource != "core" {
+		t.Fatalf("FlushRESTRateLimitUsage().RateLimit = %#v, want remaining 4878 retry-after 2m core", usage.RateLimit)
+	}
+	if usage.BackoffUntil.IsZero() {
+		t.Fatal("FlushRESTRateLimitUsage().BackoffUntil is zero, want backoff deadline")
+	}
+	if got := restEndpointUsageCount(usage.Requests, "label issues"); got != 1 {
+		t.Fatalf("label issues usage count = %d, want 1; usage = %#v", got, usage.Requests)
+	}
+	if got := restEndpointUsageCount(usage.Requests, "issue comments"); got != 1 {
+		t.Fatalf("issue comments usage count = %d, want 1; usage = %#v", got, usage.Requests)
+	}
+}
+
+func TestClientRESTBackoffAppliesAcrossClientsWithSharedToken(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Now().UTC().Add(time.Hour)
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		w.Header().Set("Retry-After", "120")
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Used", "5000")
+		w.Header().Set("X-RateLimit-Remaining", "0")
+		w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+		w.Header().Set("X-RateLimit-Resource", "core")
+		w.WriteHeader(http.StatusForbidden)
+		_, _ = w.Write([]byte(`{"message":"secondary rate limit"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	clientA, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("shared-rest-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() clientA error = %v", err)
+	}
+	clientB, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("shared-rest-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() clientB error = %v", err)
+	}
+
+	err = clientA.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues/666/comments", nil, nil)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("clientA REST() error = %v, want ErrRateLimited", err)
+	}
+	err = clientB.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues?labels=detent%3Atodo", nil, nil)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("clientB REST() error = %v, want ErrRateLimited from shared backoff", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("REST calls = %d, want only the first client to hit the server", calls.Load())
+	}
+
+	usage := clientB.FlushRESTRateLimitUsage()
+	if !usage.BackoffUntil.After(time.Now()) {
+		t.Fatalf("clientB BackoffUntil = %v, want shared future deadline", usage.BackoffUntil)
+	}
+}
+
 func TestClientReportsStaleAuthWhenRefreshFails(t *testing.T) {
 	t.Parallel()
 
@@ -315,6 +456,15 @@ func TestClientReportsStaleAuthWhenRefreshFails(t *testing.T) {
 	if health.LastRecoveredAt.IsZero() == false {
 		t.Fatalf("AuthHealth().LastRecoveredAt = %v, want zero", health.LastRecoveredAt)
 	}
+}
+
+func restEndpointUsageCount(usages []connector.RESTEndpointUsage, family string) int64 {
+	for _, usage := range usages {
+		if usage.EndpointFamily == family {
+			return usage.Count
+		}
+	}
+	return 0
 }
 
 func TestClientGraphQLCapturesRateLimitSnapshot(t *testing.T) {

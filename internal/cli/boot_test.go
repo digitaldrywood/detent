@@ -276,6 +276,34 @@ func TestRegistryRefresherRequestsProjectOrchestrators(t *testing.T) {
 	assertRefresh(t, response)
 }
 
+func TestRegistryRefresherFallsBackWhenTargetRepositoryDoesNotMatch(t *testing.T) {
+	t.Parallel()
+
+	registry := projectpkg.NewRegistry()
+	mustSetProject(t, registry, startRefreshProject(t, "project-v2"))
+
+	refresher := refresherForRegistry(registry)
+	targeted, ok := refresher.(web.TargetedRefresher)
+	if !ok {
+		t.Fatal("refresherForRegistry() does not implement TargetedRefresher")
+	}
+	response, err := targeted.RequestTargetedRefresh(context.Background(), web.RefreshTarget{
+		Repository:  "digitaldrywood/detent",
+		Event:       "projects_v2_item",
+		DeliveryID:  "delivery-1",
+		IssueNumber: 666,
+	})
+	if err != nil {
+		t.Fatalf("RequestTargetedRefresh() error = %v", err)
+	}
+	if !hasOperation(response.Operations, "target-fallback:digitaldrywood/detent") {
+		t.Fatalf("Operations = %#v, want target fallback marker", response.Operations)
+	}
+	if !hasOperation(response.Operations, "poll") || !hasOperation(response.Operations, "reconcile") {
+		t.Fatalf("Operations = %#v, want poll/reconcile fallback refresh", response.Operations)
+	}
+}
+
 func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 	host, port := freeLoopbackPort(t)
 	globalPath := filepath.Join(t.TempDir(), "global.yaml")
