@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"reflect"
@@ -236,6 +237,8 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 				TerminalStates:      []string{"Done", "Cancelled"},
 			})
 			state := newState(cfg)
+			mergingSlot := dispatchTestIssue("issue-merging-slot", "Merging")
+			state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
 			tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{tt.issue}}
 			var logs strings.Builder
 			orch := &Orchestrator{
@@ -546,6 +549,8 @@ func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
 		t.Fatalf("validator issue = %#v, want issue-validator", requests[0].Issue)
 	}
 
+	mergingSlot := dispatchTestIssue("issue-validator-merging-slot", "Merging")
+	state.Running[mergingSlot.ID] = Running{Issue: mergingSlot}
 	orch.tick(context.Background(), &state, now.Add(time.Second))
 
 	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: "issue-validator", state: "Merging"}}; !reflect.DeepEqual(got, want) {
@@ -618,6 +623,222 @@ func TestTickRequeuesObservedStaleMergingIssueForDispatch(t *testing.T) {
 	}
 	if running := state.Running[issue.ID]; running.cancel != nil {
 		running.cancel()
+	}
+}
+
+func TestTickDispatchesFreshAutoPromotedMergingIssue(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 17, 27, 1, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-auto-promoted-merging", []string{"bug"}, &connector.PullRequest{
+		Number:                 70,
+		URL:                    "https://github.test/digitaldrywood/creswoodcorners-phone/pull/70",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	issue.Identifier = "digitaldrywood/creswoodcorners-phone#62"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	runner := newWorkerHostRunner()
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:        cfg,
+		connector:  tracker,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+		logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Merging"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != issue.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
+	}
+	if request.Issue.State != "Merging" {
+		t.Fatalf("RunRequest.Issue.State = %q, want Merging", request.Issue.State)
+	}
+	for _, fragment := range []string{
+		"merge_worker_pickup",
+		"source=auto_promote",
+		"merge_worker_attempt",
+		"pull_request_number=70",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+	if running := state.Running[issue.ID]; running.cancel != nil {
+		running.cancel()
+	}
+}
+
+func TestTickReconcilesStaleMergingPullRequestStates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 18, 0, 0, 0, time.UTC)
+	merged := autoPromoteTickIssue("issue-merged-pr", []string{"bug"}, &connector.PullRequest{
+		Number:         71,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/71",
+		State:          "MERGED",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	merged.State = "Merging"
+	merged.Identifier = "digitaldrywood/creswoodcorners-phone#63"
+	conflicting := autoPromoteTickIssue("issue-conflicting-merging", []string{"bug"}, &connector.PullRequest{
+		Number:         72,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/72",
+		State:          "OPEN",
+		MergeableState: "DIRTY",
+		CIStatus:       "success",
+	})
+	conflicting.State = "Merging"
+	conflicting.Identifier = "digitaldrywood/creswoodcorners-phone#64"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{merged, conflicting},
+		candidateIssuesSet: true,
+	}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:        cfg,
+		connector:  tracker,
+		supervisor: newTestSupervisor(t, newWorkerHostRunner(), cfg),
+		runResults: make(chan runpkg.Completion, 1),
+		logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{
+		{issueID: "issue-merged-pr", state: "Done"},
+		{issueID: "issue-conflicting-merging", state: "Rework"},
+	}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if len(tracker.comments) != 2 {
+		t.Fatalf("comments = %#v, want two reconciliation comments", tracker.comments)
+	}
+	wantComments := map[string][]string{
+		"issue-merged-pr": {
+			"Reconciled this issue from Merging to Done.",
+			"reason: pull_request_merged",
+			"https://github.test/digitaldrywood/creswoodcorners-phone/pull/71",
+		},
+		"issue-conflicting-merging": {
+			"Reconciled this issue from Merging to Rework.",
+			"reason: merge_conflicts",
+			"mergeable_state: dirty",
+			"https://github.test/digitaldrywood/creswoodcorners-phone/pull/72",
+		},
+	}
+	for _, comment := range tracker.comments {
+		for _, fragment := range wantComments[comment.issueID] {
+			if !strings.Contains(comment.body, fragment) {
+				t.Fatalf("comment for %s = %q, missing %q", comment.issueID, comment.body, fragment)
+			}
+		}
+	}
+	for _, fragment := range []string{
+		"stale_merging_pr_reconciled",
+		"reason=pull_request_merged",
+		"reason=merge_conflicts",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+}
+
+func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 19, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-merge-log", []string{"bug"}, &connector.PullRequest{
+		Number:         73,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/73",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/creswoodcorners-phone#65"
+
+	var failureLogs strings.Builder
+	failureState := newState(cfg)
+	failureState.Running[issue.ID] = Running{Issue: cloneIssue(issue), StartedAt: now.Add(-time.Minute)}
+	failureOrch := &Orchestrator{
+		cfg:    cfg,
+		logger: slog.New(slog.NewTextHandler(&failureLogs, nil)),
+	}
+	failureOrch.handleRunResult(context.Background(), &failureState, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Err:         errors.New("merge command failed"),
+	})
+	for _, fragment := range []string{"merge_worker_failure", "reason=runner_failed", "merge command failed"} {
+		if !strings.Contains(failureLogs.String(), fragment) {
+			t.Fatalf("failure logs %q missing fragment %q", failureLogs.String(), fragment)
+		}
+	}
+
+	var successLogs strings.Builder
+	successIssue := cloneIssue(issue)
+	successIssue.Closed = true
+	successIssue.ClosedReason = "completed"
+	successState := newState(cfg)
+	successState.Running[successIssue.ID] = Running{Issue: cloneIssue(successIssue), StartedAt: now.Add(-time.Minute)}
+	successOrch := &Orchestrator{
+		cfg:       cfg,
+		connector: &autoPromoteTickConnector{stateIssues: []connector.Issue{successIssue}},
+		logger:    slog.New(slog.NewTextHandler(&successLogs, nil)),
+	}
+	successOrch.completeTerminalRunning(context.Background(), &successState, successIssue.ID, successState.Running[successIssue.ID], now, CodexTotals{})
+	for _, fragment := range []string{"merge_worker_success", "final_state=Done", "pull_request_number=73"} {
+		if !strings.Contains(successLogs.String(), fragment) {
+			t.Fatalf("success logs %q missing fragment %q", successLogs.String(), fragment)
+		}
 	}
 }
 

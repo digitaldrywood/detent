@@ -1411,17 +1411,20 @@ func (o *Orchestrator) dispatchIssue(
 
 	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
 	if !ok {
+		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
 		return false
 	}
 
 	globalSlot, ok := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, now)
 	if !ok {
+		o.logMergeWorkerFailure(issue, "global_slot_unavailable", nil)
 		return false
 	}
 
 	claimedIssue, claim, ok := o.claimIssue(ctx, issue, now)
 	if !ok {
 		o.releaseGlobalDispatchSlot(globalSlot)
+		o.logMergeWorkerFailure(issue, "claim_failed", nil)
 		return false
 	}
 
@@ -1435,6 +1438,7 @@ func (o *Orchestrator) dispatchIssue(
 			if o.logger != nil {
 				o.logger.Warn("start state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 			}
+			o.logMergeWorkerFailure(issue, "start_state_transition_failed", err)
 			return false
 		}
 		issue.State = targetState
@@ -1466,6 +1470,7 @@ func (o *Orchestrator) dispatchIssue(
 		SelectorContext: o.selectorContext(),
 		OnUsageUpdate:   o.usageUpdateHandler(runCtx, issue.ID),
 	}
+	o.logMergeWorkerAttempt(issue, attempt, workerHost)
 	o.supervisor.Dispatch(runCtx, request, o.runResults)
 	return true
 }
@@ -1646,6 +1651,9 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 
 	if event.Err != nil {
+		if mergeWorkerIssue(running.Issue) {
+			o.logMergeWorkerFailure(running.Issue, "runner_failed", event.Err)
+		}
 		attempt := event.RetryAttempt
 		if attempt < 1 {
 			attempt = nextAttempt(running.Attempt)
@@ -1829,6 +1837,9 @@ func (o *Orchestrator) completeTerminalRunning(
 	state.CodexTotals = addCodexTotals(state.CodexTotals, tokens)
 	if diffStatsPresent(running.DiffStats) {
 		state.DiffStats[issueID] = running.DiffStats
+	}
+	if mergeWorkerIssue(running.Issue) {
+		o.logMergeWorkerSuccess(running.Issue, finalState)
 	}
 	o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), completedAt)
 }
