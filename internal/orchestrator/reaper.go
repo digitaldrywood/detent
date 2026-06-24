@@ -16,6 +16,19 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 		return
 	}
 
+	if state.LastRefreshError == "" {
+		if ids := workspaceCleanupIssueIDs(state); len(ids) > 0 {
+			ok, found := o.reapWorkspaceIssueIDs(ctx, state, ids, now)
+			if !ok {
+				return
+			}
+			if found {
+				state.LastWorkspaceCleanupAt = now
+				return
+			}
+		}
+	}
+
 	states := cleanupFetchStates(o.cfg)
 	if len(states) == 0 {
 		return
@@ -32,6 +45,32 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 		return
 	}
 	o.reapWorkspaceStates(ctx, state, terminalStates, now)
+}
+
+func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, issueIDs []string, now time.Time) (bool, bool) {
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, issueIDs)
+	if err != nil {
+		o.logger.Warn("fetch workspace cleanup issue IDs failed", slog.Any("error", err))
+		message := workspaceCleanupIssueIDsFetchFailedMessage(issueIDs, err)
+		markRefreshError(state, message, cleanupEventAt(now))
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      cleanupEventAt(now),
+			Event:   "workspace_cleanup_fetch_failed",
+			Message: message,
+		})
+		return false, false
+	}
+	clearRefreshError(state)
+	for _, issue := range issues {
+		if !o.shouldReapWorkspaceIssue(issue, now) {
+			continue
+		}
+		if o.completeRunningIssueFromWorkspaceCleanup(ctx, state, issue, now) {
+			continue
+		}
+		o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), now)
+	}
+	return true, len(issues) > 0
 }
 
 func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, states []string, now time.Time) bool {
@@ -83,6 +122,35 @@ func appendUniqueStates(groups ...[]string) []string {
 			seen[key] = struct{}{}
 			out = append(out, state)
 		}
+	}
+	return out
+}
+
+func workspaceCleanupIssueIDs(state *State) []string {
+	if state == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := []string{}
+	appendIssue := func(issue connector.Issue) {
+		id := strings.TrimSpace(issue.ID)
+		if id == "" {
+			return
+		}
+		if _, ok := seen[id]; ok {
+			return
+		}
+		seen[id] = struct{}{}
+		out = append(out, id)
+	}
+	for _, running := range state.Running {
+		appendIssue(running.Issue)
+	}
+	for _, retry := range state.Retry {
+		appendIssue(retry.Issue)
+	}
+	for _, blocked := range state.Blocked {
+		appendIssue(blocked.Issue)
 	}
 	return out
 }
@@ -266,4 +334,8 @@ func workspaceReapUnverifiedMessage(issue connector.Issue, reason string) string
 
 func workspaceCleanupFetchFailedMessage(states []string, err error) string {
 	return fmt.Sprintf("workspace cleanup candidate fetch failed for states=%s: %v", strings.Join(states, ","), err)
+}
+
+func workspaceCleanupIssueIDsFetchFailedMessage(issueIDs []string, err error) string {
+	return fmt.Sprintf("workspace cleanup candidate fetch failed for issue_ids=%s: %v", strings.Join(issueIDs, ","), err)
 }

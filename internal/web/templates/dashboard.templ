@@ -1084,6 +1084,7 @@ templ ProjectDiagnosticsSnapshot(data DashboardData) {
 				@throughputCard(data)
 				@rateLimitsCard(data.Snapshot.RateLimits)
 				@graphQLBudgetCard(data)
+				@restBudgetCard(data)
 				@tokenCard(data)
 				@lifetimeCard(data.Snapshot.LifetimeTotals)
 			</aside>
@@ -1113,6 +1114,7 @@ templ FleetSnapshot(data DashboardData) {
 				@throughputCard(data)
 				@rateLimitsCard(data.Snapshot.RateLimits)
 				@graphQLBudgetCard(data)
+				@restBudgetCard(data)
 				@tokenCard(data)
 				@lifetimeCard(data.Snapshot.LifetimeTotals)
 			</aside>
@@ -3750,6 +3752,44 @@ templ graphQLBudgetCard(data DashboardData) {
 								<span class="font-mono text-muted-foreground">{ row.Cost }</span>
 								<span class="font-mono text-xs text-muted-foreground">{ row.Count }</span>
 								<span class="text-right font-mono text-xs text-muted-foreground">{ row.Percent }</span>
+							</div>
+						}
+					</div>
+				}
+			</div>
+		</section>
+	}
+}
+
+templ restBudgetCard(data DashboardData) {
+	if hasRESTBudget(data.Snapshot.RateLimits) {
+		<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="REST budget">
+			<div class="flex items-start justify-between gap-3">
+				@helpHeading2("REST budget", helpRateLimits, "rest-budget-card")
+				<span class="shrink-0 rounded-full bg-warning-soft px-2 py-1 font-mono text-xs font-medium text-warning">{ restBudgetRequestCount(data.Snapshot.RateLimits) }</span>
+			</div>
+			<div class="mt-5 grid gap-3">
+				<div class="grid grid-cols-2 gap-3 text-sm">
+					<div class="grid gap-1">
+						<span class="text-muted-foreground">Remaining</span>
+						<strong class="break-all font-mono text-base font-semibold text-foreground">{ restBudgetRemaining(data.Snapshot.RateLimits) }</strong>
+					</div>
+					<div class="grid gap-1">
+						<span class="text-muted-foreground">Reset</span>
+						<strong class="font-mono text-base font-semibold text-foreground">{ restBudgetReset(data.Snapshot.RateLimits, data.Snapshot.GeneratedAt) }</strong>
+						<span class="font-mono text-xs text-muted-foreground">{ restBudgetResetAt(data.Snapshot.RateLimits) }</span>
+					</div>
+				</div>
+				if len(restBudgetContributorRows(data.Snapshot.RateLimits)) == 0 {
+					@dashboardEmptyState("No REST requests this cycle.", "REST contributors will appear after GitHub REST endpoints are called.", "bg-warning")
+				} else {
+					<div class="grid gap-2 border-t border-border pt-3">
+						for _, row := range restBudgetContributorRows(data.Snapshot.RateLimits) {
+							<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-sm">
+								<span class="truncate font-mono font-medium text-foreground">{ row.EndpointFamily }</span>
+								<span class="font-mono text-muted-foreground">{ row.Count }</span>
+								<span class="font-mono text-xs text-muted-foreground">{ row.Remaining }</span>
+								<span class="text-right font-mono text-xs text-muted-foreground">{ row.Status }</span>
 							</div>
 						}
 					</div>

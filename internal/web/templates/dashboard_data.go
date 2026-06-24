@@ -119,6 +119,14 @@ type graphQLBudgetContributorRow struct {
 	Percent   string
 }
 
+type restBudgetContributorRow struct {
+	EndpointFamily string
+	Count          string
+	Remaining      string
+	Reset          string
+	Status         string
+}
+
 type boardStateRow struct {
 	State      string
 	Count      int
@@ -3813,6 +3821,7 @@ func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 	appendBucket("Primary", limits.Primary)
 	appendBucket("Secondary", limits.Secondary)
 	appendBucket("GitHub GraphQL", limits.GitHubGraphQL)
+	appendBucket("GitHub REST", limits.GitHubREST)
 	if limits.Credits != nil {
 		rows = append(rows, creditRateLimitRow(limits.Credits))
 	}
@@ -3868,6 +3877,9 @@ func rateLimitName(limits *telemetry.RateLimits) string {
 		if limits != nil && limits.GitHubGraphQL != nil {
 			return "GitHub GraphQL"
 		}
+		if limits != nil && limits.GitHubREST != nil {
+			return "GitHub REST"
+		}
 		return "Latest snapshot"
 	}
 	return limits.LimitName
@@ -3875,6 +3887,10 @@ func rateLimitName(limits *telemetry.RateLimits) string {
 
 func hasGraphQLBudget(limits *telemetry.RateLimits) bool {
 	return limits != nil && (limits.GitHubGraphQL != nil || limits.GraphQLCost != nil)
+}
+
+func hasRESTBudget(limits *telemetry.RateLimits) bool {
+	return limits != nil && (limits.GitHubREST != nil || limits.RESTUsage != nil)
 }
 
 func graphQLBudgetRemaining(limits *telemetry.RateLimits) string {
@@ -3942,6 +3958,95 @@ func graphQLBudgetContributorRows(limits *telemetry.RateLimits) []graphQLBudgetC
 		})
 	}
 	return rows
+}
+
+func restBudgetRemaining(limits *telemetry.RateLimits) string {
+	if limits == nil || limits.GitHubREST == nil {
+		return "n/a"
+	}
+	bucket := limits.GitHubREST
+	if bucket.Limit > 0 {
+		return formatInt(bucket.Remaining) + " / " + formatInt(bucket.Limit)
+	}
+	return formatInt(bucket.Remaining) + " left"
+}
+
+func restBudgetReset(limits *telemetry.RateLimits, now time.Time) string {
+	if limits == nil || limits.GitHubREST == nil {
+		return "n/a"
+	}
+	bucket := limits.GitHubREST
+	if bucket.ResetInSeconds > 0 {
+		return formatDuration(float64(bucket.ResetInSeconds)) + " to reset"
+	}
+	if bucket.ResetAt != nil {
+		if !now.IsZero() && bucket.ResetAt.After(now) {
+			return formatDuration(bucket.ResetAt.Sub(now).Seconds()) + " to reset"
+		}
+		return bucket.ResetAt.UTC().Format("15:04 UTC")
+	}
+	return "n/a"
+}
+
+func restBudgetResetAt(limits *telemetry.RateLimits) string {
+	if limits == nil || limits.GitHubREST == nil || limits.GitHubREST.ResetAt == nil {
+		return "reset time n/a"
+	}
+	return "resets " + limits.GitHubREST.ResetAt.UTC().Format("15:04 UTC")
+}
+
+func restBudgetRequestCount(limits *telemetry.RateLimits) string {
+	if limits == nil || limits.RESTUsage == nil {
+		return "0 requests"
+	}
+	return formatInt(limits.RESTUsage.TotalRequests) + " " + pluralize("request", limits.RESTUsage.TotalRequests)
+}
+
+func restBudgetContributorRows(limits *telemetry.RateLimits) []restBudgetContributorRow {
+	if limits == nil || limits.RESTUsage == nil || len(limits.RESTUsage.Contributors) == 0 {
+		return nil
+	}
+	rows := make([]restBudgetContributorRow, 0, len(limits.RESTUsage.Contributors))
+	for _, contributor := range limits.RESTUsage.Contributors {
+		rows = append(rows, restBudgetContributorRow{
+			EndpointFamily: strings.TrimSpace(contributor.EndpointFamily),
+			Count:          formatInt(contributor.Count) + " " + pluralize("request", contributor.Count),
+			Remaining:      restContributorRemaining(contributor),
+			Reset:          restContributorReset(contributor),
+			Status:         restContributorStatus(contributor),
+		})
+	}
+	return rows
+}
+
+func restContributorRemaining(contributor telemetry.RESTUsageContributor) string {
+	if contributor.Limit > 0 {
+		return formatInt(contributor.Remaining) + " / " + formatInt(contributor.Limit)
+	}
+	if contributor.Remaining > 0 {
+		return formatInt(contributor.Remaining) + " left"
+	}
+	return "remaining n/a"
+}
+
+func restContributorReset(contributor telemetry.RESTUsageContributor) string {
+	if contributor.RetryAfterMS > 0 {
+		return formatDuration(float64(contributor.RetryAfterMS)/1000) + " retry"
+	}
+	if contributor.ResetAt != nil {
+		return contributor.ResetAt.UTC().Format("15:04 UTC")
+	}
+	return "reset n/a"
+}
+
+func restContributorStatus(contributor telemetry.RESTUsageContributor) string {
+	if contributor.RateLimited {
+		return "rate limited"
+	}
+	if contributor.LastStatus > 0 {
+		return formatInt(int64(contributor.LastStatus))
+	}
+	return "ok"
 }
 
 func graphQLCostPercent(cost int64, total int64) string {

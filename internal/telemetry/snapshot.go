@@ -301,7 +301,9 @@ type RateLimits struct {
 	Secondary     *RateLimitBucket `json:"secondary,omitempty"`
 	Credits       *RateLimitBucket `json:"credits,omitempty"`
 	GitHubGraphQL *RateLimitBucket `json:"github_graphql,omitempty"`
+	GitHubREST    *RateLimitBucket `json:"github_rest,omitempty"`
 	GraphQLCost   *GraphQLCost     `json:"graphql_cost,omitempty"`
+	RESTUsage     *RESTUsage       `json:"rest_usage,omitempty"`
 }
 
 type RateLimitBucket struct {
@@ -326,6 +328,25 @@ type GraphQLCostContributor struct {
 	QueryType string `json:"query_type"`
 	Count     int64  `json:"count"`
 	Cost      int64  `json:"cost"`
+}
+
+type RESTUsage struct {
+	TotalRequests int64                  `json:"total_requests,omitempty"`
+	RateLimited   bool                   `json:"rate_limited,omitempty"`
+	BackoffUntil  *time.Time             `json:"backoff_until,omitempty"`
+	Contributors  []RESTUsageContributor `json:"contributors,omitempty"`
+}
+
+type RESTUsageContributor struct {
+	EndpointFamily string     `json:"endpoint_family"`
+	Count          int64      `json:"count"`
+	Remaining      int64      `json:"remaining,omitempty"`
+	Limit          int64      `json:"limit,omitempty"`
+	Resource       string     `json:"resource,omitempty"`
+	ResetAt        *time.Time `json:"reset_at,omitempty"`
+	RetryAfterMS   int64      `json:"retry_after_ms,omitempty"`
+	RateLimited    bool       `json:"rate_limited,omitempty"`
+	LastStatus     int        `json:"last_status,omitempty"`
 }
 
 type Tokens struct {

@@ -24,6 +24,19 @@ type Refresher interface {
 	RequestRefresh(context.Context) (RefreshResponse, error)
 }
 
+type TargetedRefresher interface {
+	RequestTargetedRefresh(context.Context, RefreshTarget) (RefreshResponse, error)
+}
+
+type RefreshTarget struct {
+	Repository        string `json:"repository,omitempty"`
+	IssueNumber       int    `json:"issue_number,omitempty"`
+	PullRequestNumber int    `json:"pull_request_number,omitempty"`
+	SHA               string `json:"sha,omitempty"`
+	Event             string `json:"event,omitempty"`
+	DeliveryID        string `json:"delivery_id,omitempty"`
+}
+
 type RefreshResponse = orchestrator.RefreshResponse
 
 func (s *Server) apiState(c echo.Context) error {

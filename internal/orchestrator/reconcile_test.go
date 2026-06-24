@@ -552,8 +552,8 @@ func TestTickCompletesTerminalRunningIssueDuringWorkspaceCleanupSweep(t *testing
 	if completed.Tokens.TotalTokens != 42 {
 		t.Fatalf("Completed[%q].Tokens.TotalTokens = %d, want 42", prior.ID, completed.Tokens.TotalTokens)
 	}
-	if !slices.Equal(tracker.requestedIDs, nil) {
-		t.Fatalf("FetchIssueStatesByIDs() ids = %#v, want no throttled running reconcile", tracker.requestedIDs)
+	if !slices.Equal(tracker.requestedIDs, []string{prior.ID}) {
+		t.Fatalf("FetchIssueStatesByIDs() ids = %#v, want cleanup verification for %q", tracker.requestedIDs, prior.ID)
 	}
 	if len(reaper.issues) != 1 || reaper.issues[0].ID != prior.ID || reaper.issues[0].State != "Done" {
 		t.Fatalf("reaped issues = %#v, want terminal Done issue", reaper.issues)

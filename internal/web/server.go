@@ -71,6 +71,7 @@ type Config struct {
 	ConfigPathRule        globalconfig.PathRule
 	Kanban                workflowconfig.Kanban
 	KanbanWorkflow        workflowconfig.Config
+	GitHubWebhookSecret   string
 	RuntimeDBPath         string
 	RuntimeLogPath        string
 	ServerAddress         string
@@ -78,34 +79,35 @@ type Config struct {
 }
 
 type Server struct {
-	echo               *echo.Echo
-	hub                *hub.Hub[telemetry.Snapshot]
-	store              store.Store
-	registry           *project.Registry
-	connector          connector.Connector
-	refresher          Refresher
-	logger             *slog.Logger
-	mode               Mode
-	tickEvery          time.Duration
-	workflow           string
-	version            string
-	build              buildinfo.Info
-	dashboardURL       string
-	pricing            budget.PricingTable
-	globalConfig       globalconfig.Config
-	globalConfigSource func() globalconfig.Config
-	hostname           func() (string, error)
-	configRule         globalconfig.PathRule
-	kanban             workflowconfig.Kanban
-	kanbanWorkflow     workflowconfig.Config
-	dbPath             string
-	logPath            string
-	serverAddr         string
-	assets             staticAssets
-	projects           *projectSmallMultipleRecorder
-	snapshots          *snapshotEnrichmentCache
-	kanbanMutations    *kanbanMutationLocks
-	demo               *demoScenarioSet
+	echo                *echo.Echo
+	hub                 *hub.Hub[telemetry.Snapshot]
+	store               store.Store
+	registry            *project.Registry
+	connector           connector.Connector
+	refresher           Refresher
+	logger              *slog.Logger
+	mode                Mode
+	tickEvery           time.Duration
+	workflow            string
+	version             string
+	build               buildinfo.Info
+	dashboardURL        string
+	pricing             budget.PricingTable
+	globalConfig        globalconfig.Config
+	globalConfigSource  func() globalconfig.Config
+	hostname            func() (string, error)
+	configRule          globalconfig.PathRule
+	kanban              workflowconfig.Kanban
+	kanbanWorkflow      workflowconfig.Config
+	githubWebhookSecret string
+	dbPath              string
+	logPath             string
+	serverAddr          string
+	assets              staticAssets
+	projects            *projectSmallMultipleRecorder
+	snapshots           *snapshotEnrichmentCache
+	kanbanMutations     *kanbanMutationLocks
+	demo                *demoScenarioSet
 }
 
 func NewServer(cfg Config, deps Dependencies) (*Server, error) {
@@ -131,36 +133,38 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	e.Server.ReadHeaderTimeout = cfg.httpReadHeaderTimeout()
 	e.Server.IdleTimeout = cfg.httpIdleTimeout()
 	kanban := cfg.kanban()
+	kanbanWorkflow := cfg.kanbanWorkflow(kanban)
 
 	server := &Server{
-		echo:               e,
-		hub:                deps.Hub,
-		store:              deps.Store,
-		registry:           deps.Registry,
-		connector:          deps.Connector,
-		refresher:          deps.Refresher,
-		logger:             cfg.logger(),
-		mode:               mode,
-		tickEvery:          cfg.sseTickInterval(),
-		workflow:           cfg.workflowPath(),
-		version:            strings.TrimSpace(cfg.Version),
-		build:              cfg.Build,
-		dashboardURL:       cfg.dashboardURL(),
-		pricing:            cfg.pricing(),
-		globalConfig:       cfg.GlobalConfig,
-		globalConfigSource: cfg.globalConfigSource(),
-		hostname:           cfg.hostname(),
-		configRule:         cfg.ConfigPathRule,
-		kanban:             kanban,
-		kanbanWorkflow:     cfg.kanbanWorkflow(kanban),
-		dbPath:             strings.TrimSpace(cfg.RuntimeDBPath),
-		logPath:            strings.TrimSpace(cfg.RuntimeLogPath),
-		serverAddr:         strings.TrimSpace(cfg.ServerAddress),
-		assets:             newStaticAssets(cfg.staticDir()),
-		projects:           newProjectSmallMultipleRecorder(),
-		snapshots:          newSnapshotEnrichmentCache(),
-		kanbanMutations:    newKanbanMutationLocks(),
-		demo:               newDemoScenarioSet(cfg.Demo),
+		echo:                e,
+		hub:                 deps.Hub,
+		store:               deps.Store,
+		registry:            deps.Registry,
+		connector:           deps.Connector,
+		refresher:           deps.Refresher,
+		logger:              cfg.logger(),
+		mode:                mode,
+		tickEvery:           cfg.sseTickInterval(),
+		workflow:            cfg.workflowPath(),
+		version:             strings.TrimSpace(cfg.Version),
+		build:               cfg.Build,
+		dashboardURL:        cfg.dashboardURL(),
+		pricing:             cfg.pricing(),
+		globalConfig:        cfg.GlobalConfig,
+		globalConfigSource:  cfg.globalConfigSource(),
+		hostname:            cfg.hostname(),
+		configRule:          cfg.ConfigPathRule,
+		kanban:              kanban,
+		kanbanWorkflow:      kanbanWorkflow,
+		githubWebhookSecret: cfg.githubWebhookSecret(kanbanWorkflow),
+		dbPath:              strings.TrimSpace(cfg.RuntimeDBPath),
+		logPath:             strings.TrimSpace(cfg.RuntimeLogPath),
+		serverAddr:          strings.TrimSpace(cfg.ServerAddress),
+		assets:              newStaticAssets(cfg.staticDir()),
+		projects:            newProjectSmallMultipleRecorder(),
+		snapshots:           newSnapshotEnrichmentCache(),
+		kanbanMutations:     newKanbanMutationLocks(),
+		demo:                newDemoScenarioSet(cfg.Demo),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
 	server.registerRoutes()
@@ -222,6 +226,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/timeseries", s.apiTimeSeries)
 	s.echo.GET("/api/v1/projects/*", s.apiProject)
 	s.echo.POST("/api/v1/refresh", s.apiRefresh)
+	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
 	s.echo.GET("/api/v1/usage", s.apiUsage)
 	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog)
@@ -568,6 +573,13 @@ func (cfg Config) kanbanWorkflow(kanban workflowconfig.Kanban) workflowconfig.Co
 	}
 	workflow.Server.Kanban = kanban
 	return workflow
+}
+
+func (cfg Config) githubWebhookSecret(workflow workflowconfig.Config) string {
+	if secret := strings.TrimSpace(cfg.GitHubWebhookSecret); secret != "" {
+		return secret
+	}
+	return strings.TrimSpace(workflow.Tracker.GitHubWebhookSecret)
 }
 
 func (cfg Config) pricing() budget.PricingTable {

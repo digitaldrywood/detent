@@ -50,6 +50,10 @@ type IssueCommentReader interface {
 	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
 }
 
+type IssuesByStatesLimiter interface {
+	FetchIssuesByStatesLimit(context.Context, []string, int) ([]Issue, error)
+}
+
 type IssueReferenceResolver interface {
 	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
 }

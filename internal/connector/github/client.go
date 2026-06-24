@@ -3,6 +3,7 @@ package github
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -25,6 +26,8 @@ const (
 	maxErrorBodyBytes      = 1000
 )
 
+var defaultRESTBackoffs = newRESTBackoffRegistry()
+
 type HTTPClient interface {
 	Do(*http.Request) (*http.Response, error)
 }
@@ -37,17 +40,23 @@ type ClientConfig struct {
 }
 
 type Client struct {
-	endpoint      string
-	restEndpoint  string
-	tokenSource   TokenSource
-	httpClient    HTTPClient
-	logger        *slog.Logger
-	mu            sync.RWMutex
-	rateLimit     connector.GraphQLRateLimit
-	queryCosts    map[string]connector.GraphQLQueryCost
-	hasRateLimit  bool
-	authHealth    connector.AuthHealth
-	hasAuthHealth bool
+	endpoint         string
+	restEndpoint     string
+	tokenSource      TokenSource
+	httpClient       HTTPClient
+	logger           *slog.Logger
+	mu               sync.RWMutex
+	rateLimit        connector.GraphQLRateLimit
+	queryCosts       map[string]connector.GraphQLQueryCost
+	hasRateLimit     bool
+	restRateLimit    connector.RESTRateLimit
+	restRequests     map[string]connector.RESTEndpointUsage
+	restBackoffUntil time.Time
+	restBackoffKey   string
+	restBackoffs     *restBackoffRegistry
+	hasRestRateLimit bool
+	authHealth       connector.AuthHealth
+	hasAuthHealth    bool
 }
 
 type restProbeResult struct {
@@ -89,6 +98,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		tokenSource:  cfg.TokenSource,
 		httpClient:   httpClient,
 		logger:       logger,
+		restBackoffs: defaultRESTBackoffs,
 	}, nil
 }
 
@@ -211,6 +221,8 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	if token == "" {
 		return restProbeResult{}, ErrMissingToken
 	}
+	backoffKey := c.restSharedBackoffKey(token)
+	c.rememberRESTBackoffKey(backoffKey)
 
 	var requestBody io.Reader
 	if body != nil {
@@ -253,6 +265,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	if err != nil {
 		return restProbeResult{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
+	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, time.Now())
 	result := restProbeResult{
 		StatusCode: resp.StatusCode,
 		Headers:    resp.Header.Clone(),
@@ -280,6 +293,11 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	token = strings.TrimSpace(token)
 	if token == "" {
 		return nil, ErrMissingToken
+	}
+	backoffKey := c.restSharedBackoffKey(token)
+	c.rememberRESTBackoffKey(backoffKey)
+	if err := c.restBackoffError(backoffKey, time.Now()); err != nil {
+		return nil, err
 	}
 
 	var requestBody io.Reader
@@ -325,6 +343,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	if err != nil {
 		return nil, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
+	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, time.Now())
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		err := classifyStatus(resp.StatusCode, resp.Header, raw)
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
@@ -424,6 +443,155 @@ func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
 	}
 	c.queryCosts = nil
 	return usage
+}
+
+func (c *Client) FlushRESTRateLimitUsage() connector.RESTRateLimitUsage {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	backoffUntil := c.restBackoffUntil
+	if c.restBackoffs != nil && c.restBackoffKey != "" {
+		if shared := c.restBackoffs.until(c.restBackoffKey, time.Now()); shared.After(backoffUntil) {
+			backoffUntil = shared
+		}
+	}
+	usage := connector.RESTRateLimitUsage{
+		RateLimit:    c.restRateLimit,
+		HasRateLimit: c.hasRestRateLimit,
+		Requests:     sortedRESTEndpointUsages(c.restRequests),
+		BackoffUntil: backoffUntil,
+	}
+	for _, request := range usage.Requests {
+		usage.TotalRequests += request.Count
+		if request.RateLimited {
+			usage.RateLimited = true
+		}
+	}
+	c.restRequests = nil
+	return usage
+}
+
+func (c *Client) restBackoffError(backoffKey string, now time.Time) error {
+	c.mu.RLock()
+	backoffUntil := c.restBackoffUntil
+	c.mu.RUnlock()
+	if c.restBackoffs != nil && backoffKey != "" {
+		if shared := c.restBackoffs.until(backoffKey, now); shared.After(backoffUntil) {
+			backoffUntil = shared
+		}
+	}
+	if backoffUntil.IsZero() || !backoffUntil.After(now) {
+		return nil
+	}
+	return &StatusError{StatusCode: http.StatusTooManyRequests, Err: ErrRateLimited}
+}
+
+func (c *Client) restSharedBackoffKey(token string) string {
+	sum := sha256.Sum256([]byte(c.restEndpoint + "\x00" + token))
+	return c.restEndpoint + "\x00" + string(sum[:])
+}
+
+func (c *Client) rememberRESTBackoffKey(backoffKey string) {
+	if strings.TrimSpace(backoffKey) == "" {
+		return
+	}
+	c.mu.Lock()
+	c.restBackoffKey = backoffKey
+	c.mu.Unlock()
+}
+
+func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string, path string, status int, headers http.Header, now time.Time) {
+	limit, hasLimit := int64Header(headers, "X-RateLimit-Limit")
+	used, hasUsed := int64Header(headers, "X-RateLimit-Used")
+	remaining, hasRemaining := int64Header(headers, "X-RateLimit-Remaining")
+	reset, hasReset := int64Header(headers, "X-RateLimit-Reset")
+	retryAfter, hasRetryAfter := parseRetryAfter(headers.Get("Retry-After"), now)
+	resource := strings.TrimSpace(headers.Get("X-RateLimit-Resource"))
+	rateLimited := restStatusRateLimited(status, headers)
+
+	var resetAt time.Time
+	if hasReset {
+		resetAt = time.Unix(reset, 0).UTC()
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if backoffKey != "" {
+		c.restBackoffKey = backoffKey
+	}
+	snapshot := c.restRateLimit
+	hasSnapshot := false
+	if hasLimit {
+		snapshot.Limit = limit
+		hasSnapshot = true
+	}
+	if hasUsed {
+		snapshot.Used = used
+		hasSnapshot = true
+	}
+	if hasRemaining {
+		snapshot.Remaining = remaining
+		hasSnapshot = true
+	}
+	if hasReset {
+		snapshot.ResetAt = resetAt
+		hasSnapshot = true
+	}
+	if resource != "" {
+		snapshot.Resource = resource
+		hasSnapshot = true
+	}
+	if hasRetryAfter {
+		snapshot.RetryAfter = retryAfter
+		hasSnapshot = true
+	} else if hasSnapshot {
+		snapshot.RetryAfter = 0
+	}
+	if hasSnapshot {
+		snapshot.UpdatedAt = now
+		c.restRateLimit = snapshot
+		c.hasRestRateLimit = true
+	}
+
+	family := restEndpointFamily(method, path)
+	if c.restRequests == nil {
+		c.restRequests = make(map[string]connector.RESTEndpointUsage)
+	}
+	request := c.restRequests[family]
+	request.EndpointFamily = family
+	request.Count++
+	request.LastStatus = status
+	request.RateLimited = request.RateLimited || rateLimited
+	if hasLimit {
+		request.Limit = limit
+	}
+	if hasUsed {
+		request.Used = used
+	}
+	if hasRemaining {
+		request.Remaining = remaining
+	}
+	if hasReset {
+		request.ResetAt = resetAt
+	}
+	if resource != "" {
+		request.Resource = resource
+	}
+	if hasRetryAfter {
+		request.RetryAfter = retryAfter
+	}
+	c.restRequests[family] = request
+
+	if rateLimited {
+		backoffUntil := restBackoffUntil(now, retryAfter, hasRetryAfter, resetAt, hasReset, remaining, hasRemaining)
+		if c.restBackoffUntil.IsZero() || backoffUntil.After(c.restBackoffUntil) {
+			c.restBackoffUntil = backoffUntil
+		}
+		if c.restBackoffs != nil && backoffKey != "" {
+			c.restBackoffs.set(backoffKey, backoffUntil)
+		}
+	}
 }
 
 func (c *Client) recordRateLimitFromData(data json.RawMessage, queryType string, now time.Time) bool {
@@ -792,6 +960,35 @@ func classifyStatus(status int, headers http.Header, body []byte) error {
 	}
 }
 
+func restStatusRateLimited(status int, headers http.Header) bool {
+	switch status {
+	case http.StatusTooManyRequests:
+		return true
+	case http.StatusForbidden:
+		return strings.TrimSpace(headers.Get("Retry-After")) != "" || headers.Get("X-RateLimit-Remaining") == "0"
+	default:
+		return false
+	}
+}
+
+func restBackoffUntil(
+	now time.Time,
+	retryAfter time.Duration,
+	hasRetryAfter bool,
+	resetAt time.Time,
+	hasReset bool,
+	remaining int64,
+	hasRemaining bool,
+) time.Time {
+	if hasRetryAfter {
+		return now.Add(retryAfter)
+	}
+	if hasRemaining && remaining == 0 && hasReset && resetAt.After(now) {
+		return resetAt
+	}
+	return now.Add(time.Minute)
+}
+
 func int64Header(headers http.Header, name string) (int64, bool) {
 	value := strings.TrimSpace(headers.Get(name))
 	if value == "" {
@@ -906,4 +1103,99 @@ func sortedGraphQLQueryCosts(costs map[string]connector.GraphQLQueryCost) []conn
 		return out[i].QueryType < out[j].QueryType
 	})
 	return out
+}
+
+func sortedRESTEndpointUsages(usages map[string]connector.RESTEndpointUsage) []connector.RESTEndpointUsage {
+	if len(usages) == 0 {
+		return nil
+	}
+
+	out := make([]connector.RESTEndpointUsage, 0, len(usages))
+	for _, usage := range usages {
+		out = append(out, usage)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Count != out[j].Count {
+			return out[i].Count > out[j].Count
+		}
+		if out[i].RateLimited != out[j].RateLimited {
+			return !out[i].RateLimited
+		}
+		return out[i].EndpointFamily < out[j].EndpointFamily
+	})
+	return out
+}
+
+type restBackoffRegistry struct {
+	mu     sync.RWMutex
+	untils map[string]time.Time
+}
+
+func newRESTBackoffRegistry() *restBackoffRegistry {
+	return &restBackoffRegistry{untils: map[string]time.Time{}}
+}
+
+func (r *restBackoffRegistry) until(key string, now time.Time) time.Time {
+	if r == nil || strings.TrimSpace(key) == "" {
+		return time.Time{}
+	}
+	r.mu.RLock()
+	until := r.untils[key]
+	r.mu.RUnlock()
+	if until.IsZero() || until.After(now) {
+		return until
+	}
+	r.mu.Lock()
+	if current := r.untils[key]; !current.IsZero() && !current.After(now) {
+		delete(r.untils, key)
+	}
+	r.mu.Unlock()
+	return time.Time{}
+}
+
+func (r *restBackoffRegistry) set(key string, until time.Time) {
+	if r == nil || strings.TrimSpace(key) == "" || until.IsZero() {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if current := r.untils[key]; current.IsZero() || until.After(current) {
+		r.untils[key] = until
+	}
+}
+
+func restEndpointFamily(method string, path string) string {
+	if strings.ToUpper(strings.TrimSpace(method)) != http.MethodGet {
+		return "mutations"
+	}
+
+	parsed, err := url.Parse(strings.TrimSpace(path))
+	if err != nil {
+		return "other"
+	}
+	segments := strings.Split(strings.Trim(parsed.Path, "/"), "/")
+	if len(segments) >= 2 && segments[0] == "search" && segments[1] == "issues" {
+		return "search"
+	}
+	if len(segments) < 4 || segments[0] != "repos" {
+		return "other"
+	}
+	switch {
+	case len(segments) == 4 && segments[3] == "issues" && parsed.Query().Get("labels") != "":
+		return "label issues"
+	case len(segments) == 5 && segments[3] == "issues" && segments[4] == "comments":
+		return "issue comments"
+	case len(segments) == 6 && segments[3] == "issues" && segments[5] == "comments":
+		return "issue comments"
+	case len(segments) == 5 && segments[3] == "issues":
+		return "issue reads"
+	case len(segments) == 6 && segments[3] == "pulls" && segments[5] == "reviews":
+		return "reviews"
+	case len(segments) == 6 && segments[3] == "commits" && segments[5] == "check-runs":
+		return "check runs"
+	case len(segments) == 6 && segments[3] == "commits" && segments[5] == "statuses":
+		return "commit statuses"
+	default:
+		return "other"
+	}
 }

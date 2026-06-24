@@ -180,12 +180,27 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 					Cost:      8,
 					ResetAt:   func() *time.Time { resetAt := now.Add(time.Hour); return &resetAt }(),
 				},
+				GitHubREST: &telemetry.RateLimitBucket{
+					Remaining: 4878,
+					Used:      122,
+					Limit:     5_000,
+					Cost:      2,
+					ResetAt:   func() *time.Time { resetAt := now.Add(time.Hour); return &resetAt }(),
+				},
 				GraphQLCost: &telemetry.GraphQLCost{
 					TotalQueries: 3,
 					TotalCost:    8,
 					Contributors: []telemetry.GraphQLCostContributor{
 						{QueryType: "candidate_issues", Count: 2, Cost: 5},
 						{QueryType: "running_states", Count: 1, Cost: 3},
+					},
+				},
+				RESTUsage: &telemetry.RESTUsage{
+					TotalRequests: 2,
+					RateLimited:   true,
+					Contributors: []telemetry.RESTUsageContributor{
+						{EndpointFamily: "label issues", Count: 1, Remaining: 4879, Limit: 5_000, LastStatus: 200},
+						{EndpointFamily: "issue comments", Count: 1, Remaining: 4878, Limit: 5_000, RetryAfterMS: 120_000, RateLimited: true, LastStatus: 403},
 					},
 				},
 				Credits: &telemetry.RateLimitBucket{
@@ -292,6 +307,13 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"GitHub GraphQL",
 		"4,880",
 		"cost 8",
+		"GitHub REST",
+		"4,878",
+		"REST budget",
+		"2 requests",
+		"label issues",
+		"issue comments",
+		"rate limited",
 		"GraphQL budget",
 		"4,880 / 5,000",
 		"1h 0m to reset",
