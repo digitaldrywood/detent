@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -413,6 +414,72 @@ func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
 		}
+	}
+}
+
+func TestTickDoesNotReconcileActiveTodoPullRequests(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 13, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	running := autoPromoteTickIssue("issue-running-todo-pr", []string{"bug"}, &connector.PullRequest{
+		Number:                 40,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/40",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	running.State = "Todo"
+	claimed := autoPromoteTickIssue("issue-claimed-todo-pr", []string{"bug"}, &connector.PullRequest{
+		Number:                 41,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/41",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	claimed.State = "Todo"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{running, claimed}}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	state := newState(cfg)
+	state.Running[running.ID] = Running{Issue: cloneIssue(running), StartedAt: now.Add(-time.Minute)}
+	state.Claimed[running.ID] = Claimed{Issue: cloneIssue(running), ClaimedAt: now.Add(-time.Minute)}
+	state.Claimed[claimed.ID] = Claimed{Issue: cloneIssue(claimed), ClaimedAt: now.Add(-time.Minute)}
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none for active Todo PRs", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none for active Todo PRs", tracker.comments)
+	}
+	if _, ok := state.Running[running.ID]; !ok {
+		t.Fatalf("Running[%q] missing after stale Todo PR reconciliation", running.ID)
+	}
+	if _, ok := state.Claimed[running.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing after stale Todo PR reconciliation", running.ID)
+	}
+	if _, ok := state.Claimed[claimed.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing after stale Todo PR reconciliation", claimed.ID)
 	}
 }
 

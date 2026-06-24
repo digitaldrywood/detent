@@ -87,6 +87,9 @@ func (o *Orchestrator) reconcileStaleTodoPullRequestIssues(
 		if issueID == "" || issue.PullRequest == nil || normalizePullRequestState(issue.PullRequest.State) != "open" {
 			continue
 		}
+		if staleTodoPullRequestAlreadyActive(state, issueID) {
+			continue
+		}
 
 		summary := AutoPromoteSummaryFromIssue(issue)
 		if !summary.PullRequestPresent {
@@ -108,6 +111,19 @@ func (o *Orchestrator) reconcileStaleTodoPullRequestIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func staleTodoPullRequestAlreadyActive(state *State, issueID string) bool {
+	if state == nil {
+		return false
+	}
+	if _, ok := state.Running[issueID]; ok {
+		return true
+	}
+	if _, ok := state.Claimed[issueID]; ok {
+		return true
+	}
+	return false
 }
 
 func staleTodoPullRequestDecision(
