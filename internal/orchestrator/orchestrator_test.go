@@ -1360,7 +1360,7 @@ func TestRunFetchesOnlyActionableObservedStates(t *testing.T) {
 func TestRunPublishesBoardIssuesFromCandidatesAndObservedStates(t *testing.T) {
 	t.Parallel()
 
-	candidate := testIssue("issue-todo", "digitaldrywood/detent#91", "Todo")
+	candidate := testIssue("issue-progress", "digitaldrywood/detent#91", "In Progress")
 	backlog := testIssue("issue-backlog", "digitaldrywood/detent#92", "Backlog")
 	review := testIssue("issue-review", "digitaldrywood/detent#93", "Human Review")
 	tracker := newFakeConnector(candidate)
@@ -1397,9 +1397,9 @@ func TestRunPublishesBoardIssuesFromCandidatesAndObservedStates(t *testing.T) {
 		got[issue.ID] = issue.State
 	}
 	want := map[string]string{
-		"issue-todo":    "Todo",
-		"issue-backlog": "Backlog",
-		"issue-review":  "Human Review",
+		"issue-progress": "In Progress",
+		"issue-backlog":  "Backlog",
+		"issue-review":   "Human Review",
 	}
 	if !maps.Equal(got, want) {
 		t.Fatalf("BoardIssues = %#v, want %#v", got, want)
