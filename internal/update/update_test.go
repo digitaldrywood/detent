@@ -327,6 +327,72 @@ func TestNewGitHubClientDefaultsTransportBounds(t *testing.T) {
 	}
 }
 
+func TestGitHubClientListReleasesUsesBearerToken(t *testing.T) {
+	t.Parallel()
+
+	var gotAuth string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotAuth = r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"tag_name":"v1.2.3"}]`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewGitHubClient(GitHubClientConfig{
+		APIBase:    server.URL,
+		Token:      "ghs_test",
+		HTTPClient: server.Client(),
+	})
+	releases, err := client.ListReleases(context.Background())
+	if err != nil {
+		t.Fatalf("ListReleases() error = %v", err)
+	}
+	if len(releases) != 1 || releases[0].TagName != "v1.2.3" {
+		t.Fatalf("ListReleases() = %#v, want v1.2.3", releases)
+	}
+	if gotAuth != "Bearer ghs_test" {
+		t.Fatalf("Authorization = %q, want bearer token", gotAuth)
+	}
+}
+
+func TestGitHubClientListReleasesRetriesWithoutTokenOnAuthFailure(t *testing.T) {
+	t.Parallel()
+
+	var authHeaders []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		authHeaders = append(authHeaders, r.Header.Get("Authorization"))
+		if len(authHeaders) == 1 {
+			w.WriteHeader(http.StatusForbidden)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[{"tag_name":"v1.2.3"}]`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewGitHubClient(GitHubClientConfig{
+		APIBase:    server.URL,
+		Token:      "bad-token",
+		HTTPClient: server.Client(),
+	})
+	releases, err := client.ListReleases(context.Background())
+	if err != nil {
+		t.Fatalf("ListReleases() error = %v", err)
+	}
+	if len(releases) != 1 || releases[0].TagName != "v1.2.3" {
+		t.Fatalf("ListReleases() = %#v, want v1.2.3", releases)
+	}
+	if len(authHeaders) != 2 {
+		t.Fatalf("request count = %d, want 2", len(authHeaders))
+	}
+	if authHeaders[0] != "Bearer bad-token" {
+		t.Fatalf("first Authorization = %q, want bearer token", authHeaders[0])
+	}
+	if authHeaders[1] != "" {
+		t.Fatalf("second Authorization = %q, want empty", authHeaders[1])
+	}
+}
+
 func TestGitHubClientDownloadRejectsOversize(t *testing.T) {
 	t.Parallel()
 
