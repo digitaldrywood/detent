@@ -1146,11 +1146,18 @@ operator asks for an advanced override.
 
 Stop here before Phase 3 or any other command that can create, link, mutate, or
 delete GitHub Projects, issue fields, labels, issues, PRs, `WORKFLOW.md`, or
-`global.yaml`. Show the operator `$ONBOARDING_DIR/recommendations.md` and the
-complete `$ONBOARDING_DIR/answers.env`, then ask: "May I execute the selected
-mutation steps using these exact answers?" Defaults from Phase 2 are still only
-recommendations; an unanswered default must not authorize any external or local
-config mutation.
+`global.yaml`. Show the operator `$ONBOARDING_DIR/recommendations.md`, the
+plain-English behavior summary, and the complete `$ONBOARDING_DIR/answers.env`,
+then ask: "May I execute the selected mutation steps using these exact
+answers?" Defaults from Phase 2 are still only recommendations; an unanswered
+default must not authorize any external or local config mutation.
+
+```sh
+detent --format pretty onboarding explain-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision
+```
+
+Show this summary before the canonical `answers.env` keys so the operator
+approves the effective behavior, not only raw fields.
 
 Record the explicit confirmation only after the operator says yes. This removes
 stale confirmations first and appends the new confirmation as the final
