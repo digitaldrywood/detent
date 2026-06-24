@@ -898,6 +898,13 @@ func normalizeOnboardingAnswersFile(path string, write bool) (onboardingAnswersN
 			nil,
 		)
 	}
+	if len(analysis.Missing) > 0 && answers.Values["MUTATION_CONFIRMED"] == "true" {
+		return onboardingAnswersNormalizationResult{}, NewValidationError(
+			fmt.Sprintf("DELIVERY_PROFILE=%s is missing expanded answers (%s), but MUTATION_CONFIRMED=true is already present", analysis.Profile, strings.Join(analysis.Missing, ", ")),
+			`Remove MUTATION_CONFIRMED, rerun detent onboarding normalize-answers --answers "$ONBOARDING_DIR/answers.env" --write, show the updated answers.env to the operator, then record a fresh confirmation.`,
+			nil,
+		)
+	}
 	content := string(raw)
 	if len(analysis.Missing) > 0 {
 		content = buildOnboardingNormalizedAnswersContent(raw, analysis)

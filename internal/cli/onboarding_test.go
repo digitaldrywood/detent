@@ -469,7 +469,6 @@ func TestOnboardingNormalizeAnswersCommandWritesAutonomousDeliveryProfileExpansi
 		"GITHUB_MODE=label",
 		"DELIVERY_PROFILE=autonomous_delivery",
 		"STATUS_LABEL_PREFIX=detent:",
-		"MUTATION_CONFIRMED=true",
 		"",
 	}, "\n"))
 	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
@@ -493,7 +492,7 @@ func TestOnboardingNormalizeAnswersCommandWritesAutonomousDeliveryProfileExpansi
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
 	}
-	if got.Status != "ok" || got.Path != answersPath || !got.Written || !got.Changed || got.DeliveryProfile != "autonomous_delivery" || !got.MutationConfirmed {
+	if got.Status != "ok" || got.Path != answersPath || !got.Written || !got.Changed || got.DeliveryProfile != "autonomous_delivery" || got.MutationConfirmed {
 		t.Fatalf("normalization result = %#v, want written autonomous profile normalization", got)
 	}
 
@@ -508,11 +507,98 @@ func TestOnboardingNormalizeAnswersCommandWritesAutonomousDeliveryProfileExpansi
 			t.Fatalf("answers.env missing %q:\n%s", want, content)
 		}
 	}
+	if strings.Contains(content, "MUTATION_CONFIRMED=true") {
+		t.Fatalf("normalization must not add mutation confirmation:\n%s", content)
+	}
+}
+
+func TestOnboardingNormalizeAnswersCommandPreservesFinalMutationConfirmationWhenAlreadyCanonical(t *testing.T) {
+	t.Parallel()
+
+	profileAnswers := autonomousDeliveryProfileAnswers()
+	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
+		"GITHUB_MODE=label",
+		"DELIVERY_PROFILE=autonomous_delivery",
+		"KANBAN_MODE=" + profileAnswers["KANBAN_MODE"],
+		"AUTO_PROMOTE_ENABLED=" + profileAnswers["AUTO_PROMOTE_ENABLED"],
+		"AUTO_PROMOTE_QUIET_SECONDS=" + profileAnswers["AUTO_PROMOTE_QUIET_SECONDS"],
+		"GATE_REQUIRE_AUTOMATED_REVIEW=" + profileAnswers["GATE_REQUIRE_AUTOMATED_REVIEW"],
+		"AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=" + profileAnswers["AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW"],
+		"DEPENDENCY_AUTO_UNBLOCK_ENABLED=" + profileAnswers["DEPENDENCY_AUTO_UNBLOCK_ENABLED"],
+		"MERGING_CONCURRENCY=" + profileAnswers["MERGING_CONCURRENCY"],
+		"STATUS_LABEL_PREFIX=detent:",
+		"MUTATION_CONFIRMED=true",
+		"",
+	}, "\n"))
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "onboarding", "normalize-answers", "--answers", answersPath, "--write"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v\nstdout:\n%s", err, stdout.String())
+	}
+
+	var got struct {
+		Written           bool `json:"written"`
+		Changed           bool `json:"changed"`
+		MutationConfirmed bool `json:"mutation_confirmed"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if !got.Written || got.Changed || !got.MutationConfirmed {
+		t.Fatalf("normalization result = %#v, want no-op write with final confirmation preserved", got)
+	}
+	raw, err := os.ReadFile(answersPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(raw)
 	if last := lastNonblankOnboardingLine(content); last != "MUTATION_CONFIRMED=true" {
 		t.Fatalf("last nonblank line = %q, want MUTATION_CONFIRMED=true\n%s", last, content)
 	}
 	if strings.Index(content, "MERGING_CONCURRENCY=1") > strings.Index(content, "MUTATION_CONFIRMED=true") {
 		t.Fatalf("profile expansion was written after final mutation confirmation:\n%s", content)
+	}
+}
+
+func TestOnboardingNormalizeAnswersCommandRejectsStaleMutationConfirmation(t *testing.T) {
+	t.Parallel()
+
+	content := validIdentityOnboardingAnswers(t) + strings.Join([]string{
+		"GITHUB_MODE=label",
+		"DELIVERY_PROFILE=autonomous_delivery",
+		"STATUS_LABEL_PREFIX=detent:",
+		"MUTATION_CONFIRMED=true",
+		"",
+	}, "\n")
+	answersPath := writeOnboardingAnswers(t, content)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"onboarding", "normalize-answers", "--answers", answersPath, "--write"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want stale mutation confirmation validation error")
+	}
+	for _, want := range []string{
+		"MUTATION_CONFIRMED=true is already present",
+		"rerun detent onboarding normalize-answers",
+		"record a fresh confirmation",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Execute() error missing %q:\n%s", want, err.Error())
+		}
+	}
+	raw, readErr := os.ReadFile(answersPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error = %v", readErr)
+	}
+	if string(raw) != content {
+		t.Fatalf("answers.env changed after stale confirmation error:\n%s", string(raw))
 	}
 }
 

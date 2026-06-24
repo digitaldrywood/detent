@@ -1169,8 +1169,11 @@ approves the effective behavior, not only raw fields.
 
 Record the explicit confirmation only after the operator says yes. This removes
 stale confirmations first and appends the new confirmation as the final
-nonblank line. If any Phase 2 answer changes later, rerun Phase 2.5 and record
-a fresh confirmation.
+nonblank line. The second normalization call below is an idempotence check. If
+it reports missing profile expansion after confirmation, remove the stale
+confirmation, rerun normalization, show the updated answer file to the operator,
+and record a fresh confirmation. If any Phase 2 answer changes later, rerun
+Phase 2.5 and record a fresh confirmation.
 
 ```sh
 CONFIRMATION_FILE="$(mktemp)"
