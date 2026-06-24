@@ -218,9 +218,13 @@ jobs:
           grep -F "binary=$DETENT_INSTALL_DIR/detent" "$DETENT_INSTALL_LOCK"
           grep -F "installed_at=" "$DETENT_INSTALL_LOCK"
 
-          version_output="$("$DETENT_INSTALL_DIR/detent" version)"
+          expected_version="${DETENT_VERSION#v}"
+          version_output="$("$DETENT_INSTALL_DIR/detent" --format pretty version)"
           printf '%s\n' "$version_output"
-          grep -F "version: $DETENT_VERSION" <<< "$version_output"
+          if ! grep -Fq "version: $DETENT_VERSION" <<< "$version_output" && ! grep -Fq "version: $expected_version" <<< "$version_output"; then
+            echo "Unexpected detent version output" >&2
+            exit 1
+          fi
 
       - name: Smoke release installer
         if: runner.os == 'Windows'
@@ -264,13 +268,18 @@ jobs:
             throw 'install lock did not record installed_at'
           }
 
-          $versionOutput = & $binary version
+          $versionOutput = & $binary --format pretty version
           if ($LASTEXITCODE -ne 0) {
             throw "detent version failed with exit code $LASTEXITCODE"
           }
           $versionText = $versionOutput -join "`n"
           Write-Host $versionText
-          if ($versionText -notmatch [regex]::Escape("version: $env:DETENT_VERSION")) {
+          $expectedVersion = $env:DETENT_VERSION
+          if ($expectedVersion.StartsWith('v')) {
+            $expectedVersion = $expectedVersion.Substring(1)
+          }
+          $versionMatches = $versionText.Contains("version: $env:DETENT_VERSION") -or $versionText.Contains("version: $expectedVersion")
+          if (-not $versionMatches) {
             throw "unexpected detent version output: $versionText"
           }
 
