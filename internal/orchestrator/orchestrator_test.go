@@ -1639,6 +1639,7 @@ func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	if firstErrorAt.IsZero() {
 		t.Fatal("initial LastRefreshErrorAt is zero")
 	}
+	time.Sleep(25 * time.Millisecond)
 
 	refresh, err := orch.RequestRefresh(context.Background())
 	if err != nil {
