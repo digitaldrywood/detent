@@ -204,6 +204,40 @@ func TestOnboardingDocsRecommendProjectKanbanIntegrationAfterWriteProbes(t *test
 	}
 }
 
+func TestOnboardingDocsPresentDeliveryProfilesBeforeAnswersEnvFields(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+
+	for _, want := range []string{
+		"Present the operator's plain-English operating model first, then show the canonical `answers.env` fields.",
+		"Conservative review: stop at `Human Review` until a human explicitly promotes work.",
+		"Autonomous delivery: move Todo work through PR, CI/gates, Merging, and Done without human review or quiet-window delay when there are no real blockers.",
+		"Custom/advanced: expose the underlying fields for teams that need a mixed policy.",
+		"When the operator says \"no human review, no wait state, unblock aggressively, only stop on real blockers,\" recommend `autonomous_delivery`.",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+
+	assertOrder(t, onboarding, "Conservative review:", "DELIVERY_PROFILE=<conservative_review|autonomous_delivery>")
+	assertOrder(t, onboarding, "Autonomous delivery:", "DELIVERY_PROFILE=<conservative_review|autonomous_delivery>")
+	assertOrder(t, onboarding, "Custom/advanced:", "DELIVERY_PROFILE=<conservative_review|autonomous_delivery>")
+}
+
+func TestOnboardingDocsSkipDuplicateProfileSuppliedQuestions(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+
+	for _, want := range []string{
+		"After selecting `DELIVERY_PROFILE=autonomous_delivery`, do not ask the Kanban interaction, validation-gate automated-review, Merging concurrency, review policy, or dependency waiting policy questions again unless the operator asks for an advanced override.",
+		"Advanced override means the operator switches to Custom/advanced after seeing the expansion; remove or omit `DELIVERY_PROFILE` before recording a profile-supplied key with a different value.",
+		"Ask the remaining Phase 2 questions that are not supplied by the selected profile.",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+}
+
 func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 	t.Parallel()
 
