@@ -36,7 +36,13 @@ type ClientConfig struct {
 	Endpoint    string
 	TokenSource TokenSource
 	HTTPClient  HTTPClient
+	RESTPolicy  RESTBudgetPolicy
 	Logger      *slog.Logger
+}
+
+type RESTBudgetPolicy struct {
+	MinRemainingReserve int64
+	FanoutMaxRequests   int64
 }
 
 type Client struct {
@@ -44,6 +50,7 @@ type Client struct {
 	restEndpoint     string
 	tokenSource      TokenSource
 	httpClient       HTTPClient
+	restPolicy       RESTBudgetPolicy
 	logger           *slog.Logger
 	mu               sync.RWMutex
 	rateLimit        connector.GraphQLRateLimit
@@ -97,6 +104,7 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 		restEndpoint: restEndpoint,
 		tokenSource:  cfg.TokenSource,
 		httpClient:   httpClient,
+		restPolicy:   normalizeRESTBudgetPolicy(cfg.RESTPolicy),
 		logger:       logger,
 		restBackoffs: defaultRESTBackoffs,
 	}, nil
@@ -299,6 +307,9 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	if err := c.restBackoffError(backoffKey, time.Now()); err != nil {
 		return nil, err
 	}
+	if err := c.restBudgetPolicyError(method, path); err != nil {
+		return nil, err
+	}
 
 	var requestBody io.Reader
 	if body != nil {
@@ -484,6 +495,86 @@ func (c *Client) restBackoffError(backoffKey string, now time.Time) error {
 		return nil
 	}
 	return &StatusError{StatusCode: http.StatusTooManyRequests, Err: ErrRateLimited}
+}
+
+func normalizeRESTBudgetPolicy(policy RESTBudgetPolicy) RESTBudgetPolicy {
+	if policy.MinRemainingReserve < 0 {
+		policy.MinRemainingReserve = 0
+	}
+	if policy.FanoutMaxRequests < 0 {
+		policy.FanoutMaxRequests = 0
+	}
+	return policy
+}
+
+func (c *Client) restBudgetPolicyError(method string, path string) error {
+	family := restEndpointFamily(method, path)
+	if !restFanoutEndpointFamily(family) {
+		return nil
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.restPolicy.FanoutMaxRequests > 0 && c.restFanoutRequestCountLocked() >= c.restPolicy.FanoutMaxRequests {
+		c.recordRESTBudgetThrottleLocked(method, path, family)
+		return &StatusError{
+			StatusCode: http.StatusTooManyRequests,
+			Body:       "REST fanout request cap reached for " + family,
+			Err:        ErrRESTBudgetReserved,
+		}
+	}
+	if c.restPolicy.MinRemainingReserve > 0 &&
+		c.hasRestRateLimit &&
+		c.restRateLimit.Limit > 0 &&
+		c.restRateLimit.Remaining <= c.restPolicy.MinRemainingReserve {
+		c.recordRESTBudgetThrottleLocked(method, path, family)
+		return &StatusError{
+			StatusCode: http.StatusTooManyRequests,
+			Body:       "REST remaining budget is reserved for shared GitHub work",
+			Err:        ErrRESTBudgetReserved,
+		}
+	}
+	return nil
+}
+
+func (c *Client) restFanoutRequestCountLocked() int64 {
+	var count int64
+	for family, request := range c.restRequests {
+		if restFanoutEndpointFamily(family) {
+			count += request.Count
+		}
+	}
+	return count
+}
+
+func (c *Client) recordRESTBudgetThrottleLocked(method string, path string, family string) {
+	if c.restRequests == nil {
+		c.restRequests = make(map[string]connector.RESTEndpointUsage)
+	}
+	request := c.restRequests[family]
+	request.EndpointFamily = family
+	request.Count++
+	request.RateLimited = true
+	request.LastStatus = http.StatusTooManyRequests
+	if c.hasRestRateLimit {
+		request.Limit = c.restRateLimit.Limit
+		request.Used = c.restRateLimit.Used
+		request.Remaining = c.restRateLimit.Remaining
+		request.Resource = c.restRateLimit.Resource
+		request.ResetAt = c.restRateLimit.ResetAt
+		request.RetryAfter = c.restRateLimit.RetryAfter
+	}
+	c.restRequests[family] = request
+	c.logger.Warn(
+		"github rest budget preserved",
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"remaining", c.restRateLimit.Remaining,
+		"reserve", c.restPolicy.MinRemainingReserve,
+		"fanout_cap", c.restPolicy.FanoutMaxRequests,
+	)
 }
 
 func (c *Client) restSharedBackoffKey(token string) string {
@@ -1189,6 +1280,10 @@ func restEndpointFamily(method string, path string) string {
 		return "issue comments"
 	case len(segments) == 5 && segments[3] == "issues":
 		return "issue reads"
+	case len(segments) == 4 && segments[3] == "pulls":
+		return "pull requests"
+	case len(segments) == 5 && segments[3] == "pulls":
+		return "pull requests"
 	case len(segments) == 6 && segments[3] == "pulls" && segments[5] == "reviews":
 		return "reviews"
 	case len(segments) == 6 && segments[3] == "commits" && segments[5] == "check-runs":
@@ -1197,5 +1292,14 @@ func restEndpointFamily(method string, path string) string {
 		return "commit statuses"
 	default:
 		return "other"
+	}
+}
+
+func restFanoutEndpointFamily(family string) bool {
+	switch family {
+	case "pull requests", "check runs", "commit statuses", "reviews":
+		return true
+	default:
+		return false
 	}
 }

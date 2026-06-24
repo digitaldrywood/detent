@@ -28,6 +28,7 @@ var (
 	ErrProjectFieldUpdateFailed   = errors.New("github project field update failed")
 	ErrProjectNotFound            = errors.New("github project not found")
 	ErrRateLimited                = errors.New("github rate limited")
+	ErrRESTBudgetReserved         = errors.New("github rest budget reserved")
 	ErrStatusFieldNotFound        = errors.New("github status field not found")
 	ErrStatusOptionNotFound       = errors.New("github status option not found")
 	ErrStatusUpdateFailed         = errors.New("github status update failed")

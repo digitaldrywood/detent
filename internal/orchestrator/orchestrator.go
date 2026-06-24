@@ -28,6 +28,8 @@ const (
 	gitHubGraphQLPauseRemaining       = 100
 	gitHubGraphQLBackoffRemaining     = 500
 	defaultGitHubGraphQLWarnRemaining = 500
+	defaultGitHubGraphQLMinReserve    = 1000
+	defaultGitHubRESTMinReserve       = 1000
 	defaultMaxConcurrentAgents        = 1
 	defaultMaxRetryBackoff            = 5 * time.Minute
 	defaultContinuationRetry          = time.Second
@@ -73,6 +75,8 @@ type Config struct {
 	FailureRetryBaseDelay         time.Duration
 	SelectorPersona               string
 	GitHubGraphQLWarnRemaining    int64
+	GitHubGraphQLMinReserve       int64
+	GitHubRESTMinReserve          int64
 }
 
 type ClaimingConfig struct {
@@ -202,6 +206,8 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 		WorkspaceCleanupSweepInterval: durationFromMillis(cfg.Workspace.CleanupSweepIntervalMS),
 		SelectorPersona:               cfg.Tracker.Assignee,
 		GitHubGraphQLWarnRemaining:    int64(cfg.Tracker.GitHubGraphQLWarnRemaining),
+		GitHubGraphQLMinReserve:       int64(cfg.Tracker.GitHubGraphQLMinReserve),
+		GitHubRESTMinReserve:          int64(cfg.Tracker.GitHubRESTMinReserve),
 	}
 }
 
@@ -1914,6 +1920,12 @@ func normalizeConfig(cfg Config) Config {
 	}
 	if cfg.GitHubGraphQLWarnRemaining <= 0 {
 		cfg.GitHubGraphQLWarnRemaining = defaultGitHubGraphQLWarnRemaining
+	}
+	if cfg.GitHubGraphQLMinReserve <= 0 {
+		cfg.GitHubGraphQLMinReserve = defaultGitHubGraphQLMinReserve
+	}
+	if cfg.GitHubRESTMinReserve <= 0 {
+		cfg.GitHubRESTMinReserve = defaultGitHubRESTMinReserve
 	}
 	if len(cfg.ActiveStates) == 0 {
 		cfg.ActiveStates = []string{"Todo", "In Progress"}

@@ -366,6 +366,109 @@ func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
 	}
 }
 
+func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) != 1 {
+			t.Fatalf("unexpected REST call to %s", r.URL.Path)
+		}
+		if r.URL.Path != "/repos/digitaldrywood/detent/pulls" {
+			t.Fatalf("path = %s, want pull requests path", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Used", "100")
+		w.Header().Set("X-RateLimit-Remaining", "4900")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+		RESTPolicy:  RESTBudgetPolicy{FanoutMaxRequests: 1},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var pulls []restPullRequest
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/pulls?state=all", nil, &pulls); err != nil {
+		t.Fatalf("REST() pull requests error = %v", err)
+	}
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/check-runs", nil, nil)
+	if !errors.Is(err, ErrRESTBudgetReserved) {
+		t.Fatalf("REST() capped fanout error = %v, want ErrRESTBudgetReserved", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("REST calls = %d, want only first request sent", calls.Load())
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+	if usage.TotalRequests != 2 || !usage.RateLimited {
+		t.Fatalf("FlushRESTRateLimitUsage() totals = requests %d rate_limited %v, want 2 true", usage.TotalRequests, usage.RateLimited)
+	}
+	if got := restEndpointUsageCount(usage.Requests, "pull requests"); got != 1 {
+		t.Fatalf("pull requests usage count = %d, want 1; usage = %#v", got, usage.Requests)
+	}
+	if got := restEndpointUsageCount(usage.Requests, "check runs"); got != 1 {
+		t.Fatalf("check runs usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
+	}
+}
+
+func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) != 1 {
+			t.Fatalf("unexpected REST call to %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Used", "4100")
+		w.Header().Set("X-RateLimit-Remaining", "900")
+		w.Header().Set("X-RateLimit-Resource", "core")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+		RESTPolicy:  RESTBudgetPolicy{MinRemainingReserve: 1000},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var pulls []restPullRequest
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/pulls?state=all", nil, &pulls); err != nil {
+		t.Fatalf("REST() pull requests error = %v", err)
+	}
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/statuses", nil, nil)
+	if !errors.Is(err, ErrRESTBudgetReserved) {
+		t.Fatalf("REST() reserve fanout error = %v, want ErrRESTBudgetReserved", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("REST calls = %d, want reserve to stop second request", calls.Load())
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+	if usage.RateLimit.Remaining != 900 {
+		t.Fatalf("RateLimit.Remaining = %d, want 900", usage.RateLimit.Remaining)
+	}
+	if got := restEndpointUsageCount(usage.Requests, "commit statuses"); got != 1 {
+		t.Fatalf("commit statuses usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
+	}
+}
+
 func TestClientRESTBackoffAppliesAcrossClientsWithSharedToken(t *testing.T) {
 	t.Parallel()
 

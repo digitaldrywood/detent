@@ -72,35 +72,38 @@ type Config struct {
 }
 
 type Tracker struct {
-	Kind                       string                `yaml:"kind"`
-	Endpoint                   string                `yaml:"endpoint"`
-	APIKey                     string                `yaml:"api_key"`
-	HTTPMaxIdleConns           int                   `yaml:"http_max_idle_conns"`
-	HTTPMaxIdleConnsPerHost    int                   `yaml:"http_max_idle_conns_per_host"`
-	HTTPIdleConnTimeoutMS      int                   `yaml:"http_idle_conn_timeout_ms"`
-	GitHubGraphQLWarnRemaining int                   `yaml:"github_graphql_warn_remaining"`
-	GitHubAppID                string                `yaml:"github_app_id"`
-	GitHubAppPrivateKey        string                `yaml:"github_app_private_key"`
-	GitHubAppPrivateKeyPath    string                `yaml:"github_app_private_key_path"`
-	GitHubAppInstallationID    string                `yaml:"github_app_installation_id"`
-	GitHubWebhookSecret        string                `yaml:"github_webhook_secret,omitempty"`
-	GitHubStatusSource         string                `yaml:"github_status_source"`
-	ProjectSlug                string                `yaml:"project_slug"`
-	Repository                 string                `yaml:"repository"`
-	StatusField                string                `yaml:"status_field"`
-	StatusLabelPrefix          string                `yaml:"status_label_prefix,omitempty"`
-	WriteProbeIssue            string                `yaml:"write_probe_issue,omitempty"`
-	Assignee                   string                `yaml:"assignee"`
-	ActiveStates               []string              `yaml:"active_states"`
-	ObservedStates             []string              `yaml:"observed_states"`
-	TerminalStates             []string              `yaml:"terminal_states"`
-	StateMap                   StringOrMap           `yaml:"state_map"`
-	PriorityMap                StringOrMap           `yaml:"priority_map"`
-	DependencyAutoUnblock      DependencyAutoUnblock `yaml:"dependency_auto_unblock"`
-	AutoProvision              bool                  `yaml:"auto_provision"`
-	Claims                     Claims                `yaml:"claims,omitempty"`
-	Authorization              selector.Selector     `yaml:"authorization,omitempty"`
-	Issues                     []connector.Issue     `yaml:"issues"`
+	Kind                        string                `yaml:"kind"`
+	Endpoint                    string                `yaml:"endpoint"`
+	APIKey                      string                `yaml:"api_key"`
+	HTTPMaxIdleConns            int                   `yaml:"http_max_idle_conns"`
+	HTTPMaxIdleConnsPerHost     int                   `yaml:"http_max_idle_conns_per_host"`
+	HTTPIdleConnTimeoutMS       int                   `yaml:"http_idle_conn_timeout_ms"`
+	GitHubGraphQLWarnRemaining  int                   `yaml:"github_graphql_warn_remaining"`
+	GitHubGraphQLMinReserve     int                   `yaml:"github_graphql_min_remaining_reserve"`
+	GitHubRESTMinReserve        int                   `yaml:"github_rest_min_remaining_reserve"`
+	GitHubRESTFanoutMaxRequests int                   `yaml:"github_rest_fanout_max_requests"`
+	GitHubAppID                 string                `yaml:"github_app_id"`
+	GitHubAppPrivateKey         string                `yaml:"github_app_private_key"`
+	GitHubAppPrivateKeyPath     string                `yaml:"github_app_private_key_path"`
+	GitHubAppInstallationID     string                `yaml:"github_app_installation_id"`
+	GitHubWebhookSecret         string                `yaml:"github_webhook_secret,omitempty"`
+	GitHubStatusSource          string                `yaml:"github_status_source"`
+	ProjectSlug                 string                `yaml:"project_slug"`
+	Repository                  string                `yaml:"repository"`
+	StatusField                 string                `yaml:"status_field"`
+	StatusLabelPrefix           string                `yaml:"status_label_prefix,omitempty"`
+	WriteProbeIssue             string                `yaml:"write_probe_issue,omitempty"`
+	Assignee                    string                `yaml:"assignee"`
+	ActiveStates                []string              `yaml:"active_states"`
+	ObservedStates              []string              `yaml:"observed_states"`
+	TerminalStates              []string              `yaml:"terminal_states"`
+	StateMap                    StringOrMap           `yaml:"state_map"`
+	PriorityMap                 StringOrMap           `yaml:"priority_map"`
+	DependencyAutoUnblock       DependencyAutoUnblock `yaml:"dependency_auto_unblock"`
+	AutoProvision               bool                  `yaml:"auto_provision"`
+	Claims                      Claims                `yaml:"claims,omitempty"`
+	Authorization               selector.Selector     `yaml:"authorization,omitempty"`
+	Issues                      []connector.Issue     `yaml:"issues"`
 }
 
 type DependencyAutoUnblock struct {
@@ -506,19 +509,22 @@ func Default() Config {
 
 	return Config{
 		Tracker: Tracker{
-			Endpoint:                   defaultLinearEndpoint,
-			HTTPMaxIdleConns:           100,
-			HTTPMaxIdleConnsPerHost:    32,
-			HTTPIdleConnTimeoutMS:      90000,
-			GitHubGraphQLWarnRemaining: 500,
-			GitHubStatusSource:         GitHubStatusSourceProjectV2,
-			StatusField:                "Status",
-			StatusLabelPrefix:          "detent:",
-			ActiveStates:               []string{"Todo", "In Progress"},
-			ObservedStates:             []string{"Backlog", "Human Review", "Blocked"},
-			TerminalStates:             []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"},
-			StateMap:                   MapValue(map[string]any{}),
-			PriorityMap:                MapValue(defaultPriorityMap()),
+			Endpoint:                    defaultLinearEndpoint,
+			HTTPMaxIdleConns:            100,
+			HTTPMaxIdleConnsPerHost:     32,
+			HTTPIdleConnTimeoutMS:       90000,
+			GitHubGraphQLWarnRemaining:  500,
+			GitHubGraphQLMinReserve:     1000,
+			GitHubRESTMinReserve:        1000,
+			GitHubRESTFanoutMaxRequests: 80,
+			GitHubStatusSource:          GitHubStatusSourceProjectV2,
+			StatusField:                 "Status",
+			StatusLabelPrefix:           "detent:",
+			ActiveStates:                []string{"Todo", "In Progress"},
+			ObservedStates:              []string{"Backlog", "Human Review", "Blocked"},
+			TerminalStates:              []string{"Closed", "Cancelled", "Canceled", "Duplicate", "Done"},
+			StateMap:                    MapValue(map[string]any{}),
+			PriorityMap:                 MapValue(defaultPriorityMap()),
 			DependencyAutoUnblock: DependencyAutoUnblock{
 				SourceStates: []string{"Blocked"},
 				TargetState:  "Todo",
@@ -724,6 +730,9 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.http_max_idle_conns_per_host", c.Tracker.HTTPMaxIdleConnsPerHost, problems)
 	validatePositive("tracker.http_idle_conn_timeout_ms", c.Tracker.HTTPIdleConnTimeoutMS, problems)
 	validatePositive("tracker.github_graphql_warn_remaining", c.Tracker.GitHubGraphQLWarnRemaining, problems)
+	validatePositive("tracker.github_graphql_min_remaining_reserve", c.Tracker.GitHubGraphQLMinReserve, problems)
+	validatePositive("tracker.github_rest_min_remaining_reserve", c.Tracker.GitHubRESTMinReserve, problems)
+	validatePositive("tracker.github_rest_fanout_max_requests", c.Tracker.GitHubRESTFanoutMaxRequests, problems)
 	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
 }
