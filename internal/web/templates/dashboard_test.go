@@ -1079,6 +1079,10 @@ func TestProjectSnapshotsRenderFirstRefreshFailureState(t *testing.T) {
 		},
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
+			Project: telemetry.Project{
+				ID:          "detent",
+				DisplayName: "Detent",
+			},
 			Refresh: telemetry.Refresh{
 				Status:      telemetry.RefreshStatusDegraded,
 				LastError:   "github tracker unavailable",
@@ -1092,8 +1096,17 @@ func TestProjectSnapshotsRenderFirstRefreshFailureState(t *testing.T) {
 		"overview": renderDashboard(t, data),
 		"runs":     renderProjectRunsSnapshot(t, data),
 	} {
-		if !strings.Contains(html, "Tracker refresh failed.") || !strings.Contains(html, "github tracker unavailable") {
-			t.Fatalf("%s missing degraded state:\n%s", name, html)
+		for _, want := range []string{
+			"Tracker refresh failed.",
+			"Detent could not load the first tracker snapshot.",
+			"github tracker unavailable",
+		} {
+			if !strings.Contains(html, want) {
+				t.Fatalf("%s missing degraded state %q:\n%s", name, want, html)
+			}
+		}
+		if strings.Contains(html, "Tracker refresh degraded.") {
+			t.Fatalf("%s rendered prior-snapshot degraded copy for first refresh failure:\n%s", name, html)
 		}
 		for _, forbidden := range []string{
 			"No issues in this state.",
@@ -1104,6 +1117,115 @@ func TestProjectSnapshotsRenderFirstRefreshFailureState(t *testing.T) {
 			if strings.Contains(html, forbidden) {
 				t.Fatalf("%s rendered loaded state %q after first refresh failure:\n%s", name, forbidden, html)
 			}
+		}
+	}
+}
+
+func TestProjectSnapshotsRenderDegradedRefreshWithPriorSnapshotState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 25, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-30 * time.Second)
+	lastErrorAt := now.Add(-5 * time.Second)
+	data := templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusDegraded,
+				LastRefreshAt: &lastRefreshAt,
+				LastError:     "workspace cleanup candidate fetch failed for states=done,cancelled: fetch github pull request: github transient error: status 502",
+				LastErrorAt:   &lastErrorAt,
+			},
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "issue-680",
+					Identifier: "digitaldrywood/detent#680",
+					ProjectID:  "detent",
+					URL:        "https://github.com/digitaldrywood/detent/issues/680",
+					Title:      "Summarize degraded refresh errors",
+					State:      "Todo",
+				},
+			},
+		},
+	}
+
+	for name, html := range map[string]string{
+		"kanban":   renderProjectKanbanPage(t, data),
+		"overview": renderDashboard(t, data),
+		"runs":     renderProjectRunsSnapshot(t, data),
+	} {
+		for _, want := range []string{
+			"Tracker refresh degraded.",
+			"GitHub returned a transient 502 while fetching workspace cleanup candidates. Detent will retry on the next refresh.",
+			"Last successful refresh: Jun 22 09:24:30 UTC.",
+		} {
+			if !strings.Contains(html, want) {
+				t.Fatalf("%s missing degraded refresh copy %q:\n%s", name, want, html)
+			}
+		}
+		for _, forbidden := range []string{
+			"Detent could not load the first tracker snapshot.",
+			"Tracker refresh failed.",
+		} {
+			if strings.Contains(html, forbidden) {
+				t.Fatalf("%s rendered first-load copy %q for degraded refresh:\n%s", name, forbidden, html)
+			}
+		}
+	}
+}
+
+func TestProjectSnapshotsSummarizeGitHubTransientHTMLReadinessError(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 30, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-time.Minute)
+	lastErrorAt := now.Add(-5 * time.Second)
+	htmlBody := "<!DOCTYPE html><html><head><title>Unicorn! · GitHub</title></head><body>upstream unavailable</body></html>"
+	data := templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo", "In Progress"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusDegraded,
+				LastRefreshAt: &lastRefreshAt,
+				LastError:     "workspace cleanup candidate fetch failed for states=done,cancelled: fetch github pull request: github transient error: status 502: " + htmlBody,
+				LastErrorAt:   &lastErrorAt,
+			},
+		},
+	}
+
+	html := renderDashboard(t, data)
+	for _, want := range []string{
+		"Tracker refresh degraded.",
+		"GitHub returned a transient 502 while fetching workspace cleanup candidates. Detent will retry on the next refresh.",
+		"Last successful refresh: Jun 22 09:29:00 UTC.",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing sanitized degraded refresh copy %q:\n%s", want, html)
+		}
+	}
+	for _, forbidden := range []string{
+		"<!DOCTYPE html>",
+		"&lt;!DOCTYPE html&gt;",
+		"Unicorn",
+		"upstream unavailable",
+		"github transient error",
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard rendered raw upstream error %q:\n%s", forbidden, html)
 		}
 	}
 }
