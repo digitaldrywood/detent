@@ -577,6 +577,50 @@ func TestDispatchCandidatesClaimsDuplicateIssueWithinCycle(t *testing.T) {
 	}
 }
 
+func TestDispatchReadyIssuesRechecksStartTransitionStateCapacity(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		MaxConcurrentAgentsByState: map[string]int{
+			"In Progress": 1,
+		},
+		ActiveStates:   []string{"Todo", "In Progress"},
+		TerminalStates: []string{"Done"},
+	})
+	runner := newWorkerHostRunner()
+	orch := Orchestrator{
+		cfg:        cfg,
+		connector:  hydratingDispatchConnector{},
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion),
+	}
+	state := newState(cfg)
+	now := time.Now()
+	first := dispatchTestIssue("issue-first", "Todo")
+	first.Fields = map[string]string{"Status": "Todo"}
+	second := dispatchTestIssue("issue-second", "Todo")
+	second.Fields = map[string]string{"Status": "Todo"}
+
+	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{first, second}, now)
+
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != first.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, first.ID)
+	}
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected second dispatch = %#v", request)
+	default:
+	}
+	if len(state.Running) != 1 {
+		t.Fatalf("Running len = %d, want 1", len(state.Running))
+	}
+	if got := state.Running[first.ID].Issue.State; got != "In Progress" {
+		t.Fatalf("Running[%q].Issue.State = %q, want In Progress", first.ID, got)
+	}
+}
+
 func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 	t.Parallel()
 

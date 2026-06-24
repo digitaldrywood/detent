@@ -1390,12 +1390,23 @@ func (o *Orchestrator) dispatchIssue(
 	now time.Time,
 	preferredWorkerHost string,
 ) bool {
+	runMode := o.dispatchMode(state, issue)
+	targetState := dispatchStartTransitionState(issue, runMode, o.cfg.ActiveStates)
+	slotIssue := issue
+	if targetState != "" {
+		slotIssue = cloneIssue(issue)
+		slotIssue.State = targetState
+		if !o.dispatchPlanner().slotsAvailable(slotIssue, state, preferredWorkerHost) {
+			return false
+		}
+	}
+
 	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
 	if !ok {
 		return false
 	}
 
-	globalSlot, ok := o.acquireGlobalDispatchSlot(ctx, issue, workerHost, now)
+	globalSlot, ok := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, now)
 	if !ok {
 		return false
 	}
@@ -1407,6 +1418,19 @@ func (o *Orchestrator) dispatchIssue(
 	}
 
 	issue = cloneIssue(claimedIssue)
+	if targetState != "" {
+		if err := o.connector.UpdateIssueState(ctx, issue.ID, targetState); err != nil {
+			o.releaseGlobalDispatchSlot(globalSlot)
+			if abandonErr := o.abandonClaim(ctx, issue.ID); abandonErr != nil && o.logger != nil {
+				o.logger.Warn("abandon claim after start state transition failed", "issue_id", issue.ID, "error", abandonErr)
+			}
+			if o.logger != nil {
+				o.logger.Warn("start state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
+			}
+			return false
+		}
+		issue.State = targetState
+	}
 	claim.Issue = issue
 	runCtx, cancel := context.WithCancel(ctx)
 	state.Running[issue.ID] = Running{
@@ -1428,7 +1452,7 @@ func (o *Orchestrator) dispatchIssue(
 	request := RunRequest{
 		Issue:           issue,
 		Attempt:         attempt,
-		Mode:            o.dispatchMode(state, issue),
+		Mode:            runMode,
 		StartedAt:       now,
 		WorkerHost:      workerHost,
 		SelectorContext: o.selectorContext(),
@@ -1436,6 +1460,19 @@ func (o *Orchestrator) dispatchIssue(
 	}
 	o.supervisor.Dispatch(runCtx, request, o.runResults)
 	return true
+}
+
+func dispatchStartTransitionState(issue connector.Issue, mode string, activeStates []string) string {
+	if mode != runpkg.RunModeImplement {
+		return ""
+	}
+	if normalizeState(issue.State) != "todo" {
+		return ""
+	}
+	if !stateIn(planImplementationState, activeStates) {
+		return ""
+	}
+	return planImplementationState
 }
 
 func (o *Orchestrator) dispatchMode(state *State, issue connector.Issue) string {

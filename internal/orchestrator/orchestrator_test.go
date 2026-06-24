@@ -120,6 +120,13 @@ func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 	defer stop()
 
 	waitForStateUpdate(t, tracker, stateUpdateCall{issueID: issue.ID, state: "Human Review"})
+	wantUpdates := []stateUpdateCall{
+		{issueID: issue.ID, state: "In Progress"},
+		{issueID: issue.ID, state: "Human Review"},
+	}
+	if updates := tracker.stateUpdateCalls(); !stateUpdateCallsContainInOrder(updates, wantUpdates) {
+		t.Fatalf("state updates = %#v, want sequence %#v", updates, wantUpdates)
+	}
 
 	if got := runner.calls.Load(); got != 1 {
 		t.Fatalf("runner calls = %d, want 1", got)
@@ -133,6 +140,38 @@ func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 	}
 	if !labelListContains(got.Labels, "detent:human-review") {
 		t.Fatalf("Labels = %#v, want detent:human-review", got.Labels)
+	}
+}
+
+func TestRunStartsLabelModeTodoIssueInProgress(t *testing.T) {
+	t.Parallel()
+
+	issue := testIssue("issue-label-start", "digitaldrywood/detent#669", "Todo")
+	issue.Labels = []string{"detent:todo", "bug"}
+	tracker := newFakeLabelConnector(issue)
+	runner := newBlockingRunner()
+
+	orch := newTestOrchestrator(t, tracker, runner)
+	stop := runOrchestrator(t, orch)
+	defer stop()
+	defer close(runner.release)
+
+	request := receiveRunRequest(t, runner.started)
+	if request.Issue.ID != issue.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
+	}
+
+	waitForStateUpdate(t, tracker, stateUpdateCall{issueID: issue.ID, state: "In Progress"})
+
+	got := tracker.candidateIssue(issue.ID)
+	if got.State != "In Progress" {
+		t.Fatalf("State = %q, want In Progress", got.State)
+	}
+	if count := statusLabelCount(got.Labels, "detent:"); count != 1 {
+		t.Fatalf("detent status label count = %d in %#v, want 1", count, got.Labels)
+	}
+	if !labelListContains(got.Labels, "detent:in-progress") {
+		t.Fatalf("Labels = %#v, want detent:in-progress", got.Labels)
 	}
 }
 
@@ -2049,6 +2088,19 @@ func waitForStateUpdate(t *testing.T, tracker *fakeConnector, want stateUpdateCa
 			time.Sleep(time.Millisecond)
 		}
 	}
+}
+
+func stateUpdateCallsContainInOrder(got []stateUpdateCall, want []stateUpdateCall) bool {
+	index := 0
+	for _, update := range got {
+		if index >= len(want) {
+			return true
+		}
+		if update == want[index] {
+			index++
+		}
+	}
+	return index == len(want)
 }
 
 func statusLabelCount(labels []string, prefix string) int {
