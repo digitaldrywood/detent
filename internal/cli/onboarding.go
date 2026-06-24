@@ -52,6 +52,16 @@ type onboardingAnswersValidationResult struct {
 	MutationConfirmed      bool                                      `json:"mutation_confirmed"`
 }
 
+type onboardingAnswersNormalizationResult struct {
+	Status                 string            `json:"status"`
+	Path                   string            `json:"path"`
+	Written                bool              `json:"written"`
+	Changed                bool              `json:"changed"`
+	DeliveryProfile        string            `json:"delivery_profile,omitempty"`
+	DeliveryProfileAnswers map[string]string `json:"delivery_profile_answers,omitempty"`
+	MutationConfirmed      bool              `json:"mutation_confirmed"`
+}
+
 type onboardingDraftAnswersResult struct {
 	Status                         string   `json:"status"`
 	AnswersPath                    string   `json:"answers_path,omitempty"`
@@ -79,6 +89,13 @@ type onboardingAnswers struct {
 	Values       map[string]string
 	LastNonblank string
 	Problems     []string
+}
+
+type onboardingDeliveryProfileAnswerAnalysis struct {
+	Profile   string
+	Expansion map[string]string
+	Missing   []string
+	Problems  []string
 }
 
 type onboardingDraftAnswersConfig struct {
@@ -110,6 +127,7 @@ func newOnboardingCommand(configPath *string, opts options) *cobra.Command {
 	cmd.AddCommand(
 		newOnboardingValidateAnswersCommand(),
 		newOnboardingExplainAnswersCommand(),
+		newOnboardingNormalizeAnswersCommand(),
 		newOnboardingDraftAnswersCommand(configPath, opts),
 		newOnboardingDiagnoseGateCommand(),
 	)
@@ -275,6 +293,42 @@ func canonicalOnboardingDeliveryAnswerLines(result onboardingAnswersValidationRe
 		lines = append(lines, key+"="+result.DeliveryProfileAnswers[key])
 	}
 	return lines
+}
+
+func newOnboardingNormalizeAnswersCommand() *cobra.Command {
+	var answersPath string
+	var write bool
+	cmd := &cobra.Command{
+		Use:          "normalize-answers",
+		Short:        "Write canonical onboarding answers expanded from selected profiles",
+		Example:      `detent onboarding normalize-answers --answers "$ONBOARDING_DIR/answers.env" --write`,
+		Args:         NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			result, err := normalizeOnboardingAnswersFile(answersPath, write)
+			if err != nil {
+				return err
+			}
+			return out.Write(func(w io.Writer) error {
+				state := "already normalized"
+				if result.Changed {
+					state = "normalized"
+				}
+				if !result.Written {
+					state += " (preview only; rerun with --write to update answers.env)"
+				}
+				_, writeErr := fmt.Fprintf(w, "onboarding answers %s: %s\n", state, result.Path)
+				return writeErr
+			}, result)
+		},
+	}
+	cmd.Flags().StringVar(&answersPath, "answers", "answers.env", "path to onboarding answers.env")
+	cmd.Flags().BoolVar(&write, "write", false, "write normalized answers back to answers.env")
+	return cmd
 }
 
 func draftOnboardingAnswers(ctx context.Context, cfg onboardingDraftAnswersConfig) (onboardingDraftAnswersResult, error) {
@@ -815,6 +869,125 @@ func validateOnboardingAnswersFile(path string, phase string) (onboardingAnswers
 	return result, nil
 }
 
+func normalizeOnboardingAnswersFile(path string, write bool) (onboardingAnswersNormalizationResult, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return onboardingAnswersNormalizationResult{}, NewValidationError(
+			"--answers is required",
+			`Run detent onboarding normalize-answers --answers "$ONBOARDING_DIR/answers.env" --write.`,
+			nil,
+		)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return onboardingAnswersNormalizationResult{}, NewValidationError(
+				"answers file not found: "+path,
+				"Create answers.env from explicit human answers before continuing onboarding.",
+				nil,
+			)
+		}
+		return onboardingAnswersNormalizationResult{}, fmt.Errorf("read onboarding answers %s: %w", path, err)
+	}
+	answers := parseOnboardingAnswers(raw)
+	analysis := analyzeOnboardingDeliveryProfileAnswers(answers)
+	if len(analysis.Problems) > 0 {
+		return onboardingAnswersNormalizationResult{}, NewValidationError(
+			strings.Join(analysis.Problems, "; "),
+			`Resolve delivery profile conflicts or remove DELIVERY_PROFILE, then rerun detent onboarding normalize-answers --answers "$ONBOARDING_DIR/answers.env" --write.`,
+			nil,
+		)
+	}
+	if len(analysis.Missing) > 0 && answers.Values["MUTATION_CONFIRMED"] == "true" {
+		return onboardingAnswersNormalizationResult{}, NewValidationError(
+			fmt.Sprintf("DELIVERY_PROFILE=%s is missing expanded answers (%s), but MUTATION_CONFIRMED=true is already present", analysis.Profile, strings.Join(analysis.Missing, ", ")),
+			`Remove MUTATION_CONFIRMED, rerun detent onboarding normalize-answers --answers "$ONBOARDING_DIR/answers.env" --write, show the updated answers.env to the operator, then record a fresh confirmation.`,
+			nil,
+		)
+	}
+	content := string(raw)
+	if len(analysis.Missing) > 0 {
+		content = buildOnboardingNormalizedAnswersContent(raw, analysis)
+	}
+	result := onboardingAnswersNormalizationResult{
+		Status:                 "ok",
+		Path:                   path,
+		Written:                write,
+		Changed:                content != string(raw),
+		DeliveryProfile:        analysis.Profile,
+		DeliveryProfileAnswers: analysis.Expansion,
+		MutationConfirmed:      answers.Values["MUTATION_CONFIRMED"] == "true" && answers.LastNonblank == "MUTATION_CONFIRMED=true",
+	}
+	if write && result.Changed {
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			return onboardingAnswersNormalizationResult{}, fmt.Errorf("write onboarding answers %s: %w", path, err)
+		}
+		if err := os.Chmod(path, 0o600); err != nil {
+			return onboardingAnswersNormalizationResult{}, fmt.Errorf("restrict onboarding answers %s: %w", path, err)
+		}
+	}
+	return result, nil
+}
+
+func buildOnboardingNormalizedAnswersContent(raw []byte, analysis onboardingDeliveryProfileAnswerAnalysis) string {
+	missing := make(map[string]bool, len(analysis.Missing))
+	additions := make([]string, 0, len(analysis.Missing))
+	for _, key := range analysis.Missing {
+		missing[key] = true
+		additions = append(additions, key+"="+analysis.Expansion[key])
+	}
+
+	lines := splitOnboardingAnswerLines(raw)
+	filtered := make([]string, 0, len(lines)+len(additions))
+	for _, line := range lines {
+		if key, ok := onboardingAnswerLineKey(line); ok && missing[key] {
+			continue
+		}
+		filtered = append(filtered, line)
+	}
+	return insertOnboardingAnswerLinesBeforeMutationConfirmation(filtered, additions)
+}
+
+func splitOnboardingAnswerLines(raw []byte) []string {
+	content := string(raw)
+	if content == "" {
+		return nil
+	}
+	content = strings.TrimSuffix(content, "\n")
+	return strings.Split(content, "\n")
+}
+
+func insertOnboardingAnswerLinesBeforeMutationConfirmation(lines []string, additions []string) string {
+	insertionIndex := len(lines)
+	foundMutationConfirmation := false
+	for index := len(lines) - 1; index >= 0; index-- {
+		line := strings.TrimSpace(lines[index])
+		if line == "" {
+			continue
+		}
+		if line == "MUTATION_CONFIRMED=true" {
+			insertionIndex = index
+			foundMutationConfirmation = true
+		}
+		break
+	}
+	if !foundMutationConfirmation {
+		for insertionIndex > 0 && strings.TrimSpace(lines[insertionIndex-1]) == "" {
+			insertionIndex--
+		}
+		lines = lines[:insertionIndex]
+	}
+
+	normalized := make([]string, 0, len(lines)+len(additions))
+	normalized = append(normalized, lines[:insertionIndex]...)
+	normalized = append(normalized, additions...)
+	normalized = append(normalized, lines[insertionIndex:]...)
+	for len(normalized) > 0 && strings.TrimSpace(normalized[len(normalized)-1]) == "" {
+		normalized = normalized[:len(normalized)-1]
+	}
+	return strings.Join(normalized, "\n") + "\n"
+}
+
 func normalizeOnboardingAnswersPhase(phase string) (string, error) {
 	switch strings.ToLower(strings.TrimSpace(phase)) {
 	case "", onboardingAnswersPhaseMutation:
@@ -900,7 +1073,7 @@ func validateOnboardingAnswers(answers onboardingAnswers, phase string, result *
 		return problems
 	}
 
-	problems = append(problems, validateOnboardingDeliveryProfileAnswers(answers, result)...)
+	problems = append(problems, validateOnboardingDeliveryProfileAnswers(answers, phase, result)...)
 
 	mode := answers.Values["GITHUB_MODE"]
 	switch mode {
@@ -915,33 +1088,52 @@ func validateOnboardingAnswers(answers onboardingAnswers, phase string, result *
 	return problems
 }
 
-func validateOnboardingDeliveryProfileAnswers(answers onboardingAnswers, result *onboardingAnswersValidationResult) []string {
-	profile := strings.TrimSpace(answers.Values["DELIVERY_PROFILE"])
-	if profile == "" {
-		return nil
-	}
-	settings, ok := onboardingprofile.DeliveryProfile(profile)
-	if !ok {
-		return []string{"DELIVERY_PROFILE must be conservative_review or autonomous_delivery"}
-	}
-	expansion, _ := onboardingprofile.DeliveryProfileAnswerExpansion(settings.ID)
-	summary, _ := onboardingprofile.SummarizeDeliveryProfile(settings.ID)
-	result.DeliveryProfile = settings.ID
-	result.DeliveryProfileAnswers = expansion
-	result.AnswersSummary = &summary
-
-	var problems []string
-	for _, key := range onboardingprofile.SortedDeliveryProfileAnswerKeys(expansion) {
-		existing := strings.TrimSpace(answers.Values[key])
-		if existing == "" {
-			answers.Values[key] = expansion[key]
-			continue
+func validateOnboardingDeliveryProfileAnswers(answers onboardingAnswers, phase string, result *onboardingAnswersValidationResult) []string {
+	analysis := analyzeOnboardingDeliveryProfileAnswers(answers)
+	if result != nil {
+		result.DeliveryProfile = analysis.Profile
+		result.DeliveryProfileAnswers = analysis.Expansion
+		if analysis.Profile != "" && len(analysis.Problems) == 0 {
+			summary, _ := onboardingprofile.SummarizeDeliveryProfile(analysis.Profile)
+			result.AnswersSummary = &summary
 		}
-		if existing != expansion[key] {
-			problems = append(problems, fmt.Sprintf("%s=%s conflicts with DELIVERY_PROFILE=%s, which expands %s=%s", key, existing, settings.ID, key, expansion[key]))
+	}
+	problems := append([]string(nil), analysis.Problems...)
+	if phase == onboardingAnswersPhaseMutation {
+		for _, key := range analysis.Missing {
+			problems = append(problems, fmt.Sprintf("%s is required when DELIVERY_PROFILE=%s; run detent onboarding normalize-answers --answers \"$ONBOARDING_DIR/answers.env\" --write before mutation validation", key, analysis.Profile))
 		}
 	}
 	return problems
+}
+
+func analyzeOnboardingDeliveryProfileAnswers(answers onboardingAnswers) onboardingDeliveryProfileAnswerAnalysis {
+	profile := strings.TrimSpace(answers.Values["DELIVERY_PROFILE"])
+	if profile == "" {
+		return onboardingDeliveryProfileAnswerAnalysis{}
+	}
+	settings, ok := onboardingprofile.DeliveryProfile(profile)
+	if !ok {
+		return onboardingDeliveryProfileAnswerAnalysis{
+			Problems: []string{"DELIVERY_PROFILE must be conservative_review or autonomous_delivery"},
+		}
+	}
+	expansion, _ := onboardingprofile.DeliveryProfileAnswerExpansion(settings.ID)
+	analysis := onboardingDeliveryProfileAnswerAnalysis{
+		Profile:   settings.ID,
+		Expansion: expansion,
+	}
+	for _, key := range onboardingprofile.SortedDeliveryProfileAnswerKeys(expansion) {
+		existing := strings.TrimSpace(answers.Values[key])
+		if existing == "" {
+			analysis.Missing = append(analysis.Missing, key)
+			continue
+		}
+		if existing != expansion[key] {
+			analysis.Problems = append(analysis.Problems, fmt.Sprintf("%s=%s conflicts with DELIVERY_PROFILE=%s, which expands %s=%s", key, existing, settings.ID, key, expansion[key]))
+		}
+	}
+	return analysis
 }
 
 func validateOnboardingIdentityAnswers(answers onboardingAnswers, result *onboardingAnswersValidationResult) []string {
@@ -1090,7 +1282,7 @@ func onboardingAnswersValidationHint(phase string) string {
 	case onboardingAnswersPhaseDecision:
 		return "Complete and validate the identity phase first, then ask the status-source question, record the explicit GITHUB_MODE answer in answers.env, and rerun the validator before discovery recommendations become selected answers."
 	default:
-		return "Complete and validate the identity and status-source answers, record the explicit mutation confirmation in answers.env, and rerun the validator before any mutation."
+		return `Complete and validate the identity and status-source answers, run detent onboarding normalize-answers --answers "$ONBOARDING_DIR/answers.env" --write after selecting DELIVERY_PROFILE, record the explicit mutation confirmation in answers.env, and rerun the validator before any mutation.`
 	}
 }
 
