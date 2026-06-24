@@ -1114,6 +1114,9 @@ func snapshotDegraded(snapshot telemetry.Snapshot) bool {
 
 func snapshotReadinessTitle(snapshot telemetry.Snapshot) string {
 	if snapshotDegraded(snapshot) {
+		if snapshotHasPriorTrackerSnapshot(snapshot) {
+			return "Tracker refresh degraded."
+		}
 		return "Tracker refresh failed."
 	}
 	return "Loading tracker state..."
@@ -1121,22 +1124,134 @@ func snapshotReadinessTitle(snapshot telemetry.Snapshot) string {
 
 func snapshotReadinessDetail(snapshot telemetry.Snapshot) string {
 	if snapshotDegraded(snapshot) {
-		parts := []string{"Detent could not load the first tracker snapshot."}
-		if err := strings.TrimSpace(snapshot.Refresh.LastError); err != "" {
-			parts = append(parts, err)
+		if snapshotHasPriorTrackerSnapshot(snapshot) {
+			return snapshotDegradedRefreshDetail(snapshot)
 		}
-		if snapshot.Refresh.LastErrorAt != nil {
-			parts = append(parts, "Last error at "+timeLabel(*snapshot.Refresh.LastErrorAt)+".")
-		}
-		if snapshot.Refresh.LastRefreshAt != nil {
-			parts = append(parts, "Last successful refresh at "+timeLabel(*snapshot.Refresh.LastRefreshAt)+".")
-		}
-		return strings.Join(parts, " ")
+		return snapshotFirstRefreshFailureDetail(snapshot)
 	}
 	if snapshot.Refresh.NextRefreshAt != nil {
 		return "Detent is waiting for the first successful tracker snapshot. Next refresh is scheduled for " + timeLabel(*snapshot.Refresh.NextRefreshAt) + "."
 	}
 	return "Detent is waiting for the first successful tracker snapshot before showing board counts or empty states."
+}
+
+func snapshotHasPriorTrackerSnapshot(snapshot telemetry.Snapshot) bool {
+	if snapshot.Refresh.LastRefreshAt != nil ||
+		len(snapshot.BoardIssues) > 0 ||
+		len(snapshot.Pipeline) > 0 ||
+		len(snapshot.Running) > 0 ||
+		len(snapshot.Queue) > 0 ||
+		len(snapshot.Blocked) > 0 ||
+		len(snapshot.Completed) > 0 ||
+		snapshot.Counts != (telemetry.Counts{}) {
+		return true
+	}
+	for _, project := range snapshot.Projects {
+		if projectSnapshotHasPriorTrackerData(project) {
+			return true
+		}
+	}
+	return false
+}
+
+func projectSnapshotHasPriorTrackerData(project telemetry.ProjectSnapshot) bool {
+	return project.Refresh.LastRefreshAt != nil ||
+		project.Refresh.Status == telemetry.RefreshStatusReady ||
+		project.Counts != (telemetry.Counts{})
+}
+
+func snapshotFirstRefreshFailureDetail(snapshot telemetry.Snapshot) string {
+	parts := []string{"Detent could not load the first tracker snapshot."}
+	if err := snapshotReadinessErrorSummary(snapshot.Refresh.LastError); err != "" {
+		parts = append(parts, err)
+	}
+	if snapshot.Refresh.LastErrorAt != nil {
+		parts = append(parts, "Last error at "+timeLabel(*snapshot.Refresh.LastErrorAt)+".")
+	}
+	return strings.Join(parts, " ")
+}
+
+func snapshotDegradedRefreshDetail(snapshot telemetry.Snapshot) string {
+	parts := []string{}
+	if err := snapshotReadinessErrorSummary(snapshot.Refresh.LastError); err != "" {
+		parts = append(parts, err)
+	} else {
+		parts = append(parts, "The latest tracker refresh failed. Detent will retry on the next refresh.")
+	}
+	if snapshot.Refresh.LastRefreshAt != nil {
+		parts = append(parts, "Last successful refresh: "+timeLabel(*snapshot.Refresh.LastRefreshAt)+".")
+	}
+	return strings.Join(parts, " ")
+}
+
+func snapshotReadinessErrorSummary(raw string) string {
+	err := strings.TrimSpace(raw)
+	if err == "" {
+		return ""
+	}
+	if status, ok := githubTransientStatus(err); ok {
+		return fmt.Sprintf("GitHub returned a transient %d while %s. Detent will retry on the next refresh.", status, githubTransientOperation(err))
+	}
+	return sanitizeReadinessError(err)
+}
+
+func githubTransientStatus(err string) (int, bool) {
+	lower := strings.ToLower(err)
+	marker := "github transient error: status "
+	index := strings.Index(lower, marker)
+	if index < 0 {
+		return 0, false
+	}
+	rest := lower[index+len(marker):]
+	status := 0
+	for _, char := range rest {
+		if char < '0' || char > '9' {
+			break
+		}
+		status = status*10 + int(char-'0')
+	}
+	return status, status >= 500 && status <= 599
+}
+
+func githubTransientOperation(err string) string {
+	lower := strings.ToLower(err)
+	switch {
+	case strings.Contains(lower, "workspace cleanup candidate fetch failed"):
+		return "fetching workspace cleanup candidates"
+	case strings.Contains(lower, "fetch github pull request reviews"):
+		return "fetching GitHub pull request reviews"
+	case strings.Contains(lower, "fetch github pull request"):
+		return "fetching GitHub pull request data"
+	case strings.Contains(lower, "fetch github issue"):
+		return "fetching GitHub issue data"
+	default:
+		return "refreshing tracker data"
+	}
+}
+
+func sanitizeReadinessError(err string) string {
+	err = strings.Join(strings.Fields(err), " ")
+	htmlIndex := firstHTMLIndex(err)
+	if htmlIndex < 0 {
+		return err
+	}
+	prefix := strings.TrimRight(strings.TrimSpace(err[:htmlIndex]), ": ")
+	if prefix == "" {
+		return "Upstream returned an HTML error page. Check logs for details."
+	}
+	return prefix + ". Check logs for details."
+}
+
+func firstHTMLIndex(value string) int {
+	lower := strings.ToLower(value)
+	first := -1
+	for _, marker := range []string{"<!doctype html", "<html", "<head", "<body"} {
+		index := strings.Index(lower, marker)
+		if index >= 0 && (first < 0 || index < first) {
+			first = index
+		}
+	}
+	return first
 }
 
 func snapshotReadinessDotClass(snapshot telemetry.Snapshot) string {
