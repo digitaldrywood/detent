@@ -712,10 +712,16 @@ recommendations before asking what to change.
 
 ## Phase 2 — Interview The Human
 
-Ask only these decision questions. Present each as question, grounded
+Ask only these eligible decision questions. Present each as question, grounded
 recommendation, and default-if-silent. Defaults are recommendations only; they
 do not authorize GitHub, issue, label, `WORKFLOW.md`, or `global.yaml`
 mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
+
+Present the operator's plain-English operating model first, then show the
+canonical `answers.env` fields. Do not lead with raw environment keys when a
+human intent profile can explain the operating effect. After a named delivery
+profile supplies a field, skip the duplicate low-level question unless the
+operator asks for an advanced override.
 
 0. **Mode.** `DETENT_ONBOARDING_MODE` was selected in Phase 0.5. If discovery
    shows the chosen mode is wrong, stop, update the identity answers, present
@@ -788,24 +794,56 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
    ```
 
-5. **Operator intent profile.** Ask: "Do you want conservative review mode or
-   autonomous delivery mode?" Use `conservative_review` when the operator wants
-   Detent to stop at `Human Review` until a human chooses the next step. Use
-   `autonomous_delivery` when the operator wants Detent to keep moving Todo
-   issues through PR, CI, merge, and Done as soon as the gates pass. Explain
-   that autonomous delivery still requires linked PRs, green CI, clear gates,
-   and no blocking P1 automated findings; it does not bypass validation. Also
-   explain that onboarding mutation should use live reload or a project-scoped
-   refresh and verify running agents were not interrupted rather than
-   restarting Detent. When a profile supplies a detailed answer below, record
-   the expansion and skip the duplicate low-level question unless the operator
-   intentionally changes profile. Verify:
+5. **Operator intent profile.** Ask: "Which operating model fits this project?"
+   Present these plain-English flavors before showing canonical
+   `answers.env` fields:
+
+   - Conservative review: stop at `Human Review` until a human explicitly
+     promotes work.
+   - Autonomous delivery: move Todo work through PR, CI/gates, Merging, and
+     Done without human review or quiet-window delay when there are no real
+     blockers.
+   - Custom/advanced: expose the underlying fields for teams that need a mixed
+     policy.
+
+   When the operator says "no human review, no wait state, unblock
+   aggressively, only stop on real blockers," recommend `autonomous_delivery`.
+   Explain that autonomous delivery still requires linked PRs, green CI, clear
+   gates, and no blocking P1 automated findings; it does not bypass validation.
+   Also explain that onboarding mutation should use live reload or a
+   project-scoped refresh and verify running agents were not interrupted rather
+   than restarting Detent.
+
+   After selecting `DELIVERY_PROFILE=autonomous_delivery`, do not ask the
+   Kanban interaction, validation-gate automated-review, Merging concurrency,
+   review policy, or dependency waiting policy questions again unless the
+   operator asks for an advanced override. Advanced override means the operator
+   explicitly wants to change one of the profile-supplied keys after seeing the
+   expansion. Ask the remaining Phase 2 questions that are not supplied by the
+   selected profile.
+
+   For conservative review or autonomous delivery, write `DELIVERY_PROFILE`
+   first:
 
    ```sh
    printf '%s\n' \
      'DELIVERY_PROFILE=<conservative_review|autonomous_delivery>' \
      >> "$ONBOARDING_DIR/answers.env"
    rg '^DELIVERY_PROFILE=' "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Conservative review expands to:
+
+   ```sh
+   printf '%s\n' \
+     'KANBAN_MODE=read_only' \
+     'AUTO_PROMOTE_ENABLED=false' \
+     'AUTO_PROMOTE_QUIET_SECONDS=600' \
+     'GATE_REQUIRE_AUTOMATED_REVIEW=true' \
+     'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=true' \
+     'DEPENDENCY_AUTO_UNBLOCK_ENABLED=false' \
+     'MERGING_CONCURRENCY=1' \
+     >> "$ONBOARDING_DIR/answers.env"
    ```
 
    Autonomous delivery expands to:
@@ -822,8 +860,13 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
      >> "$ONBOARDING_DIR/answers.env"
    ```
 
-6. **Kanban interaction.** Ask: "Should Detent's project Kanban be read-only or
-   allow GitHub mutations from the dashboard?" Keep fleet `/kanban` read-only.
+   For Custom/advanced, do not write `DELIVERY_PROFILE`; continue through the
+   lower-level fields below and record the operator's explicit mixed policy.
+
+6. **Kanban interaction.** Ask this only for Custom/advanced or an advanced
+   override when the selected profile already supplied `KANBAN_MODE`: "Should
+   Detent's project Kanban be read-only or allow GitHub mutations from the
+   dashboard?" Keep fleet `/kanban` read-only.
    For a project-scoped board on an operator-owned local or private Detent
    instance, recommend `integration` after
    `detent doctor --allow-write-probes` proves the relevant write probes. For a
@@ -940,9 +983,12 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^DASHBOARD_' "$ONBOARDING_DIR/answers.env"
    ```
 
-13. **Validation gate.** Ask: "Use the detected command, a custom command, or a
-   human review label gate? If this is a command gate, should auto-promotion
-   require an automated GitHub PR review from a bot?" Recommendation source:
+13. **Validation gate.** Ask for the gate kind and command: "Use the detected
+   command, a custom command, or a human review label gate?" Ask the automated
+   review subquestion only for Custom/advanced or an advanced override when the
+   selected profile already supplied `GATE_REQUIRE_AUTOMATED_REVIEW`:
+   "If this is a command gate, should auto-promotion require an automated
+   GitHub PR review from a bot?" Recommendation source:
    `$ONBOARDING_DIR/gate-diagnostic.json`, `$ONBOARDING_DIR/gate.txt`, detected
    manifests, task runners, CI workflow commands, and the repo's review policy.
    Default if silent: `recommended_gate_command` from
@@ -967,7 +1013,10 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    Recommendation source: host capacity, existing `global.yaml` projects, and
    the repo's gate cost. Default if silent: `agent.max_concurrent_agents: 5`
    for an active code repo, lower for expensive gates. State that
-   `Merging: 1` is required. Verify:
+   `Merging: 1` is required. If the selected profile already supplied
+   `MERGING_CONCURRENCY=1`, do not ask Merging concurrency again; record only
+   `MAX_CONCURRENT_AGENTS` unless the operator asks for an advanced override.
+   Verify:
 
    ```sh
    printf '%s\n' \
@@ -991,8 +1040,10 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-15. **Review policy.** Ask: "Should Detent hard-stop at `Human Review`, or may
-   it auto-promote to `Merging` after the human-defined criteria are true?"
+15. **Review policy.** Ask this only for Custom/advanced or an advanced
+   override when the selected profile already supplied `AUTO_PROMOTE_*`:
+   "Should Detent hard-stop at `Human Review`, or may it auto-promote to
+   `Merging` after the human-defined criteria are true?"
    Recommendation source: repo risk, issue labels, review requirements, and how
    much trust the human wants to delegate. Default if silent:
    `agent.auto_promote.enabled: false`, the safe hard stop. Both modes are
@@ -1019,8 +1070,10 @@ mutations. Record explicit answers in `$ONBOARDING_DIR/answers.env`.
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-16. **Dependency waiting policy.** Ask: "Should dependency-waiting issues stay
-   in `Todo` and be gated by Detent, or should they sit in `Blocked` and be
+16. **Dependency waiting policy.** Ask this only for Custom/advanced or an
+   advanced override when the selected profile already supplied
+   `DEPENDENCY_AUTO_UNBLOCK_ENABLED`: "Should dependency-waiting issues stay in
+   `Todo` and be gated by Detent, or should they sit in `Blocked` and be
    auto-unblocked when dependencies clear?" Default if silent:
    `tracker.dependency_auto_unblock.enabled: false`. Use the `Blocked`
    auto-unblock mode only when the team writes explicit `Depends on:` or
