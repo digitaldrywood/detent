@@ -1143,11 +1143,7 @@ func snapshotHasPriorTrackerSnapshot(snapshot telemetry.Snapshot) bool {
 		len(snapshot.Queue) > 0 ||
 		len(snapshot.Blocked) > 0 ||
 		len(snapshot.Completed) > 0 ||
-		snapshot.Counts != (telemetry.Counts{}) ||
-		snapshot.Tokens != (telemetry.Tokens{}) ||
-		snapshot.LifetimeTotals.Available ||
-		snapshot.CycleTime.Available ||
-		len(snapshot.TokenTrend) > 0 {
+		snapshot.Counts != (telemetry.Counts{}) {
 		return true
 	}
 	for _, project := range snapshot.Projects {
@@ -1161,9 +1157,7 @@ func snapshotHasPriorTrackerSnapshot(snapshot telemetry.Snapshot) bool {
 func projectSnapshotHasPriorTrackerData(project telemetry.ProjectSnapshot) bool {
 	return project.Refresh.LastRefreshAt != nil ||
 		project.Refresh.Status == telemetry.RefreshStatusReady ||
-		project.Counts != (telemetry.Counts{}) ||
-		project.Tokens != (telemetry.Tokens{}) ||
-		project.Throughput != (telemetry.TokenThroughput{})
+		project.Counts != (telemetry.Counts{})
 }
 
 func snapshotFirstRefreshFailureDetail(snapshot telemetry.Snapshot) string {

@@ -1121,6 +1121,102 @@ func TestProjectSnapshotsRenderFirstRefreshFailureState(t *testing.T) {
 	}
 }
 
+func TestProjectSnapshotsKeepFirstRefreshFailureWithLocalStats(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 22, 0, 0, time.UTC)
+	lastErrorAt := now.Add(-5 * time.Second)
+	data := templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Project: telemetry.Project{
+				ID:          "detent",
+				DisplayName: "Detent",
+			},
+			Projects: []telemetry.ProjectSnapshot{
+				{
+					Project: telemetry.Project{
+						ID:          "detent",
+						DisplayName: "Detent",
+					},
+					Refresh: telemetry.Refresh{
+						Status:      telemetry.RefreshStatusDegraded,
+						LastError:   "github tracker unavailable",
+						LastErrorAt: &lastErrorAt,
+					},
+					Tokens: telemetry.Tokens{
+						Input:  120,
+						Output: 30,
+						Total:  150,
+					},
+					Throughput: telemetry.TokenThroughput{
+						TokensPerSecond: 2.5,
+						WindowSeconds:   60,
+						Tokens:          150,
+					},
+				},
+			},
+			Refresh: telemetry.Refresh{
+				Status:      telemetry.RefreshStatusDegraded,
+				LastError:   "github tracker unavailable",
+				LastErrorAt: &lastErrorAt,
+			},
+			Tokens: telemetry.Tokens{
+				Input:  120,
+				Output: 30,
+				Total:  150,
+			},
+			LifetimeTotals: telemetry.LifetimeTotals{
+				Available:      true,
+				InputTokens:    120,
+				OutputTokens:   30,
+				TotalTokens:    150,
+				RuntimeSeconds: 45,
+				Sessions:       1,
+				Runs:           1,
+			},
+			CycleTime: telemetry.CycleTimeReport{
+				Available:      true,
+				AverageSeconds: 600,
+			},
+			TokenTrend: []telemetry.TokenTrendPoint{
+				{
+					At:     now,
+					Input:  120,
+					Output: 30,
+					Total:  150,
+				},
+			},
+		},
+	}
+
+	for name, html := range map[string]string{
+		"kanban":   renderProjectKanbanPage(t, data),
+		"overview": renderDashboard(t, data),
+		"runs":     renderProjectRunsSnapshot(t, data),
+	} {
+		for _, want := range []string{
+			"Tracker refresh failed.",
+			"Detent could not load the first tracker snapshot.",
+			"github tracker unavailable",
+		} {
+			if !strings.Contains(html, want) {
+				t.Fatalf("%s missing first-refresh failure copy %q:\n%s", name, want, html)
+			}
+		}
+		if strings.Contains(html, "Tracker refresh degraded.") {
+			t.Fatalf("%s rendered prior-snapshot degraded copy from local stats:\n%s", name, html)
+		}
+	}
+}
+
 func TestProjectSnapshotsRenderDegradedRefreshWithPriorSnapshotState(t *testing.T) {
 	t.Parallel()
 
