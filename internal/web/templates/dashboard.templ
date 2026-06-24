@@ -2039,6 +2039,12 @@ templ projectKanbanCardDetails(data DashboardData, card projectKanbanCard) {
 				@projectKanbanDetailLink("Issue", card.Identifier, card.URL)
 				if card.HasPullRequest {
 					@projectKanbanDetailLink("Pull request", card.PullRequestLabel, card.PRURL)
+					if card.MergeableState != "" {
+						@projectKanbanDetailRow("Merge state", card.MergeableState, "GitHub mergeStateStatus")
+					}
+					if card.ConflictReason != "" {
+						@projectKanbanDetailRow("Conflict", card.ConflictReason, card.ConflictReason)
+					}
 					@projectKanbanDetailRow("CI", card.CIStatus, "Continuous integration status")
 					@projectKanbanDetailRow("Codex review", card.CodexReviewState, "Codex review state")
 				} else {

@@ -82,6 +82,11 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	fetched = filterReconciledTickIssues(
 		state,
 		fetched,
+		o.reconcileStaleTodoPullRequestIssues(ctx, state, fetched.candidates, now),
+	)
+	fetched = filterReconciledTickIssues(
+		state,
+		fetched,
 		o.transitionCompletedActiveIssuesToReview(ctx, state, fetched.candidates, now),
 	)
 	state.BoardIssues = boardIssuesFromFetched(fetched)

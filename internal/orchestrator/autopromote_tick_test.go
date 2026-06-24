@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"io"
 	"log/slog"
 	"reflect"
 	"strings"
@@ -326,6 +327,159 @@ func TestTickAutoPromoteLogsNonTransitionDecisionsAtInfo(t *testing.T) {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
 		}
+	}
+}
+
+func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	ready := autoPromoteTickIssue("issue-ready-todo", []string{"bug"}, &connector.PullRequest{
+		Number:                 36,
+		URL:                    "https://github.test/digitaldrywood/creswoodcorners-phone/pull/36",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	ready.State = "Todo"
+	ready.Identifier = "digitaldrywood/creswoodcorners-phone#33"
+	conflicting := autoPromoteTickIssue("issue-conflicting-todo", []string{"bug"}, &connector.PullRequest{
+		Number:         38,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/38",
+		State:          "OPEN",
+		MergeableState: "DIRTY",
+		CIStatus:       "success",
+	})
+	conflicting.State = "Todo"
+	conflicting.Identifier = "digitaldrywood/creswoodcorners-phone#32"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{ready, conflicting}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{
+		{issueID: "issue-ready-todo", state: "Merging"},
+		{issueID: "issue-conflicting-todo", state: "Rework"},
+	}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if len(tracker.comments) != 2 {
+		t.Fatalf("comments = %#v, want stale todo reconciliation comments", tracker.comments)
+	}
+	wantComments := map[string][]string{
+		"issue-ready-todo": {
+			"Auto-promoted this issue from Todo to Merging.",
+			"reason: ready",
+			"https://github.test/digitaldrywood/creswoodcorners-phone/pull/36",
+		},
+		"issue-conflicting-todo": {
+			"Auto-promote routed this issue from Todo to Rework: linked PR has merge conflicts.",
+			"reason: merge_conflicts",
+			"mergeable_state: dirty",
+			"https://github.test/digitaldrywood/creswoodcorners-phone/pull/38",
+		},
+	}
+	for _, comment := range tracker.comments {
+		for _, fragment := range wantComments[comment.issueID] {
+			if !strings.Contains(comment.body, fragment) {
+				t.Fatalf("comment for %s = %q, missing %q", comment.issueID, comment.body, fragment)
+			}
+		}
+	}
+	for _, fragment := range []string{
+		"stale_todo_pr_reconciled",
+		"reason=ready",
+		"reason=merge_conflicts",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+}
+
+func TestTickDoesNotReconcileActiveTodoPullRequests(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 13, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	running := autoPromoteTickIssue("issue-running-todo-pr", []string{"bug"}, &connector.PullRequest{
+		Number:                 40,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/40",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	running.State = "Todo"
+	claimed := autoPromoteTickIssue("issue-claimed-todo-pr", []string{"bug"}, &connector.PullRequest{
+		Number:                 41,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/41",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	claimed.State = "Todo"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{running, claimed}}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	state := newState(cfg)
+	state.Running[running.ID] = Running{Issue: cloneIssue(running), StartedAt: now.Add(-time.Minute)}
+	state.Claimed[running.ID] = Claimed{Issue: cloneIssue(running), ClaimedAt: now.Add(-time.Minute)}
+	state.Claimed[claimed.ID] = Claimed{Issue: cloneIssue(claimed), ClaimedAt: now.Add(-time.Minute)}
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none for active Todo PRs", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none for active Todo PRs", tracker.comments)
+	}
+	if _, ok := state.Running[running.ID]; !ok {
+		t.Fatalf("Running[%q] missing after stale Todo PR reconciliation", running.ID)
+	}
+	if _, ok := state.Claimed[running.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing after stale Todo PR reconciliation", running.ID)
+	}
+	if _, ok := state.Claimed[claimed.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing after stale Todo PR reconciliation", claimed.ID)
 	}
 }
 

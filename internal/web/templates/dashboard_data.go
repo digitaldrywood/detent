@@ -298,6 +298,8 @@ type projectKanbanCard struct {
 	Description      string
 	URL              string
 	PullRequestLabel string
+	MergeableState   string
+	ConflictReason   string
 	CIStatus         string
 	CIClass          string
 	CodexReviewState string
@@ -2040,6 +2042,8 @@ func projectKanbanCardForIssue(data DashboardData, issue telemetry.Issue, state 
 		card.PRNumber = issue.PullRequest.Number
 		card.PRURL = strings.TrimSpace(issue.PullRequest.URL)
 		card.PRRepository = pullRequestRepository(issue)
+		card.MergeableState = strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState))
+		card.ConflictReason = projectKanbanPullRequestConflictReason(issue)
 	}
 	if !card.Movable && card.PRNumber > 0 {
 		card.DisabledText = "Cannot move PR-only card"
@@ -2069,6 +2073,9 @@ func projectKanbanCompactChips(card projectKanbanCard) []projectKanbanCompactChi
 			newProjectKanbanCompactChip("CI "+chartText(card.CIStatus, "n/a"), "Continuous integration status", card.CIClass),
 			newProjectKanbanCompactChip("Codex "+chartText(card.CodexReviewState, "n/a"), "Codex review state", card.CodexReviewClass),
 		)
+	}
+	if strings.TrimSpace(card.ConflictReason) != "" {
+		chips = append(chips, newProjectKanbanCompactChip("Conflict", card.ConflictReason, "border-danger-soft bg-danger-soft text-danger"))
 	}
 	if len(card.Blockers) > 0 {
 		chips = append(chips, newProjectKanbanCompactChip(projectKanbanCountLabel(len(card.Blockers), "blocker", "blockers"), strings.Join(card.Blockers, ", "), "border-danger-soft bg-danger-soft text-danger"))
@@ -2130,6 +2137,19 @@ func projectKanbanPullRequestLabel(issue telemetry.Issue) string {
 		return "PR #" + strconv.Itoa(issue.PullRequest.Number)
 	}
 	return "Linked PR"
+}
+
+func projectKanbanPullRequestConflictReason(issue telemetry.Issue) string {
+	if issue.PullRequest == nil {
+		return ""
+	}
+	mergeableState := strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState))
+	switch mergeableState {
+	case "dirty", "conflicting":
+	default:
+		return ""
+	}
+	return projectKanbanPullRequestLabel(issue) + " mergeStateStatus " + strings.ToUpper(mergeableState)
 }
 
 func projectKanbanBlockerLabels(refs []telemetry.BlockedRef, terminalStates map[string]struct{}) ([]string, []string) {
