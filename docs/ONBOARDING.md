@@ -818,8 +818,9 @@ operator asks for an advanced override.
    Kanban interaction, validation-gate automated-review, Merging concurrency,
    review policy, or dependency waiting policy questions again unless the
    operator asks for an advanced override. Advanced override means the operator
-   explicitly wants to change one of the profile-supplied keys after seeing the
-   expansion. Ask the remaining Phase 2 questions that are not supplied by the
+   switches to Custom/advanced after seeing the expansion; remove or omit
+   `DELIVERY_PROFILE` before recording a profile-supplied key with a different
+   value. Ask the remaining Phase 2 questions that are not supplied by the
    selected profile.
 
    For conservative review or autonomous delivery, write `DELIVERY_PROFILE`
@@ -863,10 +864,11 @@ operator asks for an advanced override.
    For Custom/advanced, do not write `DELIVERY_PROFILE`; continue through the
    lower-level fields below and record the operator's explicit mixed policy.
 
-6. **Kanban interaction.** Ask this only for Custom/advanced or an advanced
-   override when the selected profile already supplied `KANBAN_MODE`: "Should
-   Detent's project Kanban be read-only or allow GitHub mutations from the
-   dashboard?" Keep fleet `/kanban` read-only.
+6. **Kanban interaction.** Ask this only for Custom/advanced. If the operator
+   wants to override a selected profile's `KANBAN_MODE`, switch to
+   Custom/advanced and remove or omit `DELIVERY_PROFILE` before recording the
+   mixed policy: "Should Detent's project Kanban be read-only or allow GitHub
+   mutations from the dashboard?" Keep fleet `/kanban` read-only.
    For a project-scoped board on an operator-owned local or private Detent
    instance, recommend `integration` after
    `detent doctor --allow-write-probes` proves the relevant write probes. For a
@@ -985,8 +987,10 @@ operator asks for an advanced override.
 
 13. **Validation gate.** Ask for the gate kind and command: "Use the detected
    command, a custom command, or a human review label gate?" Ask the automated
-   review subquestion only for Custom/advanced or an advanced override when the
-   selected profile already supplied `GATE_REQUIRE_AUTOMATED_REVIEW`:
+   review subquestion only for Custom/advanced. If the operator wants to
+   override a selected profile's `GATE_REQUIRE_AUTOMATED_REVIEW`, switch to
+   Custom/advanced and remove or omit `DELIVERY_PROFILE` before recording the
+   mixed policy:
    "If this is a command gate, should auto-promotion require an automated
    GitHub PR review from a bot?" Recommendation source:
    `$ONBOARDING_DIR/gate-diagnostic.json`, `$ONBOARDING_DIR/gate.txt`, detected
@@ -1015,8 +1019,9 @@ operator asks for an advanced override.
    for an active code repo, lower for expensive gates. State that
    `Merging: 1` is required. If the selected profile already supplied
    `MERGING_CONCURRENCY=1`, do not ask Merging concurrency again; record only
-   `MAX_CONCURRENT_AGENTS` unless the operator asks for an advanced override.
-   Verify:
+   `MAX_CONCURRENT_AGENTS`. If the operator wants to override a selected
+   profile's merging concurrency, switch to Custom/advanced and remove or omit
+   `DELIVERY_PROFILE` before recording the mixed policy. Verify:
 
    ```sh
    printf '%s\n' \
@@ -1040,8 +1045,9 @@ operator asks for an advanced override.
    repository. For multiple instances sharing one board/repo, serialization
    comes from `tracker.claims`, not the per-state cap.
 
-15. **Review policy.** Ask this only for Custom/advanced or an advanced
-   override when the selected profile already supplied `AUTO_PROMOTE_*`:
+15. **Review policy.** Ask this only for Custom/advanced. If the operator wants
+   to override a selected profile's `AUTO_PROMOTE_*`, switch to Custom/advanced
+   and remove or omit `DELIVERY_PROFILE` before recording the mixed policy:
    "Should Detent hard-stop at `Human Review`, or may it auto-promote to
    `Merging` after the human-defined criteria are true?"
    Recommendation source: repo risk, issue labels, review requirements, and how
@@ -1070,10 +1076,12 @@ operator asks for an advanced override.
    rg '^AUTO_PROMOTE_' "$ONBOARDING_DIR/answers.env"
    ```
 
-16. **Dependency waiting policy.** Ask this only for Custom/advanced or an
-   advanced override when the selected profile already supplied
-   `DEPENDENCY_AUTO_UNBLOCK_ENABLED`: "Should dependency-waiting issues stay in
-   `Todo` and be gated by Detent, or should they sit in `Blocked` and be
+16. **Dependency waiting policy.** Ask this only for Custom/advanced. If the
+   operator wants to override a selected profile's
+   `DEPENDENCY_AUTO_UNBLOCK_ENABLED`, switch to Custom/advanced and remove or
+   omit `DELIVERY_PROFILE` before recording the mixed policy: "Should
+   dependency-waiting issues stay in `Todo` and be gated by Detent, or should
+   they sit in `Blocked` and be
    auto-unblocked when dependencies clear?" Default if silent:
    `tracker.dependency_auto_unblock.enabled: false`. Use the `Blocked`
    auto-unblock mode only when the team writes explicit `Depends on:` or

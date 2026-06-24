@@ -231,7 +231,7 @@ func TestOnboardingDocsSkipDuplicateProfileSuppliedQuestions(t *testing.T) {
 
 	for _, want := range []string{
 		"After selecting `DELIVERY_PROFILE=autonomous_delivery`, do not ask the Kanban interaction, validation-gate automated-review, Merging concurrency, review policy, or dependency waiting policy questions again unless the operator asks for an advanced override.",
-		"Advanced override means the operator explicitly wants to change one of the profile-supplied keys after seeing the expansion.",
+		"Advanced override means the operator switches to Custom/advanced after seeing the expansion; remove or omit `DELIVERY_PROFILE` before recording a profile-supplied key with a different value.",
 		"Ask the remaining Phase 2 questions that are not supplied by the selected profile.",
 	} {
 		assertContainsWords(t, onboarding, want)
