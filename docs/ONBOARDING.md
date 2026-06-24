@@ -1146,11 +1146,19 @@ operator asks for an advanced override.
 
 Stop here before Phase 3 or any other command that can create, link, mutate, or
 delete GitHub Projects, issue fields, labels, issues, PRs, `WORKFLOW.md`, or
-`global.yaml`. Show the operator `$ONBOARDING_DIR/recommendations.md`, the
-plain-English behavior summary, and the complete `$ONBOARDING_DIR/answers.env`,
-then ask: "May I execute the selected mutation steps using these exact
-answers?" Defaults from Phase 2 are still only recommendations; an unanswered
-default must not authorize any external or local config mutation.
+`global.yaml`. Canonicalize profile-derived answers before the final operator
+prompt so `$ONBOARDING_DIR/answers.env` visibly contains the exact low-level
+values mutation steps will read:
+
+```sh
+detent onboarding normalize-answers --answers "$ONBOARDING_DIR/answers.env" --write
+```
+
+Show the operator `$ONBOARDING_DIR/recommendations.md`, the plain-English
+behavior summary, and the complete `$ONBOARDING_DIR/answers.env`, then ask:
+"May I execute the selected mutation steps using these exact answers?" Defaults
+from Phase 2 are still only recommendations; an unanswered default must not
+authorize any external or local config mutation.
 
 ```sh
 detent --format pretty onboarding explain-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision
@@ -1171,6 +1179,7 @@ mv "$CONFIRMATION_FILE" "$ONBOARDING_DIR/answers.env"
 printf '%s\n' \
   'MUTATION_CONFIRMED=true' \
   >> "$ONBOARDING_DIR/answers.env"
+detent onboarding normalize-answers --answers "$ONBOARDING_DIR/answers.env" --write
 detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation
 rg '^MUTATION_CONFIRMED=true$' "$ONBOARDING_DIR/answers.env"
 awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOARDING_DIR/answers.env"

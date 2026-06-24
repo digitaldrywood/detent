@@ -175,6 +175,36 @@ func TestOnboardingValidateAnswersCommandRequiresModeSpecificMutationAnswers(t *
 	}
 }
 
+func TestOnboardingValidateAnswersCommandRejectsMissingDeliveryProfileExpansionBeforeMutation(t *testing.T) {
+	t.Parallel()
+
+	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
+		"GITHUB_MODE=label",
+		"DELIVERY_PROFILE=autonomous_delivery",
+		"STATUS_LABEL_PREFIX=detent:",
+		"MUTATION_CONFIRMED=true",
+		"",
+	}, "\n"))
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"onboarding", "validate-answers", "--answers", answersPath})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want missing delivery profile expansion validation error")
+	}
+	for _, want := range []string{
+		"AUTO_PROMOTE_ENABLED is required when DELIVERY_PROFILE=autonomous_delivery",
+		"KANBAN_MODE is required when DELIVERY_PROFILE=autonomous_delivery",
+		"detent onboarding normalize-answers --answers",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("Execute() error missing %q:\n%s", want, err.Error())
+		}
+	}
+}
+
 func TestOnboardingValidateAnswersCommandAcceptsDecisionPhase(t *testing.T) {
 	t.Parallel()
 
@@ -240,9 +270,17 @@ func TestOnboardingValidateAnswersCommandAcceptsLabelMode(t *testing.T) {
 func TestOnboardingValidateAnswersCommandExpandsAutonomousDeliveryProfile(t *testing.T) {
 	t.Parallel()
 
+	profileAnswers := autonomousDeliveryProfileAnswers()
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
 		"GITHUB_MODE=label",
 		"DELIVERY_PROFILE=autonomous_delivery",
+		"KANBAN_MODE=" + profileAnswers["KANBAN_MODE"],
+		"AUTO_PROMOTE_ENABLED=" + profileAnswers["AUTO_PROMOTE_ENABLED"],
+		"AUTO_PROMOTE_QUIET_SECONDS=" + profileAnswers["AUTO_PROMOTE_QUIET_SECONDS"],
+		"GATE_REQUIRE_AUTOMATED_REVIEW=" + profileAnswers["GATE_REQUIRE_AUTOMATED_REVIEW"],
+		"AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=" + profileAnswers["AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW"],
+		"DEPENDENCY_AUTO_UNBLOCK_ENABLED=" + profileAnswers["DEPENDENCY_AUTO_UNBLOCK_ENABLED"],
+		"MERGING_CONCURRENCY=" + profileAnswers["MERGING_CONCURRENCY"],
 		"STATUS_LABEL_PREFIX=detent:",
 		"MUTATION_CONFIRMED=true",
 		"",
@@ -278,16 +316,7 @@ func TestOnboardingValidateAnswersCommandExpandsAutonomousDeliveryProfile(t *tes
 	if got.DeliveryProfile != "autonomous_delivery" {
 		t.Fatalf("DeliveryProfile = %q, want autonomous_delivery", got.DeliveryProfile)
 	}
-	want := map[string]string{
-		"KANBAN_MODE":                           "integration",
-		"AUTO_PROMOTE_ENABLED":                  "true",
-		"AUTO_PROMOTE_QUIET_SECONDS":            "0",
-		"GATE_REQUIRE_AUTOMATED_REVIEW":         "false",
-		"AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW": "false",
-		"DEPENDENCY_AUTO_UNBLOCK_ENABLED":       "true",
-		"MERGING_CONCURRENCY":                   "1",
-	}
-	for key, value := range want {
+	for key, value := range profileAnswers {
 		if got.DeliveryProfileAnswers[key] != value {
 			t.Fatalf("DeliveryProfileAnswers[%q] = %q, want %q; all answers = %#v", key, got.DeliveryProfileAnswers[key], value, got.DeliveryProfileAnswers)
 		}
@@ -430,6 +459,93 @@ func TestOnboardingValidateAnswersCommandSummarizesConservativeReviewProfile(t *
 		if !containsString(summaryValues, want) {
 			t.Fatalf("AnswersSummary missing %q: %#v", want, summary)
 		}
+	}
+}
+
+func TestOnboardingNormalizeAnswersCommandWritesAutonomousDeliveryProfileExpansion(t *testing.T) {
+	t.Parallel()
+
+	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
+		"GITHUB_MODE=label",
+		"DELIVERY_PROFILE=autonomous_delivery",
+		"STATUS_LABEL_PREFIX=detent:",
+		"MUTATION_CONFIRMED=true",
+		"",
+	}, "\n"))
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "onboarding", "normalize-answers", "--answers", answersPath, "--write"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v\nstdout:\n%s", err, stdout.String())
+	}
+
+	var got struct {
+		Status            string `json:"status"`
+		Path              string `json:"path"`
+		Written           bool   `json:"written"`
+		Changed           bool   `json:"changed"`
+		DeliveryProfile   string `json:"delivery_profile"`
+		MutationConfirmed bool   `json:"mutation_confirmed"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	if got.Status != "ok" || got.Path != answersPath || !got.Written || !got.Changed || got.DeliveryProfile != "autonomous_delivery" || !got.MutationConfirmed {
+		t.Fatalf("normalization result = %#v, want written autonomous profile normalization", got)
+	}
+
+	raw, err := os.ReadFile(answersPath)
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	content := string(raw)
+	for key, value := range autonomousDeliveryProfileAnswers() {
+		want := key + "=" + value
+		if !strings.Contains(content, want) {
+			t.Fatalf("answers.env missing %q:\n%s", want, content)
+		}
+	}
+	if last := lastNonblankOnboardingLine(content); last != "MUTATION_CONFIRMED=true" {
+		t.Fatalf("last nonblank line = %q, want MUTATION_CONFIRMED=true\n%s", last, content)
+	}
+	if strings.Index(content, "MERGING_CONCURRENCY=1") > strings.Index(content, "MUTATION_CONFIRMED=true") {
+		t.Fatalf("profile expansion was written after final mutation confirmation:\n%s", content)
+	}
+}
+
+func TestOnboardingNormalizeAnswersCommandRejectsDeliveryProfileExpansionConflict(t *testing.T) {
+	t.Parallel()
+
+	content := validIdentityOnboardingAnswers(t) + strings.Join([]string{
+		"GITHUB_MODE=label",
+		"DELIVERY_PROFILE=autonomous_delivery",
+		"KANBAN_MODE=read_only",
+		"STATUS_LABEL_PREFIX=detent:",
+		"MUTATION_CONFIRMED=true",
+		"",
+	}, "\n")
+	answersPath := writeOnboardingAnswers(t, content)
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return true }))
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"onboarding", "normalize-answers", "--answers", answersPath, "--write"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want delivery profile expansion conflict")
+	}
+	if !strings.Contains(err.Error(), "KANBAN_MODE=read_only conflicts with DELIVERY_PROFILE=autonomous_delivery, which expands KANBAN_MODE=integration") {
+		t.Fatalf("Execute() error missing profile conflict:\n%s", err.Error())
+	}
+	raw, readErr := os.ReadFile(answersPath)
+	if readErr != nil {
+		t.Fatalf("ReadFile() error = %v", readErr)
+	}
+	if string(raw) != content {
+		t.Fatalf("answers.env changed after conflict:\n%s", string(raw))
 	}
 }
 
@@ -1000,6 +1116,28 @@ func writeOnboardingAnswers(t *testing.T, content string) string {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 	return path
+}
+
+func autonomousDeliveryProfileAnswers() map[string]string {
+	return map[string]string{
+		"KANBAN_MODE":                           "integration",
+		"AUTO_PROMOTE_ENABLED":                  "true",
+		"AUTO_PROMOTE_QUIET_SECONDS":            "0",
+		"GATE_REQUIRE_AUTOMATED_REVIEW":         "false",
+		"AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW": "false",
+		"DEPENDENCY_AUTO_UNBLOCK_ENABLED":       "true",
+		"MERGING_CONCURRENCY":                   "1",
+	}
+}
+
+func lastNonblankOnboardingLine(content string) string {
+	last := ""
+	for _, line := range strings.Split(content, "\n") {
+		if strings.TrimSpace(line) != "" {
+			last = strings.TrimSpace(line)
+		}
+	}
+	return last
 }
 
 func initOnboardingGitRepository(t *testing.T, remote string) string {
