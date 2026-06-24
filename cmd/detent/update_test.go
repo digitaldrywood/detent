@@ -188,6 +188,24 @@ func TestDefaultUpdateConfigUsesResolvedVersionInfo(t *testing.T) {
 	}
 }
 
+func TestUpdateGitHubTokenPrefersDetentToken(t *testing.T) {
+	t.Setenv("DETENT_GITHUB_TOKEN", "detent-token")
+	t.Setenv("GITHUB_TOKEN", "github-token")
+
+	if got := updateGitHubToken(); got != "detent-token" {
+		t.Fatalf("updateGitHubToken() = %q, want detent-token", got)
+	}
+}
+
+func TestUpdateGitHubTokenIgnoresGenericGitHubToken(t *testing.T) {
+	t.Setenv("DETENT_GITHUB_TOKEN", "")
+	t.Setenv("GITHUB_TOKEN", "github-token")
+
+	if got := updateGitHubToken(); got != "" {
+		t.Fatalf("updateGitHubToken() = %q, want empty", got)
+	}
+}
+
 func TestSelectGoInstallActionParsesReleaseChoice(t *testing.T) {
 	t.Parallel()
 

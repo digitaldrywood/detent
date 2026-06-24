@@ -104,12 +104,14 @@ type ChecksumSignatureVerifier func(context.Context, []byte, []byte) error
 
 type GitHubClientConfig struct {
 	APIBase          string
+	Token            string
 	HTTPClient       *http.Client
 	MaxDownloadBytes int64
 }
 
 type GitHubClient struct {
 	apiBase          string
+	token            string
 	http             *http.Client
 	maxDownloadBytes int64
 }
@@ -127,16 +129,32 @@ func NewGitHubClient(cfg GitHubClientConfig) *GitHubClient {
 	if maxDownloadBytes <= 0 {
 		maxDownloadBytes = defaultMaxDownloadBytes
 	}
-	return &GitHubClient{apiBase: apiBase, http: httpClient, maxDownloadBytes: maxDownloadBytes}
+	return &GitHubClient{
+		apiBase:          apiBase,
+		token:            strings.TrimSpace(cfg.Token),
+		http:             httpClient,
+		maxDownloadBytes: maxDownloadBytes,
+	}
 }
 
 func (c *GitHubClient) ListReleases(ctx context.Context) ([]Release, error) {
+	releases, err := c.listReleases(ctx, c.token)
+	if err == nil || c.token == "" || !isGitHubAuthStatusError(err) {
+		return releases, err
+	}
+	return c.listReleases(ctx, "")
+}
+
+func (c *GitHubClient) listReleases(ctx context.Context, token string) ([]Release, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, c.apiBase+"/releases?per_page=20", nil)
 	if err != nil {
 		return nil, fmt.Errorf("create releases request: %w", err)
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", defaultRequestUserAgent)
+	if token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -152,6 +170,14 @@ func (c *GitHubClient) ListReleases(ctx context.Context) ([]Release, error) {
 		return nil, fmt.Errorf("decode releases: %w", err)
 	}
 	return releases, nil
+}
+
+func isGitHubAuthStatusError(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := err.Error()
+	return strings.Contains(msg, "GitHub returned 401") || strings.Contains(msg, "GitHub returned 403")
 }
 
 func (c *GitHubClient) Download(ctx context.Context, url string) ([]byte, error) {

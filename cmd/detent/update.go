@@ -106,7 +106,14 @@ func defaultUpdateConfig(executable string, info versionInfo, goos string, goarc
 		ExecutablePath: executable,
 		GOOS:           goos,
 		GOARCH:         goarch,
+		Client: detentupdate.NewGitHubClient(detentupdate.GitHubClientConfig{
+			Token: updateGitHubToken(),
+		}),
 	}
+}
+
+func updateGitHubToken() string {
+	return strings.TrimSpace(os.Getenv("DETENT_GITHUB_TOKEN"))
 }
 
 func confirmUpdate(cmd *cobra.Command) func(detentupdate.Status) (bool, error) {
