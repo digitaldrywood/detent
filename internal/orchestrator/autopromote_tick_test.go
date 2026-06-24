@@ -329,6 +329,93 @@ func TestTickAutoPromoteLogsNonTransitionDecisionsAtInfo(t *testing.T) {
 	}
 }
 
+func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	ready := autoPromoteTickIssue("issue-ready-todo", []string{"bug"}, &connector.PullRequest{
+		Number:                 36,
+		URL:                    "https://github.test/digitaldrywood/creswoodcorners-phone/pull/36",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	ready.State = "Todo"
+	ready.Identifier = "digitaldrywood/creswoodcorners-phone#33"
+	conflicting := autoPromoteTickIssue("issue-conflicting-todo", []string{"bug"}, &connector.PullRequest{
+		Number:         38,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/38",
+		State:          "OPEN",
+		MergeableState: "DIRTY",
+		CIStatus:       "success",
+	})
+	conflicting.State = "Todo"
+	conflicting.Identifier = "digitaldrywood/creswoodcorners-phone#32"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{ready, conflicting}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{
+		{issueID: "issue-ready-todo", state: "Merging"},
+		{issueID: "issue-conflicting-todo", state: "Rework"},
+	}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	if len(tracker.comments) != 2 {
+		t.Fatalf("comments = %#v, want stale todo reconciliation comments", tracker.comments)
+	}
+	wantComments := map[string][]string{
+		"issue-ready-todo": {
+			"Auto-promoted this issue from Todo to Merging.",
+			"reason: ready",
+			"https://github.test/digitaldrywood/creswoodcorners-phone/pull/36",
+		},
+		"issue-conflicting-todo": {
+			"Auto-promote routed this issue from Todo to Rework: linked PR has merge conflicts.",
+			"reason: merge_conflicts",
+			"mergeable_state: dirty",
+			"https://github.test/digitaldrywood/creswoodcorners-phone/pull/38",
+		},
+	}
+	for _, comment := range tracker.comments {
+		for _, fragment := range wantComments[comment.issueID] {
+			if !strings.Contains(comment.body, fragment) {
+				t.Fatalf("comment for %s = %q, missing %q", comment.issueID, comment.body, fragment)
+			}
+		}
+	}
+	for _, fragment := range []string{
+		"stale_todo_pr_reconciled",
+		"reason=ready",
+		"reason=merge_conflicts",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+}
+
 func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
 	t.Parallel()
 

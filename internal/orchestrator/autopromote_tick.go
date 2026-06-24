@@ -75,6 +75,137 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 	return result
 }
 
+func (o *Orchestrator) reconcileStaleTodoPullRequestIssues(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) map[string]struct{} {
+	transitioned := map[string]struct{}{}
+	for _, issue := range issuesInStates(issues, []string{"Todo"}) {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" || issue.PullRequest == nil || normalizePullRequestState(issue.PullRequest.State) != "open" {
+			continue
+		}
+
+		summary := AutoPromoteSummaryFromIssue(issue)
+		if !summary.PullRequestPresent {
+			continue
+		}
+		decision := staleTodoPullRequestDecision(issue, summary, o.cfg.AutoPromote, now)
+		targetState := staleTodoPullRequestTargetState(decision)
+		if targetState == "" {
+			o.logAutoPromoteDecision(issue, decision, "")
+			continue
+		}
+		if !o.applyStaleTodoPullRequestDecision(ctx, state, issue, summary, decision, targetState, now) {
+			continue
+		}
+		transitioned[issueID] = struct{}{}
+		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+	}
+	if len(transitioned) == 0 {
+		return nil
+	}
+	return transitioned
+}
+
+func staleTodoPullRequestDecision(
+	issue connector.Issue,
+	summary AutoPromoteSummary,
+	cfg AutoPromoteConfig,
+	now time.Time,
+) AutoPromoteDecision {
+	if autoPromoteMergeConflicts(summary.MergeableState) {
+		return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonMergeConflicts)
+	}
+	cfg = normalizeAutoPromoteConfig(cfg)
+	if !cfg.Enabled {
+		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonDisabled)
+	}
+	return EvaluateAutoPromote(issue, summary, cfg, now)
+}
+
+func staleTodoPullRequestTargetState(decision AutoPromoteDecision) string {
+	if targetState := autoPromoteTargetState(decision.Action); targetState != "" {
+		return targetState
+	}
+	switch decision.Reason {
+	case AutoPromoteReasonMissingPullRequest:
+		return ""
+	default:
+		return autoPromoteSourceState
+	}
+}
+
+func (o *Orchestrator) applyStaleTodoPullRequestDecision(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	summary AutoPromoteSummary,
+	decision AutoPromoteDecision,
+	targetState string,
+	now time.Time,
+) bool {
+	issueID := strings.TrimSpace(issue.ID)
+	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"stale_todo_pr_reconciliation_failed",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"reason", decision.Reason,
+				"target_state", targetState,
+				"error", err,
+			)
+		}
+		return false
+	}
+
+	body := autoPromoteComment(summary, decision, displayStateName(issue.State), targetState)
+	if strings.TrimSpace(body) != "" {
+		if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
+			o.logger.Warn(
+				"stale_todo_pr_reconciliation_comment_failed",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"reason", decision.Reason,
+				"target_state", targetState,
+				"error", err,
+			)
+		}
+	}
+
+	o.logStaleTodoPullRequestDecision(issue, decision, targetState)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "stale_todo_pr_reconciled",
+		Message: "reconciled stale linked PR for " + issueLabel(issue) + " from " + displayStateName(issue.State) + " to " + targetState + ": " + string(decision.Reason),
+	})
+	return true
+}
+
+func (o *Orchestrator) logStaleTodoPullRequestDecision(issue connector.Issue, decision AutoPromoteDecision, targetState string) {
+	if o.logger == nil {
+		return
+	}
+	attrs := []any{
+		"issue_id", strings.TrimSpace(issue.ID),
+		"identifier", issue.Identifier,
+		"reason", decision.Reason,
+		"target_state", targetState,
+	}
+	if issue.PullRequest != nil {
+		if issue.PullRequest.Number > 0 {
+			attrs = append(attrs, "pull_request_number", issue.PullRequest.Number)
+		}
+		if mergeableState := strings.TrimSpace(issue.PullRequest.MergeableState); mergeableState != "" {
+			attrs = append(attrs, "mergeable_state", strings.ToLower(mergeableState))
+		}
+	}
+	o.logger.Info("stale_todo_pr_reconciled", attrs...)
+}
+
 func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueID string) {
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
@@ -361,7 +492,7 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 		return false
 	}
 
-	body := autoPromoteComment(summary, decision, targetState)
+	body := autoPromoteComment(summary, decision, displayStateName(issue.State), targetState)
 	if strings.TrimSpace(body) != "" {
 		if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
 			o.logger.Warn(
@@ -421,14 +552,23 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 func autoPromoteComment(
 	summary AutoPromoteSummary,
 	decision AutoPromoteDecision,
+	sourceState string,
 	targetState string,
 ) string {
 	var b strings.Builder
+	sourceState = displayStateName(sourceState)
+	if sourceState == "" {
+		sourceState = autoPromoteSourceState
+	}
 	switch targetState {
 	case autoPromoteMergingState:
-		b.WriteString("Auto-promoted this issue from Human Review to Merging.")
+		b.WriteString("Auto-promoted this issue from ")
+		b.WriteString(sourceState)
+		b.WriteString(" to Merging.")
 	case autoPromoteReworkState:
-		b.WriteString("Auto-promote routed this issue from Human Review to Rework")
+		b.WriteString("Auto-promote routed this issue from ")
+		b.WriteString(sourceState)
+		b.WriteString(" to Rework")
 		switch decision.Reason {
 		case AutoPromoteReasonCINotGreen:
 			b.WriteString(": current-head CI is failing")
@@ -436,6 +576,10 @@ func autoPromoteComment(
 			b.WriteString(": linked PR has merge conflicts")
 		}
 		b.WriteString(".")
+	case autoPromoteSourceState:
+		b.WriteString("Reconciled this issue from ")
+		b.WriteString(sourceState)
+		b.WriteString(" to Human Review because it already has a linked PR.")
 	default:
 		return ""
 	}

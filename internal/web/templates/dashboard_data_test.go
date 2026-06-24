@@ -1,6 +1,7 @@
 package templates
 
 import (
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -978,6 +979,16 @@ func TestProjectKanbanCompactChipsSummarizeSecondaryMetadata(t *testing.T) {
 			want: []string{"4m 0s", "CI pass", "Codex clean"},
 		},
 		{
+			name: "conflicting-pr",
+			card: projectKanbanCard{
+				HasPullRequest: true,
+				MergeableState: "dirty",
+				ConflictReason: "PR #38 mergeStateStatus DIRTY",
+				TimeInStage:    "4m 0s",
+			},
+			want: []string{"4m 0s", "CI n/a", "Codex n/a", "Conflict"},
+		},
+		{
 			name: "blocked",
 			card: projectKanbanCard{
 				TimeInStage: "3m 0s",
@@ -1011,6 +1022,43 @@ func TestProjectKanbanCompactChipsSummarizeSecondaryMetadata(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestProjectKanbanCardForIssueShowsPullRequestConflictReason(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 13, 0, 0, 0, time.UTC)
+	issue := telemetry.Issue{
+		ID:         "conflicting-pr",
+		Identifier: "digitaldrywood/creswoodcorners-phone#32",
+		Title:      "Resolve PR conflicts",
+		State:      "Rework",
+		PullRequest: &telemetry.PullRequest{
+			Number:         38,
+			URL:            "https://github.com/digitaldrywood/creswoodcorners-phone/pull/38",
+			State:          "OPEN",
+			MergeableState: "DIRTY",
+			CIStatus:       "success",
+		},
+	}
+
+	card := projectKanbanCardForIssue(DashboardData{}, issue, "Rework", now.Add(-time.Minute), now)
+
+	if card.MergeableState != "dirty" {
+		t.Fatalf("MergeableState = %q, want dirty", card.MergeableState)
+	}
+	if card.ConflictReason != "PR #38 mergeStateStatus DIRTY" {
+		t.Fatalf("ConflictReason = %q, want PR #38 mergeStateStatus DIRTY", card.ConflictReason)
+	}
+	chips := projectKanbanCompactChips(card)
+	if got := projectKanbanCompactChipLabels(chips); !slices.Contains(got, "Conflict") {
+		t.Fatalf("compact chips = %#v, want Conflict", got)
+	}
+	for _, chip := range chips {
+		if chip.Label == "Conflict" && chip.Title != "PR #38 mergeStateStatus DIRTY" {
+			t.Fatalf("Conflict chip title = %q, want PR #38 mergeStateStatus DIRTY", chip.Title)
+		}
 	}
 }
 

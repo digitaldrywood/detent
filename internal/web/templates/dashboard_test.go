@@ -1264,6 +1264,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 					PullRequest: &telemetry.PullRequest{
 						Number:           601,
 						URL:              "https://github.com/digitaldrywood/detent/pull/601",
+						MergeableState:   "DIRTY",
 						CIStatus:         "success",
 						CodexReviewState: "clean",
 					},
@@ -1333,6 +1334,10 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 		"#503",
 		"PR #601",
 		"PR #603",
+		"Merge state",
+		"dirty",
+		"Conflict",
+		"PR #601 mergeStateStatus DIRTY",
 		"CI pass",
 		"Codex clean",
 		"Codex P2",
