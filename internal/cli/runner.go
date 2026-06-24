@@ -743,6 +743,7 @@ func mergeRefresh(current, next telemetry.Refresh) telemetry.Refresh {
 		}
 	}
 	current.LastErrorAt = latestTime(current.LastErrorAt, next.LastErrorAt)
+	current.Manual = mergeRefreshAttempt(current.Manual, next.Manual)
 	switch {
 	case !currentHadSignal && nextHadSignal:
 		current.Status = next.ReadinessStatus()
@@ -766,7 +767,41 @@ func refreshHasSignal(refresh telemetry.Refresh) bool {
 		refresh.LastRefreshAt != nil ||
 		refresh.NextRefreshAt != nil ||
 		strings.TrimSpace(refresh.LastError) != "" ||
-		refresh.LastErrorAt != nil
+		refresh.LastErrorAt != nil ||
+		refresh.Manual != nil
+}
+
+func mergeRefreshAttempt(current *telemetry.RefreshAttempt, next *telemetry.RefreshAttempt) *telemetry.RefreshAttempt {
+	if current == nil {
+		return cloneRefreshAttemptPtr(next)
+	}
+	if next == nil {
+		return cloneRefreshAttemptPtr(current)
+	}
+	if refreshAttemptRequestedAt(next).After(refreshAttemptRequestedAt(current)) {
+		return cloneRefreshAttemptPtr(next)
+	}
+	return cloneRefreshAttemptPtr(current)
+}
+
+func refreshAttemptRequestedAt(attempt *telemetry.RefreshAttempt) time.Time {
+	if attempt == nil || attempt.RequestedAt == nil {
+		return time.Time{}
+	}
+	return attempt.RequestedAt.UTC()
+}
+
+func cloneRefreshAttemptPtr(attempt *telemetry.RefreshAttempt) *telemetry.RefreshAttempt {
+	if attempt == nil {
+		return nil
+	}
+	cloned := *attempt
+	cloned.RequestedAt = cloneTime(attempt.RequestedAt)
+	cloned.StartedAt = cloneTime(attempt.StartedAt)
+	cloned.CompletedAt = cloneTime(attempt.CompletedAt)
+	cloned.LastErrorAt = cloneTime(attempt.LastErrorAt)
+	cloned.Operations = append([]string(nil), attempt.Operations...)
+	return &cloned
 }
 
 func latestTime(current *time.Time, next *time.Time) *time.Time {

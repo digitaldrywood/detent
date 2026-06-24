@@ -107,6 +107,7 @@ type Server struct {
 	projects            *projectSmallMultipleRecorder
 	snapshots           *snapshotEnrichmentCache
 	kanbanMutations     *kanbanMutationLocks
+	refreshes           *manualRefreshTracker
 	demo                *demoScenarioSet
 }
 
@@ -164,6 +165,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		projects:            newProjectSmallMultipleRecorder(),
 		snapshots:           newSnapshotEnrichmentCache(),
 		kanbanMutations:     newKanbanMutationLocks(),
+		refreshes:           newManualRefreshTracker(),
 		demo:                newDemoScenarioSet(cfg.Demo),
 	}
 	e.HTTPErrorHandler = server.handleHTTPError
@@ -449,9 +451,9 @@ func (s *Server) sidebarProjectContext(selectedProjectID string, projects []temp
 func (s *Server) latestSnapshot(ctx context.Context) telemetry.Snapshot {
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return s.enrichSnapshot(ctx, telemetry.Snapshot{})
+		return s.withManualRefresh(s.enrichSnapshot(ctx, telemetry.Snapshot{}))
 	}
-	return s.cachedEnrichedSnapshot(ctx, snapshot)
+	return s.withManualRefresh(s.cachedEnrichedSnapshot(ctx, snapshot))
 }
 
 func (s *Server) health(c echo.Context) error {

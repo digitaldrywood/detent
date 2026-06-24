@@ -55,6 +55,7 @@ func (s *Server) apiState(c echo.Context) error {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
 	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
+	snapshot = s.withManualRefresh(snapshot)
 
 	return c.JSON(http.StatusOK, stateResponse(snapshot, generatedAt(snapshot, now), s.instanceName()))
 }
@@ -98,6 +99,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
 	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
+	snapshot = s.withManualRefresh(snapshot)
 	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
 	project, ok := s.dashboardProject(projectID, projects, snapshot)
 	if !ok {
@@ -197,8 +199,21 @@ func (s *Server) apiRefresh(c echo.Context) error {
 	if payload.RequestedAt.IsZero() {
 		payload.RequestedAt = apiNow()
 	}
+	if payload.RequestID == "" {
+		payload.RequestID = "manual-" + strconv.FormatInt(payload.RequestedAt.UnixNano(), 10)
+	}
+	if payload.Status == "" {
+		if payload.Coalesced {
+			payload.Status = telemetry.RefreshAttemptStatusCoalesced
+		} else if payload.Queued {
+			payload.Status = telemetry.RefreshAttemptStatusInProgress
+		}
+	}
 	if payload.Operations == nil {
 		payload.Operations = []string{}
+	}
+	if s.refreshes != nil {
+		s.refreshes.recordResponse(payload)
 	}
 
 	return c.JSON(http.StatusAccepted, payload)

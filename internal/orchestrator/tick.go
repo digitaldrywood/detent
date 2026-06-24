@@ -2,9 +2,11 @@ package orchestrator
 
 import (
 	"context"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
 type tickPreviousState struct {
@@ -29,9 +31,26 @@ type tickTransitionRefresh struct {
 }
 
 func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
+	o.tickWithManual(ctx, state, now, nil)
+}
+
+func (o *Orchestrator) tickManual(ctx context.Context, state *State, request manualRefreshRequest) {
+	o.tickWithManual(ctx, state, request.requestedAt, &request)
+}
+
+func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now time.Time, manual *manualRefreshRequest) {
+	if manual != nil {
+		startManualRefresh(state, *manual, now)
+	}
+	completed := false
 	previous := captureTickPreviousState(state)
 	o.markRefresh(state, now)
-	defer o.finishRefresh(state, now)
+	defer func() {
+		o.finishRefresh(state, now)
+		if manual != nil {
+			finishManualRefresh(state, *manual, completed)
+		}
+	}()
 
 	if pause := o.gitHubGraphQLPause(state, now); pause > 0 {
 		o.logger.Warn("github graphql polling paused", "remaining", gitHubGraphQLRemaining(state), "pause", pause)
@@ -93,6 +112,74 @@ func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
 	)
 	state.BoardIssues = boardIssuesFromFetched(fetched)
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
+	completed = true
+}
+
+func startManualRefresh(state *State, request manualRefreshRequest, now time.Time) {
+	if state == nil {
+		return
+	}
+	requestedAt := request.requestedAt.UTC()
+	startedAt := now.UTC()
+	state.ManualRefresh = telemetry.RefreshAttempt{
+		ID:          request.id,
+		Status:      telemetry.RefreshAttemptStatusInProgress,
+		RequestedAt: &requestedAt,
+		StartedAt:   &startedAt,
+		Operations:  append([]string(nil), request.operations...),
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      startedAt,
+		Event:   "manual_refresh_started",
+		Message: "manual refresh " + request.id + " started",
+	})
+}
+
+func finishManualRefresh(state *State, request manualRefreshRequest, completed bool) {
+	if state == nil {
+		return
+	}
+	completedAt := time.Now().UTC()
+	manual := state.ManualRefresh
+	if strings.TrimSpace(manual.ID) != request.id {
+		manual = telemetry.RefreshAttempt{
+			ID:          request.id,
+			RequestedAt: timePointer(request.requestedAt),
+			StartedAt:   timePointer(request.requestedAt),
+			Operations:  append([]string(nil), request.operations...),
+		}
+	}
+	manual.CompletedAt = &completedAt
+	if completed && strings.TrimSpace(state.LastRefreshError) == "" && state.LastRefreshErrorAt.IsZero() {
+		manual.Status = telemetry.RefreshAttemptStatusSucceeded
+		manual.LastError = ""
+		manual.LastErrorAt = nil
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      completedAt,
+			Event:   "manual_refresh_succeeded",
+			Message: "manual refresh " + request.id + " succeeded",
+		})
+		state.ManualRefresh = manual
+		return
+	}
+
+	manual.Status = telemetry.RefreshAttemptStatusFailed
+	manual.LastError = strings.TrimSpace(state.LastRefreshError)
+	if manual.LastError == "" {
+		manual.LastError = "manual refresh did not complete"
+	}
+	errorAt := state.LastRefreshErrorAt
+	if errorAt.IsZero() {
+		errorAt = completedAt
+	}
+	errorAt = errorAt.UTC()
+	manual.LastErrorAt = &errorAt
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      completedAt,
+		Event:   "manual_refresh_failed",
+		Message: "manual refresh " + request.id + " failed: " + manual.LastError,
+	})
+	state.ManualRefresh = manual
 }
 
 func captureTickPreviousState(state *State) tickPreviousState {

@@ -92,13 +92,47 @@ const (
 	RefreshStatusDegraded     RefreshStatus = "degraded"
 )
 
+type RefreshAttemptStatus string
+
+const (
+	RefreshAttemptStatusInProgress RefreshAttemptStatus = "in_progress"
+	RefreshAttemptStatusCoalesced  RefreshAttemptStatus = "coalesced"
+	RefreshAttemptStatusSucceeded  RefreshAttemptStatus = "succeeded"
+	RefreshAttemptStatusFailed     RefreshAttemptStatus = "failed"
+)
+
 type Refresh struct {
-	PollIntervalSeconds int64         `json:"poll_interval_seconds,omitempty"`
-	Status              RefreshStatus `json:"status,omitempty"`
-	LastRefreshAt       *time.Time    `json:"last_refresh_at,omitempty"`
-	NextRefreshAt       *time.Time    `json:"next_refresh_at,omitempty"`
-	LastError           string        `json:"last_error,omitempty"`
-	LastErrorAt         *time.Time    `json:"last_error_at,omitempty"`
+	PollIntervalSeconds int64           `json:"poll_interval_seconds,omitempty"`
+	Status              RefreshStatus   `json:"status,omitempty"`
+	LastRefreshAt       *time.Time      `json:"last_refresh_at,omitempty"`
+	NextRefreshAt       *time.Time      `json:"next_refresh_at,omitempty"`
+	LastError           string          `json:"last_error,omitempty"`
+	LastErrorAt         *time.Time      `json:"last_error_at,omitempty"`
+	Manual              *RefreshAttempt `json:"manual,omitempty"`
+}
+
+type RefreshAttempt struct {
+	ID          string               `json:"id,omitempty"`
+	Status      RefreshAttemptStatus `json:"status,omitempty"`
+	RequestedAt *time.Time           `json:"requested_at,omitempty"`
+	StartedAt   *time.Time           `json:"started_at,omitempty"`
+	CompletedAt *time.Time           `json:"completed_at,omitempty"`
+	Operations  []string             `json:"operations,omitempty"`
+	Coalesced   bool                 `json:"coalesced,omitempty"`
+	LastError   string               `json:"last_error,omitempty"`
+	LastErrorAt *time.Time           `json:"last_error_at,omitempty"`
+}
+
+func (a RefreshAttempt) IsZero() bool {
+	return strings.TrimSpace(a.ID) == "" &&
+		a.Status == "" &&
+		a.RequestedAt == nil &&
+		a.StartedAt == nil &&
+		a.CompletedAt == nil &&
+		len(a.Operations) == 0 &&
+		!a.Coalesced &&
+		strings.TrimSpace(a.LastError) == "" &&
+		a.LastErrorAt == nil
 }
 
 func (r Refresh) ReadinessStatus() RefreshStatus {
