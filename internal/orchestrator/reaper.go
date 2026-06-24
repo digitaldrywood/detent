@@ -52,7 +52,6 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 	if err != nil {
 		o.logger.Warn("fetch workspace cleanup issue IDs failed", slog.Any("error", err))
 		message := workspaceCleanupIssueIDsFetchFailedMessage(issueIDs, err)
-		markRefreshError(state, message, cleanupEventAt(now))
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      cleanupEventAt(now),
 			Event:   "workspace_cleanup_fetch_failed",
@@ -60,7 +59,6 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 		})
 		return false, false
 	}
-	clearRefreshError(state)
 	cleaned := false
 	for _, issue := range issues {
 		if !o.shouldReapWorkspaceIssue(issue, now) {
@@ -82,7 +80,6 @@ func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, st
 	if err != nil {
 		o.logger.Warn("fetch workspace cleanup candidates failed", slog.Any("error", err))
 		message := workspaceCleanupFetchFailedMessage(states, err)
-		markRefreshError(state, message, cleanupEventAt(now))
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      cleanupEventAt(now),
 			Event:   "workspace_cleanup_fetch_failed",
@@ -90,7 +87,6 @@ func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, st
 		})
 		return false
 	}
-	clearRefreshError(state)
 	for _, issue := range issues {
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
@@ -300,22 +296,6 @@ func cleanupEventAt(now time.Time) time.Time {
 		return time.Now().UTC()
 	}
 	return now.UTC()
-}
-
-func markRefreshError(state *State, message string, at time.Time) {
-	if state == nil {
-		return
-	}
-	state.LastRefreshError = message
-	state.LastRefreshErrorAt = at
-}
-
-func clearRefreshError(state *State) {
-	if state == nil {
-		return
-	}
-	state.LastRefreshError = ""
-	state.LastRefreshErrorAt = time.Time{}
 }
 
 func workspaceReapSucceededMessage(issue connector.Issue, reason string, result WorkspaceReapResult) string {
