@@ -242,6 +242,10 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 	if err := publishStartupSnapshotOnce(runCtx, cfg.Global, snapshotHub, runtimeStore, displayURL, time.Now()); err != nil {
 		return err
 	}
+	kanbanWorkflow, err := bootKanbanWorkflow(runCtx, cfg)
+	if err != nil {
+		return err
+	}
 	go publishSnapshots(runCtx, manager.Registry(), snapshotHub, runtimeStore, displayURL, defaultSnapshotInterval, time.Now)
 	go republishSnapshotsOnProjectEvents(runCtx, events, snapshotHub, logger)
 	server, err := web.NewServer(web.Config{
@@ -256,6 +260,8 @@ func startRunning(ctx context.Context, cfg BootConfig) error {
 		RuntimeDBPath:      runtimeStorePath(cfg),
 		RuntimeLogPath:     runtimeLogPath(cfg),
 		ServerAddress:      listener.Addr().String(),
+		Kanban:             kanbanWorkflow.Server.Kanban,
+		KanbanWorkflow:     kanbanWorkflow,
 		Demo: web.DemoConfig{
 			Mode:  isolatedDemo(cfg),
 			Clock: isolatedDemoClock(cfg),
@@ -667,6 +673,36 @@ func globalConfigFromWorkflow(globalPath string, workflowPath string) (globalcon
 		},
 	}
 	return cfg, nil
+}
+
+func bootKanbanWorkflow(ctx context.Context, cfg BootConfig) (workflowconfig.Config, error) {
+	workflow, ok, err := bootWorkflow(ctx, cfg)
+	if err != nil || !ok {
+		return workflowconfig.Default(), err
+	}
+	workflow.Config.Server.Kanban.Normalize()
+	return workflow.Config, nil
+}
+
+func bootWorkflow(ctx context.Context, cfg BootConfig) (workflowconfig.Workflow, bool, error) {
+	firstProject := firstGlobalProject(cfg.Global)
+	if strings.TrimSpace(firstProject.Workflow) != "" {
+		workflow, err := loadRuntimeProjectWorkflow(ctx, firstProject, runtimeDeps{}.withDefaults())
+		if err != nil {
+			return workflowconfig.Workflow{}, false, fmt.Errorf("load boot workflow: %w", err)
+		}
+		return workflow, true, nil
+	}
+
+	path := strings.TrimSpace(cfg.WorkflowPath)
+	if path == "" {
+		return workflowconfig.Workflow{}, false, nil
+	}
+	workflow, err := workflowconfig.LoadWorkflow(path)
+	if err != nil {
+		return workflowconfig.Workflow{}, false, fmt.Errorf("load boot workflow: %w", err)
+	}
+	return workflow, true, nil
 }
 
 func buildGlobalScheduler(settings globalconfig.Settings, fairShareStore scheduler.FairShareStore) (scheduler.GlobalScheduler, error) {
