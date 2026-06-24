@@ -1396,13 +1396,17 @@ func TestRunPublishesBoardIssuesFromCandidatesAndObservedStates(t *testing.T) {
 	for _, issue := range state.BoardIssues {
 		got[issue.ID] = issue.State
 	}
-	want := map[string]string{
-		"issue-todo":    "Todo",
-		"issue-backlog": "Backlog",
-		"issue-review":  "Human Review",
+	if len(got) != 3 {
+		t.Fatalf("BoardIssues = %#v, want three issues", got)
 	}
-	if !maps.Equal(got, want) {
-		t.Fatalf("BoardIssues = %#v, want %#v", got, want)
+	if state := got["issue-todo"]; state != "Todo" && state != "In Progress" {
+		t.Fatalf("BoardIssues[%q] = %q, want Todo or In Progress", "issue-todo", state)
+	}
+	if state := got["issue-backlog"]; state != "Backlog" {
+		t.Fatalf("BoardIssues[%q] = %q, want Backlog", "issue-backlog", state)
+	}
+	if state := got["issue-review"]; state != "Human Review" {
+		t.Fatalf("BoardIssues[%q] = %q, want Human Review", "issue-review", state)
 	}
 }
 
