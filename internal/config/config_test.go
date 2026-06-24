@@ -30,6 +30,9 @@ tracker:
   http_max_idle_conns_per_host: 40
   http_idle_conn_timeout_ms: 120000
   github_graphql_warn_remaining: 750
+  github_graphql_min_remaining_reserve: 1750
+  github_rest_min_remaining_reserve: 1500
+  github_rest_fanout_max_requests: 42
   claims:
     enabled: true
     lease_field: Detent Lease
@@ -202,6 +205,15 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Tracker.GitHubGraphQLWarnRemaining != 750 {
 		t.Fatalf("Tracker.GitHubGraphQLWarnRemaining = %d, want 750", cfg.Tracker.GitHubGraphQLWarnRemaining)
+	}
+	if cfg.Tracker.GitHubGraphQLMinReserve != 1750 {
+		t.Fatalf("Tracker.GitHubGraphQLMinReserve = %d, want 1750", cfg.Tracker.GitHubGraphQLMinReserve)
+	}
+	if cfg.Tracker.GitHubRESTMinReserve != 1500 {
+		t.Fatalf("Tracker.GitHubRESTMinReserve = %d, want 1500", cfg.Tracker.GitHubRESTMinReserve)
+	}
+	if cfg.Tracker.GitHubRESTFanoutMaxRequests != 42 {
+		t.Fatalf("Tracker.GitHubRESTFanoutMaxRequests = %d, want 42", cfg.Tracker.GitHubRESTFanoutMaxRequests)
 	}
 	if !cfg.Tracker.Claims.Enabled {
 		t.Fatal("Tracker.Claims.Enabled = false, want true")
@@ -477,6 +489,15 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Tracker.HTTPIdleConnTimeoutMS != 90000 {
 		t.Fatalf("Tracker.HTTPIdleConnTimeoutMS = %d, want 90000", cfg.Tracker.HTTPIdleConnTimeoutMS)
+	}
+	if cfg.Tracker.GitHubGraphQLMinReserve != 1000 {
+		t.Fatalf("Tracker.GitHubGraphQLMinReserve = %d, want 1000", cfg.Tracker.GitHubGraphQLMinReserve)
+	}
+	if cfg.Tracker.GitHubRESTMinReserve != 1000 {
+		t.Fatalf("Tracker.GitHubRESTMinReserve = %d, want 1000", cfg.Tracker.GitHubRESTMinReserve)
+	}
+	if cfg.Tracker.GitHubRESTFanoutMaxRequests != 80 {
+		t.Fatalf("Tracker.GitHubRESTFanoutMaxRequests = %d, want 80", cfg.Tracker.GitHubRESTFanoutMaxRequests)
 	}
 	if cfg.Workspace.AutoBranch != true {
 		t.Fatal("Workspace.AutoBranch = false, want true")
@@ -1141,6 +1162,10 @@ tracker:
   http_max_idle_conns: 0
   http_max_idle_conns_per_host: 0
   http_idle_conn_timeout_ms: 0
+  github_graphql_warn_remaining: 0
+  github_graphql_min_remaining_reserve: 0
+  github_rest_min_remaining_reserve: 0
+  github_rest_fanout_max_requests: 0
   active_states: ["Todo", ""]
 polling:
   interval_ms: 0
@@ -1176,6 +1201,10 @@ Prompt
 				"tracker.http_max_idle_conns must be greater than 0",
 				"tracker.http_max_idle_conns_per_host must be greater than 0",
 				"tracker.http_idle_conn_timeout_ms must be greater than 0",
+				"tracker.github_graphql_warn_remaining must be greater than 0",
+				"tracker.github_graphql_min_remaining_reserve must be greater than 0",
+				"tracker.github_rest_min_remaining_reserve must be greater than 0",
+				"tracker.github_rest_fanout_max_requests must be greater than 0",
 				"polling.interval_ms must be greater than 0",
 				"worker.max_concurrent_agents_per_host must be greater than 0",
 				"workspace.cleanup_idle_ttl_ms must be greater than 0",

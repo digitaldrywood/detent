@@ -112,6 +112,36 @@ func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(
 	}
 }
 
+func TestConnectorFetchIssueStateProbeSkipsPullRequestHydration(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Ahuman-review&page=1&per_page=100&state=all",
+			body:   `[{"node_id":"I_433","number":433,"title":"Human Review issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/433","assignees":[],"labels":[{"name":"detent:human-review"},{"name":"bug"}]}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+	})
+
+	got, err := c.FetchIssueStateProbe(context.Background(), []string{"Human Review"}, 1)
+	if err != nil {
+		t.Fatalf("FetchIssueStateProbe() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssueStateProbe() len = %d, want 1", len(got))
+	}
+	if got[0].PullRequest != nil {
+		t.Fatalf("PullRequest = %#v, want no probe hydration", got[0].PullRequest)
+	}
+	if len(server.requests()) != 1 {
+		t.Fatalf("request count = %d, want only label issue probe", len(server.requests()))
+	}
+}
+
 func TestConnectorFetchLabelIssuesPrefersCanonicalDoneOverCancelledAlias(t *testing.T) {
 	t.Parallel()
 

@@ -69,6 +69,8 @@ type Config struct {
 	TokenSource             TokenSource
 	HTTPClient              HTTPClient
 	HTTPTransport           HTTPTransportConfig
+	RESTMinRemainingReserve int
+	RESTFanoutMaxRequests   int
 	Logger                  *slog.Logger
 	Now                     func() time.Time
 	LookupEnv               func(string) string
@@ -90,6 +92,7 @@ type Connector struct {
 	statusCache       *statusCache
 	issueFields       *issueFieldCache
 	projectCache      *projectCache
+	pullRequests      *pullRequestStatusCache
 	mu                sync.RWMutex
 	writeMu           sync.Mutex
 	instanceLogin     string
@@ -121,7 +124,11 @@ func NewConnector(cfg Config) (*Connector, error) {
 		Endpoint:    cfg.Endpoint,
 		TokenSource: tokenSource,
 		HTTPClient:  httpClient,
-		Logger:      cfg.Logger,
+		RESTPolicy: RESTBudgetPolicy{
+			MinRemainingReserve: int64(cfg.RESTMinRemainingReserve),
+			FanoutMaxRequests:   int64(cfg.RESTFanoutMaxRequests),
+		},
+		Logger: cfg.Logger,
 	})
 	if err != nil {
 		return nil, err
@@ -152,6 +159,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		statusCache:       newStatusCache(githubCacheTTL, cfg.Now),
 		issueFields:       newIssueFieldCache(githubCacheTTL, cfg.Now),
 		projectCache:      newProjectCache(githubCacheTTL, cfg.Now),
+		pullRequests:      newPullRequestStatusCache(githubCacheTTL, cfg.Now),
 	}, nil
 }
 
@@ -268,6 +276,7 @@ var _ connector.IssueCommentReader = (*Connector)(nil)
 var _ connector.IssueFieldSetter = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
+var _ connector.IssueStateProber = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
 var _ connector.Provisioner = (*Connector)(nil)
 var _ connector.RateLimitReporter = (*Connector)(nil)

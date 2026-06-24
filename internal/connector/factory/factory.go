@@ -18,28 +18,30 @@ var (
 )
 
 type Config struct {
-	Kind                    string
-	Memory                  memory.Config
-	Endpoint                string
-	APIKey                  string
-	GitHubTokenRefresh      githubconnector.TokenRefreshFunc
-	HTTPMaxIdleConns        int
-	HTTPMaxIdleConnsPerHost int
-	HTTPIdleConnTimeoutMS   int
-	GitHubAppID             string
-	GitHubAppPrivateKey     string
-	GitHubAppPrivateKeyPath string
-	GitHubAppInstallationID string
-	GitHubStatusSource      string
-	ProjectSlug             string
-	Repository              string
-	StatusField             string
-	StatusLabelPrefix       string
-	ActiveStates            []string
-	ObservedStates          []string
-	TerminalStates          []string
-	StateMap                map[string]string
-	PriorityMap             map[string]*int
+	Kind                        string
+	Memory                      memory.Config
+	Endpoint                    string
+	APIKey                      string
+	GitHubTokenRefresh          githubconnector.TokenRefreshFunc
+	HTTPMaxIdleConns            int
+	HTTPMaxIdleConnsPerHost     int
+	HTTPIdleConnTimeoutMS       int
+	GitHubRESTMinReserve        int
+	GitHubRESTFanoutMaxRequests int
+	GitHubAppID                 string
+	GitHubAppPrivateKey         string
+	GitHubAppPrivateKeyPath     string
+	GitHubAppInstallationID     string
+	GitHubStatusSource          string
+	ProjectSlug                 string
+	Repository                  string
+	StatusField                 string
+	StatusLabelPrefix           string
+	ActiveStates                []string
+	ObservedStates              []string
+	TerminalStates              []string
+	StateMap                    map[string]string
+	PriorityMap                 map[string]*int
 }
 
 func NewFromConfig(cfg Config) (connector.Connector, error) {
@@ -64,6 +66,8 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 				MaxIdleConnsPerHost: cfg.HTTPMaxIdleConnsPerHost,
 				IdleConnTimeout:     time.Duration(cfg.HTTPIdleConnTimeoutMS) * time.Millisecond,
 			},
+			RESTMinRemainingReserve: cfg.GitHubRESTMinReserve,
+			RESTFanoutMaxRequests:   cfg.GitHubRESTFanoutMaxRequests,
 			GitHubAppID:             cfg.GitHubAppID,
 			GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
 			GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,

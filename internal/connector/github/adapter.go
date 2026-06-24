@@ -914,7 +914,7 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 			}
 		}
 		if attachPullRequestsForStates(wantedStates) {
-			if err := c.attachPullRequests(ctx, issues); err != nil {
+			if err := c.attachFreshPullRequests(ctx, issues); err != nil {
 				return nil, err
 			}
 		}
@@ -931,7 +931,7 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 			}
 		}
 		if attachPullRequestsForStates(wantedStates) {
-			if err := c.attachPullRequests(ctx, issues); err != nil {
+			if err := c.attachFreshPullRequests(ctx, issues); err != nil {
 				return nil, err
 			}
 		}
@@ -954,7 +954,7 @@ func (c *Connector) FetchIssuesByStates(ctx context.Context, stateNames []string
 		}
 	}
 	if attachPullRequestsForStates(wantedStates) {
-		if err := c.attachPullRequests(ctx, issues); err != nil {
+		if err := c.attachFreshPullRequests(ctx, issues); err != nil {
 			return nil, err
 		}
 	}
@@ -980,7 +980,7 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 			}
 		}
 		if attachPullRequestsForStates(wantedStates) {
-			if err := c.attachPullRequests(ctx, issues); err != nil {
+			if err := c.attachFreshPullRequests(ctx, issues); err != nil {
 				return nil, err
 			}
 		}
@@ -997,7 +997,7 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 			}
 		}
 		if attachPullRequestsForStates(wantedStates) {
-			if err := c.attachPullRequests(ctx, issues); err != nil {
+			if err := c.attachFreshPullRequests(ctx, issues); err != nil {
 				return nil, err
 			}
 		}
@@ -1020,11 +1020,35 @@ func (c *Connector) FetchIssuesByStatesLimit(ctx context.Context, stateNames []s
 		}
 	}
 	if attachPullRequestsForStates(wantedStates) {
-		if err := c.attachPullRequests(ctx, issues); err != nil {
+		if err := c.attachFreshPullRequests(ctx, issues); err != nil {
 			return nil, err
 		}
 	}
 	return issues, nil
+}
+
+func (c *Connector) FetchIssueStateProbe(ctx context.Context, stateNames []string, limit int) ([]connector.Issue, error) {
+	if limit <= 0 {
+		return []connector.Issue{}, nil
+	}
+	wantedStates := normalizedStateSet(stateNames)
+	if len(wantedStates) == 0 {
+		return []connector.Issue{}, nil
+	}
+	if c.usesLabelStatus() {
+		return c.fetchLabelIssuesByStates(ctx, stateNames, limit)
+	}
+	if c.usesIssueFieldStatus() {
+		return c.fetchIssueFieldIssuesByStates(ctx, stateNames, limit)
+	}
+	if c.projectID == "" {
+		return nil, ErrMissingProject
+	}
+
+	return c.fetchProjectItemsWithPullRequestRefsLimit(ctx, graphQLQueryObservedStatus, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+		_, ok := wantedStates[normalizeStateName(issue.State)]
+		return ok
+	}, limit)
 }
 
 func (c *Connector) VerifyStatusOptions(ctx context.Context, stateNames []string) error {
@@ -1866,6 +1890,14 @@ type pullRequestRepo struct {
 }
 
 func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.Issue) error {
+	return c.attachPullRequestsWithCache(ctx, issues, true)
+}
+
+func (c *Connector) attachFreshPullRequests(ctx context.Context, issues []connector.Issue) error {
+	return c.attachPullRequestsWithCache(ctx, issues, false)
+}
+
+func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []connector.Issue, useStatusCache bool) error {
 	byRepo := make(map[pullRequestRepo][]issuePullRequestCandidate)
 	for index, issue := range issues {
 		repo, ok := pullRequestRepoFromIdentifier(issue.Identifier)
@@ -1909,7 +1941,7 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 	})
 
 	for _, repo := range repos {
-		if err := c.attachLinkedPullRequests(ctx, repo, issues, byRepo[repo]); err != nil {
+		if err := c.attachLinkedPullRequests(ctx, repo, issues, byRepo[repo], useStatusCache); err != nil {
 			return err
 		}
 		if !hasUnattachedBranchPullRequestCandidates(issues, byRepo[repo]) {
@@ -1917,9 +1949,12 @@ func (c *Connector) attachPullRequests(ctx context.Context, issues []connector.I
 		}
 		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
 		if err != nil {
+			if errors.Is(err, ErrRESTBudgetReserved) {
+				continue
+			}
 			return err
 		}
-		if err := c.attachMatchingPullRequests(ctx, repo, issues, byRepo[repo], pullRequests); err != nil {
+		if err := c.attachMatchingPullRequests(ctx, repo, issues, byRepo[repo], pullRequests, useStatusCache); err != nil {
 			return err
 		}
 	}
@@ -1962,6 +1997,9 @@ func (c *Connector) attachPullRequestMergeStates(ctx context.Context, issues []c
 	for _, repo := range repos {
 		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
 		if err != nil {
+			if errors.Is(err, ErrRESTBudgetReserved) {
+				continue
+			}
 			return err
 		}
 		attachMatchingPullRequestMergeStates(repo, issues, byRepo[repo], pullRequests)
@@ -2052,6 +2090,7 @@ func (c *Connector) attachLinkedPullRequests(
 	repo pullRequestRepo,
 	issues []connector.Issue,
 	candidates []issuePullRequestCandidate,
+	useStatusCache bool,
 ) error {
 	pullRequests := map[pullRequestKey]pullRequestNode{}
 	for _, candidate := range candidates {
@@ -2068,10 +2107,16 @@ func (c *Connector) attachLinkedPullRequests(
 			var err error
 			pullRequest, err = c.fetchRepositoryPullRequest(ctx, pullRequestRepo, candidate.PullRequestNumber)
 			if err != nil {
+				if errors.Is(err, ErrRESTBudgetReserved) {
+					attachMinimalPullRequestToIssue(&issues[candidate.Index], pullRequestRepo, candidate.PullRequestNumber)
+					continue
+				}
 				return err
 			}
-			if err := c.populatePullRequestStatus(ctx, pullRequestRepo, &pullRequest); err != nil {
-				return err
+			if err := c.populatePullRequestStatus(ctx, pullRequestRepo, &pullRequest, useStatusCache); err != nil {
+				if !errors.Is(err, ErrRESTBudgetReserved) {
+					return err
+				}
 			}
 			pullRequests[key] = pullRequest
 		}
@@ -2086,6 +2131,7 @@ func (c *Connector) attachMatchingPullRequests(
 	issues []connector.Issue,
 	candidates []issuePullRequestCandidate,
 	pullRequests []pullRequestNode,
+	useStatusCache bool,
 ) error {
 	hydrated := map[int]pullRequestNode{}
 	for _, pullRequest := range pullRequests {
@@ -2106,10 +2152,18 @@ func (c *Connector) attachMatchingPullRequests(
 				var err error
 				hydratedPullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, pullRequest.Number)
 				if err != nil {
+					if errors.Is(err, ErrRESTBudgetReserved) {
+						hydratedPullRequest = pullRequest
+						hydrated[pullRequest.Number] = hydratedPullRequest
+						attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
+						continue
+					}
 					return err
 				}
-				if err := c.populatePullRequestStatus(ctx, repo, &hydratedPullRequest); err != nil {
-					return err
+				if err := c.populatePullRequestStatus(ctx, repo, &hydratedPullRequest, useStatusCache); err != nil {
+					if !errors.Is(err, ErrRESTBudgetReserved) {
+						return err
+					}
 				}
 				hydrated[pullRequest.Number] = hydratedPullRequest
 			}
@@ -2173,6 +2227,16 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 	}
 }
 
+func attachMinimalPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, number int) {
+	issue.PullRequest = &connector.PullRequest{Number: number}
+	if issue.PRNumber == nil && number > 0 {
+		issue.PRNumber = &number
+	}
+	if issue.PRRepository == "" {
+		issue.PRRepository = pullRequestRepoName(repo)
+	}
+}
+
 func pullRequestRepoName(repo pullRequestRepo) string {
 	owner := strings.TrimSpace(repo.Owner)
 	name := strings.TrimSpace(repo.Name)
@@ -2182,24 +2246,41 @@ func pullRequestRepoName(repo pullRequestRepo) string {
 	return owner + "/" + name
 }
 
-func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode) error {
+func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode, useStatusCache bool) error {
+	if useStatusCache && c.pullRequests != nil {
+		if status, ok := c.pullRequests.Get(repo, pullRequest.Number, pullRequest.HeadSHA); ok {
+			applyPullRequestStatus(pullRequest, status)
+			return nil
+		}
+	}
+
+	status := pullRequestStatus{}
 	if strings.TrimSpace(pullRequest.HeadSHA) != "" {
 		ci, err := c.fetchPullRequestCI(ctx, repo, pullRequest.HeadSHA)
 		if err != nil {
 			return err
 		}
-		pullRequest.CI = ci
-		pullRequest.Commits = nodeConnection[pullRequestCommit]{Nodes: []pullRequestCommit{{
-			Commit: commitNode{StatusCheckRollup: &statusCheckRollup{State: ci.State}},
-		}}}
+		status.ci = ci
 	}
 	reviews, err := c.fetchPullRequestReviews(ctx, repo, pullRequest.Number, pullRequest.HeadSHA)
 	if err != nil {
 		return err
 	}
-	pullRequest.LatestReviews = nodeConnection[pullRequestReview]{Nodes: reviews.CurrentHead}
-	pullRequest.CodexReviews = reviews
+	status.reviews = reviews
+	if useStatusCache && c.pullRequests != nil {
+		c.pullRequests.Set(repo, pullRequest.Number, pullRequest.HeadSHA, status)
+	}
+	applyPullRequestStatus(pullRequest, status)
 	return nil
+}
+
+func applyPullRequestStatus(pullRequest *pullRequestNode, status pullRequestStatus) {
+	pullRequest.CI = clonePullRequestCI(status.ci)
+	pullRequest.Commits = nodeConnection[pullRequestCommit]{Nodes: []pullRequestCommit{{
+		Commit: commitNode{StatusCheckRollup: &statusCheckRollup{State: status.ci.State}},
+	}}}
+	pullRequest.LatestReviews = nodeConnection[pullRequestReview]{Nodes: clonePullRequestReviews(status.reviews.CurrentHead)}
+	pullRequest.CodexReviews = clonePullRequestCodexReviews(status.reviews)
 }
 
 func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo, sha string) (pullRequestCI, error) {

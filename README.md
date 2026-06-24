@@ -579,6 +579,9 @@ tracker:
   http_max_idle_conns_per_host: 32
   http_idle_conn_timeout_ms: 90000
   github_graphql_warn_remaining: 500
+  github_graphql_min_remaining_reserve: 1000
+  github_rest_min_remaining_reserve: 1000
+  github_rest_fanout_max_requests: 80
   active_states:
     - Todo
     - In Progress

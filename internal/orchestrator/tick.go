@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -28,6 +29,14 @@ type tickTransitionRefresh struct {
 	pendingTransitions   []connector.Issue
 	pendingParentLookups map[string]connector.Issue
 	blockedRefreshOK     bool
+}
+
+type githubBudgetReserveDecision struct {
+	degraded       bool
+	restRemaining  int64
+	restReserve    int64
+	graphRemaining int64
+	graphReserve   int64
 }
 
 func (o *Orchestrator) tick(ctx context.Context, state *State, now time.Time) {
@@ -61,11 +70,21 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		return
 	}
 
-	o.refreshActiveRuns(ctx, state, now)
+	reserve := o.githubBudgetReserveDecision(state)
+	if reserve.degraded {
+		o.logGitHubBudgetReserveDecision(reserve)
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "github_budget_reserved",
+			Message: githubBudgetReserveMessage(reserve),
+		})
+	}
+
+	o.refreshActiveRuns(ctx, state, now, reserve)
 	if state.Draining {
 		return
 	}
-	fetched, ok := o.fetchTickIssues(ctx, state, now)
+	fetched, ok := o.fetchTickIssues(ctx, state, now, reserve)
 	if !ok {
 		return
 	}
@@ -196,13 +215,28 @@ func captureTickPreviousState(state *State) tickPreviousState {
 	}
 }
 
-func (o *Orchestrator) refreshActiveRuns(ctx context.Context, state *State, now time.Time) {
-	o.reapWorkspacesIfDue(ctx, state, now)
+func (o *Orchestrator) refreshActiveRuns(ctx context.Context, state *State, now time.Time, reserve githubBudgetReserveDecision) {
+	if reserve.degraded {
+		o.logger.Warn(
+			"workspace cleanup skipped to preserve shared github budget",
+			"rest_remaining", reserve.restRemaining,
+			"rest_reserve", reserve.restReserve,
+			"graphql_remaining", reserve.graphRemaining,
+			"graphql_reserve", reserve.graphReserve,
+		)
+	} else {
+		o.reapWorkspacesIfDue(ctx, state, now)
+	}
 	o.reconcileRunningIssues(ctx, state, now)
 	o.heartbeatRunningClaims(ctx, state, now)
 }
 
-func (o *Orchestrator) fetchTickIssues(ctx context.Context, state *State, now time.Time) (tickFetchedIssues, bool) {
+func (o *Orchestrator) fetchTickIssues(
+	ctx context.Context,
+	state *State,
+	now time.Time,
+	reserve githubBudgetReserveDecision,
+) (tickFetchedIssues, bool) {
 	observedStates := o.observedStatusFetchStates()
 
 	candidateIssues, err := o.connector.FetchCandidateIssues(ctx)
@@ -218,6 +252,17 @@ func (o *Orchestrator) fetchTickIssues(ctx context.Context, state *State, now ti
 	if len(observedStates) == 0 {
 		fetched.statusOK = true
 		clearRefreshError(state)
+		return fetched, true
+	}
+	if reserve.degraded {
+		o.logger.Warn(
+			"observed status polling skipped to preserve shared github budget",
+			"state_count", len(observedStates),
+			"rest_remaining", reserve.restRemaining,
+			"rest_reserve", reserve.restReserve,
+			"graphql_remaining", reserve.graphRemaining,
+			"graphql_reserve", reserve.graphReserve,
+		)
 		return fetched, true
 	}
 	if !tickHasActiveWork(state, candidateIssues) && !o.observedWorkExists(ctx, observedStates) {
@@ -266,6 +311,14 @@ func clearRefreshError(state *State) {
 }
 
 func (o *Orchestrator) observedWorkExists(ctx context.Context, observedStates []string) bool {
+	if prober, ok := o.connector.(connector.IssueStateProber); ok {
+		issues, err := prober.FetchIssueStateProbe(ctx, observedStates, 1)
+		if err != nil {
+			o.logger.Warn("fetch lightweight observed status probe failed", "error", err)
+			return false
+		}
+		return len(issues) > 0
+	}
 	limiter, ok := o.connector.(connector.IssuesByStatesLimiter)
 	if !ok {
 		return true
@@ -276,6 +329,46 @@ func (o *Orchestrator) observedWorkExists(ctx context.Context, observedStates []
 		return false
 	}
 	return len(issues) > 0
+}
+
+func (o *Orchestrator) githubBudgetReserveDecision(state *State) githubBudgetReserveDecision {
+	decision := githubBudgetReserveDecision{
+		restRemaining:  gitHubRESTRemaining(state),
+		restReserve:    o.cfg.GitHubRESTMinReserve,
+		graphRemaining: gitHubGraphQLRemaining(state),
+		graphReserve:   o.cfg.GitHubGraphQLMinReserve,
+	}
+	if bucket := gitHubRESTBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubRESTMinReserve) {
+		decision.degraded = true
+	}
+	if bucket := gitHubGraphQLBucketFromState(state); budgetBelowReserve(bucket, o.cfg.GitHubGraphQLMinReserve) {
+		decision.degraded = true
+	}
+	return decision
+}
+
+func budgetBelowReserve(bucket *telemetry.RateLimitBucket, reserve int64) bool {
+	return bucket != nil && reserve > 0 && bucket.Limit > 0 && bucket.Remaining <= reserve
+}
+
+func (o *Orchestrator) logGitHubBudgetReserveDecision(decision githubBudgetReserveDecision) {
+	o.logger.Warn(
+		"github polling degraded to preserve shared budget",
+		"rest_remaining", decision.restRemaining,
+		"rest_reserve", decision.restReserve,
+		"graphql_remaining", decision.graphRemaining,
+		"graphql_reserve", decision.graphReserve,
+	)
+}
+
+func githubBudgetReserveMessage(decision githubBudgetReserveDecision) string {
+	return fmt.Sprintf(
+		"GitHub polling degraded to preserve shared budget for user and AI work; REST remaining=%d reserve=%d GraphQL remaining=%d reserve=%d",
+		decision.restRemaining,
+		decision.restReserve,
+		decision.graphRemaining,
+		decision.graphReserve,
+	)
 }
 
 func tickHasActiveWork(state *State, candidates []connector.Issue) bool {

@@ -345,6 +345,106 @@ func TestTickSkipsConnectorPollingDuringGitHubRESTBackoff(t *testing.T) {
 	}
 }
 
+func TestTickSkipsNonessentialGitHubWorkBelowRESTReserve(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		PollInterval:                  30 * time.Second,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress"},
+		ObservedStates:                []string{"Human Review", "Blocked"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Minute,
+		GitHubRESTMinReserve:          1000,
+		GitHubGraphQLMinReserve:       1000,
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubREST: &telemetry.RateLimitBucket{
+			Remaining: 900,
+			Limit:     5000,
+			Used:      4100,
+			ResetAt:   &resetAt,
+		},
+	}
+	tracker := &rateLimitConnector{}
+	var logs bytes.Buffer
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		reaper:    rateLimitWorkspaceReaper{},
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want minimal active candidate fetch", tracker.fetchCandidateCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want no cleanup or observed sweep", tracker.fetchByStatesCalls)
+	}
+	if tracker.fetchByStatesLimitCalls != 0 {
+		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want no observed probe during reserve", tracker.fetchByStatesLimitCalls)
+	}
+	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "github_budget_reserved" || !strings.Contains(state.RecentEvents[0].Message, "preserve shared budget") {
+		t.Fatalf("RecentEvents = %#v, want github budget reserve event", state.RecentEvents)
+	}
+	logOutput := logs.String()
+	for _, want := range []string{
+		"github polling degraded to preserve shared budget",
+		"workspace cleanup skipped to preserve shared github budget",
+		"observed status polling skipped to preserve shared github budget",
+		"rest_remaining=900",
+		"rest_reserve=1000",
+	} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("log output missing %q:\n%s", want, logOutput)
+		}
+	}
+}
+
+func TestTickSkipsObservedPollingBelowGraphQLReserve(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	resetAt := now.Add(time.Hour)
+	cfg := normalizeConfig(Config{
+		PollInterval:            30 * time.Second,
+		MaxConcurrentAgents:     1,
+		ActiveStates:            []string{"Todo", "In Progress"},
+		ObservedStates:          []string{"Human Review"},
+		TerminalStates:          []string{"Done", "Cancelled"},
+		GitHubGraphQLMinReserve: 1000,
+		GitHubRESTMinReserve:    1000,
+	})
+	state := newState(cfg)
+	state.RateLimits = &telemetry.RateLimits{
+		GitHubGraphQL: &telemetry.RateLimitBucket{
+			Remaining: 900,
+			Limit:     5000,
+			Used:      4100,
+			ResetAt:   &resetAt,
+		},
+	}
+	tracker := &rateLimitConnector{}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if tracker.fetchCandidateCalls != 1 {
+		t.Fatalf("FetchCandidateIssues() calls = %d, want minimal active candidate fetch", tracker.fetchCandidateCalls)
+	}
+	if tracker.fetchByStatesCalls != 0 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want observed polling skipped", tracker.fetchByStatesCalls)
+	}
+	if tracker.fetchByStatesLimitCalls != 0 {
+		t.Fatalf("FetchIssuesByStatesLimit() calls = %d, want observed probe skipped", tracker.fetchByStatesLimitCalls)
+	}
+}
+
 func TestTickInactiveProjectUsesBoundedObservedProbe(t *testing.T) {
 	t.Parallel()
 
