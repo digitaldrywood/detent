@@ -876,7 +876,12 @@ func (r registryRefresher) RequestTargetedRefresh(ctx context.Context, target we
 		response = mergeRefreshResponse(response, next)
 	}
 	if !refreshed {
-		return web.RefreshResponse{}, project.ErrProjectNotFound
+		fallback, err := r.RequestRefresh(ctx)
+		if err != nil {
+			return web.RefreshResponse{}, err
+		}
+		fallback.Operations = appendOperations([]string{"target-fallback:" + repository}, fallback.Operations)
+		return fallback, nil
 	}
 	return response, nil
 }

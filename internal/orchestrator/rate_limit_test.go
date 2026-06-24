@@ -410,6 +410,46 @@ func TestReapWorkspacesVerifiesKnownWorkspaceIssueIDsBeforeStateSweep(t *testing
 	}
 }
 
+func TestReapWorkspacesStillSweepsWhenKnownWorkspaceIsActive(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	running := connector.Issue{ID: "I_666", Identifier: "digitaldrywood/detent#666", State: "In Progress"}
+	terminal := connector.Issue{ID: "I_667", Identifier: "digitaldrywood/detent#667", State: "Done"}
+	cfg := normalizeConfig(Config{
+		PollInterval:                  30 * time.Second,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress"},
+		ObservedStates:                []string{"Human Review"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Minute,
+	})
+	state := newState(cfg)
+	state.Running[running.ID] = Running{
+		Issue:         running,
+		WorkspacePath: "/tmp/detent-workspaces/issue-666",
+		StartedAt:     now.Add(-time.Hour),
+	}
+	tracker := &rateLimitConnector{
+		issuesByID:  []connector.Issue{running},
+		stateIssues: []connector.Issue{terminal},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	orch.reaper = rateLimitWorkspaceReaper{}
+
+	orch.reapWorkspacesIfDue(context.Background(), &state, now)
+
+	if tracker.fetchByIDCalls != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() calls = %d, want 1", tracker.fetchByIDCalls)
+	}
+	if tracker.fetchByStatesCalls != 1 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want due sweep after active known workspace", tracker.fetchByStatesCalls)
+	}
+	if _, ok := state.ReapedWorkspaces[terminal.ID]; !ok {
+		t.Fatalf("ReapedWorkspaces[%q] missing after due sweep", terminal.ID)
+	}
+}
+
 func TestTickReconcilesRunningIssuesOnSlowerCadence(t *testing.T) {
 	t.Parallel()
 

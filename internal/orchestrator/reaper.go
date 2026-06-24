@@ -18,11 +18,11 @@ func (o *Orchestrator) reapWorkspacesIfDue(ctx context.Context, state *State, no
 
 	if state.LastRefreshError == "" {
 		if ids := workspaceCleanupIssueIDs(state); len(ids) > 0 {
-			ok, found := o.reapWorkspaceIssueIDs(ctx, state, ids, now)
+			ok, cleaned := o.reapWorkspaceIssueIDs(ctx, state, ids, now)
 			if !ok {
 				return
 			}
-			if found {
+			if cleaned {
 				state.LastWorkspaceCleanupAt = now
 				return
 			}
@@ -61,16 +61,20 @@ func (o *Orchestrator) reapWorkspaceIssueIDs(ctx context.Context, state *State, 
 		return false, false
 	}
 	clearRefreshError(state)
+	cleaned := false
 	for _, issue := range issues {
 		if !o.shouldReapWorkspaceIssue(issue, now) {
 			continue
 		}
 		if o.completeRunningIssueFromWorkspaceCleanup(ctx, state, issue, now) {
+			cleaned = true
 			continue
 		}
-		o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), now)
+		if o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), now) {
+			cleaned = true
+		}
 	}
-	return true, len(issues) > 0
+	return true, cleaned
 }
 
 func (o *Orchestrator) reapWorkspaceStates(ctx context.Context, state *State, states []string, now time.Time) bool {
@@ -245,17 +249,17 @@ func (o *Orchestrator) completeRunningIssueFromWorkspaceCleanup(ctx context.Cont
 	return true
 }
 
-func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue connector.Issue, reason string, now time.Time) {
+func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue connector.Issue, reason string, now time.Time) bool {
 	if o.reaper == nil {
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      cleanupEventAt(now),
 			Event:   "workspace_reap_unverified",
 			Message: workspaceReapUnverifiedMessage(issue, reason),
 		})
-		return
+		return false
 	}
 	if _, ok := state.ReapedWorkspaces[issue.ID]; ok {
-		return
+		return false
 	}
 	result, err := o.reaper.ReapWorkspace(ctx, issue)
 	if err != nil {
@@ -271,7 +275,7 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 			Event:   "workspace_reap_failed",
 			Message: workspaceReapFailedMessage(issue, reason, err),
 		})
-		return
+		return false
 	}
 	state.ReapedWorkspaces[issue.ID] = cleanupEventAt(now)
 	recordStateEvent(state, telemetry.ActivityEvent{
@@ -288,6 +292,7 @@ func (o *Orchestrator) reapWorkspace(ctx context.Context, state *State, issue co
 		slog.Int("branches", result.Branches),
 		slog.Int("processes", result.Processes),
 	)
+	return true
 }
 
 func cleanupEventAt(now time.Time) time.Time {
