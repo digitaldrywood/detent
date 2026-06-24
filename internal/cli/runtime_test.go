@@ -534,7 +534,7 @@ func TestRuntimeGlobalGitHubTokenSources(t *testing.T) {
 }
 
 func TestRuntimeGitHubTokenRefresherUsesCurrentGlobalConfig(t *testing.T) {
-	t.Parallel()
+	t.Setenv("GITHUB_TOKEN", "actions-token")
 
 	workflowPath := filepath.Join(t.TempDir(), "workflow.md")
 	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n---\nPrompt\n"), 0o644); err != nil {

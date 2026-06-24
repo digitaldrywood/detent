@@ -191,11 +191,23 @@ func (r *globalConfigReloader) runtimeGitHubToken(ctx context.Context, cfg globa
 
 func resolveGlobalRuntimeGitHubToken(ctx context.Context, cfg globalconfig.Config) (string, error) {
 	deps := runtimeDeps{}.withDefaults()
+	if strings.TrimSpace(cfg.GitHubToken) != "" {
+		deps.lookupEnv = withoutRuntimeGitHubTokenEnv(deps.lookupEnv)
+	}
 	token, _, err := resolveRuntimeGitHubToken(ctx, &cfg, deps)
 	if err != nil {
 		return "", err
 	}
 	return runtimeGlobalGitHubToken(token), nil
+}
+
+func withoutRuntimeGitHubTokenEnv(lookupEnv func(string) string) func(string) string {
+	return func(key string) string {
+		if key == "GITHUB_TOKEN" {
+			return ""
+		}
+		return lookupEnv(key)
+	}
 }
 
 func managerConfigWithRuntimeGitHubToken(cfg globalconfig.Config, token string) project.ManagerConfig {
