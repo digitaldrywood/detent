@@ -99,7 +99,6 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 		return c.JSON(http.StatusOK, snapshotErrorResponse(now, "snapshot_unavailable", "Snapshot unavailable"))
 	}
 	snapshot = s.cachedEnrichedSnapshot(c.Request().Context(), snapshot)
-	snapshot = s.withManualRefresh(snapshot)
 	projects := s.projectSmallMultiples(c.Request().Context(), snapshot)
 	project, ok := s.dashboardProject(projectID, projects, snapshot)
 	if !ok {
@@ -110,6 +109,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 		DisplayName: project.Name,
 		URL:         project.URL,
 	})
+	scopedSnapshot = s.withManualRefresh(scopedSnapshot)
 
 	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), s.instanceName()))
 }

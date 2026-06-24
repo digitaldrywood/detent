@@ -4979,6 +4979,16 @@ func TestAPIRefreshOverlaysManualRequestOnStaleDegradedState(t *testing.T) {
 			LastError:   "fetch workspace cleanup candidates failed: status 504",
 			LastErrorAt: &lastErrorAt,
 		},
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Refresh: telemetry.Refresh{
+					Status:      telemetry.RefreshStatusDegraded,
+					LastError:   "fetch workspace cleanup candidates failed: status 504",
+					LastErrorAt: &lastErrorAt,
+				},
+			},
+		},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -5022,6 +5032,13 @@ func TestAPIRefreshOverlaysManualRequestOnStaleDegradedState(t *testing.T) {
 	}
 	if operations := manual["operations"].([]any); len(operations) != 2 || operations[0] != "poll" || operations[1] != "reconcile" {
 		t.Fatalf("manual.operations = %#v, want poll/reconcile", manual["operations"])
+	}
+
+	projectState := requestJSON(t, server, http.MethodGet, "/api/v1/projects/detent/state", http.StatusOK)
+	projectRefresh := projectState["refresh"].(map[string]any)
+	projectManual := projectRefresh["manual"].(map[string]any)
+	if projectManual["id"] != "manual-681" || projectManual["status"] != string(telemetry.RefreshAttemptStatusInProgress) {
+		t.Fatalf("project refresh.manual = %#v, want manual-681 in progress", projectManual)
 	}
 }
 
