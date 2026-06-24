@@ -177,13 +177,10 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, terminalStat
 		if autoPromoteMergeConflicts(pullRequest.MergeableState) {
 			return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: string(AutoPromoteReasonMergeConflicts)}
 		}
-		if staleMergingCIGreen(pullRequest.CIStatus) {
-			return staleMergingPullRequestDecision{}
-		}
 		if staleMergingCIRed(pullRequest.CIStatus) {
 			return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: string(AutoPromoteReasonCINotGreen)}
 		}
-		return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: string(AutoPromoteReasonCINotGreen)}
+		return staleMergingPullRequestDecision{}
 	default:
 		return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: "pull_request_not_open"}
 	}

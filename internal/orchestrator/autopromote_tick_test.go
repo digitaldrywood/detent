@@ -715,6 +715,15 @@ func TestTickReconcilesStaleMergingPullRequestStates(t *testing.T) {
 	})
 	conflicting.State = "Merging"
 	conflicting.Identifier = "digitaldrywood/creswoodcorners-phone#64"
+	pending := autoPromoteTickIssue("issue-pending-merging", []string{"bug"}, &connector.PullRequest{
+		Number:         74,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/74",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "pending",
+	})
+	pending.State = "Merging"
+	pending.Identifier = "digitaldrywood/creswoodcorners-phone#66"
 	cfg := normalizeConfig(Config{
 		PollInterval:        time.Minute,
 		MaxConcurrentAgents: 1,
@@ -729,7 +738,7 @@ func TestTickReconcilesStaleMergingPullRequestStates(t *testing.T) {
 		TerminalStates: []string{"Done", "Cancelled"},
 	})
 	tracker := &autoPromoteTickConnector{
-		stateIssues:        []connector.Issue{merged, conflicting},
+		stateIssues:        []connector.Issue{merged, conflicting, pending},
 		candidateIssuesSet: true,
 	}
 	var logs strings.Builder
