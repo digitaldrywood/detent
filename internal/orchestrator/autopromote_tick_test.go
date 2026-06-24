@@ -926,6 +926,53 @@ func TestStaleMergingDispatchCandidatesFiltersUnsafePullRequests(t *testing.T) {
 	}
 }
 
+func TestMergeWorkerDispatchCandidatesPreservesScheduledRetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 20, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-retrying-merge", []string{"bug"}, &connector.PullRequest{
+		Number:         74,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/74",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	issue.State = "Merging"
+	state := newState(cfg)
+	state.Claimed[issue.ID] = Claimed{
+		Issue:     cloneIssue(issue),
+		ClaimedAt: now.Add(-time.Minute),
+	}
+	state.Retry[issue.ID] = Retry{
+		Issue:   cloneIssue(issue),
+		Attempt: 2,
+		DueAt:   now.Add(time.Hour),
+		Error:   "merge worker failed",
+	}
+	orch := &Orchestrator{cfg: cfg}
+
+	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{issue})
+	if len(got) != 0 {
+		t.Fatalf("mergeWorkerDispatchCandidates() = %#v, want none while retry is scheduled", got)
+	}
+	if claimed, ok := state.Claimed[issue.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing after stale Merging dispatch candidate scan", issue.ID)
+	} else if claimed.Issue.ID != issue.ID {
+		t.Fatalf("Claimed[%q].Issue.ID = %q, want %q", issue.ID, claimed.Issue.ID, issue.ID)
+	}
+	if retry, ok := state.Retry[issue.ID]; !ok {
+		t.Fatalf("Retry[%q] missing after stale Merging dispatch candidate scan", issue.ID)
+	} else if retry.Attempt != 2 {
+		t.Fatalf("Retry[%q].Attempt = %d, want 2", issue.ID, retry.Attempt)
+	}
+}
+
 func TestTickAutoPromoteMergingIssueDispatchesAndClearsStaleMemory(t *testing.T) {
 	t.Parallel()
 

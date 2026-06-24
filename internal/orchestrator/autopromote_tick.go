@@ -137,7 +137,7 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 		if issueID == "" {
 			continue
 		}
-		if staleMergingPullRequestAlreadyRunning(state, issueID) {
+		if staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
 		}
 		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg.TerminalStates)
@@ -333,12 +333,20 @@ func mergeWorkerLogAttrs(issue connector.Issue, attrs ...any) []any {
 	return append(out, attrs...)
 }
 
-func staleMergingPullRequestAlreadyRunning(state *State, issueID string) bool {
+func staleMergingPullRequestDispatchActive(state *State, issueID string) bool {
 	if state == nil {
 		return false
 	}
-	_, ok := state.Running[issueID]
-	return ok
+	if _, ok := state.Running[issueID]; ok {
+		return true
+	}
+	if _, ok := state.Claimed[issueID]; ok {
+		return true
+	}
+	if _, ok := state.Retry[issueID]; ok {
+		return true
+	}
+	return false
 }
 
 func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []connector.Issue) []connector.Issue {
@@ -352,7 +360,7 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		if issueID == "" {
 			continue
 		}
-		if staleMergingPullRequestAlreadyRunning(state, issueID) {
+		if staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
 		}
 		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
