@@ -62,3 +62,89 @@ func TestDeliveryProfileRejectsUnknown(t *testing.T) {
 		t.Fatal("DeliveryProfileAnswerExpansion(manual) ok = true, want false")
 	}
 }
+
+func TestSummarizeDeliveryProfile(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name                        string
+		profile                     string
+		wantEffectiveProfile        string
+		wantKanbanMode              string
+		wantGateRequiresReview      bool
+		wantAutoPromoteEnabled      bool
+		wantQuietWindow             string
+		wantDependencyAutoUnblock   bool
+		wantDependencyBehavior      string
+		wantMergeConcurrency        int
+		wantMergeConcurrencySummary string
+	}{
+		{
+			name:                        "autonomous delivery",
+			profile:                     "autonomous_delivery",
+			wantEffectiveProfile:        "autonomous_delivery",
+			wantKanbanMode:              "integration",
+			wantGateRequiresReview:      false,
+			wantAutoPromoteEnabled:      true,
+			wantQuietWindow:             "There is no quiet-window delay before promotion.",
+			wantDependencyAutoUnblock:   true,
+			wantDependencyBehavior:      "Dependency-waiting `Blocked` issues can move back to `Todo` when declared blockers are terminal or merged.",
+			wantMergeConcurrency:        1,
+			wantMergeConcurrencySummary: "`Merging` remains serialized for this project.",
+		},
+		{
+			name:                        "conservative review",
+			profile:                     "conservative_review",
+			wantEffectiveProfile:        "conservative_review",
+			wantKanbanMode:              "read_only",
+			wantGateRequiresReview:      true,
+			wantAutoPromoteEnabled:      false,
+			wantQuietWindow:             "Auto-promotion is disabled; the 600-second quiet window only matters if auto-promotion is enabled later.",
+			wantDependencyAutoUnblock:   false,
+			wantDependencyBehavior:      "Dependency-waiting `Blocked` issues remain `Blocked` until a human or workflow moves them.",
+			wantMergeConcurrency:        1,
+			wantMergeConcurrencySummary: "`Merging` remains serialized for this project.",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := SummarizeDeliveryProfile(tt.profile)
+			if !ok {
+				t.Fatalf("SummarizeDeliveryProfile(%q) ok = false, want true", tt.profile)
+			}
+			if got.EffectiveDeliveryProfile != tt.wantEffectiveProfile {
+				t.Fatalf("EffectiveDeliveryProfile = %q, want %q", got.EffectiveDeliveryProfile, tt.wantEffectiveProfile)
+			}
+			if got.KanbanMode != tt.wantKanbanMode {
+				t.Fatalf("KanbanMode = %q, want %q", got.KanbanMode, tt.wantKanbanMode)
+			}
+			if got.GateRequiresAutomatedReview != tt.wantGateRequiresReview {
+				t.Fatalf("GateRequiresAutomatedReview = %t, want %t", got.GateRequiresAutomatedReview, tt.wantGateRequiresReview)
+			}
+			if got.AutoPromoteEnabled != tt.wantAutoPromoteEnabled {
+				t.Fatalf("AutoPromoteEnabled = %t, want %t", got.AutoPromoteEnabled, tt.wantAutoPromoteEnabled)
+			}
+			if got.QuietWindowBehavior != tt.wantQuietWindow {
+				t.Fatalf("QuietWindowBehavior = %q, want %q", got.QuietWindowBehavior, tt.wantQuietWindow)
+			}
+			if got.DependencyAutoUnblockEnabled != tt.wantDependencyAutoUnblock {
+				t.Fatalf("DependencyAutoUnblockEnabled = %t, want %t", got.DependencyAutoUnblockEnabled, tt.wantDependencyAutoUnblock)
+			}
+			if got.DependencyAutoUnblockBehavior != tt.wantDependencyBehavior {
+				t.Fatalf("DependencyAutoUnblockBehavior = %q, want %q", got.DependencyAutoUnblockBehavior, tt.wantDependencyBehavior)
+			}
+			if got.MergingConcurrency != tt.wantMergeConcurrency {
+				t.Fatalf("MergingConcurrency = %d, want %d", got.MergingConcurrency, tt.wantMergeConcurrency)
+			}
+			if got.MergeConcurrencyBehavior != tt.wantMergeConcurrencySummary {
+				t.Fatalf("MergeConcurrencyBehavior = %q, want %q", got.MergeConcurrencyBehavior, tt.wantMergeConcurrencySummary)
+			}
+			if len(got.StopConditions) == 0 || got.StopBehavior == "" {
+				t.Fatalf("stop summary = conditions %#v behavior %q, want populated stop behavior", got.StopConditions, got.StopBehavior)
+			}
+		})
+	}
+}

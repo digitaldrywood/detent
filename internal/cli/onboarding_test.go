@@ -260,6 +260,17 @@ func TestOnboardingValidateAnswersCommandExpandsAutonomousDeliveryProfile(t *tes
 	var got struct {
 		DeliveryProfile        string            `json:"delivery_profile"`
 		DeliveryProfileAnswers map[string]string `json:"delivery_profile_answers"`
+		AnswersSummary         struct {
+			EffectiveDeliveryProfile      string   `json:"effective_delivery_profile"`
+			EffectiveDeliveryProfileLabel string   `json:"effective_delivery_profile_label"`
+			KanbanMode                    string   `json:"kanban_mode"`
+			GateBehavior                  string   `json:"gate_behavior"`
+			AutoPromotionBehavior         string   `json:"auto_promotion_behavior"`
+			QuietWindowBehavior           string   `json:"quiet_window_behavior"`
+			DependencyAutoUnblockBehavior string   `json:"dependency_auto_unblock_behavior"`
+			MergeConcurrencyBehavior      string   `json:"merge_concurrency_behavior"`
+			StopConditions                []string `json:"stop_conditions"`
+		} `json:"answers_summary"`
 	}
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
@@ -279,6 +290,145 @@ func TestOnboardingValidateAnswersCommandExpandsAutonomousDeliveryProfile(t *tes
 	for key, value := range want {
 		if got.DeliveryProfileAnswers[key] != value {
 			t.Fatalf("DeliveryProfileAnswers[%q] = %q, want %q; all answers = %#v", key, got.DeliveryProfileAnswers[key], value, got.DeliveryProfileAnswers)
+		}
+	}
+	if got.AnswersSummary.EffectiveDeliveryProfile != "autonomous_delivery" ||
+		got.AnswersSummary.EffectiveDeliveryProfileLabel != "Autonomous delivery mode" ||
+		got.AnswersSummary.KanbanMode != "integration" {
+		t.Fatalf("AnswersSummary identity = %#v, want autonomous delivery integration summary", got.AnswersSummary)
+	}
+	summaryValues := []string{
+		got.AnswersSummary.GateBehavior,
+		got.AnswersSummary.AutoPromotionBehavior,
+		got.AnswersSummary.QuietWindowBehavior,
+		got.AnswersSummary.DependencyAutoUnblockBehavior,
+		got.AnswersSummary.MergeConcurrencyBehavior,
+	}
+	for _, want := range []string{
+		"No automated GitHub PR review is required when the command gate is passing and the workflow says so.",
+		"Detent may promote from `Human Review` to `Merging` automatically when the linked PR, local gate, and CI requirements pass.",
+		"There is no quiet-window delay before promotion.",
+		"Dependency-waiting `Blocked` issues can move back to `Todo` when declared blockers are terminal or merged.",
+		"`Merging` remains serialized for this project.",
+	} {
+		if !containsString(summaryValues, want) {
+			t.Fatalf("AnswersSummary missing %q: %#v", want, got.AnswersSummary)
+		}
+	}
+	if !containsString(got.AnswersSummary.StopConditions, "gate failures") {
+		t.Fatalf("StopConditions = %#v, want gate failures", got.AnswersSummary.StopConditions)
+	}
+}
+
+func TestOnboardingExplainAnswersCommandSummarizesAutonomousDelivery(t *testing.T) {
+	t.Parallel()
+
+	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
+		"GITHUB_MODE=label",
+		"DELIVERY_PROFILE=autonomous_delivery",
+		"",
+	}, "\n"))
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "pretty", "onboarding", "explain-answers", "--answers", answersPath})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	output := stdout.String()
+	summaryIndex := strings.Index(output, "Onboarding answer behavior summary:")
+	canonicalIndex := strings.Index(output, "Canonical delivery answer keys:")
+	if summaryIndex < 0 || canonicalIndex < 0 {
+		t.Fatalf("output missing summary or canonical keys:\n%s", output)
+	}
+	if summaryIndex > canonicalIndex {
+		t.Fatalf("summary appears after canonical keys:\n%s", output)
+	}
+	for _, want := range []string{
+		"Effective delivery profile: Autonomous delivery mode (`autonomous_delivery`).",
+		"No automated GitHub PR review is required when the command gate is passing and the workflow says so.",
+		"Detent may promote from `Human Review` to `Merging` automatically when the linked PR, local gate, and CI requirements pass.",
+		"There is no quiet-window delay before promotion.",
+		"Dependency-waiting `Blocked` issues can move back to `Todo` when declared blockers are terminal or merged.",
+		"`Merging` remains serialized for this project.",
+		"Existing validation, CI, unresolved review feedback, dependency blockers, mergeability, and gate failures still stop progress.",
+		"DELIVERY_PROFILE=autonomous_delivery",
+		"AUTO_PROMOTE_QUIET_SECONDS=0",
+		"GATE_REQUIRE_AUTOMATED_REVIEW=false",
+		"MERGING_CONCURRENCY=1",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("output missing %q:\n%s", want, output)
+		}
+	}
+}
+
+func TestOnboardingValidateAnswersCommandSummarizesConservativeReviewProfile(t *testing.T) {
+	t.Parallel()
+
+	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
+		"GITHUB_MODE=label",
+		"DELIVERY_PROFILE=conservative_review",
+		"",
+	}, "\n"))
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "onboarding", "validate-answers", "--answers", answersPath, "--phase", "decision"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		AnswersSummary struct {
+			EffectiveDeliveryProfile      string `json:"effective_delivery_profile"`
+			EffectiveDeliveryProfileLabel string `json:"effective_delivery_profile_label"`
+			KanbanMode                    string `json:"kanban_mode"`
+			GateRequiresAutomatedReview   bool   `json:"gate_requires_automated_review"`
+			GateBehavior                  string `json:"gate_behavior"`
+			AutoPromoteEnabled            bool   `json:"auto_promote_enabled"`
+			AutoPromoteQuietSeconds       int    `json:"auto_promote_quiet_seconds"`
+			AutoPromotionBehavior         string `json:"auto_promotion_behavior"`
+			QuietWindowBehavior           string `json:"quiet_window_behavior"`
+			DependencyAutoUnblockEnabled  bool   `json:"dependency_auto_unblock_enabled"`
+			DependencyAutoUnblockBehavior string `json:"dependency_auto_unblock_behavior"`
+			MergeConcurrencyBehavior      string `json:"merge_concurrency_behavior"`
+		} `json:"answers_summary"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	summary := got.AnswersSummary
+	if summary.EffectiveDeliveryProfile != "conservative_review" ||
+		summary.EffectiveDeliveryProfileLabel != "Conservative review mode" ||
+		summary.KanbanMode != "read_only" ||
+		!summary.GateRequiresAutomatedReview ||
+		summary.AutoPromoteEnabled ||
+		summary.AutoPromoteQuietSeconds != 600 ||
+		summary.DependencyAutoUnblockEnabled {
+		t.Fatalf("AnswersSummary = %#v, want conservative review defaults", summary)
+	}
+	summaryValues := []string{
+		summary.GateBehavior,
+		summary.AutoPromotionBehavior,
+		summary.QuietWindowBehavior,
+		summary.DependencyAutoUnblockBehavior,
+		summary.MergeConcurrencyBehavior,
+	}
+	for _, want := range []string{
+		"Automated GitHub PR review is required before the command gate and promotion checks can pass.",
+		"Detent will not promote from `Human Review` to `Merging` automatically; a human must move approved work forward.",
+		"Auto-promotion is disabled; the 600-second quiet window only matters if auto-promotion is enabled later.",
+		"Dependency-waiting `Blocked` issues remain `Blocked` until a human or workflow moves them.",
+		"`Merging` remains serialized for this project.",
+	} {
+		if !containsString(summaryValues, want) {
+			t.Fatalf("AnswersSummary missing %q: %#v", want, summary)
 		}
 	}
 }

@@ -35,20 +35,21 @@ var (
 )
 
 type onboardingAnswersValidationResult struct {
-	Status                 string            `json:"status"`
-	Path                   string            `json:"path"`
-	Phase                  string            `json:"phase"`
-	CustomerID             string            `json:"customer_id"`
-	DetentProjectID        string            `json:"detent_project_id"`
-	TargetRepository       string            `json:"target_repository"`
-	TargetSourceRoot       string            `json:"target_source_root"`
-	ReferenceRepositories  []string          `json:"reference_repositories"`
-	DetentOnboardingMode   string            `json:"detent_onboarding_mode"`
-	IdentityConfirmed      bool              `json:"identity_confirmed"`
-	GitHubMode             string            `json:"github_mode"`
-	DeliveryProfile        string            `json:"delivery_profile,omitempty"`
-	DeliveryProfileAnswers map[string]string `json:"delivery_profile_answers,omitempty"`
-	MutationConfirmed      bool              `json:"mutation_confirmed"`
+	Status                 string                                    `json:"status"`
+	Path                   string                                    `json:"path"`
+	Phase                  string                                    `json:"phase"`
+	CustomerID             string                                    `json:"customer_id"`
+	DetentProjectID        string                                    `json:"detent_project_id"`
+	TargetRepository       string                                    `json:"target_repository"`
+	TargetSourceRoot       string                                    `json:"target_source_root"`
+	ReferenceRepositories  []string                                  `json:"reference_repositories"`
+	DetentOnboardingMode   string                                    `json:"detent_onboarding_mode"`
+	IdentityConfirmed      bool                                      `json:"identity_confirmed"`
+	GitHubMode             string                                    `json:"github_mode"`
+	DeliveryProfile        string                                    `json:"delivery_profile,omitempty"`
+	DeliveryProfileAnswers map[string]string                         `json:"delivery_profile_answers,omitempty"`
+	AnswersSummary         *onboardingprofile.DeliveryProfileSummary `json:"answers_summary,omitempty"`
+	MutationConfirmed      bool                                      `json:"mutation_confirmed"`
 }
 
 type onboardingDraftAnswersResult struct {
@@ -108,6 +109,7 @@ func newOnboardingCommand(configPath *string, opts options) *cobra.Command {
 	}
 	cmd.AddCommand(
 		newOnboardingValidateAnswersCommand(),
+		newOnboardingExplainAnswersCommand(),
 		newOnboardingDraftAnswersCommand(configPath, opts),
 		newOnboardingDiagnoseGateCommand(),
 	)
@@ -176,6 +178,41 @@ func newOnboardingDraftAnswersCommand(configPath *string, opts options) *cobra.C
 	return cmd
 }
 
+func newOnboardingExplainAnswersCommand() *cobra.Command {
+	var answersPath string
+	var phase string
+	cmd := &cobra.Command{
+		Use:          "explain-answers",
+		Short:        "Explain onboarding answers as operational behavior",
+		Example:      `detent onboarding explain-answers --answers "$ONBOARDING_DIR/answers.env"`,
+		Args:         NoArgs,
+		SilenceUsage: true,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			out, err := OutputForCommand(cmd)
+			if err != nil {
+				return err
+			}
+			result, err := validateOnboardingAnswersFile(answersPath, phase)
+			if err != nil {
+				return err
+			}
+			if result.AnswersSummary == nil {
+				return NewValidationError(
+					"DELIVERY_PROFILE is required to explain onboarding answers",
+					"Record DELIVERY_PROFILE=conservative_review or DELIVERY_PROFILE=autonomous_delivery in answers.env, then rerun explain-answers.",
+					nil,
+				)
+			}
+			return out.Write(func(w io.Writer) error {
+				return writeOnboardingAnswersExplanationPretty(w, result)
+			}, result)
+		},
+	}
+	cmd.Flags().StringVar(&answersPath, "answers", "answers.env", "path to onboarding answers.env")
+	cmd.Flags().StringVar(&phase, "phase", onboardingAnswersPhaseDecision, "validation phase: identity, decision, or mutation")
+	return cmd
+}
+
 func newOnboardingValidateAnswersCommand() *cobra.Command {
 	var answersPath string
 	var phase string
@@ -203,6 +240,41 @@ func newOnboardingValidateAnswersCommand() *cobra.Command {
 	cmd.Flags().StringVar(&answersPath, "answers", "answers.env", "path to onboarding answers.env")
 	cmd.Flags().StringVar(&phase, "phase", onboardingAnswersPhaseMutation, "validation phase: identity, decision, or mutation")
 	return cmd
+}
+
+func writeOnboardingAnswersExplanationPretty(w io.Writer, result onboardingAnswersValidationResult) error {
+	summary := result.AnswersSummary
+	if summary == nil {
+		return NewValidationError(
+			"DELIVERY_PROFILE is required to explain onboarding answers",
+			"Record DELIVERY_PROFILE=conservative_review or DELIVERY_PROFILE=autonomous_delivery in answers.env, then rerun explain-answers.",
+			nil,
+		)
+	}
+	lines := []string{
+		"Onboarding answer behavior summary:",
+		fmt.Sprintf("- Effective delivery profile: %s (`%s`).", summary.EffectiveDeliveryProfileLabel, summary.EffectiveDeliveryProfile),
+		fmt.Sprintf("- Kanban mode: `%s`. %s", summary.KanbanMode, summary.KanbanBehavior),
+		"- Gate behavior: " + summary.GateBehavior,
+		"- Auto-promotion: " + summary.AutoPromotionBehavior,
+		"- Quiet window: " + summary.QuietWindowBehavior,
+		"- Dependency auto-unblock: " + summary.DependencyAutoUnblockBehavior,
+		fmt.Sprintf("- Merge concurrency: `%d`. %s", summary.MergingConcurrency, summary.MergeConcurrencyBehavior),
+		"- Stop conditions: " + summary.StopBehavior,
+		"",
+		"Canonical delivery answer keys:",
+	}
+	lines = append(lines, canonicalOnboardingDeliveryAnswerLines(result)...)
+	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
+	return err
+}
+
+func canonicalOnboardingDeliveryAnswerLines(result onboardingAnswersValidationResult) []string {
+	lines := []string{"DELIVERY_PROFILE=" + result.DeliveryProfile}
+	for _, key := range onboardingprofile.SortedDeliveryProfileAnswerKeys(result.DeliveryProfileAnswers) {
+		lines = append(lines, key+"="+result.DeliveryProfileAnswers[key])
+	}
+	return lines
 }
 
 func draftOnboardingAnswers(ctx context.Context, cfg onboardingDraftAnswersConfig) (onboardingDraftAnswersResult, error) {
@@ -853,8 +925,10 @@ func validateOnboardingDeliveryProfileAnswers(answers onboardingAnswers, result 
 		return []string{"DELIVERY_PROFILE must be conservative_review or autonomous_delivery"}
 	}
 	expansion, _ := onboardingprofile.DeliveryProfileAnswerExpansion(settings.ID)
+	summary, _ := onboardingprofile.SummarizeDeliveryProfile(settings.ID)
 	result.DeliveryProfile = settings.ID
 	result.DeliveryProfileAnswers = expansion
+	result.AnswersSummary = &summary
 
 	var problems []string
 	for _, key := range onboardingprofile.SortedDeliveryProfileAnswerKeys(expansion) {

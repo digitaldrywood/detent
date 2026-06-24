@@ -20,6 +20,8 @@ func TestOnboardingDocsRequireMutationAuthorization(t *testing.T) {
 	assertContains(t, onboarding, "last == \"MUTATION_CONFIRMED=true\"")
 	assertContains(t, onboarding, "GITHUB_MODE=<project_v2|issue_field|label>")
 	assertContains(t, onboarding, "tracker.github_status_source: label")
+	assertContains(t, onboarding, `detent --format pretty onboarding explain-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision`)
+	assertContains(t, onboarding, "Show this summary before the canonical `answers.env` keys")
 	assertContains(t, onboarding, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase decision`)
 	assertContains(t, onboarding, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase mutation`)
 	assertContains(t, onboarding, "Do not choose label mode for the operator")
