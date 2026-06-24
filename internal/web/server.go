@@ -70,6 +70,7 @@ type Config struct {
 	Hostname              func() (string, error)
 	ConfigPathRule        globalconfig.PathRule
 	Kanban                workflowconfig.Kanban
+	KanbanWorkflow        workflowconfig.Config
 	RuntimeDBPath         string
 	RuntimeLogPath        string
 	ServerAddress         string
@@ -96,6 +97,7 @@ type Server struct {
 	hostname           func() (string, error)
 	configRule         globalconfig.PathRule
 	kanban             workflowconfig.Kanban
+	kanbanWorkflow     workflowconfig.Config
 	dbPath             string
 	logPath            string
 	serverAddr         string
@@ -128,6 +130,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 	e.HidePort = true
 	e.Server.ReadHeaderTimeout = cfg.httpReadHeaderTimeout()
 	e.Server.IdleTimeout = cfg.httpIdleTimeout()
+	kanban := cfg.kanban()
 
 	server := &Server{
 		echo:               e,
@@ -148,7 +151,8 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		globalConfigSource: cfg.globalConfigSource(),
 		hostname:           cfg.hostname(),
 		configRule:         cfg.ConfigPathRule,
-		kanban:             cfg.kanban(),
+		kanban:             kanban,
+		kanbanWorkflow:     cfg.kanbanWorkflow(kanban),
 		dbPath:             strings.TrimSpace(cfg.RuntimeDBPath),
 		logPath:            strings.TrimSpace(cfg.RuntimeLogPath),
 		serverAddr:         strings.TrimSpace(cfg.ServerAddress),
@@ -552,6 +556,18 @@ func (cfg Config) kanban() workflowconfig.Kanban {
 	kanban := cfg.Kanban
 	kanban.Normalize()
 	return kanban
+}
+
+func (cfg Config) kanbanWorkflow(kanban workflowconfig.Kanban) workflowconfig.Config {
+	workflow := cfg.KanbanWorkflow
+	if workflow.Tracker.Kind == "" &&
+		len(workflow.Tracker.ActiveStates) == 0 &&
+		len(workflow.Tracker.ObservedStates) == 0 &&
+		len(workflow.Tracker.TerminalStates) == 0 {
+		workflow = workflowconfig.Default()
+	}
+	workflow.Server.Kanban = kanban
+	return workflow
 }
 
 func (cfg Config) pricing() budget.PricingTable {

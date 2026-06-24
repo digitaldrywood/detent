@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -304,6 +305,59 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 	select {
 	case err := <-done:
 		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("timed out waiting for startRunning to stop")
+	}
+}
+
+func TestStartRunningUsesWorkflowKanbanModeForFleetActions(t *testing.T) {
+	host, port := freeLoopbackPort(t)
+	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	alpha := createBootProjectFiles(t)
+	writeBootKanbanWorkflow(t, alpha.workflowPath, workflowconfig.KanbanModeIntegration)
+	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
+		{ID: "alpha", Workflow: alpha.workflowPath, Workdir: alpha.workdirPath, Weight: 1},
+	})
+	global, err := globalconfig.Read(configPath)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- startRunning(ctx, BootConfig{
+			Mode:   BootModeRunning,
+			Global: global,
+			Host:   host,
+			Port:   &port,
+		})
+	}()
+
+	baseURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+	waitForDashboard(t, baseURL+"/kanban", done)
+	status, body := postDashboardForm(t, baseURL+"/api/v1/kanban/move", done, url.Values{
+		"issue_id":      {"issue-1"},
+		"current_state": {"Ready"},
+		"target_state":  {"Doing"},
+	})
+	if status == http.StatusForbidden && strings.Contains(body, "Kanban integration mode is not enabled.") {
+		t.Fatalf("move API stayed read-only after workflow integration mode; status = %d body = %s", status, body)
+	}
+	if strings.Contains(body, "Kanban integration mode is not enabled.") {
+		t.Fatalf("move API body kept read-only gate after workflow integration mode; status = %d body = %s", status, body)
+	}
+	if strings.Contains(body, "Target state is not configured for this board.") {
+		t.Fatalf("move API lost workflow Kanban states; status = %d body = %s", status, body)
+	}
+
+	cancel()
+	select {
+	case err := <-done:
+		if err != nil && !errors.Is(err, context.Canceled) {
 			t.Fatalf("startRunning() error = %v, want %v", err, context.Canceled)
 		}
 	case <-time.After(10 * time.Second):
@@ -632,6 +686,43 @@ func waitForDashboardCondition(t *testing.T, url string, done <-chan error, name
 	return ""
 }
 
+func postDashboardForm(t *testing.T, rawURL string, done <-chan error, form url.Values) (int, string) {
+	t.Helper()
+
+	client := http.Client{Timeout: time.Second}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	for ctx.Err() == nil {
+		select {
+		case err := <-done:
+			t.Fatalf("startRunning returned before form post completed: %v", err)
+		default:
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodPost, rawURL, strings.NewReader(form.Encode()))
+		if err != nil {
+			t.Fatalf("NewRequestWithContext() error = %v", err)
+		}
+		req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+		resp, err := client.Do(req)
+		if err == nil {
+			body, readErr := io.ReadAll(resp.Body)
+			closeErr := resp.Body.Close()
+			if readErr != nil {
+				t.Fatalf("ReadAll() error = %v", readErr)
+			}
+			if closeErr != nil {
+				t.Fatalf("Body.Close() error = %v", closeErr)
+			}
+			return resp.StatusCode, string(body)
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("timed out posting form to %s", rawURL)
+	return 0, ""
+}
+
 type bootProjectFiles struct {
 	workflowPath string
 	workdirPath  string
@@ -653,6 +744,26 @@ Test workflow prompt.
 	return bootProjectFiles{
 		workflowPath: workflow,
 		workdirPath:  workdir,
+	}
+}
+
+func writeBootKanbanWorkflow(t *testing.T, path string, mode string) {
+	t.Helper()
+
+	content := `---
+tracker:
+  kind: memory
+  observed_states: [Backlog]
+  active_states: [Ready, Doing]
+  terminal_states: [Done]
+server:
+  kanban:
+    mode: ` + mode + `
+---
+Test workflow prompt.
+`
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
 	}
 }
 

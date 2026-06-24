@@ -3077,6 +3077,56 @@ func TestFleetKanbanRouteRendersAllProjectsReadOnly(t *testing.T) {
 	}
 }
 
+func TestFleetKanbanActionUsesRegistryConnector(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	fallbackConnector := &kanbanActionConnector{name: "fallback"}
+	projectConnector := &kanbanActionConnector{name: "project"}
+	deps.Connector = fallbackConnector
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, projectConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 16, 14, 55, 0, 0, time.UTC),
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:         "I_kw542",
+				Identifier: "digitaldrywood/detent#542",
+				Title:      "Move from fleet board",
+				State:      "Todo",
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{
+		Kanban: workflowconfig.Kanban{
+			Mode: workflowconfig.KanbanModeIntegration,
+		},
+	}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"issue_id":      {"I_kw542"},
+		"current_state": {"Todo"},
+		"target_state":  {"In Progress"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/move", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if got := projectConnector.stateUpdates(); len(got) != 1 || got[0].issueID != "I_kw542" || got[0].state != "In Progress" {
+		t.Fatalf("project connector state updates = %#v, want fleet move", got)
+	}
+	if got := fallbackConnector.stateUpdates(); len(got) != 0 {
+		t.Fatalf("fallback connector state updates = %#v, want none", got)
+	}
+}
+
 func TestProjectKanbanEventsSendBoardOnlySnapshot(t *testing.T) {
 	t.Parallel()
 

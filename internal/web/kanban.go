@@ -705,14 +705,36 @@ func (s *Server) kanbanActionTarget(projectID string) (kanbanActionTarget, strin
 		}, "", 0
 	}
 
-	workflow := workflowconfig.Default()
-	workflow.Server.Kanban = s.kanban
+	workflow := s.kanbanWorkflow
+	actionConnector := s.connector
+	if trackedProject := s.firstKanbanActionProject(); trackedProject != nil {
+		workflow = trackedProject.Workflow().Config
+		workflow.Server.Kanban = s.kanban
+		if projectConnector := trackedProject.Connector(); projectConnector != nil {
+			actionConnector = projectConnector
+		}
+	}
+	if actionConnector == nil {
+		return kanbanActionTarget{}, "Connector not configured.", http.StatusServiceUnavailable
+	}
 	return kanbanActionTarget{
-		key:       "connector:" + s.connector.Name(),
-		connector: s.connector,
+		key:       "connector:" + actionConnector.Name(),
+		connector: actionConnector,
 		workflow:  workflow,
 		kanban:    s.kanban,
 	}, "", 0
+}
+
+func (s *Server) firstKanbanActionProject() *project.Project {
+	if s.registry == nil {
+		return nil
+	}
+	for _, trackedProject := range s.registry.List() {
+		if trackedProject != nil && trackedProject.Connector() != nil {
+			return trackedProject
+		}
+	}
+	return nil
 }
 
 func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snapshot telemetry.Snapshot) templates.KanbanData {
