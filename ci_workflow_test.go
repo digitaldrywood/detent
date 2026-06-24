@@ -100,6 +100,7 @@ func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
 
 	for _, want := range []string{
 		"`required_status_checks.strict: true`",
+		"must not report success from a path- or event-dependent no-op",
 		"`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`",
 		"`Browser Visual`",
 	} {
@@ -117,6 +118,27 @@ func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
 		for _, marker := range check.markers {
 			if !strings.Contains(job, marker) {
 				t.Fatalf("workflow job for required check %q missing %q", check.name, marker)
+			}
+		}
+	}
+}
+
+func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
+	t.Parallel()
+
+	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
+	for _, check := range requiredMainStatusChecks {
+		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
+		for _, forbidden := range []string{
+			"github.event_name",
+			"EVENT_NAME",
+			"pull_request",
+			"steps.policy.outputs",
+			"Skip ",
+			" skipped:",
+		} {
+			if strings.Contains(job, forbidden) {
+				t.Fatalf("required check %q contains green no-op marker %q", check.name, forbidden)
 			}
 		}
 	}
@@ -187,7 +209,7 @@ func TestKanbanBrowserDragDropRunsInVisualGate(t *testing.T) {
 	workflow := strings.ReplaceAll(string(workflowRaw), "\r\n", "\n")
 	visualJob := workflowBetween(t, workflow, "  browser-visual:", "\n  windows-core:")
 	for _, want := range []string{
-		"internal/cli/dev_runtime*.go",
+		"npm run test:visual",
 		"name: Upload browser visual evidence",
 		"tmp/playwright-evidence",
 		"name: Upload browser visual failure artifacts",

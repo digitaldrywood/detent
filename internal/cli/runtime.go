@@ -478,6 +478,14 @@ func runtimeDepsFromOptions(opts options) runtimeDeps {
 }
 
 func defaultGHAuthToken(ctx context.Context) (string, error) {
+	return runGHAuthToken(ctx, nil)
+}
+
+func defaultGHAuthTokenWithoutRuntimeEnv(ctx context.Context) (string, error) {
+	return runGHAuthToken(ctx, environmentWithoutKeys([]string{"GITHUB_TOKEN"}))
+}
+
+func runGHAuthToken(ctx context.Context, env []string) (string, error) {
 	if ctx == nil {
 		ctx = context.Background()
 	}
@@ -490,6 +498,9 @@ func defaultGHAuthToken(ctx context.Context) (string, error) {
 	defer cancel()
 
 	cmd := exec.CommandContext(commandCtx, path, "auth", "token") // #nosec G204 -- gh path is PATH-resolved and arguments are fixed.
+	if env != nil {
+		cmd.Env = env
+	}
 	output, err := cmd.CombinedOutput()
 	if commandCtx.Err() != nil {
 		return "", commandCtx.Err()

@@ -474,14 +474,11 @@ package-manager manifests. Scoop publishing targets
 skips publishing when `SCOOP_BUCKET_GITHUB_TOKEN` or `WINGET_GITHUB_TOKEN` is
 not configured.
 
-CI also runs `GoReleaser Snapshot` on every push to `main` so the current
-merge head remains release-package validated. Pull requests run that snapshot
-only when release packaging inputs change: `.goreleaser.yaml`, the CI or
-release workflows, `Makefile`, Go module files, installer scripts, the release
-public key, or removal/rename of the top-level `README.md` and `LICENSE` files
-that are bundled into release archives. Other pull requests keep the required
-lint, build, vet, test, race, coverage, and Windows checks without the release
-packaging tail.
+CI also runs `GoReleaser Snapshot` on every pull request and every push to
+`main` so the current merge head remains release-package validated before and
+after merge. Required branch checks must not pass as path- or event-dependent
+no-ops on pull requests when the same check name runs real validation on
+`main`.
 
 ## Quick Start
 
@@ -1586,7 +1583,8 @@ but the prebuilt `v2.1.6` binary targets an older Go toolchain than this repo an
 newer prebuilt lint releases change the enforced lint set. `GoReleaser Snapshot`
 continues to run on every PR in this workflow; moving it off PRs or making it
 path-based is a release-policy decision because it trades package coverage for
-merge latency.
+merge latency and requires a separate non-required check name or equivalent
+required companion validation.
 
 ## Multi-Project Operation
 

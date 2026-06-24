@@ -57,9 +57,9 @@ The execution edge still carries these code/git/PR assumptions.
 - The CI lint job keeps the project-pinned golangci-lint version and caches its
   binary so cache hits avoid a per-run `go install` without changing lint
   coverage.
-- `GoReleaser Snapshot` runs on every push to `main` and on PRs only when
-  release packaging inputs change, preserving release-package coverage without
-  charging docs-only and routine code PRs the full snapshot cost.
+- `GoReleaser Snapshot` runs on every PR and every push to `main` so the
+  required check exercises the same release-package path before and after
+  merge.
 
 ### Main Branch Protection
 
@@ -69,8 +69,9 @@ merge. The expected GitHub branch protection or ruleset setting is
 queue, the queue must provide equivalent current-base validation before merge.
 
 Required status checks must include every meaningful CI job directly. Do not
-depend on a downstream skipped job to protect an upstream gate. The required
-checks are:
+depend on a downstream skipped job to protect an upstream gate. A required
+check name must not report success from a path- or event-dependent no-op when
+the same named check runs real validation on `main`. The required checks are:
 
 - `Lint`
 - `Verify (ubuntu-latest)`
@@ -88,7 +89,7 @@ PR through `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`.
 Push runs, including consecutive pushes to `main`, use a unique run group and
 must not be cancelled by later pushes. The workflow test in
 `ci_workflow_test.go` checks this section against `.github/workflows/ci.yml` so
-job-name and required-check drift fails in local validation.
+job-name, required-check, and green no-op drift fails in local validation.
 
 ## Still Git/PR Coupled
 
