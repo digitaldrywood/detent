@@ -106,12 +106,14 @@ type GitHubClientConfig struct {
 	APIBase          string
 	HTTPClient       *http.Client
 	MaxDownloadBytes int64
+	AuthToken        string
 }
 
 type GitHubClient struct {
 	apiBase          string
 	http             *http.Client
 	maxDownloadBytes int64
+	authToken        string
 }
 
 func NewGitHubClient(cfg GitHubClientConfig) *GitHubClient {
@@ -127,7 +129,11 @@ func NewGitHubClient(cfg GitHubClientConfig) *GitHubClient {
 	if maxDownloadBytes <= 0 {
 		maxDownloadBytes = defaultMaxDownloadBytes
 	}
-	return &GitHubClient{apiBase: apiBase, http: httpClient, maxDownloadBytes: maxDownloadBytes}
+	authToken := strings.TrimSpace(cfg.AuthToken)
+	if authToken == "" {
+		authToken = githubAuthTokenFromEnv(os.Getenv)
+	}
+	return &GitHubClient{apiBase: apiBase, http: httpClient, maxDownloadBytes: maxDownloadBytes, authToken: authToken}
 }
 
 func (c *GitHubClient) ListReleases(ctx context.Context) ([]Release, error) {
@@ -137,6 +143,9 @@ func (c *GitHubClient) ListReleases(ctx context.Context) ([]Release, error) {
 	}
 	req.Header.Set("Accept", "application/vnd.github+json")
 	req.Header.Set("User-Agent", defaultRequestUserAgent)
+	if auth := githubAuthHeader(c.authToken); auth != "" {
+		req.Header.Set("Authorization", auth)
+	}
 
 	resp, err := c.http.Do(req)
 	if err != nil {
@@ -152,6 +161,27 @@ func (c *GitHubClient) ListReleases(ctx context.Context) ([]Release, error) {
 		return nil, fmt.Errorf("decode releases: %w", err)
 	}
 	return releases, nil
+}
+
+func githubAuthTokenFromEnv(getenv func(string) string) string {
+	for _, name := range []string{"DETENT_GITHUB_TOKEN", "GH_TOKEN", "GITHUB_TOKEN"} {
+		if token := strings.TrimSpace(getenv(name)); token != "" {
+			return token
+		}
+	}
+	return ""
+}
+
+func githubAuthHeader(token string) string {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return ""
+	}
+	lower := strings.ToLower(token)
+	if strings.HasPrefix(lower, "bearer ") || strings.HasPrefix(lower, "token ") {
+		return token
+	}
+	return "Bearer " + token
 }
 
 func (c *GitHubClient) Download(ctx context.Context, url string) ([]byte, error) {

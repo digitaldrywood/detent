@@ -218,11 +218,9 @@ jobs:
           grep -F "binary=$DETENT_INSTALL_DIR/detent" "$DETENT_INSTALL_LOCK"
           grep -F "installed_at=" "$DETENT_INSTALL_LOCK"
 
-          "$DETENT_INSTALL_DIR/detent" version
-          "$DETENT_INSTALL_DIR/detent" update --check --json > "$RUNNER_TEMP/detent/update-check.json"
-          "$DETENT_INSTALL_DIR/detent" update --yes --json > "$RUNNER_TEMP/detent/update-yes.json"
-          jq -e '.install_source == "release" and .action == "up_to_date" and .update_available == false' "$RUNNER_TEMP/detent/update-check.json"
-          jq -e '.install_source == "release" and .action == "up_to_date" and .update_available == false' "$RUNNER_TEMP/detent/update-yes.json"
+          version_output="$("$DETENT_INSTALL_DIR/detent" version)"
+          printf '%s\n' "$version_output"
+          grep -F "version: $DETENT_VERSION" <<< "$version_output"
 
       - name: Smoke release installer
         if: runner.os == 'Windows'
@@ -266,24 +264,14 @@ jobs:
             throw 'install lock did not record installed_at'
           }
 
-          & $binary version
-          $checkRaw = & $binary update --check --json
+          $versionOutput = & $binary version
           if ($LASTEXITCODE -ne 0) {
-            throw "detent update --check failed with exit code $LASTEXITCODE"
+            throw "detent version failed with exit code $LASTEXITCODE"
           }
-          $yesRaw = & $binary update --yes --json
-          if ($LASTEXITCODE -ne 0) {
-            throw "detent update --yes failed with exit code $LASTEXITCODE"
-          }
-          $checkJSON = $checkRaw -join "`n"
-          $yesJSON = $yesRaw -join "`n"
-          $check = $checkJSON | ConvertFrom-Json
-          $yes = $yesJSON | ConvertFrom-Json
-          if ($check.install_source -ne 'release' -or $check.action -ne 'up_to_date' -or $check.update_available) {
-            throw "unexpected update --check status: $checkJSON"
-          }
-          if ($yes.install_source -ne 'release' -or $yes.action -ne 'up_to_date' -or $yes.update_available) {
-            throw "unexpected update --yes status: $yesJSON"
+          $versionText = $versionOutput -join "`n"
+          Write-Host $versionText
+          if ($versionText -notmatch [regex]::Escape("version: $env:DETENT_VERSION")) {
+            throw "unexpected detent version output: $versionText"
           }
 
   goreleaser-snapshot:

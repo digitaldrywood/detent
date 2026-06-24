@@ -89,6 +89,69 @@ func TestSelectLatestReleasePrereleaseHandling(t *testing.T) {
 	}
 }
 
+func TestGitHubClientListReleasesUsesAuthToken(t *testing.T) {
+	t.Parallel()
+
+	authHeaders := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases" {
+			http.NotFound(w, r)
+			return
+		}
+		authHeaders <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewGitHubClient(GitHubClientConfig{
+		APIBase:    server.URL,
+		HTTPClient: server.Client(),
+		AuthToken:  "ghs_configured_token",
+	})
+	_, err := client.ListReleases(context.Background())
+	if err != nil {
+		t.Fatalf("ListReleases() error = %v", err)
+	}
+
+	got := <-authHeaders
+	if got != "Bearer ghs_configured_token" {
+		t.Fatalf("Authorization = %q, want Bearer token", got)
+	}
+}
+
+func TestGitHubClientListReleasesUsesEnvironmentAuthToken(t *testing.T) {
+	t.Setenv("DETENT_GITHUB_TOKEN", "")
+	t.Setenv("GH_TOKEN", "ghs_environment_token")
+	t.Setenv("GITHUB_TOKEN", "")
+
+	authHeaders := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/releases" {
+			http.NotFound(w, r)
+			return
+		}
+		authHeaders <- r.Header.Get("Authorization")
+		w.Header().Set("Content-Type", "application/json")
+		fmt.Fprint(w, `[]`)
+	}))
+	t.Cleanup(server.Close)
+
+	client := NewGitHubClient(GitHubClientConfig{
+		APIBase:    server.URL,
+		HTTPClient: server.Client(),
+	})
+	_, err := client.ListReleases(context.Background())
+	if err != nil {
+		t.Fatalf("ListReleases() error = %v", err)
+	}
+
+	got := <-authHeaders
+	if got != "Bearer ghs_environment_token" {
+		t.Fatalf("Authorization = %q, want Bearer token", got)
+	}
+}
+
 func TestDetectInstallSource(t *testing.T) {
 	t.Parallel()
 
