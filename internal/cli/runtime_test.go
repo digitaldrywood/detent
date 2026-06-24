@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -564,6 +565,40 @@ func TestRuntimeGitHubTokenRefresherUsesCurrentGlobalConfig(t *testing.T) {
 	}
 }
 
+func TestRuntimeGitHubTokenRefresherResolvesConfiguredGHSentinelWithoutActionsToken(t *testing.T) {
+	t.Setenv("GITHUB_TOKEN", "actions-token")
+	fakeGHDir := t.TempDir()
+	writeFakeGHAuthToken(t, fakeGHDir)
+	t.Setenv("PATH", fakeGHDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	workflowPath := filepath.Join(t.TempDir(), "workflow.md")
+	if err := os.WriteFile(workflowPath, []byte("---\ntracker:\n  kind: github\n---\nPrompt\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	globalState := newGlobalConfigState(globalconfig.Config{})
+	tokenState := newRuntimeGitHubTokenState("")
+	refresh := runtimeGitHubTokenRefresher(globalState, tokenState)
+
+	globalState.set(globalconfig.Config{
+		GitHubToken: "gh",
+		Projects: []globalconfig.Project{{
+			ID:       "detent",
+			Workflow: workflowPath,
+			Workdir:  ".",
+		}},
+	})
+	got, err := refresh(context.Background())
+	if err != nil {
+		t.Fatalf("refresh() error = %v", err)
+	}
+	if got != "gh-token" {
+		t.Fatalf("refresh() = %q, want gh-token", got)
+	}
+	if tokenState.get() != "gh-token" {
+		t.Fatalf("runtime token state = %q, want gh-token", tokenState.get())
+	}
+}
+
 func githubRuntimeConfig(token string) globalconfig.Config {
 	return globalconfig.Config{
 		GitHubToken: token,
@@ -651,6 +686,21 @@ func runRuntimeWorkflowCommand(t *testing.T, dir string, name string, args ...st
 		t.Fatalf("%s %s error = %v\n%s", name, strings.Join(args, " "), err, output)
 	}
 	return string(output)
+}
+
+func writeFakeGHAuthToken(t *testing.T, dir string) {
+	t.Helper()
+
+	name := "gh"
+	body := "#!/bin/sh\nif [ \"$GITHUB_TOKEN\" = \"actions-token\" ]; then printf %s actions-token; else printf %s gh-token; fi\n"
+	if runtime.GOOS == "windows" {
+		name = "gh.bat"
+		body = "@echo off\r\nif \"%GITHUB_TOKEN%\"==\"actions-token\" (\r\n  echo actions-token\r\n) else (\r\n  echo gh-token\r\n)\r\n"
+	}
+	path := filepath.Join(dir, name)
+	if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
 }
 
 func mapLookup(values map[string]string) func(string) string {

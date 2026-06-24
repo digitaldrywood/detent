@@ -193,6 +193,9 @@ func resolveGlobalRuntimeGitHubToken(ctx context.Context, cfg globalconfig.Confi
 	deps := runtimeDeps{}.withDefaults()
 	if strings.TrimSpace(cfg.GitHubToken) != "" {
 		deps.lookupEnv = withoutRuntimeGitHubTokenEnv(deps.lookupEnv)
+		if githubTokenSentinel(cfg.GitHubToken) {
+			deps.ghAuthToken = defaultGHAuthTokenWithoutRuntimeEnv
+		}
 	}
 	token, _, err := resolveRuntimeGitHubToken(ctx, &cfg, deps)
 	if err != nil {
