@@ -3,6 +3,7 @@ package orchestrator
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"log/slog"
 	"strings"
@@ -410,6 +411,52 @@ func TestReapWorkspacesVerifiesKnownWorkspaceIssueIDsBeforeStateSweep(t *testing
 	}
 }
 
+func TestReapWorkspacesFallsBackToStateSweepWhenKnownWorkspaceIssueIDFetchFails(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	running := connector.Issue{ID: "I_666", Identifier: "digitaldrywood/detent#666", State: "In Progress"}
+	terminal := connector.Issue{ID: "I_667", Identifier: "digitaldrywood/detent#667", State: "Done"}
+	cfg := normalizeConfig(Config{
+		PollInterval:                  30 * time.Second,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress"},
+		ObservedStates:                []string{"Human Review"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		WorkspaceCleanupSweepInterval: time.Minute,
+	})
+	state := newState(cfg)
+	state.Running[running.ID] = Running{
+		Issue:         running,
+		WorkspacePath: "/tmp/detent-workspaces/issue-666",
+		StartedAt:     now.Add(-time.Hour),
+	}
+	tracker := &rateLimitConnector{
+		fetchByIDErr: errors.New("github transient error: status 502"),
+		stateIssues:  []connector.Issue{terminal},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+	orch.reaper = rateLimitWorkspaceReaper{}
+
+	orch.reapWorkspacesIfDue(context.Background(), &state, now)
+
+	if tracker.fetchByIDCalls != 1 {
+		t.Fatalf("FetchIssueStatesByIDs() calls = %d, want 1", tracker.fetchByIDCalls)
+	}
+	if tracker.fetchByStatesCalls != 1 {
+		t.Fatalf("FetchIssuesByStates() calls = %d, want fallback state sweep", tracker.fetchByStatesCalls)
+	}
+	if _, ok := state.ReapedWorkspaces[terminal.ID]; !ok {
+		t.Fatalf("ReapedWorkspaces[%q] missing after fallback state sweep", terminal.ID)
+	}
+	if !rateLimitRecentEventContains(state.RecentEvents, "workspace_cleanup_fetch_failed", "status 502") {
+		t.Fatalf("RecentEvents = %#v, want cleanup fetch failure event", state.RecentEvents)
+	}
+	if state.LastRefreshError != "" || !state.LastRefreshErrorAt.IsZero() {
+		t.Fatalf("refresh error = %q at %v, want none for cleanup fallback", state.LastRefreshError, state.LastRefreshErrorAt)
+	}
+}
+
 func TestReapWorkspacesStillSweepsWhenKnownWorkspaceIsActive(t *testing.T) {
 	t.Parallel()
 
@@ -483,6 +530,15 @@ func newRateLimitTestOrchestrator(cfg Config, tracker connector.Connector) *Orch
 	}
 }
 
+func rateLimitRecentEventContains(events []telemetry.ActivityEvent, event string, message string) bool {
+	for _, candidate := range events {
+		if candidate.Event == event && strings.Contains(candidate.Message, message) {
+			return true
+		}
+	}
+	return false
+}
+
 type rateLimitConnector struct {
 	candidates              []connector.Issue
 	stateIssues             []connector.Issue
@@ -498,6 +554,7 @@ type rateLimitConnector struct {
 	fetchByStatesCalls      int
 	fetchByStatesLimitCalls int
 	fetchByIDCalls          int
+	fetchByIDErr            error
 }
 
 func (c *rateLimitConnector) Name() string {
@@ -521,6 +578,9 @@ func (c *rateLimitConnector) FetchIssuesByStatesLimit(context.Context, []string,
 
 func (c *rateLimitConnector) FetchIssueStatesByIDs(context.Context, []string) ([]connector.Issue, error) {
 	c.fetchByIDCalls++
+	if c.fetchByIDErr != nil {
+		return nil, c.fetchByIDErr
+	}
 	return cloneIssues(c.issuesByID), nil
 }
 

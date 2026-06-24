@@ -1307,8 +1307,8 @@ func TestRunRetriesTransientStartupCleanupFetchAndDispatchesCandidate(t *testing
 	state := waitForState(t, orch, func(state orchestrator.State) bool {
 		return recentEventContains(state.RecentEvents, "workspace_cleanup_fetch_failed", "status 504")
 	})
-	if got := state.Snapshot(time.Now()).Refresh.ReadinessStatus(); got != telemetry.RefreshStatusDegraded {
-		t.Fatalf("snapshot Refresh status = %q, want degraded", got)
+	if got := state.Snapshot(time.Now()).Refresh.ReadinessStatus(); got != telemetry.RefreshStatusReady {
+		t.Fatalf("snapshot Refresh status = %q, want ready", got)
 	}
 	if got := logs.String(); !strings.Contains(got, "fetch workspace cleanup candidates failed") || !strings.Contains(got, "status 504") {
 		t.Fatalf("logs = %q, want startup cleanup fetch failure", got)
@@ -1327,6 +1327,69 @@ func TestRunRetriesTransientStartupCleanupFetchAndDispatchesCandidate(t *testing
 	})
 	if state.LastRefreshError != "" || !state.LastRefreshErrorAt.IsZero() {
 		t.Fatalf("refresh error = %q at %v, want cleared after retry", state.LastRefreshError, state.LastRefreshErrorAt)
+	}
+	close(runner.release)
+}
+
+func TestRunKeepsRefreshReadyWhenTerminalCleanupFetchFailsAfterSnapshot(t *testing.T) {
+	t.Parallel()
+
+	candidate := testIssue("issue-cleanup-after-snapshot", "digitaldrywood/detent#682", "Todo")
+	transientErr := errors.New("fetch github pull request: github transient error: status 502")
+	tracker := newTransientCleanupConnector(candidate, transientErr).failCleanupOnAttempt(2)
+	runner := newBlockingRunner()
+	logs := &lockedBuffer{}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:                  time.Hour,
+		MaxConcurrentAgents:           1,
+		ActiveStates:                  []string{"Todo", "In Progress", "Rework"},
+		TerminalStates:                []string{"Done", "Cancelled"},
+		ObservedStates:                []string{"Human Review"},
+		WorkspaceCleanupIdleTTL:       time.Hour,
+		WorkspaceCleanupSweepInterval: time.Hour,
+	}, orchestrator.Dependencies{
+		Connector:       tracker,
+		Runner:          runner,
+		WorkspaceReaper: &fakeWorkspaceReaper{},
+		Logger:          slog.New(slog.NewTextHandler(logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	request := receiveRunRequest(t, runner.started)
+	if request.Issue.ID != candidate.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, candidate.ID)
+	}
+	tracker.waitForCleanupAttempts(t, 1)
+
+	initialState := waitForState(t, orch, func(state orchestrator.State) bool {
+		return !state.LastRefreshAt.IsZero() &&
+			state.Snapshot(time.Now()).Refresh.ReadinessStatus() == telemetry.RefreshStatusReady
+	})
+	if initialState.LastRefreshError != "" || !initialState.LastRefreshErrorAt.IsZero() {
+		t.Fatalf("initial refresh error = %q at %v, want none", initialState.LastRefreshError, initialState.LastRefreshErrorAt)
+	}
+
+	if _, err := orch.RequestRefresh(context.Background()); err != nil {
+		t.Fatalf("RequestRefresh() error = %v", err)
+	}
+	tracker.waitForCleanupAttempts(t, 2)
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		return recentEventContains(state.RecentEvents, "workspace_cleanup_fetch_failed", "status 502")
+	})
+	if got := state.Snapshot(time.Now()).Refresh.ReadinessStatus(); got != telemetry.RefreshStatusReady {
+		t.Fatalf("snapshot Refresh status = %q, want ready", got)
+	}
+	if state.LastRefreshError != "" || !state.LastRefreshErrorAt.IsZero() {
+		t.Fatalf("refresh error = %q at %v, want none for cleanup failure", state.LastRefreshError, state.LastRefreshErrorAt)
+	}
+	if got := logs.String(); !strings.Contains(got, "fetch workspace cleanup candidates failed") || !strings.Contains(got, "status 502") {
+		t.Fatalf("logs = %q, want terminal cleanup fetch failure", got)
 	}
 	close(runner.release)
 }
@@ -1607,23 +1670,17 @@ func TestRequestRefreshPublishesManualOutcome(t *testing.T) {
 func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	t.Parallel()
 
-	candidate := testIssue("issue-cleanup-persistent", "digitaldrywood/detent#681", "Todo")
-	transientErr := errors.New("fetch github pull request reviews: github transient error: status 504")
-	tracker := newPersistentCleanupConnector(candidate, transientErr)
-	runner := newBlockingRunner()
+	transientErr := errors.New("fetch github issues: github transient error: status 504")
+	tracker := newFakeConnector()
 
 	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:                  time.Hour,
-		MaxConcurrentAgents:           1,
-		ActiveStates:                  []string{"Todo", "In Progress", "Rework"},
-		TerminalStates:                []string{"Done", "Cancelled"},
-		ObservedStates:                []string{"Human Review"},
-		WorkspaceCleanupIdleTTL:       time.Hour,
-		WorkspaceCleanupSweepInterval: time.Hour,
+		PollInterval:        time.Hour,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
 	}, orchestrator.Dependencies{
-		Connector:       tracker,
-		Runner:          runner,
-		WorkspaceReaper: &fakeWorkspaceReaper{},
+		Connector: tracker,
+		Runner:    &staticRunner{},
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -1631,26 +1688,18 @@ func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	receiveRunRequest(t, runner.started)
-	first := waitForState(t, orch, func(state orchestrator.State) bool {
-		return recentEventContains(state.RecentEvents, "workspace_cleanup_fetch_failed", "status 504")
-	})
-	firstErrorAt := first.LastRefreshErrorAt
-	if firstErrorAt.IsZero() {
-		t.Fatal("initial LastRefreshErrorAt is zero")
-	}
-	time.Sleep(25 * time.Millisecond)
+	waitForFetchCalls(t, tracker, 1)
+	tracker.setFetchCandidateError(transientErr, 2)
 
 	refresh, err := orch.RequestRefresh(context.Background())
 	if err != nil {
 		t.Fatalf("RequestRefresh() error = %v", err)
 	}
-	tracker.waitForCleanupAttempts(t, 2)
+	waitForFetchCalls(t, tracker, 2)
 
 	state := waitForState(t, orch, func(state orchestrator.State) bool {
 		snapshot := state.Snapshot(time.Now())
-		return tracker.cleanupAttempts() >= 2 &&
-			snapshot.Refresh.Manual != nil &&
+		return snapshot.Refresh.Manual != nil &&
 			snapshot.Refresh.Manual.ID == refresh.RequestID &&
 			snapshot.Refresh.Manual.Status == telemetry.RefreshAttemptStatusFailed
 	})
@@ -1661,16 +1710,15 @@ func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	if manual.LastError == "" || !strings.Contains(manual.LastError, "status 504") {
 		t.Fatalf("Manual.LastError = %q, want status 504", manual.LastError)
 	}
-	if manual.LastErrorAt == nil || !manual.LastErrorAt.After(firstErrorAt) {
-		t.Fatalf("Manual.LastErrorAt = %v, want after %v", manual.LastErrorAt, firstErrorAt)
+	if manual.LastErrorAt == nil || !manual.LastErrorAt.Equal(state.LastRefreshErrorAt) {
+		t.Fatalf("Manual.LastErrorAt = %v, want %v", manual.LastErrorAt, state.LastRefreshErrorAt)
 	}
-	if !state.LastRefreshErrorAt.After(firstErrorAt) {
-		t.Fatalf("LastRefreshErrorAt = %v, want after %v", state.LastRefreshErrorAt, firstErrorAt)
+	if state.LastRefreshError == "" || !strings.Contains(state.LastRefreshError, "fetch candidate issues failed") {
+		t.Fatalf("LastRefreshError = %q, want candidate fetch failure", state.LastRefreshError)
 	}
-	if !recentEventContains(state.RecentEvents, "workspace_cleanup_fetch_failed", "status 504") {
-		t.Fatalf("RecentEvents = %#v, want repeated cleanup failure event", state.RecentEvents)
+	if got := state.Snapshot(time.Now()).Refresh.ReadinessStatus(); got != telemetry.RefreshStatusDegraded {
+		t.Fatalf("snapshot Refresh status = %q, want degraded", got)
 	}
-	close(runner.release)
 }
 
 func TestRequestRefreshCoalescesPendingTick(t *testing.T) {
@@ -1890,6 +1938,8 @@ type fakeConnector struct {
 	setFields           []setFieldCall
 	comments            []commentCall
 	stateUpdates        []stateUpdateCall
+	fetchCandidateErr   error
+	fetchCandidateErrAt int
 	fetchByStatesErr    error
 	statusLabelPrefix   string
 }
@@ -1937,6 +1987,9 @@ func (c *fakeConnector) FetchCandidateIssues(context.Context) ([]connector.Issue
 	defer c.mu.Unlock()
 
 	c.fetchCandidateCount++
+	if c.fetchCandidateErr != nil && (c.fetchCandidateErrAt <= 0 || c.fetchCandidateCount >= c.fetchCandidateErrAt) {
+		return nil, c.fetchCandidateErr
+	}
 	return cloneIssues(c.candidates), nil
 }
 
@@ -2126,6 +2179,14 @@ func (c *fakeConnector) setStateIssues(issues ...connector.Issue) {
 	c.stateIssues = cloneIssues(issues)
 }
 
+func (c *fakeConnector) setFetchCandidateError(err error, atCall int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.fetchCandidateErr = err
+	c.fetchCandidateErrAt = atCall
+}
+
 func (c *fakeConnector) applyIssueStateLocked(issueID string, state string) {
 	for i := range c.candidates {
 		if c.candidates[i].ID == issueID {
@@ -2287,41 +2348,22 @@ type transientCleanupConnector struct {
 	candidate           connector.Issue
 	cleanupErr          error
 	cleanupAttemptCount int
+	cleanupFailureAt    int
 	changed             chan struct{}
 }
 
 func newTransientCleanupConnector(candidate connector.Issue, cleanupErr error) *transientCleanupConnector {
 	return &transientCleanupConnector{
-		candidate:  candidate,
-		cleanupErr: cleanupErr,
-		changed:    make(chan struct{}, 8),
+		candidate:        candidate,
+		cleanupErr:       cleanupErr,
+		cleanupFailureAt: 1,
+		changed:          make(chan struct{}, 8),
 	}
 }
 
-type persistentCleanupConnector struct {
-	*transientCleanupConnector
-}
-
-func newPersistentCleanupConnector(candidate connector.Issue, cleanupErr error) *persistentCleanupConnector {
-	return &persistentCleanupConnector{
-		transientCleanupConnector: newTransientCleanupConnector(candidate, cleanupErr),
-	}
-}
-
-func (c *persistentCleanupConnector) Name() string {
-	return "persistent-cleanup"
-}
-
-func (c *persistentCleanupConnector) FetchIssuesByStates(_ context.Context, states []string) ([]connector.Issue, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if transientCleanupRequest(states) {
-		c.cleanupAttemptCount++
-		c.changed <- struct{}{}
-		return nil, c.cleanupErr
-	}
-	return nil, nil
+func (c *transientCleanupConnector) failCleanupOnAttempt(attempt int) *transientCleanupConnector {
+	c.cleanupFailureAt = attempt
+	return c
 }
 
 func (c *transientCleanupConnector) Name() string {
@@ -2342,7 +2384,7 @@ func (c *transientCleanupConnector) FetchIssuesByStates(_ context.Context, state
 	if transientCleanupRequest(states) {
 		c.cleanupAttemptCount++
 		c.changed <- struct{}{}
-		if c.cleanupAttemptCount == 1 {
+		if c.cleanupAttemptCount == c.cleanupFailureAt {
 			return nil, c.cleanupErr
 		}
 	}
@@ -2403,8 +2445,7 @@ func (c *transientCleanupConnector) waitForCleanupAttempts(t *testing.T, want in
 
 func transientCleanupRequest(states []string) bool {
 	return stateListIncludes(states, "Done") &&
-		stateListIncludes(states, "Cancelled") &&
-		stateListIncludes(states, "Human Review")
+		stateListIncludes(states, "Cancelled")
 }
 
 type lockedBuffer struct {
