@@ -21,6 +21,7 @@ type State struct {
 	NextRefreshAt            time.Time
 	LastRefreshError         string
 	LastRefreshErrorAt       time.Time
+	ManualRefresh            telemetry.RefreshAttempt
 	LastRunningReconcileAt   time.Time
 	LastWorkspaceCleanupAt   time.Time
 	RecentEvents             []telemetry.ActivityEvent
@@ -132,6 +133,7 @@ func (s State) clone() State {
 		NextRefreshAt:            s.NextRefreshAt,
 		LastRefreshError:         s.LastRefreshError,
 		LastRefreshErrorAt:       s.LastRefreshErrorAt,
+		ManualRefresh:            cloneRefreshAttempt(s.ManualRefresh),
 		LastRunningReconcileAt:   s.LastRunningReconcileAt,
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
 		RecentEvents:             cloneActivityEvents(s.RecentEvents),
@@ -241,6 +243,24 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	cloned.Assignees = cloneStringSlice(issue.Assignees)
 	cloned.Fields = cloneStringMap(issue.Fields)
 	return cloned
+}
+
+func cloneRefreshAttempt(attempt telemetry.RefreshAttempt) telemetry.RefreshAttempt {
+	cloned := attempt
+	cloned.RequestedAt = timePointerValue(attempt.RequestedAt)
+	cloned.StartedAt = timePointerValue(attempt.StartedAt)
+	cloned.CompletedAt = timePointerValue(attempt.CompletedAt)
+	cloned.LastErrorAt = timePointerValue(attempt.LastErrorAt)
+	cloned.Operations = append([]string(nil), attempt.Operations...)
+	return cloned
+}
+
+func timePointerValue(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := value.UTC()
+	return &cloned
 }
 
 func cloneIssueMap(issues map[string]connector.Issue) map[string]connector.Issue {

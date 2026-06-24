@@ -4965,6 +4965,83 @@ func TestServerAPIRoutes(t *testing.T) {
 	}
 }
 
+func TestAPIRefreshOverlaysManualRequestOnStaleDegradedState(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 6, 24, 14, 0, 0, 0, time.UTC)
+	requestedAt := generatedAt.Add(5 * time.Minute)
+	lastErrorAt := generatedAt.Add(-time.Minute)
+	snapshots := hub.New[telemetry.Snapshot]()
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: generatedAt,
+		Refresh: telemetry.Refresh{
+			Status:      telemetry.RefreshStatusDegraded,
+			LastError:   "fetch workspace cleanup candidates failed: status 504",
+			LastErrorAt: &lastErrorAt,
+		},
+		Projects: []telemetry.ProjectSnapshot{
+			{
+				Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+				Refresh: telemetry.Refresh{
+					Status:      telemetry.RefreshStatusDegraded,
+					LastError:   "fetch workspace cleanup candidates failed: status 504",
+					LastErrorAt: &lastErrorAt,
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	refresher := &refreshProbe{
+		response: web.RefreshResponse{
+			RequestID:   "manual-681",
+			Status:      telemetry.RefreshAttemptStatusInProgress,
+			Queued:      true,
+			RequestedAt: requestedAt,
+			Operations:  []string{"poll", "reconcile"},
+		},
+	}
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Refresher = refresher
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	refresh := requestJSON(t, server, http.MethodPost, "/api/v1/refresh", http.StatusAccepted)
+	if refresh["request_id"] != "manual-681" || refresh["status"] != string(telemetry.RefreshAttemptStatusInProgress) {
+		t.Fatalf("refresh response = %#v, want correlated in-progress manual refresh", refresh)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	if state["generated_at"] != generatedAt.Format(time.RFC3339) {
+		t.Fatalf("generated_at = %#v, want stale snapshot timestamp %s", state["generated_at"], generatedAt.Format(time.RFC3339))
+	}
+	refreshState := state["refresh"].(map[string]any)
+	if refreshState["status"] != string(telemetry.RefreshStatusDegraded) {
+		t.Fatalf("refresh.status = %#v, want degraded", refreshState["status"])
+	}
+	manual := refreshState["manual"].(map[string]any)
+	if manual["id"] != "manual-681" || manual["status"] != string(telemetry.RefreshAttemptStatusInProgress) {
+		t.Fatalf("refresh.manual = %#v, want manual-681 in progress", manual)
+	}
+	if manual["requested_at"] != requestedAt.Format(time.RFC3339) {
+		t.Fatalf("manual.requested_at = %#v, want %s", manual["requested_at"], requestedAt.Format(time.RFC3339))
+	}
+	if operations := manual["operations"].([]any); len(operations) != 2 || operations[0] != "poll" || operations[1] != "reconcile" {
+		t.Fatalf("manual.operations = %#v, want poll/reconcile", manual["operations"])
+	}
+
+	projectState := requestJSON(t, server, http.MethodGet, "/api/v1/projects/detent/state", http.StatusOK)
+	projectRefresh := projectState["refresh"].(map[string]any)
+	projectManual := projectRefresh["manual"].(map[string]any)
+	if projectManual["id"] != "manual-681" || projectManual["status"] != string(telemetry.RefreshAttemptStatusInProgress) {
+		t.Fatalf("project refresh.manual = %#v, want manual-681 in progress", projectManual)
+	}
+}
+
 func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	t.Parallel()
 

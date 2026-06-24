@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
@@ -117,10 +118,11 @@ type Orchestrator struct {
 	drainRequests      chan drainRequest
 	forceRequests      chan forceRequest
 	configUpdates      chan configUpdateRequest
-	refreshes          chan time.Time
+	refreshes          chan manualRefreshRequest
 	runResults         chan runpkg.Completion
 	runUpdates         chan runUpdate
 	done               chan struct{}
+	refreshSeq         atomic.Uint64
 }
 
 type validatorStageResult struct {
@@ -252,7 +254,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		drainRequests:      make(chan drainRequest),
 		forceRequests:      make(chan forceRequest),
 		configUpdates:      make(chan configUpdateRequest),
-		refreshes:          make(chan time.Time, 1),
+		refreshes:          make(chan manualRefreshRequest, 1),
 		runResults:         make(chan runpkg.Completion),
 		runUpdates:         make(chan runUpdate, runUpdateBufferSize),
 		done:               make(chan struct{}),
@@ -280,8 +282,8 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 		case now := <-ticker.C:
 			o.tick(ctx, &state, now)
 			resetTicker(ticker, state.PollInterval)
-		case now := <-o.refreshes:
-			o.tick(ctx, &state, now)
+		case request := <-o.refreshes:
+			o.tickManual(ctx, &state, request)
 			resetTicker(ticker, state.PollInterval)
 		case result := <-o.runResults:
 			o.handleRunResult(ctx, &state, result)

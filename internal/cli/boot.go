@@ -891,9 +891,30 @@ func mergeRefreshResponse(current web.RefreshResponse, next web.RefreshResponse)
 	current.Coalesced = current.Coalesced || next.Coalesced
 	if current.RequestedAt.IsZero() || (!next.RequestedAt.IsZero() && next.RequestedAt.Before(current.RequestedAt)) {
 		current.RequestedAt = next.RequestedAt
+		current.RequestID = next.RequestID
+	}
+	if current.RequestID == "" {
+		current.RequestID = next.RequestID
 	}
 	current.Operations = appendOperations(current.Operations, next.Operations)
+	current.Status = mergeRefreshResponseStatus(current, next)
 	return current
+}
+
+func mergeRefreshResponseStatus(current web.RefreshResponse, next web.RefreshResponse) telemetry.RefreshAttemptStatus {
+	if current.Coalesced || next.Coalesced {
+		return telemetry.RefreshAttemptStatusCoalesced
+	}
+	if current.Status != "" {
+		return current.Status
+	}
+	if next.Status != "" {
+		return next.Status
+	}
+	if current.Queued || next.Queued {
+		return telemetry.RefreshAttemptStatusInProgress
+	}
+	return ""
 }
 
 func appendOperations(operations []string, next []string) []string {

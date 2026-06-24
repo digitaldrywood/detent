@@ -20,6 +20,10 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		LastError:           s.LastRefreshError,
 		LastErrorAt:         timePointer(s.LastRefreshErrorAt),
 	}
+	if !s.ManualRefresh.IsZero() {
+		manual := cloneRefreshAttempt(s.ManualRefresh)
+		refresh.Manual = &manual
+	}
 	if refresh.LastError != "" || refresh.LastErrorAt != nil {
 		refresh.Status = telemetry.RefreshStatusDegraded
 	} else if refresh.LastRefreshAt == nil {
