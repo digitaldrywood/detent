@@ -99,6 +99,10 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 			fetched,
 			autoPromoted.transitioned,
 		)
+		fetched.candidates = mergeIssueSlices(
+			fetched.candidates,
+			staleMergingDispatchCandidates(fetched.status),
+		)
 	}
 	fetched = filterReconciledTickIssues(
 		state,
