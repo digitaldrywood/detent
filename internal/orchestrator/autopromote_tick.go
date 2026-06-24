@@ -113,6 +113,43 @@ func (o *Orchestrator) reconcileStaleTodoPullRequestIssues(
 	return transitioned
 }
 
+func staleMergingDispatchCandidates(issues []connector.Issue) []connector.Issue {
+	candidates := []connector.Issue{}
+	for _, issue := range issuesInStates(issues, []string{autoPromoteMergingState}) {
+		if !staleMergingIssueReadyForDispatch(issue) {
+			continue
+		}
+		candidates = append(candidates, cloneIssue(issue))
+	}
+	return candidates
+}
+
+func staleMergingIssueReadyForDispatch(issue connector.Issue) bool {
+	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if normalizePullRequestState(pullRequest.State) != "open" {
+		return false
+	}
+	if pullRequest.Draft {
+		return false
+	}
+	if autoPromoteMergeConflicts(pullRequest.MergeableState) {
+		return false
+	}
+	return staleMergingCIGreen(pullRequest.CIStatus)
+}
+
+func staleMergingCIGreen(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "green", "pass", "passed", "success", "successful":
+		return true
+	default:
+		return false
+	}
+}
+
 func staleTodoPullRequestAlreadyActive(state *State, issueID string) bool {
 	if state == nil {
 		return false

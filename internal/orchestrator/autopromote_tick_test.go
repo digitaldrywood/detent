@@ -561,6 +561,141 @@ func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
 	}
 }
 
+func TestTickRequeuesObservedStaleMergingIssueForDispatch(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 15, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-stale-merging", []string{"bug"}, &connector.PullRequest{
+		Number:                 54,
+		URL:                    "https://github.test/digitaldrywood/creswoodcorners-phone/pull/54",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/creswoodcorners-phone#49"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{issue},
+		candidateIssuesSet: true,
+	}
+	runner := newWorkerHostRunner()
+	orch := &Orchestrator{
+		cfg:        cfg,
+		connector:  tracker,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(context.Background(), &state, now)
+
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != issue.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
+	}
+	if request.Issue.State != "Merging" {
+		t.Fatalf("RunRequest.Issue.State = %q, want Merging", request.Issue.State)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none", tracker.updates)
+	}
+	if running := state.Running[issue.ID]; running.cancel != nil {
+		running.cancel()
+	}
+}
+
+func TestStaleMergingDispatchCandidatesFiltersUnsafePullRequests(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		pullRequest *connector.PullRequest
+		want        bool
+	}{
+		{
+			name: "ready",
+			pullRequest: &connector.PullRequest{
+				State:          "OPEN",
+				MergeableState: "clean",
+				CIStatus:       "success",
+			},
+			want: true,
+		},
+		{
+			name:        "missing pull request",
+			pullRequest: nil,
+		},
+		{
+			name: "merged pull request",
+			pullRequest: &connector.PullRequest{
+				State:    "MERGED",
+				CIStatus: "success",
+			},
+		},
+		{
+			name: "draft pull request",
+			pullRequest: &connector.PullRequest{
+				State:          "OPEN",
+				Draft:          true,
+				MergeableState: "clean",
+				CIStatus:       "success",
+			},
+		},
+		{
+			name: "conflicting pull request",
+			pullRequest: &connector.PullRequest{
+				State:          "OPEN",
+				MergeableState: "dirty",
+				CIStatus:       "success",
+			},
+		},
+		{
+			name: "non green ci",
+			pullRequest: &connector.PullRequest{
+				State:          "OPEN",
+				MergeableState: "clean",
+				CIStatus:       "pending",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			issue := autoPromoteTickIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), []string{"bug"}, tt.pullRequest)
+			issue.State = "Merging"
+			got := staleMergingDispatchCandidates([]connector.Issue{issue})
+			if tt.want {
+				if len(got) != 1 || got[0].ID != issue.ID {
+					t.Fatalf("staleMergingDispatchCandidates() = %#v, want %s", got, issue.ID)
+				}
+				return
+			}
+			if len(got) != 0 {
+				t.Fatalf("staleMergingDispatchCandidates() = %#v, want none", got)
+			}
+		})
+	}
+}
+
 func TestTickAutoPromoteMergingIssueDispatchesAndClearsStaleMemory(t *testing.T) {
 	t.Parallel()
 
@@ -695,6 +830,8 @@ type autoPromoteTickComment struct {
 
 type autoPromoteTickConnector struct {
 	stateIssues           []connector.Issue
+	candidateIssues       []connector.Issue
+	candidateIssuesSet    bool
 	fetchByStatesRequests [][]string
 	updates               []autoPromoteTickUpdate
 	comments              []autoPromoteTickComment
@@ -706,6 +843,9 @@ func (c *autoPromoteTickConnector) Name() string {
 }
 
 func (c *autoPromoteTickConnector) FetchCandidateIssues(context.Context) ([]connector.Issue, error) {
+	if c.candidateIssuesSet {
+		return cloneIssues(c.candidateIssues), nil
+	}
 	return issuesInStates(c.stateIssues, []string{"Todo", "In Progress", "Rework", "Merging"}), nil
 }
 
