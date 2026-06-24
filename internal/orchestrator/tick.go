@@ -65,7 +65,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if state.Draining {
 		return
 	}
-	fetched, ok := o.fetchTickIssues(ctx, state)
+	fetched, ok := o.fetchTickIssues(ctx, state, now)
 	if !ok {
 		return
 	}
@@ -198,12 +198,13 @@ func (o *Orchestrator) refreshActiveRuns(ctx context.Context, state *State, now 
 	o.heartbeatRunningClaims(ctx, state, now)
 }
 
-func (o *Orchestrator) fetchTickIssues(ctx context.Context, state *State) (tickFetchedIssues, bool) {
+func (o *Orchestrator) fetchTickIssues(ctx context.Context, state *State, now time.Time) (tickFetchedIssues, bool) {
 	observedStates := o.observedStatusFetchStates()
 
 	candidateIssues, err := o.connector.FetchCandidateIssues(ctx)
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
+		markRefreshError(state, "fetch candidate issues failed: "+err.Error(), now)
 		return tickFetchedIssues{}, false
 	}
 
@@ -212,24 +213,52 @@ func (o *Orchestrator) fetchTickIssues(ctx context.Context, state *State) (tickF
 	}
 	if len(observedStates) == 0 {
 		fetched.statusOK = true
+		clearRefreshError(state)
 		return fetched, true
 	}
 	if !tickHasActiveWork(state, candidateIssues) && !o.observedWorkExists(ctx, observedStates) {
 		fetched.statusOK = true
+		clearRefreshError(state)
 		return fetched, true
 	}
 
 	statusIssues, statusErr := o.connector.FetchIssuesByStates(ctx, observedStates)
 	if statusErr != nil {
 		o.logger.Warn("fetch observed status issues failed", "error", statusErr)
+		markRefreshError(state, "fetch observed status issues failed: "+statusErr.Error(), now)
 		return fetched, true
 	}
 	fetched.status = cloneIssues(statusIssues)
 	fetched.statusOK = true
 	if !o.hydratePlanIssueComments(ctx, &fetched) {
+		markRefreshError(state, "fetch plan issue comments failed", now)
 		return tickFetchedIssues{}, false
 	}
+	clearRefreshError(state)
 	return fetched, true
+}
+
+func markRefreshError(state *State, message string, at time.Time) {
+	if state == nil {
+		return
+	}
+	message = strings.TrimSpace(message)
+	if message == "" {
+		message = "tracker refresh failed"
+	}
+	if at.IsZero() {
+		at = time.Now()
+	}
+	state.LastRefreshError = message
+	state.LastRefreshErrorAt = at.UTC()
+}
+
+func clearRefreshError(state *State) {
+	if state == nil {
+		return
+	}
+	state.LastRefreshError = ""
+	state.LastRefreshErrorAt = time.Time{}
 }
 
 func (o *Orchestrator) observedWorkExists(ctx context.Context, observedStates []string) bool {

@@ -1670,23 +1670,17 @@ func TestRequestRefreshPublishesManualOutcome(t *testing.T) {
 func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	t.Parallel()
 
-	candidate := testIssue("issue-cleanup-persistent", "digitaldrywood/detent#681", "Todo")
-	transientErr := errors.New("fetch github pull request reviews: github transient error: status 504")
-	tracker := newPersistentCleanupConnector(candidate, transientErr)
-	runner := newBlockingRunner()
+	transientErr := errors.New("fetch github issues: github transient error: status 504")
+	tracker := newFakeConnector()
 
 	orch, err := orchestrator.New(orchestrator.Config{
-		PollInterval:                  time.Hour,
-		MaxConcurrentAgents:           1,
-		ActiveStates:                  []string{"Todo", "In Progress", "Rework"},
-		TerminalStates:                []string{"Done", "Cancelled"},
-		ObservedStates:                []string{"Human Review"},
-		WorkspaceCleanupIdleTTL:       time.Hour,
-		WorkspaceCleanupSweepInterval: time.Hour,
+		PollInterval:        time.Hour,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
 	}, orchestrator.Dependencies{
-		Connector:       tracker,
-		Runner:          runner,
-		WorkspaceReaper: &fakeWorkspaceReaper{},
+		Connector: tracker,
+		Runner:    &staticRunner{},
 	})
 	if err != nil {
 		t.Fatalf("New() error = %v", err)
@@ -1694,26 +1688,18 @@ func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	stop := runOrchestrator(t, orch)
 	defer stop()
 
-	receiveRunRequest(t, runner.started)
-	first := waitForState(t, orch, func(state orchestrator.State) bool {
-		return recentEventContains(state.RecentEvents, "workspace_cleanup_fetch_failed", "status 504")
-	})
-	firstErrorAt := first.LastRefreshErrorAt
-	if firstErrorAt.IsZero() {
-		t.Fatal("initial LastRefreshErrorAt is zero")
-	}
-	time.Sleep(25 * time.Millisecond)
+	waitForFetchCalls(t, tracker, 1)
+	tracker.setFetchCandidateError(transientErr, 2)
 
 	refresh, err := orch.RequestRefresh(context.Background())
 	if err != nil {
 		t.Fatalf("RequestRefresh() error = %v", err)
 	}
-	tracker.waitForCleanupAttempts(t, 2)
+	waitForFetchCalls(t, tracker, 2)
 
 	state := waitForState(t, orch, func(state orchestrator.State) bool {
 		snapshot := state.Snapshot(time.Now())
-		return tracker.cleanupAttempts() >= 2 &&
-			snapshot.Refresh.Manual != nil &&
+		return snapshot.Refresh.Manual != nil &&
 			snapshot.Refresh.Manual.ID == refresh.RequestID &&
 			snapshot.Refresh.Manual.Status == telemetry.RefreshAttemptStatusFailed
 	})
@@ -1724,16 +1710,15 @@ func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	if manual.LastError == "" || !strings.Contains(manual.LastError, "status 504") {
 		t.Fatalf("Manual.LastError = %q, want status 504", manual.LastError)
 	}
-	if manual.LastErrorAt == nil || !manual.LastErrorAt.After(firstErrorAt) {
-		t.Fatalf("Manual.LastErrorAt = %v, want after %v", manual.LastErrorAt, firstErrorAt)
+	if manual.LastErrorAt == nil || !manual.LastErrorAt.Equal(state.LastRefreshErrorAt) {
+		t.Fatalf("Manual.LastErrorAt = %v, want %v", manual.LastErrorAt, state.LastRefreshErrorAt)
 	}
-	if !state.LastRefreshErrorAt.After(firstErrorAt) {
-		t.Fatalf("LastRefreshErrorAt = %v, want after %v", state.LastRefreshErrorAt, firstErrorAt)
+	if state.LastRefreshError == "" || !strings.Contains(state.LastRefreshError, "fetch candidate issues failed") {
+		t.Fatalf("LastRefreshError = %q, want candidate fetch failure", state.LastRefreshError)
 	}
-	if !recentEventContains(state.RecentEvents, "workspace_cleanup_fetch_failed", "status 504") {
-		t.Fatalf("RecentEvents = %#v, want repeated cleanup failure event", state.RecentEvents)
+	if got := state.Snapshot(time.Now()).Refresh.ReadinessStatus(); got != telemetry.RefreshStatusDegraded {
+		t.Fatalf("snapshot Refresh status = %q, want degraded", got)
 	}
-	close(runner.release)
 }
 
 func TestRequestRefreshCoalescesPendingTick(t *testing.T) {
@@ -1953,6 +1938,8 @@ type fakeConnector struct {
 	setFields           []setFieldCall
 	comments            []commentCall
 	stateUpdates        []stateUpdateCall
+	fetchCandidateErr   error
+	fetchCandidateErrAt int
 	fetchByStatesErr    error
 	statusLabelPrefix   string
 }
@@ -2000,6 +1987,9 @@ func (c *fakeConnector) FetchCandidateIssues(context.Context) ([]connector.Issue
 	defer c.mu.Unlock()
 
 	c.fetchCandidateCount++
+	if c.fetchCandidateErr != nil && (c.fetchCandidateErrAt <= 0 || c.fetchCandidateCount >= c.fetchCandidateErrAt) {
+		return nil, c.fetchCandidateErr
+	}
 	return cloneIssues(c.candidates), nil
 }
 
@@ -2189,6 +2179,14 @@ func (c *fakeConnector) setStateIssues(issues ...connector.Issue) {
 	c.stateIssues = cloneIssues(issues)
 }
 
+func (c *fakeConnector) setFetchCandidateError(err error, atCall int) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.fetchCandidateErr = err
+	c.fetchCandidateErrAt = atCall
+}
+
 func (c *fakeConnector) applyIssueStateLocked(issueID string, state string) {
 	for i := range c.candidates {
 		if c.candidates[i].ID == issueID {
@@ -2361,32 +2359,6 @@ func newTransientCleanupConnector(candidate connector.Issue, cleanupErr error) *
 		cleanupFailureAt: 1,
 		changed:          make(chan struct{}, 8),
 	}
-}
-
-type persistentCleanupConnector struct {
-	*transientCleanupConnector
-}
-
-func newPersistentCleanupConnector(candidate connector.Issue, cleanupErr error) *persistentCleanupConnector {
-	return &persistentCleanupConnector{
-		transientCleanupConnector: newTransientCleanupConnector(candidate, cleanupErr),
-	}
-}
-
-func (c *persistentCleanupConnector) Name() string {
-	return "persistent-cleanup"
-}
-
-func (c *persistentCleanupConnector) FetchIssuesByStates(_ context.Context, states []string) ([]connector.Issue, error) {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-
-	if transientCleanupRequest(states) {
-		c.cleanupAttemptCount++
-		c.changed <- struct{}{}
-		return nil, c.cleanupErr
-	}
-	return nil, nil
 }
 
 func (c *transientCleanupConnector) failCleanupOnAttempt(attempt int) *transientCleanupConnector {
