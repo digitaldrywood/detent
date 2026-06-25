@@ -932,6 +932,59 @@ func TestConnectorFetchIssuesByStatesRechecksPullRequestStatusForPromotion(t *te
 	}
 }
 
+func TestConnectorFetchIssuesByStatesUsesCachedPullRequestStatusAfterRateLimit(t *testing.T) {
+	t.Parallel()
+
+	projectBody := `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_401","content":{"__typename":"Issue","id":"I_401","number":401,"title":"Human review issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/401","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":411,"url":"https://github.com/digitaldrywood/detent/pull/411","state":"OPEN","repository":{"nameWithOwner":"digitaldrywood/detent"}}]}},"statusValue":{"name":"Human Review"},"priorityValue":null}]}}}}`
+	pullBody := `{"number":411,"html_url":"https://github.com/digitaldrywood/detent/pull/411","state":"open","head":{"ref":"detent/digitaldrywood_detent_401","sha":"head-current"}}`
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: projectBody},
+		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411", body: pullBody},
+		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100", body: `{"check_runs":[{"status":"completed","conclusion":"success"}]}`},
+		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/statuses?per_page=100", body: `[]`},
+		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411/reviews?per_page=100", body: `[]`},
+		{body: projectBody},
+		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411", body: pullBody},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100",
+			status: http.StatusTooManyRequests,
+			headers: map[string]string{
+				"Retry-After":          "120",
+				"X-RateLimit-Limit":    "5000",
+				"X-RateLimit-Used":     "264",
+				"X-RateLimit-Resource": "core",
+			},
+			body: `{"message":"secondary rate limit"}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	first, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() first error = %v", err)
+	}
+	if len(first) != 1 || first[0].PullRequest == nil || first[0].PullRequest.CIStatus != "pass" {
+		t.Fatalf("FetchIssuesByStates() first = %#v, want cached hydrated PR", first)
+	}
+
+	second, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() second error = %v", err)
+	}
+	if len(second) != 1 || second[0].PullRequest == nil {
+		t.Fatalf("FetchIssuesByStates() second = %#v, want hydrated PR", second)
+	}
+	pr := second[0].PullRequest
+	if pr.HydrationUnavailableReason != "" {
+		t.Fatalf("HydrationUnavailableReason = %q, want cached status without unavailable marker", pr.HydrationUnavailableReason)
+	}
+	if pr.CIStatus != "pass" {
+		t.Fatalf("CIStatus = %q, want cached pass", pr.CIStatus)
+	}
+}
+
 func TestConnectorFetchIssuesByStatesMarksLinkedPullRequestHydrationRateLimited(t *testing.T) {
 	t.Parallel()
 
