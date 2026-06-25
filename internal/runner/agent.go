@@ -709,9 +709,14 @@ func (r *Runner) finishSession(
 }
 
 func (r *Runner) usageCostUSD(model string, inputTokens int64, outputTokens int64) float64 {
+	model = strings.TrimSpace(model)
+	if model == "" {
+		r.logger.Debug("usage event model unavailable; skipping cost pricing")
+		return 0
+	}
 	cost, ok := budget.UsageCostUSD(r.pricing, model, inputTokens, outputTokens)
 	if !ok {
-		r.logger.Warn("usage event model pricing not found", "model", strings.TrimSpace(model))
+		r.logger.Warn("usage event model pricing not found", "model", model)
 		return 0
 	}
 	return cost

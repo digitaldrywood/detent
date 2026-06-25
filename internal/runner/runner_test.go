@@ -333,6 +333,30 @@ func TestRunnerUsageCostWarnsForUnknownModel(t *testing.T) {
 	}
 }
 
+func TestRunnerUsageCostSkipsPricingWarningForEmptyModel(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	runner := &Runner{
+		pricing: budget.PricingTable{},
+		logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	}
+
+	cost := runner.usageCostUSD(" \t", 10, 5)
+	if cost != 0 {
+		t.Fatalf("usageCostUSD() = %.12f, want 0", cost)
+	}
+	got := logs.String()
+	if strings.Contains(got, "level=WARN") || strings.Contains(got, "usage event model pricing not found") {
+		t.Fatalf("log output = %q, want no empty-model pricing warning", got)
+	}
+	if !strings.Contains(got, "usage event model unavailable; skipping cost pricing") {
+		t.Fatalf("log output = %q, want empty-model diagnostic", got)
+	}
+}
+
 func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T) {
 	t.Parallel()
 
