@@ -373,6 +373,66 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersGitHubAPIHealthChrome(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 14, 30, 0, 0, time.UTC)
+	lastRefresh := now.Add(-30 * time.Second)
+	nextRefresh := now.Add(90 * time.Second)
+	resetAt := now.Add(30 * time.Minute)
+	backoffUntil := now.Add(5 * time.Minute)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Detent",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				LastRefreshAt: &lastRefresh,
+				NextRefreshAt: &nextRefresh,
+			},
+			RateLimits: &telemetry.RateLimits{
+				GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+				GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+				RESTUsage: &telemetry.RESTUsage{
+					RateLimited:  true,
+					BackoffUntil: &backoffUntil,
+					Contributors: []telemetry.RESTUsageContributor{
+						{EndpointFamily: "pull requests", Count: 2, RetryAfterMS: (5 * time.Minute).Milliseconds(), RateLimited: true, LastStatus: 429},
+						{EndpointFamily: "check runs", Count: 1, RateLimited: true, LastStatus: 429},
+					},
+				},
+			},
+			LifetimeTotals: telemetry.LifetimeTotals{Available: true},
+		},
+	})
+
+	for _, want := range []string{
+		`id="github-api-health"`,
+		`sse-swap="github-api-health"`,
+		`hx-swap="morph:outerHTML"`,
+		`aria-label="GitHub API health"`,
+		"GitHub API backoff: pull requests, check runs",
+		"Primary remaining: REST 4,878 / 5,000",
+		"GraphQL 4,880 / 5,000",
+		"REST primary",
+		"GraphQL primary",
+		"4,878 / 5,000 remaining",
+		"4,880 / 5,000 remaining",
+		"Last tracker refresh",
+		"14:29:30 UTC",
+		"Next tracker refresh",
+		"14:31:30 UTC",
+		"pull requests",
+		"check runs",
+		"429",
+		"retry 14:35 UTC",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing GitHub API health marker %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestProjectRunsSnapshotRendersIssueAndPullRequestActions(t *testing.T) {
 	t.Parallel()
 

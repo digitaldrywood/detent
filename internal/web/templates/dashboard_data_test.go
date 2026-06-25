@@ -71,6 +71,117 @@ func TestRuntimeStatusReflectsDraining(t *testing.T) {
 	}
 }
 
+func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 14, 30, 0, 0, time.UTC)
+	lastRefresh := now.Add(-30 * time.Second)
+	nextRefresh := now.Add(90 * time.Second)
+	resetAt := now.Add(30 * time.Minute)
+	backoffUntil := now.Add(5 * time.Minute)
+
+	tests := []struct {
+		name            string
+		snapshot        telemetry.Snapshot
+		wantState       gitHubAPIHealthState
+		wantLabel       string
+		wantSummaryPart string
+		wantBackoffPart string
+	}{
+		{
+			name:            "unknown without GitHub snapshot",
+			snapshot:        telemetry.Snapshot{GeneratedAt: now},
+			wantState:       gitHubAPIHealthStateUnknown,
+			wantLabel:       "GitHub API unknown",
+			wantSummaryPart: "No GitHub rate-limit snapshot",
+		},
+		{
+			name: "healthy with primary budgets",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Refresh:     telemetry.Refresh{LastRefreshAt: &lastRefresh, NextRefreshAt: &nextRefresh},
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+				},
+			},
+			wantState:       gitHubAPIHealthStateHealthy,
+			wantLabel:       "GitHub API healthy",
+			wantSummaryPart: "REST 4,878 / 5,000",
+		},
+		{
+			name: "warning for low primary remaining",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 240, Used: 4760, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 3200, Used: 1800, Limit: 5000, ResetAt: &resetAt},
+				},
+			},
+			wantState:       gitHubAPIHealthStateWarning,
+			wantLabel:       "GitHub API warning",
+			wantSummaryPart: "REST 240 / 5,000",
+		},
+		{
+			name: "secondary backoff preserves healthy primary context",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+					RESTUsage: &telemetry.RESTUsage{
+						RateLimited:  true,
+						BackoffUntil: &backoffUntil,
+						Contributors: []telemetry.RESTUsageContributor{
+							{EndpointFamily: "pull requests", Count: 2, RetryAfterMS: (5 * time.Minute).Milliseconds(), RateLimited: true, LastStatus: 429},
+							{EndpointFamily: "check runs", Count: 1, RateLimited: true, LastStatus: 429},
+						},
+					},
+				},
+			},
+			wantState:       gitHubAPIHealthStateBackoff,
+			wantLabel:       "GitHub API backoff: pull requests, check runs",
+			wantSummaryPart: "Primary remaining: REST 4,878 / 5,000",
+			wantBackoffPart: "retry 14:35 UTC",
+		},
+		{
+			name: "primary exhausted outranks secondary backoff",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 0, Used: 5000, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+					RESTUsage:     &telemetry.RESTUsage{RateLimited: true, BackoffUntil: &backoffUntil},
+				},
+			},
+			wantState:       gitHubAPIHealthStateExhausted,
+			wantLabel:       "GitHub API exhausted",
+			wantSummaryPart: "REST primary 0 / 5,000",
+			wantBackoffPart: "reset 15:00 UTC",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := gitHubAPIHealth(tt.snapshot)
+			if got.State != tt.wantState {
+				t.Fatalf("gitHubAPIHealth().State = %q, want %q; view = %#v", got.State, tt.wantState, got)
+			}
+			if got.Label != tt.wantLabel {
+				t.Fatalf("gitHubAPIHealth().Label = %q, want %q; view = %#v", got.Label, tt.wantLabel, got)
+			}
+			if !strings.Contains(got.Summary, tt.wantSummaryPart) {
+				t.Fatalf("gitHubAPIHealth().Summary = %q, want substring %q; view = %#v", got.Summary, tt.wantSummaryPart, got)
+			}
+			if tt.wantBackoffPart != "" && !strings.Contains(got.Detail, tt.wantBackoffPart) {
+				t.Fatalf("gitHubAPIHealth().Detail = %q, want substring %q; view = %#v", got.Detail, tt.wantBackoffPart, got)
+			}
+		})
+	}
+}
+
 func TestThroughputTrendPoints(t *testing.T) {
 	t.Parallel()
 
