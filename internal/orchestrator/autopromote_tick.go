@@ -12,9 +12,10 @@ import (
 )
 
 const (
-	autoPromoteSourceState  = "Human Review"
-	autoPromoteMergingState = "Merging"
-	autoPromoteReworkState  = "Rework"
+	autoPromoteSourceState           = "Human Review"
+	autoPromoteMergingState          = "Merging"
+	autoPromoteReworkState           = "Rework"
+	defaultMergeWorkerStartupTimeout = 2 * time.Minute
 )
 
 type autoPromoteTickResult struct {
@@ -316,6 +317,57 @@ func (o *Orchestrator) logMergeWorkerFailure(issue connector.Issue, reason strin
 		attrs = append(attrs, "error", err)
 	}
 	o.logger.Warn("merge_worker_failure", attrs...)
+}
+
+func (o *Orchestrator) failStalledMergeWorkerStarts(state *State, now time.Time) {
+	if state == nil || state.Draining {
+		return
+	}
+	timeout := o.mergeWorkerStartupTimeout()
+	if timeout <= 0 {
+		return
+	}
+	for _, issueID := range sortedKeys(state.Running) {
+		running := state.Running[issueID]
+		if !mergeWorkerIssue(running.Issue) || running.StartedAt.IsZero() || mergeWorkerStartupObserved(running) {
+			continue
+		}
+		if now.Before(running.StartedAt.Add(timeout)) {
+			continue
+		}
+		err := fmt.Errorf("merge worker did not report process or session startup within %s", timeout)
+		o.logMergeWorkerFailure(running.Issue, "runner_startup_timeout", err)
+		o.releaseGlobalDispatchSlot(running.globalSlot)
+		if running.cancel != nil {
+			running.cancel()
+		}
+		delete(state.Running, issueID)
+		o.scheduleRetry(state, running.Issue, nextAttempt(running.Attempt), now, err.Error(), false, running.WorkerHost)
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "merge_worker_startup_timeout",
+			Message: "merge worker startup timed out for " + issueLabel(running.Issue) + ": " + err.Error(),
+		})
+	}
+}
+
+func (o *Orchestrator) mergeWorkerStartupTimeout() time.Duration {
+	timeout := defaultMergeWorkerStartupTimeout
+	if o != nil && o.cfg.PollInterval > 0 && o.cfg.PollInterval*2 > timeout {
+		timeout = o.cfg.PollInterval * 2
+	}
+	return timeout
+}
+
+func mergeWorkerStartupObserved(running Running) bool {
+	return strings.TrimSpace(running.ProcessIdentity) != "" ||
+		strings.TrimSpace(running.WorkspacePath) != "" ||
+		strings.TrimSpace(running.SessionID) != "" ||
+		strings.TrimSpace(running.LastEvent) != "" ||
+		!running.LastEventAt.IsZero() ||
+		running.TurnCount > 0 ||
+		len(running.RecentEvents) > 0 ||
+		diffStatsPresent(running.DiffStats)
 }
 
 func mergeWorkerIssue(issue connector.Issue) bool {
