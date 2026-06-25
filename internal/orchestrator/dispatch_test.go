@@ -527,6 +527,15 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 			want:  true,
 		},
 		{
+			name: "merging with degraded pull request hydration skips",
+			issue: func() connector.Issue {
+				issue := dispatchTestIssueWithPullRequest("issue-merging-pr-degraded", "Merging", "OPEN")
+				issue.PullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+				return issue
+			}(),
+			want: false,
+		},
+		{
 			name:  "todo with merged pull request skips",
 			issue: dispatchTestIssueWithPullRequest("issue-todo-merged-pr", "Todo", "MERGED"),
 			want:  false,

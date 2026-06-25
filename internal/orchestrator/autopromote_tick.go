@@ -172,13 +172,17 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, terminalStat
 	if pullRequest == nil {
 		return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: string(AutoPromoteReasonMissingPullRequest)}
 	}
-	if pullRequestHydrationUnavailableReason(pullRequest) != "" {
+	pullRequestState := normalizePullRequestState(pullRequest.State)
+	if pullRequestState == "" && pullRequestHydrationBlocksProgress(pullRequest) {
 		return staleMergingPullRequestDecision{reason: string(AutoPromoteReasonPullRequestHydrationUnavailable)}
 	}
-	switch normalizePullRequestState(pullRequest.State) {
+	switch pullRequestState {
 	case "merged":
 		return staleMergingPullRequestDecision{targetState: doneStateName(terminalStates), reason: "pull_request_merged"}
 	case "open":
+		if pullRequestHydrationBlocksProgress(pullRequest) {
+			return staleMergingPullRequestDecision{reason: string(AutoPromoteReasonPullRequestHydrationUnavailable)}
+		}
 		if pullRequest.Draft {
 			return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: "draft_pull_request"}
 		}
@@ -510,7 +514,7 @@ func staleMergingIssueReadyForDispatch(issue connector.Issue) bool {
 		return false
 	}
 	pullRequest := issue.PullRequest
-	if pullRequestHydrationUnavailableReason(pullRequest) != "" {
+	if pullRequestHydrationBlocksProgress(pullRequest) {
 		return false
 	}
 	if normalizePullRequestState(pullRequest.State) != "open" {
@@ -851,6 +855,7 @@ func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 
 	pullRequest := issue.PullRequest
 	summary.PullRequestHydrationUnavailableReason = pullRequestHydrationUnavailableReason(pullRequest)
+	summary.PullRequestHydrationDegradedReason = pullRequestHydrationDegradedReason(pullRequest)
 	if normalizePullRequestState(pullRequest.State) != "open" {
 		return summary
 	}
@@ -868,6 +873,18 @@ func pullRequestHydrationUnavailableReason(pullRequest *connector.PullRequest) s
 		return ""
 	}
 	return strings.TrimSpace(pullRequest.HydrationUnavailableReason)
+}
+
+func pullRequestHydrationDegradedReason(pullRequest *connector.PullRequest) string {
+	if pullRequest == nil {
+		return ""
+	}
+	return strings.TrimSpace(pullRequest.HydrationDegradedReason)
+}
+
+func pullRequestHydrationBlocksProgress(pullRequest *connector.PullRequest) bool {
+	return pullRequestHydrationUnavailableReason(pullRequest) != "" ||
+		pullRequestHydrationDegradedReason(pullRequest) != ""
 }
 
 func autoPromoteLastActivityAt(issue connector.Issue) *time.Time {

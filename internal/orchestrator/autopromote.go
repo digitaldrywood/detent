@@ -20,6 +20,7 @@ type AutoPromoteSummary struct {
 	PullRequestPresent                    bool
 	PullRequestURL                        string
 	PullRequestHydrationUnavailableReason string
+	PullRequestHydrationDegradedReason    string
 	MergeableState                        string
 	CIStatus                              string
 	ReviewState                           string
@@ -94,7 +95,8 @@ func EvaluateAutoPromote(
 	if autoPromoteMergeConflicts(summary.MergeableState) {
 		return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonMergeConflicts)
 	}
-	if strings.TrimSpace(summary.PullRequestHydrationUnavailableReason) != "" {
+	if strings.TrimSpace(summary.PullRequestHydrationUnavailableReason) != "" ||
+		strings.TrimSpace(summary.PullRequestHydrationDegradedReason) != "" {
 		return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonPullRequestHydrationUnavailable)
 	}
 	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateSummary(summary), now, gate.EvaluationOptions{
