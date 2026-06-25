@@ -196,12 +196,12 @@ templ helpScript() {
 			const positions = new Map()
 			const detailsOpen = new Map()
 
-			function snapshotTarget(event) {
+			function liveSwapTarget(event) {
 				const detailTarget = event.detail && event.detail.target
 				const target = detailTarget instanceof Element ? detailTarget : event.target
 				if (!(target instanceof Element)) return null
-				if (target.id === "snapshot") return target
-				return target.closest("#snapshot")
+				if (target.id === "snapshot" || target.id === "github-api-health") return target
+				return target.closest("#snapshot, #github-api-health")
 			}
 
 			function scrollKey(element) {
@@ -210,6 +210,13 @@ templ helpScript() {
 
 			function detailsKey(element) {
 				return element.dataset.preserveDetails || element.id || ""
+			}
+
+			function preservedDetails(root) {
+				const elements = []
+				if (root.matches(detailsSelector)) elements.push(root)
+				root.querySelectorAll(detailsSelector).forEach((element) => elements.push(element))
+				return elements
 			}
 
 			function rememberScroll(root) {
@@ -224,7 +231,7 @@ templ helpScript() {
 			}
 
 			function rememberDetails(root) {
-				root.querySelectorAll(detailsSelector).forEach((element) => {
+				preservedDetails(root).forEach((element) => {
 					if (!(element instanceof HTMLDetailsElement)) return
 					const key = detailsKey(element)
 					if (!key) return
@@ -233,7 +240,7 @@ templ helpScript() {
 			}
 
 			function restoreDetails(root) {
-				root.querySelectorAll(detailsSelector).forEach((element) => {
+				preservedDetails(root).forEach((element) => {
 					if (!(element instanceof HTMLDetailsElement)) return
 					const key = detailsKey(element)
 					const open = key ? detailsOpen.get(key) : undefined
@@ -255,14 +262,14 @@ templ helpScript() {
 			}
 
 			document.addEventListener("htmx:beforeSwap", (event) => {
-				const target = snapshotTarget(event)
+				const target = liveSwapTarget(event)
 				if (!target) return
 				rememberScroll(target)
 				rememberDetails(target)
 			})
 
 			document.addEventListener("htmx:afterSettle", (event) => {
-				const target = snapshotTarget(event)
+				const target = liveSwapTarget(event)
 				if (!target) return
 				restoreDetails(target)
 				restoreScroll(target)
