@@ -1073,15 +1073,16 @@ motion capture needs advancing counters. The PNG capture uses a local
 Chrome-family browser; pass `--browser <path>` or set `DETENT_CAPTURE_BROWSER`
 when auto-detection cannot find one.
 
-The CI browser visual gate runs Playwright when a PR changes UI-sensitive
-paths such as `.github/workflows/ci.yml`, `package.json`, `static/**`,
-`internal/web/**`, `internal/cli/dev_runtime*.go`, `internal/devruntime/**`,
-Templ inputs, or screenshot/onboarding docs. It builds the PR's Detent binary,
-starts isolated `dev-runtime` instances on port `0`, captures current evidence
-under `tmp/playwright-evidence`, and uploads Playwright reports, traces,
-screenshots, and image diffs when assertions fail. PRs without UI-sensitive
-changes keep the required `Browser Visual` check fast by building the Detent
-binary and running a CLI smoke instead of starting Playwright.
+The CI browser visual gate runs Playwright when a PR changes UI-sensitive paths
+such as `.github/workflows/ci.yml`, `go.mod`, `go.sum`, `package.json`,
+`static/**`, `internal/web/**`, `internal/cli/dev_runtime*.go`,
+`internal/devruntime/**`, Templ inputs, or screenshot/onboarding docs. It builds
+the PR's Detent binary, starts isolated `dev-runtime` instances on port `0`,
+captures current evidence under `tmp/playwright-evidence`, and uploads
+Playwright reports, traces, screenshots, and image diffs when assertions fail.
+PRs without UI-sensitive changes keep the required `Browser Visual` check fast
+by building the Detent binary and running a CLI smoke instead of starting
+Playwright.
 
 Run the layout gate locally after installing Playwright's Chromium browser:
 

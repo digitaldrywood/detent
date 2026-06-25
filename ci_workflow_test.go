@@ -236,6 +236,7 @@ func TestKanbanBrowserDragDropRunsInVisualGate(t *testing.T) {
 	for _, want := range []string{
 		"npm run test:visual",
 		"tmp/detent --help",
+		"go.mod|go.sum",
 		"name: Upload browser visual evidence",
 		"tmp/playwright-evidence",
 		"name: Upload browser visual failure artifacts",
