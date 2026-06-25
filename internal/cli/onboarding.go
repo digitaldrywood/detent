@@ -572,7 +572,10 @@ func onboardingDetentFreshnessBlocksPhase2(evidence onboardingDetentFreshnessEvi
 	if evidence.SourceChecked && evidence.SourceStatus != "current" {
 		return true
 	}
-	return evidence.BinaryStatus == "stale"
+	if strings.TrimSpace(evidence.CanonicalMain) == "" {
+		return false
+	}
+	return evidence.BinaryStatus != "current"
 }
 
 func onboardingDetentFreshnessNotes(evidence onboardingDetentFreshnessEvidence) []string {
@@ -591,6 +594,9 @@ func onboardingDetentFreshnessNotes(evidence onboardingDetentFreshnessEvidence) 
 	}
 	if evidence.BinaryStatus == "stale" {
 		notes = append(notes, "installed Detent binary commit differs from fetched origin/main; reinstall before using local command recommendations")
+	}
+	if evidence.BinaryStatus == "not_found" || evidence.BinaryStatus == "error" || evidence.BinaryStatus == "unknown_commit" {
+		notes = append(notes, "installed Detent binary freshness could not be proven against fetched origin/main; install or reinstall before using local command recommendations")
 	}
 	return notes
 }

@@ -968,6 +968,59 @@ func TestOnboardingDraftAnswersCommandReportsCurrentDetentSourceAndBinary(t *tes
 	}
 }
 
+func TestOnboardingDraftAnswersCommandBlocksUnprovenDetentBinary(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
+	sourceRoot, _, canonicalMain := initOnboardingDetentSourceCheckout(t, false)
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(onboardingTestCommandRunner(detentVersionJSON("none"))),
+	)
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--format", "json",
+		"--config", filepath.Join(t.TempDir(), "global.yaml"),
+		"onboarding", "draft-answers",
+		"--detent-source-root", sourceRoot,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		Confidence      string `json:"confidence"`
+		DetentFreshness struct {
+			CanonicalMain                string `json:"canonical_main"`
+			SourceStatus                 string `json:"source_status"`
+			BinaryCommit                 string `json:"binary_commit"`
+			BinaryStatus                 string `json:"binary_status"`
+			Phase2RecommendationsBlocked bool   `json:"phase2_recommendations_blocked"`
+		} `json:"detent_freshness"`
+		Notes []string `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	freshness := got.DetentFreshness
+	if freshness.CanonicalMain != canonicalMain || freshness.SourceStatus != "current" {
+		t.Fatalf("freshness = %#v, want current source at %s", freshness, canonicalMain)
+	}
+	if freshness.BinaryCommit != "none" || freshness.BinaryStatus != "unknown_commit" {
+		t.Fatalf("freshness = %#v, want unknown binary commit", freshness)
+	}
+	if !freshness.Phase2RecommendationsBlocked || got.Confidence != "needs-review" {
+		t.Fatalf("freshness = %#v confidence = %q, want blocked needs-review", freshness, got.Confidence)
+	}
+	if !containsSubstring(got.Notes, "installed Detent binary freshness could not be proven against fetched origin/main") {
+		t.Fatalf("notes = %#v, want unproven binary stop guidance", got.Notes)
+	}
+}
+
 func TestOnboardingDraftAnswersCommandAcceptsIdentityOverrides(t *testing.T) {
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
 	answersPath := filepath.Join(t.TempDir(), "answers.env")
