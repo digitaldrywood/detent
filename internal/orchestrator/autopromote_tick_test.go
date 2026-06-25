@@ -77,6 +77,30 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			},
 		},
 		{
+			name: "degraded pull request hydration waits",
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+			},
+			issue: autoPromoteTickIssue("issue-degraded-pr", []string{"bug"}, &connector.PullRequest{
+				Number:                  391,
+				URL:                     "https://github.test/digitaldrywood/detent/pull/391",
+				State:                   "OPEN",
+				MergeableState:          "clean",
+				CIStatus:                "success",
+				CodexReviewState:        "COMMENTED",
+				CodexReviewSubmittedAt:  &oldReview,
+				HydrationDegradedReason: connector.PullRequestHydrationReasonStaleCachedPullData,
+			}),
+			wantLogFragments: []string{
+				"reason=pull_request_hydration_unavailable",
+				"pull_request_hydration_degraded_reason=stale_cached_pull_request",
+			},
+			rejectLogFragments: []string{
+				"target_state=Merging",
+			},
+		},
+		{
 			name: "routes P1 findings to rework",
 			cfg: AutoPromoteConfig{
 				Enabled:       true,

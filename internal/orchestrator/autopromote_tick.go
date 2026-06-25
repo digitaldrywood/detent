@@ -855,6 +855,7 @@ func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 
 	pullRequest := issue.PullRequest
 	summary.PullRequestHydrationUnavailableReason = pullRequestHydrationUnavailableReason(pullRequest)
+	summary.PullRequestHydrationDegradedReason = pullRequestHydrationDegradedReason(pullRequest)
 	if normalizePullRequestState(pullRequest.State) != "open" {
 		return summary
 	}
