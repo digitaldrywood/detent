@@ -3,7 +3,9 @@ package orchestrator
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -705,6 +707,165 @@ func TestDispatchIssueRequiresSharedGlobalSlot(t *testing.T) {
 	bravoRequest := receiveWorkerHostRunRequest(t, bravoRunner.started)
 	if bravoRequest.Issue.ID != bravoIssue.ID {
 		t.Fatalf("bravo RunRequest.Issue.ID = %q, want %q", bravoRequest.Issue.ID, bravoIssue.ID)
+	}
+}
+
+func TestDispatchReadyIssuesAllowsOneMergeWorkerPerProject(t *testing.T) {
+	t.Parallel()
+
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 2}))
+	now := time.Date(2026, 6, 25, 13, 0, 0, 0, time.UTC)
+	ctx := t.Context()
+
+	alphaRunner := newWorkerHostRunner()
+	alphaCfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
+		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:          []string{"Done"},
+		Project:                 scheduler.ProjectCandidate{ID: "alpha", Weight: 1},
+	})
+	alpha := Orchestrator{
+		cfg:                alphaCfg,
+		supervisor:         newTestSupervisor(t, alphaRunner, alphaCfg),
+		runResults:         make(chan runpkg.Completion),
+		globalDispatchGate: globalGate,
+	}
+	alphaState := newState(alphaCfg)
+	alphaFirst := dispatchTestIssueWithPullRequest("issue-alpha-first", "Merging", "OPEN")
+	alphaSecond := dispatchTestIssueWithPullRequest("issue-alpha-second", "Merging", "OPEN")
+
+	alpha.dispatchReadyIssues(ctx, &alphaState, []connector.Issue{alphaFirst, alphaSecond}, now)
+	alphaRequest := receiveWorkerHostRunRequest(t, alphaRunner.started)
+	if alphaRequest.Issue.ID != alphaFirst.ID {
+		t.Fatalf("alpha RunRequest.Issue.ID = %q, want %q", alphaRequest.Issue.ID, alphaFirst.ID)
+	}
+	if len(alphaState.Running) != 1 {
+		t.Fatalf("alpha Running len = %d, want 1", len(alphaState.Running))
+	}
+
+	bravoRunner := newWorkerHostRunner()
+	bravoCfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
+		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:          []string{"Done"},
+		Project:                 scheduler.ProjectCandidate{ID: "bravo", Weight: 1},
+	})
+	bravo := Orchestrator{
+		cfg:                bravoCfg,
+		supervisor:         newTestSupervisor(t, bravoRunner, bravoCfg),
+		runResults:         make(chan runpkg.Completion),
+		globalDispatchGate: globalGate,
+	}
+	bravoState := newState(bravoCfg)
+	bravoIssue := dispatchTestIssueWithPullRequest("issue-bravo", "Merging", "OPEN")
+
+	bravo.dispatchReadyIssues(ctx, &bravoState, []connector.Issue{bravoIssue}, now.Add(time.Second))
+	bravoRequest := receiveWorkerHostRunRequest(t, bravoRunner.started)
+	if bravoRequest.Issue.ID != bravoIssue.ID {
+		t.Fatalf("bravo RunRequest.Issue.ID = %q, want %q", bravoRequest.Issue.ID, bravoIssue.ID)
+	}
+	if len(bravoState.Running) != 1 {
+		t.Fatalf("bravo Running len = %d, want 1", len(bravoState.Running))
+	}
+
+	for _, running := range alphaState.Running {
+		if running.cancel != nil {
+			running.cancel()
+		}
+	}
+	for _, running := range bravoState.Running {
+		if running.cancel != nil {
+			running.cancel()
+		}
+	}
+}
+
+func TestDispatchReadyIssuesLogsMergeSlotDecisionAndStopsAfterGlobalWait(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 14, 0, 0, 0, time.UTC)
+	ctx := t.Context()
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	lowerPriorityProject := scheduler.ProjectCandidate{ID: "alpha", Weight: 1}
+	lowerSlot, ok, decision, err := globalGate.TryAcquireWithDecision(ctx, lowerPriorityProject, scheduler.SlotRequest{
+		State:    "Todo",
+		Priority: 2,
+	}, now)
+	if err != nil {
+		t.Fatalf("lower-priority TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("lower-priority TryAcquireWithDecision() ok = false, want true; decision = %#v", decision)
+	}
+	t.Cleanup(func() {
+		if err := globalGate.Release(lowerSlot); err != nil && !errors.Is(err, scheduler.ErrSlotNotHeld) {
+			t.Fatalf("Release() error = %v", err)
+		}
+	})
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
+		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:          []string{"Done"},
+		Project:                 scheduler.ProjectCandidate{ID: "zulu", Weight: 1},
+	})
+	runner := newWorkerHostRunner()
+	var logs strings.Builder
+	orch := Orchestrator{
+		cfg:                cfg,
+		supervisor:         newTestSupervisor(t, runner, cfg),
+		runResults:         make(chan runpkg.Completion),
+		globalDispatchGate: globalGate,
+		logger:             slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+	first := dispatchTestIssueWithPullRequest("issue-merge-first", "Merging", "OPEN")
+	second := dispatchTestIssueWithPullRequest("issue-merge-second", "Merging", "OPEN")
+
+	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{first, second}, now.Add(time.Second))
+
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected merge dispatch while global slot is held = %#v", request)
+	default:
+	}
+	if len(state.Running) != 0 {
+		t.Fatalf("Running len = %d, want 0", len(state.Running))
+	}
+	logText := logs.String()
+	if count := strings.Count(logText, "merge_worker_slot_wait"); count != 1 {
+		t.Fatalf("merge_worker_slot_wait count = %d, want 1; logs = %q", count, logText)
+	}
+	for _, fragment := range []string{
+		"reason=global_capacity_full",
+		"global_capacity=1",
+		"global_used=1",
+		"global_available=0",
+		"project_state_capacity=1",
+		"project_state_used=0",
+		"project_state_available=1",
+		"lower_priority_running=1",
+		"selected_project_id=zulu",
+		"selected_state=merging",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs %q missing fragment %q", logText, fragment)
+		}
+	}
+	if strings.Contains(logText, "merge_worker_failure") {
+		t.Fatalf("logs %q contain merge_worker_failure, want merge slot wait telemetry instead", logText)
 	}
 }
 
