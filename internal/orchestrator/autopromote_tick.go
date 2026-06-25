@@ -18,7 +18,13 @@ const (
 )
 
 type autoPromoteTickResult struct {
-	transitioned map[string]struct{}
+	transitioned       map[string]struct{}
+	dispatchCandidates []connector.Issue
+}
+
+type staleMergingPullRequestDecision struct {
+	targetState string
+	reason      string
 }
 
 func (o *Orchestrator) autoPromoteHumanReviewIssues(
@@ -68,6 +74,12 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 		result.transitioned[issueID] = struct{}{}
 		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+		if targetState == autoPromoteMergingState {
+			promoted := cloneIssue(issue)
+			promoted.State = targetState
+			result.dispatchCandidates = append(result.dispatchCandidates, promoted)
+			o.logMergeWorkerPickup(promoted, "auto_promote")
+		}
 	}
 	if len(result.transitioned) == 0 {
 		return autoPromoteTickResult{}
@@ -113,6 +125,251 @@ func (o *Orchestrator) reconcileStaleTodoPullRequestIssues(
 	return transitioned
 }
 
+func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) map[string]struct{} {
+	transitioned := map[string]struct{}{}
+	for _, issue := range issuesInStates(issues, []string{autoPromoteMergingState}) {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if staleMergingPullRequestDispatchActive(state, issueID) {
+			continue
+		}
+		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg.TerminalStates)
+		if decision.targetState == "" {
+			continue
+		}
+		if !o.applyStaleMergingPullRequestDecision(ctx, state, issue, decision, now) {
+			continue
+		}
+		transitioned[issueID] = struct{}{}
+		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+	}
+	if len(transitioned) == 0 {
+		return nil
+	}
+	return transitioned
+}
+
+func staleMergingPullRequestDecisionForIssue(issue connector.Issue, terminalStates []string) staleMergingPullRequestDecision {
+	if strings.TrimSpace(issue.ID) == "" {
+		return staleMergingPullRequestDecision{}
+	}
+	if closedCompletedIssueNeedsStatusReconciliation(issue, terminalStates) {
+		return staleMergingPullRequestDecision{targetState: doneStateName(terminalStates), reason: "issue_closed_completed"}
+	}
+	pullRequest := issue.PullRequest
+	if pullRequest == nil {
+		return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: string(AutoPromoteReasonMissingPullRequest)}
+	}
+	switch normalizePullRequestState(pullRequest.State) {
+	case "merged":
+		return staleMergingPullRequestDecision{targetState: doneStateName(terminalStates), reason: "pull_request_merged"}
+	case "open":
+		if pullRequest.Draft {
+			return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: "draft_pull_request"}
+		}
+		if autoPromoteMergeConflicts(pullRequest.MergeableState) {
+			return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: string(AutoPromoteReasonMergeConflicts)}
+		}
+		if staleMergingCIRed(pullRequest.CIStatus) {
+			return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: string(AutoPromoteReasonCINotGreen)}
+		}
+		return staleMergingPullRequestDecision{}
+	default:
+		return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: "pull_request_not_open"}
+	}
+}
+
+func (o *Orchestrator) applyStaleMergingPullRequestDecision(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	decision staleMergingPullRequestDecision,
+	now time.Time,
+) bool {
+	issueID := strings.TrimSpace(issue.ID)
+	if err := o.connector.UpdateIssueState(ctx, issueID, decision.targetState); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"stale_merging_pr_reconciliation_failed",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"reason", decision.reason,
+				"target_state", decision.targetState,
+				"error", err,
+			)
+		}
+		return false
+	}
+
+	body := staleMergingPullRequestComment(issue, decision)
+	if strings.TrimSpace(body) != "" {
+		if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
+			o.logger.Warn(
+				"stale_merging_pr_reconciliation_comment_failed",
+				"issue_id", issueID,
+				"identifier", issue.Identifier,
+				"reason", decision.reason,
+				"target_state", decision.targetState,
+				"error", err,
+			)
+		}
+	}
+
+	o.logStaleMergingPullRequestDecision(issue, decision)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "stale_merging_pr_reconciled",
+		Message: "reconciled stale Merging PR for " + issueLabel(issue) + " to " + decision.targetState + ": " + decision.reason,
+	})
+	return true
+}
+
+func staleMergingPullRequestComment(issue connector.Issue, decision staleMergingPullRequestDecision) string {
+	var b strings.Builder
+	b.WriteString("Reconciled this issue from Merging to ")
+	b.WriteString(decision.targetState)
+	b.WriteString(".")
+	b.WriteString("\n\n- reason: ")
+	b.WriteString(decision.reason)
+	if issue.PullRequest != nil {
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			b.WriteString("\n- pull request: ")
+			b.WriteString(url)
+		}
+		if mergeableState := strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState)); mergeableState != "" {
+			b.WriteString("\n- mergeable_state: ")
+			b.WriteString(mergeableState)
+		}
+		if ciStatus := strings.TrimSpace(issue.PullRequest.CIStatus); ciStatus != "" {
+			b.WriteString("\n- ci_status: ")
+			b.WriteString(ciStatus)
+		}
+	}
+	return b.String()
+}
+
+func (o *Orchestrator) logStaleMergingPullRequestDecision(issue connector.Issue, decision staleMergingPullRequestDecision) {
+	if o.logger == nil {
+		return
+	}
+	attrs := mergeWorkerLogAttrs(issue,
+		"reason", decision.reason,
+		"target_state", decision.targetState,
+	)
+	o.logger.Info("stale_merging_pr_reconciled", attrs...)
+}
+
+func (o *Orchestrator) logMergeWorkerPickup(issue connector.Issue, source string) {
+	if o.logger == nil || !mergeWorkerIssue(issue) {
+		return
+	}
+	attrs := mergeWorkerLogAttrs(issue, "source", strings.TrimSpace(source))
+	o.logger.Info("merge_worker_pickup", attrs...)
+}
+
+func (o *Orchestrator) logMergeWorkerAttempt(issue connector.Issue, attempt int, workerHost string) {
+	if o.logger == nil || !mergeWorkerIssue(issue) {
+		return
+	}
+	attrs := mergeWorkerLogAttrs(issue,
+		"attempt", attempt,
+		"worker_host", strings.TrimSpace(workerHost),
+	)
+	o.logger.Info("merge_worker_attempt", attrs...)
+}
+
+func (o *Orchestrator) logMergeWorkerSuccess(issue connector.Issue, finalState string) {
+	if o.logger == nil || !mergeWorkerIssue(issue) {
+		return
+	}
+	attrs := mergeWorkerLogAttrs(issue, "final_state", strings.TrimSpace(finalState))
+	o.logger.Info("merge_worker_success", attrs...)
+}
+
+func (o *Orchestrator) logMergeWorkerFailure(issue connector.Issue, reason string, err error) {
+	if o.logger == nil || !mergeWorkerIssue(issue) {
+		return
+	}
+	attrs := mergeWorkerLogAttrs(issue, "reason", strings.TrimSpace(reason))
+	if err != nil {
+		attrs = append(attrs, "error", err)
+	}
+	o.logger.Warn("merge_worker_failure", attrs...)
+}
+
+func mergeWorkerIssue(issue connector.Issue) bool {
+	return normalizeState(issue.State) == normalizeState(autoPromoteMergingState)
+}
+
+func mergeWorkerLogAttrs(issue connector.Issue, attrs ...any) []any {
+	out := []any{
+		"issue_id", strings.TrimSpace(issue.ID),
+		"identifier", issue.Identifier,
+	}
+	if issue.PullRequest != nil {
+		if issue.PullRequest.Number > 0 {
+			out = append(out, "pull_request_number", issue.PullRequest.Number)
+		}
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			out = append(out, "pull_request", url)
+		}
+		if mergeableState := strings.TrimSpace(issue.PullRequest.MergeableState); mergeableState != "" {
+			out = append(out, "mergeable_state", strings.ToLower(mergeableState))
+		}
+		if ciStatus := strings.TrimSpace(issue.PullRequest.CIStatus); ciStatus != "" {
+			out = append(out, "ci_status", ciStatus)
+		}
+		if headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA); headSHA != "" {
+			out = append(out, "head_sha", headSHA)
+		}
+	}
+	return append(out, attrs...)
+}
+
+func staleMergingPullRequestDispatchActive(state *State, issueID string) bool {
+	if state == nil {
+		return false
+	}
+	if _, ok := state.Running[issueID]; ok {
+		return true
+	}
+	if _, ok := state.Claimed[issueID]; ok {
+		return true
+	}
+	if _, ok := state.Retry[issueID]; ok {
+		return true
+	}
+	return false
+}
+
+func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []connector.Issue) []connector.Issue {
+	candidates := staleMergingDispatchCandidates(issues)
+	if len(candidates) == 0 {
+		return nil
+	}
+	out := make([]connector.Issue, 0, len(candidates))
+	for _, issue := range candidates {
+		issueID := strings.TrimSpace(issue.ID)
+		if issueID == "" {
+			continue
+		}
+		if staleMergingPullRequestDispatchActive(state, issueID) {
+			continue
+		}
+		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
+		o.logMergeWorkerPickup(issue, "stale_merging")
+		out = append(out, issue)
+	}
+	return out
+}
+
 func staleMergingDispatchCandidates(issues []connector.Issue) []connector.Issue {
 	candidates := []connector.Issue{}
 	for _, issue := range issuesInStates(issues, []string{autoPromoteMergingState}) {
@@ -144,6 +401,15 @@ func staleMergingIssueReadyForDispatch(issue connector.Issue) bool {
 func staleMergingCIGreen(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "green", "pass", "passed", "success", "successful":
+		return true
+	default:
+		return false
+	}
+}
+
+func staleMergingCIRed(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "red", "fail", "failed", "failure", "error", "cancelled", "canceled":
 		return true
 	default:
 		return false
@@ -260,9 +526,13 @@ func (o *Orchestrator) logStaleTodoPullRequestDecision(issue connector.Issue, de
 }
 
 func (o *Orchestrator) clearAutoPromotedIssueDispatchMemory(state *State, issueID string) {
+	if state == nil {
+		return
+	}
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.Blocked, issueID)
+	delete(state.Completed, issueID)
 }
 
 func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.Issue, now time.Time) {
