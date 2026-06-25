@@ -2871,6 +2871,9 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 	if issue.PullRequest.QuietWaitSeconds > 0 {
 		parts = append(parts, "quiet "+formatDuration(float64(issue.PullRequest.QuietWaitSeconds)))
 	}
+	if issue.PullRequest.CIQueueSeconds > 0 {
+		parts = append(parts, "queued "+formatDuration(float64(issue.PullRequest.CIQueueSeconds)))
+	}
 	if issue.PullRequest.CIDurationSeconds > 0 {
 		parts = append(parts, "CI "+formatDuration(float64(issue.PullRequest.CIDurationSeconds)))
 	}
@@ -2916,6 +2919,9 @@ func prPipelineSlowChecks(checks []telemetry.PullRequestCheck) string {
 		}
 		if check.DurationSeconds > 0 {
 			name += " " + formatDuration(float64(check.DurationSeconds))
+		}
+		if check.QueueSeconds > 0 {
+			name += " (queued " + formatDuration(float64(check.QueueSeconds)) + ")"
 		}
 		labels = append(labels, name)
 	}

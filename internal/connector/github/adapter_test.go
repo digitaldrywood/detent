@@ -1259,7 +1259,7 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 		{
 			method: http.MethodGet,
 			path:   "/repos/digitaldrywood/detent/commits/sha-190/check-runs?per_page=100",
-			body:   `{"check_runs":[{"name":"Verify (ubuntu-latest)","status":"completed","conclusion":"success","started_at":"2026-06-05T11:00:00Z","completed_at":"2026-06-05T11:03:00Z"},{"name":"GoReleaser Snapshot","status":"completed","conclusion":"failure","started_at":"2026-06-05T11:03:30Z","completed_at":"2026-06-05T11:11:30Z"},{"name":"Windows Core","status":"in_progress","conclusion":"","started_at":"2026-06-05T11:05:00Z","completed_at":null}]}`,
+			body:   `{"check_runs":[{"name":"Verify (ubuntu-latest)","status":"completed","conclusion":"success","created_at":"2026-06-05T10:59:00Z","started_at":"2026-06-05T11:00:00Z","completed_at":"2026-06-05T11:03:00Z"},{"name":"GoReleaser Snapshot","status":"completed","conclusion":"failure","created_at":"2026-06-05T11:00:30Z","started_at":"2026-06-05T11:03:30Z","completed_at":"2026-06-05T11:11:30Z"},{"name":"Windows Core","status":"in_progress","conclusion":"","created_at":"2026-06-05T11:04:00Z","started_at":"2026-06-05T11:05:00Z","completed_at":null}]}`,
 		},
 		{
 			method: http.MethodGet,
@@ -1297,14 +1297,17 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	if pr.CIDurationSeconds != 0 {
 		t.Fatalf("CIDurationSeconds = %d, want 0 while checks are running", pr.CIDurationSeconds)
 	}
+	if pr.CIQueueSeconds != 60 {
+		t.Fatalf("CIQueueSeconds = %d, want 60", pr.CIQueueSeconds)
+	}
 	if len(pr.SlowChecks) != 2 {
 		t.Fatalf("SlowChecks len = %d, want 2: %#v", len(pr.SlowChecks), pr.SlowChecks)
 	}
-	if pr.SlowChecks[0].Name != "GoReleaser Snapshot" || pr.SlowChecks[0].DurationSeconds != 480 {
-		t.Fatalf("SlowChecks[0] = %#v, want GoReleaser Snapshot 480s", pr.SlowChecks[0])
+	if pr.SlowChecks[0].Name != "GoReleaser Snapshot" || pr.SlowChecks[0].DurationSeconds != 480 || pr.SlowChecks[0].QueueSeconds != 180 {
+		t.Fatalf("SlowChecks[0] = %#v, want GoReleaser Snapshot 480s active and 180s queued", pr.SlowChecks[0])
 	}
-	if pr.SlowChecks[1].Name != "Verify (ubuntu-latest)" || pr.SlowChecks[1].DurationSeconds != 180 {
-		t.Fatalf("SlowChecks[1] = %#v, want Verify 180s", pr.SlowChecks[1])
+	if pr.SlowChecks[1].Name != "Verify (ubuntu-latest)" || pr.SlowChecks[1].DurationSeconds != 180 || pr.SlowChecks[1].QueueSeconds != 60 {
+		t.Fatalf("SlowChecks[1] = %#v, want Verify 180s active and 60s queued", pr.SlowChecks[1])
 	}
 	if len(pr.RunningChecks) != 1 || pr.RunningChecks[0] != "Windows Core" {
 		t.Fatalf("RunningChecks = %#v, want Windows Core", pr.RunningChecks)
@@ -1316,27 +1319,70 @@ func TestConnectorFetchIssuesByStatesAttachesPipelinePullRequest(t *testing.T) {
 	}
 }
 
-func TestCheckRunTelemetryReportsCompletedSpan(t *testing.T) {
+func TestCheckRunTelemetryReportsQueueAndCompletedSpan(t *testing.T) {
 	t.Parallel()
 
+	created := time.Date(2026, 6, 5, 10, 58, 0, 0, time.UTC)
 	start := time.Date(2026, 6, 5, 11, 0, 0, 0, time.UTC)
 	verifyDone := start.Add(3 * time.Minute)
+	snapshotCreated := start.Add(time.Minute)
 	snapshotStart := verifyDone.Add(30 * time.Second)
 	snapshotDone := snapshotStart.Add(8 * time.Minute)
 
-	durationSeconds, slowChecks, runningChecks := checkRunTelemetry([]restCheckRun{
-		{Name: "Verify (ubuntu-latest)", Status: "completed", Conclusion: "success", StartedAt: &start, CompletedAt: &verifyDone},
-		{Name: "GoReleaser Snapshot", Status: "completed", Conclusion: "success", StartedAt: &snapshotStart, CompletedAt: &snapshotDone},
+	summary := checkRunTelemetry([]restCheckRun{
+		{Name: "Verify (ubuntu-latest)", Status: "completed", Conclusion: "success", CreatedAt: &created, StartedAt: &start, CompletedAt: &verifyDone},
+		{Name: "GoReleaser Snapshot", Status: "completed", Conclusion: "success", CreatedAt: &snapshotCreated, StartedAt: &snapshotStart, CompletedAt: &snapshotDone},
+	}, nil)
+
+	if summary.QueueSeconds != 120 {
+		t.Fatalf("QueueSeconds = %d, want 120", summary.QueueSeconds)
+	}
+	if summary.DurationSeconds != 690 {
+		t.Fatalf("DurationSeconds = %d, want 690", summary.DurationSeconds)
+	}
+	if len(summary.SlowChecks) != 2 || summary.SlowChecks[0].Name != "GoReleaser Snapshot" || summary.SlowChecks[0].QueueSeconds != 150 {
+		t.Fatalf("SlowChecks = %#v, want snapshot first with queued runtime", summary.SlowChecks)
+	}
+	if len(summary.RunningChecks) != 0 {
+		t.Fatalf("RunningChecks = %#v, want none", summary.RunningChecks)
+	}
+}
+
+func TestCheckRunTelemetryUsesWorkflowRunTimingForQueue(t *testing.T) {
+	t.Parallel()
+
+	runCreated := time.Date(2026, 6, 5, 10, 58, 0, 0, time.UTC)
+	runStarted := runCreated.Add(90 * time.Second)
+	checkStarted := time.Date(2026, 6, 5, 11, 0, 0, 0, time.UTC)
+	checkCompleted := checkStarted.Add(3 * time.Minute)
+
+	summary := checkRunTelemetry([]restCheckRun{
+		{Name: "Verify (ubuntu-latest)", Status: "completed", Conclusion: "success", StartedAt: &checkStarted, CompletedAt: &checkCompleted},
+	}, []restWorkflowRun{
+		{ID: 28196652213, CreatedAt: &runCreated, RunStartedAt: &runStarted},
 	})
 
-	if durationSeconds != 690 {
-		t.Fatalf("durationSeconds = %d, want 690", durationSeconds)
+	if summary.QueueSeconds != 90 {
+		t.Fatalf("QueueSeconds = %d, want 90", summary.QueueSeconds)
 	}
-	if len(slowChecks) != 2 || slowChecks[0].Name != "GoReleaser Snapshot" {
-		t.Fatalf("slowChecks = %#v, want snapshot first", slowChecks)
+	if summary.DurationSeconds != 180 {
+		t.Fatalf("DurationSeconds = %d, want 180", summary.DurationSeconds)
 	}
-	if len(runningChecks) != 0 {
-		t.Fatalf("runningChecks = %#v, want none", runningChecks)
+}
+
+func TestCheckRunWorkflowRunIDs(t *testing.T) {
+	t.Parallel()
+
+	got := checkRunWorkflowRunIDs([]restCheckRun{
+		{DetailsURL: "https://github.com/digitaldrywood/detent/actions/runs/28196652213/job/83525095026"},
+		{DetailsURL: "https://github.com/digitaldrywood/detent/actions/runs/28196652213/job/83525095027"},
+		{DetailsURL: "https://github.com/digitaldrywood/detent/actions/runs/28196652214"},
+		{DetailsURL: "https://example.com/not-actions"},
+	})
+
+	want := []int64{28196652213, 28196652214}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checkRunWorkflowRunIDs() = %#v, want %#v", got, want)
 	}
 }
 

@@ -217,6 +217,7 @@ type PullRequest struct {
 	CIStatus                   string             `json:"ci_status,omitempty"`
 	CheckRunCount              int                `json:"check_run_count,omitempty"`
 	StatusContextCount         int                `json:"status_context_count,omitempty"`
+	CIQueueSeconds             int64              `json:"ci_queue_seconds,omitempty"`
 	CIDurationSeconds          int64              `json:"ci_duration_seconds,omitempty"`
 	QuietWaitSeconds           int64              `json:"quiet_wait_seconds,omitempty"`
 	SlowChecks                 []PullRequestCheck `json:"slow_checks,omitempty"`
@@ -228,6 +229,7 @@ type PullRequestCheck struct {
 	Name            string `json:"name,omitempty"`
 	Status          string `json:"status,omitempty"`
 	Conclusion      string `json:"conclusion,omitempty"`
+	QueueSeconds    int64  `json:"queue_seconds,omitempty"`
 	DurationSeconds int64  `json:"duration_seconds,omitempty"`
 }
 

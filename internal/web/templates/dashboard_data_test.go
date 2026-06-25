@@ -1624,10 +1624,11 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 						PullRequest: &telemetry.PullRequest{
 							Number:            143,
 							CIStatus:          "pending",
+							CIQueueSeconds:    120,
 							CIDurationSeconds: 510,
 							QuietWaitSeconds:  600,
 							SlowChecks: []telemetry.PullRequestCheck{
-								{Name: "GoReleaser Snapshot", DurationSeconds: 247},
+								{Name: "GoReleaser Snapshot", DurationSeconds: 247, QueueSeconds: 60},
 							},
 							RunningChecks:    []string{"Test Coverage"},
 							CodexReviewState: "P2",
@@ -1679,7 +1680,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 			},
 			want: []pipelineCardSnapshot{
 				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m", WaitDetail: "PR hydration using stale cached data until 15:05 UTC"},
-				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s / running Test Coverage"},
+				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / queued 2m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s (queued 1m 0s) / running Test Coverage"},
 				{Lane: "Done today", IssueNumber: "#144", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "P1", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#145", Title: "Done lane unverified PR", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#146", Title: "Cancelled today PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "45m 0s"},

@@ -611,6 +611,7 @@ var (
 	issueURLPattern       = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)`)
 	numberedListPattern   = regexp.MustCompile(`^\d+[.)]\s+`)
 	branchKeyPattern      = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+	actionRunURLPattern   = regexp.MustCompile(`/actions/runs/([0-9]+)(?:/|$)`)
 )
 
 type pageInfo struct {
@@ -815,8 +816,16 @@ type restCheckRun struct {
 	Status      string     `json:"status"`
 	Conclusion  string     `json:"conclusion"`
 	Name        string     `json:"name"`
+	DetailsURL  string     `json:"details_url"`
+	CreatedAt   *time.Time `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at"`
+}
+
+type restWorkflowRun struct {
+	ID           int64      `json:"id"`
+	CreatedAt    *time.Time `json:"created_at"`
+	RunStartedAt *time.Time `json:"run_started_at"`
 }
 
 type restCommitStatus struct {
@@ -829,9 +838,17 @@ type pullRequestCI struct {
 	State              string
 	CheckRunCount      int
 	StatusContextCount int
+	CIQueueSeconds     int64
 	CIDurationSeconds  int64
 	SlowChecks         []connector.PullRequestCheck
 	RunningChecks      []string
+}
+
+type checkRunTelemetrySummary struct {
+	QueueSeconds    int64
+	DurationSeconds int64
+	SlowChecks      []connector.PullRequestCheck
+	RunningChecks   []string
 }
 
 type restComment struct {
@@ -2232,6 +2249,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		CIStatus:                     normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
 		CheckRunCount:                pullRequest.CI.CheckRunCount,
 		StatusContextCount:           pullRequest.CI.StatusContextCount,
+		CIQueueSeconds:               pullRequest.CI.CIQueueSeconds,
 		CIDurationSeconds:            pullRequest.CI.CIDurationSeconds,
 		SlowChecks:                   append([]connector.PullRequestCheck(nil), pullRequest.CI.SlowChecks...),
 		RunningChecks:                append([]string(nil), pullRequest.CI.RunningChecks...),
@@ -2432,18 +2450,23 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	if err != nil {
 		return pullRequestCI{}, fmt.Errorf("fetch github check runs: %w", err)
 	}
+	workflowRuns, workflowRunErr := fetchRESTWorkflowRunsForCheckRuns(ctx, c.client, repo, checkRuns)
+	if workflowRunErr != nil {
+		workflowRuns = nil
+	}
 	statuses, err := fetchRESTList[restCommitStatus](ctx, c.client, restCommitStatusesPath(repo, sha))
 	if err != nil {
 		return pullRequestCI{}, fmt.Errorf("fetch github commit statuses: %w", err)
 	}
-	durationSeconds, slowChecks, runningChecks := checkRunTelemetry(checkRuns)
+	telemetry := checkRunTelemetry(checkRuns, workflowRuns)
 	return pullRequestCI{
 		State:              combinedCIState(checkRunsState(checkRuns), commitStatusesState(statuses)),
 		CheckRunCount:      len(checkRuns),
 		StatusContextCount: len(statuses),
-		CIDurationSeconds:  durationSeconds,
-		SlowChecks:         slowChecks,
-		RunningChecks:      runningChecks,
+		CIQueueSeconds:     telemetry.QueueSeconds,
+		CIDurationSeconds:  telemetry.DurationSeconds,
+		SlowChecks:         telemetry.SlowChecks,
+		RunningChecks:      telemetry.RunningChecks,
 	}, nil
 }
 
@@ -3532,6 +3555,10 @@ func restCommitCheckRunsPath(repo pullRequestRepo, sha string) string {
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/commits/" + url.PathEscape(sha) + "/check-runs?" + values.Encode()
 }
 
+func restWorkflowRunPath(repo pullRequestRepo, runID int64) string {
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/actions/runs/" + strconv.FormatInt(runID, 10)
+}
+
 func restCommitStatusesPath(repo pullRequestRepo, sha string) string {
 	values := url.Values{}
 	values.Set("per_page", "100")
@@ -3570,6 +3597,43 @@ func fetchRESTCheckRuns(ctx context.Context, client *Client, path string) ([]res
 		}
 	}
 	return checkRuns, nil
+}
+
+func fetchRESTWorkflowRunsForCheckRuns(ctx context.Context, client *Client, repo pullRequestRepo, checkRuns []restCheckRun) ([]restWorkflowRun, error) {
+	runIDs := checkRunWorkflowRunIDs(checkRuns)
+	runs := make([]restWorkflowRun, 0, len(runIDs))
+	for _, runID := range runIDs {
+		var run restWorkflowRun
+		_, err := client.rest(ctx, http.MethodGet, restWorkflowRunPath(repo, runID), nil, &run)
+		if err != nil {
+			return nil, err
+		}
+		runs = append(runs, run)
+	}
+	return runs, nil
+}
+
+func checkRunWorkflowRunIDs(checkRuns []restCheckRun) []int64 {
+	seen := map[int64]struct{}{}
+	for _, checkRun := range checkRuns {
+		match := actionRunURLPattern.FindStringSubmatch(strings.TrimSpace(checkRun.DetailsURL))
+		if len(match) != 2 {
+			continue
+		}
+		runID, err := strconv.ParseInt(match[1], 10, 64)
+		if err != nil || runID <= 0 {
+			continue
+		}
+		seen[runID] = struct{}{}
+	}
+	runIDs := make([]int64, 0, len(seen))
+	for runID := range seen {
+		runIDs = append(runIDs, runID)
+	}
+	sort.Slice(runIDs, func(i, j int) bool {
+		return runIDs[i] < runIDs[j]
+	})
+	return runIDs
 }
 
 func githubIssueNodeFromREST(ref issueRef, issue restIssue) githubIssueNode {
@@ -3872,15 +3936,24 @@ func checkRunsState(checkRuns []restCheckRun) string {
 	return "success"
 }
 
-func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequestCheck, []string) {
-	var startedAt *time.Time
+func checkRunTelemetry(checkRuns []restCheckRun, workflowRuns []restWorkflowRun) checkRunTelemetrySummary {
+	var queueCreatedAt *time.Time
+	var queueStartedAt *time.Time
+	var checkStartedAt *time.Time
 	var completedAt *time.Time
 	hasRunning := false
 	slowChecks := make([]connector.PullRequestCheck, 0, len(checkRuns))
 	runningChecks := make([]string, 0, len(checkRuns))
 
+	for _, run := range workflowRuns {
+		queueCreatedAt = earliestGitHubTime(queueCreatedAt, run.CreatedAt)
+		queueStartedAt = earliestGitHubTime(queueStartedAt, run.RunStartedAt)
+	}
+
 	for _, checkRun := range checkRuns {
-		startedAt = earliestGitHubTime(startedAt, checkRun.StartedAt)
+		queueCreatedAt = earliestGitHubTime(queueCreatedAt, checkRun.CreatedAt)
+		queueStartedAt = earliestGitHubTime(queueStartedAt, checkRun.StartedAt)
+		checkStartedAt = earliestGitHubTime(checkStartedAt, checkRun.StartedAt)
 		completedAt = latestGitHubTime(completedAt, checkRun.CompletedAt)
 
 		name := strings.TrimSpace(checkRun.Name)
@@ -3894,10 +3967,15 @@ func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequest
 		if name == "" || checkRun.StartedAt == nil || checkRun.CompletedAt == nil || checkRun.CompletedAt.Before(*checkRun.StartedAt) {
 			continue
 		}
+		var queueSeconds int64
+		if checkRun.CreatedAt != nil && !checkRun.StartedAt.Before(*checkRun.CreatedAt) {
+			queueSeconds = int64(checkRun.StartedAt.Sub(*checkRun.CreatedAt) / time.Second)
+		}
 		slowChecks = append(slowChecks, connector.PullRequestCheck{
 			Name:            name,
 			Status:          status,
 			Conclusion:      conclusion,
+			QueueSeconds:    queueSeconds,
 			DurationSeconds: int64(checkRun.CompletedAt.Sub(*checkRun.StartedAt) / time.Second),
 		})
 	}
@@ -3918,10 +3996,19 @@ func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequest
 	}
 
 	var durationSeconds int64
-	if !hasRunning && startedAt != nil && completedAt != nil && !completedAt.Before(*startedAt) {
-		durationSeconds = int64(completedAt.Sub(*startedAt) / time.Second)
+	if !hasRunning && checkStartedAt != nil && completedAt != nil && !completedAt.Before(*checkStartedAt) {
+		durationSeconds = int64(completedAt.Sub(*checkStartedAt) / time.Second)
 	}
-	return durationSeconds, slowChecks, runningChecks
+	var queueSeconds int64
+	if queueCreatedAt != nil && queueStartedAt != nil && !queueStartedAt.Before(*queueCreatedAt) {
+		queueSeconds = int64(queueStartedAt.Sub(*queueCreatedAt) / time.Second)
+	}
+	return checkRunTelemetrySummary{
+		QueueSeconds:    queueSeconds,
+		DurationSeconds: durationSeconds,
+		SlowChecks:      slowChecks,
+		RunningChecks:   runningChecks,
+	}
 }
 
 func earliestGitHubTime(current *time.Time, candidate *time.Time) *time.Time {

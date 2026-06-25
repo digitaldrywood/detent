@@ -387,11 +387,13 @@ switches the detected Go-installed binary to the release asset and pins future
 updates to release-binary management. Source builds still print the recommended
 command instead of overwriting the binary.
 
-CI runs the `Installer Smoke` job on Ubuntu and Windows against the current
-GitHub Release assets. The job runs `install.sh` and `install.ps1` in release
-mode, checks checksum output, confirms the requested install directory and
-installer lock metadata, then runs `detent update --check` and
-`detent update --yes` from the release-installer install.
+CI runs the `Installer Smoke` confidence job on Ubuntu and Windows against the
+current GitHub Release assets after merges to `main`, on release tags, on the
+nightly schedule, and from manual workflow dispatch. The job runs `install.sh`
+and `install.ps1` in release mode, checks checksum output, confirms the
+requested install directory and installer lock metadata, then runs
+`detent update --check` and `detent update --yes` from the release-installer
+install.
 
 Release self-updates verify SHA256 checksums fetched from GitHub releases. The
 checksum verifier supports detached minisign signature assets named
@@ -491,11 +493,11 @@ package-manager manifests. Scoop publishing targets
 skips publishing when `SCOOP_BUCKET_GITHUB_TOKEN` or `WINGET_GITHUB_TOKEN` is
 not configured.
 
-CI also runs `GoReleaser Snapshot` on every pull request and every push to
-`main` so the current merge head remains release-package validated before and
-after merge. Required branch checks must not pass as path- or event-dependent
-no-ops on pull requests when the same check name runs real validation on
-`main`.
+CI runs `GoReleaser Snapshot` after merges to `main`, on `v*` release tags, on
+the nightly schedule, and from manual workflow dispatch so release packaging is
+validated outside the normal PR merge lane. Required branch checks must not pass
+as path- or event-dependent no-ops on pull requests when the same check name
+runs real validation on `main`.
 
 ## Quick Start
 
@@ -1071,13 +1073,16 @@ motion capture needs advancing counters. The PNG capture uses a local
 Chrome-family browser; pass `--browser <path>` or set `DETENT_CAPTURE_BROWSER`
 when auto-detection cannot find one.
 
-The CI browser visual gate runs Playwright when a PR changes UI-sensitive
-paths such as `.github/workflows/ci.yml`, `package.json`, `static/**`,
-`internal/web/**`, `internal/cli/dev_runtime*.go`, `internal/devruntime/**`,
-Templ inputs, or screenshot/onboarding docs. It builds the PR's Detent binary,
-starts isolated `dev-runtime` instances on port `0`, captures current evidence
-under `tmp/playwright-evidence`, and uploads Playwright reports, traces,
-screenshots, and image diffs when assertions fail.
+The CI browser visual gate runs Playwright when a PR changes UI-sensitive paths
+such as `.github/workflows/ci.yml`, `go.mod`, `go.sum`, `package.json`,
+`static/**`, `internal/web/**`, `internal/cli/dev_runtime*.go`,
+`internal/devruntime/**`, Templ inputs, or screenshot/onboarding docs. It builds
+the PR's Detent binary, starts isolated `dev-runtime` instances on port `0`,
+captures current evidence under `tmp/playwright-evidence`, and uploads
+Playwright reports, traces, screenshots, and image diffs when assertions fail.
+PRs without UI-sensitive changes keep the required `Browser Visual` check fast
+by building the Detent binary and running a CLI smoke instead of starting
+Playwright.
 
 Run the layout gate locally after installing Playwright's Chromium browser:
 
@@ -1594,21 +1599,19 @@ configured gate again.
 
 CI waiting should poll current-head REST check runs with backoff, not loop on
 GraphQL-heavy PR status commands. Merge handoff telemetry should record the
-quiet-window wait, local merge-gate duration, current-head PR CI duration, slow
-check names, and whether post-merge `main` CI is still running. The quiet
-window, current-head required CI, and conflict/full-gate fallback are quality
-gates; repeated full local validation after a source-clean rebase, noisy status
-polling, uncached tool install, and duplicated post-merge work are optimization
-targets.
+quiet-window wait, GitHub queue/start wait, local merge-gate duration,
+current-head PR CI duration, active slow-check runtimes, and whether post-merge
+`main` CI is still running. The quiet window, current-head required CI, and
+conflict/full-gate fallback are quality gates; repeated full local validation
+after a source-clean rebase, noisy status polling, uncached tool install, and
+duplicated post-merge work are optimization targets.
 
 The repository CI caches the project-pinned golangci-lint binary and only builds
 it with `go install` on cache miss. The official prebuilt action was evaluated,
 but the prebuilt `v2.1.6` binary targets an older Go toolchain than this repo and
 newer prebuilt lint releases change the enforced lint set. `GoReleaser Snapshot`
-continues to run on every PR in this workflow; moving it off PRs or making it
-path-based is a release-policy decision because it trades package coverage for
-merge latency and requires a separate non-required check name or equivalent
-required companion validation.
+now runs as release confidence coverage outside normal PR merges so packaging
+signal remains available without extending the required merge lane.
 
 ## Multi-Project Operation
 

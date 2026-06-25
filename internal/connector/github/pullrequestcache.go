@@ -228,6 +228,7 @@ func clonePullRequestCI(ci pullRequestCI) pullRequestCI {
 		State:              ci.State,
 		CheckRunCount:      ci.CheckRunCount,
 		StatusContextCount: ci.StatusContextCount,
+		CIQueueSeconds:     ci.CIQueueSeconds,
 		CIDurationSeconds:  ci.CIDurationSeconds,
 		SlowChecks:         append([]connector.PullRequestCheck(nil), ci.SlowChecks...),
 		RunningChecks:      append([]string(nil), ci.RunningChecks...),

@@ -3,7 +3,11 @@ name: CI
 on:
   push:
     branches: [main]
+    tags: ['v*']
   pull_request:
+  schedule:
+    - cron: '27 9 * * *'
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -51,18 +55,8 @@ jobs:
         run: ~/go/bin/golangci-lint run --timeout=5m
 
   verify:
-    name: Verify (${{ matrix.os }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            race: true
-          - os: macos-latest
-            race: true
-          - os: windows-latest
-            race: true
+    name: Verify (ubuntu-latest)
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
 
@@ -84,7 +78,6 @@ jobs:
         run: go test ./...
 
       - name: Race test
-        if: matrix.race
         run: go test -race ./...
 
   test-cover:
@@ -106,33 +99,69 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
 
       - uses: actions/setup-go@v6
         with:
           go-version: '1.26.4'
           cache: true
 
+      - name: Detect visual-sensitive changes
+        id: visual-changes
+        shell: bash
+        run: |
+          set -euo pipefail
+          run_visual=true
+          if [ -n "${GITHUB_BASE_REF:-}" ]; then
+            git fetch --no-tags --depth=1 origin "$GITHUB_BASE_REF"
+            run_visual=false
+            while IFS= read -r changed_file; do
+              case "$changed_file" in
+                .github/workflows/ci.yml|.templui.json|go.mod|go.sum|package.json|package-lock.json|playwright.config.js|README.md|docs/ONBOARDING.md|static/*|tests/visual/*|internal/web/*|internal/cli/dev_runtime*.go|internal/devruntime/*)
+                  run_visual=true
+                  break
+                  ;;
+              esac
+            done < <(git diff --name-only "origin/$GITHUB_BASE_REF...HEAD")
+          fi
+          echo "run_visual=$run_visual" >> "$GITHUB_OUTPUT"
+
       - uses: actions/setup-node@v6
+        if: steps.visual-changes.outputs.run_visual == 'true'
         with:
           node-version: '24'
           cache: npm
 
       - name: Install Node dependencies
+        if: steps.visual-changes.outputs.run_visual == 'true'
         run: npm ci
 
       - name: Install Playwright browsers
+        if: steps.visual-changes.outputs.run_visual == 'true'
         run: npx playwright install --with-deps chromium
 
       - name: Install visual build generators
+        if: steps.visual-changes.outputs.run_visual == 'true'
         run: go install github.com/sqlc-dev/sqlc/cmd/sqlc@latest
 
       - name: Build Detent visual test binary
+        if: steps.visual-changes.outputs.run_visual == 'true'
         run: make build
 
-      - name: Run browser visual gate
+      - name: Run full browser visual gate
+        if: steps.visual-changes.outputs.run_visual == 'true'
         env:
           DETENT_BINARY: ${{ github.workspace }}/tmp/detent
         run: npm run test:visual
+
+      - name: Run browser smoke gate
+        if: steps.visual-changes.outputs.run_visual != 'true'
+        run: |
+          set -euo pipefail
+          mkdir -p tmp
+          go build -o tmp/detent ./cmd/detent
+          tmp/detent --help
 
       - name: Upload browser visual evidence
         if: always()
@@ -154,7 +183,39 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
+  portability-verify:
+    if: ${{ github.event_name != 'pull_request' }}
+    name: Portability Verify (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-latest, windows-latest]
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-go@v6
+        with:
+          go-version: '1.26.4'
+          cache: true
+
+      - name: Download modules
+        run: go mod download
+
+      - name: Build
+        run: go build ./...
+
+      - name: Vet
+        run: go vet ./...
+
+      - name: Test
+        run: go test ./...
+
+      - name: Race test
+        run: go test -race ./...
+
   windows-core:
+    if: ${{ github.event_name != 'pull_request' }}
     name: Windows Core
     runs-on: windows-latest
     steps:
@@ -172,6 +233,7 @@ jobs:
         run: go build ./cmd/detent
 
   installer-smoke:
+    if: ${{ github.event_name != 'pull_request' }}
     name: Installer Smoke (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -265,9 +327,10 @@ jobs:
           & $binary version
 
   goreleaser-snapshot:
+    if: ${{ github.event_name != 'pull_request' }}
     name: GoReleaser Snapshot
     runs-on: ubuntu-latest
-    needs: [lint, verify, test-cover, browser-visual, windows-core, installer-smoke]
+    needs: [lint, verify, test-cover, browser-visual, portability-verify, windows-core, installer-smoke]
     steps:
       - uses: actions/checkout@v5
         with:

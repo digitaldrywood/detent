@@ -306,6 +306,7 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		CIStatus:                   pullRequest.CIStatus,
 		CheckRunCount:              pullRequest.CheckRunCount,
 		StatusContextCount:         pullRequest.StatusContextCount,
+		CIQueueSeconds:             pullRequest.CIQueueSeconds,
 		CIDurationSeconds:          pullRequest.CIDurationSeconds,
 		QuietWaitSeconds:           pullRequestQuietWaitSeconds(issue, quietDuration, pollInterval),
 		SlowChecks:                 telemetryPullRequestChecks(pullRequest.SlowChecks),
@@ -329,6 +330,7 @@ func telemetryPullRequestChecks(checks []connector.PullRequestCheck) []telemetry
 			Name:            check.Name,
 			Status:          check.Status,
 			Conclusion:      check.Conclusion,
+			QueueSeconds:    check.QueueSeconds,
 			DurationSeconds: check.DurationSeconds,
 		})
 	}
