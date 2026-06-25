@@ -27,6 +27,20 @@ relying on local files. Keep the Detent source repository separate from any
 target repository being onboarded; Detent may be a reference/source repository,
 not the target.
 
+Before reading local Detent docs or trusting local `detent` command
+recommendations, prove any local Detent source checkout is current with the
+canonical repository. Set `DETENT_SOURCE_ROOT` to the local Detent checkout,
+then run `git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main`,
+`git -C "$DETENT_SOURCE_ROOT" rev-parse HEAD`,
+`git -C "$DETENT_SOURCE_ROOT" rev-parse refs/remotes/origin/main`, and
+`detent --format json version`. Report the local source root, local `HEAD`,
+canonical `origin/main`, installed binary version, binary commit, binary build
+date, `DETENT_SOURCE_MATCHES_CANONICAL`, and
+`DETENT_BINARY_MATCHES_CANONICAL` in the initial evidence packet. If the local
+source checkout or installed binary is stale or cannot be proven current, stop
+before reading local docs or making Phase 2 recommendations; update/reinstall
+Detent or explicitly switch to reading docs from GitHub at the canonical head.
+
 From the Detent source repository, read README.md, CLAUDE.md or AGENTS.md if
 present, docs/ONBOARDING.md, CONTRIBUTING.md, build and language manifests,
 .github/workflows, install scripts, and any existing WORKFLOW.md or global.yaml
@@ -42,6 +56,9 @@ Detent install that must be found and verified, or a new repository/project
 being added to an existing Detent install. Distinguish reference repositories from the target repository being onboarded. In Phase 0.5, run
 `detent onboarding draft-answers --output pretty` from the target checkout, or
 pass `--target-source-root` if you are currently in the Detent source checkout.
+When a local Detent checkout is available, also pass
+`--detent-source-root "$DETENT_SOURCE_ROOT"` so the draft records source and
+binary freshness evidence.
 To write the candidate identity record, run
 `detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write`.
 Treat the draft as a candidate, not confirmation. The command should infer and

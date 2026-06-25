@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -201,6 +202,8 @@ type SignalFunc func(context.Context, Signal) error
 
 type LoggerFunc func(RuntimeSettings, io.Writer, io.Writer, bool)
 
+type CommandRunner func(context.Context, string, ...string) (string, error)
+
 type ProjectManager interface {
 	Add(context.Context, globalconfig.Project) error
 	Remove(context.Context, project.ID) error
@@ -220,6 +223,7 @@ type options struct {
 	signal        SignalFunc
 	lookupEnv     func(string) string
 	ghAuthToken   func(context.Context) (string, error)
+	runCommand    CommandRunner
 	configureLog  LoggerFunc
 	captureDemo   demoCaptureFunc
 	version       string
@@ -266,6 +270,14 @@ func WithStdoutTTY(stdoutTTY func() bool) Option {
 	return func(opts *options) {
 		if stdoutTTY != nil {
 			opts.stdoutTTY = stdoutTTY
+		}
+	}
+}
+
+func WithCommandRunner(run CommandRunner) Option {
+	return func(opts *options) {
+		if run != nil {
+			opts.runCommand = run
 		}
 	}
 }
@@ -434,9 +446,25 @@ func defaultOptions() options {
 		signal:      noSignal,
 		lookupEnv:   os.Getenv,
 		ghAuthToken: defaultGHAuthToken,
+		runCommand:  defaultCommandRunner,
 		captureDemo: runDemoCapture,
 		stdoutTTY:   stdoutIsTTY,
 	}
+}
+
+func defaultCommandRunner(ctx context.Context, name string, args ...string) (string, error) {
+	cmd := exec.CommandContext(ctx, name, args...)
+	output, err := cmd.CombinedOutput()
+	if ctx.Err() != nil {
+		return string(output), ctx.Err()
+	}
+	if err != nil {
+		if detail := strings.TrimSpace(string(output)); detail != "" {
+			return string(output), fmt.Errorf("%w: %s", err, detail)
+		}
+		return string(output), err
+	}
+	return string(output), nil
 }
 
 func newHelpCommand(root *cobra.Command, opts options) *cobra.Command {

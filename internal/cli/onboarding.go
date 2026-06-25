@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -63,26 +64,53 @@ type onboardingAnswersNormalizationResult struct {
 }
 
 type onboardingDraftAnswersResult struct {
-	Status                         string   `json:"status"`
-	AnswersPath                    string   `json:"answers_path,omitempty"`
-	Written                        bool     `json:"written"`
-	CustomerIDCandidate            string   `json:"customer_id_candidate"`
-	CustomerIDSource               string   `json:"customer_id_source"`
-	CustomerIDConfidence           string   `json:"customer_id_confidence"`
-	CustomerIDReviewRequired       bool     `json:"customer_id_review_required"`
-	CustomerIDAlternatives         []string `json:"customer_id_alternatives"`
-	DetentProjectIDCandidate       string   `json:"detent_project_id_candidate"`
-	DetentProjectIDSource          string   `json:"detent_project_id_source"`
-	TargetRepositoryCandidate      string   `json:"target_repository_candidate"`
-	TargetSourceRootCandidate      string   `json:"target_source_root_candidate"`
-	ReferenceRepositoriesCandidate []string `json:"reference_repositories_candidate"`
-	DetentOnboardingModeCandidate  string   `json:"detent_onboarding_mode_candidate"`
-	ConfigPath                     string   `json:"config_path"`
-	ConfigPathRule                 string   `json:"config_path_rule"`
-	ConfigInstalled                bool     `json:"config_installed"`
-	RegisteredProjectIDs           []string `json:"registered_project_ids"`
-	Confidence                     string   `json:"confidence"`
-	Notes                          []string `json:"notes"`
+	Status                         string                            `json:"status"`
+	AnswersPath                    string                            `json:"answers_path,omitempty"`
+	Written                        bool                              `json:"written"`
+	CustomerIDCandidate            string                            `json:"customer_id_candidate"`
+	CustomerIDSource               string                            `json:"customer_id_source"`
+	CustomerIDConfidence           string                            `json:"customer_id_confidence"`
+	CustomerIDReviewRequired       bool                              `json:"customer_id_review_required"`
+	CustomerIDAlternatives         []string                          `json:"customer_id_alternatives"`
+	DetentProjectIDCandidate       string                            `json:"detent_project_id_candidate"`
+	DetentProjectIDSource          string                            `json:"detent_project_id_source"`
+	TargetRepositoryCandidate      string                            `json:"target_repository_candidate"`
+	TargetSourceRootCandidate      string                            `json:"target_source_root_candidate"`
+	ReferenceRepositoriesCandidate []string                          `json:"reference_repositories_candidate"`
+	DetentOnboardingModeCandidate  string                            `json:"detent_onboarding_mode_candidate"`
+	ConfigPath                     string                            `json:"config_path"`
+	ConfigPathRule                 string                            `json:"config_path_rule"`
+	ConfigInstalled                bool                              `json:"config_installed"`
+	RegisteredProjectIDs           []string                          `json:"registered_project_ids"`
+	DetentFreshness                onboardingDetentFreshnessEvidence `json:"detent_freshness"`
+	Confidence                     string                            `json:"confidence"`
+	Notes                          []string                          `json:"notes"`
+}
+
+type onboardingDetentFreshnessEvidence struct {
+	SourceChecked                bool   `json:"source_checked"`
+	SourceRoot                   string `json:"source_root,omitempty"`
+	SourceRemote                 string `json:"source_remote,omitempty"`
+	SourceRepository             string `json:"source_repository,omitempty"`
+	SourceHead                   string `json:"source_head,omitempty"`
+	CanonicalMain                string `json:"canonical_main,omitempty"`
+	SourceMatchesCanonical       bool   `json:"source_matches_canonical"`
+	SourceStatus                 string `json:"source_status"`
+	SourceError                  string `json:"source_error,omitempty"`
+	BinaryChecked                bool   `json:"binary_checked"`
+	BinaryVersion                string `json:"binary_version,omitempty"`
+	BinaryCommit                 string `json:"binary_commit,omitempty"`
+	BinaryBuildDate              string `json:"binary_build_date,omitempty"`
+	BinaryMatchesCanonical       bool   `json:"binary_matches_canonical"`
+	BinaryStatus                 string `json:"binary_status"`
+	BinaryError                  string `json:"binary_error,omitempty"`
+	Phase2RecommendationsBlocked bool   `json:"phase2_recommendations_blocked"`
+}
+
+type onboardingDetentVersionEvidence struct {
+	Version   string `json:"version"`
+	Commit    string `json:"commit"`
+	BuildDate string `json:"build_date"`
 }
 
 type onboardingAnswers struct {
@@ -333,13 +361,16 @@ func newOnboardingNormalizeAnswersCommand() *cobra.Command {
 
 func draftOnboardingAnswers(ctx context.Context, cfg onboardingDraftAnswersConfig) (onboardingDraftAnswersResult, error) {
 	opts := cfg.Options
-	if opts.resolvePath == nil || opts.read == nil {
+	if opts.resolvePath == nil || opts.read == nil || opts.runCommand == nil {
 		defaults := defaultOptions()
 		if opts.resolvePath == nil {
 			opts.resolvePath = defaults.resolvePath
 		}
 		if opts.read == nil {
 			opts.read = defaults.read
+		}
+		if opts.runCommand == nil {
+			opts.runCommand = defaults.runCommand
 		}
 	}
 
@@ -401,6 +432,8 @@ func draftOnboardingAnswers(ctx context.Context, cfg onboardingDraftAnswersConfi
 	result.Notes = append(result.Notes, customerCandidate.Notes...)
 
 	result.ReferenceRepositoriesCandidate = onboardingReferenceRepositoryCandidates(ctx, cfg.DetentSourceRoot, targetRepository, &result.Notes)
+	result.DetentFreshness = onboardingDetentFreshness(ctx, cfg.DetentSourceRoot, opts)
+	result.Notes = append(result.Notes, onboardingDetentFreshnessNotes(result.DetentFreshness)...)
 	global, installed, err := readOnboardingDraftConfigEvidence(resolution.Path, opts)
 	if err != nil {
 		return onboardingDraftAnswersResult{}, err
@@ -421,7 +454,169 @@ func draftOnboardingAnswers(ctx context.Context, cfg onboardingDraftAnswersConfi
 	if result.CustomerIDReviewRequired {
 		result.Confidence = "needs-review"
 	}
+	if result.DetentFreshness.Phase2RecommendationsBlocked {
+		result.Confidence = "needs-review"
+	}
 	return result, nil
+}
+
+func onboardingDetentFreshness(ctx context.Context, detentSourceRoot string, opts options) onboardingDetentFreshnessEvidence {
+	evidence := onboardingDetentFreshnessEvidence{
+		SourceStatus: "not_checked",
+		BinaryStatus: "not_checked",
+	}
+	sourceInput := strings.TrimSpace(detentSourceRoot)
+	if sourceInput != "" {
+		evidence = onboardingDetentSourceFreshness(ctx, sourceInput, opts)
+	}
+	evidence = onboardingDetentBinaryFreshness(ctx, opts, evidence)
+	evidence.Phase2RecommendationsBlocked = onboardingDetentFreshnessBlocksPhase2(evidence)
+	return evidence
+}
+
+func onboardingDetentSourceFreshness(ctx context.Context, sourceInput string, opts options) onboardingDetentFreshnessEvidence {
+	evidence := onboardingDetentFreshnessEvidence{
+		SourceChecked: true,
+		SourceStatus:  "error",
+		BinaryStatus:  "not_checked",
+	}
+	root, err := defaultGitTopLevel(ctx, sourceInput)
+	if err != nil {
+		evidence.SourceError = err.Error()
+		return evidence
+	}
+	evidence.SourceRoot = root
+	remote, err := defaultGitRemoteURL(ctx, root)
+	if err != nil {
+		evidence.SourceError = err.Error()
+		return evidence
+	}
+	evidence.SourceRemote = remote
+	if repository, ok := gitHubRepositoryFromRemote(remote); ok {
+		evidence.SourceRepository = repository
+	}
+	if _, err := onboardingRunCommand(ctx, opts, "git", "-C", root, "fetch", "origin", "main:refs/remotes/origin/main"); err != nil {
+		evidence.SourceError = err.Error()
+		return evidence
+	}
+	head, err := onboardingRunCommand(ctx, opts, "git", "-C", root, "rev-parse", "HEAD")
+	if err != nil {
+		evidence.SourceError = err.Error()
+		return evidence
+	}
+	canonical, err := onboardingRunCommand(ctx, opts, "git", "-C", root, "rev-parse", "refs/remotes/origin/main")
+	if err != nil {
+		evidence.SourceError = err.Error()
+		return evidence
+	}
+	evidence.SourceHead = strings.TrimSpace(head)
+	evidence.CanonicalMain = strings.TrimSpace(canonical)
+	evidence.SourceMatchesCanonical = onboardingCommitsMatch(evidence.SourceHead, evidence.CanonicalMain)
+	switch {
+	case evidence.SourceMatchesCanonical:
+		evidence.SourceStatus = "current"
+	case onboardingSourceIsBehind(ctx, opts, root):
+		evidence.SourceStatus = "stale"
+	default:
+		evidence.SourceStatus = "mismatch"
+	}
+	return evidence
+}
+
+func onboardingDetentBinaryFreshness(ctx context.Context, opts options, evidence onboardingDetentFreshnessEvidence) onboardingDetentFreshnessEvidence {
+	output, err := onboardingRunCommand(ctx, opts, "detent", "--format", "json", "version")
+	evidence.BinaryChecked = true
+	if err != nil {
+		evidence.BinaryStatus = "not_found"
+		evidence.BinaryError = err.Error()
+		return evidence
+	}
+	var version onboardingDetentVersionEvidence
+	if err := json.Unmarshal([]byte(output), &version); err != nil {
+		evidence.BinaryStatus = "error"
+		evidence.BinaryError = "parse detent version JSON: " + err.Error()
+		return evidence
+	}
+	evidence.BinaryVersion = strings.TrimSpace(version.Version)
+	evidence.BinaryCommit = strings.TrimSpace(version.Commit)
+	evidence.BinaryBuildDate = strings.TrimSpace(version.BuildDate)
+	if strings.TrimSpace(evidence.CanonicalMain) == "" {
+		evidence.BinaryStatus = "not_compared"
+		return evidence
+	}
+	if onboardingCommitUnknown(evidence.BinaryCommit) {
+		evidence.BinaryStatus = "unknown_commit"
+		return evidence
+	}
+	evidence.BinaryMatchesCanonical = onboardingCommitsMatch(evidence.BinaryCommit, evidence.CanonicalMain)
+	if evidence.BinaryMatchesCanonical {
+		evidence.BinaryStatus = "current"
+		return evidence
+	}
+	evidence.BinaryStatus = "stale"
+	return evidence
+}
+
+func onboardingRunCommand(ctx context.Context, opts options, name string, args ...string) (string, error) {
+	commandCtx, cancel := context.WithTimeout(ctx, doctorCommandTimeout)
+	defer cancel()
+	return opts.runCommand(commandCtx, name, args...)
+}
+
+func onboardingSourceIsBehind(ctx context.Context, opts options, root string) bool {
+	_, err := onboardingRunCommand(ctx, opts, "git", "-C", root, "merge-base", "--is-ancestor", "HEAD", "refs/remotes/origin/main")
+	return err == nil
+}
+
+func onboardingDetentFreshnessBlocksPhase2(evidence onboardingDetentFreshnessEvidence) bool {
+	if evidence.SourceChecked && evidence.SourceStatus != "current" {
+		return true
+	}
+	return evidence.BinaryStatus == "stale"
+}
+
+func onboardingDetentFreshnessNotes(evidence onboardingDetentFreshnessEvidence) []string {
+	var notes []string
+	if evidence.SourceChecked {
+		switch evidence.SourceStatus {
+		case "current":
+			notes = append(notes, "Detent source checkout matches fetched origin/main")
+		case "stale":
+			notes = append(notes, "Detent source checkout is behind fetched origin/main; update it or read onboarding docs from GitHub at the canonical head before Phase 2 recommendations")
+		case "mismatch":
+			notes = append(notes, "Detent source checkout does not match fetched origin/main; reconcile it or read onboarding docs from GitHub at the canonical head before Phase 2 recommendations")
+		default:
+			notes = append(notes, "could not prove Detent source checkout freshness; fetch/update it or read onboarding docs from GitHub at the canonical head before Phase 2 recommendations")
+		}
+	}
+	if evidence.BinaryStatus == "stale" {
+		notes = append(notes, "installed Detent binary commit differs from fetched origin/main; reinstall before using local command recommendations")
+	}
+	return notes
+}
+
+func onboardingCommitsMatch(left string, right string) bool {
+	left = strings.TrimSpace(left)
+	right = strings.TrimSpace(right)
+	if onboardingCommitUnknown(left) || onboardingCommitUnknown(right) {
+		return false
+	}
+	if left == right {
+		return true
+	}
+	if len(left) >= 7 && strings.HasPrefix(right, left) {
+		return true
+	}
+	return len(right) >= 7 && strings.HasPrefix(left, right)
+}
+
+func onboardingCommitUnknown(commit string) bool {
+	switch strings.TrimSpace(commit) {
+	case "", "none", "unknown", "(devel)":
+		return true
+	default:
+		return false
+	}
 }
 
 func onboardingGitCheckoutEvidence(ctx context.Context, path string) (string, string, error) {
@@ -704,12 +899,15 @@ func writeOnboardingDraftAnswersPretty(w io.Writer, result onboardingDraftAnswer
 		fmt.Sprintf("Source checkout: `%s`", result.TargetSourceRootCandidate),
 		fmt.Sprintf("Reference repositories: `%s`", strings.Join(result.ReferenceRepositoriesCandidate, ",")),
 		fmt.Sprintf("Onboarding mode: `%s`", result.DetentOnboardingModeCandidate),
-		"",
-		"customer_id_source=" + result.CustomerIDSource,
-		"customer_id_confidence=" + result.CustomerIDConfidence,
-		"detent_project_id_source=" + result.DetentProjectIDSource,
-		"confidence=" + result.Confidence,
 	}
+	lines = append(lines, onboardingDetentFreshnessPrettyLines(result.DetentFreshness)...)
+	lines = append(lines,
+		"",
+		"customer_id_source="+result.CustomerIDSource,
+		"customer_id_confidence="+result.CustomerIDConfidence,
+		"detent_project_id_source="+result.DetentProjectIDSource,
+		"confidence="+result.Confidence,
+	)
 	if len(result.CustomerIDAlternatives) > 0 {
 		lines = append(lines, "Customer/workstream alternatives: "+onboardingPrettyList(result.CustomerIDAlternatives))
 	}
@@ -742,6 +940,46 @@ func writeOnboardingDraftAnswersPretty(w io.Writer, result onboardingDraftAnswer
 	}
 	_, err := fmt.Fprintln(w, strings.Join(lines, "\n"))
 	return err
+}
+
+func onboardingDetentFreshnessPrettyLines(evidence onboardingDetentFreshnessEvidence) []string {
+	lines := []string{
+		"",
+		"Detent source freshness:",
+		"source_checked: " + fmt.Sprint(evidence.SourceChecked),
+	}
+	if evidence.SourceRoot != "" {
+		lines = append(lines, "source_root: "+evidence.SourceRoot)
+	}
+	if evidence.SourceHead != "" {
+		lines = append(lines, "source_head: "+evidence.SourceHead)
+	}
+	if evidence.CanonicalMain != "" {
+		lines = append(lines, "canonical_main: "+evidence.CanonicalMain)
+	}
+	lines = append(lines,
+		"source_matches_canonical: "+fmt.Sprint(evidence.SourceMatchesCanonical),
+		"source_status: "+evidence.SourceStatus,
+		"binary_checked: "+fmt.Sprint(evidence.BinaryChecked),
+	)
+	if evidence.BinaryVersion != "" {
+		lines = append(lines, "binary_version: "+evidence.BinaryVersion)
+	}
+	if evidence.BinaryCommit != "" {
+		lines = append(lines, "binary_commit: "+evidence.BinaryCommit)
+	}
+	if evidence.BinaryBuildDate != "" {
+		lines = append(lines, "binary_build_date: "+evidence.BinaryBuildDate)
+	}
+	lines = append(lines,
+		"binary_matches_canonical: "+fmt.Sprint(evidence.BinaryMatchesCanonical),
+		"binary_status: "+evidence.BinaryStatus,
+		"phase2_recommendations_blocked: "+fmt.Sprint(evidence.Phase2RecommendationsBlocked),
+	)
+	if evidence.Phase2RecommendationsBlocked {
+		lines = append(lines, "phase2_stop: update/reinstall Detent or read docs from GitHub at the canonical head before Phase 2 recommendations.")
+	}
+	return lines
 }
 
 func onboardingPrettyList(values []string) string {

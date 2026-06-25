@@ -25,6 +25,57 @@ Use these placeholders consistently:
 | `<write-probe-issue>` | Scratch issue reference such as `<repo-owner>/<repo-name>#123` for doctor write probes. |
 | `<detent-project-id>` | Local `global.yaml` project id, such as `api`. |
 
+## Source Freshness Gate
+
+Before relying on a local copy of this runbook, local `README.md`, or local
+`detent` command recommendations, prove the local Detent source checkout is
+current with `digitaldrywood/detent`. If no local Detent source checkout is
+available, read docs from GitHub at the canonical head instead of local
+files.
+
+```sh
+ONBOARDING_DIR="${ONBOARDING_DIR:-${TMPDIR:-/tmp}/detent-onboarding-<repo-owner>-<repo-name>}"
+mkdir -p "$ONBOARDING_DIR"
+DETENT_SOURCE_ROOT="<absolute-local-detent-source-checkout>"
+
+git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main
+DETENT_SOURCE_HEAD="$(git -C "$DETENT_SOURCE_ROOT" rev-parse HEAD)"
+DETENT_CANONICAL_MAIN="$(git -C "$DETENT_SOURCE_ROOT" rev-parse refs/remotes/origin/main)"
+DETENT_VERSION_JSON="$(detent --format json version 2>/dev/null || true)"
+DETENT_BINARY_COMMIT="$(printf '%s\n' "$DETENT_VERSION_JSON" | jq -r '.commit // empty' 2>/dev/null || true)"
+
+if test "$DETENT_SOURCE_HEAD" = "$DETENT_CANONICAL_MAIN"; then
+  DETENT_SOURCE_MATCHES_CANONICAL=true
+else
+  DETENT_SOURCE_MATCHES_CANONICAL=false
+fi
+
+if test -n "$DETENT_BINARY_COMMIT" && test "$DETENT_BINARY_COMMIT" = "$DETENT_CANONICAL_MAIN"; then
+  DETENT_BINARY_MATCHES_CANONICAL=true
+else
+  DETENT_BINARY_MATCHES_CANONICAL=false
+fi
+
+{
+  printf 'DETENT_SOURCE_ROOT=%s\n' "$DETENT_SOURCE_ROOT"
+  printf 'DETENT_SOURCE_HEAD=%s\n' "$DETENT_SOURCE_HEAD"
+  printf 'DETENT_CANONICAL_MAIN=%s\n' "$DETENT_CANONICAL_MAIN"
+  printf 'DETENT_SOURCE_MATCHES_CANONICAL=%s\n' "$DETENT_SOURCE_MATCHES_CANONICAL"
+  printf 'DETENT_BINARY_COMMIT=%s\n' "$DETENT_BINARY_COMMIT"
+  printf 'DETENT_BINARY_MATCHES_CANONICAL=%s\n' "$DETENT_BINARY_MATCHES_CANONICAL"
+  printf 'DETENT_VERSION_JSON=%s\n' "$DETENT_VERSION_JSON"
+} > "$ONBOARDING_DIR/detent-source-freshness.env"
+
+test "$DETENT_SOURCE_MATCHES_CANONICAL" = true
+test "$DETENT_BINARY_MATCHES_CANONICAL" = true
+```
+
+If either check fails, stop before Phase 2 recommendations. Update the local
+source checkout and reinstall the binary, or explicitly read docs from GitHub
+at the canonical head. Include
+`$ONBOARDING_DIR/detent-source-freshness.env` in the initial evidence packet so
+the operator can see which runbook and binary version are being followed.
+
 ## Start Here — Determine The Mode
 
 Do not assume this is a fresh install, and do not silently choose the target
@@ -65,6 +116,7 @@ mkdir -p "$ONBOARDING_DIR"
   git remote get-url origin 2>/dev/null || true
   command -v detent || true
   detent version 2>/dev/null || true
+  cat "$ONBOARDING_DIR/detent-source-freshness.env" 2>/dev/null || true
   detent --format pretty config path 2>/dev/null || true
   gh auth status 2>&1 || true
   codex --version 2>/dev/null || true
@@ -216,15 +268,15 @@ Draft the first candidate from identity-safe local evidence. Run this from the
 target checkout:
 
 ```sh
-detent onboarding draft-answers --output pretty
-detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write
+detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --output pretty
+detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --answers "$ONBOARDING_DIR/answers.env" --write
 ```
 
 If you are currently in the Detent source checkout, pass the target explicitly:
 
 ```sh
-detent onboarding draft-answers --target-source-root <absolute-local-checkout-path> --output pretty
-detent onboarding draft-answers --target-source-root <absolute-local-checkout-path> --answers "$ONBOARDING_DIR/answers.env" --write
+detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --target-source-root <absolute-local-checkout-path> --output pretty
+detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --target-source-root <absolute-local-checkout-path> --answers "$ONBOARDING_DIR/answers.env" --write
 ```
 
 The draft command may inspect only local identity evidence: current working

@@ -846,6 +846,128 @@ func TestOnboardingDraftAnswersCommandPrettyExplainsCustomerChoice(t *testing.T)
 	}
 }
 
+func TestOnboardingDraftAnswersCommandReportsStaleDetentSourceAndBinary(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
+	sourceRoot, sourceHead, canonicalMain := initOnboardingDetentSourceCheckout(t, true)
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(onboardingTestCommandRunner(detentVersionJSON(sourceHead))),
+	)
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--format", "json",
+		"--config", filepath.Join(t.TempDir(), "global.yaml"),
+		"onboarding", "draft-answers",
+		"--detent-source-root", sourceRoot,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		Confidence      string `json:"confidence"`
+		DetentFreshness struct {
+			SourceChecked                bool   `json:"source_checked"`
+			SourceHead                   string `json:"source_head"`
+			CanonicalMain                string `json:"canonical_main"`
+			SourceMatchesCanonical       bool   `json:"source_matches_canonical"`
+			SourceStatus                 string `json:"source_status"`
+			BinaryChecked                bool   `json:"binary_checked"`
+			BinaryCommit                 string `json:"binary_commit"`
+			BinaryMatchesCanonical       bool   `json:"binary_matches_canonical"`
+			BinaryStatus                 string `json:"binary_status"`
+			Phase2RecommendationsBlocked bool   `json:"phase2_recommendations_blocked"`
+		} `json:"detent_freshness"`
+		Notes []string `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	freshness := got.DetentFreshness
+	if !freshness.SourceChecked || freshness.SourceHead != sourceHead || freshness.CanonicalMain != canonicalMain {
+		t.Fatalf("source freshness = %#v, want stale source %s behind %s", freshness, sourceHead, canonicalMain)
+	}
+	if freshness.SourceMatchesCanonical || freshness.SourceStatus != "stale" {
+		t.Fatalf("source freshness = %#v, want stale mismatch", freshness)
+	}
+	if !freshness.BinaryChecked || freshness.BinaryCommit != sourceHead || freshness.BinaryMatchesCanonical || freshness.BinaryStatus != "stale" {
+		t.Fatalf("binary freshness = %#v, want stale binary at %s", freshness, sourceHead)
+	}
+	if !freshness.Phase2RecommendationsBlocked || got.Confidence != "needs-review" {
+		t.Fatalf("freshness = %#v confidence = %q, want blocked needs-review", freshness, got.Confidence)
+	}
+	if !containsSubstring(got.Notes, "read onboarding docs from GitHub at the canonical head before Phase 2 recommendations") {
+		t.Fatalf("notes = %#v, want stale source stop guidance", got.Notes)
+	}
+	if !containsSubstring(got.Notes, "installed Detent binary commit differs from fetched origin/main") {
+		t.Fatalf("notes = %#v, want stale binary reinstall guidance", got.Notes)
+	}
+}
+
+func TestOnboardingDraftAnswersCommandReportsCurrentDetentSourceAndBinary(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
+	sourceRoot, sourceHead, canonicalMain := initOnboardingDetentSourceCheckout(t, false)
+	t.Chdir(targetRoot)
+
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(onboardingTestCommandRunner(detentVersionJSON(canonicalMain))),
+	)
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--format", "json",
+		"--config", filepath.Join(t.TempDir(), "global.yaml"),
+		"onboarding", "draft-answers",
+		"--detent-source-root", sourceRoot,
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		DetentFreshness struct {
+			SourceHead                   string `json:"source_head"`
+			CanonicalMain                string `json:"canonical_main"`
+			SourceMatchesCanonical       bool   `json:"source_matches_canonical"`
+			SourceStatus                 string `json:"source_status"`
+			BinaryCommit                 string `json:"binary_commit"`
+			BinaryMatchesCanonical       bool   `json:"binary_matches_canonical"`
+			BinaryStatus                 string `json:"binary_status"`
+			Phase2RecommendationsBlocked bool   `json:"phase2_recommendations_blocked"`
+		} `json:"detent_freshness"`
+		Notes []string `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	freshness := got.DetentFreshness
+	if sourceHead != canonicalMain {
+		t.Fatalf("test setup source head = %s, canonical = %s, want equal", sourceHead, canonicalMain)
+	}
+	if freshness.SourceHead != sourceHead || freshness.CanonicalMain != canonicalMain || !freshness.SourceMatchesCanonical || freshness.SourceStatus != "current" {
+		t.Fatalf("source freshness = %#v, want current source %s", freshness, canonicalMain)
+	}
+	if freshness.BinaryCommit != canonicalMain || !freshness.BinaryMatchesCanonical || freshness.BinaryStatus != "current" {
+		t.Fatalf("binary freshness = %#v, want current binary %s", freshness, canonicalMain)
+	}
+	if freshness.Phase2RecommendationsBlocked {
+		t.Fatalf("freshness = %#v, want Phase 2 recommendations allowed", freshness)
+	}
+	if !containsSubstring(got.Notes, "Detent source checkout matches fetched origin/main") {
+		t.Fatalf("notes = %#v, want current source note", got.Notes)
+	}
+}
+
 func TestOnboardingDraftAnswersCommandAcceptsIdentityOverrides(t *testing.T) {
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
 	answersPath := filepath.Join(t.TempDir(), "answers.env")
@@ -1235,6 +1357,65 @@ func initOnboardingGitRepository(t *testing.T, remote string) string {
 	return dir
 }
 
+func initOnboardingDetentSourceCheckout(t *testing.T, stale bool) (string, string, string) {
+	t.Helper()
+
+	root := t.TempDir()
+	remote := filepath.Join(root, "detent.git")
+	runGitOutput(t, "", "init", "--bare", remote)
+
+	seed := filepath.Join(root, "seed")
+	if err := os.MkdirAll(seed, 0o755); err != nil {
+		t.Fatalf("MkdirAll(seed) error = %v", err)
+	}
+	runGit(t, seed, "init")
+	runGit(t, seed, "checkout", "-b", "main")
+	runGit(t, seed, "config", "user.email", "detent@example.test")
+	runGit(t, seed, "config", "user.name", "Detent Test")
+	writeOnboardingTestFile(t, filepath.Join(seed, "README.md"), "initial\n")
+	runGit(t, seed, "add", "README.md")
+	runGit(t, seed, "commit", "-m", "initial")
+	runGit(t, seed, "remote", "add", "origin", remote)
+	runGit(t, seed, "push", "-u", "origin", "main")
+	runGit(t, remote, "symbolic-ref", "HEAD", "refs/heads/main")
+
+	local := filepath.Join(root, "local")
+	runGitOutput(t, "", "clone", "-b", "main", remote, local)
+	sourceHead := runGitOutput(t, local, "rev-parse", "HEAD")
+	canonicalMain := sourceHead
+	if stale {
+		writeOnboardingTestFile(t, filepath.Join(seed, "README.md"), "updated\n")
+		runGit(t, seed, "add", "README.md")
+		runGit(t, seed, "commit", "-m", "update")
+		runGit(t, seed, "push", "origin", "main")
+		canonicalMain = runGitOutput(t, seed, "rev-parse", "HEAD")
+	}
+	return local, sourceHead, canonicalMain
+}
+
+func writeOnboardingTestFile(t *testing.T, path string, content string) {
+	t.Helper()
+
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("WriteFile(%s) error = %v", path, err)
+	}
+}
+
+func detentVersionJSON(commit string) string {
+	return `{"version":"v0.11.1","commit":"` + commit + `","build_date":"2026-06-24T18:49:56Z","go_version":"go1.26.4","os":"linux","arch":"amd64"}` + "\n"
+}
+
+func onboardingTestCommandRunner(detentVersionOutput string) cli.CommandRunner {
+	return func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == "detent" {
+			return detentVersionOutput, nil
+		}
+		cmd := exec.CommandContext(ctx, name, args...)
+		output, err := cmd.CombinedOutput()
+		return string(output), err
+	}
+}
+
 func writeOnboardingEnvOverrideModule(t *testing.T, dir string) {
 	t.Helper()
 
@@ -1313,9 +1494,20 @@ func containsString(values []string, want string) bool {
 func runGit(t *testing.T, dir string, args ...string) {
 	t.Helper()
 
-	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	runGitOutput(t, dir, args...)
+}
+
+func runGitOutput(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	commandArgs := append([]string(nil), args...)
+	if strings.TrimSpace(dir) != "" {
+		commandArgs = append([]string{"-C", dir}, args...)
+	}
+	cmd := exec.Command("git", commandArgs...)
 	output, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("git %s error = %v\n%s", strings.Join(args, " "), err, output)
 	}
+	return strings.TrimSpace(string(output))
 }
