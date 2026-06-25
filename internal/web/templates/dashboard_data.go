@@ -2813,6 +2813,9 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 		return ""
 	}
 	parts := []string{}
+	if hydration := pullRequestHydrationWaitDetail(issue.PullRequest.HydrationUnavailableReason); hydration != "" {
+		parts = append(parts, hydration)
+	}
 	if issue.PullRequest.QuietWaitSeconds > 0 {
 		parts = append(parts, "quiet "+formatDuration(float64(issue.PullRequest.QuietWaitSeconds)))
 	}
@@ -2826,6 +2829,17 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 		parts = append(parts, "running "+runningChecks)
 	}
 	return strings.Join(parts, " / ")
+}
+
+func pullRequestHydrationWaitDetail(reason string) string {
+	switch strings.TrimSpace(reason) {
+	case "rate_limited":
+		return "PR hydration rate-limited"
+	case "rest_budget_reserved":
+		return "PR hydration waiting for REST budget"
+	default:
+		return ""
+	}
 }
 
 func prPipelineSlowChecks(checks []telemetry.PullRequestCheck) string {

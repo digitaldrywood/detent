@@ -806,7 +806,7 @@ func TestConnectorCachesPullRequestStatusByHeadSHA(t *testing.T) {
 	}
 }
 
-func TestConnectorFetchCandidateIssuesSkipsBranchPullRequestMatchingWhenRESTBudgetReserved(t *testing.T) {
+func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailableWhenRESTBudgetReserved(t *testing.T) {
 	t.Parallel()
 
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
@@ -842,8 +842,14 @@ func TestConnectorFetchCandidateIssuesSkipsBranchPullRequestMatchingWhenRESTBudg
 	if len(got) != 1 {
 		t.Fatalf("FetchCandidateIssues() len = %d, want 1", len(got))
 	}
-	if got[0].PullRequest != nil {
-		t.Fatalf("PullRequest = %#v, want skipped branch match while REST budget is reserved", got[0].PullRequest)
+	if got[0].PullRequest == nil {
+		t.Fatal("PullRequest = nil, want hydration-unavailable marker")
+	}
+	if got[0].PullRequest.HydrationUnavailableReason != "rest_budget_reserved" {
+		t.Fatalf("HydrationUnavailableReason = %q, want rest_budget_reserved", got[0].PullRequest.HydrationUnavailableReason)
+	}
+	if got[0].PullRequest.Number != 0 {
+		t.Fatalf("PullRequest.Number = %d, want unknown PR number while branch matching is skipped", got[0].PullRequest.Number)
 	}
 
 	requests := server.requests()
@@ -923,6 +929,50 @@ func TestConnectorFetchIssuesByStatesRechecksPullRequestStatusForPromotion(t *te
 		if count != 2 {
 			t.Fatalf("%s request count = %d, want fresh status fetch each call; requests = %#v", pattern, count, requests)
 		}
+	}
+}
+
+func TestConnectorFetchIssuesByStatesMarksLinkedPullRequestHydrationRateLimited(t *testing.T) {
+	t.Parallel()
+
+	projectBody := `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_401","content":{"__typename":"Issue","id":"I_401","number":401,"title":"Human review issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/401","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":411,"url":"https://github.com/digitaldrywood/detent/pull/411","state":"OPEN","repository":{"nameWithOwner":"digitaldrywood/detent"}}]}},"statusValue":{"name":"Human Review"},"priorityValue":null}]}}}}`
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: projectBody},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/411",
+			status: http.StatusTooManyRequests,
+			headers: map[string]string{
+				"Retry-After":          "120",
+				"X-RateLimit-Limit":    "5000",
+				"X-RateLimit-Used":     "264",
+				"X-RateLimit-Resource": "core",
+			},
+			body: `{"message":"secondary rate limit"}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+
+	got, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() error = %v", err)
+	}
+	if len(got) != 1 {
+		t.Fatalf("FetchIssuesByStates() len = %d, want 1", len(got))
+	}
+	pr := got[0].PullRequest
+	if pr == nil {
+		t.Fatal("PullRequest = nil, want retained linked PR shell")
+	}
+	if pr.Number != 411 {
+		t.Fatalf("PullRequest.Number = %d, want 411", pr.Number)
+	}
+	if pr.HydrationUnavailableReason != "rate_limited" {
+		t.Fatalf("HydrationUnavailableReason = %q, want rate_limited", pr.HydrationUnavailableReason)
+	}
+	if got[0].PRNumber == nil || *got[0].PRNumber != 411 {
+		t.Fatalf("PRNumber = %v, want 411", got[0].PRNumber)
 	}
 }
 

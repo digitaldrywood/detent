@@ -51,6 +51,7 @@ type PullRequest struct {
 	Draft                        bool                 `json:"draft,omitempty" yaml:"draft,omitempty"`
 	ActivityAt                   *time.Time           `json:"activity_at,omitempty" yaml:"activity_at,omitempty"`
 	HeadSHA                      string               `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
+	HydrationUnavailableReason   string               `json:"hydration_unavailable_reason,omitempty" yaml:"hydration_unavailable_reason,omitempty"`
 	CIStatus                     string               `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
 	CheckRunCount                int                  `json:"check_run_count,omitempty" yaml:"check_run_count,omitempty"`
 	StatusContextCount           int                  `json:"status_context_count,omitempty" yaml:"status_context_count,omitempty"`
@@ -64,6 +65,11 @@ type PullRequest struct {
 	LatestCodexReviewCommitSHA   string               `json:"latest_codex_review_commit_sha,omitempty" yaml:"latest_codex_review_commit_sha,omitempty"`
 	LatestCodexReviewSubmittedAt *time.Time           `json:"latest_codex_review_submitted_at,omitempty" yaml:"latest_codex_review_submitted_at,omitempty"`
 }
+
+const (
+	PullRequestHydrationReasonRateLimited        = "rate_limited"
+	PullRequestHydrationReasonRESTBudgetReserved = "rest_budget_reserved"
+)
 
 type PullRequestCheck struct {
 	Name            string `json:"name,omitempty" yaml:"name,omitempty"`

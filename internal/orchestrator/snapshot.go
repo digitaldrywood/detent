@@ -295,19 +295,20 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		pullRequest = &connector.PullRequest{Number: *prNumber}
 	}
 	return &telemetry.PullRequest{
-		Number:             pullRequest.Number,
-		URL:                pullRequest.URL,
-		BranchName:         pullRequest.BranchName,
-		State:              pullRequest.State,
-		MergeableState:     pullRequest.MergeableState,
-		CIStatus:           pullRequest.CIStatus,
-		CheckRunCount:      pullRequest.CheckRunCount,
-		StatusContextCount: pullRequest.StatusContextCount,
-		CIDurationSeconds:  pullRequest.CIDurationSeconds,
-		QuietWaitSeconds:   pullRequestQuietWaitSeconds(issue, quietDuration, pollInterval),
-		SlowChecks:         telemetryPullRequestChecks(pullRequest.SlowChecks),
-		RunningChecks:      append([]string(nil), pullRequest.RunningChecks...),
-		CodexReviewState:   pullRequest.CodexReviewState,
+		Number:                     pullRequest.Number,
+		URL:                        pullRequest.URL,
+		BranchName:                 pullRequest.BranchName,
+		State:                      pullRequest.State,
+		MergeableState:             pullRequest.MergeableState,
+		HydrationUnavailableReason: pullRequest.HydrationUnavailableReason,
+		CIStatus:                   pullRequest.CIStatus,
+		CheckRunCount:              pullRequest.CheckRunCount,
+		StatusContextCount:         pullRequest.StatusContextCount,
+		CIDurationSeconds:          pullRequest.CIDurationSeconds,
+		QuietWaitSeconds:           pullRequestQuietWaitSeconds(issue, quietDuration, pollInterval),
+		SlowChecks:                 telemetryPullRequestChecks(pullRequest.SlowChecks),
+		RunningChecks:              append([]string(nil), pullRequest.RunningChecks...),
+		CodexReviewState:           pullRequest.CodexReviewState,
 	}
 }
 

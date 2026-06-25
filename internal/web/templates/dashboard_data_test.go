@@ -1471,10 +1471,11 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 						State:      "Human Review",
 						UpdatedAt:  &reviewAt,
 						PullRequest: &telemetry.PullRequest{
-							Number:           142,
-							URL:              "https://github.com/digitaldrywood/detent/pull/142",
-							CIStatus:         "success",
-							CodexReviewState: "clean",
+							Number:                     142,
+							URL:                        "https://github.com/digitaldrywood/detent/pull/142",
+							CIStatus:                   "success",
+							CodexReviewState:           "clean",
+							HydrationUnavailableReason: "rate_limited",
 						},
 					},
 					{
@@ -1540,7 +1541,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				},
 			},
 			want: []pipelineCardSnapshot{
-				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m"},
+				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m", WaitDetail: "PR hydration rate-limited"},
 				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s / running Test Coverage"},
 				{Lane: "Done today", IssueNumber: "#144", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "P1", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#145", Title: "Done lane unverified PR", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "45m 0s"},

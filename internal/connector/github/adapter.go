@@ -709,18 +709,19 @@ type pullRequest struct {
 }
 
 type pullRequestNode struct {
-	Number         int                               `json:"number"`
-	URL            string                            `json:"url"`
-	State          string                            `json:"state"`
-	MergeableState string                            `json:"mergeableState"`
-	Draft          bool                              `json:"draft"`
-	ActivityAt     *time.Time                        `json:"activityAt"`
-	HeadRefName    string                            `json:"headRefName"`
-	HeadSHA        string                            `json:"headSHA"`
-	Commits        nodeConnection[pullRequestCommit] `json:"commits"`
-	LatestReviews  nodeConnection[pullRequestReview] `json:"latestReviews"`
-	CodexReviews   pullRequestCodexReviews           `json:"-"`
-	CI             pullRequestCI                     `json:"-"`
+	Number                     int                               `json:"number"`
+	URL                        string                            `json:"url"`
+	State                      string                            `json:"state"`
+	MergeableState             string                            `json:"mergeableState"`
+	Draft                      bool                              `json:"draft"`
+	ActivityAt                 *time.Time                        `json:"activityAt"`
+	HeadRefName                string                            `json:"headRefName"`
+	HeadSHA                    string                            `json:"headSHA"`
+	HydrationUnavailableReason string                            `json:"-"`
+	Commits                    nodeConnection[pullRequestCommit] `json:"commits"`
+	LatestReviews              nodeConnection[pullRequestReview] `json:"latestReviews"`
+	CodexReviews               pullRequestCodexReviews           `json:"-"`
+	CI                         pullRequestCI                     `json:"-"`
 }
 
 type pullRequestCommit struct {
@@ -1949,7 +1950,8 @@ func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []co
 		}
 		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
 		if err != nil {
-			if errors.Is(err, ErrRESTBudgetReserved) {
+			if reason := pullRequestHydrationUnavailableReason(err); reason != "" {
+				markPullRequestHydrationUnavailableForCandidates(issues, byRepo[repo], repo, reason)
 				continue
 			}
 			return err
@@ -2107,14 +2109,16 @@ func (c *Connector) attachLinkedPullRequests(
 			var err error
 			pullRequest, err = c.fetchRepositoryPullRequest(ctx, pullRequestRepo, candidate.PullRequestNumber)
 			if err != nil {
-				if errors.Is(err, ErrRESTBudgetReserved) {
-					attachMinimalPullRequestToIssue(&issues[candidate.Index], pullRequestRepo, candidate.PullRequestNumber)
+				if reason := pullRequestHydrationUnavailableReason(err); reason != "" {
+					attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], pullRequestRepo, candidate.PullRequestNumber, reason)
 					continue
 				}
 				return err
 			}
 			if err := c.populatePullRequestStatus(ctx, pullRequestRepo, &pullRequest, useStatusCache); err != nil {
-				if !errors.Is(err, ErrRESTBudgetReserved) {
+				if reason := pullRequestHydrationUnavailableReason(err); reason != "" {
+					pullRequest.HydrationUnavailableReason = reason
+				} else {
 					return err
 				}
 			}
@@ -2152,16 +2156,18 @@ func (c *Connector) attachMatchingPullRequests(
 				var err error
 				hydratedPullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, pullRequest.Number)
 				if err != nil {
-					if errors.Is(err, ErrRESTBudgetReserved) {
-						hydratedPullRequest = pullRequest
-						hydrated[pullRequest.Number] = hydratedPullRequest
-						attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
+					if reason := pullRequestHydrationUnavailableReason(err); reason != "" {
+						pullRequest.HydrationUnavailableReason = reason
+						hydrated[pullRequest.Number] = pullRequest
+						attachPullRequestToIssue(&issues[candidate.Index], repo, pullRequest)
 						continue
 					}
 					return err
 				}
 				if err := c.populatePullRequestStatus(ctx, repo, &hydratedPullRequest, useStatusCache); err != nil {
-					if !errors.Is(err, ErrRESTBudgetReserved) {
+					if reason := pullRequestHydrationUnavailableReason(err); reason != "" {
+						hydratedPullRequest.HydrationUnavailableReason = reason
+					} else {
 						return err
 					}
 				}
@@ -2205,6 +2211,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		Draft:                        pullRequest.Draft,
 		ActivityAt:                   cloneGitHubTime(pullRequest.ActivityAt),
 		HeadSHA:                      strings.TrimSpace(pullRequest.HeadSHA),
+		HydrationUnavailableReason:   strings.TrimSpace(pullRequest.HydrationUnavailableReason),
 		CIStatus:                     normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
 		CheckRunCount:                pullRequest.CI.CheckRunCount,
 		StatusContextCount:           pullRequest.CI.StatusContextCount,
@@ -2227,13 +2234,52 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 	}
 }
 
-func attachMinimalPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, number int) {
-	issue.PullRequest = &connector.PullRequest{Number: number}
+func markPullRequestHydrationUnavailableForCandidates(
+	issues []connector.Issue,
+	candidates []issuePullRequestCandidate,
+	defaultRepo pullRequestRepo,
+	reason string,
+) {
+	for _, candidate := range candidates {
+		if issues[candidate.Index].PullRequest != nil {
+			continue
+		}
+		repo := candidate.PullRequestRepo
+		if strings.TrimSpace(repo.Owner) == "" || strings.TrimSpace(repo.Name) == "" {
+			repo = defaultRepo
+		}
+		attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], repo, candidate.PullRequestNumber, reason)
+	}
+}
+
+func attachPullRequestHydrationUnavailableToIssue(issue *connector.Issue, repo pullRequestRepo, number int, reason string) {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return
+	}
+	if issue.PullRequest == nil {
+		issue.PullRequest = &connector.PullRequest{}
+	}
+	if number > 0 {
+		issue.PullRequest.Number = number
+	}
+	issue.PullRequest.HydrationUnavailableReason = reason
 	if issue.PRNumber == nil && number > 0 {
 		issue.PRNumber = &number
 	}
 	if issue.PRRepository == "" {
 		issue.PRRepository = pullRequestRepoName(repo)
+	}
+}
+
+func pullRequestHydrationUnavailableReason(err error) string {
+	switch {
+	case errors.Is(err, ErrRESTBudgetReserved):
+		return connector.PullRequestHydrationReasonRESTBudgetReserved
+	case errors.Is(err, ErrRateLimited):
+		return connector.PullRequestHydrationReasonRateLimited
+	default:
+		return ""
 	}
 }
 

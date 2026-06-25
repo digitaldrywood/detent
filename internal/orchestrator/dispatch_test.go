@@ -495,6 +495,11 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 			want:  false,
 		},
 		{
+			name:  "todo with unavailable pull request hydration skips",
+			issue: dispatchTestIssueWithUnavailablePullRequestHydration("issue-todo-pr-rate-limited", "Todo"),
+			want:  false,
+		},
+		{
 			name:  "in progress with open pull request dispatches",
 			issue: dispatchTestIssueWithPullRequest("issue-progress-open-pr", "In Progress", "OPEN"),
 			want:  true,
@@ -503,6 +508,11 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 			name:  "rework with open pull request dispatches",
 			issue: dispatchTestIssueWithPullRequest("issue-rework-open-pr", "Rework", "OPEN"),
 			want:  true,
+		},
+		{
+			name:  "rework with unavailable pull request hydration skips",
+			issue: dispatchTestIssueWithUnavailablePullRequestHydration("issue-rework-pr-rate-limited", "Rework"),
+			want:  false,
 		},
 		{
 			name:  "merging with open pull request dispatches",
@@ -941,6 +951,12 @@ func dispatchTestIssueWithPullRequest(id, state, prState string) connector.Issue
 		BranchName: "detent/digitaldrywood_detent_187",
 		State:      prState,
 	}
+	return issue
+}
+
+func dispatchTestIssueWithUnavailablePullRequestHydration(id, state string) connector.Issue {
+	issue := dispatchTestIssueWithPullRequest(id, state, "OPEN")
+	issue.PullRequest.HydrationUnavailableReason = "rate_limited"
 	return issue
 }
 
