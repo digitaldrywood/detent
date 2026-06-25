@@ -79,6 +79,7 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 	nextRefresh := now.Add(90 * time.Second)
 	resetAt := now.Add(30 * time.Minute)
 	backoffUntil := now.Add(5 * time.Minute)
+	expiredBackoffUntil := now.Add(-5 * time.Minute)
 
 	tests := []struct {
 		name            string
@@ -145,6 +146,26 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantBackoffPart: "retry 14:35 UTC",
 		},
 		{
+			name: "expired secondary backoff does not mask healthy primary",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+					RESTUsage: &telemetry.RESTUsage{
+						RateLimited:  true,
+						BackoffUntil: &expiredBackoffUntil,
+						Contributors: []telemetry.RESTUsageContributor{
+							{EndpointFamily: "pull requests", Count: 2, RetryAfterMS: (5 * time.Minute).Milliseconds(), RateLimited: true, LastStatus: 429},
+						},
+					},
+				},
+			},
+			wantState:       gitHubAPIHealthStateHealthy,
+			wantLabel:       "GitHub API healthy",
+			wantSummaryPart: "REST 4,878 / 5,000",
+		},
+		{
 			name: "primary exhausted outranks secondary backoff",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -177,6 +198,9 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			}
 			if tt.wantBackoffPart != "" && !strings.Contains(got.Detail, tt.wantBackoffPart) {
 				t.Fatalf("gitHubAPIHealth().Detail = %q, want substring %q; view = %#v", got.Detail, tt.wantBackoffPart, got)
+			}
+			if tt.name == "expired secondary backoff does not mask healthy primary" && len(got.Endpoints) != 0 {
+				t.Fatalf("gitHubAPIHealth().Endpoints = %#v, want no active endpoint backoff rows", got.Endpoints)
 			}
 		})
 	}

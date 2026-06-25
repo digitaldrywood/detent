@@ -4270,7 +4270,7 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 		return view
 	}
 	if gitHubAPIInBackoff(snapshot) {
-		families := gitHubAPIBackoffFamilySummary(snapshot.RateLimits.RESTUsage)
+		families := gitHubAPIBackoffFamilySummary(snapshot, snapshot.RateLimits.RESTUsage)
 		view.State = gitHubAPIHealthStateBackoff
 		view.Label = "GitHub API backoff: " + families
 		view.Summary = "Primary remaining: " + primarySummary
@@ -4360,22 +4360,39 @@ func gitHubAPIInBackoff(snapshot telemetry.Snapshot) bool {
 		return false
 	}
 	usage := snapshot.RateLimits.RESTUsage
-	if usage.RateLimited {
+	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, usage.BackoffUntil) {
 		return true
 	}
-	if usage.BackoffUntil != nil && (snapshot.GeneratedAt.IsZero() || usage.BackoffUntil.After(snapshot.GeneratedAt)) {
+	if usage.RateLimited && usage.BackoffUntil == nil {
 		return true
 	}
 	for _, contributor := range usage.Contributors {
-		if gitHubAPIContributorBackedOff(contributor) {
+		if gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
 			return true
 		}
 	}
 	return false
 }
 
-func gitHubAPIContributorBackedOff(contributor telemetry.RESTUsageContributor) bool {
+func gitHubAPIContributorBackedOff(snapshot telemetry.Snapshot, contributor telemetry.RESTUsageContributor, backoffUntil *time.Time) bool {
+	if !gitHubAPIContributorHasBackoffSignal(contributor) {
+		return false
+	}
+	if backoffUntil != nil {
+		return gitHubAPIDeadlineActive(snapshot.GeneratedAt, backoffUntil)
+	}
+	if contributor.ResetAt != nil {
+		return gitHubAPIDeadlineActive(snapshot.GeneratedAt, contributor.ResetAt)
+	}
+	return true
+}
+
+func gitHubAPIContributorHasBackoffSignal(contributor telemetry.RESTUsageContributor) bool {
 	return contributor.RateLimited || contributor.LastStatus == httpStatusTooManyRequests || contributor.RetryAfterMS > 0
+}
+
+func gitHubAPIDeadlineActive(generatedAt time.Time, deadline *time.Time) bool {
+	return deadline != nil && (generatedAt.IsZero() || deadline.After(generatedAt))
 }
 
 func gitHubAPIPrimarySummary(limits *telemetry.RateLimits, includePrimaryWord bool) string {
@@ -4402,22 +4419,22 @@ func gitHubAPIPrimarySummary(limits *telemetry.RateLimits, includePrimaryWord bo
 	return strings.Join(parts, " / ")
 }
 
-func gitHubAPIBackoffFamilySummary(usage *telemetry.RESTUsage) string {
-	families := gitHubAPIBackoffFamilies(usage)
+func gitHubAPIBackoffFamilySummary(snapshot telemetry.Snapshot, usage *telemetry.RESTUsage) string {
+	families := gitHubAPIBackoffFamilies(snapshot, usage)
 	if len(families) == 0 {
 		return "REST endpoints"
 	}
 	return strings.Join(families, ", ")
 }
 
-func gitHubAPIBackoffFamilies(usage *telemetry.RESTUsage) []string {
+func gitHubAPIBackoffFamilies(snapshot telemetry.Snapshot, usage *telemetry.RESTUsage) []string {
 	if usage == nil {
 		return nil
 	}
 	families := make([]string, 0, len(usage.Contributors))
 	seen := map[string]struct{}{}
 	for _, contributor := range usage.Contributors {
-		if !gitHubAPIContributorBackedOff(contributor) {
+		if !gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
 			continue
 		}
 		family := strings.TrimSpace(contributor.EndpointFamily)
@@ -4438,18 +4455,18 @@ func gitHubAPIRetryLabel(snapshot telemetry.Snapshot) string {
 		return "retry time n/a"
 	}
 	usage := snapshot.RateLimits.RESTUsage
-	if usage.BackoffUntil != nil {
+	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, usage.BackoffUntil) {
 		return "retry " + usage.BackoffUntil.UTC().Format("15:04 UTC")
 	}
 	for _, contributor := range usage.Contributors {
-		if contributor.RetryAfterMS > 0 {
-			if !snapshot.GeneratedAt.IsZero() {
-				return "retry " + snapshot.GeneratedAt.Add(time.Duration(contributor.RetryAfterMS)*time.Millisecond).UTC().Format("15:04 UTC")
-			}
-			return "retry after " + formatDuration(float64(contributor.RetryAfterMS)/1000)
+		if !gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
+			continue
 		}
-		if contributor.ResetAt != nil {
+		if contributor.ResetAt != nil && gitHubAPIDeadlineActive(snapshot.GeneratedAt, contributor.ResetAt) {
 			return "retry " + contributor.ResetAt.UTC().Format("15:04 UTC")
+		}
+		if contributor.RetryAfterMS > 0 {
+			return "retry after " + formatDuration(float64(contributor.RetryAfterMS)/1000)
 		}
 	}
 	return "retry time n/a"
@@ -4537,7 +4554,7 @@ func gitHubAPIHealthEndpointRows(snapshot telemetry.Snapshot) []gitHubAPIHealthE
 	usage := snapshot.RateLimits.RESTUsage
 	rows := make([]gitHubAPIHealthEndpointRow, 0, len(usage.Contributors))
 	for _, contributor := range usage.Contributors {
-		if !gitHubAPIContributorBackedOff(contributor) {
+		if !gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
 			continue
 		}
 		rows = append(rows, gitHubAPIHealthEndpointRow{
@@ -4571,17 +4588,11 @@ func gitHubAPIEndpointStatus(contributor telemetry.RESTUsageContributor) string 
 }
 
 func gitHubAPIEndpointRetry(snapshot telemetry.Snapshot, contributor telemetry.RESTUsageContributor, backoffUntil *time.Time) string {
-	if contributor.RetryAfterMS > 0 && !snapshot.GeneratedAt.IsZero() {
-		return "retry " + snapshot.GeneratedAt.Add(time.Duration(contributor.RetryAfterMS)*time.Millisecond).UTC().Format("15:04 UTC")
-	}
-	if backoffUntil != nil {
+	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, backoffUntil) {
 		return "retry " + backoffUntil.UTC().Format("15:04 UTC")
 	}
-	if contributor.ResetAt != nil {
+	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, contributor.ResetAt) {
 		return "reset " + contributor.ResetAt.UTC().Format("15:04 UTC")
-	}
-	if contributor.RetryAfterMS > 0 {
-		return "retry after " + formatDuration(float64(contributor.RetryAfterMS)/1000)
 	}
 	return "retry time n/a"
 }
