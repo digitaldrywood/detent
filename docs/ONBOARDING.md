@@ -722,6 +722,13 @@ canonical `answers.env` fields. Do not lead with raw environment keys when a
 human intent profile can explain the operating effect. After a named delivery
 profile supplies a field, skip the duplicate low-level question unless the
 operator asks for an advanced override.
+Ask or select the delivery profile before emitting low-level `KANBAN_MODE`
+defaults. For `GITHUB_MODE=label` add-project onboarding on an operator-owned
+local or private Detent instance, recommend `KANBAN_MODE=integration` even when
+the pre-mutation `detent doctor --port 0` skipped write probes. Skipped
+pre-mutation write probes must not become a `read_only` recommendation;
+mutation still requires Phase 2.5 authorization and post-authorization write
+probes.
 
 0. **Mode.** `DETENT_ONBOARDING_MODE` was selected in Phase 0.5. If discovery
    shows the chosen mode is wrong, stop, update the identity answers, present
@@ -870,13 +877,16 @@ operator asks for an advanced override.
    mixed policy: "Should Detent's project Kanban be read-only or allow GitHub
    mutations from the dashboard?" Keep fleet `/kanban` read-only.
    For a project-scoped board on an operator-owned local or private Detent
-   instance, recommend `integration` after
-   `detent doctor --allow-write-probes` proves the relevant write probes. For a
-   shared observer dashboard, or when write probes are missing or failing,
-   recommend `read_only` until writes are proven.
-   Integration mode requires `detent doctor --allow-write-probes` to prove
-   ProjectV2 status write or issue-field status write, or status-label update,
-   plus issue/PR comment write. Verify:
+   instance, recommend `integration` by default before mutation authorization.
+   This recommendation does not authorize writes; Phase 2.5 must approve the
+   exact answers before any GitHub or config mutation. After authorization,
+   `detent doctor --allow-write-probes` must prove ProjectV2 status write,
+   issue-field status write, or status-label update for the selected status
+   source, plus issue/PR comment write. For a shared observer dashboard or an
+   explicit no-writes choice, recommend `read_only`. If failed
+   post-authorization write probes prevent integration, stop and repair
+   permissions or ask whether to downgrade to `read_only`. Do not use skipped
+   pre-mutation write probes as evidence for `read_only`. Verify:
 
    ```sh
    printf '%s\n' \
@@ -1681,15 +1691,17 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    configuration. Maintained templates set project boards to `integration` for
    a trusted operator-owned local or private Detent instance. Keep fleet
    `/kanban` read-only; this setting only controls `/projects/<id>/kanban`.
-   For a shared observer dashboard, or when write probes are not configured or
-   not passing, set `read_only` until `detent doctor --allow-write-probes`
-   proves status write and issue/PR comment write. Verify:
+   For a shared observer dashboard or explicit no-writes choice, set
+   `read_only`. If post-authorization write probes fail, stop and repair
+   permissions or ask whether to downgrade to `read_only`; skipped pre-mutation
+   write probes are not evidence for that downgrade. Verify:
 
    ```yaml
    server:
      kanban:
        mode: integration
-       # Use mode: read_only for observer/shared dashboards or until write probes pass.
+       # Use mode: read_only for observer/shared dashboards, no-writes choices,
+       # or failed post-authorization write probes.
        # Optional allowed_transitions expose broader manual status editing.
        # allowed_transitions:
        #   In Progress: [Blocked, Cancelled]
@@ -2481,7 +2493,7 @@ linked issue.
 | Boardless repository | `tracker.repository` in `WORKFLOW.md` for issue-field and label modes. |
 | Boardless issue field | `tracker.status_field` in `WORKFLOW.md`; defaults to `Status` when omitted. |
 | Status label prefix | `tracker.status_label_prefix` in `WORKFLOW.md`; defaults to `detent:` for label mode. |
-| Kanban interaction | Fleet and observer boards stay read-only; trusted project boards use `integration` after `detent doctor --allow-write-probes` proves write permissions. |
+| Kanban interaction | Fleet and observer boards stay read-only; trusted operator-owned project boards default to `integration`, with writes authorized and proven by post-authorization `detent doctor --allow-write-probes`. |
 | Project scheduling priority | `projects[].priority` in `global.yaml`. |
 | Project scheduling weight | `projects[].weight` in `global.yaml`. |
 | Project color | Optional `projects[].color` in `global.yaml`; missing colors are deterministic and appear in the sidebar and multi-project Kanban. |

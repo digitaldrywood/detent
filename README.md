@@ -766,16 +766,19 @@ labels such as `documentation`, `bug`, or `enhancement`.
 
 The fleet `/kanban` board stays read-only, as do observer dashboards and
 shared dashboards where users should not mutate GitHub from Detent. For a
-trusted operator project board, set `server.kanban.mode: integration` after
-`detent doctor --allow-write-probes` proves writes: ProjectV2 status write,
-issue-field status write, or status-label update for the selected status
-source, plus issue/PR comment write:
+trusted operator-owned project board, default `server.kanban.mode:
+integration` before mutation authorization. Skipped pre-mutation write probes
+are not evidence for `read_only`; mutation still requires authorization and
+post-authorization `detent doctor --allow-write-probes` to prove ProjectV2
+status write, issue-field status write, or status-label update for the selected
+status source, plus issue/PR comment write:
 
 ```yaml
 server:
   kanban:
     mode: integration
-    # Use mode: read_only for observer/shared dashboards or until write probes pass.
+    # Use mode: read_only for observer/shared dashboards, no-writes choices,
+    # or failed post-authorization write probes.
     # allowed_transitions:
     #   In Progress: [Blocked, Cancelled]
     #   Rework: [Blocked, Cancelled]
@@ -1224,8 +1227,8 @@ repo is a real, working instance of this setup to copy from.
    [`WORKFLOW.issue_field.md`](docs/templates/WORKFLOW.issue_field.md), and
    [`WORKFLOW.label.md`](docs/templates/WORKFLOW.label.md).
    They set `server.kanban.mode: integration` for trusted project boards;
-   change that to `read_only` for an observer or shared dashboard, or until
-   write probes pass under `detent doctor --allow-write-probes`.
+   change that to `read_only` only for an observer or shared dashboard,
+   explicit no-writes choice, or failed post-authorization write probes.
 
    For ProjectV2 mode, set `tracker.project_slug` (your `PVT_` id). For
    boardless issue-field mode, set `tracker.github_status_source:
@@ -1476,13 +1479,14 @@ You choose where GitHub status lives; Detent fills in the rest.
 
 Boardless projects use Detent's own dashboard as the day-to-day board. The
 fleet `/kanban` board stays read-only because it is a cross-project observer
-surface. A trusted operator project board should use `integration` after
-`detent doctor --allow-write-probes` proves writes, so operators can move cards
-and post comments from `/projects/<id>/kanban`. Keep `read_only` for an
-observer or shared dashboard, or until `detent doctor --allow-write-probes`
-proves ProjectV2 status write in ProjectV2 mode, issue-field status write in
-issue-field mode, status-label update in label mode, and issue/PR comment write
-for comment forms.
+surface. A trusted operator project board should default to `integration`
+before mutation authorization, so operators can move cards and post comments
+from `/projects/<id>/kanban` after the mutation gate and write probes pass.
+Skipped pre-mutation write probes are not evidence for `read_only`. Keep
+`read_only` for an observer or shared dashboard, an explicit no-writes choice,
+or failed post-authorization write probes for ProjectV2 status write in
+ProjectV2 mode, issue-field status write in issue-field mode, status-label
+update in label mode, or issue/PR comment write for comment forms.
 
 ### Migration Notes
 

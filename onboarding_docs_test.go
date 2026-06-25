@@ -156,7 +156,7 @@ func TestOnboardingDocsInferCurrentCheckoutCandidateBeforeRawFields(t *testing.T
 	assertOrder(t, onboarding, "Source checkout:", "TARGET_SOURCE_ROOT=<absolute-local-checkout-path>")
 }
 
-func TestOnboardingDocsRecommendProjectKanbanIntegrationAfterWriteProbes(t *testing.T) {
+func TestOnboardingDocsDefaultProjectKanbanIntegrationForOperatorOwnedAddProject(t *testing.T) {
 	t.Parallel()
 
 	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
@@ -165,9 +165,11 @@ func TestOnboardingDocsRecommendProjectKanbanIntegrationAfterWriteProbes(t *test
 	for _, want := range []string{
 		"Keep fleet `/kanban` read-only",
 		"operator-owned local or private Detent instance",
-		"recommend `integration` after `detent doctor --allow-write-probes` proves the relevant write probes",
+		"For `GITHUB_MODE=label` add-project onboarding on an operator-owned local or private Detent instance, recommend `KANBAN_MODE=integration` even when the pre-mutation `detent doctor --port 0` skipped write probes",
+		"Skipped pre-mutation write probes must not become a `read_only` recommendation",
+		"Ask or select the delivery profile before emitting low-level `KANBAN_MODE` defaults",
 		"shared observer dashboard",
-		"recommend `read_only` until writes are proven",
+		"failed post-authorization write probes",
 		`KANBAN_MODE="${KANBAN_MODE:?set KANBAN_MODE to read_only or integration from answers.env}"`,
 		"mode: ${KANBAN_MODE}",
 	} {
@@ -176,7 +178,8 @@ func TestOnboardingDocsRecommendProjectKanbanIntegrationAfterWriteProbes(t *test
 
 	for _, want := range []string{
 		"fleet `/kanban` board stays read-only",
-		"trusted operator project board should use `integration` after `detent doctor --allow-write-probes` proves writes",
+		"trusted operator project board should default to `integration` before mutation authorization",
+		"Skipped pre-mutation write probes are not evidence for `read_only`",
 		"observer or shared dashboard",
 		"server.kanban.mode: integration",
 	} {
