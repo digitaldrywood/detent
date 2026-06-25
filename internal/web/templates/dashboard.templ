@@ -179,6 +179,7 @@ templ GitHubAPIHealthChrome(snapshot telemetry.Snapshot) {
 		sse-swap="github-api-health"
 		hx-swap="morph:outerHTML"
 		aria-label="GitHub API health"
+		data-preserve-details="github-api-health"
 		data-github-api-health-state={ string(gitHubAPIHealth(snapshot).State) }
 	>
 		<summary class="flex min-h-10 cursor-pointer list-none items-center gap-2 px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">

@@ -411,6 +411,7 @@ func TestDashboardRendersGitHubAPIHealthChrome(t *testing.T) {
 		`sse-swap="github-api-health"`,
 		`hx-swap="morph:outerHTML"`,
 		`aria-label="GitHub API health"`,
+		`data-preserve-details="github-api-health"`,
 		"GitHub API backoff: pull requests, check runs",
 		"Primary remaining: REST 4,878 / 5,000",
 		"GraphQL 4,880 / 5,000",
@@ -430,6 +431,106 @@ func TestDashboardRendersGitHubAPIHealthChrome(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing GitHub API health marker %q:\n%s", want, html)
 		}
+	}
+}
+
+func TestDashboardRendersGitHubAPIHealthPreservationMetadataForStates(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 14, 30, 0, 0, time.UTC)
+	resetAt := now.Add(30 * time.Minute)
+	backoffUntil := now.Add(5 * time.Minute)
+
+	tests := []struct {
+		name      string
+		snapshot  telemetry.Snapshot
+		wantState string
+		wantLabel string
+	}{
+		{
+			name:      "unknown",
+			snapshot:  telemetry.Snapshot{GeneratedAt: now},
+			wantState: "unknown",
+			wantLabel: "GitHub API unknown",
+		},
+		{
+			name: "healthy",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+				},
+			},
+			wantState: "healthy",
+			wantLabel: "GitHub API healthy",
+		},
+		{
+			name: "warning",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 240, Used: 4760, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 3200, Used: 1800, Limit: 5000, ResetAt: &resetAt},
+				},
+			},
+			wantState: "warning",
+			wantLabel: "GitHub API warning",
+		},
+		{
+			name: "secondary backoff",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+					RESTUsage: &telemetry.RESTUsage{
+						RateLimited:  true,
+						BackoffUntil: &backoffUntil,
+						Contributors: []telemetry.RESTUsageContributor{
+							{EndpointFamily: "pull requests", Count: 2, RetryAfterMS: (5 * time.Minute).Milliseconds(), RateLimited: true, LastStatus: 429},
+						},
+					},
+				},
+			},
+			wantState: "backoff",
+			wantLabel: "GitHub API backoff: pull requests",
+		},
+		{
+			name: "primary exhausted",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 0, Used: 5000, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+				},
+			},
+			wantState: "exhausted",
+			wantLabel: "GitHub API exhausted",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			html := renderDashboard(t, templates.DashboardData{
+				Title:         "Detent",
+				ConnectorName: "github",
+				Snapshot:      tt.snapshot,
+			})
+
+			for _, want := range []string{
+				`id="github-api-health"`,
+				`data-preserve-details="github-api-health"`,
+				`data-github-api-health-state="` + tt.wantState + `"`,
+				tt.wantLabel,
+			} {
+				if !strings.Contains(html, want) {
+					t.Fatalf("dashboard missing GitHub API health marker %q:\n%s", want, html)
+				}
+			}
+		})
 	}
 }
 

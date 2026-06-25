@@ -102,6 +102,52 @@ test("GitHub API health chrome covers key rate-limit states", async ({ page }, t
   }
 });
 
+test("GitHub API health disclosure stays open across live refreshes", async ({ page }) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "github-api-secondary-backoff",
+    viewport: desktopViewport,
+  });
+
+  const indicator = page.locator("#github-api-health");
+  await expect(indicator).toBeVisible();
+  await expect(indicator).toHaveAttribute("data-preserve-details", "github-api-health");
+
+  await indicator.locator("summary").click();
+  await expect(indicator).toHaveJSProperty("open", true);
+
+  await page.evaluate(() => {
+    const target = document.getElementById("github-api-health");
+    document.dispatchEvent(new CustomEvent("htmx:beforeSwap", { detail: { target } }));
+    if (target) {
+      const replacement = target.cloneNode(true);
+      if (replacement instanceof HTMLDetailsElement) {
+        replacement.open = false;
+      }
+      target.replaceWith(replacement);
+      document.dispatchEvent(new CustomEvent("htmx:afterSettle", { detail: { target: replacement } }));
+    }
+  });
+  await expect(indicator).toHaveJSProperty("open", true);
+
+  await indicator.locator("summary").click();
+  await expect(indicator).toHaveJSProperty("open", false);
+
+  await page.evaluate(() => {
+    const target = document.getElementById("github-api-health");
+    document.dispatchEvent(new CustomEvent("htmx:beforeSwap", { detail: { target } }));
+    if (target) {
+      const replacement = target.cloneNode(true);
+      if (replacement instanceof HTMLDetailsElement) {
+        replacement.open = true;
+      }
+      target.replaceWith(replacement);
+      document.dispatchEvent(new CustomEvent("htmx:afterSettle", { detail: { target: replacement } }));
+    }
+  });
+  await expect(indicator).toHaveJSProperty("open", false);
+});
+
 test("fleet Kanban lanes stay fixed width across multiple projects", async ({ page }, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
