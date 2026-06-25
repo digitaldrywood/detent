@@ -147,6 +147,7 @@ templ DashboardShell(data DashboardShellData) {
 			}) {
 				@dashboardSidebar(data)
 				@sidebar.Inset(sidebar.InsetProps{Class: "dashboard-main min-w-0 px-3 py-3 sm:px-6 lg:px-8"}) {
+					@dashboardStatusStrip(data)
 					{ children... }
 				}
 			}
@@ -161,6 +162,85 @@ templ dashboardPageHeading(title string) {
 
 templ dashboardTopbarDivider() {
 	<span aria-hidden="true">/</span>
+}
+
+templ dashboardStatusStrip(data DashboardShellData) {
+	if dashboardStatusStripVisible(data) {
+		<div class="mx-auto mb-3 flex w-full max-w-7xl justify-end">
+			@GitHubAPIHealthChrome(data.Snapshot)
+		</div>
+	}
+}
+
+templ GitHubAPIHealthChrome(snapshot telemetry.Snapshot) {
+	<details
+		id="github-api-health"
+		class={ "relative w-full max-w-full rounded-md border text-sm shadow-sm sm:w-fit " + gitHubAPIHealthClass(snapshot) }
+		sse-swap="github-api-health"
+		hx-swap="morph:outerHTML"
+		aria-label="GitHub API health"
+		data-github-api-health-state={ string(gitHubAPIHealth(snapshot).State) }
+	>
+		<summary class="flex min-h-10 cursor-pointer list-none items-center gap-2 px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
+			<span class="h-2.5 w-2.5 shrink-0 rounded-full bg-current"></span>
+			@icon.Github(icon.Props{Class: "size-4 shrink-0"})
+			<span class="grid min-w-0 flex-1 gap-0.5 text-left">
+				<span class="truncate font-semibold">{ gitHubAPIHealth(snapshot).Label }</span>
+				<span class="truncate font-mono text-[11px] opacity-85">{ gitHubAPIHealth(snapshot).Summary }</span>
+			</span>
+			@icon.ChevronDown(icon.Props{Class: "size-3.5 shrink-0"})
+		</summary>
+		<div class="z-50 mt-2 grid w-full gap-3 rounded-md border border-border bg-popover p-3 text-popover-foreground shadow-sm sm:absolute sm:right-0 sm:w-[24rem]" role="region" aria-label="GitHub API health details">
+			<p class="text-xs text-muted-foreground">{ gitHubAPIHealth(snapshot).Detail }</p>
+			if len(gitHubAPIHealth(snapshot).Buckets) == 0 {
+				@dashboardEmptyState("No GitHub primary budget snapshot.", "REST and GraphQL primary buckets will appear after the tracker reports them.", "bg-muted-foreground")
+			} else {
+				<div class="grid gap-2">
+					for _, bucket := range gitHubAPIHealth(snapshot).Buckets {
+						<div class="grid gap-1 rounded-md bg-muted/60 px-2 py-2 text-xs">
+							<div class="flex items-center justify-between gap-3">
+								<span class="font-medium text-foreground">{ bucket.Name }</span>
+								<span class="font-mono text-muted-foreground">{ bucket.Reset }</span>
+							</div>
+							<div class="grid grid-cols-3 gap-2 font-mono text-muted-foreground">
+								<span>{ bucket.Remaining }</span>
+								<span>{ bucket.Used }</span>
+								<span>{ bucket.Limit }</span>
+							</div>
+						</div>
+					}
+				</div>
+			}
+			if len(gitHubAPIHealth(snapshot).Endpoints) == 0 {
+				@dashboardEmptyState("No endpoint backoff active.", "Secondary REST throttling will list paused endpoint families here.", "bg-success")
+			} else {
+				<div class="grid gap-2">
+					for _, endpoint := range gitHubAPIHealth(snapshot).Endpoints {
+						<div class="grid gap-1 rounded-md bg-muted/60 px-2 py-2 text-xs">
+							<div class="flex items-center justify-between gap-3">
+								<span class="truncate font-medium text-foreground">{ endpoint.EndpointFamily }</span>
+								<span class="font-mono text-muted-foreground">{ endpoint.Status }</span>
+							</div>
+							<div class="grid grid-cols-2 gap-2 font-mono text-muted-foreground">
+								<span>{ endpoint.Count }</span>
+								<span>{ endpoint.Remaining }</span>
+								<span>{ endpoint.RetryAfter }</span>
+								<span>{ endpoint.Retry }</span>
+							</div>
+						</div>
+					}
+				</div>
+			}
+			<div class="grid gap-2 border-t border-border pt-2">
+				for _, row := range gitHubAPIHealth(snapshot).Refreshes {
+					<div class="flex items-center justify-between gap-3 text-xs">
+						<span class="text-muted-foreground">{ row.Label }</span>
+						<span class="font-mono text-foreground">{ row.Value }</span>
+					</div>
+				}
+			</div>
+		</div>
+	</details>
 }
 
 templ kanbanDialogHost() {

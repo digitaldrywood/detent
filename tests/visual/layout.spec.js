@@ -67,10 +67,39 @@ test("screenshots manifest includes visual gate scenarios", async ({ request }) 
       "kanban-startup-loading",
       "kanban-read-only",
       "kanban-dense-overflow",
+      "github-api-healthy",
+      "github-api-warning",
+      "github-api-secondary-backoff",
+      "github-api-primary-exhausted",
       "settings-project-context",
       "onboarding-project-selection",
     ]),
   );
+});
+
+test("GitHub API health chrome covers key rate-limit states", async ({ page }, testInfo) => {
+  const scenarios = [
+    ["github-api-healthy", "GitHub API healthy"],
+    ["github-api-warning", "GitHub API warning"],
+    ["github-api-secondary-backoff", "GitHub API backoff"],
+    ["github-api-primary-exhausted", "GitHub API exhausted"],
+  ];
+
+  for (const [scenario, label] of scenarios) {
+    await openScenario(page, {
+      runtime: screenshotsRuntime,
+      scenario,
+      viewport: scenario === "github-api-secondary-backoff" ? narrowViewport : desktopViewport,
+    });
+
+    const indicator = page.locator("#github-api-health");
+    await expect(indicator).toBeVisible();
+    await expect(indicator).toContainText(label);
+    await assertElementFitsViewport(page, "#github-api-health");
+    await captureClipAndAttach(page, "#github-api-health", `${scenario}.png`, testInfo, {
+      maxHeight: 280,
+    });
+  }
 });
 
 test("fleet Kanban lanes stay fixed width across multiple projects", async ({ page }, testInfo) => {

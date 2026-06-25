@@ -27,6 +27,12 @@ const (
 	projectKanbanLaneWidthClass = "w-[var(--project-kanban-lane-width,18rem)] min-w-[var(--project-kanban-lane-width,18rem)] max-w-[var(--project-kanban-lane-width,18rem)] basis-[var(--project-kanban-lane-width,18rem)] shrink-0"
 )
 
+const (
+	gitHubAPIWarningRemaining = int64(500)
+	gitHubAPIWarningRatio     = 0.1
+	httpStatusTooManyRequests = 429
+)
+
 type DashboardData struct {
 	Title            string
 	ApplicationName  string
@@ -125,6 +131,48 @@ type restBudgetContributorRow struct {
 	Remaining      string
 	Reset          string
 	Status         string
+}
+
+type gitHubAPIHealthState string
+
+const (
+	gitHubAPIHealthStateUnknown   gitHubAPIHealthState = "unknown"
+	gitHubAPIHealthStateHealthy   gitHubAPIHealthState = "healthy"
+	gitHubAPIHealthStateWarning   gitHubAPIHealthState = "warning"
+	gitHubAPIHealthStateBackoff   gitHubAPIHealthState = "backoff"
+	gitHubAPIHealthStateExhausted gitHubAPIHealthState = "exhausted"
+)
+
+type gitHubAPIHealthView struct {
+	State     gitHubAPIHealthState
+	Label     string
+	Summary   string
+	Detail    string
+	Buckets   []gitHubAPIHealthBucketRow
+	Endpoints []gitHubAPIHealthEndpointRow
+	Refreshes []gitHubAPIHealthRefreshRow
+}
+
+type gitHubAPIHealthBucketRow struct {
+	Name      string
+	Remaining string
+	Used      string
+	Limit     string
+	Reset     string
+}
+
+type gitHubAPIHealthEndpointRow struct {
+	EndpointFamily string
+	Count          string
+	Status         string
+	Retry          string
+	RetryAfter     string
+	Remaining      string
+}
+
+type gitHubAPIHealthRefreshRow struct {
+	Label string
+	Value string
 }
 
 type boardStateRow struct {
@@ -4193,6 +4241,381 @@ func restContributorStatus(contributor telemetry.RESTUsageContributor) string {
 		return formatInt(int64(contributor.LastStatus))
 	}
 	return "ok"
+}
+
+func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
+	view := gitHubAPIHealthView{
+		State:     gitHubAPIHealthStateUnknown,
+		Label:     "GitHub API unknown",
+		Summary:   "No GitHub rate-limit snapshot",
+		Detail:    "No GitHub rate-limit snapshot is available in the latest tracker state.",
+		Buckets:   gitHubAPIHealthBucketRows(snapshot.RateLimits),
+		Endpoints: gitHubAPIHealthEndpointRows(snapshot),
+		Refreshes: gitHubAPIHealthRefreshRows(snapshot.Refresh),
+	}
+	if !gitHubAPIHasSnapshot(snapshot.RateLimits) {
+		return view
+	}
+
+	primarySummary := gitHubAPIPrimarySummary(snapshot.RateLimits, false)
+	if primarySummary == "" {
+		primarySummary = "Primary remaining unavailable"
+	}
+
+	if gitHubAPIPrimaryExhausted(snapshot.RateLimits) {
+		view.State = gitHubAPIHealthStateExhausted
+		view.Label = "GitHub API exhausted"
+		view.Summary = gitHubAPIPrimarySummary(snapshot.RateLimits, true)
+		view.Detail = "Primary quota exhausted; " + gitHubAPIExhaustedReset(snapshot.RateLimits) + "."
+		return view
+	}
+	if gitHubAPIInBackoff(snapshot) {
+		families := gitHubAPIBackoffFamilySummary(snapshot, snapshot.RateLimits.RESTUsage)
+		view.State = gitHubAPIHealthStateBackoff
+		view.Label = "GitHub API backoff: " + families
+		view.Summary = "Primary remaining: " + primarySummary
+		view.Detail = "Secondary REST backoff for " + families + "; " + gitHubAPIRetryLabel(snapshot) + "."
+		return view
+	}
+	if gitHubAPIPrimaryWarning(snapshot.RateLimits) {
+		view.State = gitHubAPIHealthStateWarning
+		view.Label = "GitHub API warning"
+		view.Summary = primarySummary
+		view.Detail = "Primary quota is below the warning threshold; " + gitHubAPIWarningReset(snapshot.RateLimits) + "."
+		return view
+	}
+
+	view.State = gitHubAPIHealthStateHealthy
+	view.Label = "GitHub API healthy"
+	view.Summary = primarySummary
+	view.Detail = "Primary quota is available and no secondary REST backoff is active."
+	return view
+}
+
+func gitHubAPIHealthClass(snapshot telemetry.Snapshot) string {
+	switch gitHubAPIHealth(snapshot).State {
+	case gitHubAPIHealthStateHealthy:
+		return "border-success-soft bg-success-soft text-success"
+	case gitHubAPIHealthStateWarning, gitHubAPIHealthStateBackoff:
+		return "border-warning-soft bg-warning-soft text-warning"
+	case gitHubAPIHealthStateExhausted:
+		return "border-danger-soft bg-danger-soft text-danger"
+	default:
+		return "border-border bg-muted text-muted-foreground"
+	}
+}
+
+func dashboardStatusStripVisible(data DashboardShellData) bool {
+	return !data.Snapshot.GeneratedAt.IsZero() || gitHubAPIHasSnapshot(data.Snapshot.RateLimits)
+}
+
+func gitHubAPIHasSnapshot(limits *telemetry.RateLimits) bool {
+	return limits != nil &&
+		(gitHubAPIBucketKnown(limits.GitHubREST) ||
+			gitHubAPIBucketKnown(limits.GitHubGraphQL) ||
+			limits.RESTUsage != nil)
+}
+
+func gitHubAPIBucketKnown(bucket *telemetry.RateLimitBucket) bool {
+	return bucket != nil &&
+		(bucket.Limit > 0 ||
+			bucket.Remaining > 0 ||
+			bucket.Used > 0 ||
+			bucket.ResetAt != nil ||
+			bucket.ResetInSeconds > 0)
+}
+
+func gitHubAPIPrimaryExhausted(limits *telemetry.RateLimits) bool {
+	if limits == nil {
+		return false
+	}
+	for _, bucket := range []*telemetry.RateLimitBucket{limits.GitHubREST, limits.GitHubGraphQL} {
+		if bucket != nil && bucket.Limit > 0 && bucket.Remaining <= 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func gitHubAPIPrimaryWarning(limits *telemetry.RateLimits) bool {
+	if limits == nil {
+		return false
+	}
+	for _, bucket := range []*telemetry.RateLimitBucket{limits.GitHubREST, limits.GitHubGraphQL} {
+		if bucket == nil || bucket.Limit <= 0 || bucket.Remaining <= 0 {
+			continue
+		}
+		if bucket.Remaining <= gitHubAPIWarningRemaining {
+			return true
+		}
+		if float64(bucket.Remaining)/float64(bucket.Limit) <= gitHubAPIWarningRatio {
+			return true
+		}
+	}
+	return false
+}
+
+func gitHubAPIInBackoff(snapshot telemetry.Snapshot) bool {
+	if snapshot.RateLimits == nil || snapshot.RateLimits.RESTUsage == nil {
+		return false
+	}
+	usage := snapshot.RateLimits.RESTUsage
+	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, usage.BackoffUntil) {
+		return true
+	}
+	if usage.RateLimited && usage.BackoffUntil == nil {
+		return true
+	}
+	for _, contributor := range usage.Contributors {
+		if gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
+			return true
+		}
+	}
+	return false
+}
+
+func gitHubAPIContributorBackedOff(snapshot telemetry.Snapshot, contributor telemetry.RESTUsageContributor, backoffUntil *time.Time) bool {
+	if !gitHubAPIContributorHasBackoffSignal(contributor) {
+		return false
+	}
+	if backoffUntil != nil {
+		return gitHubAPIDeadlineActive(snapshot.GeneratedAt, backoffUntil)
+	}
+	if contributor.ResetAt != nil {
+		return gitHubAPIDeadlineActive(snapshot.GeneratedAt, contributor.ResetAt)
+	}
+	return true
+}
+
+func gitHubAPIContributorHasBackoffSignal(contributor telemetry.RESTUsageContributor) bool {
+	return contributor.RateLimited || contributor.LastStatus == httpStatusTooManyRequests || contributor.RetryAfterMS > 0
+}
+
+func gitHubAPIDeadlineActive(generatedAt time.Time, deadline *time.Time) bool {
+	return deadline != nil && (generatedAt.IsZero() || deadline.After(generatedAt))
+}
+
+func gitHubAPIPrimarySummary(limits *telemetry.RateLimits, includePrimaryWord bool) string {
+	if limits == nil {
+		return ""
+	}
+	parts := make([]string, 0, 2)
+	appendBucket := func(name string, bucket *telemetry.RateLimitBucket) {
+		if !gitHubAPIBucketKnown(bucket) {
+			return
+		}
+		label := name
+		if includePrimaryWord {
+			label += " primary"
+		}
+		if bucket.Limit > 0 {
+			parts = append(parts, label+" "+formatInt(bucket.Remaining)+" / "+formatInt(bucket.Limit))
+			return
+		}
+		parts = append(parts, label+" "+formatInt(bucket.Remaining)+" left")
+	}
+	appendBucket("REST", limits.GitHubREST)
+	appendBucket("GraphQL", limits.GitHubGraphQL)
+	return strings.Join(parts, " / ")
+}
+
+func gitHubAPIBackoffFamilySummary(snapshot telemetry.Snapshot, usage *telemetry.RESTUsage) string {
+	families := gitHubAPIBackoffFamilies(snapshot, usage)
+	if len(families) == 0 {
+		return "REST endpoints"
+	}
+	return strings.Join(families, ", ")
+}
+
+func gitHubAPIBackoffFamilies(snapshot telemetry.Snapshot, usage *telemetry.RESTUsage) []string {
+	if usage == nil {
+		return nil
+	}
+	families := make([]string, 0, len(usage.Contributors))
+	seen := map[string]struct{}{}
+	for _, contributor := range usage.Contributors {
+		if !gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
+			continue
+		}
+		family := strings.TrimSpace(contributor.EndpointFamily)
+		if family == "" {
+			family = "REST endpoints"
+		}
+		if _, ok := seen[family]; ok {
+			continue
+		}
+		seen[family] = struct{}{}
+		families = append(families, family)
+	}
+	return families
+}
+
+func gitHubAPIRetryLabel(snapshot telemetry.Snapshot) string {
+	if snapshot.RateLimits == nil || snapshot.RateLimits.RESTUsage == nil {
+		return "retry time n/a"
+	}
+	usage := snapshot.RateLimits.RESTUsage
+	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, usage.BackoffUntil) {
+		return "retry " + usage.BackoffUntil.UTC().Format("15:04 UTC")
+	}
+	for _, contributor := range usage.Contributors {
+		if !gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
+			continue
+		}
+		if contributor.ResetAt != nil && gitHubAPIDeadlineActive(snapshot.GeneratedAt, contributor.ResetAt) {
+			return "retry " + contributor.ResetAt.UTC().Format("15:04 UTC")
+		}
+		if contributor.RetryAfterMS > 0 {
+			return "retry after " + formatDuration(float64(contributor.RetryAfterMS)/1000)
+		}
+	}
+	return "retry time n/a"
+}
+
+func gitHubAPIExhaustedReset(limits *telemetry.RateLimits) string {
+	if limits == nil {
+		return "reset time n/a"
+	}
+	reset := gitHubAPIEarliestReset(limits.GitHubREST, limits.GitHubGraphQL)
+	if reset != nil {
+		return "reset " + reset.UTC().Format("15:04 UTC")
+	}
+	return "reset time n/a"
+}
+
+func gitHubAPIWarningReset(limits *telemetry.RateLimits) string {
+	if limits == nil {
+		return "reset time n/a"
+	}
+	reset := gitHubAPIEarliestReset(limits.GitHubREST, limits.GitHubGraphQL)
+	if reset != nil {
+		return "next reset " + reset.UTC().Format("15:04 UTC")
+	}
+	return "reset time n/a"
+}
+
+func gitHubAPIEarliestReset(buckets ...*telemetry.RateLimitBucket) *time.Time {
+	var earliest *time.Time
+	for _, bucket := range buckets {
+		if bucket == nil || bucket.ResetAt == nil {
+			continue
+		}
+		reset := bucket.ResetAt.UTC()
+		if earliest == nil || reset.Before(*earliest) {
+			earliest = &reset
+		}
+	}
+	return earliest
+}
+
+func gitHubAPIHealthBucketRows(limits *telemetry.RateLimits) []gitHubAPIHealthBucketRow {
+	if limits == nil {
+		return nil
+	}
+	rows := make([]gitHubAPIHealthBucketRow, 0, 2)
+	appendBucket := func(name string, bucket *telemetry.RateLimitBucket) {
+		if !gitHubAPIBucketKnown(bucket) {
+			return
+		}
+		rows = append(rows, gitHubAPIHealthBucketRow{
+			Name:      name,
+			Remaining: gitHubAPIHealthBucketRemaining(bucket),
+			Used:      formatInt(bucket.Used) + " used",
+			Limit:     formatLimit(bucket.Limit) + " limit",
+			Reset:     gitHubAPIHealthBucketReset(bucket),
+		})
+	}
+	appendBucket("REST primary", limits.GitHubREST)
+	appendBucket("GraphQL primary", limits.GitHubGraphQL)
+	return rows
+}
+
+func gitHubAPIHealthBucketRemaining(bucket *telemetry.RateLimitBucket) string {
+	if bucket.Limit > 0 {
+		return formatInt(bucket.Remaining) + " / " + formatInt(bucket.Limit) + " remaining"
+	}
+	return formatInt(bucket.Remaining) + " remaining"
+}
+
+func gitHubAPIHealthBucketReset(bucket *telemetry.RateLimitBucket) string {
+	if bucket.ResetAt != nil {
+		return "reset " + bucket.ResetAt.UTC().Format("15:04 UTC")
+	}
+	if bucket.ResetInSeconds > 0 {
+		return "reset in " + formatDuration(float64(bucket.ResetInSeconds))
+	}
+	return "reset time n/a"
+}
+
+func gitHubAPIHealthEndpointRows(snapshot telemetry.Snapshot) []gitHubAPIHealthEndpointRow {
+	if snapshot.RateLimits == nil || snapshot.RateLimits.RESTUsage == nil {
+		return nil
+	}
+	usage := snapshot.RateLimits.RESTUsage
+	rows := make([]gitHubAPIHealthEndpointRow, 0, len(usage.Contributors))
+	for _, contributor := range usage.Contributors {
+		if !gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
+			continue
+		}
+		rows = append(rows, gitHubAPIHealthEndpointRow{
+			EndpointFamily: gitHubAPIEndpointFamily(contributor),
+			Count:          formatInt(contributor.Count) + " " + pluralize("request", contributor.Count),
+			Status:         gitHubAPIEndpointStatus(contributor),
+			Retry:          gitHubAPIEndpointRetry(snapshot, contributor, usage.BackoffUntil),
+			RetryAfter:     gitHubAPIEndpointRetryAfter(contributor),
+			Remaining:      restContributorRemaining(contributor),
+		})
+	}
+	return rows
+}
+
+func gitHubAPIEndpointFamily(contributor telemetry.RESTUsageContributor) string {
+	family := strings.TrimSpace(contributor.EndpointFamily)
+	if family != "" {
+		return family
+	}
+	return "REST endpoints"
+}
+
+func gitHubAPIEndpointStatus(contributor telemetry.RESTUsageContributor) string {
+	if contributor.LastStatus > 0 {
+		return formatInt(int64(contributor.LastStatus))
+	}
+	if contributor.RateLimited {
+		return "rate limited"
+	}
+	return "n/a"
+}
+
+func gitHubAPIEndpointRetry(snapshot telemetry.Snapshot, contributor telemetry.RESTUsageContributor, backoffUntil *time.Time) string {
+	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, backoffUntil) {
+		return "retry " + backoffUntil.UTC().Format("15:04 UTC")
+	}
+	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, contributor.ResetAt) {
+		return "reset " + contributor.ResetAt.UTC().Format("15:04 UTC")
+	}
+	return "retry time n/a"
+}
+
+func gitHubAPIEndpointRetryAfter(contributor telemetry.RESTUsageContributor) string {
+	if contributor.RetryAfterMS <= 0 {
+		return "retry-after n/a"
+	}
+	return "retry-after " + formatDuration(float64(contributor.RetryAfterMS)/1000)
+}
+
+func gitHubAPIHealthRefreshRows(refresh telemetry.Refresh) []gitHubAPIHealthRefreshRow {
+	rows := []gitHubAPIHealthRefreshRow{
+		{Label: "Last tracker refresh", Value: "n/a"},
+		{Label: "Next tracker refresh", Value: "n/a"},
+	}
+	if refresh.LastRefreshAt != nil {
+		rows[0].Value = timeLabel(*refresh.LastRefreshAt)
+	}
+	if refresh.NextRefreshAt != nil {
+		rows[1].Value = timeLabel(*refresh.NextRefreshAt)
+	}
+	return rows
 }
 
 func graphQLCostPercent(cost int64, total int64) string {

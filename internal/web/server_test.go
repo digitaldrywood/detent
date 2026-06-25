@@ -3412,6 +3412,9 @@ func TestProjectStateAPIScopesSnapshot(t *testing.T) {
 			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "digitaldrywood/detent#377", ProjectID: "detent"}},
 			{Issue: telemetry.Issue{ID: "pyro-running", Identifier: "digitaldrywood/pyroapex#12", ProjectID: "pyroapex"}},
 		},
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST: &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000},
+		},
 	}); err != nil {
 		t.Fatalf("Publish() error = %v", err)
 	}
@@ -3431,6 +3434,9 @@ func TestProjectStateAPIScopesSnapshot(t *testing.T) {
 	running := state["running"].([]any)
 	if len(running) != 1 || running[0].(map[string]any)["issue_identifier"] != "digitaldrywood/detent#377" {
 		t.Fatalf("running = %#v, want only detent row", running)
+	}
+	if got := nestedString(t, state, "rate_limits", "github_rest", "remaining"); got != "4878" {
+		t.Fatalf("rate_limits.github_rest.remaining = %s, want 4878", got)
 	}
 
 	missing := requestJSON(t, server, http.MethodGet, "/api/v1/projects/missing/state", http.StatusNotFound)
@@ -3938,6 +3944,61 @@ func TestServerEventsStreamsPublishedSnapshots(t *testing.T) {
 	}
 }
 
+func TestServerEventsStreamsGitHubAPIHealthChrome(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 14, 30, 0, 0, time.UTC)
+	backoffUntil := now.Add(5 * time.Minute)
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000},
+			GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000},
+			RESTUsage: &telemetry.RESTUsage{
+				RateLimited:  true,
+				BackoffUntil: &backoffUntil,
+				Contributors: []telemetry.RESTUsageContributor{
+					{EndpointFamily: "pull requests", Count: 2, RateLimited: true, LastStatus: 429},
+					{EndpointFamily: "check runs", Count: 1, RateLimited: true, LastStatus: 429},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	addr := startWebServer(t, server)
+	conn, body, reader := openRawEventStream(t, addr)
+	defer conn.Close()
+	defer body.Close()
+
+	if event := readRawSSEEvent(t, conn, reader); event.name != "snapshot" {
+		t.Fatalf("first event name = %q, want snapshot", event.name)
+	}
+	if event := readRawSSEEvent(t, conn, reader); event.name != "sidebar" {
+		t.Fatalf("second event name = %q, want sidebar", event.name)
+	}
+	event := readRawSSEEvent(t, conn, reader)
+	if event.name != "github-api-health" {
+		t.Fatalf("third event name = %q, want github-api-health", event.name)
+	}
+	for _, want := range []string{
+		`id="github-api-health"`,
+		"GitHub API backoff: pull requests, check runs",
+		"Primary remaining: REST 4,878 / 5,000",
+		"retry 14:35 UTC",
+	} {
+		if !strings.Contains(event.data, want) {
+			t.Fatalf("github api health event missing %q:\n%s", want, event.data)
+		}
+	}
+}
+
 func TestServerEventsPreserveProjectKanbanVisibilityMetadata(t *testing.T) {
 	t.Parallel()
 
@@ -4077,6 +4138,10 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	sidebarEvent := readRawSSEEvent(t, conn, reader)
 	if sidebarEvent.name != "sidebar" {
 		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
+	}
+	healthEvent := readRawSSEEvent(t, conn, reader)
+	if healthEvent.name != "github-api-health" {
+		t.Fatalf("event name = %q, want github-api-health", healthEvent.name)
 	}
 
 	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{

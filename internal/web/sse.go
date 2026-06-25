@@ -19,6 +19,7 @@ import (
 const (
 	sseEventSnapshot     = "snapshot"
 	sseEventSidebar      = "sidebar"
+	sseEventGitHubAPI    = "github-api-health"
 	sseEventTick         = "tick"
 	sseViewKanban        = "kanban"
 	sseViewRuns          = "runs"
@@ -107,6 +108,9 @@ func (s *Server) events(c echo.Context) error {
 				return err
 			}
 			if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data))); err != nil {
+				return err
+			}
+			if err := writeSSEComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthChrome(data.Snapshot)); err != nil {
 				return err
 			}
 			flusher.Flush()

@@ -130,6 +130,10 @@ func demoScenarioDefinitions() []demoScenario {
 		{ID: "fleet-draining-shutdown", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "draining"},
 		{ID: "fleet-dense-multiproject", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "dense"},
 		{ID: "fleet-degraded-telemetry", Route: "/", WaitSelector: "#snapshot", Page: "fleet", Variant: "degraded"},
+		{ID: "github-api-healthy", Route: "/", WaitSelector: "#github-api-health", Page: "fleet", Variant: "github-api-healthy"},
+		{ID: "github-api-warning", Route: "/", WaitSelector: "#github-api-health", Page: "fleet", Variant: "github-api-warning"},
+		{ID: "github-api-secondary-backoff", Route: "/", WaitSelector: "#github-api-health", Page: "fleet", Variant: "github-api-secondary-backoff"},
+		{ID: "github-api-primary-exhausted", Route: "/", WaitSelector: "#github-api-health", Page: "fleet", Variant: "github-api-primary-exhausted"},
 		{ID: "fleet-kanban-multiproject", Route: "/kanban", WaitSelector: "#fleet-kanban", Page: "fleet-kanban", Variant: "dense-kanban", KanbanMode: workflowconfig.KanbanModeReadOnly},
 		{ID: "project-active-overview", Route: "/projects/dogfood", WaitSelector: "#snapshot", Page: "project", Variant: "healthy", ProjectID: demoPrimaryProjectID},
 		{ID: "project-paused-overview", Route: "/projects/mobile-client", WaitSelector: "#snapshot", Page: "project", Variant: "paused", ProjectID: "mobile-client"},
@@ -674,6 +678,14 @@ func demoSnapshotForScenario(scenario demoScenario) telemetry.Snapshot {
 		snapshot = demoTrackerRefreshGapSnapshot()
 	case "startup-loading":
 		snapshot = demoStartupLoadingSnapshot()
+	case "github-api-healthy":
+		snapshot = demoGitHubAPIHealthySnapshot()
+	case "github-api-warning":
+		snapshot = demoGitHubAPIWarningSnapshot()
+	case "github-api-secondary-backoff":
+		snapshot = demoGitHubAPISecondaryBackoffSnapshot()
+	case "github-api-primary-exhausted":
+		snapshot = demoGitHubAPIPrimaryExhaustedSnapshot()
 	}
 	if scenario.Variant == "terminal" {
 		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, "demo-cancelled", "digitaldrywood/detent-core#5259", "Cancelled alternate dashboard theme", "Cancelled", 48))
@@ -813,7 +825,9 @@ func demoHealthySnapshot() telemetry.Snapshot {
 			Secondary:     &telemetry.RateLimitBucket{Remaining: 460, Used: 40, Limit: 500, ResetAt: demoTimePtr(now.Add(8 * time.Minute)), ResetInSeconds: 480},
 			Credits:       &telemetry.RateLimitBucket{HasCredits: true, Balance: "healthy"},
 			GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4320, Used: 680, Limit: 5000, ResetAt: demoTimePtr(now.Add(42 * time.Minute)), ResetInSeconds: 2520},
+			GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: demoTimePtr(now.Add(46 * time.Minute)), ResetInSeconds: 2760},
 			GraphQLCost:   &telemetry.GraphQLCost{TotalQueries: 88, TotalCost: 680, Contributors: []telemetry.GraphQLCostContributor{{QueryType: "project_items", Count: 30, Cost: 300}, {QueryType: "pull_requests", Count: 18, Cost: 180}}},
+			RESTUsage:     &telemetry.RESTUsage{TotalRequests: 122, Contributors: []telemetry.RESTUsageContributor{{EndpointFamily: "issues", Count: 82, Remaining: 4878, Limit: 5000}, {EndpointFamily: "pull requests", Count: 40, Remaining: 4878, Limit: 5000}}},
 		},
 		Tokens:         telemetry.Tokens{Input: 74540, Output: 27190, Total: 101730, RuntimeSeconds: 4380},
 		Throughput:     telemetry.TokenThroughput{TokensPerSecond: 23.5, WindowSeconds: 600, Tokens: 14100},
@@ -885,8 +899,50 @@ func demoOverloadedSnapshot() telemetry.Snapshot {
 		Secondary:     &telemetry.RateLimitBucket{Remaining: 4, Used: 496, Limit: 500, ResetAt: demoTimePtr(now.Add(9 * time.Minute)), ResetInSeconds: 540},
 		Credits:       &telemetry.RateLimitBucket{HasCredits: true, Balance: "low"},
 		GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 95, Used: 4905, Limit: 5000, ResetAt: demoTimePtr(now.Add(34 * time.Minute)), ResetInSeconds: 2040},
+		GitHubREST:    &telemetry.RateLimitBucket{Remaining: 430, Used: 4570, Limit: 5000, ResetAt: demoTimePtr(now.Add(18 * time.Minute)), ResetInSeconds: 1080},
 		GraphQLCost:   &telemetry.GraphQLCost{TotalQueries: 410, TotalCost: 4905, Contributors: []telemetry.GraphQLCostContributor{{QueryType: "project_items", Count: 180, Cost: 2700}, {QueryType: "review_threads", Count: 90, Cost: 1260}, {QueryType: "rate_limit_probe", Count: 40, Cost: 480}}},
+		RESTUsage:     &telemetry.RESTUsage{TotalRequests: 4570, Contributors: []telemetry.RESTUsageContributor{{EndpointFamily: "issues", Count: 4100, Remaining: 430, Limit: 5000}, {EndpointFamily: "check runs", Count: 470, Remaining: 430, Limit: 5000}}},
 	}
+	return snapshot
+}
+
+func demoGitHubAPIHealthySnapshot() telemetry.Snapshot {
+	return demoHealthySnapshot()
+}
+
+func demoGitHubAPIWarningSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	now := snapshot.GeneratedAt
+	snapshot.RateLimits.GitHubREST = &telemetry.RateLimitBucket{Remaining: 240, Used: 4760, Limit: 5000, ResetAt: demoTimePtr(now.Add(24 * time.Minute)), ResetInSeconds: 1440}
+	snapshot.RateLimits.GitHubGraphQL = &telemetry.RateLimitBucket{Remaining: 3200, Used: 1800, Limit: 5000, ResetAt: demoTimePtr(now.Add(42 * time.Minute)), ResetInSeconds: 2520}
+	snapshot.RateLimits.RESTUsage = &telemetry.RESTUsage{TotalRequests: 4760, Contributors: []telemetry.RESTUsageContributor{{EndpointFamily: "issues", Count: 3900, Remaining: 240, Limit: 5000}, {EndpointFamily: "pull requests", Count: 860, Remaining: 240, Limit: 5000}}}
+	return snapshot
+}
+
+func demoGitHubAPISecondaryBackoffSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	now := snapshot.GeneratedAt
+	backoffUntil := now.Add(5 * time.Minute)
+	snapshot.RateLimits.GitHubREST = &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: demoTimePtr(now.Add(46 * time.Minute)), ResetInSeconds: 2760}
+	snapshot.RateLimits.GitHubGraphQL = &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: demoTimePtr(now.Add(42 * time.Minute)), ResetInSeconds: 2520}
+	snapshot.RateLimits.RESTUsage = &telemetry.RESTUsage{
+		TotalRequests: 122,
+		RateLimited:   true,
+		BackoffUntil:  &backoffUntil,
+		Contributors: []telemetry.RESTUsageContributor{
+			{EndpointFamily: "pull requests", Count: 2, RetryAfterMS: (5 * time.Minute).Milliseconds(), RateLimited: true, LastStatus: 429, Remaining: 4878, Limit: 5000},
+			{EndpointFamily: "check runs", Count: 1, RateLimited: true, LastStatus: 429, Remaining: 4878, Limit: 5000},
+		},
+	}
+	return snapshot
+}
+
+func demoGitHubAPIPrimaryExhaustedSnapshot() telemetry.Snapshot {
+	snapshot := demoHealthySnapshot()
+	now := snapshot.GeneratedAt
+	snapshot.RateLimits.GitHubREST = &telemetry.RateLimitBucket{Remaining: 0, Used: 5000, Limit: 5000, ResetAt: demoTimePtr(now.Add(30 * time.Minute)), ResetInSeconds: 1800}
+	snapshot.RateLimits.GitHubGraphQL = &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: demoTimePtr(now.Add(42 * time.Minute)), ResetInSeconds: 2520}
+	snapshot.RateLimits.RESTUsage = &telemetry.RESTUsage{TotalRequests: 5000, Contributors: []telemetry.RESTUsageContributor{{EndpointFamily: "issues", Count: 4400, Remaining: 0, Limit: 5000}, {EndpointFamily: "pull requests", Count: 600, Remaining: 0, Limit: 5000}}}
 	return snapshot
 }
 
@@ -1393,7 +1449,10 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 	if err := writeSSEComponent(ctx, res.Writer, sseEventSnapshot, snapshotComponent); err != nil {
 		return err
 	}
-	return writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data)))
+	if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data))); err != nil {
+		return err
+	}
+	return writeSSEComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthChrome(data.Snapshot))
 }
 
 func demoSSEViewForScenario(scenario demoScenario) string {

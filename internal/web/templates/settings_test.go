@@ -59,6 +59,7 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 	for _, forbidden := range []string{
 		"dashboard-nav flex min-w-0 items-center gap-4",
 		"dashboard-nav-link",
+		`id="github-api-health"`,
 		"underline decoration-2 underline-offset-4",
 	} {
 		if strings.Contains(html, forbidden) {
