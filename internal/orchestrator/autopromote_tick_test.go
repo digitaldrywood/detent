@@ -743,12 +743,13 @@ func TestTickRequeuesObservedStaleMergingIssueForDispatch(t *testing.T) {
 		candidateIssuesSet: true,
 	}
 	runner := newWorkerHostRunner()
+	var logs strings.Builder
 	orch := &Orchestrator{
 		cfg:        cfg,
 		connector:  tracker,
 		supervisor: newTestSupervisor(t, runner, cfg),
 		runResults: make(chan runpkg.Completion, 1),
-		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+		logger:     slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 	state := newState(cfg)
 
@@ -761,11 +762,100 @@ func TestTickRequeuesObservedStaleMergingIssueForDispatch(t *testing.T) {
 	if request.Issue.State != "Merging" {
 		t.Fatalf("RunRequest.Issue.State = %q, want Merging", request.Issue.State)
 	}
+	if _, ok := state.Running[issue.ID]; !ok {
+		t.Fatalf("Running[%q] missing after stale Merging dispatch", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing after stale Merging dispatch", issue.ID)
+	}
 	if len(tracker.updates) != 0 {
 		t.Fatalf("updates = %#v, want none", tracker.updates)
 	}
+	for _, fragment := range []string{"merge_worker_pickup", "source=stale_merging", "merge_worker_attempt", "pull_request_number=54"} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
 	if running := state.Running[issue.ID]; running.cancel != nil {
 		running.cancel()
+	}
+}
+
+func TestTickFailsAndRetriesStaleMergingWithoutStartupTelemetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 16, 0, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-stale-merging-no-startup", []string{"bug"}, &connector.PullRequest{
+		Number:         71,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/71",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+		HeadSHA:        "aacd52414e368678a912a7cc638f78d8ccae7131",
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/creswoodcorners-phone#63"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{issue},
+		candidateIssuesSet: true,
+	}
+	runner := newWorkerHostRunner()
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:        cfg,
+		connector:  tracker,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+		logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(context.Background(), &state, now)
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != issue.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, issue.ID)
+	}
+
+	orch.tick(context.Background(), &state, now.Add(2*time.Minute+time.Second))
+
+	if _, ok := state.Running[issue.ID]; ok {
+		t.Fatalf("Running[%q] present after startup timeout", issue.ID)
+	}
+	retry, ok := state.Retry[issue.ID]
+	if !ok {
+		t.Fatalf("Retry[%q] missing after startup timeout", issue.ID)
+	}
+	if retry.Attempt != 1 {
+		t.Fatalf("Retry[%q].Attempt = %d, want 1", issue.ID, retry.Attempt)
+	}
+	if !strings.Contains(retry.Error, "did not report process or session startup") {
+		t.Fatalf("Retry[%q].Error = %q, want startup telemetry detail", issue.ID, retry.Error)
+	}
+	if _, ok := state.Claimed[issue.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing after startup timeout", issue.ID)
+	}
+	for _, fragment := range []string{"merge_worker_failure", "reason=runner_startup_timeout", "did not report process or session startup"} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected immediate redispatch after startup timeout = %#v", request)
+	default:
 	}
 }
 
@@ -934,6 +1024,72 @@ func TestTickReconcilesStaleMergingPullRequestStates(t *testing.T) {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
 		}
+	}
+}
+
+func TestTickAdvancesStaleMergingLaneAfterFrontPRReconcilesDone(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 18, 30, 0, 0, time.UTC)
+	front := autoPromoteTickIssue("issue-front-merged", []string{"bug"}, &connector.PullRequest{
+		Number:         71,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/71",
+		State:          "MERGED",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	front.State = "Merging"
+	front.Identifier = "digitaldrywood/creswoodcorners-phone#63"
+	next := autoPromoteTickIssue("issue-next-ready", []string{"bug"}, &connector.PullRequest{
+		Number:         72,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/72",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	next.State = "Merging"
+	next.Identifier = "digitaldrywood/creswoodcorners-phone#64"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{front, next},
+		candidateIssuesSet: true,
+	}
+	runner := newWorkerHostRunner()
+	orch := &Orchestrator{
+		cfg:        cfg,
+		connector:  tracker,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: front.ID, state: "Done"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != next.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, next.ID)
+	}
+	if _, ok := state.Running[next.ID]; !ok {
+		t.Fatalf("Running[%q] missing after front PR reconciliation", next.ID)
+	}
+	if running := state.Running[next.ID]; running.cancel != nil {
+		running.cancel()
 	}
 }
 
