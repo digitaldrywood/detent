@@ -1332,7 +1332,7 @@ func TestCheckRunTelemetryReportsQueueAndCompletedSpan(t *testing.T) {
 	summary := checkRunTelemetry([]restCheckRun{
 		{Name: "Verify (ubuntu-latest)", Status: "completed", Conclusion: "success", CreatedAt: &created, StartedAt: &start, CompletedAt: &verifyDone},
 		{Name: "GoReleaser Snapshot", Status: "completed", Conclusion: "success", CreatedAt: &snapshotCreated, StartedAt: &snapshotStart, CompletedAt: &snapshotDone},
-	})
+	}, nil)
 
 	if summary.QueueSeconds != 120 {
 		t.Fatalf("QueueSeconds = %d, want 120", summary.QueueSeconds)
@@ -1345,6 +1345,44 @@ func TestCheckRunTelemetryReportsQueueAndCompletedSpan(t *testing.T) {
 	}
 	if len(summary.RunningChecks) != 0 {
 		t.Fatalf("RunningChecks = %#v, want none", summary.RunningChecks)
+	}
+}
+
+func TestCheckRunTelemetryUsesWorkflowRunTimingForQueue(t *testing.T) {
+	t.Parallel()
+
+	runCreated := time.Date(2026, 6, 5, 10, 58, 0, 0, time.UTC)
+	runStarted := runCreated.Add(90 * time.Second)
+	checkStarted := time.Date(2026, 6, 5, 11, 0, 0, 0, time.UTC)
+	checkCompleted := checkStarted.Add(3 * time.Minute)
+
+	summary := checkRunTelemetry([]restCheckRun{
+		{Name: "Verify (ubuntu-latest)", Status: "completed", Conclusion: "success", StartedAt: &checkStarted, CompletedAt: &checkCompleted},
+	}, []restWorkflowRun{
+		{ID: 28196652213, CreatedAt: &runCreated, RunStartedAt: &runStarted},
+	})
+
+	if summary.QueueSeconds != 90 {
+		t.Fatalf("QueueSeconds = %d, want 90", summary.QueueSeconds)
+	}
+	if summary.DurationSeconds != 180 {
+		t.Fatalf("DurationSeconds = %d, want 180", summary.DurationSeconds)
+	}
+}
+
+func TestCheckRunWorkflowRunIDs(t *testing.T) {
+	t.Parallel()
+
+	got := checkRunWorkflowRunIDs([]restCheckRun{
+		{DetailsURL: "https://github.com/digitaldrywood/detent/actions/runs/28196652213/job/83525095026"},
+		{DetailsURL: "https://github.com/digitaldrywood/detent/actions/runs/28196652213/job/83525095027"},
+		{DetailsURL: "https://github.com/digitaldrywood/detent/actions/runs/28196652214"},
+		{DetailsURL: "https://example.com/not-actions"},
+	})
+
+	want := []int64{28196652213, 28196652214}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("checkRunWorkflowRunIDs() = %#v, want %#v", got, want)
 	}
 }
 
