@@ -165,9 +165,11 @@ templ dashboardTopbarDivider() {
 }
 
 templ dashboardStatusStrip(data DashboardShellData) {
-	<div class="mx-auto mb-3 flex w-full max-w-7xl justify-end">
-		@GitHubAPIHealthChrome(data.Snapshot)
-	</div>
+	if dashboardStatusStripVisible(data) {
+		<div class="mx-auto mb-3 flex w-full max-w-7xl justify-end">
+			@GitHubAPIHealthChrome(data.Snapshot)
+		</div>
+	}
 }
 
 templ GitHubAPIHealthChrome(snapshot telemetry.Snapshot) {

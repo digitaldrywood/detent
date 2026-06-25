@@ -4305,6 +4305,10 @@ func gitHubAPIHealthClass(snapshot telemetry.Snapshot) string {
 	}
 }
 
+func dashboardStatusStripVisible(data DashboardShellData) bool {
+	return !data.Snapshot.GeneratedAt.IsZero() || gitHubAPIHasSnapshot(data.Snapshot.RateLimits)
+}
+
 func gitHubAPIHasSnapshot(limits *telemetry.RateLimits) bool {
 	return limits != nil &&
 		(gitHubAPIBucketKnown(limits.GitHubREST) ||
