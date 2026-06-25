@@ -70,8 +70,8 @@ func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`detent onboarding draft-answers --output pretty`,
-		`detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write`,
+		`detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --output pretty`,
+		`detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --answers "$ONBOARDING_DIR/answers.env" --write`,
 		"CUSTOMER_ID=<customer-or-workstream-id>",
 		"DETENT_PROJECT_ID=<local-detent-project-id>",
 		"TARGET_REPOSITORY=<repo-owner>/<repo-name>",
@@ -90,6 +90,43 @@ func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	assertContains(t, readme, "Distinguish reference repositories from the target repository")
 	assertContains(t, readme, `detent onboarding validate-answers --answers "$ONBOARDING_DIR/answers.env" --phase identity`)
 	assertContains(t, readme, "Ask and record `GITHUB_MODE` explicitly")
+}
+
+func TestOnboardingDocsRequireDetentSourceFreshnessBeforeRunbook(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+
+	for _, want := range []string{
+		`git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main`,
+		`git -C "$DETENT_SOURCE_ROOT" rev-parse HEAD`,
+		`git -C "$DETENT_SOURCE_ROOT" rev-parse refs/remotes/origin/main`,
+		`detent --format json version`,
+		"DETENT_SOURCE_MATCHES_CANONICAL",
+		"DETENT_BINARY_MATCHES_CANONICAL",
+		"$ONBOARDING_DIR/detent-source-freshness.env",
+		"stop before Phase 2 recommendations",
+		"read docs from GitHub at the canonical head",
+	} {
+		assertContains(t, onboarding, want)
+	}
+
+	for _, want := range []string{
+		"Before reading local Detent docs or trusting local `detent` command recommendations",
+		`git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main`,
+		"`DETENT_SOURCE_MATCHES_CANONICAL`",
+		"`DETENT_BINARY_MATCHES_CANONICAL`",
+		"stop before reading local docs or making Phase 2 recommendations",
+		"reading docs from GitHub at the canonical head",
+		`--detent-source-root "$DETENT_SOURCE_ROOT"`,
+	} {
+		assertContainsWords(t, readme, want)
+	}
+
+	assertOrder(t, readme, "Before reading local Detent docs", "From the Detent source repository, read README.md")
+	assertOrder(t, onboarding, "## Source Freshness Gate", "## Start Here")
+	assertOrder(t, onboarding, "DETENT_SOURCE_MATCHES_CANONICAL", "## Phase 0.5")
 }
 
 func TestOnboardingDocsPreserveEarlyLabelStatusSourceDecision(t *testing.T) {
