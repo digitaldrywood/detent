@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 )
 
 var (
@@ -69,9 +70,12 @@ func (e *GraphQLErrorList) Unwrap() error {
 }
 
 type StatusError struct {
-	StatusCode int
-	Body       string
-	Err        error
+	StatusCode    int
+	Body          string
+	Err           error
+	RateLimitKind string
+	RetryAfter    time.Duration
+	ResetAt       time.Time
 }
 
 func (e *StatusError) Error() string {

@@ -502,6 +502,7 @@ func retainUnavailablePullRequests(current []connector.Issue, previous []connect
 		}
 		retained := cloneIssue(prior).PullRequest
 		retained.HydrationUnavailableReason = reason
+		retained.HydrationNextRetryAt = cloneTime(issue.PullRequest.HydrationNextRetryAt)
 		out[index].PullRequest = retained
 		if out[index].PRNumber == nil && prior.PRNumber != nil {
 			prNumber := *prior.PRNumber

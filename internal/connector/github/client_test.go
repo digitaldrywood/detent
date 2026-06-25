@@ -307,8 +307,8 @@ func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
 			w.Header().Set("Content-Type", "application/json")
 			w.Header().Set("Retry-After", "120")
 			w.Header().Set("X-RateLimit-Limit", "5000")
-			w.Header().Set("X-RateLimit-Used", "122")
-			w.Header().Set("X-RateLimit-Remaining", "4878")
+			w.Header().Set("X-RateLimit-Used", "5000")
+			w.Header().Set("X-RateLimit-Remaining", "0")
 			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
 			w.Header().Set("X-RateLimit-Resource", "core")
 			w.WriteHeader(http.StatusForbidden)
@@ -352,8 +352,8 @@ func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
 	if usage.TotalRequests != 2 || !usage.RateLimited {
 		t.Fatalf("FlushRESTRateLimitUsage() totals = requests %d rate_limited %v, want 2 true", usage.TotalRequests, usage.RateLimited)
 	}
-	if usage.RateLimit.Remaining != 4878 || usage.RateLimit.RetryAfter != 2*time.Minute || usage.RateLimit.Resource != "core" {
-		t.Fatalf("FlushRESTRateLimitUsage().RateLimit = %#v, want remaining 4878 retry-after 2m core", usage.RateLimit)
+	if usage.RateLimit.Remaining != 0 || usage.RateLimit.RetryAfter != 2*time.Minute || usage.RateLimit.Resource != "core" {
+		t.Fatalf("FlushRESTRateLimitUsage().RateLimit = %#v, want remaining 0 retry-after 2m core", usage.RateLimit)
 	}
 	if usage.BackoffUntil.IsZero() {
 		t.Fatal("FlushRESTRateLimitUsage().BackoffUntil is zero, want backoff deadline")
@@ -363,6 +363,81 @@ func TestClientRESTAggregatesUsageAndBacksOffAfterRateLimit(t *testing.T) {
 	}
 	if got := restEndpointUsageCount(usage.Requests, "issue comments"); got != 1 {
 		t.Fatalf("issue comments usage count = %d, want 1; usage = %#v", got, usage.Requests)
+	}
+}
+
+func TestClientRESTDoesNotGloballyBackOffAfterSecondaryFanoutThrottle(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch call := calls.Add(1); call {
+		case 1:
+			if r.URL.Path != "/repos/digitaldrywood/detent/commits/abc/check-runs" {
+				t.Fatalf("first path = %s, want check-runs path", r.URL.Path)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("Retry-After", "120")
+			w.Header().Set("X-RateLimit-Limit", "5000")
+			w.Header().Set("X-RateLimit-Used", "122")
+			w.Header().Set("X-RateLimit-Remaining", "4878")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+			w.Header().Set("X-RateLimit-Resource", "core")
+			w.WriteHeader(http.StatusTooManyRequests)
+			_, _ = w.Write([]byte(`{"message":"secondary rate limit"}`))
+		case 2:
+			if r.URL.Path != "/repos/digitaldrywood/detent/issues" {
+				t.Fatalf("second path = %s, want label issues path", r.URL.Path)
+			}
+			if got := r.URL.Query().Get("labels"); got != "detent:todo" {
+				t.Fatalf("labels query = %q, want detent:todo", got)
+			}
+			w.Header().Set("Content-Type", "application/json")
+			w.Header().Set("X-RateLimit-Limit", "5000")
+			w.Header().Set("X-RateLimit-Used", "123")
+			w.Header().Set("X-RateLimit-Remaining", "4877")
+			w.Header().Set("X-RateLimit-Reset", strconv.FormatInt(resetAt.Unix(), 10))
+			w.Header().Set("X-RateLimit-Resource", "core")
+			w.WriteHeader(http.StatusOK)
+			_, _ = w.Write([]byte(`[]`))
+		default:
+			t.Fatalf("unexpected REST call %d to %s", call, r.URL.Path)
+		}
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/check-runs", nil, nil)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("REST() check-runs error = %v, want ErrRateLimited", err)
+	}
+	var issues []restIssue
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues?labels=detent%3Atodo", nil, &issues); err != nil {
+		t.Fatalf("REST() label issues after secondary throttle error = %v", err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("REST calls = %d, want secondary throttle not to block label issues", calls.Load())
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+	if usage.RateLimit.RetryAfter != 0 {
+		t.Fatalf("RateLimit.RetryAfter = %s, want no global REST retry-after", usage.RateLimit.RetryAfter)
+	}
+	if !usage.BackoffUntil.IsZero() {
+		t.Fatalf("BackoffUntil = %v, want no global REST backoff", usage.BackoffUntil)
+	}
+	checkRuns := restEndpointUsage(usage.Requests, "check runs")
+	if !checkRuns.RateLimited || checkRuns.RetryAfter != 2*time.Minute {
+		t.Fatalf("check runs usage = %#v, want endpoint retry-after", checkRuns)
 	}
 }
 
@@ -568,6 +643,15 @@ func restEndpointUsageCount(usages []connector.RESTEndpointUsage, family string)
 		}
 	}
 	return 0
+}
+
+func restEndpointUsage(usages []connector.RESTEndpointUsage, family string) connector.RESTEndpointUsage {
+	for _, usage := range usages {
+		if usage.EndpointFamily == family {
+			return usage
+		}
+	}
+	return connector.RESTEndpointUsage{}
 }
 
 func TestClientGraphQLCapturesRateLimitSnapshot(t *testing.T) {

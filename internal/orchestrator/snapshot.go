@@ -301,6 +301,8 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		State:                      pullRequest.State,
 		MergeableState:             pullRequest.MergeableState,
 		HydrationUnavailableReason: pullRequest.HydrationUnavailableReason,
+		HydrationDegradedReason:    pullRequest.HydrationDegradedReason,
+		HydrationNextRetryAt:       cloneTime(pullRequest.HydrationNextRetryAt),
 		CIStatus:                   pullRequest.CIStatus,
 		CheckRunCount:              pullRequest.CheckRunCount,
 		StatusContextCount:         pullRequest.StatusContextCount,
@@ -310,6 +312,14 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		RunningChecks:              append([]string(nil), pullRequest.RunningChecks...),
 		CodexReviewState:           pullRequest.CodexReviewState,
 	}
+}
+
+func cloneTime(value *time.Time) *time.Time {
+	if value == nil {
+		return nil
+	}
+	cloned := *value
+	return &cloned
 }
 
 func telemetryPullRequestChecks(checks []connector.PullRequestCheck) []telemetry.PullRequestCheck {

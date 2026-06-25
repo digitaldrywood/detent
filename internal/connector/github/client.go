@@ -26,6 +26,11 @@ const (
 	maxErrorBodyBytes      = 1000
 )
 
+const (
+	restRateLimitKindPrimaryExhausted   = "primary_exhausted"
+	restRateLimitKindSecondaryThrottled = "secondary_throttled"
+)
+
 var defaultRESTBackoffs = newRESTBackoffRegistry()
 
 type HTTPClient interface {
@@ -174,7 +179,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	headerRateLimit := c.recordRateLimitFromHeaders(resp.Header, receivedAt)
 
 	if resp.StatusCode != http.StatusOK {
-		err := classifyStatus(resp.StatusCode, resp.Header, raw)
+		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
 		}
@@ -273,7 +278,8 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	if err != nil {
 		return restProbeResult{}, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
-	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, time.Now())
+	receivedAt := time.Now()
+	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt)
 	result := restProbeResult{
 		StatusCode: resp.StatusCode,
 		Headers:    resp.Header.Clone(),
@@ -281,7 +287,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 		FullBody:   string(bytes.TrimSpace(raw)),
 	}
 	if resp.StatusCode == http.StatusUnauthorized || resp.StatusCode == http.StatusForbidden {
-		err := classifyStatus(resp.StatusCode, resp.Header, raw)
+		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.restProbeWithTokenRefresh(ctx, method, path, body, false)
 		}
@@ -354,9 +360,10 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	if err != nil {
 		return nil, fmt.Errorf("%w: read response: %w", ErrTransient, err)
 	}
-	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, time.Now())
+	receivedAt := time.Now()
+	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
-		err := classifyStatus(resp.StatusCode, resp.Header, raw)
+		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.restWithTokenRefresh(ctx, method, path, body, out, false)
 		}
@@ -494,7 +501,12 @@ func (c *Client) restBackoffError(backoffKey string, now time.Time) error {
 	if backoffUntil.IsZero() || !backoffUntil.After(now) {
 		return nil
 	}
-	return &StatusError{StatusCode: http.StatusTooManyRequests, Err: ErrRateLimited}
+	return &StatusError{
+		StatusCode:    http.StatusTooManyRequests,
+		Err:           ErrRateLimited,
+		RateLimitKind: restRateLimitKindPrimaryExhausted,
+		RetryAfter:    backoffUntil.Sub(now),
+	}
 }
 
 func normalizeRESTBudgetPolicy(policy RESTBudgetPolicy) RESTBudgetPolicy {
@@ -599,6 +611,8 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 	retryAfter, hasRetryAfter := parseRetryAfter(headers.Get("Retry-After"), now)
 	resource := strings.TrimSpace(headers.Get("X-RateLimit-Resource"))
 	rateLimited := restStatusRateLimited(status, headers)
+	family := restEndpointFamily(method, path)
+	sharedBackoff := rateLimited && restShouldApplySharedBackoff(family, remaining, hasRemaining)
 
 	var resetAt time.Time
 	if hasReset {
@@ -633,7 +647,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 		snapshot.Resource = resource
 		hasSnapshot = true
 	}
-	if hasRetryAfter {
+	if hasRetryAfter && sharedBackoff {
 		snapshot.RetryAfter = retryAfter
 		hasSnapshot = true
 	} else if hasSnapshot {
@@ -645,7 +659,6 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 		c.hasRestRateLimit = true
 	}
 
-	family := restEndpointFamily(method, path)
 	if c.restRequests == nil {
 		c.restRequests = make(map[string]connector.RESTEndpointUsage)
 	}
@@ -674,7 +687,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 	}
 	c.restRequests[family] = request
 
-	if rateLimited {
+	if sharedBackoff {
 		backoffUntil := restBackoffUntil(now, retryAfter, hasRetryAfter, resetAt, hasReset, remaining, hasRemaining)
 		if c.restBackoffUntil.IsZero() || backoffUntil.After(c.restBackoffUntil) {
 			c.restBackoffUntil = backoffUntil
@@ -1026,6 +1039,10 @@ func requestPath(value *url.URL) string {
 }
 
 func classifyStatus(status int, headers http.Header, body []byte) error {
+	return classifyStatusAt(status, headers, body, time.Now())
+}
+
+func classifyStatusAt(status int, headers http.Header, body []byte, now time.Time) error {
 	base := ErrUnexpectedStatus
 	switch {
 	case status == http.StatusUnauthorized:
@@ -1044,11 +1061,19 @@ func classifyStatus(status int, headers http.Header, body []byte) error {
 		base = ErrTransient
 	}
 
-	return &StatusError{
+	statusErr := &StatusError{
 		StatusCode: status,
 		Body:       summarizeBody(body),
 		Err:        base,
 	}
+	if errors.Is(base, ErrRateLimited) {
+		statusErr.RateLimitKind = restRateLimitKindFromHeaders(status, headers)
+		statusErr.RetryAfter, _ = parseRetryAfter(headers.Get("Retry-After"), now)
+		if reset, ok := int64Header(headers, "X-RateLimit-Reset"); ok {
+			statusErr.ResetAt = time.Unix(reset, 0).UTC()
+		}
+	}
+	return statusErr
 }
 
 func restStatusRateLimited(status int, headers http.Header) bool {
@@ -1060,6 +1085,23 @@ func restStatusRateLimited(status int, headers http.Header) bool {
 	default:
 		return false
 	}
+}
+
+func restRateLimitKindFromHeaders(status int, headers http.Header) string {
+	if !restStatusRateLimited(status, headers) {
+		return ""
+	}
+	if remaining, ok := int64Header(headers, "X-RateLimit-Remaining"); ok && remaining <= 0 {
+		return restRateLimitKindPrimaryExhausted
+	}
+	return restRateLimitKindSecondaryThrottled
+}
+
+func restShouldApplySharedBackoff(family string, remaining int64, hasRemaining bool) bool {
+	if !restFanoutEndpointFamily(family) {
+		return true
+	}
+	return hasRemaining && remaining <= 0
 }
 
 func restBackoffUntil(

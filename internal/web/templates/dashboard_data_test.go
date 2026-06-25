@@ -1453,6 +1453,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 	mergeAt := now.Add(-15 * time.Minute)
 	doneAt := now.Add(-45 * time.Minute)
 	oldDoneAt := now.Add(-25 * time.Hour)
+	retryAt := now.Add(5 * time.Minute)
 
 	tests := []struct {
 		name     string
@@ -1471,11 +1472,12 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 						State:      "Human Review",
 						UpdatedAt:  &reviewAt,
 						PullRequest: &telemetry.PullRequest{
-							Number:                     142,
-							URL:                        "https://github.com/digitaldrywood/detent/pull/142",
-							CIStatus:                   "success",
-							CodexReviewState:           "clean",
-							HydrationUnavailableReason: "rate_limited",
+							Number:                  142,
+							URL:                     "https://github.com/digitaldrywood/detent/pull/142",
+							CIStatus:                "success",
+							CodexReviewState:        "clean",
+							HydrationDegradedReason: "stale_cached_pull_request",
+							HydrationNextRetryAt:    &retryAt,
 						},
 					},
 					{
@@ -1541,7 +1543,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				},
 			},
 			want: []pipelineCardSnapshot{
-				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m", WaitDetail: "PR hydration rate-limited"},
+				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m", WaitDetail: "PR hydration using stale cached data until 15:05 UTC"},
 				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s / running Test Coverage"},
 				{Lane: "Done today", IssueNumber: "#144", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "P1", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#145", Title: "Done lane unverified PR", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "45m 0s"},

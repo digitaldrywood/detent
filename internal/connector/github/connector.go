@@ -93,6 +93,7 @@ type Connector struct {
 	issueFields       *issueFieldCache
 	projectCache      *projectCache
 	pullRequests      *pullRequestStatusCache
+	prHydration       *pullRequestHydrationCircuitBreaker
 	mu                sync.RWMutex
 	writeMu           sync.Mutex
 	instanceLogin     string
@@ -160,6 +161,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		issueFields:       newIssueFieldCache(githubCacheTTL, cfg.Now),
 		projectCache:      newProjectCache(githubCacheTTL, cfg.Now),
 		pullRequests:      newPullRequestStatusCache(githubCacheTTL, cfg.Now),
+		prHydration:       newPullRequestHydrationCircuitBreaker(cfg.Now),
 	}, nil
 }
 

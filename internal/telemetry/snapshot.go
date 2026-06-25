@@ -212,6 +212,8 @@ type PullRequest struct {
 	State                      string             `json:"state,omitempty"`
 	MergeableState             string             `json:"mergeable_state,omitempty"`
 	HydrationUnavailableReason string             `json:"hydration_unavailable_reason,omitempty"`
+	HydrationDegradedReason    string             `json:"hydration_degraded_reason,omitempty"`
+	HydrationNextRetryAt       *time.Time         `json:"hydration_next_retry_at,omitempty"`
 	CIStatus                   string             `json:"ci_status,omitempty"`
 	CheckRunCount              int                `json:"check_run_count,omitempty"`
 	StatusContextCount         int                `json:"status_context_count,omitempty"`

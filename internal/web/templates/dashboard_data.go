@@ -2813,7 +2813,11 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 		return ""
 	}
 	parts := []string{}
-	if hydration := pullRequestHydrationWaitDetail(issue.PullRequest.HydrationUnavailableReason); hydration != "" {
+	if hydration := pullRequestHydrationWaitDetail(
+		issue.PullRequest.HydrationUnavailableReason,
+		issue.PullRequest.HydrationDegradedReason,
+		issue.PullRequest.HydrationNextRetryAt,
+	); hydration != "" {
 		parts = append(parts, hydration)
 	}
 	if issue.PullRequest.QuietWaitSeconds > 0 {
@@ -2831,15 +2835,28 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 	return strings.Join(parts, " / ")
 }
 
-func pullRequestHydrationWaitDetail(reason string) string {
-	switch strings.TrimSpace(reason) {
+func pullRequestHydrationWaitDetail(unavailableReason string, degradedReason string, nextRetryAt *time.Time) string {
+	detail := ""
+	switch strings.TrimSpace(unavailableReason) {
 	case "rate_limited":
-		return "PR hydration rate-limited"
+		detail = "PR hydration rate-limited"
+	case "secondary_throttled":
+		detail = "PR hydration secondary throttled"
+	case "primary_exhausted":
+		detail = "PR hydration primary exhausted"
 	case "rest_budget_reserved":
-		return "PR hydration waiting for REST budget"
-	default:
+		detail = "PR hydration waiting for REST budget"
+	}
+	if detail == "" && strings.TrimSpace(degradedReason) == "stale_cached_pull_request" {
+		detail = "PR hydration using stale cached data"
+	}
+	if detail == "" {
 		return ""
 	}
+	if nextRetryAt != nil && !nextRetryAt.IsZero() {
+		detail += " until " + nextRetryAt.UTC().Format("15:04 UTC")
+	}
+	return detail
 }
 
 func prPipelineSlowChecks(checks []telemetry.PullRequestCheck) string {
