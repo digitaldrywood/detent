@@ -313,7 +313,7 @@ func (p dispatchPlanner) dispatchableIssue(
 	if !stateIn(issue.State, p.cfg.ActiveStates) || stateIn(issue.State, p.cfg.TerminalStates) {
 		return false
 	}
-	if pullRequestHydrationUnavailableReason(issue.PullRequest) != "" {
+	if pullRequestHydrationBlocksDispatch(issue) {
 		return false
 	}
 	if duplicatePullRequestWork(issue) {
@@ -339,6 +339,20 @@ func (p dispatchPlanner) dispatchableIssue(
 	}
 
 	return p.slotsAvailable(issue, state, preferredWorkerHost)
+}
+
+func pullRequestHydrationBlocksDispatch(issue connector.Issue) bool {
+	pullRequest := issue.PullRequest
+	if pullRequestHydrationUnavailableReason(pullRequest) == "" {
+		return false
+	}
+	if normalizeState(issue.State) != "todo" {
+		return true
+	}
+	return pullRequest.Number > 0 ||
+		strings.TrimSpace(pullRequest.URL) != "" ||
+		strings.TrimSpace(pullRequest.BranchName) != "" ||
+		normalizePullRequestState(pullRequest.State) != ""
 }
 
 func (p dispatchPlanner) authorized(issue connector.Issue) bool {

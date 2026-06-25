@@ -500,6 +500,11 @@ func TestDispatchableSkipsDuplicatePullRequestWork(t *testing.T) {
 			want:  false,
 		},
 		{
+			name:  "todo with unknown unavailable pull request hydration dispatches",
+			issue: dispatchTestIssueWithUnknownUnavailablePullRequestHydration("issue-todo-pr-unknown", "Todo"),
+			want:  true,
+		},
+		{
 			name:  "in progress with open pull request dispatches",
 			issue: dispatchTestIssueWithPullRequest("issue-progress-open-pr", "In Progress", "OPEN"),
 			want:  true,
@@ -957,6 +962,14 @@ func dispatchTestIssueWithPullRequest(id, state, prState string) connector.Issue
 func dispatchTestIssueWithUnavailablePullRequestHydration(id, state string) connector.Issue {
 	issue := dispatchTestIssueWithPullRequest(id, state, "OPEN")
 	issue.PullRequest.HydrationUnavailableReason = "rate_limited"
+	return issue
+}
+
+func dispatchTestIssueWithUnknownUnavailablePullRequestHydration(id, state string) connector.Issue {
+	issue := dispatchTestIssue(id, state)
+	issue.PullRequest = &connector.PullRequest{
+		HydrationUnavailableReason: "rest_budget_reserved",
+	}
 	return issue
 }
 

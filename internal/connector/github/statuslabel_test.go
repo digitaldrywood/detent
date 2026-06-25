@@ -151,11 +151,6 @@ func TestConnectorFetchLabelIssuesPrefersCanonicalDoneOverCancelledAlias(t *test
 			path:   "/repos/digitaldrywood/detent/issues?labels=detent%3Adone&page=1&per_page=100&state=all",
 			body:   `[{"node_id":"I_485","number":485,"title":"Installer packages","body":"","state":"closed","state_reason":"completed","html_url":"https://github.com/digitaldrywood/detent/issues/485","assignees":[],"labels":[{"name":"detent:done"},{"name":"release"}]}]`,
 		},
-		{
-			method: http.MethodGet,
-			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
-			body:   `[]`,
-		},
 	})
 	c := newGitHubTestConnector(t, server, Config{
 		GitHubStatusSource: GitHubStatusSourceLabel,
@@ -176,6 +171,9 @@ func TestConnectorFetchLabelIssuesPrefersCanonicalDoneOverCancelledAlias(t *test
 	}
 	if !got[0].Closed || got[0].ClosedReason != "completed" {
 		t.Fatalf("closed metadata = (%v, %q), want closed completed", got[0].Closed, got[0].ClosedReason)
+	}
+	if len(server.requests()) != 1 {
+		t.Fatalf("request count = %d, want only label issue fetch", len(server.requests()))
 	}
 }
 

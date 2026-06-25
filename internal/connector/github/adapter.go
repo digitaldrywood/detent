@@ -2304,20 +2304,41 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	if strings.TrimSpace(pullRequest.HeadSHA) != "" {
 		ci, err := c.fetchPullRequestCI(ctx, repo, pullRequest.HeadSHA)
 		if err != nil {
+			if c.applyCachedPullRequestStatusAfterThrottle(repo, pullRequest, err) {
+				return nil
+			}
 			return err
 		}
 		status.ci = ci
 	}
 	reviews, err := c.fetchPullRequestReviews(ctx, repo, pullRequest.Number, pullRequest.HeadSHA)
 	if err != nil {
+		if c.applyCachedPullRequestStatusAfterThrottle(repo, pullRequest, err) {
+			return nil
+		}
 		return err
 	}
 	status.reviews = reviews
-	if useStatusCache && c.pullRequests != nil {
+	if c.pullRequests != nil {
 		c.pullRequests.Set(repo, pullRequest.Number, pullRequest.HeadSHA, status)
 	}
 	applyPullRequestStatus(pullRequest, status)
 	return nil
+}
+
+func (c *Connector) applyCachedPullRequestStatusAfterThrottle(repo pullRequestRepo, pullRequest *pullRequestNode, err error) bool {
+	if c.pullRequests == nil || pullRequest == nil {
+		return false
+	}
+	if !errors.Is(err, ErrRESTBudgetReserved) && !errors.Is(err, ErrRateLimited) {
+		return false
+	}
+	status, ok := c.pullRequests.Get(repo, pullRequest.Number, pullRequest.HeadSHA)
+	if !ok {
+		return false
+	}
+	applyPullRequestStatus(pullRequest, status)
+	return true
 }
 
 func applyPullRequestStatus(pullRequest *pullRequestNode, status pullRequestStatus) {
@@ -4390,7 +4411,7 @@ func stateInList(state string, states []string) bool {
 }
 
 func attachPullRequestsForStates(states map[string]struct{}) bool {
-	for _, state := range []string{"Human Review", "Merging", "Done", "Blocked"} {
+	for _, state := range []string{"Human Review", "Merging", "Blocked"} {
 		if _, ok := states[normalizeStateName(state)]; ok {
 			return true
 		}
