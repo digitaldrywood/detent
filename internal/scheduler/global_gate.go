@@ -149,8 +149,14 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 
 	g.ready[project.ID] = readyProjectSlot{ProjectCandidate: project, request: req}
 	if g.selected != "" {
-		if _, ok := g.ready[g.selected]; !ok {
+		selected, ok := g.ready[g.selected]
+		if !ok {
 			g.clearSelectionLocked()
+		} else {
+			g.selectedReq = selected.request
+			if g.hasHigherPriorityReadyProjectLocked(selected.request.Priority) {
+				g.clearSelectionLocked()
+			}
 		}
 	}
 	if g.selected == "" {
@@ -374,6 +380,15 @@ func (g *GlobalDispatchGate) lowerPriorityRunningLocked(priority int) int {
 		}
 	}
 	return count
+}
+
+func (g *GlobalDispatchGate) hasHigherPriorityReadyProjectLocked(priority int) bool {
+	for _, ready := range g.ready {
+		if ready.request.Priority < priority {
+			return true
+		}
+	}
+	return false
 }
 
 func (g *GlobalDispatchGate) clearSelectionLocked() {
