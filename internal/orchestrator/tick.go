@@ -88,6 +88,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if !ok {
 		return
 	}
+	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
 
 	transitions := o.refreshTransitionSets(ctx, state, fetched, previous)
 	completedEpics := o.resolveCompletedEpics(ctx, state, transitions, previous)
@@ -468,6 +469,49 @@ func boardIssuesFromFetched(fetched tickFetchedIssues) []connector.Issue {
 		issues = mergeIssueSlices(issues, fetched.status)
 	}
 	return issues
+}
+
+func retainUnavailablePullRequestsFromPrevious(fetched tickFetchedIssues, previous tickPreviousState) tickFetchedIssues {
+	previousIssues := mergeIssueSlices(previous.pipeline, previous.epicTransitionWatch)
+	fetched.candidates = retainUnavailablePullRequests(fetched.candidates, previousIssues)
+	fetched.status = retainUnavailablePullRequests(fetched.status, previousIssues)
+	return fetched
+}
+
+func retainUnavailablePullRequests(current []connector.Issue, previous []connector.Issue) []connector.Issue {
+	if len(current) == 0 || len(previous) == 0 {
+		return current
+	}
+	previousByKey := make(map[string]connector.Issue, len(previous))
+	for _, issue := range previous {
+		key := issueIdentityKey(issue)
+		if key == "" {
+			continue
+		}
+		previousByKey[key] = cloneIssue(issue)
+	}
+	out := cloneIssues(current)
+	for index, issue := range out {
+		reason := pullRequestHydrationUnavailableReason(issue.PullRequest)
+		if reason == "" {
+			continue
+		}
+		prior, ok := previousByKey[issueIdentityKey(issue)]
+		if !ok || prior.PullRequest == nil {
+			continue
+		}
+		retained := cloneIssue(prior).PullRequest
+		retained.HydrationUnavailableReason = reason
+		out[index].PullRequest = retained
+		if out[index].PRNumber == nil && prior.PRNumber != nil {
+			prNumber := *prior.PRNumber
+			out[index].PRNumber = &prNumber
+		}
+		if out[index].PRRepository == "" {
+			out[index].PRRepository = prior.PRRepository
+		}
+	}
+	return out
 }
 
 func (o *Orchestrator) dispatchTickIssues(

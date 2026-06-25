@@ -17,14 +17,15 @@ type AutoPromoteConfig struct {
 }
 
 type AutoPromoteSummary struct {
-	PullRequestPresent bool
-	PullRequestURL     string
-	MergeableState     string
-	CIStatus           string
-	ReviewState        string
-	P1Findings         []AutoPromoteFinding
-	Validator          gate.ValidatorResult
-	LastActivityAt     *time.Time
+	PullRequestPresent                    bool
+	PullRequestURL                        string
+	PullRequestHydrationUnavailableReason string
+	MergeableState                        string
+	CIStatus                              string
+	ReviewState                           string
+	P1Findings                            []AutoPromoteFinding
+	Validator                             gate.ValidatorResult
+	LastActivityAt                        *time.Time
 }
 
 type AutoPromoteFinding struct {
@@ -46,22 +47,23 @@ const (
 type AutoPromoteReason string
 
 const (
-	AutoPromoteReasonReady                        AutoPromoteReason = "ready"
-	AutoPromoteReasonDisabled                     AutoPromoteReason = "disabled"
-	AutoPromoteReasonOptoutLabel                  AutoPromoteReason = "optout_label"
-	AutoPromoteReasonLabelNotAllowed              AutoPromoteReason = "label_not_allowed"
-	AutoPromoteReasonMissingPullRequest           AutoPromoteReason = "missing_pull_request"
-	AutoPromoteReasonMergeConflicts               AutoPromoteReason = "merge_conflicts"
-	AutoPromoteReasonCINotGreen                   AutoPromoteReason = "ci_not_green"
-	AutoPromoteReasonCodexReviewMissing           AutoPromoteReason = "automated_review_missing"
-	AutoPromoteReasonP1Findings                   AutoPromoteReason = "p1_findings"
-	AutoPromoteReasonCodexReviewNotQuiet          AutoPromoteReason = "codex_review_not_quiet"
-	AutoPromoteReasonHumanApprovalMissing         AutoPromoteReason = "human_approval_missing"
-	AutoPromoteReasonValidatorMissing             AutoPromoteReason = "validator_missing"
-	AutoPromoteReasonValidatorWait                AutoPromoteReason = "validator_wait"
-	AutoPromoteReasonValidatorRework              AutoPromoteReason = "validator_rework"
-	AutoPromoteReasonValidatorScoreBelowThreshold AutoPromoteReason = "validator_score_below_threshold"
-	AutoPromoteReasonValidatorBlockedSeverity     AutoPromoteReason = "validator_blocked_severity"
+	AutoPromoteReasonReady                           AutoPromoteReason = "ready"
+	AutoPromoteReasonDisabled                        AutoPromoteReason = "disabled"
+	AutoPromoteReasonOptoutLabel                     AutoPromoteReason = "optout_label"
+	AutoPromoteReasonLabelNotAllowed                 AutoPromoteReason = "label_not_allowed"
+	AutoPromoteReasonMissingPullRequest              AutoPromoteReason = "missing_pull_request"
+	AutoPromoteReasonPullRequestHydrationUnavailable AutoPromoteReason = "pull_request_hydration_unavailable"
+	AutoPromoteReasonMergeConflicts                  AutoPromoteReason = "merge_conflicts"
+	AutoPromoteReasonCINotGreen                      AutoPromoteReason = "ci_not_green"
+	AutoPromoteReasonCodexReviewMissing              AutoPromoteReason = "automated_review_missing"
+	AutoPromoteReasonP1Findings                      AutoPromoteReason = "p1_findings"
+	AutoPromoteReasonCodexReviewNotQuiet             AutoPromoteReason = "codex_review_not_quiet"
+	AutoPromoteReasonHumanApprovalMissing            AutoPromoteReason = "human_approval_missing"
+	AutoPromoteReasonValidatorMissing                AutoPromoteReason = "validator_missing"
+	AutoPromoteReasonValidatorWait                   AutoPromoteReason = "validator_wait"
+	AutoPromoteReasonValidatorRework                 AutoPromoteReason = "validator_rework"
+	AutoPromoteReasonValidatorScoreBelowThreshold    AutoPromoteReason = "validator_score_below_threshold"
+	AutoPromoteReasonValidatorBlockedSeverity        AutoPromoteReason = "validator_blocked_severity"
 )
 
 type AutoPromoteDecision struct {
@@ -91,6 +93,9 @@ func EvaluateAutoPromote(
 	}
 	if autoPromoteMergeConflicts(summary.MergeableState) {
 		return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonMergeConflicts)
+	}
+	if strings.TrimSpace(summary.PullRequestHydrationUnavailableReason) != "" {
+		return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonPullRequestHydrationUnavailable)
 	}
 	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateSummary(summary), now, gate.EvaluationOptions{
 		QuietDuration: cfg.QuietDuration,

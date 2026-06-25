@@ -333,6 +333,75 @@ func TestTickAutoPromoteLogsNonTransitionDecisionsAtInfo(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromoteDefersWhenPullRequestHydrationRateLimited(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 7, 24, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	prior := autoPromoteTickIssue("issue-rate-limited-pr", []string{"bug"}, &connector.PullRequest{
+		Number:                 77,
+		URL:                    "https://github.test/digitaldrywood/creswoodcorners-phone/pull/77",
+		State:                  "OPEN",
+		MergeableState:         "clean",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	prior.Identifier = "digitaldrywood/creswoodcorners-phone#69"
+	current := autoPromoteTickIssue("issue-rate-limited-pr", []string{"bug"}, &connector.PullRequest{
+		Number:                     77,
+		HydrationUnavailableReason: "rate_limited",
+	})
+	current.Identifier = prior.Identifier
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{current}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+	}
+
+	state := newState(cfg)
+	state.Pipeline = []connector.Issue{prior}
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none", tracker.updates)
+	}
+	if strings.Contains(logs.String(), "reason=missing_pull_request") {
+		t.Fatalf("logs %q contain missing_pull_request", logs.String())
+	}
+	for _, fragment := range []string{
+		"reason=pull_request_hydration_unavailable",
+		"pull_request_hydration_reason=rate_limited",
+		"pull_request_number=77",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+	if len(state.Pipeline) != 1 || state.Pipeline[0].PullRequest == nil {
+		t.Fatalf("Pipeline = %#v, want retained pull request metadata", state.Pipeline)
+	}
+	pr := state.Pipeline[0].PullRequest
+	if pr.URL != "https://github.test/digitaldrywood/creswoodcorners-phone/pull/77" {
+		t.Fatalf("retained PullRequest.URL = %q, want prior URL", pr.URL)
+	}
+	if pr.HydrationUnavailableReason != "rate_limited" {
+		t.Fatalf("retained HydrationUnavailableReason = %q, want rate_limited", pr.HydrationUnavailableReason)
+	}
+}
+
 func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 	t.Parallel()
 

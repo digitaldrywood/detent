@@ -142,6 +142,9 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 		}
 		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg.TerminalStates)
 		if decision.targetState == "" {
+			if strings.TrimSpace(decision.reason) != "" {
+				o.logStaleMergingPullRequestDeferred(issue, decision)
+			}
 			continue
 		}
 		if !o.applyStaleMergingPullRequestDecision(ctx, state, issue, decision, now) {
@@ -166,6 +169,9 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, terminalStat
 	pullRequest := issue.PullRequest
 	if pullRequest == nil {
 		return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: string(AutoPromoteReasonMissingPullRequest)}
+	}
+	if pullRequestHydrationUnavailableReason(pullRequest) != "" {
+		return staleMergingPullRequestDecision{reason: string(AutoPromoteReasonPullRequestHydrationUnavailable)}
 	}
 	switch normalizePullRequestState(pullRequest.State) {
 	case "merged":
@@ -266,6 +272,14 @@ func (o *Orchestrator) logStaleMergingPullRequestDecision(issue connector.Issue,
 	o.logger.Info("stale_merging_pr_reconciled", attrs...)
 }
 
+func (o *Orchestrator) logStaleMergingPullRequestDeferred(issue connector.Issue, decision staleMergingPullRequestDecision) {
+	if o.logger == nil {
+		return
+	}
+	attrs := mergeWorkerLogAttrs(issue, "reason", decision.reason)
+	o.logger.Info("stale_merging_pr_reconciliation_deferred", attrs...)
+}
+
 func (o *Orchestrator) logMergeWorkerPickup(issue connector.Issue, source string) {
 	if o.logger == nil || !mergeWorkerIssue(issue) {
 		return
@@ -328,6 +342,9 @@ func mergeWorkerLogAttrs(issue connector.Issue, attrs ...any) []any {
 		}
 		if headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA); headSHA != "" {
 			out = append(out, "head_sha", headSHA)
+		}
+		if reason := pullRequestHydrationUnavailableReason(issue.PullRequest); reason != "" {
+			out = append(out, "pull_request_hydration_reason", reason)
 		}
 	}
 	return append(out, attrs...)
@@ -723,6 +740,7 @@ func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 	}
 
 	pullRequest := issue.PullRequest
+	summary.PullRequestHydrationUnavailableReason = pullRequestHydrationUnavailableReason(pullRequest)
 	if normalizePullRequestState(pullRequest.State) != "open" {
 		return summary
 	}
@@ -733,6 +751,13 @@ func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 	summary.ReviewState = pullRequest.CodexReviewState
 	summary.P1Findings = autoPromoteFindingsFromPullRequest(pullRequest)
 	return summary
+}
+
+func pullRequestHydrationUnavailableReason(pullRequest *connector.PullRequest) string {
+	if pullRequest == nil {
+		return ""
+	}
+	return strings.TrimSpace(pullRequest.HydrationUnavailableReason)
 }
 
 func autoPromoteLastActivityAt(issue connector.Issue) *time.Time {
@@ -854,11 +879,17 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 		attrs = append(attrs, "ci_status", decision.CIStatus)
 	}
 	if issue.PullRequest != nil {
+		if issue.PullRequest.Number > 0 {
+			attrs = append(attrs, "pull_request_number", issue.PullRequest.Number)
+		}
 		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
 			attrs = append(attrs, "pull_request", url)
 		}
 		if mergeableState := strings.TrimSpace(issue.PullRequest.MergeableState); mergeableState != "" {
 			attrs = append(attrs, "mergeable_state", mergeableState)
+		}
+		if reason := pullRequestHydrationUnavailableReason(issue.PullRequest); reason != "" {
+			attrs = append(attrs, "pull_request_hydration_reason", reason)
 		}
 	}
 	if decision.QuietRemaining > 0 {

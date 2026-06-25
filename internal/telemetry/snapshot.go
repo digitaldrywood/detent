@@ -206,19 +206,20 @@ type BlockedRef struct {
 }
 
 type PullRequest struct {
-	Number             int                `json:"number,omitempty"`
-	URL                string             `json:"url,omitempty"`
-	BranchName         string             `json:"branch_name,omitempty"`
-	State              string             `json:"state,omitempty"`
-	MergeableState     string             `json:"mergeable_state,omitempty"`
-	CIStatus           string             `json:"ci_status,omitempty"`
-	CheckRunCount      int                `json:"check_run_count,omitempty"`
-	StatusContextCount int                `json:"status_context_count,omitempty"`
-	CIDurationSeconds  int64              `json:"ci_duration_seconds,omitempty"`
-	QuietWaitSeconds   int64              `json:"quiet_wait_seconds,omitempty"`
-	SlowChecks         []PullRequestCheck `json:"slow_checks,omitempty"`
-	RunningChecks      []string           `json:"running_checks,omitempty"`
-	CodexReviewState   string             `json:"codex_review_state,omitempty"`
+	Number                     int                `json:"number,omitempty"`
+	URL                        string             `json:"url,omitempty"`
+	BranchName                 string             `json:"branch_name,omitempty"`
+	State                      string             `json:"state,omitempty"`
+	MergeableState             string             `json:"mergeable_state,omitempty"`
+	HydrationUnavailableReason string             `json:"hydration_unavailable_reason,omitempty"`
+	CIStatus                   string             `json:"ci_status,omitempty"`
+	CheckRunCount              int                `json:"check_run_count,omitempty"`
+	StatusContextCount         int                `json:"status_context_count,omitempty"`
+	CIDurationSeconds          int64              `json:"ci_duration_seconds,omitempty"`
+	QuietWaitSeconds           int64              `json:"quiet_wait_seconds,omitempty"`
+	SlowChecks                 []PullRequestCheck `json:"slow_checks,omitempty"`
+	RunningChecks              []string           `json:"running_checks,omitempty"`
+	CodexReviewState           string             `json:"codex_review_state,omitempty"`
 }
 
 type PullRequestCheck struct {
