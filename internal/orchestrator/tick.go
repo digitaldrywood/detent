@@ -89,6 +89,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		return
 	}
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
+	fetched = applyStatusPullRequestHydrationBlocksToCandidates(fetched)
 
 	transitions := o.refreshTransitionSets(ctx, state, fetched, previous)
 	completedEpics := o.resolveCompletedEpics(ctx, state, transitions, previous)
@@ -477,6 +478,73 @@ func retainUnavailablePullRequestsFromPrevious(fetched tickFetchedIssues, previo
 	fetched.candidates = retainUnavailablePullRequests(fetched.candidates, previousIssues)
 	fetched.status = retainUnavailablePullRequests(fetched.status, previousIssues)
 	return fetched
+}
+
+func applyStatusPullRequestHydrationBlocksToCandidates(fetched tickFetchedIssues) tickFetchedIssues {
+	if len(fetched.candidates) == 0 || len(fetched.status) == 0 {
+		return fetched
+	}
+	statusByKey := make(map[string]connector.PullRequest, len(fetched.status))
+	for _, issue := range fetched.status {
+		key := issueIdentityKey(issue)
+		if key == "" || !pullRequestHydrationBlocksProgress(issue.PullRequest) {
+			continue
+		}
+		statusByKey[key] = *cloneIssue(issue).PullRequest
+	}
+	if len(statusByKey) == 0 {
+		return fetched
+	}
+	candidates := cloneIssues(fetched.candidates)
+	for index, issue := range candidates {
+		statusPullRequest, ok := statusByKey[issueIdentityKey(issue)]
+		if !ok {
+			continue
+		}
+		if candidates[index].PullRequest == nil {
+			candidates[index].PullRequest = &connector.PullRequest{}
+		}
+		applyPullRequestHydrationBlock(candidates[index].PullRequest, statusPullRequest)
+		if candidates[index].PRNumber == nil && statusPullRequest.Number > 0 {
+			prNumber := statusPullRequest.Number
+			candidates[index].PRNumber = &prNumber
+		}
+	}
+	fetched.candidates = candidates
+	return fetched
+}
+
+func applyPullRequestHydrationBlock(target *connector.PullRequest, source connector.PullRequest) {
+	if target == nil {
+		return
+	}
+	if reason := strings.TrimSpace(source.HydrationUnavailableReason); reason != "" {
+		target.HydrationUnavailableReason = reason
+	}
+	if reason := strings.TrimSpace(source.HydrationDegradedReason); reason != "" {
+		target.HydrationDegradedReason = reason
+	}
+	if source.HydrationNextRetryAt != nil {
+		target.HydrationNextRetryAt = cloneTime(source.HydrationNextRetryAt)
+	}
+	if target.Number == 0 && source.Number > 0 {
+		target.Number = source.Number
+	}
+	if strings.TrimSpace(target.URL) == "" {
+		target.URL = strings.TrimSpace(source.URL)
+	}
+	if strings.TrimSpace(target.BranchName) == "" {
+		target.BranchName = strings.TrimSpace(source.BranchName)
+	}
+	if normalizePullRequestState(target.State) == "" {
+		target.State = source.State
+	}
+	if strings.TrimSpace(target.MergeableState) == "" {
+		target.MergeableState = source.MergeableState
+	}
+	if strings.TrimSpace(target.CIStatus) == "" {
+		target.CIStatus = source.CIStatus
+	}
 }
 
 func retainUnavailablePullRequests(current []connector.Issue, previous []connector.Issue) []connector.Issue {

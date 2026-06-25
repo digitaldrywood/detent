@@ -781,6 +781,87 @@ func TestTickRequeuesObservedStaleMergingIssueForDispatch(t *testing.T) {
 	}
 }
 
+func TestTickDefersStaleMergingCandidateWhenObservedHydrationUnavailable(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 16, 4, 0, 0, time.UTC)
+	retryAt := now.Add(3 * time.Minute)
+	candidate := autoPromoteTickIssue("issue-stale-merging-rate-limited", []string{"bug"}, &connector.PullRequest{
+		Number:         80,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/80",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+		HeadSHA:        "b8e85ef7554b4f9cf385adba88ed151e2f69a4f0",
+	})
+	candidate.State = "Merging"
+	candidate.Identifier = "digitaldrywood/creswoodcorners-phone#79"
+	observed := cloneIssue(candidate)
+	observed.PullRequest.HydrationUnavailableReason = connector.PullRequestHydrationReasonSecondaryThrottled
+	observed.PullRequest.HydrationNextRetryAt = &retryAt
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{observed},
+		candidateIssues:    []connector.Issue{candidate},
+		candidateIssuesSet: true,
+	}
+	runner := newWorkerHostRunner()
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:        cfg,
+		connector:  tracker,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+		logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none", tracker.updates)
+	}
+	if _, ok := state.Running[candidate.ID]; ok {
+		t.Fatalf("Running[%q] present, want no merge worker dispatch", candidate.ID)
+	}
+	if _, ok := state.Claimed[candidate.ID]; ok {
+		t.Fatalf("Claimed[%q] present, want no merge worker claim", candidate.ID)
+	}
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected merge worker dispatch = %#v", request)
+	default:
+	}
+	for _, fragment := range []string{
+		"stale_merging_pr_reconciliation_deferred",
+		"reason=pull_request_hydration_unavailable",
+		"pull_request_hydration_reason=secondary_throttled",
+		"pull_request_hydration_next_retry_at=2026-06-25T16:07:00Z",
+		"pull_request_number=80",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+	for _, fragment := range []string{"merge_worker_pickup", "merge_worker_attempt"} {
+		if strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q contain %q, want no merge worker pickup or attempt", logs.String(), fragment)
+		}
+	}
+}
+
 func TestTickFailsAndRetriesStaleMergingWithoutStartupTelemetry(t *testing.T) {
 	t.Parallel()
 
@@ -1210,6 +1291,15 @@ func TestStaleMergingDispatchCandidatesFiltersUnsafePullRequests(t *testing.T) {
 				MergeableState:             "clean",
 				CIStatus:                   "success",
 				HydrationUnavailableReason: "rate_limited",
+			},
+		},
+		{
+			name: "hydration degraded",
+			pullRequest: &connector.PullRequest{
+				State:                   "OPEN",
+				MergeableState:          "clean",
+				CIStatus:                "success",
+				HydrationDegradedReason: connector.PullRequestHydrationReasonStaleCachedPullData,
 			},
 		},
 	}

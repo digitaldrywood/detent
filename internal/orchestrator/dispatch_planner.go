@@ -346,7 +346,7 @@ func (p dispatchPlanner) dispatchableIssue(
 
 func pullRequestHydrationBlocksDispatch(issue connector.Issue) bool {
 	pullRequest := issue.PullRequest
-	if pullRequestHydrationUnavailableReason(pullRequest) == "" {
+	if !pullRequestHydrationBlocksProgress(pullRequest) {
 		return false
 	}
 	if normalizeState(issue.State) != "todo" {
