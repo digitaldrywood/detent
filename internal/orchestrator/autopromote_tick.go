@@ -403,6 +403,9 @@ func staleMergingIssueReadyForDispatch(issue connector.Issue) bool {
 		return false
 	}
 	pullRequest := issue.PullRequest
+	if pullRequestHydrationUnavailableReason(pullRequest) != "" {
+		return false
+	}
 	if normalizePullRequestState(pullRequest.State) != "open" {
 		return false
 	}

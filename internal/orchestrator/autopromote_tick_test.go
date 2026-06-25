@@ -973,6 +973,15 @@ func TestStaleMergingDispatchCandidatesFiltersUnsafePullRequests(t *testing.T) {
 				CIStatus:       "pending",
 			},
 		},
+		{
+			name: "hydration unavailable",
+			pullRequest: &connector.PullRequest{
+				State:                      "OPEN",
+				MergeableState:             "clean",
+				CIStatus:                   "success",
+				HydrationUnavailableReason: "rate_limited",
+			},
+		},
 	}
 
 	for _, tt := range tests {

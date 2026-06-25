@@ -313,6 +313,9 @@ func (p dispatchPlanner) dispatchableIssue(
 	if !stateIn(issue.State, p.cfg.ActiveStates) || stateIn(issue.State, p.cfg.TerminalStates) {
 		return false
 	}
+	if pullRequestHydrationUnavailableReason(issue.PullRequest) != "" {
+		return false
+	}
 	if duplicatePullRequestWork(issue) {
 		return false
 	}
