@@ -8,47 +8,55 @@ import (
 
 type requiredStatusCheck struct {
 	name     string
+	budget   string
 	jobStart string
 	jobEnd   string
 	markers  []string
 }
 
-var requiredMainStatusChecks = []requiredStatusCheck{
+var requiredPRStatusChecks = []requiredStatusCheck{
 	{
 		name:     "Lint",
+		budget:   "2m",
 		jobStart: "  lint:",
 		jobEnd:   "  verify:",
 		markers:  []string{"name: Lint"},
 	},
 	{
 		name:     "Verify (ubuntu-latest)",
+		budget:   "4m",
 		jobStart: "  verify:",
 		jobEnd:   "  test-cover:",
-		markers:  []string{"name: Verify (${{ matrix.os }})", "os: ubuntu-latest"},
-	},
-	{
-		name:     "Verify (macos-latest)",
-		jobStart: "  verify:",
-		jobEnd:   "  test-cover:",
-		markers:  []string{"name: Verify (${{ matrix.os }})", "os: macos-latest"},
-	},
-	{
-		name:     "Verify (windows-latest)",
-		jobStart: "  verify:",
-		jobEnd:   "  test-cover:",
-		markers:  []string{"name: Verify (${{ matrix.os }})", "os: windows-latest"},
+		markers:  []string{"name: Verify (ubuntu-latest)", "runs-on: ubuntu-latest"},
 	},
 	{
 		name:     "Test Coverage",
+		budget:   "4m",
 		jobStart: "  test-cover:",
 		jobEnd:   "  browser-visual:",
 		markers:  []string{"name: Test Coverage"},
 	},
 	{
 		name:     "Browser Visual",
+		budget:   "5m",
 		jobStart: "  browser-visual:",
+		jobEnd:   "  portability-verify:",
+		markers:  []string{"name: Browser Visual", "Run full browser visual gate", "Run browser smoke gate"},
+	},
+}
+
+var confidenceStatusChecks = []requiredStatusCheck{
+	{
+		name:     "Portability Verify (macos-latest)",
+		jobStart: "  portability-verify:",
 		jobEnd:   "  windows-core:",
-		markers:  []string{"name: Browser Visual"},
+		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]"},
+	},
+	{
+		name:     "Portability Verify (windows-latest)",
+		jobStart: "  portability-verify:",
+		jobEnd:   "  windows-core:",
+		markers:  []string{"name: Portability Verify (${{ matrix.os }})", "os: [macos-latest, windows-latest]"},
 	},
 	{
 		name:     "Windows Core",
@@ -103,14 +111,15 @@ func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
 		"must not report success from a path- or event-dependent no-op",
 		"`cancel-in-progress: ${{ github.event_name == 'pull_request' }}`",
 		"`Browser Visual`",
+		"Release and portability confidence checks",
 	} {
 		if !strings.Contains(protection, want) {
 			t.Fatalf("main branch protection docs missing %q", want)
 		}
 	}
 
-	for _, check := range requiredMainStatusChecks {
-		if !strings.Contains(protection, "- `"+check.name+"`") {
+	for _, check := range requiredPRStatusChecks {
+		if !strings.Contains(protection, "- `"+check.name+"` - budget: `"+check.budget+"`") {
 			t.Fatalf("main branch protection docs missing required check %q", check.name)
 		}
 
@@ -121,13 +130,29 @@ func TestMainProtectionDocumentationMatchesWorkflow(t *testing.T) {
 			}
 		}
 	}
+
+	for _, check := range confidenceStatusChecks {
+		if !strings.Contains(protection, "- `"+check.name+"`") {
+			t.Fatalf("main branch protection docs missing confidence check %q", check.name)
+		}
+
+		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
+		if !strings.Contains(job, "if: ${{ github.event_name != 'pull_request' }}") {
+			t.Fatalf("confidence check %q must stay outside the normal PR path", check.name)
+		}
+		for _, marker := range check.markers {
+			if !strings.Contains(job, marker) {
+				t.Fatalf("workflow job for confidence check %q missing %q", check.name, marker)
+			}
+		}
+	}
 }
 
 func TestRequiredChecksDoNotUseEventDependentGreenNoops(t *testing.T) {
 	t.Parallel()
 
 	workflow := readNormalizedFile(t, ".github/workflows/ci.yml")
-	for _, check := range requiredMainStatusChecks {
+	for _, check := range requiredPRStatusChecks {
 		job := workflowBetween(t, workflow, check.jobStart, check.jobEnd)
 		for _, forbidden := range []string{
 			"github.event_name",
@@ -207,9 +232,10 @@ func TestKanbanBrowserDragDropRunsInVisualGate(t *testing.T) {
 		t.Fatalf("ReadFile(.github/workflows/ci.yml) error = %v", err)
 	}
 	workflow := strings.ReplaceAll(string(workflowRaw), "\r\n", "\n")
-	visualJob := workflowBetween(t, workflow, "  browser-visual:", "\n  windows-core:")
+	visualJob := workflowBetween(t, workflow, "  browser-visual:", "\n  portability-verify:")
 	for _, want := range []string{
 		"npm run test:visual",
+		"tmp/detent --help",
 		"name: Upload browser visual evidence",
 		"tmp/playwright-evidence",
 		"name: Upload browser visual failure artifacts",

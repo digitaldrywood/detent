@@ -57,6 +57,7 @@ type PullRequest struct {
 	CIStatus                     string               `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
 	CheckRunCount                int                  `json:"check_run_count,omitempty" yaml:"check_run_count,omitempty"`
 	StatusContextCount           int                  `json:"status_context_count,omitempty" yaml:"status_context_count,omitempty"`
+	CIQueueSeconds               int64                `json:"ci_queue_seconds,omitempty" yaml:"ci_queue_seconds,omitempty"`
 	CIDurationSeconds            int64                `json:"ci_duration_seconds,omitempty" yaml:"ci_duration_seconds,omitempty"`
 	SlowChecks                   []PullRequestCheck   `json:"slow_checks,omitempty" yaml:"slow_checks,omitempty"`
 	RunningChecks                []string             `json:"running_checks,omitempty" yaml:"running_checks,omitempty"`
@@ -80,6 +81,7 @@ type PullRequestCheck struct {
 	Name            string `json:"name,omitempty" yaml:"name,omitempty"`
 	Status          string `json:"status,omitempty" yaml:"status,omitempty"`
 	Conclusion      string `json:"conclusion,omitempty" yaml:"conclusion,omitempty"`
+	QueueSeconds    int64  `json:"queue_seconds,omitempty" yaml:"queue_seconds,omitempty"`
 	DurationSeconds int64  `json:"duration_seconds,omitempty" yaml:"duration_seconds,omitempty"`
 }
 

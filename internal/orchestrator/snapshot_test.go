@@ -235,11 +235,12 @@ func TestStateSnapshotPopulated(t *testing.T) {
 				URL:                     "https://github.com/digitaldrywood/detent/pull/142",
 				State:                   "OPEN",
 				CIStatus:                "pending",
+				CIQueueSeconds:          120,
 				CIDurationSeconds:       900,
 				HydrationDegradedReason: connector.PullRequestHydrationReasonStaleCachedPullData,
 				HydrationNextRetryAt:    &prHydrationRetryAt,
 				SlowChecks: []connector.PullRequestCheck{
-					{Name: "GoReleaser Snapshot", DurationSeconds: 247},
+					{Name: "GoReleaser Snapshot", DurationSeconds: 247, QueueSeconds: 60},
 				},
 				RunningChecks:    []string{"Test Coverage"},
 				CodexReviewState: "P2",
@@ -327,6 +328,9 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if pipeline.PullRequest.CIDurationSeconds != 900 {
 		t.Fatalf("Pipeline[0].PullRequest.CIDurationSeconds = %d, want 900", pipeline.PullRequest.CIDurationSeconds)
+	}
+	if pipeline.PullRequest.CIQueueSeconds != 120 {
+		t.Fatalf("Pipeline[0].PullRequest.CIQueueSeconds = %d, want 120", pipeline.PullRequest.CIQueueSeconds)
 	}
 	if pipeline.PullRequest.HydrationDegradedReason != connector.PullRequestHydrationReasonStaleCachedPullData {
 		t.Fatalf("Pipeline[0].PullRequest.HydrationDegradedReason = %q, want stale cached data", pipeline.PullRequest.HydrationDegradedReason)
@@ -454,9 +458,10 @@ func TestStateSnapshotIncludesPullRequestMergeWaitTelemetry(t *testing.T) {
 				Number:                 461,
 				ActivityAt:             &prActivityAt,
 				CodexReviewSubmittedAt: &reviewSubmittedAt,
+				CIQueueSeconds:         120,
 				CIDurationSeconds:      480,
 				SlowChecks: []connector.PullRequestCheck{
-					{Name: "GoReleaser Snapshot", DurationSeconds: 247},
+					{Name: "GoReleaser Snapshot", DurationSeconds: 247, QueueSeconds: 60},
 				},
 				RunningChecks: []string{"Test Coverage"},
 			},
@@ -473,6 +478,9 @@ func TestStateSnapshotIncludesPullRequestMergeWaitTelemetry(t *testing.T) {
 	}
 	if pr.CIDurationSeconds != 480 {
 		t.Fatalf("CIDurationSeconds = %d, want 480", pr.CIDurationSeconds)
+	}
+	if pr.CIQueueSeconds != 120 {
+		t.Fatalf("CIQueueSeconds = %d, want 120", pr.CIQueueSeconds)
 	}
 	if len(pr.SlowChecks) != 1 || pr.SlowChecks[0].Name != "GoReleaser Snapshot" {
 		t.Fatalf("SlowChecks = %#v", pr.SlowChecks)

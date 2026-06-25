@@ -48,18 +48,18 @@ The execution edge still carries these code/git/PR assumptions.
   conflict resolution, stale validation, or unknown validation state.
 - Current-head CI waiting should use REST check-run polling with backoff and
   clear slow-check status rather than GraphQL-heavy PR polling loops.
-- Merge telemetry should report quiet-window wait, local merge-gate duration,
-  current-head PR CI duration, slow check names, and whether post-merge `main`
-  CI is still running.
+- Merge telemetry should report quiet-window wait, GitHub queue/start wait,
+  local merge-gate duration, current-head PR CI duration, active slow-check
+  runtimes, and whether post-merge `main` CI is still running.
 - Duplicate full local validation after a source-clean rebase, uncached tool
   install, noisy polling, and post-merge work that is not part of the merge
   decision are optimization targets.
 - The CI lint job keeps the project-pinned golangci-lint version and caches its
   binary so cache hits avoid a per-run `go install` without changing lint
   coverage.
-- `GoReleaser Snapshot` runs on every PR and every push to `main` so the
-  required check exercises the same release-package path before and after
-  merge.
+- `GoReleaser Snapshot` is a release confidence check that runs after merges to
+  `main`, on release tags, on the nightly CI schedule, and from manual
+  workflow dispatch instead of blocking the normal PR merge lane.
 
 ### Main Branch Protection
 
@@ -68,17 +68,26 @@ merge. The expected GitHub branch protection or ruleset setting is
 `required_status_checks.strict: true`; if the repository switches to merge
 queue, the queue must provide equivalent current-base validation before merge.
 
-Required status checks must include every meaningful CI job directly. Do not
-depend on a downstream skipped job to protect an upstream gate. A required
+Required status checks must include every merge-blocking CI job directly. Do
+not depend on a downstream skipped job to protect an upstream gate. A required
 check name must not report success from a path- or event-dependent no-op when
-the same named check runs real validation on `main`. The required checks are:
+the same named check runs real validation on `main`; `Browser Visual` is still a
+real gate because non-UI pull requests run a Detent binary smoke instead of a
+green no-op.
 
-- `Lint`
-- `Verify (ubuntu-latest)`
-- `Verify (macos-latest)`
-- `Verify (windows-latest)`
-- `Test Coverage`
-- `Browser Visual`
+Required PR merge checks:
+
+- `Lint` - budget: `2m`
+- `Verify (ubuntu-latest)` - budget: `4m`
+- `Test Coverage` - budget: `4m`
+- `Browser Visual` - budget: `5m`
+
+Release and portability confidence checks run after merges to `main`, on `v*`
+release tags, on the nightly CI schedule, and from manual workflow dispatch.
+They are not required for normal PR merge:
+
+- `Portability Verify (macos-latest)`
+- `Portability Verify (windows-latest)`
 - `Windows Core`
 - `Installer Smoke (ubuntu-latest)`
 - `Installer Smoke (windows-latest)`
@@ -86,10 +95,10 @@ the same named check runs real validation on `main`. The required checks are:
 
 The CI workflow keeps pull request runs cancellable by newer pushes to the same
 PR through `cancel-in-progress: ${{ github.event_name == 'pull_request' }}`.
-Push runs, including consecutive pushes to `main`, use a unique run group and
-must not be cancelled by later pushes. The workflow test in
-`ci_workflow_test.go` checks this section against `.github/workflows/ci.yml` so
-job-name, required-check, and green no-op drift fails in local validation.
+Push, tag, schedule, and manual runs use a unique run group and must not be
+cancelled by later runs. The workflow test in `ci_workflow_test.go` checks this
+section against `.github/workflows/ci.yml` so job-name, required-check, wall-time
+budget, confidence-check, and green no-op drift fails in local validation.
 
 ## Still Git/PR Coupled
 

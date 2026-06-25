@@ -815,6 +815,7 @@ type restCheckRun struct {
 	Status      string     `json:"status"`
 	Conclusion  string     `json:"conclusion"`
 	Name        string     `json:"name"`
+	CreatedAt   *time.Time `json:"created_at"`
 	StartedAt   *time.Time `json:"started_at"`
 	CompletedAt *time.Time `json:"completed_at"`
 }
@@ -829,9 +830,17 @@ type pullRequestCI struct {
 	State              string
 	CheckRunCount      int
 	StatusContextCount int
+	CIQueueSeconds     int64
 	CIDurationSeconds  int64
 	SlowChecks         []connector.PullRequestCheck
 	RunningChecks      []string
+}
+
+type checkRunTelemetrySummary struct {
+	QueueSeconds    int64
+	DurationSeconds int64
+	SlowChecks      []connector.PullRequestCheck
+	RunningChecks   []string
 }
 
 type restComment struct {
@@ -2232,6 +2241,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		CIStatus:                     normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
 		CheckRunCount:                pullRequest.CI.CheckRunCount,
 		StatusContextCount:           pullRequest.CI.StatusContextCount,
+		CIQueueSeconds:               pullRequest.CI.CIQueueSeconds,
 		CIDurationSeconds:            pullRequest.CI.CIDurationSeconds,
 		SlowChecks:                   append([]connector.PullRequestCheck(nil), pullRequest.CI.SlowChecks...),
 		RunningChecks:                append([]string(nil), pullRequest.CI.RunningChecks...),
@@ -2436,14 +2446,15 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 	if err != nil {
 		return pullRequestCI{}, fmt.Errorf("fetch github commit statuses: %w", err)
 	}
-	durationSeconds, slowChecks, runningChecks := checkRunTelemetry(checkRuns)
+	telemetry := checkRunTelemetry(checkRuns)
 	return pullRequestCI{
 		State:              combinedCIState(checkRunsState(checkRuns), commitStatusesState(statuses)),
 		CheckRunCount:      len(checkRuns),
 		StatusContextCount: len(statuses),
-		CIDurationSeconds:  durationSeconds,
-		SlowChecks:         slowChecks,
-		RunningChecks:      runningChecks,
+		CIQueueSeconds:     telemetry.QueueSeconds,
+		CIDurationSeconds:  telemetry.DurationSeconds,
+		SlowChecks:         telemetry.SlowChecks,
+		RunningChecks:      telemetry.RunningChecks,
 	}, nil
 }
 
@@ -3872,7 +3883,8 @@ func checkRunsState(checkRuns []restCheckRun) string {
 	return "success"
 }
 
-func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequestCheck, []string) {
+func checkRunTelemetry(checkRuns []restCheckRun) checkRunTelemetrySummary {
+	var createdAt *time.Time
 	var startedAt *time.Time
 	var completedAt *time.Time
 	hasRunning := false
@@ -3880,6 +3892,7 @@ func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequest
 	runningChecks := make([]string, 0, len(checkRuns))
 
 	for _, checkRun := range checkRuns {
+		createdAt = earliestGitHubTime(createdAt, checkRun.CreatedAt)
 		startedAt = earliestGitHubTime(startedAt, checkRun.StartedAt)
 		completedAt = latestGitHubTime(completedAt, checkRun.CompletedAt)
 
@@ -3894,10 +3907,15 @@ func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequest
 		if name == "" || checkRun.StartedAt == nil || checkRun.CompletedAt == nil || checkRun.CompletedAt.Before(*checkRun.StartedAt) {
 			continue
 		}
+		var queueSeconds int64
+		if checkRun.CreatedAt != nil && !checkRun.StartedAt.Before(*checkRun.CreatedAt) {
+			queueSeconds = int64(checkRun.StartedAt.Sub(*checkRun.CreatedAt) / time.Second)
+		}
 		slowChecks = append(slowChecks, connector.PullRequestCheck{
 			Name:            name,
 			Status:          status,
 			Conclusion:      conclusion,
+			QueueSeconds:    queueSeconds,
 			DurationSeconds: int64(checkRun.CompletedAt.Sub(*checkRun.StartedAt) / time.Second),
 		})
 	}
@@ -3921,7 +3939,16 @@ func checkRunTelemetry(checkRuns []restCheckRun) (int64, []connector.PullRequest
 	if !hasRunning && startedAt != nil && completedAt != nil && !completedAt.Before(*startedAt) {
 		durationSeconds = int64(completedAt.Sub(*startedAt) / time.Second)
 	}
-	return durationSeconds, slowChecks, runningChecks
+	var queueSeconds int64
+	if createdAt != nil && startedAt != nil && !startedAt.Before(*createdAt) {
+		queueSeconds = int64(startedAt.Sub(*createdAt) / time.Second)
+	}
+	return checkRunTelemetrySummary{
+		QueueSeconds:    queueSeconds,
+		DurationSeconds: durationSeconds,
+		SlowChecks:      slowChecks,
+		RunningChecks:   runningChecks,
+	}
 }
 
 func earliestGitHubTime(current *time.Time, candidate *time.Time) *time.Time {
