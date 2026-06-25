@@ -221,6 +221,10 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 			submittedAt := *issue.PullRequest.LatestCodexReviewSubmittedAt
 			pullRequest.LatestCodexReviewSubmittedAt = &submittedAt
 		}
+		if issue.PullRequest.HydrationNextRetryAt != nil {
+			nextRetryAt := *issue.PullRequest.HydrationNextRetryAt
+			pullRequest.HydrationNextRetryAt = &nextRetryAt
+		}
 		pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
 		cloned.PullRequest = &pullRequest
 	}

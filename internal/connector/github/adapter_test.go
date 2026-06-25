@@ -871,6 +871,93 @@ func TestConnectorFetchCandidateIssuesMarksBranchPullRequestHydrationUnavailable
 	}
 }
 
+func TestConnectorFetchCandidateIssuesStopsBranchPullRequestHydrationAfterSecondaryThrottle(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 13, 0, 0, 0, time.UTC)
+	projectBody := `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_182","content":{"__typename":"Issue","id":"I_182","number":182,"title":"First issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/182","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null},{"id":"PVTI_183","content":{"__typename":"Issue","id":"I_183","number":183,"title":"Second issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/183","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"}},"statusValue":{"name":"Todo"},"priorityValue":null}]}}}}`
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: projectBody},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls?direction=desc&page=1&per_page=100&sort=updated&state=all",
+			body:   `[{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}},{"number":188,"html_url":"https://github.com/digitaldrywood/detent/pull/188","state":"open","head":{"ref":"detent/digitaldrywood_detent_183","sha":"sha-188"}}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/pulls/187",
+			body:   `{"number":187,"html_url":"https://github.com/digitaldrywood/detent/pull/187","state":"open","head":{"ref":"detent/digitaldrywood_detent_182","sha":"sha-187"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/sha-187/check-runs?per_page=100",
+			status: http.StatusTooManyRequests,
+			headers: map[string]string{
+				"Retry-After":           "120",
+				"X-RateLimit-Limit":     "5000",
+				"X-RateLimit-Used":      "264",
+				"X-RateLimit-Remaining": "4736",
+				"X-RateLimit-Resource":  "core",
+			},
+			body: `{"message":"secondary rate limit"}`,
+		},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:  "PVT_1",
+		ActiveStates: []string{"Todo"},
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	got, err := c.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("FetchCandidateIssues() len = %d, want 2", len(got))
+	}
+
+	byID := map[string]connector.Issue{}
+	for _, issue := range got {
+		byID[issue.ID] = issue
+	}
+	for _, id := range []string{"I_182", "I_183"} {
+		pr := byID[id].PullRequest
+		if pr == nil {
+			t.Fatalf("%s PullRequest = nil, want hydration marker", id)
+		}
+		if pr.HydrationUnavailableReason != connector.PullRequestHydrationReasonSecondaryThrottled {
+			t.Fatalf("%s HydrationUnavailableReason = %q, want secondary_throttled", id, pr.HydrationUnavailableReason)
+		}
+		if pr.HydrationNextRetryAt == nil || !pr.HydrationNextRetryAt.After(now.Add(120*time.Second)) {
+			t.Fatalf("%s HydrationNextRetryAt = %v, want retry-after plus jitter", id, pr.HydrationNextRetryAt)
+		}
+	}
+	if byID["I_182"].PullRequest.Number != 187 {
+		t.Fatalf("I_182 PullRequest.Number = %d, want hydrated PR number 187", byID["I_182"].PullRequest.Number)
+	}
+	if byID["I_183"].PullRequest.Number != 0 {
+		t.Fatalf("I_183 PullRequest.Number = %d, want no second PR hydration after circuit trip", byID["I_183"].PullRequest.Number)
+	}
+
+	requests := server.requests()
+	checkRunRequests := 0
+	for _, request := range requests {
+		path, _ := request["path"].(string)
+		if strings.Contains(path, "/pulls/188") || strings.Contains(path, "sha-188") {
+			t.Fatalf("unexpected request after circuit trip: %#v", request)
+		}
+		if strings.Contains(path, "/check-runs") {
+			checkRunRequests++
+		}
+	}
+	if checkRunRequests != 1 {
+		t.Fatalf("check-runs requests = %d, want only first PR status attempt; requests = %#v", checkRunRequests, requests)
+	}
+}
+
 func TestConnectorFetchIssuesByStatesRechecksPullRequestStatusForPromotion(t *testing.T) {
 	t.Parallel()
 
@@ -935,6 +1022,7 @@ func TestConnectorFetchIssuesByStatesRechecksPullRequestStatusForPromotion(t *te
 func TestConnectorFetchIssuesByStatesUsesCachedPullRequestStatusAfterRateLimit(t *testing.T) {
 	t.Parallel()
 
+	now := time.Date(2026, 6, 25, 10, 0, 0, 0, time.UTC)
 	projectBody := `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_401","content":{"__typename":"Issue","id":"I_401","number":401,"title":"Human review issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/401","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":411,"url":"https://github.com/digitaldrywood/detent/pull/411","state":"OPEN","repository":{"nameWithOwner":"digitaldrywood/detent"}}]}},"statusValue":{"name":"Human Review"},"priorityValue":null}]}}}}`
 	pullBody := `{"number":411,"html_url":"https://github.com/digitaldrywood/detent/pull/411","state":"open","head":{"ref":"detent/digitaldrywood_detent_401","sha":"head-current"}}`
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
@@ -950,16 +1038,22 @@ func TestConnectorFetchIssuesByStatesUsesCachedPullRequestStatusAfterRateLimit(t
 			path:   "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100",
 			status: http.StatusTooManyRequests,
 			headers: map[string]string{
-				"Retry-After":          "120",
-				"X-RateLimit-Limit":    "5000",
-				"X-RateLimit-Used":     "264",
-				"X-RateLimit-Resource": "core",
+				"Retry-After":           "120",
+				"X-RateLimit-Limit":     "5000",
+				"X-RateLimit-Used":      "264",
+				"X-RateLimit-Remaining": "4736",
+				"X-RateLimit-Resource":  "core",
 			},
 			body: `{"message":"secondary rate limit"}`,
 		},
 	})
 
-	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+		Now: func() time.Time {
+			return now
+		},
+	})
 
 	first, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
 	if err != nil {
@@ -980,14 +1074,121 @@ func TestConnectorFetchIssuesByStatesUsesCachedPullRequestStatusAfterRateLimit(t
 	if pr.HydrationUnavailableReason != "" {
 		t.Fatalf("HydrationUnavailableReason = %q, want cached status without unavailable marker", pr.HydrationUnavailableReason)
 	}
+	if pr.HydrationDegradedReason != connector.PullRequestHydrationReasonStaleCachedPullData {
+		t.Fatalf("HydrationDegradedReason = %q, want stale cached pull request marker", pr.HydrationDegradedReason)
+	}
+	if pr.HydrationNextRetryAt == nil || !pr.HydrationNextRetryAt.After(now.Add(120*time.Second)) {
+		t.Fatalf("HydrationNextRetryAt = %v, want retry-after plus jitter", pr.HydrationNextRetryAt)
+	}
 	if pr.CIStatus != "pass" {
 		t.Fatalf("CIStatus = %q, want cached pass", pr.CIStatus)
 	}
 }
 
-func TestConnectorFetchIssuesByStatesMarksLinkedPullRequestHydrationRateLimited(t *testing.T) {
+func TestConnectorFetchIssuesByStatesCircuitBreaksPullRequestHydrationAfterSecondaryThrottle(t *testing.T) {
 	t.Parallel()
 
+	now := time.Date(2026, 6, 25, 11, 0, 0, 0, time.UTC)
+	projectBody := `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_401","content":{"__typename":"Issue","id":"I_401","number":401,"title":"Human review issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/401","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":411,"url":"https://github.com/digitaldrywood/detent/pull/411","state":"OPEN","repository":{"nameWithOwner":"digitaldrywood/detent"}}]}},"statusValue":{"name":"Human Review"},"priorityValue":null}]}}}}`
+	pullBody := `{"number":411,"html_url":"https://github.com/digitaldrywood/detent/pull/411","state":"open","head":{"ref":"detent/digitaldrywood_detent_401","sha":"head-current"}}`
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: projectBody},
+		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411", body: pullBody},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100",
+			status: http.StatusTooManyRequests,
+			headers: map[string]string{
+				"Retry-After":           "120",
+				"X-RateLimit-Limit":     "5000",
+				"X-RateLimit-Used":      "264",
+				"X-RateLimit-Remaining": "4736",
+				"X-RateLimit-Resource":  "core",
+			},
+			body: `{"message":"secondary rate limit"}`,
+		},
+		{body: projectBody},
+		{body: projectBody},
+		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411", body: pullBody},
+		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/check-runs?per_page=100", body: `{"check_runs":[{"status":"completed","conclusion":"success"}]}`},
+		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/commits/head-current/statuses?per_page=100", body: `[]`},
+		{method: http.MethodGet, path: "/repos/digitaldrywood/detent/pulls/411/reviews?per_page=100", body: `[]`},
+	})
+
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	first, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() first error = %v", err)
+	}
+	if len(first) != 1 || first[0].PullRequest == nil {
+		t.Fatalf("FetchIssuesByStates() first = %#v, want PR hydration marker", first)
+	}
+	pr := first[0].PullRequest
+	if pr.HydrationUnavailableReason != "secondary_throttled" {
+		t.Fatalf("HydrationUnavailableReason = %q, want secondary_throttled", pr.HydrationUnavailableReason)
+	}
+	if pr.HydrationNextRetryAt == nil {
+		t.Fatal("HydrationNextRetryAt = nil, want retry deadline")
+	}
+	retryAt := *pr.HydrationNextRetryAt
+	if !retryAt.After(now.Add(120*time.Second)) || retryAt.After(now.Add(151*time.Second)) {
+		t.Fatalf("HydrationNextRetryAt = %v, want retry-after plus jitter", retryAt)
+	}
+
+	beforeCooldownRequests := len(server.requests())
+	second, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() second error = %v", err)
+	}
+	if len(second) != 1 || second[0].PullRequest == nil {
+		t.Fatalf("FetchIssuesByStates() second = %#v, want PR hydration marker", second)
+	}
+	if second[0].PullRequest.HydrationUnavailableReason != "secondary_throttled" {
+		t.Fatalf("second HydrationUnavailableReason = %q, want secondary_throttled", second[0].PullRequest.HydrationUnavailableReason)
+	}
+	if len(server.requests()) != beforeCooldownRequests+1 {
+		t.Fatalf("request count after cooldown skip = %d, want one project refresh; requests = %#v", len(server.requests()), server.requests())
+	}
+
+	now = retryAt.Add(time.Second)
+	third, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
+	if err != nil {
+		t.Fatalf("FetchIssuesByStates() third error = %v", err)
+	}
+	if len(third) != 1 || third[0].PullRequest == nil {
+		t.Fatalf("FetchIssuesByStates() third = %#v, want hydrated PR", third)
+	}
+	pr = third[0].PullRequest
+	if pr.HydrationUnavailableReason != "" || pr.HydrationNextRetryAt != nil {
+		t.Fatalf("third hydration state = reason %q retry %v, want cleared", pr.HydrationUnavailableReason, pr.HydrationNextRetryAt)
+	}
+	if pr.CIStatus != "pass" {
+		t.Fatalf("third CIStatus = %q, want pass", pr.CIStatus)
+	}
+
+	requests := server.requests()
+	checkRunRequests := 0
+	for _, request := range requests {
+		path, _ := request["path"].(string)
+		if strings.Contains(path, "/check-runs") {
+			checkRunRequests++
+		}
+	}
+	if checkRunRequests != 2 {
+		t.Fatalf("check-runs requests = %d, want one failing call and one retry after cooldown; requests = %#v", checkRunRequests, requests)
+	}
+}
+
+func TestConnectorFetchIssuesByStatesMarksLinkedPullRequestHydrationSecondaryThrottled(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 12, 0, 0, 0, time.UTC)
 	projectBody := `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_401","content":{"__typename":"Issue","id":"I_401","number":401,"title":"Human review issue","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/401","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[{"number":411,"url":"https://github.com/digitaldrywood/detent/pull/411","state":"OPEN","repository":{"nameWithOwner":"digitaldrywood/detent"}}]}},"statusValue":{"name":"Human Review"},"priorityValue":null}]}}}}`
 	server := newGraphQLTestServer(t, []graphqlTestResponse{
 		{body: projectBody},
@@ -996,16 +1197,22 @@ func TestConnectorFetchIssuesByStatesMarksLinkedPullRequestHydrationRateLimited(
 			path:   "/repos/digitaldrywood/detent/pulls/411",
 			status: http.StatusTooManyRequests,
 			headers: map[string]string{
-				"Retry-After":          "120",
-				"X-RateLimit-Limit":    "5000",
-				"X-RateLimit-Used":     "264",
-				"X-RateLimit-Resource": "core",
+				"Retry-After":           "120",
+				"X-RateLimit-Limit":     "5000",
+				"X-RateLimit-Used":      "264",
+				"X-RateLimit-Remaining": "4736",
+				"X-RateLimit-Resource":  "core",
 			},
 			body: `{"message":"secondary rate limit"}`,
 		},
 	})
 
-	c := newGitHubTestConnector(t, server, Config{ProjectSlug: "PVT_1"})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+		Now: func() time.Time {
+			return now
+		},
+	})
 
 	got, err := c.FetchIssuesByStates(context.Background(), []string{"Human Review"})
 	if err != nil {
@@ -1021,8 +1228,11 @@ func TestConnectorFetchIssuesByStatesMarksLinkedPullRequestHydrationRateLimited(
 	if pr.Number != 411 {
 		t.Fatalf("PullRequest.Number = %d, want 411", pr.Number)
 	}
-	if pr.HydrationUnavailableReason != "rate_limited" {
-		t.Fatalf("HydrationUnavailableReason = %q, want rate_limited", pr.HydrationUnavailableReason)
+	if pr.HydrationUnavailableReason != connector.PullRequestHydrationReasonSecondaryThrottled {
+		t.Fatalf("HydrationUnavailableReason = %q, want secondary_throttled", pr.HydrationUnavailableReason)
+	}
+	if pr.HydrationNextRetryAt == nil || !pr.HydrationNextRetryAt.After(now.Add(120*time.Second)) {
+		t.Fatalf("HydrationNextRetryAt = %v, want retry-after plus jitter", pr.HydrationNextRetryAt)
 	}
 	if got[0].PRNumber == nil || *got[0].PRNumber != 411 {
 		t.Fatalf("PRNumber = %v, want 411", got[0].PRNumber)

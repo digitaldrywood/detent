@@ -402,6 +402,80 @@ func TestTickAutoPromoteDefersWhenPullRequestHydrationRateLimited(t *testing.T) 
 	}
 }
 
+func TestLogAutoPromoteDecisionIncludesHydrationReasons(t *testing.T) {
+	t.Parallel()
+
+	retryAt := time.Date(2026, 6, 25, 12, 5, 0, 0, time.UTC)
+	tests := []struct {
+		name        string
+		pullRequest *connector.PullRequest
+		want        []string
+	}{
+		{
+			name: "primary exhausted",
+			pullRequest: &connector.PullRequest{
+				Number:                     77,
+				HydrationUnavailableReason: connector.PullRequestHydrationReasonPrimaryExhausted,
+			},
+			want: []string{"pull_request_hydration_reason=primary_exhausted"},
+		},
+		{
+			name: "secondary throttled",
+			pullRequest: &connector.PullRequest{
+				Number:                     77,
+				HydrationUnavailableReason: connector.PullRequestHydrationReasonSecondaryThrottled,
+				HydrationNextRetryAt:       &retryAt,
+			},
+			want: []string{
+				"pull_request_hydration_reason=secondary_throttled",
+				"pull_request_hydration_next_retry_at=2026-06-25T12:05:00Z",
+			},
+		},
+		{
+			name: "rest budget reserved",
+			pullRequest: &connector.PullRequest{
+				Number:                     77,
+				HydrationUnavailableReason: connector.PullRequestHydrationReasonRESTBudgetReserved,
+			},
+			want: []string{"pull_request_hydration_reason=rest_budget_reserved"},
+		},
+		{
+			name: "stale cached data",
+			pullRequest: &connector.PullRequest{
+				Number:                  77,
+				HydrationDegradedReason: connector.PullRequestHydrationReasonStaleCachedPullData,
+				HydrationNextRetryAt:    &retryAt,
+			},
+			want: []string{
+				"pull_request_hydration_degraded_reason=stale_cached_pull_request",
+				"pull_request_hydration_next_retry_at=2026-06-25T12:05:00Z",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			var logs strings.Builder
+			orch := &Orchestrator{
+				logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelInfo})),
+			}
+			issue := autoPromoteTickIssue("issue-hydration-log", []string{"bug"}, tt.pullRequest)
+			orch.logAutoPromoteDecision(issue, AutoPromoteDecision{
+				Action: AutoPromoteActionSkip,
+				Reason: AutoPromoteReasonPullRequestHydrationUnavailable,
+			}, "")
+
+			for _, fragment := range tt.want {
+				if !strings.Contains(logs.String(), fragment) {
+					t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+				}
+			}
+		})
+	}
+}
+
 func TestTickReconcilesStaleTodoLinkedPullRequests(t *testing.T) {
 	t.Parallel()
 

@@ -346,6 +346,12 @@ func mergeWorkerLogAttrs(issue connector.Issue, attrs ...any) []any {
 		if reason := pullRequestHydrationUnavailableReason(issue.PullRequest); reason != "" {
 			out = append(out, "pull_request_hydration_reason", reason)
 		}
+		if reason := strings.TrimSpace(issue.PullRequest.HydrationDegradedReason); reason != "" {
+			out = append(out, "pull_request_hydration_degraded_reason", reason)
+		}
+		if issue.PullRequest.HydrationNextRetryAt != nil && !issue.PullRequest.HydrationNextRetryAt.IsZero() {
+			out = append(out, "pull_request_hydration_next_retry_at", issue.PullRequest.HydrationNextRetryAt.UTC().Format(time.RFC3339))
+		}
 	}
 	return append(out, attrs...)
 }
@@ -893,6 +899,12 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 		}
 		if reason := pullRequestHydrationUnavailableReason(issue.PullRequest); reason != "" {
 			attrs = append(attrs, "pull_request_hydration_reason", reason)
+		}
+		if reason := strings.TrimSpace(issue.PullRequest.HydrationDegradedReason); reason != "" {
+			attrs = append(attrs, "pull_request_hydration_degraded_reason", reason)
+		}
+		if issue.PullRequest.HydrationNextRetryAt != nil && !issue.PullRequest.HydrationNextRetryAt.IsZero() {
+			attrs = append(attrs, "pull_request_hydration_next_retry_at", issue.PullRequest.HydrationNextRetryAt.UTC().Format(time.RFC3339))
 		}
 	}
 	if decision.QuietRemaining > 0 {

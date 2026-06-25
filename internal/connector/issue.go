@@ -52,6 +52,8 @@ type PullRequest struct {
 	ActivityAt                   *time.Time           `json:"activity_at,omitempty" yaml:"activity_at,omitempty"`
 	HeadSHA                      string               `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
 	HydrationUnavailableReason   string               `json:"hydration_unavailable_reason,omitempty" yaml:"hydration_unavailable_reason,omitempty"`
+	HydrationDegradedReason      string               `json:"hydration_degraded_reason,omitempty" yaml:"hydration_degraded_reason,omitempty"`
+	HydrationNextRetryAt         *time.Time           `json:"hydration_next_retry_at,omitempty" yaml:"hydration_next_retry_at,omitempty"`
 	CIStatus                     string               `json:"ci_status,omitempty" yaml:"ci_status,omitempty"`
 	CheckRunCount                int                  `json:"check_run_count,omitempty" yaml:"check_run_count,omitempty"`
 	StatusContextCount           int                  `json:"status_context_count,omitempty" yaml:"status_context_count,omitempty"`
@@ -67,8 +69,11 @@ type PullRequest struct {
 }
 
 const (
-	PullRequestHydrationReasonRateLimited        = "rate_limited"
-	PullRequestHydrationReasonRESTBudgetReserved = "rest_budget_reserved"
+	PullRequestHydrationReasonRateLimited         = "rate_limited"
+	PullRequestHydrationReasonSecondaryThrottled  = "secondary_throttled"
+	PullRequestHydrationReasonPrimaryExhausted    = "primary_exhausted"
+	PullRequestHydrationReasonRESTBudgetReserved  = "rest_budget_reserved"
+	PullRequestHydrationReasonStaleCachedPullData = "stale_cached_pull_request"
 )
 
 type PullRequestCheck struct {

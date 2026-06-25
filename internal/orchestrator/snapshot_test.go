@@ -206,6 +206,7 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	completedAt := now.Add(-time.Minute)
 	blockedAt := now.Add(-3 * time.Minute)
 	pipelineUpdatedAt := now.Add(-4 * time.Minute)
+	prHydrationRetryAt := now.Add(5 * time.Minute)
 
 	state := newState(normalizeConfig(Config{}))
 	state.LastRefreshAt = now.Add(-30 * time.Second)
@@ -230,11 +231,13 @@ func TestStateSnapshotPopulated(t *testing.T) {
 			BlockedBy:  []connector.BlockedRef{{Identifier: "digitaldrywood/detent#415", State: "Done"}},
 			UpdatedAt:  &pipelineUpdatedAt,
 			PullRequest: &connector.PullRequest{
-				Number:            142,
-				URL:               "https://github.com/digitaldrywood/detent/pull/142",
-				State:             "OPEN",
-				CIStatus:          "pending",
-				CIDurationSeconds: 900,
+				Number:                  142,
+				URL:                     "https://github.com/digitaldrywood/detent/pull/142",
+				State:                   "OPEN",
+				CIStatus:                "pending",
+				CIDurationSeconds:       900,
+				HydrationDegradedReason: connector.PullRequestHydrationReasonStaleCachedPullData,
+				HydrationNextRetryAt:    &prHydrationRetryAt,
 				SlowChecks: []connector.PullRequestCheck{
 					{Name: "GoReleaser Snapshot", DurationSeconds: 247},
 				},
@@ -324,6 +327,12 @@ func TestStateSnapshotPopulated(t *testing.T) {
 	}
 	if pipeline.PullRequest.CIDurationSeconds != 900 {
 		t.Fatalf("Pipeline[0].PullRequest.CIDurationSeconds = %d, want 900", pipeline.PullRequest.CIDurationSeconds)
+	}
+	if pipeline.PullRequest.HydrationDegradedReason != connector.PullRequestHydrationReasonStaleCachedPullData {
+		t.Fatalf("Pipeline[0].PullRequest.HydrationDegradedReason = %q, want stale cached data", pipeline.PullRequest.HydrationDegradedReason)
+	}
+	if pipeline.PullRequest.HydrationNextRetryAt == nil || !pipeline.PullRequest.HydrationNextRetryAt.Equal(prHydrationRetryAt) {
+		t.Fatalf("Pipeline[0].PullRequest.HydrationNextRetryAt = %v, want %v", pipeline.PullRequest.HydrationNextRetryAt, prHydrationRetryAt)
 	}
 	if len(pipeline.PullRequest.SlowChecks) != 1 || pipeline.PullRequest.SlowChecks[0].Name != "GoReleaser Snapshot" {
 		t.Fatalf("Pipeline[0].PullRequest.SlowChecks = %#v", pipeline.PullRequest.SlowChecks)

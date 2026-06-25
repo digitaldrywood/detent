@@ -718,6 +718,8 @@ type pullRequestNode struct {
 	HeadRefName                string                            `json:"headRefName"`
 	HeadSHA                    string                            `json:"headSHA"`
 	HydrationUnavailableReason string                            `json:"-"`
+	HydrationDegradedReason    string                            `json:"-"`
+	HydrationNextRetryAt       *time.Time                        `json:"-"`
 	Commits                    nodeConnection[pullRequestCommit] `json:"commits"`
 	LatestReviews              nodeConnection[pullRequestReview] `json:"latestReviews"`
 	CodexReviews               pullRequestCodexReviews           `json:"-"`
@@ -1948,10 +1950,14 @@ func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []co
 		if !hasUnattachedBranchPullRequestCandidates(issues, byRepo[repo]) {
 			continue
 		}
+		if state, ok := c.currentPullRequestHydrationState(repo); ok {
+			markPullRequestHydrationUnavailableForCandidates(issues, byRepo[repo], repo, state)
+			continue
+		}
 		pullRequests, err := c.fetchRepositoryPullRequests(ctx, repo)
 		if err != nil {
-			if reason := pullRequestHydrationUnavailableReason(err); reason != "" {
-				markPullRequestHydrationUnavailableForCandidates(issues, byRepo[repo], repo, reason)
+			if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
+				markPullRequestHydrationUnavailableForCandidates(issues, byRepo[repo], repo, state)
 				continue
 			}
 			return err
@@ -2103,21 +2109,25 @@ func (c *Connector) attachLinkedPullRequests(
 		if strings.TrimSpace(pullRequestRepo.Owner) == "" || strings.TrimSpace(pullRequestRepo.Name) == "" {
 			pullRequestRepo = repo
 		}
+		if state, ok := c.currentPullRequestHydrationState(pullRequestRepo); ok {
+			attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], pullRequestRepo, candidate.PullRequestNumber, state)
+			continue
+		}
 		key := pullRequestKey{Repo: pullRequestRepo, Number: candidate.PullRequestNumber}
 		pullRequest, ok := pullRequests[key]
 		if !ok {
 			var err error
 			pullRequest, err = c.fetchRepositoryPullRequest(ctx, pullRequestRepo, candidate.PullRequestNumber)
 			if err != nil {
-				if reason := pullRequestHydrationUnavailableReason(err); reason != "" {
-					attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], pullRequestRepo, candidate.PullRequestNumber, reason)
+				if state := c.pullRequestHydrationStateForError(pullRequestRepo, err); state.Reason != "" {
+					attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], pullRequestRepo, candidate.PullRequestNumber, state)
 					continue
 				}
 				return err
 			}
 			if err := c.populatePullRequestStatus(ctx, pullRequestRepo, &pullRequest, useStatusCache); err != nil {
-				if reason := pullRequestHydrationUnavailableReason(err); reason != "" {
-					pullRequest.HydrationUnavailableReason = reason
+				if state := c.pullRequestHydrationStateForError(pullRequestRepo, err); state.Reason != "" {
+					applyPullRequestHydrationUnavailableState(&pullRequest, state)
 				} else {
 					return err
 				}
@@ -2156,17 +2166,22 @@ func (c *Connector) attachMatchingPullRequests(
 				var err error
 				hydratedPullRequest, err = c.fetchRepositoryPullRequest(ctx, repo, pullRequest.Number)
 				if err != nil {
-					if reason := pullRequestHydrationUnavailableReason(err); reason != "" {
-						pullRequest.HydrationUnavailableReason = reason
+					if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
+						applyPullRequestHydrationUnavailableState(&pullRequest, state)
 						hydrated[pullRequest.Number] = pullRequest
 						attachPullRequestToIssue(&issues[candidate.Index], repo, pullRequest)
-						continue
+						markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
+						return nil
 					}
 					return err
 				}
 				if err := c.populatePullRequestStatus(ctx, repo, &hydratedPullRequest, useStatusCache); err != nil {
-					if reason := pullRequestHydrationUnavailableReason(err); reason != "" {
-						hydratedPullRequest.HydrationUnavailableReason = reason
+					if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
+						applyPullRequestHydrationUnavailableState(&hydratedPullRequest, state)
+						hydrated[pullRequest.Number] = hydratedPullRequest
+						attachPullRequestToIssue(&issues[candidate.Index], repo, hydratedPullRequest)
+						markPullRequestHydrationUnavailableForCandidates(issues, candidates, repo, state)
+						return nil
 					} else {
 						return err
 					}
@@ -2212,6 +2227,8 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		ActivityAt:                   cloneGitHubTime(pullRequest.ActivityAt),
 		HeadSHA:                      strings.TrimSpace(pullRequest.HeadSHA),
 		HydrationUnavailableReason:   strings.TrimSpace(pullRequest.HydrationUnavailableReason),
+		HydrationDegradedReason:      strings.TrimSpace(pullRequest.HydrationDegradedReason),
+		HydrationNextRetryAt:         cloneGitHubTime(pullRequest.HydrationNextRetryAt),
 		CIStatus:                     normalizePullRequestCIStatus(pullRequestCIState(pullRequest)),
 		CheckRunCount:                pullRequest.CI.CheckRunCount,
 		StatusContextCount:           pullRequest.CI.StatusContextCount,
@@ -2238,7 +2255,7 @@ func markPullRequestHydrationUnavailableForCandidates(
 	issues []connector.Issue,
 	candidates []issuePullRequestCandidate,
 	defaultRepo pullRequestRepo,
-	reason string,
+	state pullRequestHydrationState,
 ) {
 	for _, candidate := range candidates {
 		if issues[candidate.Index].PullRequest != nil {
@@ -2248,13 +2265,12 @@ func markPullRequestHydrationUnavailableForCandidates(
 		if strings.TrimSpace(repo.Owner) == "" || strings.TrimSpace(repo.Name) == "" {
 			repo = defaultRepo
 		}
-		attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], repo, candidate.PullRequestNumber, reason)
+		attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], repo, candidate.PullRequestNumber, state)
 	}
 }
 
-func attachPullRequestHydrationUnavailableToIssue(issue *connector.Issue, repo pullRequestRepo, number int, reason string) {
-	reason = strings.TrimSpace(reason)
-	if reason == "" {
+func attachPullRequestHydrationUnavailableToIssue(issue *connector.Issue, repo pullRequestRepo, number int, state pullRequestHydrationState) {
+	if strings.TrimSpace(state.Reason) == "" {
 		return
 	}
 	if issue.PullRequest == nil {
@@ -2263,7 +2279,8 @@ func attachPullRequestHydrationUnavailableToIssue(issue *connector.Issue, repo p
 	if number > 0 {
 		issue.PullRequest.Number = number
 	}
-	issue.PullRequest.HydrationUnavailableReason = reason
+	issue.PullRequest.HydrationUnavailableReason = strings.TrimSpace(state.Reason)
+	issue.PullRequest.HydrationNextRetryAt = cloneGitHubTime(state.NextRetryAt)
 	if issue.PRNumber == nil && number > 0 {
 		issue.PRNumber = &number
 	}
@@ -2272,15 +2289,71 @@ func attachPullRequestHydrationUnavailableToIssue(issue *connector.Issue, repo p
 	}
 }
 
-func pullRequestHydrationUnavailableReason(err error) string {
+func applyPullRequestHydrationUnavailableState(pullRequest *pullRequestNode, state pullRequestHydrationState) {
+	if pullRequest == nil || strings.TrimSpace(state.Reason) == "" {
+		return
+	}
+	pullRequest.HydrationUnavailableReason = strings.TrimSpace(state.Reason)
+	pullRequest.HydrationNextRetryAt = cloneGitHubTime(state.NextRetryAt)
+}
+
+func (c *Connector) currentPullRequestHydrationState(repo pullRequestRepo) (pullRequestHydrationState, bool) {
+	if c == nil || c.prHydration == nil {
+		return pullRequestHydrationState{}, false
+	}
+	return c.prHydration.Current(repo)
+}
+
+func (c *Connector) pullRequestHydrationStateForError(repo pullRequestRepo, err error) pullRequestHydrationState {
 	switch {
 	case errors.Is(err, ErrRESTBudgetReserved):
-		return connector.PullRequestHydrationReasonRESTBudgetReserved
+		return pullRequestHydrationState{Reason: connector.PullRequestHydrationReasonRESTBudgetReserved}
 	case errors.Is(err, ErrRateLimited):
-		return connector.PullRequestHydrationReasonRateLimited
+		var statusErr *StatusError
+		if errors.As(err, &statusErr) {
+			switch statusErr.RateLimitKind {
+			case restRateLimitKindSecondaryThrottled:
+				return c.tripPullRequestHydrationCircuit(repo, statusErr.RetryAfter)
+			case restRateLimitKindPrimaryExhausted:
+				return newPullRequestHydrationState(
+					connector.PullRequestHydrationReasonPrimaryExhausted,
+					c.pullRequestHydrationRetryAt(statusErr),
+				)
+			}
+		}
+		return pullRequestHydrationState{Reason: connector.PullRequestHydrationReasonRateLimited}
 	default:
-		return ""
+		return pullRequestHydrationState{}
 	}
+}
+
+func (c *Connector) tripPullRequestHydrationCircuit(repo pullRequestRepo, retryAfter time.Duration) pullRequestHydrationState {
+	reason := connector.PullRequestHydrationReasonSecondaryThrottled
+	if c == nil || c.prHydration == nil {
+		return pullRequestHydrationState{Reason: reason}
+	}
+	state := c.prHydration.Trip(repo, reason, retryAfter)
+	if strings.TrimSpace(state.Reason) == "" {
+		return pullRequestHydrationState{Reason: reason}
+	}
+	return state
+}
+
+func (c *Connector) pullRequestHydrationRetryAt(statusErr *StatusError) time.Time {
+	if statusErr == nil {
+		return time.Time{}
+	}
+	now := time.Now()
+	if c != nil && c.prHydration != nil && c.prHydration.now != nil {
+		now = c.prHydration.now()
+	}
+	if statusErr.RetryAfter > 0 {
+		return now.Add(statusErr.RetryAfter)
+	}
+	if statusErr.ResetAt.After(now) {
+		return statusErr.ResetAt
+	}
+	return time.Time{}
 }
 
 func pullRequestRepoName(repo pullRequestRepo) string {
@@ -2304,7 +2377,8 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	if strings.TrimSpace(pullRequest.HeadSHA) != "" {
 		ci, err := c.fetchPullRequestCI(ctx, repo, pullRequest.HeadSHA)
 		if err != nil {
-			if c.applyCachedPullRequestStatusAfterThrottle(repo, pullRequest, err) {
+			state := c.pullRequestHydrationStateForError(repo, err)
+			if c.applyCachedPullRequestStatusAfterThrottle(repo, pullRequest, state) {
 				return nil
 			}
 			return err
@@ -2313,7 +2387,8 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	}
 	reviews, err := c.fetchPullRequestReviews(ctx, repo, pullRequest.Number, pullRequest.HeadSHA)
 	if err != nil {
-		if c.applyCachedPullRequestStatusAfterThrottle(repo, pullRequest, err) {
+		state := c.pullRequestHydrationStateForError(repo, err)
+		if c.applyCachedPullRequestStatusAfterThrottle(repo, pullRequest, state) {
 			return nil
 		}
 		return err
@@ -2326,11 +2401,11 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	return nil
 }
 
-func (c *Connector) applyCachedPullRequestStatusAfterThrottle(repo pullRequestRepo, pullRequest *pullRequestNode, err error) bool {
+func (c *Connector) applyCachedPullRequestStatusAfterThrottle(repo pullRequestRepo, pullRequest *pullRequestNode, state pullRequestHydrationState) bool {
 	if c.pullRequests == nil || pullRequest == nil {
 		return false
 	}
-	if !errors.Is(err, ErrRESTBudgetReserved) && !errors.Is(err, ErrRateLimited) {
+	if strings.TrimSpace(state.Reason) == "" {
 		return false
 	}
 	status, ok := c.pullRequests.Get(repo, pullRequest.Number, pullRequest.HeadSHA)
@@ -2338,6 +2413,8 @@ func (c *Connector) applyCachedPullRequestStatusAfterThrottle(repo pullRequestRe
 		return false
 	}
 	applyPullRequestStatus(pullRequest, status)
+	pullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
+	pullRequest.HydrationNextRetryAt = cloneGitHubTime(state.NextRetryAt)
 	return true
 }
 
