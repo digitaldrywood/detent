@@ -47,16 +47,18 @@ type Config struct {
 }
 
 type SlotRequest struct {
-	State  string
-	Host   string
-	Weight int
+	State    string
+	Host     string
+	Weight   int
+	Priority int
 }
 
 type Slot struct {
-	State  string
-	Host   string
-	Weight int
-	token  uint64
+	State    string
+	Host     string
+	Weight   int
+	Priority int
+	token    uint64
 }
 
 type Counters struct {
@@ -75,6 +77,13 @@ type CountingSemaphore struct {
 	usedByHost      map[string]int
 	active          map[uint64]Slot
 	nextToken       uint64
+}
+
+type capacitySnapshot struct {
+	globalCapacity int
+	globalUsed     int
+	stateCapacity  int
+	stateUsed      int
 }
 
 var _ Scheduler = (*CountingSemaphore)(nil)
@@ -187,6 +196,28 @@ func (s *CountingSemaphore) Counters() Counters {
 	}
 }
 
+func (s *CountingSemaphore) capacitySnapshot(state string) capacitySnapshot {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	state = normalizeState(state)
+	stateCapacity := s.capacity
+	stateUsed := s.used
+	if state != "" {
+		stateUsed = s.usedByState[state]
+		if capacity, ok := s.capacityByState[state]; ok {
+			stateCapacity = capacity
+		}
+	}
+
+	return capacitySnapshot{
+		globalCapacity: s.capacity,
+		globalUsed:     s.used,
+		stateCapacity:  stateCapacity,
+		stateUsed:      stateUsed,
+	}
+}
+
 func (s *CountingSemaphore) checkCapacity(slot Slot) error {
 	if slot.Weight > s.capacity {
 		return fmt.Errorf("%w: global capacity %d", ErrWeightExceedsCapacity, s.capacity)
@@ -233,10 +264,18 @@ func normalizeRequest(req SlotRequest) (Slot, error) {
 	}
 
 	return Slot{
-		State:  normalizeState(req.State),
-		Host:   normalizeHost(req.Host),
-		Weight: weight,
+		State:    normalizeState(req.State),
+		Host:     normalizeHost(req.Host),
+		Weight:   weight,
+		Priority: normalizeSlotPriority(req.Priority),
 	}, nil
+}
+
+func normalizeSlotPriority(priority int) int {
+	if priority < 0 {
+		return 0
+	}
+	return priority
 }
 
 func normalizedCapacities(values map[string]int) map[string]int {

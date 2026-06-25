@@ -8,6 +8,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -317,6 +318,54 @@ func (o *Orchestrator) logMergeWorkerFailure(issue connector.Issue, reason strin
 		attrs = append(attrs, "error", err)
 	}
 	o.logger.Warn("merge_worker_failure", attrs...)
+}
+
+func (o *Orchestrator) logMergeWorkerSlotWait(
+	issue connector.Issue,
+	decision scheduler.DispatchGateDecision,
+	projectStats projectStateSlotStats,
+) {
+	if o.logger == nil || !mergeWorkerIssue(issue) {
+		return
+	}
+	o.logger.Info("merge_worker_slot_wait", mergeWorkerSlotDecisionAttrs(issue, decision, projectStats)...)
+}
+
+func (o *Orchestrator) logMergeWorkerSlotAcquired(
+	issue connector.Issue,
+	decision scheduler.DispatchGateDecision,
+	projectStats projectStateSlotStats,
+) {
+	if o.logger == nil || !mergeWorkerIssue(issue) {
+		return
+	}
+	o.logger.Info("merge_worker_slot_acquired", mergeWorkerSlotDecisionAttrs(issue, decision, projectStats)...)
+}
+
+func mergeWorkerSlotDecisionAttrs(
+	issue connector.Issue,
+	decision scheduler.DispatchGateDecision,
+	projectStats projectStateSlotStats,
+) []any {
+	reason := strings.TrimSpace(decision.Reason)
+	if reason == "" {
+		reason = dispatchIssueFailureGlobalSlotUnavailable
+	}
+	attrs := mergeWorkerLogAttrs(issue,
+		"reason", reason,
+		"global_capacity", decision.GlobalCapacity,
+		"global_used", decision.GlobalUsed,
+		"global_available", decision.GlobalAvailable,
+		"project_state_capacity", projectStats.capacity,
+		"project_state_used", projectStats.used,
+		"project_state_available", projectStats.available,
+		"lower_priority_running", decision.LowerPriorityRunning,
+		"selected_project_id", strings.TrimSpace(decision.SelectedProjectID),
+		"selected_state", strings.TrimSpace(decision.SelectedState),
+		"ready_projects", decision.ReadyProjects,
+		"running_projects", decision.RunningProjects,
+	)
+	return attrs
 }
 
 func (o *Orchestrator) failStalledMergeWorkerStarts(state *State, now time.Time) {

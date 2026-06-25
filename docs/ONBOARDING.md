@@ -1098,9 +1098,11 @@ probes.
    per project orchestrator (`internal/orchestrator/dispatch_planner.go`
    `stateSlotsAvailable`) and per project scheduler
    (`internal/project/project.go` `CapacityByState`). The global settings
-   struct (`internal/config/global/config.go`) has no by-state field, and the
-   global dispatch gate (`internal/scheduler/global_gate.go`) is state-blind —
-   it only arbitrates total pool slots and weighted/fair-share selection.
+   struct (`internal/config/global/config.go`) has no by-state field. The global
+   dispatch gate (`internal/scheduler/global_gate.go`) still arbitrates total
+   pool slots and weighted/fair-share project selection, but it also receives
+   each project's current dispatch-state priority so waiting `Merging` work can
+   reserve the next released global slot ahead of lower-priority lanes.
 
    `Merging: 1` serializes merges **within one project only**; multiple
    projects merge concurrently because each merge train targets its own

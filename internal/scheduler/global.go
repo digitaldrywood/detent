@@ -34,8 +34,10 @@ type ProjectCandidate struct {
 }
 
 type RunningProject struct {
-	ProjectID string
-	Priority  int
+	ProjectID    string
+	Priority     int
+	State        string
+	SlotPriority int
 }
 
 type ProjectSelectionRequest struct {
@@ -110,6 +112,10 @@ func (s *globalScheduler) RequestSlot(ctx context.Context, req SlotRequest) (Slo
 
 func (s *globalScheduler) ReleaseSlot(slot Slot) error {
 	return s.sem.ReleaseSlot(slot)
+}
+
+func (s *globalScheduler) capacitySnapshot(state string) capacitySnapshot {
+	return s.sem.capacitySnapshot(state)
 }
 
 func (s *globalScheduler) SelectProject(ctx context.Context, req ProjectSelectionRequest) (ProjectSelection, error) {

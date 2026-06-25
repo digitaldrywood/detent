@@ -1317,6 +1317,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		return
 	}
 	planner := o.dispatchPlanner()
+	var lastDispatchFailure string
 	planner.plan(state, issues, now, dispatchPlanHooks{
 		hydrate: func(issue connector.Issue) (connector.Issue, bool) {
 			return o.hydrateDispatchIssue(ctx, issue)
@@ -1328,7 +1329,16 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return waitForDispatchBackoff(ctx, continuationDelay(continuationIndex))
 		},
 		dispatch: func(issue connector.Issue, attempt int, workerHost string) bool {
-			return o.dispatchIssue(ctx, state, issue, attempt, now, workerHost)
+			outcome := o.dispatchIssueWithOutcome(ctx, state, issue, attempt, now, workerHost)
+			if !outcome.dispatched {
+				lastDispatchFailure = outcome.reason
+			} else {
+				lastDispatchFailure = ""
+			}
+			return outcome.dispatched
+		},
+		dispatchFailed: func(issue connector.Issue) bool {
+			return !mergeWorkerIssue(issue) || lastDispatchFailure != dispatchIssueFailureGlobalSlotUnavailable
 		},
 		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
 			planner.scheduleRetry(state, issue, retry.Attempt, now, "claim verification failed", false, retry.WorkerHost)
@@ -1390,6 +1400,19 @@ func (o *Orchestrator) dispatchable(issue connector.Issue, state *State, now tim
 	return o.dispatchPlanner().dispatchable(issue, state, now)
 }
 
+const (
+	dispatchIssueFailureLocalSlotUnavailable  = "local_slot_unavailable"
+	dispatchIssueFailureWorkerHostUnavailable = "worker_host_unavailable"
+	dispatchIssueFailureGlobalSlotUnavailable = "global_slot_unavailable"
+	dispatchIssueFailureClaimFailed           = "claim_failed"
+	dispatchIssueFailureStartStateTransition  = "start_state_transition_failed"
+)
+
+type dispatchIssueOutcome struct {
+	dispatched bool
+	reason     string
+}
+
 func (o *Orchestrator) dispatchIssue(
 	ctx context.Context,
 	state *State,
@@ -1398,6 +1421,17 @@ func (o *Orchestrator) dispatchIssue(
 	now time.Time,
 	preferredWorkerHost string,
 ) bool {
+	return o.dispatchIssueWithOutcome(ctx, state, issue, attempt, now, preferredWorkerHost).dispatched
+}
+
+func (o *Orchestrator) dispatchIssueWithOutcome(
+	ctx context.Context,
+	state *State,
+	issue connector.Issue,
+	attempt int,
+	now time.Time,
+	preferredWorkerHost string,
+) dispatchIssueOutcome {
 	runMode := o.dispatchMode(state, issue)
 	targetState := dispatchStartTransitionState(issue, runMode, o.cfg.ActiveStates)
 	slotIssue := issue
@@ -1405,27 +1439,33 @@ func (o *Orchestrator) dispatchIssue(
 		slotIssue = cloneIssue(issue)
 		slotIssue.State = targetState
 		if !o.dispatchPlanner().slotsAvailable(slotIssue, state, preferredWorkerHost) {
-			return false
+			return dispatchIssueOutcome{reason: dispatchIssueFailureLocalSlotUnavailable}
 		}
 	}
+	projectStats := o.projectStateSlotStats(slotIssue, state)
 
 	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
 	if !ok {
 		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
-		return false
+		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable}
 	}
 
-	globalSlot, ok := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, now)
+	globalSlot, ok, decision := o.acquireGlobalDispatchSlot(ctx, slotIssue, workerHost, now)
 	if !ok {
-		o.logMergeWorkerFailure(issue, "global_slot_unavailable", nil)
-		return false
+		if mergeWorkerIssue(issue) {
+			o.logMergeWorkerSlotWait(issue, decision, projectStats)
+		} else {
+			o.logMergeWorkerFailure(issue, "global_slot_unavailable", nil)
+		}
+		return dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable}
 	}
+	o.logMergeWorkerSlotAcquired(issue, decision, projectStats)
 
 	claimedIssue, claim, ok := o.claimIssue(ctx, issue, now)
 	if !ok {
 		o.releaseGlobalDispatchSlot(globalSlot)
 		o.logMergeWorkerFailure(issue, "claim_failed", nil)
-		return false
+		return dispatchIssueOutcome{reason: dispatchIssueFailureClaimFailed}
 	}
 
 	issue = cloneIssue(claimedIssue)
@@ -1439,7 +1479,7 @@ func (o *Orchestrator) dispatchIssue(
 				o.logger.Warn("start state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 			}
 			o.logMergeWorkerFailure(issue, "start_state_transition_failed", err)
-			return false
+			return dispatchIssueOutcome{reason: dispatchIssueFailureStartStateTransition}
 		}
 		issue.State = targetState
 	}
@@ -1472,7 +1512,7 @@ func (o *Orchestrator) dispatchIssue(
 	}
 	o.logMergeWorkerAttempt(issue, attempt, workerHost)
 	o.supervisor.Dispatch(runCtx, request, o.runResults)
-	return true
+	return dispatchIssueOutcome{dispatched: true}
 }
 
 func dispatchStartTransitionState(issue connector.Issue, mode string, activeStates []string) string {
@@ -1517,27 +1557,83 @@ func (o *Orchestrator) markGlobalProjectIdle() {
 	o.globalDispatchGate.MarkIdle(o.cfg.Project.ID)
 }
 
+type projectStateSlotStats struct {
+	capacity  int
+	used      int
+	available int
+}
+
+type detailedProjectDispatchGate interface {
+	TryAcquireWithDecision(context.Context, scheduler.ProjectCandidate, scheduler.SlotRequest, time.Time) (
+		scheduler.Slot,
+		bool,
+		scheduler.DispatchGateDecision,
+		error,
+	)
+}
+
 func (o *Orchestrator) acquireGlobalDispatchSlot(
 	ctx context.Context,
 	issue connector.Issue,
 	workerHost string,
 	now time.Time,
-) (scheduler.Slot, bool) {
+) (scheduler.Slot, bool, scheduler.DispatchGateDecision) {
 	if o.globalDispatchGate == nil {
-		return scheduler.Slot{}, true
+		return scheduler.Slot{}, true, scheduler.DispatchGateDecision{Reason: scheduler.DispatchGateReasonGranted}
 	}
 
-	slot, ok, err := o.globalDispatchGate.TryAcquire(ctx, o.cfg.Project, scheduler.SlotRequest{
-		State: issue.State,
-		Host:  workerHost,
-	}, now)
+	req := scheduler.SlotRequest{
+		State:    issue.State,
+		Host:     workerHost,
+		Priority: o.dispatchStatePriority(issue.State),
+	}
+	var (
+		slot     scheduler.Slot
+		ok       bool
+		decision scheduler.DispatchGateDecision
+		err      error
+	)
+	if detailed, hasDecision := o.globalDispatchGate.(detailedProjectDispatchGate); hasDecision {
+		slot, ok, decision, err = detailed.TryAcquireWithDecision(ctx, o.cfg.Project, req, now)
+	} else {
+		slot, ok, err = o.globalDispatchGate.TryAcquire(ctx, o.cfg.Project, req, now)
+		if ok {
+			decision.Reason = scheduler.DispatchGateReasonGranted
+		}
+	}
 	if err != nil {
 		if o.logger != nil {
 			o.logger.Warn("global dispatch slot unavailable", "project_id", o.cfg.Project.ID, "issue_id", issue.ID, "error", err)
 		}
-		return scheduler.Slot{}, false
+		return scheduler.Slot{}, false, decision
 	}
-	return slot, ok
+	return slot, ok, decision
+}
+
+func (o *Orchestrator) dispatchStatePriority(state string) int {
+	return stateDispatchRank(stateDispatchRanks(o.cfg.DispatchPriorityByState), state)
+}
+
+func (o *Orchestrator) projectStateSlotStats(issue connector.Issue, state *State) projectStateSlotStats {
+	limit := o.cfg.MaxConcurrentAgents
+	normalized := normalizeState(issue.State)
+	if stateLimit, ok := o.cfg.MaxConcurrentAgentsByState[normalized]; ok {
+		limit = stateLimit
+	}
+
+	used := 0
+	if state != nil {
+		for _, running := range state.Running {
+			if normalizeState(running.Issue.State) == normalized {
+				used++
+			}
+		}
+	}
+	available := limit - used
+	if available < 0 {
+		available = 0
+	}
+	return projectStateSlotStats{capacity: limit, used: used, available: available}
 }
 
 func (o *Orchestrator) releaseGlobalDispatchSlot(slot scheduler.Slot) {

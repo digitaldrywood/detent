@@ -18,6 +18,7 @@ type dispatchPlanHooks struct {
 	hydrate             func(connector.Issue) (connector.Issue, bool)
 	beforeDispatch      func(connector.Issue, int) bool
 	dispatch            func(connector.Issue, int, string) bool
+	dispatchFailed      func(connector.Issue) bool
 	retryDispatchFailed func(connector.Issue, Retry)
 }
 
@@ -84,6 +85,8 @@ func (p dispatchPlanner) plan(
 		}
 		if p.applyDispatchAction(state, action, now, hooks) {
 			plan.Dispatches = append(plan.Dispatches, action.decision())
+		} else if hooks.dispatchFailed != nil && !hooks.dispatchFailed(action.issue) {
+			break
 		}
 	}
 
