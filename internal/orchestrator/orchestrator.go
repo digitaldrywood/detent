@@ -2017,7 +2017,7 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		}
 		issue = mergeIssueTrackerFields(running.Issue, issue)
 		if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
-			return false
+			return o.completeProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
 		}
 		tokens := event.Result.Tokens
 		if tokens == (CodexTotals{}) {
@@ -2034,6 +2034,162 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 		return true
 	}
 	return false
+}
+
+func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	issue connector.Issue,
+) bool {
+	if state != nil && state.Draining {
+		return false
+	}
+	if !mergeWorkerTurnSucceeded(event) {
+		return false
+	}
+	hydrator, ok := o.connector.(connector.PullRequestHydrator)
+	if !ok {
+		return false
+	}
+	refreshedIssue, err := hydrator.HydratePullRequest(ctx, issue)
+	if err != nil {
+		running.Issue = issue
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_pr_refresh_failed", err)
+		return true
+	}
+	issue = refreshedIssue
+	if !mergeWorkerProgrammaticMergeReady(issue) {
+		return false
+	}
+	merger, ok := o.connector.(connector.PullRequestMerger)
+	if !ok {
+		return false
+	}
+	issueID := strings.TrimSpace(event.IssueID)
+	repository := pullRequestRepository(issue)
+	number := pullRequestNumber(issue)
+	headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA)
+	if err := merger.MergePullRequest(ctx, repository, number, headSHA); err != nil {
+		running.Issue = issue
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_failed", err)
+		return true
+	}
+
+	targetState := doneStateName(o.cfg.TerminalStates)
+	mergedIssue := cloneIssue(issue)
+	if mergedIssue.PullRequest != nil {
+		mergedIssue.PullRequest.State = "MERGED"
+		activityAt := event.CompletedAt.UTC()
+		mergedIssue.PullRequest.ActivityAt = &activityAt
+	}
+	if err := o.updateIssueStateByID(ctx, issueID, mergedIssue, targetState, event.CompletedAt, "merge_worker_programmatic_merge"); err != nil {
+		running.Issue = mergedIssue
+		o.failProgrammaticMergeWorkerResult(ctx, state, event, running, "programmatic_merge_state_update_failed", err)
+		return true
+	}
+
+	updatedAt := event.CompletedAt.UTC()
+	mergedIssue.State = targetState
+	mergedIssue.UpdatedAt = &updatedAt
+	mergedIssue.StageUpdatedAt = &updatedAt
+	mergeTimingIssue := running.Issue
+	running.Issue = mergedIssue
+	tokens := event.Result.Tokens
+	if tokens == (CodexTotals{}) {
+		tokens = running.Tokens
+	}
+	if diffStatsPresent(event.Result.DiffStats) {
+		running.DiffStats = event.Result.DiffStats
+	}
+	if o.logger != nil {
+		o.logger.Info("merge_worker_programmatic_merge", mergeWorkerLogAttrs(mergedIssue, "target_state", targetState)...)
+	}
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_programmatic_merge",
+		Message: "programmatically merged " + issueLabel(mergedIssue) + " and moved it to " + targetState,
+	})
+	o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(mergedIssue, o.cfg.TerminalStates, event.CompletedAt), tokens)
+	mergeTiming := o.recordMergeCompleted(state, mergeTimingIssue, event.CompletedAt, targetState)
+	if completed, ok := state.Completed[issueID]; ok {
+		completed.MergeTiming = mergeTiming
+		state.Completed[issueID] = completed
+	}
+	o.logMergeWorkerSuccess(mergeTimingIssue, targetState)
+	if event.Result.RateLimits != nil {
+		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+	}
+	return true
+}
+
+func (o *Orchestrator) failProgrammaticMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+	reason string,
+	err error,
+) {
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, reason, errorString(err), "merging", "programmatic merge failed")
+	o.logMergeWorkerFailure(running.Issue, reason, err)
+	o.recordMergeFailed(state, running.Issue, event.CompletedAt, reason, err)
+	attempt := nextAttempt(running.Attempt)
+	if attempt > maxMergeWorkerRunnerFailures {
+		if o.reworkExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, err) {
+			return
+		}
+	}
+	o.scheduleRetry(
+		state,
+		running.Issue,
+		attempt,
+		event.CompletedAt,
+		errorString(err),
+		false,
+		running.WorkerHost,
+	)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_programmatic_merge_failed",
+		Message: "programmatic merge failed for " + issueLabel(running.Issue) + ": " + errorString(err),
+	})
+}
+
+func mergeWorkerTurnSucceeded(event runpkg.Completion) bool {
+	return event.Err == nil && !strings.EqualFold(strings.TrimSpace(event.Result.FinalState), runpkg.FinalStateFailed)
+}
+
+func mergeWorkerProgrammaticMergeReady(issue connector.Issue) bool {
+	if strings.TrimSpace(issue.ID) == "" || issue.PullRequest == nil {
+		return false
+	}
+	pullRequest := issue.PullRequest
+	if pullRequestHydrationBlocksProgress(pullRequest) {
+		return false
+	}
+	if normalizePullRequestState(pullRequest.State) != "open" || pullRequest.Draft {
+		return false
+	}
+	if strings.ToLower(strings.TrimSpace(pullRequest.MergeableState)) != "clean" {
+		return false
+	}
+	if !mergeWorkerCIGreen(pullRequest.CIStatus) {
+		return false
+	}
+	return pullRequestRepository(issue) != "" &&
+		pullRequestNumber(issue) > 0 &&
+		strings.TrimSpace(pullRequest.HeadSHA) != ""
+}
+
+func mergeWorkerCIGreen(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "success", "green", "pass", "passed":
+		return true
+	default:
+		return false
+	}
 }
 
 func (o *Orchestrator) handleIncompleteMergeWorkerResult(

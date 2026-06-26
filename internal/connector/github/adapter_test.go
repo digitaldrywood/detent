@@ -2412,6 +2412,86 @@ func TestConnectorCreatePullRequestCommentUsesIssueCommentsEndpoint(t *testing.T
 	}
 }
 
+func TestConnectorMergePullRequestUsesRESTMergeEndpoint(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{{
+		method: http.MethodPut,
+		path:   "/repos/example/repo/pulls/42/merge",
+		body:   `{"sha":"merge-sha","merged":true,"message":"Pull Request successfully merged"}`,
+	}})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.MergePullRequest(context.Background(), "example/repo", 42, "head-sha"); err != nil {
+		t.Fatalf("MergePullRequest() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("request count = %d, want 1", len(requests))
+	}
+	if requests[0]["method"] != http.MethodPut || requests[0]["path"] != "/repos/example/repo/pulls/42/merge" {
+		t.Fatalf("merge request = %#v, want REST pull request merge", requests[0])
+	}
+	body := requests[0]["body"].(map[string]any)
+	if body["merge_method"] != "squash" || body["sha"] != "head-sha" {
+		t.Fatalf("merge body = %#v, want squash merge with head sha", body)
+	}
+}
+
+func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/42",
+			body:   `{"number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","mergeable_state":"clean","draft":false,"head":{"ref":"detent/example_repo_1","sha":"head-sha"},"base":{"sha":"base-sha"},"updated_at":"2026-06-26T13:00:00Z"}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/check-runs?per_page=100",
+			body:   `{"check_runs":[{"name":"Verify","status":"completed","conclusion":"success"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	prNumber := 42
+	issue := connector.Issue{
+		ID:         "I_kw42",
+		Identifier: "example/repo#1",
+		PRNumber:   &prNumber,
+	}
+
+	got, err := c.HydratePullRequest(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() error = %v", err)
+	}
+
+	if got.PullRequest == nil {
+		t.Fatalf("HydratePullRequest().PullRequest = nil, want hydrated pull request")
+	}
+	pr := got.PullRequest
+	if pr.Number != 42 || pr.State != "OPEN" || pr.MergeableState != "clean" || pr.HeadSHA != "head-sha" || pr.BaseSHA != "base-sha" {
+		t.Fatalf("hydrated pull request = %#v, want current clean pull request details", pr)
+	}
+	if pr.CIStatus != "pass" || pr.CheckRunCount != 1 {
+		t.Fatalf("hydrated CI = status %q check runs %d, want pass with one check run", pr.CIStatus, pr.CheckRunCount)
+	}
+	if got.PRRepository != "example/repo" {
+		t.Fatalf("PRRepository = %q, want example/repo", got.PRRepository)
+	}
+}
+
 func TestConnectorSetIssueFieldUsesIssueFieldEndpoint(t *testing.T) {
 	t.Parallel()
 
