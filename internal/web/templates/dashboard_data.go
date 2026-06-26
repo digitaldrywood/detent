@@ -2854,11 +2854,16 @@ func mergeLaneIssue(issue telemetry.Issue) bool {
 }
 
 func mergeLaneIssueKey(issue telemetry.Issue) string {
+	scope := strings.TrimSpace(issue.ProjectID)
+	prefix := ""
+	if scope != "" {
+		prefix = "project:" + scope + ":"
+	}
 	if id := strings.TrimSpace(issue.ID); id != "" {
-		return "id:" + id
+		return prefix + "id:" + id
 	}
 	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
-		return "identifier:" + identifier
+		return prefix + "identifier:" + identifier
 	}
 	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
 		repository := strings.ToLower(strings.TrimSpace(pullRequestRepository(issue)))

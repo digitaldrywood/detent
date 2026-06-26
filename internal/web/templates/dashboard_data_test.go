@@ -1258,6 +1258,80 @@ func TestProjectKanbanBoardShowsMergeLaneStatus(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanBoardScopesMergeLaneStatusByProject(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 20, 0, 0, 0, time.UTC)
+	activeAt := now.Add(-5 * time.Minute)
+	queuedAt := now.Add(-2 * time.Minute)
+
+	board := projectKanbanBoardView(DashboardData{
+		Kanban: KanbanData{
+			States: []string{"Merging"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Pipeline: []telemetry.Issue{
+				{
+					ID:             "local-1",
+					Identifier:     "digitaldrywood/detent#143",
+					ProjectID:      "detent",
+					Title:          "Active merge",
+					State:          "Merging",
+					StageUpdatedAt: &activeAt,
+					PullRequest: &telemetry.PullRequest{
+						Number: 143,
+						URL:    "https://github.com/digitaldrywood/detent/pull/143",
+					},
+				},
+				{
+					ID:             "local-1",
+					Identifier:     "digitaldrywood/docs-site#27",
+					ProjectID:      "docs-site",
+					Title:          "Queued docs merge",
+					State:          "Merging",
+					StageUpdatedAt: &queuedAt,
+					PullRequest: &telemetry.PullRequest{
+						Number: 27,
+						URL:    "https://github.com/digitaldrywood/docs-site/pull/27",
+					},
+				},
+			},
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "local-1",
+						Identifier: "digitaldrywood/detent#143",
+						ProjectID:  "detent",
+						Title:      "Active merge",
+						State:      "Merging",
+						PullRequest: &telemetry.PullRequest{
+							Number: 143,
+							URL:    "https://github.com/digitaldrywood/detent/pull/143",
+						},
+					},
+					StartedAt: activeAt,
+					LastEvent: "running checks",
+				},
+			},
+		},
+	})
+
+	got := collectKanbanCards(board.AllLanes)
+	want := []kanbanCardSnapshot{
+		{Lane: "Merging", IssueNumber: "#143", Title: "Active merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "5m 0s", Metadata: "PR #143", MergeLaneStatus: "Merging now", MergeLaneDetail: "Active merge worker for PR #143; running checks"},
+		{Lane: "Merging", IssueNumber: "#27", Title: "Queued docs merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #27", MergeLaneStatus: "Queued #1", MergeLaneDetail: "1st in merge queue; waiting for repo merge lane"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("kanban card %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
 func TestProjectKanbanCardForIssueShowsPullRequestConflictReason(t *testing.T) {
 	t.Parallel()
 
