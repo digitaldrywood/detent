@@ -1752,6 +1752,22 @@ func (c *Connector) SetIssueField(ctx context.Context, issueID string, fieldID i
 	return nil
 }
 
+func (c *Connector) ClearIssueField(ctx context.Context, issueID string, fieldID int) error {
+	if fieldID <= 0 || strings.TrimSpace(issueID) == "" {
+		return ErrIssueFieldUpdateFailed
+	}
+
+	ref, ok, err := c.issueRefForID(ctx, issueID, graphQLQueryIssueLookup)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return ErrIssueFieldUpdateFailed
+	}
+
+	return c.deleteIssueFieldValue(ctx, ref, fieldID, ErrIssueFieldUpdateFailed)
+}
+
 func (c *Connector) CloseIssue(ctx context.Context, issueID string) error {
 	ref, ok, err := c.issueRefForID(ctx, issueID, graphQLQueryIssueLookup)
 	if err != nil {

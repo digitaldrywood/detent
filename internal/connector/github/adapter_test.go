@@ -2449,6 +2449,34 @@ func TestConnectorSetIssueFieldUsesIssueFieldEndpoint(t *testing.T) {
 	}
 }
 
+func TestConnectorClearIssueFieldUsesIssueFieldEndpoint(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw28","number":28,"repository":{"nameWithOwner":"digitaldrywood/detent"}}]}}`,
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/repos/digitaldrywood/detent/issues/28/issue-field-values/123",
+			status: http.StatusNoContent,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.ClearIssueField(context.Background(), "I_kw28", 123); err != nil {
+		t.Fatalf("ClearIssueField() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if requests[1]["method"] != http.MethodDelete || requests[1]["path"] != "/repos/digitaldrywood/detent/issues/28/issue-field-values/123" {
+		t.Fatalf("issue field request = %#v, want REST issue field delete", requests[1])
+	}
+}
+
 func TestConnectorCloseIssueCallsCloseIssue(t *testing.T) {
 	t.Parallel()
 

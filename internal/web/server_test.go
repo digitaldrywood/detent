@@ -908,6 +908,56 @@ func TestKanbanRemoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	}
 }
 
+func TestKanbanRemoveClearsConfiguredIssueField(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode:              workflowconfig.KanbanModeIntegration,
+		IssueStateFieldID: 123,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kw741",
+			Identifier: "digitaldrywood/detent#741",
+			ProjectID:  "detent",
+			Title:      "Issue field remove card",
+			State:      "Todo",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw741"},
+		"current_state": {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/remove", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Removed card from project.") {
+		t.Fatalf("body missing success feedback: %s", rec.Body.String())
+	}
+	if got, want := actionConnector.issueFieldClears(), []kanbanIssueFieldUpdate{{issueID: "I_kw741", fieldID: 123}}; !equalIssueFieldUpdates(got, want) {
+		t.Fatalf("issue field clears = %#v, want %#v", got, want)
+	}
+	if got := actionConnector.removals(); len(got) != 0 {
+		t.Fatalf("removals = %#v, want none", got)
+	}
+}
+
 func TestKanbanRemoveReturnsVisibleErrorWhenUnsupported(t *testing.T) {
 	t.Parallel()
 
@@ -6437,6 +6487,7 @@ type kanbanActionConnector struct {
 	mu           sync.Mutex
 	states       []kanbanStateUpdate
 	fields       []kanbanIssueFieldUpdate
+	fieldClears  []kanbanIssueFieldUpdate
 	removes      []kanbanRemoval
 	commentLog   []kanbanComment
 	prCommentLog []kanbanPRComment
@@ -6510,6 +6561,14 @@ func (c *kanbanActionConnector) SetIssueField(_ context.Context, issueID string,
 	return nil
 }
 
+func (c *kanbanActionConnector) ClearIssueField(_ context.Context, issueID string, fieldID int) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.fieldClears = append(c.fieldClears, kanbanIssueFieldUpdate{issueID: issueID, fieldID: fieldID})
+	return nil
+}
+
 func (c *kanbanActionConnector) RemoveIssueFromProject(_ context.Context, issueID string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -6538,6 +6597,13 @@ func (c *kanbanActionConnector) issueFieldUpdates() []kanbanIssueFieldUpdate {
 	defer c.mu.Unlock()
 
 	return append([]kanbanIssueFieldUpdate(nil), c.fields...)
+}
+
+func (c *kanbanActionConnector) issueFieldClears() []kanbanIssueFieldUpdate {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]kanbanIssueFieldUpdate(nil), c.fieldClears...)
 }
 
 func (c *kanbanActionConnector) removals() []kanbanRemoval {

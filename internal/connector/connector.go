@@ -46,6 +46,10 @@ type IssueFieldSetter interface {
 	SetIssueField(context.Context, string, int, string) error
 }
 
+type IssueFieldClearer interface {
+	ClearIssueField(context.Context, string, int) error
+}
+
 type PullRequestCommenter interface {
 	CreatePullRequestComment(context.Context, string, int, string) error
 }

@@ -393,6 +393,20 @@ func (s *Server) apiKanbanRemove(c echo.Context) error {
 		if strings.TrimSpace(current) != "" {
 			currentState = current
 		}
+		if target.kanban.IssueStateFieldID > 0 {
+			clearer, ok := target.connector.(connector.IssueFieldClearer)
+			if !ok {
+				return connector.ErrNotImplemented
+			}
+			if err := clearer.ClearIssueField(c.Request().Context(), req.issueID, target.kanban.IssueStateFieldID); err != nil {
+				return err
+			}
+			if strings.TrimSpace(snapshotState) == "" {
+				snapshotState = currentState
+			}
+			s.kanbanMutations.noteCardRemoved(target.key, req.issueID, snapshotState)
+			return nil
+		}
 		remover, ok := target.connector.(connector.ProjectRemover)
 		if !ok {
 			return connector.ErrNotImplemented
