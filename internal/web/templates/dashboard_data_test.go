@@ -108,7 +108,7 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			},
 			wantState:       gitHubAPIHealthStateHealthy,
 			wantLabel:       "GitHub API healthy",
-			wantSummaryPart: "REST 4,878 / 5,000",
+			wantSummaryPart: "REST primary: 4,878 remaining / 5,000 total (122 used)",
 		},
 		{
 			name: "warning for low primary remaining",
@@ -121,7 +121,7 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			},
 			wantState:       gitHubAPIHealthStateWarning,
 			wantLabel:       "GitHub API warning",
-			wantSummaryPart: "REST 240 / 5,000",
+			wantSummaryPart: "REST primary: 240 remaining / 5,000 total (4,760 used)",
 		},
 		{
 			name: "secondary backoff preserves healthy primary context",
@@ -141,8 +141,8 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 				},
 			},
 			wantState:       gitHubAPIHealthStateBackoff,
-			wantLabel:       "GitHub API backoff: pull requests, check runs",
-			wantSummaryPart: "Primary remaining: REST 4,878 / 5,000",
+			wantLabel:       "GitHub secondary backoff: pull requests, check runs",
+			wantSummaryPart: "REST primary: 4,878 remaining / 5,000 total (122 used)",
 			wantBackoffPart: "retry 14:35 UTC",
 		},
 		{
@@ -163,7 +163,7 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			},
 			wantState:       gitHubAPIHealthStateHealthy,
 			wantLabel:       "GitHub API healthy",
-			wantSummaryPart: "REST 4,878 / 5,000",
+			wantSummaryPart: "REST primary: 4,878 remaining / 5,000 total (122 used)",
 		},
 		{
 			name: "primary exhausted outranks secondary backoff",
@@ -176,8 +176,8 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 				},
 			},
 			wantState:       gitHubAPIHealthStateExhausted,
-			wantLabel:       "GitHub API exhausted",
-			wantSummaryPart: "REST primary 0 / 5,000",
+			wantLabel:       "GitHub primary quota exhausted",
+			wantSummaryPart: "REST primary: 0 remaining / 5,000 total (5,000 used)",
 			wantBackoffPart: "reset 15:00 UTC",
 		},
 	}

@@ -81,8 +81,8 @@ test("GitHub API health chrome covers key rate-limit states", async ({ page }, t
   const scenarios = [
     ["github-api-healthy", "GitHub API healthy"],
     ["github-api-warning", "GitHub API warning"],
-    ["github-api-secondary-backoff", "GitHub API backoff"],
-    ["github-api-primary-exhausted", "GitHub API exhausted"],
+    ["github-api-secondary-backoff", "GitHub secondary backoff"],
+    ["github-api-primary-exhausted", "GitHub primary quota exhausted"],
   ];
 
   for (const [scenario, label] of scenarios) {

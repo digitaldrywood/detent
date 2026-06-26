@@ -412,9 +412,9 @@ func TestDashboardRendersGitHubAPIHealthChrome(t *testing.T) {
 		`hx-swap="morph:outerHTML"`,
 		`aria-label="GitHub API health"`,
 		`data-preserve-details="github-api-health"`,
-		"GitHub API backoff: pull requests, check runs",
-		"Primary remaining: REST 4,878 / 5,000",
-		"GraphQL 4,880 / 5,000",
+		"GitHub secondary backoff: pull requests, check runs",
+		"REST primary: 4,878 remaining / 5,000 total (122 used)",
+		"GraphQL primary: 4,880 remaining / 5,000 total (120 used)",
 		"REST primary",
 		"GraphQL primary",
 		"4,878 / 5,000 remaining",
@@ -494,7 +494,7 @@ func TestDashboardRendersGitHubAPIHealthPreservationMetadataForStates(t *testing
 				},
 			},
 			wantState: "backoff",
-			wantLabel: "GitHub API backoff: pull requests",
+			wantLabel: "GitHub secondary backoff: pull requests",
 		},
 		{
 			name: "primary exhausted",
@@ -506,7 +506,7 @@ func TestDashboardRendersGitHubAPIHealthPreservationMetadataForStates(t *testing
 				},
 			},
 			wantState: "exhausted",
-			wantLabel: "GitHub API exhausted",
+			wantLabel: "GitHub primary quota exhausted",
 		},
 	}
 
