@@ -231,6 +231,56 @@ func TestLocalGitCreateAndCleanupWithoutHooks(t *testing.T) {
 	}
 }
 
+func TestGitMetadataWritableRootsForLinkedWorktree(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	info, err := backend.Create(context.Background(), Issue{Identifier: "DD-GIT-ROOTS"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	roots, err := GitMetadataWritableRoots(context.Background(), info.Path)
+	if err != nil {
+		t.Fatalf("GitMetadataWritableRoots() error = %v", err)
+	}
+
+	wantRoots := []string{
+		mustCanonicalExistingPath(t, strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-dir"))),
+		mustCanonicalExistingPath(t, strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-path", "objects"))),
+		mustCanonicalExistingPath(t, filepath.Dir(strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-path", "refs/heads/detent/dd-git-roots")))),
+		mustCanonicalExistingPath(t, filepath.Dir(strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-path", "logs/refs/heads/detent/dd-git-roots")))),
+	}
+	for _, want := range wantRoots {
+		if !containsString(roots, want) {
+			t.Fatalf("GitMetadataWritableRoots() = %#v, missing %q", roots, want)
+		}
+	}
+	if commonDir := mustCanonicalExistingPath(t, strings.TrimSpace(runGit(t, info.Path, "rev-parse", "--git-common-dir"))); containsString(roots, commonDir) {
+		t.Fatalf("GitMetadataWritableRoots() = %#v, should not allow entire common git dir %q", roots, commonDir)
+	}
+
+	if err := os.WriteFile(filepath.Join(info.Path, "agent.txt"), []byte("agent edit\n"), 0o600); err != nil {
+		t.Fatalf("write agent edit: %v", err)
+	}
+	runGit(t, info.Path, "add", "agent.txt")
+	runGit(t, info.Path, "commit", "-m", "agent commit")
+	if got := strings.TrimSpace(runGit(t, info.Path, "log", "-1", "--pretty=%s")); got != "agent commit" {
+		t.Fatalf("latest commit subject = %q, want agent commit", got)
+	}
+}
+
 func TestLocalGitHooksUseNonLoginShell(t *testing.T) {
 	skipWindows(t)
 
@@ -866,6 +916,25 @@ func readFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(raw)
+}
+
+func mustCanonicalExistingPath(t *testing.T, path string) string {
+	t.Helper()
+
+	canonical, err := canonicalExistingPath(path)
+	if err != nil {
+		t.Fatalf("canonicalExistingPath(%q) error = %v", path, err)
+	}
+	return canonical
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 func shellQuote(value string) string {

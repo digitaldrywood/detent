@@ -740,6 +740,147 @@ func gitCommonDir(ctx context.Context, dir string) (string, error) {
 	return canonicalExistingPath(commonDir)
 }
 
+func GitMetadataWritableRoots(ctx context.Context, workspacePath string) ([]string, error) {
+	workspaceRoot, err := canonicalExistingPath(workspacePath)
+	if err != nil {
+		return nil, fmt.Errorf("workspace path: %w", err)
+	}
+	commonDir, err := gitCommonDir(ctx, workspaceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("git common dir: %w", err)
+	}
+
+	roots := []string{}
+	seen := map[string]struct{}{}
+	addRoot := func(path string) {
+		if path == "" || path == commonDir || pathWithin(workspaceRoot, path) || !pathWithin(commonDir, path) {
+			return
+		}
+		if _, ok := seen[path]; ok {
+			return
+		}
+		seen[path] = struct{}{}
+		roots = append(roots, path)
+	}
+
+	gitDir, err := gitDir(ctx, workspaceRoot)
+	if err != nil {
+		return nil, fmt.Errorf("git dir: %w", err)
+	}
+	addRoot(gitDir)
+
+	objectsDir, err := gitExistingPath(ctx, workspaceRoot, "objects")
+	if err != nil {
+		return nil, fmt.Errorf("git objects dir: %w", err)
+	}
+	addRoot(objectsDir)
+
+	ref, err := gitSymbolicHead(ctx, workspaceRoot)
+	if err != nil {
+		var cmdErr *CommandError
+		if errors.As(err, &cmdErr) && cmdErr.ExitCode == 1 {
+			return roots, nil
+		}
+		return nil, fmt.Errorf("git symbolic head: %w", err)
+	}
+	if !strings.HasPrefix(ref, "refs/heads/") {
+		return roots, nil
+	}
+
+	refPath, err := gitPath(ctx, workspaceRoot, ref)
+	if err != nil {
+		return nil, fmt.Errorf("git branch ref path: %w", err)
+	}
+	refDir, err := canonicalExistingDir(filepath.Dir(refPath))
+	if err != nil {
+		return nil, fmt.Errorf("git branch ref dir: %w", err)
+	}
+	addRoot(refDir)
+
+	logPath, err := gitPath(ctx, workspaceRoot, "logs/"+ref)
+	if err != nil {
+		return nil, fmt.Errorf("git branch log path: %w", err)
+	}
+	logDir, err := canonicalExistingDir(filepath.Dir(logPath))
+	if err != nil {
+		return nil, fmt.Errorf("git branch log dir: %w", err)
+	}
+	addRoot(logDir)
+
+	return roots, nil
+}
+
+func gitDir(ctx context.Context, dir string) (string, error) {
+	output, err := runGitAt(ctx, dir, "rev-parse", "--git-dir")
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(output)
+	if path == "" {
+		return "", errors.New("git dir is empty")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	return canonicalExistingPath(path)
+}
+
+func gitExistingPath(ctx context.Context, dir string, name string) (string, error) {
+	path, err := gitPath(ctx, dir, name)
+	if err != nil {
+		return "", err
+	}
+	return canonicalExistingPath(path)
+}
+
+func gitPath(ctx context.Context, dir string, gitPath string) (string, error) {
+	output, err := runGitAt(ctx, dir, "rev-parse", "--git-path", gitPath)
+	if err != nil {
+		return "", err
+	}
+	path := strings.TrimSpace(output)
+	if path == "" {
+		return "", errors.New("git path is empty")
+	}
+	if !filepath.IsAbs(path) {
+		path = filepath.Join(dir, path)
+	}
+	return filepath.Clean(path), nil
+}
+
+func gitSymbolicHead(ctx context.Context, dir string) (string, error) {
+	output, err := runGitAt(ctx, dir, "symbolic-ref", "-q", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	return strings.TrimSpace(output), nil
+}
+
+func canonicalExistingDir(path string) (string, error) {
+	for {
+		canonical, err := canonicalExistingPath(path)
+		if err == nil {
+			return canonical, nil
+		}
+		if !errors.Is(err, fs.ErrNotExist) {
+			return "", err
+		}
+		parent := filepath.Dir(path)
+		if parent == path {
+			return "", err
+		}
+		path = parent
+	}
+}
+
+func pathWithin(root string, path string) bool {
+	rel, err := filepath.Rel(root, path)
+	if err != nil {
+		return false
+	}
+	return rel == "." || (rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) && !filepath.IsAbs(rel))
+}
+
 func hookEnv(info Info, issue Issue) []string {
 	env := append([]string{}, os.Environ()...)
 	values := []struct {

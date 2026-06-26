@@ -280,6 +280,139 @@ func normalizeRunMode(mode string) string {
 	}
 }
 
+func turnSandboxPolicyForWorkspace(ctx context.Context, workspacePath string, threadSandbox string, policy any, logger *slog.Logger) any {
+	policyMap, ok := workspaceWriteSandboxPolicyMap(threadSandbox, policy)
+	if !ok {
+		return policy
+	}
+	roots, err := workspace.GitMetadataWritableRoots(ctx, workspacePath)
+	if err != nil {
+		if logger != nil {
+			logger.Warn("workspace git metadata writable roots unavailable", slog.String("workspace_path", workspacePath), slog.Any("error", err))
+		}
+		return policy
+	}
+	if len(roots) == 0 {
+		return policy
+	}
+	return mergeSandboxWritableRoots(policyMap, roots)
+}
+
+func workspaceWriteSandboxPolicyMap(threadSandbox string, policy any) (map[string]any, bool) {
+	policyMap, ok := sandboxPolicyMap(policy)
+	if ok && isWorkspaceWriteSandboxName(policyType(policyMap)) {
+		return policyMap, true
+	}
+	if !isWorkspaceWriteSandboxName(threadSandbox) || !ok {
+		return nil, false
+	}
+	if strings.TrimSpace(policyType(policyMap)) == "" {
+		policyMap["type"] = "workspaceWrite"
+	}
+	return policyMap, true
+}
+
+func sandboxPolicyMap(policy any) (map[string]any, bool) {
+	if policy == nil {
+		return map[string]any{}, true
+	}
+	switch value := policy.(type) {
+	case map[string]any:
+		out := make(map[string]any, len(value))
+		maps.Copy(out, value)
+		return out, true
+	case json.RawMessage:
+		return decodeSandboxPolicyMap(value)
+	case []byte:
+		return decodeSandboxPolicyMap(value)
+	case string:
+		return decodeSandboxPolicyMap([]byte(value))
+	default:
+		raw, err := json.Marshal(value)
+		if err != nil {
+			return nil, false
+		}
+		return decodeSandboxPolicyMap(raw)
+	}
+}
+
+func decodeSandboxPolicyMap(raw []byte) (map[string]any, bool) {
+	var policy map[string]any
+	if err := json.Unmarshal(raw, &policy); err != nil {
+		return nil, false
+	}
+	if policy == nil {
+		policy = map[string]any{}
+	}
+	return policy, true
+}
+
+func policyType(policy map[string]any) string {
+	value, ok := policy["type"]
+	if !ok {
+		return ""
+	}
+	text, ok := value.(string)
+	if !ok {
+		return ""
+	}
+	return text
+}
+
+func isWorkspaceWriteSandboxName(value string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(value))
+	normalized = strings.ReplaceAll(normalized, "_", "-")
+	return normalized == "workspace-write" || normalized == "workspacewrite"
+}
+
+func mergeSandboxWritableRoots(policy map[string]any, roots []string) map[string]any {
+	merged := []string{}
+	merged = appendPolicyStringSlice(merged, policy["writableRoots"])
+	merged = appendPolicyStringSlice(merged, policy["writable_roots"])
+	merged = appendUniqueStrings(merged, roots...)
+	if strings.TrimSpace(policyType(policy)) == "" {
+		policy["type"] = "workspaceWrite"
+	}
+	policy["writableRoots"] = merged
+	delete(policy, "writable_roots")
+	return policy
+}
+
+func appendPolicyStringSlice(out []string, value any) []string {
+	switch values := value.(type) {
+	case []string:
+		return appendUniqueStrings(out, values...)
+	case []any:
+		for _, item := range values {
+			text, ok := item.(string)
+			if !ok {
+				continue
+			}
+			out = appendUniqueStrings(out, text)
+		}
+	}
+	return out
+}
+
+func appendUniqueStrings(out []string, values ...string) []string {
+	seen := make(map[string]struct{}, len(out)+len(values))
+	for _, value := range out {
+		seen[value] = struct{}{}
+	}
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -358,7 +491,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		Prompt:            prompt,
 		ApprovalPolicy:    stringOrMapValue(backendConfig.Options.ApprovalPolicy),
 		ThreadSandbox:     backendConfig.Options.ThreadSandbox,
-		TurnSandboxPolicy: backendConfig.Options.TurnSandboxPolicy,
+		TurnSandboxPolicy: turnSandboxPolicyForWorkspace(ctx, info.Path, backendConfig.Options.ThreadSandbox, backendConfig.Options.TurnSandboxPolicy, r.logger),
 		Model:             model,
 	}, func(update AgentUpdate) error {
 		r.logAgentUpdate(req.Issue, update)
@@ -510,7 +643,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		Prompt:            prompt,
 		ApprovalPolicy:    stringOrMapValue(backendConfig.Options.ApprovalPolicy),
 		ThreadSandbox:     backendConfig.Options.ThreadSandbox,
-		TurnSandboxPolicy: backendConfig.Options.TurnSandboxPolicy,
+		TurnSandboxPolicy: turnSandboxPolicyForWorkspace(ctx, info.Path, backendConfig.Options.ThreadSandbox, backendConfig.Options.TurnSandboxPolicy, r.logger),
 		Model:             model,
 	}, func(update AgentUpdate) error {
 		r.logAgentUpdate(req.Issue, update)
