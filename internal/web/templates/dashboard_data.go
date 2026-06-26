@@ -304,6 +304,7 @@ type sidebarProjectItem struct {
 
 type agentTimelineRow struct {
 	Identifier        string
+	Identity          issueIdentityView
 	Title             string
 	State             string
 	IssueURL          string
@@ -351,6 +352,7 @@ type prPipelineLane struct {
 
 type prPipelineCard struct {
 	IssueNumber      string
+	Identity         issueIdentityView
 	Identifier       string
 	ProjectID        string
 	Title            string
@@ -380,6 +382,14 @@ type prPipelineMergeMetrics struct {
 	TotalP90      string
 	ActiveWarning bool
 	QueueWarning  bool
+}
+
+type issueIdentityView struct {
+	Repository        string
+	IssueNumber       string
+	PullRequestNumber int
+	PullRequestLabel  string
+	Label             string
 }
 
 type projectKanbanBoard struct {
@@ -1390,6 +1400,76 @@ func issueProjectLabel(issue telemetry.Issue) string {
 		return ""
 	}
 	return projectID
+}
+
+func issueIdentity(issue telemetry.Issue) issueIdentityView {
+	repository := issueRepositoryLabel(issue)
+	issueNumber := issueReference(issue)
+	prNumber := pullRequestNumber(issue)
+	prLabel := ""
+	if prNumber > 0 {
+		prLabel = "PR #" + strconv.Itoa(prNumber)
+	}
+
+	label := issueNumber
+	if repository != "" && issueNumber != "" {
+		label = repository + " " + issueNumber
+	} else if repository != "" {
+		label = repository
+	}
+	if label == "" {
+		label = issueIdentifier(issue)
+	}
+	if prLabel != "" {
+		label += " · " + prLabel
+	}
+
+	return issueIdentityView{
+		Repository:        repository,
+		IssueNumber:       issueNumber,
+		PullRequestNumber: prNumber,
+		PullRequestLabel:  prLabel,
+		Label:             label,
+	}
+}
+
+func issueReference(issue telemetry.Issue) string {
+	identifier := issueIdentifier(issue)
+	if index := strings.LastIndex(identifier, "#"); index >= 0 && index < len(identifier)-1 {
+		return identifier[index:]
+	}
+	return identifier
+}
+
+func issueRepositoryLabel(issue telemetry.Issue) string {
+	if repository := issueRepository(issue.Identifier); repository != "" {
+		return repository
+	}
+	if repository := repositoryFromRecordURL(issue.URL); repository != "" {
+		return repository
+	}
+	return pullRequestRepository(issue)
+}
+
+func identityRepositoryClass(accent bool) string {
+	if accent {
+		return "text-accent"
+	}
+	return "text-foreground"
+}
+
+func identityIssueBadgeClass(accent bool) string {
+	if accent {
+		return "border-accent-soft bg-accent-soft text-accent"
+	}
+	return "border-border bg-muted text-foreground"
+}
+
+func identityPullRequestBadgeClass(accent bool) string {
+	if accent {
+		return "border-accent-soft bg-accent-soft text-accent"
+	}
+	return "border-accent-soft bg-card text-accent"
 }
 
 func issueDescriptionPreview(issue telemetry.Issue) string {
@@ -2727,20 +2807,33 @@ func pullRequestRepositoryBaseURL(issue telemetry.Issue) string {
 }
 
 func repositoryBaseURLFromRecordURL(rawURL string) string {
+	scheme, host, repository := recordURLRepositoryParts(rawURL)
+	if repository == "" {
+		return ""
+	}
+	return scheme + "://" + host + "/" + repository
+}
+
+func repositoryFromRecordURL(rawURL string) string {
+	_, _, repository := recordURLRepositoryParts(rawURL)
+	return repository
+}
+
+func recordURLRepositoryParts(rawURL string) (string, string, string) {
 	parsed, err := url.Parse(strings.TrimSpace(rawURL))
 	if err != nil || parsed.Scheme == "" || parsed.Host == "" {
-		return ""
+		return "", "", ""
 	}
 	parts := strings.Split(strings.Trim(parsed.Path, "/"), "/")
 	if len(parts) < 4 || (parts[2] != "issues" && parts[2] != "pull") {
-		return ""
+		return "", "", ""
 	}
 	owner := strings.TrimSpace(parts[0])
 	repo := strings.TrimSpace(parts[1])
 	if owner == "" || repo == "" {
-		return ""
+		return "", "", ""
 	}
-	return parsed.Scheme + "://" + parsed.Host + "/" + owner + "/" + repo
+	return parsed.Scheme, parsed.Host, owner + "/" + repo
 }
 
 func pullRequestRepository(issue telemetry.Issue) string {
@@ -3273,6 +3366,7 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 	codexReview := prPipelineCodexReviewState(issue)
 	return prPipelineCard{
 		IssueNumber:      issueNumber(issue),
+		Identity:         issueIdentity(issue),
 		Identifier:       issueIdentifier(issue),
 		ProjectID:        strings.TrimSpace(issue.ProjectID),
 		Title:            issueTitle(issue),
@@ -3995,6 +4089,7 @@ func agentTimelineRows(snapshot telemetry.Snapshot) []agentTimelineRow {
 
 		rows = append(rows, agentTimelineRow{
 			Identifier:        identifier,
+			Identity:          issueIdentity(entry.issue),
 			Title:             title,
 			State:             state,
 			IssueURL:          issueURL(entry.issue),

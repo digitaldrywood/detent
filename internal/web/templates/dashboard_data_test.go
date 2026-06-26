@@ -791,6 +791,67 @@ func TestRunningActivityRowsFallBackToLatestEvent(t *testing.T) {
 	}
 }
 
+func TestIssueIdentityKeepsRepositoryIssueAndPullRequest(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		issue telemetry.Issue
+		want  issueIdentityView
+	}{
+		{
+			name: "repository issue and pull request",
+			issue: telemetry.Issue{
+				Identifier: "digitaldrywood/creswoodcorners-phone#66",
+				PullRequest: &telemetry.PullRequest{
+					Number: 75,
+					URL:    "https://github.com/digitaldrywood/creswoodcorners-phone/pull/75",
+				},
+			},
+			want: issueIdentityView{
+				Repository:        "digitaldrywood/creswoodcorners-phone",
+				IssueNumber:       "#66",
+				PullRequestNumber: 75,
+				PullRequestLabel:  "PR #75",
+				Label:             "digitaldrywood/creswoodcorners-phone #66 · PR #75",
+			},
+		},
+		{
+			name: "repository issue without pull request",
+			issue: telemetry.Issue{
+				Identifier: "digitaldrywood/detent#728",
+			},
+			want: issueIdentityView{
+				Repository:  "digitaldrywood/detent",
+				IssueNumber: "#728",
+				Label:       "digitaldrywood/detent #728",
+			},
+		},
+		{
+			name: "repository from issue URL",
+			issue: telemetry.Issue{
+				Identifier: "ISSUE-728",
+				URL:        "https://github.com/digitaldrywood/detent/issues/728",
+			},
+			want: issueIdentityView{
+				Repository:  "digitaldrywood/detent",
+				IssueNumber: "ISSUE-728",
+				Label:       "digitaldrywood/detent ISSUE-728",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := issueIdentity(tt.issue); got != tt.want {
+				t.Fatalf("issueIdentity() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestAgentTimelineRows(t *testing.T) {
 	t.Parallel()
 
@@ -875,6 +936,9 @@ func TestAgentTimelineRows(t *testing.T) {
 	}
 	if rows[3].IssueURL != "" || rows[3].PullRequestURL != "https://github.com/digitaldrywood/detent/pull/22" || rows[3].PullRequestNumber != 22 {
 		t.Fatalf("PR-only timeline row links = %q/%q/%d", rows[3].IssueURL, rows[3].PullRequestURL, rows[3].PullRequestNumber)
+	}
+	if rows[3].Identity.Label != "digitaldrywood/detent DD-2 · PR #22" {
+		t.Fatalf("running timeline identity = %q, want full issue and PR identity", rows[3].Identity.Label)
 	}
 
 	tests := []struct {
@@ -1901,6 +1965,29 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPRPipelineCardIncludesIssueAndPullRequestIdentity(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 19, 0, 0, 0, time.UTC)
+	card := prPipelineCardForIssue(telemetry.Issue{
+		ID:         "review",
+		Identifier: "digitaldrywood/detent#12",
+		Title:      "Review lane PR",
+		State:      "Human Review",
+		PullRequest: &telemetry.PullRequest{
+			Number: 142,
+			URL:    "https://github.com/digitaldrywood/detent/pull/142",
+		},
+	}, "Human Review", "human-review", now.Add(-2*time.Minute), now)
+
+	if card.Identity.Label != "digitaldrywood/detent #12 · PR #142" {
+		t.Fatalf("card.Identity.Label = %q, want issue and PR identity", card.Identity.Label)
+	}
+	if card.IssueNumber != "#142" {
+		t.Fatalf("card.IssueNumber = %q, want existing PR summary badge", card.IssueNumber)
 	}
 }
 
