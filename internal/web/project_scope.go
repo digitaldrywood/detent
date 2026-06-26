@@ -91,11 +91,11 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	if len(snapshot.Projects) > 0 {
 		out.TokenTrend = nil
 	}
-	out.WorkflowMetrics = scopedWorkflowMetrics(snapshot.WorkflowMetrics, selectedProjectID)
+	out.WorkflowMetrics = scopedWorkflowMetrics(out, snapshot.WorkflowMetrics, selectedProjectID)
 	return out
 }
 
-func scopedWorkflowMetrics(metrics telemetry.WorkflowMetrics, selectedProjectID string) telemetry.WorkflowMetrics {
+func scopedWorkflowMetrics(snapshot telemetry.Snapshot, metrics telemetry.WorkflowMetrics, selectedProjectID string) telemetry.WorkflowMetrics {
 	if selectedProjectID == "" {
 		return metrics
 	}
@@ -107,10 +107,12 @@ func scopedWorkflowMetrics(metrics telemetry.WorkflowMetrics, selectedProjectID 
 		scopedWindow.SubPhases = scopedWorkflowPhaseMetrics(window.SubPhases, selectedProjectID)
 		out.Windows = append(out.Windows, scopedWindow)
 	}
-	out.OldestCards = scopedWorkflowLaneAges(metrics.OldestCards, selectedProjectID)
-	if !workflowBottleneckMatchesProject(metrics.ActiveBottleneck, selectedProjectID) {
-		out.ActiveBottleneck = telemetry.WorkflowBottleneck{}
+	out.OldestCards = workflowOldestCards(snapshot)
+	now := snapshot.GeneratedAt
+	if now.IsZero() {
+		now = time.Now()
 	}
+	out.ActiveBottleneck = workflowActiveBottleneck(snapshot, now)
 	return out
 }
 
@@ -122,21 +124,6 @@ func scopedWorkflowPhaseMetrics(metrics []telemetry.WorkflowPhaseMetric, selecte
 		}
 	}
 	return out
-}
-
-func scopedWorkflowLaneAges(cards []telemetry.WorkflowLaneAge, selectedProjectID string) []telemetry.WorkflowLaneAge {
-	out := make([]telemetry.WorkflowLaneAge, 0, len(cards))
-	for _, card := range cards {
-		if strings.TrimSpace(card.ProjectID) == selectedProjectID {
-			out = append(out, card)
-		}
-	}
-	return out
-}
-
-func workflowBottleneckMatchesProject(bottleneck telemetry.WorkflowBottleneck, selectedProjectID string) bool {
-	projectID := strings.TrimSpace(bottleneck.ProjectID)
-	return projectID == "" || projectID == selectedProjectID
 }
 
 func projectSnapshotHasRefreshSignal(project telemetry.ProjectSnapshot) bool {
