@@ -122,6 +122,11 @@ func NewConnector(cfg Config) (*Connector, error) {
 		})
 	}
 
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	client, err := NewClient(ClientConfig{
 		Endpoint:    cfg.Endpoint,
 		TokenSource: tokenSource,
@@ -130,14 +135,10 @@ func NewConnector(cfg Config) (*Connector, error) {
 			MinRemainingReserve: int64(cfg.RESTMinRemainingReserve),
 			FanoutMaxRequests:   int64(cfg.RESTFanoutMaxRequests),
 		},
-		Logger: cfg.Logger,
+		Logger: logger,
 	})
 	if err != nil {
 		return nil, err
-	}
-	logger := cfg.Logger
-	if logger == nil {
-		logger = slog.Default()
 	}
 
 	statusField := strings.TrimSpace(cfg.StatusField)

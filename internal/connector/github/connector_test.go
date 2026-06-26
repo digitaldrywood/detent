@@ -1,12 +1,15 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -53,6 +56,51 @@ func TestConnectorAuthenticateValidatesViewerAndProject(t *testing.T) {
 	variables := payload["variables"].(map[string]any)
 	if variables["projectId"] != "PVT_1" {
 		t.Fatalf("projectId = %v, want PVT_1", variables["projectId"])
+	}
+}
+
+func TestConnectorUsesDefaultLoggerForClientDiagnostics(t *testing.T) {
+	var logs bytes.Buffer
+	previous := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+		Level: slog.LevelDebug,
+	})))
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/digitaldrywood/detent/commits/abc/check-runs" {
+			t.Fatalf("path = %s, want check-runs path", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"check_runs":[]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	c, err := NewConnector(Config{
+		Endpoint:   server.URL,
+		APIKey:     "token",
+		HTTPClient: server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewConnector() error = %v", err)
+	}
+
+	if err := c.client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/check-runs", nil, nil); err != nil {
+		t.Fatalf("REST() error = %v", err)
+	}
+
+	logText := logs.String()
+	for _, fragment := range []string{
+		"github rest request",
+		"github rest response",
+		`endpoint_family="check runs"`,
+		"request_purpose=hydrate_pull_request_checks",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logText)
+		}
 	}
 }
 
