@@ -91,6 +91,10 @@ func (c *Connector) FetchCandidateIssues(context.Context) ([]connector.Issue, er
 	return cloneIssues(c.issues), nil
 }
 
+func (c *Connector) FetchCandidateIssuesByStates(ctx context.Context, stateNames []string) ([]connector.Issue, error) {
+	return c.FetchIssuesByStates(ctx, stateNames)
+}
+
 func (c *Connector) FetchIssuesByStates(_ context.Context, stateNames []string) ([]connector.Issue, error) {
 	c.mu.RLock()
 	defer c.mu.RUnlock()

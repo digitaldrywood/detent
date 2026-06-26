@@ -17,6 +17,7 @@ const (
 	autoPromoteMergingState          = "Merging"
 	autoPromoteReworkState           = "Rework"
 	defaultMergeWorkerStartupTimeout = 2 * time.Minute
+	mergeWorkerProjectStateFull      = "project_state_capacity_full"
 )
 
 type autoPromoteTickResult struct {
@@ -483,6 +484,7 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		return nil
 	}
 	out := make([]connector.Issue, 0, len(candidates))
+	selectedByState := map[string]int{}
 	for _, issue := range candidates {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
@@ -491,6 +493,25 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 		if staleMergingPullRequestDispatchActive(state, issueID) {
 			continue
 		}
+		stateKey := normalizeState(issue.State)
+		projectStats := o.projectStateSlotStats(issue, state)
+		selected := selectedByState[stateKey]
+		if selected > 0 {
+			projectStats.used += selected
+			projectStats.available -= selected
+			if projectStats.available < 0 {
+				projectStats.available = 0
+			}
+		}
+		if projectStats.available <= 0 {
+			o.logMergeWorkerSlotWait(
+				issue,
+				scheduler.DispatchGateDecision{Reason: mergeWorkerProjectStateFull},
+				projectStats,
+			)
+			break
+		}
+		selectedByState[stateKey] = selected + 1
 		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
 		o.logMergeWorkerPickup(issue, "stale_merging")
 		out = append(out, issue)

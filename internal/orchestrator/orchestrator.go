@@ -34,6 +34,7 @@ const (
 	defaultMaxRetryBackoff            = 5 * time.Minute
 	defaultContinuationRetry          = time.Second
 	defaultFailureRetryBaseDelay      = 10 * time.Second
+	maxMergeWorkerRunnerFailures      = 3
 	continuationDispatchBackoff       = 100 * time.Millisecond
 	runUpdateBufferSize               = 128
 	maxRecentEvents                   = 50
@@ -437,6 +438,31 @@ func (o *Orchestrator) observedStatusFetchStates() []string {
 		states = append(states, cfg.SourceStates...)
 	}
 	return displayStateNames(states)
+}
+
+func (o *Orchestrator) observedStatusFetchStatesForTick(state *State) []string {
+	states := o.observedStatusFetchStates()
+	if o.mergeWorkerLocalSlotsAvailable(state) {
+		return states
+	}
+	return statesWithoutState(states, autoPromoteMergingState)
+}
+
+func (o *Orchestrator) mergeWorkerLocalSlotsAvailable(state *State) bool {
+	stats := o.projectStateSlotStats(connector.Issue{State: autoPromoteMergingState}, state)
+	return stats.available > 0
+}
+
+func statesWithoutState(states []string, omit string) []string {
+	omit = normalizeState(omit)
+	out := make([]string, 0, len(states))
+	for _, state := range states {
+		if normalizeState(state) == omit {
+			continue
+		}
+		out = append(out, state)
+	}
+	return out
 }
 
 func prPipelineFetchStates() []string {
@@ -1343,7 +1369,17 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
 			planner.scheduleRetry(state, issue, retry.Attempt, now, "claim verification failed", false, retry.WorkerHost)
 		},
+		preserveMissingDueRetry: func(retry Retry) bool {
+			return o.preserveMissingDueRetry(state, retry)
+		},
 	})
+}
+
+func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
+	if normalizeState(retry.Issue.State) != normalizeState(autoPromoteMergingState) {
+		return false
+	}
+	return !o.mergeWorkerLocalSlotsAvailable(state)
 }
 
 func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, issue connector.Issue) (connector.Issue, bool) {
@@ -1754,6 +1790,11 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		if attempt < 1 {
 			attempt = nextAttempt(running.Attempt)
 		}
+		if mergeWorkerIssue(running.Issue) && attempt > maxMergeWorkerRunnerFailures {
+			if o.reworkExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, event.Err) {
+				return
+			}
+		}
 		delay := event.RetryDelay
 		if delay <= 0 {
 			delay = o.retryDelay(attempt, false)
@@ -1810,6 +1851,93 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
+}
+
+func (o *Orchestrator) reworkExhaustedMergeWorker(
+	ctx context.Context,
+	state *State,
+	running Running,
+	completedAt time.Time,
+	attempt int,
+	err error,
+) bool {
+	issueID := strings.TrimSpace(running.Issue.ID)
+	if issueID == "" || o.connector == nil {
+		return false
+	}
+	if err := o.connector.UpdateIssueState(ctx, issueID, autoPromoteReworkState); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"merge_worker_rework_failed",
+				"issue_id", issueID,
+				"identifier", running.Issue.Identifier,
+				"reason", "runner_failed_retry_exhausted",
+				"target_state", autoPromoteReworkState,
+				"error", err,
+			)
+		}
+		return false
+	}
+	if comment := mergeWorkerRetryExhaustedComment(running.Issue, attempt, err); strings.TrimSpace(comment) != "" {
+		if err := o.connector.CreateComment(ctx, issueID, comment); err != nil && o.logger != nil {
+			o.logger.Warn(
+				"merge_worker_rework_comment_failed",
+				"issue_id", issueID,
+				"identifier", running.Issue.Identifier,
+				"reason", "runner_failed_retry_exhausted",
+				"error", err,
+			)
+		}
+	}
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon exhausted merge worker claim failed", "issue_id", issueID, "error", err)
+	}
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+	delete(state.Completed, issueID)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      completedAt,
+		Event:   "merge_worker_retry_exhausted",
+		Message: "merge worker retries exhausted for " + issueLabel(running.Issue) + ": " + errorString(err),
+	})
+	return true
+}
+
+func mergeWorkerRetryExhaustedComment(issue connector.Issue, attempt int, err error) string {
+	var b strings.Builder
+	b.WriteString("Merge worker retries were exhausted; routed this issue from Merging to Rework.")
+	b.WriteString("\n\n- reason: runner_failed_retry_exhausted")
+	if attempt > 0 {
+		b.WriteString("\n- attempt: ")
+		b.WriteString(fmt.Sprintf("%d", attempt))
+	}
+	if errText := errorString(err); errText != "" {
+		b.WriteString("\n- error: ")
+		b.WriteString(errText)
+	}
+	if issue.PullRequest != nil {
+		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
+			b.WriteString("\n- pull request: ")
+			b.WriteString(url)
+		}
+		if mergeableState := strings.ToLower(strings.TrimSpace(issue.PullRequest.MergeableState)); mergeableState != "" {
+			b.WriteString("\n- mergeable_state: ")
+			b.WriteString(mergeableState)
+		}
+		if ciStatus := strings.TrimSpace(issue.PullRequest.CIStatus); ciStatus != "" {
+			b.WriteString("\n- ci_status: ")
+			b.WriteString(ciStatus)
+		}
+	}
+	return b.String()
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.TrimSpace(err.Error())
 }
 
 func (o *Orchestrator) completePlanRunning(

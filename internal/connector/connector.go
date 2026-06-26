@@ -54,6 +54,10 @@ type IssuesByStatesLimiter interface {
 	FetchIssuesByStatesLimit(context.Context, []string, int) ([]Issue, error)
 }
 
+type CandidateIssuesByStatesFetcher interface {
+	FetchCandidateIssuesByStates(context.Context, []string) ([]Issue, error)
+}
+
 type IssueStateProber interface {
 	FetchIssueStateProbe(context.Context, []string, int) ([]Issue, error)
 }

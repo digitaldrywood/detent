@@ -249,9 +249,9 @@ func (o *Orchestrator) fetchTickIssues(
 	now time.Time,
 	reserve githubBudgetReserveDecision,
 ) (tickFetchedIssues, bool) {
-	observedStates := o.observedStatusFetchStates()
+	observedStates := o.observedStatusFetchStatesForTick(state)
 
-	candidateIssues, err := o.connector.FetchCandidateIssues(ctx)
+	candidateIssues, err := o.fetchCandidateIssuesForTick(ctx, state)
 	if err != nil {
 		o.logger.Warn("fetch candidate issues failed", "error", err)
 		markRefreshError(state, "fetch candidate issues failed: "+err.Error(), now)
@@ -297,6 +297,25 @@ func (o *Orchestrator) fetchTickIssues(
 	}
 	clearRefreshError(state)
 	return fetched, true
+}
+
+func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *State) ([]connector.Issue, error) {
+	if fetcher, ok := o.connector.(connector.CandidateIssuesByStatesFetcher); ok {
+		states := o.candidateFetchStatesForTick(state)
+		if len(states) == 0 {
+			return []connector.Issue{}, nil
+		}
+		return fetcher.FetchCandidateIssuesByStates(ctx, states)
+	}
+	return o.connector.FetchCandidateIssues(ctx)
+}
+
+func (o *Orchestrator) candidateFetchStatesForTick(state *State) []string {
+	states := append([]string(nil), o.cfg.ActiveStates...)
+	if o.mergeWorkerLocalSlotsAvailable(state) {
+		return states
+	}
+	return statesWithoutState(states, autoPromoteMergingState)
 }
 
 func markRefreshError(state *State, message string, at time.Time) {
@@ -421,7 +440,7 @@ func (o *Orchestrator) refreshTransitionSets(
 	if fetched.statusOK {
 		transitionIssues = append(transitionIssues, fetched.status...)
 		state.Pipeline = issuesInStates(fetched.status, prPipelineFetchStates())
-		if !pipelineRefreshOK {
+		if !pipelineRefreshOK || !o.mergeWorkerLocalSlotsAvailable(state) {
 			state.Pipeline = mergeIssueSlices(state.Pipeline, previous.pipeline)
 		}
 	}
