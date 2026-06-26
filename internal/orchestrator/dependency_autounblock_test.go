@@ -509,7 +509,7 @@ func TestDependencyAutoUnblockDoesNotChangeTodoDependencyGate(t *testing.T) {
 	}}
 
 	planner := newDispatchPlanner(cfg)
-	if _, ok := planner.dispatchAction(&state, issue, time.Date(2026, 6, 12, 16, 10, 0, 0, time.UTC)); ok {
+	if _, ok, _ := planner.dispatchAction(&state, issue, time.Date(2026, 6, 12, 16, 10, 0, 0, time.UTC)); ok {
 		t.Fatal("dispatchAction ok = true, want Todo issue blocked by dependency")
 	}
 	blocked, ok := state.Blocked[issue.ID]

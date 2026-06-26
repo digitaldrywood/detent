@@ -627,8 +627,10 @@ func redirectDefaultLogger(path string, level string) (func(), error) {
 	}
 
 	previous := slog.Default()
+	logLevel := parseSlogLevel(level)
 	slog.SetDefault(slog.New(slog.NewJSONHandler(file, &slog.HandlerOptions{
-		Level: parseSlogLevel(level),
+		Level:     logLevel,
+		AddSource: runtimeLogAddSource(logLevel),
 	})))
 
 	return func() {
@@ -791,6 +793,32 @@ func parseSlogLevel(level string) slog.Level {
 		return slog.LevelError
 	default:
 		return slog.LevelInfo
+	}
+}
+
+func runtimeLogAddSource(level slog.Level) bool {
+	value, ok := lookupLogSourceEnv("LOG_ADD_SOURCE", "DETENT_LOG_ADD_SOURCE")
+	if ok {
+		return parseRuntimeLogBool(value)
+	}
+	return level == slog.LevelDebug
+}
+
+func lookupLogSourceEnv(keys ...string) (string, bool) {
+	for _, key := range keys {
+		if value, ok := os.LookupEnv(key); ok && strings.TrimSpace(value) != "" {
+			return value, true
+		}
+	}
+	return "", false
+}
+
+func parseRuntimeLogBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "t", "true", "y", "yes", "on":
+		return true
+	default:
+		return false
 	}
 }
 

@@ -287,14 +287,22 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	workflow, agentRuntime := r.runtimeSnapshot()
 
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	r.logWorkerEvent(req.Issue, "worker_workspace_create_started")
 	info, err := r.workspace.Create(ctx, workspaceIssue)
 	if err != nil {
 		return RunResult{}, fmt.Errorf("create workspace: %w", err)
 	}
+	r.logWorkerEvent(req.Issue, "worker_workspace_created",
+		"workspace_path", info.Path,
+		"workspace_branch", info.Branch,
+	)
 
 	if err := r.workspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
 		return RunResult{}, fmt.Errorf("workspace before_run: %w", err)
 	}
+	r.logWorkerEvent(req.Issue, "worker_before_run_finished",
+		"workspace_path", info.Path,
+	)
 
 	afterRunPending := true
 	defer func() {
@@ -335,6 +343,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return RunResult{}, err
 	}
 
+	r.logWorkerEvent(req.Issue, "worker_command_started",
+		"workspace_path", info.Path,
+		"backend_id", selection.BackendID,
+		"route", selection.RouteName,
+		"role", RoleCode,
+		"model", model,
+		"mode", normalizeRunMode(req.Mode),
+	)
 	result := RunResult{FinalState: FinalStateCompleted}
 	progress := newAgentRunProgress()
 	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
@@ -345,6 +361,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		TurnSandboxPolicy: backendConfig.Options.TurnSandboxPolicy,
 		Model:             model,
 	}, func(update AgentUpdate) error {
+		r.logAgentUpdate(req.Issue, update)
 		applyAgentUpdate(&result, update)
 		eventAt := r.now()
 		progress.apply(update, eventAt)
@@ -355,9 +372,21 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	})
 	_ = turnResult
 	result.Output = progress.outputText()
+	r.logWorkerEvent(req.Issue, "worker_command_finished",
+		"workspace_path", info.Path,
+		"backend_id", selection.BackendID,
+		"route", selection.RouteName,
+		"role", RoleCode,
+		"model", model,
+		"outcome", workerRunOutcome(turnErr, result.FinalState),
+		"error", errorString(turnErr),
+	)
 
 	r.afterRun(info, workspaceIssue)
 	afterRunPending = false
+	r.logWorkerEvent(req.Issue, "worker_after_run_finished",
+		"workspace_path", info.Path,
+	)
 
 	if turnErr != nil {
 		result.FinalState = FinalStateFailed
@@ -412,14 +441,22 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	workflow, agentRuntime := r.runtimeSnapshot()
 
 	workspaceIssue := workspaceIssue(r.projectID, req.Issue)
+	r.logWorkerEvent(req.Issue, "worker_check_workspace_create_started")
 	info, err := r.workspace.Create(ctx, workspaceIssue)
 	if err != nil {
 		return gate.ValidatorResult{}, fmt.Errorf("create workspace: %w", err)
 	}
+	r.logWorkerEvent(req.Issue, "worker_check_workspace_created",
+		"workspace_path", info.Path,
+		"workspace_branch", info.Branch,
+	)
 
 	if err := r.workspace.BeforeRun(ctx, info, workspaceIssue); err != nil {
 		return gate.ValidatorResult{}, fmt.Errorf("workspace before_run: %w", err)
 	}
+	r.logWorkerEvent(req.Issue, "worker_check_before_run_finished",
+		"workspace_path", info.Path,
+	)
 
 	afterRunPending := true
 	defer func() {
@@ -452,6 +489,13 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return gate.ValidatorResult{}, err
 	}
 
+	r.logWorkerEvent(req.Issue, "worker_check_started",
+		"workspace_path", info.Path,
+		"backend_id", selection.BackendID,
+		"route", selection.RouteName,
+		"role", RoleValidator,
+		"model", model,
+	)
 	runReq := RunRequest{
 		Issue:           req.Issue,
 		StartedAt:       req.StartedAt,
@@ -469,6 +513,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		TurnSandboxPolicy: backendConfig.Options.TurnSandboxPolicy,
 		Model:             model,
 	}, func(update AgentUpdate) error {
+		r.logAgentUpdate(req.Issue, update)
 		if update.Type == AgentUpdateMessageDelta {
 			output.WriteString(update.Delta)
 		}
@@ -481,9 +526,21 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return nil
 	})
 	_ = turnResult
+	r.logWorkerEvent(req.Issue, "worker_check_finished",
+		"workspace_path", info.Path,
+		"backend_id", selection.BackendID,
+		"route", selection.RouteName,
+		"role", RoleValidator,
+		"model", model,
+		"outcome", workerRunOutcome(turnErr, runResult.FinalState),
+		"error", errorString(turnErr),
+	)
 
 	r.afterRun(info, workspaceIssue)
 	afterRunPending = false
+	r.logWorkerEvent(req.Issue, "worker_check_after_run_finished",
+		"workspace_path", info.Path,
+	)
 
 	finishedAt := r.now().UTC()
 	runResult.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
@@ -658,6 +715,10 @@ func (r *Runner) startSession(
 	if err != nil {
 		return 0, false, fmt.Errorf("start codex session: %w", err)
 	}
+	r.logWorkerEvent(issue, "worker_session_started",
+		"session_id", sessionID,
+		"model", model,
+	)
 	return sessionID, true, nil
 }
 
@@ -691,6 +752,12 @@ func (r *Runner) finishSession(
 	}); err != nil {
 		return fmt.Errorf("finish codex session: %w", err)
 	}
+	r.logWorkerEvent(issue, "worker_session_finished",
+		"session_id", sessionID,
+		"model", model,
+		"final_state", result.FinalState,
+		"turns", turns,
+	)
 	if _, err := r.store.RecordUsageEvent(ctx, store.UsageEvent{
 		ProjectID:      r.projectID,
 		SessionID:      sessionID,
@@ -1078,6 +1145,88 @@ func cloneMap(value map[string]any) map[string]any {
 		return value
 	}
 	return cloned
+}
+
+func (r *Runner) logWorkerEvent(issue connector.Issue, event string, attrs ...any) {
+	if r == nil || r.logger == nil {
+		return
+	}
+	all := []any{
+		"event", strings.TrimSpace(event),
+		"project_id", strings.TrimSpace(r.projectID),
+		"issue_id", strings.TrimSpace(issue.ID),
+		"issue_identifier", strings.TrimSpace(issue.Identifier),
+		"issue_state", strings.TrimSpace(issue.State),
+	}
+	all = append(all, attrs...)
+	r.logger.Debug(strings.TrimSpace(event), all...)
+}
+
+func (r *Runner) logAgentUpdate(issue connector.Issue, update AgentUpdate) {
+	event := strings.TrimSpace(string(update.Type))
+	if event == "" {
+		event = strings.TrimSpace(update.Method)
+	}
+	switch update.Type {
+	case AgentUpdateProcessStarted:
+		r.logWorkerEvent(issue, "worker_process_started",
+			"process_identity", strings.TrimSpace(update.ProcessIdentity),
+		)
+	case AgentUpdateTurnStarted:
+		r.logWorkerEvent(issue, "worker_turn_started",
+			"thread_id", strings.TrimSpace(update.ThreadID),
+			"turn_id", strings.TrimSpace(update.TurnID),
+		)
+	case AgentUpdateTurnCompleted:
+		r.logWorkerEvent(issue, "worker_turn_finished",
+			"thread_id", strings.TrimSpace(update.ThreadID),
+			"turn_id", strings.TrimSpace(update.TurnID),
+			"status", strings.TrimSpace(update.Status),
+		)
+	case AgentUpdateTokenUsage:
+		r.logWorkerEvent(issue, "worker_usage_updated",
+			"thread_id", strings.TrimSpace(update.ThreadID),
+			"turn_id", strings.TrimSpace(update.TurnID),
+			"total_tokens", update.Tokens.TotalTokens,
+			"input_tokens", update.Tokens.InputTokens,
+			"output_tokens", update.Tokens.OutputTokens,
+		)
+	case AgentUpdateRateLimits:
+		r.logWorkerEvent(issue, "worker_rate_limits_updated",
+			"thread_id", strings.TrimSpace(update.ThreadID),
+			"turn_id", strings.TrimSpace(update.TurnID),
+		)
+	default:
+		if event != "" && update.Type != AgentUpdateMessageDelta {
+			r.logWorkerEvent(issue, "worker_agent_update",
+				"agent_event", event,
+				"thread_id", strings.TrimSpace(update.ThreadID),
+				"turn_id", strings.TrimSpace(update.TurnID),
+			)
+		}
+	}
+}
+
+func workerRunOutcome(err error, finalState string) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed_out"
+	case err != nil:
+		return "failed"
+	case strings.EqualFold(strings.TrimSpace(finalState), FinalStateCompleted), strings.TrimSpace(finalState) == "":
+		return "succeeded"
+	default:
+		return strings.TrimSpace(finalState)
+	}
+}
+
+func errorString(err error) string {
+	if err == nil {
+		return ""
+	}
+	return strings.TrimSpace(err.Error())
 }
 
 func runtimeSeconds(startedAt, completedAt time.Time) float64 {

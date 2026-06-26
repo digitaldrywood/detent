@@ -94,6 +94,7 @@ type Connector struct {
 	projectCache      *projectCache
 	pullRequests      *pullRequestStatusCache
 	prHydration       *pullRequestHydrationCircuitBreaker
+	logger            *slog.Logger
 	mu                sync.RWMutex
 	writeMu           sync.Mutex
 	instanceLogin     string
@@ -121,6 +122,11 @@ func NewConnector(cfg Config) (*Connector, error) {
 		})
 	}
 
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
+
 	client, err := NewClient(ClientConfig{
 		Endpoint:    cfg.Endpoint,
 		TokenSource: tokenSource,
@@ -129,7 +135,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 			MinRemainingReserve: int64(cfg.RESTMinRemainingReserve),
 			FanoutMaxRequests:   int64(cfg.RESTFanoutMaxRequests),
 		},
-		Logger: cfg.Logger,
+		Logger: logger,
 	})
 	if err != nil {
 		return nil, err
@@ -162,6 +168,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		projectCache:      newProjectCache(githubCacheTTL, cfg.Now),
 		pullRequests:      newPullRequestStatusCache(githubCacheTTL, cfg.Now),
 		prHydration:       newPullRequestHydrationCircuitBreaker(cfg.Now),
+		logger:            logger,
 	}, nil
 }
 

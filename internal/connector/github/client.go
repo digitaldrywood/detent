@@ -154,7 +154,13 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 	req.Header.Set("X-GitHub-Api-Version", gitHubAPIVersion)
 
 	operation := firstLine(query)
-	c.logger.DebugContext(ctx, "github graphql request", "operation", operation, "live_connections", c.LiveConnections())
+	c.logger.DebugContext(ctx, "github graphql request",
+		"endpoint_family", "graphql",
+		"request_purpose", queryType,
+		"operation", operation,
+		"variables_present", len(variables) > 0,
+		"live_connections", c.LiveConnections(),
+	)
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
@@ -169,7 +175,13 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		}
 	}()
 
-	c.logger.DebugContext(ctx, "github graphql response", "operation", operation, "status", resp.StatusCode, "live_connections", c.LiveConnections())
+	c.logger.DebugContext(ctx, "github graphql response",
+		"endpoint_family", "graphql",
+		"request_purpose", queryType,
+		"operation", operation,
+		"status", resp.StatusCode,
+		"live_connections", c.LiveConnections(),
+	)
 
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
@@ -261,6 +273,14 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 		req.Header.Set("Content-Type", "application/json")
 	}
 
+	family := restEndpointFamily(method, path)
+	c.logger.DebugContext(ctx, "github rest probe request",
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"request_purpose", restRequestPurpose(method, path),
+		"body_present", body != nil,
+	)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -270,7 +290,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	}
 	defer func() {
 		if err := drainAndClose(resp.Body); err != nil {
-			c.logger.DebugContext(ctx, "github rest probe response body drain failed", "method", method, "path", path, "error", err)
+			c.logger.DebugContext(ctx, "github rest probe response body drain failed", "method", method, "path", path, "endpoint_family", family, "error", err)
 		}
 	}()
 
@@ -280,6 +300,13 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	}
 	receivedAt := time.Now()
 	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt)
+	c.logger.DebugContext(ctx, "github rest probe response",
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"request_purpose", restRequestPurpose(method, path),
+		"status", resp.StatusCode,
+	)
 	result := restProbeResult{
 		StatusCode: resp.StatusCode,
 		Headers:    resp.Header.Clone(),
@@ -311,9 +338,24 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	backoffKey := c.restSharedBackoffKey(token)
 	c.rememberRESTBackoffKey(backoffKey)
 	if err := c.restBackoffError(backoffKey, time.Now()); err != nil {
+		c.logger.DebugContext(ctx, "github rest backoff active",
+			"method", strings.ToUpper(strings.TrimSpace(method)),
+			"path", path,
+			"endpoint_family", restEndpointFamily(method, path),
+			"request_purpose", restRequestPurpose(method, path),
+			"backoff_reason", restBackoffReason(err),
+			"retry_after_seconds", retryAfterSeconds(err),
+		)
 		return nil, err
 	}
 	if err := c.restBudgetPolicyError(method, path); err != nil {
+		c.logger.DebugContext(ctx, "github rest budget reserved",
+			"method", strings.ToUpper(strings.TrimSpace(method)),
+			"path", path,
+			"endpoint_family", restEndpointFamily(method, path),
+			"request_purpose", restRequestPurpose(method, path),
+			"backoff_reason", restBackoffReason(err),
+		)
 		return nil, err
 	}
 
@@ -341,7 +383,16 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		req.Header.Set("Content-Type", "application/json")
 	}
 
-	c.logger.DebugContext(ctx, "github rest request", "method", method, "path", path, "live_connections", c.LiveConnections())
+	family := restEndpointFamily(method, path)
+	purpose := restRequestPurpose(method, path)
+	c.logger.DebugContext(ctx, "github rest request",
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"request_purpose", purpose,
+		"body_present", body != nil,
+		"live_connections", c.LiveConnections(),
+	)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -351,11 +402,18 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}
 	defer func() {
 		if err := drainAndClose(resp.Body); err != nil {
-			c.logger.DebugContext(ctx, "github rest response body drain failed", "method", method, "path", path, "error", err)
+			c.logger.DebugContext(ctx, "github rest response body drain failed", "method", method, "path", path, "endpoint_family", family, "error", err)
 		}
 	}()
 
-	c.logger.DebugContext(ctx, "github rest response", "method", method, "path", path, "status", resp.StatusCode, "live_connections", c.LiveConnections())
+	c.logger.DebugContext(ctx, "github rest response",
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"request_purpose", purpose,
+		"status", resp.StatusCode,
+		"live_connections", c.LiveConnections(),
+	)
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read response: %w", ErrTransient, err)
@@ -695,6 +753,16 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 		if c.restBackoffs != nil && backoffKey != "" {
 			c.restBackoffs.set(backoffKey, backoffUntil)
 		}
+		c.logger.Debug(
+			"github rest shared backoff recorded",
+			"method", strings.ToUpper(strings.TrimSpace(method)),
+			"path", path,
+			"endpoint_family", family,
+			"request_purpose", restRequestPurpose(method, path),
+			"backoff_reason", restRateLimitKindFromHeaders(status, headers),
+			"retry_after_seconds", int64(backoffUntil.Sub(now)/time.Second),
+			"remaining", remaining,
+		)
 	}
 }
 
@@ -1335,6 +1403,57 @@ func restEndpointFamily(method string, path string) string {
 	default:
 		return "other"
 	}
+}
+
+func restRequestPurpose(method string, path string) string {
+	family := restEndpointFamily(method, path)
+	switch family {
+	case "label issues":
+		return "fetch_issues_by_status_label"
+	case "issue reads":
+		return "hydrate_issue"
+	case "issue comments":
+		return "hydrate_issue_comments"
+	case "pull requests":
+		return "hydrate_pull_request"
+	case "reviews":
+		return "hydrate_pull_request_reviews"
+	case "check runs":
+		return "hydrate_pull_request_checks"
+	case "commit statuses":
+		return "hydrate_pull_request_statuses"
+	case "search":
+		return "search_issue_metadata"
+	case "mutations":
+		return "mutate_github_state"
+	default:
+		return strings.ReplaceAll(family, " ", "_")
+	}
+}
+
+func restBackoffReason(err error) string {
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		if strings.TrimSpace(statusErr.RateLimitKind) != "" {
+			return statusErr.RateLimitKind
+		}
+	}
+	switch {
+	case errors.Is(err, ErrRESTBudgetReserved):
+		return "rest_budget_reserved"
+	case errors.Is(err, ErrRateLimited):
+		return "rate_limited"
+	default:
+		return ""
+	}
+}
+
+func retryAfterSeconds(err error) int64 {
+	var statusErr *StatusError
+	if !errors.As(err, &statusErr) || statusErr.RetryAfter <= 0 {
+		return 0
+	}
+	return int64(statusErr.RetryAfter / time.Second)
 }
 
 func restFanoutEndpointFamily(family string) bool {

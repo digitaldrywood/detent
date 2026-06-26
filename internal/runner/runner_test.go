@@ -274,6 +274,76 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 }
 
+func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := t.TempDir()
+	var logs bytes.Buffer
+	codexClient := &fakeCodexClient{
+		updates: []AgentUpdate{
+			{Type: AgentUpdateProcessStarted, ProcessIdentity: "pid-123"},
+			{Type: AgentUpdateTurnStarted, ThreadID: "thread-1", TurnID: "turn-1"},
+			{Type: AgentUpdateMessageDelta, Delta: "do not log this message body"},
+			{Type: AgentUpdateTokenUsage, ThreadID: "thread-1", TurnID: "turn-1", Tokens: AgentTokenUsage{InputTokens: 10, OutputTokens: 5, TotalTokens: 15}},
+			{Type: AgentUpdateTurnCompleted, ThreadID: "thread-1", TurnID: "turn-1", Status: "completed"},
+		},
+		result: AgentTurnResult{ThreadID: "thread-1", TurnID: "turn-1", SessionID: "session-1"},
+	}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{Config: config.Config{}},
+		Workspace: &fakeWorkspaceBackend{
+			info: workspace.Info{Path: workspacePath, Key: "issue-726", Branch: "detent/issue-726"},
+		},
+		AgentBackend: codexClient,
+		Store:        &fakeSessionStore{sessionID: 726},
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:          "issue-726",
+			Identifier:  "digitaldrywood/detent#726",
+			Title:       "Lifecycle diagnostics",
+			Description: "do not log this prompt body",
+			State:       "Todo",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	logText := logs.String()
+	for _, fragment := range []string{
+		"worker_workspace_create_started",
+		"worker_workspace_created",
+		"worker_before_run_finished",
+		"worker_session_started",
+		"worker_command_started",
+		"worker_process_started",
+		"worker_turn_started",
+		"worker_usage_updated",
+		"worker_turn_finished",
+		"worker_command_finished",
+		"worker_after_run_finished",
+		"worker_session_finished",
+		"issue_id=issue-726",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logText)
+		}
+	}
+	for _, leaked := range []string{"do not log this message body", "do not log this prompt body"} {
+		if strings.Contains(logText, leaked) {
+			t.Fatalf("logs leaked %q:\n%s", leaked, logText)
+		}
+	}
+}
+
 func TestRunnerPlanModeCapturesOutputAndConstrainsPrompt(t *testing.T) {
 	t.Parallel()
 
