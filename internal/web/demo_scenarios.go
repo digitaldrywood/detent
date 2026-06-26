@@ -988,10 +988,22 @@ func demoBlockedHeavySnapshot() telemetry.Snapshot {
 func demoLongContentSnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
 	if len(snapshot.Running) > 0 {
+		identifier := "digitaldrywood/creswoodcorners-phone#66"
+		snapshot.Running[0].Identifier = identifier
+		snapshot.Running[0].URL = demoIssueURL(identifier)
 		snapshot.Running[0].Title = "Implement page-addressable screenshot scenarios with very long deterministic fixture names, wide workspace paths, detailed token accounting, and browser-friendly waiting selectors"
 		snapshot.Running[0].SessionID = "thread-demo-core-5260-very-long-session-id-for-wide-table-verification-0000000001"
 		snapshot.Running[0].WorkspacePath = "/tmp/detent-screenshots/workspaces/detent-core/5260/very/deep/generated/worktree/path/that/exercises/wrapping"
 		snapshot.Running[0].LastMessage = "Long message: scenario route loaded, manifest matched, Chart.js endpoint agreed with seeded ledger, and visual baseline is ready for capture."
+		snapshot.Running[0].PullRequest = &telemetry.PullRequest{
+			Number:           75,
+			URL:              demoPRURL(identifier, 75),
+			BranchName:       "detent/demo-long-content",
+			State:            "OPEN",
+			MergeableState:   "clean",
+			CIStatus:         "pending",
+			CodexReviewState: "CLEAN",
+		}
 		snapshot.Running[0].Tokens = telemetry.Tokens{Input: 980000, Output: 214000, Total: 1194000, RuntimeSeconds: 9180}
 	}
 	return snapshot

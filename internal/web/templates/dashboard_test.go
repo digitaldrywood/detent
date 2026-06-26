@@ -2689,7 +2689,7 @@ func TestDashboardRendersReadableAgentTimelineForConcurrentSessions(t *testing.T
 		"DD-RUN-2",
 		"DD-RUN-3",
 		"DD-RUN-4",
-		"min-w-[68rem]",
+		"min-w-[78rem]",
 		"Live now",
 		"bg-accent",
 	} {

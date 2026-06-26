@@ -1269,21 +1269,21 @@ templ runningIssuesSection(data DashboardData) {
 			</div>
 			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
 				<div class="overflow-x-auto" data-preserve-scroll="running-issues">
-					<table class="dashboard-table w-full min-w-[76rem] table-fixed border-collapse text-sm">
+					<table class="dashboard-table w-full min-w-[92rem] table-fixed border-collapse text-sm">
 						<thead class="bg-muted/70">
 							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
-								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
+								<th class="w-[30rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">State</th>
-								<th class="w-[10rem] px-3 py-3 font-medium">
+								<th class="w-[11rem] px-3 py-3 font-medium">
 									@helpInlineLabel("Runtime / turns", helpAgeTurn, "running-table", "")
 								</th>
 								<th class="px-3 py-3 font-medium">
 									@helpInlineLabel("Codex update", helpEvent, "running-table", "")
 								</th>
-								<th class="w-[8rem] px-3 py-3 font-medium">
+								<th class="w-[9rem] px-3 py-3 font-medium">
 									@helpInlineLabel("Diff", helpDiff, "running-table", "")
 								</th>
-								<th class="w-[10rem] px-3 py-3 font-medium">
+								<th class="w-[11rem] px-3 py-3 font-medium">
 									@helpInlineLabel("Tokens", helpTokens, "running-table", "")
 								</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">
@@ -1294,21 +1294,21 @@ templ runningIssuesSection(data DashboardData) {
 						<tbody>
 							for i, row := range data.Snapshot.Running {
 								<tr class="border-b border-border transition-colors last:border-b-0 hover:bg-muted/50">
-									<td class="px-3 py-4 align-top">
+									<td class="px-3 py-4 align-top overflow-hidden" data-running-issue-cell>
 										@issueCell(row.Issue, "running", i, true)
 									</td>
 									<td class="px-3 py-4 align-top">
 										<span class="inline-flex rounded-full bg-accent-soft px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
 									</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
-									<td class="px-3 py-4 align-top">
+									<td class="px-3 py-4 align-top font-mono text-muted-foreground whitespace-nowrap">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
+									<td class="px-3 py-4 align-top overflow-hidden" data-running-activity-cell>
 										@runningActivityCell(row, "running", i, data.Snapshot.GeneratedAt)
 									</td>
-									<td class="px-3 py-4 align-top font-mono text-muted-foreground">{ formatDiffStat(row) }</td>
-									<td class="px-3 py-4 align-top">
-										<div class="grid gap-1 font-mono">
+									<td class="px-3 py-4 align-top font-mono text-muted-foreground whitespace-nowrap" data-running-diff-cell>{ formatDiffStat(row) }</td>
+									<td class="px-3 py-4 align-top overflow-hidden" data-running-tokens-cell>
+										<div class="grid min-w-0 gap-1 font-mono">
 											<span class="font-medium text-foreground">{ formatTokens(row.Tokens) }</span>
-											<span class="text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
+											<span class="truncate text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
 										</div>
 									</td>
 									<td class="px-3 py-4 align-top">
@@ -2486,7 +2486,7 @@ templ prPipelineLaneView(lane prPipelineLane) {
 				@dashboardEmptyState(lane.EmptyTitle, lane.EmptyDetail, lane.DotClass)
 			</div>
 		} else {
-			<div class="pr-pipeline-lane-scroll mt-3 grid auto-rows-max max-h-[24rem] gap-2 overflow-y-auto pr-1" data-preserve-scroll={ "pr-pipeline-" + lane.ID }>
+			<div class="pr-pipeline-lane-scroll mt-3 grid auto-rows-max max-h-[24rem] gap-2 overflow-y-auto pb-1 pr-1" data-preserve-scroll={ "pr-pipeline-" + lane.ID }>
 				for _, card := range lane.Cards {
 					@prPipelineCardView(card)
 				}
@@ -2496,20 +2496,22 @@ templ prPipelineLaneView(lane prPipelineLane) {
 }
 
 templ prPipelineCardView(card prPipelineCard) {
-	<article class="pr-pipeline-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="pr-pipeline-card min-w-0 rounded-md border border-border bg-card p-3 shadow-sm" data-pr-pipeline-identity={ card.Identity.Label }>
 		<div class="flex min-w-0 items-start justify-between gap-3">
-			<div class="min-w-0">
+			<div class="min-w-0 flex-1 basis-0">
 				if card.URL != "" {
-					<a class="block min-w-0 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer">
-						<span class="font-mono text-xs font-semibold text-accent">{ card.IssueNumber }</span>
-						<span class="mt-1 line-clamp-2 text-sm font-medium text-foreground">{ card.Title }</span>
+					<a class="block min-w-0 max-w-full overflow-hidden focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open " + card.Identity.Label }>
+						@issueIdentityLine(card.Identity, true)
+						<span class="mt-1 line-clamp-2 break-words text-sm font-medium text-foreground">{ card.Title }</span>
 					</a>
 				} else {
-					<span class="font-mono text-xs font-semibold text-accent">{ card.IssueNumber }</span>
-					<span class="mt-1 line-clamp-2 text-sm font-medium text-foreground">{ card.Title }</span>
+					@issueIdentityLine(card.Identity, true)
+					<span class="mt-1 line-clamp-2 break-words text-sm font-medium text-foreground">{ card.Title }</span>
 				}
 				if card.ProjectID != "" {
-					<span class="mt-2 inline-flex max-w-full rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">{ card.ProjectID }</span>
+					<span class="mt-2 inline-flex max-w-full overflow-hidden rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ "Project " + card.ProjectID }>
+						<span class="min-w-0 truncate">{ card.ProjectID }</span>
+					</span>
 				}
 			</div>
 			<span class="shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
@@ -3046,7 +3048,7 @@ templ kanbanScript() {
 }
 
 templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt time.Time) {
-	<article class="dashboard-card rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-3 shadow-sm">
 		@issueCell(row.Issue, "running-mobile", rowIndex, true)
 		<div class="mt-3 grid gap-2 text-sm">
 			<div class="flex min-h-10 items-center justify-between gap-3">
@@ -3077,20 +3079,20 @@ templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt ti
 
 templ runningActivityCell(row telemetry.Running, prefix string, rowIndex int, generatedAt time.Time) {
 	<div
-		class="running-activity relative"
+		class="running-activity relative min-w-0 max-w-full overflow-hidden"
 		data-popover
 		data-running-activity
 	>
 		<button
 			type="button"
-			class="running-activity-trigger -m-2 grid w-full gap-1 rounded-md p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+			class="running-activity-trigger -m-2 grid w-full min-w-0 max-w-full gap-1 overflow-hidden rounded-md p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
 			aria-describedby={ runningActivityID(prefix, rowIndex) }
 			aria-expanded="false"
 			data-popover-trigger
 			data-running-activity-trigger
 		>
-			<span class="line-clamp-2 text-foreground">{ lastCodexUpdate(row) }</span>
-			<span class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
+			<span class="line-clamp-2 break-words text-foreground">{ lastCodexUpdate(row) }</span>
+			<span class="truncate font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
 		</button>
 		@runningActivityPanel(row, prefix, rowIndex, generatedAt)
 	</div>
@@ -3424,18 +3426,18 @@ templ agentActivityTimeline(snapshot telemetry.Snapshot) {
 			</div>
 			<div class="mt-4 hidden overflow-hidden rounded-md border border-border sm:block">
 				<div class="dashboard-agent-scroll max-h-[32rem] overflow-x-auto overflow-y-auto" data-preserve-scroll="agent-activity">
-					<div class="min-w-[68rem]">
-						<div class="grid grid-cols-[18rem_minmax(0,1fr)_12rem] gap-3 border-b border-border bg-muted/70 px-3 py-3 text-xs font-medium uppercase text-muted-foreground">
+					<div class="min-w-[78rem]">
+						<div class="grid grid-cols-[25rem_minmax(0,1fr)_12rem] gap-3 border-b border-border bg-muted/70 px-3 py-3 text-xs font-medium uppercase text-muted-foreground">
 							<span>Agent</span>
 							<span>Lifespan</span>
 							<span class="text-right">State / runtime</span>
 						</div>
 						for _, row := range agentTimelineRows(snapshot) {
-							<div class="agent-activity-table-row grid min-h-14 grid-cols-[18rem_minmax(0,1fr)_12rem] items-center gap-3 border-b border-border px-3 py-3 last:border-b-0">
+							<div class="agent-activity-table-row grid min-h-14 grid-cols-[25rem_minmax(0,1fr)_12rem] items-center gap-3 border-b border-border px-3 py-3 last:border-b-0" data-agent-identity={ row.Identity.Label }>
 								<div class="flex min-w-0 items-start gap-2">
 									<div class="min-w-0 flex-1">
-										<span class="block truncate font-medium text-foreground">{ row.Identifier }</span>
-										<span class="line-clamp-1 text-sm text-muted-foreground">{ row.Title }</span>
+										@issueIdentityLine(row.Identity, false)
+										<span class="line-clamp-2 break-words text-sm text-muted-foreground">{ row.Title }</span>
 									</div>
 									@agentTimelineActions(row)
 								</div>
@@ -3466,11 +3468,11 @@ templ agentActivityTimeline(snapshot telemetry.Snapshot) {
 }
 
 templ agentActivityMobileCard(row agentTimelineRow) {
-	<article class="dashboard-card rounded-md border border-border bg-card p-3 shadow-sm">
+	<article class="dashboard-card min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-3 shadow-sm" data-agent-identity={ row.Identity.Label }>
 		<div class="flex items-start justify-between gap-3">
 			<div class="min-w-0 flex-1">
-				<span class="block truncate font-medium text-foreground">{ row.Identifier }</span>
-				<span class="line-clamp-2 text-sm text-muted-foreground">{ row.Title }</span>
+				@issueIdentityLine(row.Identity, false)
+				<span class="line-clamp-2 break-words text-sm text-muted-foreground">{ row.Title }</span>
 			</div>
 			<div class="flex shrink-0 items-start gap-1">
 				@agentTimelineActions(row)
@@ -3794,29 +3796,47 @@ templ recentSessionMobileCard(row telemetry.Completed, rowIndex int) {
 	</article>
 }
 
+templ issueIdentityLine(identity issueIdentityView, accent bool) {
+	<span class="flex min-w-0 max-w-full flex-wrap items-center gap-1.5 font-mono text-xs leading-5" data-primary-identity={ identity.Label }>
+		if identity.Repository != "" {
+			<span class={ "min-w-0 break-all font-semibold " + identityRepositoryClass(accent) } title={ identity.Repository } data-identity-repository>{ identity.Repository }</span>
+		}
+		if identity.IssueNumber != "" {
+			<span class={ "shrink-0 rounded-sm border px-1.5 py-0.5 font-semibold " + identityIssueBadgeClass(accent) } data-identity-issue>{ identity.IssueNumber }</span>
+		}
+		if identity.PullRequestLabel != "" {
+			<span class={ "shrink-0 rounded-sm border px-1.5 py-0.5 font-semibold " + identityPullRequestBadgeClass(accent) } data-identity-pr>{ identity.PullRequestLabel }</span>
+		}
+	</span>
+}
+
 templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails bool) {
-	<div class="grid gap-2" data-popover>
+	<div class="grid min-w-0 max-w-full gap-2 overflow-hidden" data-popover data-issue-identifier={ issueIdentifier(issue) } data-issue-identity={ issueIdentity(issue).Label }>
 		<div class="flex min-w-0 items-start gap-2">
 			<button
 				type="button"
-				class="min-w-0 flex-1 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+				class="min-w-0 flex-1 basis-0 overflow-hidden text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
 				aria-describedby={ issuePopoverID(prefix, rowIndex) }
 				aria-expanded="false"
 				data-popover-trigger
 			>
-				<span class="block truncate font-medium text-foreground">{ issueIdentifier(issue) }</span>
-				<span class="line-clamp-1 text-muted-foreground">{ issueTitle(issue) }</span>
+				@issueIdentityLine(issueIdentity(issue), false)
+				<span class="line-clamp-2 break-words text-muted-foreground">{ issueTitle(issue) }</span>
 			</button>
-			if issueProjectLabel(issue) != "" {
-				<span class="shrink-0 rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ "Project " + issueProjectLabel(issue) }>{ issueProjectLabel(issue) }</span>
-			}
-			if issueURL(issue) != "" {
-				@issueCopyButton(issueURL(issue))
-				@issueOpenLink(issueURL(issue), issueOpenLabel(issue), false)
-			}
-			if pullRequestURL(issue) != "" {
-				@pullRequestOpenLink(pullRequestURL(issue), pullRequestOpenLabel(issue), false)
-			}
+			<div class="flex shrink-0 flex-wrap items-start justify-end gap-1.5">
+				if issueProjectLabel(issue) != "" {
+					<span class="inline-flex max-w-[9rem] overflow-hidden rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ "Project " + issueProjectLabel(issue) }>
+						<span class="min-w-0 truncate">{ issueProjectLabel(issue) }</span>
+					</span>
+				}
+				if issueURL(issue) != "" {
+					@issueCopyButton(issueURL(issue))
+					@issueOpenLink(issueURL(issue), issueOpenLabel(issue), false)
+				}
+				if pullRequestURL(issue) != "" {
+					@pullRequestOpenLink(pullRequestURL(issue), pullRequestOpenLabel(issue), false)
+				}
+			</div>
 		</div>
 		if issueDescriptionPreview(issue) != "" {
 			<p class="line-clamp-2 text-xs text-muted-foreground">{ issueDescriptionPreview(issue) }</p>

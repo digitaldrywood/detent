@@ -198,6 +198,34 @@ test("project runs issue and PR actions stay inside activity rows", async ({ pag
   });
 });
 
+test("project runs keeps active identities readable without column overlap", async ({ page }, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "runs-long-content",
+    viewport: desktopViewport,
+  });
+
+  const activeIdentity = "digitaldrywood/creswoodcorners-phone #66 · PR #75";
+  const pipelineIdentity = "digitaldrywood/detent-core #5290 · PR #5290";
+  const running = page.locator("#running-issues");
+  const activity = page.locator('section[aria-label="Agent activity timeline"]');
+  const pipeline = page.locator('section[aria-label="Pull request pipeline"]');
+
+  await expect(running.locator(`[data-issue-identity="${activeIdentity}"]:visible`)).toHaveCount(1);
+  await expect(activity.locator(`[data-agent-identity="${activeIdentity}"]:visible`)).toHaveCount(1);
+  await expect(pipeline.locator(`[data-pr-pipeline-identity="${pipelineIdentity}"]:visible`)).toHaveCount(1);
+  await assertPrimaryIdentitiesReadable(page, "#running-issues");
+  await assertPrimaryIdentitiesReadable(page, 'section[aria-label="Agent activity timeline"]');
+  await assertPrimaryIdentitiesReadable(page, 'section[aria-label="Pull request pipeline"]');
+  await assertRunningTableColumnsDoNotOverlap(page);
+  await assertElementsDoNotOverlap(page, "#github-api-health", ".dashboard-topbar");
+  await assertNoDocumentOverflow(page);
+  await running.scrollIntoViewIfNeeded();
+  await captureClipAndAttach(page, "#running-issues", "project-runs-identities-desktop.png", testInfo, {
+    maxHeight: 520,
+  });
+});
+
 test("project Kanban keeps action controls inside compact cards", async ({ page }, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
@@ -712,6 +740,107 @@ async function assertProjectKanbanLayout(page, boardSelector, options) {
     expect(lane.width, `${lane.title} lane width`).toBeLessThanOrEqual(289);
   }
   expect(metrics.visibleLeaks).toEqual([]);
+}
+
+async function assertPrimaryIdentitiesReadable(page, selector) {
+  const failures = await page.locator(selector).evaluate((root) => {
+    const out = [];
+    for (const identity of root.querySelectorAll("[data-primary-identity]")) {
+      const identityRect = identity.getBoundingClientRect();
+      const identityStyle = window.getComputedStyle(identity);
+      if (
+        identityStyle.display === "none" ||
+        identityStyle.visibility === "hidden" ||
+        identityRect.width === 0 ||
+        identityRect.height === 0
+      ) {
+        continue;
+      }
+      const label = identity.getAttribute("data-primary-identity") || identity.textContent || "identity";
+      const container = identity.closest("[data-issue-identity], [data-agent-identity], [data-pr-pipeline-identity]");
+      const containerRect = container?.getBoundingClientRect() || identityRect;
+      for (const part of identity.querySelectorAll("[data-identity-repository], [data-identity-issue], [data-identity-pr]")) {
+        const style = window.getComputedStyle(part);
+        const rect = part.getBoundingClientRect();
+        if (style.display === "none" || style.visibility === "hidden" || rect.width === 0 || rect.height === 0) {
+          out.push(`${label} has hidden identity part`);
+          continue;
+        }
+        if (style.textOverflow === "ellipsis") {
+          out.push(`${label} identity part still uses ellipsis`);
+        }
+        if (rect.left < containerRect.left - 1 || rect.right > containerRect.right + 1) {
+          out.push(`${label} identity part escapes container bounds`);
+        }
+      }
+    }
+    return out;
+  });
+
+  expect(failures).toEqual([]);
+}
+
+async function assertRunningTableColumnsDoNotOverlap(page) {
+  const failures = await page.locator("#running-issues table").evaluate((table) => {
+    const out = [];
+    for (const row of table.querySelectorAll("tbody tr")) {
+      const activityCell = row.querySelector("[data-running-activity-cell]");
+      const diffCell = row.querySelector("[data-running-diff-cell]");
+      const tokensCell = row.querySelector("[data-running-tokens-cell]");
+      if (!activityCell || !diffCell || !tokensCell) {
+        out.push("running row is missing measured cells");
+        continue;
+      }
+      const activityRect = activityCell.getBoundingClientRect();
+      const diffRect = diffCell.getBoundingClientRect();
+      const tokensRect = tokensCell.getBoundingClientRect();
+      if (activityRect.right > diffRect.left + 1) {
+        out.push("Codex update cell overlaps Diff cell");
+      }
+      if (diffRect.right > tokensRect.left + 1) {
+        out.push("Diff cell overlaps Tokens cell");
+      }
+      for (const child of activityCell.querySelectorAll("[data-running-activity-trigger], [data-running-activity-trigger] *")) {
+        const style = window.getComputedStyle(child);
+        const rect = child.getBoundingClientRect();
+        if (style.display === "none" || style.visibility === "hidden" || rect.width === 0 || rect.height === 0) {
+          continue;
+        }
+        if (rect.left < activityRect.left - 1 || rect.right > activityRect.right + 1) {
+          out.push("Codex update content escapes its column");
+        }
+      }
+    }
+    return out;
+  });
+
+  expect(failures).toEqual([]);
+}
+
+async function assertElementsDoNotOverlap(page, firstSelector, secondSelector) {
+  const overlap = await page.evaluate(
+    ({ firstSelector, secondSelector }) => {
+      const first = document.querySelector(firstSelector);
+      const second = document.querySelector(secondSelector);
+      if (!first || !second) {
+        return { missing: true, overlaps: false };
+      }
+      const firstRect = first.getBoundingClientRect();
+      const secondRect = second.getBoundingClientRect();
+      return {
+        missing: false,
+        overlaps:
+          firstRect.left < secondRect.right - 1 &&
+          firstRect.right > secondRect.left + 1 &&
+          firstRect.top < secondRect.bottom - 1 &&
+          firstRect.bottom > secondRect.top + 1,
+      };
+    },
+    { firstSelector, secondSelector },
+  );
+
+  expect(overlap.missing).toBeFalsy();
+  expect(overlap.overlaps).toBeFalsy();
 }
 
 async function assertAgentActivityActionsFit(page) {
