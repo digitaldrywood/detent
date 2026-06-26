@@ -19,6 +19,7 @@ const (
 	EventKindFieldUpdate        EventKind = "memory_tracker_field_update"
 	EventKindProjectRemove      EventKind = "memory_tracker_project_remove"
 	EventKindClose              EventKind = "memory_tracker_close"
+	EventKindPullRequestMerge   EventKind = "memory_tracker_pull_request_merge"
 )
 
 type EventKind string
@@ -64,6 +65,8 @@ var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
+var _ connector.PullRequestHydrator = (*Connector)(nil)
+var _ connector.PullRequestMerger = (*Connector)(nil)
 
 func New(cfg Config) *Connector {
 	now := cfg.Now
@@ -237,6 +240,45 @@ func (c *Connector) CreatePullRequestComment(_ context.Context, repository strin
 	return nil
 }
 
+func (c *Connector) HydratePullRequest(_ context.Context, issue connector.Issue) (connector.Issue, error) {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+
+	wantID := strings.TrimSpace(issue.ID)
+	wantIdentifier := normalizeState(issue.Identifier)
+	wantRepository := normalizeState(memoryPullRequestRepository(issue))
+	wantNumber := memoryPullRequestNumber(issue)
+	for _, candidate := range c.issues {
+		if wantID != "" && strings.TrimSpace(candidate.ID) == wantID {
+			return cloneIssue(candidate), nil
+		}
+		if wantIdentifier != "" && normalizeState(candidate.Identifier) == wantIdentifier {
+			return cloneIssue(candidate), nil
+		}
+		if wantNumber <= 0 || candidate.PullRequest == nil || candidate.PullRequest.Number != wantNumber {
+			continue
+		}
+		if wantRepository == "" || normalizeState(memoryPullRequestRepository(candidate)) == wantRepository {
+			return cloneIssue(candidate), nil
+		}
+	}
+	return cloneIssue(issue), nil
+}
+
+func (c *Connector) MergePullRequest(_ context.Context, repository string, number int, headSHA string) error {
+	repository = strings.TrimSpace(repository)
+	c.applyPullRequest(repository, number, func(issue *connector.Issue, now time.Time) {
+		if issue.PullRequest == nil {
+			return
+		}
+		issue.PullRequest.State = "MERGED"
+		issue.PullRequest.ActivityAt = &now
+		issue.UpdatedAt = &now
+	})
+	c.send(Event{Kind: EventKindPullRequestMerge, Repository: repository, PRNumber: number, Body: strings.TrimSpace(headSHA)})
+	return nil
+}
+
 func (c *Connector) Events() []Event {
 	c.eventMu.RLock()
 	defer c.eventMu.RUnlock()
@@ -329,6 +371,28 @@ func (c *Connector) applyIssue(issueID string, update func(*connector.Issue, tim
 	}
 }
 
+func (c *Connector) applyPullRequest(repository string, number int, update func(*connector.Issue, time.Time)) {
+	if !c.stateful {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	now := c.now()
+	for index := range c.issues {
+		issue := &c.issues[index]
+		if issue.PullRequest == nil || issue.PullRequest.Number != number {
+			continue
+		}
+		if repository != "" && !strings.EqualFold(memoryPullRequestRepository(*issue), repository) {
+			continue
+		}
+		update(issue, now)
+		return
+	}
+}
+
 func (c *Connector) send(event Event) {
 	c.eventMu.Lock()
 	c.events = append(c.events, event)
@@ -377,6 +441,28 @@ func memoryIssueKey(issue connector.Issue) string {
 		return "identifier:" + identifier
 	}
 	return ""
+}
+
+func memoryPullRequestRepository(issue connector.Issue) string {
+	if repository := strings.TrimSpace(issue.PRRepository); repository != "" {
+		return repository
+	}
+	identifier := strings.TrimSpace(issue.Identifier)
+	repository, _, ok := strings.Cut(identifier, "#")
+	if ok {
+		return strings.TrimSpace(repository)
+	}
+	return ""
+}
+
+func memoryPullRequestNumber(issue connector.Issue) int {
+	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
+		return issue.PullRequest.Number
+	}
+	if issue.PRNumber != nil {
+		return *issue.PRNumber
+	}
+	return 0
 }
 
 func cloneIssues(issues []connector.Issue) []connector.Issue {

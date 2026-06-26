@@ -54,6 +54,14 @@ type PullRequestCommenter interface {
 	CreatePullRequestComment(context.Context, string, int, string) error
 }
 
+type PullRequestMerger interface {
+	MergePullRequest(context.Context, string, int, string) error
+}
+
+type PullRequestHydrator interface {
+	HydratePullRequest(context.Context, Issue) (Issue, error)
+}
+
 type IssueCommentReader interface {
 	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
 }

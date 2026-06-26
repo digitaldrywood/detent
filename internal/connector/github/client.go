@@ -1396,6 +1396,8 @@ func restEndpointFamily(method string, path string) string {
 		return "pull requests"
 	case len(segments) == 6 && segments[3] == "pulls" && segments[5] == "reviews":
 		return "reviews"
+	case len(segments) == 6 && segments[3] == "pulls" && segments[5] == "merge":
+		return "mutations"
 	case len(segments) == 6 && segments[3] == "commits" && segments[5] == "check-runs":
 		return "check runs"
 	case len(segments) == 6 && segments[3] == "commits" && segments[5] == "statuses":

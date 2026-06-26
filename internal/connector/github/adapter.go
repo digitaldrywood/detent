@@ -806,6 +806,12 @@ type restPullRequest struct {
 	MergedAt       *string    `json:"merged_at"`
 }
 
+type restPullRequestMergeResponse struct {
+	SHA     string `json:"sha"`
+	Merged  bool   `json:"merged"`
+	Message string `json:"message"`
+}
+
 type restHead struct {
 	Ref string `json:"ref"`
 	SHA string `json:"sha"`
@@ -2169,6 +2175,75 @@ func (c *Connector) fetchRepositoryPullRequest(ctx context.Context, repo pullReq
 		return pullRequestNode{}, fmt.Errorf("fetch github pull request: %w", err)
 	}
 	return pullRequestNodeFromREST(response), nil
+}
+
+func (c *Connector) HydratePullRequest(ctx context.Context, issue connector.Issue) (connector.Issue, error) {
+	repo, number, ok := hydratedPullRequestRef(issue)
+	if !ok {
+		return issue, nil
+	}
+	pullRequest, err := c.fetchRepositoryPullRequest(ctx, repo, number)
+	if err != nil {
+		if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
+			attachPullRequestHydrationUnavailableToIssue(&issue, repo, number, state)
+			return issue, nil
+		}
+		return issue, fmt.Errorf("hydrate github pull request: %w", err)
+	}
+	if err := c.populatePullRequestStatus(ctx, repo, &pullRequest, false); err != nil {
+		if state := c.pullRequestHydrationStateForError(repo, err); state.Reason != "" {
+			applyPullRequestHydrationUnavailableState(&pullRequest, state)
+		} else {
+			return issue, fmt.Errorf("hydrate github pull request status: %w", err)
+		}
+	}
+	attachPullRequestToIssue(&issue, repo, pullRequest)
+	return issue, nil
+}
+
+func (c *Connector) MergePullRequest(ctx context.Context, repository string, number int, headSHA string) error {
+	repo, ok := pullRequestRepoFromName(repository)
+	if !ok || number <= 0 {
+		return fmt.Errorf("merge github pull request: invalid pull request %s#%d", strings.TrimSpace(repository), number)
+	}
+	body := map[string]string{
+		"merge_method": "squash",
+	}
+	if headSHA = strings.TrimSpace(headSHA); headSHA != "" {
+		body["sha"] = headSHA
+	}
+	var response restPullRequestMergeResponse
+	if err := c.client.REST(ctx, http.MethodPut, restPullRequestMergePath(repo, number), body, &response); err != nil {
+		return fmt.Errorf("merge github pull request: %w", err)
+	}
+	if !response.Merged {
+		message := strings.TrimSpace(response.Message)
+		if message == "" {
+			message = "github did not merge pull request"
+		}
+		return fmt.Errorf("merge github pull request: %s", message)
+	}
+	return nil
+}
+
+func hydratedPullRequestRef(issue connector.Issue) (pullRequestRepo, int, bool) {
+	number := 0
+	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
+		number = issue.PullRequest.Number
+	}
+	if number <= 0 && issue.PRNumber != nil {
+		number = *issue.PRNumber
+	}
+	if number <= 0 {
+		return pullRequestRepo{}, 0, false
+	}
+	if repo, ok := pullRequestRepoFromName(issue.PRRepository); ok {
+		return repo, number, true
+	}
+	if repo, ok := pullRequestRepoFromIdentifier(issue.Identifier); ok {
+		return repo, number, true
+	}
+	return pullRequestRepo{}, 0, false
 }
 
 func (c *Connector) fetchRepositoryPullRequestsPage(
@@ -3683,6 +3758,10 @@ func restPullRequestsPath(repo pullRequestRepo, page int) string {
 
 func restPullRequestPath(repo pullRequestRepo, number int) string {
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/pulls/" + strconv.Itoa(number)
+}
+
+func restPullRequestMergePath(repo pullRequestRepo, number int) string {
+	return restPullRequestPath(repo, number) + "/merge"
 }
 
 func restPullRequestReviewsPath(repo pullRequestRepo, number int) string {

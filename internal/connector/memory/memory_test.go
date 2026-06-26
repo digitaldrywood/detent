@@ -290,13 +290,99 @@ func TestConnectorCapturesIssueAndPullRequestComments(t *testing.T) {
 	if err := c.CreatePullRequestComment(context.Background(), "digitaldrywood/detent", 42, "pr comment"); err != nil {
 		t.Fatalf("CreatePullRequestComment() error = %v", err)
 	}
+	if err := c.MergePullRequest(context.Background(), "digitaldrywood/detent", 42, "head-sha"); err != nil {
+		t.Fatalf("MergePullRequest() error = %v", err)
+	}
 
 	want := []Event{
 		{Kind: EventKindComment, IssueID: "issue-1", Body: "issue comment"},
 		{Kind: EventKindPullRequestComment, Repository: "digitaldrywood/detent", PRNumber: 42, Body: "pr comment"},
+		{Kind: EventKindPullRequestMerge, Repository: "digitaldrywood/detent", PRNumber: 42, Body: "head-sha"},
 	}
 	if got := c.Events(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("Events() = %#v, want %#v", got, want)
+	}
+}
+
+func TestConnectorMergePullRequestUpdatesStatefulFixture(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 13, 45, 0, 0, time.UTC)
+	c := New(Config{
+		Issues: []connector.Issue{{
+			ID:           "issue-1",
+			Identifier:   "digitaldrywood/detent#744",
+			PRRepository: "digitaldrywood/detent",
+			PullRequest: &connector.PullRequest{
+				Number: 76,
+				State:  "OPEN",
+			},
+		}},
+		Stateful: true,
+		Now: func() time.Time {
+			return now
+		},
+	})
+
+	if err := c.MergePullRequest(context.Background(), "digitaldrywood/detent", 76, "head-sha"); err != nil {
+		t.Fatalf("MergePullRequest() error = %v", err)
+	}
+	issues, err := c.FetchCandidateIssues(context.Background())
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+	pullRequest := issues[0].PullRequest
+	if pullRequest == nil || pullRequest.State != "MERGED" {
+		t.Fatalf("PullRequest = %#v, want merged", pullRequest)
+	}
+	if pullRequest.ActivityAt == nil || !pullRequest.ActivityAt.Equal(now) {
+		t.Fatalf("ActivityAt = %v, want %v", pullRequest.ActivityAt, now)
+	}
+	if issues[0].UpdatedAt == nil || !issues[0].UpdatedAt.Equal(now) {
+		t.Fatalf("UpdatedAt = %v, want %v", issues[0].UpdatedAt, now)
+	}
+}
+
+func TestConnectorHydratePullRequestReturnsCurrentFixture(t *testing.T) {
+	t.Parallel()
+
+	c := New(Config{Issues: []connector.Issue{{
+		ID:           "issue-1",
+		Identifier:   "digitaldrywood/detent#744",
+		PRRepository: "digitaldrywood/detent",
+		PullRequest: &connector.PullRequest{
+			Number:         76,
+			State:          "OPEN",
+			MergeableState: "dirty",
+			CIStatus:       "failure",
+			HeadSHA:        "fresh-head",
+		},
+	}}})
+	stale := connector.Issue{
+		ID:         "issue-1",
+		Identifier: "digitaldrywood/detent#744",
+		PullRequest: &connector.PullRequest{
+			Number:         76,
+			State:          "OPEN",
+			MergeableState: "clean",
+			CIStatus:       "success",
+			HeadSHA:        "stale-head",
+		},
+	}
+
+	got, err := c.HydratePullRequest(context.Background(), stale)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() error = %v", err)
+	}
+
+	if got.PullRequest == nil {
+		t.Fatalf("HydratePullRequest().PullRequest = nil, want fixture pull request")
+	}
+	if got.PullRequest.HeadSHA != "fresh-head" || got.PullRequest.CIStatus != "failure" || got.PullRequest.MergeableState != "dirty" {
+		t.Fatalf("HydratePullRequest().PullRequest = %#v, want current fixture PR", got.PullRequest)
+	}
+	if got.PRRepository != "digitaldrywood/detent" {
+		t.Fatalf("PRRepository = %q, want digitaldrywood/detent", got.PRRepository)
 	}
 }
 
