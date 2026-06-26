@@ -510,17 +510,68 @@ func TestLocalGitCreateReusesExistingWorktreeWithoutAfterCreate(t *testing.T) {
 	}
 }
 
-func TestLocalGitCreateRejectsReusedWorktreeOnUnexpectedBranch(t *testing.T) {
+func TestLocalGitCreateRecoversCleanDetachedWorktree(t *testing.T) {
 	t.Parallel()
 	skipWindows(t)
 
 	source := initSourceRepo(t)
 	root := filepath.Join(t.TempDir(), "workspaces")
+	tracePath := filepath.Join(t.TempDir(), "after-create.trace")
 
 	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
 		Root:       root,
 		SourceRoot: source,
 		AutoBranch: true,
+		Hooks: Hooks{
+			AfterCreate: "printf 'after-create\n' >> " + shellQuote(tracePath),
+			Timeout:     time.Second,
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	first, err := backend.Create(context.Background(), Issue{Identifier: "DD-DETACHED"})
+	if err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+	runGit(t, first.Path, "switch", "--detach", "HEAD")
+
+	second, err := backend.Create(context.Background(), Issue{Identifier: "DD-DETACHED"})
+	if err != nil {
+		t.Fatalf("second Create() error = %v", err)
+	}
+
+	if !second.Created {
+		t.Fatal("second Create() Created = false, want true")
+	}
+	if second.Path != first.Path {
+		t.Fatalf("second Create() Path = %q, want %q", second.Path, first.Path)
+	}
+	if got := strings.TrimSpace(runGit(t, second.Path, "branch", "--show-current")); got != "detent/dd-detached" {
+		t.Fatalf("worktree branch = %q, want detent/dd-detached", got)
+	}
+	if got := strings.Count(readFile(t, tracePath), "after-create"); got != 2 {
+		t.Fatalf("after_create runs = %d, want 2", got)
+	}
+}
+
+func TestLocalGitCreateRecoversCleanWrongBranchWorktree(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	tracePath := filepath.Join(t.TempDir(), "after-create.trace")
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+		Hooks: Hooks{
+			AfterCreate: "printf 'after-create\n' >> " + shellQuote(tracePath),
+			Timeout:     time.Second,
+		},
 	})
 	if err != nil {
 		t.Fatalf("NewBackend() error = %v", err)
@@ -534,19 +585,87 @@ func TestLocalGitCreateRejectsReusedWorktreeOnUnexpectedBranch(t *testing.T) {
 	runGit(t, source, "branch", "detent/other")
 	runGit(t, info.Path, "switch", "detent/other")
 
-	_, err = backend.Create(context.Background(), Issue{Identifier: "DD-REUSE"})
-	if err == nil {
-		t.Fatal("second Create() error = nil, want branch mismatch")
+	second, err := backend.Create(context.Background(), Issue{Identifier: "DD-REUSE"})
+	if err != nil {
+		t.Fatalf("second Create() error = %v", err)
 	}
-	for _, want := range []string{
-		"workspace path is on branch",
-		"detent/other",
-		"detent/dd-reuse",
-		info.Path,
-	} {
-		if !strings.Contains(err.Error(), want) {
-			t.Fatalf("second Create() error = %q, want %q", err, want)
-		}
+
+	if !second.Created {
+		t.Fatal("second Create() Created = false, want true")
+	}
+	if second.Path != info.Path {
+		t.Fatalf("second Create() Path = %q, want %q", second.Path, info.Path)
+	}
+	if got := strings.TrimSpace(runGit(t, second.Path, "branch", "--show-current")); got != "detent/dd-reuse" {
+		t.Fatalf("worktree branch = %q, want detent/dd-reuse", got)
+	}
+	if got := strings.Count(readFile(t, tracePath), "after-create"); got != 2 {
+		t.Fatalf("after_create runs = %d, want 2", got)
+	}
+}
+
+func TestLocalGitCreateQuarantinesDirtyDetachedWorktree(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	var logs strings.Builder
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+		Logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	first, err := backend.Create(context.Background(), Issue{Identifier: "DD-DIRTY-DETACHED"})
+	if err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+	runGit(t, first.Path, "switch", "--detach", "HEAD")
+	if err := os.WriteFile(filepath.Join(first.Path, "local-progress.txt"), []byte("keep\n"), 0o600); err != nil {
+		t.Fatalf("write local progress: %v", err)
+	}
+
+	second, err := backend.Create(context.Background(), Issue{Identifier: "DD-DIRTY-DETACHED"})
+	if err != nil {
+		t.Fatalf("second Create() error = %v", err)
+	}
+
+	if !second.Created {
+		t.Fatal("second Create() Created = false, want true")
+	}
+	if second.Path != first.Path {
+		t.Fatalf("second Create() Path = %q, want %q", second.Path, first.Path)
+	}
+	if got := strings.TrimSpace(runGit(t, second.Path, "branch", "--show-current")); got != "detent/dd-dirty-detached" {
+		t.Fatalf("worktree branch = %q, want detent/dd-dirty-detached", got)
+	}
+	if _, err := os.Stat(filepath.Join(second.Path, "local-progress.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local progress exists in fresh workspace, stat error = %v", err)
+	}
+
+	quarantineDir := filepath.Join(root, ".detent", "quarantine")
+	entries, err := os.ReadDir(quarantineDir)
+	if err != nil {
+		t.Fatalf("read quarantine dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("quarantine entries = %d, want 1", len(entries))
+	}
+	quarantinedPath := filepath.Join(quarantineDir, entries[0].Name())
+	if got := readFile(t, filepath.Join(quarantinedPath, "local-progress.txt")); got != "keep\n" {
+		t.Fatalf("quarantined local-progress.txt = %q, want keep", got)
+	}
+	if got := strings.TrimSpace(runGit(t, quarantinedPath, "branch", "--show-current")); got != "" {
+		t.Fatalf("quarantined worktree branch = %q, want detached HEAD", got)
+	}
+	if got := logs.String(); !strings.Contains(got, "quarantined stale workspace") || !strings.Contains(got, quarantinedPath) {
+		t.Fatalf("logs = %q, want quarantine report for %s", got, quarantinedPath)
 	}
 }
 
