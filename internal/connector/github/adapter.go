@@ -882,8 +882,16 @@ type projectField struct {
 }
 
 func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue, error) {
+	return c.FetchCandidateIssuesByStates(ctx, c.activeStates)
+}
+
+func (c *Connector) FetchCandidateIssuesByStates(ctx context.Context, stateNames []string) ([]connector.Issue, error) {
+	stateNames = normalizeStateList(stateNames, nil)
+	if len(stateNames) == 0 {
+		return []connector.Issue{}, nil
+	}
 	if c.usesLabelStatus() {
-		issues, err := c.fetchLabelIssuesByStates(ctx, c.activeStates, 0)
+		issues, err := c.fetchLabelIssuesByStates(ctx, stateNames, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -893,7 +901,7 @@ func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue
 		return issues, nil
 	}
 	if c.usesIssueFieldStatus() {
-		issues, err := c.fetchIssueFieldIssuesByStates(ctx, c.activeStates, 0)
+		issues, err := c.fetchIssueFieldIssuesByStates(ctx, stateNames, 0)
 		if err != nil {
 			return nil, err
 		}
@@ -906,8 +914,8 @@ func (c *Connector) FetchCandidateIssues(ctx context.Context) ([]connector.Issue
 		return nil, ErrMissingProject
 	}
 
-	issues, err := c.fetchProjectItems(ctx, graphQLQueryCandidateIssues, c.projectStatusQuery(c.activeStates), func(issue connector.Issue) bool {
-		return stateInList(issue.State, c.activeStates)
+	issues, err := c.fetchProjectItems(ctx, graphQLQueryCandidateIssues, c.projectStatusQuery(stateNames), func(issue connector.Issue) bool {
+		return stateInList(issue.State, stateNames)
 	})
 	if err != nil {
 		return nil, err
