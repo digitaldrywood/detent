@@ -172,6 +172,9 @@ func runWithShutdown(ctx context.Context, cfg runningShutdownConfig, serve shutd
 	for {
 		select {
 		case err := <-serveErrs:
+			if ctx.Err() != nil && unexpectedShutdownServeError(err) == nil {
+				return ctx.Err()
+			}
 			return unexpectedShutdownServeError(err)
 		case <-ctx.Done():
 			cancelServe()
