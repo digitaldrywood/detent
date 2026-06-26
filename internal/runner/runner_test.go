@@ -260,6 +260,18 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if sessionStore.usage.Outcome != FinalStateCompleted {
 		t.Fatalf("UsageEvent outcome = %q, want %q", sessionStore.usage.Outcome, FinalStateCompleted)
 	}
+	if sessionStore.phase.ProjectID != "detent" || sessionStore.phase.SessionID != 42 {
+		t.Fatalf("WorkflowPhaseEvent identity = %#v, want project detent and session 42", sessionStore.phase)
+	}
+	if sessionStore.phase.PhaseType != store.WorkflowPhaseTypeAgentSession || sessionStore.phase.PhaseName != "agent_active" || sessionStore.phase.Status != FinalStateCompleted {
+		t.Fatalf("WorkflowPhaseEvent phase = %#v, want completed agent_active session", sessionStore.phase)
+	}
+	if sessionStore.phase.StartedAt != startedAt || sessionStore.phase.FinishedAt != completedAt || sessionStore.phase.DurationSeconds != 4 {
+		t.Fatalf("WorkflowPhaseEvent timing = %#v, want 4s session", sessionStore.phase)
+	}
+	if sessionStore.phase.Turns != 1 || sessionStore.phase.InputTokens != 100 || sessionStore.phase.OutputTokens != 25 || sessionStore.phase.TotalTokens != 125 {
+		t.Fatalf("WorkflowPhaseEvent usage = %#v, want turns and token totals", sessionStore.phase)
+	}
 }
 
 func TestRunnerPlanModeCapturesOutputAndConstrainsPrompt(t *testing.T) {
@@ -923,6 +935,7 @@ type fakeSessionStore struct {
 	started   store.SessionStart
 	finished  store.SessionFinish
 	usage     store.UsageEvent
+	phase     store.WorkflowPhaseEvent
 }
 
 func (s *fakeSessionStore) StartSession(_ context.Context, attrs store.SessionStart) (int64, error) {
@@ -937,6 +950,11 @@ func (s *fakeSessionStore) FinishSession(_ context.Context, _ int64, attrs store
 
 func (s *fakeSessionStore) RecordUsageEvent(_ context.Context, attrs store.UsageEvent) (int64, error) {
 	s.usage = attrs
+	return 1, nil
+}
+
+func (s *fakeSessionStore) RecordWorkflowPhaseEvent(_ context.Context, attrs store.WorkflowPhaseEvent) (int64, error) {
+	s.phase = attrs
 	return 1, nil
 }
 

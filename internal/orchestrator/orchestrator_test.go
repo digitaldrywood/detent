@@ -16,6 +16,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
+	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -172,6 +174,55 @@ func TestRunStartsLabelModeTodoIssueInProgress(t *testing.T) {
 	}
 	if !labelListContains(got.Labels, "detent:in-progress") {
 		t.Fatalf("Labels = %#v, want detent:in-progress", got.Labels)
+	}
+}
+
+func TestRunRecordsLaneTransitionMetrics(t *testing.T) {
+	t.Parallel()
+
+	stageAt := time.Now().Add(-2 * time.Hour)
+	issue := testIssue("issue-metrics-start", "digitaldrywood/detent#722", "Todo")
+	issue.StageUpdatedAt = &stageAt
+	tracker := newFakeConnector(issue)
+	runner := newBlockingRunner()
+	metrics := &workflowMetricsRecorder{}
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:           5 * time.Millisecond,
+		MaxConcurrentAgents:    1,
+		MaxRetryBackoff:        time.Hour,
+		FailureRetryBaseDelay:  time.Hour,
+		Project:                scheduler.ProjectCandidate{ID: "detent", Weight: 1},
+		ActiveStates:           []string{"Todo", "In Progress"},
+		TerminalStates:         []string{"Done", "Cancelled", "Canceled", "Closed"},
+		ContinuationRetryDelay: time.Second,
+	}, orchestrator.Dependencies{
+		Connector:       tracker,
+		Runner:          runner,
+		WorkflowMetrics: metrics,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+	defer close(runner.release)
+
+	receiveRunRequest(t, runner.started)
+	waitForStateUpdate(t, tracker, stateUpdateCall{issueID: issue.ID, state: "In Progress"})
+	events := waitForWorkflowMetricEvents(t, metrics, 2)
+
+	if events[0].ProjectID != "detent" || events[0].IssueID != issue.ID || events[0].Identifier != issue.Identifier {
+		t.Fatalf("exit event identity = %#v", events[0])
+	}
+	if events[0].PhaseType != store.WorkflowPhaseTypeLane || events[0].PhaseName != "Todo" || events[0].Status != "exited" {
+		t.Fatalf("exit event phase = %#v, want Todo exited lane", events[0])
+	}
+	if !events[0].StartedAt.Equal(stageAt) || events[0].FinishedAt.IsZero() || events[0].DurationSeconds <= 0 {
+		t.Fatalf("exit event timing = %#v, want duration from stage timestamp", events[0])
+	}
+	if events[1].PhaseType != store.WorkflowPhaseTypeLane || events[1].PhaseName != "In Progress" || events[1].PreviousPhaseName != "Todo" || events[1].Status != "entered" {
+		t.Fatalf("enter event phase = %#v, want In Progress entered from Todo", events[1])
 	}
 }
 
@@ -1970,6 +2021,26 @@ type stateUpdateCall struct {
 	state   string
 }
 
+type workflowMetricsRecorder struct {
+	mu     sync.Mutex
+	events []store.WorkflowPhaseEvent
+}
+
+func (r *workflowMetricsRecorder) RecordWorkflowPhaseEvent(_ context.Context, event store.WorkflowPhaseEvent) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.events = append(r.events, event)
+	return int64(len(r.events)), nil
+}
+
+func (r *workflowMetricsRecorder) snapshot() []store.WorkflowPhaseEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]store.WorkflowPhaseEvent(nil), r.events...)
+}
+
 func newFakeConnector(issues ...connector.Issue) *fakeConnector {
 	return &fakeConnector{candidates: cloneIssues(issues)}
 }
@@ -2274,6 +2345,25 @@ func waitForStateUpdate(t *testing.T, tracker *fakeConnector, want stateUpdateCa
 		select {
 		case <-deadline:
 			t.Fatalf("timed out waiting for state update %#v; got %#v", want, tracker.stateUpdateCalls())
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+}
+
+func waitForWorkflowMetricEvents(t *testing.T, recorder *workflowMetricsRecorder, want int) []store.WorkflowPhaseEvent {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	for {
+		events := recorder.snapshot()
+		if len(events) >= want {
+			return events
+		}
+
+		select {
+		case <-deadline:
+			t.Fatalf("timed out waiting for %d workflow metric events; got %#v", want, events)
 		default:
 			time.Sleep(time.Millisecond)
 		}

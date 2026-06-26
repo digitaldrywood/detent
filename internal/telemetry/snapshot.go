@@ -6,29 +6,30 @@ import (
 )
 
 type Snapshot struct {
-	GeneratedAt    time.Time         `json:"generated_at"`
-	Project        Project           `json:"project"`
-	Instance       Instance          `json:"instance"`
-	Projects       []ProjectSnapshot `json:"projects,omitempty"`
-	DashboardURL   string            `json:"dashboard_url,omitempty"`
-	Auth           AuthHealth        `json:"auth,omitzero"`
-	Shutdown       Shutdown          `json:"shutdown"`
-	Refresh        Refresh           `json:"refresh"`
-	Events         []ActivityEvent   `json:"events,omitempty"`
-	Counts         Counts            `json:"counts"`
-	BoardIssues    []Issue           `json:"board_issues,omitempty"`
-	Pipeline       []Issue           `json:"pipeline,omitempty"`
-	Running        []Running         `json:"running"`
-	Queue          []Queued          `json:"queue"`
-	Blocked        []Blocked         `json:"blocked"`
-	Completed      []Completed       `json:"completed"`
-	Budget         Budget            `json:"budget"`
-	RateLimits     *RateLimits       `json:"rate_limits"`
-	Tokens         Tokens            `json:"tokens"`
-	Throughput     TokenThroughput   `json:"throughput"`
-	LifetimeTotals LifetimeTotals    `json:"lifetime_totals"`
-	CycleTime      CycleTimeReport   `json:"cycle_time"`
-	TokenTrend     []TokenTrendPoint `json:"token_trend,omitempty"`
+	GeneratedAt     time.Time         `json:"generated_at"`
+	Project         Project           `json:"project"`
+	Instance        Instance          `json:"instance"`
+	Projects        []ProjectSnapshot `json:"projects,omitempty"`
+	DashboardURL    string            `json:"dashboard_url,omitempty"`
+	Auth            AuthHealth        `json:"auth,omitzero"`
+	Shutdown        Shutdown          `json:"shutdown"`
+	Refresh         Refresh           `json:"refresh"`
+	Events          []ActivityEvent   `json:"events,omitempty"`
+	Counts          Counts            `json:"counts"`
+	BoardIssues     []Issue           `json:"board_issues,omitempty"`
+	Pipeline        []Issue           `json:"pipeline,omitempty"`
+	Running         []Running         `json:"running"`
+	Queue           []Queued          `json:"queue"`
+	Blocked         []Blocked         `json:"blocked"`
+	Completed       []Completed       `json:"completed"`
+	Budget          Budget            `json:"budget"`
+	RateLimits      *RateLimits       `json:"rate_limits"`
+	Tokens          Tokens            `json:"tokens"`
+	Throughput      TokenThroughput   `json:"throughput"`
+	LifetimeTotals  LifetimeTotals    `json:"lifetime_totals"`
+	CycleTime       CycleTimeReport   `json:"cycle_time"`
+	WorkflowMetrics WorkflowMetrics   `json:"workflow_metrics"`
+	TokenTrend      []TokenTrendPoint `json:"token_trend,omitempty"`
 }
 
 type Shutdown struct {
@@ -173,26 +174,28 @@ type Counts struct {
 }
 
 type Issue struct {
-	ID             string         `json:"issue_id"`
-	Identifier     string         `json:"identifier,omitempty"`
-	ProjectID      string         `json:"project_id,omitempty"`
-	URL            string         `json:"url,omitempty"`
-	Title          string         `json:"title,omitempty"`
-	Description    string         `json:"description,omitempty"`
-	State          string         `json:"state,omitempty"`
-	Labels         []string       `json:"labels,omitempty"`
-	Assignees      []string       `json:"assignees,omitempty"`
-	Comments       []IssueComment `json:"comments,omitempty"`
-	BlockedBy      []BlockedRef   `json:"blocked_by,omitempty"`
-	PullRequest    *PullRequest   `json:"pull_request,omitempty"`
-	MergeTiming    *MergeTiming   `json:"merge_timing,omitempty"`
-	Owner          string         `json:"owner,omitempty"`
-	LeaseRenewedAt *time.Time     `json:"lease_renewed_at,omitempty"`
-	LeaseExpiresAt *time.Time     `json:"lease_expires_at,omitempty"`
-	LeaseStale     bool           `json:"lease_stale,omitempty"`
-	CreatedAt      *time.Time     `json:"created_at,omitempty"`
-	UpdatedAt      *time.Time     `json:"updated_at,omitempty"`
-	StageUpdatedAt *time.Time     `json:"stage_updated_at,omitempty"`
+	ID                    string         `json:"issue_id"`
+	Identifier            string         `json:"identifier,omitempty"`
+	ProjectID             string         `json:"project_id,omitempty"`
+	URL                   string         `json:"url,omitempty"`
+	Title                 string         `json:"title,omitempty"`
+	Description           string         `json:"description,omitempty"`
+	State                 string         `json:"state,omitempty"`
+	Labels                []string       `json:"labels,omitempty"`
+	Assignees             []string       `json:"assignees,omitempty"`
+	Comments              []IssueComment `json:"comments,omitempty"`
+	BlockedBy             []BlockedRef   `json:"blocked_by,omitempty"`
+	PullRequest           *PullRequest   `json:"pull_request,omitempty"`
+	MergeTiming           *MergeTiming   `json:"merge_timing,omitempty"`
+	Owner                 string         `json:"owner,omitempty"`
+	LeaseRenewedAt        *time.Time     `json:"lease_renewed_at,omitempty"`
+	LeaseExpiresAt        *time.Time     `json:"lease_expires_at,omitempty"`
+	LeaseStale            bool           `json:"lease_stale,omitempty"`
+	CreatedAt             *time.Time     `json:"created_at,omitempty"`
+	UpdatedAt             *time.Time     `json:"updated_at,omitempty"`
+	StageUpdatedAt        *time.Time     `json:"stage_updated_at,omitempty"`
+	CurrentLaneEnteredAt  *time.Time     `json:"current_lane_entered_at,omitempty"`
+	CurrentLaneAgeSeconds int64          `json:"current_lane_age_seconds,omitempty"`
 }
 
 type IssueComment struct {
@@ -457,6 +460,75 @@ type CycleTimeBucket struct {
 	MinSeconds int64  `json:"min_seconds"`
 	MaxSeconds int64  `json:"max_seconds,omitempty"`
 	Count      int    `json:"count"`
+}
+
+type WorkflowMetrics struct {
+	Available        bool                    `json:"available"`
+	DegradedReason   string                  `json:"degraded_reason,omitempty"`
+	Windows          []WorkflowMetricsWindow `json:"windows,omitempty"`
+	OldestCards      []WorkflowLaneAge       `json:"oldest_cards,omitempty"`
+	ActiveBottleneck WorkflowBottleneck      `json:"active_bottleneck,omitzero"`
+}
+
+type WorkflowMetricsWindow struct {
+	Label     string                `json:"label"`
+	From      time.Time             `json:"from"`
+	To        time.Time             `json:"to"`
+	Lanes     []WorkflowPhaseMetric `json:"lanes,omitempty"`
+	SubPhases []WorkflowPhaseMetric `json:"sub_phases,omitempty"`
+}
+
+type WorkflowPhaseMetric struct {
+	ProjectID      string `json:"project_id,omitempty"`
+	PhaseType      string `json:"phase_type"`
+	PhaseName      string `json:"phase_name"`
+	Count          int64  `json:"count"`
+	TotalSeconds   int64  `json:"total_seconds"`
+	AverageSeconds int64  `json:"average_seconds"`
+	P50Seconds     int64  `json:"p50_seconds"`
+	P90Seconds     int64  `json:"p90_seconds"`
+	P95Seconds     int64  `json:"p95_seconds"`
+	InputTokens    int64  `json:"input_tokens,omitempty"`
+	OutputTokens   int64  `json:"output_tokens,omitempty"`
+	TotalTokens    int64  `json:"total_tokens,omitempty"`
+	Turns          int64  `json:"turns,omitempty"`
+	EndpointFamily string `json:"endpoint_family,omitempty"`
+}
+
+type WorkflowLaneAge struct {
+	ProjectID     string     `json:"project_id,omitempty"`
+	IssueID       string     `json:"issue_id,omitempty"`
+	Identifier    string     `json:"identifier,omitempty"`
+	URL           string     `json:"url,omitempty"`
+	Title         string     `json:"title,omitempty"`
+	State         string     `json:"state,omitempty"`
+	EnteredAt     *time.Time `json:"entered_at,omitempty"`
+	AgeSeconds    int64      `json:"age_seconds"`
+	BottleneckKey string     `json:"bottleneck_key,omitempty"`
+}
+
+type WorkflowBottleneck struct {
+	Kind       string     `json:"kind,omitempty"`
+	Label      string     `json:"label,omitempty"`
+	Detail     string     `json:"detail,omitempty"`
+	ProjectID  string     `json:"project_id,omitempty"`
+	IssueID    string     `json:"issue_id,omitempty"`
+	Identifier string     `json:"identifier,omitempty"`
+	Seconds    int64      `json:"seconds,omitempty"`
+	Count      int        `json:"count,omitempty"`
+	Until      *time.Time `json:"until,omitempty"`
+}
+
+func (b WorkflowBottleneck) IsZero() bool {
+	return b.Kind == "" &&
+		b.Label == "" &&
+		b.Detail == "" &&
+		b.ProjectID == "" &&
+		b.IssueID == "" &&
+		b.Identifier == "" &&
+		b.Seconds == 0 &&
+		b.Count == 0 &&
+		b.Until == nil
 }
 
 type TokenTrendPoint struct {

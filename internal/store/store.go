@@ -27,6 +27,7 @@ type Store interface {
 	StatsStore
 	FairShareStore
 	BudgetCostStore
+	WorkflowMetricsStore
 	Queries() *sqlc.Queries
 	Close() error
 }
@@ -53,6 +54,24 @@ type FairShareStore interface {
 type BudgetCostStore interface {
 	BudgetCostEvents(context.Context, BudgetCostQuery) ([]BudgetCostEvent, error)
 }
+
+type WorkflowMetricsStore interface {
+	RecordWorkflowPhaseEvent(context.Context, WorkflowPhaseEvent) (int64, error)
+	WorkflowMetricsReport(context.Context, WorkflowMetricsQuery) (WorkflowMetricsReport, error)
+	IssueWorkflowTimeline(context.Context, IssueIdentity) (WorkflowTimeline, error)
+}
+
+type WorkflowPhaseType string
+
+const (
+	WorkflowPhaseTypeLane          WorkflowPhaseType = "lane"
+	WorkflowPhaseTypeAgentSession  WorkflowPhaseType = "agent_session"
+	WorkflowPhaseTypeLocalCheck    WorkflowPhaseType = "local_check"
+	WorkflowPhaseTypeCI            WorkflowPhaseType = "ci"
+	WorkflowPhaseTypeGitHubBackoff WorkflowPhaseType = "github_backoff"
+	WorkflowPhaseTypeReview        WorkflowPhaseType = "review"
+	WorkflowPhaseTypeMergeQueue    WorkflowPhaseType = "merge_queue"
+)
 
 type RunStart struct {
 	StartedAt            time.Time
@@ -120,6 +139,65 @@ type UsageEvent struct {
 	StartedAt      time.Time
 	FinishedAt     time.Time
 	Outcome        string
+}
+
+type WorkflowPhaseEvent struct {
+	ID                int64
+	ProjectID         string
+	RunID             int64
+	SessionID         int64
+	IssueID           string
+	Identifier        string
+	IssueURL          string
+	PRNumber          *int64
+	PhaseType         WorkflowPhaseType
+	PhaseName         string
+	PreviousPhaseName string
+	Reason            string
+	Status            string
+	StartedAt         time.Time
+	FinishedAt        time.Time
+	DurationSeconds   int64
+	CommandName       string
+	ExitCode          *int64
+	Turns             int64
+	InputTokens       int64
+	OutputTokens      int64
+	TotalTokens       int64
+	EndpointFamily    string
+	MetadataJSON      string
+}
+
+type WorkflowMetricsQuery struct {
+	ProjectID string
+	From      time.Time
+	To        time.Time
+}
+
+type WorkflowMetricsReport struct {
+	Lanes     []WorkflowPhaseMetric
+	SubPhases []WorkflowPhaseMetric
+}
+
+type WorkflowPhaseMetric struct {
+	ProjectID      string
+	PhaseType      string
+	PhaseName      string
+	Count          int64
+	TotalSeconds   int64
+	AverageSeconds int64
+	P50Seconds     int64
+	P90Seconds     int64
+	P95Seconds     int64
+	InputTokens    int64
+	OutputTokens   int64
+	TotalTokens    int64
+	Turns          int64
+	EndpointFamily string
+}
+
+type WorkflowTimeline struct {
+	Events []WorkflowPhaseEvent
 }
 
 type UsageReportGroup string

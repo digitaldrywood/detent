@@ -1158,6 +1158,7 @@ templ ProjectDiagnosticsSnapshot(data DashboardData) {
 		<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 			<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
 				@boardHealthSection(data.Snapshot)
+				@workflowMetricsSection(data.Snapshot.WorkflowMetrics)
 				@cycleTimeSection(data.Snapshot.CycleTime)
 				@budgetCard(data.Snapshot)
 			</div>
@@ -1202,6 +1203,7 @@ templ FleetSnapshot(data DashboardData) {
 		</section>
 		<section class="dashboard-analytics grid min-w-0 gap-4 lg:gap-5" aria-label="Dashboard analytics">
 			@boardHealthSection(data.Snapshot)
+			@workflowMetricsSection(data.Snapshot.WorkflowMetrics)
 			@cycleTimeSection(data.Snapshot.CycleTime)
 			@budgetCard(data.Snapshot)
 		</section>
@@ -3248,6 +3250,148 @@ templ cycleTimeSection(report telemetry.CycleTimeReport) {
 						}
 					</div>
 				</div>
+			</div>
+		}
+	</section>
+}
+
+templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Workflow metrics">
+		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+			<div class="min-w-0">
+				@helpHeading2("Workflow metrics", helpWorkflowMetrics, "workflow-metrics")
+				<p class="text-sm text-muted-foreground">Lane timing, observable sub-phases, oldest cards, and the active bottleneck from local runtime telemetry.</p>
+			</div>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ workflowMetricsSummaryLabel(report) }</span>
+		</div>
+		if !workflowMetricsAvailable(report) {
+			<div class="mt-4">
+				@dashboardEmptyState("Workflow metrics unavailable.", workflowMetricsUnavailableDetail(report), "bg-muted-foreground")
+			</div>
+		} else if len(workflowLaneMetricRows(report)) == 0 && len(workflowOldestCardRows(report)) == 0 {
+			<div class="mt-4">
+				@dashboardEmptyState("No workflow timing events yet.", "Lane and sub-phase aggregates appear after Detent records state transitions or observable work phases.", "bg-accent")
+			</div>
+		} else {
+			<div class="mt-5 grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_20rem]">
+				<div class="grid min-w-0 gap-5">
+					<div class="min-w-0">
+						<div class="flex items-center justify-between gap-3">
+							@helpHeading3("Lane percentiles", helpWorkflowMetrics, "workflow-metrics")
+							<span class="font-mono text-xs text-muted-foreground">24h / 7d / 30d</span>
+						</div>
+						if len(workflowLaneMetricRows(report)) == 0 {
+							<div class="mt-3">
+								@dashboardEmptyState("No lane duration aggregates.", "Completed lane exits will populate p50 and p90 timing here.", "bg-accent")
+							</div>
+						} else {
+							<div class="mt-3 overflow-hidden rounded-md border border-border">
+								<div class="max-h-72 overflow-auto" data-preserve-scroll="workflow-lanes">
+									<table class="min-w-full text-left text-sm">
+										<thead class="sticky top-0 bg-muted text-xs uppercase text-muted-foreground">
+											<tr>
+												<th class="px-3 py-2 font-medium">Window</th>
+												<th class="px-3 py-2 font-medium">Lane</th>
+												<th class="px-3 py-2 text-right font-medium">Count</th>
+												<th class="px-3 py-2 text-right font-medium">Avg</th>
+												<th class="px-3 py-2 text-right font-medium">P50</th>
+												<th class="px-3 py-2 text-right font-medium">P90</th>
+												<th class="px-3 py-2 text-right font-medium">P95</th>
+											</tr>
+										</thead>
+										<tbody class="divide-y divide-border">
+											for _, row := range workflowLaneMetricRows(report) {
+												<tr>
+													<td class="px-3 py-2 font-mono text-xs text-muted-foreground">{ row.Window }</td>
+													<td class="px-3 py-2 font-medium text-foreground">{ row.Lane }</td>
+													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.Count }</td>
+													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.Average }</td>
+													<td class="px-3 py-2 text-right font-mono text-foreground">{ row.P50 }</td>
+													<td class="px-3 py-2 text-right font-mono text-foreground">{ row.P90 }</td>
+													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.P95 }</td>
+												</tr>
+											}
+										</tbody>
+									</table>
+								</div>
+							</div>
+						}
+					</div>
+					<div class="min-w-0">
+						<div class="flex items-center justify-between gap-3">
+							@helpHeading3("Observable sub-phases", helpWorkflowMetrics, "workflow-metrics")
+							<span class="font-mono text-xs text-muted-foreground">AI / checks / CI / backoff</span>
+						</div>
+						if len(workflowSubphaseMetricRows(report)) == 0 {
+							<div class="mt-3">
+								@dashboardEmptyState("No sub-phase aggregates yet.", "AI sessions, local checks, CI, merge queue, and rate-limit events appear as Detent observes them.", "bg-accent")
+							</div>
+						} else {
+							<div class="mt-3 grid gap-2 sm:grid-cols-2">
+								for _, row := range workflowSubphaseMetricRows(report) {
+									<div class="grid gap-1 rounded-md bg-muted/60 px-3 py-2 text-sm">
+										<div class="flex min-w-0 items-center justify-between gap-3">
+											<span class="truncate font-medium text-foreground">{ row.Phase }</span>
+											<span class="font-mono text-xs text-muted-foreground">{ row.Window }</span>
+										</div>
+										<div class="grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground">
+											<span>{ row.Count } runs</span>
+											<span>{ row.Total }</span>
+											<span>{ row.Mean } avg</span>
+										</div>
+										<span class="truncate text-xs text-muted-foreground">{ row.Detail }</span>
+									</div>
+								}
+							</div>
+						}
+					</div>
+				</div>
+				<aside class="grid min-w-0 content-start gap-4">
+					<div class="rounded-md bg-muted/60 px-3 py-3">
+						<span class="block text-xs font-medium uppercase text-muted-foreground">Active bottleneck</span>
+						<strong class="mt-1 block text-lg font-semibold text-foreground">{ workflowBottleneck(report).Label }</strong>
+						<span class="mt-1 block font-mono text-sm text-muted-foreground">{ workflowBottleneck(report).Value }</span>
+						<p class="mt-2 text-sm text-muted-foreground">{ workflowBottleneck(report).Detail }</p>
+						if workflowBottleneck(report).Count != "" {
+							<span class="mt-2 inline-block font-mono text-xs text-muted-foreground">{ workflowBottleneck(report).Count }</span>
+						}
+					</div>
+					<div class="min-w-0">
+						<div class="flex items-center justify-between gap-3">
+							@helpHeading3("Oldest cards", helpWorkflowMetrics, "workflow-metrics")
+							<span class="font-mono text-xs text-muted-foreground">{ strconv.Itoa(len(workflowOldestCardRows(report))) }</span>
+						</div>
+						if len(workflowOldestCardRows(report)) == 0 {
+							<div class="mt-3">
+								@dashboardEmptyState("No live card ages.", "Visible cards will appear after the next tracker snapshot.", "bg-accent")
+							</div>
+						} else {
+							<div class="mt-3 grid gap-2">
+								for _, row := range workflowOldestCardRows(report) {
+									<div class="grid gap-1 rounded-md bg-muted/60 px-3 py-2 text-sm">
+										<div class="flex min-w-0 items-start gap-2">
+											<div class="min-w-0 flex-1">
+												<span class="block truncate font-medium text-foreground">{ row.Identifier }</span>
+												<span class="block truncate text-xs text-muted-foreground">{ row.Title }</span>
+											</div>
+											if row.URL != "" {
+												@issueOpenLink(row.URL, "Open issue "+row.Identifier, true)
+											}
+										</div>
+										<div class="flex flex-wrap items-center gap-x-3 gap-y-1 font-mono text-xs text-muted-foreground">
+											<span>{ row.State }</span>
+											if row.ProjectID != "" {
+												<span>{ row.ProjectID }</span>
+											}
+											<span>{ row.Age }</span>
+											<span>{ row.Key }</span>
+										</div>
+									</div>
+								}
+							</div>
+						}
+					</div>
+				</aside>
 			</div>
 		}
 	</section>

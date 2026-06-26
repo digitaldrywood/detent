@@ -35,7 +35,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		}
 
 		handled[issueID] = struct{}{}
-		if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+		if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "completed_active_review_transition"); err != nil {
 			if o.logger != nil {
 				o.logger.Warn(
 					"completed issue review transition failed",

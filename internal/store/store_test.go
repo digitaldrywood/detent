@@ -40,8 +40,8 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	if got := queryInt(t, sqliteBackend.db, "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", got)
 	}
-	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events')"); got != 4 {
-		t.Fatalf("migrated table count = %d, want 4", got)
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events')"); got != 5 {
+		t.Fatalf("migrated table count = %d, want 5", got)
 	}
 }
 
@@ -477,6 +477,103 @@ func TestCycleTimeBuckets(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestWorkflowMetricsStoreRoundTripAndAggregates(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	base := time.Date(2026, 6, 1, 10, 0, 0, 0, time.UTC)
+
+	events := []WorkflowPhaseEvent{
+		{
+			ProjectID:         " detent ",
+			IssueID:           " issue-722 ",
+			Identifier:        " digitaldrywood/detent#722 ",
+			IssueURL:          " https://github.com/digitaldrywood/detent/issues/722 ",
+			PhaseType:         WorkflowPhaseTypeLane,
+			PhaseName:         " In Progress ",
+			PreviousPhaseName: "Todo",
+			Status:            " exited ",
+			StartedAt:         base,
+			FinishedAt:        base.Add(10 * time.Minute),
+			Reason:            "transition_to:Human Review",
+		},
+		{
+			ProjectID:  "detent",
+			IssueID:    "issue-723",
+			Identifier: "digitaldrywood/detent#723",
+			PhaseType:  WorkflowPhaseTypeLane,
+			PhaseName:  "In Progress",
+			Status:     "exited",
+			StartedAt:  base.Add(time.Hour),
+			FinishedAt: base.Add(time.Hour + 20*time.Minute),
+		},
+		{
+			ProjectID:      "detent",
+			IssueID:        "issue-722",
+			Identifier:     "digitaldrywood/detent#722",
+			PhaseType:      WorkflowPhaseTypeAgentSession,
+			PhaseName:      "agent_active",
+			Status:         "completed",
+			StartedAt:      base.Add(time.Minute),
+			FinishedAt:     base.Add(9 * time.Minute),
+			Turns:          3,
+			InputTokens:    1000,
+			OutputTokens:   250,
+			TotalTokens:    1250,
+			MetadataJSON:   `{"session_id":42}`,
+			EndpointFamily: "codex",
+		},
+	}
+	for _, event := range events {
+		if _, err := backend.RecordWorkflowPhaseEvent(ctx, event); err != nil {
+			t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+		}
+	}
+
+	report, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{
+		ProjectID: "detent",
+		From:      base.Add(-time.Minute),
+		To:        base.Add(2 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("WorkflowMetricsReport() error = %v", err)
+	}
+
+	if len(report.Lanes) != 1 {
+		t.Fatalf("WorkflowMetricsReport().Lanes len = %d, want 1: %#v", len(report.Lanes), report.Lanes)
+	}
+	lane := report.Lanes[0]
+	if lane.ProjectID != "detent" || lane.PhaseName != "In Progress" || lane.Count != 2 {
+		t.Fatalf("lane metric = %#v, want detent In Progress count 2", lane)
+	}
+	if lane.AverageSeconds != 900 || lane.P50Seconds != 600 || lane.P90Seconds != 1200 || lane.P95Seconds != 1200 {
+		t.Fatalf("lane durations = %#v, want average 900 p50 600 p90/p95 1200", lane)
+	}
+
+	if len(report.SubPhases) != 1 {
+		t.Fatalf("WorkflowMetricsReport().SubPhases len = %d, want 1: %#v", len(report.SubPhases), report.SubPhases)
+	}
+	subphase := report.SubPhases[0]
+	if subphase.PhaseType != string(WorkflowPhaseTypeAgentSession) || subphase.PhaseName != "agent_active" || subphase.TotalSeconds != 480 {
+		t.Fatalf("subphase metric = %#v, want 480s agent_active", subphase)
+	}
+
+	timeline, err := backend.IssueWorkflowTimeline(ctx, IssueIdentity{Identifier: "digitaldrywood/detent#722"})
+	if err != nil {
+		t.Fatalf("IssueWorkflowTimeline() error = %v", err)
+	}
+	if len(timeline.Events) != 2 {
+		t.Fatalf("IssueWorkflowTimeline().Events len = %d, want 2: %#v", len(timeline.Events), timeline.Events)
+	}
+	if timeline.Events[0].ProjectID != "detent" || timeline.Events[0].PhaseName != "In Progress" || timeline.Events[0].DurationSeconds != 600 {
+		t.Fatalf("timeline first event = %#v, want normalized In Progress lane", timeline.Events[0])
+	}
+	if timeline.Events[1].Turns != 3 || timeline.Events[1].TotalTokens != 1250 || timeline.Events[1].MetadataJSON != `{"session_id":42}` {
+		t.Fatalf("timeline agent event = %#v, want turns/tokens/metadata", timeline.Events[1])
 	}
 }
 

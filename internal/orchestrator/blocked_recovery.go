@@ -127,7 +127,7 @@ func (o *Orchestrator) applyBlockedRecovery(
 	if targetState == "" {
 		targetState = autoPromoteReworkState
 	}
-	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "blocked_recovery"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("blocked recovery transition failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "reason", decision.Reason, "error", err)
 		}

@@ -91,7 +91,52 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	if len(snapshot.Projects) > 0 {
 		out.TokenTrend = nil
 	}
+	out.WorkflowMetrics = scopedWorkflowMetrics(snapshot.WorkflowMetrics, selectedProjectID)
 	return out
+}
+
+func scopedWorkflowMetrics(metrics telemetry.WorkflowMetrics, selectedProjectID string) telemetry.WorkflowMetrics {
+	if selectedProjectID == "" {
+		return metrics
+	}
+	out := metrics
+	out.Windows = make([]telemetry.WorkflowMetricsWindow, 0, len(metrics.Windows))
+	for _, window := range metrics.Windows {
+		scopedWindow := window
+		scopedWindow.Lanes = scopedWorkflowPhaseMetrics(window.Lanes, selectedProjectID)
+		scopedWindow.SubPhases = scopedWorkflowPhaseMetrics(window.SubPhases, selectedProjectID)
+		out.Windows = append(out.Windows, scopedWindow)
+	}
+	out.OldestCards = scopedWorkflowLaneAges(metrics.OldestCards, selectedProjectID)
+	if !workflowBottleneckMatchesProject(metrics.ActiveBottleneck, selectedProjectID) {
+		out.ActiveBottleneck = telemetry.WorkflowBottleneck{}
+	}
+	return out
+}
+
+func scopedWorkflowPhaseMetrics(metrics []telemetry.WorkflowPhaseMetric, selectedProjectID string) []telemetry.WorkflowPhaseMetric {
+	out := make([]telemetry.WorkflowPhaseMetric, 0, len(metrics))
+	for _, metric := range metrics {
+		if strings.TrimSpace(metric.ProjectID) == selectedProjectID {
+			out = append(out, metric)
+		}
+	}
+	return out
+}
+
+func scopedWorkflowLaneAges(cards []telemetry.WorkflowLaneAge, selectedProjectID string) []telemetry.WorkflowLaneAge {
+	out := make([]telemetry.WorkflowLaneAge, 0, len(cards))
+	for _, card := range cards {
+		if strings.TrimSpace(card.ProjectID) == selectedProjectID {
+			out = append(out, card)
+		}
+	}
+	return out
+}
+
+func workflowBottleneckMatchesProject(bottleneck telemetry.WorkflowBottleneck, selectedProjectID string) bool {
+	projectID := strings.TrimSpace(bottleneck.ProjectID)
+	return projectID == "" || projectID == selectedProjectID
 }
 
 func projectSnapshotHasRefreshSignal(project telemetry.ProjectSnapshot) bool {

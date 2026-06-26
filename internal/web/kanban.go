@@ -9,12 +9,14 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/labstack/echo/v4"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/project"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web/templates"
 )
@@ -230,7 +232,7 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 	var feedbackStatus int
 	err := s.kanbanMutations.withLock(target.key, func() error {
 		currentState := req.currentState
-		ok, current, snapshotState := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
+		ok, current, snapshotState, snapshotIssue := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
 		if !ok {
 			feedback = "Card is stale; refresh and retry."
 			if current != "" {
@@ -256,12 +258,14 @@ func (s *Server) apiKanbanMove(c echo.Context) error {
 			if err := setter.SetIssueField(c.Request().Context(), req.issueID, target.kanban.IssueStateFieldID, mappedKanbanState(target.workflow, req.targetState)); err != nil {
 				return err
 			}
+			s.recordKanbanLaneTransition(c.Request().Context(), req.projectID, snapshotIssue, currentState, req.targetState, "kanban_move_field")
 			s.kanbanMutations.noteCardState(target.key, req.issueID, snapshotState, req.targetState)
 			return nil
 		}
 		if err := target.connector.UpdateIssueState(c.Request().Context(), req.issueID, req.targetState); err != nil {
 			return err
 		}
+		s.recordKanbanLaneTransition(c.Request().Context(), req.projectID, snapshotIssue, currentState, req.targetState, "kanban_move")
 		s.kanbanMutations.noteCardState(target.key, req.issueID, snapshotState, req.targetState)
 		return nil
 	})
@@ -794,11 +798,11 @@ func (s *Server) kanbanTerminalStatesByProject(projectID string) map[string][]st
 	return out
 }
 
-func (s *Server) kanbanCardFresh(lockKey string, projectID string, issueID string, currentState string) (bool, string, string) {
+func (s *Server) kanbanCardFresh(lockKey string, projectID string, issueID string, currentState string) (bool, string, string, telemetry.Issue) {
 	currentState = strings.TrimSpace(currentState)
 	snapshot, ok := s.hub.Latest()
 	if !ok {
-		return false, "", ""
+		return false, "", "", telemetry.Issue{}
 	}
 	for _, issue := range snapshotKanbanIssues(snapshot) {
 		if !sameKanbanIssue(issue, projectID, issueID, snapshot.Project.ID) {
@@ -810,11 +814,96 @@ func (s *Server) kanbanCardFresh(lockKey string, projectID string, issueID strin
 			state = s.kanbanMutations.cardState(lockKey, issueID, snapshotState)
 		}
 		if currentState == "" || normalizeKanbanState(state) == normalizeKanbanState(currentState) {
-			return true, state, snapshotState
+			return true, state, snapshotState, issue
 		}
-		return false, state, snapshotState
+		return false, state, snapshotState, issue
 	}
-	return false, "", ""
+	return false, "", "", telemetry.Issue{}
+}
+
+func (s *Server) recordKanbanLaneTransition(
+	ctx context.Context,
+	projectID string,
+	issue telemetry.Issue,
+	currentState string,
+	targetState string,
+	reason string,
+) {
+	if s.store == nil {
+		return
+	}
+	currentState = strings.TrimSpace(currentState)
+	targetState = strings.TrimSpace(targetState)
+	if targetState == "" || normalizeKanbanState(currentState) == normalizeKanbanState(targetState) {
+		return
+	}
+	now := time.Now()
+	projectID = strings.TrimSpace(projectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(issue.ProjectID)
+	}
+	if projectID == "" {
+		projectID = "default"
+	}
+	base := store.WorkflowPhaseEvent{
+		ProjectID:      projectID,
+		IssueID:        issue.ID,
+		Identifier:     issue.Identifier,
+		IssueURL:       issue.URL,
+		PRNumber:       kanbanWorkflowPRNumber(issue),
+		PhaseType:      store.WorkflowPhaseTypeLane,
+		Reason:         strings.TrimSpace(reason),
+		StartedAt:      now,
+		EndpointFamily: "tracker",
+		MetadataJSON:   "{}",
+	}
+	if base.Reason == "" {
+		base.Reason = "kanban_move"
+	}
+	if currentState != "" {
+		startedAt := kanbanLaneStartedAt(issue, now)
+		exitEvent := base
+		exitEvent.PhaseName = currentState
+		exitEvent.Status = "exited"
+		exitEvent.StartedAt = startedAt
+		exitEvent.FinishedAt = now
+		exitEvent.DurationSeconds = kanbanWorkflowDurationSeconds(startedAt, now)
+		if _, err := s.store.RecordWorkflowPhaseEvent(ctx, exitEvent); err != nil && s.logger != nil {
+			s.logger.WarnContext(ctx, "record kanban lane exit metric failed", "project", projectID, "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", currentState, "target_state", targetState, "error", err)
+		}
+	}
+	enterEvent := base
+	enterEvent.PhaseName = targetState
+	enterEvent.PreviousPhaseName = currentState
+	enterEvent.Status = "entered"
+	if _, err := s.store.RecordWorkflowPhaseEvent(ctx, enterEvent); err != nil && s.logger != nil {
+		s.logger.WarnContext(ctx, "record kanban lane enter metric failed", "project", projectID, "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", currentState, "target_state", targetState, "error", err)
+	}
+}
+
+func kanbanLaneStartedAt(issue telemetry.Issue, fallback time.Time) time.Time {
+	for _, candidate := range []*time.Time{issue.StageUpdatedAt, issue.UpdatedAt, issue.CreatedAt} {
+		if candidate == nil || candidate.IsZero() || candidate.After(fallback) {
+			continue
+		}
+		return *candidate
+	}
+	return fallback
+}
+
+func kanbanWorkflowDurationSeconds(startedAt time.Time, finishedAt time.Time) int64 {
+	if startedAt.IsZero() || finishedAt.IsZero() || finishedAt.Before(startedAt) {
+		return 0
+	}
+	return int64(finishedAt.Sub(startedAt) / time.Second)
+}
+
+func kanbanWorkflowPRNumber(issue telemetry.Issue) *int64 {
+	if issue.PullRequest == nil || issue.PullRequest.Number <= 0 {
+		return nil
+	}
+	value := int64(issue.PullRequest.Number)
+	return &value
 }
 
 func (s *Server) kanbanCommentTargetKnown(req kanbanCommentRequest) bool {

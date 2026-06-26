@@ -52,6 +52,7 @@ const (
 	helpTopIssues           helpTerm = "top-issues"
 	helpTopPRs              helpTerm = "top-prs"
 	helpTopProjects         helpTerm = "top-projects"
+	helpWorkflowMetrics     helpTerm = "workflow-metrics"
 	helpRuntime             helpTerm = "runtime"
 )
 
@@ -105,6 +106,7 @@ var helpDefinitions = map[helpTerm]helpEntry{
 	helpTopIssues:           {Label: "Top issues by tokens", Description: "Issue buckets using the most tokens in the report window. Start here when one task seems to dominate usage."},
 	helpTopPRs:              {Label: "Top PRs by tokens", Description: "Pull request buckets using the most tokens in the report window. Use it to find review or rework loops that are getting expensive."},
 	helpTopProjects:         {Label: "Per-project breakdown", Description: "Token and spend split by project. It shows which project is driving shared capacity and budget pressure."},
+	helpWorkflowMetrics:     {Label: "Workflow metrics", Description: "Lane and sub-phase timing from durable runtime events plus live card aging. Use it to identify whether time is going to AI work, CI, merge queue, review, or rate limits."},
 	helpRuntime:             {Label: "Runtime", Description: "How long this Detent instance or agent session has been running. Long runtimes are worth checking when progress slows."},
 }
 

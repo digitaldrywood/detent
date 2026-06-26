@@ -231,6 +231,7 @@ func (s *Server) registerRoutes() {
 	s.echo.POST("/api/v1/webhooks/github", s.githubWebhook)
 	s.echo.GET("/api/v1/refresh", s.methodNotAllowed)
 	s.echo.GET("/api/v1/usage", s.apiUsage)
+	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline)
 	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog)
 	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove)
 	s.echo.GET("/api/v1/kanban/comment", s.apiKanbanCommentDialog)

@@ -330,6 +330,121 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 	return i, err
 }
 
+const createWorkflowPhaseEvent = `-- name: CreateWorkflowPhaseEvent :one
+INSERT INTO workflow_phase_events (
+  project_id,
+  run_id,
+  session_id,
+  issue_id,
+  identifier,
+  issue_url,
+  pr_number,
+  phase_type,
+  phase_name,
+  previous_phase_name,
+  reason,
+  status,
+  started_at,
+  finished_at,
+  duration_seconds,
+  event_day,
+  command_name,
+  exit_code,
+  turns,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  endpoint_family,
+  metadata_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, run_id, session_id, issue_id, identifier, issue_url, pr_number, phase_type, phase_name, previous_phase_name, reason, status, started_at, finished_at, duration_seconds, event_day, command_name, exit_code, turns, input_tokens, output_tokens, total_tokens, endpoint_family, metadata_json
+`
+
+type CreateWorkflowPhaseEventParams struct {
+	ProjectID         string         `json:"project_id"`
+	RunID             sql.NullInt64  `json:"run_id"`
+	SessionID         sql.NullInt64  `json:"session_id"`
+	IssueID           sql.NullString `json:"issue_id"`
+	Identifier        sql.NullString `json:"identifier"`
+	IssueURL          sql.NullString `json:"issue_url"`
+	PrNumber          sql.NullInt64  `json:"pr_number"`
+	PhaseType         string         `json:"phase_type"`
+	PhaseName         string         `json:"phase_name"`
+	PreviousPhaseName sql.NullString `json:"previous_phase_name"`
+	Reason            sql.NullString `json:"reason"`
+	Status            sql.NullString `json:"status"`
+	StartedAt         string         `json:"started_at"`
+	FinishedAt        sql.NullString `json:"finished_at"`
+	DurationSeconds   int64          `json:"duration_seconds"`
+	EventDay          string         `json:"event_day"`
+	CommandName       sql.NullString `json:"command_name"`
+	ExitCode          sql.NullInt64  `json:"exit_code"`
+	Turns             int64          `json:"turns"`
+	InputTokens       int64          `json:"input_tokens"`
+	OutputTokens      int64          `json:"output_tokens"`
+	TotalTokens       int64          `json:"total_tokens"`
+	EndpointFamily    sql.NullString `json:"endpoint_family"`
+	MetadataJson      string         `json:"metadata_json"`
+}
+
+func (q *Queries) CreateWorkflowPhaseEvent(ctx context.Context, arg CreateWorkflowPhaseEventParams) (WorkflowPhaseEvent, error) {
+	row := q.db.QueryRowContext(ctx, createWorkflowPhaseEvent,
+		arg.ProjectID,
+		arg.RunID,
+		arg.SessionID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+		arg.PrNumber,
+		arg.PhaseType,
+		arg.PhaseName,
+		arg.PreviousPhaseName,
+		arg.Reason,
+		arg.Status,
+		arg.StartedAt,
+		arg.FinishedAt,
+		arg.DurationSeconds,
+		arg.EventDay,
+		arg.CommandName,
+		arg.ExitCode,
+		arg.Turns,
+		arg.InputTokens,
+		arg.OutputTokens,
+		arg.TotalTokens,
+		arg.EndpointFamily,
+		arg.MetadataJson,
+	)
+	var i WorkflowPhaseEvent
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.RunID,
+		&i.SessionID,
+		&i.IssueID,
+		&i.Identifier,
+		&i.IssueURL,
+		&i.PrNumber,
+		&i.PhaseType,
+		&i.PhaseName,
+		&i.PreviousPhaseName,
+		&i.Reason,
+		&i.Status,
+		&i.StartedAt,
+		&i.FinishedAt,
+		&i.DurationSeconds,
+		&i.EventDay,
+		&i.CommandName,
+		&i.ExitCode,
+		&i.Turns,
+		&i.InputTokens,
+		&i.OutputTokens,
+		&i.TotalTokens,
+		&i.EndpointFamily,
+		&i.MetadataJson,
+	)
+	return i, err
+}
+
 const dailyTokenSpend = `-- name: DailyTokenSpend :many
 SELECT
   CAST(COALESCE(model, '') AS TEXT) AS model,
@@ -550,6 +665,95 @@ func (q *Queries) IssueTokenSpend(ctx context.Context, arg IssueTokenSpendParams
 			&i.OutputTokens,
 			&i.TotalTokens,
 			&i.Sessions,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const issueWorkflowTimelineRows = `-- name: IssueWorkflowTimelineRows :many
+SELECT
+  id,
+  project_id,
+  run_id,
+  session_id,
+  issue_id,
+  identifier,
+  issue_url,
+  pr_number,
+  phase_type,
+  phase_name,
+  previous_phase_name,
+  reason,
+  status,
+  started_at,
+  finished_at,
+  duration_seconds,
+  event_day,
+  command_name,
+  exit_code,
+  turns,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  endpoint_family,
+  metadata_json
+FROM workflow_phase_events
+WHERE issue_id = ?1
+   OR identifier = ?2
+   OR issue_url = ?3
+ORDER BY started_at, id
+`
+
+type IssueWorkflowTimelineRowsParams struct {
+	IssueID    sql.NullString `json:"issue_id"`
+	Identifier sql.NullString `json:"identifier"`
+	IssueURL   sql.NullString `json:"issue_url"`
+}
+
+func (q *Queries) IssueWorkflowTimelineRows(ctx context.Context, arg IssueWorkflowTimelineRowsParams) ([]WorkflowPhaseEvent, error) {
+	rows, err := q.db.QueryContext(ctx, issueWorkflowTimelineRows, arg.IssueID, arg.Identifier, arg.IssueURL)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkflowPhaseEvent{}
+	for rows.Next() {
+		var i WorkflowPhaseEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.RunID,
+			&i.SessionID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.PhaseType,
+			&i.PhaseName,
+			&i.PreviousPhaseName,
+			&i.Reason,
+			&i.Status,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.DurationSeconds,
+			&i.EventDay,
+			&i.CommandName,
+			&i.ExitCode,
+			&i.Turns,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.TotalTokens,
+			&i.EndpointFamily,
+			&i.MetadataJson,
 		); err != nil {
 			return nil, err
 		}
@@ -834,6 +1038,96 @@ func (q *Queries) UsageReportRows(ctx context.Context, arg UsageReportRowsParams
 			&i.TotalTokens,
 			&i.RuntimeSeconds,
 			&i.Events,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const workflowPhaseDurationRows = `-- name: WorkflowPhaseDurationRows :many
+SELECT
+  id,
+  project_id,
+  run_id,
+  session_id,
+  issue_id,
+  identifier,
+  issue_url,
+  pr_number,
+  phase_type,
+  phase_name,
+  previous_phase_name,
+  reason,
+  status,
+  started_at,
+  finished_at,
+  duration_seconds,
+  event_day,
+  command_name,
+  exit_code,
+  turns,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  endpoint_family,
+  metadata_json
+FROM workflow_phase_events
+WHERE finished_at IS NOT NULL
+  AND (?1 IS NULL OR project_id = ?1)
+  AND (?2 IS NULL OR finished_at >= ?2)
+  AND (?3 IS NULL OR finished_at < ?3)
+ORDER BY project_id, phase_type, phase_name, finished_at, id
+`
+
+type WorkflowPhaseDurationRowsParams struct {
+	ProjectID interface{} `json:"project_id"`
+	FromTime  interface{} `json:"from_time"`
+	ToTime    interface{} `json:"to_time"`
+}
+
+func (q *Queries) WorkflowPhaseDurationRows(ctx context.Context, arg WorkflowPhaseDurationRowsParams) ([]WorkflowPhaseEvent, error) {
+	rows, err := q.db.QueryContext(ctx, workflowPhaseDurationRows, arg.ProjectID, arg.FromTime, arg.ToTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkflowPhaseEvent{}
+	for rows.Next() {
+		var i WorkflowPhaseEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.RunID,
+			&i.SessionID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.PhaseType,
+			&i.PhaseName,
+			&i.PreviousPhaseName,
+			&i.Reason,
+			&i.Status,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.DurationSeconds,
+			&i.EventDay,
+			&i.CommandName,
+			&i.ExitCode,
+			&i.Turns,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.TotalTokens,
+			&i.EndpointFamily,
+			&i.MetadataJson,
 		); err != nil {
 			return nil, err
 		}

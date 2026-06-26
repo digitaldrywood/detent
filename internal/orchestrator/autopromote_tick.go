@@ -216,7 +216,7 @@ func (o *Orchestrator) applyStaleMergingPullRequestDecision(
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.connector.UpdateIssueState(ctx, issueID, decision.targetState); err != nil {
+	if err := o.updateIssueStateByID(ctx, issueID, issue, decision.targetState, now, decision.reason); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"stale_merging_pr_reconciliation_failed",
@@ -751,7 +751,7 @@ func (o *Orchestrator) applyStaleTodoPullRequestDecision(
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, string(decision.Reason)); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"stale_todo_pr_reconciliation_failed",
@@ -1105,7 +1105,7 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, string(decision.Reason)); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"auto promote transition failed",

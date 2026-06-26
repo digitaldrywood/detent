@@ -229,3 +229,99 @@ ON CONFLICT(project_id) DO UPDATE SET
   runtime_seconds = fair_share_usage.runtime_seconds + excluded.runtime_seconds,
   updated_at = excluded.updated_at
 RETURNING *;
+
+-- name: CreateWorkflowPhaseEvent :one
+INSERT INTO workflow_phase_events (
+  project_id,
+  run_id,
+  session_id,
+  issue_id,
+  identifier,
+  issue_url,
+  pr_number,
+  phase_type,
+  phase_name,
+  previous_phase_name,
+  reason,
+  status,
+  started_at,
+  finished_at,
+  duration_seconds,
+  event_day,
+  command_name,
+  exit_code,
+  turns,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  endpoint_family,
+  metadata_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: WorkflowPhaseDurationRows :many
+SELECT
+  id,
+  project_id,
+  run_id,
+  session_id,
+  issue_id,
+  identifier,
+  issue_url,
+  pr_number,
+  phase_type,
+  phase_name,
+  previous_phase_name,
+  reason,
+  status,
+  started_at,
+  finished_at,
+  duration_seconds,
+  event_day,
+  command_name,
+  exit_code,
+  turns,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  endpoint_family,
+  metadata_json
+FROM workflow_phase_events
+WHERE finished_at IS NOT NULL
+  AND (sqlc.narg(project_id) IS NULL OR project_id = sqlc.narg(project_id))
+  AND (sqlc.narg(from_time) IS NULL OR finished_at >= sqlc.narg(from_time))
+  AND (sqlc.narg(to_time) IS NULL OR finished_at < sqlc.narg(to_time))
+ORDER BY project_id, phase_type, phase_name, finished_at, id;
+
+-- name: IssueWorkflowTimelineRows :many
+SELECT
+  id,
+  project_id,
+  run_id,
+  session_id,
+  issue_id,
+  identifier,
+  issue_url,
+  pr_number,
+  phase_type,
+  phase_name,
+  previous_phase_name,
+  reason,
+  status,
+  started_at,
+  finished_at,
+  duration_seconds,
+  event_day,
+  command_name,
+  exit_code,
+  turns,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  endpoint_family,
+  metadata_json
+FROM workflow_phase_events
+WHERE issue_id = sqlc.arg(issue_id)
+   OR identifier = sqlc.arg(identifier)
+   OR issue_url = sqlc.arg(issue_url)
+ORDER BY started_at, id;
