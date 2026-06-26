@@ -105,6 +105,7 @@ hooks:
   timeout_ms: 60000
 ---
 You are working on {{ issue.identifier }}: {{ issue.title }}.
+Current Detent status: {{ issue.state }}.
 
 Follow repository instructions, keep changes scoped to the issue, and keep a
 single persistent `## Codex Workpad` issue comment updated with the plan,
@@ -153,11 +154,14 @@ Use the current Detent state as the source of truth for which section applies.
 
 ### For Merging
 
-1. Invoke and follow `$go-workflow:ship`.
-2. Do not call `gh pr merge` directly outside the ship workflow.
-3. End with exactly one terminal outcome:
+1. Confirm `$go-workflow:ship` is available in the Codex environment. If it is
+   unavailable, keep the issue in `Merging` and record the missing ship workflow
+   as an external blocker in the `## Codex Workpad`.
+2. Invoke and follow `$go-workflow:ship`.
+3. Do not call `gh pr merge` directly outside the ship workflow.
+4. End with exactly one terminal outcome:
    - pull request merged and issue moved to `Done`;
    - issue moved to `Rework` with an actionable defect;
    - issue remains in `Merging` with a concrete external blocker recorded in
      the `## Codex Workpad`.
-4. Move the issue to `Done` only after the pull request is merged.
+5. Move the issue to `Done` only after the pull request is merged.

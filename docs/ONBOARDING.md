@@ -1690,7 +1690,10 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `gh pr merge` directly outside ship, and should require exactly one terminal
    outcome: pull request merged and issue moved to `Done`, issue moved to
    `Rework` with an actionable defect, or issue remaining in `Merging` with a
-   concrete external blocker recorded.
+   concrete external blocker recorded. Before dispatching `Merging`, confirm
+   the Detent host's Codex environment exposes `$go-workflow:ship`; otherwise
+   install or enable that workflow, or replace the `For Merging` section with
+   equivalent project-local merge instructions.
 
 2. **Substitute the tracker and workspace answers.** In ProjectV2 mode, use the
    ProjectV2 node id as `tracker.project_slug`. In boardless issue-field mode,
@@ -1914,11 +1917,13 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    explicitly chooses stronger project-specific instructions. The flow should
    tell agents what to do in `Todo`, `In Progress`, `Rework`, and `Merging`,
    including the `For Merging` requirement to use `$go-workflow:ship` and move
-   the issue to `Done` only after the pull request is merged. Verify:
+   the issue to `Done` only after the pull request is merged. Include the
+   current state with `Current Detent status: {{ issue.state }}` so resumed
+   agents choose the right section. Verify:
 
    ```sh
    awk 'seen {print} /^---$/ {count++; if (count == 2) seen=1}' <source-root>/WORKFLOW.md \
-     | rg 'Codex Workpad|Required Execution Flow|For Todo|For In Progress|For Rework|For Merging|go-workflow:ship|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|<gate-command>|<repo-owner>/<repo-name>'
+     | rg 'Current Detent status|Codex Workpad|Required Execution Flow|For Todo|For In Progress|For Rework|For Merging|go-workflow:ship|CLAUDE.md|AGENTS.md|CONTRIBUTING.md|<gate-command>|<repo-owner>/<repo-name>'
    ```
 
 8. **Check the workflow contract before registration.** This is a structural

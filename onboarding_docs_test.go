@@ -398,7 +398,9 @@ func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 		"`For Merging`",
 		"`$go-workflow:ship`",
 		"`gh pr merge` directly outside ship",
+		"Codex environment exposes `$go-workflow:ship`",
 		"issue remaining in `Merging` with a concrete external blocker recorded",
+		"Current Detent status: {{ issue.state }}",
 	} {
 		assertContainsWords(t, onboarding, want)
 	}
@@ -410,9 +412,11 @@ func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 		"`For Rework`",
 		"`For Merging`",
 		"invoke `$go-workflow:ship`",
+		"Codex environment exposes `$go-workflow:ship`",
 		"`Done`",
 		"`Rework` with an actionable defect",
 		"`Merging` with a concrete external blocker recorded",
+		"Current Detent status: {{ issue.state }}",
 	} {
 		assertContainsWords(t, readme, want)
 	}
@@ -428,12 +432,16 @@ func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
 			content := readRepositoryTextFile(t, path)
 			for _, want := range []string{
 				"## Required Execution Flow",
+				"Current Detent status: {{ issue.state }}",
 				"### For Todo",
 				"### For In Progress",
 				"### For Rework",
 				"### For Merging",
 				"Move the issue to `In Progress`.",
 				"Move the issue to `Human Review` only after the pull request is open",
+				"Confirm `$go-workflow:ship` is available in the Codex environment.",
+				"record the missing ship workflow",
+				"as an external blocker",
 				"Invoke and follow `$go-workflow:ship`.",
 				"Do not call `gh pr merge` directly outside the ship workflow.",
 				"pull request merged and issue moved to `Done`",

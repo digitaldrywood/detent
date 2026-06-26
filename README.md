@@ -1255,7 +1255,10 @@ repo is a real, working instance of this setup to copy from.
    Progress`, `For Rework`, and `For Merging` sections so merge workers have a
    terminal instruction: invoke `$go-workflow:ship`, merge and move the issue to
    `Done`, move it to `Rework` with an actionable defect, or leave it in
-   `Merging` with a concrete external blocker recorded.
+   `Merging` with a concrete external blocker recorded. Before dispatching
+   `Merging`, confirm the Detent host's Codex environment exposes
+   `$go-workflow:ship`; otherwise install or enable that workflow, or replace
+   the `For Merging` section with equivalent project-local merge instructions.
 
    For ProjectV2 mode, set `tracker.project_slug` (your `PVT_` id). For
    boardless issue-field mode, set `tracker.github_status_source:
@@ -1266,7 +1269,8 @@ repo is a real, working instance of this setup to copy from.
    set `workspace.source_root` (`<source-root>`), `workspace.root` (a worktrees
    directory), `write_probe_issue` when using write probes, and the prompt body.
    If the repository already has a `WORKFLOW.md`, audit its prompt body for the
-   same Required Execution Flow before dispatching Detent against it.
+   same Required Execution Flow and `Current Detent status: {{ issue.state }}`
+   line before dispatching Detent against it.
    Registered projects can use `github_token: gh` in `global.yaml`; leave
    `tracker.api_key` out of the workflow unless you are intentionally using a
    workflow-local token. The full field reference is in [Quick Start](#quick-start).
