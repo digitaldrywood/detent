@@ -195,6 +195,9 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, terminalStat
 		if pullRequest.Draft {
 			return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: "draft_pull_request"}
 		}
+		if staleMergingCIRed(pullRequest.CIStatus) {
+			return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: string(AutoPromoteReasonCINotGreen)}
+		}
 		return staleMergingPullRequestDecision{}
 	default:
 		return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: "pull_request_not_open"}
@@ -582,9 +585,6 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 	candidates := []connector.Issue{}
 	consumedRepositories := activeMergeWorkerRepositories(state)
 	for _, issue := range staleMergingQueueIssues(issues, o.cfg) {
-		if !staleMergingIssueReadyForDispatch(issue) {
-			continue
-		}
 		issueID := strings.TrimSpace(issue.ID)
 		repository := mergeWorkerRepositoryKey(issue)
 		if staleMergingPullRequestDispatchActive(state, issueID) {
@@ -592,6 +592,10 @@ func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues 
 			continue
 		}
 		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) {
+			continue
+		}
+		if !staleMergingIssueReadyForDispatch(issue) {
+			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
 		candidates = append(candidates, cloneIssue(issue))
@@ -614,7 +618,16 @@ func staleMergingIssueReadyForDispatch(issue connector.Issue) bool {
 	if pullRequest.Draft {
 		return false
 	}
-	return true
+	return !staleMergingCIRed(pullRequest.CIStatus)
+}
+
+func staleMergingCIRed(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "red", "fail", "failed", "failure", "error", "cancelled", "canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 func staleTodoPullRequestAlreadyActive(state *State, issueID string) bool {
