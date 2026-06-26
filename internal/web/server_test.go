@@ -4141,9 +4141,9 @@ func TestServerEventsStreamsGitHubAPIHealthChrome(t *testing.T) {
 	for _, want := range []string{
 		`id="github-api-health"`,
 		`data-preserve-details="github-api-health"`,
-		"GitHub secondary backoff: pull requests, check runs",
-		"REST primary: 4,878 remaining / 5,000 total (122 used)",
-		"retry 14:35 UTC",
+		"GitHub secondary throttle active for pull requests/check runs",
+		"Primary REST quota is healthy: 4,878/5,000 remaining",
+		"Retrying at 14:35 UTC",
 	} {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("github api health event missing %q:\n%s", want, event.data)

@@ -5001,16 +5001,18 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 		return view
 	}
 	if gitHubAPIInBackoff(snapshot) {
-		families := gitHubAPIBackoffFamilySummary(snapshot, snapshot.RateLimits.RESTUsage)
+		families := gitHubAPIBackoffFamilyLabel(snapshot, snapshot.RateLimits.RESTUsage)
+		primaryContext := gitHubAPIRESTPrimaryContext(snapshot.RateLimits)
+		retrySentence := gitHubAPIBackoffRetrySentence(snapshot)
 		view.State = gitHubAPIHealthStateBackoff
-		view.Label = "GitHub secondary backoff: " + families
-		view.Summary = primarySummary + "; " + gitHubAPIRetryLabel(snapshot)
-		view.Detail = "Secondary endpoint-family REST backoff for " + families + "; " + gitHubAPIRetryLabel(snapshot) + "."
+		view.Label = "GitHub secondary throttle active for " + families
+		view.Summary = primaryContext + ". " + retrySentence + "."
+		view.Detail = "GitHub secondary endpoint throttle is active for " + families + ". " + primaryContext + ". " + retrySentence + "."
 		return view
 	}
 	if gitHubAPIPrimaryWarning(snapshot.RateLimits) {
 		view.State = gitHubAPIHealthStateWarning
-		view.Label = "GitHub API warning"
+		view.Label = "GitHub primary quota low"
 		view.Summary = primarySummary
 		view.Detail = "Primary quota is below the warning threshold; " + gitHubAPIWarningReset(snapshot.RateLimits) + "."
 		return view
@@ -5073,17 +5075,21 @@ func gitHubAPIPrimaryWarning(limits *telemetry.RateLimits) bool {
 		return false
 	}
 	for _, bucket := range []*telemetry.RateLimitBucket{limits.GitHubREST, limits.GitHubGraphQL} {
-		if bucket == nil || bucket.Limit <= 0 || bucket.Remaining <= 0 {
-			continue
-		}
-		if bucket.Remaining <= gitHubAPIWarningRemaining {
-			return true
-		}
-		if float64(bucket.Remaining)/float64(bucket.Limit) <= gitHubAPIWarningRatio {
+		if gitHubAPIBucketWarning(bucket) {
 			return true
 		}
 	}
 	return false
+}
+
+func gitHubAPIBucketWarning(bucket *telemetry.RateLimitBucket) bool {
+	if bucket == nil || bucket.Limit <= 0 || bucket.Remaining <= 0 {
+		return false
+	}
+	if bucket.Remaining <= gitHubAPIWarningRemaining {
+		return true
+	}
+	return float64(bucket.Remaining)/float64(bucket.Limit) <= gitHubAPIWarningRatio
 }
 
 func gitHubAPIInBackoff(snapshot telemetry.Snapshot) bool {
@@ -5091,7 +5097,7 @@ func gitHubAPIInBackoff(snapshot telemetry.Snapshot) bool {
 		return false
 	}
 	usage := snapshot.RateLimits.RESTUsage
-	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, usage.BackoffUntil) {
+	if usage.RateLimited && gitHubAPIDeadlineActive(snapshot.GeneratedAt, usage.BackoffUntil) {
 		return true
 	}
 	if usage.RateLimited && usage.BackoffUntil == nil {
@@ -5163,12 +5169,12 @@ func gitHubAPIPrimaryBucketUsed(bucket *telemetry.RateLimitBucket) int64 {
 	return bucket.Used
 }
 
-func gitHubAPIBackoffFamilySummary(snapshot telemetry.Snapshot, usage *telemetry.RESTUsage) string {
+func gitHubAPIBackoffFamilyLabel(snapshot telemetry.Snapshot, usage *telemetry.RESTUsage) string {
 	families := gitHubAPIBackoffFamilies(snapshot, usage)
 	if len(families) == 0 {
 		return "REST endpoints"
 	}
-	return strings.Join(families, ", ")
+	return strings.Join(families, "/")
 }
 
 func gitHubAPIBackoffFamilies(snapshot telemetry.Snapshot, usage *telemetry.RESTUsage) []string {
@@ -5194,26 +5200,47 @@ func gitHubAPIBackoffFamilies(snapshot telemetry.Snapshot, usage *telemetry.REST
 	return families
 }
 
-func gitHubAPIRetryLabel(snapshot telemetry.Snapshot) string {
+func gitHubAPIBackoffRetrySentence(snapshot telemetry.Snapshot) string {
 	if snapshot.RateLimits == nil || snapshot.RateLimits.RESTUsage == nil {
-		return "retry time n/a"
+		return "Retry time unavailable"
 	}
 	usage := snapshot.RateLimits.RESTUsage
 	if gitHubAPIDeadlineActive(snapshot.GeneratedAt, usage.BackoffUntil) {
-		return "retry " + usage.BackoffUntil.UTC().Format("15:04 UTC")
+		return "Retrying at " + usage.BackoffUntil.UTC().Format("15:04 UTC")
 	}
 	for _, contributor := range usage.Contributors {
 		if !gitHubAPIContributorBackedOff(snapshot, contributor, usage.BackoffUntil) {
 			continue
 		}
 		if contributor.ResetAt != nil && gitHubAPIDeadlineActive(snapshot.GeneratedAt, contributor.ResetAt) {
-			return "retry " + contributor.ResetAt.UTC().Format("15:04 UTC")
+			return "Retrying at " + contributor.ResetAt.UTC().Format("15:04 UTC")
 		}
 		if contributor.RetryAfterMS > 0 {
-			return "retry after " + formatDuration(float64(contributor.RetryAfterMS)/1000)
+			return "Retrying after " + formatDuration(float64(contributor.RetryAfterMS)/1000)
 		}
 	}
-	return "retry time n/a"
+	return "Retry time unavailable"
+}
+
+func gitHubAPIRESTPrimaryContext(limits *telemetry.RateLimits) string {
+	if limits == nil || !gitHubAPIBucketKnown(limits.GitHubREST) {
+		return "Primary REST quota health is unavailable"
+	}
+	bucket := limits.GitHubREST
+	status := "healthy"
+	if bucket.Limit > 0 && bucket.Remaining <= 0 {
+		status = "exhausted"
+	} else if gitHubAPIBucketWarning(bucket) {
+		status = "low"
+	}
+	return "Primary REST quota is " + status + ": " + gitHubAPIPrimaryBucketCompact(bucket)
+}
+
+func gitHubAPIPrimaryBucketCompact(bucket *telemetry.RateLimitBucket) string {
+	if bucket.Limit > 0 {
+		return formatInt(bucket.Remaining) + "/" + formatInt(bucket.Limit) + " remaining"
+	}
+	return formatInt(bucket.Remaining) + " remaining"
 }
 
 func gitHubAPIExhaustedReset(limits *telemetry.RateLimits) string {

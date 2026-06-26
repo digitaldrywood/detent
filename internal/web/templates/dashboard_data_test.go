@@ -82,12 +82,13 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 	expiredBackoffUntil := now.Add(-5 * time.Minute)
 
 	tests := []struct {
-		name            string
-		snapshot        telemetry.Snapshot
-		wantState       gitHubAPIHealthState
-		wantLabel       string
-		wantSummaryPart string
-		wantBackoffPart string
+		name             string
+		snapshot         telemetry.Snapshot
+		wantState        gitHubAPIHealthState
+		wantLabel        string
+		wantSummaryPart  string
+		wantDetailParts  []string
+		rejectDetailPart string
 	}{
 		{
 			name:            "unknown without GitHub snapshot",
@@ -120,11 +121,11 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 				},
 			},
 			wantState:       gitHubAPIHealthStateWarning,
-			wantLabel:       "GitHub API warning",
+			wantLabel:       "GitHub primary quota low",
 			wantSummaryPart: "REST primary: 240 remaining / 5,000 total (4,760 used)",
 		},
 		{
-			name: "secondary backoff preserves healthy primary context",
+			name: "secondary throttle preserves healthy primary context",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
 				RateLimits: &telemetry.RateLimits{
@@ -141,9 +142,39 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 				},
 			},
 			wantState:       gitHubAPIHealthStateBackoff,
-			wantLabel:       "GitHub secondary backoff: pull requests, check runs",
-			wantSummaryPart: "REST primary: 4,878 remaining / 5,000 total (122 used)",
-			wantBackoffPart: "retry 14:35 UTC",
+			wantLabel:       "GitHub secondary throttle active for pull requests/check runs",
+			wantSummaryPart: "Primary REST quota is healthy: 4,878/5,000 remaining",
+			wantDetailParts: []string{
+				"GitHub secondary endpoint throttle is active for pull requests/check runs.",
+				"Primary REST quota is healthy: 4,878/5,000 remaining.",
+				"Retrying at 14:35 UTC.",
+			},
+			rejectDetailPart: "REST primary:",
+		},
+		{
+			name: "secondary throttle with low primary quota names both conditions",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 240, Used: 4760, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+					RESTUsage: &telemetry.RESTUsage{
+						RateLimited:  true,
+						BackoffUntil: &backoffUntil,
+						Contributors: []telemetry.RESTUsageContributor{
+							{EndpointFamily: "pull requests", Count: 2, RetryAfterMS: (5 * time.Minute).Milliseconds(), RateLimited: true, LastStatus: 429},
+						},
+					},
+				},
+			},
+			wantState:       gitHubAPIHealthStateBackoff,
+			wantLabel:       "GitHub secondary throttle active for pull requests",
+			wantSummaryPart: "Primary REST quota is low: 240/5,000 remaining",
+			wantDetailParts: []string{
+				"GitHub secondary endpoint throttle is active for pull requests.",
+				"Primary REST quota is low: 240/5,000 remaining.",
+				"Retrying at 14:35 UTC.",
+			},
 		},
 		{
 			name: "expired secondary backoff does not mask healthy primary",
@@ -166,6 +197,25 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantSummaryPart: "REST primary: 4,878 remaining / 5,000 total (122 used)",
 		},
 		{
+			name: "cleared secondary throttle with stale future backoff is healthy",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+					RESTUsage: &telemetry.RESTUsage{
+						BackoffUntil: &backoffUntil,
+						Contributors: []telemetry.RESTUsageContributor{
+							{EndpointFamily: "pull requests", Count: 2, LastStatus: 200},
+						},
+					},
+				},
+			},
+			wantState:       gitHubAPIHealthStateHealthy,
+			wantLabel:       "GitHub API healthy",
+			wantSummaryPart: "REST primary: 4,878 remaining / 5,000 total (122 used)",
+		},
+		{
 			name: "primary exhausted outranks secondary backoff",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
@@ -178,7 +228,7 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantState:       gitHubAPIHealthStateExhausted,
 			wantLabel:       "GitHub primary quota exhausted",
 			wantSummaryPart: "REST primary: 0 remaining / 5,000 total (5,000 used)",
-			wantBackoffPart: "reset 15:00 UTC",
+			wantDetailParts: []string{"reset 15:00 UTC"},
 		},
 	}
 
@@ -196,10 +246,17 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			if !strings.Contains(got.Summary, tt.wantSummaryPart) {
 				t.Fatalf("gitHubAPIHealth().Summary = %q, want substring %q; view = %#v", got.Summary, tt.wantSummaryPart, got)
 			}
-			if tt.wantBackoffPart != "" && !strings.Contains(got.Detail, tt.wantBackoffPart) {
-				t.Fatalf("gitHubAPIHealth().Detail = %q, want substring %q; view = %#v", got.Detail, tt.wantBackoffPart, got)
+			for _, want := range tt.wantDetailParts {
+				if !strings.Contains(got.Detail, want) {
+					t.Fatalf("gitHubAPIHealth().Detail = %q, want substring %q; view = %#v", got.Detail, want, got)
+				}
 			}
-			if tt.name == "expired secondary backoff does not mask healthy primary" && len(got.Endpoints) != 0 {
+			if tt.rejectDetailPart != "" && strings.Contains(got.Detail, tt.rejectDetailPart) {
+				t.Fatalf("gitHubAPIHealth().Detail = %q, want no substring %q; view = %#v", got.Detail, tt.rejectDetailPart, got)
+			}
+			if (tt.name == "expired secondary backoff does not mask healthy primary" ||
+				tt.name == "cleared secondary throttle with stale future backoff is healthy") &&
+				len(got.Endpoints) != 0 {
 				t.Fatalf("gitHubAPIHealth().Endpoints = %#v, want no active endpoint backoff rows", got.Endpoints)
 			}
 		})
