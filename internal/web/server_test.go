@@ -3990,8 +3990,8 @@ func TestServerEventsStreamsGitHubAPIHealthChrome(t *testing.T) {
 	for _, want := range []string{
 		`id="github-api-health"`,
 		`data-preserve-details="github-api-health"`,
-		"GitHub API backoff: pull requests, check runs",
-		"Primary remaining: REST 4,878 / 5,000",
+		"GitHub secondary backoff: pull requests, check runs",
+		"REST primary: 4,878 remaining / 5,000 total (122 used)",
 		"retry 14:35 UTC",
 	} {
 		if !strings.Contains(event.data, want) {

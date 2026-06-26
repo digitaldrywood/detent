@@ -4980,24 +4980,24 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 		return view
 	}
 
-	primarySummary := gitHubAPIPrimarySummary(snapshot.RateLimits, false)
+	primarySummary := gitHubAPIPrimarySummary(snapshot.RateLimits)
 	if primarySummary == "" {
-		primarySummary = "Primary remaining unavailable"
+		primarySummary = "Primary quota unavailable"
 	}
 
 	if gitHubAPIPrimaryExhausted(snapshot.RateLimits) {
 		view.State = gitHubAPIHealthStateExhausted
-		view.Label = "GitHub API exhausted"
-		view.Summary = gitHubAPIPrimarySummary(snapshot.RateLimits, true)
-		view.Detail = "Primary quota exhausted; " + gitHubAPIExhaustedReset(snapshot.RateLimits) + "."
+		view.Label = "GitHub primary quota exhausted"
+		view.Summary = primarySummary
+		view.Detail = "Primary REST or GraphQL quota exhausted; " + gitHubAPIExhaustedReset(snapshot.RateLimits) + "."
 		return view
 	}
 	if gitHubAPIInBackoff(snapshot) {
 		families := gitHubAPIBackoffFamilySummary(snapshot, snapshot.RateLimits.RESTUsage)
 		view.State = gitHubAPIHealthStateBackoff
-		view.Label = "GitHub API backoff: " + families
-		view.Summary = "Primary remaining: " + primarySummary
-		view.Detail = "Secondary REST backoff for " + families + "; " + gitHubAPIRetryLabel(snapshot) + "."
+		view.Label = "GitHub secondary backoff: " + families
+		view.Summary = primarySummary + "; " + gitHubAPIRetryLabel(snapshot)
+		view.Detail = "Secondary endpoint-family REST backoff for " + families + "; " + gitHubAPIRetryLabel(snapshot) + "."
 		return view
 	}
 	if gitHubAPIPrimaryWarning(snapshot.RateLimits) {
@@ -5118,7 +5118,7 @@ func gitHubAPIDeadlineActive(generatedAt time.Time, deadline *time.Time) bool {
 	return deadline != nil && (generatedAt.IsZero() || deadline.After(generatedAt))
 }
 
-func gitHubAPIPrimarySummary(limits *telemetry.RateLimits, includePrimaryWord bool) string {
+func gitHubAPIPrimarySummary(limits *telemetry.RateLimits) string {
 	if limits == nil {
 		return ""
 	}
@@ -5127,19 +5127,32 @@ func gitHubAPIPrimarySummary(limits *telemetry.RateLimits, includePrimaryWord bo
 		if !gitHubAPIBucketKnown(bucket) {
 			return
 		}
-		label := name
-		if includePrimaryWord {
-			label += " primary"
-		}
-		if bucket.Limit > 0 {
-			parts = append(parts, label+" "+formatInt(bucket.Remaining)+" / "+formatInt(bucket.Limit))
-			return
-		}
-		parts = append(parts, label+" "+formatInt(bucket.Remaining)+" left")
+		parts = append(parts, gitHubAPIPrimaryBucketSummary(name+" primary", bucket))
 	}
 	appendBucket("REST", limits.GitHubREST)
 	appendBucket("GraphQL", limits.GitHubGraphQL)
-	return strings.Join(parts, " / ")
+	return strings.Join(parts, "; ")
+}
+
+func gitHubAPIPrimaryBucketSummary(label string, bucket *telemetry.RateLimitBucket) string {
+	remaining := formatInt(bucket.Remaining) + " remaining"
+	if bucket.Limit > 0 {
+		return label + ": " + remaining + " / " + formatInt(bucket.Limit) + " total (" + formatInt(gitHubAPIPrimaryBucketUsed(bucket)) + " used)"
+	}
+	if bucket.Used > 0 {
+		return label + ": " + remaining + " (" + formatInt(bucket.Used) + " used)"
+	}
+	return label + ": " + remaining
+}
+
+func gitHubAPIPrimaryBucketUsed(bucket *telemetry.RateLimitBucket) int64 {
+	if bucket.Used > 0 || bucket.Limit <= 0 {
+		return bucket.Used
+	}
+	if bucket.Remaining >= 0 && bucket.Remaining <= bucket.Limit {
+		return bucket.Limit - bucket.Remaining
+	}
+	return bucket.Used
 }
 
 func gitHubAPIBackoffFamilySummary(snapshot telemetry.Snapshot, usage *telemetry.RESTUsage) string {
