@@ -680,9 +680,63 @@ No description provided.
 {% endif %}
 
 Use a single persistent tracker comment headed ## Codex Workpad for the plan,
-validation evidence, blockers, and handoff notes. Move Todo work to In Progress
-before coding, move validated PRs to Human Review, and keep Merging serialized
-until the PR is green and merged.`
+validation evidence, blockers, and handoff notes.
+
+## Required Execution Flow
+
+Use the current Detent status above as the source of truth for which section
+applies.
+
+### For Todo
+
+1. Move the issue to In Progress.
+2. Create or update the persistent ## Codex Workpad comment with the plan,
+   acceptance criteria, validation plan, and blockers.
+3. Fetch current origin/main, confirm this worktree is based on it, and confirm
+   every Depends on: or Blocked by: issue or pull request is merged or otherwise
+   terminal before coding.
+4. Reproduce or confirm the reported behavior before changing code when the
+   issue is a bug.
+5. Implement the smallest complete change that satisfies the issue.
+6. Run focused tests for touched packages, then run the configured validation
+   gate.
+7. Commit and push the branch.
+8. Open or update a pull request that references the issue.
+9. Re-check pull request comments, inline review comments, and CI after the
+   latest push.
+10. Move the issue to Human Review only after the pull request is open, not a
+    draft, references the issue, validation is green, and no actionable review
+    comments remain.
+
+### For In Progress
+
+1. Re-read the issue, pull request, comments, and ## Codex Workpad.
+2. Continue from the current repository and tracker state.
+3. If implementation is complete, run the full pre-review gate and move the
+   issue to Human Review only when the gate passes.
+
+### For Rework
+
+1. Re-read all human and bot feedback.
+2. Move the issue to In Progress.
+3. Fix the requested changes.
+4. Push updates to the pull request.
+5. Run the full pre-review gate again.
+6. Move the issue back to Human Review only when the gate passes.
+
+### For Merging
+
+1. Confirm $go-workflow:ship is available in the Codex environment. If it is
+   unavailable, keep the issue in Merging and record the missing ship workflow
+   as an external blocker in the ## Codex Workpad.
+2. Invoke and follow $go-workflow:ship.
+3. Do not call gh pr merge directly outside the ship workflow.
+4. End with exactly one terminal outcome:
+   - pull request merged and issue moved to Done;
+   - issue moved to Rework with an actionable defect;
+   - issue remains in Merging with a concrete external blocker recorded in the
+     ## Codex Workpad.
+5. Move the issue to Done only after the pull request is merged.`
 }
 
 func writeScalar(b *strings.Builder, indent string, key string, value string) {

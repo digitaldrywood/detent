@@ -372,6 +372,18 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 				"max_concurrent_agents_by_state:\n    Merging: 1",
 				"dispatch_priority_by_label:\n    - bug\n    - regression\n    - enhancement",
 				"You are working on GitHub issue `{{ issue.identifier }}`",
+				"Current Detent status: {{ issue.state }}",
+				"## Required Execution Flow",
+				"### For Todo",
+				"### For In Progress",
+				"### For Rework",
+				"### For Merging",
+				"Confirm $go-workflow:ship is available in the Codex environment.",
+				"Invoke and follow $go-workflow:ship.",
+				"Do not call gh pr merge directly outside the ship workflow.",
+				"pull request merged and issue moved to Done",
+				"issue moved to Rework with an actionable defect",
+				"issue remains in Merging with a concrete external blocker recorded",
 			) {
 				if !strings.Contains(content, want) {
 					t.Fatalf("workflow missing %q:\n%s", want, content)
@@ -692,6 +704,9 @@ func TestOnboardingWriteMemoryWorkflowSeedsSampleIssue(t *testing.T) {
 		"identifier: MEM-1",
 		"state: Todo",
 		"You are working on a memory tracker issue `{{ issue.identifier }}`",
+		"Current Detent status: {{ issue.state }}",
+		"## Required Execution Flow",
+		"Confirm $go-workflow:ship is available in the Codex environment.",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("workflow missing %q:\n%s", want, content)
