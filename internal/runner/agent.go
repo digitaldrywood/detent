@@ -300,15 +300,17 @@ func turnSandboxPolicyForWorkspace(ctx context.Context, workspacePath string, th
 
 func workspaceWriteSandboxPolicyMap(threadSandbox string, policy any) (map[string]any, bool) {
 	policyMap, ok := sandboxPolicyMap(policy)
-	if ok && isWorkspaceWriteSandboxName(policyType(policyMap)) {
-		return policyMap, true
-	}
-	if !isWorkspaceWriteSandboxName(threadSandbox) || !ok {
+	if !ok {
 		return nil, false
 	}
-	if strings.TrimSpace(policyType(policyMap)) == "" {
-		policyMap["type"] = "workspaceWrite"
+	policyKind := strings.TrimSpace(policyType(policyMap))
+	if isWorkspaceWriteSandboxName(policyKind) {
+		return policyMap, true
 	}
+	if policyKind != "" || !isWorkspaceWriteSandboxName(threadSandbox) {
+		return nil, false
+	}
+	policyMap["type"] = "workspaceWrite"
 	return policyMap, true
 }
 

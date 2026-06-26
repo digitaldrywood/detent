@@ -345,6 +345,26 @@ func TestRunnerRunAddsGitMetadataWritableRootsForManagedWorkspace(t *testing.T) 
 	}
 }
 
+func TestWorkspaceWriteSandboxPolicyMapSkipsExplicitNonWorkspacePolicy(t *testing.T) {
+	t.Parallel()
+
+	policy := map[string]any{
+		"type":          "dangerFullAccess",
+		"networkAccess": true,
+	}
+
+	got, ok := workspaceWriteSandboxPolicyMap("workspace-write", policy)
+	if ok {
+		t.Fatalf("workspaceWriteSandboxPolicyMap() = %#v, true; want false for explicit non-workspace policy", got)
+	}
+	if policy["type"] != "dangerFullAccess" {
+		t.Fatalf("policy type = %#v, want dangerFullAccess", policy["type"])
+	}
+	if _, ok := policy["writableRoots"]; ok {
+		t.Fatalf("policy writableRoots = %#v, want absent", policy["writableRoots"])
+	}
+}
+
 func TestRunnerRunLogsLifecycleWithoutPromptOrMessageBody(t *testing.T) {
 	t.Parallel()
 
