@@ -80,8 +80,8 @@ test("screenshots manifest includes visual gate scenarios", async ({ request }) 
 test("GitHub API health chrome covers key rate-limit states", async ({ page }, testInfo) => {
   const scenarios = [
     ["github-api-healthy", "GitHub API healthy"],
-    ["github-api-warning", "GitHub API warning"],
-    ["github-api-secondary-backoff", "GitHub secondary backoff"],
+    ["github-api-warning", "GitHub primary quota low"],
+    ["github-api-secondary-backoff", "GitHub secondary throttle active"],
     ["github-api-primary-exhausted", "GitHub primary quota exhausted"],
   ];
 
