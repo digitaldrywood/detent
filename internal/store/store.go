@@ -28,6 +28,7 @@ type Store interface {
 	FairShareStore
 	BudgetCostStore
 	WorkflowMetricsStore
+	WorkAttemptStore
 	Queries() *sqlc.Queries
 	Close() error
 }
@@ -61,6 +62,17 @@ type WorkflowMetricsStore interface {
 	IssueWorkflowTimeline(context.Context, IssueIdentity) (WorkflowTimeline, error)
 }
 
+type WorkAttemptStore interface {
+	StartWorkAttempt(context.Context, WorkAttemptStart) (int64, error)
+	RecordWorkAttemptHeartbeat(context.Context, WorkAttemptHeartbeat) error
+	CompleteWorkAttempt(context.Context, WorkAttemptCompletion) error
+	ListActiveWorkAttempts(context.Context, WorkAttemptQuery) ([]WorkAttempt, error)
+	TimeoutExpiredWorkAttempts(context.Context, WorkAttemptTimeout) ([]WorkAttempt, error)
+	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
+	RecordSchedulerDecision(context.Context, SchedulerDecision) (int64, error)
+	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
+}
+
 type WorkflowPhaseType string
 
 const (
@@ -71,6 +83,31 @@ const (
 	WorkflowPhaseTypeGitHubBackoff WorkflowPhaseType = "github_backoff"
 	WorkflowPhaseTypeReview        WorkflowPhaseType = "review"
 	WorkflowPhaseTypeMergeQueue    WorkflowPhaseType = "merge_queue"
+)
+
+type WorkAttemptStatus string
+
+const (
+	WorkAttemptStatusActive   WorkAttemptStatus = "active"
+	WorkAttemptStatusTerminal WorkAttemptStatus = "terminal"
+)
+
+type WorkAttemptTerminalState string
+
+const (
+	WorkAttemptTerminalSuccess    WorkAttemptTerminalState = "success"
+	WorkAttemptTerminalFailure    WorkAttemptTerminalState = "failure"
+	WorkAttemptTerminalCancelled  WorkAttemptTerminalState = "cancelled"
+	WorkAttemptTerminalTimedOut   WorkAttemptTerminalState = "timed_out"
+	WorkAttemptTerminalSuperseded WorkAttemptTerminalState = "superseded"
+	WorkAttemptTerminalAbandoned  WorkAttemptTerminalState = "abandoned"
+)
+
+type SchedulerDecisionResult string
+
+const (
+	SchedulerDecisionResultSelected SchedulerDecisionResult = "selected"
+	SchedulerDecisionResultSkipped  SchedulerDecisionResult = "skipped"
 )
 
 type RunStart struct {
@@ -166,6 +203,154 @@ type WorkflowPhaseEvent struct {
 	TotalTokens       int64
 	EndpointFamily    string
 	MetadataJSON      string
+}
+
+type WorkAttempt struct {
+	ID                     int64
+	ProjectID              string
+	IssueID                string
+	Identifier             string
+	IssueURL               string
+	PRNumber               *int64
+	Repo                   string
+	WorkerType             string
+	WorkerHost             string
+	Lane                   string
+	AttemptNumber          int
+	Status                 WorkAttemptStatus
+	StartedAt              time.Time
+	LeaseExpiresAt         time.Time
+	HeartbeatAt            time.Time
+	CompletedAt            time.Time
+	TerminalState          WorkAttemptTerminalState
+	ErrorClass             string
+	ErrorMessage           string
+	Phase                  string
+	StatusMessage          string
+	CurrentStep            *int64
+	TotalSteps             *int64
+	ProgressPercent        *int64
+	CurrentCommand         string
+	WaitReason             string
+	GitHubRateSnapshotJSON string
+	CIState                string
+	CapacitySnapshotJSON   string
+	WorkerMetadataJSON     string
+	MetricsJSON            string
+	NextAction             string
+}
+
+type WorkAttemptStart struct {
+	ProjectID              string
+	IssueID                string
+	Identifier             string
+	IssueURL               string
+	PRNumber               *int64
+	Repo                   string
+	WorkerType             string
+	WorkerHost             string
+	Lane                   string
+	AttemptNumber          int
+	StartedAt              time.Time
+	LeaseExpiresAt         time.Time
+	Phase                  string
+	StatusMessage          string
+	CurrentStep            *int64
+	TotalSteps             *int64
+	ProgressPercent        *int64
+	CurrentCommand         string
+	WaitReason             string
+	GitHubRateSnapshotJSON string
+	CIState                string
+	CapacitySnapshotJSON   string
+	WorkerMetadataJSON     string
+	MetricsJSON            string
+	NextAction             string
+}
+
+type WorkAttemptHeartbeat struct {
+	AttemptID              int64
+	HeartbeatAt            time.Time
+	LeaseExpiresAt         time.Time
+	Phase                  string
+	StatusMessage          string
+	CurrentStep            *int64
+	TotalSteps             *int64
+	ProgressPercent        *int64
+	CurrentCommand         string
+	WaitReason             string
+	GitHubRateSnapshotJSON string
+	CIState                string
+	CapacitySnapshotJSON   string
+	MetricsJSON            string
+	NextAction             string
+	ErrorClass             string
+	ErrorMessage           string
+}
+
+type WorkAttemptCompletion struct {
+	AttemptID              int64
+	CompletedAt            time.Time
+	Status                 WorkAttemptStatus
+	TerminalState          WorkAttemptTerminalState
+	ErrorClass             string
+	ErrorMessage           string
+	Phase                  string
+	StatusMessage          string
+	WaitReason             string
+	GitHubRateSnapshotJSON string
+	CIState                string
+	CapacitySnapshotJSON   string
+	MetricsJSON            string
+	NextAction             string
+}
+
+type WorkAttemptQuery struct {
+	ProjectID string
+}
+
+type WorkAttemptTimeout struct {
+	ProjectID     string
+	Now           time.Time
+	TerminalState WorkAttemptTerminalState
+	ErrorClass    string
+	ErrorMessage  string
+}
+
+type WorkAttemptReclaim struct {
+	ProjectID     string
+	Now           time.Time
+	TerminalState WorkAttemptTerminalState
+	ErrorClass    string
+	ErrorMessage  string
+}
+
+type SchedulerDecision struct {
+	ID                     int64
+	ProjectID              string
+	IssueID                string
+	Identifier             string
+	IssueURL               string
+	PRNumber               *int64
+	Repo                   string
+	Lane                   string
+	QueuePosition          int
+	Result                 SchedulerDecisionResult
+	Reason                 string
+	Selected               bool
+	Retry                  bool
+	AttemptNumber          int
+	WorkerHost             string
+	DecisionAt             time.Time
+	WaitReason             string
+	CapacitySnapshotJSON   string
+	GitHubRateSnapshotJSON string
+	MetadataJSON           string
+}
+
+type SchedulerDecisionQuery struct {
+	ProjectID string
+	Limit     int
 }
 
 type WorkflowMetricsQuery struct {

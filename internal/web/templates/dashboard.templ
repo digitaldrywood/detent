@@ -1158,6 +1158,7 @@ templ ProjectDiagnosticsSnapshot(data DashboardData) {
 		<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
 			<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
 				@boardHealthSection(data.Snapshot)
+				@schedulerRuntimeSection(data.Snapshot)
 				@workflowMetricsSection(data.Snapshot.WorkflowMetrics)
 				@cycleTimeSection(data.Snapshot.CycleTime)
 				@budgetCard(data.Snapshot)
@@ -1203,6 +1204,7 @@ templ FleetSnapshot(data DashboardData) {
 		</section>
 		<section class="dashboard-analytics grid min-w-0 gap-4 lg:gap-5" aria-label="Dashboard analytics">
 			@boardHealthSection(data.Snapshot)
+			@schedulerRuntimeSection(data.Snapshot)
 			@workflowMetricsSection(data.Snapshot.WorkflowMetrics)
 			@cycleTimeSection(data.Snapshot.CycleTime)
 			@budgetCard(data.Snapshot)
@@ -3562,6 +3564,108 @@ templ retryQueueSection(snapshot telemetry.Snapshot) {
 							}
 						</tbody>
 					</table>
+				</div>
+			</div>
+		}
+	</section>
+}
+
+templ schedulerRuntimeSection(snapshot telemetry.Snapshot) {
+	<section id="scheduler-runtime" class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
+		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+			<div class="min-w-0">
+				@helpHeading2("Scheduler runtime", helpWorkflowMetrics, "scheduler-runtime")
+				<p class="text-sm text-muted-foreground">Durable attempts, leases, and recent scheduling decisions.</p>
+			</div>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ schedulerRuntimeCount(snapshot) }</span>
+		</div>
+		if len(schedulerWorkAttemptRows(snapshot)) == 0 && len(schedulerDecisionRows(snapshot)) == 0 {
+			<div class="mt-4">
+				@dashboardEmptyState("No scheduler runtime records yet.", "Attempts and candidate decisions appear after the scheduler reconciles work.", "bg-accent")
+			</div>
+		} else {
+			<div class="mt-4 grid gap-4 xl:grid-cols-2">
+				<div class="min-w-0">
+					<div class="mb-2 flex items-center justify-between gap-3">
+						<h3 class="text-sm font-medium text-foreground">Work attempts</h3>
+						<span class="font-mono text-xs text-muted-foreground">{ formatCount(len(schedulerWorkAttemptRows(snapshot))) }</span>
+					</div>
+					if len(schedulerWorkAttemptRows(snapshot)) == 0 {
+						@dashboardEmptyState("No work attempts recorded.", "Active and recovered leases will appear here.", "bg-accent")
+					} else {
+						<div class="grid gap-2">
+							for _, row := range schedulerWorkAttemptRows(snapshot) {
+								<article class="rounded-md border border-border bg-muted/30 p-3">
+									<div class="flex min-w-0 items-start justify-between gap-3">
+										<div class="min-w-0">
+											<div class="truncate font-mono text-sm font-medium text-foreground">{ workAttemptIssueLabel(row) }</div>
+											<div class="mt-1 truncate text-xs text-muted-foreground">{ workAttemptWorkerLabel(row) }</div>
+										</div>
+										<span class={ workAttemptStatusClass(row) }>{ workAttemptStatusLabel(row) }</span>
+									</div>
+									<div class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+										<div class="min-w-0">
+											<span class="block text-xs font-medium uppercase text-muted-foreground">Phase</span>
+											<span class="block truncate font-mono text-foreground">{ workAttemptPhaseLabel(row) }</span>
+										</div>
+										<div class="min-w-0">
+											<span class="block text-xs font-medium uppercase text-muted-foreground">Wait</span>
+											<span class="block truncate font-mono text-foreground">{ workAttemptWaitLabel(row) }</span>
+										</div>
+										<div class="min-w-0">
+											<span class="block text-xs font-medium uppercase text-muted-foreground">Lease</span>
+											<span class="block truncate font-mono text-foreground">{ workAttemptLeaseLabel(row, snapshot.GeneratedAt) }</span>
+										</div>
+										<div class="min-w-0">
+											<span class="block text-xs font-medium uppercase text-muted-foreground">Next</span>
+											<span class="block truncate font-mono text-foreground">{ workAttemptNextActionLabel(row) }</span>
+										</div>
+									</div>
+								</article>
+							}
+						</div>
+					}
+				</div>
+				<div class="min-w-0">
+					<div class="mb-2 flex items-center justify-between gap-3">
+						<h3 class="text-sm font-medium text-foreground">Candidate decisions</h3>
+						<span class="font-mono text-xs text-muted-foreground">{ formatCount(len(schedulerDecisionRows(snapshot))) }</span>
+					</div>
+					if len(schedulerDecisionRows(snapshot)) == 0 {
+						@dashboardEmptyState("No candidate decisions recorded.", "Selected and skipped candidates will appear here.", "bg-warning")
+					} else {
+						<div class="grid gap-2">
+							for _, row := range schedulerDecisionRows(snapshot) {
+								<article class="rounded-md border border-border bg-muted/30 p-3">
+									<div class="flex min-w-0 items-start justify-between gap-3">
+										<div class="min-w-0">
+											<div class="truncate font-mono text-sm font-medium text-foreground">{ schedulerDecisionIssueLabel(row) }</div>
+											<div class="mt-1 truncate text-xs text-muted-foreground">{ schedulerDecisionLaneLabel(row) }</div>
+										</div>
+										<span class={ schedulerDecisionStatusClass(row) }>{ schedulerDecisionStatusLabel(row) }</span>
+									</div>
+									<div class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+										<div class="min-w-0">
+											<span class="block text-xs font-medium uppercase text-muted-foreground">Reason</span>
+											<span class="block truncate font-mono text-foreground">{ schedulerDecisionReasonLabel(row) }</span>
+										</div>
+										<div class="min-w-0">
+											<span class="block text-xs font-medium uppercase text-muted-foreground">Wait</span>
+											<span class="block truncate font-mono text-foreground">{ schedulerDecisionWaitLabel(row) }</span>
+										</div>
+										<div class="min-w-0">
+											<span class="block text-xs font-medium uppercase text-muted-foreground">Queue</span>
+											<span class="block truncate font-mono text-foreground">{ schedulerDecisionQueueLabel(row) }</span>
+										</div>
+										<div class="min-w-0">
+											<span class="block text-xs font-medium uppercase text-muted-foreground">At</span>
+											<span class="block truncate font-mono text-foreground">{ schedulerDecisionTimeLabel(row) }</span>
+										</div>
+									</div>
+								</article>
+							}
+						</div>
+					}
 				</div>
 			</div>
 		}

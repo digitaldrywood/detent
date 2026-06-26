@@ -18,10 +18,7 @@ const (
 	workerOutcomeTimedOut  = "timed_out"
 )
 
-func (o *Orchestrator) logDispatchPlanDecision(state *State, now time.Time, decision dispatchPlanDecision) {
-	if o == nil || o.logger == nil {
-		return
-	}
+func (o *Orchestrator) logDispatchPlanDecision(ctx context.Context, state *State, now time.Time, decision dispatchPlanDecision) {
 	result := "skipped"
 	reason := strings.TrimSpace(decision.SkipReason)
 	if decision.Selected {
@@ -29,6 +26,13 @@ func (o *Orchestrator) logDispatchPlanDecision(state *State, now time.Time, deci
 		if reason == "" {
 			reason = "selected"
 		}
+	}
+	if o == nil {
+		return
+	}
+	o.recordSchedulerDecision(ctx, state, now, decision, result, reason)
+	if o.logger == nil {
+		return
 	}
 	attrs := o.schedulerDecisionAttrs(state, now, decision.Issue,
 		"result", result,

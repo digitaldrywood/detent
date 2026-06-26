@@ -5565,6 +5565,205 @@ func formatInt(value int64) string {
 	return out.String()
 }
 
+func schedulerRuntimeCount(snapshot telemetry.Snapshot) string {
+	return formatCount(len(schedulerWorkAttemptRows(snapshot)) + len(schedulerDecisionRows(snapshot)))
+}
+
+func schedulerWorkAttemptRows(snapshot telemetry.Snapshot) []telemetry.WorkAttempt {
+	return limitWorkAttemptRows(snapshot.WorkAttempts, 6)
+}
+
+func schedulerDecisionRows(snapshot telemetry.Snapshot) []telemetry.SchedulerDecision {
+	return limitSchedulerDecisionRows(snapshot.SchedulerDecisions, 8)
+}
+
+func limitWorkAttemptRows(rows []telemetry.WorkAttempt, limit int) []telemetry.WorkAttempt {
+	if len(rows) == 0 || limit <= 0 {
+		return nil
+	}
+	if len(rows) <= limit {
+		return rows
+	}
+	return rows[:limit]
+}
+
+func limitSchedulerDecisionRows(rows []telemetry.SchedulerDecision, limit int) []telemetry.SchedulerDecision {
+	if len(rows) == 0 || limit <= 0 {
+		return nil
+	}
+	if len(rows) <= limit {
+		return rows
+	}
+	return rows[:limit]
+}
+
+func workAttemptIssueLabel(row telemetry.WorkAttempt) string {
+	if label := strings.TrimSpace(row.Identifier); label != "" {
+		return label
+	}
+	if label := strings.TrimSpace(row.IssueID); label != "" {
+		return label
+	}
+	return fmt.Sprintf("attempt-%d", row.AttemptID)
+}
+
+func workAttemptWorkerLabel(row telemetry.WorkAttempt) string {
+	parts := []string{}
+	if row.WorkerType != "" {
+		parts = append(parts, row.WorkerType)
+	}
+	if row.WorkerHost != "" {
+		parts = append(parts, row.WorkerHost)
+	}
+	if row.AttemptNumber > 0 {
+		parts = append(parts, "attempt "+formatInt(int64(row.AttemptNumber)))
+	}
+	if len(parts) == 0 {
+		return "worker pending"
+	}
+	return strings.Join(parts, " / ")
+}
+
+func workAttemptStatusClass(row telemetry.WorkAttempt) string {
+	base := "shrink-0 rounded-full px-2 py-1 font-mono text-xs font-medium "
+	if row.Stale {
+		return base + "bg-danger-soft text-danger"
+	}
+	switch strings.TrimSpace(row.TerminalState) {
+	case "success":
+		return base + "bg-success-soft text-success"
+	case "failure", "timed_out", "abandoned", "cancelled":
+		return base + "bg-danger-soft text-danger"
+	}
+	if strings.TrimSpace(row.Status) == "active" {
+		return base + "bg-accent-soft text-accent"
+	}
+	return base + "bg-muted text-muted-foreground"
+}
+
+func workAttemptStatusLabel(row telemetry.WorkAttempt) string {
+	if row.Stale {
+		return "stale"
+	}
+	if state := strings.TrimSpace(row.TerminalState); state != "" {
+		return state
+	}
+	if status := strings.TrimSpace(row.Status); status != "" {
+		return status
+	}
+	return "unknown"
+}
+
+func workAttemptPhaseLabel(row telemetry.WorkAttempt) string {
+	if value := strings.TrimSpace(row.Phase); value != "" {
+		return value
+	}
+	return "pending"
+}
+
+func workAttemptWaitLabel(row telemetry.WorkAttempt) string {
+	if value := strings.TrimSpace(row.WaitReason); value != "" {
+		return value
+	}
+	return "none"
+}
+
+func workAttemptLeaseLabel(row telemetry.WorkAttempt, generatedAt time.Time) string {
+	if row.LeaseExpiresAt == nil {
+		if row.CompletedAt != nil {
+			return "released"
+		}
+		return "none"
+	}
+	if generatedAt.IsZero() {
+		return timeLabel(*row.LeaseExpiresAt)
+	}
+	if row.LeaseExpiresAt.Before(generatedAt) {
+		return "expired " + formatDuration(generatedAt.Sub(*row.LeaseExpiresAt).Seconds()) + " ago"
+	}
+	return "expires in " + formatDuration(row.LeaseExpiresAt.Sub(generatedAt).Seconds())
+}
+
+func workAttemptNextActionLabel(row telemetry.WorkAttempt) string {
+	if value := strings.TrimSpace(row.NextAction); value != "" {
+		return value
+	}
+	return "none"
+}
+
+func schedulerDecisionIssueLabel(row telemetry.SchedulerDecision) string {
+	if label := strings.TrimSpace(row.Identifier); label != "" {
+		return label
+	}
+	if label := strings.TrimSpace(row.IssueID); label != "" {
+		return label
+	}
+	return "candidate"
+}
+
+func schedulerDecisionLaneLabel(row telemetry.SchedulerDecision) string {
+	parts := []string{}
+	if row.Lane != "" {
+		parts = append(parts, row.Lane)
+	}
+	if row.WorkerHost != "" {
+		parts = append(parts, row.WorkerHost)
+	}
+	if row.Retry {
+		parts = append(parts, "retry")
+	}
+	if len(parts) == 0 {
+		return "lane unknown"
+	}
+	return strings.Join(parts, " / ")
+}
+
+func schedulerDecisionStatusClass(row telemetry.SchedulerDecision) string {
+	base := "shrink-0 rounded-full px-2 py-1 font-mono text-xs font-medium "
+	if row.Selected || strings.TrimSpace(row.Result) == "selected" {
+		return base + "bg-success-soft text-success"
+	}
+	return base + "bg-warning-soft text-warning"
+}
+
+func schedulerDecisionStatusLabel(row telemetry.SchedulerDecision) string {
+	if result := strings.TrimSpace(row.Result); result != "" {
+		return result
+	}
+	if row.Selected {
+		return "selected"
+	}
+	return "skipped"
+}
+
+func schedulerDecisionReasonLabel(row telemetry.SchedulerDecision) string {
+	if reason := strings.TrimSpace(row.Reason); reason != "" {
+		return reason
+	}
+	return schedulerDecisionStatusLabel(row)
+}
+
+func schedulerDecisionWaitLabel(row telemetry.SchedulerDecision) string {
+	if wait := strings.TrimSpace(row.WaitReason); wait != "" {
+		return wait
+	}
+	return "none"
+}
+
+func schedulerDecisionQueueLabel(row telemetry.SchedulerDecision) string {
+	if row.QueuePosition <= 0 {
+		return "not queued"
+	}
+	return "#" + formatInt(int64(row.QueuePosition))
+}
+
+func schedulerDecisionTimeLabel(row telemetry.SchedulerDecision) string {
+	if row.DecisionAt.IsZero() {
+		return "unknown"
+	}
+	return timeLabel(row.DecisionAt)
+}
+
 func formatDecimal(value float64) string {
 	if value <= 0 || math.IsNaN(value) || math.IsInf(value, 0) {
 		return "0"

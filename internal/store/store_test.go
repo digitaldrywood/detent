@@ -40,8 +40,8 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	if got := queryInt(t, sqliteBackend.db, "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", got)
 	}
-	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events')"); got != 5 {
-		t.Fatalf("migrated table count = %d, want 5", got)
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions')"); got != 7 {
+		t.Fatalf("migrated table count = %d, want 7", got)
 	}
 }
 
@@ -109,6 +109,138 @@ func TestSQLiteQueriesRoundTrip(t *testing.T) {
 	}
 	if got.Identifier.String != "digitaldrywood/detent#5" {
 		t.Fatalf("session identifier = %q, want digitaldrywood/detent#5", got.Identifier.String)
+	}
+}
+
+func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	base := time.Date(2026, 6, 26, 14, 30, 0, 0, time.UTC)
+
+	prNumber := int64(737)
+	attemptID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+		ProjectID:            " detent ",
+		IssueID:              " issue-737 ",
+		Identifier:           " digitaldrywood/detent#737 ",
+		IssueURL:             " https://github.com/digitaldrywood/detent/issues/737 ",
+		PRNumber:             &prNumber,
+		Repo:                 " digitaldrywood/detent ",
+		WorkerType:           " agent ",
+		WorkerHost:           " worker-a ",
+		Lane:                 " In Progress ",
+		AttemptNumber:        2,
+		StartedAt:            base,
+		LeaseExpiresAt:       base.Add(5 * time.Minute),
+		WorkerMetadataJSON:   `{"mode":"implement"}`,
+		CapacitySnapshotJSON: `{"global_used":1}`,
+	})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt() error = %v", err)
+	}
+	if attemptID <= 0 {
+		t.Fatalf("StartWorkAttempt() id = %d, want positive", attemptID)
+	}
+
+	if err := backend.RecordWorkAttemptHeartbeat(ctx, WorkAttemptHeartbeat{
+		AttemptID:              attemptID,
+		HeartbeatAt:            base.Add(time.Minute),
+		LeaseExpiresAt:         base.Add(6 * time.Minute),
+		Phase:                  "testing",
+		StatusMessage:          "running focused tests",
+		WaitReason:             "github_checks",
+		GitHubRateSnapshotJSON: `{"rest_remaining":4878}`,
+		CapacitySnapshotJSON:   `{"global_available":1}`,
+		MetricsJSON:            `{"test_runs":1}`,
+		NextAction:             "wait for CI",
+	}); err != nil {
+		t.Fatalf("RecordWorkAttemptHeartbeat() error = %v", err)
+	}
+
+	if _, err := backend.RecordSchedulerDecision(ctx, SchedulerDecision{
+		ProjectID:            " detent ",
+		IssueID:              " issue-738 ",
+		Identifier:           " digitaldrywood/detent#738 ",
+		Repo:                 " digitaldrywood/detent ",
+		Lane:                 " Rework ",
+		QueuePosition:        3,
+		Result:               SchedulerDecisionResultSkipped,
+		Reason:               " repo_merge_lock ",
+		DecisionAt:           base.Add(2 * time.Minute),
+		CapacitySnapshotJSON: `{"repo_merge_lock":"digitaldrywood/detent"}`,
+	}); err != nil {
+		t.Fatalf("RecordSchedulerDecision() error = %v", err)
+	}
+
+	active, err := backend.ListActiveWorkAttempts(ctx, WorkAttemptQuery{ProjectID: "detent"})
+	if err != nil {
+		t.Fatalf("ListActiveWorkAttempts() error = %v", err)
+	}
+	if len(active) != 1 {
+		t.Fatalf("active attempts len = %d, want 1: %#v", len(active), active)
+	}
+	got := active[0]
+	if got.ProjectID != "detent" || got.IssueID != "issue-737" || got.AttemptNumber != 2 || got.Phase != "testing" {
+		t.Fatalf("active attempt = %#v, want normalized heartbeat", got)
+	}
+	if got.Status != WorkAttemptStatusActive {
+		t.Fatalf("active status = %q, want %q", got.Status, WorkAttemptStatusActive)
+	}
+
+	decisions, err := backend.ListRecentSchedulerDecisions(ctx, SchedulerDecisionQuery{ProjectID: "detent", Limit: 5})
+	if err != nil {
+		t.Fatalf("ListRecentSchedulerDecisions() error = %v", err)
+	}
+	if len(decisions) != 1 {
+		t.Fatalf("decisions len = %d, want 1: %#v", len(decisions), decisions)
+	}
+	if decisions[0].Result != SchedulerDecisionResultSkipped || decisions[0].Reason != "repo_merge_lock" {
+		t.Fatalf("decision = %#v, want skipped repo_merge_lock", decisions[0])
+	}
+
+	if err := backend.CompleteWorkAttempt(ctx, WorkAttemptCompletion{
+		AttemptID:     attemptID,
+		CompletedAt:   base.Add(3 * time.Minute),
+		Status:        WorkAttemptStatusTerminal,
+		TerminalState: WorkAttemptTerminalSuccess,
+		Phase:         "completed",
+	}); err != nil {
+		t.Fatalf("CompleteWorkAttempt() error = %v", err)
+	}
+	active, err = backend.ListActiveWorkAttempts(ctx, WorkAttemptQuery{ProjectID: "detent"})
+	if err != nil {
+		t.Fatalf("ListActiveWorkAttempts() after complete error = %v", err)
+	}
+	if len(active) != 0 {
+		t.Fatalf("active attempts after complete = %#v, want none", active)
+	}
+
+	staleID, err := backend.StartWorkAttempt(ctx, WorkAttemptStart{
+		ProjectID:      "detent",
+		IssueID:        "issue-stale",
+		Identifier:     "digitaldrywood/detent#739",
+		Repo:           "digitaldrywood/detent",
+		WorkerType:     "merge",
+		Lane:           "Merging",
+		AttemptNumber:  1,
+		StartedAt:      base.Add(-10 * time.Minute),
+		LeaseExpiresAt: base.Add(-time.Minute),
+	})
+	if err != nil {
+		t.Fatalf("StartWorkAttempt() stale error = %v", err)
+	}
+	recovered, err := backend.TimeoutExpiredWorkAttempts(ctx, WorkAttemptTimeout{
+		Now:           base,
+		TerminalState: WorkAttemptTerminalTimedOut,
+		ErrorClass:    "stale_lease",
+		ErrorMessage:  "worker lease expired",
+	})
+	if err != nil {
+		t.Fatalf("TimeoutExpiredWorkAttempts() error = %v", err)
+	}
+	if len(recovered) != 1 || recovered[0].ID != staleID || recovered[0].TerminalState != WorkAttemptTerminalTimedOut {
+		t.Fatalf("recovered stale attempts = %#v, want stale timeout id %d", recovered, staleID)
 	}
 }
 

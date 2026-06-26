@@ -241,6 +241,7 @@ func (o *Orchestrator) refreshActiveRuns(ctx context.Context, state *State, now 
 	o.reconcileRunningIssues(ctx, state, now)
 	o.failStalledMergeWorkerStarts(state, now)
 	o.heartbeatRunningClaims(ctx, state, now)
+	o.heartbeatRunningWorkAttempts(ctx, state, now)
 }
 
 func (o *Orchestrator) fetchTickIssues(

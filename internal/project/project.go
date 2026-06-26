@@ -19,6 +19,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 var (
@@ -85,6 +86,7 @@ type Dependencies struct {
 	Scheduler              scheduler.Scheduler
 	GlobalDispatchGate     scheduler.ProjectDispatchGate
 	WorkflowMetrics        orchestrator.WorkflowMetricsRecorder
+	WorkAttempts           store.WorkAttemptStore
 	Events                 *hub.Hub[Event]
 	Logger                 *slog.Logger
 	GitHubToken            string
@@ -174,6 +176,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Runner:             deps.Runner,
 		GlobalDispatchGate: deps.GlobalDispatchGate,
 		WorkflowMetrics:    deps.WorkflowMetrics,
+		WorkAttempts:       deps.WorkAttempts,
 		Logger:             logger,
 	}
 	orch, err := orchestratorFactory(orchConfig, orchDeps)

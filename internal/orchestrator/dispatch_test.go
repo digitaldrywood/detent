@@ -16,6 +16,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
@@ -1086,6 +1087,143 @@ func TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle(t *testing.T) {
 	}
 }
 
+func TestDispatchIssueAcquiresDurableAttemptBeforeWorker(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 14, 45, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+		WorkerHosts:         []string{"worker-a"},
+	})
+	runner := newWorkerHostRunner()
+	attempts := &recordingWorkAttemptStore{nextID: 42}
+	orch := Orchestrator{
+		cfg:          cfg,
+		supervisor:   newTestSupervisor(t, runner, cfg),
+		runResults:   make(chan runpkg.Completion, 1),
+		workAttempts: attempts,
+	}
+	state := newState(cfg)
+	issue := dispatchTestIssue("issue-durable-attempt", "Todo")
+	issue.Identifier = "digitaldrywood/detent#737"
+	issue.URL = "https://github.com/digitaldrywood/detent/issues/737"
+
+	if !orch.dispatchIssue(t.Context(), &state, issue, 2, now, "worker-a") {
+		t.Fatal("dispatchIssue() = false, want true")
+	}
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.WorkAttemptID != 42 {
+		t.Fatalf("RunRequest.WorkAttemptID = %d, want 42", request.WorkAttemptID)
+	}
+	running := state.Running[issue.ID]
+	if running.WorkAttemptID != 42 {
+		t.Fatalf("Running.WorkAttemptID = %d, want 42", running.WorkAttemptID)
+	}
+	if len(attempts.starts) != 1 {
+		t.Fatalf("work attempt starts len = %d, want 1", len(attempts.starts))
+	}
+	start := attempts.starts[0]
+	if start.ProjectID != "detent" || start.IssueID != issue.ID || start.Identifier != issue.Identifier {
+		t.Fatalf("work attempt start identity = %#v, want detent issue", start)
+	}
+	if start.WorkerType != "agent" || start.WorkerHost != "worker-a" || start.AttemptNumber != 2 {
+		t.Fatalf("work attempt start worker = %#v, want agent worker-a attempt 2", start)
+	}
+	if !start.StartedAt.Equal(now) || !start.LeaseExpiresAt.After(now) {
+		t.Fatalf("work attempt times = started %s lease %s, want started now and future lease", start.StartedAt, start.LeaseExpiresAt)
+	}
+	state.Running[issue.ID].cancel()
+}
+
+func TestHandleRunResultCompletesDurableAttempt(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 15, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+	})
+	attempts := &recordingWorkAttemptStore{}
+	orch := Orchestrator{
+		cfg:          cfg,
+		runResults:   make(chan runpkg.Completion, 1),
+		workAttempts: attempts,
+	}
+	state := newState(cfg)
+	issue := dispatchTestIssue("issue-failed-attempt", "Todo")
+	state.Running[issue.ID] = Running{
+		Issue:         issue,
+		Attempt:       2,
+		StartedAt:     now.Add(-time.Minute),
+		WorkerHost:    "worker-a",
+		WorkAttemptID: 77,
+	}
+	errRun := errors.New("runner eof")
+
+	orch.handleRunResult(t.Context(), &state, runpkg.Completion{
+		IssueID:      issue.ID,
+		Request:      RunRequest{Issue: issue, Attempt: 2, WorkAttemptID: 77},
+		Err:          errRun,
+		CompletedAt:  now,
+		Retryable:    true,
+		RetryAttempt: 3,
+		RetryDelay:   time.Second,
+	})
+
+	if len(attempts.completions) != 1 {
+		t.Fatalf("work attempt completions len = %d, want 1", len(attempts.completions))
+	}
+	completion := attempts.completions[0]
+	if completion.AttemptID != 77 || completion.TerminalState != store.WorkAttemptTerminalFailure {
+		t.Fatalf("completion = %#v, want failed attempt 77", completion)
+	}
+	if completion.ErrorClass != "runner_error" || !strings.Contains(completion.ErrorMessage, "runner eof") {
+		t.Fatalf("completion error = %q/%q, want runner_error with message", completion.ErrorClass, completion.ErrorMessage)
+	}
+	if _, ok := state.Retry[issue.ID]; !ok {
+		t.Fatalf("Retry[%q] missing after failed durable attempt", issue.ID)
+	}
+}
+
+func TestDispatchReadyIssuesPersistsEveryCapacitySkip(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 15, 15, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo"},
+		TerminalStates:      []string{"Done"},
+		Project:             scheduler.ProjectCandidate{ID: "detent"},
+	})
+	attempts := &recordingWorkAttemptStore{}
+	orch := Orchestrator{
+		cfg:          cfg,
+		runResults:   make(chan runpkg.Completion, 1),
+		workAttempts: attempts,
+	}
+	state := newState(cfg)
+	running := dispatchTestIssue("issue-running-capacity", "Todo")
+	state.Running[running.ID] = Running{Issue: running, StartedAt: now.Add(-time.Minute)}
+	first := dispatchTestIssue("issue-waiting-a", "Todo")
+	second := dispatchTestIssue("issue-waiting-b", "Todo")
+
+	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{first, second}, now)
+
+	if len(attempts.decisions) != 2 {
+		t.Fatalf("decisions len = %d, want every skipped candidate: %#v", len(attempts.decisions), attempts.decisions)
+	}
+	for _, decision := range attempts.decisions {
+		if decision.Result != store.SchedulerDecisionResultSkipped || decision.Reason != dispatchSkipGlobalCapacityFull {
+			t.Fatalf("decision = %#v, want skipped global capacity", decision)
+		}
+	}
+}
+
 func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	t.Parallel()
 
@@ -1385,4 +1523,54 @@ func receiveWorkerHostRunRequest(t *testing.T, requests <-chan RunRequest) RunRe
 	}
 
 	return RunRequest{}
+}
+
+type recordingWorkAttemptStore struct {
+	nextID      int64
+	starts      []store.WorkAttemptStart
+	heartbeats  []store.WorkAttemptHeartbeat
+	completions []store.WorkAttemptCompletion
+	decisions   []store.SchedulerDecision
+	reclaimed   []store.WorkAttempt
+}
+
+func (s *recordingWorkAttemptStore) StartWorkAttempt(_ context.Context, attrs store.WorkAttemptStart) (int64, error) {
+	s.starts = append(s.starts, attrs)
+	if s.nextID <= 0 {
+		s.nextID = 1
+	}
+	id := s.nextID
+	s.nextID++
+	return id, nil
+}
+
+func (s *recordingWorkAttemptStore) RecordWorkAttemptHeartbeat(_ context.Context, attrs store.WorkAttemptHeartbeat) error {
+	s.heartbeats = append(s.heartbeats, attrs)
+	return nil
+}
+
+func (s *recordingWorkAttemptStore) CompleteWorkAttempt(_ context.Context, attrs store.WorkAttemptCompletion) error {
+	s.completions = append(s.completions, attrs)
+	return nil
+}
+
+func (s *recordingWorkAttemptStore) TimeoutExpiredWorkAttempts(context.Context, store.WorkAttemptTimeout) ([]store.WorkAttempt, error) {
+	return append([]store.WorkAttempt(nil), s.reclaimed...), nil
+}
+
+func (s *recordingWorkAttemptStore) ReclaimActiveWorkAttempts(context.Context, store.WorkAttemptReclaim) ([]store.WorkAttempt, error) {
+	return append([]store.WorkAttempt(nil), s.reclaimed...), nil
+}
+
+func (s *recordingWorkAttemptStore) ListActiveWorkAttempts(context.Context, store.WorkAttemptQuery) ([]store.WorkAttempt, error) {
+	return nil, nil
+}
+
+func (s *recordingWorkAttemptStore) RecordSchedulerDecision(_ context.Context, attrs store.SchedulerDecision) (int64, error) {
+	s.decisions = append(s.decisions, attrs)
+	return int64(len(s.decisions)), nil
+}
+
+func (s *recordingWorkAttemptStore) ListRecentSchedulerDecisions(context.Context, store.SchedulerDecisionQuery) ([]store.SchedulerDecision, error) {
+	return nil, nil
 }
