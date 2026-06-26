@@ -4,8 +4,10 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -271,6 +273,95 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if sessionStore.phase.Turns != 1 || sessionStore.phase.InputTokens != 100 || sessionStore.phase.OutputTokens != 25 || sessionStore.phase.TotalTokens != 125 {
 		t.Fatalf("WorkflowPhaseEvent usage = %#v, want turns and token totals", sessionStore.phase)
+	}
+}
+
+func TestRunnerRunAddsGitMetadataWritableRootsForManagedWorkspace(t *testing.T) {
+	t.Parallel()
+
+	source := initRunnerSourceRepo(t)
+	workspaceRoot := filepath.Join(t.TempDir(), "workspaces")
+	workspaceBackend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
+		Root:       workspaceRoot,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	agentBackend := &committingAgentBackend{}
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Codex: config.Codex{
+					ThreadSandbox: "workspace-write",
+					TurnSandboxPolicy: map[string]any{
+						"type":          "workspaceWrite",
+						"networkAccess": true,
+					},
+				},
+			},
+			Prompt: "Work on {{ issue.identifier }}",
+		},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-743",
+			Identifier: "digitaldrywood/detent#743",
+			Title:      "Managed workspace sandbox can prevent git add/commit",
+			BranchName: "detent/issue-743",
+		},
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.FinalState != FinalStateCompleted {
+		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateCompleted)
+	}
+
+	wantRoots, err := workspace.GitMetadataWritableRoots(context.Background(), agentBackend.request.Workspace)
+	if err != nil {
+		t.Fatalf("GitMetadataWritableRoots() error = %v", err)
+	}
+	gotRoots := sandboxPolicyWritableRoots(t, agentBackend.request.TurnSandboxPolicy)
+	for _, want := range wantRoots {
+		if !containsRunnerString(gotRoots, want) {
+			t.Fatalf("sandbox writableRoots = %#v, missing %q", gotRoots, want)
+		}
+	}
+	policy := sandboxPolicyMapForTest(t, agentBackend.request.TurnSandboxPolicy)
+	if policy["networkAccess"] != true {
+		t.Fatalf("sandboxPolicy.networkAccess = %#v, want true", policy["networkAccess"])
+	}
+	if got := strings.TrimSpace(runRunnerGit(t, agentBackend.request.Workspace, "log", "-1", "--pretty=%s")); got != "agent commit" {
+		t.Fatalf("latest commit subject = %q, want agent commit", got)
+	}
+}
+
+func TestWorkspaceWriteSandboxPolicyMapSkipsExplicitNonWorkspacePolicy(t *testing.T) {
+	t.Parallel()
+
+	policy := map[string]any{
+		"type":          "dangerFullAccess",
+		"networkAccess": true,
+	}
+
+	got, ok := workspaceWriteSandboxPolicyMap("workspace-write", policy)
+	if ok {
+		t.Fatalf("workspaceWriteSandboxPolicyMap() = %#v, true; want false for explicit non-workspace policy", got)
+	}
+	if policy["type"] != "dangerFullAccess" {
+		t.Fatalf("policy type = %#v, want dangerFullAccess", policy["type"])
+	}
+	if _, ok := policy["writableRoots"]; ok {
+		t.Fatalf("policy writableRoots = %#v, want absent", policy["writableRoots"])
 	}
 }
 
@@ -914,6 +1005,103 @@ func TestRunnerReapWorkspaceUsesWorkspaceIssueCleanup(t *testing.T) {
 		workspaceBackend.cleanupIssue.BranchName != "detent/digitaldrywood_detent_311" {
 		t.Fatalf("CleanupIssue() issue = %#v", workspaceBackend.cleanupIssue)
 	}
+}
+
+type committingAgentBackend struct {
+	request AgentTurnRequest
+}
+
+func (b *committingAgentBackend) RunTurn(ctx context.Context, req AgentTurnRequest, _ AgentUpdateHandler) (AgentTurnResult, error) {
+	b.request = req
+	if err := os.WriteFile(filepath.Join(req.Workspace, "agent.txt"), []byte("agent edit\n"), 0o600); err != nil {
+		return AgentTurnResult{}, fmt.Errorf("write agent edit: %w", err)
+	}
+	if err := runAgentGit(ctx, req.Workspace, "add", "agent.txt"); err != nil {
+		return AgentTurnResult{}, err
+	}
+	if err := runAgentGit(ctx, req.Workspace, "commit", "-m", "agent commit"); err != nil {
+		return AgentTurnResult{}, err
+	}
+	return AgentTurnResult{ThreadID: "thread-743", TurnID: "turn-1", SessionID: "thread-743-turn-1"}, nil
+}
+
+func runAgentGit(ctx context.Context, dir string, args ...string) error {
+	gitArgs := append([]string{"-C", dir}, args...)
+	cmd := exec.CommandContext(ctx, "git", gitArgs...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		return fmt.Errorf("git %s failed: %w\n%s", strings.Join(gitArgs, " "), err, output)
+	}
+	return nil
+}
+
+func initRunnerSourceRepo(t *testing.T) string {
+	t.Helper()
+
+	dir := t.TempDir()
+	runRunnerGit(t, dir, "init", "-b", "main")
+	runRunnerGit(t, dir, "config", "core.autocrlf", "false")
+	runRunnerGit(t, dir, "config", "user.name", "Test User")
+	runRunnerGit(t, dir, "config", "user.email", "test@example.com")
+	if err := os.WriteFile(filepath.Join(dir, "README.md"), []byte("source repo\n"), 0o600); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runRunnerGit(t, dir, "add", "README.md")
+	runRunnerGit(t, dir, "commit", "-m", "initial")
+	return dir
+}
+
+func runRunnerGit(t *testing.T, dir string, args ...string) string {
+	t.Helper()
+
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("git %s failed: %v\n%s", strings.Join(cmd.Args[1:], " "), err, output)
+	}
+	return string(output)
+}
+
+func sandboxPolicyWritableRoots(t *testing.T, policy any) []string {
+	t.Helper()
+
+	policyMap := sandboxPolicyMapForTest(t, policy)
+	values, ok := policyMap["writableRoots"].([]string)
+	if ok {
+		return values
+	}
+	rawValues, ok := policyMap["writableRoots"].([]any)
+	if !ok {
+		t.Fatalf("sandboxPolicy.writableRoots = %#v, want string list", policyMap["writableRoots"])
+	}
+	roots := make([]string, 0, len(rawValues))
+	for _, raw := range rawValues {
+		root, ok := raw.(string)
+		if !ok {
+			t.Fatalf("sandboxPolicy.writableRoots item = %#v, want string", raw)
+		}
+		roots = append(roots, root)
+	}
+	return roots
+}
+
+func sandboxPolicyMapForTest(t *testing.T, policy any) map[string]any {
+	t.Helper()
+
+	policyMap, ok := policy.(map[string]any)
+	if !ok {
+		t.Fatalf("TurnSandboxPolicy = %T, want map[string]any", policy)
+	}
+	return policyMap
+}
+
+func containsRunnerString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
 }
 
 type fakeWorkspaceBackend struct {
