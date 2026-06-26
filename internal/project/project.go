@@ -563,8 +563,16 @@ func (p *Project) Wait(ctx context.Context) error {
 
 func (p *Project) waitDone(ctx context.Context, done <-chan struct{}) error {
 	started := logProjectShutdownBoundaryBegin(p.logger, "project_wait_done", "component", "project", "project_id", p.id)
+	if err := ctx.Err(); err != nil {
+		logProjectShutdownBoundaryEnd(p.logger, "project_wait_done", started, err, "component", "project", "project_id", p.id)
+		return err
+	}
 	select {
 	case <-done:
+		if err := ctx.Err(); err != nil {
+			logProjectShutdownBoundaryEnd(p.logger, "project_wait_done", started, err, "component", "project", "project_id", p.id)
+			return err
+		}
 		p.mu.Lock()
 		defer p.mu.Unlock()
 
