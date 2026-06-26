@@ -15,11 +15,12 @@ type dispatchPlanner struct {
 }
 
 type dispatchPlanHooks struct {
-	hydrate             func(connector.Issue) (connector.Issue, bool)
-	beforeDispatch      func(connector.Issue, int) bool
-	dispatch            func(connector.Issue, int, string) bool
-	dispatchFailed      func(connector.Issue) bool
-	retryDispatchFailed func(connector.Issue, Retry)
+	hydrate                 func(connector.Issue) (connector.Issue, bool)
+	beforeDispatch          func(connector.Issue, int) bool
+	dispatch                func(connector.Issue, int, string) bool
+	dispatchFailed          func(connector.Issue) bool
+	retryDispatchFailed     func(connector.Issue, Retry)
+	preserveMissingDueRetry func(Retry) bool
 }
 
 type dispatchAction struct {
@@ -44,7 +45,7 @@ func (p dispatchPlanner) plan(
 	plannedCandidates := cloneIssues(candidates)
 	sortIssuesForDispatch(plannedCandidates, p.cfg.DispatchPriorityByState, p.cfg.DispatchPriorityByLabel)
 	dueRetries := dueRetriesByIssue(state, now)
-	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries)
+	p.releaseMissingDueRetries(state, plannedCandidates, dueRetries, hooks)
 
 	plan := DispatchPlan{}
 	continuations := 0
@@ -269,6 +270,7 @@ func (p dispatchPlanner) releaseMissingDueRetries(
 	state *State,
 	issues []connector.Issue,
 	dueRetries map[string]Retry,
+	hooks dispatchPlanHooks,
 ) {
 	if len(dueRetries) == 0 {
 		return
@@ -279,8 +281,11 @@ func (p dispatchPlanner) releaseMissingDueRetries(
 		byID[issue.ID] = struct{}{}
 	}
 
-	for issueID := range dueRetries {
+	for issueID, retry := range dueRetries {
 		if _, ok := byID[issueID]; !ok {
+			if hooks.preserveMissingDueRetry != nil && hooks.preserveMissingDueRetry(retry) {
+				continue
+			}
 			if _, blocked := state.Blocked[issueID]; blocked {
 				p.releaseClaim(state, issueID)
 				continue

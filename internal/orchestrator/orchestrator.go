@@ -1369,7 +1369,17 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 		retryDispatchFailed: func(issue connector.Issue, retry Retry) {
 			planner.scheduleRetry(state, issue, retry.Attempt, now, "claim verification failed", false, retry.WorkerHost)
 		},
+		preserveMissingDueRetry: func(retry Retry) bool {
+			return o.preserveMissingDueRetry(state, retry)
+		},
 	})
+}
+
+func (o *Orchestrator) preserveMissingDueRetry(state *State, retry Retry) bool {
+	if normalizeState(retry.Issue.State) != normalizeState(autoPromoteMergingState) {
+		return false
+	}
+	return !o.mergeWorkerLocalSlotsAvailable(state)
 }
 
 func (o *Orchestrator) hydrateDispatchIssue(ctx context.Context, issue connector.Issue) (connector.Issue, bool) {

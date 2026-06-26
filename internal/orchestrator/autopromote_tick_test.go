@@ -1526,6 +1526,85 @@ func TestFetchTickIssuesSkipsMergingStatusHydrationWhenMergingLaneFull(t *testin
 	}
 }
 
+func TestTickPreservesDueMergingRetryWhenLaneFullAndMergingFetchOmitted(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 21, 7, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		FailureRetryBaseDelay: time.Minute,
+		MaxRetryBackoff:       time.Hour,
+		ActiveStates:          []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:        []string{"Done", "Cancelled"},
+	})
+	running := autoPromoteTickIssue("issue-running-merge", []string{"bug"}, &connector.PullRequest{
+		Number:         72,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/72",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	running.State = "Merging"
+	retrying := autoPromoteTickIssue("issue-retrying-merge", []string{"bug"}, &connector.PullRequest{
+		Number:         75,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/75",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	retrying.State = "Merging"
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{running, retrying},
+		candidateIssues:    []connector.Issue{},
+		candidateIssuesSet: true,
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+	state.Running[running.ID] = Running{
+		Issue:     cloneIssue(running),
+		StartedAt: now.Add(-time.Minute),
+	}
+	state.Claimed[retrying.ID] = Claimed{
+		Issue:     cloneIssue(retrying),
+		ClaimedAt: now.Add(-time.Minute),
+	}
+	state.Retry[retrying.ID] = Retry{
+		Issue:   cloneIssue(retrying),
+		Attempt: 2,
+		DueAt:   now.Add(-time.Second),
+		Error:   "run agent turn: stream turn: EOF",
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.candidateByStates) != 1 {
+		t.Fatalf("FetchCandidateIssuesByStates requests = %#v, want one candidate fetch", tracker.candidateByStates)
+	}
+	for _, stateName := range tracker.candidateByStates[0] {
+		if normalizeState(stateName) == normalizeState(autoPromoteMergingState) {
+			t.Fatalf("FetchCandidateIssuesByStates states = %#v, want Merging omitted while lane is full", tracker.candidateByStates[0])
+		}
+	}
+	if retry, ok := state.Retry[retrying.ID]; !ok {
+		t.Fatalf("Retry[%q] missing while Merging lane is full", retrying.ID)
+	} else if retry.Attempt != 2 || retry.Error != "run agent turn: stream turn: EOF" {
+		t.Fatalf("Retry[%q] = %#v, want original retry preserved", retrying.ID, retry)
+	}
+	if _, ok := state.Claimed[retrying.ID]; !ok {
+		t.Fatalf("Claimed[%q] missing while Merging lane is full", retrying.ID)
+	}
+	if _, ok := state.Running[retrying.ID]; ok {
+		t.Fatalf("Running[%q] present while Merging lane is full", retrying.ID)
+	}
+}
+
 func TestHandleRunResultReworksMergeWorkerAfterRepeatedRunnerFailures(t *testing.T) {
 	t.Parallel()
 
