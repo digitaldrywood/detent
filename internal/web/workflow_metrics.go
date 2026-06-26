@@ -151,6 +151,7 @@ func workflowMetricTrendDirection(deltaSeconds int64) string {
 func workflowMarkBottleneckLane(lanes []telemetry.WorkflowPhaseMetric) {
 	best := -1
 	for i := range lanes {
+		lanes[i].Bottleneck = false
 		if lanes[i].Count == 0 || lanes[i].AverageSeconds <= 0 {
 			continue
 		}
