@@ -1484,6 +1484,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	workerHost, ok := o.selectWorkerHost(state, preferredWorkerHost)
 	if !ok {
 		o.logMergeWorkerFailure(issue, "worker_host_unavailable", nil)
+		o.recordMergeFailed(state, issue, now, "worker_host_unavailable", nil)
 		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkerHostUnavailable}
 	}
 
@@ -1497,12 +1498,14 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		}
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable}
 	}
-	o.logMergeWorkerSlotAcquired(issue, decision, projectStats)
+	mergeTiming := o.markMergeWorkerSlotAcquired(state, issue, now)
+	o.logMergeWorkerSlotAcquired(issue, decision, projectStats, mergeTiming)
 
 	claimedIssue, claim, ok := o.claimIssue(ctx, issue, now)
 	if !ok {
 		o.releaseGlobalDispatchSlot(globalSlot)
 		o.logMergeWorkerFailure(issue, "claim_failed", nil)
+		o.recordMergeFailed(state, issue, now, "claim_failed", nil)
 		return dispatchIssueOutcome{reason: dispatchIssueFailureClaimFailed}
 	}
 
@@ -1517,10 +1520,12 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 				o.logger.Warn("start state transition failed", "issue_id", issue.ID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 			}
 			o.logMergeWorkerFailure(issue, "start_state_transition_failed", err)
+			o.recordMergeFailed(state, issue, now, "start_state_transition_failed", err)
 			return dispatchIssueOutcome{reason: dispatchIssueFailureStartStateTransition}
 		}
 		issue.State = targetState
 	}
+	o.markMergeStarted(state, issue, now)
 	claim.Issue = issue
 	runCtx, cancel := context.WithCancel(ctx)
 	state.Running[issue.ID] = Running{
@@ -1787,6 +1792,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	if event.Err != nil {
 		if mergeWorkerIssue(running.Issue) {
 			o.logMergeWorkerFailure(running.Issue, "runner_failed", event.Err)
+			o.recordMergeFailed(state, running.Issue, event.CompletedAt, "runner_failed", event.Err)
 		}
 		attempt := event.RetryAttempt
 		if attempt < 1 {
@@ -2146,12 +2152,17 @@ func (o *Orchestrator) completeTerminalRunning(
 	if finalState == "" {
 		finalState = FinalStateCompleted
 	}
+	mergeTiming := MergeTiming{}
+	if mergeWorkerIssue(running.Issue) {
+		mergeTiming = o.recordMergeCompleted(state, running.Issue, completedAt, finalState)
+	}
 	state.Completed[issueID] = Completed{
 		Issue:       cloneIssue(issue),
 		StartedAt:   running.StartedAt,
 		CompletedAt: completedAt,
 		FinalState:  finalState,
 		Tokens:      tokens,
+		MergeTiming: mergeTiming,
 	}
 	state.CodexTotals = addCodexTotals(state.CodexTotals, tokens)
 	if diffStatsPresent(running.DiffStats) {

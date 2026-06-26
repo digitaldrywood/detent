@@ -490,6 +490,95 @@ func TestStateSnapshotIncludesPullRequestMergeWaitTelemetry(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotIncludesMergeTimingTelemetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	enteredAt := now.Add(-9 * time.Minute)
+	slotAcquiredAt := now.Add(-7 * time.Minute)
+	startedAt := now.Add(-6 * time.Minute)
+	mergedAt := now.Add(-2 * time.Minute)
+	state := newState(normalizeConfig(Config{}))
+	state.Pipeline = []connector.Issue{{
+		ID:             "queued",
+		Identifier:     "digitaldrywood/detent#721",
+		State:          "Merging",
+		StageUpdatedAt: &enteredAt,
+		PullRequest: &connector.PullRequest{
+			Number:  721,
+			HeadSHA: "queued-head",
+			BaseSHA: "queued-base",
+		},
+	}}
+	state.Running["active"] = Running{
+		Issue: connector.Issue{
+			ID:         "active",
+			Identifier: "digitaldrywood/detent#722",
+			State:      "Merging",
+			PullRequest: &connector.PullRequest{
+				Number:  722,
+				HeadSHA: "active-head",
+				BaseSHA: "active-base",
+			},
+		},
+		StartedAt: startedAt,
+	}
+	state.Completed["done"] = Completed{
+		Issue: connector.Issue{
+			ID:         "done",
+			Identifier: "digitaldrywood/detent#723",
+			State:      "Merging",
+			PullRequest: &connector.PullRequest{
+				Number:  723,
+				HeadSHA: "done-head",
+				BaseSHA: "done-base",
+			},
+		},
+		StartedAt:   startedAt,
+		CompletedAt: mergedAt,
+		FinalState:  "Done",
+		MergeTiming: MergeTiming{
+			EnteredMergingAt:           enteredAt,
+			MergeWorkerSlotAcquiredAt:  slotAcquiredAt,
+			MergeStartedAt:             startedAt,
+			MergedAt:                   mergedAt,
+			QueueWaitSeconds:           120,
+			ActiveMergeDurationSeconds: 240,
+			TotalMergingSeconds:        420,
+		},
+	}
+	state.MergeTimings["queued"] = MergeTiming{EnteredMergingAt: enteredAt}
+	state.MergeTimings["active"] = MergeTiming{
+		EnteredMergingAt:          enteredAt,
+		MergeWorkerSlotAcquiredAt: slotAcquiredAt,
+		MergeStartedAt:            startedAt,
+	}
+
+	snapshot := state.Snapshot(now)
+
+	if len(snapshot.Pipeline) != 1 || snapshot.Pipeline[0].MergeTiming == nil {
+		t.Fatalf("Pipeline = %#v, want queued merge timing", snapshot.Pipeline)
+	}
+	queued := snapshot.Pipeline[0].MergeTiming
+	if queued.QueueWaitSeconds != 540 || queued.TotalMergingSeconds != 540 || queued.HeadSHA != "queued-head" || queued.BaseSHA != "queued-base" {
+		t.Fatalf("queued MergeTiming = %#v, want queue duration and PR SHAs", queued)
+	}
+	if len(snapshot.Running) != 1 || snapshot.Running[0].MergeTiming == nil {
+		t.Fatalf("Running = %#v, want active merge timing", snapshot.Running)
+	}
+	active := snapshot.Running[0].MergeTiming
+	if active.QueueWaitSeconds != 120 || active.ActiveMergeDurationSeconds != 360 || active.TotalMergingSeconds != 540 {
+		t.Fatalf("active MergeTiming = %#v, want live active durations", active)
+	}
+	if len(snapshot.Completed) != 1 || snapshot.Completed[0].MergeTiming == nil {
+		t.Fatalf("Completed = %#v, want completed merge timing", snapshot.Completed)
+	}
+	done := snapshot.Completed[0].MergeTiming
+	if done.QueueWaitSeconds != 120 || done.ActiveMergeDurationSeconds != 240 || done.TotalMergingSeconds != 420 || done.MergedAt == nil {
+		t.Fatalf("completed MergeTiming = %#v, want terminal durations", done)
+	}
+}
+
 func TestStateSnapshotOmitsStalePullRequestQuietWait(t *testing.T) {
 	t.Parallel()
 

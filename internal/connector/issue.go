@@ -51,6 +51,7 @@ type PullRequest struct {
 	Draft                        bool                 `json:"draft,omitempty" yaml:"draft,omitempty"`
 	ActivityAt                   *time.Time           `json:"activity_at,omitempty" yaml:"activity_at,omitempty"`
 	HeadSHA                      string               `json:"head_sha,omitempty" yaml:"head_sha,omitempty"`
+	BaseSHA                      string               `json:"base_sha,omitempty" yaml:"base_sha,omitempty"`
 	HydrationUnavailableReason   string               `json:"hydration_unavailable_reason,omitempty" yaml:"hydration_unavailable_reason,omitempty"`
 	HydrationDegradedReason      string               `json:"hydration_degraded_reason,omitempty" yaml:"hydration_degraded_reason,omitempty"`
 	HydrationNextRetryAt         *time.Time           `json:"hydration_next_retry_at,omitempty" yaml:"hydration_next_retry_at,omitempty"`

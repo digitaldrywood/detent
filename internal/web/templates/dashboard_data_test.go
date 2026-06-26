@@ -2195,6 +2195,90 @@ func TestPipelineNowUsesStageUpdatedAt(t *testing.T) {
 	}
 }
 
+func TestPRPipelineMergeSummaryTracksActiveAndRecentDurations(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 13, 0, 0, 0, time.UTC)
+	activeEnteredAt := now.Add(-9 * time.Minute)
+	activeStartedAt := now.Add(-6 * time.Minute)
+	queuedEnteredAt := now.Add(-12 * time.Minute)
+	recentFastCompletedAt := now.Add(-2 * time.Hour)
+	recentSlowCompletedAt := now.Add(-time.Hour)
+	oldCompletedAt := now.Add(-25 * time.Hour)
+
+	summary := prPipelineMergeSummary(telemetry.Snapshot{
+		GeneratedAt: now,
+		Pipeline: []telemetry.Issue{
+			{
+				ID:         "active",
+				Identifier: "digitaldrywood/detent#721",
+				State:      "Merging",
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt:          &activeEnteredAt,
+					MergeWorkerSlotAcquiredAt: &activeStartedAt,
+					MergeStartedAt:            &activeStartedAt,
+				},
+			},
+			{
+				ID:         "queued",
+				Identifier: "digitaldrywood/detent#722",
+				State:      "Merging",
+				MergeTiming: &telemetry.MergeTiming{
+					EnteredMergingAt: &queuedEnteredAt,
+				},
+			},
+		},
+		Completed: []telemetry.Completed{
+			{
+				Issue: telemetry.Issue{
+					ID:         "recent-fast",
+					Identifier: "digitaldrywood/detent#723",
+					MergeTiming: &telemetry.MergeTiming{
+						ActiveMergeDurationSeconds: int64((4 * time.Minute).Seconds()),
+						TotalMergingSeconds:        int64((7 * time.Minute).Seconds()),
+					},
+				},
+				CompletedAt: recentFastCompletedAt,
+			},
+			{
+				Issue: telemetry.Issue{
+					ID:         "recent-slow",
+					Identifier: "digitaldrywood/detent#724",
+					MergeTiming: &telemetry.MergeTiming{
+						ActiveMergeDurationSeconds: int64((6 * time.Minute).Seconds()),
+						TotalMergingSeconds:        int64((9 * time.Minute).Seconds()),
+					},
+				},
+				CompletedAt: recentSlowCompletedAt,
+			},
+			{
+				Issue: telemetry.Issue{
+					ID:         "old",
+					Identifier: "digitaldrywood/detent#725",
+					MergeTiming: &telemetry.MergeTiming{
+						ActiveMergeDurationSeconds: int64((20 * time.Minute).Seconds()),
+						TotalMergingSeconds:        int64((30 * time.Minute).Seconds()),
+					},
+				},
+				CompletedAt: oldCompletedAt,
+			},
+		},
+	})
+
+	if summary.ActiveElapsed != "6m 0s" || !summary.ActiveWarning {
+		t.Fatalf("active summary = (%q, %v), want 6m warning", summary.ActiveElapsed, summary.ActiveWarning)
+	}
+	if summary.QueueWait != "12m 0s" || !summary.QueueWarning {
+		t.Fatalf("queue summary = (%q, %v), want 12m warning", summary.QueueWait, summary.QueueWarning)
+	}
+	if summary.RecentCount != "2" || summary.ActiveP50 != "4m 0s" || summary.ActiveP90 != "6m 0s" {
+		t.Fatalf("active percentiles = %#v, want recent count 2 and active p50/p90", summary)
+	}
+	if summary.TotalP50 != "7m 0s" || summary.TotalP90 != "9m 0s" {
+		t.Fatalf("total percentiles = %#v, want total p50/p90", summary)
+	}
+}
+
 type pipelineCardSnapshot struct {
 	Lane             string
 	IssueNumber      string

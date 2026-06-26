@@ -19,12 +19,15 @@ import (
 )
 
 const (
-	throughputTrendWindow       = 10 * time.Minute
-	defaultThroughputWindow     = time.Minute
-	prPipelineDoneTodayLimit    = 10
-	kanbanActionDialogID        = "kanban-action-dialog"
-	kanbanDialogContentID       = "kanban-dialog-content"
-	projectKanbanLaneWidthClass = "w-[var(--project-kanban-lane-width,18rem)] min-w-[var(--project-kanban-lane-width,18rem)] max-w-[var(--project-kanban-lane-width,18rem)] basis-[var(--project-kanban-lane-width,18rem)] shrink-0"
+	throughputTrendWindow        = 10 * time.Minute
+	defaultThroughputWindow      = time.Minute
+	prPipelineDoneTodayLimit     = 10
+	prPipelineMergeSummaryWindow = 24 * time.Hour
+	prPipelineActiveMergeTarget  = 5 * time.Minute
+	prPipelineQueueWaitTarget    = 10 * time.Minute
+	kanbanActionDialogID         = "kanban-action-dialog"
+	kanbanDialogContentID        = "kanban-dialog-content"
+	projectKanbanLaneWidthClass  = "w-[var(--project-kanban-lane-width,18rem)] min-w-[var(--project-kanban-lane-width,18rem)] max-w-[var(--project-kanban-lane-width,18rem)] basis-[var(--project-kanban-lane-width,18rem)] shrink-0"
 )
 
 const (
@@ -328,6 +331,19 @@ type prPipelineCard struct {
 	MergeLaneClass   string
 	Stage            string
 	StageAt          time.Time
+}
+
+type prPipelineMergeMetrics struct {
+	Available     bool
+	ActiveElapsed string
+	QueueWait     string
+	RecentCount   string
+	ActiveP50     string
+	ActiveP90     string
+	TotalP50      string
+	TotalP90      string
+	ActiveWarning bool
+	QueueWarning  bool
 }
 
 type projectKanbanBoard struct {
@@ -3028,6 +3044,129 @@ func prPipelineTotalLabel(snapshot telemetry.Snapshot) string {
 	return formatCount(total)
 }
 
+func prPipelineMergeSummary(snapshot telemetry.Snapshot) prPipelineMergeMetrics {
+	now := pipelineNow(snapshot)
+	activeSeconds := int64(0)
+	queueSeconds := int64(0)
+	collectLive := func(issue telemetry.Issue) {
+		if normalizeDashboardState(issue.State) != "merging" || issue.MergeTiming == nil {
+			return
+		}
+		timing := issue.MergeTiming
+		if timing.MergeStartedAt != nil && timing.MergedAt == nil && timing.MergeFailedAt == nil {
+			activeSeconds = max(activeSeconds, liveActiveMergeSeconds(timing, now))
+			return
+		}
+		queueSeconds = max(queueSeconds, liveMergeQueueSeconds(timing, now))
+	}
+	for _, issue := range snapshot.Pipeline {
+		collectLive(issue)
+	}
+	for _, row := range snapshot.Running {
+		collectLive(row.Issue)
+	}
+	for _, row := range snapshot.Queue {
+		collectLive(row.Issue)
+	}
+
+	activeDurations := []int64{}
+	totalDurations := []int64{}
+	cutoff := now.Add(-prPipelineMergeSummaryWindow)
+	for _, row := range snapshot.Completed {
+		if row.MergeTiming == nil || row.CompletedAt.IsZero() || (!now.IsZero() && row.CompletedAt.Before(cutoff)) {
+			continue
+		}
+		if row.MergeTiming.ActiveMergeDurationSeconds > 0 {
+			activeDurations = append(activeDurations, row.MergeTiming.ActiveMergeDurationSeconds)
+		}
+		if row.MergeTiming.TotalMergingSeconds > 0 {
+			totalDurations = append(totalDurations, row.MergeTiming.TotalMergingSeconds)
+		}
+	}
+
+	summary := prPipelineMergeMetrics{
+		Available:     activeSeconds > 0 || queueSeconds > 0 || len(activeDurations) > 0 || len(totalDurations) > 0,
+		ActiveElapsed: formatOptionalDuration(activeSeconds),
+		QueueWait:     formatOptionalDuration(queueSeconds),
+		RecentCount:   formatCount(len(activeDurations)),
+		ActiveP50:     formatOptionalDuration(percentileDuration(activeDurations, 50)),
+		ActiveP90:     formatOptionalDuration(percentileDuration(activeDurations, 90)),
+		TotalP50:      formatOptionalDuration(percentileDuration(totalDurations, 50)),
+		TotalP90:      formatOptionalDuration(percentileDuration(totalDurations, 90)),
+		ActiveWarning: time.Duration(activeSeconds)*time.Second > prPipelineActiveMergeTarget,
+		QueueWarning:  time.Duration(queueSeconds)*time.Second > prPipelineQueueWaitTarget,
+	}
+	return summary
+}
+
+func liveActiveMergeSeconds(timing *telemetry.MergeTiming, now time.Time) int64 {
+	if timing == nil {
+		return 0
+	}
+	if timing.ActiveMergeDurationSeconds > 0 {
+		return timing.ActiveMergeDurationSeconds
+	}
+	if timing.MergeStartedAt == nil || timing.MergeStartedAt.IsZero() || now.IsZero() || now.Before(*timing.MergeStartedAt) {
+		return 0
+	}
+	return int64(now.Sub(*timing.MergeStartedAt) / time.Second)
+}
+
+func liveMergeQueueSeconds(timing *telemetry.MergeTiming, now time.Time) int64 {
+	if timing == nil {
+		return 0
+	}
+	if timing.QueueWaitSeconds > 0 {
+		return timing.QueueWaitSeconds
+	}
+	if timing.EnteredMergingAt == nil || timing.EnteredMergingAt.IsZero() {
+		return 0
+	}
+	queueEnd := now
+	for _, candidate := range []*time.Time{timing.MergeWorkerSlotAcquiredAt, timing.MergeStartedAt, timing.MergedAt, timing.MergeFailedAt} {
+		if candidate != nil && !candidate.IsZero() {
+			queueEnd = *candidate
+			break
+		}
+	}
+	if queueEnd.IsZero() || queueEnd.Before(*timing.EnteredMergingAt) {
+		return 0
+	}
+	return int64(queueEnd.Sub(*timing.EnteredMergingAt) / time.Second)
+}
+
+func percentileDuration(values []int64, percentile int) int64 {
+	if len(values) == 0 {
+		return 0
+	}
+	sorted := append([]int64(nil), values...)
+	sort.Slice(sorted, func(i, j int) bool {
+		return sorted[i] < sorted[j]
+	})
+	index := int(math.Ceil(float64(percentile)/100*float64(len(sorted)))) - 1
+	if index < 0 {
+		index = 0
+	}
+	if index >= len(sorted) {
+		index = len(sorted) - 1
+	}
+	return sorted[index]
+}
+
+func formatOptionalDuration(seconds int64) string {
+	if seconds <= 0 {
+		return "n/a"
+	}
+	return formatDuration(float64(seconds))
+}
+
+func prPipelineMergeSummaryClass(warning bool) string {
+	if warning {
+		return "border-warning-soft bg-warning-soft text-warning"
+	}
+	return "border-border bg-card text-foreground"
+}
+
 func appendPRPipelineCard(
 	cardsByLane map[string][]prPipelineCard,
 	seen map[string]struct{},
@@ -3115,31 +3254,53 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 }
 
 func prPipelineWaitDetail(issue telemetry.Issue) string {
-	if issue.PullRequest == nil {
+	if issue.PullRequest == nil && issue.MergeTiming == nil {
 		return ""
 	}
 	parts := []string{}
-	if hydration := pullRequestHydrationWaitDetail(
-		issue.PullRequest.HydrationUnavailableReason,
-		issue.PullRequest.HydrationDegradedReason,
-		issue.PullRequest.HydrationNextRetryAt,
-	); hydration != "" {
-		parts = append(parts, hydration)
+	if issue.PullRequest != nil {
+		if hydration := pullRequestHydrationWaitDetail(
+			issue.PullRequest.HydrationUnavailableReason,
+			issue.PullRequest.HydrationDegradedReason,
+			issue.PullRequest.HydrationNextRetryAt,
+		); hydration != "" {
+			parts = append(parts, hydration)
+		}
+		if issue.PullRequest.QuietWaitSeconds > 0 {
+			parts = append(parts, "quiet "+formatDuration(float64(issue.PullRequest.QuietWaitSeconds)))
+		}
+		if issue.PullRequest.CIQueueSeconds > 0 {
+			parts = append(parts, "queued "+formatDuration(float64(issue.PullRequest.CIQueueSeconds)))
+		}
+		if issue.PullRequest.CIDurationSeconds > 0 {
+			parts = append(parts, "CI "+formatDuration(float64(issue.PullRequest.CIDurationSeconds)))
+		}
+		if slowChecks := prPipelineSlowChecks(issue.PullRequest.SlowChecks); slowChecks != "" {
+			parts = append(parts, "slow "+slowChecks)
+		}
+		if runningChecks := prPipelineRunningChecks(issue.PullRequest.RunningChecks); runningChecks != "" {
+			parts = append(parts, "running "+runningChecks)
+		}
 	}
-	if issue.PullRequest.QuietWaitSeconds > 0 {
-		parts = append(parts, "quiet "+formatDuration(float64(issue.PullRequest.QuietWaitSeconds)))
+	if merge := prPipelineMergeWaitDetail(issue.MergeTiming); merge != "" {
+		parts = append(parts, merge)
 	}
-	if issue.PullRequest.CIQueueSeconds > 0 {
-		parts = append(parts, "queued "+formatDuration(float64(issue.PullRequest.CIQueueSeconds)))
+	return strings.Join(parts, " / ")
+}
+
+func prPipelineMergeWaitDetail(timing *telemetry.MergeTiming) string {
+	if timing == nil {
+		return ""
 	}
-	if issue.PullRequest.CIDurationSeconds > 0 {
-		parts = append(parts, "CI "+formatDuration(float64(issue.PullRequest.CIDurationSeconds)))
+	parts := []string{}
+	if timing.QueueWaitSeconds > 0 {
+		parts = append(parts, "merge queue "+formatDuration(float64(timing.QueueWaitSeconds)))
 	}
-	if slowChecks := prPipelineSlowChecks(issue.PullRequest.SlowChecks); slowChecks != "" {
-		parts = append(parts, "slow "+slowChecks)
+	if timing.ActiveMergeDurationSeconds > 0 {
+		parts = append(parts, "active merge "+formatDuration(float64(timing.ActiveMergeDurationSeconds)))
 	}
-	if runningChecks := prPipelineRunningChecks(issue.PullRequest.RunningChecks); runningChecks != "" {
-		parts = append(parts, "running "+runningChecks)
+	if timing.TotalMergingSeconds > 0 && (timing.MergedAt != nil || timing.MergeFailedAt != nil) {
+		parts = append(parts, "total Merging "+formatDuration(float64(timing.TotalMergingSeconds)))
 	}
 	return strings.Join(parts, " / ")
 }

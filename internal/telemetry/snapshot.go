@@ -185,6 +185,7 @@ type Issue struct {
 	Comments       []IssueComment `json:"comments,omitempty"`
 	BlockedBy      []BlockedRef   `json:"blocked_by,omitempty"`
 	PullRequest    *PullRequest   `json:"pull_request,omitempty"`
+	MergeTiming    *MergeTiming   `json:"merge_timing,omitempty"`
 	Owner          string         `json:"owner,omitempty"`
 	LeaseRenewedAt *time.Time     `json:"lease_renewed_at,omitempty"`
 	LeaseExpiresAt *time.Time     `json:"lease_expires_at,omitempty"`
@@ -211,6 +212,8 @@ type PullRequest struct {
 	BranchName                 string             `json:"branch_name,omitempty"`
 	State                      string             `json:"state,omitempty"`
 	MergeableState             string             `json:"mergeable_state,omitempty"`
+	HeadSHA                    string             `json:"head_sha,omitempty"`
+	BaseSHA                    string             `json:"base_sha,omitempty"`
 	HydrationUnavailableReason string             `json:"hydration_unavailable_reason,omitempty"`
 	HydrationDegradedReason    string             `json:"hydration_degraded_reason,omitempty"`
 	HydrationNextRetryAt       *time.Time         `json:"hydration_next_retry_at,omitempty"`
@@ -231,6 +234,27 @@ type PullRequestCheck struct {
 	Conclusion      string `json:"conclusion,omitempty"`
 	QueueSeconds    int64  `json:"queue_seconds,omitempty"`
 	DurationSeconds int64  `json:"duration_seconds,omitempty"`
+}
+
+type MergeTiming struct {
+	EnteredMergingAt           *time.Time `json:"entered_merging_at,omitempty"`
+	MergeWorkerSlotAcquiredAt  *time.Time `json:"merge_worker_slot_acquired_at,omitempty"`
+	MergeStartedAt             *time.Time `json:"merge_started_at,omitempty"`
+	BaseRefreshStartedAt       *time.Time `json:"base_refresh_started_at,omitempty"`
+	BaseRefreshFinishedAt      *time.Time `json:"base_refresh_finished_at,omitempty"`
+	CIWaitStartedAt            *time.Time `json:"ci_wait_started_at,omitempty"`
+	CIWaitFinishedAt           *time.Time `json:"ci_wait_finished_at,omitempty"`
+	MergedAt                   *time.Time `json:"merged_at,omitempty"`
+	MergeFailedAt              *time.Time `json:"merge_failed_at,omitempty"`
+	MergeFailureReason         string     `json:"merge_failure_reason,omitempty"`
+	QueueWaitSeconds           int64      `json:"queue_wait_seconds,omitempty"`
+	ActiveMergeDurationSeconds int64      `json:"active_merge_duration_seconds,omitempty"`
+	TotalMergingSeconds        int64      `json:"total_merging_seconds,omitempty"`
+	Repository                 string     `json:"repository,omitempty"`
+	PullRequestNumber          int        `json:"pull_request_number,omitempty"`
+	IssueNumber                int        `json:"issue_number,omitempty"`
+	HeadSHA                    string     `json:"head_sha,omitempty"`
+	BaseSHA                    string     `json:"base_sha,omitempty"`
 }
 
 type ActivityEvent struct {
