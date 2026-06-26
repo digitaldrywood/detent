@@ -3335,7 +3335,7 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
 				<div class="grid min-w-0 gap-5">
 					<div class="min-w-0">
 						<div class="flex items-center justify-between gap-3">
-							@helpHeading3("Lane percentiles", helpWorkflowMetrics, "workflow-metrics")
+							@helpHeading3("Lane trends", helpWorkflowMetrics, "workflow-metrics")
 							<span class="font-mono text-xs text-muted-foreground">24h / 7d / 30d</span>
 						</div>
 						if len(workflowLaneMetricRows(report)) == 0 {
@@ -3350,6 +3350,9 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
 											<tr>
 												<th class="px-3 py-2 font-medium">Window</th>
 												<th class="px-3 py-2 font-medium">Lane</th>
+												<th class="px-3 py-2 font-medium">Comparison</th>
+												<th class="px-3 py-2 font-medium">Trend</th>
+												<th class="px-3 py-2 text-right font-medium">Delta</th>
 												<th class="px-3 py-2 text-right font-medium">Count</th>
 												<th class="px-3 py-2 text-right font-medium">Avg</th>
 												<th class="px-3 py-2 text-right font-medium">P50</th>
@@ -3359,9 +3362,19 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
 										</thead>
 										<tbody class="divide-y divide-border">
 											for _, row := range workflowLaneMetricRows(report) {
-												<tr>
+												<tr class={ row.RowClass }>
 													<td class="px-3 py-2 font-mono text-xs text-muted-foreground">{ row.Window }</td>
-													<td class="px-3 py-2 font-medium text-foreground">{ row.Lane }</td>
+													<td class="px-3 py-2 font-medium text-foreground">
+														<div class="flex min-w-0 items-center gap-2">
+															<span class="truncate">{ row.Lane }</span>
+															if row.Bottleneck {
+																<span class="shrink-0 rounded-full bg-warning-soft px-2 py-1 text-xs font-semibold text-warning">Bottleneck</span>
+															}
+														</div>
+													</td>
+													<td class="px-3 py-2 font-mono text-xs text-muted-foreground">{ row.Comparison }</td>
+													<td class="px-3 py-2"><span class={ row.TrendClass }>{ row.Trend }</span></td>
+													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.Delta }</td>
 													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.Count }</td>
 													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.Average }</td>
 													<td class="px-3 py-2 text-right font-mono text-foreground">{ row.P50 }</td>

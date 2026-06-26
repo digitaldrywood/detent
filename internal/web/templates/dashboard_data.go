@@ -192,13 +192,19 @@ type cycleTimeBucketRow struct {
 }
 
 type workflowLaneMetricRow struct {
-	Window  string
-	Lane    string
-	Count   string
-	Average string
-	P50     string
-	P90     string
-	P95     string
+	Window     string
+	Lane       string
+	Count      string
+	Average    string
+	P50        string
+	P90        string
+	P95        string
+	Comparison string
+	Trend      string
+	TrendClass string
+	Delta      string
+	Bottleneck bool
+	RowClass   string
 }
 
 type workflowSubphaseMetricRow struct {
@@ -3881,17 +3887,77 @@ func workflowLaneMetricRows(report telemetry.WorkflowMetrics) []workflowLaneMetr
 	for _, window := range report.Windows {
 		for _, metric := range window.Lanes {
 			rows = append(rows, workflowLaneMetricRow{
-				Window:  window.Label,
-				Lane:    workflowPhaseLabel(metric.PhaseName),
-				Count:   formatInt(metric.Count),
-				Average: formatDuration(float64(metric.AverageSeconds)),
-				P50:     formatDuration(float64(metric.P50Seconds)),
-				P90:     formatDuration(float64(metric.P90Seconds)),
-				P95:     formatDuration(float64(metric.P95Seconds)),
+				Window:     window.Label,
+				Lane:       workflowPhaseLabel(metric.PhaseName),
+				Count:      formatInt(metric.Count),
+				Average:    formatDuration(float64(metric.AverageSeconds)),
+				P50:        formatDuration(float64(metric.P50Seconds)),
+				P90:        formatDuration(float64(metric.P90Seconds)),
+				P95:        formatDuration(float64(metric.P95Seconds)),
+				Comparison: workflowMetricComparisonLabel(metric),
+				Trend:      workflowMetricTrendLabel(metric.Comparison),
+				TrendClass: workflowMetricTrendClass(metric.Comparison),
+				Delta:      workflowMetricDeltaLabel(metric.Comparison),
+				Bottleneck: metric.Bottleneck,
+				RowClass:   workflowLaneMetricRowClass(metric),
 			})
 		}
 	}
 	return rows
+}
+
+func workflowMetricComparisonLabel(metric telemetry.WorkflowPhaseMetric) string {
+	if metric.Comparison == nil || strings.TrimSpace(metric.Comparison.Label) == "" {
+		return "No comparison"
+	}
+	return strings.TrimSpace(metric.Comparison.Label)
+}
+
+func workflowMetricTrendLabel(comparison *telemetry.WorkflowMetricComparison) string {
+	if comparison == nil {
+		return "No prior"
+	}
+	switch strings.TrimSpace(comparison.Direction) {
+	case "faster":
+		return "Faster"
+	case "slower":
+		return "Slower"
+	case "unchanged":
+		return "Unchanged"
+	default:
+		return "No prior"
+	}
+}
+
+func workflowMetricTrendClass(comparison *telemetry.WorkflowMetricComparison) string {
+	base := "inline-flex rounded-full px-2 py-1 text-xs font-semibold "
+	if comparison == nil {
+		return base + "bg-muted text-muted-foreground"
+	}
+	switch strings.TrimSpace(comparison.Direction) {
+	case "faster":
+		return base + "bg-success-soft text-success"
+	case "slower":
+		return base + "bg-danger-soft text-danger"
+	case "unchanged":
+		return base + "bg-accent-soft text-accent"
+	default:
+		return base + "bg-muted text-muted-foreground"
+	}
+}
+
+func workflowMetricDeltaLabel(comparison *telemetry.WorkflowMetricComparison) string {
+	if comparison == nil || strings.TrimSpace(comparison.Direction) == "insufficient_history" {
+		return "No prior"
+	}
+	return formatSignedDuration(comparison.DeltaSeconds)
+}
+
+func workflowLaneMetricRowClass(metric telemetry.WorkflowPhaseMetric) string {
+	if metric.Bottleneck {
+		return "bg-warning-soft/40"
+	}
+	return ""
 }
 
 func workflowSubphaseMetricRows(report telemetry.WorkflowMetrics) []workflowSubphaseMetricRow {
@@ -3954,6 +4020,12 @@ func workflowBottleneck(report telemetry.WorkflowMetrics) workflowBottleneckView
 }
 
 func workflowPhaseLabel(value string) string {
+	switch strings.TrimSpace(value) {
+	case "agent_active":
+		return "AI Active"
+	case "ci_wait":
+		return "CI Wait"
+	}
 	value = strings.TrimSpace(strings.ReplaceAll(value, "_", " "))
 	if value == "" {
 		return "Unknown"
@@ -5557,6 +5629,16 @@ func formatDuration(seconds float64) string {
 		return fmt.Sprintf("%dm %ds", minutes, secs)
 	}
 	return fmt.Sprintf("%ds", secs)
+}
+
+func formatSignedDuration(seconds int64) string {
+	if seconds < 0 {
+		return "-" + formatDuration(float64(-seconds))
+	}
+	if seconds > 0 {
+		return "+" + formatDuration(float64(seconds))
+	}
+	return "0s"
 }
 
 func formatDurationWindow(duration time.Duration) string {

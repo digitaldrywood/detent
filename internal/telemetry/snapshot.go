@@ -535,20 +535,33 @@ type WorkflowMetricsWindow struct {
 }
 
 type WorkflowPhaseMetric struct {
-	ProjectID      string `json:"project_id,omitempty"`
-	PhaseType      string `json:"phase_type"`
-	PhaseName      string `json:"phase_name"`
-	Count          int64  `json:"count"`
-	TotalSeconds   int64  `json:"total_seconds"`
-	AverageSeconds int64  `json:"average_seconds"`
-	P50Seconds     int64  `json:"p50_seconds"`
-	P90Seconds     int64  `json:"p90_seconds"`
-	P95Seconds     int64  `json:"p95_seconds"`
-	InputTokens    int64  `json:"input_tokens,omitempty"`
-	OutputTokens   int64  `json:"output_tokens,omitempty"`
-	TotalTokens    int64  `json:"total_tokens,omitempty"`
-	Turns          int64  `json:"turns,omitempty"`
-	EndpointFamily string `json:"endpoint_family,omitempty"`
+	ProjectID      string                    `json:"project_id,omitempty"`
+	PhaseType      string                    `json:"phase_type"`
+	PhaseName      string                    `json:"phase_name"`
+	Count          int64                     `json:"count"`
+	TotalSeconds   int64                     `json:"total_seconds"`
+	AverageSeconds int64                     `json:"average_seconds"`
+	P50Seconds     int64                     `json:"p50_seconds"`
+	P90Seconds     int64                     `json:"p90_seconds"`
+	P95Seconds     int64                     `json:"p95_seconds"`
+	InputTokens    int64                     `json:"input_tokens,omitempty"`
+	OutputTokens   int64                     `json:"output_tokens,omitempty"`
+	TotalTokens    int64                     `json:"total_tokens,omitempty"`
+	Turns          int64                     `json:"turns,omitempty"`
+	EndpointFamily string                    `json:"endpoint_family,omitempty"`
+	Bottleneck     bool                      `json:"bottleneck,omitempty"`
+	Comparison     *WorkflowMetricComparison `json:"comparison,omitempty"`
+}
+
+type WorkflowMetricComparison struct {
+	Label                  string    `json:"label"`
+	PreviousFrom           time.Time `json:"previous_from"`
+	PreviousTo             time.Time `json:"previous_to"`
+	PreviousCount          int64     `json:"previous_count"`
+	PreviousAverageSeconds int64     `json:"previous_average_seconds,omitempty"`
+	DeltaSeconds           int64     `json:"delta_seconds"`
+	DeltaPercent           float64   `json:"delta_percent,omitempty"`
+	Direction              string    `json:"direction"`
 }
 
 type WorkflowLaneAge struct {
