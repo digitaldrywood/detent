@@ -604,6 +604,48 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotMergesSchedulerRuntimeRows(t *testing.T) {
+	t.Parallel()
+
+	got := mergeSnapshot(telemetry.Snapshot{}, telemetry.Snapshot{
+		Project: telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		WorkAttempts: []telemetry.WorkAttempt{
+			{AttemptID: 41, Identifier: "digitaldrywood/detent#737"},
+		},
+		SchedulerDecisions: []telemetry.SchedulerDecision{
+			{ID: 51, Identifier: "digitaldrywood/detent#737", Result: "selected"},
+		},
+	})
+	got = mergeSnapshot(got, telemetry.Snapshot{
+		Project: telemetry.Project{ID: "drywood", DisplayName: "Drywood"},
+		WorkAttempts: []telemetry.WorkAttempt{
+			{AttemptID: 42, ProjectID: "custom", Identifier: "digitaldrywood/detent#738"},
+		},
+		SchedulerDecisions: []telemetry.SchedulerDecision{
+			{ID: 52, ProjectID: "custom", Identifier: "digitaldrywood/detent#738", Result: "skipped"},
+		},
+	})
+
+	if len(got.WorkAttempts) != 2 {
+		t.Fatalf("WorkAttempts len = %d, want 2", len(got.WorkAttempts))
+	}
+	if got.WorkAttempts[0].AttemptID != 41 || got.WorkAttempts[0].ProjectID != "detent" {
+		t.Fatalf("WorkAttempts[0] = %#v, want detent attempt 41", got.WorkAttempts[0])
+	}
+	if got.WorkAttempts[1].AttemptID != 42 || got.WorkAttempts[1].ProjectID != "custom" {
+		t.Fatalf("WorkAttempts[1] = %#v, want custom attempt 42", got.WorkAttempts[1])
+	}
+	if len(got.SchedulerDecisions) != 2 {
+		t.Fatalf("SchedulerDecisions len = %d, want 2", len(got.SchedulerDecisions))
+	}
+	if got.SchedulerDecisions[0].ID != 51 || got.SchedulerDecisions[0].ProjectID != "detent" {
+		t.Fatalf("SchedulerDecisions[0] = %#v, want detent decision 51", got.SchedulerDecisions[0])
+	}
+	if got.SchedulerDecisions[1].ID != 52 || got.SchedulerDecisions[1].ProjectID != "custom" {
+		t.Fatalf("SchedulerDecisions[1] = %#v, want custom decision 52", got.SchedulerDecisions[1])
+	}
+}
+
 func TestMergeSnapshotMergesDrainingShutdown(t *testing.T) {
 	t.Parallel()
 
