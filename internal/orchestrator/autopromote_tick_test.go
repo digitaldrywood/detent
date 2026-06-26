@@ -1962,6 +1962,271 @@ func TestHandleRunResultReworksMergeWorkerAfterRepeatedRunnerFailures(t *testing
 	}
 }
 
+func TestHandleRunResultRetriesMergeWorkerWhenRunCompletesWithoutTerminalState(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 13, 15, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:   1,
+		FailureRetryBaseDelay: time.Minute,
+		MaxRetryBackoff:       time.Hour,
+		ActiveStates:          []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:        []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-incomplete-merge", []string{"bug"}, &connector.PullRequest{
+		Number:         75,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/75",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	issue.State = "Merging"
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:    cfg,
+		logger: slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:      cloneIssue(issue),
+		Attempt:    1,
+		StartedAt:  now.Add(-time.Minute),
+		WorkerHost: "worker-a",
+	}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
+	})
+
+	if _, ok := state.Completed[issue.ID]; ok {
+		t.Fatalf("Completed[%q] present after incomplete merge worker result", issue.ID)
+	}
+	if _, ok := state.Running[issue.ID]; ok {
+		t.Fatalf("Running[%q] present after incomplete merge worker result", issue.ID)
+	}
+	retry, ok := state.Retry[issue.ID]
+	if !ok {
+		t.Fatalf("Retry[%q] missing after incomplete merge worker result", issue.ID)
+	}
+	if retry.Attempt != 2 {
+		t.Fatalf("Retry[%q].Attempt = %d, want 2", issue.ID, retry.Attempt)
+	}
+	if retry.WorkerHost != "worker-a" {
+		t.Fatalf("Retry[%q].WorkerHost = %q, want worker-a", issue.ID, retry.WorkerHost)
+	}
+	if retry.Error != "merge worker completed without reaching a terminal issue or pull request state" {
+		t.Fatalf("Retry[%q].Error = %q", issue.ID, retry.Error)
+	}
+	if !retry.DueAt.Equal(now.Add(time.Minute * 2)) {
+		t.Fatalf("Retry[%q].DueAt = %v, want %v", issue.ID, retry.DueAt, now.Add(time.Minute*2))
+	}
+	for _, fragment := range []string{
+		"merge_worker_failure",
+		"reason=terminal_state_missing",
+		"completed without reaching a terminal issue or pull request state",
+		"pull_request_number=75",
+	} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+}
+
+func TestHandleRunResultAbandonsIncompleteMergeWorkerWhileDraining(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 13, 16, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+		Claiming: ClaimingConfig{
+			Enabled:    true,
+			LeaseField: "Lease",
+		},
+	})
+	issue := autoPromoteTickIssue("issue-incomplete-merge-drain", []string{"bug"}, &connector.PullRequest{
+		Number:         75,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/75",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	issue.State = "Merging"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+	state.Draining = true
+	state.Running[issue.ID] = Running{
+		Issue:      cloneIssue(issue),
+		Attempt:    1,
+		StartedAt:  now.Add(-time.Minute),
+		WorkerHost: "worker-a",
+	}
+	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: now.Add(-time.Minute)}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
+	})
+
+	if _, ok := state.Running[issue.ID]; ok {
+		t.Fatalf("Running[%q] present after draining incomplete merge worker result", issue.ID)
+	}
+	if _, ok := state.Claimed[issue.ID]; ok {
+		t.Fatalf("Claimed[%q] present after draining incomplete merge worker result", issue.ID)
+	}
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after draining incomplete merge worker result", issue.ID)
+	}
+	if got := tracker.setFields; !reflect.DeepEqual(got, []autoPromoteTickSetField{{
+		issueID: issue.ID,
+		field:   "Lease",
+		value:   "",
+	}}) {
+		t.Fatalf("set fields = %#v, want lease release", got)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none while draining", tracker.comments)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none while draining", tracker.updates)
+	}
+	if strings.Contains(logs.String(), "terminal_state_missing") {
+		t.Fatalf("logs %q contain terminal_state_missing", logs.String())
+	}
+}
+
+func TestHandleRunResultCompletesMergeWorkerWhenLatestIssueIsTerminal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 13, 18, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	runningIssue := autoPromoteTickIssue("issue-terminal-merge", []string{"bug"}, &connector.PullRequest{
+		Number:         75,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/75",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	runningIssue.State = "Merging"
+	terminalIssue := cloneIssue(runningIssue)
+	terminalIssue.Closed = true
+	terminalIssue.ClosedReason = "completed"
+	terminalIssue.PullRequest.State = "MERGED"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{terminalIssue}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+	state.Running[runningIssue.ID] = Running{
+		Issue:     cloneIssue(runningIssue),
+		StartedAt: now.Add(-time.Minute),
+	}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     runningIssue.ID,
+		CompletedAt: now,
+		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
+	})
+
+	if _, ok := state.Running[runningIssue.ID]; ok {
+		t.Fatalf("Running[%q] present after terminal merge worker result", runningIssue.ID)
+	}
+	if _, ok := state.Retry[runningIssue.ID]; ok {
+		t.Fatalf("Retry[%q] present after terminal merge worker result", runningIssue.ID)
+	}
+	completed, ok := state.Completed[runningIssue.ID]
+	if !ok {
+		t.Fatalf("Completed[%q] missing after terminal merge worker result", runningIssue.ID)
+	}
+	if completed.FinalState != "Done" {
+		t.Fatalf("Completed[%q].FinalState = %q, want Done", runningIssue.ID, completed.FinalState)
+	}
+	if got := tracker.updates; !reflect.DeepEqual(got, []autoPromoteTickUpdate{{issueID: runningIssue.ID, state: "Done"}}) {
+		t.Fatalf("updates = %#v, want Done reconciliation", got)
+	}
+	if !strings.Contains(logs.String(), "merge_worker_success") {
+		t.Fatalf("logs %q missing merge_worker_success", logs.String())
+	}
+	if strings.Contains(logs.String(), "terminal_state_missing") {
+		t.Fatalf("logs %q contain terminal_state_missing", logs.String())
+	}
+}
+
+func TestHandleRunResultReworksMergeWorkerAfterRepeatedIncompleteResults(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 13, 20, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:   1,
+		FailureRetryBaseDelay: time.Minute,
+		MaxRetryBackoff:       time.Hour,
+		ActiveStates:          []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:        []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-incomplete-merge-exhausted", []string{"bug"}, &connector.PullRequest{
+		Number:         76,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/76",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	issue.State = "Merging"
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+	state.Running[issue.ID] = Running{
+		Issue:     cloneIssue(issue),
+		Attempt:   3,
+		StartedAt: now.Add(-time.Minute),
+	}
+
+	orch.handleRunResult(context.Background(), &state, runpkg.Completion{
+		IssueID:     issue.ID,
+		CompletedAt: now,
+		Result:      runpkg.RunResult{FinalState: runpkg.FinalStateCompleted},
+	})
+
+	if _, ok := state.Retry[issue.ID]; ok {
+		t.Fatalf("Retry[%q] present after repeated incomplete merge results", issue.ID)
+	}
+	if got := tracker.updates; !reflect.DeepEqual(got, []autoPromoteTickUpdate{{issueID: issue.ID, state: autoPromoteReworkState}}) {
+		t.Fatalf("updates = %#v, want Rework transition", got)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one exhausted retry comment", tracker.comments)
+	}
+	for _, fragment := range []string{"runner_failed_retry_exhausted", "terminal issue or pull request state", "pull request"} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+	if !strings.Contains(logs.String(), "reason=terminal_state_missing") {
+		t.Fatalf("logs %q missing terminal_state_missing", logs.String())
+	}
+}
+
 func TestTickAutoPromoteMergingIssueDispatchesAndClearsStaleMemory(t *testing.T) {
 	t.Parallel()
 
@@ -2094,6 +2359,12 @@ type autoPromoteTickComment struct {
 	body    string
 }
 
+type autoPromoteTickSetField struct {
+	issueID string
+	field   string
+	value   string
+}
+
 type autoPromoteTickConnector struct {
 	stateIssues           []connector.Issue
 	candidateIssues       []connector.Issue
@@ -2103,6 +2374,7 @@ type autoPromoteTickConnector struct {
 	updates               []autoPromoteTickUpdate
 	comments              []autoPromoteTickComment
 	prComments            []autoPromoteTickComment
+	setFields             []autoPromoteTickSetField
 }
 
 func (c *autoPromoteTickConnector) Name() string {
@@ -2220,6 +2492,7 @@ func (c *autoPromoteTickConnector) SetAssignee(context.Context, string, string) 
 	return nil
 }
 
-func (c *autoPromoteTickConnector) SetField(context.Context, string, string, string) error {
+func (c *autoPromoteTickConnector) SetField(_ context.Context, issueID string, field string, value string) error {
+	c.setFields = append(c.setFields, autoPromoteTickSetField{issueID: issueID, field: field, value: value})
 	return nil
 }

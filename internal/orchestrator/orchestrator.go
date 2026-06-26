@@ -41,6 +41,7 @@ const (
 	blockedStatusState                = "Blocked"
 	blockedReasonDependency           = "blocked by non-terminal dependency"
 	blockedReasonProjectStatus        = "blocked by project status"
+	mergeWorkerTerminalStateMissing   = "merge worker completed without reaching a terminal issue or pull request state"
 )
 
 var prPipelineStates = []string{"Human Review", "Merging"}
@@ -262,7 +263,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		forceRequests:      make(chan forceRequest),
 		configUpdates:      make(chan configUpdateRequest),
 		refreshes:          make(chan manualRefreshRequest, 1),
-		runResults:         make(chan runpkg.Completion),
+		runResults:         make(chan runpkg.Completion, max(cfg.MaxConcurrentAgents, 1)),
 		runUpdates:         make(chan runUpdate, runUpdateBufferSize),
 		done:               make(chan struct{}),
 	}, nil
@@ -1816,6 +1817,18 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 
+	if mergeWorkerIssue(running.Issue) {
+		if o.completeLatestTerminalMergeWorkerResult(ctx, state, event, running) {
+			return
+		}
+		if state.Draining {
+			o.cleanupDrainedRun(ctx, state, event.IssueID)
+			return
+		}
+		o.handleIncompleteMergeWorkerResult(ctx, state, event, running)
+		return
+	}
+
 	finalState := event.Result.FinalState
 	if finalState == "" {
 		finalState = FinalStateCompleted
@@ -1842,15 +1855,96 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 	}
 
 	if state.Draining {
-		if err := o.abandonClaim(ctx, event.IssueID); err != nil && o.logger != nil {
-			o.logger.Warn("abandon completed drain claim failed", "issue_id", event.IssueID, "error", err)
-		}
-		delete(state.Claimed, event.IssueID)
-		delete(state.Retry, event.IssueID)
-		delete(state.BudgetRefusals, event.IssueID)
+		o.cleanupDrainedRun(ctx, state, event.IssueID)
 		return
 	}
 	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
+}
+
+func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issueID string) {
+	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
+		o.logger.Warn("abandon completed drain claim failed", "issue_id", issueID, "error", err)
+	}
+	delete(state.Claimed, issueID)
+	delete(state.Retry, issueID)
+	delete(state.BudgetRefusals, issueID)
+}
+
+func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) bool {
+	issueID := strings.TrimSpace(event.IssueID)
+	if issueID == "" || o.connector == nil {
+		return false
+	}
+	issues, err := o.connector.FetchIssueStatesByIDs(ctx, []string{issueID})
+	if err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"merge_worker_terminal_state_refresh_failed",
+				"issue_id", issueID,
+				"identifier", running.Issue.Identifier,
+				"error", err,
+			)
+		}
+		return false
+	}
+	for _, issue := range issues {
+		if strings.TrimSpace(issue.ID) != issueID {
+			continue
+		}
+		issue = mergeIssueTrackerFields(running.Issue, issue)
+		if !workspaceIssueTerminal(issue, o.cfg.TerminalStates) {
+			return false
+		}
+		tokens := event.Result.Tokens
+		if tokens == (CodexTotals{}) {
+			tokens = running.Tokens
+		}
+		if diffStatsPresent(event.Result.DiffStats) {
+			running.DiffStats = event.Result.DiffStats
+		}
+		running.Issue = issue
+		o.completeTerminalRunning(ctx, state, issueID, running, terminalCompletedAt(issue, o.cfg.TerminalStates, event.CompletedAt), tokens)
+		if event.Result.RateLimits != nil {
+			state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
+		}
+		return true
+	}
+	return false
+}
+
+func (o *Orchestrator) handleIncompleteMergeWorkerResult(
+	ctx context.Context,
+	state *State,
+	event runpkg.Completion,
+	running Running,
+) {
+	err := errors.New(mergeWorkerTerminalStateMissing)
+	o.logMergeWorkerFailure(running.Issue, "terminal_state_missing", err)
+	attempt := nextAttempt(running.Attempt)
+	if attempt > maxMergeWorkerRunnerFailures {
+		if o.reworkExhaustedMergeWorker(ctx, state, running, event.CompletedAt, attempt, err) {
+			return
+		}
+	}
+	o.scheduleRetry(
+		state,
+		running.Issue,
+		attempt,
+		event.CompletedAt,
+		err.Error(),
+		false,
+		running.WorkerHost,
+	)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      event.CompletedAt,
+		Event:   "merge_worker_terminal_state_missing",
+		Message: "merge worker completed without terminal state for " + issueLabel(running.Issue),
+	})
 }
 
 func (o *Orchestrator) reworkExhaustedMergeWorker(
