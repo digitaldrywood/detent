@@ -50,6 +50,9 @@ const (
 const (
 	defaultHTTPReadHeaderTimeout = 5 * time.Second
 	defaultHTTPIdleTimeout       = 2 * time.Minute
+	defaultSSEFragmentInterval   = 5 * time.Second
+	defaultSSEHealthInterval     = 10 * time.Second
+	defaultSSEMetricsInterval    = time.Minute
 	sidebarStateCookieName       = "sidebar_state"
 )
 
@@ -58,6 +61,9 @@ type Config struct {
 	Mode                  Mode
 	StaticDir             string
 	SSETickInterval       time.Duration
+	SSEFragmentInterval   time.Duration
+	SSEHealthInterval     time.Duration
+	SSEMetricsInterval    time.Duration
 	HTTPReadHeaderTimeout time.Duration
 	HTTPIdleTimeout       time.Duration
 	WorkflowPath          string
@@ -88,6 +94,9 @@ type Server struct {
 	logger              *slog.Logger
 	mode                Mode
 	tickEvery           time.Duration
+	sseFragmentInterval time.Duration
+	sseHealthInterval   time.Duration
+	sseMetricsInterval  time.Duration
 	workflow            string
 	version             string
 	build               buildinfo.Info
@@ -146,6 +155,9 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		logger:              cfg.logger(),
 		mode:                mode,
 		tickEvery:           cfg.sseTickInterval(),
+		sseFragmentInterval: cfg.sseFragmentInterval(),
+		sseHealthInterval:   cfg.sseHealthInterval(),
+		sseMetricsInterval:  cfg.sseMetricsInterval(),
 		workflow:            cfg.workflowPath(),
 		version:             strings.TrimSpace(cfg.Version),
 		build:               cfg.Build,
@@ -531,6 +543,36 @@ func (cfg Config) sseTickInterval() time.Duration {
 		return cfg.SSETickInterval
 	}
 	return time.Second
+}
+
+func (cfg Config) sseFragmentInterval() time.Duration {
+	if cfg.SSEFragmentInterval < 0 {
+		return 0
+	}
+	if cfg.SSEFragmentInterval > 0 {
+		return cfg.SSEFragmentInterval
+	}
+	return defaultSSEFragmentInterval
+}
+
+func (cfg Config) sseHealthInterval() time.Duration {
+	if cfg.SSEHealthInterval < 0 {
+		return 0
+	}
+	if cfg.SSEHealthInterval > 0 {
+		return cfg.SSEHealthInterval
+	}
+	return defaultSSEHealthInterval
+}
+
+func (cfg Config) sseMetricsInterval() time.Duration {
+	if cfg.SSEMetricsInterval < 0 {
+		return 0
+	}
+	if cfg.SSEMetricsInterval > 0 {
+		return cfg.SSEMetricsInterval
+	}
+	return defaultSSEMetricsInterval
 }
 
 func (cfg Config) httpReadHeaderTimeout() time.Duration {
