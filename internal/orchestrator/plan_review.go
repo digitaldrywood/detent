@@ -317,7 +317,7 @@ func (o *Orchestrator) applyPlanReviewDecision(
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "plan_review_decision"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"plan review transition failed",

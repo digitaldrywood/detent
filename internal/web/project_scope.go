@@ -91,6 +91,38 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	if len(snapshot.Projects) > 0 {
 		out.TokenTrend = nil
 	}
+	out.WorkflowMetrics = scopedWorkflowMetrics(out, snapshot.WorkflowMetrics, selectedProjectID)
+	return out
+}
+
+func scopedWorkflowMetrics(snapshot telemetry.Snapshot, metrics telemetry.WorkflowMetrics, selectedProjectID string) telemetry.WorkflowMetrics {
+	if selectedProjectID == "" {
+		return metrics
+	}
+	out := metrics
+	out.Windows = make([]telemetry.WorkflowMetricsWindow, 0, len(metrics.Windows))
+	for _, window := range metrics.Windows {
+		scopedWindow := window
+		scopedWindow.Lanes = scopedWorkflowPhaseMetrics(window.Lanes, selectedProjectID)
+		scopedWindow.SubPhases = scopedWorkflowPhaseMetrics(window.SubPhases, selectedProjectID)
+		out.Windows = append(out.Windows, scopedWindow)
+	}
+	out.OldestCards = workflowOldestCards(snapshot)
+	now := snapshot.GeneratedAt
+	if now.IsZero() {
+		now = time.Now()
+	}
+	out.ActiveBottleneck = workflowActiveBottleneck(snapshot, now)
+	return out
+}
+
+func scopedWorkflowPhaseMetrics(metrics []telemetry.WorkflowPhaseMetric, selectedProjectID string) []telemetry.WorkflowPhaseMetric {
+	out := make([]telemetry.WorkflowPhaseMetric, 0, len(metrics))
+	for _, metric := range metrics {
+		if strings.TrimSpace(metric.ProjectID) == selectedProjectID {
+			out = append(out, metric)
+		}
+	}
 	return out
 }
 

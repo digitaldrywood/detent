@@ -96,6 +96,7 @@ type Dependencies struct {
 	Connector          connector.Connector
 	Runner             Runner
 	WorkspaceReaper    WorkspaceReaper
+	WorkflowMetrics    WorkflowMetricsRecorder
 	GlobalDispatchGate scheduler.ProjectDispatchGate
 	Logger             *slog.Logger
 }
@@ -112,6 +113,7 @@ type RuntimeUpdate struct {
 type Orchestrator struct {
 	cfg                Config
 	connector          connector.Connector
+	workflowMetrics    WorkflowMetricsRecorder
 	supervisor         *runpkg.Supervisor
 	validator          Validator
 	reaper             WorkspaceReaper
@@ -251,6 +253,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	return &Orchestrator{
 		cfg:                cfg,
 		connector:          deps.Connector,
+		workflowMetrics:    deps.WorkflowMetrics,
 		supervisor:         supervisor,
 		validator:          validator,
 		reaper:             reaper,
@@ -575,7 +578,7 @@ func (o *Orchestrator) reconcileClosedCompletedIssueStatuses(ctx context.Context
 		if !closedCompletedIssueNeedsStatusReconciliation(issue, o.cfg.TerminalStates) {
 			continue
 		}
-		if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+		if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "closed_completed_status_reconciled"); err != nil {
 			if o.logger != nil {
 				o.logger.Warn("reconcile closed completed issue status failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 			}
@@ -1511,7 +1514,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 
 	issue = cloneIssue(claimedIssue)
 	if targetState != "" {
-		if err := o.connector.UpdateIssueState(ctx, issue.ID, targetState); err != nil {
+		if err := o.updateIssueState(ctx, issue, targetState, now, "dispatch_start"); err != nil {
 			o.releaseGlobalDispatchSlot(globalSlot)
 			if abandonErr := o.abandonClaim(ctx, issue.ID); abandonErr != nil && o.logger != nil {
 				o.logger.Warn("abandon claim after start state transition failed", "issue_id", issue.ID, "error", abandonErr)
@@ -1966,7 +1969,7 @@ func (o *Orchestrator) reworkExhaustedMergeWorker(
 	if issueID == "" || o.connector == nil {
 		return false
 	}
-	if err := o.connector.UpdateIssueState(ctx, issueID, autoPromoteReworkState); err != nil {
+	if err := o.updateIssueStateByID(ctx, issueID, running.Issue, autoPromoteReworkState, completedAt, "merge_worker_retry_exhausted"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"merge_worker_rework_failed",
@@ -2055,7 +2058,7 @@ func (o *Orchestrator) completePlanRunning(
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan comment failed: "+err.Error(), false, running.WorkerHost)
 		return
 	}
-	if err := o.connector.UpdateIssueState(ctx, issueID, cfg.Stop); err != nil {
+	if err := o.updateIssueStateByID(ctx, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan review transition failed: "+err.Error(), false, running.WorkerHost)
 		return
 	}
@@ -2147,7 +2150,7 @@ func (o *Orchestrator) completeTerminalRunning(
 			Message: fmt.Sprintf("claim lease release failed for %s: %v", issueLabel(running.Issue), err),
 		})
 	}
-	issue := o.ensureClosedCompletedRunningIssueDone(ctx, issueID, running.Issue)
+	issue := o.ensureClosedCompletedRunningIssueDone(ctx, issueID, running.Issue, completedAt)
 	finalState := strings.TrimSpace(issue.State)
 	if finalState == "" {
 		finalState = FinalStateCompleted
@@ -2174,7 +2177,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	o.reapWorkspace(ctx, state, issue, workspaceReapReason(issue, o.cfg.TerminalStates), completedAt)
 }
 
-func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context, issueID string, issue connector.Issue) connector.Issue {
+func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context, issueID string, issue connector.Issue, now time.Time) connector.Issue {
 	if !issue.Closed || !closedReasonCompleted(issue.ClosedReason) {
 		return issue
 	}
@@ -2182,7 +2185,7 @@ func (o *Orchestrator) ensureClosedCompletedRunningIssueDone(ctx context.Context
 	if strings.TrimSpace(targetState) == "" {
 		return issue
 	}
-	if err := o.connector.UpdateIssueState(ctx, issueID, targetState); err != nil {
+	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, "closed_completed_running_done"); err != nil {
 		if o.logger != nil {
 			o.logger.Warn("mark closed completed running issue done failed", "issue_id", issueID, "identifier", issue.Identifier, "from_state", issue.State, "target_state", targetState, "error", err)
 		}

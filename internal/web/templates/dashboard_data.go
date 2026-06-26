@@ -191,6 +191,42 @@ type cycleTimeBucketRow struct {
 	Count string
 }
 
+type workflowLaneMetricRow struct {
+	Window  string
+	Lane    string
+	Count   string
+	Average string
+	P50     string
+	P90     string
+	P95     string
+}
+
+type workflowSubphaseMetricRow struct {
+	Window string
+	Phase  string
+	Count  string
+	Total  string
+	Mean   string
+	Detail string
+}
+
+type workflowOldestCardRow struct {
+	Identifier string
+	Title      string
+	ProjectID  string
+	State      string
+	Age        string
+	Key        string
+	URL        string
+}
+
+type workflowBottleneckView struct {
+	Label  string
+	Detail string
+	Value  string
+	Count  string
+}
+
 type budgetHistoryBar struct {
 	Style string
 	Title string
@@ -3708,6 +3744,173 @@ func cycleTimeUnavailableDetail(report telemetry.CycleTimeReport) string {
 		return report.DegradedReason
 	}
 	return "Runtime store unavailable."
+}
+
+func workflowMetricsAvailable(report telemetry.WorkflowMetrics) bool {
+	return report.Available && strings.TrimSpace(report.DegradedReason) == ""
+}
+
+func workflowMetricsUnavailableDetail(report telemetry.WorkflowMetrics) string {
+	if strings.TrimSpace(report.DegradedReason) != "" {
+		return report.DegradedReason
+	}
+	return "Runtime store unavailable."
+}
+
+func workflowMetricsSummaryLabel(report telemetry.WorkflowMetrics) string {
+	count := int64(0)
+	for _, window := range report.Windows {
+		if window.Label != "24h" {
+			continue
+		}
+		for _, metric := range window.Lanes {
+			count += metric.Count
+		}
+		break
+	}
+	if count == 1 {
+		return "1 lane event"
+	}
+	return formatInt(count) + " lane events"
+}
+
+func workflowLaneMetricRows(report telemetry.WorkflowMetrics) []workflowLaneMetricRow {
+	rows := []workflowLaneMetricRow{}
+	for _, window := range report.Windows {
+		for _, metric := range window.Lanes {
+			rows = append(rows, workflowLaneMetricRow{
+				Window:  window.Label,
+				Lane:    workflowPhaseLabel(metric.PhaseName),
+				Count:   formatInt(metric.Count),
+				Average: formatDuration(float64(metric.AverageSeconds)),
+				P50:     formatDuration(float64(metric.P50Seconds)),
+				P90:     formatDuration(float64(metric.P90Seconds)),
+				P95:     formatDuration(float64(metric.P95Seconds)),
+			})
+		}
+	}
+	return rows
+}
+
+func workflowSubphaseMetricRows(report telemetry.WorkflowMetrics) []workflowSubphaseMetricRow {
+	rows := []workflowSubphaseMetricRow{}
+	for _, window := range report.Windows {
+		for _, metric := range window.SubPhases {
+			rows = append(rows, workflowSubphaseMetricRow{
+				Window: window.Label,
+				Phase:  workflowPhaseLabel(metric.PhaseName),
+				Count:  formatInt(metric.Count),
+				Total:  formatDuration(float64(metric.TotalSeconds)),
+				Mean:   formatDuration(float64(metric.AverageSeconds)),
+				Detail: workflowSubphaseDetail(metric),
+			})
+		}
+	}
+	return rows
+}
+
+func workflowOldestCardRows(report telemetry.WorkflowMetrics) []workflowOldestCardRow {
+	rows := make([]workflowOldestCardRow, 0, len(report.OldestCards))
+	for _, card := range report.OldestCards {
+		rows = append(rows, workflowOldestCardRow{
+			Identifier: workflowCardIdentifier(card),
+			Title:      workflowCardTitle(card),
+			ProjectID:  strings.TrimSpace(card.ProjectID),
+			State:      workflowPhaseLabel(card.State),
+			Age:        formatDuration(float64(card.AgeSeconds)),
+			Key:        workflowBottleneckLabel(card.BottleneckKey),
+			URL:        strings.TrimSpace(card.URL),
+		})
+	}
+	return rows
+}
+
+func workflowBottleneck(report telemetry.WorkflowMetrics) workflowBottleneckView {
+	bottleneck := report.ActiveBottleneck
+	label := strings.TrimSpace(bottleneck.Label)
+	if label == "" {
+		label = "No active bottleneck"
+	}
+	detail := strings.TrimSpace(bottleneck.Detail)
+	if detail == "" {
+		detail = "No live queue pressure detected."
+	}
+	count := ""
+	if bottleneck.Count > 0 {
+		count = formatInt(int64(bottleneck.Count)) + " cards"
+	}
+	value := formatDuration(float64(bottleneck.Seconds))
+	if bottleneck.Seconds <= 0 {
+		value = "now"
+	}
+	return workflowBottleneckView{
+		Label:  label,
+		Detail: detail,
+		Value:  value,
+		Count:  count,
+	}
+}
+
+func workflowPhaseLabel(value string) string {
+	value = strings.TrimSpace(strings.ReplaceAll(value, "_", " "))
+	if value == "" {
+		return "Unknown"
+	}
+	words := strings.Fields(value)
+	for i, word := range words {
+		if len(word) == 0 {
+			continue
+		}
+		words[i] = strings.ToUpper(word[:1]) + word[1:]
+	}
+	return strings.Join(words, " ")
+}
+
+func workflowSubphaseDetail(metric telemetry.WorkflowPhaseMetric) string {
+	parts := []string{}
+	if strings.TrimSpace(metric.EndpointFamily) != "" {
+		parts = append(parts, metric.EndpointFamily)
+	}
+	if metric.Turns > 0 {
+		parts = append(parts, formatInt(metric.Turns)+" turns")
+	}
+	if metric.TotalTokens > 0 {
+		parts = append(parts, formatInt(metric.TotalTokens)+" tokens")
+	}
+	if len(parts) == 0 {
+		return "observed"
+	}
+	return strings.Join(parts, " / ")
+}
+
+func workflowCardIdentifier(card telemetry.WorkflowLaneAge) string {
+	if strings.TrimSpace(card.Identifier) != "" {
+		return strings.TrimSpace(card.Identifier)
+	}
+	if strings.TrimSpace(card.IssueID) != "" {
+		return strings.TrimSpace(card.IssueID)
+	}
+	return "unknown"
+}
+
+func workflowCardTitle(card telemetry.WorkflowLaneAge) string {
+	if strings.TrimSpace(card.Title) != "" {
+		return strings.TrimSpace(card.Title)
+	}
+	return "Untitled issue"
+}
+
+func workflowBottleneckLabel(key string) string {
+	switch strings.TrimSpace(key) {
+	case "ci_wait":
+		return "CI wait"
+	case "merge_queue":
+		return "Merge queue"
+	case "lane_age":
+		return "Lane age"
+	default:
+		return "Lane age"
+	}
 }
 
 func boardStateDotClass(state string) string {

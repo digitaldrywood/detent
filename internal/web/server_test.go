@@ -5633,6 +5633,51 @@ func TestServerUsageAPIReportsAggregates(t *testing.T) {
 	}
 }
 
+func TestServerWorkflowTimelineAPI(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openWebTestStore(t)
+	startedAt := time.Date(2026, 6, 26, 14, 0, 0, 0, time.UTC)
+	finishedAt := startedAt.Add(30 * time.Minute)
+	if _, err := backend.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+		ProjectID:       "detent",
+		IssueID:         "issue-722",
+		Identifier:      "digitaldrywood/detent#722",
+		IssueURL:        "https://github.com/digitaldrywood/detent/issues/722",
+		PhaseType:       store.WorkflowPhaseTypeLane,
+		PhaseName:       "Todo",
+		Status:          "exited",
+		StartedAt:       startedAt,
+		FinishedAt:      finishedAt,
+		DurationSeconds: int64((30 * time.Minute) / time.Second),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+
+	deps := testDeps(t)
+	deps.Store = backend
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	missing := requestJSON(t, server, http.MethodGet, "/api/v1/workflow/timeline", http.StatusBadRequest)
+	if got := nestedString(t, missing, "error", "code"); got != "missing_issue_identity" {
+		t.Fatalf("error.code = %q, want missing_issue_identity", got)
+	}
+
+	payload := requestJSON(t, server, http.MethodGet, "/api/v1/workflow/timeline?identifier=digitaldrywood/detent%23722", http.StatusOK)
+	events := payload["events"].([]any)
+	if len(events) != 1 {
+		t.Fatalf("events len = %d, want 1", len(events))
+	}
+	event := events[0].(map[string]any)
+	if event["phase_type"] != "lane" || event["phase_name"] != "Todo" || event["duration_seconds"] != float64(1800) {
+		t.Fatalf("timeline event = %#v, want Todo lane duration", event)
+	}
+}
+
 func TestServerUsageAPIRejectsInvalidParameters(t *testing.T) {
 	t.Parallel()
 
@@ -6201,6 +6246,18 @@ func (p storeProbe) BudgetCostEvents(ctx context.Context, query store.BudgetCost
 		return p.budgetCostEvents(ctx, query)
 	}
 	return nil, nil
+}
+
+func (storeProbe) RecordWorkflowPhaseEvent(context.Context, store.WorkflowPhaseEvent) (int64, error) {
+	return 0, nil
+}
+
+func (storeProbe) WorkflowMetricsReport(context.Context, store.WorkflowMetricsQuery) (store.WorkflowMetricsReport, error) {
+	return store.WorkflowMetricsReport{}, nil
+}
+
+func (storeProbe) IssueWorkflowTimeline(context.Context, store.IssueIdentity) (store.WorkflowTimeline, error) {
+	return store.WorkflowTimeline{}, nil
 }
 
 func (storeProbe) Queries() *sqlc.Queries {

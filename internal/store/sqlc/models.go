@@ -65,3 +65,31 @@ type UsageEvent struct {
 	Outcome        string         `json:"outcome"`
 	CostUsd        float64        `json:"cost_usd"`
 }
+
+type WorkflowPhaseEvent struct {
+	ID                int64          `json:"id"`
+	ProjectID         string         `json:"project_id"`
+	RunID             sql.NullInt64  `json:"run_id"`
+	SessionID         sql.NullInt64  `json:"session_id"`
+	IssueID           sql.NullString `json:"issue_id"`
+	Identifier        sql.NullString `json:"identifier"`
+	IssueURL          sql.NullString `json:"issue_url"`
+	PrNumber          sql.NullInt64  `json:"pr_number"`
+	PhaseType         string         `json:"phase_type"`
+	PhaseName         string         `json:"phase_name"`
+	PreviousPhaseName sql.NullString `json:"previous_phase_name"`
+	Reason            sql.NullString `json:"reason"`
+	Status            sql.NullString `json:"status"`
+	StartedAt         string         `json:"started_at"`
+	FinishedAt        sql.NullString `json:"finished_at"`
+	DurationSeconds   int64          `json:"duration_seconds"`
+	EventDay          string         `json:"event_day"`
+	CommandName       sql.NullString `json:"command_name"`
+	ExitCode          sql.NullInt64  `json:"exit_code"`
+	Turns             int64          `json:"turns"`
+	InputTokens       int64          `json:"input_tokens"`
+	OutputTokens      int64          `json:"output_tokens"`
+	TotalTokens       int64          `json:"total_tokens"`
+	EndpointFamily    sql.NullString `json:"endpoint_family"`
+	MetadataJson      string         `json:"metadata_json"`
+}

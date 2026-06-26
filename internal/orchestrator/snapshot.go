@@ -39,7 +39,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Shutdown:    shutdownSnapshot(s),
 		Events:      cloneActivityEvents(s.RecentEvents),
 		Refresh:     refresh,
-		BoardIssues: issueSnapshots(s.BoardIssues, s.AutoPromoteQuietDuration, s.PollInterval),
+		BoardIssues: issueSnapshots(s.BoardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now),
 		Pipeline:    pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now),
 		Running:     runningSnapshots(s.Running, s.Claimed, s.MergeTimings, now),
 		Queue:       queueSnapshots(s.Retry, s.Claimed, s.MergeTimings, now),
@@ -107,17 +107,17 @@ func pipelineSnapshots(
 ) []telemetry.Issue {
 	out := make([]telemetry.Issue, 0, len(issues))
 	for _, issue := range issues {
-		item := telemetryIssue(issue, quietDuration, pollInterval)
+		item := telemetryIssue(issue, quietDuration, pollInterval, now)
 		applyMergeTimingSnapshot(&item, issue, mergeTimings[strings.TrimSpace(issue.ID)], now)
 		out = append(out, item)
 	}
 	return out
 }
 
-func issueSnapshots(issues []connector.Issue, quietDuration time.Duration, pollInterval time.Duration) []telemetry.Issue {
+func issueSnapshots(issues []connector.Issue, quietDuration time.Duration, pollInterval time.Duration, now time.Time) []telemetry.Issue {
 	out := make([]telemetry.Issue, 0, len(issues))
 	for _, issue := range issues {
-		out = append(out, telemetryIssue(issue, quietDuration, pollInterval))
+		out = append(out, telemetryIssue(issue, quietDuration, pollInterval, now))
 	}
 	return out
 }
@@ -128,7 +128,7 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, mer
 	for _, id := range ids {
 		entry := running[id]
 		lastEventAt := timePointer(entry.LastEventAt)
-		issue := telemetryIssue(entry.Issue, 0, 0)
+		issue := telemetryIssue(entry.Issue, 0, 0, now)
 		timing := mergeTimings[strings.TrimSpace(entry.Issue.ID)]
 		if mergeWorkerIssue(entry.Issue) && timing.MergeStartedAt.IsZero() && !entry.StartedAt.IsZero() {
 			timing.MergeStartedAt = entry.StartedAt
@@ -163,7 +163,7 @@ func queueSnapshots(retry map[string]Retry, claims map[string]Claimed, mergeTimi
 	out := make([]telemetry.Queued, 0, len(ids))
 	for _, id := range ids {
 		entry := retry[id]
-		issue := telemetryIssue(entry.Issue, 0, 0)
+		issue := telemetryIssue(entry.Issue, 0, 0, now)
 		applyMergeTimingSnapshot(&issue, entry.Issue, mergeTimings[strings.TrimSpace(entry.Issue.ID)], now)
 		applyClaimSnapshot(&issue, claims[id], now)
 		queued := telemetry.Queued{
@@ -186,7 +186,7 @@ func blockedSnapshots(blocked map[string]Blocked, claims map[string]Claimed, now
 	out := make([]telemetry.Blocked, 0, len(ids))
 	for _, id := range ids {
 		entry := blocked[id]
-		issue := telemetryIssue(entry.Issue, 0, 0)
+		issue := telemetryIssue(entry.Issue, 0, 0, now)
 		applyClaimSnapshot(&issue, claims[id], now)
 		item := telemetry.Blocked{
 			Issue:          issue,
@@ -208,7 +208,7 @@ func completedSnapshots(completed map[string]Completed, claims map[string]Claime
 	out := make([]telemetry.Completed, 0, len(ids))
 	for _, id := range ids {
 		entry := completed[id]
-		issue := telemetryIssue(entry.Issue, 0, 0)
+		issue := telemetryIssue(entry.Issue, 0, 0, now)
 		applyMergeTimingSnapshot(&issue, entry.Issue, entry.MergeTiming, entry.CompletedAt)
 		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Completed{
@@ -311,23 +311,44 @@ func telemetryMergeTiming(issue connector.Issue, timing MergeTiming, now time.Ti
 	return out, true
 }
 
-func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInterval time.Duration) telemetry.Issue {
+func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInterval time.Duration, now time.Time) telemetry.Issue {
+	laneEnteredAt := telemetryIssueLaneEnteredAt(issue)
 	return telemetry.Issue{
-		ID:             issue.ID,
-		Identifier:     issue.Identifier,
-		URL:            issue.URL,
-		Title:          issue.Title,
-		Description:    issue.Description,
-		State:          issue.State,
-		Labels:         append([]string(nil), issue.Labels...),
-		Assignees:      append([]string(nil), issue.Assignees...),
-		Comments:       telemetryIssueComments(issue.Comments),
-		BlockedBy:      telemetryBlockedRefs(issue.BlockedBy),
-		PullRequest:    telemetryPullRequest(issue, quietDuration, pollInterval),
-		CreatedAt:      timePointerFromPtr(issue.CreatedAt),
-		UpdatedAt:      timePointerFromPtr(issue.UpdatedAt),
-		StageUpdatedAt: timePointerFromPtr(issue.StageUpdatedAt),
+		ID:                    issue.ID,
+		Identifier:            issue.Identifier,
+		URL:                   issue.URL,
+		Title:                 issue.Title,
+		Description:           issue.Description,
+		State:                 issue.State,
+		Labels:                append([]string(nil), issue.Labels...),
+		Assignees:             append([]string(nil), issue.Assignees...),
+		Comments:              telemetryIssueComments(issue.Comments),
+		BlockedBy:             telemetryBlockedRefs(issue.BlockedBy),
+		PullRequest:           telemetryPullRequest(issue, quietDuration, pollInterval),
+		CreatedAt:             timePointerFromPtr(issue.CreatedAt),
+		UpdatedAt:             timePointerFromPtr(issue.UpdatedAt),
+		StageUpdatedAt:        timePointerFromPtr(issue.StageUpdatedAt),
+		CurrentLaneEnteredAt:  timePointerFromPtr(laneEnteredAt),
+		CurrentLaneAgeSeconds: telemetryIssueLaneAgeSeconds(laneEnteredAt, now),
 	}
+}
+
+func telemetryIssueLaneEnteredAt(issue connector.Issue) *time.Time {
+	for _, candidate := range []*time.Time{issue.StageUpdatedAt, issue.UpdatedAt, issue.CreatedAt} {
+		if candidate == nil || candidate.IsZero() {
+			continue
+		}
+		value := *candidate
+		return &value
+	}
+	return nil
+}
+
+func telemetryIssueLaneAgeSeconds(startedAt *time.Time, now time.Time) int64 {
+	if startedAt == nil || startedAt.IsZero() || now.IsZero() || now.Before(*startedAt) {
+		return 0
+	}
+	return int64(now.Sub(*startedAt) / time.Second)
 }
 
 func telemetryIssueComments(comments []connector.IssueComment) []telemetry.IssueComment {

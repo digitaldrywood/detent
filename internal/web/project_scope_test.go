@@ -86,6 +86,85 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 }
 
+func TestProjectScopedSnapshotRecomputesWorkflowSummaries(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC)
+	detentEnteredAt := now.Add(-90 * time.Second)
+	pyroEnteredAt := now.Add(-15 * time.Minute)
+	got, ok := projectScopedSnapshot(telemetry.Snapshot{
+		GeneratedAt: now,
+		Project:     telemetry.Project{DisplayName: "multiple projects"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+			{Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"}},
+		},
+		BoardIssues: []telemetry.Issue{
+			{
+				ID:                    "detent-card",
+				Identifier:            "digitaldrywood/detent#722",
+				ProjectID:             "detent",
+				Title:                 "Detent metrics",
+				State:                 "Todo",
+				CurrentLaneEnteredAt:  &detentEnteredAt,
+				CurrentLaneAgeSeconds: 90,
+			},
+			{
+				ID:                    "pyro-card",
+				Identifier:            "digitaldrywood/pyroapex#91",
+				ProjectID:             "pyroapex",
+				Title:                 "Pyro Apex task",
+				State:                 "Rework",
+				CurrentLaneEnteredAt:  &pyroEnteredAt,
+				CurrentLaneAgeSeconds: 900,
+			},
+		},
+		WorkflowMetrics: telemetry.WorkflowMetrics{
+			Available: true,
+			Windows: []telemetry.WorkflowMetricsWindow{
+				{
+					Label: "24h",
+					Lanes: []telemetry.WorkflowPhaseMetric{
+						{ProjectID: "detent", PhaseName: "Todo", Count: 1},
+						{ProjectID: "pyroapex", PhaseName: "Rework", Count: 2},
+					},
+				},
+			},
+			OldestCards: []telemetry.WorkflowLaneAge{
+				{ProjectID: "pyroapex", IssueID: "pyro-card", Identifier: "digitaldrywood/pyroapex#91", AgeSeconds: 900},
+			},
+			ActiveBottleneck: telemetry.WorkflowBottleneck{
+				Kind:       "lane_age",
+				Label:      "Oldest lane",
+				ProjectID:  "pyroapex",
+				IssueID:    "pyro-card",
+				Identifier: "digitaldrywood/pyroapex#91",
+				Seconds:    900,
+				Count:      1,
+			},
+		},
+	}, "detent")
+
+	if !ok {
+		t.Fatal("projectScopedSnapshot() ok = false, want true")
+	}
+	if len(got.WorkflowMetrics.Windows) != 1 || len(got.WorkflowMetrics.Windows[0].Lanes) != 1 {
+		t.Fatalf("WorkflowMetrics.Windows = %#v, want only detent lane metrics", got.WorkflowMetrics.Windows)
+	}
+	if got.WorkflowMetrics.Windows[0].Lanes[0].ProjectID != "detent" {
+		t.Fatalf("WorkflowMetrics.Windows[0].Lanes[0].ProjectID = %q, want detent", got.WorkflowMetrics.Windows[0].Lanes[0].ProjectID)
+	}
+	if len(got.WorkflowMetrics.OldestCards) != 1 {
+		t.Fatalf("WorkflowMetrics.OldestCards = %#v, want one detent card", got.WorkflowMetrics.OldestCards)
+	}
+	if got.WorkflowMetrics.OldestCards[0].ProjectID != "detent" || got.WorkflowMetrics.OldestCards[0].IssueID != "detent-card" {
+		t.Fatalf("WorkflowMetrics.OldestCards[0] = %#v, want recomputed detent card", got.WorkflowMetrics.OldestCards[0])
+	}
+	if got.WorkflowMetrics.ActiveBottleneck.ProjectID != "detent" || got.WorkflowMetrics.ActiveBottleneck.IssueID != "detent-card" {
+		t.Fatalf("WorkflowMetrics.ActiveBottleneck = %#v, want recomputed detent bottleneck", got.WorkflowMetrics.ActiveBottleneck)
+	}
+}
+
 func TestProjectScopedSnapshotFallsBackToSingleProjectRows(t *testing.T) {
 	t.Parallel()
 

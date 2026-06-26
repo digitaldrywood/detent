@@ -84,6 +84,7 @@ type Dependencies struct {
 	Runner                 orchestrator.Runner
 	Scheduler              scheduler.Scheduler
 	GlobalDispatchGate     scheduler.ProjectDispatchGate
+	WorkflowMetrics        orchestrator.WorkflowMetricsRecorder
 	Events                 *hub.Hub[Event]
 	Logger                 *slog.Logger
 	GitHubToken            string
@@ -172,6 +173,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		Connector:          projectConnector,
 		Runner:             deps.Runner,
 		GlobalDispatchGate: deps.GlobalDispatchGate,
+		WorkflowMetrics:    deps.WorkflowMetrics,
 		Logger:             logger,
 	}
 	orch, err := orchestratorFactory(orchConfig, orchDeps)

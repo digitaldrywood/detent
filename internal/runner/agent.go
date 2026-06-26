@@ -43,6 +43,10 @@ type SessionStore interface {
 	RecordUsageEvent(context.Context, store.UsageEvent) (int64, error)
 }
 
+type workflowPhaseStore interface {
+	RecordWorkflowPhaseEvent(context.Context, store.WorkflowPhaseEvent) (int64, error)
+}
+
 type AgentBackendFactory interface {
 	NewAgentBackend(config.AgentBackend) (AgentBackend, error)
 }
@@ -704,6 +708,48 @@ func (r *Runner) finishSession(
 		Outcome:        result.FinalState,
 	}); err != nil {
 		return fmt.Errorf("record usage event: %w", err)
+	}
+	if err := r.recordAgentSessionPhase(ctx, sessionID, issue, startedAt, finishedAt, result); err != nil {
+		return err
+	}
+	return nil
+}
+
+func (r *Runner) recordAgentSessionPhase(
+	ctx context.Context,
+	sessionID int64,
+	issue connector.Issue,
+	startedAt time.Time,
+	finishedAt time.Time,
+	result RunResult,
+) error {
+	phaseStore, ok := r.store.(workflowPhaseStore)
+	if !ok {
+		return nil
+	}
+	if result.FinalState == "" {
+		result.FinalState = FinalStateCompleted
+	}
+	if _, err := phaseStore.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
+		ProjectID:       r.projectID,
+		SessionID:       sessionID,
+		IssueID:         issue.ID,
+		Identifier:      issue.Identifier,
+		IssueURL:        issue.URL,
+		PRNumber:        pullRequestNumber(issue),
+		PhaseType:       store.WorkflowPhaseTypeAgentSession,
+		PhaseName:       "agent_active",
+		Status:          result.FinalState,
+		StartedAt:       startedAt,
+		FinishedAt:      finishedAt,
+		DurationSeconds: int64(math.Round(result.Tokens.RuntimeSeconds)),
+		Turns:           1,
+		InputTokens:     result.Tokens.InputTokens,
+		OutputTokens:    result.Tokens.OutputTokens,
+		TotalTokens:     result.Tokens.TotalTokens,
+		EndpointFamily:  "codex",
+	}); err != nil {
+		return fmt.Errorf("record agent session phase: %w", err)
 	}
 	return nil
 }
