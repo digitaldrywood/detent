@@ -95,6 +95,7 @@ type AgentTokenUsage struct {
 type RunRequest struct {
 	Issue           connector.Issue
 	Attempt         int
+	WorkAttemptID   int64
 	Mode            string
 	StartedAt       time.Time
 	WorkerHost      string

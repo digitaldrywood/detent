@@ -17,6 +17,7 @@ import (
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/selector"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -97,6 +98,7 @@ type Dependencies struct {
 	Runner             Runner
 	WorkspaceReaper    WorkspaceReaper
 	WorkflowMetrics    WorkflowMetricsRecorder
+	WorkAttempts       store.WorkAttemptStore
 	GlobalDispatchGate scheduler.ProjectDispatchGate
 	Logger             *slog.Logger
 }
@@ -114,6 +116,7 @@ type Orchestrator struct {
 	cfg                Config
 	connector          connector.Connector
 	workflowMetrics    WorkflowMetricsRecorder
+	workAttempts       store.WorkAttemptStore
 	supervisor         *runpkg.Supervisor
 	validator          Validator
 	reaper             WorkspaceReaper
@@ -254,6 +257,7 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		cfg:                cfg,
 		connector:          deps.Connector,
 		workflowMetrics:    deps.WorkflowMetrics,
+		workAttempts:       deps.WorkAttempts,
 		supervisor:         supervisor,
 		validator:          validator,
 		reaper:             reaper,
@@ -283,6 +287,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 
 	state := newState(o.cfg)
 	defer o.releaseRunningSlots(&state)
+	o.recoverDurableWorkAttempts(ctx, &state, time.Now())
 	o.tick(ctx, &state, time.Now())
 	resetTicker(ticker, state.PollInterval)
 
@@ -1377,7 +1382,7 @@ func (o *Orchestrator) dispatchReadyIssues(ctx context.Context, state *State, is
 			return o.preserveMissingDueRetry(state, retry)
 		},
 		decision: func(decision dispatchPlanDecision) {
-			o.logDispatchPlanDecision(state, now, decision)
+			o.logDispatchPlanDecision(ctx, state, now, decision)
 		},
 	})
 }
@@ -1448,6 +1453,7 @@ const (
 	dispatchIssueFailureWorkerHostUnavailable = "worker_host_unavailable"
 	dispatchIssueFailureGlobalSlotUnavailable = "global_slot_unavailable"
 	dispatchIssueFailureClaimFailed           = "claim_failed"
+	dispatchIssueFailureWorkAttemptStart      = "work_attempt_start_failed"
 	dispatchIssueFailureStartStateTransition  = "start_state_transition_failed"
 )
 
@@ -1527,9 +1533,32 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	}
 
 	issue = cloneIssue(claimedIssue)
+	workAttemptID, ok := o.startDurableWorkAttempt(ctx, state, issue, attempt, now, workerHost, runMode)
+	if !ok {
+		o.releaseGlobalDispatchSlot(globalSlot)
+		o.logWorkerLifecycle(issue, "worker_capacity_released",
+			"attempt", attempt,
+			"worker_host", strings.TrimSpace(workerHost),
+			"reason", dispatchIssueFailureWorkAttemptStart,
+		)
+		if abandonErr := o.abandonClaim(ctx, issue.ID); abandonErr != nil && o.logger != nil {
+			o.logger.Warn("abandon claim after work attempt start failed", "issue_id", issue.ID, "error", abandonErr)
+		}
+		o.logMergeWorkerFailure(issue, "work_attempt_start_failed", nil)
+		o.recordMergeFailed(state, issue, now, "work_attempt_start_failed", nil)
+		return dispatchIssueOutcome{reason: dispatchIssueFailureWorkAttemptStart}
+	}
 	if targetState != "" {
 		if err := o.updateIssueState(ctx, issue, targetState, now, "dispatch_start"); err != nil {
 			o.releaseGlobalDispatchSlot(globalSlot)
+			o.completeDurableWorkAttempt(ctx, state, Running{
+				Issue:         issue,
+				Attempt:       attempt,
+				WorkAttemptID: workAttemptID,
+				Mode:          runMode,
+				StartedAt:     now,
+				WorkerHost:    workerHost,
+			}, now, store.WorkAttemptTerminalFailure, workAttemptErrorStartTransition, err.Error(), "starting", "start state transition failed")
 			o.logWorkerLifecycle(issue, "worker_capacity_released",
 				"attempt", attempt,
 				"worker_host", strings.TrimSpace(workerHost),
@@ -1551,12 +1580,14 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	claim.Issue = issue
 	runCtx, cancel := context.WithCancel(ctx)
 	state.Running[issue.ID] = Running{
-		Issue:      issue,
-		Attempt:    attempt,
-		StartedAt:  now,
-		WorkerHost: workerHost,
-		globalSlot: globalSlot,
-		cancel:     cancel,
+		Issue:         issue,
+		Attempt:       attempt,
+		WorkAttemptID: workAttemptID,
+		Mode:          runMode,
+		StartedAt:     now,
+		WorkerHost:    workerHost,
+		globalSlot:    globalSlot,
+		cancel:        cancel,
 	}
 	o.setGlobalDispatchPreempt(globalSlot, cancel)
 	state.Claimed[issue.ID] = claim
@@ -1569,6 +1600,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 	request := RunRequest{
 		Issue:           issue,
 		Attempt:         attempt,
+		WorkAttemptID:   workAttemptID,
 		Mode:            runMode,
 		StartedAt:       now,
 		WorkerHost:      workerHost,
@@ -1787,6 +1819,20 @@ func (o *Orchestrator) handleRunUpdate(state *State, event runUpdate) {
 	if event.usage.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.usage.RateLimits)
 	}
+	if o.workAttempts != nil && running.WorkAttemptID > 0 {
+		now := event.usage.LastEventAt
+		if now.IsZero() {
+			now = time.Now()
+		}
+		heartbeat := o.runningWorkAttemptHeartbeat(state, running, now)
+		if err := o.workAttempts.RecordWorkAttemptHeartbeat(context.Background(), heartbeat); err != nil {
+			if o.logger != nil {
+				o.logger.Warn("work attempt usage heartbeat failed", "attempt_id", running.WorkAttemptID, "issue_id", event.issueID, "error", err)
+			}
+		} else {
+			o.applyWorkAttemptHeartbeatSnapshot(state, running.WorkAttemptID, heartbeat)
+		}
+	}
 }
 
 func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event runpkg.Completion) {
@@ -1834,6 +1880,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			"retry_delay_seconds", int64(event.RetryDelay/time.Second),
 			"error", event.Err,
 		)
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminalStateForRun(event.Err, event.Result.FinalState), workAttemptErrorRunner, event.Err.Error(), "failed", "worker failed")
 		if mergeWorkerIssue(running.Issue) {
 			o.logMergeWorkerFailure(running.Issue, "runner_failed", event.Err)
 			o.recordMergeFailed(state, running.Issue, event.CompletedAt, "runner_failed", event.Err)
@@ -1879,6 +1926,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 			return
 		}
 		if state.Draining {
+			o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalCancelled, "draining", "worker stopped during drain", "cancelled", "worker stopped during drain")
 			o.cleanupDrainedRun(ctx, state, event.IssueID)
 			return
 		}
@@ -1896,6 +1944,14 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		"mode", strings.TrimSpace(event.Request.Mode),
 		"final_state", strings.TrimSpace(finalState),
 	)
+	terminalState := terminalStateForRun(nil, finalState)
+	errorClass := ""
+	errorMessage := ""
+	if terminalState == store.WorkAttemptTerminalFailure {
+		errorClass = "runner_final_state"
+		errorMessage = finalState
+	}
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, terminalState, errorClass, errorMessage, "completed", "worker completed")
 
 	state.Completed[event.IssueID] = Completed{
 		Issue:       cloneIssue(running.Issue),
@@ -1987,6 +2043,7 @@ func (o *Orchestrator) handleIncompleteMergeWorkerResult(
 	running Running,
 ) {
 	err := errors.New(mergeWorkerTerminalStateMissing)
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, workAttemptErrorMergeIncomplete, err.Error(), "merging", "merge worker completed without terminal state")
 	o.logMergeWorkerFailure(running.Issue, "terminal_state_missing", err)
 	attempt := nextAttempt(running.Attempt)
 	if attempt > maxMergeWorkerRunnerFailures {
@@ -2108,13 +2165,16 @@ func (o *Orchestrator) completePlanRunning(
 	issue := cloneIssue(running.Issue)
 	body := planArtifactComment(issue, event.Result.Output)
 	if err := o.connector.CreateComment(ctx, issueID, body); err != nil {
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_comment_failed", err.Error(), "reviewing", "plan comment failed")
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan comment failed: "+err.Error(), false, running.WorkerHost)
 		return
 	}
 	if err := o.updateIssueStateByID(ctx, issueID, issue, cfg.Stop, event.CompletedAt, "plan_artifact_created"); err != nil {
+		o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalFailure, "plan_transition_failed", err.Error(), "reviewing", "plan review transition failed")
 		o.scheduleRetry(state, issue, nextAttempt(running.Attempt), event.CompletedAt, "plan review transition failed: "+err.Error(), false, running.WorkerHost)
 		return
 	}
+	o.completeDurableWorkAttempt(ctx, state, running, event.CompletedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "plan review created")
 	if err := o.abandonClaim(ctx, issueID); err != nil && o.logger != nil {
 		o.logger.Warn("abandon completed plan claim failed", "issue_id", issueID, "error", err)
 	}
@@ -2188,6 +2248,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	completedAt time.Time,
 	tokens CodexTotals,
 ) {
+	o.completeDurableWorkAttempt(ctx, state, running, completedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker reached terminal state")
 	o.releaseGlobalDispatchSlot(running.globalSlot)
 	if running.cancel != nil {
 		running.cancel()

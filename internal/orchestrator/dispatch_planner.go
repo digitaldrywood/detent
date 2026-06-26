@@ -91,11 +91,13 @@ func (p dispatchPlanner) plan(
 			continue
 		}
 		if availableSlots(state) == 0 {
-			p.logDecision(hooks, dispatchPlanDecision{
-				Issue:         issue,
-				QueuePosition: queuePosition,
-				SkipReason:    dispatchSkipGlobalCapacityFull,
-			})
+			for skipIndex := index; skipIndex < len(plannedCandidates); skipIndex++ {
+				p.logDecision(hooks, dispatchPlanDecision{
+					Issue:         plannedCandidates[skipIndex],
+					QueuePosition: skipIndex + 1,
+					SkipReason:    dispatchSkipGlobalCapacityFull,
+				})
+			}
 			break
 		}
 		if hooks.hydrate != nil {

@@ -55,6 +55,71 @@ func (q *Queries) BudgetCostEvents(ctx context.Context, arg BudgetCostEventsPara
 	return items, nil
 }
 
+const completeWorkAttempt = `-- name: CompleteWorkAttempt :execrows
+UPDATE work_attempts
+SET status = ?,
+    terminal_state = ?,
+    completed_at = ?,
+    heartbeat_at = ?,
+    lease_expires_at = ?,
+    error_class = ?,
+    error_message = ?,
+    phase = ?,
+    status_message = ?,
+    wait_reason = ?,
+    github_rate_snapshot_json = ?,
+    ci_state = ?,
+    capacity_snapshot_json = ?,
+    metrics_json = ?,
+    next_action = ?
+WHERE id = ?
+  AND completed_at IS NULL
+`
+
+type CompleteWorkAttemptParams struct {
+	Status                 string         `json:"status"`
+	TerminalState          sql.NullString `json:"terminal_state"`
+	CompletedAt            sql.NullString `json:"completed_at"`
+	HeartbeatAt            sql.NullString `json:"heartbeat_at"`
+	LeaseExpiresAt         sql.NullString `json:"lease_expires_at"`
+	ErrorClass             sql.NullString `json:"error_class"`
+	ErrorMessage           sql.NullString `json:"error_message"`
+	Phase                  sql.NullString `json:"phase"`
+	StatusMessage          sql.NullString `json:"status_message"`
+	WaitReason             sql.NullString `json:"wait_reason"`
+	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
+	CiState                sql.NullString `json:"ci_state"`
+	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
+	MetricsJson            string         `json:"metrics_json"`
+	NextAction             sql.NullString `json:"next_action"`
+	ID                     int64          `json:"id"`
+}
+
+func (q *Queries) CompleteWorkAttempt(ctx context.Context, arg CompleteWorkAttemptParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, completeWorkAttempt,
+		arg.Status,
+		arg.TerminalState,
+		arg.CompletedAt,
+		arg.HeartbeatAt,
+		arg.LeaseExpiresAt,
+		arg.ErrorClass,
+		arg.ErrorMessage,
+		arg.Phase,
+		arg.StatusMessage,
+		arg.WaitReason,
+		arg.GithubRateSnapshotJson,
+		arg.CiState,
+		arg.CapacitySnapshotJson,
+		arg.MetricsJson,
+		arg.NextAction,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
 const completedIssueCycleRows = `-- name: CompletedIssueCycleRows :many
 WITH issue_sessions AS (
   SELECT
@@ -247,6 +312,101 @@ func (q *Queries) CreateDetentRun(ctx context.Context, arg CreateDetentRunParams
 	return i, err
 }
 
+const createSchedulerDecision = `-- name: CreateSchedulerDecision :one
+INSERT INTO scheduler_decisions (
+  project_id,
+  issue_id,
+  identifier,
+  issue_url,
+  pr_number,
+  repo,
+  lane,
+  queue_position,
+  result,
+  reason,
+  selected,
+  retry,
+  attempt_number,
+  worker_host,
+  decision_at,
+  wait_reason,
+  capacity_snapshot_json,
+  github_rate_snapshot_json,
+  metadata_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json
+`
+
+type CreateSchedulerDecisionParams struct {
+	ProjectID              string         `json:"project_id"`
+	IssueID                sql.NullString `json:"issue_id"`
+	Identifier             sql.NullString `json:"identifier"`
+	IssueURL               sql.NullString `json:"issue_url"`
+	PrNumber               sql.NullInt64  `json:"pr_number"`
+	Repo                   sql.NullString `json:"repo"`
+	Lane                   sql.NullString `json:"lane"`
+	QueuePosition          int64          `json:"queue_position"`
+	Result                 string         `json:"result"`
+	Reason                 sql.NullString `json:"reason"`
+	Selected               int64          `json:"selected"`
+	Retry                  int64          `json:"retry"`
+	AttemptNumber          int64          `json:"attempt_number"`
+	WorkerHost             sql.NullString `json:"worker_host"`
+	DecisionAt             string         `json:"decision_at"`
+	WaitReason             sql.NullString `json:"wait_reason"`
+	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
+	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
+	MetadataJson           string         `json:"metadata_json"`
+}
+
+func (q *Queries) CreateSchedulerDecision(ctx context.Context, arg CreateSchedulerDecisionParams) (SchedulerDecision, error) {
+	row := q.db.QueryRowContext(ctx, createSchedulerDecision,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+		arg.PrNumber,
+		arg.Repo,
+		arg.Lane,
+		arg.QueuePosition,
+		arg.Result,
+		arg.Reason,
+		arg.Selected,
+		arg.Retry,
+		arg.AttemptNumber,
+		arg.WorkerHost,
+		arg.DecisionAt,
+		arg.WaitReason,
+		arg.CapacitySnapshotJson,
+		arg.GithubRateSnapshotJson,
+		arg.MetadataJson,
+	)
+	var i SchedulerDecision
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.Identifier,
+		&i.IssueURL,
+		&i.PrNumber,
+		&i.Repo,
+		&i.Lane,
+		&i.QueuePosition,
+		&i.Result,
+		&i.Reason,
+		&i.Selected,
+		&i.Retry,
+		&i.AttemptNumber,
+		&i.WorkerHost,
+		&i.DecisionAt,
+		&i.WaitReason,
+		&i.CapacitySnapshotJson,
+		&i.GithubRateSnapshotJson,
+		&i.MetadataJson,
+	)
+	return i, err
+}
+
 const createUsageEvent = `-- name: CreateUsageEvent :one
 INSERT INTO usage_events (
   project_id,
@@ -326,6 +486,137 @@ func (q *Queries) CreateUsageEvent(ctx context.Context, arg CreateUsageEventPara
 		&i.EventDay,
 		&i.Outcome,
 		&i.CostUsd,
+	)
+	return i, err
+}
+
+const createWorkAttempt = `-- name: CreateWorkAttempt :one
+INSERT INTO work_attempts (
+  project_id,
+  issue_id,
+  identifier,
+  issue_url,
+  pr_number,
+  repo,
+  worker_type,
+  worker_host,
+  lane,
+  attempt_number,
+  status,
+  started_at,
+  lease_expires_at,
+  heartbeat_at,
+  phase,
+  status_message,
+  current_step,
+  total_steps,
+  progress_percent,
+  current_command,
+  wait_reason,
+  github_rate_snapshot_json,
+  ci_state,
+  capacity_snapshot_json,
+  worker_metadata_json,
+  metrics_json,
+  next_action
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+`
+
+type CreateWorkAttemptParams struct {
+	ProjectID              string         `json:"project_id"`
+	IssueID                sql.NullString `json:"issue_id"`
+	Identifier             sql.NullString `json:"identifier"`
+	IssueURL               sql.NullString `json:"issue_url"`
+	PrNumber               sql.NullInt64  `json:"pr_number"`
+	Repo                   sql.NullString `json:"repo"`
+	WorkerType             string         `json:"worker_type"`
+	WorkerHost             sql.NullString `json:"worker_host"`
+	Lane                   sql.NullString `json:"lane"`
+	AttemptNumber          int64          `json:"attempt_number"`
+	Status                 string         `json:"status"`
+	StartedAt              string         `json:"started_at"`
+	LeaseExpiresAt         sql.NullString `json:"lease_expires_at"`
+	HeartbeatAt            sql.NullString `json:"heartbeat_at"`
+	Phase                  sql.NullString `json:"phase"`
+	StatusMessage          sql.NullString `json:"status_message"`
+	CurrentStep            sql.NullInt64  `json:"current_step"`
+	TotalSteps             sql.NullInt64  `json:"total_steps"`
+	ProgressPercent        sql.NullInt64  `json:"progress_percent"`
+	CurrentCommand         sql.NullString `json:"current_command"`
+	WaitReason             sql.NullString `json:"wait_reason"`
+	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
+	CiState                sql.NullString `json:"ci_state"`
+	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
+	WorkerMetadataJson     string         `json:"worker_metadata_json"`
+	MetricsJson            string         `json:"metrics_json"`
+	NextAction             sql.NullString `json:"next_action"`
+}
+
+func (q *Queries) CreateWorkAttempt(ctx context.Context, arg CreateWorkAttemptParams) (WorkAttempt, error) {
+	row := q.db.QueryRowContext(ctx, createWorkAttempt,
+		arg.ProjectID,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+		arg.PrNumber,
+		arg.Repo,
+		arg.WorkerType,
+		arg.WorkerHost,
+		arg.Lane,
+		arg.AttemptNumber,
+		arg.Status,
+		arg.StartedAt,
+		arg.LeaseExpiresAt,
+		arg.HeartbeatAt,
+		arg.Phase,
+		arg.StatusMessage,
+		arg.CurrentStep,
+		arg.TotalSteps,
+		arg.ProgressPercent,
+		arg.CurrentCommand,
+		arg.WaitReason,
+		arg.GithubRateSnapshotJson,
+		arg.CiState,
+		arg.CapacitySnapshotJson,
+		arg.WorkerMetadataJson,
+		arg.MetricsJson,
+		arg.NextAction,
+	)
+	var i WorkAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.Identifier,
+		&i.IssueURL,
+		&i.PrNumber,
+		&i.Repo,
+		&i.WorkerType,
+		&i.WorkerHost,
+		&i.Lane,
+		&i.AttemptNumber,
+		&i.Status,
+		&i.StartedAt,
+		&i.LeaseExpiresAt,
+		&i.HeartbeatAt,
+		&i.CompletedAt,
+		&i.TerminalState,
+		&i.ErrorClass,
+		&i.ErrorMessage,
+		&i.Phase,
+		&i.StatusMessage,
+		&i.CurrentStep,
+		&i.TotalSteps,
+		&i.ProgressPercent,
+		&i.CurrentCommand,
+		&i.WaitReason,
+		&i.GithubRateSnapshotJson,
+		&i.CiState,
+		&i.CapacitySnapshotJson,
+		&i.WorkerMetadataJson,
+		&i.MetricsJson,
+		&i.NextAction,
 	)
 	return i, err
 }
@@ -621,6 +912,52 @@ func (q *Queries) GetUsageEvent(ctx context.Context, id int64) (UsageEvent, erro
 	return i, err
 }
 
+const getWorkAttempt = `-- name: GetWorkAttempt :one
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+FROM work_attempts
+WHERE id = ?
+`
+
+func (q *Queries) GetWorkAttempt(ctx context.Context, id int64) (WorkAttempt, error) {
+	row := q.db.QueryRowContext(ctx, getWorkAttempt, id)
+	var i WorkAttempt
+	err := row.Scan(
+		&i.ID,
+		&i.ProjectID,
+		&i.IssueID,
+		&i.Identifier,
+		&i.IssueURL,
+		&i.PrNumber,
+		&i.Repo,
+		&i.WorkerType,
+		&i.WorkerHost,
+		&i.Lane,
+		&i.AttemptNumber,
+		&i.Status,
+		&i.StartedAt,
+		&i.LeaseExpiresAt,
+		&i.HeartbeatAt,
+		&i.CompletedAt,
+		&i.TerminalState,
+		&i.ErrorClass,
+		&i.ErrorMessage,
+		&i.Phase,
+		&i.StatusMessage,
+		&i.CurrentStep,
+		&i.TotalSteps,
+		&i.ProgressPercent,
+		&i.CurrentCommand,
+		&i.WaitReason,
+		&i.GithubRateSnapshotJson,
+		&i.CiState,
+		&i.CapacitySnapshotJson,
+		&i.WorkerMetadataJson,
+		&i.MetricsJson,
+		&i.NextAction,
+	)
+	return i, err
+}
+
 const issueTokenSpend = `-- name: IssueTokenSpend :many
 SELECT
   CAST(COALESCE(model, '') AS TEXT) AS model,
@@ -803,6 +1140,70 @@ func (q *Queries) LifetimeTotals(ctx context.Context) (LifetimeTotalsRow, error)
 	return i, err
 }
 
+const listActiveWorkAttempts = `-- name: ListActiveWorkAttempts :many
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+FROM work_attempts
+WHERE completed_at IS NULL
+  AND (?1 = '' OR project_id = ?1)
+ORDER BY started_at, id
+`
+
+func (q *Queries) ListActiveWorkAttempts(ctx context.Context, filterProjectID interface{}) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, listActiveWorkAttempts, filterProjectID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkAttempt{}
+	for rows.Next() {
+		var i WorkAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Repo,
+			&i.WorkerType,
+			&i.WorkerHost,
+			&i.Lane,
+			&i.AttemptNumber,
+			&i.Status,
+			&i.StartedAt,
+			&i.LeaseExpiresAt,
+			&i.HeartbeatAt,
+			&i.CompletedAt,
+			&i.TerminalState,
+			&i.ErrorClass,
+			&i.ErrorMessage,
+			&i.Phase,
+			&i.StatusMessage,
+			&i.CurrentStep,
+			&i.TotalSteps,
+			&i.ProgressPercent,
+			&i.CurrentCommand,
+			&i.WaitReason,
+			&i.GithubRateSnapshotJson,
+			&i.CiState,
+			&i.CapacitySnapshotJson,
+			&i.WorkerMetadataJson,
+			&i.MetricsJson,
+			&i.NextAction,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listFairShareUsage = `-- name: ListFairShareUsage :many
 SELECT
   project_id,
@@ -888,6 +1289,253 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 	return items, nil
 }
 
+const listRecentSchedulerDecisions = `-- name: ListRecentSchedulerDecisions :many
+SELECT id, project_id, issue_id, identifier, issue_url, pr_number, repo, lane, queue_position, result, reason, selected, retry, attempt_number, worker_host, decision_at, wait_reason, capacity_snapshot_json, github_rate_snapshot_json, metadata_json
+FROM scheduler_decisions
+WHERE ?1 = '' OR project_id = ?1
+ORDER BY decision_at DESC, id DESC
+LIMIT ?2
+`
+
+type ListRecentSchedulerDecisionsParams struct {
+	FilterProjectID interface{} `json:"filter_project_id"`
+	Limit           int64       `json:"limit"`
+}
+
+func (q *Queries) ListRecentSchedulerDecisions(ctx context.Context, arg ListRecentSchedulerDecisionsParams) ([]SchedulerDecision, error) {
+	rows, err := q.db.QueryContext(ctx, listRecentSchedulerDecisions, arg.FilterProjectID, arg.Limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []SchedulerDecision{}
+	for rows.Next() {
+		var i SchedulerDecision
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Repo,
+			&i.Lane,
+			&i.QueuePosition,
+			&i.Result,
+			&i.Reason,
+			&i.Selected,
+			&i.Retry,
+			&i.AttemptNumber,
+			&i.WorkerHost,
+			&i.DecisionAt,
+			&i.WaitReason,
+			&i.CapacitySnapshotJson,
+			&i.GithubRateSnapshotJson,
+			&i.MetadataJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const reclaimActiveWorkAttempts = `-- name: ReclaimActiveWorkAttempts :many
+UPDATE work_attempts
+SET status = ?,
+    terminal_state = ?,
+    completed_at = ?,
+    heartbeat_at = ?,
+    error_class = ?,
+    error_message = ?,
+    phase = ?,
+    status_message = ?
+WHERE completed_at IS NULL
+  AND project_id = ?
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+`
+
+type ReclaimActiveWorkAttemptsParams struct {
+	Status        string         `json:"status"`
+	TerminalState sql.NullString `json:"terminal_state"`
+	CompletedAt   sql.NullString `json:"completed_at"`
+	HeartbeatAt   sql.NullString `json:"heartbeat_at"`
+	ErrorClass    sql.NullString `json:"error_class"`
+	ErrorMessage  sql.NullString `json:"error_message"`
+	Phase         sql.NullString `json:"phase"`
+	StatusMessage sql.NullString `json:"status_message"`
+	ProjectID     string         `json:"project_id"`
+}
+
+func (q *Queries) ReclaimActiveWorkAttempts(ctx context.Context, arg ReclaimActiveWorkAttemptsParams) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, reclaimActiveWorkAttempts,
+		arg.Status,
+		arg.TerminalState,
+		arg.CompletedAt,
+		arg.HeartbeatAt,
+		arg.ErrorClass,
+		arg.ErrorMessage,
+		arg.Phase,
+		arg.StatusMessage,
+		arg.ProjectID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkAttempt{}
+	for rows.Next() {
+		var i WorkAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Repo,
+			&i.WorkerType,
+			&i.WorkerHost,
+			&i.Lane,
+			&i.AttemptNumber,
+			&i.Status,
+			&i.StartedAt,
+			&i.LeaseExpiresAt,
+			&i.HeartbeatAt,
+			&i.CompletedAt,
+			&i.TerminalState,
+			&i.ErrorClass,
+			&i.ErrorMessage,
+			&i.Phase,
+			&i.StatusMessage,
+			&i.CurrentStep,
+			&i.TotalSteps,
+			&i.ProgressPercent,
+			&i.CurrentCommand,
+			&i.WaitReason,
+			&i.GithubRateSnapshotJson,
+			&i.CiState,
+			&i.CapacitySnapshotJson,
+			&i.WorkerMetadataJson,
+			&i.MetricsJson,
+			&i.NextAction,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const timeoutExpiredWorkAttempts = `-- name: TimeoutExpiredWorkAttempts :many
+UPDATE work_attempts
+SET status = ?,
+    terminal_state = ?,
+    completed_at = ?,
+    heartbeat_at = ?,
+    error_class = ?,
+    error_message = ?,
+    phase = ?,
+    status_message = ?
+WHERE completed_at IS NULL
+  AND (?9 = '' OR project_id = ?9)
+  AND lease_expires_at IS NOT NULL
+  AND lease_expires_at <= ?10
+RETURNING id, project_id, issue_id, identifier, issue_url, pr_number, repo, worker_type, worker_host, lane, attempt_number, status, started_at, lease_expires_at, heartbeat_at, completed_at, terminal_state, error_class, error_message, phase, status_message, current_step, total_steps, progress_percent, current_command, wait_reason, github_rate_snapshot_json, ci_state, capacity_snapshot_json, worker_metadata_json, metrics_json, next_action
+`
+
+type TimeoutExpiredWorkAttemptsParams struct {
+	Status          string         `json:"status"`
+	TerminalState   sql.NullString `json:"terminal_state"`
+	CompletedAt     sql.NullString `json:"completed_at"`
+	HeartbeatAt     sql.NullString `json:"heartbeat_at"`
+	ErrorClass      sql.NullString `json:"error_class"`
+	ErrorMessage    sql.NullString `json:"error_message"`
+	Phase           sql.NullString `json:"phase"`
+	StatusMessage   sql.NullString `json:"status_message"`
+	FilterProjectID interface{}    `json:"filter_project_id"`
+	LeaseExpiresAt  sql.NullString `json:"lease_expires_at"`
+}
+
+func (q *Queries) TimeoutExpiredWorkAttempts(ctx context.Context, arg TimeoutExpiredWorkAttemptsParams) ([]WorkAttempt, error) {
+	rows, err := q.db.QueryContext(ctx, timeoutExpiredWorkAttempts,
+		arg.Status,
+		arg.TerminalState,
+		arg.CompletedAt,
+		arg.HeartbeatAt,
+		arg.ErrorClass,
+		arg.ErrorMessage,
+		arg.Phase,
+		arg.StatusMessage,
+		arg.FilterProjectID,
+		arg.LeaseExpiresAt,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkAttempt{}
+	for rows.Next() {
+		var i WorkAttempt
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.Repo,
+			&i.WorkerType,
+			&i.WorkerHost,
+			&i.Lane,
+			&i.AttemptNumber,
+			&i.Status,
+			&i.StartedAt,
+			&i.LeaseExpiresAt,
+			&i.HeartbeatAt,
+			&i.CompletedAt,
+			&i.TerminalState,
+			&i.ErrorClass,
+			&i.ErrorMessage,
+			&i.Phase,
+			&i.StatusMessage,
+			&i.CurrentStep,
+			&i.TotalSteps,
+			&i.ProgressPercent,
+			&i.CurrentCommand,
+			&i.WaitReason,
+			&i.GithubRateSnapshotJson,
+			&i.CiState,
+			&i.CapacitySnapshotJson,
+			&i.WorkerMetadataJson,
+			&i.MetricsJson,
+			&i.NextAction,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const updateDetentRun = `-- name: UpdateDetentRun :execrows
 UPDATE detent_runs
 SET stopped_at = COALESCE(?, stopped_at),
@@ -923,6 +1571,74 @@ func (q *Queries) UpdateDetentRun(ctx context.Context, arg UpdateDetentRunParams
 		arg.OutputTokens,
 		arg.TotalTokens,
 		arg.RuntimeSeconds,
+		arg.ID,
+	)
+	if err != nil {
+		return 0, err
+	}
+	return result.RowsAffected()
+}
+
+const updateWorkAttemptHeartbeat = `-- name: UpdateWorkAttemptHeartbeat :execrows
+UPDATE work_attempts
+SET heartbeat_at = ?,
+    lease_expires_at = ?,
+    phase = ?,
+    status_message = ?,
+    current_step = ?,
+    total_steps = ?,
+    progress_percent = ?,
+    current_command = ?,
+    wait_reason = ?,
+    github_rate_snapshot_json = ?,
+    ci_state = ?,
+    capacity_snapshot_json = ?,
+    metrics_json = ?,
+    next_action = ?,
+    error_class = ?,
+    error_message = ?
+WHERE id = ?
+  AND completed_at IS NULL
+`
+
+type UpdateWorkAttemptHeartbeatParams struct {
+	HeartbeatAt            sql.NullString `json:"heartbeat_at"`
+	LeaseExpiresAt         sql.NullString `json:"lease_expires_at"`
+	Phase                  sql.NullString `json:"phase"`
+	StatusMessage          sql.NullString `json:"status_message"`
+	CurrentStep            sql.NullInt64  `json:"current_step"`
+	TotalSteps             sql.NullInt64  `json:"total_steps"`
+	ProgressPercent        sql.NullInt64  `json:"progress_percent"`
+	CurrentCommand         sql.NullString `json:"current_command"`
+	WaitReason             sql.NullString `json:"wait_reason"`
+	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
+	CiState                sql.NullString `json:"ci_state"`
+	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
+	MetricsJson            string         `json:"metrics_json"`
+	NextAction             sql.NullString `json:"next_action"`
+	ErrorClass             sql.NullString `json:"error_class"`
+	ErrorMessage           sql.NullString `json:"error_message"`
+	ID                     int64          `json:"id"`
+}
+
+func (q *Queries) UpdateWorkAttemptHeartbeat(ctx context.Context, arg UpdateWorkAttemptHeartbeatParams) (int64, error) {
+	result, err := q.db.ExecContext(ctx, updateWorkAttemptHeartbeat,
+		arg.HeartbeatAt,
+		arg.LeaseExpiresAt,
+		arg.Phase,
+		arg.StatusMessage,
+		arg.CurrentStep,
+		arg.TotalSteps,
+		arg.ProgressPercent,
+		arg.CurrentCommand,
+		arg.WaitReason,
+		arg.GithubRateSnapshotJson,
+		arg.CiState,
+		arg.CapacitySnapshotJson,
+		arg.MetricsJson,
+		arg.NextAction,
+		arg.ErrorClass,
+		arg.ErrorMessage,
 		arg.ID,
 	)
 	if err != nil {

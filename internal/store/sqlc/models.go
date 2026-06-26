@@ -46,6 +46,29 @@ type FairShareUsage struct {
 	UpdatedAt      string `json:"updated_at"`
 }
 
+type SchedulerDecision struct {
+	ID                     int64          `json:"id"`
+	ProjectID              string         `json:"project_id"`
+	IssueID                sql.NullString `json:"issue_id"`
+	Identifier             sql.NullString `json:"identifier"`
+	IssueURL               sql.NullString `json:"issue_url"`
+	PrNumber               sql.NullInt64  `json:"pr_number"`
+	Repo                   sql.NullString `json:"repo"`
+	Lane                   sql.NullString `json:"lane"`
+	QueuePosition          int64          `json:"queue_position"`
+	Result                 string         `json:"result"`
+	Reason                 sql.NullString `json:"reason"`
+	Selected               int64          `json:"selected"`
+	Retry                  int64          `json:"retry"`
+	AttemptNumber          int64          `json:"attempt_number"`
+	WorkerHost             sql.NullString `json:"worker_host"`
+	DecisionAt             string         `json:"decision_at"`
+	WaitReason             sql.NullString `json:"wait_reason"`
+	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
+	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
+	MetadataJson           string         `json:"metadata_json"`
+}
+
 type UsageEvent struct {
 	ID             int64          `json:"id"`
 	ProjectID      string         `json:"project_id"`
@@ -64,6 +87,41 @@ type UsageEvent struct {
 	EventDay       string         `json:"event_day"`
 	Outcome        string         `json:"outcome"`
 	CostUsd        float64        `json:"cost_usd"`
+}
+
+type WorkAttempt struct {
+	ID                     int64          `json:"id"`
+	ProjectID              string         `json:"project_id"`
+	IssueID                sql.NullString `json:"issue_id"`
+	Identifier             sql.NullString `json:"identifier"`
+	IssueURL               sql.NullString `json:"issue_url"`
+	PrNumber               sql.NullInt64  `json:"pr_number"`
+	Repo                   sql.NullString `json:"repo"`
+	WorkerType             string         `json:"worker_type"`
+	WorkerHost             sql.NullString `json:"worker_host"`
+	Lane                   sql.NullString `json:"lane"`
+	AttemptNumber          int64          `json:"attempt_number"`
+	Status                 string         `json:"status"`
+	StartedAt              string         `json:"started_at"`
+	LeaseExpiresAt         sql.NullString `json:"lease_expires_at"`
+	HeartbeatAt            sql.NullString `json:"heartbeat_at"`
+	CompletedAt            sql.NullString `json:"completed_at"`
+	TerminalState          sql.NullString `json:"terminal_state"`
+	ErrorClass             sql.NullString `json:"error_class"`
+	ErrorMessage           sql.NullString `json:"error_message"`
+	Phase                  sql.NullString `json:"phase"`
+	StatusMessage          sql.NullString `json:"status_message"`
+	CurrentStep            sql.NullInt64  `json:"current_step"`
+	TotalSteps             sql.NullInt64  `json:"total_steps"`
+	ProgressPercent        sql.NullInt64  `json:"progress_percent"`
+	CurrentCommand         sql.NullString `json:"current_command"`
+	WaitReason             sql.NullString `json:"wait_reason"`
+	GithubRateSnapshotJson string         `json:"github_rate_snapshot_json"`
+	CiState                sql.NullString `json:"ci_state"`
+	CapacitySnapshotJson   string         `json:"capacity_snapshot_json"`
+	WorkerMetadataJson     string         `json:"worker_metadata_json"`
+	MetricsJson            string         `json:"metrics_json"`
+	NextAction             sql.NullString `json:"next_action"`
 }
 
 type WorkflowPhaseEvent struct {

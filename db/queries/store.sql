@@ -325,3 +325,149 @@ WHERE issue_id = sqlc.arg(issue_id)
    OR identifier = sqlc.arg(identifier)
    OR issue_url = sqlc.arg(issue_url)
 ORDER BY started_at, id;
+
+-- name: CreateWorkAttempt :one
+INSERT INTO work_attempts (
+  project_id,
+  issue_id,
+  identifier,
+  issue_url,
+  pr_number,
+  repo,
+  worker_type,
+  worker_host,
+  lane,
+  attempt_number,
+  status,
+  started_at,
+  lease_expires_at,
+  heartbeat_at,
+  phase,
+  status_message,
+  current_step,
+  total_steps,
+  progress_percent,
+  current_command,
+  wait_reason,
+  github_rate_snapshot_json,
+  ci_state,
+  capacity_snapshot_json,
+  worker_metadata_json,
+  metrics_json,
+  next_action
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: GetWorkAttempt :one
+SELECT *
+FROM work_attempts
+WHERE id = ?;
+
+-- name: UpdateWorkAttemptHeartbeat :execrows
+UPDATE work_attempts
+SET heartbeat_at = ?,
+    lease_expires_at = ?,
+    phase = ?,
+    status_message = ?,
+    current_step = ?,
+    total_steps = ?,
+    progress_percent = ?,
+    current_command = ?,
+    wait_reason = ?,
+    github_rate_snapshot_json = ?,
+    ci_state = ?,
+    capacity_snapshot_json = ?,
+    metrics_json = ?,
+    next_action = ?,
+    error_class = ?,
+    error_message = ?
+WHERE id = ?
+  AND completed_at IS NULL;
+
+-- name: CompleteWorkAttempt :execrows
+UPDATE work_attempts
+SET status = ?,
+    terminal_state = ?,
+    completed_at = ?,
+    heartbeat_at = ?,
+    lease_expires_at = ?,
+    error_class = ?,
+    error_message = ?,
+    phase = ?,
+    status_message = ?,
+    wait_reason = ?,
+    github_rate_snapshot_json = ?,
+    ci_state = ?,
+    capacity_snapshot_json = ?,
+    metrics_json = ?,
+    next_action = ?
+WHERE id = ?
+  AND completed_at IS NULL;
+
+-- name: ListActiveWorkAttempts :many
+SELECT *
+FROM work_attempts
+WHERE completed_at IS NULL
+  AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
+ORDER BY started_at, id;
+
+-- name: TimeoutExpiredWorkAttempts :many
+UPDATE work_attempts
+SET status = ?,
+    terminal_state = ?,
+    completed_at = ?,
+    heartbeat_at = ?,
+    error_class = ?,
+    error_message = ?,
+    phase = ?,
+    status_message = ?
+WHERE completed_at IS NULL
+  AND (sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id))
+  AND lease_expires_at IS NOT NULL
+  AND lease_expires_at <= sqlc.arg(lease_expires_at)
+RETURNING *;
+
+-- name: ReclaimActiveWorkAttempts :many
+UPDATE work_attempts
+SET status = ?,
+    terminal_state = ?,
+    completed_at = ?,
+    heartbeat_at = ?,
+    error_class = ?,
+    error_message = ?,
+    phase = ?,
+    status_message = ?
+WHERE completed_at IS NULL
+  AND project_id = ?
+RETURNING *;
+
+-- name: CreateSchedulerDecision :one
+INSERT INTO scheduler_decisions (
+  project_id,
+  issue_id,
+  identifier,
+  issue_url,
+  pr_number,
+  repo,
+  lane,
+  queue_position,
+  result,
+  reason,
+  selected,
+  retry,
+  attempt_number,
+  worker_host,
+  decision_at,
+  wait_reason,
+  capacity_snapshot_json,
+  github_rate_snapshot_json,
+  metadata_json
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING *;
+
+-- name: ListRecentSchedulerDecisions :many
+SELECT *
+FROM scheduler_decisions
+WHERE sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id)
+ORDER BY decision_at DESC, id DESC
+LIMIT sqlc.arg(limit);

@@ -29,6 +29,8 @@ type State struct {
 	BoardIssues              []connector.Issue
 	Pipeline                 []connector.Issue
 	Running                  map[string]Running
+	WorkAttempts             []telemetry.WorkAttempt
+	SchedulerDecisions       []telemetry.SchedulerDecision
 	Claimed                  map[string]Claimed
 	Blocked                  map[string]Blocked
 	Completed                map[string]Completed
@@ -47,6 +49,8 @@ type State struct {
 type Running struct {
 	Issue           connector.Issue
 	Attempt         int
+	WorkAttemptID   int64
+	Mode            string
 	StartedAt       time.Time
 	WorkerHost      string
 	ProcessIdentity string
@@ -159,6 +163,8 @@ func (s State) clone() State {
 		Auth:                     s.Auth,
 		BoardIssues:              cloneIssues(s.BoardIssues),
 		Pipeline:                 cloneIssues(s.Pipeline),
+		WorkAttempts:             cloneTelemetryWorkAttempts(s.WorkAttempts),
+		SchedulerDecisions:       cloneTelemetrySchedulerDecisions(s.SchedulerDecisions),
 		Running:                  make(map[string]Running, len(s.Running)),
 		Claimed:                  make(map[string]Claimed, len(s.Claimed)),
 		Blocked:                  make(map[string]Blocked, len(s.Blocked)),
@@ -412,6 +418,20 @@ func cloneRESTUsage(usage *telemetry.RESTUsage) *telemetry.RESTUsage {
 		}
 	}
 	return &cloned
+}
+
+func cloneTelemetryWorkAttempts(values []telemetry.WorkAttempt) []telemetry.WorkAttempt {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]telemetry.WorkAttempt(nil), values...)
+}
+
+func cloneTelemetrySchedulerDecisions(values []telemetry.SchedulerDecision) []telemetry.SchedulerDecision {
+	if len(values) == 0 {
+		return nil
+	}
+	return append([]telemetry.SchedulerDecision(nil), values...)
 }
 
 func addCodexTotals(left, right CodexTotals) CodexTotals {

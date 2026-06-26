@@ -6,30 +6,32 @@ import (
 )
 
 type Snapshot struct {
-	GeneratedAt     time.Time         `json:"generated_at"`
-	Project         Project           `json:"project"`
-	Instance        Instance          `json:"instance"`
-	Projects        []ProjectSnapshot `json:"projects,omitempty"`
-	DashboardURL    string            `json:"dashboard_url,omitempty"`
-	Auth            AuthHealth        `json:"auth,omitzero"`
-	Shutdown        Shutdown          `json:"shutdown"`
-	Refresh         Refresh           `json:"refresh"`
-	Events          []ActivityEvent   `json:"events,omitempty"`
-	Counts          Counts            `json:"counts"`
-	BoardIssues     []Issue           `json:"board_issues,omitempty"`
-	Pipeline        []Issue           `json:"pipeline,omitempty"`
-	Running         []Running         `json:"running"`
-	Queue           []Queued          `json:"queue"`
-	Blocked         []Blocked         `json:"blocked"`
-	Completed       []Completed       `json:"completed"`
-	Budget          Budget            `json:"budget"`
-	RateLimits      *RateLimits       `json:"rate_limits"`
-	Tokens          Tokens            `json:"tokens"`
-	Throughput      TokenThroughput   `json:"throughput"`
-	LifetimeTotals  LifetimeTotals    `json:"lifetime_totals"`
-	CycleTime       CycleTimeReport   `json:"cycle_time"`
-	WorkflowMetrics WorkflowMetrics   `json:"workflow_metrics"`
-	TokenTrend      []TokenTrendPoint `json:"token_trend,omitempty"`
+	GeneratedAt        time.Time           `json:"generated_at"`
+	Project            Project             `json:"project"`
+	Instance           Instance            `json:"instance"`
+	Projects           []ProjectSnapshot   `json:"projects,omitempty"`
+	DashboardURL       string              `json:"dashboard_url,omitempty"`
+	Auth               AuthHealth          `json:"auth,omitzero"`
+	Shutdown           Shutdown            `json:"shutdown"`
+	Refresh            Refresh             `json:"refresh"`
+	Events             []ActivityEvent     `json:"events,omitempty"`
+	Counts             Counts              `json:"counts"`
+	BoardIssues        []Issue             `json:"board_issues,omitempty"`
+	Pipeline           []Issue             `json:"pipeline,omitempty"`
+	Running            []Running           `json:"running"`
+	WorkAttempts       []WorkAttempt       `json:"work_attempts,omitempty"`
+	SchedulerDecisions []SchedulerDecision `json:"scheduler_decisions,omitempty"`
+	Queue              []Queued            `json:"queue"`
+	Blocked            []Blocked           `json:"blocked"`
+	Completed          []Completed         `json:"completed"`
+	Budget             Budget              `json:"budget"`
+	RateLimits         *RateLimits         `json:"rate_limits"`
+	Tokens             Tokens              `json:"tokens"`
+	Throughput         TokenThroughput     `json:"throughput"`
+	LifetimeTotals     LifetimeTotals      `json:"lifetime_totals"`
+	CycleTime          CycleTimeReport     `json:"cycle_time"`
+	WorkflowMetrics    WorkflowMetrics     `json:"workflow_metrics"`
+	TokenTrend         []TokenTrendPoint   `json:"token_trend,omitempty"`
 }
 
 type Shutdown struct {
@@ -284,6 +286,60 @@ type Running struct {
 	DiffFiles       int             `json:"diff_files"`
 	DiffStatus      string          `json:"diff_status,omitempty"`
 	Tokens          Tokens          `json:"tokens"`
+}
+
+type WorkAttempt struct {
+	AttemptID              int64      `json:"attempt_id"`
+	ProjectID              string     `json:"project_id,omitempty"`
+	IssueID                string     `json:"issue_id,omitempty"`
+	Identifier             string     `json:"identifier,omitempty"`
+	IssueURL               string     `json:"issue_url,omitempty"`
+	PRNumber               *int64     `json:"pr_number,omitempty"`
+	Repo                   string     `json:"repo,omitempty"`
+	WorkerType             string     `json:"worker_type,omitempty"`
+	WorkerHost             string     `json:"worker_host,omitempty"`
+	Lane                   string     `json:"lane,omitempty"`
+	AttemptNumber          int        `json:"attempt_number,omitempty"`
+	Status                 string     `json:"status,omitempty"`
+	StartedAt              time.Time  `json:"started_at,omitzero"`
+	LeaseExpiresAt         *time.Time `json:"lease_expires_at,omitempty"`
+	HeartbeatAt            *time.Time `json:"heartbeat_at,omitempty"`
+	CompletedAt            *time.Time `json:"completed_at,omitempty"`
+	TerminalState          string     `json:"terminal_state,omitempty"`
+	ErrorClass             string     `json:"error_class,omitempty"`
+	ErrorMessage           string     `json:"error_message,omitempty"`
+	Phase                  string     `json:"phase,omitempty"`
+	StatusMessage          string     `json:"status_message,omitempty"`
+	CurrentCommand         string     `json:"current_command,omitempty"`
+	WaitReason             string     `json:"wait_reason,omitempty"`
+	GitHubRateSnapshotJSON string     `json:"github_rate_snapshot_json,omitempty"`
+	CIState                string     `json:"ci_state,omitempty"`
+	CapacitySnapshotJSON   string     `json:"capacity_snapshot_json,omitempty"`
+	MetricsJSON            string     `json:"metrics_json,omitempty"`
+	NextAction             string     `json:"next_action,omitempty"`
+	Stale                  bool       `json:"stale,omitempty"`
+}
+
+type SchedulerDecision struct {
+	ID                     int64     `json:"id,omitempty"`
+	ProjectID              string    `json:"project_id,omitempty"`
+	IssueID                string    `json:"issue_id,omitempty"`
+	Identifier             string    `json:"identifier,omitempty"`
+	IssueURL               string    `json:"issue_url,omitempty"`
+	PRNumber               *int64    `json:"pr_number,omitempty"`
+	Repo                   string    `json:"repo,omitempty"`
+	Lane                   string    `json:"lane,omitempty"`
+	QueuePosition          int       `json:"queue_position,omitempty"`
+	Result                 string    `json:"result,omitempty"`
+	Reason                 string    `json:"reason,omitempty"`
+	Selected               bool      `json:"selected,omitempty"`
+	Retry                  bool      `json:"retry,omitempty"`
+	AttemptNumber          int       `json:"attempt_number,omitempty"`
+	WorkerHost             string    `json:"worker_host,omitempty"`
+	DecisionAt             time.Time `json:"decision_at,omitzero"`
+	WaitReason             string    `json:"wait_reason,omitempty"`
+	CapacitySnapshotJSON   string    `json:"capacity_snapshot_json,omitempty"`
+	GitHubRateSnapshotJSON string    `json:"github_rate_snapshot_json,omitempty"`
 }
 
 type Queued struct {
