@@ -40,6 +40,7 @@ func (s *Server) snapshotWorkflowMetrics(ctx context.Context, snapshot telemetry
 	}
 	for _, window := range windows {
 		from := now.Add(-window.duration)
+		previousFrom := from.Add(-window.duration)
 		report, err := s.store.WorkflowMetricsReport(ctx, store.WorkflowMetricsQuery{
 			ProjectID: projectID,
 			From:      from,
@@ -49,11 +50,24 @@ func (s *Server) snapshotWorkflowMetrics(ctx context.Context, snapshot telemetry
 			s.logger.Warn("workflow metrics report failed", slog.Any("error", err))
 			return telemetry.WorkflowMetrics{DegradedReason: "workflow metrics query failed"}
 		}
+		previousReport, err := s.store.WorkflowMetricsReport(ctx, store.WorkflowMetricsQuery{
+			ProjectID: projectID,
+			From:      previousFrom,
+			To:        from,
+		})
+		if err != nil {
+			s.logger.Warn("workflow metrics previous report failed", slog.Any("error", err))
+			return telemetry.WorkflowMetrics{DegradedReason: "workflow metrics query failed"}
+		}
+
+		lanes := workflowPhaseMetricsFromStore(report.Lanes)
+		workflowAttachLaneComparisons(lanes, workflowPhaseMetricsFromStore(previousReport.Lanes), window.label, previousFrom, from)
+		workflowMarkBottleneckLane(lanes)
 		out.Windows = append(out.Windows, telemetry.WorkflowMetricsWindow{
 			Label:     window.label,
 			From:      from,
 			To:        now,
-			Lanes:     workflowPhaseMetricsFromStore(report.Lanes),
+			Lanes:     lanes,
 			SubPhases: workflowPhaseMetricsFromStore(report.SubPhases),
 		})
 	}
@@ -81,6 +95,89 @@ func workflowPhaseMetricsFromStore(metrics []store.WorkflowPhaseMetric) []teleme
 		})
 	}
 	return out
+}
+
+func workflowAttachLaneComparisons(lanes []telemetry.WorkflowPhaseMetric, previous []telemetry.WorkflowPhaseMetric, label string, previousFrom time.Time, previousTo time.Time) {
+	previousByKey := make(map[string]telemetry.WorkflowPhaseMetric, len(previous))
+	for _, metric := range previous {
+		previousByKey[workflowLaneMetricKey(metric)] = metric
+	}
+	comparisonLabel := label + " vs previous " + label
+	for i := range lanes {
+		previousMetric, ok := previousByKey[workflowLaneMetricKey(lanes[i])]
+		comparison := telemetry.WorkflowMetricComparison{
+			Label:        comparisonLabel,
+			PreviousFrom: previousFrom,
+			PreviousTo:   previousTo,
+			Direction:    "insufficient_history",
+		}
+		if ok && previousMetric.Count > 0 {
+			comparison.PreviousCount = previousMetric.Count
+			comparison.PreviousAverageSeconds = previousMetric.AverageSeconds
+			comparison.DeltaSeconds = lanes[i].AverageSeconds - previousMetric.AverageSeconds
+			comparison.DeltaPercent = workflowMetricDeltaPercent(lanes[i].AverageSeconds, previousMetric.AverageSeconds)
+			comparison.Direction = workflowMetricTrendDirection(comparison.DeltaSeconds)
+		}
+		lanes[i].Comparison = &comparison
+	}
+}
+
+func workflowLaneMetricKey(metric telemetry.WorkflowPhaseMetric) string {
+	return strings.Join([]string{
+		strings.TrimSpace(metric.ProjectID),
+		strings.TrimSpace(metric.PhaseType),
+		strings.TrimSpace(metric.PhaseName),
+	}, "\x00")
+}
+
+func workflowMetricDeltaPercent(currentAverage int64, previousAverage int64) float64 {
+	if previousAverage <= 0 {
+		return 0
+	}
+	return float64(currentAverage-previousAverage) / float64(previousAverage) * 100
+}
+
+func workflowMetricTrendDirection(deltaSeconds int64) string {
+	switch {
+	case deltaSeconds < 0:
+		return "faster"
+	case deltaSeconds > 0:
+		return "slower"
+	default:
+		return "unchanged"
+	}
+}
+
+func workflowMarkBottleneckLane(lanes []telemetry.WorkflowPhaseMetric) {
+	best := -1
+	for i := range lanes {
+		lanes[i].Bottleneck = false
+		if lanes[i].Count == 0 || lanes[i].AverageSeconds <= 0 {
+			continue
+		}
+		if best < 0 || workflowLaneBottleneckLess(lanes[best], lanes[i]) {
+			best = i
+		}
+	}
+	if best >= 0 {
+		lanes[best].Bottleneck = true
+	}
+}
+
+func workflowLaneBottleneckLess(a telemetry.WorkflowPhaseMetric, b telemetry.WorkflowPhaseMetric) bool {
+	if a.AverageSeconds != b.AverageSeconds {
+		return a.AverageSeconds < b.AverageSeconds
+	}
+	if a.P95Seconds != b.P95Seconds {
+		return a.P95Seconds < b.P95Seconds
+	}
+	if a.P90Seconds != b.P90Seconds {
+		return a.P90Seconds < b.P90Seconds
+	}
+	if a.Count != b.Count {
+		return a.Count < b.Count
+	}
+	return a.PhaseName > b.PhaseName
 }
 
 func workflowOldestCards(snapshot telemetry.Snapshot) []telemetry.WorkflowLaneAge {

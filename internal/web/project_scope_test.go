@@ -125,8 +125,8 @@ func TestProjectScopedSnapshotRecomputesWorkflowSummaries(t *testing.T) {
 				{
 					Label: "24h",
 					Lanes: []telemetry.WorkflowPhaseMetric{
-						{ProjectID: "detent", PhaseName: "Todo", Count: 1},
-						{ProjectID: "pyroapex", PhaseName: "Rework", Count: 2},
+						{ProjectID: "detent", PhaseName: "Todo", Count: 1, AverageSeconds: 30},
+						{ProjectID: "pyroapex", PhaseName: "Rework", Count: 2, AverageSeconds: 900, Bottleneck: true},
 					},
 				},
 			},
@@ -153,6 +153,9 @@ func TestProjectScopedSnapshotRecomputesWorkflowSummaries(t *testing.T) {
 	}
 	if got.WorkflowMetrics.Windows[0].Lanes[0].ProjectID != "detent" {
 		t.Fatalf("WorkflowMetrics.Windows[0].Lanes[0].ProjectID = %q, want detent", got.WorkflowMetrics.Windows[0].Lanes[0].ProjectID)
+	}
+	if !got.WorkflowMetrics.Windows[0].Lanes[0].Bottleneck {
+		t.Fatalf("WorkflowMetrics.Windows[0].Lanes[0].Bottleneck = false, want true")
 	}
 	if len(got.WorkflowMetrics.OldestCards) != 1 {
 		t.Fatalf("WorkflowMetrics.OldestCards = %#v, want one detent card", got.WorkflowMetrics.OldestCards)

@@ -104,6 +104,7 @@ func scopedWorkflowMetrics(snapshot telemetry.Snapshot, metrics telemetry.Workfl
 	for _, window := range metrics.Windows {
 		scopedWindow := window
 		scopedWindow.Lanes = scopedWorkflowPhaseMetrics(window.Lanes, selectedProjectID)
+		workflowMarkBottleneckLane(scopedWindow.Lanes)
 		scopedWindow.SubPhases = scopedWorkflowPhaseMetrics(window.SubPhases, selectedProjectID)
 		out.Windows = append(out.Windows, scopedWindow)
 	}
