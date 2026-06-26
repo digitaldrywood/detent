@@ -495,10 +495,18 @@ func (l *LocalGit) recoverStaleSourceWorktree(ctx context.Context, path string, 
 	if err != nil {
 		return fmt.Errorf("inspect stale workspace changes for branch %q, want %q: %w", currentBranch, expectedBranch, err)
 	}
-	if dirty {
+	unreferencedDetachedHead, err := l.unreferencedDetachedHead(ctx, path, currentBranch)
+	if err != nil {
+		return fmt.Errorf("inspect detached workspace HEAD for branch %q, want %q: %w", currentBranch, expectedBranch, err)
+	}
+	if dirty || unreferencedDetachedHead {
 		quarantinePath, err := l.quarantineWorktree(ctx, path)
 		if err != nil {
-			return fmt.Errorf("workspace path is on branch %q, want %q and has uncommitted changes; preserve it by moving or cleaning %s: %w", currentBranch, expectedBranch, path, err)
+			reason := "has uncommitted changes"
+			if unreferencedDetachedHead {
+				reason = "has a detached HEAD commit that is not reachable from a ref"
+			}
+			return fmt.Errorf("workspace path is on branch %q, want %q and %s; preserve it by moving or cleaning %s: %w", currentBranch, expectedBranch, reason, path, err)
 		}
 		l.logger.Warn(
 			"quarantined stale workspace",
@@ -506,7 +514,8 @@ func (l *LocalGit) recoverStaleSourceWorktree(ctx context.Context, path string, 
 			slog.String("quarantine_path", quarantinePath),
 			slog.String("current_branch", currentBranch),
 			slog.String("expected_branch", expectedBranch),
-			slog.Bool("dirty", true),
+			slog.Bool("dirty", dirty),
+			slog.Bool("unreferenced_detached_head", unreferencedDetachedHead),
 		)
 		return nil
 	}
@@ -530,6 +539,17 @@ func (l *LocalGit) worktreeHasChanges(ctx context.Context, path string) (bool, e
 		return false, fmt.Errorf("inspect workspace status: %w", err)
 	}
 	return strings.TrimSpace(output) != "", nil
+}
+
+func (l *LocalGit) unreferencedDetachedHead(ctx context.Context, path string, currentBranch string) (bool, error) {
+	if strings.TrimSpace(currentBranch) != "" {
+		return false, nil
+	}
+	output, err := runGitAt(ctx, path, "for-each-ref", "--contains", "HEAD", "--format=%(refname)")
+	if err != nil {
+		return false, fmt.Errorf("inspect refs containing HEAD: %w", err)
+	}
+	return strings.TrimSpace(output) == "", nil
 }
 
 func (l *LocalGit) removeCleanWorktree(ctx context.Context, path string) error {

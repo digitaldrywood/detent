@@ -669,6 +669,76 @@ func TestLocalGitCreateQuarantinesDirtyDetachedWorktree(t *testing.T) {
 	}
 }
 
+func TestLocalGitCreateQuarantinesCleanDetachedUnreferencedCommit(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+	var logs strings.Builder
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+		Logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+
+	first, err := backend.Create(context.Background(), Issue{Identifier: "DD-DETACHED-COMMIT"})
+	if err != nil {
+		t.Fatalf("first Create() error = %v", err)
+	}
+	runGit(t, first.Path, "switch", "--detach", "HEAD")
+	if err := os.WriteFile(filepath.Join(first.Path, "local-commit.txt"), []byte("keep\n"), 0o600); err != nil {
+		t.Fatalf("write local commit file: %v", err)
+	}
+	runGit(t, first.Path, "add", "local-commit.txt")
+	runGit(t, first.Path, "commit", "-m", "local detached commit")
+	if got := strings.TrimSpace(runGit(t, first.Path, "status", "--porcelain")); got != "" {
+		t.Fatalf("detached worktree status = %q, want clean", got)
+	}
+	if got := strings.TrimSpace(runGit(t, first.Path, "branch", "--show-current")); got != "" {
+		t.Fatalf("detached worktree branch = %q, want detached HEAD", got)
+	}
+
+	second, err := backend.Create(context.Background(), Issue{Identifier: "DD-DETACHED-COMMIT"})
+	if err != nil {
+		t.Fatalf("second Create() error = %v", err)
+	}
+
+	if !second.Created {
+		t.Fatal("second Create() Created = false, want true")
+	}
+	if got := strings.TrimSpace(runGit(t, second.Path, "branch", "--show-current")); got != "detent/dd-detached-commit" {
+		t.Fatalf("worktree branch = %q, want detent/dd-detached-commit", got)
+	}
+	if _, err := os.Stat(filepath.Join(second.Path, "local-commit.txt")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("local commit file exists in fresh workspace, stat error = %v", err)
+	}
+
+	quarantineDir := filepath.Join(root, ".detent", "quarantine")
+	entries, err := os.ReadDir(quarantineDir)
+	if err != nil {
+		t.Fatalf("read quarantine dir: %v", err)
+	}
+	if len(entries) != 1 {
+		t.Fatalf("quarantine entries = %d, want 1", len(entries))
+	}
+	quarantinedPath := filepath.Join(quarantineDir, entries[0].Name())
+	if got := readFile(t, filepath.Join(quarantinedPath, "local-commit.txt")); got != "keep\n" {
+		t.Fatalf("quarantined local-commit.txt = %q, want keep", got)
+	}
+	if got := strings.TrimSpace(runGit(t, quarantinedPath, "branch", "--show-current")); got != "" {
+		t.Fatalf("quarantined worktree branch = %q, want detached HEAD", got)
+	}
+	if got := logs.String(); !strings.Contains(got, "quarantined stale workspace") || !strings.Contains(got, quarantinedPath) {
+		t.Fatalf("logs = %q, want quarantine report for %s", got, quarantinedPath)
+	}
+}
+
 func TestLocalGitBeforeAndAfterRunHooks(t *testing.T) {
 	t.Parallel()
 	skipWindows(t)
