@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"log/slog"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -104,6 +106,90 @@ func TestProductionLoggerWritesJSON(t *testing.T) {
 	}
 	if record["component"] != "test" {
 		t.Fatalf("component = %v, want test", record["component"])
+	}
+}
+
+func TestProductionDebugLoggerIncludesSourceByDefault(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	var out bytes.Buffer
+	logger := setupLogger("production", "debug", &out)
+	logger.Debug("ready")
+
+	var record map[string]any
+	if err := json.Unmarshal(out.Bytes(), &record); err != nil {
+		t.Fatalf("log output is not JSON: %v\n%s", err, out.String())
+	}
+	source, ok := record["source"].(map[string]any)
+	if !ok {
+		t.Fatalf("source = %#v, want object", record["source"])
+	}
+	file, ok := source["file"].(string)
+	if !ok || !strings.HasSuffix(file, "slog_test.go") {
+		t.Fatalf("source.file = %#v, want shortened slog_test.go path", source["file"])
+	}
+}
+
+func TestLogAddSourceEnablesInfoJSONSource(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+	t.Setenv("ENV", "production")
+	t.Setenv("LOG_LEVEL", "info")
+	t.Setenv("LOG_ADD_SOURCE", "true")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	logger := setupLoggerFromEnv(&stdout, &stderr)
+	logger.Info("ready")
+
+	var record map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &record); err != nil {
+		t.Fatalf("stderr log output is not JSON: %v\n%s", err, stderr.String())
+	}
+	if _, ok := record["source"].(map[string]any); !ok {
+		t.Fatalf("source = %#v, want source object when LOG_ADD_SOURCE=true", record["source"])
+	}
+}
+
+func TestLogAddSourceFalseDisablesDebugJSONSource(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+	t.Setenv("ENV", "production")
+	t.Setenv("LOG_LEVEL", "debug")
+	t.Setenv("LOG_ADD_SOURCE", "false")
+
+	var stdout bytes.Buffer
+	var stderr bytes.Buffer
+	logger := setupLoggerFromEnv(&stdout, &stderr)
+	logger.Debug("ready")
+
+	var record map[string]any
+	if err := json.Unmarshal(stderr.Bytes(), &record); err != nil {
+		t.Fatalf("stderr log output is not JSON: %v\n%s", err, stderr.String())
+	}
+	if _, ok := record["source"]; ok {
+		t.Fatalf("source = %#v, want omitted when LOG_ADD_SOURCE=false", record["source"])
+	}
+}
+
+func TestCleanSourcePathUsesWorkspaceRelativePath(t *testing.T) {
+	t.Parallel()
+
+	wd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd() error = %v", err)
+	}
+	path := filepath.Join(wd, "slog.go")
+
+	if got := cleanSourcePath(path); got != "slog.go" {
+		t.Fatalf("cleanSourcePath() = %q, want slog.go", got)
 	}
 }
 

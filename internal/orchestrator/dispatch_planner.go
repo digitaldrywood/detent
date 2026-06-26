@@ -21,6 +21,7 @@ type dispatchPlanHooks struct {
 	dispatchFailed          func(connector.Issue) bool
 	retryDispatchFailed     func(connector.Issue, Retry)
 	preserveMissingDueRetry func(Retry) bool
+	decision                func(dispatchPlanDecision)
 }
 
 type dispatchAction struct {
@@ -28,6 +29,16 @@ type dispatchAction struct {
 	attempt    int
 	workerHost string
 	retry      bool
+}
+
+type dispatchPlanDecision struct {
+	Issue         connector.Issue
+	QueuePosition int
+	Attempt       int
+	WorkerHost    string
+	Retry         bool
+	Selected      bool
+	SkipReason    string
 }
 
 func newDispatchPlanner(cfg Config) dispatchPlanner {
@@ -49,12 +60,29 @@ func (p dispatchPlanner) plan(
 
 	plan := DispatchPlan{}
 	continuations := 0
-	for _, issue := range plannedCandidates {
+	for index, issue := range plannedCandidates {
+		queuePosition := index + 1
 		if retry, ok := dueRetries[issue.ID]; ok {
-			action, ok := p.retryAction(state, issue, retry, now)
+			action, ok, reason := p.retryAction(state, issue, retry, now)
 			if !ok {
+				p.logDecision(hooks, dispatchPlanDecision{
+					Issue:         issue,
+					QueuePosition: queuePosition,
+					Attempt:       retry.Attempt,
+					WorkerHost:    retry.WorkerHost,
+					Retry:         true,
+					SkipReason:    reason,
+				})
 				continue
 			}
+			p.logDecision(hooks, dispatchPlanDecision{
+				Issue:         action.issue,
+				QueuePosition: queuePosition,
+				Attempt:       action.attempt,
+				WorkerHost:    action.workerHost,
+				Retry:         true,
+				Selected:      true,
+			})
 			if p.applyDispatchAction(state, action, now, hooks) {
 				plan.Dispatches = append(plan.Dispatches, action.decision())
 			} else if hooks.retryDispatchFailed != nil {
@@ -63,17 +91,32 @@ func (p dispatchPlanner) plan(
 			continue
 		}
 		if availableSlots(state) == 0 {
+			p.logDecision(hooks, dispatchPlanDecision{
+				Issue:         issue,
+				QueuePosition: queuePosition,
+				SkipReason:    dispatchSkipGlobalCapacityFull,
+			})
 			break
 		}
 		if hooks.hydrate != nil {
 			var ok bool
 			issue, ok = hooks.hydrate(issue)
 			if !ok {
+				p.logDecision(hooks, dispatchPlanDecision{
+					Issue:         issue,
+					QueuePosition: queuePosition,
+					SkipReason:    dispatchSkipHydrationFailed,
+				})
 				continue
 			}
 		}
-		action, ok := p.dispatchAction(state, issue, now)
+		action, ok, reason := p.dispatchAction(state, issue, now)
 		if !ok {
+			p.logDecision(hooks, dispatchPlanDecision{
+				Issue:         issue,
+				QueuePosition: queuePosition,
+				SkipReason:    reason,
+			})
 			continue
 		}
 		continuationIndex := -1
@@ -82,8 +125,24 @@ func (p dispatchPlanner) plan(
 			continuations++
 		}
 		if hooks.beforeDispatch != nil && !hooks.beforeDispatch(action.issue, continuationIndex) {
+			p.logDecision(hooks, dispatchPlanDecision{
+				Issue:         action.issue,
+				QueuePosition: queuePosition,
+				Attempt:       action.attempt,
+				WorkerHost:    action.workerHost,
+				Retry:         action.retry,
+				SkipReason:    dispatchSkipDispatchBackoffCancelled,
+			})
 			break
 		}
+		p.logDecision(hooks, dispatchPlanDecision{
+			Issue:         action.issue,
+			QueuePosition: queuePosition,
+			Attempt:       action.attempt,
+			WorkerHost:    action.workerHost,
+			Retry:         action.retry,
+			Selected:      true,
+		})
 		if p.applyDispatchAction(state, action, now, hooks) {
 			plan.Dispatches = append(plan.Dispatches, action.decision())
 		} else if hooks.dispatchFailed != nil && !hooks.dispatchFailed(action.issue) {
@@ -96,6 +155,12 @@ func (p dispatchPlanner) plan(
 	plan.BudgetRefusals = budgetRefusalIDs(state.BudgetRefusals)
 	plan.Retry = retryIDs(state.Retry)
 	return plan
+}
+
+func (p dispatchPlanner) logDecision(hooks dispatchPlanHooks, decision dispatchPlanDecision) {
+	if hooks.decision != nil {
+		hooks.decision(decision)
+	}
 }
 
 func (p dispatchPlanner) applyDispatchAction(
@@ -116,32 +181,38 @@ func (p dispatchPlanner) retryAction(
 	issue connector.Issue,
 	retry Retry,
 	now time.Time,
-) (dispatchAction, bool) {
+) (dispatchAction, bool, string) {
 	delete(state.Retry, retry.Issue.ID)
 
-	if !p.dispatchableForRetry(issue, state, now, retry.WorkerHost) {
+	decision := p.dispatchableIssueDecision(issue, state, true, now, retry.WorkerHost)
+	if !decision.dispatchable {
 		if p.budgetCooldownActive(state, issue.ID, now) {
 			p.scheduleRetry(state, issue, retry.Attempt, now, "budget cooldown active", false, retry.WorkerHost)
-			return dispatchAction{}, false
+			return dispatchAction{}, false, decision.reason
 		}
 		if !p.slotsAvailable(issue, state, retry.WorkerHost) {
 			p.scheduleRetry(state, issue, retry.Attempt, now, "no available orchestrator slots", false, retry.WorkerHost)
-			return dispatchAction{}, false
+			return dispatchAction{}, false, decision.reason
 		}
 		if _, blocked := state.Blocked[issue.ID]; blocked {
 			p.releaseClaim(state, issue.ID)
-			return dispatchAction{}, false
+			return dispatchAction{}, false, decision.reason
 		}
 
 		p.releaseIssue(state, issue.ID)
-		return dispatchAction{}, false
+		return dispatchAction{}, false, decision.reason
 	}
 
-	return p.newDispatchAction(state, issue, retry.Attempt, retry.WorkerHost, true)
+	action, ok := p.newDispatchAction(state, issue, retry.Attempt, retry.WorkerHost, true)
+	if !ok {
+		return dispatchAction{}, false, dispatchSkipWorkerHostUnavailable
+	}
+	return action, true, ""
 }
 
-func (p dispatchPlanner) dispatchAction(state *State, issue connector.Issue, now time.Time) (dispatchAction, bool) {
-	if !p.dispatchable(issue, state, now) {
+func (p dispatchPlanner) dispatchAction(state *State, issue connector.Issue, now time.Time) (dispatchAction, bool, string) {
+	decision := p.dispatchableIssueDecision(issue, state, false, now, "")
+	if !decision.dispatchable {
 		if todoBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
 			state.Blocked[issue.ID] = Blocked{
 				Issue:     cloneIssue(issue),
@@ -150,10 +221,14 @@ func (p dispatchPlanner) dispatchAction(state *State, issue connector.Issue, now
 				Source:    BlockedSourceDependency,
 			}
 		}
-		return dispatchAction{}, false
+		return dispatchAction{}, false, decision.reason
 	}
 
-	return p.newDispatchAction(state, issue, 0, "", false)
+	action, ok := p.newDispatchAction(state, issue, 0, "", false)
+	if !ok {
+		return dispatchAction{}, false, dispatchSkipWorkerHostUnavailable
+	}
+	return action, true, ""
 }
 
 func (p dispatchPlanner) newDispatchAction(
@@ -299,15 +374,6 @@ func (p dispatchPlanner) dispatchable(issue connector.Issue, state *State, now t
 	return p.dispatchableIssue(issue, state, false, now, "")
 }
 
-func (p dispatchPlanner) dispatchableForRetry(
-	issue connector.Issue,
-	state *State,
-	now time.Time,
-	preferredWorkerHost string,
-) bool {
-	return p.dispatchableIssue(issue, state, true, now, preferredWorkerHost)
-}
-
 func (p dispatchPlanner) dispatchableIssue(
 	issue connector.Issue,
 	state *State,
@@ -315,38 +381,77 @@ func (p dispatchPlanner) dispatchableIssue(
 	now time.Time,
 	preferredWorkerHost string,
 ) bool {
+	return p.dispatchableIssueDecision(issue, state, allowClaimed, now, preferredWorkerHost).dispatchable
+}
+
+type dispatchableDecision struct {
+	dispatchable bool
+	reason       string
+}
+
+const (
+	dispatchSkipInvalidCandidate         = "invalid_candidate"
+	dispatchSkipInactiveState            = "inactive_state"
+	dispatchSkipTerminalState            = "terminal_state"
+	dispatchSkipPullRequestHydration     = "pull_request_hydration_unavailable"
+	dispatchSkipDuplicatePullRequest     = "duplicate_pull_request_work"
+	dispatchSkipUnauthorized             = "unauthorized"
+	dispatchSkipBlockedByDependency      = "blocked_by_dependency"
+	dispatchSkipAlreadyRunning           = "already_running"
+	dispatchSkipAlreadyClaimed           = "already_claimed"
+	dispatchSkipBlocked                  = "blocked"
+	dispatchSkipBudgetCooldown           = "budget_cooldown"
+	dispatchSkipLocalSlotUnavailable     = "local_slot_unavailable"
+	dispatchSkipWorkerHostUnavailable    = "worker_host_unavailable"
+	dispatchSkipGlobalCapacityFull       = "global_capacity_full"
+	dispatchSkipHydrationFailed          = "hydrate_failed"
+	dispatchSkipDispatchBackoffCancelled = "dispatch_backoff_cancelled"
+)
+
+func (p dispatchPlanner) dispatchableIssueDecision(
+	issue connector.Issue,
+	state *State,
+	allowClaimed bool,
+	now time.Time,
+	preferredWorkerHost string,
+) dispatchableDecision {
 	if !validCandidate(issue) {
-		return false
+		return dispatchableDecision{reason: dispatchSkipInvalidCandidate}
 	}
-	if !stateIn(issue.State, p.cfg.ActiveStates) || stateIn(issue.State, p.cfg.TerminalStates) {
-		return false
+	if !stateIn(issue.State, p.cfg.ActiveStates) {
+		return dispatchableDecision{reason: dispatchSkipInactiveState}
+	}
+	if stateIn(issue.State, p.cfg.TerminalStates) {
+		return dispatchableDecision{reason: dispatchSkipTerminalState}
 	}
 	if pullRequestHydrationBlocksDispatch(issue) {
-		return false
+		return dispatchableDecision{reason: dispatchSkipPullRequestHydration}
 	}
 	if duplicatePullRequestWork(issue) {
-		return false
+		return dispatchableDecision{reason: dispatchSkipDuplicatePullRequest}
 	}
 	if !p.authorized(issue) {
-		return false
+		return dispatchableDecision{reason: dispatchSkipUnauthorized}
 	}
 	if todoBlockedByNonTerminal(issue, p.cfg.TerminalStates) {
-		return false
+		return dispatchableDecision{reason: dispatchSkipBlockedByDependency}
 	}
 	if _, ok := state.Running[issue.ID]; ok {
-		return false
+		return dispatchableDecision{reason: dispatchSkipAlreadyRunning}
 	}
 	if _, ok := state.Claimed[issue.ID]; ok && !allowClaimed {
-		return false
+		return dispatchableDecision{reason: dispatchSkipAlreadyClaimed}
 	}
 	if _, ok := state.Blocked[issue.ID]; ok {
-		return false
+		return dispatchableDecision{reason: dispatchSkipBlocked}
 	}
 	if p.budgetCooldownActive(state, issue.ID, now) {
-		return false
+		return dispatchableDecision{reason: dispatchSkipBudgetCooldown}
 	}
-
-	return p.slotsAvailable(issue, state, preferredWorkerHost)
+	if !p.slotsAvailable(issue, state, preferredWorkerHost) {
+		return dispatchableDecision{reason: dispatchSkipLocalSlotUnavailable}
+	}
+	return dispatchableDecision{dispatchable: true}
 }
 
 func pullRequestHydrationBlocksDispatch(issue connector.Issue) bool {

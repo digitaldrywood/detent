@@ -1978,6 +1978,7 @@ func (c *Connector) attachPullRequestsWithCache(ctx context.Context, issues []co
 			continue
 		}
 		if state, ok := c.currentPullRequestHydrationState(repo); ok {
+			c.logPullRequestHydrationSkip(ctx, repo, state, "shared_backoff")
 			markPullRequestHydrationUnavailableForCandidates(issues, byRepo[repo], repo, state)
 			continue
 		}
@@ -2137,6 +2138,7 @@ func (c *Connector) attachLinkedPullRequests(
 			pullRequestRepo = repo
 		}
 		if state, ok := c.currentPullRequestHydrationState(pullRequestRepo); ok {
+			c.logPullRequestHydrationSkip(ctx, pullRequestRepo, state, "linked_pull_request")
 			attachPullRequestHydrationUnavailableToIssue(&issues[candidate.Index], pullRequestRepo, candidate.PullRequestNumber, state)
 			continue
 		}
@@ -2398,9 +2400,11 @@ func pullRequestRepoName(repo pullRequestRepo) string {
 func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode, useStatusCache bool) error {
 	if useStatusCache && c.pullRequests != nil {
 		if status, ok := c.pullRequests.Get(repo, pullRequest.Number, pullRequest.HeadSHA); ok {
+			c.logPullRequestCache(ctx, repo, pullRequest, true, false, "")
 			applyPullRequestStatus(pullRequest, status)
 			return nil
 		}
+		c.logPullRequestCache(ctx, repo, pullRequest, false, false, "")
 	}
 
 	status := pullRequestStatus{}
@@ -2408,7 +2412,7 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 		ci, err := c.fetchPullRequestCI(ctx, repo, pullRequest.HeadSHA)
 		if err != nil {
 			state := c.pullRequestHydrationStateForError(repo, err)
-			if c.applyCachedPullRequestStatusAfterThrottle(repo, pullRequest, state) {
+			if c.applyCachedPullRequestStatusAfterThrottle(ctx, repo, pullRequest, state) {
 				return nil
 			}
 			return err
@@ -2418,7 +2422,7 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	reviews, err := c.fetchPullRequestReviews(ctx, repo, pullRequest.Number, pullRequest.HeadSHA)
 	if err != nil {
 		state := c.pullRequestHydrationStateForError(repo, err)
-		if c.applyCachedPullRequestStatusAfterThrottle(repo, pullRequest, state) {
+		if c.applyCachedPullRequestStatusAfterThrottle(ctx, repo, pullRequest, state) {
 			return nil
 		}
 		return err
@@ -2426,12 +2430,13 @@ func (c *Connector) populatePullRequestStatus(ctx context.Context, repo pullRequ
 	status.reviews = reviews
 	if c.pullRequests != nil {
 		c.pullRequests.Set(repo, pullRequest.Number, pullRequest.HeadSHA, status)
+		c.logPullRequestCache(ctx, repo, pullRequest, false, false, "stored")
 	}
 	applyPullRequestStatus(pullRequest, status)
 	return nil
 }
 
-func (c *Connector) applyCachedPullRequestStatusAfterThrottle(repo pullRequestRepo, pullRequest *pullRequestNode, state pullRequestHydrationState) bool {
+func (c *Connector) applyCachedPullRequestStatusAfterThrottle(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode, state pullRequestHydrationState) bool {
 	if c.pullRequests == nil || pullRequest == nil {
 		return false
 	}
@@ -2442,10 +2447,44 @@ func (c *Connector) applyCachedPullRequestStatusAfterThrottle(repo pullRequestRe
 	if !ok {
 		return false
 	}
+	c.logPullRequestCache(ctx, repo, pullRequest, true, true, state.Reason)
 	applyPullRequestStatus(pullRequest, status)
 	pullRequest.HydrationDegradedReason = connector.PullRequestHydrationReasonStaleCachedPullData
 	pullRequest.HydrationNextRetryAt = cloneGitHubTime(state.NextRetryAt)
 	return true
+}
+
+func (c *Connector) logPullRequestHydrationSkip(ctx context.Context, repo pullRequestRepo, state pullRequestHydrationState, purpose string) {
+	if c == nil || c.logger == nil {
+		return
+	}
+	c.logger.DebugContext(ctx, "github pull request hydration skipped",
+		"endpoint_family", "pull requests",
+		"request_purpose", "hydrate_pull_request",
+		"repository", pullRequestRepoName(repo),
+		"cache_hit", true,
+		"avoidable_request", true,
+		"backoff_reason", strings.TrimSpace(state.Reason),
+		"purpose", strings.TrimSpace(purpose),
+		"retry_at", state.NextRetryAt,
+	)
+}
+
+func (c *Connector) logPullRequestCache(ctx context.Context, repo pullRequestRepo, pullRequest *pullRequestNode, hit bool, staleFallback bool, reason string) {
+	if c == nil || c.logger == nil || pullRequest == nil {
+		return
+	}
+	c.logger.DebugContext(ctx, "github pull request status cache",
+		"endpoint_family", "pull_request_status_cache",
+		"request_purpose", "hydrate_pull_request_status",
+		"repository", pullRequestRepoName(repo),
+		"pr_number", pullRequest.Number,
+		"head_sha_known", strings.TrimSpace(pullRequest.HeadSHA) != "",
+		"cache_hit", hit,
+		"avoidable_request", hit,
+		"stale_fallback", staleFallback,
+		"backoff_reason", strings.TrimSpace(reason),
+	)
 }
 
 func applyPullRequestStatus(pullRequest *pullRequestNode, status pullRequestStatus) {

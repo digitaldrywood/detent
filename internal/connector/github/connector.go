@@ -94,6 +94,7 @@ type Connector struct {
 	projectCache      *projectCache
 	pullRequests      *pullRequestStatusCache
 	prHydration       *pullRequestHydrationCircuitBreaker
+	logger            *slog.Logger
 	mu                sync.RWMutex
 	writeMu           sync.Mutex
 	instanceLogin     string
@@ -134,6 +135,10 @@ func NewConnector(cfg Config) (*Connector, error) {
 	if err != nil {
 		return nil, err
 	}
+	logger := cfg.Logger
+	if logger == nil {
+		logger = slog.Default()
+	}
 
 	statusField := strings.TrimSpace(cfg.StatusField)
 	if statusField == "" {
@@ -162,6 +167,7 @@ func NewConnector(cfg Config) (*Connector, error) {
 		projectCache:      newProjectCache(githubCacheTTL, cfg.Now),
 		pullRequests:      newPullRequestStatusCache(githubCacheTTL, cfg.Now),
 		prHydration:       newPullRequestHydrationCircuitBreaker(cfg.Now),
+		logger:            logger,
 	}, nil
 }
 

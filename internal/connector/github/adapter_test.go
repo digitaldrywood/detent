@@ -1,10 +1,12 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -1383,6 +1385,50 @@ func TestCheckRunWorkflowRunIDs(t *testing.T) {
 	want := []int64{28196652213, 28196652214}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("checkRunWorkflowRunIDs() = %#v, want %#v", got, want)
+	}
+}
+
+func TestConnectorPullRequestStatusCacheDebugLog(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	var logs bytes.Buffer
+	c := &Connector{
+		pullRequests: newPullRequestStatusCache(time.Minute, func() time.Time { return now }),
+		logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	}
+	repo := pullRequestRepo{Owner: "digitaldrywood", Name: "detent"}
+	status := pullRequestStatus{
+		ci: pullRequestCI{
+			State:         "SUCCESS",
+			CheckRunCount: 2,
+		},
+	}
+	c.pullRequests.Set(repo, 726, "head-sha", status)
+	pullRequest := pullRequestNode{Number: 726, HeadSHA: "head-sha"}
+
+	if err := c.populatePullRequestStatus(context.Background(), repo, &pullRequest, true); err != nil {
+		t.Fatalf("populatePullRequestStatus() error = %v", err)
+	}
+
+	logText := logs.String()
+	for _, fragment := range []string{
+		"github pull request status cache",
+		"endpoint_family=pull_request_status_cache",
+		"request_purpose=hydrate_pull_request_status",
+		"repository=digitaldrywood/detent",
+		"pr_number=726",
+		"cache_hit=true",
+		"avoidable_request=true",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logText)
+		}
+	}
+	if pullRequest.CI.CheckRunCount != 2 {
+		t.Fatalf("CheckRunCount = %d, want cached status", pullRequest.CI.CheckRunCount)
 	}
 }
 

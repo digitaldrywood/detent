@@ -143,6 +143,21 @@ func (s *Supervisor) Run(ctx context.Context, request RunRequest) (completion Co
 			completion.RetryAttempt = nextFailureAttempt(request.Attempt)
 			completion.RetryDelay = s.RetryDelay(completion.RetryAttempt)
 		}
+		s.logger.Debug(
+			"worker_attempt_finished",
+			slog.String("event", "worker_attempt_finished"),
+			slog.String("issue_id", request.Issue.ID),
+			slog.String("issue_identifier", request.Issue.Identifier),
+			slog.String("issue_state", request.Issue.State),
+			slog.Int("attempt", request.Attempt),
+			slog.String("worker_host", request.WorkerHost),
+			slog.String("mode", request.Mode),
+			slog.String("outcome", workerRunOutcome(completion.Err, completion.Result.FinalState)),
+			slog.Bool("retryable", completion.Retryable),
+			slog.Int("retry_attempt", completion.RetryAttempt),
+			slog.Int64("retry_delay_seconds", int64(completion.RetryDelay/time.Second)),
+			slog.Any("error", completion.Err),
+		)
 	}()
 
 	result, err := s.backend.Run(ctx, request)

@@ -1016,6 +1016,76 @@ func TestDispatchReadyIssuesHydratesLightweightCandidateBeforeDependencyGate(t *
 	}
 }
 
+func TestDispatchReadyIssuesLogsDebugDecisionAndWorkerLifecycle(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 2,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done"},
+		Project:             scheduler.ProjectCandidate{ID: "detent", Weight: 2, Priority: 10},
+	})
+	runner := newWorkerHostRunner()
+	var logs strings.Builder
+	orch := Orchestrator{
+		cfg:        cfg,
+		connector:  hydratingDispatchConnector{},
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+		logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	}
+	state := newState(cfg)
+	running := dispatchTestIssueWithPullRequest("issue-running", "In Progress", "OPEN")
+	running.Fields = map[string]string{"Status": "In Progress"}
+	running.PullRequest.CIStatus = "pass"
+	running.PullRequest.CheckRunCount = 3
+	state.Running[running.ID] = Running{Issue: running, StartedAt: now.Add(-time.Minute)}
+	selected := dispatchTestIssue("issue-selected", "Todo")
+	selected.Fields = map[string]string{"Status": "Todo"}
+	selected.UpdatedAt = timePointer(now.Add(-2 * time.Minute))
+
+	ctx := t.Context()
+	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{running, selected}, now)
+
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != selected.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want %q", request.Issue.ID, selected.ID)
+	}
+	if state.Running[selected.ID].cancel == nil {
+		t.Fatalf("Running[%q].cancel = nil, want cancellation hook", selected.ID)
+	}
+	state.Running[selected.ID].cancel()
+	orch.handleRunResult(ctx, &state, runpkg.Completion{
+		IssueID:     selected.ID,
+		Request:     request,
+		Err:         context.Canceled,
+		CompletedAt: now.Add(time.Second),
+	})
+
+	logText := logs.String()
+	for _, fragment := range []string{
+		"scheduler_dispatch_decision",
+		"skip_reason=already_running",
+		"result=selected",
+		"queue_position=2",
+		"pr_ci_status=pass",
+		"pr_check_run_count=3",
+		"scheduler_dispatch_slot_decision",
+		"outcome=acquired",
+		"worker_slot_acquired",
+		"worker_attempt_started",
+		"worker_capacity_released",
+		"worker_cancelled",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logText)
+		}
+	}
+}
+
 func TestDispatchReadyIssuesStaggersContinuationDispatches(t *testing.T) {
 	t.Parallel()
 

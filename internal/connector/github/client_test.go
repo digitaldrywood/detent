@@ -1,13 +1,16 @@
 package github
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"runtime"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -275,6 +278,57 @@ func TestClientRESTRefreshesTokenAfterAuthFailure(t *testing.T) {
 	}
 	if first, second := <-requests, <-requests; first != "Bearer stale-token" || second != "Bearer fresh-token" {
 		t.Fatalf("Authorization sequence = %q, %q; want stale then fresh", first, second)
+	}
+}
+
+func TestClientRESTDebugLogsEndpointPurposeWithoutSecrets(t *testing.T) {
+	t.Parallel()
+
+	var logs bytes.Buffer
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/repos/digitaldrywood/detent/commits/abc/check-runs" {
+			t.Fatalf("path = %s, want check-runs path", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer super-secret-token" {
+			t.Fatalf("Authorization = %q, want bearer token", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"check_runs":[],"body_secret":"do-not-log-response-body"}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("super-secret-token"),
+		HTTPClient:  server.Client(),
+		Logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/commits/abc/check-runs", nil, nil); err != nil {
+		t.Fatalf("REST() error = %v", err)
+	}
+
+	logText := logs.String()
+	for _, fragment := range []string{
+		"github rest request",
+		"github rest response",
+		`endpoint_family="check runs"`,
+		"request_purpose=hydrate_pull_request_checks",
+		"body_present=false",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs missing %q:\n%s", fragment, logText)
+		}
+	}
+	for _, leaked := range []string{"super-secret-token", "do-not-log-response-body"} {
+		if strings.Contains(logText, leaked) {
+			t.Fatalf("logs leaked %q:\n%s", leaked, logText)
+		}
 	}
 }
 
