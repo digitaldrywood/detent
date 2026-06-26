@@ -135,12 +135,18 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 	now time.Time,
 ) map[string]struct{} {
 	transitioned := map[string]struct{}{}
-	for _, issue := range issuesInStates(issues, []string{autoPromoteMergingState}) {
+	consumedRepositories := activeMergeWorkerRepositories(state)
+	for _, issue := range staleMergingQueueIssues(issues, o.cfg) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
 		}
+		repository := mergeWorkerRepositoryKey(issue)
+		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) {
+			continue
+		}
 		if staleMergingPullRequestDispatchActive(state, issueID) {
+			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
 		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg.TerminalStates)
@@ -148,9 +154,11 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 			if strings.TrimSpace(decision.reason) != "" {
 				o.logStaleMergingPullRequestDeferred(issue, decision)
 			}
+			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
 		if !o.applyStaleMergingPullRequestDecision(ctx, state, issue, decision, now) {
+			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
 		transitioned[issueID] = struct{}{}
@@ -186,9 +194,6 @@ func staleMergingPullRequestDecisionForIssue(issue connector.Issue, terminalStat
 		}
 		if pullRequest.Draft {
 			return staleMergingPullRequestDecision{targetState: autoPromoteSourceState, reason: "draft_pull_request"}
-		}
-		if autoPromoteMergeConflicts(pullRequest.MergeableState) {
-			return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: string(AutoPromoteReasonMergeConflicts)}
 		}
 		if staleMergingCIRed(pullRequest.CIStatus) {
 			return staleMergingPullRequestDecision{targetState: autoPromoteReworkState, reason: string(AutoPromoteReasonCINotGreen)}
@@ -478,8 +483,65 @@ func staleMergingPullRequestDispatchActive(state *State, issueID string) bool {
 	return false
 }
 
+func staleMergingQueueIssues(issues []connector.Issue, cfg Config) []connector.Issue {
+	queue := issuesInStates(issues, []string{autoPromoteMergingState})
+	sortIssuesForDispatch(queue, cfg.DispatchPriorityByState, cfg.DispatchPriorityByLabel)
+	return queue
+}
+
+func activeMergeWorkerRepositories(state *State) map[string]struct{} {
+	if state == nil {
+		return nil
+	}
+	repositories := map[string]struct{}{}
+	for _, running := range state.Running {
+		repositories = consumeActiveMergeWorkerRepository(repositories, running.Issue)
+	}
+	for _, claimed := range state.Claimed {
+		repositories = consumeActiveMergeWorkerRepository(repositories, claimed.Issue)
+	}
+	for _, retry := range state.Retry {
+		repositories = consumeActiveMergeWorkerRepository(repositories, retry.Issue)
+	}
+	if len(repositories) == 0 {
+		return nil
+	}
+	return repositories
+}
+
+func consumeActiveMergeWorkerRepository(repositories map[string]struct{}, issue connector.Issue) map[string]struct{} {
+	if !mergeWorkerIssue(issue) {
+		return repositories
+	}
+	return consumeMergeWorkerRepository(repositories, mergeWorkerRepositoryKey(issue))
+}
+
+func consumeMergeWorkerRepository(repositories map[string]struct{}, repository string) map[string]struct{} {
+	repository = strings.TrimSpace(repository)
+	if repository == "" {
+		return repositories
+	}
+	if repositories == nil {
+		repositories = map[string]struct{}{}
+	}
+	repositories[repository] = struct{}{}
+	return repositories
+}
+
+func mergeWorkerRepositoryConsumed(repositories map[string]struct{}, repository string) bool {
+	if repository == "" || len(repositories) == 0 {
+		return false
+	}
+	_, ok := repositories[repository]
+	return ok
+}
+
+func mergeWorkerRepositoryKey(issue connector.Issue) string {
+	return strings.ToLower(strings.TrimSpace(pullRequestRepository(issue)))
+}
+
 func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []connector.Issue) []connector.Issue {
-	candidates := staleMergingDispatchCandidates(issues)
+	candidates := o.staleMergingQueueDispatchCandidates(state, issues)
 	if len(candidates) == 0 {
 		return nil
 	}
@@ -519,13 +581,25 @@ func (o *Orchestrator) mergeWorkerDispatchCandidates(state *State, issues []conn
 	return out
 }
 
-func staleMergingDispatchCandidates(issues []connector.Issue) []connector.Issue {
+func (o *Orchestrator) staleMergingQueueDispatchCandidates(state *State, issues []connector.Issue) []connector.Issue {
 	candidates := []connector.Issue{}
-	for _, issue := range issuesInStates(issues, []string{autoPromoteMergingState}) {
+	consumedRepositories := activeMergeWorkerRepositories(state)
+	for _, issue := range staleMergingQueueIssues(issues, o.cfg) {
+		issueID := strings.TrimSpace(issue.ID)
+		repository := mergeWorkerRepositoryKey(issue)
+		if staleMergingPullRequestDispatchActive(state, issueID) {
+			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
+			continue
+		}
+		if mergeWorkerRepositoryConsumed(consumedRepositories, repository) {
+			continue
+		}
 		if !staleMergingIssueReadyForDispatch(issue) {
+			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
 		candidates = append(candidates, cloneIssue(issue))
+		consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 	}
 	return candidates
 }
@@ -544,19 +618,7 @@ func staleMergingIssueReadyForDispatch(issue connector.Issue) bool {
 	if pullRequest.Draft {
 		return false
 	}
-	if autoPromoteMergeConflicts(pullRequest.MergeableState) {
-		return false
-	}
-	return staleMergingCIGreen(pullRequest.CIStatus)
-}
-
-func staleMergingCIGreen(status string) bool {
-	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "green", "pass", "passed", "success", "successful":
-		return true
-	default:
-		return false
-	}
+	return !staleMergingCIRed(pullRequest.CIStatus)
 }
 
 func staleMergingCIRed(status string) bool {

@@ -1079,11 +1079,12 @@ func TestTickReconcilesStaleMergingPullRequestStates(t *testing.T) {
 		stateIssues:        []connector.Issue{merged, conflicting, pending},
 		candidateIssuesSet: true,
 	}
+	runner := newWorkerHostRunner()
 	var logs strings.Builder
 	orch := &Orchestrator{
 		cfg:        cfg,
 		connector:  tracker,
-		supervisor: newTestSupervisor(t, newWorkerHostRunner(), cfg),
+		supervisor: newTestSupervisor(t, runner, cfg),
 		runResults: make(chan runpkg.Completion, 1),
 		logger:     slog.New(slog.NewTextHandler(&logs, nil)),
 	}
@@ -1093,25 +1094,28 @@ func TestTickReconcilesStaleMergingPullRequestStates(t *testing.T) {
 
 	wantUpdates := []autoPromoteTickUpdate{
 		{issueID: "issue-merged-pr", state: "Done"},
-		{issueID: "issue-conflicting-merging", state: "Rework"},
 	}
 	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
 		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
 	}
-	if len(tracker.comments) != 2 {
-		t.Fatalf("comments = %#v, want two reconciliation comments", tracker.comments)
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != conflicting.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want dirty queue head %q", request.Issue.ID, conflicting.ID)
+	}
+	if _, ok := state.Running[conflicting.ID]; !ok {
+		t.Fatalf("Running[%q] missing after dirty Merging queue head dispatch", conflicting.ID)
+	}
+	if _, ok := state.Running[pending.ID]; ok {
+		t.Fatalf("Running[%q] present, want same-repo sibling left queued", pending.ID)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one reconciliation comment", tracker.comments)
 	}
 	wantComments := map[string][]string{
 		"issue-merged-pr": {
 			"Reconciled this issue from Merging to Done.",
 			"reason: pull_request_merged",
 			"https://github.test/digitaldrywood/creswoodcorners-phone/pull/71",
-		},
-		"issue-conflicting-merging": {
-			"Reconciled this issue from Merging to Rework.",
-			"reason: merge_conflicts",
-			"mergeable_state: dirty",
-			"https://github.test/digitaldrywood/creswoodcorners-phone/pull/72",
 		},
 	}
 	for _, comment := range tracker.comments {
@@ -1124,11 +1128,17 @@ func TestTickReconcilesStaleMergingPullRequestStates(t *testing.T) {
 	for _, fragment := range []string{
 		"stale_merging_pr_reconciled",
 		"reason=pull_request_merged",
-		"reason=merge_conflicts",
+		"merge_worker_attempt",
 	} {
 		if !strings.Contains(logs.String(), fragment) {
 			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
 		}
+	}
+	if strings.Contains(logs.String(), "reason=merge_conflicts") {
+		t.Fatalf("logs %q contain merge_conflicts, want dirty Merging PR handled by merge worker", logs.String())
+	}
+	if running := state.Running[conflicting.ID]; running.cancel != nil {
+		running.cancel()
 	}
 }
 
@@ -1198,6 +1208,154 @@ func TestTickAdvancesStaleMergingLaneAfterFrontPRReconcilesDone(t *testing.T) {
 	}
 }
 
+func TestTickDispatchesDirtySameRepoMergingQueueHeadForRefresh(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 22, 0, 0, 0, time.UTC)
+	headCreatedAt := now.Add(-2 * time.Hour)
+	siblingCreatedAt := now.Add(-time.Hour)
+	head := autoPromoteTickIssue("issue-head-dirty", []string{"bug"}, &connector.PullRequest{
+		Number:         75,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/75",
+		State:          "OPEN",
+		MergeableState: "DIRTY",
+		CIStatus:       "success",
+	})
+	head.State = "Merging"
+	head.Identifier = "digitaldrywood/creswoodcorners-phone#66"
+	head.CreatedAt = &headCreatedAt
+	sibling := autoPromoteTickIssue("issue-sibling-dirty", []string{"bug"}, &connector.PullRequest{
+		Number:         76,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/76",
+		State:          "OPEN",
+		MergeableState: "DIRTY",
+		CIStatus:       "success",
+	})
+	sibling.State = "Merging"
+	sibling.Identifier = "digitaldrywood/creswoodcorners-phone#68"
+	sibling.CreatedAt = &siblingCreatedAt
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{sibling, head},
+		candidateIssuesSet: true,
+	}
+	runner := newWorkerHostRunner()
+	orch := &Orchestrator{
+		cfg:        cfg,
+		connector:  tracker,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+		logger:     slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no Rework transition before merge-worker refresh", tracker.updates)
+	}
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.Issue.ID != head.ID {
+		t.Fatalf("RunRequest.Issue.ID = %q, want queue head %q", request.Issue.ID, head.ID)
+	}
+	if _, ok := state.Running[head.ID]; !ok {
+		t.Fatalf("Running[%q] missing after dirty Merging queue head dispatch", head.ID)
+	}
+	if _, ok := state.Running[sibling.ID]; ok {
+		t.Fatalf("Running[%q] present, want same-repo sibling left queued", sibling.ID)
+	}
+	if running := state.Running[head.ID]; running.cancel != nil {
+		running.cancel()
+	}
+}
+
+func TestTickReworksRedStaleMergingQueueHead(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 22, 15, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-head-red", []string{"bug"}, &connector.PullRequest{
+		Number:         75,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/75",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "fail",
+	})
+	issue.State = "Merging"
+	issue.Identifier = "digitaldrywood/creswoodcorners-phone#66"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{issue},
+		candidateIssuesSet: true,
+	}
+	runner := newWorkerHostRunner()
+	var logs strings.Builder
+	orch := &Orchestrator{
+		cfg:        cfg,
+		connector:  tracker,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion, 1),
+		logger:     slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+
+	orch.tick(context.Background(), &state, now)
+
+	wantUpdates := []autoPromoteTickUpdate{{issueID: issue.ID, state: "Rework"}}
+	if !reflect.DeepEqual(tracker.updates, wantUpdates) {
+		t.Fatalf("updates = %#v, want %#v", tracker.updates, wantUpdates)
+	}
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected merge worker dispatch = %#v", request)
+	default:
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one stale Merging reconciliation comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Reconciled this issue from Merging to Rework.",
+		"reason: ci_not_green",
+		"ci_status: fail",
+		"https://github.test/digitaldrywood/creswoodcorners-phone/pull/75",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment = %q, missing %q", tracker.comments[0].body, fragment)
+		}
+	}
+	for _, fragment := range []string{"stale_merging_pr_reconciled", "reason=ci_not_green", "target_state=Rework"} {
+		if !strings.Contains(logs.String(), fragment) {
+			t.Fatalf("logs %q missing fragment %q", logs.String(), fragment)
+		}
+	}
+	if strings.Contains(logs.String(), "merge_worker_attempt") {
+		t.Fatalf("logs %q contain merge_worker_attempt, want no merge worker dispatch for red CI", logs.String())
+	}
+}
+
 func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 	t.Parallel()
 
@@ -1255,7 +1413,7 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 	}
 }
 
-func TestStaleMergingDispatchCandidatesFiltersUnsafePullRequests(t *testing.T) {
+func TestStaleMergingQueueDispatchCandidatesFiltersUnsafePullRequests(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
@@ -1299,6 +1457,7 @@ func TestStaleMergingDispatchCandidatesFiltersUnsafePullRequests(t *testing.T) {
 				MergeableState: "dirty",
 				CIStatus:       "success",
 			},
+			want: true,
 		},
 		{
 			name: "non green ci",
@@ -1306,6 +1465,15 @@ func TestStaleMergingDispatchCandidatesFiltersUnsafePullRequests(t *testing.T) {
 				State:          "OPEN",
 				MergeableState: "clean",
 				CIStatus:       "pending",
+			},
+			want: true,
+		},
+		{
+			name: "failed ci",
+			pullRequest: &connector.PullRequest{
+				State:          "OPEN",
+				MergeableState: "clean",
+				CIStatus:       "failure",
 			},
 		},
 		{
@@ -1332,17 +1500,27 @@ func TestStaleMergingDispatchCandidatesFiltersUnsafePullRequests(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
+			cfg := normalizeConfig(Config{
+				MaxConcurrentAgents: 1,
+				MaxConcurrentAgentsByState: map[string]int{
+					"Merging": 1,
+				},
+				ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+				TerminalStates: []string{"Done", "Cancelled"},
+			})
+			state := newState(cfg)
+			orch := &Orchestrator{cfg: cfg}
 			issue := autoPromoteTickIssue("issue-"+strings.ReplaceAll(tt.name, " ", "-"), []string{"bug"}, tt.pullRequest)
 			issue.State = "Merging"
-			got := staleMergingDispatchCandidates([]connector.Issue{issue})
+			got := orch.staleMergingQueueDispatchCandidates(&state, []connector.Issue{issue})
 			if tt.want {
 				if len(got) != 1 || got[0].ID != issue.ID {
-					t.Fatalf("staleMergingDispatchCandidates() = %#v, want %s", got, issue.ID)
+					t.Fatalf("staleMergingQueueDispatchCandidates() = %#v, want %s", got, issue.ID)
 				}
 				return
 			}
 			if len(got) != 0 {
-				t.Fatalf("staleMergingDispatchCandidates() = %#v, want none", got)
+				t.Fatalf("staleMergingQueueDispatchCandidates() = %#v, want none", got)
 			}
 		})
 	}
@@ -1395,6 +1573,125 @@ func TestMergeWorkerDispatchCandidatesPreservesScheduledRetry(t *testing.T) {
 	}
 }
 
+func TestMergeWorkerDispatchCandidatesSelectsOneQueueHeadPerRepository(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 21, 30, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 3,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 3,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	phoneHeadCreatedAt := now.Add(-3 * time.Hour)
+	phoneSiblingCreatedAt := now.Add(-2 * time.Hour)
+	outletCreatedAt := now.Add(-time.Hour)
+	phoneHead := autoPromoteTickIssue("issue-phone-head", []string{"bug"}, &connector.PullRequest{
+		Number:         75,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/75",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	phoneHead.State = "Merging"
+	phoneHead.Identifier = "digitaldrywood/creswoodcorners-phone#66"
+	phoneHead.CreatedAt = &phoneHeadCreatedAt
+	phoneSibling := autoPromoteTickIssue("issue-phone-sibling", []string{"bug"}, &connector.PullRequest{
+		Number:         76,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/76",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	phoneSibling.State = "Merging"
+	phoneSibling.Identifier = "digitaldrywood/creswoodcorners-phone#68"
+	phoneSibling.CreatedAt = &phoneSiblingCreatedAt
+	outlet := autoPromoteTickIssue("issue-outlet-head", []string{"bug"}, &connector.PullRequest{
+		Number:         89,
+		URL:            "https://github.test/digitaldrywood/creswoodcornersoutlet/pull/89",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	outlet.State = "Merging"
+	outlet.Identifier = "digitaldrywood/creswoodcornersoutlet#89"
+	outlet.CreatedAt = &outletCreatedAt
+	state := newState(cfg)
+	orch := &Orchestrator{cfg: cfg}
+
+	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{phoneSibling, outlet, phoneHead})
+	gotIDs := make([]string, 0, len(got))
+	for _, issue := range got {
+		gotIDs = append(gotIDs, issue.ID)
+	}
+	wantIDs := []string{"issue-phone-head", "issue-outlet-head"}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("mergeWorkerDispatchCandidates() ids = %#v, want %#v", gotIDs, wantIDs)
+	}
+}
+
+func TestMergeWorkerDispatchCandidatesConsumesNotReadyQueueHeadRepository(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 21, 45, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 3,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 3,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	phoneHeadCreatedAt := now.Add(-3 * time.Hour)
+	phoneSiblingCreatedAt := now.Add(-2 * time.Hour)
+	outletCreatedAt := now.Add(-time.Hour)
+	phoneHead := autoPromoteTickIssue("issue-phone-head-hydration-blocked", []string{"bug"}, &connector.PullRequest{
+		Number:                     75,
+		URL:                        "https://github.test/digitaldrywood/creswoodcorners-phone/pull/75",
+		State:                      "OPEN",
+		MergeableState:             "clean",
+		CIStatus:                   "success",
+		HydrationUnavailableReason: connector.PullRequestHydrationReasonSecondaryThrottled,
+	})
+	phoneHead.State = "Merging"
+	phoneHead.Identifier = "digitaldrywood/creswoodcorners-phone#66"
+	phoneHead.CreatedAt = &phoneHeadCreatedAt
+	phoneSibling := autoPromoteTickIssue("issue-phone-sibling-ready", []string{"bug"}, &connector.PullRequest{
+		Number:         76,
+		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/76",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	phoneSibling.State = "Merging"
+	phoneSibling.Identifier = "digitaldrywood/creswoodcorners-phone#68"
+	phoneSibling.CreatedAt = &phoneSiblingCreatedAt
+	outlet := autoPromoteTickIssue("issue-outlet-head-ready", []string{"bug"}, &connector.PullRequest{
+		Number:         89,
+		URL:            "https://github.test/digitaldrywood/creswoodcornersoutlet/pull/89",
+		State:          "OPEN",
+		MergeableState: "clean",
+		CIStatus:       "success",
+	})
+	outlet.State = "Merging"
+	outlet.Identifier = "digitaldrywood/creswoodcornersoutlet#89"
+	outlet.CreatedAt = &outletCreatedAt
+	state := newState(cfg)
+	orch := &Orchestrator{cfg: cfg}
+
+	got := orch.mergeWorkerDispatchCandidates(&state, []connector.Issue{phoneSibling, outlet, phoneHead})
+	gotIDs := make([]string, 0, len(got))
+	for _, issue := range got {
+		gotIDs = append(gotIDs, issue.ID)
+	}
+	wantIDs := []string{"issue-outlet-head-ready"}
+	if !reflect.DeepEqual(gotIDs, wantIDs) {
+		t.Fatalf("mergeWorkerDispatchCandidates() ids = %#v, want %#v", gotIDs, wantIDs)
+	}
+}
+
 func TestMergeWorkerDispatchCandidatesWaitsWhenMergingLaneFull(t *testing.T) {
 	t.Parallel()
 
@@ -1415,14 +1712,16 @@ func TestMergeWorkerDispatchCandidatesWaitsWhenMergingLaneFull(t *testing.T) {
 		CIStatus:       "success",
 	})
 	running.State = "Merging"
+	running.Identifier = "digitaldrywood/creswoodcorners-phone#72"
 	waiting := autoPromoteTickIssue("issue-waiting-merge", []string{"bug"}, &connector.PullRequest{
 		Number:         75,
-		URL:            "https://github.test/digitaldrywood/creswoodcorners-phone/pull/75",
+		URL:            "https://github.test/digitaldrywood/creswoodcornersoutlet/pull/75",
 		State:          "OPEN",
 		MergeableState: "clean",
 		CIStatus:       "success",
 	})
 	waiting.State = "Merging"
+	waiting.Identifier = "digitaldrywood/creswoodcornersoutlet#75"
 	state := newState(cfg)
 	state.Running[running.ID] = Running{
 		Issue:     cloneIssue(running),
