@@ -127,6 +127,7 @@ templ DashboardShell(data DashboardShellData) {
 			<script src="https://unpkg.com/htmx.org@2.0.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/htmx-ext-sse@2.2.4"></script>
 			<script src="https://cdn.jsdelivr.net/npm/idiomorph@0.7.3/dist/idiomorph-ext.min.js"></script>
+			@dashboardSSEMetricsScript()
 			if data.IncludeDashboardCharts {
 				<script src={ chartJSPath(data.Assets) } defer></script>
 				<script src={ dashboardChartsScriptPath(data.Assets) } defer></script>
@@ -267,9 +268,332 @@ templ dashboardMobileSidebarTrigger() {
 	}
 }
 
+templ dashboardSSEMetricsScript() {
+	<script>
+			(function() {
+				const reportEvery = 60000;
+				const processingTimeout = 15000;
+				const state = {
+					events: {},
+					pending: {},
+					reportTimer: 0,
+				};
+				const encoder = window.TextEncoder ? new TextEncoder() : null;
+
+				function metricsFor(name) {
+					if (!state.events[name]) {
+						state.events[name] = {
+							received: 0,
+							bytes: 0,
+							swaps: 0,
+							totalMs: 0,
+							maxMs: 0,
+							skipped: 0,
+							queued: 0,
+							replayed: 0,
+						};
+					}
+					return state.events[name];
+				}
+
+				function byteLength(value) {
+					const text = String(value || "");
+					if (!text) {
+						return 0;
+					}
+					return encoder ? encoder.encode(text).length : text.length;
+				}
+
+				function eventName(event) {
+					const detail = event.detail || {};
+					const message = detail.message || detail.event || {};
+					return String(detail.type || detail.name || message.type || "message");
+				}
+
+				function eventPayload(event) {
+					const detail = event.detail || {};
+					const message = detail.message || detail.event || {};
+					return message.data || detail.data || "";
+				}
+
+				function pendingKey(target, name) {
+					if (target && target.id) {
+						return target.id;
+					}
+					if (target && target.getAttribute) {
+						return target.getAttribute("sse-swap") || name || "message";
+					}
+					return name || "message";
+				}
+
+				function pendingCount(name) {
+					let count = 0;
+					Object.keys(state.pending).forEach(function(key) {
+						if (state.pending[key].name === name) {
+							count += 1;
+						}
+					});
+					return count;
+				}
+
+				function parseDelay(value) {
+					if (window.htmx && typeof window.htmx.parseInterval === "function") {
+						return window.htmx.parseInterval(value);
+					}
+					if (value.slice(-2) === "ms") {
+						return Number(value.slice(0, -2)) || 0;
+					}
+					if (value.slice(-1) === "s") {
+						return (Number(value.slice(0, -1)) || 0) * 1000;
+					}
+					return Number(value) || 0;
+				}
+
+				function swapSpecFor(target) {
+					const spec = { swapStyle: "innerHTML" };
+					const raw = String(target.getAttribute("hx-swap") || "").trim();
+					if (!raw) {
+						return spec;
+					}
+					const modifierNames = {
+						swap: true,
+						settle: true,
+						transition: true,
+						ignoreTitle: true,
+						scroll: true,
+						show: true,
+						focusScroll: true,
+						"focus-scroll": true,
+					};
+					raw.split(/\s+/).forEach(function(token, index) {
+						const separator = token.indexOf(":");
+						const name = separator >= 0 ? token.slice(0, separator) : token;
+						const value = separator >= 0 ? token.slice(separator + 1) : "";
+						if (index === 0 && !modifierNames[name]) {
+							spec.swapStyle = token;
+							return;
+						}
+						if (name === "swap") {
+							spec.swapDelay = parseDelay(value);
+						} else if (name === "settle") {
+							spec.settleDelay = parseDelay(value);
+						} else if (name === "transition") {
+							spec.transition = value === "true";
+						} else if (name === "ignoreTitle") {
+							spec.ignoreTitle = value === "true";
+						}
+					});
+					return spec;
+				}
+
+				function targetForEventName(name) {
+					const targets = document.querySelectorAll("[sse-swap]");
+					for (const target of targets) {
+						if (target.getAttribute("sse-swap") === name) {
+							return target;
+						}
+					}
+					return null;
+				}
+
+				function swapTarget(event) {
+					const detailTarget = event.detail && event.detail.target;
+					const target = detailTarget instanceof Element ? detailTarget : event.target;
+					if (!(target instanceof Element)) {
+						return null;
+					}
+					if (target.hasAttribute("sse-swap")) {
+						return target;
+					}
+					return target.closest("[sse-swap]");
+				}
+
+				function clearProcessing(target) {
+					if (target.dataset.detentSseTimer) {
+						window.clearTimeout(Number(target.dataset.detentSseTimer));
+					}
+					delete target.dataset.detentSseProcessing;
+					delete target.dataset.detentSseEvent;
+					delete target.dataset.detentSseStarted;
+					delete target.dataset.detentSseTimer;
+				}
+
+				function markProcessing(target, name) {
+					if (target.dataset.detentSseTimer) {
+						window.clearTimeout(Number(target.dataset.detentSseTimer));
+					}
+					target.dataset.detentSseProcessing = "true";
+					target.dataset.detentSseEvent = name;
+					target.dataset.detentSseStarted = String(performance.now());
+					target.dataset.detentSseTimer = String(window.setTimeout(function() {
+						clearProcessing(target);
+						replayPending(target, name);
+					}, processingTimeout));
+				}
+
+				function rememberPending(target, name, payload) {
+					state.pending[pendingKey(target, name)] = {
+						name: name,
+						payload: payload,
+						targetID: target.id || "",
+						sseSwap: target.getAttribute("sse-swap") || name,
+						swapSpec: swapSpecFor(target),
+					};
+					metricsFor(name).queued += 1;
+				}
+
+				function targetForPending(pending) {
+					if (pending.targetID) {
+						const target = document.getElementById(pending.targetID);
+						if (target) {
+							return target;
+						}
+					}
+					return targetForEventName(pending.sseSwap || pending.name);
+				}
+
+				function replayPending(target, name) {
+					const key = pendingKey(target, name);
+					const pending = state.pending[key];
+					if (!pending) {
+						return;
+					}
+					delete state.pending[key];
+					const nextTarget = targetForPending(pending) || target;
+					if (!(nextTarget instanceof Element) || !nextTarget.isConnected) {
+						return;
+					}
+					metricsFor(pending.name).replayed += 1;
+					markProcessing(nextTarget, pending.name);
+					window.setTimeout(function() {
+						if (!(nextTarget instanceof Element) || !nextTarget.isConnected) {
+							clearProcessing(nextTarget);
+							scheduleReport();
+							return;
+						}
+						if (window.htmx && typeof window.htmx.swap === "function") {
+							window.htmx.swap(nextTarget, pending.payload, pending.swapSpec, {
+								contextElement: nextTarget,
+								eventInfo: { target: nextTarget, source: nextTarget },
+								afterSettleCallback: function() {
+									const settledTarget = targetForPending(pending) || nextTarget;
+									if (settledTarget instanceof Element) {
+										clearProcessing(settledTarget);
+										replayPending(settledTarget, pending.name);
+									}
+									scheduleReport();
+								},
+							});
+							return;
+						}
+						nextTarget.innerHTML = pending.payload;
+						clearProcessing(nextTarget);
+						replayPending(nextTarget, pending.name);
+						scheduleReport();
+					}, 0);
+				}
+
+				function scheduleReport() {
+					if (state.reportTimer) {
+						return;
+					}
+					state.reportTimer = window.setTimeout(report, reportEvery);
+				}
+
+				function report() {
+					state.reportTimer = 0;
+					const snapshot = {};
+					Object.keys(state.events).sort().forEach(function(name) {
+						const metrics = state.events[name];
+						const averageMs = metrics.swaps > 0 ? metrics.totalMs / metrics.swaps : 0;
+						snapshot[name] = {
+							received: metrics.received,
+							bytes: metrics.bytes,
+							swaps: metrics.swaps,
+							averageMs: Math.round(averageMs * 10) / 10,
+							maxMs: Math.round(metrics.maxMs * 10) / 10,
+							skipped: metrics.skipped,
+							queued: metrics.queued,
+							replayed: metrics.replayed,
+							pending: pendingCount(name),
+						};
+					});
+					if (window.console && console.info) {
+						console.info("[detent] SSE metrics", snapshot);
+					}
+					scheduleReport();
+				}
+
+				document.addEventListener("htmx:sseBeforeMessage", function(event) {
+					const name = eventName(event);
+					const metrics = metricsFor(name);
+					const payload = eventPayload(event);
+					metrics.received += 1;
+					metrics.bytes += byteLength(payload);
+					const target = swapTarget(event) || targetForEventName(name);
+					if (!target) {
+						scheduleReport();
+						return;
+					}
+					if (target.dataset.detentSseProcessing === "true" && name !== "tick") {
+						metrics.skipped += 1;
+						rememberPending(target, name, payload);
+						event.preventDefault();
+						scheduleReport();
+						return;
+					}
+					markProcessing(target, name);
+					scheduleReport();
+				});
+
+				document.addEventListener("htmx:beforeSwap", function(event) {
+					const target = swapTarget(event);
+					if (!target) {
+						return;
+					}
+					markProcessing(target, target.dataset.detentSseEvent || target.getAttribute("sse-swap") || "message");
+				});
+
+				document.addEventListener("htmx:afterSettle", function(event) {
+					const target = swapTarget(event);
+					if (!target) {
+						return;
+					}
+					const name = target.dataset.detentSseEvent || target.getAttribute("sse-swap") || "message";
+					const started = Number(target.dataset.detentSseStarted || "0");
+					if (started > 0) {
+						const duration = performance.now() - started;
+						const metrics = metricsFor(name);
+						metrics.swaps += 1;
+						metrics.totalMs += duration;
+						metrics.maxMs = Math.max(metrics.maxMs, duration);
+					}
+					clearProcessing(target);
+					replayPending(target, name);
+					scheduleReport();
+				});
+
+				document.addEventListener("htmx:sseOpen", function() {
+					document.documentElement.dataset.detentSseStatus = "open";
+				});
+				document.addEventListener("htmx:sseError", function() {
+					document.documentElement.dataset.detentSseStatus = "error";
+				});
+				document.addEventListener("htmx:sseClose", function() {
+					document.documentElement.dataset.detentSseStatus = "closed";
+				});
+
+				window.__detentSSEMetrics = {
+					events: state.events,
+					report: report,
+				};
+			})();
+		</script>
+}
+
 templ dashboardSidebarFilterScript() {
 	<script>
-		(function() {
+			(function() {
 			document.addEventListener("input", function(event) {
 				const input = event.target.closest("[data-dashboard-project-filter]");
 				if (!input) {
@@ -949,34 +1273,34 @@ templ DashboardSidebarContent(data DashboardShellData) {
 						<span>Kanban</span>
 					}
 				}
-					@sidebar.MenuItem() {
-						@sidebar.MenuButton(sidebar.MenuButtonProps{
-							Href:       projectSidebarRunsPath(data),
-							IsActive:   projectSidebarRunsActive(data),
-							Tooltip:    "Project runs",
-							Attributes: projectSidebarViewAttributes(data, "runs"),
+				@sidebar.MenuItem() {
+					@sidebar.MenuButton(sidebar.MenuButtonProps{
+						Href:       projectSidebarRunsPath(data),
+						IsActive:   projectSidebarRunsActive(data),
+						Tooltip:    "Project runs",
+						Attributes: projectSidebarViewAttributes(data, "runs"),
 					}) {
 						@icon.Activity(icon.Props{Class: "size-4 shrink-0"})
 						<span>Runs</span>
 					}
 				}
-					@sidebar.MenuItem() {
-						@sidebar.MenuButton(sidebar.MenuButtonProps{
-							Href:       projectSidebarConfigurationPath(data),
-							IsActive:   projectSidebarConfigurationActive(data),
-							Tooltip:    "Project configuration",
-							Attributes: projectSidebarViewAttributes(data, "configuration"),
+				@sidebar.MenuItem() {
+					@sidebar.MenuButton(sidebar.MenuButtonProps{
+						Href:       projectSidebarConfigurationPath(data),
+						IsActive:   projectSidebarConfigurationActive(data),
+						Tooltip:    "Project configuration",
+						Attributes: projectSidebarViewAttributes(data, "configuration"),
 					}) {
 						@icon.SlidersHorizontal(icon.Props{Class: "size-4 shrink-0"})
 						<span>Configuration</span>
 					}
 				}
-					@sidebar.MenuItem() {
-						@sidebar.MenuButton(sidebar.MenuButtonProps{
-							Href:       projectSidebarDiagnosticsPath(data),
-							IsActive:   projectSidebarDiagnosticsActive(data),
-							Tooltip:    "Project diagnostics",
-							Attributes: projectSidebarViewAttributes(data, "diagnostics"),
+				@sidebar.MenuItem() {
+					@sidebar.MenuButton(sidebar.MenuButtonProps{
+						Href:       projectSidebarDiagnosticsPath(data),
+						IsActive:   projectSidebarDiagnosticsActive(data),
+						Tooltip:    "Project diagnostics",
+						Attributes: projectSidebarViewAttributes(data, "diagnostics"),
 					}) {
 						@icon.Gauge(icon.Props{Class: "size-4 shrink-0"})
 						<span>Diagnostics</span>

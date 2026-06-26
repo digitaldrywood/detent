@@ -4261,7 +4261,11 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 		t.Fatalf("Publish() error = %v", err)
 	}
 
-	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	server, err := web.NewServer(web.Config{
+		SSETickInterval:     time.Hour,
+		SSEFragmentInterval: -1,
+		SSEHealthInterval:   -1,
+	}, deps)
 	if err != nil {
 		t.Fatalf("NewServer() error = %v", err)
 	}
