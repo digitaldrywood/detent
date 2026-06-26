@@ -384,6 +384,73 @@ func TestWorkflowTemplatesAreCurrentAndModeSpecific(t *testing.T) {
 	}
 }
 
+func TestWorkflowTemplatesRecommendRequiredExecutionFlow(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+
+	for _, want := range []string{
+		"`## Required Execution Flow`",
+		"`For Todo`",
+		"`For In Progress`",
+		"`For Rework`",
+		"`For Merging`",
+		"`$go-workflow:ship`",
+		"`gh pr merge` directly outside ship",
+		"issue remaining in `Merging` with a concrete external blocker recorded",
+	} {
+		assertContainsWords(t, onboarding, want)
+	}
+
+	for _, want := range []string{
+		"`## Required Execution Flow`",
+		"`For Todo`",
+		"`For In Progress`",
+		"`For Rework`",
+		"`For Merging`",
+		"invoke `$go-workflow:ship`",
+		"`Done`",
+		"`Rework` with an actionable defect",
+		"`Merging` with a concrete external blocker recorded",
+	} {
+		assertContainsWords(t, readme, want)
+	}
+
+	for _, path := range []string{
+		"docs/templates/WORKFLOW.project_v2.md",
+		"docs/templates/WORKFLOW.issue_field.md",
+		"docs/templates/WORKFLOW.label.md",
+	} {
+		t.Run(path, func(t *testing.T) {
+			t.Parallel()
+
+			content := readRepositoryTextFile(t, path)
+			for _, want := range []string{
+				"## Required Execution Flow",
+				"### For Todo",
+				"### For In Progress",
+				"### For Rework",
+				"### For Merging",
+				"Move the issue to `In Progress`.",
+				"Move the issue to `Human Review` only after the pull request is open",
+				"Invoke and follow `$go-workflow:ship`.",
+				"Do not call `gh pr merge` directly outside the ship workflow.",
+				"pull request merged and issue moved to `Done`",
+				"issue moved to `Rework` with an actionable defect",
+				"issue remains in `Merging` with a concrete external blocker recorded",
+				"Move the issue to `Done` only after the pull request is merged.",
+			} {
+				assertContains(t, content, want)
+			}
+
+			assertOrder(t, content, "### For Todo", "### For In Progress")
+			assertOrder(t, content, "### For In Progress", "### For Rework")
+			assertOrder(t, content, "### For Rework", "### For Merging")
+		})
+	}
+}
+
 func readRepositoryTextFile(t *testing.T, path string) string {
 	t.Helper()
 
