@@ -718,6 +718,7 @@ type pullRequestNode struct {
 	ActivityAt                 *time.Time                        `json:"activityAt"`
 	HeadRefName                string                            `json:"headRefName"`
 	HeadSHA                    string                            `json:"headSHA"`
+	BaseSHA                    string                            `json:"baseRefOid"`
 	HydrationUnavailableReason string                            `json:"-"`
 	HydrationDegradedReason    string                            `json:"-"`
 	HydrationNextRetryAt       *time.Time                        `json:"-"`
@@ -790,6 +791,7 @@ type restPullRequest struct {
 	MergeableState string     `json:"mergeable_state"`
 	Draft          bool       `json:"draft"`
 	Head           restHead   `json:"head"`
+	Base           restHead   `json:"base"`
 	UpdatedAt      *time.Time `json:"updated_at"`
 	MergedAt       *string    `json:"merged_at"`
 }
@@ -2238,6 +2240,7 @@ func pullRequestNodeFromREST(pullRequest restPullRequest) pullRequestNode {
 		ActivityAt:     cloneGitHubTime(pullRequest.UpdatedAt),
 		HeadRefName:    pullRequest.Head.Ref,
 		HeadSHA:        pullRequest.Head.SHA,
+		BaseSHA:        pullRequest.Base.SHA,
 	}
 }
 
@@ -2251,6 +2254,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		Draft:                        pullRequest.Draft,
 		ActivityAt:                   cloneGitHubTime(pullRequest.ActivityAt),
 		HeadSHA:                      strings.TrimSpace(pullRequest.HeadSHA),
+		BaseSHA:                      strings.TrimSpace(pullRequest.BaseSHA),
 		HydrationUnavailableReason:   strings.TrimSpace(pullRequest.HydrationUnavailableReason),
 		HydrationDegradedReason:      strings.TrimSpace(pullRequest.HydrationDegradedReason),
 		HydrationNextRetryAt:         cloneGitHubTime(pullRequest.HydrationNextRetryAt),

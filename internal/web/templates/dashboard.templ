@@ -2426,12 +2426,48 @@ templ prPipelineSection(snapshot telemetry.Snapshot) {
 			</div>
 			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ prPipelineTotalLabel(snapshot) }</span>
 		</div>
+		@prPipelineMergeSummaryView(prPipelineMergeSummary(snapshot))
 		<div class="dashboard-section-grid mt-4 grid min-w-0 gap-3 lg:grid-cols-3">
 			for _, lane := range prPipelineLanes(snapshot) {
 				@prPipelineLaneView(lane)
 			}
 		</div>
 	</section>
+}
+
+templ prPipelineMergeSummaryView(summary prPipelineMergeMetrics) {
+	if summary.Available {
+		<div class="mt-4 grid min-w-0 gap-2 sm:grid-cols-2 xl:grid-cols-7">
+			<div class={ "min-w-0 rounded-md border px-3 py-2 " + prPipelineMergeSummaryClass(summary.ActiveWarning) }>
+				<span class="block text-xs font-medium uppercase">Active</span>
+				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.ActiveElapsed }</span>
+			</div>
+			<div class={ "min-w-0 rounded-md border px-3 py-2 " + prPipelineMergeSummaryClass(summary.QueueWarning) }>
+				<span class="block text-xs font-medium uppercase">Queued</span>
+				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.QueueWait }</span>
+			</div>
+			<div class="min-w-0 rounded-md border border-border bg-card px-3 py-2 text-foreground">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Recent</span>
+				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.RecentCount }</span>
+			</div>
+			<div class="min-w-0 rounded-md border border-border bg-card px-3 py-2 text-foreground">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Active p50</span>
+				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.ActiveP50 }</span>
+			</div>
+			<div class="min-w-0 rounded-md border border-border bg-card px-3 py-2 text-foreground">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Active p90</span>
+				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.ActiveP90 }</span>
+			</div>
+			<div class="min-w-0 rounded-md border border-border bg-card px-3 py-2 text-foreground">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Total p50</span>
+				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.TotalP50 }</span>
+			</div>
+			<div class="min-w-0 rounded-md border border-border bg-card px-3 py-2 text-foreground">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Total p90</span>
+				<span class="mt-1 block truncate font-mono text-sm font-semibold">{ summary.TotalP90 }</span>
+			</div>
+		</div>
+	}
 }
 
 templ prPipelineLaneView(lane prPipelineLane) {

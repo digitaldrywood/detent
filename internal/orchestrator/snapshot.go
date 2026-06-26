@@ -2,6 +2,7 @@ package orchestrator
 
 import (
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -39,9 +40,9 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Events:      cloneActivityEvents(s.RecentEvents),
 		Refresh:     refresh,
 		BoardIssues: issueSnapshots(s.BoardIssues, s.AutoPromoteQuietDuration, s.PollInterval),
-		Pipeline:    pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval),
-		Running:     runningSnapshots(s.Running, s.Claimed, now),
-		Queue:       queueSnapshots(s.Retry, s.Claimed, now),
+		Pipeline:    pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now),
+		Running:     runningSnapshots(s.Running, s.Claimed, s.MergeTimings, now),
+		Queue:       queueSnapshots(s.Retry, s.Claimed, s.MergeTimings, now),
 		Blocked:     blockedSnapshots(s.Blocked, s.Claimed, now),
 		Completed:   completedSnapshots(s.Completed, s.Claimed, now),
 		RateLimits:  cloneRateLimits(s.RateLimits),
@@ -97,8 +98,20 @@ func instanceSnapshot(cfg Config) telemetry.Instance {
 	}
 }
 
-func pipelineSnapshots(issues []connector.Issue, quietDuration time.Duration, pollInterval time.Duration) []telemetry.Issue {
-	return issueSnapshots(issues, quietDuration, pollInterval)
+func pipelineSnapshots(
+	issues []connector.Issue,
+	quietDuration time.Duration,
+	pollInterval time.Duration,
+	mergeTimings map[string]MergeTiming,
+	now time.Time,
+) []telemetry.Issue {
+	out := make([]telemetry.Issue, 0, len(issues))
+	for _, issue := range issues {
+		item := telemetryIssue(issue, quietDuration, pollInterval)
+		applyMergeTimingSnapshot(&item, issue, mergeTimings[strings.TrimSpace(issue.ID)], now)
+		out = append(out, item)
+	}
+	return out
 }
 
 func issueSnapshots(issues []connector.Issue, quietDuration time.Duration, pollInterval time.Duration) []telemetry.Issue {
@@ -109,13 +122,18 @@ func issueSnapshots(issues []connector.Issue, quietDuration time.Duration, pollI
 	return out
 }
 
-func runningSnapshots(running map[string]Running, claims map[string]Claimed, now time.Time) []telemetry.Running {
+func runningSnapshots(running map[string]Running, claims map[string]Claimed, mergeTimings map[string]MergeTiming, now time.Time) []telemetry.Running {
 	ids := sortedKeys(running)
 	out := make([]telemetry.Running, 0, len(ids))
 	for _, id := range ids {
 		entry := running[id]
 		lastEventAt := timePointer(entry.LastEventAt)
 		issue := telemetryIssue(entry.Issue, 0, 0)
+		timing := mergeTimings[strings.TrimSpace(entry.Issue.ID)]
+		if mergeWorkerIssue(entry.Issue) && timing.MergeStartedAt.IsZero() && !entry.StartedAt.IsZero() {
+			timing.MergeStartedAt = entry.StartedAt
+		}
+		applyMergeTimingSnapshot(&issue, entry.Issue, timing, now)
 		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Running{
 			Issue:           issue,
@@ -140,12 +158,13 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, now
 	return out
 }
 
-func queueSnapshots(retry map[string]Retry, claims map[string]Claimed, now time.Time) []telemetry.Queued {
+func queueSnapshots(retry map[string]Retry, claims map[string]Claimed, mergeTimings map[string]MergeTiming, now time.Time) []telemetry.Queued {
 	ids := sortedKeys(retry)
 	out := make([]telemetry.Queued, 0, len(ids))
 	for _, id := range ids {
 		entry := retry[id]
 		issue := telemetryIssue(entry.Issue, 0, 0)
+		applyMergeTimingSnapshot(&issue, entry.Issue, mergeTimings[strings.TrimSpace(entry.Issue.ID)], now)
 		applyClaimSnapshot(&issue, claims[id], now)
 		queued := telemetry.Queued{
 			Issue:      issue,
@@ -190,6 +209,7 @@ func completedSnapshots(completed map[string]Completed, claims map[string]Claime
 	for _, id := range ids {
 		entry := completed[id]
 		issue := telemetryIssue(entry.Issue, 0, 0)
+		applyMergeTimingSnapshot(&issue, entry.Issue, entry.MergeTiming, entry.CompletedAt)
 		applyClaimSnapshot(&issue, claims[id], now)
 		out = append(out, telemetry.Completed{
 			Issue:          issue,
@@ -241,6 +261,54 @@ func applyClaimSnapshot(issue *telemetry.Issue, claim Claimed, now time.Time) {
 	issue.LeaseRenewedAt = timePointer(claim.LeaseRenewedAt)
 	issue.LeaseExpiresAt = timePointer(claim.LeaseExpiresAt)
 	issue.LeaseStale = !claim.LeaseExpiresAt.IsZero() && !now.Before(claim.LeaseExpiresAt)
+}
+
+func applyMergeTimingSnapshot(snapshot *telemetry.Issue, issue connector.Issue, timing MergeTiming, now time.Time) {
+	if snapshot == nil {
+		return
+	}
+	value, ok := telemetryMergeTiming(issue, timing, now)
+	if !ok {
+		return
+	}
+	snapshot.MergeTiming = &value
+}
+
+func telemetryMergeTiming(issue connector.Issue, timing MergeTiming, now time.Time) (telemetry.MergeTiming, bool) {
+	if timing == (MergeTiming{}) && !mergeWorkerIssue(issue) {
+		return telemetry.MergeTiming{}, false
+	}
+	if timing.EnteredMergingAt.IsZero() {
+		timing.EnteredMergingAt = mergeQueueEnteredAt(issue, now)
+	}
+	terminalAt := firstNonZeroTime(timing.MergedAt, timing.MergeFailedAt)
+	if terminalAt.IsZero() {
+		terminalAt = now
+	}
+	timing = timing.withDurations(terminalAt)
+	out := telemetry.MergeTiming{
+		EnteredMergingAt:           timePointer(timing.EnteredMergingAt),
+		MergeWorkerSlotAcquiredAt:  timePointer(timing.MergeWorkerSlotAcquiredAt),
+		MergeStartedAt:             timePointer(timing.MergeStartedAt),
+		BaseRefreshStartedAt:       timePointer(timing.BaseRefreshStartedAt),
+		BaseRefreshFinishedAt:      timePointer(timing.BaseRefreshFinishedAt),
+		CIWaitStartedAt:            timePointer(timing.CIWaitStartedAt),
+		CIWaitFinishedAt:           timePointer(timing.CIWaitFinishedAt),
+		MergedAt:                   timePointer(timing.MergedAt),
+		MergeFailedAt:              timePointer(timing.MergeFailedAt),
+		MergeFailureReason:         timing.MergeFailureReason,
+		QueueWaitSeconds:           timing.QueueWaitSeconds,
+		ActiveMergeDurationSeconds: timing.ActiveMergeDurationSeconds,
+		TotalMergingSeconds:        timing.TotalMergingSeconds,
+		Repository:                 pullRequestRepository(issue),
+		PullRequestNumber:          pullRequestNumber(issue),
+		IssueNumber:                issueNumberFromIdentifier(issue.Identifier),
+	}
+	if issue.PullRequest != nil {
+		out.HeadSHA = strings.TrimSpace(issue.PullRequest.HeadSHA)
+		out.BaseSHA = strings.TrimSpace(issue.PullRequest.BaseSHA)
+	}
+	return out, true
 }
 
 func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInterval time.Duration) telemetry.Issue {
@@ -300,6 +368,8 @@ func telemetryPullRequest(issue connector.Issue, quietDuration time.Duration, po
 		BranchName:                 pullRequest.BranchName,
 		State:                      pullRequest.State,
 		MergeableState:             pullRequest.MergeableState,
+		HeadSHA:                    pullRequest.HeadSHA,
+		BaseSHA:                    pullRequest.BaseSHA,
 		HydrationUnavailableReason: pullRequest.HydrationUnavailableReason,
 		HydrationDegradedReason:    pullRequest.HydrationDegradedReason,
 		HydrationNextRetryAt:       cloneTime(pullRequest.HydrationNextRetryAt),

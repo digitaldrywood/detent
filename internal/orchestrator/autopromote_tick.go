@@ -80,6 +80,9 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if targetState == autoPromoteMergingState {
 			promoted := cloneIssue(issue)
 			promoted.State = targetState
+			promotedAt := now.UTC()
+			promoted.StageUpdatedAt = &promotedAt
+			o.recordMergeQueueEntered(state, promoted, now, "auto_promote")
 			result.dispatchCandidates = append(result.dispatchCandidates, promoted)
 			o.logMergeWorkerPickup(promoted, "auto_promote")
 		}
@@ -135,6 +138,7 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 	now time.Time,
 ) map[string]struct{} {
 	transitioned := map[string]struct{}{}
+	o.recordMergeQueueEntries(state, issues, now, "tracker")
 	consumedRepositories := activeMergeWorkerRepositories(state)
 	for _, issue := range staleMergingQueueIssues(issues, o.cfg) {
 		issueID := strings.TrimSpace(issue.ID)
@@ -241,6 +245,11 @@ func (o *Orchestrator) applyStaleMergingPullRequestDecision(
 	}
 
 	o.logStaleMergingPullRequestDecision(issue, decision)
+	if normalizeState(decision.targetState) == normalizeState(doneStateName(o.cfg.TerminalStates)) {
+		o.recordMergeCompleted(state, issue, now, decision.targetState)
+	} else {
+		o.recordMergeFailed(state, issue, now, decision.reason, nil)
+	}
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      now,
 		Event:   "stale_merging_pr_reconciled",
@@ -345,11 +354,14 @@ func (o *Orchestrator) logMergeWorkerSlotAcquired(
 	issue connector.Issue,
 	decision scheduler.DispatchGateDecision,
 	projectStats projectStateSlotStats,
+	timing MergeTiming,
 ) {
 	if o.logger == nil || !mergeWorkerIssue(issue) {
 		return
 	}
-	o.logger.Info("merge_worker_slot_acquired", mergeWorkerSlotDecisionAttrs(issue, decision, projectStats)...)
+	attrs := mergeWorkerSlotDecisionAttrs(issue, decision, projectStats)
+	attrs = append(attrs, mergeTimingAttrs(timing)...)
+	o.logger.Info("merge_worker_slot_acquired", attrs...)
 }
 
 func (o *Orchestrator) logDispatchSlotWait(
@@ -447,6 +459,7 @@ func (o *Orchestrator) failStalledMergeWorkerStarts(state *State, now time.Time)
 		}
 		err := fmt.Errorf("merge worker did not report process or session startup within %s", timeout)
 		o.logMergeWorkerFailure(running.Issue, "runner_startup_timeout", err)
+		o.recordMergeFailed(state, running.Issue, now, "runner_startup_timeout", err)
 		o.releaseGlobalDispatchSlot(running.globalSlot)
 		if running.cancel != nil {
 			running.cancel()
@@ -493,6 +506,9 @@ func mergeWorkerLogAttrs(issue connector.Issue, attrs ...any) []any {
 		if issue.PullRequest.Number > 0 {
 			out = append(out, "pull_request_number", issue.PullRequest.Number)
 		}
+		if repository := pullRequestRepository(issue); repository != "" {
+			out = append(out, "repository", repository)
+		}
 		if url := strings.TrimSpace(issue.PullRequest.URL); url != "" {
 			out = append(out, "pull_request", url)
 		}
@@ -504,6 +520,9 @@ func mergeWorkerLogAttrs(issue connector.Issue, attrs ...any) []any {
 		}
 		if headSHA := strings.TrimSpace(issue.PullRequest.HeadSHA); headSHA != "" {
 			out = append(out, "head_sha", headSHA)
+		}
+		if baseSHA := strings.TrimSpace(issue.PullRequest.BaseSHA); baseSHA != "" {
+			out = append(out, "base_sha", baseSHA)
 		}
 		if reason := pullRequestHydrationUnavailableReason(issue.PullRequest); reason != "" {
 			out = append(out, "pull_request_hydration_reason", reason)

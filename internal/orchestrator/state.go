@@ -33,6 +33,7 @@ type State struct {
 	Blocked                  map[string]Blocked
 	Completed                map[string]Completed
 	Retry                    map[string]Retry
+	MergeTimings             map[string]MergeTiming
 	BudgetRefusals           map[string]BudgetRefusal
 	DiffStats                map[string]DiffStats
 	ReapedWorkspaces         map[string]time.Time
@@ -92,6 +93,23 @@ type Completed struct {
 	CompletedAt time.Time
 	FinalState  string
 	Tokens      CodexTotals
+	MergeTiming MergeTiming
+}
+
+type MergeTiming struct {
+	EnteredMergingAt           time.Time
+	MergeWorkerSlotAcquiredAt  time.Time
+	MergeStartedAt             time.Time
+	BaseRefreshStartedAt       time.Time
+	BaseRefreshFinishedAt      time.Time
+	CIWaitStartedAt            time.Time
+	CIWaitFinishedAt           time.Time
+	MergedAt                   time.Time
+	MergeFailedAt              time.Time
+	MergeFailureReason         string
+	QueueWaitSeconds           int64
+	ActiveMergeDurationSeconds int64
+	TotalMergingSeconds        int64
 }
 
 type Retry struct {
@@ -113,6 +131,7 @@ func newState(cfg Config) State {
 		Blocked:                  map[string]Blocked{},
 		Completed:                map[string]Completed{},
 		Retry:                    map[string]Retry{},
+		MergeTimings:             map[string]MergeTiming{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
 		DiffStats:                map[string]DiffStats{},
 		ReapedWorkspaces:         map[string]time.Time{},
@@ -145,6 +164,7 @@ func (s State) clone() State {
 		Blocked:                  make(map[string]Blocked, len(s.Blocked)),
 		Completed:                make(map[string]Completed, len(s.Completed)),
 		Retry:                    make(map[string]Retry, len(s.Retry)),
+		MergeTimings:             maps.Clone(s.MergeTimings),
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),

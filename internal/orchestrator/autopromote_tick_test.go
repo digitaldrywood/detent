@@ -1360,6 +1360,9 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 24, 19, 0, 0, 0, time.UTC)
+	enteredAt := now.Add(-8 * time.Minute)
+	slotAcquiredAt := now.Add(-6 * time.Minute)
+	startedAt := now.Add(-5 * time.Minute)
 	cfg := normalizeConfig(Config{
 		PollInterval:        time.Minute,
 		MaxConcurrentAgents: 1,
@@ -1372,13 +1375,20 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 		State:          "OPEN",
 		MergeableState: "clean",
 		CIStatus:       "success",
+		HeadSHA:        "head-merge-log",
+		BaseSHA:        "base-merge-log",
 	})
 	issue.State = "Merging"
 	issue.Identifier = "digitaldrywood/creswoodcorners-phone#65"
 
 	var failureLogs strings.Builder
 	failureState := newState(cfg)
-	failureState.Running[issue.ID] = Running{Issue: cloneIssue(issue), StartedAt: now.Add(-time.Minute)}
+	failureState.MergeTimings[issue.ID] = MergeTiming{
+		EnteredMergingAt:          enteredAt,
+		MergeWorkerSlotAcquiredAt: slotAcquiredAt,
+		MergeStartedAt:            startedAt,
+	}
+	failureState.Running[issue.ID] = Running{Issue: cloneIssue(issue), StartedAt: startedAt}
 	failureOrch := &Orchestrator{
 		cfg:    cfg,
 		logger: slog.New(slog.NewTextHandler(&failureLogs, nil)),
@@ -1388,10 +1398,22 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 		CompletedAt: now,
 		Err:         errors.New("merge command failed"),
 	})
-	for _, fragment := range []string{"merge_worker_failure", "reason=runner_failed", "merge command failed"} {
+	for _, fragment := range []string{
+		"merge_failed",
+		"reason=runner_failed",
+		"merge command failed",
+		"queue_wait_seconds=120",
+		"active_merge_duration_seconds=300",
+		"total_merging_seconds=480",
+		"head_sha=head-merge-log",
+		"base_sha=base-merge-log",
+	} {
 		if !strings.Contains(failureLogs.String(), fragment) {
 			t.Fatalf("failure logs %q missing fragment %q", failureLogs.String(), fragment)
 		}
+	}
+	if timing := failureState.MergeTimings[issue.ID]; timing.MergeFailedAt.IsZero() || timing.MergeFailureReason != "runner_failed" {
+		t.Fatalf("failure MergeTimings[%q] = %#v, want failed terminal state", issue.ID, timing)
 	}
 
 	var successLogs strings.Builder
@@ -1399,17 +1421,35 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 	successIssue.Closed = true
 	successIssue.ClosedReason = "completed"
 	successState := newState(cfg)
-	successState.Running[successIssue.ID] = Running{Issue: cloneIssue(successIssue), StartedAt: now.Add(-time.Minute)}
+	successState.MergeTimings[successIssue.ID] = MergeTiming{
+		EnteredMergingAt:          enteredAt,
+		MergeWorkerSlotAcquiredAt: slotAcquiredAt,
+		MergeStartedAt:            startedAt,
+	}
+	successState.Running[successIssue.ID] = Running{Issue: cloneIssue(successIssue), StartedAt: startedAt}
 	successOrch := &Orchestrator{
 		cfg:       cfg,
 		connector: &autoPromoteTickConnector{stateIssues: []connector.Issue{successIssue}},
 		logger:    slog.New(slog.NewTextHandler(&successLogs, nil)),
 	}
 	successOrch.completeTerminalRunning(context.Background(), &successState, successIssue.ID, successState.Running[successIssue.ID], now, CodexTotals{})
-	for _, fragment := range []string{"merge_worker_success", "final_state=Done", "pull_request_number=73"} {
+	for _, fragment := range []string{
+		"merge_completed",
+		"final_state=Done",
+		"pull_request_number=73",
+		"queue_wait_seconds=120",
+		"active_merge_duration_seconds=300",
+		"total_merging_seconds=480",
+		"head_sha=head-merge-log",
+		"base_sha=base-merge-log",
+	} {
 		if !strings.Contains(successLogs.String(), fragment) {
 			t.Fatalf("success logs %q missing fragment %q", successLogs.String(), fragment)
 		}
+	}
+	completed := successState.Completed[successIssue.ID]
+	if completed.MergeTiming.MergedAt.IsZero() || completed.MergeTiming.ActiveMergeDurationSeconds != 300 {
+		t.Fatalf("Completed[%q].MergeTiming = %#v, want successful terminal durations", successIssue.ID, completed.MergeTiming)
 	}
 }
 
