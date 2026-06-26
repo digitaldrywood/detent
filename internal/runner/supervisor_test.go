@@ -3,7 +3,9 @@ package runner
 import (
 	"context"
 	"errors"
+	"log/slog"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -200,6 +202,119 @@ func TestSupervisorDispatchSendsCompletion(t *testing.T) {
 	}
 }
 
+func TestSupervisorDispatchDeliversCompletionAfterContextCancellation(t *testing.T) {
+	backend := &cancelCompletionBackend{
+		returning: make(chan struct{}),
+		release:   make(chan struct{}),
+	}
+	supervisor, err := NewSupervisor(backend, SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       time.Minute,
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	completions := make(chan Completion)
+	supervisor.Dispatch(ctx, RunRequest{
+		Issue: connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/detent#22"},
+	}, completions)
+
+	cancel()
+	select {
+	case <-backend.returning:
+	case <-time.After(time.Second):
+		t.Fatal("backend did not observe cancellation")
+	}
+	close(backend.release)
+
+	select {
+	case completion := <-completions:
+		if !errors.Is(completion.Err, context.Canceled) {
+			t.Fatalf("Completion.Err = %v, want context.Canceled", completion.Err)
+		}
+		if !completion.Retryable {
+			t.Fatal("Retryable = false, want true")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for canceled completion")
+	}
+}
+
+func TestSupervisorDispatchStopsBlockedSendAfterCancellation(t *testing.T) {
+	t.Parallel()
+
+	returned := make(chan struct{})
+	logs := newSignalLog("runner completion delivery timed out after context cancellation")
+	supervisor, err := NewSupervisor(staticBackend{
+		result:   RunResult{FinalState: FinalStateCompleted},
+		returned: returned,
+	}, SupervisorConfig{
+		FailureRetryBaseDelay: time.Second,
+		MaxRetryBackoff:       time.Minute,
+		Logger:                slog.New(slog.NewTextHandler(logs, nil)),
+	})
+	if err != nil {
+		t.Fatalf("NewSupervisor() error = %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+
+	supervisor.Dispatch(ctx, RunRequest{
+		Issue: connector.Issue{ID: "issue-22", Identifier: "digitaldrywood/detent#22"},
+	}, make(chan Completion))
+
+	select {
+	case <-returned:
+	case <-time.After(time.Second):
+		t.Fatal("backend did not return")
+	}
+	cancel()
+
+	select {
+	case <-logs.signal:
+	case <-time.After(time.Second):
+		t.Fatalf("logs %q missing blocked completion timeout", logs.String())
+	}
+}
+
+type signalLog struct {
+	mu       sync.Mutex
+	body     strings.Builder
+	fragment string
+	signal   chan struct{}
+	once     sync.Once
+}
+
+func newSignalLog(fragment string) *signalLog {
+	return &signalLog{
+		fragment: fragment,
+		signal:   make(chan struct{}),
+	}
+}
+
+func (l *signalLog) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	_, _ = l.body.Write(p)
+	if strings.Contains(l.body.String(), l.fragment) {
+		l.once.Do(func() {
+			close(l.signal)
+		})
+	}
+	return len(p), nil
+}
+
+func (l *signalLog) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	return l.body.String()
+}
+
 type panicBackend struct{}
 
 func (panicBackend) Run(context.Context, RunRequest) (RunResult, error) {
@@ -213,9 +328,25 @@ func (errorBackend) Run(context.Context, RunRequest) (RunResult, error) {
 }
 
 type staticBackend struct {
-	result RunResult
+	result   RunResult
+	returned chan struct{}
 }
 
 func (b staticBackend) Run(context.Context, RunRequest) (RunResult, error) {
+	if b.returned != nil {
+		close(b.returned)
+	}
 	return b.result, nil
+}
+
+type cancelCompletionBackend struct {
+	returning chan struct{}
+	release   chan struct{}
+}
+
+func (b *cancelCompletionBackend) Run(ctx context.Context, _ RunRequest) (RunResult, error) {
+	<-ctx.Done()
+	close(b.returning)
+	<-b.release
+	return RunResult{}, ctx.Err()
 }

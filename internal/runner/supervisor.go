@@ -13,6 +13,7 @@ import (
 const (
 	defaultSupervisorMaxRetryBackoff       = 5 * time.Minute
 	defaultSupervisorFailureRetryBaseDelay = 10 * time.Second
+	defaultCompletionDeliveryGrace         = 250 * time.Millisecond
 )
 
 var ErrMissingRunner = errors.New("runner backend is required")
@@ -88,9 +89,34 @@ func (s *Supervisor) UpdateConfig(cfg SupervisorConfig) {
 func (s *Supervisor) Dispatch(ctx context.Context, request RunRequest, completions chan<- Completion) {
 	go func() {
 		completion := s.Run(ctx, request)
+		if completions == nil {
+			return
+		}
 		select {
 		case completions <- completion:
+			return
+		default:
+		}
+		if ctx == nil {
+			completions <- completion
+			return
+		}
+		select {
+		case completions <- completion:
+			return
 		case <-ctx.Done():
+		}
+		timer := time.NewTimer(defaultCompletionDeliveryGrace)
+		defer timer.Stop()
+		select {
+		case completions <- completion:
+		case <-timer.C:
+			s.logger.Warn(
+				"runner completion delivery timed out after context cancellation",
+				slog.String("issue_id", request.Issue.ID),
+				slog.String("issue_identifier", request.Issue.Identifier),
+				slog.Any("error", completion.Err),
+			)
 		}
 	}()
 }
