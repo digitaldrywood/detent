@@ -1143,6 +1143,16 @@ func TestProjectKanbanCompactChipsSummarizeSecondaryMetadata(t *testing.T) {
 			},
 			want: []string{"2m 0s", "CI pass", "Codex P2", "1 assignee", "2 labels"},
 		},
+		{
+			name: "merge-lane-active",
+			card: projectKanbanCard{
+				TimeInStage:     "1m 0s",
+				MergeLaneStatus: "Merging now",
+				MergeLaneDetail: "Active merge worker for PR #143; running checks",
+				MergeLaneClass:  "border-accent-soft bg-accent-soft text-accent",
+			},
+			want: []string{"1m 0s", "Merging now"},
+		},
 	}
 
 	for _, tt := range tests {
@@ -1157,6 +1167,168 @@ func TestProjectKanbanCompactChipsSummarizeSecondaryMetadata(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestProjectKanbanBoardShowsMergeLaneStatus(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 18, 0, 0, 0, time.UTC)
+	activeAt := now.Add(-3 * time.Minute)
+	queuedAt := now.Add(-2 * time.Minute)
+
+	board := projectKanbanBoardView(DashboardData{
+		Kanban: KanbanData{
+			States: []string{"Merging"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Pipeline: []telemetry.Issue{
+				{
+					ID:             "active",
+					Identifier:     "digitaldrywood/detent#143",
+					Title:          "Active merge",
+					State:          "Merging",
+					StageUpdatedAt: &activeAt,
+					PullRequest: &telemetry.PullRequest{
+						Number: 143,
+						URL:    "https://github.com/digitaldrywood/detent/pull/143",
+					},
+				},
+				{
+					ID:             "queued",
+					Identifier:     "digitaldrywood/detent#144",
+					Title:          "Queued merge",
+					State:          "Merging",
+					StageUpdatedAt: &queuedAt,
+					PullRequest: &telemetry.PullRequest{
+						Number: 144,
+						URL:    "https://github.com/digitaldrywood/detent/pull/144",
+					},
+				},
+			},
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "active",
+						Identifier: "digitaldrywood/detent#143",
+						Title:      "Active merge",
+						State:      "Merging",
+						PullRequest: &telemetry.PullRequest{
+							Number: 143,
+							URL:    "https://github.com/digitaldrywood/detent/pull/143",
+						},
+					},
+					StartedAt: activeAt,
+					LastEvent: "running checks",
+				},
+			},
+			Queue: []telemetry.Queued{
+				{
+					Issue: telemetry.Issue{
+						ID:             "queued",
+						Identifier:     "digitaldrywood/detent#144",
+						Title:          "Queued merge",
+						State:          "Merging",
+						StageUpdatedAt: &queuedAt,
+						PullRequest: &telemetry.PullRequest{
+							Number: 144,
+							URL:    "https://github.com/digitaldrywood/detent/pull/144",
+						},
+					},
+					Attempt: 1,
+					Error:   "project_state_capacity_full",
+				},
+			},
+		},
+	})
+
+	got := collectKanbanCards(board.AllLanes)
+	want := []kanbanCardSnapshot{
+		{Lane: "Merging", IssueNumber: "#143", Title: "Active merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "3m 0s", Metadata: "PR #143", MergeLaneStatus: "Merging now", MergeLaneDetail: "Active merge worker for PR #143; running checks"},
+		{Lane: "Merging", IssueNumber: "#144", Title: "Queued merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #144", MergeLaneStatus: "Queued #2", MergeLaneDetail: "Waiting: project_state_capacity_full; 2nd in merge queue; waiting for repo merge lane behind PR #143"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("kanban card %d = %#v, want %#v", i, got[i], want[i])
+		}
+	}
+}
+
+func TestProjectKanbanBoardScopesMergeLaneStatusByProject(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 20, 0, 0, 0, time.UTC)
+	activeAt := now.Add(-5 * time.Minute)
+	queuedAt := now.Add(-2 * time.Minute)
+
+	board := projectKanbanBoardView(DashboardData{
+		Kanban: KanbanData{
+			States: []string{"Merging"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Pipeline: []telemetry.Issue{
+				{
+					ID:             "local-1",
+					Identifier:     "digitaldrywood/detent#143",
+					ProjectID:      "detent",
+					Title:          "Active merge",
+					State:          "Merging",
+					StageUpdatedAt: &activeAt,
+					PullRequest: &telemetry.PullRequest{
+						Number: 143,
+						URL:    "https://github.com/digitaldrywood/detent/pull/143",
+					},
+				},
+				{
+					ID:             "local-1",
+					Identifier:     "digitaldrywood/docs-site#27",
+					ProjectID:      "docs-site",
+					Title:          "Queued docs merge",
+					State:          "Merging",
+					StageUpdatedAt: &queuedAt,
+					PullRequest: &telemetry.PullRequest{
+						Number: 27,
+						URL:    "https://github.com/digitaldrywood/docs-site/pull/27",
+					},
+				},
+			},
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:         "local-1",
+						Identifier: "digitaldrywood/detent#143",
+						ProjectID:  "detent",
+						Title:      "Active merge",
+						State:      "Merging",
+						PullRequest: &telemetry.PullRequest{
+							Number: 143,
+							URL:    "https://github.com/digitaldrywood/detent/pull/143",
+						},
+					},
+					StartedAt: activeAt,
+					LastEvent: "running checks",
+				},
+			},
+		},
+	})
+
+	got := collectKanbanCards(board.AllLanes)
+	want := []kanbanCardSnapshot{
+		{Lane: "Merging", IssueNumber: "#143", Title: "Active merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "5m 0s", Metadata: "PR #143", MergeLaneStatus: "Merging now", MergeLaneDetail: "Active merge worker for PR #143; running checks"},
+		{Lane: "Merging", IssueNumber: "#27", Title: "Queued docs merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #27", MergeLaneStatus: "Queued #1", MergeLaneDetail: "1st in merge queue; waiting for repo merge lane"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("kanban card %d = %#v, want %#v", i, got[i], want[i])
+		}
 	}
 }
 
@@ -1680,7 +1852,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 			},
 			want: []pipelineCardSnapshot{
 				{Lane: "Human Review", IssueNumber: "#142", Title: "Review lane PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2h 0m", WaitDetail: "PR hydration using stale cached data until 15:05 UTC"},
-				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / queued 2m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s (queued 1m 0s) / running Test Coverage"},
+				{Lane: "Merging", IssueNumber: "#143", Title: "Merge lane PR", CIStatus: "pending", CodexReviewState: "P2", TimeInStage: "15m 0s", WaitDetail: "quiet 10m 0s / queued 2m 0s / CI 8m 30s / slow GoReleaser Snapshot 4m 7s (queued 1m 0s) / running Test Coverage", MergeLaneStatus: "Queued #1", MergeLaneDetail: "1st in merge queue; waiting for repo merge lane"},
 				{Lane: "Done today", IssueNumber: "#144", Title: "Done lane PR", CIStatus: "pass", CodexReviewState: "P1", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#145", Title: "Done lane unverified PR", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "45m 0s"},
 				{Lane: "Done today", IssueNumber: "#146", Title: "Cancelled today PR", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "45m 0s"},
@@ -1703,7 +1875,7 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				},
 			},
 			want: []pipelineCardSnapshot{
-				{Lane: "Merging", IssueNumber: "#21", Title: "Merge session", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "5m 0s"},
+				{Lane: "Merging", IssueNumber: "#21", Title: "Merge session", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "5m 0s", MergeLaneStatus: "Merging now", MergeLaneDetail: "Active merge worker"},
 			},
 		},
 		{
@@ -1729,6 +1901,71 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestPRPipelineLanesShowMergeLaneStatus(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 19, 0, 0, 0, time.UTC)
+	activeAt := now.Add(-4 * time.Minute)
+	queuedAt := now.Add(-2 * time.Minute)
+	snapshot := telemetry.Snapshot{
+		GeneratedAt: now,
+		Pipeline: []telemetry.Issue{
+			{
+				ID:             "active",
+				Identifier:     "digitaldrywood/detent#143",
+				Title:          "Active merge",
+				State:          "Merging",
+				StageUpdatedAt: &activeAt,
+				PullRequest: &telemetry.PullRequest{
+					Number: 143,
+					URL:    "https://github.com/digitaldrywood/detent/pull/143",
+				},
+			},
+			{
+				ID:             "queued",
+				Identifier:     "digitaldrywood/detent#144",
+				Title:          "Queued merge",
+				State:          "Merging",
+				StageUpdatedAt: &queuedAt,
+				PullRequest: &telemetry.PullRequest{
+					Number: 144,
+					URL:    "https://github.com/digitaldrywood/detent/pull/144",
+				},
+			},
+		},
+		Running: []telemetry.Running{
+			{
+				Issue: telemetry.Issue{
+					ID:         "active",
+					Identifier: "digitaldrywood/detent#143",
+					Title:      "Active merge",
+					State:      "Merging",
+					PullRequest: &telemetry.PullRequest{
+						Number: 143,
+						URL:    "https://github.com/digitaldrywood/detent/pull/143",
+					},
+				},
+				StartedAt: activeAt,
+				LastEvent: "squash merging",
+			},
+		},
+	}
+
+	got := collectPipelineCards(prPipelineLanes(snapshot))
+	want := []pipelineCardSnapshot{
+		{Lane: "Merging", IssueNumber: "#144", Title: "Queued merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "2m 0s", MergeLaneStatus: "Queued #2", MergeLaneDetail: "2nd in merge queue; waiting for repo merge lane behind PR #143"},
+		{Lane: "Merging", IssueNumber: "#143", Title: "Active merge", CIStatus: "pending", CodexReviewState: "clean", TimeInStage: "4m 0s", MergeLaneStatus: "Merging now", MergeLaneDetail: "Active merge worker for PR #143; squash merging"},
+	}
+	if len(got) != len(want) {
+		t.Fatalf("pipeline cards len = %d, want %d; got %#v", len(got), len(want), got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("pipeline card %d = %#v, want %#v", i, got[i], want[i])
+		}
 	}
 }
 
@@ -1890,7 +2127,7 @@ func TestPRPipelineLanesUseTrackerStateWhenCompletedSessionAlsoExists(t *testing
 
 	got := collectPipelineCards(prPipelineLanes(snapshot))
 	want := []pipelineCardSnapshot{
-		{Lane: "Merging", IssueNumber: "#552", Title: "Keep completed implementation visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "30s"},
+		{Lane: "Merging", IssueNumber: "#552", Title: "Keep completed implementation visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "30s", MergeLaneStatus: "Queued #1", MergeLaneDetail: "1st in merge queue; waiting for repo merge lane"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("pipeline cards len = %d, want %d; got %#v", len(got), len(want), got)
@@ -1966,6 +2203,8 @@ type pipelineCardSnapshot struct {
 	CodexReviewState string
 	TimeInStage      string
 	WaitDetail       string
+	MergeLaneStatus  string
+	MergeLaneDetail  string
 }
 
 func collectPipelineCards(lanes []prPipelineLane) []pipelineCardSnapshot {
@@ -1980,6 +2219,8 @@ func collectPipelineCards(lanes []prPipelineLane) []pipelineCardSnapshot {
 				CodexReviewState: card.CodexReviewState,
 				TimeInStage:      card.TimeInStage,
 				WaitDetail:       card.WaitDetail,
+				MergeLaneStatus:  card.MergeLaneStatus,
+				MergeLaneDetail:  card.MergeLaneDetail,
 			})
 		}
 	}
@@ -2000,6 +2241,8 @@ type kanbanCardSnapshot struct {
 	Blockers         string
 	ClearedBlockers  string
 	Metadata         string
+	MergeLaneStatus  string
+	MergeLaneDetail  string
 }
 
 func collectKanbanCards(lanes []projectKanbanLane) []kanbanCardSnapshot {
@@ -2020,6 +2263,8 @@ func collectKanbanCards(lanes []projectKanbanLane) []kanbanCardSnapshot {
 				Blockers:         strings.Join(card.Blockers, ", "),
 				ClearedBlockers:  strings.Join(card.ClearedBlockers, ", "),
 				Metadata:         card.PullRequestLabel,
+				MergeLaneStatus:  card.MergeLaneStatus,
+				MergeLaneDetail:  card.MergeLaneDetail,
 			})
 		}
 	}
