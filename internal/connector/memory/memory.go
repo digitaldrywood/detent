@@ -17,6 +17,7 @@ const (
 	EventKindStateUpdate        EventKind = "memory_tracker_state_update"
 	EventKindAssigneeUpdate     EventKind = "memory_tracker_assignee_update"
 	EventKindFieldUpdate        EventKind = "memory_tracker_field_update"
+	EventKindProjectRemove      EventKind = "memory_tracker_project_remove"
 	EventKindClose              EventKind = "memory_tracker_close"
 )
 
@@ -61,6 +62,7 @@ var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
+var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
 
 func New(cfg Config) *Connector {
@@ -286,6 +288,26 @@ func (c *Connector) SetField(_ context.Context, issueID string, fieldName string
 		issue.UpdatedAt = &now
 	})
 	c.send(Event{Kind: EventKindFieldUpdate, IssueID: issueID, FieldName: fieldName, FieldValue: value})
+	return nil
+}
+
+func (c *Connector) RemoveIssueFromProject(_ context.Context, issueID string) error {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return connector.ErrNotImplemented
+	}
+	if c.stateful {
+		c.mu.Lock()
+		issues := c.issues[:0]
+		for _, issue := range c.issues {
+			if strings.TrimSpace(issue.ID) != issueID {
+				issues = append(issues, issue)
+			}
+		}
+		c.issues = issues
+		c.mu.Unlock()
+	}
+	c.send(Event{Kind: EventKindProjectRemove, IssueID: issueID})
 	return nil
 }
 

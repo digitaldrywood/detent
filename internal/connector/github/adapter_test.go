@@ -2449,6 +2449,34 @@ func TestConnectorSetIssueFieldUsesIssueFieldEndpoint(t *testing.T) {
 	}
 }
 
+func TestConnectorClearIssueFieldUsesIssueFieldEndpoint(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_kw28","number":28,"repository":{"nameWithOwner":"digitaldrywood/detent"}}]}}`,
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/repos/digitaldrywood/detent/issues/28/issue-field-values/123",
+			status: http.StatusNoContent,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+
+	if err := c.ClearIssueField(context.Background(), "I_kw28", 123); err != nil {
+		t.Fatalf("ClearIssueField() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want 2", len(requests))
+	}
+	if requests[1]["method"] != http.MethodDelete || requests[1]["path"] != "/repos/digitaldrywood/detent/issues/28/issue-field-values/123" {
+		t.Fatalf("issue field request = %#v, want REST issue field delete", requests[1])
+	}
+}
+
 func TestConnectorCloseIssueCallsCloseIssue(t *testing.T) {
 	t.Parallel()
 
@@ -2519,6 +2547,44 @@ func TestConnectorUpdateIssueStateWritesStatusOptionID(t *testing.T) {
 	}
 	if variables["optionId"] == "Ready" {
 		t.Fatal("optionId used the option name, want option id")
+	}
+}
+
+func TestConnectorRemoveIssueFromProjectDeletesProjectV2Item(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"}}]}}}}`},
+		{body: `{"data":{"deleteProjectV2Item":{"deletedItemId":"PVTI_1"}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+	})
+
+	if err := c.RemoveIssueFromProject(context.Background(), "I_kw1"); err != nil {
+		t.Fatalf("RemoveIssueFromProject() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want project item lookup and delete", len(requests))
+	}
+	deleteQuery := requests[1]["query"].(string)
+	if !strings.Contains(deleteQuery, "deleteProjectV2Item") {
+		t.Fatalf("query = %q, want deleteProjectV2Item", deleteQuery)
+	}
+	if strings.Contains(deleteQuery, "rateLimit") {
+		t.Fatalf("query = %q, want no rateLimit on mutation root", deleteQuery)
+	}
+	variables := requests[1]["variables"].(map[string]any)
+	want := map[string]any{
+		"projectId": "PVT_1",
+		"itemId":    "PVTI_1",
+	}
+	for key, value := range want {
+		if variables[key] != value {
+			t.Fatalf("%s = %v, want %v", key, variables[key], value)
+		}
 	}
 }
 

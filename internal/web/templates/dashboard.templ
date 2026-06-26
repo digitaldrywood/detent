@@ -2206,6 +2206,9 @@ templ projectKanbanActionButtons(data DashboardData, card projectKanbanCard) {
 			@projectKanbanMoveDialogTrigger(data, card)
 			@projectKanbanDragMoveForm(data, card)
 		}
+		if projectKanbanCardCanRemove(data, card) {
+			@projectKanbanRemoveForm(data, card)
+		}
 		@projectKanbanCommentDialogTriggers(data, card)
 	</div>
 }
@@ -2241,6 +2244,30 @@ templ projectKanbanDragMoveForm(data DashboardData, card projectKanbanCard) {
 		<input type="hidden" name="target_state" value="" data-kanban-drag-target-state/>
 		if card.PRNumber > 0 {
 			<input type="hidden" name="pr_number" value={ strconv.Itoa(card.PRNumber) }/>
+		}
+	</form>
+}
+
+templ projectKanbanRemoveForm(data DashboardData, card projectKanbanCard) {
+	<form class="inline-flex" hx-post="/api/v1/kanban/remove" hx-target="#kanban-feedback" hx-swap="outerHTML" hx-confirm="Remove this item from project?">
+		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
+		<input type="hidden" name="issue_id" value={ card.IssueID }/>
+		<input type="hidden" name="current_state" value={ card.Stage }/>
+		if card.PRNumber > 0 {
+			<input type="hidden" name="pr_number" value={ strconv.Itoa(card.PRNumber) }/>
+		}
+		@button.Button(button.Props{
+			Type:    button.TypeSubmit,
+			Size:    button.SizeIcon,
+			Variant: button.VariantGhost,
+			Class:   "size-8 border border-danger-soft bg-card text-danger hover:border-danger hover:bg-danger-soft hover:text-danger focus-visible:ring-danger",
+			Attributes: templ.Attributes{
+				"aria-label": "Remove " + card.IssueNumber + " from project",
+				"title":      "Remove from project",
+			},
+		}) {
+			@icon.FolderMinus(icon.Props{Class: "size-4"})
+			<span class="sr-only">Remove from project</span>
 		}
 	</form>
 }
@@ -2641,6 +2668,9 @@ templ kanbanActionButtons(data DashboardData, card kanbanCard) {
 			@kanbanMoveDialogTrigger(data, card)
 			@kanbanDragMoveForm(data, card)
 		}
+		if kanbanCardCanRemove(data, card) {
+			@kanbanRemoveForm(data, card)
+		}
 		@kanbanCommentDialogTriggers(data, card)
 	</div>
 }
@@ -2676,6 +2706,30 @@ templ kanbanDragMoveForm(data DashboardData, card kanbanCard) {
 		<input type="hidden" name="target_state" value="" data-kanban-drag-target-state/>
 		if card.PRNumber > 0 {
 			<input type="hidden" name="pr_number" value={ strconv.Itoa(card.PRNumber) }/>
+		}
+	</form>
+}
+
+templ kanbanRemoveForm(data DashboardData, card kanbanCard) {
+	<form class="inline-flex" hx-post="/api/v1/kanban/remove" hx-target="#kanban-feedback" hx-swap="outerHTML" hx-confirm="Remove this item from project?">
+		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
+		<input type="hidden" name="issue_id" value={ card.IssueID }/>
+		<input type="hidden" name="current_state" value={ card.State }/>
+		if card.PRNumber > 0 {
+			<input type="hidden" name="pr_number" value={ strconv.Itoa(card.PRNumber) }/>
+		}
+		@button.Button(button.Props{
+			Type:    button.TypeSubmit,
+			Size:    button.SizeIcon,
+			Variant: button.VariantGhost,
+			Class:   "size-8 border border-danger-soft bg-card text-danger hover:border-danger hover:bg-danger-soft hover:text-danger focus-visible:ring-danger",
+			Attributes: templ.Attributes{
+				"aria-label": "Remove " + card.Identifier + " from project",
+				"title":      "Remove from project",
+			},
+		}) {
+			@icon.FolderMinus(icon.Props{Class: "size-4"})
+			<span class="sr-only">Remove from project</span>
 		}
 	</form>
 }

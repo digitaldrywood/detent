@@ -2640,6 +2640,14 @@ func kanbanCardCanMove(data DashboardData, card kanbanCard) bool {
 	return kanbanIntegrationEnabled(data) && card.Movable && len(kanbanMoveTargetStates(data, card.State)) > 0
 }
 
+func projectKanbanCardCanRemove(data DashboardData, card projectKanbanCard) bool {
+	return kanbanIntegrationEnabled(data) && strings.TrimSpace(card.IssueID) != ""
+}
+
+func kanbanCardCanRemove(data DashboardData, card kanbanCard) bool {
+	return kanbanIntegrationEnabled(data) && strings.TrimSpace(card.IssueID) != ""
+}
+
 func projectKanbanMoveDisabledText(data DashboardData, card projectKanbanCard) string {
 	if card.DisabledText != "" {
 		return card.DisabledText

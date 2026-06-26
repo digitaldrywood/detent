@@ -47,6 +47,7 @@ const (
 	graphQLQuerySetAssignee     = "set_assignee"
 	graphQLQueryRemoveAssignees = "remove_assignees"
 	graphQLQueryUpdateField     = "update_project_field"
+	graphQLQueryRemoveItem      = "remove_project_item"
 )
 
 type Config struct {
@@ -282,8 +283,10 @@ var _ connector.InstanceIdentifier = (*Connector)(nil)
 var _ connector.IssueChildrenResolver = (*Connector)(nil)
 var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
+var _ connector.IssueFieldClearer = (*Connector)(nil)
 var _ connector.IssueFieldSetter = (*Connector)(nil)
 var _ connector.IssueParentResolver = (*Connector)(nil)
+var _ connector.ProjectRemover = (*Connector)(nil)
 var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.IssueStateProber = (*Connector)(nil)
 var _ connector.PullRequestCommenter = (*Connector)(nil)
