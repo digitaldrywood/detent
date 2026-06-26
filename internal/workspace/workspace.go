@@ -418,24 +418,33 @@ func (l *LocalGit) ensureWorktree(ctx context.Context, path string, branch strin
 	if exists {
 		if isDir {
 			if l.isSourceWorktree(ctx, path) {
-				if err := l.ensureExpectedBranch(ctx, path, branch); err != nil {
+				matches, current, err := l.workspaceOnExpectedBranch(ctx, path, branch)
+				if err != nil {
 					return false, err
 				}
-				return false, nil
-			}
-			if l.isGitWorkspace(ctx, path) {
+				if matches {
+					return false, nil
+				}
+				if err := l.recoverStaleSourceWorktree(ctx, path, current, branch); err != nil {
+					return false, err
+				}
+				exists = false
+			} else if l.isGitWorkspace(ctx, path) {
 				return false, fmt.Errorf("workspace path is a git worktree not managed by source: %s", path)
-			}
-			empty, err := dirIsEmpty(path)
-			if err != nil {
-				return false, err
-			}
-			if !empty {
-				return false, fmt.Errorf("workspace path exists but is not a git worktree: %s", path)
+			} else {
+				empty, err := dirIsEmpty(path)
+				if err != nil {
+					return false, err
+				}
+				if !empty {
+					return false, fmt.Errorf("workspace path exists but is not a git worktree: %s", path)
+				}
 			}
 		}
-		if err := os.RemoveAll(path); err != nil {
-			return false, fmt.Errorf("remove stale workspace path: %w", err)
+		if exists {
+			if err := os.RemoveAll(path); err != nil {
+				return false, fmt.Errorf("remove stale workspace path: %w", err)
+			}
 		}
 	}
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
@@ -467,21 +476,126 @@ func (l *LocalGit) addBranchedWorktree(ctx context.Context, path string, branch 
 	return err
 }
 
-func (l *LocalGit) ensureExpectedBranch(ctx context.Context, path string, branch string) error {
+func (l *LocalGit) workspaceOnExpectedBranch(ctx context.Context, path string, branch string) (bool, string, error) {
 	branch = strings.TrimSpace(branch)
 	if !l.autoBranch || branch == "" {
-		return nil
+		return true, "", nil
 	}
 
 	output, err := runGitAt(ctx, path, "branch", "--show-current")
 	if err != nil {
-		return fmt.Errorf("inspect workspace branch: %w", err)
+		return false, "", fmt.Errorf("inspect workspace branch: %w", err)
 	}
 	current := strings.TrimSpace(output)
-	if current == branch {
+	return current == branch, current, nil
+}
+
+func (l *LocalGit) recoverStaleSourceWorktree(ctx context.Context, path string, currentBranch string, expectedBranch string) error {
+	dirty, err := l.worktreeHasChanges(ctx, path)
+	if err != nil {
+		return fmt.Errorf("inspect stale workspace changes for branch %q, want %q: %w", currentBranch, expectedBranch, err)
+	}
+	unreferencedDetachedHead, err := l.unreferencedDetachedHead(ctx, path, currentBranch)
+	if err != nil {
+		return fmt.Errorf("inspect detached workspace HEAD for branch %q, want %q: %w", currentBranch, expectedBranch, err)
+	}
+	if dirty || unreferencedDetachedHead {
+		quarantinePath, err := l.quarantineWorktree(ctx, path)
+		if err != nil {
+			reason := "has uncommitted changes"
+			if unreferencedDetachedHead {
+				reason = "has a detached HEAD commit that is not reachable from a ref"
+			}
+			return fmt.Errorf("workspace path is on branch %q, want %q and %s; preserve it by moving or cleaning %s: %w", currentBranch, expectedBranch, reason, path, err)
+		}
+		l.logger.Warn(
+			"quarantined stale workspace",
+			slog.String("path", path),
+			slog.String("quarantine_path", quarantinePath),
+			slog.String("current_branch", currentBranch),
+			slog.String("expected_branch", expectedBranch),
+			slog.Bool("dirty", dirty),
+			slog.Bool("unreferenced_detached_head", unreferencedDetachedHead),
+		)
 		return nil
 	}
-	return fmt.Errorf("workspace path is on branch %q, want %q: %s", current, branch, path)
+
+	if err := l.removeCleanWorktree(ctx, path); err != nil {
+		return fmt.Errorf("recover stale clean workspace on branch %q, want %q: %w", currentBranch, expectedBranch, err)
+	}
+	l.logger.Info(
+		"removed stale clean workspace",
+		slog.String("path", path),
+		slog.String("current_branch", currentBranch),
+		slog.String("expected_branch", expectedBranch),
+		slog.Bool("dirty", false),
+	)
+	return nil
+}
+
+func (l *LocalGit) worktreeHasChanges(ctx context.Context, path string) (bool, error) {
+	output, err := runGitAt(ctx, path, "status", "--porcelain", "--untracked-files=all")
+	if err != nil {
+		return false, fmt.Errorf("inspect workspace status: %w", err)
+	}
+	return strings.TrimSpace(output) != "", nil
+}
+
+func (l *LocalGit) unreferencedDetachedHead(ctx context.Context, path string, currentBranch string) (bool, error) {
+	if strings.TrimSpace(currentBranch) != "" {
+		return false, nil
+	}
+	output, err := runGitAt(ctx, path, "for-each-ref", "--contains", "HEAD", "--format=%(refname)")
+	if err != nil {
+		return false, fmt.Errorf("inspect refs containing HEAD: %w", err)
+	}
+	return strings.TrimSpace(output) == "", nil
+}
+
+func (l *LocalGit) removeCleanWorktree(ctx context.Context, path string) error {
+	_, err := l.runGit(ctx, "worktree", "remove", path)
+	if err != nil {
+		return fmt.Errorf("remove stale clean worktree: %w", err)
+	}
+	return nil
+}
+
+func (l *LocalGit) quarantineWorktree(ctx context.Context, path string) (string, error) {
+	quarantinePath, err := l.nextQuarantinePath(path)
+	if err != nil {
+		return "", err
+	}
+	if err := os.MkdirAll(filepath.Dir(quarantinePath), 0o700); err != nil {
+		return "", fmt.Errorf("create quarantine parent: %w", err)
+	}
+	if _, err := l.runGit(ctx, "worktree", "move", path, quarantinePath); err != nil {
+		return "", fmt.Errorf("move stale worktree to quarantine: %w", err)
+	}
+	return quarantinePath, nil
+}
+
+func (l *LocalGit) nextQuarantinePath(path string) (string, error) {
+	parent := filepath.Join(l.root, ".detent", "quarantine")
+	base := SafeKey(filepath.Base(path))
+	stamp := time.Now().UTC().Format("20060102T150405.000000000Z")
+	for i := range 100 {
+		name := base + "-" + stamp
+		if i > 0 {
+			name += fmt.Sprintf("-%d", i)
+		}
+		candidate, err := validateWorkspacePath(l.root, filepath.Join(parent, name))
+		if err != nil {
+			return "", err
+		}
+		exists, _, err := pathExists(candidate)
+		if err != nil {
+			return "", err
+		}
+		if !exists {
+			return candidate, nil
+		}
+	}
+	return "", errors.New("exhausted quarantine workspace path attempts")
 }
 
 func (l *LocalGit) branchExists(ctx context.Context, branch string) (bool, error) {
