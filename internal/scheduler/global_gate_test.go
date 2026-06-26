@@ -200,6 +200,182 @@ func TestGlobalDispatchGateReselectsHigherPriorityWaitingLane(t *testing.T) {
 	}
 }
 
+func TestGlobalDispatchGateUsesUnreservedCapacityBehindPendingHigherPriorityLane(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 26, 9, 0, 0, 0, time.UTC)
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 5}))
+
+	runningSlots := make([]scheduler.Slot, 0, 5)
+	for index, project := range []scheduler.ProjectCandidate{
+		{ID: "running-alpha", Weight: 1},
+		{ID: "running-bravo", Weight: 1},
+		{ID: "running-charlie", Weight: 1},
+		{ID: "running-delta", Weight: 1},
+		{ID: "running-echo", Weight: 1},
+	} {
+		slot, ok, decision, err := gate.TryAcquireWithDecision(ctx, project, scheduler.SlotRequest{
+			State:    "Todo",
+			Priority: 2,
+		}, now.Add(time.Duration(index)*time.Second))
+		if err != nil {
+			t.Fatalf("%s TryAcquireWithDecision() error = %v", project.ID, err)
+		}
+		if !ok {
+			t.Fatalf("%s TryAcquireWithDecision() ok = false, want true; decision = %#v", project.ID, decision)
+		}
+		runningSlots = append(runningSlots, slot)
+	}
+	t.Cleanup(func() {
+		for _, slot := range runningSlots {
+			if err := gate.Release(slot); err != nil && !errors.Is(err, scheduler.ErrSlotNotHeld) {
+				t.Fatalf("Release() error = %v", err)
+			}
+		}
+	})
+
+	mergeProject := scheduler.ProjectCandidate{ID: "merge", Weight: 1}
+	if _, ok, decision, err := gate.TryAcquireWithDecision(ctx, mergeProject, scheduler.SlotRequest{
+		State:    "Merging",
+		Priority: 0,
+	}, now.Add(5*time.Second)); err != nil {
+		t.Fatalf("merge waiting TryAcquireWithDecision() error = %v", err)
+	} else if ok {
+		t.Fatal("merge waiting TryAcquireWithDecision() ok = true while all global slots are held, want false")
+	} else if decision.SelectedProjectID != mergeProject.ID || decision.Reason != scheduler.DispatchGateReasonGlobalCapacityFull {
+		t.Fatalf("merge waiting decision = %#v, want selected merge with global capacity full", decision)
+	}
+
+	for _, slot := range runningSlots[:3] {
+		if err := gate.Release(slot); err != nil {
+			t.Fatalf("Release() error = %v", err)
+		}
+	}
+
+	reworkProject := scheduler.ProjectCandidate{ID: "rework", Weight: 1}
+	reworkSlot, ok, decision, err := gate.TryAcquireWithDecision(ctx, reworkProject, scheduler.SlotRequest{
+		State:    "Rework",
+		Priority: 1,
+	}, now.Add(6*time.Second))
+	if err != nil {
+		t.Fatalf("rework TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("rework TryAcquireWithDecision() ok = false, want true with unreserved capacity; decision = %#v", decision)
+	}
+	if decision.Reason != scheduler.DispatchGateReasonGranted {
+		t.Fatalf("rework decision reason = %q, want %q", decision.Reason, scheduler.DispatchGateReasonGranted)
+	}
+	if decision.GlobalCapacity != 5 || decision.GlobalUsed != 3 || decision.GlobalAvailable != 2 {
+		t.Fatalf("rework decision global capacity = %d used = %d available = %d, want 5/3/2",
+			decision.GlobalCapacity, decision.GlobalUsed, decision.GlobalAvailable)
+	}
+	t.Cleanup(func() {
+		if err := gate.Release(reworkSlot); err != nil && !errors.Is(err, scheduler.ErrSlotNotHeld) {
+			t.Fatalf("Release() error = %v", err)
+		}
+	})
+
+	mergeSlot, ok, decision, err := gate.TryAcquireWithDecision(ctx, mergeProject, scheduler.SlotRequest{
+		State:    "Merging",
+		Priority: 0,
+	}, now.Add(7*time.Second))
+	if err != nil {
+		t.Fatalf("merge TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("merge TryAcquireWithDecision() ok = false, want true; decision = %#v", decision)
+	}
+	t.Cleanup(func() {
+		if err := gate.Release(mergeSlot); err != nil && !errors.Is(err, scheduler.ErrSlotNotHeld) {
+			t.Fatalf("Release() error = %v", err)
+		}
+	})
+}
+
+func TestGlobalDispatchGateReservesPendingSelectionWeight(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 26, 9, 30, 0, 0, time.UTC)
+	gate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 3}))
+	runningProject := scheduler.ProjectCandidate{ID: "running", Weight: 1}
+
+	runningSlot, ok, decision, err := gate.TryAcquireWithDecision(ctx, runningProject, scheduler.SlotRequest{
+		State:    "Todo",
+		Weight:   3,
+		Priority: 2,
+	}, now)
+	if err != nil {
+		t.Fatalf("running TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("running TryAcquireWithDecision() ok = false, want true; decision = %#v", decision)
+	}
+	t.Cleanup(func() {
+		if err := gate.Release(runningSlot); err != nil && !errors.Is(err, scheduler.ErrSlotNotHeld) {
+			t.Fatalf("Release() error = %v", err)
+		}
+	})
+
+	mergeProject := scheduler.ProjectCandidate{ID: "merge", Weight: 1}
+	if _, ok, decision, err := gate.TryAcquireWithDecision(ctx, mergeProject, scheduler.SlotRequest{
+		State:    "Merging",
+		Weight:   2,
+		Priority: 0,
+	}, now.Add(time.Second)); err != nil {
+		t.Fatalf("merge waiting TryAcquireWithDecision() error = %v", err)
+	} else if ok {
+		t.Fatal("merge waiting TryAcquireWithDecision() ok = true while all global slots are held, want false")
+	} else if decision.SelectedProjectID != mergeProject.ID || decision.Reason != scheduler.DispatchGateReasonGlobalCapacityFull {
+		t.Fatalf("merge waiting decision = %#v, want selected merge with global capacity full", decision)
+	}
+
+	if err := gate.Release(runningSlot); err != nil {
+		t.Fatalf("running Release() error = %v", err)
+	}
+
+	reworkProject := scheduler.ProjectCandidate{ID: "rework", Weight: 1}
+	if _, ok, decision, err := gate.TryAcquireWithDecision(ctx, reworkProject, scheduler.SlotRequest{
+		State:    "Rework",
+		Weight:   2,
+		Priority: 1,
+	}, now.Add(2*time.Second)); err != nil {
+		t.Fatalf("rework TryAcquireWithDecision() error = %v", err)
+	} else if ok {
+		t.Fatal("rework TryAcquireWithDecision() ok = true while only one unreserved slot remains, want false")
+	} else {
+		if decision.SelectedProjectID != mergeProject.ID {
+			t.Fatalf("rework decision selected project = %q, want %q", decision.SelectedProjectID, mergeProject.ID)
+		}
+		if decision.Reason != scheduler.DispatchGateReasonReservedForHigherPriority {
+			t.Fatalf("rework decision reason = %q, want %q", decision.Reason, scheduler.DispatchGateReasonReservedForHigherPriority)
+		}
+		if decision.GlobalCapacity != 3 || decision.GlobalUsed != 0 || decision.GlobalAvailable != 3 {
+			t.Fatalf("rework decision global capacity = %d used = %d available = %d, want 3/0/3",
+				decision.GlobalCapacity, decision.GlobalUsed, decision.GlobalAvailable)
+		}
+	}
+
+	mergeSlot, ok, decision, err := gate.TryAcquireWithDecision(ctx, mergeProject, scheduler.SlotRequest{
+		State:    "Merging",
+		Weight:   2,
+		Priority: 0,
+	}, now.Add(3*time.Second))
+	if err != nil {
+		t.Fatalf("merge TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("merge TryAcquireWithDecision() ok = false, want true; decision = %#v", decision)
+	}
+	t.Cleanup(func() {
+		if err := gate.Release(mergeSlot); err != nil && !errors.Is(err, scheduler.ErrSlotNotHeld) {
+			t.Fatalf("Release() error = %v", err)
+		}
+	})
+}
+
 func TestSchedulersAllowOneMergeLanePerProject(t *testing.T) {
 	t.Parallel()
 

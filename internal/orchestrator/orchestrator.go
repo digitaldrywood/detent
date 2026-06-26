@@ -1492,7 +1492,8 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		if mergeWorkerIssue(issue) {
 			o.logMergeWorkerSlotWait(issue, decision, projectStats)
 		} else {
-			o.logMergeWorkerFailure(issue, "global_slot_unavailable", nil)
+			o.logDispatchSlotWait(issue, decision, projectStats)
+			o.recordDispatchSlotWait(state, issue, decision, projectStats, now)
 		}
 		return dispatchIssueOutcome{reason: dispatchIssueFailureGlobalSlotUnavailable}
 	}
