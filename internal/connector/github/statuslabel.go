@@ -139,6 +139,51 @@ func (c *Connector) updateIssueStatusLabel(ctx context.Context, ref issueRef, is
 	return nil
 }
 
+func (c *Connector) removeIssueStatusLabels(ctx context.Context, ref issueRef) error {
+	latest, err := c.fetchRESTIssue(ctx, ref)
+	if err != nil {
+		return fmt.Errorf("fetch latest github status labels: %w", err)
+	}
+	if strings.TrimSpace(latest.ID) == "" {
+		return ErrStatusUpdateFailed
+	}
+
+	nextLabels := c.nonStatusLabels(latest.Labels)
+	var response []label
+	if err := c.client.REST(ctx, http.MethodPut, restIssueLabelsPath(ref), map[string]any{
+		"labels": nextLabels,
+	}, &response); err != nil {
+		return fmt.Errorf("remove github status labels: %w", err)
+	}
+	if resolution := c.labelStatusResolutionFromLabels(nodeConnection[label]{Nodes: response}); resolution.Status != "" || resolution.conflicted() {
+		return ErrStatusUpdateFailed
+	}
+	for _, label := range response {
+		if c.isStatusLabel(label.Name) {
+			return ErrStatusUpdateFailed
+		}
+	}
+	return nil
+}
+
+func (c *Connector) nonStatusLabels(labels nodeConnection[label]) []string {
+	nextLabels := make([]string, 0, len(labels.Nodes))
+	seen := map[string]struct{}{}
+	for _, label := range labels.Nodes {
+		labelName := strings.TrimSpace(label.Name)
+		if labelName == "" || c.isStatusLabel(labelName) {
+			continue
+		}
+		key := normalizeLabelName(labelName)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		nextLabels = append(nextLabels, labelName)
+	}
+	return nextLabels
+}
+
 func (c *Connector) EnsureLabelStateOptions(ctx context.Context) error {
 	if !validPullRequestRepo(c.repository) {
 		return ErrMissingRepository

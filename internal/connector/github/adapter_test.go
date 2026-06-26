@@ -2522,6 +2522,44 @@ func TestConnectorUpdateIssueStateWritesStatusOptionID(t *testing.T) {
 	}
 }
 
+func TestConnectorRemoveIssueFromProjectDeletesProjectV2Item(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{body: `{"data":{"node":{"projectItems":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_1","project":{"id":"PVT_1"},"statusValue":{"name":"Todo"}}]}}}}`},
+		{body: `{"data":{"deleteProjectV2Item":{"deletedItemId":"PVTI_1"}}}`},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug: "PVT_1",
+	})
+
+	if err := c.RemoveIssueFromProject(context.Background(), "I_kw1"); err != nil {
+		t.Fatalf("RemoveIssueFromProject() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want project item lookup and delete", len(requests))
+	}
+	deleteQuery := requests[1]["query"].(string)
+	if !strings.Contains(deleteQuery, "deleteProjectV2Item") {
+		t.Fatalf("query = %q, want deleteProjectV2Item", deleteQuery)
+	}
+	if strings.Contains(deleteQuery, "rateLimit") {
+		t.Fatalf("query = %q, want no rateLimit on mutation root", deleteQuery)
+	}
+	variables := requests[1]["variables"].(map[string]any)
+	want := map[string]any{
+		"projectId": "PVT_1",
+		"itemId":    "PVTI_1",
+	}
+	for key, value := range want {
+		if variables[key] != value {
+			t.Fatalf("%s = %v, want %v", key, variables[key], value)
+		}
+	}
+}
+
 func TestConnectorVerifyStatusOptionsChecksMappedStatusOptions(t *testing.T) {
 	t.Parallel()
 

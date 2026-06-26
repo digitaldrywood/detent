@@ -234,6 +234,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/api/v1/workflow/timeline", s.apiWorkflowTimeline)
 	s.echo.GET("/api/v1/kanban/move", s.apiKanbanMoveDialog)
 	s.echo.POST("/api/v1/kanban/move", s.apiKanbanMove)
+	s.echo.POST("/api/v1/kanban/remove", s.apiKanbanRemove)
 	s.echo.GET("/api/v1/kanban/comment", s.apiKanbanCommentDialog)
 	s.echo.POST("/api/v1/kanban/comment", s.apiKanbanComment)
 	s.echo.GET("/api/v1/*", s.apiIssue)

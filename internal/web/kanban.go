@@ -22,14 +22,20 @@ import (
 )
 
 type kanbanMutationLocks struct {
-	mu     sync.Mutex
-	locks  map[string]*sync.Mutex
-	states map[string]kanbanPendingState
+	mu      sync.Mutex
+	locks   map[string]*sync.Mutex
+	states  map[string]kanbanPendingState
+	removed map[string]kanbanPendingRemoval
 }
 
 type kanbanPendingState struct {
 	snapshot string
 	current  string
+}
+
+type kanbanPendingRemoval struct {
+	snapshot  string
+	removedAt time.Time
 }
 
 type kanbanActionTarget struct {
@@ -48,6 +54,13 @@ type kanbanMoveRequest struct {
 	drag         bool
 }
 
+type kanbanRemoveRequest struct {
+	projectID    string
+	issueID      string
+	currentState string
+	prNumber     int
+}
+
 type kanbanCommentRequest struct {
 	projectID    string
 	target       string
@@ -61,12 +74,14 @@ const (
 	kanbanDialogContentTarget = "#kanban-dialog-content"
 	kanbanProjectBoardTarget  = "#project-kanban"
 	kanbanDialogSucceeded     = "kanbanActionSucceeded"
+	kanbanRemovalPendingTTL   = 5 * time.Minute
 )
 
 func newKanbanMutationLocks() *kanbanMutationLocks {
 	return &kanbanMutationLocks{
-		locks:  map[string]*sync.Mutex{},
-		states: map[string]kanbanPendingState{},
+		locks:   map[string]*sync.Mutex{},
+		states:  map[string]kanbanPendingState{},
+		removed: map[string]kanbanPendingRemoval{},
 	}
 }
 
@@ -135,6 +150,44 @@ func (l *kanbanMutationLocks) noteCardState(key string, issueID string, snapshot
 		snapshot: strings.TrimSpace(snapshotState),
 		current:  strings.TrimSpace(currentState),
 	}
+}
+
+func (l *kanbanMutationLocks) cardRemoved(key string, issueID string, snapshotState string) bool {
+	stateKey := kanbanMutationStateKey(key, issueID)
+	if stateKey == "" {
+		return false
+	}
+
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	removed, ok := l.removed[stateKey]
+	if !ok {
+		return false
+	}
+	if time.Since(removed.removedAt) > kanbanRemovalPendingTTL {
+		delete(l.removed, stateKey)
+		return false
+	}
+	if normalizeKanbanState(snapshotState) == normalizeKanbanState(removed.snapshot) {
+		return true
+	}
+	delete(l.removed, stateKey)
+	return false
+}
+
+func (l *kanbanMutationLocks) noteCardRemoved(key string, issueID string, snapshotState string) {
+	stateKey := kanbanMutationStateKey(key, issueID)
+	if stateKey == "" {
+		return
+	}
+
+	l.mu.Lock()
+	l.removed[stateKey] = kanbanPendingRemoval{
+		snapshot:  strings.TrimSpace(snapshotState),
+		removedAt: time.Now(),
+	}
+	l.mu.Unlock()
 }
 
 func kanbanMutationStateKey(key string, issueID string) string {
@@ -304,11 +357,96 @@ func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, messag
 	return render(c, templates.ProjectKanbanSnapshot(data))
 }
 
+func (s *Server) apiKanbanRemove(c echo.Context) error {
+	req, response, status := parseKanbanRemoveRequest(c)
+	if response != "" {
+		return kanbanFeedback(c, status, response)
+	}
+
+	target, response, status := s.kanbanActionTarget(req.projectID)
+	if response != "" {
+		return kanbanFeedback(c, status, response)
+	}
+	if target.kanban.Mode != workflowconfig.KanbanModeIntegration {
+		return kanbanFeedback(c, http.StatusForbidden, "Kanban integration mode is not enabled.")
+	}
+	if req.issueID == "" {
+		if req.prNumber > 0 {
+			return kanbanFeedback(c, http.StatusUnprocessableEntity, "Cannot remove PR-only card without a linked issue.")
+		}
+		return kanbanFeedback(c, http.StatusBadRequest, "Issue id is required.")
+	}
+
+	var feedback string
+	var feedbackStatus int
+	err := s.kanbanMutations.withLock(target.key, func() error {
+		currentState := req.currentState
+		ok, current, snapshotState, _ := s.kanbanCardFresh(target.key, req.projectID, req.issueID, req.currentState)
+		if !ok {
+			feedback = "Card is stale; refresh and retry."
+			if current != "" {
+				feedback = fmt.Sprintf("Card is stale; current state is %s.", current)
+			}
+			feedbackStatus = http.StatusConflict
+			return nil
+		}
+		if strings.TrimSpace(current) != "" {
+			currentState = current
+		}
+		remover, ok := target.connector.(connector.ProjectRemover)
+		if !ok {
+			return connector.ErrNotImplemented
+		}
+		if err := remover.RemoveIssueFromProject(c.Request().Context(), req.issueID); err != nil {
+			return err
+		}
+		if strings.TrimSpace(snapshotState) == "" {
+			snapshotState = currentState
+		}
+		s.kanbanMutations.noteCardRemoved(target.key, req.issueID, snapshotState)
+		return nil
+	})
+	if feedback != "" {
+		return kanbanFeedback(c, feedbackStatus, feedback)
+	}
+	if err != nil {
+		s.logger.WarnContext(c.Request().Context(), "kanban remove failed", "project", req.projectID, "issue_id", req.issueID, "error", err)
+		return kanbanFeedback(c, http.StatusBadGateway, "Remove failed: "+err.Error())
+	}
+	return s.kanbanRemoveSuccess(c, req, "Removed card from project.")
+}
+
+func (s *Server) kanbanRemoveSuccess(c echo.Context, req kanbanRemoveRequest, message string) error {
+	ctx := c.Request().Context()
+	s.requestKanbanRefresh(ctx)
+	if c.Request().Header.Get("HX-Request") != "true" || strings.TrimSpace(req.projectID) == "" {
+		return kanbanFeedback(c, http.StatusOK, message)
+	}
+
+	data, ok := s.projectDashboardData(ctx, req.projectID, s.latestSnapshot(ctx))
+	if !ok {
+		return kanbanFeedback(c, http.StatusOK, message)
+	}
+	data.Kanban.Feedback = message
+	data.Kanban.FeedbackKind = "success"
+
+	c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+	c.Response().Header().Set("HX-Retarget", kanbanProjectBoardTarget)
+	c.Response().Header().Set("HX-Reswap", "outerHTML")
+	return render(c, templates.ProjectKanbanSnapshot(data))
+}
+
 func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID string, snapshot telemetry.Snapshot) telemetry.Snapshot {
 	if s.kanbanMutations == nil {
 		return snapshot
 	}
 	snapshot = cloneKanbanIssueSlices(snapshot)
+	filterSnapshotKanbanIssues(&snapshot, func(issue telemetry.Issue) bool {
+		if strings.TrimSpace(issue.ID) == "" || !sameKanbanProject(issue, projectID, snapshot.Project.ID) {
+			return true
+		}
+		return !s.kanbanMutations.cardRemoved(lockKey, issue.ID, issue.State)
+	})
 	applySnapshotKanbanIssues(&snapshot, func(issue *telemetry.Issue) {
 		if issue == nil || strings.TrimSpace(issue.ID) == "" || !sameKanbanProject(*issue, projectID, snapshot.Project.ID) {
 			return
@@ -326,6 +464,57 @@ func (s *Server) kanbanSnapshotWithPendingStates(lockKey string, projectID strin
 		issue.BlockedBy = kanbanBlockedRefsWithCurrentStates(issue.BlockedBy, states)
 	})
 	return snapshot
+}
+
+func filterSnapshotKanbanIssues(snapshot *telemetry.Snapshot, keep func(telemetry.Issue) bool) {
+	if snapshot == nil || keep == nil {
+		return
+	}
+	snapshot.BoardIssues = filterTelemetryIssues(snapshot.BoardIssues, keep)
+	snapshot.Pipeline = filterTelemetryIssues(snapshot.Pipeline, keep)
+	snapshot.Running = filterTelemetryRunning(snapshot.Running, keep)
+	snapshot.Queue = filterTelemetryQueued(snapshot.Queue, keep)
+	snapshot.Blocked = filterTelemetryBlocked(snapshot.Blocked, keep)
+}
+
+func filterTelemetryIssues(issues []telemetry.Issue, keep func(telemetry.Issue) bool) []telemetry.Issue {
+	out := issues[:0]
+	for _, issue := range issues {
+		if keep(issue) {
+			out = append(out, issue)
+		}
+	}
+	return out
+}
+
+func filterTelemetryRunning(rows []telemetry.Running, keep func(telemetry.Issue) bool) []telemetry.Running {
+	out := rows[:0]
+	for _, row := range rows {
+		if keep(row.Issue) {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func filterTelemetryQueued(rows []telemetry.Queued, keep func(telemetry.Issue) bool) []telemetry.Queued {
+	out := rows[:0]
+	for _, row := range rows {
+		if keep(row.Issue) {
+			out = append(out, row)
+		}
+	}
+	return out
+}
+
+func filterTelemetryBlocked(rows []telemetry.Blocked, keep func(telemetry.Issue) bool) []telemetry.Blocked {
+	out := rows[:0]
+	for _, row := range rows {
+		if keep(row.Issue) {
+			out = append(out, row)
+		}
+	}
+	return out
 }
 
 func cloneKanbanIssueSlices(snapshot telemetry.Snapshot) telemetry.Snapshot {
@@ -643,6 +832,22 @@ func parseKanbanMoveRequest(c echo.Context) (kanbanMoveRequest, string, int) {
 	}
 	if req.targetState == "" {
 		return kanbanMoveRequest{}, "Target state is required.", http.StatusBadRequest
+	}
+	return req, "", 0
+}
+
+func parseKanbanRemoveRequest(c echo.Context) (kanbanRemoveRequest, string, int) {
+	req := kanbanRemoveRequest{
+		projectID:    strings.TrimSpace(c.FormValue("project_id")),
+		issueID:      strings.TrimSpace(c.FormValue("issue_id")),
+		currentState: strings.TrimSpace(c.FormValue("current_state")),
+	}
+	if value := strings.TrimSpace(c.FormValue("pr_number")); value != "" {
+		number, err := strconv.Atoi(value)
+		if err != nil || number <= 0 {
+			return kanbanRemoveRequest{}, "PR number is invalid.", http.StatusBadRequest
+		}
+		req.prNumber = number
 	}
 	return req, "", 0
 }

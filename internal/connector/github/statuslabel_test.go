@@ -300,6 +300,45 @@ func TestConnectorUpdateIssueStateReplacesStaleStatusLabelRace(t *testing.T) {
 	}
 }
 
+func TestConnectorRemoveIssueFromProjectRemovesStatusLabels(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"nodes":[{"__typename":"Issue","id":"I_485","number":485,"repository":{"nameWithOwner":"digitaldrywood/detent"}}]}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues/485",
+			body:   `{"node_id":"I_485","number":485,"title":"Installer packages","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/485","assignees":[],"labels":[{"name":"detent:todo"},{"name":"detent:in-progress"},{"name":"bug"},{"name":"stage:s6"}]}`,
+		},
+		{
+			method: http.MethodPut,
+			path:   "/repos/digitaldrywood/detent/issues/485/labels",
+			body:   `[{"name":"bug"},{"name":"stage:s6"}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ActiveStates:       []string{"Todo", "In Progress"},
+	})
+
+	if err := c.RemoveIssueFromProject(context.Background(), "I_485"); err != nil {
+		t.Fatalf("RemoveIssueFromProject() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 3 {
+		t.Fatalf("request count = %d, want 3", len(requests))
+	}
+	body := requests[2]["body"].(map[string]any)
+	labels := body["labels"].([]any)
+	if !reflect.DeepEqual(labels, []any{"bug", "stage:s6"}) {
+		t.Fatalf("labels body = %#v, want only non-status labels", labels)
+	}
+}
+
 func TestConnectorFetchCandidateIssuesSurfacesStatusLabelConflict(t *testing.T) {
 	t.Parallel()
 

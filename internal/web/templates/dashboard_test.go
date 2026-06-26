@@ -2263,9 +2263,12 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 		`hx-get="/api/v1/kanban/move?`,
 		`hx-get="/api/v1/kanban/comment?`,
 		`hx-post="/api/v1/kanban/move"`,
+		`hx-post="/api/v1/kanban/remove"`,
+		`hx-confirm="Remove this item from project?"`,
 		`hx-target="#kanban-feedback"`,
 		`hx-target="#kanban-dialog-content"`,
 		`data-kanban-drag-move-form`,
+		`Remove from project`,
 		`event.dataTransfer.setDragImage(card`,
 		`pr_repository=digitaldrywood%2Ffrontend`,
 		`Cannot move PR-only card`,
@@ -2288,6 +2291,7 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 	html = renderProjectKanbanPage(t, data)
 	for _, forbidden := range []string{
 		`hx-post="/api/v1/kanban/move"`,
+		`hx-post="/api/v1/kanban/remove"`,
 		`hx-post="/api/v1/kanban/comment"`,
 		`hx-get="/api/v1/kanban/move`,
 		`hx-get="/api/v1/kanban/comment`,

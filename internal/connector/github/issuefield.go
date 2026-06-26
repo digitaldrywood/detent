@@ -3,6 +3,7 @@ package github
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -493,6 +494,31 @@ func (c *Connector) setIssueFieldValue(ctx context.Context, ref issueRef, metada
 	return nil
 }
 
+func (c *Connector) clearIssueStatusField(ctx context.Context, ref issueRef) error {
+	metadata, err := c.resolveIssueStatusMetadata(ctx)
+	if err != nil {
+		return err
+	}
+	return c.deleteIssueFieldValue(ctx, ref, metadata.FieldID, ErrStatusUpdateFailed)
+}
+
+func (c *Connector) deleteIssueFieldValue(ctx context.Context, ref issueRef, fieldID int, emptyResponseError error) error {
+	if fieldID <= 0 {
+		return emptyResponseError
+	}
+
+	c.writeMu.Lock()
+	err := c.client.REST(ctx, http.MethodDelete, restIssueFieldValuePath(ref, fieldID), nil, nil)
+	c.writeMu.Unlock()
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return nil
+		}
+		return fmt.Errorf("delete github issue field: %w", err)
+	}
+	return nil
+}
+
 func (c *Connector) createIssueStatusField(ctx context.Context, org string, required []projectSingleSelectOption) (issueFieldMetadata, error) {
 	options := issueFieldOptionsWithRequiredOrder(nil, required)
 	var response restIssueField
@@ -785,6 +811,10 @@ func restOrgIssueFieldPath(org string, fieldID int) string {
 
 func restIssueFieldValuesPath(ref issueRef) string {
 	return restIssuePath(ref) + "/issue-field-values"
+}
+
+func restIssueFieldValuePath(ref issueRef, fieldID int) string {
+	return restIssueFieldValuesPath(ref) + "/" + strconv.Itoa(fieldID)
 }
 
 func restIssueFieldValuesListPath(ref issueRef) string {

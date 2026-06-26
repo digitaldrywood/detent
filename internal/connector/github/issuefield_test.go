@@ -132,6 +132,41 @@ func TestConnectorIssueFieldUpdateIssueState(t *testing.T) {
 	}
 }
 
+func TestConnectorIssueFieldRemoveIssueFromProjectClearsStatusField(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/orgs/digitaldrywood/issue-fields?per_page=100",
+			body:   `[{"id":10,"node_id":"IFSS_status","name":"Status","data_type":"single_select","options":[{"id":1,"name":"Ready","color":"green"},{"id":2,"name":"Working","color":"yellow"}]}]`,
+		},
+		{
+			method: http.MethodDelete,
+			path:   "/repos/digitaldrywood/detent/issues/1/issue-field-values/10",
+			status: http.StatusNoContent,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceIssueField,
+		Repository:         "digitaldrywood/detent",
+		StatusField:        "Status",
+	})
+	c.projectCache.SetIssueRef("I_1", issueRef{Owner: "digitaldrywood", Name: "detent", Number: 1})
+
+	if err := c.RemoveIssueFromProject(context.Background(), "I_1"); err != nil {
+		t.Fatalf("RemoveIssueFromProject() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d, want metadata read and delete", len(requests))
+	}
+	if requests[1]["method"] != http.MethodDelete {
+		t.Fatalf("remove method = %v, want DELETE", requests[1]["method"])
+	}
+}
+
 func TestConnectorIssueFieldFetchIssueStatesByIDsCapturesClosedIssue(t *testing.T) {
 	t.Parallel()
 

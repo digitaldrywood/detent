@@ -38,6 +38,10 @@ type IssueCloser interface {
 	CloseIssue(context.Context, string) error
 }
 
+type ProjectRemover interface {
+	RemoveIssueFromProject(context.Context, string) error
+}
+
 type IssueFieldSetter interface {
 	SetIssueField(context.Context, string, int, string) error
 }

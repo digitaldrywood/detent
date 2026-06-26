@@ -604,6 +604,16 @@ mutation DetentGitHubUpdateTextField($projectId: ID!, $itemId: ID!, $fieldId: ID
   }
 }`
 
+const deleteProjectItemMutation = `
+mutation DetentGitHubDeleteProjectItem($projectId: ID!, $itemId: ID!) {
+  deleteProjectV2Item(input: {
+    projectId: $projectId,
+    itemId: $itemId
+  }) {
+    deletedItemId
+  }
+}`
+
 var (
 	modelOverridePattern  = regexp.MustCompile(`(?i)<!--\s*model:\s*(\S+?)\s*-->`)
 	dependencyLinePattern = regexp.MustCompile("(?i)^\\s*(?:>\\s*)?(?:[-*+]\\s+)?(?:[*_`~]+)?\\s*(?:blocked\\s+by|depends[\\s-]+on)(?:[*_`~]+)?\\s*:\\s*(?:[*_`~]+)?\\s*(.+)\\s*$")
@@ -1822,6 +1832,46 @@ func (c *Connector) UpdateIssueState(ctx context.Context, issueID string, stateN
 
 	githubState := c.detentToGitHubState(stateName)
 	return c.setProjectItemStatus(ctx, item.ID, githubState)
+}
+
+func (c *Connector) RemoveIssueFromProject(ctx context.Context, issueID string) error {
+	issueID = strings.TrimSpace(issueID)
+	if issueID == "" {
+		return ErrProjectItemRemoveFailed
+	}
+	if c.usesLabelStatus() {
+		ref, ok, err := c.issueRefForID(ctx, issueID, graphQLQueryIssueLookup)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrStatusUpdateFailed
+		}
+		return c.removeIssueStatusLabels(ctx, ref)
+	}
+	if c.usesIssueFieldStatus() {
+		ref, ok, err := c.issueRefForID(ctx, issueID, graphQLQueryIssueLookup)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			return ErrStatusUpdateFailed
+		}
+		return c.clearIssueStatusField(ctx, ref)
+	}
+	if c.projectID == "" {
+		return ErrMissingProject
+	}
+
+	item, err := c.resolveProjectItem(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	if err := c.deleteProjectItem(ctx, item.ID); err != nil {
+		return err
+	}
+	c.projectCache.ClearItemID(c.projectID, issueID)
+	return nil
 }
 
 func (c *Connector) setProjectItemStatus(ctx context.Context, itemID string, githubState string) error {
@@ -3273,6 +3323,29 @@ func (c *Connector) updateProjectV2TextFieldValue(
 		response.UpdateProjectV2ItemFieldValue.ProjectV2Item == nil ||
 		strings.TrimSpace(response.UpdateProjectV2ItemFieldValue.ProjectV2Item.ID) == "" {
 		return emptyResponseError
+	}
+	return nil
+}
+
+func (c *Connector) deleteProjectItem(ctx context.Context, itemID string) error {
+	itemID = strings.TrimSpace(itemID)
+	if itemID == "" {
+		return ErrProjectItemRemoveFailed
+	}
+
+	var response struct {
+		DeleteProjectV2Item *struct {
+			DeletedItemID string `json:"deletedItemId"`
+		} `json:"deleteProjectV2Item"`
+	}
+	if err := c.client.GraphQLWithType(ctx, graphQLQueryRemoveItem, deleteProjectItemMutation, map[string]any{
+		"projectId": c.projectID,
+		"itemId":    itemID,
+	}, &response); err != nil {
+		return fmt.Errorf("remove github project item: %w", err)
+	}
+	if response.DeleteProjectV2Item == nil || strings.TrimSpace(response.DeleteProjectV2Item.DeletedItemID) == "" {
+		return ErrProjectItemRemoveFailed
 	}
 	return nil
 }

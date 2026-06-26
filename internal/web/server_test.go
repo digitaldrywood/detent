@@ -846,6 +846,107 @@ func TestKanbanMoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
 	}
 }
 
+func TestKanbanRemoveSuccessResponseRefreshesProjectBoard(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	actionConnector := &kanbanActionConnector{name: "github"}
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, actionConnector)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+		Projects: []telemetry.ProjectSnapshot{
+			{Project: telemetry.Project{ID: "detent", DisplayName: "Detent"}},
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kw739",
+			Identifier: "digitaldrywood/detent#739",
+			ProjectID:  "detent",
+			Title:      "Remove regression card",
+			State:      "Todo",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw739"},
+		"current_state": {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/remove", form)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
+	}
+	if rec.Header().Get("HX-Retarget") != "#project-kanban" {
+		t.Fatalf("HX-Retarget = %q, want #project-kanban", rec.Header().Get("HX-Retarget"))
+	}
+	if rec.Header().Get("HX-Reswap") != "outerHTML" {
+		t.Fatalf("HX-Reswap = %q, want outerHTML", rec.Header().Get("HX-Reswap"))
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="project-kanban"`,
+		"Removed card from project.",
+		`data-project-kanban-lane="todo"`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("response missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "Remove regression card") || strings.Contains(body, `data-kanban-issue-id="I_kw739"`) {
+		t.Fatalf("response still contains removed card:\n%s", body)
+	}
+	if got, want := actionConnector.removals(), []kanbanRemoval{{issueID: "I_kw739"}}; !equalRemovals(got, want) {
+		t.Fatalf("removals = %#v, want %#v", got, want)
+	}
+}
+
+func TestKanbanRemoveReturnsVisibleErrorWhenUnsupported(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	mustSetKanbanProject(t, deps.Registry, "detent", workflowconfig.Kanban{
+		Mode: workflowconfig.KanbanModeIntegration,
+	}, connectorProbe{name: "github"})
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 15, 12, 0, 0, 0, time.UTC),
+		Project:     telemetry.Project{ID: "detent"},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kw740",
+			Identifier: "digitaldrywood/detent#740",
+			ProjectID:  "detent",
+			Title:      "Unsupported remove card",
+			State:      "Todo",
+		}},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	form := url.Values{
+		"project_id":    {"detent"},
+		"issue_id":      {"I_kw740"},
+		"current_state": {"Todo"},
+	}
+	rec := performForm(t, server.Handler(), http.MethodPost, "/api/v1/kanban/remove", form)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusBadGateway, rec.Body.String())
+	}
+	if !strings.Contains(rec.Body.String(), "Remove failed: "+connector.ErrNotImplemented.Error()) {
+		t.Fatalf("body missing visible unsupported error: %s", rec.Body.String())
+	}
+}
+
 func TestKanbanDragMoveSuccessResponseRefreshesProjectBoardWithoutInlineFlash(t *testing.T) {
 	t.Parallel()
 
@@ -6315,6 +6416,10 @@ type kanbanIssueFieldUpdate struct {
 	value   string
 }
 
+type kanbanRemoval struct {
+	issueID string
+}
+
 type kanbanComment struct {
 	issueID string
 	body    string
@@ -6332,6 +6437,7 @@ type kanbanActionConnector struct {
 	mu           sync.Mutex
 	states       []kanbanStateUpdate
 	fields       []kanbanIssueFieldUpdate
+	removes      []kanbanRemoval
 	commentLog   []kanbanComment
 	prCommentLog []kanbanPRComment
 	activeMoves  int
@@ -6404,6 +6510,14 @@ func (c *kanbanActionConnector) SetIssueField(_ context.Context, issueID string,
 	return nil
 }
 
+func (c *kanbanActionConnector) RemoveIssueFromProject(_ context.Context, issueID string) error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.removes = append(c.removes, kanbanRemoval{issueID: issueID})
+	return nil
+}
+
 func (c *kanbanActionConnector) CreatePullRequestComment(_ context.Context, repository string, number int, body string) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -6424,6 +6538,13 @@ func (c *kanbanActionConnector) issueFieldUpdates() []kanbanIssueFieldUpdate {
 	defer c.mu.Unlock()
 
 	return append([]kanbanIssueFieldUpdate(nil), c.fields...)
+}
+
+func (c *kanbanActionConnector) removals() []kanbanRemoval {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	return append([]kanbanRemoval(nil), c.removes...)
 }
 
 func (c *kanbanActionConnector) comments() []kanbanComment {
@@ -6555,6 +6676,18 @@ func equalStateUpdates(left, right []kanbanStateUpdate) bool {
 }
 
 func equalIssueFieldUpdates(left, right []kanbanIssueFieldUpdate) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
+}
+
+func equalRemovals(left, right []kanbanRemoval) bool {
 	if len(left) != len(right) {
 		return false
 	}
