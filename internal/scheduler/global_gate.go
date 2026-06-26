@@ -51,22 +51,27 @@ type runningProjectSlot struct {
 	preempt func()
 }
 
+type selectedProjectSlot struct {
+	ProjectCandidate
+	request     SlotRequest
+	preemptions []RunningProject
+}
+
 type GlobalDispatchGate struct {
 	global GlobalScheduler
 
-	mu          sync.Mutex
-	ready       map[string]readyProjectSlot
-	running     map[uint64]runningProjectSlot
-	selected    string
-	selectedReq SlotRequest
-	preemptions []RunningProject
+	mu       sync.Mutex
+	ready    map[string]readyProjectSlot
+	running  map[uint64]runningProjectSlot
+	selected map[string]selectedProjectSlot
 }
 
 func NewGlobalDispatchGate(global GlobalScheduler) *GlobalDispatchGate {
 	return &GlobalDispatchGate{
-		global:  global,
-		ready:   map[string]readyProjectSlot{},
-		running: map[uint64]runningProjectSlot{},
+		global:   global,
+		ready:    map[string]readyProjectSlot{},
+		running:  map[uint64]runningProjectSlot{},
+		selected: map[string]selectedProjectSlot{},
 	}
 }
 
@@ -100,11 +105,7 @@ func (g *GlobalDispatchGate) MarkIdle(projectID string) {
 	defer g.mu.Unlock()
 
 	delete(g.ready, projectID)
-	if g.selected == projectID {
-		g.selected = ""
-		g.selectedReq = SlotRequest{}
-		g.preemptions = nil
-	}
+	delete(g.selected, projectID)
 }
 
 func (g *GlobalDispatchGate) TryAcquire(
@@ -148,39 +149,22 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 	}
 
 	g.ready[project.ID] = readyProjectSlot{ProjectCandidate: project, request: req}
-	if g.selected != "" {
-		selected, ok := g.ready[g.selected]
-		if !ok {
-			g.clearSelectionLocked()
-		} else {
-			g.selectedReq = selected.request
-			if g.hasHigherPriorityReadyProjectLocked(selected.request.Priority) {
-				g.clearSelectionLocked()
-			}
+	g.reconcileSelectionsLocked()
+	if err := g.fillSelectionsLocked(ctx, now, true); err != nil {
+		if errors.Is(err, ErrNoSlots) {
+			decision := g.decisionLocked(project.ID, req, DispatchGateReasonGlobalCapacityFull)
+			return Slot{}, false, decision, nil
 		}
+		return Slot{}, false, DispatchGateDecision{}, err
 	}
-	if g.selected == "" {
-		selection, selectedReq, err := g.selectReadyProjectLocked(ctx, now, true)
-		if err != nil {
-			if errors.Is(err, ErrNoSlots) {
-				decision := g.decisionLocked(project.ID, req, DispatchGateReasonGlobalCapacityFull)
-				return Slot{}, false, decision, nil
-			}
-			return Slot{}, false, DispatchGateDecision{}, err
-		}
-		g.selected = selection.Project.ID
-		g.selectedReq = selectedReq
-		g.preemptions = selection.Preemptions
-	}
-	if g.selected != project.ID {
-		reason := DispatchGateReasonSelectedProjectWaiting
-		if selected, ok := g.ready[g.selected]; ok && selected.request.Priority < req.Priority {
-			reason = DispatchGateReasonReservedForHigherPriority
-		}
+
+	selected, selectedOK := g.selected[project.ID]
+	if !selectedOK {
+		reason := g.waitReasonLocked(req)
 		return Slot{}, false, g.decisionLocked(project.ID, req, reason), nil
 	}
-	if err := g.preemptProjectsLocked(g.preemptions); err != nil {
-		g.clearSelectionLocked()
+	if err := g.preemptProjectsLocked(selected.preemptions); err != nil {
+		delete(g.selected, project.ID)
 		return Slot{}, false, DispatchGateDecision{}, err
 	}
 
@@ -190,7 +174,7 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 			decision := g.decisionLocked(project.ID, req, DispatchGateReasonGlobalCapacityFull)
 			return Slot{}, false, decision, nil
 		}
-		g.clearSelectionLocked()
+		delete(g.selected, project.ID)
 		return Slot{}, false, DispatchGateDecision{}, err
 	}
 	if err := g.global.RecordProjectDispatch(ctx, ProjectDispatch{
@@ -198,13 +182,13 @@ func (g *GlobalDispatchGate) TryAcquireWithDecision(
 		Weight:       project.Weight,
 		DispatchedAt: now,
 	}); err != nil {
-		g.clearSelectionLocked()
+		delete(g.selected, project.ID)
 		return Slot{}, false, DispatchGateDecision{}, errors.Join(err, g.global.ReleaseSlot(slot))
 	}
 
 	decision := g.decisionLocked(project.ID, req, DispatchGateReasonGranted)
 	delete(g.ready, project.ID)
-	g.clearSelectionLocked()
+	delete(g.selected, project.ID)
 	g.running[slot.token] = runningProjectSlot{
 		RunningProject: RunningProject{
 			ProjectID:    project.ID,
@@ -275,39 +259,75 @@ func (g *GlobalDispatchGate) preemptProjectLocked(preemption RunningProject) err
 	return nil
 }
 
-func (g *GlobalDispatchGate) selectReadyProjectLocked(
-	ctx context.Context,
-	now time.Time,
-	reserveWhenFull bool,
-) (ProjectSelection, SlotRequest, error) {
-	projects, requests := g.readyProjectsForSelectionLocked()
-	if len(projects) == 0 {
-		return ProjectSelection{}, SlotRequest{}, ErrNoCandidates
+func (g *GlobalDispatchGate) reconcileSelectionsLocked() {
+	for projectID, selected := range g.selected {
+		ready, ok := g.ready[projectID]
+		if !ok {
+			delete(g.selected, projectID)
+			continue
+		}
+		selected.ProjectCandidate = ready.ProjectCandidate
+		selected.request = ready.request
+		g.selected[projectID] = selected
 	}
 
-	selection, err := g.global.SelectProject(ctx, ProjectSelectionRequest{
-		Projects: projects,
-		Running:  g.runningProjectsLocked(),
-		Now:      now,
-	})
-	if err == nil {
-		return selection, requests[selection.Project.ID], nil
+	bestPriority, ok := g.bestReadyPriorityLocked()
+	if !ok {
+		return
 	}
-	if !reserveWhenFull || !errors.Is(err, ErrNoSlots) {
-		return ProjectSelection{}, SlotRequest{}, err
+	for projectID, selected := range g.selected {
+		if selected.request.Priority > bestPriority {
+			delete(g.selected, projectID)
+		}
 	}
-
-	selection, reserveErr := g.global.SelectProject(ctx, ProjectSelectionRequest{
-		Projects: projects,
-		Now:      now,
-	})
-	if reserveErr != nil {
-		return ProjectSelection{}, SlotRequest{}, err
-	}
-	return selection, requests[selection.Project.ID], nil
 }
 
-func (g *GlobalDispatchGate) readyProjectsForSelectionLocked() ([]ProjectCandidate, map[string]SlotRequest) {
+func (g *GlobalDispatchGate) fillSelectionsLocked(ctx context.Context, now time.Time, reserveWhenFull bool) error {
+	for {
+		excluded := g.selectedProjectIDsLocked()
+		projects, requests := g.readyProjectsForSelectionLocked(excluded, g.unreservedCapacityLocked())
+		if len(projects) == 0 {
+			if !reserveWhenFull || len(g.selected) > 0 {
+				return nil
+			}
+			projects, requests = g.readyProjectsForSelectionLocked(excluded, -1)
+			if len(projects) == 0 {
+				return nil
+			}
+		}
+
+		selection, err := g.global.SelectProject(ctx, ProjectSelectionRequest{
+			Projects: projects,
+			Running:  g.runningProjectsWithSelectionsLocked(),
+			Now:      now,
+		})
+		if err != nil {
+			if !reserveWhenFull || !errors.Is(err, ErrNoSlots) || len(g.selected) > 0 {
+				if errors.Is(err, ErrNoSlots) {
+					return nil
+				}
+				return err
+			}
+			reserved, reserveErr := g.global.SelectProject(ctx, ProjectSelectionRequest{
+				Projects: projects,
+				Now:      now,
+			})
+			if reserveErr != nil {
+				return err
+			}
+			selection = reserved
+		}
+
+		req := requests[selection.Project.ID]
+		g.selected[selection.Project.ID] = selectedProjectSlot{
+			ProjectCandidate: selection.Project,
+			request:          req,
+			preemptions:      selection.Preemptions,
+		}
+	}
+}
+
+func (g *GlobalDispatchGate) readyProjectsForSelectionLocked(excluded map[string]struct{}, maxWeight int) ([]ProjectCandidate, map[string]SlotRequest) {
 	if len(g.ready) == 0 {
 		return nil, nil
 	}
@@ -315,15 +335,30 @@ func (g *GlobalDispatchGate) readyProjectsForSelectionLocked() ([]ProjectCandida
 	bestPriority := 0
 	first := true
 	for _, ready := range g.ready {
+		if _, ok := excluded[ready.ID]; ok {
+			continue
+		}
+		if maxWeight >= 0 && ready.request.Weight > maxWeight {
+			continue
+		}
 		if first || ready.request.Priority < bestPriority {
 			bestPriority = ready.request.Priority
 			first = false
 		}
 	}
+	if first {
+		return nil, nil
+	}
 
 	projects := make([]ProjectCandidate, 0, len(g.ready))
 	requests := make(map[string]SlotRequest, len(g.ready))
 	for _, ready := range g.ready {
+		if _, ok := excluded[ready.ID]; ok {
+			continue
+		}
+		if maxWeight >= 0 && ready.request.Weight > maxWeight {
+			continue
+		}
 		if ready.request.Priority != bestPriority {
 			continue
 		}
@@ -338,11 +373,8 @@ func (g *GlobalDispatchGate) readyProjectsForSelectionLocked() ([]ProjectCandida
 
 func (g *GlobalDispatchGate) decisionLocked(projectID string, req SlotRequest, reason string) DispatchGateDecision {
 	stats := g.capacitySnapshotLocked(req.State)
-	selectedProjectID := g.selected
-	selectedState := g.selectedReq.State
-	if selected, ok := g.ready[selectedProjectID]; ok {
-		selectedState = selected.request.State
-	}
+	selectedProjectID, selectedReq, _ := g.decisionSelectionLocked(projectID)
+	selectedState := selectedReq.State
 	if reason == "" {
 		reason = DispatchGateReasonSelectedProjectWaiting
 	}
@@ -365,11 +397,58 @@ func (g *GlobalDispatchGate) decisionLocked(projectID string, req SlotRequest, r
 	}
 }
 
+func (g *GlobalDispatchGate) waitReasonLocked(req SlotRequest) string {
+	_, selectedReq, ok := g.decisionSelectionLocked("")
+	if ok && selectedReq.Priority < req.Priority {
+		return DispatchGateReasonReservedForHigherPriority
+	}
+	return DispatchGateReasonSelectedProjectWaiting
+}
+
+func (g *GlobalDispatchGate) decisionSelectionLocked(projectID string) (string, SlotRequest, bool) {
+	if projectID != "" {
+		if selected, ok := g.selected[projectID]; ok {
+			return projectID, selected.request, true
+		}
+	}
+	if len(g.selected) == 0 {
+		return "", SlotRequest{}, false
+	}
+
+	selectedIDs := make([]string, 0, len(g.selected))
+	for projectID := range g.selected {
+		selectedIDs = append(selectedIDs, projectID)
+	}
+	sort.Slice(selectedIDs, func(i, j int) bool {
+		left := g.selected[selectedIDs[i]]
+		right := g.selected[selectedIDs[j]]
+		if left.request.Priority != right.request.Priority {
+			return left.request.Priority < right.request.Priority
+		}
+		return selectedIDs[i] < selectedIDs[j]
+	})
+	selected := g.selected[selectedIDs[0]]
+	return selectedIDs[0], selected.request, true
+}
+
 func (g *GlobalDispatchGate) capacitySnapshotLocked(state string) capacitySnapshot {
 	if snapshotter, ok := g.global.(interface{ capacitySnapshot(string) capacitySnapshot }); ok {
 		return snapshotter.capacitySnapshot(state)
 	}
 	return capacitySnapshot{}
+}
+
+func (g *GlobalDispatchGate) unreservedCapacityLocked() int {
+	stats := g.capacitySnapshotLocked("")
+	return nonNegativeInt(stats.globalCapacity - stats.globalUsed - g.selectedReservationWeightLocked())
+}
+
+func (g *GlobalDispatchGate) selectedReservationWeightLocked() int {
+	weight := 0
+	for _, selected := range g.selected {
+		weight += selected.request.Weight
+	}
+	return weight
 }
 
 func (g *GlobalDispatchGate) lowerPriorityRunningLocked(priority int) int {
@@ -382,33 +461,69 @@ func (g *GlobalDispatchGate) lowerPriorityRunningLocked(priority int) int {
 	return count
 }
 
-func (g *GlobalDispatchGate) hasHigherPriorityReadyProjectLocked(priority int) bool {
+func (g *GlobalDispatchGate) bestReadyPriorityLocked() (int, bool) {
+	bestPriority := 0
+	found := false
 	for _, ready := range g.ready {
-		if ready.request.Priority < priority {
-			return true
+		if !found || ready.request.Priority < bestPriority {
+			bestPriority = ready.request.Priority
+			found = true
 		}
 	}
-	return false
+	return bestPriority, found
 }
 
-func (g *GlobalDispatchGate) clearSelectionLocked() {
-	g.selected = ""
-	g.selectedReq = SlotRequest{}
-	g.preemptions = nil
+func (g *GlobalDispatchGate) selectedProjectIDsLocked() map[string]struct{} {
+	if len(g.selected) == 0 {
+		return nil
+	}
+	ids := make(map[string]struct{}, len(g.selected))
+	for projectID := range g.selected {
+		ids[projectID] = struct{}{}
+	}
+	return ids
+}
+
+func (g *GlobalDispatchGate) runningProjectsWithSelectionsLocked() []RunningProject {
+	projects := g.runningProjectsLocked()
+	for _, selected := range g.selected {
+		projects = appendRunningProjectWeight(projects, RunningProject{
+			ProjectID:    selected.ID,
+			Priority:     selected.Priority,
+			State:        selected.request.State,
+			SlotPriority: selected.request.Priority,
+		}, selected.request.Weight)
+	}
+	sortRunningProjects(projects)
+	return projects
 }
 
 func (g *GlobalDispatchGate) runningProjectsLocked() []RunningProject {
 	projects := make([]RunningProject, 0, len(g.running))
 	for _, project := range g.running {
-		projects = append(projects, project.RunningProject)
+		projects = appendRunningProjectWeight(projects, project.RunningProject, project.slot.Weight)
 	}
+	sortRunningProjects(projects)
+	return projects
+}
+
+func appendRunningProjectWeight(projects []RunningProject, project RunningProject, weight int) []RunningProject {
+	if weight <= 0 {
+		weight = 1
+	}
+	for range weight {
+		projects = append(projects, project)
+	}
+	return projects
+}
+
+func sortRunningProjects(projects []RunningProject) {
 	sort.Slice(projects, func(i, j int) bool {
 		if projects[i].ProjectID != projects[j].ProjectID {
 			return projects[i].ProjectID < projects[j].ProjectID
 		}
 		return projects[i].Priority < projects[j].Priority
 	})
-	return projects
 }
 
 func normalizeSlotRequest(req SlotRequest) (SlotRequest, error) {

@@ -878,6 +878,100 @@ func TestDispatchReadyIssuesLogsMergeSlotDecisionAndStopsAfterGlobalWait(t *test
 	}
 }
 
+func TestDispatchReadyIssuesRecordsNonMergeSlotWaitTelemetry(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 10, 0, 0, 0, time.UTC)
+	ctx := t.Context()
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewWeightedFair(scheduler.Config{Capacity: 1}))
+	lowerSlot, ok, decision, err := globalGate.TryAcquireWithDecision(ctx, scheduler.ProjectCandidate{ID: "alpha", Weight: 1}, scheduler.SlotRequest{
+		State:    "Todo",
+		Priority: 2,
+	}, now)
+	if err != nil {
+		t.Fatalf("lower-priority TryAcquireWithDecision() error = %v", err)
+	}
+	if !ok {
+		t.Fatalf("lower-priority TryAcquireWithDecision() ok = false, want true; decision = %#v", decision)
+	}
+	t.Cleanup(func() {
+		if err := globalGate.Release(lowerSlot); err != nil && !errors.Is(err, scheduler.ErrSlotNotHeld) {
+			t.Fatalf("Release() error = %v", err)
+		}
+	})
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents:     2,
+		DispatchPriorityByState: []string{"Merging", "Rework", "Todo"},
+		ActiveStates:            []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates:          []string{"Done"},
+		Project:                 scheduler.ProjectCandidate{ID: "zulu", Weight: 1},
+	})
+	runner := newWorkerHostRunner()
+	var logs strings.Builder
+	orch := Orchestrator{
+		cfg:                cfg,
+		supervisor:         newTestSupervisor(t, runner, cfg),
+		runResults:         make(chan runpkg.Completion),
+		globalDispatchGate: globalGate,
+		logger:             slog.New(slog.NewTextHandler(&logs, nil)),
+	}
+	state := newState(cfg)
+	candidate := dispatchTestIssue("issue-rework", "Rework")
+
+	orch.dispatchReadyIssues(ctx, &state, []connector.Issue{candidate}, now.Add(time.Second))
+
+	select {
+	case request := <-runner.started:
+		t.Fatalf("unexpected rework dispatch while global slot is held = %#v", request)
+	default:
+	}
+	if len(state.Running) != 0 {
+		t.Fatalf("Running len = %d, want 0", len(state.Running))
+	}
+	logText := logs.String()
+	for _, fragment := range []string{
+		"dispatch_slot_wait",
+		"issue_id=issue-rework",
+		"state=Rework",
+		"reason=global_capacity_full",
+		"global_capacity=1",
+		"global_used=1",
+		"global_available=0",
+		"project_state_capacity=2",
+		"project_state_used=0",
+		"project_state_available=2",
+		"selected_project_id=zulu",
+		"selected_state=rework",
+	} {
+		if !strings.Contains(logText, fragment) {
+			t.Fatalf("logs %q missing fragment %q", logText, fragment)
+		}
+	}
+	if strings.Contains(logText, "merge_worker_failure") {
+		t.Fatalf("logs %q contain merge_worker_failure, want dispatch slot wait telemetry instead", logText)
+	}
+	if len(state.RecentEvents) != 1 {
+		t.Fatalf("RecentEvents len = %d, want 1", len(state.RecentEvents))
+	}
+	event := state.RecentEvents[0]
+	if event.Event != "dispatch_slot_wait" {
+		t.Fatalf("RecentEvents[0].Event = %q, want dispatch_slot_wait", event.Event)
+	}
+	for _, fragment := range []string{
+		"digitaldrywood/detent#issue-rework",
+		"state=Rework",
+		"reason=global_capacity_full",
+		"global_available=0",
+		"project_state_available=2",
+		"selected_project_id=zulu",
+	} {
+		if !strings.Contains(event.Message, fragment) {
+			t.Fatalf("RecentEvents[0].Message %q missing fragment %q", event.Message, fragment)
+		}
+	}
+}
+
 func TestDispatchReadyIssuesHydratesLightweightCandidateBeforeDependencyGate(t *testing.T) {
 	t.Parallel()
 

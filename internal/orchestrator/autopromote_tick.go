@@ -352,6 +352,56 @@ func (o *Orchestrator) logMergeWorkerSlotAcquired(
 	o.logger.Info("merge_worker_slot_acquired", mergeWorkerSlotDecisionAttrs(issue, decision, projectStats)...)
 }
 
+func (o *Orchestrator) logDispatchSlotWait(
+	issue connector.Issue,
+	decision scheduler.DispatchGateDecision,
+	projectStats projectStateSlotStats,
+) {
+	if o.logger == nil {
+		return
+	}
+	o.logger.Info("dispatch_slot_wait", mergeWorkerSlotDecisionAttrs(issue, decision, projectStats)...)
+}
+
+func (o *Orchestrator) recordDispatchSlotWait(
+	state *State,
+	issue connector.Issue,
+	decision scheduler.DispatchGateDecision,
+	projectStats projectStateSlotStats,
+	now time.Time,
+) {
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "dispatch_slot_wait",
+		Message: dispatchSlotWaitMessage(issue, decision, projectStats),
+	})
+}
+
+func dispatchSlotWaitMessage(
+	issue connector.Issue,
+	decision scheduler.DispatchGateDecision,
+	projectStats projectStateSlotStats,
+) string {
+	reason := strings.TrimSpace(decision.Reason)
+	if reason == "" {
+		reason = dispatchIssueFailureGlobalSlotUnavailable
+	}
+	return fmt.Sprintf(
+		"dispatch waiting for %s state=%s reason=%s global_capacity=%d global_used=%d global_available=%d project_state_capacity=%d project_state_used=%d project_state_available=%d selected_project_id=%s selected_state=%s",
+		issueLabel(issue),
+		strings.TrimSpace(issue.State),
+		reason,
+		decision.GlobalCapacity,
+		decision.GlobalUsed,
+		decision.GlobalAvailable,
+		projectStats.capacity,
+		projectStats.used,
+		projectStats.available,
+		strings.TrimSpace(decision.SelectedProjectID),
+		strings.TrimSpace(decision.SelectedState),
+	)
+}
+
 func mergeWorkerSlotDecisionAttrs(
 	issue connector.Issue,
 	decision scheduler.DispatchGateDecision,
@@ -362,6 +412,7 @@ func mergeWorkerSlotDecisionAttrs(
 		reason = dispatchIssueFailureGlobalSlotUnavailable
 	}
 	attrs := mergeWorkerLogAttrs(issue,
+		"state", strings.TrimSpace(issue.State),
 		"reason", reason,
 		"global_capacity", decision.GlobalCapacity,
 		"global_used", decision.GlobalUsed,
