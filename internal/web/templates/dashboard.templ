@@ -2116,6 +2116,9 @@ templ projectKanbanCardDetails(data DashboardData, card projectKanbanCard) {
 			<div class="grid min-w-0 max-w-full gap-1.5 overflow-hidden rounded-md bg-muted/40 p-2">
 				@projectKanbanDetailRow("Status", card.Stage, card.Identifier)
 				@projectKanbanDetailRow("Time in stage", card.TimeInStage, card.TimeInStageTitle)
+				if card.MergeLaneStatus != "" {
+					@projectKanbanDetailRow("Merge lane", card.MergeLaneStatus, card.MergeLaneDetail)
+				}
 				if card.ProjectID != "" {
 					@projectKanbanDetailRow("Project", card.ProjectID, card.ProjectID)
 				}
@@ -2475,9 +2478,18 @@ templ prPipelineCardView(card prPipelineCard) {
 		</div>
 		<div class="mt-3 grid gap-2 text-xs">
 			<div class="flex flex-wrap gap-2">
+				if card.MergeLaneStatus != "" {
+					<span class={ "inline-flex min-h-7 items-center rounded-full border px-2 py-1 font-medium " + card.MergeLaneClass } title={ card.MergeLaneDetail }>{ card.MergeLaneStatus }</span>
+				}
 				<span class={ "inline-flex min-h-7 items-center rounded-full border px-2 py-1 font-medium " + card.CIClass }>CI { card.CIStatus }</span>
 				<span class={ "inline-flex min-h-7 items-center rounded-full border px-2 py-1 font-medium " + card.CodexReviewClass }>Codex { card.CodexReviewState }</span>
 			</div>
+			if card.MergeLaneStatus != "" {
+				<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-muted/60 px-2 py-1">
+					<span class="text-muted-foreground">Merge lane</span>
+					<span class="min-w-0 truncate font-mono font-medium text-foreground" title={ card.MergeLaneDetail }>{ card.MergeLaneDetail }</span>
+				</div>
+			}
 			<div class="flex min-h-7 items-center justify-between gap-3 rounded-md bg-muted/60 px-2 py-1">
 				<span class="text-muted-foreground">Time in stage</span>
 				<span class="font-mono font-medium text-foreground" title={ card.TimeInStageTitle }>{ card.TimeInStage }</span>

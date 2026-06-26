@@ -323,6 +323,9 @@ type prPipelineCard struct {
 	TimeInStage      string
 	TimeInStageTitle string
 	WaitDetail       string
+	MergeLaneStatus  string
+	MergeLaneDetail  string
+	MergeLaneClass   string
 	Stage            string
 	StageAt          time.Time
 }
@@ -363,6 +366,9 @@ type projectKanbanCard struct {
 	TimeInStage      string
 	TimeInStageTitle string
 	WaitDetail       string
+	MergeLaneStatus  string
+	MergeLaneDetail  string
+	MergeLaneClass   string
 	Stage            string
 	StageAt          time.Time
 	Labels           []string
@@ -1630,11 +1636,17 @@ func projectOverviewDiagnosticsDotClass(snapshot telemetry.Snapshot) string {
 
 func projectKanbanCardsByState(data DashboardData) map[string][]projectKanbanCard {
 	issues := projectKanbanIssues(data.Snapshot)
+	mergeStatuses := mergeLaneStatuses(data.Snapshot)
 	configured := projectKanbanConfiguredStateMap(data.Kanban.States)
 	cardsByState := map[string][]projectKanbanCard{}
 	for _, entry := range issues {
 		state := projectKanbanDisplayState(entry.state, configured)
 		card := projectKanbanCardForIssue(data, entry.issue, state, entry.stageAt, pipelineNow(data.Snapshot))
+		if status, ok := mergeStatuses[mergeLaneIssueKey(entry.issue)]; ok {
+			card.MergeLaneStatus = status.Label
+			card.MergeLaneDetail = status.Detail
+			card.MergeLaneClass = status.Class
+		}
 		cardsByState[projectKanbanStateKey(state)] = append(cardsByState[projectKanbanStateKey(state)], card)
 	}
 	for key := range cardsByState {
@@ -2239,6 +2251,9 @@ func projectKanbanCompactChips(card projectKanbanCard) []projectKanbanCompactChi
 			Class: "border-border bg-muted text-muted-foreground",
 		},
 	}
+	if strings.TrimSpace(card.MergeLaneStatus) != "" {
+		chips = append(chips, newProjectKanbanCompactChip(card.MergeLaneStatus, card.MergeLaneDetail, card.MergeLaneClass))
+	}
 	if card.HasPullRequest {
 		chips = append(chips,
 			newProjectKanbanCompactChip("CI "+chartText(card.CIStatus, "n/a"), "Continuous integration status", card.CIClass),
@@ -2706,34 +2721,265 @@ func normalizeDashboardState(value string) string {
 	return strings.ToLower(strings.Join(strings.Fields(strings.TrimSpace(value)), " "))
 }
 
+type mergeLaneCardStatus struct {
+	Label  string
+	Detail string
+	Class  string
+}
+
+type mergeLaneIssueRecord struct {
+	issue      telemetry.Issue
+	key        string
+	group      string
+	active     bool
+	stageAt    time.Time
+	step       string
+	queueError string
+	rank       int
+	index      int
+}
+
+func mergeLaneStatuses(snapshot telemetry.Snapshot) map[string]mergeLaneCardStatus {
+	records := mergeLaneIssueRecords(snapshot)
+	if len(records) == 0 {
+		return nil
+	}
+
+	byGroup := map[string][]mergeLaneIssueRecord{}
+	for _, record := range records {
+		byGroup[record.group] = append(byGroup[record.group], record)
+	}
+
+	statuses := make(map[string]mergeLaneCardStatus, len(records))
+	for _, groupRecords := range byGroup {
+		sort.SliceStable(groupRecords, func(i, j int) bool {
+			if groupRecords[i].active != groupRecords[j].active {
+				return groupRecords[i].active
+			}
+			left := groupRecords[i].stageAt
+			right := groupRecords[j].stageAt
+			if left.IsZero() || right.IsZero() {
+				return !left.IsZero() && right.IsZero()
+			}
+			if !left.Equal(right) {
+				return left.Before(right)
+			}
+			if groupRecords[i].index != groupRecords[j].index {
+				return groupRecords[i].index < groupRecords[j].index
+			}
+			return issueIdentifier(groupRecords[i].issue) < issueIdentifier(groupRecords[j].issue)
+		})
+
+		activePRNumber := 0
+		for _, record := range groupRecords {
+			if record.active {
+				activePRNumber = pullRequestNumber(record.issue)
+				break
+			}
+		}
+
+		for i, record := range groupRecords {
+			position := i + 1
+			if record.active {
+				statuses[record.key] = mergeLaneActiveStatus(record)
+				continue
+			}
+			statuses[record.key] = mergeLaneQueuedStatus(record, position, activePRNumber)
+		}
+	}
+	return statuses
+}
+
+func mergeLaneIssueRecords(snapshot telemetry.Snapshot) []mergeLaneIssueRecord {
+	recordsByKey := map[string]mergeLaneIssueRecord{}
+	nextIndex := 0
+	upsert := func(record mergeLaneIssueRecord) {
+		if !mergeLaneIssue(record.issue) {
+			return
+		}
+		record.key = mergeLaneIssueKey(record.issue)
+		record.group = mergeLaneGroupKey(record.issue)
+		if record.key == "" || record.group == "" {
+			return
+		}
+		record.index = nextIndex
+		nextIndex++
+		current, ok := recordsByKey[record.key]
+		if ok && current.rank > record.rank {
+			return
+		}
+		if ok && current.rank == record.rank && current.active && !record.active {
+			return
+		}
+		recordsByKey[record.key] = record
+	}
+
+	for _, issue := range snapshot.BoardIssues {
+		upsert(mergeLaneIssueRecord{issue: issue, stageAt: projectKanbanIssueStageTime(issue, time.Time{}), rank: 5})
+	}
+	for _, issue := range snapshot.Pipeline {
+		upsert(mergeLaneIssueRecord{issue: issue, stageAt: pipelineIssueStageTime(issue), rank: 10})
+	}
+	for _, row := range snapshot.Queue {
+		stageAt := projectKanbanIssueStageTime(row.Issue, time.Time{})
+		if stageAt.IsZero() && row.DueAt != nil {
+			stageAt = row.DueAt.UTC()
+		}
+		upsert(mergeLaneIssueRecord{
+			issue:      row.Issue,
+			stageAt:    stageAt,
+			queueError: strings.TrimSpace(row.Error),
+			rank:       20,
+		})
+	}
+	for _, row := range snapshot.Running {
+		upsert(mergeLaneIssueRecord{
+			issue:   row.Issue,
+			active:  true,
+			stageAt: row.StartedAt.UTC(),
+			step:    mergeLaneActiveStep(row),
+			rank:    30,
+		})
+	}
+
+	records := make([]mergeLaneIssueRecord, 0, len(recordsByKey))
+	for _, record := range recordsByKey {
+		records = append(records, record)
+	}
+	return records
+}
+
+func mergeLaneIssue(issue telemetry.Issue) bool {
+	return prPipelineLaneID(issueState(issue, "")) == "merging"
+}
+
+func mergeLaneIssueKey(issue telemetry.Issue) string {
+	if id := strings.TrimSpace(issue.ID); id != "" {
+		return "id:" + id
+	}
+	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
+		return "identifier:" + identifier
+	}
+	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
+		repository := strings.ToLower(strings.TrimSpace(pullRequestRepository(issue)))
+		if repository != "" {
+			return "pr:" + repository + "#" + strconv.Itoa(issue.PullRequest.Number)
+		}
+	}
+	return ""
+}
+
+func mergeLaneGroupKey(issue telemetry.Issue) string {
+	if repository := strings.ToLower(strings.TrimSpace(pullRequestRepository(issue))); repository != "" {
+		return "repo:" + repository
+	}
+	if projectID := strings.ToLower(strings.TrimSpace(issue.ProjectID)); projectID != "" {
+		return "project:" + projectID
+	}
+	return mergeLaneIssueKey(issue)
+}
+
+func mergeLaneActiveStep(row telemetry.Running) string {
+	if event := strings.TrimSpace(row.LastEvent); event != "" {
+		return event
+	}
+	if message := strings.TrimSpace(row.LastMessage); message != "" {
+		return message
+	}
+	for i := len(row.RecentEvents) - 1; i >= 0; i-- {
+		event := row.RecentEvents[i]
+		if message := strings.TrimSpace(event.Message); message != "" {
+			return message
+		}
+		if name := strings.TrimSpace(event.Event); name != "" {
+			return name
+		}
+	}
+	return ""
+}
+
+func mergeLaneActiveStatus(record mergeLaneIssueRecord) mergeLaneCardStatus {
+	detail := "Active merge worker"
+	if number := pullRequestNumber(record.issue); number > 0 {
+		detail += " for PR #" + strconv.Itoa(number)
+	}
+	if step := strings.TrimSpace(record.step); step != "" {
+		detail += "; " + step
+	}
+	return mergeLaneCardStatus{
+		Label:  "Merging now",
+		Detail: detail,
+		Class:  "border-accent-soft bg-accent-soft text-accent",
+	}
+}
+
+func mergeLaneQueuedStatus(record mergeLaneIssueRecord, position int, activePRNumber int) mergeLaneCardStatus {
+	details := []string{}
+	if queueError := strings.TrimSpace(record.queueError); queueError != "" {
+		details = append(details, "Waiting: "+queueError)
+	}
+	details = append(details, mergeLaneOrdinal(position)+" in merge queue")
+	waiting := "waiting for repo merge lane"
+	if activePRNumber > 0 {
+		waiting += " behind PR #" + strconv.Itoa(activePRNumber)
+	}
+	details = append(details, waiting)
+	return mergeLaneCardStatus{
+		Label:  "Queued #" + strconv.Itoa(position),
+		Detail: strings.Join(details, "; "),
+		Class:  "border-warning-soft bg-warning-soft text-warning",
+	}
+}
+
+func mergeLaneOrdinal(position int) string {
+	if position <= 0 {
+		return "0th"
+	}
+	lastTwo := position % 100
+	if lastTwo >= 11 && lastTwo <= 13 {
+		return strconv.Itoa(position) + "th"
+	}
+	switch position % 10 {
+	case 1:
+		return strconv.Itoa(position) + "st"
+	case 2:
+		return strconv.Itoa(position) + "nd"
+	case 3:
+		return strconv.Itoa(position) + "rd"
+	default:
+		return strconv.Itoa(position) + "th"
+	}
+}
+
 func prPipelineLanes(snapshot telemetry.Snapshot) []prPipelineLane {
 	cardsByLane := map[string][]prPipelineCard{
 		"human-review": {},
 		"merging":      {},
 		"done-today":   {},
 	}
+	mergeStatuses := mergeLaneStatuses(snapshot)
 	seen := map[string]struct{}{}
 	now := pipelineNow(snapshot)
 
 	for _, issue := range snapshot.Pipeline {
-		appendPRPipelineCard(cardsByLane, seen, issue, issue.State, pipelineIssueStageTime(issue), now)
+		appendPRPipelineCard(cardsByLane, seen, mergeStatuses, issue, issue.State, pipelineIssueStageTime(issue), now)
 	}
 	for _, row := range snapshot.Running {
-		appendPRPipelineCard(cardsByLane, seen, row.Issue, issueState(row.Issue, "Running"), row.StartedAt, now)
+		appendPRPipelineCard(cardsByLane, seen, mergeStatuses, row.Issue, issueState(row.Issue, "Running"), row.StartedAt, now)
 	}
 	for _, row := range snapshot.Queue {
 		stageAt := time.Time{}
 		if row.DueAt != nil {
 			stageAt = *row.DueAt
 		}
-		appendPRPipelineCard(cardsByLane, seen, row.Issue, issueState(row.Issue, "Todo"), stageAt, now)
+		appendPRPipelineCard(cardsByLane, seen, mergeStatuses, row.Issue, issueState(row.Issue, "Todo"), stageAt, now)
 	}
 	for _, row := range snapshot.Blocked {
 		stageAt := time.Time{}
 		if row.BlockedAt != nil {
 			stageAt = *row.BlockedAt
 		}
-		appendPRPipelineCard(cardsByLane, seen, row.Issue, issueState(row.Issue, "Blocked"), stageAt, now)
+		appendPRPipelineCard(cardsByLane, seen, mergeStatuses, row.Issue, issueState(row.Issue, "Blocked"), stageAt, now)
 	}
 
 	prunePRPipelineCards(cardsByLane)
@@ -2780,6 +3026,7 @@ func prPipelineTotalLabel(snapshot telemetry.Snapshot) string {
 func appendPRPipelineCard(
 	cardsByLane map[string][]prPipelineCard,
 	seen map[string]struct{},
+	mergeLaneStatuses map[string]mergeLaneCardStatus,
 	issue telemetry.Issue,
 	state string,
 	stageAt time.Time,
@@ -2802,7 +3049,13 @@ func appendPRPipelineCard(
 	}
 	seen[key] = struct{}{}
 
-	cardsByLane[laneID] = append(cardsByLane[laneID], prPipelineCardForIssue(issue, state, laneID, stageAt, now))
+	card := prPipelineCardForIssue(issue, state, laneID, stageAt, now)
+	if status, ok := mergeLaneStatuses[mergeLaneIssueKey(issue)]; ok {
+		card.MergeLaneStatus = status.Label
+		card.MergeLaneDetail = status.Detail
+		card.MergeLaneClass = status.Class
+	}
+	cardsByLane[laneID] = append(cardsByLane[laneID], card)
 }
 
 func prunePRPipelineCards(cardsByLane map[string][]prPipelineCard) {
