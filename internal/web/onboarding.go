@@ -54,7 +54,6 @@ func (s *Server) onboarding(c echo.Context) error {
 		PollingIntervalMS:            defaultPollingIntervalMS,
 		MergingConcurrency:           defaultMergingConcurrency,
 		DispatchPriorityState:        defaultDispatchPriorityText,
-		DeliveryProfile:              onboardingprofile.DeliveryProfileConservativeReview,
 		DependencyAutoUnblockEnabled: "false",
 		KanbanMode:                   config.KanbanModeIntegration,
 	}
@@ -329,6 +328,11 @@ func validateAgent(form templates.OnboardingForm) []string {
 	problems = append(problems, positiveIntegerProblem("polling interval", form.PollingIntervalMS)...)
 	problems = append(problems, minimumIntegerProblem("polling interval", form.PollingIntervalMS, config.MinPollingIntervalMS)...)
 	problems = append(problems, positiveIntegerProblem("merging concurrency", form.MergingConcurrency)...)
+	if strings.TrimSpace(form.DeliveryProfile) == "" {
+		problems = append(problems, "automation policy is required")
+	} else if _, ok := onboardingprofile.DeliveryProfile(form.DeliveryProfile); !ok {
+		problems = append(problems, "automation policy must be full_autopilot, review_gate, or conservative_manual")
+	}
 	for _, state := range dispatchPriorityStates(form) {
 		problems = append(problems, rejectNewlines("dispatch priority state", state)...)
 		if strings.TrimSpace(state) == "" {
@@ -448,6 +452,7 @@ func applyDeliveryProfile(form *templates.OnboardingForm) {
 	form.DeliveryProfile = settings.ID
 	form.MergingConcurrency = strconv.Itoa(settings.MergingConcurrency)
 	form.DependencyAutoUnblockEnabled = onboardingBool(settings.DependencyAutoUnblockEnabled)
+	form.KanbanMode = settings.KanbanMode
 }
 
 func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
@@ -455,6 +460,7 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	if hasDeliveryProfile {
 		form.MergingConcurrency = strconv.Itoa(settings.MergingConcurrency)
 		form.DependencyAutoUnblockEnabled = onboardingBool(settings.DependencyAutoUnblockEnabled)
+		form.KanbanMode = settings.KanbanMode
 	}
 	var b strings.Builder
 	b.WriteString("---\n")
@@ -635,10 +641,12 @@ func deliveryProfileWorkflowPrompt(form templates.OnboardingForm) string {
 		return ""
 	}
 	switch settings.ID {
-	case onboardingprofile.DeliveryProfileAutonomousDelivery:
-		return "\n\nAutonomous delivery still requires linked PRs, green CI, and clear gates.\nUse live reload or a project-scoped refresh after onboarding changes; do not restart Detent or interrupt running agents unless the operator explicitly authorizes it."
+	case onboardingprofile.DeliveryProfileFullAutopilot:
+		return "\n\nFull autopilot still requires linked PRs, green CI, clear gates, and no blocking P1 automated findings.\nUse live reload or a project-scoped refresh after onboarding changes; do not restart Detent or interrupt running agents unless the operator explicitly authorizes it."
+	case onboardingprofile.DeliveryProfileReviewGate:
+		return "\n\nReview gate mode stops completed work in Human Review until the operator approves promotion to Merging."
 	default:
-		return "\n\nConservative review mode keeps Detent parked at Human Review until the operator chooses promotion or merge."
+		return "\n\nConservative/manual mode keeps GitHub and project mutations read-only by default and requires explicit operator approval before promotion or mutation."
 	}
 }
 

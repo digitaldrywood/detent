@@ -11,8 +11,8 @@ func TestDeliveryProfileAnswerExpansion(t *testing.T) {
 		want    map[string]string
 	}{
 		{
-			name:    "autonomous delivery",
-			profile: "autonomous_delivery",
+			name:    "full autopilot",
+			profile: "full_autopilot",
 			want: map[string]string{
 				"KANBAN_MODE":                           "integration",
 				"AUTO_PROMOTE_ENABLED":                  "true",
@@ -24,8 +24,21 @@ func TestDeliveryProfileAnswerExpansion(t *testing.T) {
 			},
 		},
 		{
-			name:    "conservative review alias",
-			profile: "conservative",
+			name:    "review gate",
+			profile: "review_gate",
+			want: map[string]string{
+				"KANBAN_MODE":                           "integration",
+				"AUTO_PROMOTE_ENABLED":                  "false",
+				"AUTO_PROMOTE_QUIET_SECONDS":            "600",
+				"GATE_REQUIRE_AUTOMATED_REVIEW":         "false",
+				"AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW": "false",
+				"DEPENDENCY_AUTO_UNBLOCK_ENABLED":       "false",
+				"MERGING_CONCURRENCY":                   "1",
+			},
+		},
+		{
+			name:    "conservative manual",
+			profile: "conservative_manual",
 			want: map[string]string{
 				"KANBAN_MODE":                           "read_only",
 				"AUTO_PROMOTE_ENABLED":                  "false",
@@ -58,8 +71,8 @@ func TestDeliveryProfileAnswerExpansion(t *testing.T) {
 func TestDeliveryProfileRejectsUnknown(t *testing.T) {
 	t.Parallel()
 
-	if _, ok := DeliveryProfileAnswerExpansion("manual"); ok {
-		t.Fatal("DeliveryProfileAnswerExpansion(manual) ok = true, want false")
+	if _, ok := DeliveryProfileAnswerExpansion("safe_start"); ok {
+		t.Fatal("DeliveryProfileAnswerExpansion(safe_start) ok = true, want false")
 	}
 }
 
@@ -80,9 +93,9 @@ func TestSummarizeDeliveryProfile(t *testing.T) {
 		wantMergeConcurrencySummary string
 	}{
 		{
-			name:                        "autonomous delivery",
-			profile:                     "autonomous_delivery",
-			wantEffectiveProfile:        "autonomous_delivery",
+			name:                        "full autopilot",
+			profile:                     "full_autopilot",
+			wantEffectiveProfile:        "full_autopilot",
 			wantKanbanMode:              "integration",
 			wantGateRequiresReview:      false,
 			wantAutoPromoteEnabled:      true,
@@ -93,9 +106,22 @@ func TestSummarizeDeliveryProfile(t *testing.T) {
 			wantMergeConcurrencySummary: "`Merging` remains serialized for this project.",
 		},
 		{
-			name:                        "conservative review",
-			profile:                     "conservative_review",
-			wantEffectiveProfile:        "conservative_review",
+			name:                        "review gate",
+			profile:                     "review_gate",
+			wantEffectiveProfile:        "review_gate",
+			wantKanbanMode:              "integration",
+			wantGateRequiresReview:      false,
+			wantAutoPromoteEnabled:      false,
+			wantQuietWindow:             "Auto-promotion is disabled; the 600-second quiet window only matters if auto-promotion is enabled later.",
+			wantDependencyAutoUnblock:   false,
+			wantDependencyBehavior:      "Dependency-waiting `Blocked` issues remain `Blocked` until a human or workflow moves them.",
+			wantMergeConcurrency:        1,
+			wantMergeConcurrencySummary: "`Merging` remains serialized for this project.",
+		},
+		{
+			name:                        "conservative manual",
+			profile:                     "conservative_manual",
+			wantEffectiveProfile:        "conservative_manual",
 			wantKanbanMode:              "read_only",
 			wantGateRequiresReview:      true,
 			wantAutoPromoteEnabled:      false,

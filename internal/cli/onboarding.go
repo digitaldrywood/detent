@@ -245,7 +245,7 @@ func newOnboardingExplainAnswersCommand() *cobra.Command {
 			if result.AnswersSummary == nil {
 				return NewValidationError(
 					"DELIVERY_PROFILE is required to explain onboarding answers",
-					"Record DELIVERY_PROFILE=conservative_review or DELIVERY_PROFILE=autonomous_delivery in answers.env, then rerun explain-answers.",
+					"Record DELIVERY_PROFILE=full_autopilot, DELIVERY_PROFILE=review_gate, or DELIVERY_PROFILE=conservative_manual in answers.env, then rerun explain-answers.",
 					nil,
 				)
 			}
@@ -293,7 +293,7 @@ func writeOnboardingAnswersExplanationPretty(w io.Writer, result onboardingAnswe
 	if summary == nil {
 		return NewValidationError(
 			"DELIVERY_PROFILE is required to explain onboarding answers",
-			"Record DELIVERY_PROFILE=conservative_review or DELIVERY_PROFILE=autonomous_delivery in answers.env, then rerun explain-answers.",
+			"Record DELIVERY_PROFILE=full_autopilot, DELIVERY_PROFILE=review_gate, or DELIVERY_PROFILE=conservative_manual in answers.env, then rerun explain-answers.",
 			nil,
 		)
 	}
@@ -1359,7 +1359,7 @@ func analyzeOnboardingDeliveryProfileAnswers(answers onboardingAnswers) onboardi
 	settings, ok := onboardingprofile.DeliveryProfile(profile)
 	if !ok {
 		return onboardingDeliveryProfileAnswerAnalysis{
-			Problems: []string{"DELIVERY_PROFILE must be conservative_review or autonomous_delivery"},
+			Problems: []string{"DELIVERY_PROFILE must be full_autopilot, review_gate, or conservative_manual"},
 		}
 	}
 	expansion, _ := onboardingprofile.DeliveryProfileAnswerExpansion(settings.ID)

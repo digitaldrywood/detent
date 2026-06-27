@@ -180,7 +180,7 @@ func TestOnboardingValidateAnswersCommandRejectsMissingDeliveryProfileExpansionB
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
 		"GITHUB_MODE=label",
-		"DELIVERY_PROFILE=autonomous_delivery",
+		"DELIVERY_PROFILE=full_autopilot",
 		"STATUS_LABEL_PREFIX=detent:",
 		"MUTATION_CONFIRMED=true",
 		"",
@@ -195,8 +195,8 @@ func TestOnboardingValidateAnswersCommandRejectsMissingDeliveryProfileExpansionB
 		t.Fatal("Execute() error = nil, want missing delivery profile expansion validation error")
 	}
 	for _, want := range []string{
-		"AUTO_PROMOTE_ENABLED is required when DELIVERY_PROFILE=autonomous_delivery",
-		"KANBAN_MODE is required when DELIVERY_PROFILE=autonomous_delivery",
+		"AUTO_PROMOTE_ENABLED is required when DELIVERY_PROFILE=full_autopilot",
+		"KANBAN_MODE is required when DELIVERY_PROFILE=full_autopilot",
 		"detent onboarding normalize-answers --answers",
 	} {
 		if !strings.Contains(err.Error(), want) {
@@ -267,13 +267,13 @@ func TestOnboardingValidateAnswersCommandAcceptsLabelMode(t *testing.T) {
 	}
 }
 
-func TestOnboardingValidateAnswersCommandExpandsAutonomousDeliveryProfile(t *testing.T) {
+func TestOnboardingValidateAnswersCommandExpandsFullAutopilotProfile(t *testing.T) {
 	t.Parallel()
 
-	profileAnswers := autonomousDeliveryProfileAnswers()
+	profileAnswers := fullAutopilotProfileAnswers()
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
 		"GITHUB_MODE=label",
-		"DELIVERY_PROFILE=autonomous_delivery",
+		"DELIVERY_PROFILE=full_autopilot",
 		"KANBAN_MODE=" + profileAnswers["KANBAN_MODE"],
 		"AUTO_PROMOTE_ENABLED=" + profileAnswers["AUTO_PROMOTE_ENABLED"],
 		"AUTO_PROMOTE_QUIET_SECONDS=" + profileAnswers["AUTO_PROMOTE_QUIET_SECONDS"],
@@ -313,18 +313,18 @@ func TestOnboardingValidateAnswersCommandExpandsAutonomousDeliveryProfile(t *tes
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
 	}
-	if got.DeliveryProfile != "autonomous_delivery" {
-		t.Fatalf("DeliveryProfile = %q, want autonomous_delivery", got.DeliveryProfile)
+	if got.DeliveryProfile != "full_autopilot" {
+		t.Fatalf("DeliveryProfile = %q, want full_autopilot", got.DeliveryProfile)
 	}
 	for key, value := range profileAnswers {
 		if got.DeliveryProfileAnswers[key] != value {
 			t.Fatalf("DeliveryProfileAnswers[%q] = %q, want %q; all answers = %#v", key, got.DeliveryProfileAnswers[key], value, got.DeliveryProfileAnswers)
 		}
 	}
-	if got.AnswersSummary.EffectiveDeliveryProfile != "autonomous_delivery" ||
-		got.AnswersSummary.EffectiveDeliveryProfileLabel != "Autonomous delivery mode" ||
+	if got.AnswersSummary.EffectiveDeliveryProfile != "full_autopilot" ||
+		got.AnswersSummary.EffectiveDeliveryProfileLabel != "Full autopilot" ||
 		got.AnswersSummary.KanbanMode != "integration" {
-		t.Fatalf("AnswersSummary identity = %#v, want autonomous delivery integration summary", got.AnswersSummary)
+		t.Fatalf("AnswersSummary identity = %#v, want full autopilot integration summary", got.AnswersSummary)
 	}
 	summaryValues := []string{
 		got.AnswersSummary.GateBehavior,
@@ -335,7 +335,7 @@ func TestOnboardingValidateAnswersCommandExpandsAutonomousDeliveryProfile(t *tes
 	}
 	for _, want := range []string{
 		"No automated GitHub PR review is required when the command gate is passing and the workflow says so.",
-		"Detent may promote from `Human Review` to `Merging` automatically when the linked PR, local gate, and CI requirements pass.",
+		"Detent automatically promotes eligible work from `Human Review` to `Merging` when the linked PR, local gate, CI, and guardrails pass.",
 		"There is no quiet-window delay before promotion.",
 		"Dependency-waiting `Blocked` issues can move back to `Todo` when declared blockers are terminal or merged.",
 		"`Merging` remains serialized for this project.",
@@ -349,12 +349,12 @@ func TestOnboardingValidateAnswersCommandExpandsAutonomousDeliveryProfile(t *tes
 	}
 }
 
-func TestOnboardingExplainAnswersCommandSummarizesAutonomousDelivery(t *testing.T) {
+func TestOnboardingExplainAnswersCommandSummarizesFullAutopilot(t *testing.T) {
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
 		"GITHUB_MODE=label",
-		"DELIVERY_PROFILE=autonomous_delivery",
+		"DELIVERY_PROFILE=full_autopilot",
 		"",
 	}, "\n"))
 	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
@@ -377,14 +377,14 @@ func TestOnboardingExplainAnswersCommandSummarizesAutonomousDelivery(t *testing.
 		t.Fatalf("summary appears after canonical keys:\n%s", output)
 	}
 	for _, want := range []string{
-		"Effective delivery profile: Autonomous delivery mode (`autonomous_delivery`).",
+		"Effective delivery profile: Full autopilot (`full_autopilot`).",
 		"No automated GitHub PR review is required when the command gate is passing and the workflow says so.",
-		"Detent may promote from `Human Review` to `Merging` automatically when the linked PR, local gate, and CI requirements pass.",
+		"Detent automatically promotes eligible work from `Human Review` to `Merging` when the linked PR, local gate, CI, and guardrails pass.",
 		"There is no quiet-window delay before promotion.",
 		"Dependency-waiting `Blocked` issues can move back to `Todo` when declared blockers are terminal or merged.",
 		"`Merging` remains serialized for this project.",
 		"Existing validation, CI, unresolved review feedback, dependency blockers, mergeability, and gate failures still stop progress.",
-		"DELIVERY_PROFILE=autonomous_delivery",
+		"DELIVERY_PROFILE=full_autopilot",
 		"AUTO_PROMOTE_QUIET_SECONDS=0",
 		"GATE_REQUIRE_AUTOMATED_REVIEW=false",
 		"MERGING_CONCURRENCY=1",
@@ -395,12 +395,12 @@ func TestOnboardingExplainAnswersCommandSummarizesAutonomousDelivery(t *testing.
 	}
 }
 
-func TestOnboardingValidateAnswersCommandSummarizesConservativeReviewProfile(t *testing.T) {
+func TestOnboardingValidateAnswersCommandSummarizesReviewGateProfile(t *testing.T) {
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
 		"GITHUB_MODE=label",
-		"DELIVERY_PROFILE=conservative_review",
+		"DELIVERY_PROFILE=review_gate",
 		"",
 	}, "\n"))
 	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
@@ -433,14 +433,14 @@ func TestOnboardingValidateAnswersCommandSummarizesConservativeReviewProfile(t *
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
 	}
 	summary := got.AnswersSummary
-	if summary.EffectiveDeliveryProfile != "conservative_review" ||
-		summary.EffectiveDeliveryProfileLabel != "Conservative review mode" ||
-		summary.KanbanMode != "read_only" ||
-		!summary.GateRequiresAutomatedReview ||
+	if summary.EffectiveDeliveryProfile != "review_gate" ||
+		summary.EffectiveDeliveryProfileLabel != "Review gate" ||
+		summary.KanbanMode != "integration" ||
+		summary.GateRequiresAutomatedReview ||
 		summary.AutoPromoteEnabled ||
 		summary.AutoPromoteQuietSeconds != 600 ||
 		summary.DependencyAutoUnblockEnabled {
-		t.Fatalf("AnswersSummary = %#v, want conservative review defaults", summary)
+		t.Fatalf("AnswersSummary = %#v, want review gate defaults", summary)
 	}
 	summaryValues := []string{
 		summary.GateBehavior,
@@ -450,8 +450,8 @@ func TestOnboardingValidateAnswersCommandSummarizesConservativeReviewProfile(t *
 		summary.MergeConcurrencyBehavior,
 	}
 	for _, want := range []string{
-		"Automated GitHub PR review is required before the command gate and promotion checks can pass.",
-		"Detent will not promote from `Human Review` to `Merging` automatically; a human must move approved work forward.",
+		"No automated GitHub PR review is required when the command gate is passing and the workflow says so.",
+		"Detent stops in `Human Review` until an operator approves promotion to `Merging`.",
 		"Auto-promotion is disabled; the 600-second quiet window only matters if auto-promotion is enabled later.",
 		"Dependency-waiting `Blocked` issues remain `Blocked` until a human or workflow moves them.",
 		"`Merging` remains serialized for this project.",
@@ -462,12 +462,58 @@ func TestOnboardingValidateAnswersCommandSummarizesConservativeReviewProfile(t *
 	}
 }
 
-func TestOnboardingNormalizeAnswersCommandWritesAutonomousDeliveryProfileExpansion(t *testing.T) {
+func TestOnboardingValidateAnswersCommandSummarizesConservativeManualProfile(t *testing.T) {
 	t.Parallel()
 
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
 		"GITHUB_MODE=label",
-		"DELIVERY_PROFILE=autonomous_delivery",
+		"DELIVERY_PROFILE=conservative_manual",
+		"",
+	}, "\n"))
+	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{"--format", "json", "onboarding", "validate-answers", "--answers", answersPath, "--phase", "decision"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+
+	var got struct {
+		AnswersSummary struct {
+			EffectiveDeliveryProfile      string `json:"effective_delivery_profile"`
+			EffectiveDeliveryProfileLabel string `json:"effective_delivery_profile_label"`
+			KanbanMode                    string `json:"kanban_mode"`
+			GateRequiresAutomatedReview   bool   `json:"gate_requires_automated_review"`
+			AutoPromoteEnabled            bool   `json:"auto_promote_enabled"`
+			DependencyAutoUnblockEnabled  bool   `json:"dependency_auto_unblock_enabled"`
+			AutoPromotionBehavior         string `json:"auto_promotion_behavior"`
+		} `json:"answers_summary"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	summary := got.AnswersSummary
+	if summary.EffectiveDeliveryProfile != "conservative_manual" ||
+		summary.EffectiveDeliveryProfileLabel != "Conservative/manual" ||
+		summary.KanbanMode != "read_only" ||
+		!summary.GateRequiresAutomatedReview ||
+		summary.AutoPromoteEnabled ||
+		summary.DependencyAutoUnblockEnabled {
+		t.Fatalf("AnswersSummary = %#v, want conservative/manual defaults", summary)
+	}
+	if summary.AutoPromotionBehavior != "Detent stops in `Human Review` until an operator approves promotion to `Merging`." {
+		t.Fatalf("AutoPromotionBehavior = %q, want operator approval summary", summary.AutoPromotionBehavior)
+	}
+}
+
+func TestOnboardingNormalizeAnswersCommandWritesFullAutopilotProfileExpansion(t *testing.T) {
+	t.Parallel()
+
+	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
+		"GITHUB_MODE=label",
+		"DELIVERY_PROFILE=full_autopilot",
 		"STATUS_LABEL_PREFIX=detent:",
 		"",
 	}, "\n"))
@@ -492,8 +538,8 @@ func TestOnboardingNormalizeAnswersCommandWritesAutonomousDeliveryProfileExpansi
 	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
 		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
 	}
-	if got.Status != "ok" || got.Path != answersPath || !got.Written || !got.Changed || got.DeliveryProfile != "autonomous_delivery" || got.MutationConfirmed {
-		t.Fatalf("normalization result = %#v, want written autonomous profile normalization", got)
+	if got.Status != "ok" || got.Path != answersPath || !got.Written || !got.Changed || got.DeliveryProfile != "full_autopilot" || got.MutationConfirmed {
+		t.Fatalf("normalization result = %#v, want written full autopilot profile normalization", got)
 	}
 
 	raw, err := os.ReadFile(answersPath)
@@ -501,7 +547,7 @@ func TestOnboardingNormalizeAnswersCommandWritesAutonomousDeliveryProfileExpansi
 		t.Fatalf("ReadFile() error = %v", err)
 	}
 	content := string(raw)
-	for key, value := range autonomousDeliveryProfileAnswers() {
+	for key, value := range fullAutopilotProfileAnswers() {
 		want := key + "=" + value
 		if !strings.Contains(content, want) {
 			t.Fatalf("answers.env missing %q:\n%s", want, content)
@@ -515,10 +561,10 @@ func TestOnboardingNormalizeAnswersCommandWritesAutonomousDeliveryProfileExpansi
 func TestOnboardingNormalizeAnswersCommandPreservesFinalMutationConfirmationWhenAlreadyCanonical(t *testing.T) {
 	t.Parallel()
 
-	profileAnswers := autonomousDeliveryProfileAnswers()
+	profileAnswers := fullAutopilotProfileAnswers()
 	answersPath := writeOnboardingAnswers(t, validIdentityOnboardingAnswers(t)+strings.Join([]string{
 		"GITHUB_MODE=label",
-		"DELIVERY_PROFILE=autonomous_delivery",
+		"DELIVERY_PROFILE=full_autopilot",
 		"KANBAN_MODE=" + profileAnswers["KANBAN_MODE"],
 		"AUTO_PROMOTE_ENABLED=" + profileAnswers["AUTO_PROMOTE_ENABLED"],
 		"AUTO_PROMOTE_QUIET_SECONDS=" + profileAnswers["AUTO_PROMOTE_QUIET_SECONDS"],
@@ -569,7 +615,7 @@ func TestOnboardingNormalizeAnswersCommandRejectsStaleMutationConfirmation(t *te
 
 	content := validIdentityOnboardingAnswers(t) + strings.Join([]string{
 		"GITHUB_MODE=label",
-		"DELIVERY_PROFILE=autonomous_delivery",
+		"DELIVERY_PROFILE=full_autopilot",
 		"STATUS_LABEL_PREFIX=detent:",
 		"MUTATION_CONFIRMED=true",
 		"",
@@ -607,7 +653,7 @@ func TestOnboardingNormalizeAnswersCommandRejectsDeliveryProfileExpansionConflic
 
 	content := validIdentityOnboardingAnswers(t) + strings.Join([]string{
 		"GITHUB_MODE=label",
-		"DELIVERY_PROFILE=autonomous_delivery",
+		"DELIVERY_PROFILE=full_autopilot",
 		"KANBAN_MODE=read_only",
 		"STATUS_LABEL_PREFIX=detent:",
 		"MUTATION_CONFIRMED=true",
@@ -623,7 +669,7 @@ func TestOnboardingNormalizeAnswersCommandRejectsDeliveryProfileExpansionConflic
 	if err == nil {
 		t.Fatal("Execute() error = nil, want delivery profile expansion conflict")
 	}
-	if !strings.Contains(err.Error(), "KANBAN_MODE=read_only conflicts with DELIVERY_PROFILE=autonomous_delivery, which expands KANBAN_MODE=integration") {
+	if !strings.Contains(err.Error(), "KANBAN_MODE=read_only conflicts with DELIVERY_PROFILE=full_autopilot, which expands KANBAN_MODE=integration") {
 		t.Fatalf("Execute() error missing profile conflict:\n%s", err.Error())
 	}
 	raw, readErr := os.ReadFile(answersPath)
@@ -1379,7 +1425,7 @@ func writeOnboardingAnswers(t *testing.T, content string) string {
 	return path
 }
 
-func autonomousDeliveryProfileAnswers() map[string]string {
+func fullAutopilotProfileAnswers() map[string]string {
 	return map[string]string{
 		"KANBAN_MODE":                           "integration",
 		"AUTO_PROMOTE_ENABLED":                  "true",

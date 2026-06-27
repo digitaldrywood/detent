@@ -8,8 +8,11 @@ import (
 )
 
 const (
-	DeliveryProfileConservativeReview = "conservative_review"
-	DeliveryProfileAutonomousDelivery = "autonomous_delivery"
+	DeliveryProfileFullAutopilot      = "full_autopilot"
+	DeliveryProfileReviewGate         = "review_gate"
+	DeliveryProfileConservativeManual = "conservative_manual"
+	DeliveryProfileAutonomousDelivery = DeliveryProfileFullAutopilot
+	DeliveryProfileConservativeReview = DeliveryProfileConservativeManual
 )
 
 type DeliveryProfileSettings struct {
@@ -44,10 +47,12 @@ type DeliveryProfileSummary struct {
 
 func NormalizeDeliveryProfile(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "conservative", "conservative-review", "review", "human_review", "human-review", DeliveryProfileConservativeReview:
-		return DeliveryProfileConservativeReview
-	case "autonomous", "autonomous-delivery", "delivery", DeliveryProfileAutonomousDelivery:
-		return DeliveryProfileAutonomousDelivery
+	case "full", "full-autopilot", "full_autopilot", "autopilot", "maximum", "max", "autonomous", "autonomous-delivery", "autonomous_delivery":
+		return DeliveryProfileFullAutopilot
+	case "review", "review-gate", "review_gate", "human_review", "human-review":
+		return DeliveryProfileReviewGate
+	case "conservative", "conservative-manual", "conservative_manual", "manual", "conservative-review", "conservative_review":
+		return DeliveryProfileConservativeManual
 	default:
 		return strings.ToLower(strings.TrimSpace(value))
 	}
@@ -55,26 +60,37 @@ func NormalizeDeliveryProfile(value string) string {
 
 func DeliveryProfile(value string) (DeliveryProfileSettings, bool) {
 	switch NormalizeDeliveryProfile(value) {
-	case DeliveryProfileConservativeReview:
+	case DeliveryProfileFullAutopilot:
 		return DeliveryProfileSettings{
-			ID:                           DeliveryProfileConservativeReview,
-			Label:                        "Conservative review mode",
-			KanbanMode:                   "read_only",
-			AutoPromoteEnabled:           false,
-			AutoPromoteQuietSeconds:      600,
-			GateRequireAutomatedReview:   true,
-			DependencyAutoUnblockEnabled: false,
-			MergingConcurrency:           1,
-		}, true
-	case DeliveryProfileAutonomousDelivery:
-		return DeliveryProfileSettings{
-			ID:                           DeliveryProfileAutonomousDelivery,
-			Label:                        "Autonomous delivery mode",
+			ID:                           DeliveryProfileFullAutopilot,
+			Label:                        "Full autopilot",
 			KanbanMode:                   "integration",
 			AutoPromoteEnabled:           true,
 			AutoPromoteQuietSeconds:      0,
 			GateRequireAutomatedReview:   false,
 			DependencyAutoUnblockEnabled: true,
+			MergingConcurrency:           1,
+		}, true
+	case DeliveryProfileReviewGate:
+		return DeliveryProfileSettings{
+			ID:                           DeliveryProfileReviewGate,
+			Label:                        "Review gate",
+			KanbanMode:                   "integration",
+			AutoPromoteEnabled:           false,
+			AutoPromoteQuietSeconds:      600,
+			GateRequireAutomatedReview:   false,
+			DependencyAutoUnblockEnabled: false,
+			MergingConcurrency:           1,
+		}, true
+	case DeliveryProfileConservativeManual:
+		return DeliveryProfileSettings{
+			ID:                           DeliveryProfileConservativeManual,
+			Label:                        "Conservative/manual",
+			KanbanMode:                   "read_only",
+			AutoPromoteEnabled:           false,
+			AutoPromoteQuietSeconds:      600,
+			GateRequireAutomatedReview:   true,
+			DependencyAutoUnblockEnabled: false,
 			MergingConcurrency:           1,
 		}, true
 	default:
@@ -159,9 +175,9 @@ func gateBehavior(settings DeliveryProfileSettings) string {
 
 func autoPromotionBehavior(settings DeliveryProfileSettings) string {
 	if settings.AutoPromoteEnabled {
-		return "Detent may promote from `Human Review` to `Merging` automatically when the linked PR, local gate, and CI requirements pass."
+		return "Detent automatically promotes eligible work from `Human Review` to `Merging` when the linked PR, local gate, CI, and guardrails pass."
 	}
-	return "Detent will not promote from `Human Review` to `Merging` automatically; a human must move approved work forward."
+	return "Detent stops in `Human Review` until an operator approves promotion to `Merging`."
 }
 
 func quietWindowBehavior(settings DeliveryProfileSettings) string {

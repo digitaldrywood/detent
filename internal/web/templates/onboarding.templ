@@ -117,28 +117,36 @@ func projectStepTitle(form OnboardingForm) string {
 
 func selectedDeliveryProfile(form OnboardingForm) string {
 	switch form.DeliveryProfile {
-	case "autonomous_delivery":
-		return "autonomous_delivery"
+	case "full_autopilot", "review_gate", "conservative_manual":
+		return form.DeliveryProfile
 	default:
-		return "conservative_review"
+		return ""
 	}
 }
 
 func deliveryProfileLabel(form OnboardingForm) string {
 	switch selectedDeliveryProfile(form) {
-	case "autonomous_delivery":
-		return "Autonomous delivery mode"
+	case "full_autopilot":
+		return "Full autopilot"
+	case "review_gate":
+		return "Review gate"
+	case "conservative_manual":
+		return "Conservative/manual"
 	default:
-		return "Conservative review mode"
+		return "Not selected"
 	}
 }
 
 func deliveryProfileExplanation(form OnboardingForm) string {
 	switch selectedDeliveryProfile(form) {
-	case "autonomous_delivery":
-		return "Autonomous delivery mode promotes validated work when gates and CI still apply, keeps Merging serialized, enables dependency auto-unblock, and prefers live reload or project refresh without interrupting running agents."
+	case "full_autopilot":
+		return "Full autopilot promotes validated work through Human Review to Merging when gates, CI, and guardrails pass, enables dependency auto-unblock, and keeps Merging serialized."
+	case "review_gate":
+		return "Review gate stops completed work in Human Review until the operator approves promotion to Merging."
+	case "conservative_manual":
+		return "Conservative/manual keeps GitHub and project mutations read-only by default and requires explicit approval before promotion or mutation."
 	default:
-		return "Conservative review mode keeps Detent parked at Human Review until the operator chooses the next step."
+		return "Choose an automation policy before writing WORKFLOW.md."
 	}
 }
 
@@ -347,9 +355,10 @@ templ agentStep(data OnboardingData) {
 		<form class="mt-5 grid gap-4 sm:grid-cols-2" hx-post="/onboarding/agent" hx-target="#onboarding-step" hx-swap="outerHTML">
 			@hiddenProject(data.Form)
 			<div class="grid gap-3 sm:col-span-2">
-				<span class="text-sm font-medium">Delivery profile</span>
-				@deliveryProfileChoice(data, "conservative_review", "Conservative review mode", "Stop at Human Review until the operator chooses promotion or merge.")
-				@deliveryProfileChoice(data, "autonomous_delivery", "Autonomous delivery mode", "Promote when linked PRs, gates, and CI pass; keep Merging serialized.")
+				<span class="text-sm font-medium">How should Detent handle completed work after the validation gate passes?</span>
+				@deliveryProfileChoice(data, "full_autopilot", "Full autopilot", "Automatically promote work through Human Review to Merging when gates, CI, and guardrails pass.")
+				@deliveryProfileChoice(data, "review_gate", "Review gate", "Stop in Human Review until the operator approves, then continue merging.")
+				@deliveryProfileChoice(data, "conservative_manual", "Conservative/manual", "Require explicit approval before promotion or mutation; keep writes off by default.")
 			</div>
 			<label class="block sm:col-span-2">
 				<span class="text-sm font-medium">Workspace root</span>
