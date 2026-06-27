@@ -1246,6 +1246,78 @@ func snapshotHasLoadedData(snapshot telemetry.Snapshot) bool {
 		snapshot.CycleTime.Available
 }
 
+func diagnosticsSnapshotHasLoadedData(snapshot telemetry.Snapshot) bool {
+	return len(snapshot.BoardIssues) > 0 ||
+		len(snapshot.Pipeline) > 0 ||
+		len(snapshot.Running) > 0 ||
+		len(snapshot.Queue) > 0 ||
+		len(snapshot.Blocked) > 0 ||
+		len(snapshot.Completed) > 0 ||
+		len(snapshot.Events) > 0 ||
+		len(snapshot.WorkAttempts) > 0 ||
+		len(snapshot.SchedulerDecisions) > 0 ||
+		len(snapshot.TokenTrend) > 0 ||
+		snapshot.Counts != (telemetry.Counts{}) ||
+		snapshot.Tokens != (telemetry.Tokens{}) ||
+		snapshot.Throughput != (telemetry.TokenThroughput{}) ||
+		snapshot.RateLimits != nil ||
+		diagnosticsBudgetHasLoadedData(snapshot.Budget) ||
+		diagnosticsProjectSnapshotsHaveLoadedData(snapshot.Projects) ||
+		snapshot.LifetimeTotals.Available ||
+		snapshot.CycleTime.Available ||
+		diagnosticsWorkflowMetricsHasLoadedData(snapshot.WorkflowMetrics)
+}
+
+func diagnosticsProjectSnapshotsHaveLoadedData(projects []telemetry.ProjectSnapshot) bool {
+	for _, project := range projects {
+		if project.Counts != (telemetry.Counts{}) ||
+			project.Tokens != (telemetry.Tokens{}) ||
+			project.Throughput != (telemetry.TokenThroughput{}) ||
+			!project.Auth.IsZero() ||
+			snapshotHasRefreshSignal(project.Refresh) {
+			return true
+		}
+	}
+	return false
+}
+
+func diagnosticsBudgetHasLoadedData(budget telemetry.Budget) bool {
+	return budget.Enabled ||
+		strings.TrimSpace(budget.DegradedReason) != "" ||
+		budget.PerDayMaxUSD != nil ||
+		budget.PerIssueMaxUSD != nil ||
+		budget.CurrentSpendUSD != 0 ||
+		budget.ProjectedCostUSD != 0 ||
+		budget.ProjectedSpendUSD != 0 ||
+		!budget.PeriodStart.IsZero() ||
+		!budget.PeriodEnd.IsZero() ||
+		len(budget.SpendPoints) > 0 ||
+		len(budget.Days) > 0 ||
+		len(budget.Refusals) > 0
+}
+
+func diagnosticsWorkflowMetricsHasLoadedData(report telemetry.WorkflowMetrics) bool {
+	return report.Available ||
+		strings.TrimSpace(report.DegradedReason) != "" ||
+		diagnosticsRuntimeStoreHasLoadedData(report.RuntimeStore) ||
+		len(report.Windows) > 0 ||
+		len(report.OldestCards) > 0 ||
+		!report.ActiveBottleneck.IsZero()
+}
+
+func diagnosticsRuntimeStoreHasLoadedData(store telemetry.RuntimeStoreEvidence) bool {
+	return strings.TrimSpace(store.Backend) != "" ||
+		strings.TrimSpace(store.Status) != "" ||
+		store.Healthy ||
+		strings.TrimSpace(store.Path) != "" ||
+		strings.TrimSpace(store.MigrationStatus) != "" ||
+		store.MigrationVersion != 0 ||
+		len(store.Tables) > 0 ||
+		store.WorkflowPhaseEvents.RowCount != 0 ||
+		store.WorkflowPhaseEvents.OldestFinishedAt != nil ||
+		store.WorkflowPhaseEvents.NewestFinishedAt != nil
+}
+
 func snapshotReady(snapshot telemetry.Snapshot) bool {
 	return snapshotReadinessStatus(snapshot) == telemetry.RefreshStatusReady
 }

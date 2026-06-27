@@ -1623,10 +1623,10 @@ templ ProjectRunsSnapshot(data DashboardData) {
 
 templ ProjectDiagnosticsSnapshot(data DashboardData) {
 	@dashboardHealth(data)
-	@diagnosticsOperationsSummary(data)
-	if !snapshotReady(data.Snapshot) && !snapshotHasLoadedData(data.Snapshot) {
+	if !snapshotReady(data.Snapshot) && !diagnosticsSnapshotHasLoadedData(data.Snapshot) {
 		@snapshotReadiness(data.Snapshot)
 	} else {
+		@diagnosticsOperationsSummary(data)
 		@diagnosticsTabbedView(data)
 	}
 }

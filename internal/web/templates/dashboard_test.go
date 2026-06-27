@@ -1203,13 +1203,16 @@ func TestProjectSnapshotsAvoidEmptyStatesBeforeReadiness(t *testing.T) {
 	}
 
 	for name, html := range map[string]string{
-		"overview": renderDashboard(t, data),
-		"runs":     renderProjectRunsSnapshot(t, data),
+		"diagnostics": renderProjectDiagnosticsPage(t, data),
+		"overview":    renderDashboard(t, data),
+		"runs":        renderProjectRunsSnapshot(t, data),
 	} {
 		if !strings.Contains(html, "Loading tracker state...") {
 			t.Fatalf("%s missing startup state:\n%s", name, html)
 		}
 		for _, forbidden := range []string{
+			`aria-label="Diagnostics operations summary"`,
+			"Tracker data and runtime telemetry are available.",
 			"No active issue sessions.",
 			"No agent activity recorded.",
 			"No issues are currently backing off.",
@@ -1254,9 +1257,10 @@ func TestProjectSnapshotsRenderFirstRefreshFailureState(t *testing.T) {
 	}
 
 	for name, html := range map[string]string{
-		"kanban":   renderProjectKanbanPage(t, data),
-		"overview": renderDashboard(t, data),
-		"runs":     renderProjectRunsSnapshot(t, data),
+		"diagnostics": renderProjectDiagnosticsPage(t, data),
+		"kanban":      renderProjectKanbanPage(t, data),
+		"overview":    renderDashboard(t, data),
+		"runs":        renderProjectRunsSnapshot(t, data),
 	} {
 		for _, want := range []string{
 			"Tracker refresh failed.",
@@ -1271,6 +1275,8 @@ func TestProjectSnapshotsRenderFirstRefreshFailureState(t *testing.T) {
 			t.Fatalf("%s rendered prior-snapshot degraded copy for first refresh failure:\n%s", name, html)
 		}
 		for _, forbidden := range []string{
+			`aria-label="Diagnostics operations summary"`,
+			"Tracker data and runtime telemetry are available.",
 			"No issues in this state.",
 			"No active issue sessions.",
 			`>0 cards<`,
