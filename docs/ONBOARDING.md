@@ -27,22 +27,85 @@ Use these placeholders consistently:
 
 ## Source Freshness Gate
 
-Before relying on a local copy of this runbook, local `README.md`, or local
-`detent` command recommendations, prove the local Detent source checkout is
-current with `digitaldrywood/detent`. If no local Detent source checkout is
-available, read docs from GitHub at the canonical head instead of local
-files.
+Before relying on this runbook, `README.md`, or `detent` command
+recommendations, pin the Detent documentation source to a concrete canonical
+commit from `digitaldrywood/detent`. A local Detent checkout is optional. Use
+the remote GitHub documentation source when a verified local checkout is absent,
+stale, or not desired. Do not clone Detent by default; cloning is only an
+optional fallback when remote reads are unavailable or the operator explicitly
+asks for a local source checkout.
+
+### Remote Detent Documentation Source
+
+Use GitHub as the first-class documentation source and record the pinned commit
+in the initial evidence packet:
 
 ```sh
 ONBOARDING_DIR="${ONBOARDING_DIR:-${TMPDIR:-/tmp}/detent-onboarding-<repo-owner>-<repo-name>}"
 mkdir -p "$ONBOARDING_DIR"
+DETENT_DOCS_ACCESS_METHOD=github_api
+DETENT_DOCS_REPOSITORY=digitaldrywood/detent
+DETENT_DOCS_REF=main
+DETENT_DOCS_COMMIT="$(
+  gh api repos/digitaldrywood/detent/git/ref/heads/main --jq '.object.sha'
+)"
+DETENT_VERSION_JSON="$(detent --format json version 2>/dev/null || true)"
+DETENT_BINARY_VERSION="$(printf '%s\n' "$DETENT_VERSION_JSON" | jq -r '.version // empty' 2>/dev/null || true)"
+DETENT_BINARY_COMMIT="$(printf '%s\n' "$DETENT_VERSION_JSON" | jq -r '.commit // empty' 2>/dev/null || true)"
+DETENT_BINARY_BUILD_DATE="$(printf '%s\n' "$DETENT_VERSION_JSON" | jq -r '.build_date // empty' 2>/dev/null || true)"
+
+if test -n "$DETENT_BINARY_COMMIT" && test "$DETENT_BINARY_COMMIT" = "$DETENT_DOCS_COMMIT"; then
+  DETENT_BINARY_MATCHES_CANONICAL=true
+else
+  DETENT_BINARY_MATCHES_CANONICAL=false
+fi
+
+{
+  printf 'DETENT_DOCS_ACCESS_METHOD=%s\n' "$DETENT_DOCS_ACCESS_METHOD"
+  printf 'DETENT_DOCS_REPOSITORY=%s\n' "$DETENT_DOCS_REPOSITORY"
+  printf 'DETENT_DOCS_REF=%s\n' "$DETENT_DOCS_REF"
+  printf 'DETENT_DOCS_COMMIT=%s\n' "$DETENT_DOCS_COMMIT"
+  printf 'DETENT_BINARY_VERSION=%s\n' "$DETENT_BINARY_VERSION"
+  printf 'DETENT_BINARY_COMMIT=%s\n' "$DETENT_BINARY_COMMIT"
+  printf 'DETENT_BINARY_BUILD_DATE=%s\n' "$DETENT_BINARY_BUILD_DATE"
+  printf 'DETENT_BINARY_MATCHES_CANONICAL=%s\n' "$DETENT_BINARY_MATCHES_CANONICAL"
+  printf 'DETENT_VERSION_JSON=%s\n' "$DETENT_VERSION_JSON"
+} > "$ONBOARDING_DIR/detent-source-freshness.env"
+
+test -n "$DETENT_DOCS_COMMIT"
+```
+
+Read required Detent files from GitHub at the pinned commit. Required file
+coverage is README.md AGENTS.md CLAUDE.md docs/ONBOARDING.md CONTRIBUTING.md,
+build and language manifests, .github/workflows docs/templates, install
+scripts, workflow examples, and any existing WORKFLOW.md or global.yaml
+examples.
+
+```sh
+for path in README.md AGENTS.md CLAUDE.md docs/ONBOARDING.md CONTRIBUTING.md Makefile go.mod; do
+  gh api "repos/$DETENT_DOCS_REPOSITORY/contents/$path?ref=$DETENT_DOCS_COMMIT" \
+    --jq '.content' 2>/dev/null | base64 --decode || true
+done
+
+gh api "repos/$DETENT_DOCS_REPOSITORY/contents/.github/workflows?ref=$DETENT_DOCS_COMMIT" \
+  --jq '.[].path' 2>/dev/null || true
+gh api "repos/$DETENT_DOCS_REPOSITORY/contents/docs/templates?ref=$DETENT_DOCS_COMMIT" \
+  --jq '.[].path' 2>/dev/null || true
+```
+
+### Local Detent Source Checkout
+
+If a local Detent checkout is explicitly known and verified, you may use it as
+a local documentation source. Keep it separate from the target repository, set
+`DETENT_SOURCE_ROOT` only after verifying the checkout root, then compare it to
+the canonical repository:
+
+```sh
 DETENT_SOURCE_ROOT="<absolute-local-detent-source-checkout>"
 
 git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main
 DETENT_SOURCE_HEAD="$(git -C "$DETENT_SOURCE_ROOT" rev-parse HEAD)"
 DETENT_CANONICAL_MAIN="$(git -C "$DETENT_SOURCE_ROOT" rev-parse refs/remotes/origin/main)"
-DETENT_VERSION_JSON="$(detent --format json version 2>/dev/null || true)"
-DETENT_BINARY_COMMIT="$(printf '%s\n' "$DETENT_VERSION_JSON" | jq -r '.commit // empty' 2>/dev/null || true)"
 
 if test "$DETENT_SOURCE_HEAD" = "$DETENT_CANONICAL_MAIN"; then
   DETENT_SOURCE_MATCHES_CANONICAL=true
@@ -50,31 +113,26 @@ else
   DETENT_SOURCE_MATCHES_CANONICAL=false
 fi
 
-if test -n "$DETENT_BINARY_COMMIT" && test "$DETENT_BINARY_COMMIT" = "$DETENT_CANONICAL_MAIN"; then
-  DETENT_BINARY_MATCHES_CANONICAL=true
-else
-  DETENT_BINARY_MATCHES_CANONICAL=false
-fi
-
 {
+  cat "$ONBOARDING_DIR/detent-source-freshness.env" 2>/dev/null || true
   printf 'DETENT_SOURCE_ROOT=%s\n' "$DETENT_SOURCE_ROOT"
   printf 'DETENT_SOURCE_HEAD=%s\n' "$DETENT_SOURCE_HEAD"
   printf 'DETENT_CANONICAL_MAIN=%s\n' "$DETENT_CANONICAL_MAIN"
   printf 'DETENT_SOURCE_MATCHES_CANONICAL=%s\n' "$DETENT_SOURCE_MATCHES_CANONICAL"
-  printf 'DETENT_BINARY_COMMIT=%s\n' "$DETENT_BINARY_COMMIT"
-  printf 'DETENT_BINARY_MATCHES_CANONICAL=%s\n' "$DETENT_BINARY_MATCHES_CANONICAL"
-  printf 'DETENT_VERSION_JSON=%s\n' "$DETENT_VERSION_JSON"
-} > "$ONBOARDING_DIR/detent-source-freshness.env"
-
-test "$DETENT_SOURCE_MATCHES_CANONICAL" = true
-test "$DETENT_BINARY_MATCHES_CANONICAL" = true
+} > "$ONBOARDING_DIR/detent-source-freshness.next.env"
+mv "$ONBOARDING_DIR/detent-source-freshness.next.env" "$ONBOARDING_DIR/detent-source-freshness.env"
 ```
 
-If either check fails, stop before Phase 2 recommendations. Update the local
-source checkout and reinstall the binary, or explicitly read docs from GitHub
-at the canonical head. Include
+If the local checkout is absent, stale, or cannot be proven current, do not read
+local Detent docs from it. Continue from the remote GitHub documentation source
+at `DETENT_DOCS_COMMIT` instead. Stop before Phase 2 recommendations only when
+neither a pinned remote documentation source nor a verified local documentation
+source is available, or when the installed binary must be present for a command
+recommendation and cannot be verified. Include
 `$ONBOARDING_DIR/detent-source-freshness.env` in the initial evidence packet so
-the operator can see which runbook and binary version are being followed.
+the operator can see the documentation repository, ref, commit SHA, access
+method, binary version/commit/build date when available, and whether the
+binary/docs match canonical.
 
 ## Start Here — Determine The Mode
 
@@ -268,11 +326,14 @@ Draft the first candidate from identity-safe local evidence. Run this from the
 target checkout:
 
 ```sh
-detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --output pretty
-detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --answers "$ONBOARDING_DIR/answers.env" --write
+detent onboarding draft-answers --output pretty
+detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write
 ```
 
-If you are currently in the Detent source checkout, pass the target explicitly:
+If a verified local Detent source checkout is available and you want the draft
+to include local source freshness evidence, add
+`--detent-source-root "$DETENT_SOURCE_ROOT"`. If you are currently in the Detent
+source checkout, pass the target explicitly:
 
 ```sh
 detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --target-source-root <absolute-local-checkout-path> --output pretty
@@ -281,7 +342,7 @@ detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --tar
 
 The draft command may inspect only local identity evidence: current working
 directory and git top-level, origin remote and parsed GitHub owner/name,
-canonical Detent source repository evidence, Detent config path and registered
+Detent documentation source evidence, Detent config path and registered
 project ids, and local installed binary/config/service evidence needed to
 recommend `new-install`, `existing-install`, or `add-project`. It must not
 inspect target ProjectV2 boards, organization issue fields, repository labels,
@@ -290,7 +351,7 @@ issues, `WORKFLOW.md`, validation commands, deployment docs, or runtime docs.
 The command should infer and restate an identity candidate from the current git
 checkout before asking for raw answer fields. Its local evidence includes
 `pwd`, `git rev-parse --show-toplevel`, `git remote get-url origin`, the
-canonical Detent source checkout identity, the installed Detent config path, and
+Detent documentation source identity, the installed Detent config path, and
 registered project ids. If the current working directory is a GitHub checkout
 and its git top level is not the canonical Detent source checkout, it proposes
 that checkout as the target candidate. It derives `TARGET_REPOSITORY` from the

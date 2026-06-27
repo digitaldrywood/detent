@@ -70,8 +70,9 @@ func TestOnboardingDocsRequireIdentityGateBeforeDiscovery(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		`detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --output pretty`,
-		`detent onboarding draft-answers --detent-source-root "$DETENT_SOURCE_ROOT" --answers "$ONBOARDING_DIR/answers.env" --write`,
+		`detent onboarding draft-answers --output pretty`,
+		`detent onboarding draft-answers --answers "$ONBOARDING_DIR/answers.env" --write`,
+		`If a verified local Detent source checkout is available and you want the draft`,
 		"CUSTOMER_ID=<customer-or-workstream-id>",
 		"DETENT_PROJECT_ID=<local-detent-project-id>",
 		"TARGET_REPOSITORY=<repo-owner>/<repo-name>",
@@ -99,6 +100,11 @@ func TestOnboardingDocsRequireDetentSourceFreshnessBeforeRunbook(t *testing.T) {
 	readme := readRepositoryTextFile(t, "README.md")
 
 	for _, want := range []string{
+		`gh api repos/digitaldrywood/detent/git/ref/heads/main --jq '.object.sha'`,
+		"DETENT_DOCS_ACCESS_METHOD=github_api",
+		"DETENT_DOCS_REPOSITORY=digitaldrywood/detent",
+		"DETENT_DOCS_REF=main",
+		"DETENT_DOCS_COMMIT",
 		`git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main`,
 		`git -C "$DETENT_SOURCE_ROOT" rev-parse HEAD`,
 		`git -C "$DETENT_SOURCE_ROOT" rev-parse refs/remotes/origin/main`,
@@ -106,27 +112,64 @@ func TestOnboardingDocsRequireDetentSourceFreshnessBeforeRunbook(t *testing.T) {
 		"DETENT_SOURCE_MATCHES_CANONICAL",
 		"DETENT_BINARY_MATCHES_CANONICAL",
 		"$ONBOARDING_DIR/detent-source-freshness.env",
-		"stop before Phase 2 recommendations",
-		"read docs from GitHub at the canonical head",
+		"Continue from the remote GitHub documentation source",
+		"documentation repository, ref, commit SHA, access",
 	} {
 		assertContains(t, onboarding, want)
 	}
 
 	for _, want := range []string{
-		"Before reading local Detent docs or trusting local `detent` command recommendations",
+		"Pin the Detent docs to a concrete canonical commit before relying on them",
+		"`DETENT_DOCS_ACCESS_METHOD=github_api`",
+		"`DETENT_DOCS_REPOSITORY=digitaldrywood/detent`",
+		"`DETENT_DOCS_REF=main`",
+		"`DETENT_DOCS_COMMIT`",
 		`git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main`,
 		"`DETENT_SOURCE_MATCHES_CANONICAL`",
 		"`DETENT_BINARY_MATCHES_CANONICAL`",
-		"stop before reading local docs or making Phase 2 recommendations",
-		"reading docs from GitHub at the canonical head",
+		"read Detent docs from GitHub at `DETENT_DOCS_COMMIT` instead of cloning or relying on local files",
 		`--detent-source-root "$DETENT_SOURCE_ROOT"`,
 	} {
 		assertContainsWords(t, readme, want)
 	}
 
-	assertOrder(t, readme, "Before reading local Detent docs", "From the Detent source repository, read README.md")
+	assertOrder(t, readme, "Pin the Detent docs", "From the pinned Detent documentation source, read README.md")
 	assertOrder(t, onboarding, "## Source Freshness Gate", "## Start Here")
-	assertOrder(t, onboarding, "DETENT_SOURCE_MATCHES_CANONICAL", "## Phase 0.5")
+	assertOrder(t, onboarding, "DETENT_DOCS_COMMIT", "## Phase 0.5")
+}
+
+func TestOnboardingDocsAllowRemoteDetentSourceInspectionWithoutLocalCheckout(t *testing.T) {
+	t.Parallel()
+
+	onboarding := readRepositoryTextFile(t, "docs/ONBOARDING.md")
+	readme := readRepositoryTextFile(t, "README.md")
+
+	for _, want := range []string{
+		"Remote Detent Documentation Source",
+		"DETENT_DOCS_ACCESS_METHOD=github_api",
+		"DETENT_DOCS_REPOSITORY=digitaldrywood/detent",
+		"DETENT_DOCS_REF=main",
+		"DETENT_DOCS_COMMIT",
+		`gh api repos/digitaldrywood/detent/git/ref/heads/main --jq '.object.sha'`,
+		"README.md AGENTS.md CLAUDE.md docs/ONBOARDING.md CONTRIBUTING.md",
+		".github/workflows docs/templates",
+		"Do not clone Detent by default",
+	} {
+		assertContains(t, onboarding, want)
+	}
+
+	for _, want := range []string{
+		"Use GitHub as the first-class Detent documentation source when a verified local checkout is absent, stale, or not desired",
+		"gh api repos/digitaldrywood/detent/git/ref/heads/main --jq '.object.sha'",
+		"`DETENT_DOCS_ACCESS_METHOD=github_api`",
+		"`DETENT_DOCS_COMMIT`",
+		"Do not clone Detent by default",
+	} {
+		assertContainsWords(t, readme, want)
+	}
+
+	assertOrder(t, onboarding, "Remote Detent Documentation Source", "Local Detent Source Checkout")
+	assertOrder(t, readme, "Use GitHub as the", "If a verified")
 }
 
 func TestOnboardingDocsPreserveEarlyLabelStatusSourceDecision(t *testing.T) {

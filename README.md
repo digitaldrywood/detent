@@ -21,36 +21,44 @@ manual README skim.
 
 Treat https://github.com/digitaldrywood/detent as the canonical Detent source
 repository. Do not assume the current working directory is the Detent source
-checkout or the target repository being onboarded. If a local Detent checkout is
-present, inspect it; if not, inspect the repository on GitHub or clone it before
-relying on local files. Keep the Detent source repository separate from any
+checkout or the target repository being onboarded. Use GitHub as the
+first-class Detent documentation source when a verified local checkout is
+absent, stale, or not desired. Do not clone Detent by default; cloning is only
+an optional fallback when remote reads are unavailable or I explicitly ask for a
+local source checkout. Keep the Detent source repository separate from any
 target repository being onboarded; Detent may be a reference/source repository,
 not the target.
 
-Before reading local Detent docs or trusting local `detent` command
-recommendations, prove any local Detent source checkout is current with the
-canonical repository. Set `DETENT_SOURCE_ROOT` to the local Detent checkout,
-then run `git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main`,
-`git -C "$DETENT_SOURCE_ROOT" rev-parse HEAD`,
-`git -C "$DETENT_SOURCE_ROOT" rev-parse refs/remotes/origin/main`, and
-`detent --format json version`. Report the local source root, local `HEAD`,
-canonical `origin/main`, installed binary version, binary commit, binary build
-date, `DETENT_SOURCE_MATCHES_CANONICAL`, and
-`DETENT_BINARY_MATCHES_CANONICAL` in the initial evidence packet. If the local
-source checkout or installed binary is stale or cannot be proven current, stop
-before reading local docs or making Phase 2 recommendations; update/reinstall
-Detent or explicitly switch to reading docs from GitHub at the canonical head.
+Pin the Detent docs to a concrete canonical commit before relying on them. Run
+`DETENT_DOCS_COMMIT="$(gh api repos/digitaldrywood/detent/git/ref/heads/main --jq '.object.sha')"`
+and record `DETENT_DOCS_ACCESS_METHOD=github_api`,
+`DETENT_DOCS_REPOSITORY=digitaldrywood/detent`, `DETENT_DOCS_REF=main`, and
+`DETENT_DOCS_COMMIT` in the initial evidence packet. Also run
+`detent --format json version` when the binary is available and report installed
+binary version, binary commit, binary build date, and
+`DETENT_BINARY_MATCHES_CANONICAL` against `DETENT_DOCS_COMMIT`. If a verified
+local Detent checkout is present, you may additionally set `DETENT_SOURCE_ROOT`
+and run `git -C "$DETENT_SOURCE_ROOT" fetch origin main:refs/remotes/origin/main`,
+`git -C "$DETENT_SOURCE_ROOT" rev-parse HEAD`, and
+`git -C "$DETENT_SOURCE_ROOT" rev-parse refs/remotes/origin/main`; report the
+local source root, local `HEAD`, canonical `origin/main`, and
+`DETENT_SOURCE_MATCHES_CANONICAL`. If the local checkout is absent, stale, or
+cannot be proven current, read Detent docs from GitHub at `DETENT_DOCS_COMMIT`
+instead of cloning or relying on local files.
 
-From the Detent source repository, read README.md, CLAUDE.md or AGENTS.md if
-present, docs/ONBOARDING.md, CONTRIBUTING.md, build and language manifests,
-.github/workflows, install scripts, and any existing WORKFLOW.md or global.yaml
-examples. Detent can drive any project with a clear workflow and validation
-gate, so use the repository evidence to identify the stack, tools, and commands
-instead of starting from one language. Do not inspect a target repository's
+From the pinned Detent documentation source, read README.md, AGENTS.md and
+CLAUDE.md if present, docs/ONBOARDING.md, CONTRIBUTING.md, build and language
+manifests, .github/workflows, install scripts, docs/templates, workflow
+examples, and any existing WORKFLOW.md or global.yaml examples. Use
+`gh api repos/digitaldrywood/detent/contents/<path>?ref="$DETENT_DOCS_COMMIT"`
+or raw GitHub URLs pinned to the same commit. Detent can drive any project with
+a clear workflow and validation gate, so use the repository evidence to
+identify the stack, tools, and commands instead of starting from one language.
+Do not inspect a target repository's
 ProjectV2 boards, labels, issues, WORKFLOW.md, validation commands, or runtime
 docs until the identity gate below is explicit and confirmed.
 
-Use the Detent source repository's docs/ONBOARDING.md as the interrogation
+Use the pinned Detent documentation source's docs/ONBOARDING.md as the interrogation
 guide. First determine which path applies: a new Detent install, an existing
 Detent install that must be found and verified, or a new repository/project
 being added to an existing Detent install. Distinguish reference repositories from the target repository being onboarded. In Phase 0.5, run
@@ -64,8 +72,8 @@ To write the candidate identity record, run
 Treat the draft as a candidate, not confirmation. The command should infer and
 restate an identity candidate from the current git checkout before asking for
 raw answer fields, using only identity-safe local evidence first: `pwd`,
-`git rev-parse --show-toplevel`, `git remote get-url origin`, the canonical
-Detent source checkout identity, the installed Detent config path, and
+`git rev-parse --show-toplevel`, `git remote get-url origin`, the Detent
+documentation source identity, the installed Detent config path, and
 registered project ids. If the current working directory is a GitHub checkout
 and is not the canonical Detent source checkout, propose it as the target
 candidate. If the current working directory is the Detent source checkout, do
