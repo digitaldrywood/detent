@@ -29,6 +29,7 @@ type Store interface {
 	BudgetCostStore
 	WorkflowMetricsStore
 	WorkAttemptStore
+	RuntimeEvidenceStore
 	Queries() *sqlc.Queries
 	Close() error
 }
@@ -71,6 +72,36 @@ type WorkAttemptStore interface {
 	ReclaimActiveWorkAttempts(context.Context, WorkAttemptReclaim) ([]WorkAttempt, error)
 	RecordSchedulerDecision(context.Context, SchedulerDecision) (int64, error)
 	ListRecentSchedulerDecisions(context.Context, SchedulerDecisionQuery) ([]SchedulerDecision, error)
+}
+
+type RuntimeEvidenceStore interface {
+	RuntimeEvidence(context.Context, RuntimeEvidenceQuery) (RuntimeEvidence, error)
+}
+
+type RuntimeEvidenceQuery struct {
+	ProjectID string
+}
+
+type RuntimeEvidence struct {
+	Backend             Backend
+	Path                string
+	Healthy             bool
+	MigrationStatus     string
+	MigrationVersion    int64
+	Tables              []RuntimeTableEvidence
+	WorkflowPhaseEvents RuntimeWorkflowPhaseEventEvidence
+}
+
+type RuntimeTableEvidence struct {
+	Name     string
+	Scope    string
+	RowCount int64
+}
+
+type RuntimeWorkflowPhaseEventEvidence struct {
+	RowCount         int64
+	OldestFinishedAt *time.Time
+	NewestFinishedAt *time.Time
 }
 
 type WorkflowPhaseType string

@@ -45,6 +45,78 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	}
 }
 
+func TestRuntimeEvidenceReportsSQLiteTelemetry(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
+	backend, err := Open(ctx, Config{
+		Backend: BackendSQLite,
+		Path:    dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	finishedAt := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	if _, err := backend.RecordUsageEvent(ctx, UsageEvent{
+		ProjectID:      "detent",
+		Model:          "gpt-5-codex",
+		StartedAt:      finishedAt.Add(-5 * time.Minute),
+		FinishedAt:     finishedAt,
+		RuntimeSeconds: 300,
+		TotalTokens:    1200,
+		Outcome:        "success",
+	}); err != nil {
+		t.Fatalf("RecordUsageEvent() error = %v", err)
+	}
+	if _, err := backend.RecordWorkflowPhaseEvent(ctx, WorkflowPhaseEvent{
+		ProjectID:       "detent",
+		IssueID:         "issue-755",
+		Identifier:      "digitaldrywood/detent#755",
+		PhaseType:       WorkflowPhaseTypeLane,
+		PhaseName:       "In Progress",
+		Status:          "completed",
+		StartedAt:       finishedAt.Add(-30 * time.Minute),
+		FinishedAt:      finishedAt,
+		DurationSeconds: int64((30 * time.Minute) / time.Second),
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+
+	evidence, err := backend.RuntimeEvidence(ctx, RuntimeEvidenceQuery{ProjectID: "detent"})
+	if err != nil {
+		t.Fatalf("RuntimeEvidence() error = %v", err)
+	}
+
+	if evidence.Backend != BackendSQLite || evidence.Path != dbPath || !evidence.Healthy {
+		t.Fatalf("RuntimeEvidence() = %#v, want healthy sqlite evidence for %q", evidence, dbPath)
+	}
+	if evidence.MigrationVersion < 6 || evidence.MigrationStatus == "" {
+		t.Fatalf("migration evidence = version %d status %q, want applied version", evidence.MigrationVersion, evidence.MigrationStatus)
+	}
+	if got := runtimeEvidenceTableCount(evidence.Tables, "usage_events"); got != 1 {
+		t.Fatalf("usage_events row count = %d, want 1", got)
+	}
+	if got := runtimeEvidenceTableCount(evidence.Tables, "workflow_phase_events"); got != 1 {
+		t.Fatalf("workflow_phase_events row count = %d, want 1", got)
+	}
+	if evidence.WorkflowPhaseEvents.RowCount != 1 {
+		t.Fatalf("WorkflowPhaseEvents.RowCount = %d, want 1", evidence.WorkflowPhaseEvents.RowCount)
+	}
+	if evidence.WorkflowPhaseEvents.OldestFinishedAt == nil || !evidence.WorkflowPhaseEvents.OldestFinishedAt.Equal(finishedAt) {
+		t.Fatalf("OldestFinishedAt = %#v, want %s", evidence.WorkflowPhaseEvents.OldestFinishedAt, finishedAt)
+	}
+	if evidence.WorkflowPhaseEvents.NewestFinishedAt == nil || !evidence.WorkflowPhaseEvents.NewestFinishedAt.Equal(finishedAt) {
+		t.Fatalf("NewestFinishedAt = %#v, want %s", evidence.WorkflowPhaseEvents.NewestFinishedAt, finishedAt)
+	}
+}
+
 func TestSQLiteQueriesRoundTrip(t *testing.T) {
 	t.Parallel()
 
@@ -110,6 +182,15 @@ func TestSQLiteQueriesRoundTrip(t *testing.T) {
 	if got.Identifier.String != "digitaldrywood/detent#5" {
 		t.Fatalf("session identifier = %q, want digitaldrywood/detent#5", got.Identifier.String)
 	}
+}
+
+func runtimeEvidenceTableCount(tables []RuntimeTableEvidence, name string) int64 {
+	for _, table := range tables {
+		if table.Name == name {
+			return table.RowCount
+		}
+	}
+	return -1
 }
 
 func TestWorkAttemptStoreRoundTripDecisionsAndRecovery(t *testing.T) {

@@ -521,9 +521,33 @@ type CycleTimeBucket struct {
 type WorkflowMetrics struct {
 	Available        bool                    `json:"available"`
 	DegradedReason   string                  `json:"degraded_reason,omitempty"`
+	RuntimeStore     RuntimeStoreEvidence    `json:"runtime_store,omitzero"`
 	Windows          []WorkflowMetricsWindow `json:"windows,omitempty"`
 	OldestCards      []WorkflowLaneAge       `json:"oldest_cards,omitempty"`
 	ActiveBottleneck WorkflowBottleneck      `json:"active_bottleneck,omitzero"`
+}
+
+type RuntimeStoreEvidence struct {
+	Backend             string                          `json:"backend,omitempty"`
+	Status              string                          `json:"status,omitempty"`
+	Healthy             bool                            `json:"healthy"`
+	Path                string                          `json:"path,omitempty"`
+	MigrationStatus     string                          `json:"migration_status,omitempty"`
+	MigrationVersion    int64                           `json:"migration_version,omitempty"`
+	Tables              []RuntimeStoreTableEvidence     `json:"tables,omitempty"`
+	WorkflowPhaseEvents RuntimeStoreWorkflowPhaseEvents `json:"workflow_phase_events,omitzero"`
+}
+
+type RuntimeStoreTableEvidence struct {
+	Name     string `json:"name"`
+	Scope    string `json:"scope,omitempty"`
+	RowCount int64  `json:"row_count"`
+}
+
+type RuntimeStoreWorkflowPhaseEvents struct {
+	RowCount         int64      `json:"row_count"`
+	OldestFinishedAt *time.Time `json:"oldest_finished_at,omitempty"`
+	NewestFinishedAt *time.Time `json:"newest_finished_at,omitempty"`
 }
 
 type WorkflowMetricsWindow struct {

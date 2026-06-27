@@ -81,6 +81,7 @@ templ ProjectDiagnosticsPage(data DashboardData) {
 			<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
 				@ProjectDiagnosticsSnapshot(data)
 			</div>
+			@diagnosticsTabsScript()
 			@dashboardCharts(data)
 		</div>
 	}
@@ -698,6 +699,153 @@ templ dashboardSidebarActiveScript() {
 				document.addEventListener("DOMContentLoaded", applyProjectSidebarActiveState);
 			} else {
 				applyProjectSidebarActiveState();
+			}
+		})();
+	</script>
+}
+
+templ diagnosticsTabsScript() {
+	<script>
+		(function() {
+			if (window.__detentDiagnosticsTabsRegistered) {
+				return;
+			}
+			window.__detentDiagnosticsTabsRegistered = true;
+
+			function tabStorage() {
+				try {
+					return window.localStorage;
+				} catch (error) {
+					return null;
+				}
+			}
+
+			function tabRoots() {
+				return Array.from(document.querySelectorAll("[data-diagnostics-tabs]"));
+			}
+
+			function tabs(root) {
+				return Array.from(root.querySelectorAll("[data-diagnostics-tab]"));
+			}
+
+			function panels(root) {
+				return Array.from(root.querySelectorAll("[data-diagnostics-panel]"));
+			}
+
+			function storageName(root) {
+				return root.dataset.diagnosticsStorageName || "detent.ui.diagnostics.selectedTab.fleet";
+			}
+
+			function hasTab(root, id) {
+				return tabs(root).some(function(tab) {
+					return tab.dataset.diagnosticsTab === id;
+				});
+			}
+
+			function activeTabID(root) {
+				const active = tabs(root).find(function(tab) {
+					return tab.getAttribute("aria-selected") === "true";
+				});
+				return active ? active.dataset.diagnosticsTab : "overview";
+			}
+
+			function setActiveTab(root, id, persist) {
+				if (!hasTab(root, id)) {
+					id = "overview";
+				}
+				tabs(root).forEach(function(tab) {
+					const active = tab.dataset.diagnosticsTab === id;
+					tab.setAttribute("aria-selected", active ? "true" : "false");
+					tab.setAttribute("tabindex", active ? "0" : "-1");
+					tab.dataset.diagnosticsActive = active ? "true" : "false";
+				});
+				panels(root).forEach(function(panel) {
+					panel.hidden = panel.dataset.diagnosticsPanel !== id;
+				});
+				if (persist) {
+					const store = tabStorage();
+					if (store) {
+						store.setItem(storageName(root), id);
+					}
+				}
+			}
+
+			function restoreTabs(root) {
+				const store = tabStorage();
+				const saved = store ? store.getItem(storageName(root)) : "";
+				setActiveTab(root, saved || activeTabID(root), false);
+			}
+
+			function moveFocus(tab, offset) {
+				const root = tab.closest("[data-diagnostics-tabs]");
+				if (!root) {
+					return;
+				}
+				const list = tabs(root);
+				const index = list.indexOf(tab);
+				if (index < 0) {
+					return;
+				}
+				const next = list[(index + offset + list.length) % list.length];
+				next.focus();
+				setActiveTab(root, next.dataset.diagnosticsTab || "overview", true);
+			}
+
+			document.addEventListener("click", function(event) {
+				const tab = event.target instanceof Element ? event.target.closest("[data-diagnostics-tab]") : null;
+				if (!tab) {
+					return;
+				}
+				const root = tab.closest("[data-diagnostics-tabs]");
+				if (!root) {
+					return;
+				}
+				setActiveTab(root, tab.dataset.diagnosticsTab || "overview", true);
+			});
+
+			document.addEventListener("keydown", function(event) {
+				const tab = event.target instanceof Element ? event.target.closest("[data-diagnostics-tab]") : null;
+				if (!tab) {
+					return;
+				}
+				const root = tab.closest("[data-diagnostics-tabs]");
+				if (!root) {
+					return;
+				}
+				if (event.key === "ArrowRight") {
+					event.preventDefault();
+					moveFocus(tab, 1);
+				} else if (event.key === "ArrowLeft") {
+					event.preventDefault();
+					moveFocus(tab, -1);
+				} else if (event.key === "Home") {
+					event.preventDefault();
+					const first = tabs(root)[0];
+					if (first) {
+						first.focus();
+						setActiveTab(root, first.dataset.diagnosticsTab || "overview", true);
+					}
+				} else if (event.key === "End") {
+					event.preventDefault();
+					const list = tabs(root);
+					const last = list[list.length - 1];
+					if (last) {
+						last.focus();
+						setActiveTab(root, last.dataset.diagnosticsTab || "overview", true);
+					}
+				}
+			});
+
+			document.addEventListener("htmx:afterSettle", function() {
+				tabRoots().forEach(restoreTabs);
+			});
+
+			if (document.readyState === "loading") {
+				document.addEventListener("DOMContentLoaded", function() {
+					tabRoots().forEach(restoreTabs);
+				});
+			} else {
+				tabRoots().forEach(restoreTabs);
 			}
 		})();
 	</script>
@@ -1475,28 +1623,299 @@ templ ProjectRunsSnapshot(data DashboardData) {
 
 templ ProjectDiagnosticsSnapshot(data DashboardData) {
 	@dashboardHealth(data)
-	if !snapshotReady(data.Snapshot) {
+	@diagnosticsOperationsSummary(data)
+	if !snapshotReady(data.Snapshot) && !snapshotHasLoadedData(data.Snapshot) {
 		@snapshotReadiness(data.Snapshot)
 	} else {
-		@statStrip(data.Snapshot)
-		<section class="dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]">
-			<div class="dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5">
-				@boardHealthSection(data.Snapshot)
-				@schedulerRuntimeSection(data.Snapshot)
-				@workflowMetricsSection(data.Snapshot.WorkflowMetrics)
-				@cycleTimeSection(data.Snapshot.CycleTime)
-				@budgetCard(data.Snapshot)
-			</div>
-			<aside class="dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5">
-				@throughputCard(data)
-				@rateLimitsCard(data.Snapshot.RateLimits)
-				@graphQLBudgetCard(data)
-				@restBudgetCard(data)
-				@tokenCard(data)
-				@lifetimeCard(data.Snapshot.LifetimeTotals)
-			</aside>
-		</section>
+		@diagnosticsTabbedView(data)
 	}
+}
+
+templ diagnosticsOperationsSummary(data DashboardData) {
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-3 shadow-sm sm:p-4" aria-label="Diagnostics operations summary">
+		<div class="grid min-w-0 gap-2 md:grid-cols-5">
+			for _, fact := range diagnosticsSummaryFacts(data) {
+				<article class="min-w-0 rounded-md border border-border bg-muted/30 p-3">
+					<div class="flex min-w-0 items-center justify-between gap-2">
+						<span class="truncate text-xs font-medium uppercase text-muted-foreground">{ fact.Label }</span>
+						<span class={ "h-2.5 w-2.5 shrink-0 rounded-full border " + fact.Class }></span>
+					</div>
+					<div class="mt-1 truncate text-sm font-semibold text-foreground">{ fact.Value }</div>
+					<p class="mt-1 line-clamp-2 text-xs text-muted-foreground">{ fact.Detail }</p>
+				</article>
+			}
+		</div>
+	</section>
+}
+
+templ diagnosticsTabbedView(data DashboardData) {
+	<section class="grid min-w-0 gap-4" aria-label="Diagnostics operations view" data-diagnostics-tabs data-diagnostics-storage-name={ diagnosticsStorageName(data) }>
+		<div class="overflow-x-auto rounded-md border border-border bg-card p-1" role="tablist" aria-label="Diagnostics sections">
+			<div class="flex min-w-max items-center gap-1">
+				@diagnosticsTabButton("overview", "Overview", true)
+				@diagnosticsTabButton("workflow-timing", "Workflow timing", false)
+				@diagnosticsTabButton("active-work", "Active work", false)
+				@diagnosticsTabButton("queues-blockers", "Queues & blockers", false)
+				@diagnosticsTabButton("github-api", "GitHub/API", false)
+				@diagnosticsTabButton("runtime-store", "Runtime store", false)
+				@diagnosticsTabButton("raw-debug", "Raw/Debug", false)
+			</div>
+		</div>
+		<div class="grid min-w-0">
+			@diagnosticsTabPanel("overview", "Overview", true) {
+				@diagnosticsOverviewTab(data)
+			}
+			@diagnosticsTabPanel("workflow-timing", "Workflow timing", false) {
+				@diagnosticsWorkflowTimingTab(data)
+			}
+			@diagnosticsTabPanel("active-work", "Active work", false) {
+				@diagnosticsActiveWorkTab(data)
+			}
+			@diagnosticsTabPanel("queues-blockers", "Queues & blockers", false) {
+				@diagnosticsQueuesBlockersTab(data)
+			}
+			@diagnosticsTabPanel("github-api", "GitHub/API", false) {
+				@diagnosticsGitHubAPITab(data)
+			}
+			@diagnosticsTabPanel("runtime-store", "Runtime store", false) {
+				@diagnosticsRuntimeStoreTab(data)
+			}
+			@diagnosticsTabPanel("raw-debug", "Raw/Debug", false) {
+				@diagnosticsRawDebugTab(data)
+			}
+		</div>
+	</section>
+}
+
+templ diagnosticsTabButton(id string, label string, active bool) {
+	<button id={ "diagnostics-tab-" + id } class="inline-flex h-9 shrink-0 items-center rounded-md px-3 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent data-[diagnostics-active=true]:bg-accent-soft data-[diagnostics-active=true]:text-accent" type="button" role="tab" aria-selected={ diagnosticsBool(active) } aria-controls={ "diagnostics-panel-" + id } tabindex={ diagnosticsTabIndex(active) } data-diagnostics-tab={ id } data-diagnostics-active={ diagnosticsBool(active) }>
+		{ label }
+	</button>
+}
+
+templ diagnosticsTabPanel(id string, label string, active bool) {
+	<section id={ "diagnostics-panel-" + id } class="grid min-w-0 gap-4" role="tabpanel" aria-labelledby={ "diagnostics-tab-" + id } tabindex="0" data-diagnostics-panel={ id } hidden?={ !active }>
+		{ children... }
+	</section>
+}
+
+templ diagnosticsOverviewTab(data DashboardData) {
+	<div class="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_20rem]">
+		<div class="grid min-w-0 gap-4">
+			@boardHealthSection(data.Snapshot)
+			@cycleTimeSection(data.Snapshot.CycleTime)
+		</div>
+		<aside class="grid min-w-0 content-start gap-4">
+			@diagnosticsBottleneckCard(data.Snapshot.WorkflowMetrics)
+			@throughputCard(data)
+		</aside>
+	</div>
+}
+
+templ diagnosticsBottleneckCard(report telemetry.WorkflowMetrics) {
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Active bottleneck">
+		<div class="flex items-start justify-between gap-3">
+			<div class="min-w-0">
+				<h2 class="text-base font-semibold text-foreground">Active bottleneck</h2>
+				<p class="text-sm text-muted-foreground">{ workflowBottleneck(report).Detail }</p>
+			</div>
+			<span class="rounded-full bg-warning-soft px-2 py-1 font-mono text-xs font-semibold text-warning">{ workflowBottleneck(report).Value }</span>
+		</div>
+		<div class="mt-3 rounded-md bg-muted/60 px-3 py-2">
+			<div class="truncate text-sm font-semibold text-foreground">{ workflowBottleneck(report).Label }</div>
+			if workflowBottleneck(report).Count != "" {
+				<div class="mt-1 font-mono text-xs text-muted-foreground">{ workflowBottleneck(report).Count }</div>
+			}
+		</div>
+	</section>
+}
+
+templ diagnosticsWorkflowTimingTab(data DashboardData) {
+	<div class="grid min-w-0 gap-4" data-preserve-scroll="diagnostics-workflow-timing">
+		<div class="flex min-w-0 flex-wrap items-center justify-between gap-2 rounded-md border border-border bg-card px-3 py-2 text-sm">
+			<span class="font-medium text-foreground">Query windows</span>
+			<span class="font-mono text-muted-foreground">{ workflowMetricsWindowLabels(data.Snapshot.WorkflowMetrics) }</span>
+		</div>
+		@workflowMetricsSection(data.Snapshot.WorkflowMetrics)
+		@cycleTimeSection(data.Snapshot.CycleTime)
+	</div>
+}
+
+templ diagnosticsActiveWorkTab(data DashboardData) {
+	<div class="grid min-w-0 gap-4 lg:grid-cols-2">
+		@diagnosticsRunningWorkersSection(data.Snapshot)
+		@schedulerRuntimeSection(data.Snapshot)
+	</div>
+}
+
+templ diagnosticsRunningWorkersSection(snapshot telemetry.Snapshot) {
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Active workers">
+		<div class="flex items-start justify-between gap-3">
+			<div class="min-w-0">
+				<h2 class="text-base font-semibold text-foreground">Active workers</h2>
+				<p class="text-sm text-muted-foreground">Running worker identity, current step, heartbeat, and issue or PR context.</p>
+			</div>
+			<span class="inline-flex min-h-9 min-w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft px-2 py-1 text-sm font-medium text-accent">{ formatCount(runningCount(snapshot)) }</span>
+		</div>
+		if len(snapshot.Running) == 0 {
+			<div class="mt-4">
+				@dashboardEmptyState("No active workers.", "Running worker rows will appear after Detent dispatches work.", "bg-accent")
+			</div>
+		} else {
+			<div class="mt-4 grid gap-2">
+				for _, row := range snapshot.Running {
+					<article class="rounded-md border border-border bg-muted/30 p-3">
+						<div class="flex min-w-0 items-start justify-between gap-3">
+							<div class="min-w-0">
+								<div class="truncate font-mono text-sm font-medium text-foreground">{ issueIdentifier(row.Issue) }</div>
+								<div class="mt-1 line-clamp-2 text-sm text-muted-foreground">{ issueTitle(row.Issue) }</div>
+							</div>
+							if row.URL != "" {
+								@issueOpenLink(row.URL, "Open issue "+issueIdentifier(row.Issue), true)
+							}
+						</div>
+						<div class="mt-3 grid gap-2 text-sm sm:grid-cols-2">
+							<div class="min-w-0">
+								<span class="block text-xs font-medium uppercase text-muted-foreground">Worker host</span>
+								<span class="block truncate font-mono text-foreground">{ chartText(row.WorkerHost, "n/a") }</span>
+							</div>
+							<div class="min-w-0">
+								<span class="block text-xs font-medium uppercase text-muted-foreground">Last event</span>
+								<span class="block truncate font-mono text-foreground">{ chartText(row.LastEvent, "n/a") }</span>
+							</div>
+							<div class="min-w-0">
+								<span class="block text-xs font-medium uppercase text-muted-foreground">Heartbeat</span>
+								if row.LastEventAt != nil {
+									<span class="block truncate font-mono text-foreground">{ timeLabel(*row.LastEventAt) }</span>
+								} else {
+									<span class="block truncate font-mono text-foreground">n/a</span>
+								}
+							</div>
+							<div class="min-w-0">
+								<span class="block text-xs font-medium uppercase text-muted-foreground">Runtime</span>
+								<span class="block truncate font-mono text-foreground">{ formatDuration(row.RuntimeSeconds) }</span>
+							</div>
+						</div>
+					</article>
+				}
+			</div>
+		}
+	</section>
+}
+
+templ diagnosticsQueuesBlockersTab(data DashboardData) {
+	<div class="grid min-w-0 gap-4 xl:grid-cols-2">
+		@retryQueueSection(data.Snapshot)
+		@blockedSessionsSection(data.Snapshot)
+	</div>
+}
+
+templ diagnosticsGitHubAPITab(data DashboardData) {
+	<div class="grid min-w-0 gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] xl:grid-cols-[minmax(0,1fr)_22rem]">
+		<div class="grid min-w-0 gap-4">
+			@rateLimitsCard(data.Snapshot.RateLimits)
+			@budgetCard(data.Snapshot)
+		</div>
+		<aside class="grid min-w-0 content-start gap-4">
+			@graphQLBudgetCard(data)
+			@restBudgetCard(data)
+		</aside>
+	</div>
+}
+
+templ diagnosticsRuntimeStoreTab(data DashboardData) {
+	@runtimeStoreEvidenceSection(data.Snapshot.WorkflowMetrics)
+}
+
+templ diagnosticsRawDebugTab(data DashboardData) {
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Raw diagnostics">
+		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+			<div class="min-w-0">
+				<h2 class="text-base font-semibold text-foreground">Raw/Debug</h2>
+				<p class="text-sm text-muted-foreground">Low-level links and counters for deeper inspection.</p>
+			</div>
+		</div>
+		<div class="mt-4 grid gap-2 sm:grid-cols-2">
+			<a class="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm font-medium text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href="/api/v1/state">Fleet state JSON</a>
+			if projectStateAPIPath(data) != "" {
+				<a class="rounded-md border border-border bg-muted/30 px-3 py-2 text-sm font-medium text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ projectStateAPIPath(data) }>Project state JSON</a>
+			}
+		</div>
+		<div class="mt-4 grid gap-2 text-sm sm:grid-cols-3">
+			<div class="rounded-md bg-muted/60 px-3 py-2">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Recent events</span>
+				<span class="font-mono text-foreground">{ formatCount(len(data.Snapshot.Events)) }</span>
+			</div>
+			<div class="rounded-md bg-muted/60 px-3 py-2">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Work attempts</span>
+				<span class="font-mono text-foreground">{ formatCount(len(data.Snapshot.WorkAttempts)) }</span>
+			</div>
+			<div class="rounded-md bg-muted/60 px-3 py-2">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Scheduler decisions</span>
+				<span class="font-mono text-foreground">{ formatCount(len(data.Snapshot.SchedulerDecisions)) }</span>
+			</div>
+		</div>
+	</section>
+}
+
+templ runtimeStoreEvidenceSection(report telemetry.WorkflowMetrics) {
+	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Runtime store">
+		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+			<div class="min-w-0">
+				<h2 class="text-base font-semibold text-foreground">Runtime store</h2>
+				<p class="text-sm text-muted-foreground">SQLite persistence evidence for workflow metrics and scheduler telemetry.</p>
+			</div>
+			<span class={ "inline-flex min-h-9 shrink-0 items-center rounded-full border px-3 py-1 text-sm font-medium " + runtimeStoreStatusClass(report.RuntimeStore) }>{ runtimeStoreStatusLabel(report.RuntimeStore) }</span>
+		</div>
+		<div class="mt-4 grid gap-3 lg:grid-cols-3">
+			<div class="rounded-md bg-muted/60 px-3 py-2">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Database path</span>
+				<span class="block truncate font-mono text-sm text-foreground">{ runtimeStorePathLabel(report.RuntimeStore) }</span>
+			</div>
+			<div class="rounded-md bg-muted/60 px-3 py-2">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Migration status</span>
+				<span class="block truncate font-mono text-sm text-foreground">{ runtimeStoreMigrationLabel(report.RuntimeStore) }</span>
+			</div>
+			<div class="rounded-md bg-muted/60 px-3 py-2">
+				<span class="block text-xs font-medium uppercase text-muted-foreground">Newest event</span>
+				<span class="block truncate font-mono text-sm text-foreground">{ runtimeWorkflowEventNewestLabel(report.RuntimeStore) }</span>
+			</div>
+		</div>
+		<div class="mt-4 rounded-md border border-border bg-muted/30 p-3 text-sm text-muted-foreground">
+			<strong class="text-foreground">workflow_phase_events:</strong>
+			<span class="font-mono">{ runtimeWorkflowEventCountLabel(report.RuntimeStore) }</span>
+			<span>Oldest event { runtimeWorkflowEventOldestLabel(report.RuntimeStore) }. Newest event { runtimeWorkflowEventNewestLabel(report.RuntimeStore) }.</span>
+		</div>
+		if report.RuntimeStore.Status == "healthy" && report.RuntimeStore.WorkflowPhaseEvents.RowCount == 0 {
+			<div class="mt-4">
+				@dashboardEmptyState("SQLite history is empty.", "Lane averages appear after Detent records lane exits. New state transitions will populate the current query windows.", "bg-accent")
+			</div>
+		}
+		if len(runtimeStoreTableRows(report.RuntimeStore)) > 0 {
+			<div class="mt-4 overflow-hidden rounded-md border border-border">
+				<div class="overflow-x-auto" data-preserve-scroll="runtime-store-tables">
+					<table class="dashboard-table w-full min-w-[38rem] table-fixed border-collapse text-sm">
+						<thead class="bg-muted/70">
+							<tr class="border-b border-border text-left text-xs font-medium uppercase text-muted-foreground">
+								<th class="w-[18rem] px-3 py-3 font-medium">Table</th>
+								<th class="w-[8rem] px-3 py-3 font-medium">Scope</th>
+								<th class="px-3 py-3 text-right font-medium">Rows</th>
+							</tr>
+						</thead>
+						<tbody>
+							for _, row := range runtimeStoreTableRows(report.RuntimeStore) {
+								<tr class="border-b border-border last:border-b-0">
+									<td class="px-3 py-3 font-mono text-foreground">{ row.Name }</td>
+									<td class="px-3 py-3 font-mono text-muted-foreground">{ row.Scope }</td>
+									<td class="px-3 py-3 text-right font-mono text-muted-foreground">{ row.RowCount }</td>
+								</tr>
+							}
+						</tbody>
+					</table>
+				</div>
+			</div>
+		}
+	</section>
 }
 
 templ FleetSnapshot(data DashboardData) {
@@ -3652,7 +4071,7 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
 			</div>
 		} else if len(workflowLaneMetricRows(report)) == 0 && len(workflowOldestCardRows(report)) == 0 {
 			<div class="mt-4">
-				@dashboardEmptyState("No workflow timing events yet.", "Lane and sub-phase aggregates appear after Detent records state transitions or observable work phases.", "bg-accent")
+				@dashboardEmptyState(workflowMetricsEmptyHistoryTitle(report), workflowMetricsEmptyHistoryDetail(report), "bg-accent")
 			</div>
 		} else {
 			<div class="mt-5 grid min-w-0 gap-5 xl:grid-cols-[minmax(0,1fr)_20rem]">

@@ -2550,6 +2550,95 @@ func TestDashboardPreservesSnapshotScrollContainersAcrossSSEMorph(t *testing.T) 
 	}
 }
 
+func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	html := renderProjectDiagnosticsPage(t, templates.DashboardData{
+		Title:         "Diagnostics",
+		ConnectorName: "github",
+		ProjectID:     "detent",
+		ProjectName:   "Detent",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusReady,
+				LastRefreshAt: &now,
+			},
+			WorkflowMetrics: telemetry.WorkflowMetrics{
+				Available: true,
+				RuntimeStore: telemetry.RuntimeStoreEvidence{
+					Backend:         "sqlite",
+					Status:          "healthy",
+					Healthy:         true,
+					Path:            "tmp/detent.db",
+					MigrationStatus: "applied through 6",
+					Tables: []telemetry.RuntimeStoreTableEvidence{
+						{Name: "workflow_phase_events", RowCount: 12, Scope: "project"},
+						{Name: "usage_events", RowCount: 4, Scope: "project"},
+					},
+					WorkflowPhaseEvents: telemetry.RuntimeStoreWorkflowPhaseEvents{
+						RowCount:         12,
+						OldestFinishedAt: &now,
+						NewestFinishedAt: &now,
+					},
+				},
+				Windows: []telemetry.WorkflowMetricsWindow{
+					{
+						Label: "24h",
+						From:  now.Add(-24 * time.Hour),
+						To:    now,
+						Lanes: []telemetry.WorkflowPhaseMetric{
+							{PhaseName: "In Progress", Count: 2, AverageSeconds: 600, P50Seconds: 540, P90Seconds: 720, P95Seconds: 720, Bottleneck: true},
+						},
+					},
+				},
+				ActiveBottleneck: telemetry.WorkflowBottleneck{
+					Label:   "Human Review waiting longest",
+					Detail:  "digitaldrywood/detent#755 has waited 2h in Human Review.",
+					Seconds: 7200,
+					Count:   1,
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`role="tablist"`,
+		`aria-label="Diagnostics sections"`,
+		`id="diagnostics-tab-overview"`,
+		`aria-controls="diagnostics-panel-overview"`,
+		`aria-selected="true"`,
+		`role="tabpanel"`,
+		`id="diagnostics-panel-workflow-timing"`,
+		`aria-labelledby="diagnostics-tab-workflow-timing"`,
+		"Overview",
+		"Workflow timing",
+		"Active work",
+		"Queues &amp; blockers",
+		"GitHub/API",
+		"Runtime store",
+		"Raw/Debug",
+		`detent.ui.diagnostics.selectedTab.detent`,
+		`window.localStorage`,
+		`document.addEventListener("htmx:afterSettle"`,
+		`event.key === "ArrowRight"`,
+		`event.key === "ArrowLeft"`,
+		`event.key === "Home"`,
+		`event.key === "End"`,
+		`data-preserve-scroll="diagnostics-workflow-timing"`,
+		"SQLite-backed history",
+		"tmp/detent.db",
+		"workflow_phase_events",
+		"applied through 6",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("project diagnostics page missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
 	t.Parallel()
 
@@ -3577,6 +3666,16 @@ func renderProjectKanbanPage(t *testing.T, data templates.DashboardData) string 
 
 	var buf bytes.Buffer
 	if err := templates.ProjectKanbanPage(data).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	return buf.String()
+}
+
+func renderProjectDiagnosticsPage(t *testing.T, data templates.DashboardData) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := templates.ProjectDiagnosticsPage(data).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
 	return buf.String()

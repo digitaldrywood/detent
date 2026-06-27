@@ -18,6 +18,7 @@ import (
 type sqliteStore struct {
 	db      *sql.DB
 	queries *sqlc.Queries
+	path    string
 }
 
 var _ Store = (*sqliteStore)(nil)
@@ -48,11 +49,67 @@ func openSQLite(ctx context.Context, cfg Config) (*sqliteStore, error) {
 	return &sqliteStore{
 		db:      db,
 		queries: sqlc.New(db),
+		path:    cfg.Path,
 	}, nil
 }
 
 func (s *sqliteStore) Queries() *sqlc.Queries {
 	return s.queries
+}
+
+func (s *sqliteStore) RuntimeEvidence(ctx context.Context, query RuntimeEvidenceQuery) (RuntimeEvidence, error) {
+	evidence := RuntimeEvidence{
+		Backend: BackendSQLite,
+		Path:    s.path,
+	}
+	if err := s.db.PingContext(ctx); err != nil {
+		return evidence, fmt.Errorf("pinging runtime store: %w", err)
+	}
+	evidence.Healthy = true
+
+	version, err := s.runtimeMigrationVersion(ctx)
+	if err != nil {
+		return evidence, err
+	}
+	evidence.MigrationVersion = version
+	evidence.MigrationStatus = fmt.Sprintf("applied through %d", version)
+
+	tables := []struct {
+		name          string
+		projectScoped bool
+	}{
+		{name: "detent_runs"},
+		{name: "codex_sessions"},
+		{name: "fair_share_usage", projectScoped: true},
+		{name: "usage_events", projectScoped: true},
+		{name: "workflow_phase_events", projectScoped: true},
+		{name: "work_attempts", projectScoped: true},
+		{name: "scheduler_decisions", projectScoped: true},
+	}
+	projectID := strings.TrimSpace(query.ProjectID)
+	for _, table := range tables {
+		count, err := s.runtimeTableCount(ctx, table.name, table.projectScoped, projectID)
+		if err != nil {
+			return evidence, err
+		}
+		scope := "fleet"
+		if table.projectScoped && projectID != "" {
+			scope = "project"
+		}
+		evidence.Tables = append(evidence.Tables, RuntimeTableEvidence{
+			Name:     table.name,
+			Scope:    scope,
+			RowCount: count,
+		})
+	}
+
+	workflowEvidence, err := s.runtimeWorkflowPhaseEventEvidence(ctx, projectID)
+	if err != nil {
+		return evidence, err
+	}
+	evidence.WorkflowPhaseEvents = workflowEvidence
+
+	return evidence, nil
 }
 
 func (s *sqliteStore) Close() error {
@@ -566,6 +623,94 @@ func configureSQLite(ctx context.Context, db *sql.DB, busyTimeoutMillis int64) e
 		return fmt.Errorf("pinging sqlite database: %w", err)
 	}
 	return nil
+}
+
+func (s *sqliteStore) runtimeMigrationVersion(ctx context.Context) (int64, error) {
+	var version sql.NullInt64
+	if err := s.db.QueryRowContext(ctx, "SELECT COALESCE(MAX(version_id), 0) FROM goose_db_version WHERE is_applied = 1").Scan(&version); err != nil {
+		return 0, fmt.Errorf("reading migration status: %w", err)
+	}
+	if !version.Valid {
+		return 0, nil
+	}
+	return version.Int64, nil
+}
+
+func (s *sqliteStore) runtimeTableCount(ctx context.Context, tableName string, projectScoped bool, projectID string) (int64, error) {
+	var row *sql.Row
+	if projectScoped && projectID != "" {
+		switch tableName {
+		case "fair_share_usage":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM fair_share_usage WHERE project_id = ?", projectID)
+		case "usage_events":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM usage_events WHERE project_id = ?", projectID)
+		case "workflow_phase_events":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM workflow_phase_events WHERE project_id = ?", projectID)
+		case "work_attempts":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM work_attempts WHERE project_id = ?", projectID)
+		case "scheduler_decisions":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduler_decisions WHERE project_id = ?", projectID)
+		default:
+			return 0, fmt.Errorf("unsupported project-scoped runtime table %q", tableName)
+		}
+	} else {
+		switch tableName {
+		case "detent_runs":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM detent_runs")
+		case "codex_sessions":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM codex_sessions")
+		case "fair_share_usage":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM fair_share_usage")
+		case "usage_events":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM usage_events")
+		case "workflow_phase_events":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM workflow_phase_events")
+		case "work_attempts":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM work_attempts")
+		case "scheduler_decisions":
+			row = s.db.QueryRowContext(ctx, "SELECT COUNT(*) FROM scheduler_decisions")
+		default:
+			return 0, fmt.Errorf("unsupported runtime table %q", tableName)
+		}
+	}
+
+	var count int64
+	if err := row.Scan(&count); err != nil {
+		return 0, fmt.Errorf("counting runtime table %s: %w", tableName, err)
+	}
+	return count, nil
+}
+
+func (s *sqliteStore) runtimeWorkflowPhaseEventEvidence(ctx context.Context, projectID string) (RuntimeWorkflowPhaseEventEvidence, error) {
+	var row *sql.Row
+	if projectID != "" {
+		row = s.db.QueryRowContext(ctx, "SELECT COUNT(*), MIN(finished_at), MAX(finished_at) FROM workflow_phase_events WHERE project_id = ?", projectID)
+	} else {
+		row = s.db.QueryRowContext(ctx, "SELECT COUNT(*), MIN(finished_at), MAX(finished_at) FROM workflow_phase_events")
+	}
+
+	var count int64
+	var oldest sql.NullString
+	var newest sql.NullString
+	if err := row.Scan(&count, &oldest, &newest); err != nil {
+		return RuntimeWorkflowPhaseEventEvidence{}, fmt.Errorf("reading workflow phase event evidence: %w", err)
+	}
+	return RuntimeWorkflowPhaseEventEvidence{
+		RowCount:         count,
+		OldestFinishedAt: nullableRuntimeTimestamp(oldest),
+		NewestFinishedAt: nullableRuntimeTimestamp(newest),
+	}, nil
+}
+
+func nullableRuntimeTimestamp(value sql.NullString) *time.Time {
+	if !value.Valid || strings.TrimSpace(value.String) == "" {
+		return nil
+	}
+	parsed, err := time.Parse(time.RFC3339, strings.TrimSpace(value.String))
+	if err != nil {
+		return nil
+	}
+	return &parsed
 }
 
 func requiredTimestamp(name string, value time.Time) (string, error) {
