@@ -109,6 +109,7 @@ func (s *Server) apiProjectState(c echo.Context, projectID string) error {
 		DisplayName: project.Name,
 		URL:         project.URL,
 	})
+	scopedSnapshot.WorkflowMetrics = s.snapshotWorkflowMetrics(c.Request().Context(), scopedSnapshot)
 	scopedSnapshot = s.withManualRefresh(scopedSnapshot)
 
 	return c.JSON(http.StatusOK, stateResponse(scopedSnapshot, generatedAt(scopedSnapshot, now), s.instanceName()))

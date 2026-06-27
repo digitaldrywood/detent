@@ -233,6 +233,19 @@ type workflowBottleneckView struct {
 	Count  string
 }
 
+type diagnosticsSummaryFact struct {
+	Label  string
+	Value  string
+	Detail string
+	Class  string
+}
+
+type runtimeStoreTableRow struct {
+	Name     string
+	Scope    string
+	RowCount string
+}
+
 type budgetHistoryBar struct {
 	Style string
 	Title string
@@ -1063,6 +1076,17 @@ func projectDiagnosticsPath(projectID string) string {
 	return "/projects/" + url.PathEscape(projectID) + "/diagnostics"
 }
 
+func projectStateAPIPath(data DashboardData) string {
+	projectID := strings.TrimSpace(data.ProjectID)
+	if projectID == "" {
+		projectID = strings.TrimSpace(data.Snapshot.Project.ID)
+	}
+	if projectID == "" {
+		return ""
+	}
+	return "/api/v1/projects/" + url.PathEscape(projectID) + "/state"
+}
+
 func projectConfigurationPath(projectID string) string {
 	projectID = strings.TrimSpace(projectID)
 	if projectID == "" {
@@ -1220,6 +1244,78 @@ func snapshotHasLoadedData(snapshot telemetry.Snapshot) bool {
 		snapshot.RateLimits != nil ||
 		snapshot.LifetimeTotals.Available ||
 		snapshot.CycleTime.Available
+}
+
+func diagnosticsSnapshotHasLoadedData(snapshot telemetry.Snapshot) bool {
+	return len(snapshot.BoardIssues) > 0 ||
+		len(snapshot.Pipeline) > 0 ||
+		len(snapshot.Running) > 0 ||
+		len(snapshot.Queue) > 0 ||
+		len(snapshot.Blocked) > 0 ||
+		len(snapshot.Completed) > 0 ||
+		len(snapshot.Events) > 0 ||
+		len(snapshot.WorkAttempts) > 0 ||
+		len(snapshot.SchedulerDecisions) > 0 ||
+		len(snapshot.TokenTrend) > 0 ||
+		snapshot.Counts != (telemetry.Counts{}) ||
+		snapshot.Tokens != (telemetry.Tokens{}) ||
+		snapshot.Throughput != (telemetry.TokenThroughput{}) ||
+		snapshot.RateLimits != nil ||
+		diagnosticsBudgetHasLoadedData(snapshot.Budget) ||
+		diagnosticsProjectSnapshotsHaveLoadedData(snapshot.Projects) ||
+		snapshot.LifetimeTotals.Available ||
+		snapshot.CycleTime.Available ||
+		diagnosticsWorkflowMetricsHasLoadedData(snapshot.WorkflowMetrics)
+}
+
+func diagnosticsProjectSnapshotsHaveLoadedData(projects []telemetry.ProjectSnapshot) bool {
+	for _, project := range projects {
+		if project.Counts != (telemetry.Counts{}) ||
+			project.Tokens != (telemetry.Tokens{}) ||
+			project.Throughput != (telemetry.TokenThroughput{}) ||
+			!project.Auth.IsZero() ||
+			snapshotHasRefreshSignal(project.Refresh) {
+			return true
+		}
+	}
+	return false
+}
+
+func diagnosticsBudgetHasLoadedData(budget telemetry.Budget) bool {
+	return budget.Enabled ||
+		strings.TrimSpace(budget.DegradedReason) != "" ||
+		budget.PerDayMaxUSD != nil ||
+		budget.PerIssueMaxUSD != nil ||
+		budget.CurrentSpendUSD != 0 ||
+		budget.ProjectedCostUSD != 0 ||
+		budget.ProjectedSpendUSD != 0 ||
+		!budget.PeriodStart.IsZero() ||
+		!budget.PeriodEnd.IsZero() ||
+		len(budget.SpendPoints) > 0 ||
+		len(budget.Days) > 0 ||
+		len(budget.Refusals) > 0
+}
+
+func diagnosticsWorkflowMetricsHasLoadedData(report telemetry.WorkflowMetrics) bool {
+	return report.Available ||
+		strings.TrimSpace(report.DegradedReason) != "" ||
+		diagnosticsRuntimeStoreHasLoadedData(report.RuntimeStore) ||
+		len(report.Windows) > 0 ||
+		len(report.OldestCards) > 0 ||
+		!report.ActiveBottleneck.IsZero()
+}
+
+func diagnosticsRuntimeStoreHasLoadedData(store telemetry.RuntimeStoreEvidence) bool {
+	return strings.TrimSpace(store.Backend) != "" ||
+		strings.TrimSpace(store.Status) != "" ||
+		store.Healthy ||
+		strings.TrimSpace(store.Path) != "" ||
+		strings.TrimSpace(store.MigrationStatus) != "" ||
+		store.MigrationVersion != 0 ||
+		len(store.Tables) > 0 ||
+		store.WorkflowPhaseEvents.RowCount != 0 ||
+		store.WorkflowPhaseEvents.OldestFinishedAt != nil ||
+		store.WorkflowPhaseEvents.NewestFinishedAt != nil
 }
 
 func snapshotReady(snapshot telemetry.Snapshot) bool {
@@ -3880,6 +3976,341 @@ func workflowMetricsSummaryLabel(report telemetry.WorkflowMetrics) string {
 		return "1 lane event"
 	}
 	return formatInt(count) + " lane events"
+}
+
+func diagnosticsStorageName(data DashboardData) string {
+	return "detent.ui.diagnostics.selectedTab." + diagnosticsStorageKey(data)
+}
+
+func diagnosticsStorageKey(data DashboardData) string {
+	scope := strings.TrimSpace(data.ProjectID)
+	if scope == "" {
+		scope = strings.TrimSpace(data.Snapshot.Project.ID)
+	}
+	if scope == "" {
+		return "fleet"
+	}
+	key := projectKanbanLaneID(scope)
+	if key == "unknown" {
+		return "project"
+	}
+	return key
+}
+
+func diagnosticsBool(value bool) string {
+	if value {
+		return "true"
+	}
+	return "false"
+}
+
+func diagnosticsTabIndex(active bool) string {
+	if active {
+		return "0"
+	}
+	return "-1"
+}
+
+func diagnosticsSummaryFacts(data DashboardData) []diagnosticsSummaryFact {
+	snapshot := data.Snapshot
+	bottleneck := workflowBottleneck(snapshot.WorkflowMetrics)
+	return []diagnosticsSummaryFact{
+		{
+			Label:  "Overall health",
+			Value:  diagnosticsHealthLabel(snapshot),
+			Detail: diagnosticsHealthDetail(snapshot),
+			Class:  diagnosticsHealthClass(snapshot),
+		},
+		{
+			Label:  "Active bottleneck",
+			Value:  bottleneck.Label,
+			Detail: bottleneck.Detail,
+			Class:  "border-warning-soft bg-warning-soft text-warning",
+		},
+		{
+			Label:  "Forward progress",
+			Value:  diagnosticsForwardProgressValue(snapshot),
+			Detail: diagnosticsForwardProgressDetail(snapshot),
+			Class:  "border-accent-soft bg-accent-soft text-accent",
+		},
+		{
+			Label:  "Data freshness",
+			Value:  diagnosticsDataFreshnessValue(snapshot),
+			Detail: diagnosticsDataFreshnessDetail(snapshot),
+			Class:  runtimeStoreStatusClass(snapshot.WorkflowMetrics.RuntimeStore),
+		},
+		{
+			Label:  "API pressure",
+			Value:  gitHubAPIHealth(snapshot).Label,
+			Detail: gitHubAPIHealth(snapshot).Summary,
+			Class:  gitHubAPIHealthClass(snapshot),
+		},
+	}
+}
+
+func diagnosticsHealthLabel(snapshot telemetry.Snapshot) string {
+	if snapshot.Shutdown.Draining {
+		return "Draining"
+	}
+	if snapshotDegraded(snapshot) || strings.TrimSpace(snapshot.WorkflowMetrics.DegradedReason) != "" || strings.TrimSpace(snapshot.Budget.DegradedReason) != "" {
+		return "Degraded"
+	}
+	if runningCount(snapshot) == 0 && queueCount(snapshot)+blockedCount(snapshot) > 0 {
+		return "Stalled"
+	}
+	return "Running"
+}
+
+func diagnosticsHealthDetail(snapshot telemetry.Snapshot) string {
+	if snapshot.Shutdown.Draining {
+		return formatCount(snapshot.Shutdown.SessionsRemaining) + " sessions remaining"
+	}
+	if snapshotDegraded(snapshot) {
+		return snapshotDegradedRefreshDetail(snapshot)
+	}
+	if reason := strings.TrimSpace(snapshot.WorkflowMetrics.DegradedReason); reason != "" {
+		return reason
+	}
+	if reason := strings.TrimSpace(snapshot.Budget.DegradedReason); reason != "" {
+		return reason
+	}
+	if runningCount(snapshot) == 0 && queueCount(snapshot)+blockedCount(snapshot) > 0 {
+		return "No active workers while work is queued or blocked."
+	}
+	return "Tracker data and runtime telemetry are available."
+}
+
+func diagnosticsHealthClass(snapshot telemetry.Snapshot) string {
+	switch diagnosticsHealthLabel(snapshot) {
+	case "Running":
+		return "border-success-soft bg-success-soft text-success"
+	case "Draining", "Stalled":
+		return "border-warning-soft bg-warning-soft text-warning"
+	case "Degraded":
+		return "border-danger-soft bg-danger-soft text-danger"
+	default:
+		return "border-border bg-muted text-muted-foreground"
+	}
+}
+
+func diagnosticsForwardProgressValue(snapshot telemetry.Snapshot) string {
+	parts := []string{
+		formatCount(runningCount(snapshot)) + " active",
+		formatCount(queueCount(snapshot)) + " queued",
+	}
+	return strings.Join(parts, " / ")
+}
+
+func diagnosticsForwardProgressDetail(snapshot telemetry.Snapshot) string {
+	parts := []string{}
+	if transition := diagnosticsLastTransition(snapshot); transition != "" {
+		parts = append(parts, "Last transition: "+transition+".")
+	}
+	if merge := diagnosticsLastMerge(snapshot); merge != "" {
+		parts = append(parts, "Last merge: "+merge+".")
+	}
+	if len(parts) == 0 {
+		return "No completed transition or merge is visible in this snapshot."
+	}
+	return strings.Join(parts, " ")
+}
+
+func diagnosticsLastTransition(snapshot telemetry.Snapshot) string {
+	var latest *telemetry.ActivityEvent
+	for i := range snapshot.Events {
+		event := snapshot.Events[i]
+		if event.At.IsZero() {
+			continue
+		}
+		if latest == nil || event.At.After(latest.At) {
+			latest = &event
+		}
+	}
+	if latest == nil {
+		return ""
+	}
+	label := strings.TrimSpace(latest.Event)
+	if label == "" {
+		label = strings.TrimSpace(latest.Message)
+	}
+	if label == "" {
+		label = "event"
+	}
+	return label + " at " + timeLabel(latest.At)
+}
+
+func diagnosticsLastMerge(snapshot telemetry.Snapshot) string {
+	var latest *telemetry.Completed
+	for i := range snapshot.Completed {
+		completed := snapshot.Completed[i]
+		if completed.CompletedAt.IsZero() {
+			continue
+		}
+		if latest == nil || completed.CompletedAt.After(latest.CompletedAt) {
+			latest = &completed
+		}
+	}
+	if latest == nil {
+		return ""
+	}
+	return issueIdentifier(latest.Issue) + " at " + timeLabel(latest.CompletedAt)
+}
+
+func diagnosticsDataFreshnessValue(snapshot telemetry.Snapshot) string {
+	store := snapshot.WorkflowMetrics.RuntimeStore
+	if store.Status == "healthy" {
+		return "SQLite-backed history"
+	}
+	if store.Status == "not_configured" {
+		return "No runtime store"
+	}
+	if strings.TrimSpace(snapshot.WorkflowMetrics.DegradedReason) != "" {
+		return "Metrics degraded"
+	}
+	return "Runtime evidence pending"
+}
+
+func diagnosticsDataFreshnessDetail(snapshot telemetry.Snapshot) string {
+	parts := []string{}
+	if snapshot.Refresh.LastRefreshAt != nil {
+		parts = append(parts, "Tracker refresh "+timeLabel(*snapshot.Refresh.LastRefreshAt)+".")
+	}
+	if newest := snapshot.WorkflowMetrics.RuntimeStore.WorkflowPhaseEvents.NewestFinishedAt; newest != nil {
+		parts = append(parts, "Newest metrics event "+timeLabel(*newest)+".")
+	}
+	if status := runtimeStoreStatusLabel(snapshot.WorkflowMetrics.RuntimeStore); status != "" {
+		parts = append(parts, status+".")
+	}
+	if len(parts) == 0 {
+		return "No tracker refresh or runtime metrics event has been recorded yet."
+	}
+	return strings.Join(parts, " ")
+}
+
+func runtimeStoreStatusLabel(store telemetry.RuntimeStoreEvidence) string {
+	switch strings.TrimSpace(store.Status) {
+	case "healthy":
+		return "SQLite-backed history healthy"
+	case "not_configured":
+		return "SQLite runtime store not configured"
+	case "degraded":
+		return "SQLite runtime store degraded"
+	default:
+		if strings.TrimSpace(store.Backend) == "" {
+			return "Runtime store evidence unavailable"
+		}
+		return workflowPhaseLabel(store.Backend) + " runtime store status unknown"
+	}
+}
+
+func runtimeStoreStatusClass(store telemetry.RuntimeStoreEvidence) string {
+	switch strings.TrimSpace(store.Status) {
+	case "healthy":
+		return "border-success-soft bg-success-soft text-success"
+	case "not_configured":
+		return "border-border bg-muted text-muted-foreground"
+	default:
+		return "border-danger-soft bg-danger-soft text-danger"
+	}
+}
+
+func runtimeStorePathLabel(store telemetry.RuntimeStoreEvidence) string {
+	if path := strings.TrimSpace(store.Path); path != "" {
+		return path
+	}
+	return "path unavailable"
+}
+
+func runtimeStoreMigrationLabel(store telemetry.RuntimeStoreEvidence) string {
+	if label := strings.TrimSpace(store.MigrationStatus); label != "" {
+		return label
+	}
+	if store.MigrationVersion > 0 {
+		return "applied through " + formatInt(store.MigrationVersion)
+	}
+	return "migration status unavailable"
+}
+
+func runtimeStoreTableRows(store telemetry.RuntimeStoreEvidence) []runtimeStoreTableRow {
+	rows := make([]runtimeStoreTableRow, 0, len(store.Tables))
+	for _, table := range store.Tables {
+		scope := strings.TrimSpace(table.Scope)
+		if scope == "" {
+			scope = "fleet"
+		}
+		rows = append(rows, runtimeStoreTableRow{
+			Name:     strings.TrimSpace(table.Name),
+			Scope:    scope,
+			RowCount: runtimeStoreRowCountLabel(table.RowCount, scope),
+		})
+	}
+	return rows
+}
+
+func runtimeStoreRowCountLabel(count int64, scope string) string {
+	rowLabel := "rows"
+	if count == 1 {
+		rowLabel = "row"
+	}
+	scope = strings.TrimSpace(scope)
+	if scope == "" {
+		return formatInt(count) + " " + rowLabel
+	}
+	return formatInt(count) + " " + scope + " " + rowLabel
+}
+
+func runtimeWorkflowEventNewestLabel(store telemetry.RuntimeStoreEvidence) string {
+	if store.WorkflowPhaseEvents.NewestFinishedAt == nil {
+		return "No completed workflow phase event"
+	}
+	return timeLabel(*store.WorkflowPhaseEvents.NewestFinishedAt)
+}
+
+func runtimeWorkflowEventOldestLabel(store telemetry.RuntimeStoreEvidence) string {
+	if store.WorkflowPhaseEvents.OldestFinishedAt == nil {
+		return "No completed workflow phase event"
+	}
+	return timeLabel(*store.WorkflowPhaseEvents.OldestFinishedAt)
+}
+
+func runtimeWorkflowEventCountLabel(store telemetry.RuntimeStoreEvidence) string {
+	return runtimeStoreRowCountLabel(store.WorkflowPhaseEvents.RowCount, runtimeWorkflowEventScope(store))
+}
+
+func runtimeWorkflowEventScope(store telemetry.RuntimeStoreEvidence) string {
+	for _, table := range store.Tables {
+		if table.Name == "workflow_phase_events" {
+			return table.Scope
+		}
+	}
+	return "fleet"
+}
+
+func workflowMetricsEmptyHistoryTitle(report telemetry.WorkflowMetrics) string {
+	if report.RuntimeStore.Status == "healthy" && report.RuntimeStore.WorkflowPhaseEvents.RowCount == 0 {
+		return "SQLite history is empty."
+	}
+	return "No workflow timing events yet."
+}
+
+func workflowMetricsEmptyHistoryDetail(report telemetry.WorkflowMetrics) string {
+	if report.RuntimeStore.Status == "healthy" && report.RuntimeStore.WorkflowPhaseEvents.RowCount == 0 {
+		return "Lane averages appear after Detent records lane exits. New state transitions will populate the current query windows."
+	}
+	return "Lane and sub-phase aggregates appear after Detent records state transitions or observable work phases."
+}
+
+func workflowMetricsWindowLabels(report telemetry.WorkflowMetrics) string {
+	labels := make([]string, 0, len(report.Windows))
+	for _, window := range report.Windows {
+		if strings.TrimSpace(window.Label) != "" {
+			labels = append(labels, strings.TrimSpace(window.Label))
+		}
+	}
+	if len(labels) == 0 {
+		return "24h / 7d / 30d"
+	}
+	return strings.Join(labels, " / ")
 }
 
 func workflowLaneMetricRows(report telemetry.WorkflowMetrics) []workflowLaneMetricRow {

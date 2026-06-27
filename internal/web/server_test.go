@@ -5888,6 +5888,106 @@ func TestWorkflowMetricsStateAPIIncludesLaneTrendComparisons(t *testing.T) {
 	}
 }
 
+func TestProjectDiagnosticsRendersRuntimeStoreEvidence(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
+	backend, err := store.Open(ctx, store.Config{
+		Backend: store.BackendSQLite,
+		Path:    dbPath,
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+	seedWorkflowTrendEvents(t, ctx, backend, now)
+
+	deps := testDeps(t)
+	deps.Store = backend
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
+	for _, want := range []string{
+		"Runtime store",
+		"SQLite-backed history",
+		dbPath,
+		"workflow_phase_events",
+		"8 project rows",
+		"Newest event",
+		"24h",
+		"7d",
+		"30d",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("diagnostics missing runtime evidence %q:\n%s", want, html)
+		}
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	metrics := state["workflow_metrics"].(map[string]any)
+	runtimeStore := metrics["runtime_store"].(map[string]any)
+	if runtimeStore["backend"] != "sqlite" || runtimeStore["path"] != dbPath || runtimeStore["status"] != "healthy" {
+		t.Fatalf("runtime_store = %#v, want healthy sqlite evidence for %q", runtimeStore, dbPath)
+	}
+	workflowPhaseEvents := runtimeStore["workflow_phase_events"].(map[string]any)
+	if workflowPhaseEvents["row_count"] != float64(8) {
+		t.Fatalf("workflow_phase_events = %#v, want row_count 8", workflowPhaseEvents)
+	}
+	tables := runtimeStore["tables"].([]any)
+	if got := runtimeStoreTableCount(t, tables, "workflow_phase_events"); got != 8 {
+		t.Fatalf("workflow_phase_events table count = %d, want 8", got)
+	}
+}
+
+func TestProjectDiagnosticsRendersWorkflowMetricsEmptyHistory(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	backend := openWebTestStore(t)
+
+	deps := testDeps(t)
+	deps.Store = backend
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
+	for _, want := range []string{
+		"SQLite history is empty.",
+		"Lane averages appear after Detent records lane exits.",
+		"workflow_phase_events",
+		"0 project rows",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("diagnostics missing empty workflow metric state %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestProjectDiagnosticsRendersWorkflowMetricsTrends(t *testing.T) {
 	t.Parallel()
 
@@ -6543,6 +6643,27 @@ func metricComparison(t *testing.T, lane map[string]any) map[string]any {
 	return comparison
 }
 
+func runtimeStoreTableCount(t *testing.T, tables []any, name string) int64 {
+	t.Helper()
+
+	for _, raw := range tables {
+		table, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("runtime store table = %T, want object", raw)
+		}
+		if table["name"] != name {
+			continue
+		}
+		count, ok := table["row_count"].(float64)
+		if !ok {
+			t.Fatalf("%s.row_count = %T, want number", name, table["row_count"])
+		}
+		return int64(count)
+	}
+	t.Fatalf("runtime store table %q missing from %#v", name, tables)
+	return 0
+}
+
 func boardStateCount(t *testing.T, payload map[string]any, stateName string) string {
 	t.Helper()
 
@@ -6574,6 +6695,7 @@ type storeProbe struct {
 
 	cycleTimeReport  func(context.Context) (store.CycleTimeReport, error)
 	budgetCostEvents func(context.Context, store.BudgetCostQuery) ([]store.BudgetCostEvent, error)
+	runtimeEvidence  func(context.Context, store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error)
 }
 
 func (storeProbe) LifetimeTotals(context.Context) (store.LifetimeTotals, error) {
@@ -6608,6 +6730,20 @@ func (storeProbe) WorkflowMetricsReport(context.Context, store.WorkflowMetricsQu
 
 func (storeProbe) IssueWorkflowTimeline(context.Context, store.IssueIdentity) (store.WorkflowTimeline, error) {
 	return store.WorkflowTimeline{}, nil
+}
+
+func (p storeProbe) RuntimeEvidence(ctx context.Context, query store.RuntimeEvidenceQuery) (store.RuntimeEvidence, error) {
+	if p.runtimeEvidence != nil {
+		return p.runtimeEvidence(ctx, query)
+	}
+	return store.RuntimeEvidence{
+		Backend:         store.BackendSQLite,
+		Healthy:         true,
+		MigrationStatus: "applied through 0",
+		Tables: []store.RuntimeTableEvidence{
+			{Name: "workflow_phase_events", Scope: "project"},
+		},
+	}, nil
 }
 
 func (storeProbe) Queries() *sqlc.Queries {

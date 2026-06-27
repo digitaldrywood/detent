@@ -829,11 +829,12 @@ func demoHealthySnapshot() telemetry.Snapshot {
 			GraphQLCost:   &telemetry.GraphQLCost{TotalQueries: 88, TotalCost: 680, Contributors: []telemetry.GraphQLCostContributor{{QueryType: "project_items", Count: 30, Cost: 300}, {QueryType: "pull_requests", Count: 18, Cost: 180}}},
 			RESTUsage:     &telemetry.RESTUsage{TotalRequests: 122, Contributors: []telemetry.RESTUsageContributor{{EndpointFamily: "issues", Count: 82, Remaining: 4878, Limit: 5000}, {EndpointFamily: "pull requests", Count: 40, Remaining: 4878, Limit: 5000}}},
 		},
-		Tokens:         telemetry.Tokens{Input: 74540, Output: 27190, Total: 101730, RuntimeSeconds: 4380},
-		Throughput:     telemetry.TokenThroughput{TokensPerSecond: 23.5, WindowSeconds: 600, Tokens: 14100},
-		LifetimeTotals: telemetry.LifetimeTotals{Available: true, InputTokens: 4410000, OutputTokens: 1390000, TotalTokens: 5800000, RuntimeSeconds: 242000, Sessions: 182, Runs: 37},
-		CycleTime:      demoCycleTime(now),
-		TokenTrend:     demoTokenTrend(now),
+		Tokens:          telemetry.Tokens{Input: 74540, Output: 27190, Total: 101730, RuntimeSeconds: 4380},
+		Throughput:      telemetry.TokenThroughput{TokensPerSecond: 23.5, WindowSeconds: 600, Tokens: 14100},
+		LifetimeTotals:  telemetry.LifetimeTotals{Available: true, InputTokens: 4410000, OutputTokens: 1390000, TotalTokens: 5800000, RuntimeSeconds: 242000, Sessions: 182, Runs: 37},
+		CycleTime:       demoCycleTime(now),
+		WorkflowMetrics: demoWorkflowMetrics(now),
+		TokenTrend:      demoTokenTrend(now),
 	}
 	for i := range snapshot.Running {
 		snapshot.Running[i].LeaseRenewedAt = &leaseRenewed
@@ -847,15 +848,16 @@ func demoEmptySnapshot() telemetry.Snapshot {
 	lastRefresh := now.Add(-15 * time.Second)
 	nextRefresh := now.Add(time.Minute)
 	return telemetry.Snapshot{
-		GeneratedAt:    now,
-		Project:        telemetry.Project{DisplayName: "multiple projects"},
-		Instance:       telemetry.Instance{Name: "detent-demo-screenshots", GitHubLogin: "detent-bot", AuthorizationScope: "repo, read:project", AuthorizationConfigured: true},
-		Projects:       demoProjectSnapshots(demoProjectsForVariant("project-empty")),
-		DashboardURL:   "http://localhost:0",
-		Shutdown:       telemetry.Shutdown{Status: "running"},
-		Refresh:        telemetry.Refresh{PollIntervalSeconds: 60, Status: telemetry.RefreshStatusReady, LastRefreshAt: &lastRefresh, NextRefreshAt: &nextRefresh},
-		LifetimeTotals: telemetry.LifetimeTotals{Available: true},
-		CycleTime:      telemetry.CycleTimeReport{Available: false, DegradedReason: "no completed sessions in the selected window"},
+		GeneratedAt:     now,
+		Project:         telemetry.Project{DisplayName: "multiple projects"},
+		Instance:        telemetry.Instance{Name: "detent-demo-screenshots", GitHubLogin: "detent-bot", AuthorizationScope: "repo, read:project", AuthorizationConfigured: true},
+		Projects:        demoProjectSnapshots(demoProjectsForVariant("project-empty")),
+		DashboardURL:    "http://localhost:0",
+		Shutdown:        telemetry.Shutdown{Status: "running"},
+		Refresh:         telemetry.Refresh{PollIntervalSeconds: 60, Status: telemetry.RefreshStatusReady, LastRefreshAt: &lastRefresh, NextRefreshAt: &nextRefresh},
+		LifetimeTotals:  telemetry.LifetimeTotals{Available: true},
+		CycleTime:       telemetry.CycleTimeReport{Available: false, DegradedReason: "no completed sessions in the selected window"},
+		WorkflowMetrics: demoEmptyWorkflowMetrics(now),
 	}
 }
 
@@ -958,6 +960,9 @@ func demoDegradedSnapshot() telemetry.Snapshot {
 	snapshot.LifetimeTotals = telemetry.LifetimeTotals{Available: false, DegradedReason: "usage ledger unavailable in this scenario"}
 	snapshot.CycleTime = telemetry.CycleTimeReport{Available: false, DegradedReason: "cycle-time query timed out"}
 	snapshot.Budget.DegradedReason = "budget history is partially unavailable"
+	snapshot.WorkflowMetrics.DegradedReason = "workflow metrics query failed"
+	snapshot.WorkflowMetrics.RuntimeStore.Status = "degraded"
+	snapshot.WorkflowMetrics.RuntimeStore.Healthy = false
 	return snapshot
 }
 
@@ -1294,6 +1299,107 @@ func demoCycleTime(now time.Time) telemetry.CycleTimeReport {
 		Issues: []telemetry.CycleTimeIssue{
 			{Key: "digitaldrywood/detent-core#5240", StartedAt: now.Add(-9 * time.Hour), CompletedAt: now.Add(-2 * time.Hour), DurationSeconds: int64(7 * time.Hour / time.Second), Sessions: 1},
 			{Key: "digitaldrywood/docs-site#5241", StartedAt: now.Add(-13 * time.Hour), CompletedAt: now.Add(-5 * time.Hour), DurationSeconds: int64(8 * time.Hour / time.Second), Sessions: 2},
+		},
+	}
+}
+
+func demoWorkflowMetrics(now time.Time) telemetry.WorkflowMetrics {
+	return telemetry.WorkflowMetrics{
+		Available:    true,
+		RuntimeStore: demoRuntimeStoreEvidence(now, 36),
+		Windows: []telemetry.WorkflowMetricsWindow{
+			demoWorkflowMetricsWindow("24h", now.Add(-24*time.Hour), now, 6*time.Minute, 18*time.Minute, 11*time.Minute),
+			demoWorkflowMetricsWindow("7d", now.Add(-7*24*time.Hour), now, 8*time.Minute, 14*time.Minute, 9*time.Minute),
+			demoWorkflowMetricsWindow("30d", now.Add(-30*24*time.Hour), now, 10*time.Minute, 12*time.Minute, 8*time.Minute),
+		},
+		ActiveBottleneck: telemetry.WorkflowBottleneck{
+			Kind:       "lane_age",
+			Label:      "Human Review is slowest",
+			Detail:     "digitaldrywood/detent-core#5281 has waited longest in Human Review.",
+			ProjectID:  demoPrimaryProjectID,
+			IssueID:    "demo-blocked-hook",
+			Identifier: "digitaldrywood/detent-core#5281",
+			Seconds:    int64(5 * time.Hour / time.Second),
+			Count:      1,
+		},
+	}
+}
+
+func demoEmptyWorkflowMetrics(now time.Time) telemetry.WorkflowMetrics {
+	return telemetry.WorkflowMetrics{
+		Available:    true,
+		RuntimeStore: demoRuntimeStoreEvidence(now, 0),
+		Windows: []telemetry.WorkflowMetricsWindow{
+			{Label: "24h", From: now.Add(-24 * time.Hour), To: now},
+			{Label: "7d", From: now.Add(-7 * 24 * time.Hour), To: now},
+			{Label: "30d", From: now.Add(-30 * 24 * time.Hour), To: now},
+		},
+	}
+}
+
+func demoWorkflowMetricsWindow(label string, from time.Time, to time.Time, inProgress time.Duration, review time.Duration, merging time.Duration) telemetry.WorkflowMetricsWindow {
+	return telemetry.WorkflowMetricsWindow{
+		Label: label,
+		From:  from,
+		To:    to,
+		Lanes: []telemetry.WorkflowPhaseMetric{
+			demoWorkflowLaneMetric("In Progress", 9, inProgress, false),
+			demoWorkflowLaneMetric("Human Review", 5, review, true),
+			demoWorkflowLaneMetric("Merging", 4, merging, false),
+		},
+		SubPhases: []telemetry.WorkflowPhaseMetric{
+			{ProjectID: demoPrimaryProjectID, PhaseType: "agent_session", PhaseName: "agent_active", Count: 9, TotalSeconds: int64((42 * time.Minute) / time.Second), AverageSeconds: int64((5 * time.Minute) / time.Second), Turns: 38, TotalTokens: 284000, EndpointFamily: "codex"},
+			{ProjectID: demoPrimaryProjectID, PhaseType: "ci", PhaseName: "ci_wait", Count: 4, TotalSeconds: int64((19 * time.Minute) / time.Second), AverageSeconds: int64((5 * time.Minute) / time.Second), EndpointFamily: "checks"},
+		},
+	}
+}
+
+func demoWorkflowLaneMetric(name string, count int64, average time.Duration, bottleneck bool) telemetry.WorkflowPhaseMetric {
+	seconds := int64(average / time.Second)
+	return telemetry.WorkflowPhaseMetric{
+		ProjectID:      demoPrimaryProjectID,
+		PhaseType:      "lane",
+		PhaseName:      name,
+		Count:          count,
+		TotalSeconds:   seconds * count,
+		AverageSeconds: seconds,
+		P50Seconds:     seconds,
+		P90Seconds:     int64((average + average/3) / time.Second),
+		P95Seconds:     int64((average + average/2) / time.Second),
+		Bottleneck:     bottleneck,
+		Comparison:     &telemetry.WorkflowMetricComparison{Label: "demo comparison", Direction: "unchanged"},
+	}
+}
+
+func demoRuntimeStoreEvidence(now time.Time, workflowRows int64) telemetry.RuntimeStoreEvidence {
+	var oldest *time.Time
+	var newest *time.Time
+	if workflowRows > 0 {
+		oldestValue := now.Add(-27 * 24 * time.Hour)
+		newestValue := now.Add(-11 * time.Minute)
+		oldest = &oldestValue
+		newest = &newestValue
+	}
+	return telemetry.RuntimeStoreEvidence{
+		Backend:          "sqlite",
+		Status:           "healthy",
+		Healthy:          true,
+		Path:             "/tmp/detent-screenshots/detent.db",
+		MigrationStatus:  "applied through 6",
+		MigrationVersion: 6,
+		Tables: []telemetry.RuntimeStoreTableEvidence{
+			{Name: "detent_runs", Scope: "fleet", RowCount: 7},
+			{Name: "codex_sessions", Scope: "fleet", RowCount: 22},
+			{Name: "fair_share_usage", Scope: "project", RowCount: 1},
+			{Name: "usage_events", Scope: "project", RowCount: 18},
+			{Name: "workflow_phase_events", Scope: "project", RowCount: workflowRows},
+			{Name: "work_attempts", Scope: "project", RowCount: 3},
+			{Name: "scheduler_decisions", Scope: "project", RowCount: 12},
+		},
+		WorkflowPhaseEvents: telemetry.RuntimeStoreWorkflowPhaseEvents{
+			RowCount:         workflowRows,
+			OldestFinishedAt: oldest,
+			NewestFinishedAt: newest,
 		},
 	}
 }

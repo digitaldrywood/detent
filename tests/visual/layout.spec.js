@@ -71,10 +71,62 @@ test("screenshots manifest includes visual gate scenarios", async ({ request }) 
       "github-api-warning",
       "github-api-secondary-backoff",
       "github-api-primary-exhausted",
+      "diagnostics-healthy",
+      "diagnostics-no-history",
+      "diagnostics-degraded",
+      "diagnostics-rate-limit-pressure",
       "settings-project-context",
       "onboarding-project-selection",
     ]),
   );
+});
+
+test("project diagnostics tabs cover operational states", async ({ page }, testInfo) => {
+  await openScenario(page, {
+    runtime: screenshotsRuntime,
+    scenario: "diagnostics-healthy",
+    viewport: desktopViewport,
+  });
+
+  const diagnostics = page.locator("[data-diagnostics-tabs]");
+  await expect(diagnostics).toBeVisible();
+  await assertSidebarActive(page, "[data-dashboard-view='diagnostics']");
+  await expect(page.getByRole("tab", { name: "Overview" })).toHaveAttribute("aria-selected", "true");
+  await page.getByRole("tab", { name: "Runtime store" }).click();
+  await expect(page.getByRole("tab", { name: "Runtime store" })).toHaveAttribute("aria-selected", "true");
+  await expect(page.locator("#diagnostics-panel-runtime-store")).toBeVisible();
+  await page.reload({ waitUntil: "domcontentloaded" });
+  await page.locator("#snapshot").waitFor({ state: "visible" });
+  await expect(page.getByRole("tab", { name: "Runtime store" })).toHaveAttribute("aria-selected", "true");
+  await assertNoDocumentOverflow(page);
+  await diagnostics.scrollIntoViewIfNeeded();
+  await captureClipAndAttach(page, "[data-diagnostics-tabs]", "diagnostics-healthy-tabs-desktop.png", testInfo, {
+    maxHeight: 700,
+  });
+
+  const scenarios = [
+    ["diagnostics-no-history", desktopViewport, "SQLite history is empty."],
+    ["diagnostics-degraded", desktopViewport, "degraded"],
+    ["diagnostics-rate-limit-pressure", desktopViewport, "GitHub/API"],
+    ["diagnostics-healthy", narrowViewport, "Workflow timing"],
+  ];
+
+  for (const [scenario, viewport, expectedText] of scenarios) {
+    await openScenario(page, {
+      runtime: screenshotsRuntime,
+      scenario,
+      viewport,
+    });
+    await expect(diagnostics).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Workflow timing" })).toBeVisible();
+    await expect(page.getByRole("tab", { name: "Runtime store" })).toBeVisible();
+    await expect(page.locator("body")).toContainText(expectedText);
+    await assertNoDocumentOverflow(page);
+    await diagnostics.scrollIntoViewIfNeeded();
+    await captureClipAndAttach(page, "[data-diagnostics-tabs]", `${scenario}-tabs.png`, testInfo, {
+      maxHeight: viewport.width < 600 ? 760 : 700,
+    });
+  }
 });
 
 test("GitHub API health chrome covers key rate-limit states", async ({ page }, testInfo) => {

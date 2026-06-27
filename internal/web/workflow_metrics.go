@@ -15,7 +15,12 @@ const maxWorkflowOldestCards = 8
 
 func (s *Server) snapshotWorkflowMetrics(ctx context.Context, snapshot telemetry.Snapshot) telemetry.WorkflowMetrics {
 	if s.store == nil {
-		return telemetry.WorkflowMetrics{}
+		return telemetry.WorkflowMetrics{
+			RuntimeStore: telemetry.RuntimeStoreEvidence{
+				Backend: "none",
+				Status:  "not_configured",
+			},
+		}
 	}
 
 	now := snapshot.GeneratedAt
@@ -24,6 +29,16 @@ func (s *Server) snapshotWorkflowMetrics(ctx context.Context, snapshot telemetry
 	}
 
 	projectID := strings.TrimSpace(snapshot.Project.ID)
+	runtimeEvidence, err := s.store.RuntimeEvidence(ctx, store.RuntimeEvidenceQuery{ProjectID: projectID})
+	if err != nil {
+		s.logger.Warn("runtime store evidence query failed", slog.Any("error", err))
+		return telemetry.WorkflowMetrics{
+			DegradedReason: "runtime store evidence query failed",
+			RuntimeStore: telemetry.RuntimeStoreEvidence{
+				Status: "degraded",
+			},
+		}
+	}
 	windows := []struct {
 		label    string
 		duration time.Duration
@@ -35,6 +50,7 @@ func (s *Server) snapshotWorkflowMetrics(ctx context.Context, snapshot telemetry
 
 	out := telemetry.WorkflowMetrics{
 		Available:        true,
+		RuntimeStore:     runtimeStoreEvidenceFromStore(runtimeEvidence),
 		OldestCards:      workflowOldestCards(snapshot),
 		ActiveBottleneck: workflowActiveBottleneck(snapshot, now),
 	}
@@ -48,7 +64,7 @@ func (s *Server) snapshotWorkflowMetrics(ctx context.Context, snapshot telemetry
 		})
 		if err != nil {
 			s.logger.Warn("workflow metrics report failed", slog.Any("error", err))
-			return telemetry.WorkflowMetrics{DegradedReason: "workflow metrics query failed"}
+			return telemetry.WorkflowMetrics{DegradedReason: "workflow metrics query failed", RuntimeStore: out.RuntimeStore}
 		}
 		previousReport, err := s.store.WorkflowMetricsReport(ctx, store.WorkflowMetricsQuery{
 			ProjectID: projectID,
@@ -57,7 +73,7 @@ func (s *Server) snapshotWorkflowMetrics(ctx context.Context, snapshot telemetry
 		})
 		if err != nil {
 			s.logger.Warn("workflow metrics previous report failed", slog.Any("error", err))
-			return telemetry.WorkflowMetrics{DegradedReason: "workflow metrics query failed"}
+			return telemetry.WorkflowMetrics{DegradedReason: "workflow metrics query failed", RuntimeStore: out.RuntimeStore}
 		}
 
 		lanes := workflowPhaseMetricsFromStore(report.Lanes)
@@ -72,6 +88,38 @@ func (s *Server) snapshotWorkflowMetrics(ctx context.Context, snapshot telemetry
 		})
 	}
 	return out
+}
+
+func runtimeStoreEvidenceFromStore(evidence store.RuntimeEvidence) telemetry.RuntimeStoreEvidence {
+	out := telemetry.RuntimeStoreEvidence{
+		Backend:             string(evidence.Backend),
+		Status:              "degraded",
+		Healthy:             evidence.Healthy,
+		Path:                strings.TrimSpace(evidence.Path),
+		MigrationStatus:     strings.TrimSpace(evidence.MigrationStatus),
+		MigrationVersion:    evidence.MigrationVersion,
+		WorkflowPhaseEvents: runtimeWorkflowPhaseEventsFromStore(evidence.WorkflowPhaseEvents),
+	}
+	if evidence.Healthy {
+		out.Status = "healthy"
+	}
+	out.Tables = make([]telemetry.RuntimeStoreTableEvidence, 0, len(evidence.Tables))
+	for _, table := range evidence.Tables {
+		out.Tables = append(out.Tables, telemetry.RuntimeStoreTableEvidence{
+			Name:     strings.TrimSpace(table.Name),
+			Scope:    strings.TrimSpace(table.Scope),
+			RowCount: table.RowCount,
+		})
+	}
+	return out
+}
+
+func runtimeWorkflowPhaseEventsFromStore(evidence store.RuntimeWorkflowPhaseEventEvidence) telemetry.RuntimeStoreWorkflowPhaseEvents {
+	return telemetry.RuntimeStoreWorkflowPhaseEvents{
+		RowCount:         evidence.RowCount,
+		OldestFinishedAt: evidence.OldestFinishedAt,
+		NewestFinishedAt: evidence.NewestFinishedAt,
+	}
 }
 
 func workflowPhaseMetricsFromStore(metrics []store.WorkflowPhaseMetric) []telemetry.WorkflowPhaseMetric {

@@ -405,6 +405,7 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 	if target, _, _ := s.kanbanActionTarget(project.ID); target.key != "" {
 		scopedSnapshot = s.kanbanSnapshotWithPendingStates(target.key, project.ID, scopedSnapshot)
 	}
+	scopedSnapshot.WorkflowMetrics = s.snapshotWorkflowMetrics(ctx, scopedSnapshot)
 	name := strings.TrimSpace(project.Name)
 	if name == "" {
 		name = strings.TrimSpace(project.ID)
