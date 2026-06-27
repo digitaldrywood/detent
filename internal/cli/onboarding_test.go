@@ -689,7 +689,12 @@ func TestOnboardingDraftAnswersCommandPrefersRepoPrefixForSharedOwner(t *testing
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
 	t.Chdir(targetRoot)
 
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	canonicalMain := "b6b8fc5d8f0f5ed413f6b0b9694970c0f02c6d7d"
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(onboardingTestCommandRunnerWithRemoteDetentDocs(detentVersionJSON(canonicalMain), canonicalMain)),
+	)
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
@@ -738,7 +743,12 @@ func TestOnboardingDraftAnswersCommandKeepsNormalOwnerForProductSuffixRepo(t *te
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/payments-api.git")
 	t.Chdir(targetRoot)
 
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	canonicalMain := "b6b8fc5d8f0f5ed413f6b0b9694970c0f02c6d7d"
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(onboardingTestCommandRunnerWithRemoteDetentDocs(detentVersionJSON(canonicalMain), canonicalMain)),
+	)
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
@@ -1197,7 +1207,12 @@ func TestOnboardingDraftAnswersCommandAcceptsIdentityOverrides(t *testing.T) {
 	answersPath := filepath.Join(t.TempDir(), "answers.env")
 	t.Chdir(targetRoot)
 
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	canonicalMain := "b6b8fc5d8f0f5ed413f6b0b9694970c0f02c6d7d"
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(onboardingTestCommandRunnerWithRemoteDetentDocs(detentVersionJSON(canonicalMain), canonicalMain)),
+	)
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
@@ -1637,6 +1652,20 @@ func onboardingTestCommandRunner(detentVersionOutput string) cli.CommandRunner {
 		cmd := exec.CommandContext(ctx, name, args...)
 		output, err := cmd.CombinedOutput()
 		return string(output), err
+	}
+}
+
+func onboardingTestCommandRunnerWithRemoteDetentDocs(detentVersionOutput string, canonicalMain string) cli.CommandRunner {
+	base := onboardingTestCommandRunner(detentVersionOutput)
+	return func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == "gh" {
+			want := []string{"api", "repos/digitaldrywood/detent/git/ref/heads/main", "--jq", ".object.sha"}
+			if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+				return "", fmt.Errorf("unexpected gh args: %s", strings.Join(args, " "))
+			}
+			return canonicalMain + "\n", nil
+		}
+		return base(ctx, name, args...)
 	}
 }
 
