@@ -49,9 +49,9 @@ func NormalizeDeliveryProfile(value string) string {
 	switch strings.ToLower(strings.TrimSpace(value)) {
 	case "full", "full-autopilot", "full_autopilot", "autopilot", "maximum", "max", "autonomous", "autonomous-delivery", "autonomous_delivery":
 		return DeliveryProfileFullAutopilot
-	case "review", "review-gate", "review_gate", "human_review", "human-review":
+	case "review-gate", "review_gate":
 		return DeliveryProfileReviewGate
-	case "conservative", "conservative-manual", "conservative_manual", "manual", "conservative-review", "conservative_review":
+	case "conservative", "conservative-manual", "conservative_manual", "manual", "review", "human_review", "human-review", "conservative-review", "conservative_review":
 		return DeliveryProfileConservativeManual
 	default:
 		return strings.ToLower(strings.TrimSpace(value))

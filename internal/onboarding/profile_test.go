@@ -76,6 +76,33 @@ func TestDeliveryProfileRejectsUnknown(t *testing.T) {
 	}
 }
 
+func TestNormalizeDeliveryProfilePreservesLegacyReviewAliases(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		value string
+		want  string
+	}{
+		{name: "explicit review gate", value: "review_gate", want: "review_gate"},
+		{name: "hyphenated review gate", value: "review-gate", want: "review_gate"},
+		{name: "legacy review", value: "review", want: "conservative_manual"},
+		{name: "legacy human review", value: "human_review", want: "conservative_manual"},
+		{name: "legacy hyphenated human review", value: "human-review", want: "conservative_manual"},
+		{name: "legacy conservative review", value: "conservative_review", want: "conservative_manual"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := NormalizeDeliveryProfile(tt.value); got != tt.want {
+				t.Fatalf("NormalizeDeliveryProfile(%q) = %q, want %q", tt.value, got, tt.want)
+			}
+		})
+	}
+}
+
 func TestSummarizeDeliveryProfile(t *testing.T) {
 	t.Parallel()
 
