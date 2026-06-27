@@ -80,11 +80,12 @@ func (s *Server) snapshotWorkflowMetrics(ctx context.Context, snapshot telemetry
 		workflowAttachLaneComparisons(lanes, workflowPhaseMetricsFromStore(previousReport.Lanes), window.label, previousFrom, from)
 		workflowMarkBottleneckLane(lanes)
 		out.Windows = append(out.Windows, telemetry.WorkflowMetricsWindow{
-			Label:     window.label,
-			From:      from,
-			To:        now,
-			Lanes:     lanes,
-			SubPhases: workflowPhaseMetricsFromStore(report.SubPhases),
+			Label:      window.label,
+			From:       from,
+			To:         now,
+			Lanes:      lanes,
+			SubPhases:  workflowPhaseMetricsFromStore(report.SubPhases),
+			LaneTrends: workflowLaneTrendsFromStore(report.LaneTrends),
 		})
 	}
 	return out
@@ -140,6 +141,30 @@ func workflowPhaseMetricsFromStore(metrics []store.WorkflowPhaseMetric) []teleme
 			TotalTokens:    metric.TotalTokens,
 			Turns:          metric.Turns,
 			EndpointFamily: metric.EndpointFamily,
+			ActiveSeconds:  metric.ActiveSeconds,
+			WaitSeconds:    metric.WaitSeconds,
+			ActivePercent:  metric.ActivePercent,
+		})
+	}
+	return out
+}
+
+func workflowLaneTrendsFromStore(trends []store.WorkflowLaneTrend) []telemetry.WorkflowLaneTrend {
+	out := make([]telemetry.WorkflowLaneTrend, 0, len(trends))
+	for _, trend := range trends {
+		points := make([]telemetry.WorkflowLaneTrendPoint, 0, len(trend.Points))
+		for _, point := range trend.Points {
+			points = append(points, telemetry.WorkflowLaneTrendPoint{
+				Label:          point.Label,
+				Count:          point.Count,
+				AverageSeconds: point.AverageSeconds,
+			})
+		}
+		out = append(out, telemetry.WorkflowLaneTrend{
+			ProjectID:  trend.ProjectID,
+			PhaseName:  trend.PhaseName,
+			Points:     points,
+			TotalCount: trend.TotalCount,
 		})
 	}
 	return out

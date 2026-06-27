@@ -293,6 +293,57 @@ WHERE finished_at IS NOT NULL
   AND (sqlc.narg(to_time) IS NULL OR finished_at < sqlc.narg(to_time))
 ORDER BY project_id, phase_type, phase_name, finished_at, id;
 
+-- name: WorkflowPhaseFlowRows :many
+SELECT
+  event.id,
+  event.project_id,
+  event.run_id,
+  event.session_id,
+  event.issue_id,
+  event.identifier,
+  event.issue_url,
+  event.pr_number,
+  event.phase_type,
+  event.phase_name,
+  event.previous_phase_name,
+  event.reason,
+  event.status,
+  event.started_at,
+  event.finished_at,
+  event.duration_seconds,
+  event.event_day,
+  event.command_name,
+  event.exit_code,
+  event.turns,
+  event.input_tokens,
+  event.output_tokens,
+  event.total_tokens,
+  event.endpoint_family,
+  event.metadata_json
+FROM workflow_phase_events AS event
+WHERE event.finished_at IS NOT NULL
+  AND event.phase_type IN ('agent_session', 'local_check', 'ci')
+  AND (sqlc.narg(project_id) IS NULL OR event.project_id = sqlc.narg(project_id))
+  AND EXISTS (
+    SELECT 1
+    FROM workflow_phase_events AS lane
+    WHERE lane.finished_at IS NOT NULL
+      AND lane.phase_type = 'lane'
+      AND (sqlc.narg(project_id) IS NULL OR lane.project_id = sqlc.narg(project_id))
+      AND (sqlc.narg(from_time) IS NULL OR lane.finished_at >= sqlc.narg(from_time))
+      AND (sqlc.narg(to_time) IS NULL OR lane.finished_at < sqlc.narg(to_time))
+      AND event.project_id = lane.project_id
+      AND event.started_at < lane.finished_at
+      AND event.finished_at > lane.started_at
+      AND (
+        (event.issue_id IS NOT NULL AND event.issue_id <> '' AND event.issue_id = lane.issue_id)
+        OR (event.identifier IS NOT NULL AND event.identifier <> '' AND event.identifier = lane.identifier)
+        OR (event.issue_url IS NOT NULL AND event.issue_url <> '' AND event.issue_url = lane.issue_url)
+        OR (event.pr_number IS NOT NULL AND event.pr_number = lane.pr_number)
+      )
+  )
+ORDER BY event.project_id, event.phase_type, event.phase_name, event.finished_at, event.id;
+
 -- name: IssueWorkflowTimelineRows :many
 SELECT
   id,

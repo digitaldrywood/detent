@@ -3,7 +3,9 @@ package store
 import (
 	"context"
 	"database/sql"
+	"math"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -788,6 +790,236 @@ func TestWorkflowMetricsStoreRoundTripAndAggregates(t *testing.T) {
 	if timeline.Events[1].Turns != 3 || timeline.Events[1].TotalTokens != 1250 || timeline.Events[1].MetadataJSON != `{"session_id":42}` {
 		t.Fatalf("timeline agent event = %#v, want turns/tokens/metadata", timeline.Events[1])
 	}
+}
+
+func TestWorkflowMetricsReportComputesLaneFlowEfficiency(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		events        []WorkflowPhaseEvent
+		phaseName     string
+		activeSeconds int64
+		waitSeconds   int64
+		activePercent float64
+	}{
+		{
+			name:      "splits active intervals from uncovered lane time",
+			phaseName: "In Progress",
+			events: []WorkflowPhaseEvent{
+				workflowMetricTestEvent("detent", "issue-1", WorkflowPhaseTypeLane, "In Progress", 0, 10*time.Minute),
+				workflowMetricTestEvent("detent", "issue-1", WorkflowPhaseTypeAgentSession, "agent_active", 2*time.Minute, 2*time.Minute),
+				workflowMetricTestEvent("detent", "issue-1", WorkflowPhaseTypeCI, "ci", 5*time.Minute, 3*time.Minute),
+			},
+			activeSeconds: 300,
+			waitSeconds:   300,
+			activePercent: 50,
+		},
+		{
+			name:      "caps overlapping active intervals at their union",
+			phaseName: "Rework",
+			events: []WorkflowPhaseEvent{
+				workflowMetricTestEvent("detent", "issue-2", WorkflowPhaseTypeLane, "Rework", 0, 10*time.Minute),
+				workflowMetricTestEvent("detent", "issue-2", WorkflowPhaseTypeAgentSession, "agent_active", time.Minute, 5*time.Minute),
+				workflowMetricTestEvent("detent", "issue-2", WorkflowPhaseTypeLocalCheck, "make check", 4*time.Minute, 5*time.Minute),
+			},
+			activeSeconds: 480,
+			waitSeconds:   120,
+			activePercent: 80,
+		},
+		{
+			name:      "treats explicit wait and unrelated work as wait",
+			phaseName: "Merging",
+			events: []WorkflowPhaseEvent{
+				workflowMetricTestEvent("detent", "issue-3", WorkflowPhaseTypeLane, "Merging", 0, 10*time.Minute),
+				workflowMetricTestEvent("detent", "issue-3", WorkflowPhaseTypeGitHubBackoff, "github_backoff", time.Minute, 4*time.Minute),
+				workflowMetricTestEvent("detent", "issue-3", WorkflowPhaseTypeCI, "ci", 7*time.Minute, 2*time.Minute),
+				workflowMetricTestEvent("detent", "issue-other", WorkflowPhaseTypeAgentSession, "agent_active", time.Minute, 8*time.Minute),
+			},
+			activeSeconds: 120,
+			waitSeconds:   480,
+			activePercent: 20,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			backend := openTestStore(t, ctx)
+			for _, event := range tt.events {
+				if _, err := backend.RecordWorkflowPhaseEvent(ctx, event); err != nil {
+					t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+				}
+			}
+
+			report, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{
+				ProjectID: "detent",
+				From:      workflowMetricTestBase.Add(-time.Minute),
+				To:        workflowMetricTestBase.Add(time.Hour),
+			})
+			if err != nil {
+				t.Fatalf("WorkflowMetricsReport() error = %v", err)
+			}
+
+			lane := workflowMetricTestLane(t, report.Lanes, tt.phaseName)
+			if lane.ActiveSeconds != tt.activeSeconds || lane.WaitSeconds != tt.waitSeconds {
+				t.Fatalf("%s active/wait = %d/%d, want %d/%d", tt.phaseName, lane.ActiveSeconds, lane.WaitSeconds, tt.activeSeconds, tt.waitSeconds)
+			}
+			if math.Abs(lane.ActivePercent-tt.activePercent) > 0.01 {
+				t.Fatalf("%s active percent = %.2f, want %.2f", tt.phaseName, lane.ActivePercent, tt.activePercent)
+			}
+		})
+	}
+}
+
+func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name          string
+		lane          WorkflowPhaseEvent
+		active        WorkflowPhaseEvent
+		from          time.Time
+		to            time.Time
+		activeSeconds int64
+		waitSeconds   int64
+	}{
+		{
+			name:          "active event finished before report window",
+			lane:          workflowMetricTestEvent("detent", "issue-boundary-before", WorkflowPhaseTypeLane, "In Progress", 0, 10*time.Minute),
+			active:        workflowMetricTestEvent("detent", "issue-boundary-before", WorkflowPhaseTypeAgentSession, "agent_active", 2*time.Minute, 2*time.Minute),
+			from:          workflowMetricTestBase.Add(9 * time.Minute),
+			to:            workflowMetricTestBase.Add(20 * time.Minute),
+			activeSeconds: 120,
+			waitSeconds:   480,
+		},
+		{
+			name:          "active event finished after report window",
+			lane:          workflowMetricTestEvent("detent", "issue-boundary-after", WorkflowPhaseTypeLane, "Merging", 8*time.Minute, 4*time.Minute),
+			active:        workflowMetricTestEvent("detent", "issue-boundary-after", WorkflowPhaseTypeCI, "ci", 11*time.Minute, 3*time.Minute),
+			from:          workflowMetricTestBase.Add(9 * time.Minute),
+			to:            workflowMetricTestBase.Add(13 * time.Minute),
+			activeSeconds: 60,
+			waitSeconds:   180,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			ctx := context.Background()
+			backend := openTestStore(t, ctx)
+			for _, event := range []WorkflowPhaseEvent{tt.lane, tt.active} {
+				if _, err := backend.RecordWorkflowPhaseEvent(ctx, event); err != nil {
+					t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+				}
+			}
+
+			report, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{
+				ProjectID: "detent",
+				From:      tt.from,
+				To:        tt.to,
+			})
+			if err != nil {
+				t.Fatalf("WorkflowMetricsReport() error = %v", err)
+			}
+
+			lane := workflowMetricTestLane(t, report.Lanes, tt.lane.PhaseName)
+			if lane.ActiveSeconds != tt.activeSeconds || lane.WaitSeconds != tt.waitSeconds {
+				t.Fatalf("%s active/wait = %d/%d, want %d/%d", tt.lane.PhaseName, lane.ActiveSeconds, lane.WaitSeconds, tt.activeSeconds, tt.waitSeconds)
+			}
+			if len(report.SubPhases) != 0 {
+				t.Fatalf("WorkflowMetricsReport().SubPhases len = %d, want 0: %#v", len(report.SubPhases), report.SubPhases)
+			}
+		})
+	}
+}
+
+func TestWorkflowMetricsReportBuildsTrackedLaneTrends(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	events := []WorkflowPhaseEvent{
+		workflowMetricTestEvent("detent", "issue-1", WorkflowPhaseTypeLane, "In Progress", 10*time.Minute, 2*time.Minute),
+		workflowMetricTestEvent("detent", "issue-2", WorkflowPhaseTypeLane, "In Progress", 70*time.Minute, 4*time.Minute),
+		workflowMetricTestEvent("detent", "issue-3", WorkflowPhaseTypeLane, "Human Review", 130*time.Minute, 6*time.Minute),
+		workflowMetricTestEvent("detent", "issue-4", WorkflowPhaseTypeLane, "Merging", 190*time.Minute, 8*time.Minute),
+		workflowMetricTestEvent("detent", "issue-5", WorkflowPhaseTypeLane, "Rework", 250*time.Minute, 10*time.Minute),
+		workflowMetricTestEvent("detent", "issue-6", WorkflowPhaseTypeLane, "Todo", 310*time.Minute, 12*time.Minute),
+	}
+	for _, event := range events {
+		if _, err := backend.RecordWorkflowPhaseEvent(ctx, event); err != nil {
+			t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+		}
+	}
+
+	report, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{
+		ProjectID: "detent",
+		From:      workflowMetricTestBase,
+		To:        workflowMetricTestBase.Add(8 * time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("WorkflowMetricsReport() error = %v", err)
+	}
+
+	if len(report.LaneTrends) != 4 {
+		t.Fatalf("LaneTrends len = %d, want 4: %#v", len(report.LaneTrends), report.LaneTrends)
+	}
+	for _, phaseName := range []string{"In Progress", "Human Review", "Merging", "Rework"} {
+		trend := workflowMetricTestTrend(t, report.LaneTrends, phaseName)
+		if len(trend.Points) != 8 {
+			t.Fatalf("%s trend points len = %d, want 8", phaseName, len(trend.Points))
+		}
+	}
+	for _, trend := range report.LaneTrends {
+		if trend.PhaseName == "Todo" {
+			t.Fatalf("LaneTrends included Todo: %#v", report.LaneTrends)
+		}
+	}
+}
+
+var workflowMetricTestBase = time.Date(2026, 6, 1, 8, 0, 0, 0, time.UTC)
+
+func workflowMetricTestEvent(projectID string, issueID string, phaseType WorkflowPhaseType, phaseName string, offset time.Duration, duration time.Duration) WorkflowPhaseEvent {
+	startedAt := workflowMetricTestBase.Add(offset)
+	return WorkflowPhaseEvent{
+		ProjectID:       projectID,
+		IssueID:         issueID,
+		Identifier:      "digitaldrywood/detent#" + strings.TrimPrefix(issueID, "issue-"),
+		IssueURL:        "https://github.com/digitaldrywood/detent/issues/" + strings.TrimPrefix(issueID, "issue-"),
+		PhaseType:       phaseType,
+		PhaseName:       phaseName,
+		Status:          "completed",
+		StartedAt:       startedAt,
+		FinishedAt:      startedAt.Add(duration),
+		DurationSeconds: int64(duration / time.Second),
+	}
+}
+
+func workflowMetricTestLane(t *testing.T, lanes []WorkflowPhaseMetric, phaseName string) WorkflowPhaseMetric {
+	t.Helper()
+	for _, lane := range lanes {
+		if lane.PhaseName == phaseName {
+			return lane
+		}
+	}
+	t.Fatalf("missing lane %q in %#v", phaseName, lanes)
+	return WorkflowPhaseMetric{}
+}
+
+func workflowMetricTestTrend(t *testing.T, trends []WorkflowLaneTrend, phaseName string) WorkflowLaneTrend {
+	t.Helper()
+	for _, trend := range trends {
+		if trend.PhaseName == phaseName {
+			return trend
+		}
+	}
+	t.Fatalf("missing trend %q in %#v", phaseName, trends)
+	return WorkflowLaneTrend{}
 }
 
 func TestFairShareStoreRoundTrip(t *testing.T) {

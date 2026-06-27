@@ -97,16 +97,33 @@ func (s *sqliteStore) WorkflowMetricsReport(ctx context.Context, query WorkflowM
 		return WorkflowMetricsReport{}, fmt.Errorf("reading workflow metrics report: %w", err)
 	}
 
-	metricRows := make([]workflowMetricRow, 0, len(rows))
-	for _, row := range rows {
-		event, err := workflowPhaseEventFromRow(row)
-		if err != nil {
-			return WorkflowMetricsReport{}, err
-		}
-		metricRows = append(metricRows, workflowMetricRow{event: event})
+	metricRows, err := workflowMetricRowsFromEvents(rows)
+	if err != nil {
+		return WorkflowMetricsReport{}, err
 	}
 
-	return workflowMetricsReport(metricRows), nil
+	flowRows := make([]workflowMetricRow, 0, len(metricRows))
+	for _, row := range metricRows {
+		if row.event.PhaseType == WorkflowPhaseTypeLane {
+			flowRows = append(flowRows, row)
+		}
+	}
+
+	activeRows, err := s.queries.WorkflowPhaseFlowRows(ctx, sqlc.WorkflowPhaseFlowRowsParams{
+		ProjectID: nullString(query.ProjectID),
+		FromTime:  from,
+		ToTime:    to,
+	})
+	if err != nil {
+		return WorkflowMetricsReport{}, fmt.Errorf("reading workflow flow metrics: %w", err)
+	}
+	activeMetricRows, err := workflowMetricRowsFromEvents(activeRows)
+	if err != nil {
+		return WorkflowMetricsReport{}, err
+	}
+	flowRows = append(flowRows, activeMetricRows...)
+
+	return workflowMetricsReport(metricRows, flowRows, query.From, query.To), nil
 }
 
 func (s *sqliteStore) IssueWorkflowTimeline(ctx context.Context, identity IssueIdentity) (WorkflowTimeline, error) {
@@ -151,7 +168,42 @@ type workflowMetricBucket struct {
 	turns          int64
 }
 
-func workflowMetricsReport(rows []workflowMetricRow) WorkflowMetricsReport {
+type workflowLaneFlow struct {
+	activeSeconds int64
+	waitSeconds   int64
+}
+
+type workflowInterval struct {
+	startedAt  time.Time
+	finishedAt time.Time
+}
+
+type workflowLaneTrendBucket struct {
+	totalSeconds int64
+	count        int64
+	label        string
+}
+
+type workflowLaneTrendAccumulator struct {
+	projectID  string
+	phaseName  string
+	buckets    []workflowLaneTrendBucket
+	totalCount int64
+}
+
+func workflowMetricRowsFromEvents(rows []sqlc.WorkflowPhaseEvent) ([]workflowMetricRow, error) {
+	metricRows := make([]workflowMetricRow, 0, len(rows))
+	for _, row := range rows {
+		event, err := workflowPhaseEventFromRow(row)
+		if err != nil {
+			return nil, err
+		}
+		metricRows = append(metricRows, workflowMetricRow{event: event})
+	}
+	return metricRows, nil
+}
+
+func workflowMetricsReport(rows []workflowMetricRow, flowRows []workflowMetricRow, from time.Time, to time.Time) WorkflowMetricsReport {
 	buckets := map[string]*workflowMetricBucket{}
 	for _, row := range rows {
 		event := row.event
@@ -176,9 +228,16 @@ func workflowMetricsReport(rows []workflowMetricRow) WorkflowMetricsReport {
 		bucket.turns += event.Turns
 	}
 
+	laneFlows := workflowLaneFlows(flowRows)
 	metrics := make([]WorkflowPhaseMetric, 0, len(buckets))
 	for _, bucket := range buckets {
-		metrics = append(metrics, workflowPhaseMetricFromBucket(bucket))
+		metric := workflowPhaseMetricFromBucket(bucket)
+		if flow, ok := laneFlows[workflowMetricBucketKey(bucket)]; ok {
+			metric.ActiveSeconds = flow.activeSeconds
+			metric.WaitSeconds = flow.waitSeconds
+			metric.ActivePercent = workflowPercent(flow.activeSeconds, flow.activeSeconds+flow.waitSeconds)
+		}
+		metrics = append(metrics, metric)
 	}
 	sort.SliceStable(metrics, func(i, j int) bool {
 		if metrics[i].ProjectID != metrics[j].ProjectID {
@@ -194,8 +253,9 @@ func workflowMetricsReport(rows []workflowMetricRow) WorkflowMetricsReport {
 	})
 
 	report := WorkflowMetricsReport{
-		Lanes:     []WorkflowPhaseMetric{},
-		SubPhases: []WorkflowPhaseMetric{},
+		Lanes:      []WorkflowPhaseMetric{},
+		SubPhases:  []WorkflowPhaseMetric{},
+		LaneTrends: workflowLaneTrends(rows, from, to),
 	}
 	for _, metric := range metrics {
 		if metric.PhaseType == string(WorkflowPhaseTypeLane) {
@@ -208,15 +268,278 @@ func workflowMetricsReport(rows []workflowMetricRow) WorkflowMetricsReport {
 }
 
 func workflowMetricKey(event WorkflowPhaseEvent) string {
+	return workflowMetricKeyFromParts(event.ProjectID, string(event.PhaseType), event.PhaseName, event.EndpointFamily)
+}
+
+func workflowMetricBucketKey(bucket *workflowMetricBucket) string {
+	return workflowMetricKeyFromParts(bucket.projectID, bucket.phaseType, bucket.phaseName, bucket.endpointFamily)
+}
+
+func workflowMetricKeyFromParts(projectID string, phaseType string, phaseName string, endpointFamily string) string {
 	parts := []string{
-		event.ProjectID,
-		string(event.PhaseType),
-		event.PhaseName,
+		projectID,
+		phaseType,
+		phaseName,
 	}
-	if event.EndpointFamily != "" {
-		parts = append(parts, event.EndpointFamily)
+	if endpointFamily != "" {
+		parts = append(parts, endpointFamily)
 	}
 	return strings.Join(parts, "\x00")
+}
+
+func workflowLaneFlows(rows []workflowMetricRow) map[string]workflowLaneFlow {
+	activeEvents := make([]WorkflowPhaseEvent, 0, len(rows))
+	for _, row := range rows {
+		event := row.event
+		if workflowPhaseTypeIsActive(event.PhaseType) && workflowEventHasInterval(event) {
+			activeEvents = append(activeEvents, event)
+		}
+	}
+
+	flows := map[string]*workflowLaneFlow{}
+	for _, row := range rows {
+		lane := row.event
+		if lane.PhaseType != WorkflowPhaseTypeLane || lane.DurationSeconds < 0 {
+			continue
+		}
+		key := workflowMetricKey(lane)
+		flow, ok := flows[key]
+		if !ok {
+			flow = &workflowLaneFlow{}
+			flows[key] = flow
+		}
+
+		activeIntervals := []workflowInterval{}
+		if workflowEventHasInterval(lane) {
+			for _, activeEvent := range activeEvents {
+				if !workflowEventsShareIssue(lane, activeEvent) {
+					continue
+				}
+				if overlap, ok := workflowEventOverlap(lane, activeEvent); ok {
+					activeIntervals = append(activeIntervals, overlap)
+				}
+			}
+		}
+		activeSeconds := workflowMergedIntervalSeconds(activeIntervals)
+		if activeSeconds > lane.DurationSeconds {
+			activeSeconds = lane.DurationSeconds
+		}
+		if activeSeconds < 0 {
+			activeSeconds = 0
+		}
+		flow.activeSeconds += activeSeconds
+		flow.waitSeconds += lane.DurationSeconds - activeSeconds
+	}
+
+	out := make(map[string]workflowLaneFlow, len(flows))
+	for key, flow := range flows {
+		out[key] = *flow
+	}
+	return out
+}
+
+func workflowLaneTrends(rows []workflowMetricRow, from time.Time, to time.Time) []WorkflowLaneTrend {
+	from = from.UTC()
+	to = to.UTC()
+	if from.IsZero() || to.IsZero() || !from.Before(to) {
+		return []WorkflowLaneTrend{}
+	}
+
+	const bucketCount = 8
+	window := to.Sub(from)
+	bucketDuration := window / bucketCount
+	if bucketDuration <= 0 {
+		return []WorkflowLaneTrend{}
+	}
+
+	accumulators := map[string]*workflowLaneTrendAccumulator{}
+	for _, row := range rows {
+		event := row.event
+		if event.PhaseType != WorkflowPhaseTypeLane || !workflowLaneIsTracked(event.PhaseName) || event.DurationSeconds < 0 {
+			continue
+		}
+		if event.FinishedAt.Before(from) || !event.FinishedAt.Before(to) {
+			continue
+		}
+		key := strings.Join([]string{event.ProjectID, event.PhaseName}, "\x00")
+		accumulator, ok := accumulators[key]
+		if !ok {
+			accumulator = &workflowLaneTrendAccumulator{
+				projectID: event.ProjectID,
+				phaseName: event.PhaseName,
+				buckets:   workflowLaneTrendBuckets(from, bucketDuration, bucketCount, window),
+			}
+			accumulators[key] = accumulator
+		}
+		index := int(event.FinishedAt.Sub(from) / bucketDuration)
+		if index < 0 {
+			continue
+		}
+		if index >= bucketCount {
+			index = bucketCount - 1
+		}
+		accumulator.buckets[index].totalSeconds += event.DurationSeconds
+		accumulator.buckets[index].count++
+		accumulator.totalCount++
+	}
+
+	trends := make([]WorkflowLaneTrend, 0, len(accumulators))
+	for _, accumulator := range accumulators {
+		points := make([]WorkflowLaneTrendPoint, 0, len(accumulator.buckets))
+		for _, bucket := range accumulator.buckets {
+			averageSeconds := int64(0)
+			if bucket.count > 0 {
+				averageSeconds = bucket.totalSeconds / bucket.count
+			}
+			points = append(points, WorkflowLaneTrendPoint{
+				Label:          bucket.label,
+				Count:          bucket.count,
+				AverageSeconds: averageSeconds,
+			})
+		}
+		trends = append(trends, WorkflowLaneTrend{
+			ProjectID:  accumulator.projectID,
+			PhaseName:  accumulator.phaseName,
+			Points:     points,
+			TotalCount: accumulator.totalCount,
+		})
+	}
+	sort.SliceStable(trends, func(i int, j int) bool {
+		if trends[i].ProjectID != trends[j].ProjectID {
+			return trends[i].ProjectID < trends[j].ProjectID
+		}
+		return workflowTrackedLaneRank(trends[i].PhaseName) < workflowTrackedLaneRank(trends[j].PhaseName)
+	})
+	return trends
+}
+
+func workflowLaneTrendBuckets(from time.Time, bucketDuration time.Duration, bucketCount int, window time.Duration) []workflowLaneTrendBucket {
+	buckets := make([]workflowLaneTrendBucket, 0, bucketCount)
+	for i := range bucketCount {
+		bucketStart := from.Add(time.Duration(i) * bucketDuration)
+		bucketEnd := bucketStart.Add(bucketDuration)
+		buckets = append(buckets, workflowLaneTrendBucket{
+			label: workflowLaneTrendBucketLabel(bucketEnd, window),
+		})
+	}
+	return buckets
+}
+
+func workflowLaneTrendBucketLabel(bucketEnd time.Time, window time.Duration) string {
+	switch {
+	case window <= 48*time.Hour:
+		return bucketEnd.Format("15:04")
+	case window <= 14*24*time.Hour:
+		return bucketEnd.Format("Jan 2 15:04")
+	default:
+		return bucketEnd.Format("Jan 2")
+	}
+}
+
+func workflowLaneIsTracked(phaseName string) bool {
+	return workflowTrackedLaneRank(phaseName) >= 0
+}
+
+func workflowTrackedLaneRank(phaseName string) int {
+	switch strings.ToLower(strings.TrimSpace(phaseName)) {
+	case "in progress":
+		return 0
+	case "human review":
+		return 1
+	case "merging":
+		return 2
+	case "rework":
+		return 3
+	default:
+		return -1
+	}
+}
+
+func workflowPhaseTypeIsActive(phaseType WorkflowPhaseType) bool {
+	switch phaseType {
+	case WorkflowPhaseTypeAgentSession, WorkflowPhaseTypeLocalCheck, WorkflowPhaseTypeCI:
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowEventHasInterval(event WorkflowPhaseEvent) bool {
+	return !event.StartedAt.IsZero() && !event.FinishedAt.IsZero() && event.StartedAt.Before(event.FinishedAt)
+}
+
+func workflowEventsShareIssue(lane WorkflowPhaseEvent, event WorkflowPhaseEvent) bool {
+	if strings.TrimSpace(lane.ProjectID) != strings.TrimSpace(event.ProjectID) {
+		return false
+	}
+	if workflowNonEmptyEqual(lane.IssueID, event.IssueID) {
+		return true
+	}
+	if workflowNonEmptyEqual(lane.Identifier, event.Identifier) {
+		return true
+	}
+	if workflowNonEmptyEqual(lane.IssueURL, event.IssueURL) {
+		return true
+	}
+	if lane.PRNumber != nil && event.PRNumber != nil && *lane.PRNumber == *event.PRNumber {
+		return true
+	}
+	return false
+}
+
+func workflowNonEmptyEqual(a string, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	return a != "" && b != "" && a == b
+}
+
+func workflowEventOverlap(lane WorkflowPhaseEvent, event WorkflowPhaseEvent) (workflowInterval, bool) {
+	startedAt := lane.StartedAt
+	if event.StartedAt.After(startedAt) {
+		startedAt = event.StartedAt
+	}
+	finishedAt := lane.FinishedAt
+	if event.FinishedAt.Before(finishedAt) {
+		finishedAt = event.FinishedAt
+	}
+	if !startedAt.Before(finishedAt) {
+		return workflowInterval{}, false
+	}
+	return workflowInterval{startedAt: startedAt, finishedAt: finishedAt}, true
+}
+
+func workflowMergedIntervalSeconds(intervals []workflowInterval) int64 {
+	if len(intervals) == 0 {
+		return 0
+	}
+	sort.Slice(intervals, func(i int, j int) bool {
+		if intervals[i].startedAt.Equal(intervals[j].startedAt) {
+			return intervals[i].finishedAt.Before(intervals[j].finishedAt)
+		}
+		return intervals[i].startedAt.Before(intervals[j].startedAt)
+	})
+
+	total := int64(0)
+	current := intervals[0]
+	for _, interval := range intervals[1:] {
+		if interval.startedAt.After(current.finishedAt) {
+			total += int64(current.finishedAt.Sub(current.startedAt) / time.Second)
+			current = interval
+			continue
+		}
+		if interval.finishedAt.After(current.finishedAt) {
+			current.finishedAt = interval.finishedAt
+		}
+	}
+	total += int64(current.finishedAt.Sub(current.startedAt) / time.Second)
+	return total
+}
+
+func workflowPercent(part int64, total int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	return float64(part) / float64(total) * 100
 }
 
 func workflowPhaseMetricFromBucket(bucket *workflowMetricBucket) WorkflowPhaseMetric {

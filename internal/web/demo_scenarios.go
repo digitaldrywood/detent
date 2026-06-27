@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1338,36 +1339,72 @@ func demoEmptyWorkflowMetrics(now time.Time) telemetry.WorkflowMetrics {
 }
 
 func demoWorkflowMetricsWindow(label string, from time.Time, to time.Time, inProgress time.Duration, review time.Duration, merging time.Duration) telemetry.WorkflowMetricsWindow {
+	rework := merging + 3*time.Minute
 	return telemetry.WorkflowMetricsWindow{
 		Label: label,
 		From:  from,
 		To:    to,
 		Lanes: []telemetry.WorkflowPhaseMetric{
-			demoWorkflowLaneMetric("In Progress", 9, inProgress, false),
-			demoWorkflowLaneMetric("Human Review", 5, review, true),
-			demoWorkflowLaneMetric("Merging", 4, merging, false),
+			demoWorkflowLaneMetric("In Progress", 9, inProgress, false, 46),
+			demoWorkflowLaneMetric("Human Review", 5, review, true, 8),
+			demoWorkflowLaneMetric("Merging", 4, merging, false, 22),
+			demoWorkflowLaneMetric("Rework", 3, rework, false, 58),
 		},
 		SubPhases: []telemetry.WorkflowPhaseMetric{
 			{ProjectID: demoPrimaryProjectID, PhaseType: "agent_session", PhaseName: "agent_active", Count: 9, TotalSeconds: int64((42 * time.Minute) / time.Second), AverageSeconds: int64((5 * time.Minute) / time.Second), Turns: 38, TotalTokens: 284000, EndpointFamily: "codex"},
 			{ProjectID: demoPrimaryProjectID, PhaseType: "ci", PhaseName: "ci_wait", Count: 4, TotalSeconds: int64((19 * time.Minute) / time.Second), AverageSeconds: int64((5 * time.Minute) / time.Second), EndpointFamily: "checks"},
 		},
+		LaneTrends: []telemetry.WorkflowLaneTrend{
+			demoWorkflowLaneTrend("In Progress", inProgress),
+			demoWorkflowLaneTrend("Human Review", review),
+			demoWorkflowLaneTrend("Merging", merging),
+			demoWorkflowLaneTrend("Rework", rework),
+		},
 	}
 }
 
-func demoWorkflowLaneMetric(name string, count int64, average time.Duration, bottleneck bool) telemetry.WorkflowPhaseMetric {
+func demoWorkflowLaneMetric(name string, count int64, average time.Duration, bottleneck bool, activePercent int64) telemetry.WorkflowPhaseMetric {
 	seconds := int64(average / time.Second)
+	totalSeconds := seconds * count
+	activeSeconds := totalSeconds * activePercent / 100
 	return telemetry.WorkflowPhaseMetric{
 		ProjectID:      demoPrimaryProjectID,
 		PhaseType:      "lane",
 		PhaseName:      name,
 		Count:          count,
-		TotalSeconds:   seconds * count,
+		TotalSeconds:   totalSeconds,
 		AverageSeconds: seconds,
 		P50Seconds:     seconds,
 		P90Seconds:     int64((average + average/3) / time.Second),
 		P95Seconds:     int64((average + average/2) / time.Second),
+		ActiveSeconds:  activeSeconds,
+		WaitSeconds:    totalSeconds - activeSeconds,
+		ActivePercent:  float64(activePercent),
 		Bottleneck:     bottleneck,
 		Comparison:     &telemetry.WorkflowMetricComparison{Label: "demo comparison", Direction: "unchanged"},
+	}
+}
+
+func demoWorkflowLaneTrend(name string, average time.Duration) telemetry.WorkflowLaneTrend {
+	points := make([]telemetry.WorkflowLaneTrendPoint, 0, 8)
+	baseSeconds := int64(average / time.Second)
+	for i := range 8 {
+		offset := int64(i - 4)
+		value := baseSeconds + offset*20
+		if value < 0 {
+			value = 0
+		}
+		points = append(points, telemetry.WorkflowLaneTrendPoint{
+			Label:          strconv.Itoa(i + 1),
+			Count:          1,
+			AverageSeconds: value,
+		})
+	}
+	return telemetry.WorkflowLaneTrend{
+		ProjectID:  demoPrimaryProjectID,
+		PhaseName:  name,
+		Points:     points,
+		TotalCount: int64(len(points)),
 	}
 }
 

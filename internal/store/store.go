@@ -391,8 +391,9 @@ type WorkflowMetricsQuery struct {
 }
 
 type WorkflowMetricsReport struct {
-	Lanes     []WorkflowPhaseMetric
-	SubPhases []WorkflowPhaseMetric
+	Lanes      []WorkflowPhaseMetric
+	SubPhases  []WorkflowPhaseMetric
+	LaneTrends []WorkflowLaneTrend
 }
 
 type WorkflowPhaseMetric struct {
@@ -410,6 +411,22 @@ type WorkflowPhaseMetric struct {
 	TotalTokens    int64
 	Turns          int64
 	EndpointFamily string
+	ActiveSeconds  int64
+	WaitSeconds    int64
+	ActivePercent  float64
+}
+
+type WorkflowLaneTrend struct {
+	ProjectID  string
+	PhaseName  string
+	Points     []WorkflowLaneTrendPoint
+	TotalCount int64
+}
+
+type WorkflowLaneTrendPoint struct {
+	Label          string
+	Count          int64
+	AverageSeconds int64
 }
 
 type WorkflowTimeline struct {
