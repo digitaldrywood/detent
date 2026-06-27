@@ -914,60 +914,84 @@ probes.
    rg '^STATUS_LABEL_PREFIX=' "$ONBOARDING_DIR/answers.env"
    ```
 
-5. **Operator intent profile.** Ask: "Which operating model fits this project?"
-   Present these plain-English flavors before showing canonical
-   `answers.env` fields:
+5. **Automation policy.** Ask the customer-facing policy questions before
+   recommending review, auto-promotion, dependency unblock, Kanban mutation, or
+   Merging settings. Do not present raw `answers.env` keys as the primary
+   interface.
 
-   - Conservative review: stop at `Human Review` until a human explicitly
-     promotes work.
-   - Autonomous delivery: move Todo work through PR, CI/gates, Merging, and
-     Done without human review or quiet-window delay when there are no real
-     blockers.
+   Ask first:
+
+   ```text
+   How should Detent handle completed work after the validation gate passes?
+
+   1. Full autopilot: automatically promote work through Human Review and into Merging when gates pass.
+   2. Review gate: stop in Human Review until I approve, then continue merging.
+   3. Conservative/manual: stop before mutations or merging unless I explicitly approve each step.
+   ```
+
+   Then ask:
+
+   ```text
+   When blocked work becomes unblocked, should Detent automatically resume it when guardrails pass, or wait for human approval?
+   ```
+
+   And ask:
+
+   ```text
+   Should Detent automatically move eligible issues forward when the configured tests/checks pass?
+   ```
+
+   Present the operator's plain-English operating model first, then show the
+   canonical `answers.env` fields as a secondary implementation mapping:
+
+   - Full autopilot: promote through `Human Review` to `Merging` when linked
+     PRs, gates, CI, mergeability, dependency checks, and guardrails pass; also
+     auto-unblock dependency-waiting work when declared blockers clear.
+   - Review gate: stop at `Human Review` until a human explicitly approves
+     promotion to `Merging`; GitHub/config writes still require the separate
+     mutation confirmation.
+   - Conservative/manual: require explicit approval before promotion or
+     mutation; keep project Kanban mutations read-only unless the operator
+     later switches to a custom advanced policy.
    - Custom/advanced: expose the underlying fields for teams that need a mixed
      policy.
 
    When the operator says "no human review, no wait state, unblock
-   aggressively, only stop on real blockers," recommend `autonomous_delivery`.
-   Explain that autonomous delivery still requires linked PRs, green CI, clear
-   gates, and no blocking P1 automated findings; it does not bypass validation.
-   Also explain that onboarding mutation should use live reload or a
-   project-scoped refresh and verify running agents were not interrupted rather
-   than restarting Detent.
+   aggressively, only stop on real blockers," asks for maximum automation, or
+   says to auto-promote and auto-unblock as much as guardrails allow, recommend
+   `full_autopilot`. Explain that full autopilot still requires linked PRs,
+   green CI, clear gates, mergeability, satisfied dependencies, and no blocking
+   P1 automated findings; it does not bypass validation. Do not recommend
+   `AUTO_PROMOTE_ENABLED=false` unless the operator selected review gate or
+   conservative/manual. Do not recommend stopping at `Human Review` unless the
+   operator selected review gate or conservative/manual. Do not label an
+   unselected setup as a safety-default review posture.
 
-   After selecting `DELIVERY_PROFILE=autonomous_delivery`, do not ask the
-   Kanban interaction, validation-gate automated-review, Merging concurrency,
-   review policy, or dependency waiting policy questions again unless the
-   operator asks for an advanced override. Advanced override means the operator
-   switches to Custom/advanced after seeing the expansion; remove or omit
-   `DELIVERY_PROFILE` before recording a profile-supplied key with a different
-   value. Ask the remaining Phase 2 questions that are not supplied by the
-   selected profile.
+   Asking for automation policy does not authorize mutation. Phase 2.5 still
+   must approve the exact answers before creating labels, editing
+   `global.yaml`, writing `WORKFLOW.md`, or dispatching agents. Onboarding
+   mutation should use live reload or a project-scoped refresh and verify
+   running agents were not interrupted rather than restarting Detent.
 
-   For conservative review or autonomous delivery, write `DELIVERY_PROFILE`
-   first:
+   After selecting a named profile, do not ask the Kanban interaction,
+   validation-gate automated-review, Merging concurrency, review policy, or
+   dependency waiting policy questions again unless the operator asks for an
+   advanced override. Advanced override means the operator switches to
+   Custom/advanced after seeing the expansion; remove or omit `DELIVERY_PROFILE`
+   before recording a profile-supplied key with a different value. Ask the
+   remaining Phase 2 questions that are not supplied by the selected profile.
+
+   For full autopilot, review gate, or conservative/manual, write
+   `DELIVERY_PROFILE` first:
 
    ```sh
    printf '%s\n' \
-     'DELIVERY_PROFILE=<conservative_review|autonomous_delivery>' \
+     'DELIVERY_PROFILE=<full_autopilot|review_gate|conservative_manual>' \
      >> "$ONBOARDING_DIR/answers.env"
    rg '^DELIVERY_PROFILE=' "$ONBOARDING_DIR/answers.env"
    ```
 
-   Conservative review expands to:
-
-   ```sh
-   printf '%s\n' \
-     'KANBAN_MODE=read_only' \
-     'AUTO_PROMOTE_ENABLED=false' \
-     'AUTO_PROMOTE_QUIET_SECONDS=600' \
-     'GATE_REQUIRE_AUTOMATED_REVIEW=true' \
-     'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=true' \
-     'DEPENDENCY_AUTO_UNBLOCK_ENABLED=false' \
-     'MERGING_CONCURRENCY=1' \
-     >> "$ONBOARDING_DIR/answers.env"
-   ```
-
-   Autonomous delivery expands to:
+   Full autopilot expands to:
 
    ```sh
    printf '%s\n' \
@@ -977,6 +1001,34 @@ probes.
      'GATE_REQUIRE_AUTOMATED_REVIEW=false' \
      'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=false' \
      'DEPENDENCY_AUTO_UNBLOCK_ENABLED=true' \
+     'MERGING_CONCURRENCY=1' \
+     >> "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Review gate expands to:
+
+   ```sh
+   printf '%s\n' \
+     'KANBAN_MODE=integration' \
+     'AUTO_PROMOTE_ENABLED=false' \
+     'AUTO_PROMOTE_QUIET_SECONDS=600' \
+     'GATE_REQUIRE_AUTOMATED_REVIEW=false' \
+     'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=false' \
+     'DEPENDENCY_AUTO_UNBLOCK_ENABLED=false' \
+     'MERGING_CONCURRENCY=1' \
+     >> "$ONBOARDING_DIR/answers.env"
+   ```
+
+   Conservative/manual expands to:
+
+   ```sh
+   printf '%s\n' \
+     'KANBAN_MODE=read_only' \
+     'AUTO_PROMOTE_ENABLED=false' \
+     'AUTO_PROMOTE_QUIET_SECONDS=600' \
+     'GATE_REQUIRE_AUTOMATED_REVIEW=true' \
+     'AUTO_PROMOTE_REQUIRE_AUTOMATED_REVIEW=true' \
+     'DEPENDENCY_AUTO_UNBLOCK_ENABLED=false' \
      'MERGING_CONCURRENCY=1' \
      >> "$ONBOARDING_DIR/answers.env"
    ```
@@ -1176,8 +1228,10 @@ probes.
    "Should Detent hard-stop at `Human Review`, or may it auto-promote to
    `Merging` after the human-defined criteria are true?"
    Recommendation source: repo risk, issue labels, review requirements, and how
-   much trust the human wants to delegate. Default if silent:
-   `agent.auto_promote.enabled: false`, the safe hard stop. Both modes are
+   much trust the human wants to delegate. Default if silent: no review-policy
+   answer is recorded; ask again in plain English. Do not write
+   `AUTO_PROMOTE_ENABLED=false` unless the operator chose review gate,
+   conservative/manual, or explicitly chose a custom hard stop. Both modes are
    fully supported, and this is the human's call.
 
    For criteria-based auto-promote, use `agent.auto_promote.enabled`,

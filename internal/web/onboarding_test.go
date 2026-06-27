@@ -100,7 +100,10 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"Agent config",
 				onboardingStepBadge("agent"),
 				"name=\"delivery_profile\"",
-				"Autonomous delivery mode",
+				"How should Detent handle completed work after the validation gate passes?",
+				"Full autopilot",
+				"Review gate",
+				"Conservative/manual",
 				"name=\"max_concurrent_agents\"",
 				"name=\"workspace_root\"",
 				"name=\"dependency_auto_unblock_enabled\"",
@@ -124,6 +127,7 @@ func TestOnboardingRoutesProgressThroughWizard(t *testing.T) {
 				"merging_concurrency":        {"1"},
 				"dispatch_priority_by_state": {"Merging\nRework"},
 				"dispatch_priority_by_label": {"bug\nregression\nenhancement"},
+				"delivery_profile":           {"full_autopilot"},
 			},
 			wantStatus: http.StatusOK,
 			wantContent: []string{
@@ -366,7 +370,9 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 				"dependency_auto_unblock:\n    enabled: false\n    source_states:\n      - Blocked\n    target_state: Todo\n    readiness: terminal_or_merged",
 				"source_root: "+sourceRoot,
 				"codex:\n  command: codex app-server",
-				"gate:\n  kind: command\n  run: make check\n  ci_failure_action: skip",
+				"gate:\n  kind: command\n  run: make check",
+				"require_automated_review: false",
+				"ci_failure_action: skip",
 				"validator:\n    enabled: false\n    model: \"\"\n    min_score: 0.8\n    block_on:\n      - p1",
 				"hooks:\n  timeout_ms: 60000",
 				"max_concurrent_agents_by_state:\n    Merging: 1",
@@ -438,9 +444,9 @@ func TestOnboardingWriteLabelWorkflowKanbanMode(t *testing.T) {
 			wantMode: workflowconfig.KanbanModeIntegration,
 		},
 		{
-			name: "observer choice stays read only",
+			name: "conservative manual keeps kanban read only",
 			edit: func(form url.Values) {
-				form.Set("kanban_mode", workflowconfig.KanbanModeReadOnly)
+				form.Set("delivery_profile", "conservative_manual")
 			},
 			wantMode: workflowconfig.KanbanModeReadOnly,
 		},
@@ -477,7 +483,7 @@ func TestOnboardingWriteLabelWorkflowKanbanMode(t *testing.T) {
 				t.Fatalf("ReadFile() error = %v", err)
 			}
 			content := string(raw)
-			wantContent := "server:\n  kanban:\n    mode: " + tt.wantMode
+			wantContent := "kanban:\n    mode: " + tt.wantMode
 			if !strings.Contains(content, wantContent) {
 				t.Fatalf("workflow missing %q:\n%s", wantContent, content)
 			}
@@ -533,7 +539,7 @@ func TestOnboardingAgentStepExplainsKanbanWriteProbeRequirement(t *testing.T) {
 	}
 }
 
-func TestOnboardingProjectStepPreservesKanbanModeAfterAgentBack(t *testing.T) {
+func TestOnboardingProjectStepAppliesProfileKanbanModeAfterAgentBack(t *testing.T) {
 	t.Parallel()
 
 	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
@@ -545,8 +551,8 @@ func TestOnboardingProjectStepPreservesKanbanModeAfterAgentBack(t *testing.T) {
 	form := validOnboardingForm()
 	form.Set("github_status_source", workflowconfig.GitHubStatusSourceLabel)
 	form.Set("status_label_prefix", "detent:")
-	form.Set("kanban_mode", workflowconfig.KanbanModeReadOnly)
-	form.Set("delivery_profile", "autonomous_delivery")
+	form.Set("kanban_mode", workflowconfig.KanbanModeIntegration)
+	form.Set("delivery_profile", "conservative_manual")
 	form.Del("project_slug")
 
 	rec := httptest.NewRecorder()
@@ -560,7 +566,7 @@ func TestOnboardingProjectStepPreservesKanbanModeAfterAgentBack(t *testing.T) {
 	for _, want := range []string{
 		"Configure labels",
 		"name=\"kanban_mode\" value=\"read_only\"",
-		"name=\"delivery_profile\" value=\"autonomous_delivery\"",
+		"name=\"delivery_profile\" value=\"conservative_manual\"",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("body missing %q:\n%s", want, rec.Body.String())
@@ -577,7 +583,7 @@ func TestOnboardingProjectStepPreservesKanbanModeAfterAgentBack(t *testing.T) {
 	}
 	for _, want := range []string{
 		"name=\"kanban_mode\" value=\"read_only\" checked",
-		"name=\"delivery_profile\" value=\"autonomous_delivery\" checked",
+		"name=\"delivery_profile\" value=\"conservative_manual\" checked",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Fatalf("agent body missing %q:\n%s", want, rec.Body.String())
@@ -595,7 +601,7 @@ func TestOnboardingWriteWorkflowCanEnableDependencyAutoUnblock(t *testing.T) {
 	}
 
 	form := validOnboardingForm()
-	form.Set("dependency_auto_unblock_enabled", "true")
+	form.Set("delivery_profile", "full_autopilot")
 	rec := httptest.NewRecorder()
 	req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
 
@@ -613,7 +619,7 @@ func TestOnboardingWriteWorkflowCanEnableDependencyAutoUnblock(t *testing.T) {
 	}
 }
 
-func TestOnboardingWriteWorkflowAppliesAutonomousDeliveryProfile(t *testing.T) {
+func TestOnboardingWriteWorkflowAppliesFullAutopilotProfile(t *testing.T) {
 	t.Parallel()
 
 	workflowPath := filepath.Join(t.TempDir(), "WORKFLOW.md")
@@ -623,7 +629,7 @@ func TestOnboardingWriteWorkflowAppliesAutonomousDeliveryProfile(t *testing.T) {
 	}
 
 	form := validOnboardingForm()
-	form.Set("delivery_profile", "autonomous_delivery")
+	form.Set("delivery_profile", "full_autopilot")
 	rec := httptest.NewRecorder()
 	req := onboardingRequest(http.MethodPost, "/onboarding/write", form)
 
@@ -632,8 +638,8 @@ func TestOnboardingWriteWorkflowAppliesAutonomousDeliveryProfile(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status = %d, want %d; body = %s", rec.Code, http.StatusOK, rec.Body.String())
 	}
-	if !strings.Contains(rec.Body.String(), "gates and CI still apply") {
-		t.Fatalf("body missing autonomous profile explanation:\n%s", rec.Body.String())
+	if !strings.Contains(rec.Body.String(), "gates, CI, and guardrails pass") {
+		t.Fatalf("body missing full autopilot profile explanation:\n%s", rec.Body.String())
 	}
 	raw, err := os.ReadFile(workflowPath)
 	if err != nil {
@@ -646,7 +652,7 @@ func TestOnboardingWriteWorkflowAppliesAutonomousDeliveryProfile(t *testing.T) {
 		"auto_promote:\n    enabled: true\n    quiet_seconds: 0",
 		"gate:\n  kind: command\n  run: make check\n  require_automated_review: false",
 		"server:\n  host: 127.0.0.1\n  kanban:\n    mode: integration",
-		"Autonomous delivery still requires linked PRs, green CI, and clear gates.",
+		"Full autopilot still requires linked PRs, green CI, clear gates, and no blocking P1 automated findings.",
 		"Use live reload or a project-scoped refresh after onboarding changes; do not restart Detent or interrupt running agents unless the operator explicitly authorizes it.",
 	} {
 		if !strings.Contains(content, want) {
@@ -1032,11 +1038,18 @@ func TestOnboardingWriteValidatesInput(t *testing.T) {
 			want: "polling interval must be at least 60000",
 		},
 		{
-			name: "invalid kanban mode",
+			name: "missing automation policy",
 			edit: func(form url.Values) {
-				form.Set("kanban_mode", "observer")
+				form.Del("delivery_profile")
 			},
-			want: "kanban mode must be read_only or integration",
+			want: "automation policy is required",
+		},
+		{
+			name: "invalid automation policy",
+			edit: func(form url.Values) {
+				form.Set("delivery_profile", "observer")
+			},
+			want: "automation policy must be full_autopilot, review_gate, or conservative_manual",
 		},
 	}
 
@@ -1079,6 +1092,7 @@ func validOnboardingForm() url.Values {
 		"merging_concurrency":             {"1"},
 		"dispatch_priority_by_state":      {"Merging\nRework"},
 		"dispatch_priority_by_label":      {"bug\nregression\nenhancement"},
+		"delivery_profile":                {"review_gate"},
 		"dependency_auto_unblock_enabled": {"false"},
 	}
 }

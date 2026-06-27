@@ -111,7 +111,13 @@ Present findings with evidence and ask only the next necessary human decisions.
 Ask and record `GITHUB_MODE` explicitly after the identity phase and before
 target-specific discovery; never infer ProjectV2, issue-field, or label mode
 from existing projects. Recommendations can cite evidence, but they are not
-selected answers; do not create, link, mutate, or delete GitHub Projects, issue fields, labels,
+selected answers. Before recommending review, auto-promotion, dependency
+unblock, or merging settings, ask in plain English whether I want full
+autopilot, a Human Review gate, or conservative/manual approval. If I ask for
+maximum automation, map that to `DELIVERY_PROFILE=full_autopilot` and summarize
+the behavior before showing `answers.env` fields. Do not recommend
+`AUTO_PROMOTE_ENABLED=false` or stopping at Human Review unless I selected
+review gate or conservative/manual; do not create, link, mutate, or delete GitHub Projects, issue fields, labels,
 issues, PRs, `WORKFLOW.md`, or `global.yaml`, or dispatch agents, until Phase 2
 answers are recorded in `answers.env`, `detent onboarding validate-answers`
 passes for the selected phase, and I explicitly confirm the mutation step.
