@@ -207,6 +207,28 @@ type workflowLaneMetricRow struct {
 	RowClass   string
 }
 
+type workflowLaneTrendCard struct {
+	Lane    string
+	Window  string
+	Summary string
+	Chart   SeriesChartData
+	HasData bool
+}
+
+type workflowLaneFlowRow struct {
+	Lane               string
+	Window             string
+	Active             string
+	Wait               string
+	Total              string
+	ActivePercent      string
+	ActiveStyle        string
+	WaitStyle          string
+	ActiveSegmentTitle string
+	WaitSegmentTitle   string
+	HasData            bool
+}
+
 type workflowSubphaseMetricRow struct {
 	Window string
 	Phase  string
@@ -4311,6 +4333,165 @@ func workflowMetricsWindowLabels(report telemetry.WorkflowMetrics) string {
 		return "24h / 7d / 30d"
 	}
 	return strings.Join(labels, " / ")
+}
+
+func workflowLaneTrendCards(report telemetry.WorkflowMetrics) []workflowLaneTrendCard {
+	window, ok := workflowChartWindow(report)
+	if !ok {
+		return []workflowLaneTrendCard{}
+	}
+
+	trendsByLane := make(map[string]telemetry.WorkflowLaneTrend, len(window.LaneTrends))
+	for _, trend := range window.LaneTrends {
+		if lane, ok := workflowTrackedLaneName(trend.PhaseName); ok {
+			trend.PhaseName = lane
+			trendsByLane[lane] = trend
+		}
+	}
+
+	cards := make([]workflowLaneTrendCard, 0, len(workflowTrackedLaneNames()))
+	for _, lane := range workflowTrackedLaneNames() {
+		trend := trendsByLane[lane]
+		points := make([]webchart.Point, 0, len(trend.Points))
+		latestAverage := int64(0)
+		for _, point := range trend.Points {
+			points = append(points, webchart.Point{Label: point.Label, Value: float64(point.AverageSeconds)})
+			if point.Count > 0 {
+				latestAverage = point.AverageSeconds
+			}
+		}
+		hasData := trend.TotalCount > 0
+		summary := "No samples"
+		if hasData {
+			summary = formatDuration(float64(latestAverage)) + " latest"
+		}
+		cards = append(cards, workflowLaneTrendCard{
+			Lane:    lane,
+			Window:  window.Label,
+			Summary: summary,
+			HasData: hasData,
+			Chart: SeriesChartData{
+				Title:       lane + " average lane time",
+				AriaLabel:   lane + " average lane time trend for " + window.Label,
+				Points:      points,
+				ValueSuffix: "s",
+				ColorClass:  workflowLaneTrendColor(lane),
+				Class:       "h-24 border-border/70 bg-card/60",
+				Height:      120,
+			},
+		})
+	}
+	return cards
+}
+
+func workflowLaneFlowRows(report telemetry.WorkflowMetrics) []workflowLaneFlowRow {
+	window, ok := workflowChartWindow(report)
+	if !ok {
+		return []workflowLaneFlowRow{}
+	}
+
+	metricsByLane := make(map[string]telemetry.WorkflowPhaseMetric, len(window.Lanes))
+	for _, metric := range window.Lanes {
+		if lane, ok := workflowTrackedLaneName(metric.PhaseName); ok {
+			metric.PhaseName = lane
+			metricsByLane[lane] = metric
+		}
+	}
+
+	rows := make([]workflowLaneFlowRow, 0, len(workflowTrackedLaneNames()))
+	for _, lane := range workflowTrackedLaneNames() {
+		metric := metricsByLane[lane]
+		activeSeconds := metric.ActiveSeconds
+		waitSeconds := metric.WaitSeconds
+		totalSeconds := activeSeconds + waitSeconds
+		if totalSeconds == 0 && metric.TotalSeconds > 0 {
+			totalSeconds = metric.TotalSeconds
+			waitSeconds = metric.TotalSeconds
+		}
+		activePercent := workflowFlowActivePercent(activeSeconds, totalSeconds)
+		activePercentInt := int(math.Round(activePercent))
+		waitPercentInt := 100 - activePercentInt
+		if waitPercentInt < 0 {
+			waitPercentInt = 0
+		}
+		hasData := metric.Count > 0 || totalSeconds > 0
+		rows = append(rows, workflowLaneFlowRow{
+			Lane:               lane,
+			Window:             window.Label,
+			Active:             formatDuration(float64(activeSeconds)),
+			Wait:               formatDuration(float64(waitSeconds)),
+			Total:              formatDuration(float64(totalSeconds)),
+			ActivePercent:      strconv.Itoa(activePercentInt) + "% active",
+			ActiveStyle:        percentStyle(activePercentInt),
+			WaitStyle:          percentStyle(waitPercentInt),
+			ActiveSegmentTitle: lane + " active: " + formatDuration(float64(activeSeconds)),
+			WaitSegmentTitle:   lane + " wait: " + formatDuration(float64(waitSeconds)),
+			HasData:            hasData,
+		})
+	}
+	return rows
+}
+
+func workflowChartWindow(report telemetry.WorkflowMetrics) (telemetry.WorkflowMetricsWindow, bool) {
+	for _, window := range report.Windows {
+		if len(window.LaneTrends) > 0 || workflowWindowHasTrackedLane(window) {
+			return window, true
+		}
+	}
+	if len(report.Windows) == 0 {
+		return telemetry.WorkflowMetricsWindow{}, false
+	}
+	return report.Windows[0], true
+}
+
+func workflowWindowHasTrackedLane(window telemetry.WorkflowMetricsWindow) bool {
+	for _, metric := range window.Lanes {
+		if _, ok := workflowTrackedLaneName(metric.PhaseName); ok {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowTrackedLaneNames() []string {
+	return []string{"In Progress", "Human Review", "Merging", "Rework"}
+}
+
+func workflowTrackedLaneName(phaseName string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(phaseName)) {
+	case "in progress":
+		return "In Progress", true
+	case "human review":
+		return "Human Review", true
+	case "merging":
+		return "Merging", true
+	case "rework":
+		return "Rework", true
+	default:
+		return "", false
+	}
+}
+
+func workflowLaneTrendColor(lane string) string {
+	switch lane {
+	case "In Progress":
+		return "text-accent"
+	case "Human Review":
+		return "text-warning"
+	case "Merging":
+		return "text-success"
+	case "Rework":
+		return "text-danger"
+	default:
+		return "text-accent"
+	}
+}
+
+func workflowFlowActivePercent(activeSeconds int64, totalSeconds int64) float64 {
+	if totalSeconds <= 0 {
+		return 0
+	}
+	return float64(activeSeconds) / float64(totalSeconds) * 100
 }
 
 func workflowLaneMetricRows(report telemetry.WorkflowMetrics) []workflowLaneMetricRow {

@@ -551,11 +551,12 @@ type RuntimeStoreWorkflowPhaseEvents struct {
 }
 
 type WorkflowMetricsWindow struct {
-	Label     string                `json:"label"`
-	From      time.Time             `json:"from"`
-	To        time.Time             `json:"to"`
-	Lanes     []WorkflowPhaseMetric `json:"lanes,omitempty"`
-	SubPhases []WorkflowPhaseMetric `json:"sub_phases,omitempty"`
+	Label      string                `json:"label"`
+	From       time.Time             `json:"from"`
+	To         time.Time             `json:"to"`
+	Lanes      []WorkflowPhaseMetric `json:"lanes,omitempty"`
+	SubPhases  []WorkflowPhaseMetric `json:"sub_phases,omitempty"`
+	LaneTrends []WorkflowLaneTrend   `json:"lane_trends,omitempty"`
 }
 
 type WorkflowPhaseMetric struct {
@@ -573,8 +574,24 @@ type WorkflowPhaseMetric struct {
 	TotalTokens    int64                     `json:"total_tokens,omitempty"`
 	Turns          int64                     `json:"turns,omitempty"`
 	EndpointFamily string                    `json:"endpoint_family,omitempty"`
+	ActiveSeconds  int64                     `json:"active_seconds,omitempty"`
+	WaitSeconds    int64                     `json:"wait_seconds,omitempty"`
+	ActivePercent  float64                   `json:"active_percent,omitempty"`
 	Bottleneck     bool                      `json:"bottleneck,omitempty"`
 	Comparison     *WorkflowMetricComparison `json:"comparison,omitempty"`
+}
+
+type WorkflowLaneTrend struct {
+	ProjectID  string                   `json:"project_id,omitempty"`
+	PhaseName  string                   `json:"phase_name"`
+	Points     []WorkflowLaneTrendPoint `json:"points,omitempty"`
+	TotalCount int64                    `json:"total_count"`
+}
+
+type WorkflowLaneTrendPoint struct {
+	Label          string `json:"label"`
+	Count          int64  `json:"count"`
+	AverageSeconds int64  `json:"average_seconds"`
 }
 
 type WorkflowMetricComparison struct {

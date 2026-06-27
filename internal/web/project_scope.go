@@ -106,6 +106,7 @@ func scopedWorkflowMetrics(snapshot telemetry.Snapshot, metrics telemetry.Workfl
 		scopedWindow.Lanes = scopedWorkflowPhaseMetrics(window.Lanes, selectedProjectID)
 		workflowMarkBottleneckLane(scopedWindow.Lanes)
 		scopedWindow.SubPhases = scopedWorkflowPhaseMetrics(window.SubPhases, selectedProjectID)
+		scopedWindow.LaneTrends = scopedWorkflowLaneTrends(window.LaneTrends, selectedProjectID)
 		out.Windows = append(out.Windows, scopedWindow)
 	}
 	out.OldestCards = workflowOldestCards(snapshot)
@@ -122,6 +123,16 @@ func scopedWorkflowPhaseMetrics(metrics []telemetry.WorkflowPhaseMetric, selecte
 	for _, metric := range metrics {
 		if strings.TrimSpace(metric.ProjectID) == selectedProjectID {
 			out = append(out, metric)
+		}
+	}
+	return out
+}
+
+func scopedWorkflowLaneTrends(trends []telemetry.WorkflowLaneTrend, selectedProjectID string) []telemetry.WorkflowLaneTrend {
+	out := make([]telemetry.WorkflowLaneTrend, 0, len(trends))
+	for _, trend := range trends {
+		if strings.TrimSpace(trend.ProjectID) == selectedProjectID {
+			out = append(out, trend)
 		}
 	}
 	return out

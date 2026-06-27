@@ -1857,3 +1857,110 @@ func (q *Queries) WorkflowPhaseDurationRows(ctx context.Context, arg WorkflowPha
 	}
 	return items, nil
 }
+
+const workflowPhaseFlowRows = `-- name: WorkflowPhaseFlowRows :many
+SELECT
+  event.id,
+  event.project_id,
+  event.run_id,
+  event.session_id,
+  event.issue_id,
+  event.identifier,
+  event.issue_url,
+  event.pr_number,
+  event.phase_type,
+  event.phase_name,
+  event.previous_phase_name,
+  event.reason,
+  event.status,
+  event.started_at,
+  event.finished_at,
+  event.duration_seconds,
+  event.event_day,
+  event.command_name,
+  event.exit_code,
+  event.turns,
+  event.input_tokens,
+  event.output_tokens,
+  event.total_tokens,
+  event.endpoint_family,
+  event.metadata_json
+FROM workflow_phase_events AS event
+WHERE event.finished_at IS NOT NULL
+  AND event.phase_type IN ('agent_session', 'local_check', 'ci')
+  AND (?1 IS NULL OR event.project_id = ?1)
+  AND EXISTS (
+    SELECT 1
+    FROM workflow_phase_events AS lane
+    WHERE lane.finished_at IS NOT NULL
+      AND lane.phase_type = 'lane'
+      AND (?1 IS NULL OR lane.project_id = ?1)
+      AND (?2 IS NULL OR lane.finished_at >= ?2)
+      AND (?3 IS NULL OR lane.finished_at < ?3)
+      AND event.project_id = lane.project_id
+      AND event.started_at < lane.finished_at
+      AND event.finished_at > lane.started_at
+      AND (
+        (event.issue_id IS NOT NULL AND event.issue_id <> '' AND event.issue_id = lane.issue_id)
+        OR (event.identifier IS NOT NULL AND event.identifier <> '' AND event.identifier = lane.identifier)
+        OR (event.issue_url IS NOT NULL AND event.issue_url <> '' AND event.issue_url = lane.issue_url)
+        OR (event.pr_number IS NOT NULL AND event.pr_number = lane.pr_number)
+      )
+  )
+ORDER BY event.project_id, event.phase_type, event.phase_name, event.finished_at, event.id
+`
+
+type WorkflowPhaseFlowRowsParams struct {
+	ProjectID interface{} `json:"project_id"`
+	FromTime  interface{} `json:"from_time"`
+	ToTime    interface{} `json:"to_time"`
+}
+
+func (q *Queries) WorkflowPhaseFlowRows(ctx context.Context, arg WorkflowPhaseFlowRowsParams) ([]WorkflowPhaseEvent, error) {
+	rows, err := q.db.QueryContext(ctx, workflowPhaseFlowRows, arg.ProjectID, arg.FromTime, arg.ToTime)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []WorkflowPhaseEvent{}
+	for rows.Next() {
+		var i WorkflowPhaseEvent
+		if err := rows.Scan(
+			&i.ID,
+			&i.ProjectID,
+			&i.RunID,
+			&i.SessionID,
+			&i.IssueID,
+			&i.Identifier,
+			&i.IssueURL,
+			&i.PrNumber,
+			&i.PhaseType,
+			&i.PhaseName,
+			&i.PreviousPhaseName,
+			&i.Reason,
+			&i.Status,
+			&i.StartedAt,
+			&i.FinishedAt,
+			&i.DurationSeconds,
+			&i.EventDay,
+			&i.CommandName,
+			&i.ExitCode,
+			&i.Turns,
+			&i.InputTokens,
+			&i.OutputTokens,
+			&i.TotalTokens,
+			&i.EndpointFamily,
+			&i.MetadataJson,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Close(); err != nil {
+		return nil, err
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}

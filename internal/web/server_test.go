@@ -6033,6 +6033,57 @@ func TestProjectDiagnosticsRendersWorkflowMetricsTrends(t *testing.T) {
 	}
 }
 
+func TestProjectDiagnosticsRendersWorkflowFlowEfficiencyCharts(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	now := time.Date(2026, 6, 26, 12, 0, 0, 0, time.UTC)
+	backend := openWebTestStore(t)
+	seedWorkflowFlowEvents(t, ctx, backend, now)
+
+	deps := testDeps(t)
+	deps.Store = backend
+	mustSetWebProject(t, deps.Registry, "detent", false)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	window := workflowMetricsWindow(t, state, "24h")
+	inProgress := workflowMetricLane(t, window, "In Progress")
+	if inProgress["active_seconds"] != float64(300) || inProgress["wait_seconds"] != float64(300) || inProgress["active_percent"] != float64(50) {
+		t.Fatalf("In Progress flow = %#v, want active/wait/percent 300/300/50", inProgress)
+	}
+	if !workflowLaneTrendIncludes(t, window, "Rework") {
+		t.Fatalf("lane_trends missing Rework: %#v", window["lane_trends"])
+	}
+	if workflowLaneTrendIncludes(t, window, "Todo") {
+		t.Fatalf("lane_trends included Todo: %#v", window["lane_trends"])
+	}
+
+	html := requestHTML(t, server.Handler(), http.MethodGet, "/projects/detent/diagnostics", http.StatusOK)
+	for _, want := range []string{
+		"Average lane trend",
+		"Flow efficiency",
+		"50% active",
+		"In Progress",
+		"Rework",
+		"Active",
+		"Wait",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("diagnostics missing workflow flow chart %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestServerUsageAPIRejectsInvalidParameters(t *testing.T) {
 	t.Parallel()
 
@@ -6372,6 +6423,42 @@ func seedWorkflowTrendEvents(t *testing.T, ctx context.Context, backend store.St
 	}
 }
 
+func seedWorkflowFlowEvents(t *testing.T, ctx context.Context, backend store.Store, now time.Time) {
+	t.Helper()
+
+	events := []struct {
+		issueID   string
+		phaseName string
+		finished  time.Time
+		duration  time.Duration
+		phaseType store.WorkflowPhaseType
+	}{
+		{issueID: "issue-progress", phaseName: "In Progress", finished: now.Add(-2 * time.Hour), duration: 10 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
+		{issueID: "issue-progress", phaseName: "agent_active", finished: now.Add(-2*time.Hour - 6*time.Minute), duration: 2 * time.Minute, phaseType: store.WorkflowPhaseTypeAgentSession},
+		{issueID: "issue-progress", phaseName: "ci", finished: now.Add(-2*time.Hour - time.Minute), duration: 3 * time.Minute, phaseType: store.WorkflowPhaseTypeCI},
+		{issueID: "issue-progress", phaseName: "github_backoff", finished: now.Add(-2*time.Hour - 4*time.Minute), duration: 2 * time.Minute, phaseType: store.WorkflowPhaseTypeGitHubBackoff},
+		{issueID: "issue-rework", phaseName: "Rework", finished: now.Add(-90 * time.Minute), duration: 5 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
+		{issueID: "issue-todo", phaseName: "Todo", finished: now.Add(-80 * time.Minute), duration: 4 * time.Minute, phaseType: store.WorkflowPhaseTypeLane},
+	}
+	for i, event := range events {
+		attrs := store.WorkflowPhaseEvent{
+			ProjectID:       "detent",
+			IssueID:         event.issueID,
+			Identifier:      "digitaldrywood/detent#" + strconv.Itoa(980+i),
+			PhaseType:       event.phaseType,
+			PhaseName:       event.phaseName,
+			Status:          "completed",
+			StartedAt:       event.finished.Add(-event.duration),
+			FinishedAt:      event.finished,
+			DurationSeconds: int64(event.duration / time.Second),
+			EndpointFamily:  "codex",
+		}
+		if _, err := backend.RecordWorkflowPhaseEvent(ctx, attrs); err != nil {
+			t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+		}
+	}
+}
+
 func seedUsageAPIEvents(t *testing.T, ctx context.Context, backend store.Store) {
 	t.Helper()
 
@@ -6631,6 +6718,25 @@ func workflowMetricLane(t *testing.T, window map[string]any, phaseName string) m
 	}
 	t.Fatalf("window.lanes missing %q: %#v", phaseName, lanes)
 	return nil
+}
+
+func workflowLaneTrendIncludes(t *testing.T, window map[string]any, phaseName string) bool {
+	t.Helper()
+
+	trends, ok := window["lane_trends"].([]any)
+	if !ok {
+		t.Fatalf("window.lane_trends = %T, want list", window["lane_trends"])
+	}
+	for _, raw := range trends {
+		trend, ok := raw.(map[string]any)
+		if !ok {
+			t.Fatalf("lane trend = %T, want object", raw)
+		}
+		if trend["phase_name"] == phaseName {
+			return true
+		}
+	}
+	return false
 }
 
 func metricComparison(t *testing.T, lane map[string]any) map[string]any {
