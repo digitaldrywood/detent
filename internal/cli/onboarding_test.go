@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -688,7 +689,12 @@ func TestOnboardingDraftAnswersCommandPrefersRepoPrefixForSharedOwner(t *testing
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/digitaldrywood/creswoodcorners-phone.git")
 	t.Chdir(targetRoot)
 
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	canonicalMain := "b6b8fc5d8f0f5ed413f6b0b9694970c0f02c6d7d"
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(onboardingTestCommandRunnerWithRemoteDetentDocs(detentVersionJSON(canonicalMain), canonicalMain)),
+	)
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
@@ -737,7 +743,12 @@ func TestOnboardingDraftAnswersCommandKeepsNormalOwnerForProductSuffixRepo(t *te
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/payments-api.git")
 	t.Chdir(targetRoot)
 
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	canonicalMain := "b6b8fc5d8f0f5ed413f6b0b9694970c0f02c6d7d"
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(onboardingTestCommandRunnerWithRemoteDetentDocs(detentVersionJSON(canonicalMain), canonicalMain)),
+	)
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
@@ -968,6 +979,176 @@ func TestOnboardingDraftAnswersCommandReportsCurrentDetentSourceAndBinary(t *tes
 	}
 }
 
+func TestOnboardingDraftAnswersCommandUsesRemoteDetentDocsWithoutLocalCheckout(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
+	canonicalMain := "b6b8fc5d8f0f5ed413f6b0b9694970c0f02c6d7d"
+	t.Chdir(targetRoot)
+
+	ghRefRequested := false
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(func(ctx context.Context, name string, args ...string) (string, error) {
+			if name == "detent" {
+				return detentVersionJSON(canonicalMain), nil
+			}
+			if name == "gh" {
+				want := []string{"api", "repos/digitaldrywood/detent/git/ref/heads/main", "--jq", ".object.sha"}
+				if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+					return "", fmt.Errorf("unexpected gh args: %s", strings.Join(args, " "))
+				}
+				ghRefRequested = true
+				return canonicalMain + "\n", nil
+			}
+			return onboardingTestCommandRunner(detentVersionJSON(canonicalMain))(ctx, name, args...)
+		}),
+	)
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--format", "json",
+		"--config", filepath.Join(t.TempDir(), "global.yaml"),
+		"onboarding", "draft-answers",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !ghRefRequested {
+		t.Fatal("draft-answers did not request canonical Detent docs from GitHub")
+	}
+
+	var got struct {
+		Confidence      string `json:"confidence"`
+		DetentFreshness struct {
+			SourceChecked                 bool   `json:"source_checked"`
+			SourceStatus                  string `json:"source_status"`
+			CanonicalMain                 string `json:"canonical_main"`
+			DocumentationAccessMethod     string `json:"documentation_access_method"`
+			DocumentationRepository       string `json:"documentation_repository"`
+			DocumentationRef              string `json:"documentation_ref"`
+			DocumentationCommit           string `json:"documentation_commit"`
+			DocumentationMatchesCanonical bool   `json:"documentation_matches_canonical"`
+			DocumentationStatus           string `json:"documentation_status"`
+			BinaryVersion                 string `json:"binary_version"`
+			BinaryCommit                  string `json:"binary_commit"`
+			BinaryBuildDate               string `json:"binary_build_date"`
+			BinaryMatchesCanonical        bool   `json:"binary_matches_canonical"`
+			BinaryStatus                  string `json:"binary_status"`
+			Phase2RecommendationsBlocked  bool   `json:"phase2_recommendations_blocked"`
+		} `json:"detent_freshness"`
+		Notes []string `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	freshness := got.DetentFreshness
+	if freshness.SourceChecked || freshness.SourceStatus != "not_checked" {
+		t.Fatalf("local source freshness = %#v, want no local source checkout inspection", freshness)
+	}
+	if freshness.CanonicalMain != canonicalMain {
+		t.Fatalf("canonical main = %q, want %q", freshness.CanonicalMain, canonicalMain)
+	}
+	if freshness.DocumentationAccessMethod != "github_api" ||
+		freshness.DocumentationRepository != "digitaldrywood/detent" ||
+		freshness.DocumentationRef != "main" ||
+		freshness.DocumentationCommit != canonicalMain ||
+		!freshness.DocumentationMatchesCanonical ||
+		freshness.DocumentationStatus != "current" {
+		t.Fatalf("documentation freshness = %#v, want GitHub canonical docs at %s", freshness, canonicalMain)
+	}
+	if freshness.BinaryVersion == "" || freshness.BinaryCommit != canonicalMain || freshness.BinaryBuildDate == "" ||
+		!freshness.BinaryMatchesCanonical || freshness.BinaryStatus != "current" {
+		t.Fatalf("binary freshness = %#v, want binary matched to canonical docs", freshness)
+	}
+	if freshness.Phase2RecommendationsBlocked || got.Confidence != "medium" {
+		t.Fatalf("freshness = %#v confidence = %q, want remote docs path unblocked", freshness, got.Confidence)
+	}
+	if !containsSubstring(got.Notes, "Detent source docs will be read from GitHub at digitaldrywood/detent main") {
+		t.Fatalf("notes = %#v, want remote documentation note", got.Notes)
+	}
+}
+
+func TestOnboardingDraftAnswersCommandBlocksFailedRemoteDetentDocsWithoutLocalCheckout(t *testing.T) {
+	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
+	t.Chdir(targetRoot)
+
+	ghRefRequested := false
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(func(ctx context.Context, name string, args ...string) (string, error) {
+			if name == "detent" {
+				return detentVersionJSON("local"), nil
+			}
+			if name == "gh" {
+				want := []string{"api", "repos/digitaldrywood/detent/git/ref/heads/main", "--jq", ".object.sha"}
+				if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+					return "", fmt.Errorf("unexpected gh args: %s", strings.Join(args, " "))
+				}
+				ghRefRequested = true
+				return "", fmt.Errorf("gh auth failed")
+			}
+			return onboardingTestCommandRunner(detentVersionJSON("local"))(ctx, name, args...)
+		}),
+	)
+	var stdout bytes.Buffer
+	cmd.SetOut(&stdout)
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--format", "json",
+		"--config", filepath.Join(t.TempDir(), "global.yaml"),
+		"onboarding", "draft-answers",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("Execute() error = %v", err)
+	}
+	if !ghRefRequested {
+		t.Fatal("draft-answers did not request canonical Detent docs from GitHub")
+	}
+
+	var got struct {
+		Confidence      string `json:"confidence"`
+		DetentFreshness struct {
+			SourceChecked                bool   `json:"source_checked"`
+			SourceStatus                 string `json:"source_status"`
+			CanonicalMain                string `json:"canonical_main"`
+			DocumentationAccessMethod    string `json:"documentation_access_method"`
+			DocumentationRepository      string `json:"documentation_repository"`
+			DocumentationRef             string `json:"documentation_ref"`
+			DocumentationStatus          string `json:"documentation_status"`
+			DocumentationError           string `json:"documentation_error"`
+			Phase2RecommendationsBlocked bool   `json:"phase2_recommendations_blocked"`
+		} `json:"detent_freshness"`
+		Notes []string `json:"notes"`
+	}
+	if err := json.Unmarshal(stdout.Bytes(), &got); err != nil {
+		t.Fatalf("stdout is not JSON: %v\n%s", err, stdout.String())
+	}
+	freshness := got.DetentFreshness
+	if freshness.SourceChecked || freshness.SourceStatus != "not_checked" {
+		t.Fatalf("local source freshness = %#v, want no local source checkout inspection", freshness)
+	}
+	if freshness.CanonicalMain != "" {
+		t.Fatalf("canonical main = %q, want blank when remote docs cannot be pinned", freshness.CanonicalMain)
+	}
+	if freshness.DocumentationAccessMethod != "github_api" ||
+		freshness.DocumentationRepository != "digitaldrywood/detent" ||
+		freshness.DocumentationRef != "main" ||
+		freshness.DocumentationStatus != "error" ||
+		freshness.DocumentationError == "" {
+		t.Fatalf("documentation freshness = %#v, want failed GitHub canonical docs evidence", freshness)
+	}
+	if !freshness.Phase2RecommendationsBlocked || got.Confidence != "needs-review" {
+		t.Fatalf("freshness = %#v confidence = %q, want failed remote docs path blocked", freshness, got.Confidence)
+	}
+	if !containsSubstring(got.Notes, "could not read canonical Detent docs from GitHub") {
+		t.Fatalf("notes = %#v, want remote documentation error note", got.Notes)
+	}
+}
+
 func TestOnboardingDraftAnswersCommandBlocksUnprovenDetentBinary(t *testing.T) {
 	targetRoot := initOnboardingGitRepository(t, "https://github.com/acme/api.git")
 	sourceRoot, _, canonicalMain := initOnboardingDetentSourceCheckout(t, false)
@@ -1026,7 +1207,12 @@ func TestOnboardingDraftAnswersCommandAcceptsIdentityOverrides(t *testing.T) {
 	answersPath := filepath.Join(t.TempDir(), "answers.env")
 	t.Chdir(targetRoot)
 
-	cmd := cli.NewRootCommand(context.Background(), cli.WithStdoutTTY(func() bool { return false }))
+	canonicalMain := "b6b8fc5d8f0f5ed413f6b0b9694970c0f02c6d7d"
+	cmd := cli.NewRootCommand(
+		context.Background(),
+		cli.WithStdoutTTY(func() bool { return false }),
+		cli.WithCommandRunner(onboardingTestCommandRunnerWithRemoteDetentDocs(detentVersionJSON(canonicalMain), canonicalMain)),
+	)
 	var stdout bytes.Buffer
 	cmd.SetOut(&stdout)
 	cmd.SetErr(&bytes.Buffer{})
@@ -1466,6 +1652,20 @@ func onboardingTestCommandRunner(detentVersionOutput string) cli.CommandRunner {
 		cmd := exec.CommandContext(ctx, name, args...)
 		output, err := cmd.CombinedOutput()
 		return string(output), err
+	}
+}
+
+func onboardingTestCommandRunnerWithRemoteDetentDocs(detentVersionOutput string, canonicalMain string) cli.CommandRunner {
+	base := onboardingTestCommandRunner(detentVersionOutput)
+	return func(ctx context.Context, name string, args ...string) (string, error) {
+		if name == "gh" {
+			want := []string{"api", "repos/digitaldrywood/detent/git/ref/heads/main", "--jq", ".object.sha"}
+			if strings.Join(args, "\x00") != strings.Join(want, "\x00") {
+				return "", fmt.Errorf("unexpected gh args: %s", strings.Join(args, " "))
+			}
+			return canonicalMain + "\n", nil
+		}
+		return base(ctx, name, args...)
 	}
 }
 

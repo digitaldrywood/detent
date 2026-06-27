@@ -28,6 +28,7 @@ const (
 	onboardingAnswersPhaseDecision = "decision"
 	onboardingAnswersPhaseMutation = "mutation"
 	onboardingDetentRepository     = "digitaldrywood/detent"
+	onboardingDetentCanonicalRef   = "main"
 )
 
 var (
@@ -88,23 +89,30 @@ type onboardingDraftAnswersResult struct {
 }
 
 type onboardingDetentFreshnessEvidence struct {
-	SourceChecked                bool   `json:"source_checked"`
-	SourceRoot                   string `json:"source_root,omitempty"`
-	SourceRemote                 string `json:"source_remote,omitempty"`
-	SourceRepository             string `json:"source_repository,omitempty"`
-	SourceHead                   string `json:"source_head,omitempty"`
-	CanonicalMain                string `json:"canonical_main,omitempty"`
-	SourceMatchesCanonical       bool   `json:"source_matches_canonical"`
-	SourceStatus                 string `json:"source_status"`
-	SourceError                  string `json:"source_error,omitempty"`
-	BinaryChecked                bool   `json:"binary_checked"`
-	BinaryVersion                string `json:"binary_version,omitempty"`
-	BinaryCommit                 string `json:"binary_commit,omitempty"`
-	BinaryBuildDate              string `json:"binary_build_date,omitempty"`
-	BinaryMatchesCanonical       bool   `json:"binary_matches_canonical"`
-	BinaryStatus                 string `json:"binary_status"`
-	BinaryError                  string `json:"binary_error,omitempty"`
-	Phase2RecommendationsBlocked bool   `json:"phase2_recommendations_blocked"`
+	SourceChecked                 bool   `json:"source_checked"`
+	SourceRoot                    string `json:"source_root,omitempty"`
+	SourceRemote                  string `json:"source_remote,omitempty"`
+	SourceRepository              string `json:"source_repository,omitempty"`
+	SourceHead                    string `json:"source_head,omitempty"`
+	CanonicalMain                 string `json:"canonical_main,omitempty"`
+	SourceMatchesCanonical        bool   `json:"source_matches_canonical"`
+	SourceStatus                  string `json:"source_status"`
+	SourceError                   string `json:"source_error,omitempty"`
+	DocumentationAccessMethod     string `json:"documentation_access_method,omitempty"`
+	DocumentationRepository       string `json:"documentation_repository,omitempty"`
+	DocumentationRef              string `json:"documentation_ref,omitempty"`
+	DocumentationCommit           string `json:"documentation_commit,omitempty"`
+	DocumentationMatchesCanonical bool   `json:"documentation_matches_canonical"`
+	DocumentationStatus           string `json:"documentation_status,omitempty"`
+	DocumentationError            string `json:"documentation_error,omitempty"`
+	BinaryChecked                 bool   `json:"binary_checked"`
+	BinaryVersion                 string `json:"binary_version,omitempty"`
+	BinaryCommit                  string `json:"binary_commit,omitempty"`
+	BinaryBuildDate               string `json:"binary_build_date,omitempty"`
+	BinaryMatchesCanonical        bool   `json:"binary_matches_canonical"`
+	BinaryStatus                  string `json:"binary_status"`
+	BinaryError                   string `json:"binary_error,omitempty"`
+	Phase2RecommendationsBlocked  bool   `json:"phase2_recommendations_blocked"`
 }
 
 type onboardingDetentVersionEvidence struct {
@@ -462,23 +470,73 @@ func draftOnboardingAnswers(ctx context.Context, cfg onboardingDraftAnswersConfi
 
 func onboardingDetentFreshness(ctx context.Context, detentSourceRoot string, opts options) onboardingDetentFreshnessEvidence {
 	evidence := onboardingDetentFreshnessEvidence{
-		SourceStatus: "not_checked",
-		BinaryStatus: "not_checked",
+		SourceStatus:        "not_checked",
+		DocumentationStatus: "not_checked",
+		BinaryStatus:        "not_checked",
 	}
 	sourceInput := strings.TrimSpace(detentSourceRoot)
 	if sourceInput != "" {
 		evidence = onboardingDetentSourceFreshness(ctx, sourceInput, opts)
+		if evidence.SourceStatus == "current" {
+			evidence = onboardingDetentLocalDocumentationFreshness(evidence)
+		}
+	} else {
+		evidence = onboardingDetentRemoteDocumentationFreshness(ctx, opts, evidence)
 	}
 	evidence = onboardingDetentBinaryFreshness(ctx, opts, evidence)
 	evidence.Phase2RecommendationsBlocked = onboardingDetentFreshnessBlocksPhase2(evidence)
 	return evidence
 }
 
+func onboardingDetentLocalDocumentationFreshness(evidence onboardingDetentFreshnessEvidence) onboardingDetentFreshnessEvidence {
+	evidence.DocumentationAccessMethod = "local_checkout"
+	evidence.DocumentationRepository = strings.TrimSpace(evidence.SourceRepository)
+	if evidence.DocumentationRepository == "" {
+		evidence.DocumentationRepository = onboardingDetentRepository
+	}
+	evidence.DocumentationRef = "HEAD"
+	evidence.DocumentationCommit = strings.TrimSpace(evidence.SourceHead)
+	evidence.DocumentationMatchesCanonical = onboardingCommitsMatch(evidence.DocumentationCommit, evidence.CanonicalMain)
+	evidence.DocumentationStatus = evidence.SourceStatus
+	return evidence
+}
+
+func onboardingDetentRemoteDocumentationFreshness(ctx context.Context, opts options, evidence onboardingDetentFreshnessEvidence) onboardingDetentFreshnessEvidence {
+	evidence.DocumentationAccessMethod = "github_api"
+	evidence.DocumentationRepository = onboardingDetentRepository
+	evidence.DocumentationRef = onboardingDetentCanonicalRef
+	evidence.DocumentationStatus = "error"
+	output, err := onboardingRunCommand(
+		ctx,
+		opts,
+		"gh",
+		"api",
+		"repos/"+onboardingDetentRepository+"/git/ref/heads/"+onboardingDetentCanonicalRef,
+		"--jq",
+		".object.sha",
+	)
+	if err != nil {
+		evidence.DocumentationError = err.Error()
+		return evidence
+	}
+	commit := strings.TrimSpace(output)
+	if commit == "" {
+		evidence.DocumentationError = "GitHub API returned blank canonical Detent commit"
+		return evidence
+	}
+	evidence.CanonicalMain = commit
+	evidence.DocumentationCommit = commit
+	evidence.DocumentationMatchesCanonical = true
+	evidence.DocumentationStatus = "current"
+	return evidence
+}
+
 func onboardingDetentSourceFreshness(ctx context.Context, sourceInput string, opts options) onboardingDetentFreshnessEvidence {
 	evidence := onboardingDetentFreshnessEvidence{
-		SourceChecked: true,
-		SourceStatus:  "error",
-		BinaryStatus:  "not_checked",
+		SourceChecked:       true,
+		SourceStatus:        "error",
+		DocumentationStatus: "not_checked",
+		BinaryStatus:        "not_checked",
 	}
 	root, err := defaultGitTopLevel(ctx, sourceInput)
 	if err != nil {
@@ -572,10 +630,16 @@ func onboardingDetentFreshnessBlocksPhase2(evidence onboardingDetentFreshnessEvi
 	if evidence.SourceChecked && evidence.SourceStatus != "current" {
 		return true
 	}
+	if !evidence.SourceChecked && evidence.DocumentationStatus != "current" {
+		return true
+	}
 	if strings.TrimSpace(evidence.CanonicalMain) == "" {
 		return false
 	}
-	return evidence.BinaryStatus != "current"
+	if evidence.BinaryStatus == "stale" {
+		return true
+	}
+	return evidence.SourceChecked && evidence.BinaryStatus != "current"
 }
 
 func onboardingDetentFreshnessNotes(evidence onboardingDetentFreshnessEvidence) []string {
@@ -591,6 +655,17 @@ func onboardingDetentFreshnessNotes(evidence onboardingDetentFreshnessEvidence) 
 		default:
 			notes = append(notes, "could not prove Detent source checkout freshness; fetch/update it or read onboarding docs from GitHub at the canonical head before Phase 2 recommendations")
 		}
+	}
+	if evidence.DocumentationStatus == "current" {
+		switch evidence.DocumentationAccessMethod {
+		case "github_api":
+			notes = append(notes, "Detent source docs will be read from GitHub at digitaldrywood/detent main")
+		case "local_checkout":
+			notes = append(notes, "Detent source docs will be read from the verified local checkout")
+		}
+	}
+	if evidence.DocumentationStatus == "error" {
+		notes = append(notes, "could not read canonical Detent docs from GitHub; retry gh or use a verified local checkout before Phase 2 recommendations")
 	}
 	if evidence.BinaryStatus == "stale" {
 		notes = append(notes, "installed Detent binary commit differs from fetched origin/main; reinstall before using local command recommendations")
