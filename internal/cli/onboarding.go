@@ -630,6 +630,9 @@ func onboardingDetentFreshnessBlocksPhase2(evidence onboardingDetentFreshnessEvi
 	if evidence.SourceChecked && evidence.SourceStatus != "current" {
 		return true
 	}
+	if !evidence.SourceChecked && evidence.DocumentationStatus != "current" {
+		return true
+	}
 	if strings.TrimSpace(evidence.CanonicalMain) == "" {
 		return false
 	}
