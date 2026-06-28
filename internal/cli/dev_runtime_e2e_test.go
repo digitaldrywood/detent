@@ -79,6 +79,10 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	fleetBody := waitForDashboardCondition(t, dashboardURL+"/kanban", done, "fleet kanban demo board", func(body string) bool {
 		return strings.Contains(body, `aria-label="Fleet Kanban"`) &&
 			strings.Contains(body, `data-project-kanban-visibility-key="fleet"`) &&
+			strings.Contains(body, `id="kanban-feedback"`) &&
+			strings.Contains(body, `hx-get="/api/v1/kanban/move?`) &&
+			strings.Contains(body, `kanban_board=fleet`) &&
+			strings.Contains(body, `project_id=`+projectID) &&
 			strings.Contains(body, `href="/projects/`+projectID+`/kanban"`) &&
 			strings.Contains(body, `href="/projects/docs-site/kanban"`) &&
 			strings.Contains(body, "Kanban demo backlog intake") &&
@@ -87,10 +91,11 @@ func TestStartKanbanDemoRendersAndAppliesSafeActions(t *testing.T) {
 	for _, forbidden := range []string{
 		`data-kanban-action="move"`,
 		`hx-post="/api/v1/kanban/move"`,
-		`id="kanban-feedback"`,
+		`draggable="true"`,
+		`data-kanban-drag-move-form>`,
 	} {
 		if strings.Contains(fleetBody, forbidden) {
-			t.Fatalf("fleet kanban demo rendered mutation affordance %q:\n%s", forbidden, fleetBody)
+			t.Fatalf("fleet kanban demo rendered project-only affordance %q:\n%s", forbidden, fleetBody)
 		}
 	}
 

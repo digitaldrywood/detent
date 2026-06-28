@@ -271,9 +271,7 @@ func (s *Server) fleetKanban(c echo.Context) error {
 		return s.demoFleetKanban(c, scenario)
 	}
 	ctx := c.Request().Context()
-	data := s.dashboardData(ctx, s.latestSnapshot(ctx))
-	data.ActiveNav = "kanban"
-	data.Title = instancePageTitle(s.instanceName(), "Kanban - Detent")
+	data := s.fleetKanbanData(ctx, s.latestSnapshot(ctx))
 	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 	return render(c, templates.ProjectKanbanPage(data))
 }
@@ -370,9 +368,7 @@ func cleanProjectRouteParam(projectID string) string {
 
 func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
 	instanceName := s.instanceName()
-	if target, _, _ := s.kanbanActionTarget(""); target.key != "" {
-		snapshot = s.kanbanSnapshotWithPendingStates(target.key, "", snapshot)
-	}
+	snapshot = s.fleetKanbanSnapshotWithPendingStates(snapshot)
 	return templates.DashboardData{
 		Title:           instancePageTitle(instanceName, "Detent"),
 		ApplicationName: applicationName(instanceName),
@@ -387,6 +383,13 @@ func (s *Server) dashboardData(ctx context.Context, snapshot telemetry.Snapshot)
 		Assets:          s.assets.templatePaths(),
 		ActiveNav:       "fleet",
 	}
+}
+
+func (s *Server) fleetKanbanData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
+	data := s.dashboardData(ctx, snapshot)
+	data.ActiveNav = "kanban"
+	data.Title = instancePageTitle(s.instanceName(), "Kanban - Detent")
+	return data
 }
 
 func (s *Server) projectDashboardData(ctx context.Context, projectID string, snapshot telemetry.Snapshot) (templates.DashboardData, bool) {

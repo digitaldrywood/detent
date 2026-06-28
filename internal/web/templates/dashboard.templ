@@ -2164,7 +2164,7 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 					<p class="text-sm text-muted-foreground">{ projectKanbanSectionDescription(data) }</p>
 				</div>
 				<div class="flex shrink-0 flex-wrap items-center gap-2">
-					if kanbanIntegrationEnabled(data) {
+					if projectKanbanActionsEnabled(data) {
 						<span class="inline-flex min-h-8 items-center rounded-full border border-success bg-success-soft px-2.5 py-1 text-xs font-semibold text-success">Integration</span>
 					} else {
 						<span class="inline-flex min-h-8 items-center rounded-full border border-accent-soft bg-accent-soft px-2.5 py-1 text-xs font-semibold text-accent">Read-only</span>
@@ -2182,7 +2182,7 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 			if projectKanbanReadOnlySetupNotice(data) {
 				@projectKanbanReadOnlyNotice(data)
 			}
-			if kanbanIntegrationEnabled(data) && snapshotReady(data.Snapshot) {
+			if projectKanbanActionsEnabled(data) && snapshotReady(data.Snapshot) {
 				<div id="kanban-feedback" role="status" aria-live="polite" class={ kanbanFeedbackClass(data.Kanban) }>{ kanbanFeedbackText(data.Kanban) }</div>
 			}
 			if !snapshotReady(data.Snapshot) {
@@ -2201,7 +2201,7 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 					}
 				</div>
 			}
-			if kanbanIntegrationEnabled(data) && snapshotReady(data.Snapshot) {
+			if projectKanbanActionsEnabled(data) && snapshotReady(data.Snapshot) {
 				@kanbanScript()
 			}
 		</section>
@@ -2832,7 +2832,7 @@ templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 				@projectKanbanCompactChipView(chip)
 			}
 		</div>
-		if kanbanIntegrationEnabled(data) {
+		if projectKanbanCardActionsVisible(data, card) {
 			@projectKanbanActionButtons(data, card)
 		}
 		@projectKanbanCardDetails(data, card)
@@ -2908,7 +2908,7 @@ templ projectKanbanCardDetails(data DashboardData, card projectKanbanCard) {
 					}
 				</div>
 			}
-			if projectKanbanMoveDisabledText(data, card) != "" && kanbanIntegrationEnabled(data) {
+			if projectKanbanMoveDisabledText(data, card) != "" && projectKanbanCardIntegrationEnabled(data, card) {
 				<div class="min-w-0 max-w-full overflow-hidden break-words rounded-md border border-border bg-muted/60 px-3 py-2 text-sm text-muted-foreground">{ projectKanbanMoveDisabledText(data, card) }</div>
 			}
 		</div>
@@ -2952,12 +2952,16 @@ templ projectKanbanActionButtons(data DashboardData, card projectKanbanCard) {
 	<div class="mt-3 flex min-w-0 max-w-full flex-wrap items-center gap-1.5" aria-label="Kanban actions">
 		if projectKanbanCardCanMove(data, card) {
 			@projectKanbanMoveDialogTrigger(data, card)
-			@projectKanbanDragMoveForm(data, card)
+			if projectKanbanDragDropEnabled(data) {
+				@projectKanbanDragMoveForm(data, card)
+			}
 		}
-		if projectKanbanCardCanRemove(data, card) {
-			@projectKanbanRemoveForm(data, card)
+		if isProjectDashboard(data) && kanbanIntegrationEnabled(data) {
+			if projectKanbanCardCanRemove(data, card) {
+				@projectKanbanRemoveForm(data, card)
+			}
+			@projectKanbanCommentDialogTriggers(data, card)
 		}
-		@projectKanbanCommentDialogTriggers(data, card)
 	</div>
 }
 
@@ -2984,7 +2988,8 @@ templ projectKanbanMoveDialogTrigger(data DashboardData, card projectKanbanCard)
 templ projectKanbanDragMoveForm(data DashboardData, card projectKanbanCard) {
 	<form class="hidden" hx-post="/api/v1/kanban/move" hx-target="#kanban-feedback" hx-swap="outerHTML" data-kanban-drag-move-form>
 		<input type="hidden" name="kanban_drag" value="true"/>
-		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
+		<input type="hidden" name="kanban_board" value={ projectKanbanBoardScope(data) }/>
+		<input type="hidden" name="project_id" value={ projectKanbanCardProjectID(data, card) }/>
 		<input type="hidden" name="issue_id" value={ card.IssueID }/>
 		<input type="hidden" name="identifier" value={ card.Identifier }/>
 		<input type="hidden" name="title" value={ card.Title }/>
@@ -2998,7 +3003,7 @@ templ projectKanbanDragMoveForm(data DashboardData, card projectKanbanCard) {
 
 templ projectKanbanRemoveForm(data DashboardData, card projectKanbanCard) {
 	<form class="inline-flex" hx-post="/api/v1/kanban/remove" hx-target="#kanban-feedback" hx-swap="outerHTML" hx-confirm="Remove this item from project?">
-		<input type="hidden" name="project_id" value={ kanbanProjectID(data) }/>
+		<input type="hidden" name="project_id" value={ projectKanbanCardProjectID(data, card) }/>
 		<input type="hidden" name="issue_id" value={ card.IssueID }/>
 		<input type="hidden" name="current_state" value={ card.Stage }/>
 		if card.PRNumber > 0 {
@@ -3527,6 +3532,7 @@ templ KanbanMoveDialogContent(data KanbanMoveDialogData) {
 	@kanbanDialogError(data.Error)
 	<form class="grid gap-4" hx-post="/api/v1/kanban/move" hx-target="#kanban-feedback" hx-swap="outerHTML">
 		<input type="hidden" name="kanban_dialog" value="true"/>
+		<input type="hidden" name="kanban_board" value={ data.Board }/>
 		<input type="hidden" name="project_id" value={ data.ProjectID }/>
 		<input type="hidden" name="issue_id" value={ data.IssueID }/>
 		<input type="hidden" name="current_state" value={ data.CurrentState }/>
