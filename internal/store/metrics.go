@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -173,6 +174,8 @@ type workflowLaneFlow struct {
 	waitSeconds   int64
 }
 
+const maxWorkflowRepresentativeRuns = 3
+
 type workflowInterval struct {
 	startedAt  time.Time
 	finishedAt time.Time
@@ -229,6 +232,7 @@ func workflowMetricsReport(rows []workflowMetricRow, flowRows []workflowMetricRo
 	}
 
 	laneFlows := workflowLaneFlows(flowRows)
+	laneRepresentatives := workflowLaneRepresentativeRuns(rows, flowRows)
 	metrics := make([]WorkflowPhaseMetric, 0, len(buckets))
 	for _, bucket := range buckets {
 		metric := workflowPhaseMetricFromBucket(bucket)
@@ -236,6 +240,9 @@ func workflowMetricsReport(rows []workflowMetricRow, flowRows []workflowMetricRo
 			metric.ActiveSeconds = flow.activeSeconds
 			metric.WaitSeconds = flow.waitSeconds
 			metric.ActivePercent = workflowPercent(flow.activeSeconds, flow.activeSeconds+flow.waitSeconds)
+		}
+		if representatives := laneRepresentatives[workflowMetricBucketKey(bucket)]; len(representatives) > 0 {
+			metric.Representatives = representatives
 		}
 		metrics = append(metrics, metric)
 	}
@@ -336,6 +343,125 @@ func workflowLaneFlows(rows []workflowMetricRow) map[string]workflowLaneFlow {
 		out[key] = *flow
 	}
 	return out
+}
+
+func workflowLaneRepresentativeRuns(rows []workflowMetricRow, flowRows []workflowMetricRow) map[string][]WorkflowRepresentativeRun {
+	activeEvents := make([]WorkflowPhaseEvent, 0, len(flowRows))
+	for _, row := range flowRows {
+		event := row.event
+		if workflowPhaseTypeIsActive(event.PhaseType) && workflowEventHasInterval(event) {
+			activeEvents = append(activeEvents, event)
+		}
+	}
+	sort.SliceStable(activeEvents, func(i int, j int) bool {
+		if activeEvents[i].FinishedAt.Equal(activeEvents[j].FinishedAt) {
+			return activeEvents[i].ID > activeEvents[j].ID
+		}
+		return activeEvents[i].FinishedAt.After(activeEvents[j].FinishedAt)
+	})
+
+	laneEvents := make([]WorkflowPhaseEvent, 0, len(rows))
+	for _, row := range rows {
+		event := row.event
+		if event.PhaseType == WorkflowPhaseTypeLane && event.DurationSeconds >= 0 {
+			laneEvents = append(laneEvents, event)
+		}
+	}
+	sort.SliceStable(laneEvents, func(i int, j int) bool {
+		if laneEvents[i].FinishedAt.Equal(laneEvents[j].FinishedAt) {
+			return laneEvents[i].ID > laneEvents[j].ID
+		}
+		return laneEvents[i].FinishedAt.After(laneEvents[j].FinishedAt)
+	})
+
+	out := map[string][]WorkflowRepresentativeRun{}
+	seen := map[string]map[string]struct{}{}
+	fallbacks := map[string][]WorkflowRepresentativeRun{}
+	for _, lane := range laneEvents {
+		key := workflowMetricKey(lane)
+		for _, activeEvent := range activeEvents {
+			if len(out[key]) >= maxWorkflowRepresentativeRuns {
+				break
+			}
+			if !workflowEventsShareIssue(lane, activeEvent) {
+				continue
+			}
+			if _, ok := workflowEventOverlap(lane, activeEvent); !ok {
+				continue
+			}
+			representative := workflowRepresentativeRunFromEvents(lane, activeEvent)
+			workflowAppendRepresentative(out, seen, key, representative)
+		}
+		fallbacks[key] = append(fallbacks[key], workflowRepresentativeRunFromEvents(lane, lane))
+	}
+	for key, representatives := range fallbacks {
+		for _, representative := range representatives {
+			if len(out[key]) >= maxWorkflowRepresentativeRuns {
+				break
+			}
+			workflowAppendRepresentative(out, seen, key, representative)
+		}
+	}
+	return out
+}
+
+func workflowRepresentativeRunFromEvents(lane WorkflowPhaseEvent, event WorkflowPhaseEvent) WorkflowRepresentativeRun {
+	run := WorkflowRepresentativeRun{
+		RunID:      event.RunID,
+		SessionID:  event.SessionID,
+		IssueID:    firstWorkflowMetricNonEmpty(event.IssueID, lane.IssueID),
+		Identifier: firstWorkflowMetricNonEmpty(event.Identifier, lane.Identifier),
+		IssueURL:   firstWorkflowMetricNonEmpty(event.IssueURL, lane.IssueURL),
+		FinishedAt: event.FinishedAt,
+	}
+	if run.FinishedAt.IsZero() {
+		run.FinishedAt = lane.FinishedAt
+	}
+	return run
+}
+
+func workflowAppendRepresentative(out map[string][]WorkflowRepresentativeRun, seen map[string]map[string]struct{}, key string, representative WorkflowRepresentativeRun) bool {
+	representativeKey := workflowRepresentativeRunKey(representative)
+	if representativeKey == "" {
+		return false
+	}
+	if seen[key] == nil {
+		seen[key] = map[string]struct{}{}
+	}
+	if _, ok := seen[key][representativeKey]; ok {
+		return false
+	}
+	seen[key][representativeKey] = struct{}{}
+	out[key] = append(out[key], representative)
+	return true
+}
+
+func workflowRepresentativeRunKey(run WorkflowRepresentativeRun) string {
+	parts := []string{
+		strconv.FormatInt(run.RunID, 10),
+		strconv.FormatInt(run.SessionID, 10),
+		strings.TrimSpace(run.IssueID),
+		strings.TrimSpace(run.Identifier),
+		strings.TrimSpace(run.IssueURL),
+	}
+	if !run.FinishedAt.IsZero() {
+		parts = append(parts, run.FinishedAt.UTC().Format(time.RFC3339Nano))
+	}
+	key := strings.Join(parts, "\x00")
+	if strings.Trim(key, "\x00") == "0\x000" {
+		return ""
+	}
+	return key
+}
+
+func firstWorkflowMetricNonEmpty(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func workflowLaneTrends(rows []workflowMetricRow, from time.Time, to time.Time) []WorkflowLaneTrend {

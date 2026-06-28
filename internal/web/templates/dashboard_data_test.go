@@ -71,6 +71,89 @@ func TestRuntimeStatusReflectsDraining(t *testing.T) {
 	}
 }
 
+func TestWorkflowDiagnosticPromptIncludesRequiredLaneSections(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	window := telemetry.WorkflowMetricsWindow{
+		Label: "24h",
+		From:  now.Add(-24 * time.Hour),
+		To:    now,
+		SubPhases: []telemetry.WorkflowPhaseMetric{
+			{PhaseType: "agent_session", PhaseName: "agent_active", Count: 2, TotalSeconds: 240, TotalTokens: 1500, Turns: 3},
+			{PhaseType: "local_check", PhaseName: "make check", Count: 1, TotalSeconds: 120},
+			{PhaseType: "ci", PhaseName: "ci", Count: 3, TotalSeconds: 600},
+			{PhaseType: "github_backoff", PhaseName: "github_backoff", Count: 1, TotalSeconds: 90},
+			{PhaseType: "merge_queue", PhaseName: "merge_queue", Count: 2, TotalSeconds: 300},
+		},
+	}
+	metric := telemetry.WorkflowPhaseMetric{
+		ProjectID:      "detent",
+		PhaseType:      "lane",
+		PhaseName:      "Merging",
+		Count:          4,
+		TotalSeconds:   1200,
+		AverageSeconds: 300,
+		P50Seconds:     240,
+		P90Seconds:     600,
+		P95Seconds:     900,
+		ActiveSeconds:  300,
+		WaitSeconds:    900,
+		Comparison: &telemetry.WorkflowMetricComparison{
+			Label:        "24h vs previous 24h",
+			DeltaSeconds: 180,
+			Direction:    "slower",
+		},
+		Representatives: []telemetry.WorkflowRepresentativeRun{
+			{RunID: 42, SessionID: 84, Identifier: "digitaldrywood/detent#759", IssueURL: "https://github.com/digitaldrywood/detent/issues/759", FinishedAt: now.Add(-time.Hour)},
+			{RunID: 43, SessionID: 85, IssueID: "issue-760", FinishedAt: now.Add(-2 * time.Hour)},
+		},
+	}
+	report := telemetry.WorkflowMetrics{
+		Windows: []telemetry.WorkflowMetricsWindow{window},
+		OldestCards: []telemetry.WorkflowLaneAge{
+			{ProjectID: "detent", IssueID: "issue-759", Identifier: "digitaldrywood/detent#759", URL: "https://github.com/digitaldrywood/detent/issues/759", State: "Merging", AgeSeconds: 7200},
+			{ProjectID: "detent", IssueID: "issue-760", Identifier: "digitaldrywood/detent#760", URL: "https://github.com/digitaldrywood/detent/issues/760", State: "In Progress", AgeSeconds: 5400},
+		},
+	}
+
+	prompt := workflowDiagnosticPrompt(telemetry.Project{ID: "detent", DisplayName: "Detent"}, report, window, metric)
+	for _, want := range []string{
+		"Detent workflow lane diagnostic request",
+		"Project: Detent (detent)",
+		"Lane: Merging",
+		"Selected window: 24h (2026-06-27T12:00:00Z to 2026-06-28T12:00:00Z)",
+		"Timing",
+		"Count: 4 lane exits",
+		"Average: 5m 0s",
+		"P50: 4m 0s",
+		"P90: 10m 0s",
+		"P95: 15m 0s",
+		"Trend delta: Slower +3m 0s (24h vs previous 24h)",
+		"Wait vs active: 15m 0s wait / 5m 0s active / 20m 0s total (25% active)",
+		"Sub-phase breakdown",
+		"AI active time/tokens: 2 events, 4m 0s total, 2m 0s avg, 1,500 tokens, 3 turns",
+		"Local checks: 1 events, 2m 0s total, 2m 0s avg",
+		"CI wait: 3 events, 10m 0s total, 3m 20s avg",
+		"GitHub backoff: 1 events, 1m 30s total, 1m 30s avg",
+		"Merge-queue wait: 2 events, 5m 0s total, 2m 30s avg",
+		"Oldest/currently stuck cards in Merging",
+		"digitaldrywood/detent#759 / 2h 0m old / https://github.com/digitaldrywood/detent/issues/759",
+		"Representative run identifiers",
+		"run_id=42 / session_id=84 / identifier=digitaldrywood/detent#759 / url=https://github.com/digitaldrywood/detent/issues/759 / finished_at=2026-06-28T11:00:00Z",
+		"run_id=43 / session_id=85 / issue_id=issue-760 / finished_at=2026-06-28T10:00:00Z",
+		"Diagnose why this lane is slow.",
+		"Propose concrete prioritized fixes",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("workflow diagnostic prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	if strings.Contains(prompt, "digitaldrywood/detent#760 / 1h 30m old") {
+		t.Fatalf("workflow diagnostic prompt included oldest card from another lane:\n%s", prompt)
+	}
+}
+
 func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 	t.Parallel()
 
