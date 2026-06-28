@@ -47,6 +47,7 @@ type kanbanActionTarget struct {
 
 type kanbanMoveRequest struct {
 	projectID    string
+	board        string
 	issueID      string
 	currentState string
 	targetState  string
@@ -73,6 +74,7 @@ type kanbanCommentRequest struct {
 const (
 	kanbanDialogContentTarget = "#kanban-dialog-content"
 	kanbanProjectBoardTarget  = "#project-kanban"
+	kanbanFleetBoardTarget    = "#fleet-kanban"
 	kanbanDialogSucceeded     = "kanbanActionSucceeded"
 	kanbanRemovalPendingTTL   = 5 * time.Minute
 )
@@ -340,6 +342,16 @@ func (s *Server) kanbanMoveSuccess(c echo.Context, req kanbanMoveRequest, messag
 	s.requestKanbanRefresh(ctx)
 	if c.Request().Header.Get("HX-Request") != "true" || strings.TrimSpace(req.projectID) == "" {
 		return kanbanFeedback(c, http.StatusOK, message)
+	}
+	if strings.EqualFold(strings.TrimSpace(req.board), "fleet") {
+		data := s.fleetKanbanData(ctx, s.latestSnapshot(ctx))
+		data.Kanban.Feedback = message
+		data.Kanban.FeedbackKind = "success"
+
+		c.Response().Header().Set("HX-Trigger", kanbanDialogSucceeded)
+		c.Response().Header().Set("HX-Retarget", kanbanFleetBoardTarget)
+		c.Response().Header().Set("HX-Reswap", "outerHTML")
+		return render(c, templates.ProjectKanbanSnapshot(data))
 	}
 
 	data, ok := s.projectDashboardData(ctx, req.projectID, s.latestSnapshot(ctx))
@@ -727,6 +739,7 @@ func (s *Server) kanbanCommentDialogValidation(c echo.Context, message string) e
 func (s *Server) kanbanMoveDialogData(c echo.Context, message string) (templates.KanbanMoveDialogData, string) {
 	data := templates.KanbanMoveDialogData{
 		ProjectID:    kanbanRequestValue(c, "project_id"),
+		Board:        kanbanRequestValue(c, "kanban_board"),
 		IssueID:      kanbanRequestValue(c, "issue_id"),
 		Identifier:   kanbanRequestValue(c, "identifier"),
 		Title:        kanbanRequestValue(c, "title"),
@@ -832,6 +845,7 @@ func (s *Server) kanbanCommentDialogData(c echo.Context, message string) (templa
 func parseKanbanMoveRequest(c echo.Context) (kanbanMoveRequest, string, int) {
 	req := kanbanMoveRequest{
 		projectID:    strings.TrimSpace(c.FormValue("project_id")),
+		board:        strings.TrimSpace(c.FormValue("kanban_board")),
 		issueID:      strings.TrimSpace(c.FormValue("issue_id")),
 		currentState: strings.TrimSpace(c.FormValue("current_state")),
 		targetState:  strings.TrimSpace(c.FormValue("target_state")),
@@ -970,7 +984,7 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 		mode = workflowconfig.KanbanModeReadOnly
 	}
 	states := kanbanStateNames(target.workflow, snapshot)
-	return templates.KanbanData{
+	data := templates.KanbanData{
 		Mode:                    mode,
 		ProjectID:               strings.TrimSpace(projectID),
 		States:                  states,
@@ -978,6 +992,74 @@ func (s *Server) dashboardKanbanData(ctx context.Context, projectID string, snap
 		TerminalStatesByProject: s.kanbanTerminalStatesByProject(projectID),
 		AllowedTransitions:      kanbanAllowedTransitions(target.workflow, states),
 	}
+	if strings.TrimSpace(projectID) == "" {
+		data.Projects = s.kanbanProjectsData(snapshot)
+	}
+	return data
+}
+
+func (s *Server) kanbanProjectsData(snapshot telemetry.Snapshot) map[string]templates.KanbanProjectData {
+	if s.registry == nil {
+		return nil
+	}
+	projects := s.registry.List()
+	if len(projects) == 0 {
+		return nil
+	}
+	out := make(map[string]templates.KanbanProjectData, len(projects))
+	for _, trackedProject := range projects {
+		if trackedProject == nil {
+			continue
+		}
+		projectID := strings.TrimSpace(string(trackedProject.ID()))
+		if projectID == "" {
+			continue
+		}
+		target, _, _ := s.kanbanActionTarget(projectID)
+		if target.connector == nil {
+			continue
+		}
+		states := kanbanStateNames(target.workflow, snapshot)
+		out[projectID] = templates.KanbanProjectData{
+			Mode:               target.kanban.Mode,
+			ProjectID:          projectID,
+			States:             states,
+			TerminalStates:     target.workflow.Tracker.TerminalStates,
+			AllowedTransitions: kanbanAllowedTransitions(target.workflow, states),
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func (s *Server) fleetKanbanSnapshotWithPendingStates(snapshot telemetry.Snapshot) telemetry.Snapshot {
+	if s.registry != nil {
+		applied := false
+		for _, trackedProject := range s.registry.List() {
+			if trackedProject == nil {
+				continue
+			}
+			projectID := strings.TrimSpace(string(trackedProject.ID()))
+			if projectID == "" {
+				continue
+			}
+			target, _, _ := s.kanbanActionTarget(projectID)
+			if target.key == "" {
+				continue
+			}
+			snapshot = s.kanbanSnapshotWithPendingStates(target.key, projectID, snapshot)
+			applied = true
+		}
+		if applied {
+			return snapshot
+		}
+	}
+	if target, _, _ := s.kanbanActionTarget(""); target.key != "" {
+		return s.kanbanSnapshotWithPendingStates(target.key, "", snapshot)
+	}
+	return snapshot
 }
 
 func (s *Server) kanbanTerminalStatesByProject(projectID string) map[string][]string {

@@ -1632,6 +1632,87 @@ func TestDashboardRendersFleetKanbanReadOnlyBoard(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersFleetKanbanMoveForEligibleProjectCards(t *testing.T) {
+	t.Parallel()
+
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:     "Detent / Kanban",
+		ActiveNav: "kanban",
+		Projects: []templates.ProjectSmallMultiple{
+			{ID: "detent", Name: "Detent", Color: "#1192e8"},
+			{ID: "docs-site", Name: "Docs Site"},
+		},
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo", "In Progress", "Done"},
+			Projects: map[string]templates.KanbanProjectData{
+				"detent": {
+					Mode:   "integration",
+					States: []string{"Todo", "In Progress", "Done"},
+					AllowedTransitions: map[string][]string{
+						"Todo": {"In Progress"},
+						"Done": {},
+					},
+				},
+				"docs-site": {
+					Mode:   "read_only",
+					States: []string{"Todo", "In Progress"},
+				},
+			},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{ID: "detent-card", Identifier: "digitaldrywood/detent#542", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/542", Title: "Eligible fleet move", State: "Todo"},
+				{ID: "docs-card", Identifier: "digitaldrywood/docs-site#12", ProjectID: "docs-site", URL: "https://github.com/digitaldrywood/docs-site/issues/12", Title: "Read only fleet card", State: "Todo"},
+				{ID: "unknown-card", Identifier: "digitaldrywood/unknown#7", ProjectID: "unknown", URL: "https://github.com/digitaldrywood/unknown/issues/7", Title: "Unknown project card", State: "Todo"},
+				{ID: "done-card", Identifier: "digitaldrywood/detent#544", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/544", Title: "No transition card", State: "Done"},
+				{Identifier: "digitaldrywood/detent#545", ProjectID: "detent", URL: "https://github.com/digitaldrywood/detent/issues/545", Title: "PR only fleet card", State: "Todo", PullRequest: &telemetry.PullRequest{Number: 145, URL: "https://github.com/digitaldrywood/detent/pull/145"}},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		"Integration",
+		`id="kanban-feedback"`,
+		`hx-get="/api/v1/kanban/move?`,
+		`kanban_board=fleet`,
+		`project_id=detent`,
+		`issue_id=detent-card`,
+		`current_state=Todo`,
+		`aria-label="Move #542"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("fleet Kanban missing %q:\n%s", want, html)
+		}
+	}
+	if got := strings.Count(html, `hx-get="/api/v1/kanban/move?`); got != 1 {
+		t.Fatalf("fleet Kanban move trigger count = %d, want 1:\n%s", got, html)
+	}
+
+	for _, title := range []string{
+		"Read only fleet card",
+		"Unknown project card",
+		"No transition card",
+		"PR only fleet card",
+	} {
+		card := compactKanbanCardSection(t, html, title)
+		if strings.Contains(card, `hx-get="/api/v1/kanban/move?`) {
+			t.Fatalf("fleet Kanban rendered unsafe move action for %q:\n%s", title, card)
+		}
+	}
+	for _, forbidden := range []string{
+		`draggable="true"`,
+		`data-kanban-drop-state=`,
+		`data-kanban-drag-move-form>`,
+		`hx-post="/api/v1/kanban/remove"`,
+		`hx-get="/api/v1/kanban/comment?`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("fleet Kanban rendered project-only affordance %q:\n%s", forbidden, html)
+		}
+	}
+}
+
 func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 	t.Parallel()
 

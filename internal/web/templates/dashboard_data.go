@@ -84,12 +84,22 @@ type KanbanData struct {
 	TerminalStates          []string
 	TerminalStatesByProject map[string][]string
 	AllowedTransitions      map[string][]string
+	Projects                map[string]KanbanProjectData
 	Feedback                string
 	FeedbackKind            string
 }
 
+type KanbanProjectData struct {
+	Mode               string
+	ProjectID          string
+	States             []string
+	TerminalStates     []string
+	AllowedTransitions map[string][]string
+}
+
 type KanbanMoveDialogData struct {
 	ProjectID    string
+	Board        string
 	IssueID      string
 	Identifier   string
 	Title        string
@@ -1851,7 +1861,7 @@ func projectKanbanSectionLabel(data DashboardData) string {
 }
 
 func projectKanbanSectionDescription(data DashboardData) string {
-	if kanbanIntegrationEnabled(data) {
+	if projectKanbanActionsEnabled(data) {
 		return "Workflow lanes grouped by configured Detent states with operator actions enabled."
 	}
 	if isProjectDashboard(data) {
@@ -2006,6 +2016,50 @@ func kanbanIntegrationEnabled(data DashboardData) bool {
 	return strings.EqualFold(strings.TrimSpace(data.Kanban.Mode), "integration")
 }
 
+func projectKanbanActionsEnabled(data DashboardData) bool {
+	if isProjectDashboard(data) {
+		return kanbanIntegrationEnabled(data)
+	}
+	for _, projectData := range data.Kanban.Projects {
+		if strings.EqualFold(strings.TrimSpace(projectData.Mode), "integration") {
+			return true
+		}
+	}
+	return false
+}
+
+func projectKanbanDragDropEnabled(data DashboardData) bool {
+	return isProjectDashboard(data) && kanbanIntegrationEnabled(data)
+}
+
+func projectKanbanCardKanbanData(data DashboardData, card projectKanbanCard) KanbanData {
+	if isProjectDashboard(data) {
+		return data.Kanban
+	}
+	projectID := strings.TrimSpace(card.ProjectID)
+	if projectID == "" {
+		return KanbanData{}
+	}
+	projectData, ok := data.Kanban.Projects[projectID]
+	if !ok {
+		return KanbanData{}
+	}
+	if configuredProjectID := strings.TrimSpace(projectData.ProjectID); configuredProjectID != "" {
+		projectID = configuredProjectID
+	}
+	return KanbanData{
+		Mode:               projectData.Mode,
+		ProjectID:          projectID,
+		States:             projectData.States,
+		TerminalStates:     projectData.TerminalStates,
+		AllowedTransitions: projectData.AllowedTransitions,
+	}
+}
+
+func projectKanbanCardIntegrationEnabled(data DashboardData, card projectKanbanCard) bool {
+	return strings.EqualFold(strings.TrimSpace(projectKanbanCardKanbanData(data, card).Mode), "integration")
+}
+
 func projectKanbanReadOnlySetupNotice(data DashboardData) bool {
 	return isProjectDashboard(data) && !kanbanIntegrationEnabled(data)
 }
@@ -2045,22 +2099,36 @@ func kanbanProjectID(data DashboardData) string {
 	return strings.TrimSpace(data.ProjectID)
 }
 
+func projectKanbanCardProjectID(data DashboardData, card projectKanbanCard) string {
+	if isProjectDashboard(data) {
+		return kanbanProjectID(data)
+	}
+	return strings.TrimSpace(card.ProjectID)
+}
+
+func projectKanbanBoardScope(data DashboardData) string {
+	if isProjectDashboard(data) {
+		return "project"
+	}
+	return "fleet"
+}
+
 func kanbanDialogTargetSelector() string {
 	return "#" + kanbanDialogContentID
 }
 
 func projectKanbanMoveDialogPath(data DashboardData, card projectKanbanCard) string {
-	values := kanbanMoveDialogValues(kanbanProjectID(data), card.IssueID, card.Identifier, card.Title, card.Stage, "", card.PRNumber)
+	values := kanbanMoveDialogValues(projectKanbanCardProjectID(data, card), card.IssueID, card.Identifier, card.Title, card.Stage, "", card.PRNumber, projectKanbanBoardScope(data))
 	return "/api/v1/kanban/move?" + values.Encode()
 }
 
 func projectKanbanCommentDialogPath(data DashboardData, card projectKanbanCard, target string) string {
-	values := kanbanCommentDialogValues(kanbanProjectID(data), target, card.IssueID, card.PRRepository, card.Identifier, card.Title, card.PRNumber)
+	values := kanbanCommentDialogValues(projectKanbanCardProjectID(data, card), target, card.IssueID, card.PRRepository, card.Identifier, card.Title, card.PRNumber)
 	return "/api/v1/kanban/comment?" + values.Encode()
 }
 
 func kanbanMoveDialogPath(data DashboardData, card kanbanCard) string {
-	values := kanbanMoveDialogValues(kanbanProjectID(data), card.IssueID, card.Identifier, card.Title, card.State, "", card.PRNumber)
+	values := kanbanMoveDialogValues(kanbanProjectID(data), card.IssueID, card.Identifier, card.Title, card.State, "", card.PRNumber, projectKanbanBoardScope(data))
 	return "/api/v1/kanban/move?" + values.Encode()
 }
 
@@ -2069,9 +2137,10 @@ func kanbanCommentDialogPath(data DashboardData, card kanbanCard, target string)
 	return "/api/v1/kanban/comment?" + values.Encode()
 }
 
-func kanbanMoveDialogValues(projectID string, issueID string, identifier string, title string, currentState string, targetState string, prNumber int) url.Values {
+func kanbanMoveDialogValues(projectID string, issueID string, identifier string, title string, currentState string, targetState string, prNumber int, board string) url.Values {
 	values := url.Values{}
 	addQueryValue(values, "project_id", projectID)
+	addQueryValue(values, "kanban_board", board)
 	addQueryValue(values, "issue_id", issueID)
 	addQueryValue(values, "identifier", identifier)
 	addQueryValue(values, "title", title)
@@ -2662,7 +2731,7 @@ func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLa
 	if lane.Empty {
 		attrs["data-project-kanban-empty-lane"] = true
 	}
-	if kanbanIntegrationEnabled(data) {
+	if projectKanbanDragDropEnabled(data) {
 		attrs["data-kanban-drop-state"] = lane.Title
 		attrs["data-kanban-drop-key"] = projectKanbanStateKey(lane.Title)
 	}
@@ -2701,7 +2770,7 @@ func projectKanbanCardAttributes(data DashboardData, card projectKanbanCard) tem
 		"data-help-title":          card.Title,
 		"data-help-description":    card.Description,
 	}
-	if !kanbanIntegrationEnabled(data) {
+	if !projectKanbanDragDropEnabled(data) {
 		return attrs
 	}
 	attrs["data-kanban-card"] = true
@@ -2712,7 +2781,7 @@ func projectKanbanCardAttributes(data DashboardData, card projectKanbanCard) tem
 	if projectKanbanCardCanMove(data, card) {
 		attrs["draggable"] = "true"
 		attrs["data-kanban-action"] = "move"
-		attrs["data-kanban-allowed-targets"] = projectKanbanMoveTargetKeys(data, card.Stage)
+		attrs["data-kanban-allowed-targets"] = projectKanbanMoveTargetKeys(data, card)
 	} else {
 		attrs["aria-disabled"] = "true"
 	}
@@ -2758,7 +2827,11 @@ func kanbanCardAttributes(data DashboardData, card kanbanCard) templ.Attributes 
 }
 
 func projectKanbanCardCanMove(data DashboardData, card projectKanbanCard) bool {
-	return kanbanIntegrationEnabled(data) && card.Movable && len(projectKanbanMoveTargetStates(data, card.Stage)) > 0
+	return projectKanbanCardIntegrationEnabled(data, card) && card.Movable && len(projectKanbanMoveTargetStates(data, card)) > 0
+}
+
+func projectKanbanCardActionsVisible(data DashboardData, card projectKanbanCard) bool {
+	return projectKanbanCardCanMove(data, card) || projectKanbanCardCanRemove(data, card) || projectKanbanCardCanComment(data, card)
 }
 
 func kanbanCardCanMove(data DashboardData, card kanbanCard) bool {
@@ -2766,7 +2839,14 @@ func kanbanCardCanMove(data DashboardData, card kanbanCard) bool {
 }
 
 func projectKanbanCardCanRemove(data DashboardData, card projectKanbanCard) bool {
-	return kanbanIntegrationEnabled(data) && strings.TrimSpace(card.IssueID) != ""
+	return isProjectDashboard(data) && kanbanIntegrationEnabled(data) && strings.TrimSpace(card.IssueID) != ""
+}
+
+func projectKanbanCardCanComment(data DashboardData, card projectKanbanCard) bool {
+	if !isProjectDashboard(data) || !kanbanIntegrationEnabled(data) {
+		return false
+	}
+	return strings.TrimSpace(card.IssueID) != "" || (card.PRNumber > 0 && strings.TrimSpace(card.PRRepository) != "")
 }
 
 func kanbanCardCanRemove(data DashboardData, card kanbanCard) bool {
@@ -2777,7 +2857,7 @@ func projectKanbanMoveDisabledText(data DashboardData, card projectKanbanCard) s
 	if card.DisabledText != "" {
 		return card.DisabledText
 	}
-	if kanbanIntegrationEnabled(data) && card.Movable && len(projectKanbanMoveTargetStates(data, card.Stage)) == 0 {
+	if projectKanbanCardIntegrationEnabled(data, card) && card.Movable && len(projectKanbanMoveTargetStates(data, card)) == 0 {
 		return "No allowed moves from " + card.Stage
 	}
 	return ""
@@ -2793,16 +2873,16 @@ func kanbanMoveDisabledText(data DashboardData, card kanbanCard) string {
 	return ""
 }
 
-func projectKanbanMoveTargetStates(data DashboardData, source string) []string {
-	return kanbanMoveTargets(data.Kanban, source)
+func projectKanbanMoveTargetStates(data DashboardData, card projectKanbanCard) []string {
+	return kanbanMoveTargets(projectKanbanCardKanbanData(data, card), card.Stage)
 }
 
 func kanbanMoveTargetStates(data DashboardData, source string) []string {
 	return kanbanMoveTargets(data.Kanban, source)
 }
 
-func projectKanbanMoveTargetKeys(data DashboardData, source string) string {
-	return kanbanMoveTargetKeyList(data.Kanban, source)
+func projectKanbanMoveTargetKeys(data DashboardData, card projectKanbanCard) string {
+	return kanbanMoveTargetKeyList(projectKanbanCardKanbanData(data, card), card.Stage)
 }
 
 func kanbanMoveTargetKeys(data DashboardData, source string) string {
