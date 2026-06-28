@@ -938,6 +938,57 @@ func TestWorkflowMetricsReportIncludesFlowActiveEventsAcrossWindowBoundary(t *te
 	}
 }
 
+func TestWorkflowMetricsReportIncludesRepresentativeRuns(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	events := []WorkflowPhaseEvent{
+		workflowMetricTestEvent("detent", "issue-1", WorkflowPhaseTypeLane, "In Progress", 0, 10*time.Minute),
+		workflowMetricTestEvent("detent", "issue-1", WorkflowPhaseTypeAgentSession, "agent_active", time.Minute, 2*time.Minute),
+		workflowMetricTestEvent("detent", "issue-2", WorkflowPhaseTypeLane, "In Progress", 10*time.Minute, 10*time.Minute),
+		workflowMetricTestEvent("detent", "issue-2", WorkflowPhaseTypeAgentSession, "agent_active", 12*time.Minute, 2*time.Minute),
+		workflowMetricTestEvent("detent", "issue-3", WorkflowPhaseTypeLane, "In Progress", 20*time.Minute, 10*time.Minute),
+		workflowMetricTestEvent("detent", "issue-3", WorkflowPhaseTypeAgentSession, "agent_active", 22*time.Minute, 2*time.Minute),
+		workflowMetricTestEvent("detent", "issue-4", WorkflowPhaseTypeLane, "In Progress", 30*time.Minute, 10*time.Minute),
+		workflowMetricTestEvent("detent", "issue-4", WorkflowPhaseTypeAgentSession, "agent_active", 32*time.Minute, 2*time.Minute),
+		workflowMetricTestEvent("detent", "issue-other", WorkflowPhaseTypeAgentSession, "agent_active", 35*time.Minute, 2*time.Minute),
+	}
+	for i := range events {
+		if events[i].PhaseType == WorkflowPhaseTypeAgentSession {
+			events[i].RunID = 100 + int64(i)
+			events[i].SessionID = 200 + int64(i)
+			events[i].TotalTokens = 1_000 + int64(i)
+		}
+		if _, err := backend.RecordWorkflowPhaseEvent(ctx, events[i]); err != nil {
+			t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+		}
+	}
+
+	report, err := backend.WorkflowMetricsReport(ctx, WorkflowMetricsQuery{
+		ProjectID: "detent",
+		From:      workflowMetricTestBase.Add(-time.Minute),
+		To:        workflowMetricTestBase.Add(time.Hour),
+	})
+	if err != nil {
+		t.Fatalf("WorkflowMetricsReport() error = %v", err)
+	}
+
+	lane := workflowMetricTestLane(t, report.Lanes, "In Progress")
+	if len(lane.Representatives) != 3 {
+		t.Fatalf("Representatives len = %d, want 3: %#v", len(lane.Representatives), lane.Representatives)
+	}
+	wantRunIDs := []int64{107, 105, 103}
+	for i, want := range wantRunIDs {
+		if lane.Representatives[i].RunID != want {
+			t.Fatalf("Representatives[%d].RunID = %d, want %d: %#v", i, lane.Representatives[i].RunID, want, lane.Representatives)
+		}
+	}
+	if lane.Representatives[0].Identifier != "digitaldrywood/detent#4" || lane.Representatives[0].SessionID != 207 {
+		t.Fatalf("Representatives[0] = %#v, want issue-4 active session", lane.Representatives[0])
+	}
+}
+
 func TestWorkflowMetricsReportBuildsTrackedLaneTrends(t *testing.T) {
 	t.Parallel()
 

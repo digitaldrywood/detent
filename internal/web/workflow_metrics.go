@@ -127,23 +127,39 @@ func workflowPhaseMetricsFromStore(metrics []store.WorkflowPhaseMetric) []teleme
 	out := make([]telemetry.WorkflowPhaseMetric, 0, len(metrics))
 	for _, metric := range metrics {
 		out = append(out, telemetry.WorkflowPhaseMetric{
-			ProjectID:      metric.ProjectID,
-			PhaseType:      metric.PhaseType,
-			PhaseName:      metric.PhaseName,
-			Count:          metric.Count,
-			TotalSeconds:   metric.TotalSeconds,
-			AverageSeconds: metric.AverageSeconds,
-			P50Seconds:     metric.P50Seconds,
-			P90Seconds:     metric.P90Seconds,
-			P95Seconds:     metric.P95Seconds,
-			InputTokens:    metric.InputTokens,
-			OutputTokens:   metric.OutputTokens,
-			TotalTokens:    metric.TotalTokens,
-			Turns:          metric.Turns,
-			EndpointFamily: metric.EndpointFamily,
-			ActiveSeconds:  metric.ActiveSeconds,
-			WaitSeconds:    metric.WaitSeconds,
-			ActivePercent:  metric.ActivePercent,
+			ProjectID:       metric.ProjectID,
+			PhaseType:       metric.PhaseType,
+			PhaseName:       metric.PhaseName,
+			Count:           metric.Count,
+			TotalSeconds:    metric.TotalSeconds,
+			AverageSeconds:  metric.AverageSeconds,
+			P50Seconds:      metric.P50Seconds,
+			P90Seconds:      metric.P90Seconds,
+			P95Seconds:      metric.P95Seconds,
+			InputTokens:     metric.InputTokens,
+			OutputTokens:    metric.OutputTokens,
+			TotalTokens:     metric.TotalTokens,
+			Turns:           metric.Turns,
+			EndpointFamily:  metric.EndpointFamily,
+			ActiveSeconds:   metric.ActiveSeconds,
+			WaitSeconds:     metric.WaitSeconds,
+			ActivePercent:   metric.ActivePercent,
+			Representatives: workflowRepresentativeRunsFromStore(metric.Representatives),
+		})
+	}
+	return out
+}
+
+func workflowRepresentativeRunsFromStore(representatives []store.WorkflowRepresentativeRun) []telemetry.WorkflowRepresentativeRun {
+	out := make([]telemetry.WorkflowRepresentativeRun, 0, len(representatives))
+	for _, representative := range representatives {
+		out = append(out, telemetry.WorkflowRepresentativeRun{
+			RunID:      representative.RunID,
+			SessionID:  representative.SessionID,
+			IssueID:    representative.IssueID,
+			Identifier: representative.Identifier,
+			IssueURL:   representative.IssueURL,
+			FinishedAt: representative.FinishedAt,
 		})
 	}
 	return out

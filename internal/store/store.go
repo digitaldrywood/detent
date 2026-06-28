@@ -397,23 +397,33 @@ type WorkflowMetricsReport struct {
 }
 
 type WorkflowPhaseMetric struct {
-	ProjectID      string
-	PhaseType      string
-	PhaseName      string
-	Count          int64
-	TotalSeconds   int64
-	AverageSeconds int64
-	P50Seconds     int64
-	P90Seconds     int64
-	P95Seconds     int64
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	Turns          int64
-	EndpointFamily string
-	ActiveSeconds  int64
-	WaitSeconds    int64
-	ActivePercent  float64
+	ProjectID       string
+	PhaseType       string
+	PhaseName       string
+	Count           int64
+	TotalSeconds    int64
+	AverageSeconds  int64
+	P50Seconds      int64
+	P90Seconds      int64
+	P95Seconds      int64
+	InputTokens     int64
+	OutputTokens    int64
+	TotalTokens     int64
+	Turns           int64
+	EndpointFamily  string
+	ActiveSeconds   int64
+	WaitSeconds     int64
+	ActivePercent   float64
+	Representatives []WorkflowRepresentativeRun
+}
+
+type WorkflowRepresentativeRun struct {
+	RunID      int64
+	SessionID  int64
+	IssueID    string
+	Identifier string
+	IssueURL   string
+	FinishedAt time.Time
 }
 
 type WorkflowLaneTrend struct {

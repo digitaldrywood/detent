@@ -205,6 +205,7 @@ type workflowLaneMetricRow struct {
 	Delta      string
 	Bottleneck bool
 	RowClass   string
+	Prompt     string
 }
 
 type workflowLaneTrendCard struct {
@@ -4494,13 +4495,20 @@ func workflowFlowActivePercent(activeSeconds int64, totalSeconds int64) float64 
 	return float64(activeSeconds) / float64(totalSeconds) * 100
 }
 
-func workflowLaneMetricRows(report telemetry.WorkflowMetrics) []workflowLaneMetricRow {
+func workflowLaneMetricRows(report telemetry.WorkflowMetrics, project telemetry.Project) []workflowLaneMetricRow {
 	rows := []workflowLaneMetricRow{}
 	for _, window := range report.Windows {
 		for _, metric := range window.Lanes {
+			lane := workflowPhaseLabel(metric.PhaseName)
+			prompt := ""
+			if trackedLane, ok := workflowTrackedLaneName(metric.PhaseName); ok {
+				metric.PhaseName = trackedLane
+				lane = trackedLane
+				prompt = workflowDiagnosticPrompt(project, report, window, metric)
+			}
 			rows = append(rows, workflowLaneMetricRow{
 				Window:     window.Label,
-				Lane:       workflowPhaseLabel(metric.PhaseName),
+				Lane:       lane,
 				Count:      formatInt(metric.Count),
 				Average:    formatDuration(float64(metric.AverageSeconds)),
 				P50:        formatDuration(float64(metric.P50Seconds)),
@@ -4512,6 +4520,7 @@ func workflowLaneMetricRows(report telemetry.WorkflowMetrics) []workflowLaneMetr
 				Delta:      workflowMetricDeltaLabel(metric.Comparison),
 				Bottleneck: metric.Bottleneck,
 				RowClass:   workflowLaneMetricRowClass(metric),
+				Prompt:     prompt,
 			})
 		}
 	}
@@ -4629,6 +4638,302 @@ func workflowBottleneck(report telemetry.WorkflowMetrics) workflowBottleneckView
 		Value:  value,
 		Count:  count,
 	}
+}
+
+func workflowBottleneckDiagnosticPrompt(project telemetry.Project, report telemetry.WorkflowMetrics) string {
+	window, metric, ok := workflowBottleneckDiagnosticMetric(report)
+	if !ok {
+		return ""
+	}
+	return workflowDiagnosticPrompt(project, report, window, metric)
+}
+
+func workflowBottleneckDiagnosticMetric(report telemetry.WorkflowMetrics) (telemetry.WorkflowMetricsWindow, telemetry.WorkflowPhaseMetric, bool) {
+	window, ok := workflowChartWindow(report)
+	if !ok {
+		return telemetry.WorkflowMetricsWindow{}, telemetry.WorkflowPhaseMetric{}, false
+	}
+	if lane := workflowActiveBottleneckLane(report); lane != "" {
+		if metric, ok := workflowWindowLaneMetric(window, lane); ok {
+			return window, metric, true
+		}
+		return window, telemetry.WorkflowPhaseMetric{PhaseType: "lane", PhaseName: lane}, true
+	}
+	for _, metric := range window.Lanes {
+		if !metric.Bottleneck {
+			continue
+		}
+		if lane, ok := workflowTrackedLaneName(metric.PhaseName); ok {
+			metric.PhaseName = lane
+			return window, metric, true
+		}
+	}
+	for _, lane := range workflowTrackedLaneNames() {
+		if metric, ok := workflowWindowLaneMetric(window, lane); ok {
+			return window, metric, true
+		}
+	}
+	return telemetry.WorkflowMetricsWindow{}, telemetry.WorkflowPhaseMetric{}, false
+}
+
+func workflowWindowLaneMetric(window telemetry.WorkflowMetricsWindow, lane string) (telemetry.WorkflowPhaseMetric, bool) {
+	for _, metric := range window.Lanes {
+		if trackedLane, ok := workflowTrackedLaneName(metric.PhaseName); ok && trackedLane == lane {
+			metric.PhaseName = trackedLane
+			return metric, true
+		}
+	}
+	return telemetry.WorkflowPhaseMetric{}, false
+}
+
+func workflowActiveBottleneckLane(report telemetry.WorkflowMetrics) string {
+	bottleneck := report.ActiveBottleneck
+	for _, card := range report.OldestCards {
+		if !workflowBottleneckMatchesCard(bottleneck, card) {
+			continue
+		}
+		if lane, ok := workflowTrackedLaneName(card.State); ok {
+			return lane
+		}
+	}
+	if lane, ok := workflowTrackedLaneName(bottleneck.Detail); ok {
+		return lane
+	}
+	switch strings.TrimSpace(bottleneck.Kind) {
+	case "ai_active":
+		return "In Progress"
+	case "ci_wait", "merge_queue", "rate_limited":
+		return "Merging"
+	default:
+		return ""
+	}
+}
+
+func workflowBottleneckMatchesCard(bottleneck telemetry.WorkflowBottleneck, card telemetry.WorkflowLaneAge) bool {
+	if strings.TrimSpace(bottleneck.ProjectID) != "" &&
+		strings.TrimSpace(card.ProjectID) != "" &&
+		!workflowNonEmptyStringEqual(bottleneck.ProjectID, card.ProjectID) {
+		return false
+	}
+	return workflowNonEmptyStringEqual(bottleneck.IssueID, card.IssueID) ||
+		workflowNonEmptyStringEqual(bottleneck.Identifier, card.Identifier)
+}
+
+func workflowNonEmptyStringEqual(a string, b string) bool {
+	a = strings.TrimSpace(a)
+	b = strings.TrimSpace(b)
+	return a != "" && b != "" && a == b
+}
+
+func workflowDiagnosticPrompt(project telemetry.Project, report telemetry.WorkflowMetrics, window telemetry.WorkflowMetricsWindow, metric telemetry.WorkflowPhaseMetric) string {
+	lane, ok := workflowTrackedLaneName(metric.PhaseName)
+	if !ok {
+		lane = workflowPhaseLabel(metric.PhaseName)
+	}
+	var b strings.Builder
+	b.WriteString("Detent workflow lane diagnostic request\n\n")
+	b.WriteString("Context\n")
+	b.WriteString("- Project: " + workflowDiagnosticProjectLabel(project, metric) + "\n")
+	b.WriteString("- Lane: " + lane + "\n")
+	b.WriteString("- Selected window: " + workflowDiagnosticWindowLabel(window) + "\n\n")
+	b.WriteString("Timing\n")
+	b.WriteString("- Count: " + formatInt(metric.Count) + " lane exits\n")
+	b.WriteString("- Average: " + formatDuration(float64(metric.AverageSeconds)) + "\n")
+	b.WriteString("- P50: " + formatDuration(float64(metric.P50Seconds)) + "\n")
+	b.WriteString("- P90: " + formatDuration(float64(metric.P90Seconds)) + "\n")
+	b.WriteString("- P95: " + formatDuration(float64(metric.P95Seconds)) + "\n")
+	b.WriteString("- Trend delta: " + workflowDiagnosticTrend(metric) + "\n")
+	b.WriteString("- Wait vs active: " + workflowDiagnosticWaitActive(metric) + "\n\n")
+	b.WriteString("Sub-phase breakdown\n")
+	for _, row := range workflowDiagnosticSubphaseRows(window) {
+		b.WriteString("- " + row + "\n")
+	}
+	b.WriteString("\nOldest/currently stuck cards in " + lane + "\n")
+	for _, row := range workflowDiagnosticOldestCardRows(report, lane) {
+		b.WriteString("- " + row + "\n")
+	}
+	b.WriteString("\nRepresentative run identifiers\n")
+	for _, row := range workflowDiagnosticRepresentativeRunRows(metric) {
+		b.WriteString("- " + row + "\n")
+	}
+	b.WriteString("\nInstruction\n")
+	b.WriteString("Diagnose why this lane is slow. Examine skill and workflow selection, the sub-phase time distribution, wait-vs-active split, CI waits, GitHub backoff, and merge-queue waits. Propose concrete prioritized fixes Detent operators should make next.\n")
+	return b.String()
+}
+
+func workflowDiagnosticProjectLabel(project telemetry.Project, metric telemetry.WorkflowPhaseMetric) string {
+	name := strings.TrimSpace(project.DisplayName)
+	id := strings.TrimSpace(project.ID)
+	if id == "" {
+		id = strings.TrimSpace(metric.ProjectID)
+	}
+	switch {
+	case name != "" && id != "":
+		return name + " (" + id + ")"
+	case name != "":
+		return name
+	case id != "":
+		return id
+	default:
+		return "unknown"
+	}
+}
+
+func workflowDiagnosticWindowLabel(window telemetry.WorkflowMetricsWindow) string {
+	label := strings.TrimSpace(window.Label)
+	if label == "" {
+		label = "unknown"
+	}
+	if window.From.IsZero() || window.To.IsZero() {
+		return label
+	}
+	return label + " (" + window.From.UTC().Format(time.RFC3339) + " to " + window.To.UTC().Format(time.RFC3339) + ")"
+}
+
+func workflowDiagnosticTrend(metric telemetry.WorkflowPhaseMetric) string {
+	if metric.Comparison == nil {
+		return "No prior comparison"
+	}
+	trend := workflowMetricTrendLabel(metric.Comparison)
+	delta := workflowMetricDeltaLabel(metric.Comparison)
+	comparison := workflowMetricComparisonLabel(metric)
+	if delta == "No prior" {
+		return trend + " (" + comparison + ")"
+	}
+	return trend + " " + delta + " (" + comparison + ")"
+}
+
+func workflowDiagnosticWaitActive(metric telemetry.WorkflowPhaseMetric) string {
+	activeSeconds := metric.ActiveSeconds
+	waitSeconds := metric.WaitSeconds
+	totalSeconds := activeSeconds + waitSeconds
+	if totalSeconds == 0 && metric.TotalSeconds > 0 {
+		totalSeconds = metric.TotalSeconds
+		waitSeconds = metric.TotalSeconds
+	}
+	activePercent := int(math.Round(workflowFlowActivePercent(activeSeconds, totalSeconds)))
+	return formatDuration(float64(waitSeconds)) + " wait / " +
+		formatDuration(float64(activeSeconds)) + " active / " +
+		formatDuration(float64(totalSeconds)) + " total (" +
+		strconv.Itoa(activePercent) + "% active)"
+}
+
+func workflowDiagnosticSubphaseRows(window telemetry.WorkflowMetricsWindow) []string {
+	metricsByCategory := map[string]telemetry.WorkflowPhaseMetric{}
+	for _, metric := range window.SubPhases {
+		category := workflowDiagnosticSubphaseCategory(metric)
+		if category == "" {
+			continue
+		}
+		current := metricsByCategory[category]
+		current.PhaseName = category
+		current.Count += metric.Count
+		current.TotalSeconds += metric.TotalSeconds
+		current.InputTokens += metric.InputTokens
+		current.OutputTokens += metric.OutputTokens
+		current.TotalTokens += metric.TotalTokens
+		current.Turns += metric.Turns
+		metricsByCategory[category] = current
+	}
+	categories := []string{"AI active time/tokens", "Local checks", "CI wait", "GitHub backoff", "Merge-queue wait"}
+	rows := make([]string, 0, len(categories))
+	for _, category := range categories {
+		metric := metricsByCategory[category]
+		if metric.Count == 0 && metric.TotalSeconds == 0 && metric.TotalTokens == 0 && metric.Turns == 0 {
+			rows = append(rows, category+": no samples")
+			continue
+		}
+		averageSeconds := int64(0)
+		if metric.Count > 0 {
+			averageSeconds = metric.TotalSeconds / metric.Count
+		}
+		parts := []string{
+			category + ": " + formatInt(metric.Count) + " events",
+			formatDuration(float64(metric.TotalSeconds)) + " total",
+			formatDuration(float64(averageSeconds)) + " avg",
+		}
+		if metric.TotalTokens > 0 {
+			parts = append(parts, formatInt(metric.TotalTokens)+" tokens")
+		}
+		if metric.Turns > 0 {
+			parts = append(parts, formatInt(metric.Turns)+" turns")
+		}
+		rows = append(rows, strings.Join(parts, ", "))
+	}
+	return rows
+}
+
+func workflowDiagnosticSubphaseCategory(metric telemetry.WorkflowPhaseMetric) string {
+	phaseType := strings.TrimSpace(metric.PhaseType)
+	phaseName := strings.TrimSpace(metric.PhaseName)
+	switch {
+	case phaseType == "agent_session" || phaseName == "agent_active":
+		return "AI active time/tokens"
+	case phaseType == "local_check":
+		return "Local checks"
+	case phaseType == "ci" || phaseName == "ci":
+		return "CI wait"
+	case phaseType == "github_backoff" || phaseName == "github_backoff":
+		return "GitHub backoff"
+	case phaseType == "merge_queue" || phaseName == "merge_queue":
+		return "Merge-queue wait"
+	default:
+		return ""
+	}
+}
+
+func workflowDiagnosticOldestCardRows(report telemetry.WorkflowMetrics, lane string) []string {
+	rows := []string{}
+	for _, card := range report.OldestCards {
+		cardLane, ok := workflowTrackedLaneName(card.State)
+		if !ok || cardLane != lane {
+			continue
+		}
+		parts := []string{
+			workflowCardIdentifier(card),
+			formatDuration(float64(card.AgeSeconds)) + " old",
+		}
+		if strings.TrimSpace(card.URL) != "" {
+			parts = append(parts, strings.TrimSpace(card.URL))
+		}
+		rows = append(rows, strings.Join(parts, " / "))
+	}
+	if len(rows) == 0 {
+		return []string{"No oldest-card samples for this lane."}
+	}
+	return rows
+}
+
+func workflowDiagnosticRepresentativeRunRows(metric telemetry.WorkflowPhaseMetric) []string {
+	if len(metric.Representatives) == 0 {
+		return []string{"No representative run identifiers recorded for this lane."}
+	}
+	rows := make([]string, 0, len(metric.Representatives))
+	for _, representative := range metric.Representatives {
+		parts := []string{}
+		if representative.RunID > 0 {
+			parts = append(parts, "run_id="+strconv.FormatInt(representative.RunID, 10))
+		}
+		if representative.SessionID > 0 {
+			parts = append(parts, "session_id="+strconv.FormatInt(representative.SessionID, 10))
+		}
+		if strings.TrimSpace(representative.Identifier) != "" {
+			parts = append(parts, "identifier="+strings.TrimSpace(representative.Identifier))
+		} else if strings.TrimSpace(representative.IssueID) != "" {
+			parts = append(parts, "issue_id="+strings.TrimSpace(representative.IssueID))
+		}
+		if strings.TrimSpace(representative.IssueURL) != "" {
+			parts = append(parts, "url="+strings.TrimSpace(representative.IssueURL))
+		}
+		if !representative.FinishedAt.IsZero() {
+			parts = append(parts, "finished_at="+representative.FinishedAt.UTC().Format(time.RFC3339))
+		}
+		if len(parts) == 0 {
+			parts = append(parts, "unknown representative run")
+		}
+		rows = append(rows, strings.Join(parts, " / "))
+	}
+	return rows
 }
 
 func workflowPhaseLabel(value string) string {

@@ -2645,6 +2645,81 @@ func TestProjectDiagnosticsPageRendersTabbedOperationsView(t *testing.T) {
 	}
 }
 
+func TestProjectDiagnosticsPageRendersWorkflowDiagnosticPromptCopyControls(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 28, 12, 0, 0, 0, time.UTC)
+	lanes := []telemetry.WorkflowPhaseMetric{
+		workflowDiagnosticTestLane("In Progress", 180, 60, 120),
+		workflowDiagnosticTestLane("Human Review", 240, 30, 210),
+		workflowDiagnosticTestLane("Merging", 600, 120, 480),
+		workflowDiagnosticTestLane("Rework", 300, 180, 120),
+	}
+	lanes[2].Bottleneck = true
+	html := renderProjectDiagnosticsPage(t, templates.DashboardData{
+		Title:         "Diagnostics",
+		ConnectorName: "github",
+		ProjectID:     "detent",
+		ProjectName:   "Detent",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Project:     telemetry.Project{ID: "detent", DisplayName: "Detent"},
+			WorkflowMetrics: telemetry.WorkflowMetrics{
+				Available: true,
+				RuntimeStore: telemetry.RuntimeStoreEvidence{
+					Backend: "sqlite",
+					Status:  "healthy",
+					Healthy: true,
+				},
+				Windows: []telemetry.WorkflowMetricsWindow{
+					{
+						Label: "24h",
+						From:  now.Add(-24 * time.Hour),
+						To:    now,
+						Lanes: lanes,
+						SubPhases: []telemetry.WorkflowPhaseMetric{
+							{PhaseType: "agent_session", PhaseName: "agent_active", Count: 1, TotalSeconds: 120, TotalTokens: 600, Turns: 1},
+							{PhaseType: "local_check", PhaseName: "make check", Count: 1, TotalSeconds: 90},
+							{PhaseType: "ci", PhaseName: "ci", Count: 1, TotalSeconds: 180},
+							{PhaseType: "github_backoff", PhaseName: "github_backoff", Count: 1, TotalSeconds: 60},
+							{PhaseType: "merge_queue", PhaseName: "merge_queue", Count: 1, TotalSeconds: 240},
+						},
+					},
+				},
+				OldestCards: []telemetry.WorkflowLaneAge{
+					{ProjectID: "detent", IssueID: "issue-759", Identifier: "digitaldrywood/detent#759", URL: "https://github.com/digitaldrywood/detent/issues/759", State: "Merging", AgeSeconds: 3600},
+				},
+				ActiveBottleneck: telemetry.WorkflowBottleneck{
+					Kind:       "merge_queue",
+					Label:      "Merge queue",
+					Detail:     "issues waiting or actively merging",
+					ProjectID:  "detent",
+					IssueID:    "issue-759",
+					Identifier: "digitaldrywood/detent#759",
+					Seconds:    3600,
+					Count:      1,
+				},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`aria-label="Copy diagnostic prompt"`,
+		`aria-label="Copy diagnostic prompt for In Progress"`,
+		`aria-label="Copy diagnostic prompt for Human Review"`,
+		`aria-label="Copy diagnostic prompt for Merging"`,
+		`aria-label="Copy diagnostic prompt for Rework"`,
+		`data-copy="Detent workflow lane diagnostic request`,
+		"Wait vs active:",
+		"Representative run identifiers",
+		"navigator.clipboard.writeText(this.dataset.copy)",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("diagnostics missing workflow diagnostic prompt control %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
 	t.Parallel()
 
@@ -2710,6 +2785,25 @@ func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard shell rendered retired nav marker %q:\n%s", forbidden, html)
 		}
+	}
+}
+
+func workflowDiagnosticTestLane(lane string, average int64, active int64, wait int64) telemetry.WorkflowPhaseMetric {
+	return telemetry.WorkflowPhaseMetric{
+		ProjectID:      "detent",
+		PhaseType:      "lane",
+		PhaseName:      lane,
+		Count:          2,
+		TotalSeconds:   average * 2,
+		AverageSeconds: average,
+		P50Seconds:     average,
+		P90Seconds:     average + 60,
+		P95Seconds:     average + 120,
+		ActiveSeconds:  active,
+		WaitSeconds:    wait,
+		Representatives: []telemetry.WorkflowRepresentativeRun{
+			{RunID: 42, SessionID: 84, Identifier: "digitaldrywood/detent#759", FinishedAt: time.Date(2026, 6, 28, 11, 0, 0, 0, time.UTC)},
+		},
 	}
 }
 

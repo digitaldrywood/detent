@@ -1706,13 +1706,13 @@ templ diagnosticsOverviewTab(data DashboardData) {
 			@cycleTimeSection(data.Snapshot.CycleTime)
 		</div>
 		<aside class="grid min-w-0 content-start gap-4">
-			@diagnosticsBottleneckCard(data.Snapshot.WorkflowMetrics)
+			@diagnosticsBottleneckCard(data.Snapshot.WorkflowMetrics, data.Snapshot.Project)
 			@throughputCard(data)
 		</aside>
 	</div>
 }
 
-templ diagnosticsBottleneckCard(report telemetry.WorkflowMetrics) {
+templ diagnosticsBottleneckCard(report telemetry.WorkflowMetrics, project telemetry.Project) {
 	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Active bottleneck">
 		<div class="flex items-start justify-between gap-3">
 			<div class="min-w-0">
@@ -1727,6 +1727,11 @@ templ diagnosticsBottleneckCard(report telemetry.WorkflowMetrics) {
 				<div class="mt-1 font-mono text-xs text-muted-foreground">{ workflowBottleneck(report).Count }</div>
 			}
 		</div>
+		if workflowBottleneckDiagnosticPrompt(project, report) != "" {
+			<div class="mt-3">
+				@diagnosticPromptCopyButton(workflowBottleneckDiagnosticPrompt(project, report), "Copy diagnostic prompt", "Copy diagnostic prompt")
+			</div>
+		}
 	</section>
 }
 
@@ -1736,7 +1741,7 @@ templ diagnosticsWorkflowTimingTab(data DashboardData) {
 			<span class="font-medium text-foreground">Query windows</span>
 			<span class="font-mono text-muted-foreground">{ workflowMetricsWindowLabels(data.Snapshot.WorkflowMetrics) }</span>
 		</div>
-		@workflowMetricsSection(data.Snapshot.WorkflowMetrics)
+		@workflowMetricsSection(data.Snapshot.WorkflowMetrics, data.Snapshot.Project)
 		@cycleTimeSection(data.Snapshot.CycleTime)
 	</div>
 }
@@ -1948,7 +1953,7 @@ templ FleetSnapshot(data DashboardData) {
 		<section class="dashboard-analytics grid min-w-0 gap-4 lg:gap-5" aria-label="Dashboard analytics">
 			@boardHealthSection(data.Snapshot)
 			@schedulerRuntimeSection(data.Snapshot)
-			@workflowMetricsSection(data.Snapshot.WorkflowMetrics)
+			@workflowMetricsSection(data.Snapshot.WorkflowMetrics, data.Snapshot.Project)
 			@cycleTimeSection(data.Snapshot.CycleTime)
 			@budgetCard(data.Snapshot)
 		</section>
@@ -4056,7 +4061,7 @@ templ cycleTimeSection(report telemetry.CycleTimeReport) {
 	</section>
 }
 
-templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
+templ workflowMetricsSection(report telemetry.WorkflowMetrics, project telemetry.Project) {
 	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5" aria-label="Workflow metrics">
 		<div class="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
 			<div class="min-w-0">
@@ -4069,7 +4074,7 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
 			<div class="mt-4">
 				@dashboardEmptyState("Workflow metrics unavailable.", workflowMetricsUnavailableDetail(report), "bg-muted-foreground")
 			</div>
-		} else if len(workflowLaneMetricRows(report)) == 0 && len(workflowOldestCardRows(report)) == 0 {
+		} else if len(workflowLaneMetricRows(report, project)) == 0 && len(workflowOldestCardRows(report)) == 0 {
 			<div class="mt-4">
 				@dashboardEmptyState(workflowMetricsEmptyHistoryTitle(report), workflowMetricsEmptyHistoryDetail(report), "bg-accent")
 			</div>
@@ -4155,7 +4160,7 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
 							@helpHeading3("Lane trends", helpWorkflowMetrics, "workflow-metrics")
 							<span class="font-mono text-xs text-muted-foreground">24h / 7d / 30d</span>
 						</div>
-						if len(workflowLaneMetricRows(report)) == 0 {
+						if len(workflowLaneMetricRows(report, project)) == 0 {
 							<div class="mt-3">
 								@dashboardEmptyState("No lane duration aggregates.", "Completed lane exits will populate p50 and p90 timing here.", "bg-accent")
 							</div>
@@ -4175,10 +4180,11 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
 												<th class="px-3 py-2 text-right font-medium">P50</th>
 												<th class="px-3 py-2 text-right font-medium">P90</th>
 												<th class="px-3 py-2 text-right font-medium">P95</th>
+												<th class="px-3 py-2 text-right font-medium">Action</th>
 											</tr>
 										</thead>
 										<tbody class="divide-y divide-border">
-											for _, row := range workflowLaneMetricRows(report) {
+											for _, row := range workflowLaneMetricRows(report, project) {
 												<tr class={ row.RowClass }>
 													<td class="px-3 py-2 font-mono text-xs text-muted-foreground">{ row.Window }</td>
 													<td class="px-3 py-2 font-medium text-foreground">
@@ -4197,6 +4203,11 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
 													<td class="px-3 py-2 text-right font-mono text-foreground">{ row.P50 }</td>
 													<td class="px-3 py-2 text-right font-mono text-foreground">{ row.P90 }</td>
 													<td class="px-3 py-2 text-right font-mono text-muted-foreground">{ row.P95 }</td>
+													<td class="px-3 py-2 text-right">
+														if row.Prompt != "" {
+															@diagnosticPromptCopyButton(row.Prompt, "Copy prompt", "Copy diagnostic prompt for "+row.Lane)
+														}
+													</td>
 												</tr>
 											}
 										</tbody>
@@ -4242,6 +4253,11 @@ templ workflowMetricsSection(report telemetry.WorkflowMetrics) {
 						<p class="mt-2 text-sm text-muted-foreground">{ workflowBottleneck(report).Detail }</p>
 						if workflowBottleneck(report).Count != "" {
 							<span class="mt-2 inline-block font-mono text-xs text-muted-foreground">{ workflowBottleneck(report).Count }</span>
+						}
+						if workflowBottleneckDiagnosticPrompt(project, report) != "" {
+							<div class="mt-3">
+								@diagnosticPromptCopyButton(workflowBottleneckDiagnosticPrompt(project, report), "Copy diagnostic prompt", "Copy diagnostic prompt")
+							</div>
 						}
 					</div>
 					<div class="min-w-0">
@@ -4876,6 +4892,21 @@ templ issueCopyButton(value string) {
 	>
 		@icon.Copy(icon.Props{Class: "size-4"})
 		<span class="sr-only" data-copy-label>Copy issue URL</span>
+	</button>
+}
+
+templ diagnosticPromptCopyButton(value string, label string, title string) {
+	<button
+		type="button"
+		class="inline-flex min-h-9 max-w-full items-center gap-2 rounded-md border border-border bg-card px-2.5 py-1.5 text-xs font-medium text-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+		data-label={ label }
+		data-copy={ value }
+		title={ title }
+		aria-label={ title }
+		onclick="const done = () => { const label = this.querySelector('[data-copy-label]'); label.textContent = 'Copied'; clearTimeout(this._copyTimer); this._copyTimer = setTimeout(() => { label.textContent = this.dataset.label }, 1200); }; if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(this.dataset.copy).then(done, done); } else { done(); }"
+	>
+		@icon.ClipboardCopy(icon.Props{Class: "size-3.5 shrink-0"})
+		<span class="truncate" data-copy-label>{ label }</span>
 	</button>
 }
 
