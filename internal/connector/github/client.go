@@ -61,6 +61,7 @@ type Client struct {
 	rateLimit              connector.GraphQLRateLimit
 	queryCosts             map[string]connector.GraphQLQueryCost
 	hasRateLimit           bool
+	hasRateLimitUsage      bool
 	graphQLRateLimitStatus string
 	restRateLimit          connector.RESTRateLimit
 	restRequests           map[string]connector.RESTEndpointUsage
@@ -506,6 +507,7 @@ func (c *Client) ResetGraphQLRateLimitUsage() {
 
 	c.queryCosts = nil
 	c.graphQLRateLimitStatus = ""
+	c.hasRateLimitUsage = false
 }
 
 func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
@@ -513,10 +515,12 @@ func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
 	defer c.mu.Unlock()
 
 	usage := connector.GraphQLRateLimitUsage{
-		RateLimit:       c.rateLimit,
-		HasRateLimit:    c.hasRateLimit,
 		RateLimitStatus: c.graphQLRateLimitStatus,
 		QueryCosts:      sortedGraphQLQueryCosts(c.queryCosts),
+	}
+	if c.hasRateLimitUsage {
+		usage.RateLimit = c.rateLimit
+		usage.HasRateLimit = true
 	}
 	for _, cost := range usage.QueryCosts {
 		usage.TotalQueries += cost.Count
@@ -524,6 +528,7 @@ func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
 	}
 	c.queryCosts = nil
 	c.graphQLRateLimitStatus = ""
+	c.hasRateLimitUsage = false
 	return usage
 }
 
@@ -866,6 +871,7 @@ func (c *Client) recordRateLimitFromHeaders(headers http.Header, now time.Time) 
 		snapshot.UpdatedAt = now
 		c.rateLimit = snapshot
 		c.hasRateLimit = true
+		c.hasRateLimitUsage = true
 	}
 	return graphQLHeaderRateLimit{
 		Previous:           previous,
@@ -930,6 +936,7 @@ func (c *Client) setRateLimit(snapshot connector.GraphQLRateLimit) {
 
 	c.rateLimit = snapshot
 	c.hasRateLimit = true
+	c.hasRateLimitUsage = true
 }
 
 func (c *Client) addGraphQLQueryCost(queryType string, cost int64) {

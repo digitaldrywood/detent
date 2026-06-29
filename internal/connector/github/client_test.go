@@ -855,6 +855,53 @@ func TestClientGraphQLRecordsRateLimitStatusWithoutSnapshot(t *testing.T) {
 	}
 }
 
+func TestClientGraphQLRateLimitFailureDoesNotPublishStaleSnapshot(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, 6, 1, 13, 0, 0, 0, time.UTC)
+	responses := make(chan string, 2)
+	responses <- `{"data":{"rateLimit":{"limit":5000,"used":120,"remaining":4880,"cost":2,"resetAt":"` + resetAt.Format(time.RFC3339) + `"}}}`
+	responses <- `{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(<-responses))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	if err := client.GraphQLWithType(context.Background(), "candidate_issues", "query { rateLimit { cost } }", nil, nil); err != nil {
+		t.Fatalf("GraphQLWithType() healthy query error = %v", err)
+	}
+	usage := client.FlushGraphQLRateLimitUsage()
+	if !usage.HasRateLimit || usage.RateLimit.Remaining != 4880 {
+		t.Fatalf("FlushGraphQLRateLimitUsage() = %#v, want healthy current bucket", usage)
+	}
+
+	err = client.GraphQLWithType(context.Background(), "issue_parent_metadata", "query { viewer { login } }", nil, nil)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("GraphQLWithType() error = %v, want ErrRateLimited", err)
+	}
+	usage = client.FlushGraphQLRateLimitUsage()
+	if usage.HasRateLimit {
+		t.Fatalf("FlushGraphQLRateLimitUsage().HasRateLimit = true, want false after failure with no fresh bucket: %#v", usage)
+	}
+	if usage.RateLimit != (connector.GraphQLRateLimit{}) {
+		t.Fatalf("FlushGraphQLRateLimitUsage().RateLimit = %#v, want zero stale bucket", usage.RateLimit)
+	}
+	if usage.RateLimitStatus != connector.GraphQLRateLimitStatusExhausted {
+		t.Fatalf("FlushGraphQLRateLimitUsage().RateLimitStatus = %q, want %q", usage.RateLimitStatus, connector.GraphQLRateLimitStatusExhausted)
+	}
+}
+
 func TestClientGraphQLInfersMutationCostsFromHeaders(t *testing.T) {
 	t.Parallel()
 

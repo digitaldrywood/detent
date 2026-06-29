@@ -872,16 +872,14 @@ func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) g
 	status := graphQLRateLimitTelemetryStatus(usage.RateLimitStatus)
 	if hasRateLimit {
 		rateLimit = usage.RateLimit
-	} else {
+	} else if status == "" {
 		reporter, ok := o.connector.(connector.RateLimitReporter)
 		if !ok {
-			if status == "" {
-				return graphQLRateLimitCycle{}
-			}
+			return graphQLRateLimitCycle{}
 		} else {
 			var okRateLimit bool
 			rateLimit, okRateLimit = reporter.GraphQLRateLimit()
-			if !okRateLimit && status == "" {
+			if !okRateLimit {
 				return graphQLRateLimitCycle{}
 			}
 			hasRateLimit = okRateLimit
