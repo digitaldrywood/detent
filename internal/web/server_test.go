@@ -3763,6 +3763,34 @@ func TestProjectStateAPIScopesSnapshot(t *testing.T) {
 	}
 }
 
+func TestStateAPIIncludesGitHubGraphQLRateLimitStatus(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 29, 15, 0, 0, 0, time.UTC),
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4608, Used: 392, Limit: 5000},
+			GitHubGraphQL: &telemetry.RateLimitBucket{Status: telemetry.RateLimitStatusExhausted},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	if got := nestedString(t, state, "rate_limits", "github_rest", "remaining"); got != "4608" {
+		t.Fatalf("rate_limits.github_rest.remaining = %s, want 4608", got)
+	}
+	if got := nestedString(t, state, "rate_limits", "github_graphql", "status"); got != telemetry.RateLimitStatusExhausted {
+		t.Fatalf("rate_limits.github_graphql.status = %s, want %s", got, telemetry.RateLimitStatusExhausted)
+	}
+}
+
 func TestProjectStateAPIRendersConfiguredProjectWithoutTelemetryRows(t *testing.T) {
 	t.Parallel()
 

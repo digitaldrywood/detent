@@ -195,6 +195,50 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantSummaryPart: "REST primary: 4,878 remaining / 5,000 total (122 used)",
 		},
 		{
+			name: "rest primary without graphql remains unknown",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST: &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+				},
+			},
+			wantState:       gitHubAPIHealthStateUnknown,
+			wantLabel:       "GitHub API GraphQL unknown",
+			wantSummaryPart: "GraphQL primary quota unavailable",
+			wantDetailParts: []string{
+				"REST primary quota is visible",
+				"GraphQL primary quota is unavailable",
+			},
+		},
+		{
+			name: "graphql exhausted status without numeric snapshot",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Status: telemetry.RateLimitStatusExhausted},
+				},
+			},
+			wantState:       gitHubAPIHealthStateExhausted,
+			wantLabel:       "GitHub primary quota exhausted",
+			wantSummaryPart: "GraphQL primary: exhausted",
+			wantDetailParts: []string{"reset time n/a"},
+		},
+		{
+			name: "graphql backoff status without numeric snapshot",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Status: telemetry.RateLimitStatusBackoff},
+				},
+			},
+			wantState:       gitHubAPIHealthStateBackoff,
+			wantLabel:       "GitHub GraphQL backoff active",
+			wantSummaryPart: "GraphQL primary: backoff",
+			wantDetailParts: []string{"GitHub GraphQL requests are in backoff", "retry time n/a"},
+		},
+		{
 			name: "warning for low primary remaining",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,

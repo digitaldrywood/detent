@@ -428,11 +428,17 @@ type RateLimits struct {
 	RESTUsage     *RESTUsage       `json:"rest_usage,omitempty"`
 }
 
+const (
+	RateLimitStatusBackoff   = "backoff"
+	RateLimitStatusExhausted = "exhausted"
+)
+
 type RateLimitBucket struct {
 	Remaining      int64      `json:"remaining,omitempty"`
 	Used           int64      `json:"used,omitempty"`
 	Limit          int64      `json:"limit,omitempty"`
 	Cost           int64      `json:"cost,omitempty"`
+	Status         string     `json:"status,omitempty"`
 	ResetAt        *time.Time `json:"reset_at,omitempty"`
 	ResetInSeconds int64      `json:"reset_in_seconds,omitempty"`
 	HasCredits     bool       `json:"has_credits,omitempty"`

@@ -509,6 +509,18 @@ func TestDashboardRendersGitHubAPIHealthPreservationMetadataForStates(t *testing
 			wantState: "exhausted",
 			wantLabel: "GitHub primary quota exhausted",
 		},
+		{
+			name: "graphql exhausted status",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Status: telemetry.RateLimitStatusExhausted},
+				},
+			},
+			wantState: "exhausted",
+			wantLabel: "GitHub primary quota exhausted",
+		},
 	}
 
 	for _, tt := range tests {

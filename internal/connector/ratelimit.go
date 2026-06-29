@@ -2,6 +2,11 @@ package connector
 
 import "time"
 
+const (
+	GraphQLRateLimitStatusBackoff   = "backoff"
+	GraphQLRateLimitStatusExhausted = "exhausted"
+)
+
 type GraphQLRateLimit struct {
 	Limit      int64
 	Used       int64
@@ -19,11 +24,12 @@ type GraphQLQueryCost struct {
 }
 
 type GraphQLRateLimitUsage struct {
-	RateLimit    GraphQLRateLimit
-	HasRateLimit bool
-	QueryCosts   []GraphQLQueryCost
-	TotalQueries int64
-	TotalCost    int64
+	RateLimit       GraphQLRateLimit
+	HasRateLimit    bool
+	RateLimitStatus string
+	QueryCosts      []GraphQLQueryCost
+	TotalQueries    int64
+	TotalCost       int64
 }
 
 type RateLimitReporter interface {
