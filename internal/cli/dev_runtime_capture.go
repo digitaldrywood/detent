@@ -511,13 +511,13 @@ func writeDemoTerminalCapture(outDir string) (demoCaptureTerminalResult, error) 
 		},
 		Projects: []globalconfig.Project{{
 			ID:       "detent-demo",
-			Workflow: "./terminal/v1/config/WORKFLOW.md",
-			Workdir:  "./terminal/v1/source/detent-demo",
+			Workflow: "~/terminal/v1/config/WORKFLOW.md",
+			Workdir:  "~/terminal/v1/source/detent-demo",
 			Weight:   1,
 			Priority: 1,
 		}},
 	}
-	if err := globalconfig.Write(configPath, cfg, globalconfig.WithRelativeTo(outDir)); err != nil {
+	if err := globalconfig.Write(configPath, cfg, globalconfig.WithHome(outDir), globalconfig.WithRelativeTo(outDir)); err != nil {
 		return demoCaptureTerminalResult{}, fmt.Errorf("write terminal capture global config: %w", err)
 	}
 
@@ -607,8 +607,8 @@ func writeDemoTerminalCast(path string) error {
 	}{
 		{0.10, "$ detent init --config ./terminal/v1/config/global.yaml\r\n"},
 		{0.45, "status: ok\r\npath: ./terminal/v1/config/global.yaml\r\nrule: --config\r\n"},
-		{0.90, "$ detent add-project --config ./terminal/v1/config/global.yaml --id detent-demo --workflow ./terminal/v1/config/WORKFLOW.md --workdir ./terminal/v1/source/detent-demo\r\n"},
-		{1.35, "status: ok\r\nid: detent-demo\r\nworkflow: ./terminal/v1/config/WORKFLOW.md\r\nworkdir: ./terminal/v1/source/detent-demo\r\n"},
+		{0.90, "$ detent add-project --config ./terminal/v1/config/global.yaml --id detent-demo --workflow ~/terminal/v1/config/WORKFLOW.md --workdir ~/terminal/v1/source/detent-demo\r\n"},
+		{1.35, "status: ok\r\nid: detent-demo\r\nworkflow: ~/terminal/v1/config/WORKFLOW.md\r\nworkdir: ~/terminal/v1/source/detent-demo\r\n"},
 		{1.80, "$ detent doctor --config ./terminal/v1/config/global.yaml --port 0\r\n"},
 		{2.20, "Config resolution ... OK\r\nRuntime settings ... OK\r\nProject detent-demo workflow ... OK\r\nProject detent-demo source repository ... OK\r\nSQLite database ... OK\r\nGitHub token ... OK (skipped for memory tracker)\r\nServer port ... OK\r\nresult: PASS\r\n"},
 	}

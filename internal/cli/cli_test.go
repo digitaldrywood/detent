@@ -936,29 +936,29 @@ func TestCLIValidationErrorsCarryHints(t *testing.T) {
 			name:         "missing project id",
 			args:         []string{"--config", configPath, "add-project", "--workflow", "./WORKFLOW.md", "--workdir", "~/code/api"},
 			wantMessage:  "--id is required",
-			wantHint:     "e.g. detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api",
-			wantCommands: []string{"detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api"},
+			wantHint:     "e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api",
+			wantCommands: []string{"detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api"},
 		},
 		{
 			name:         "missing project workflow",
 			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workdir", "~/code/api"},
 			wantMessage:  "--workflow is required",
-			wantHint:     "e.g. detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api",
-			wantCommands: []string{"detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api"},
+			wantHint:     "e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api",
+			wantCommands: []string{"detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api"},
 		},
 		{
 			name:         "missing project workdir",
 			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workflow", "./WORKFLOW.md"},
 			wantMessage:  "--workdir is required",
-			wantHint:     "e.g. detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api",
-			wantCommands: []string{"detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api"},
+			wantHint:     "e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api",
+			wantCommands: []string{"detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api"},
 		},
 		{
 			name:         "invalid project weight",
 			args:         []string{"--config", configPath, "add-project", "--id", "api", "--workflow", "./WORKFLOW.md", "--workdir", "~/code/api", "--weight", "0"},
 			wantMessage:  "--weight must be positive",
-			wantHint:     "e.g. detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api --weight 1",
-			wantCommands: []string{"detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api --weight 1"},
+			wantHint:     "e.g. detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --weight 1",
+			wantCommands: []string{"detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --weight 1"},
 		},
 		{
 			name:         "invalid promote priority",
@@ -1168,6 +1168,45 @@ func TestAddProjectCommandEmitsJSONResult(t *testing.T) {
 	}
 }
 
+func TestAddProjectRejectsPlainRelativeWorkflowPath(t *testing.T) {
+	root := t.TempDir()
+	daemonDir := filepath.Join(root, "daemon")
+	projectDir := filepath.Join(root, "project")
+	writeWorkflow(t, filepath.Join(daemonDir, "WORKFLOW.md"), validWorkflowContent())
+	writeWorkflow(t, filepath.Join(projectDir, "WORKFLOW.md"), validWorkflowContent())
+	configPath := filepath.Join(root, "global.yaml")
+	writeGlobalConfig(t, configPath, nil)
+	t.Chdir(daemonDir)
+
+	cmd := cli.NewRootCommand(context.Background())
+	cmd.SetOut(&bytes.Buffer{})
+	cmd.SetErr(&bytes.Buffer{})
+	cmd.SetArgs([]string{
+		"--config", configPath,
+		"add-project",
+		"--id", "detent",
+		"--workflow", "WORKFLOW.md",
+		"--workdir", projectDir,
+	})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("Execute() error = nil, want relative workflow validation error")
+	}
+	want := "projects[0].workflow: must be absolute or home-relative when workflow_ref is empty"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("Execute() error = %q, want substring %q", err, want)
+	}
+
+	cfg, err := globalconfig.Read(configPath)
+	if err != nil {
+		t.Fatalf("Read() error = %v", err)
+	}
+	if len(cfg.Projects) != 0 {
+		t.Fatalf("Projects length = %d, want 0", len(cfg.Projects))
+	}
+}
+
 func TestRootCommandClassifiesMistypedCommandSuggestion(t *testing.T) {
 	t.Parallel()
 
@@ -1369,7 +1408,12 @@ func TestProjectAdminCommandsEditConfigAndSignalManager(t *testing.T) {
 func TestProjectAdminCommandsPreserveProjectPathLiterals(t *testing.T) {
 	t.Parallel()
 
-	configPath := filepath.Join(t.TempDir(), "global.yaml")
+	root := t.TempDir()
+	configPath := filepath.Join(root, "global.yaml")
+	workflowPath := filepath.Join(root, "cli.go")
+	if err := os.WriteFile(workflowPath, []byte("package cli\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
 	if err := os.WriteFile(configPath, []byte(`apiVersion: detent/v1
 kind: GlobalConfig
 global:
@@ -1377,12 +1421,12 @@ global:
   scheduling: weighted
 projects:
   - id: detent
-    workflow: cli.go
+    workflow: `+workflowPath+`
     workdir: .
     weight: 1
     priority: 0
   - id: docs
-    workflow: cli.go
+    workflow: `+workflowPath+`
     workdir: .
     weight: 2
     priority: 1
@@ -1419,8 +1463,8 @@ projects:
 		t.Fatalf("Projects length = %d, want 2", len(written.Projects))
 	}
 	for _, project := range written.Projects {
-		if project.Workflow != "cli.go" {
-			t.Fatalf("project %s workflow = %q, want cli.go", project.ID, project.Workflow)
+		if project.Workflow != workflowPath {
+			t.Fatalf("project %s workflow = %q, want %q", project.ID, project.Workflow, workflowPath)
 		}
 		if project.Workdir != "." {
 			t.Fatalf("project %s workdir = %q, want .", project.ID, project.Workdir)

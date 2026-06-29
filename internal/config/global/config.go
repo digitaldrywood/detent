@@ -28,6 +28,8 @@ const (
 	configFileMode = 0o600
 )
 
+const plainWorkflowPathRequirement = "must be absolute or home-relative when workflow_ref is empty"
+
 var schedulingModes = []string{
 	SchedulingWeighted,
 	SchedulingStrict,
@@ -419,7 +421,7 @@ func (c Config) Validate(opts ...Option) error {
 		if strings.TrimSpace(project.Workflow) == "" {
 			problems = append(problems, prefix+".workflow: must not be blank")
 		} else if strings.TrimSpace(project.WorkflowRef) == "" {
-			problems = append(problems, projectPathErrors(project.Workflow, prefix+".workflow", readOptions, wantFile)...)
+			problems = append(problems, plainWorkflowPathErrors(project.Workflow, prefix+".workflow", readOptions, wantFile)...)
 		}
 		if strings.ContainsAny(project.WorkflowRef, "\r\n") {
 			problems = append(problems, prefix+".workflow_ref: must be a single line")
@@ -784,7 +786,7 @@ func projectErrors(value any, index int, opts options) []string {
 	problems = append(problems, singleLineStringErrors(project, "workflow_ref", prefix)...)
 	problems = append(problems, projectColorErrors(project, prefix)...)
 	if strings.TrimSpace(projectStringValue(project, "workflow_ref")) == "" {
-		problems = append(problems, pathErrors(project, "workflow", prefix, opts, wantFile)...)
+		problems = append(problems, plainWorkflowErrors(project, "workflow", prefix, opts, wantFile)...)
 	} else {
 		problems = append(problems, stringErrors(project, "workflow", prefix)...)
 	}
@@ -902,6 +904,29 @@ func pathErrors(attrs map[string]any, field string, prefix string, opts options,
 	return projectPathErrors(text, prefix+"."+field, opts, expected)
 }
 
+func plainWorkflowErrors(attrs map[string]any, field string, prefix string, opts options, expected pathExpectation) []string {
+	value, ok := attrs[field]
+	if !ok || value == nil {
+		return nil
+	}
+
+	text, ok := value.(string)
+	if !ok {
+		return []string{prefix + "." + field + ": must be a string"}
+	}
+	return plainWorkflowPathErrors(text, prefix+"."+field, opts, expected)
+}
+
+func plainWorkflowPathErrors(path string, field string, opts options, expected pathExpectation) []string {
+	if strings.TrimSpace(path) == "" {
+		return []string{field + ": must not be blank"}
+	}
+	if relativeWorkflowPathLiteral(path) {
+		return []string{field + ": " + plainWorkflowPathRequirement}
+	}
+	return projectPathErrors(path, field, opts, expected)
+}
+
 func projectPathErrors(path string, field string, opts options, expected pathExpectation) []string {
 	if strings.TrimSpace(path) == "" {
 		return []string{field + ": must not be blank"}
@@ -923,6 +948,15 @@ func projectPathErrors(path string, field string, opts options, expected pathExp
 		return []string{field + ": path does not exist"}
 	}
 	return nil
+}
+
+func relativeWorkflowPathLiteral(path string) bool {
+	path = strings.TrimSpace(path)
+	return !filepath.IsAbs(path) && !homePathLiteral(path)
+}
+
+func homePathLiteral(path string) bool {
+	return path == "~" || strings.HasPrefix(path, "~/")
 }
 
 func positiveIntegerError(value any, field string) []string {
@@ -1209,6 +1243,9 @@ func buildProjects(projects []any, opts options) ([]Project, error) {
 		}
 		if !opts.projectPathLiterals {
 			if strings.TrimSpace(workflowRef) == "" {
+				if relativeWorkflowPathLiteral(workflow) {
+					return nil, fmt.Errorf("%s.workflow: %s", prefix, plainWorkflowPathRequirement)
+				}
 				expandedWorkflow, err := expandPath(workflow, opts)
 				if err != nil {
 					return nil, fmt.Errorf("%s.workflow: expand path: %w", prefix, err)
