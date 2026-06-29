@@ -5804,9 +5804,9 @@ func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 		}
 		rows = append(rows, rateLimitRow{
 			Name:        name,
-			Remaining:   formatInt(bucket.Remaining) + " left",
+			Remaining:   rateLimitRemainingLabel(bucket),
 			Used:        rateLimitUsedLabel(bucket),
-			Limit:       formatLimit(bucket.Limit) + " limit",
+			Limit:       rateLimitLimitLabel(bucket),
 			Reset:       resetLabel(bucket),
 			UsedPercent: usedPercent(bucket),
 		})
@@ -5822,12 +5822,29 @@ func rateLimitRows(limits *telemetry.RateLimits) []rateLimitRow {
 	return rows
 }
 
+func rateLimitRemainingLabel(bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 && bucket.Remaining == 0 {
+		return "exhausted"
+	}
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusBackoff && bucket.Limit <= 0 && bucket.Remaining == 0 {
+		return "backoff"
+	}
+	return formatInt(bucket.Remaining) + " left"
+}
+
 func rateLimitUsedLabel(bucket *telemetry.RateLimitBucket) string {
 	label := formatInt(bucket.Used) + " used"
 	if bucket.Cost > 0 {
 		label += " / cost " + formatInt(bucket.Cost)
 	}
 	return label
+}
+
+func rateLimitLimitLabel(bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 {
+		return "limit unknown"
+	}
+	return formatLimit(bucket.Limit) + " limit"
 }
 
 func creditRateLimitRow(bucket *telemetry.RateLimitBucket) rateLimitRow {
@@ -5892,6 +5909,12 @@ func graphQLBudgetRemaining(limits *telemetry.RateLimits) string {
 		return "n/a"
 	}
 	bucket := limits.GitHubGraphQL
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 && bucket.Remaining == 0 {
+		return "exhausted"
+	}
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusBackoff && bucket.Limit <= 0 && bucket.Remaining == 0 {
+		return "backoff"
+	}
 	if bucket.Limit > 0 {
 		return formatInt(bucket.Remaining) + " / " + formatInt(bucket.Limit)
 	}
@@ -6069,6 +6092,13 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 		view.Detail = "Primary REST or GraphQL quota exhausted; " + gitHubAPIExhaustedReset(snapshot.RateLimits) + "."
 		return view
 	}
+	if gitHubAPIGraphQLBackoff(snapshot) {
+		view.State = gitHubAPIHealthStateBackoff
+		view.Label = "GitHub GraphQL backoff active"
+		view.Summary = primarySummary
+		view.Detail = "GitHub GraphQL requests are in backoff; " + gitHubAPIGraphQLBackoffReset(snapshot.RateLimits) + "."
+		return view
+	}
 	if gitHubAPIInBackoff(snapshot) {
 		families := gitHubAPIBackoffFamilyLabel(snapshot, snapshot.RateLimits.RESTUsage)
 		primaryContext := gitHubAPIRESTPrimaryContext(snapshot.RateLimits)
@@ -6084,6 +6114,14 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 		view.Label = "GitHub primary quota low"
 		view.Summary = primarySummary
 		view.Detail = "Primary quota is below the warning threshold; " + gitHubAPIWarningReset(snapshot.RateLimits) + "."
+		return view
+	}
+	if gitHubAPIGraphQLPrimaryUnknown(snapshot.RateLimits) {
+		restContext := gitHubAPIRESTPrimaryContext(snapshot.RateLimits)
+		view.State = gitHubAPIHealthStateUnknown
+		view.Label = "GitHub API GraphQL unknown"
+		view.Summary = restContext + ". GraphQL primary quota unavailable."
+		view.Detail = "REST primary quota is visible, but GraphQL primary quota is unavailable; doctor may still fail when GraphQL is exhausted."
 		return view
 	}
 
@@ -6120,7 +6158,8 @@ func gitHubAPIHasSnapshot(limits *telemetry.RateLimits) bool {
 
 func gitHubAPIBucketKnown(bucket *telemetry.RateLimitBucket) bool {
 	return bucket != nil &&
-		(bucket.Limit > 0 ||
+		(rateLimitBucketStatus(bucket) != "" ||
+			bucket.Limit > 0 ||
 			bucket.Remaining > 0 ||
 			bucket.Used > 0 ||
 			bucket.ResetAt != nil ||
@@ -6132,11 +6171,21 @@ func gitHubAPIPrimaryExhausted(limits *telemetry.RateLimits) bool {
 		return false
 	}
 	for _, bucket := range []*telemetry.RateLimitBucket{limits.GitHubREST, limits.GitHubGraphQL} {
-		if bucket != nil && bucket.Limit > 0 && bucket.Remaining <= 0 {
+		if gitHubAPIBucketExhausted(bucket) {
 			return true
 		}
 	}
 	return false
+}
+
+func gitHubAPIBucketExhausted(bucket *telemetry.RateLimitBucket) bool {
+	if bucket == nil {
+		return false
+	}
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted {
+		return true
+	}
+	return bucket.Limit > 0 && bucket.Remaining <= 0
 }
 
 func gitHubAPIPrimaryWarning(limits *telemetry.RateLimits) bool {
@@ -6152,7 +6201,7 @@ func gitHubAPIPrimaryWarning(limits *telemetry.RateLimits) bool {
 }
 
 func gitHubAPIBucketWarning(bucket *telemetry.RateLimitBucket) bool {
-	if bucket == nil || bucket.Limit <= 0 || bucket.Remaining <= 0 {
+	if bucket == nil || gitHubAPIBucketExhausted(bucket) || bucket.Limit <= 0 || bucket.Remaining <= 0 {
 		return false
 	}
 	if bucket.Remaining <= gitHubAPIWarningRemaining {
@@ -6180,6 +6229,20 @@ func gitHubAPIInBackoff(snapshot telemetry.Snapshot) bool {
 	return false
 }
 
+func gitHubAPIGraphQLBackoff(snapshot telemetry.Snapshot) bool {
+	if snapshot.RateLimits == nil {
+		return false
+	}
+	bucket := snapshot.RateLimits.GitHubGraphQL
+	if bucket == nil || rateLimitBucketStatus(bucket) != telemetry.RateLimitStatusBackoff {
+		return false
+	}
+	if bucket.ResetAt == nil {
+		return true
+	}
+	return gitHubAPIDeadlineActive(snapshot.GeneratedAt, bucket.ResetAt)
+}
+
 func gitHubAPIContributorBackedOff(snapshot telemetry.Snapshot, contributor telemetry.RESTUsageContributor, backoffUntil *time.Time) bool {
 	if !gitHubAPIContributorHasBackoffSignal(contributor) {
 		return false
@@ -6201,6 +6264,10 @@ func gitHubAPIDeadlineActive(generatedAt time.Time, deadline *time.Time) bool {
 	return deadline != nil && (generatedAt.IsZero() || deadline.After(generatedAt))
 }
 
+func gitHubAPIGraphQLPrimaryUnknown(limits *telemetry.RateLimits) bool {
+	return limits != nil && gitHubAPIBucketKnown(limits.GitHubREST) && !gitHubAPIBucketKnown(limits.GitHubGraphQL)
+}
+
 func gitHubAPIPrimarySummary(limits *telemetry.RateLimits) string {
 	if limits == nil {
 		return ""
@@ -6218,6 +6285,12 @@ func gitHubAPIPrimarySummary(limits *telemetry.RateLimits) string {
 }
 
 func gitHubAPIPrimaryBucketSummary(label string, bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 && bucket.Remaining == 0 {
+		return label + ": exhausted"
+	}
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusBackoff && bucket.Limit <= 0 && bucket.Remaining == 0 {
+		return label + ": backoff"
+	}
 	remaining := formatInt(bucket.Remaining) + " remaining"
 	if bucket.Limit > 0 {
 		return label + ": " + remaining + " / " + formatInt(bucket.Limit) + " total (" + formatInt(gitHubAPIPrimaryBucketUsed(bucket)) + " used)"
@@ -6297,7 +6370,7 @@ func gitHubAPIRESTPrimaryContext(limits *telemetry.RateLimits) string {
 	}
 	bucket := limits.GitHubREST
 	status := "healthy"
-	if bucket.Limit > 0 && bucket.Remaining <= 0 {
+	if gitHubAPIBucketExhausted(bucket) {
 		status = "exhausted"
 	} else if gitHubAPIBucketWarning(bucket) {
 		status = "low"
@@ -6316,11 +6389,35 @@ func gitHubAPIExhaustedReset(limits *telemetry.RateLimits) string {
 	if limits == nil {
 		return "reset time n/a"
 	}
-	reset := gitHubAPIEarliestReset(limits.GitHubREST, limits.GitHubGraphQL)
+	reset := gitHubAPIEarliestExhaustedReset(limits.GitHubREST, limits.GitHubGraphQL)
 	if reset != nil {
 		return "reset " + reset.UTC().Format("15:04 UTC")
 	}
 	return "reset time n/a"
+}
+
+func gitHubAPIEarliestExhaustedReset(buckets ...*telemetry.RateLimitBucket) *time.Time {
+	exhausted := make([]*telemetry.RateLimitBucket, 0, len(buckets))
+	for _, bucket := range buckets {
+		if gitHubAPIBucketExhausted(bucket) {
+			exhausted = append(exhausted, bucket)
+		}
+	}
+	return gitHubAPIEarliestReset(exhausted...)
+}
+
+func gitHubAPIGraphQLBackoffReset(limits *telemetry.RateLimits) string {
+	if limits == nil || limits.GitHubGraphQL == nil {
+		return "retry time n/a"
+	}
+	bucket := limits.GitHubGraphQL
+	if bucket.ResetAt != nil {
+		return "retry " + bucket.ResetAt.UTC().Format("15:04 UTC")
+	}
+	if bucket.ResetInSeconds > 0 {
+		return "retry in " + formatDuration(float64(bucket.ResetInSeconds))
+	}
+	return "retry time n/a"
 }
 
 func gitHubAPIWarningReset(limits *telemetry.RateLimits) string {
@@ -6371,10 +6468,23 @@ func gitHubAPIHealthBucketRows(limits *telemetry.RateLimits) []gitHubAPIHealthBu
 }
 
 func gitHubAPIHealthBucketRemaining(bucket *telemetry.RateLimitBucket) string {
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusExhausted && bucket.Limit <= 0 && bucket.Remaining == 0 {
+		return "exhausted"
+	}
+	if rateLimitBucketStatus(bucket) == telemetry.RateLimitStatusBackoff && bucket.Limit <= 0 && bucket.Remaining == 0 {
+		return "backoff"
+	}
 	if bucket.Limit > 0 {
 		return formatInt(bucket.Remaining) + " / " + formatInt(bucket.Limit) + " remaining"
 	}
 	return formatInt(bucket.Remaining) + " remaining"
+}
+
+func rateLimitBucketStatus(bucket *telemetry.RateLimitBucket) string {
+	if bucket == nil {
+		return ""
+	}
+	return strings.TrimSpace(bucket.Status)
 }
 
 func gitHubAPIHealthBucketReset(bucket *telemetry.RateLimitBucket) string {

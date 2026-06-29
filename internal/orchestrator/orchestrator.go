@@ -869,23 +869,27 @@ func (o *Orchestrator) captureConnectorRateLimits(state *State, now time.Time) g
 
 	var rateLimit connector.GraphQLRateLimit
 	hasRateLimit := usage.HasRateLimit
+	status := graphQLRateLimitTelemetryStatus(usage.RateLimitStatus)
 	if hasRateLimit {
 		rateLimit = usage.RateLimit
 	} else {
 		reporter, ok := o.connector.(connector.RateLimitReporter)
 		if !ok {
-			return graphQLRateLimitCycle{}
+			if status == "" {
+				return graphQLRateLimitCycle{}
+			}
+		} else {
+			var okRateLimit bool
+			rateLimit, okRateLimit = reporter.GraphQLRateLimit()
+			if !okRateLimit && status == "" {
+				return graphQLRateLimitCycle{}
+			}
+			hasRateLimit = okRateLimit
 		}
-		var okRateLimit bool
-		rateLimit, okRateLimit = reporter.GraphQLRateLimit()
-		if !okRateLimit {
-			return graphQLRateLimitCycle{}
-		}
-		hasRateLimit = true
 	}
 
 	cost := graphQLCostSummary(usage)
-	bucket := gitHubGraphQLBucket(rateLimit, now)
+	bucket := gitHubGraphQLBucket(rateLimit, now, status)
 	if cost != nil {
 		bucket.Cost = cost.TotalCost
 	}
@@ -1082,7 +1086,18 @@ func (o *Orchestrator) logGraphQLRateLimitCycle(cycle graphQLRateLimitCycle) {
 	}
 }
 
-func gitHubGraphQLBucket(rateLimit connector.GraphQLRateLimit, now time.Time) *telemetry.RateLimitBucket {
+func graphQLRateLimitTelemetryStatus(status string) string {
+	switch strings.TrimSpace(status) {
+	case connector.GraphQLRateLimitStatusExhausted:
+		return telemetry.RateLimitStatusExhausted
+	case connector.GraphQLRateLimitStatusBackoff:
+		return telemetry.RateLimitStatusBackoff
+	default:
+		return ""
+	}
+}
+
+func gitHubGraphQLBucket(rateLimit connector.GraphQLRateLimit, now time.Time, status string) *telemetry.RateLimitBucket {
 	var resetAt *time.Time
 	var resetInSeconds int64
 	if !rateLimit.ResetAt.IsZero() {
@@ -1098,15 +1113,29 @@ func gitHubGraphQLBucket(rateLimit connector.GraphQLRateLimit, now time.Time) *t
 		resetAt = &value
 		resetInSeconds = int64(rateLimit.RetryAfter.Round(time.Second) / time.Second)
 	}
+	if status == "" {
+		status = graphQLRateLimitStatusFromSnapshot(rateLimit)
+	}
 
 	return &telemetry.RateLimitBucket{
 		Remaining:      rateLimit.Remaining,
 		Used:           rateLimit.Used,
 		Limit:          rateLimit.Limit,
 		Cost:           rateLimit.Cost,
+		Status:         status,
 		ResetAt:        resetAt,
 		ResetInSeconds: resetInSeconds,
 	}
+}
+
+func graphQLRateLimitStatusFromSnapshot(rateLimit connector.GraphQLRateLimit) string {
+	if rateLimit.Limit > 0 && rateLimit.Remaining <= 0 {
+		return telemetry.RateLimitStatusExhausted
+	}
+	if rateLimit.RetryAfter > 0 {
+		return telemetry.RateLimitStatusBackoff
+	}
+	return ""
 }
 
 func (o *Orchestrator) adaptivePollInterval(state *State, now time.Time) time.Duration {

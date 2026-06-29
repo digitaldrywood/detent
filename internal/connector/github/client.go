@@ -51,24 +51,25 @@ type RESTBudgetPolicy struct {
 }
 
 type Client struct {
-	endpoint         string
-	restEndpoint     string
-	tokenSource      TokenSource
-	httpClient       HTTPClient
-	restPolicy       RESTBudgetPolicy
-	logger           *slog.Logger
-	mu               sync.RWMutex
-	rateLimit        connector.GraphQLRateLimit
-	queryCosts       map[string]connector.GraphQLQueryCost
-	hasRateLimit     bool
-	restRateLimit    connector.RESTRateLimit
-	restRequests     map[string]connector.RESTEndpointUsage
-	restBackoffUntil time.Time
-	restBackoffKey   string
-	restBackoffs     *restBackoffRegistry
-	hasRestRateLimit bool
-	authHealth       connector.AuthHealth
-	hasAuthHealth    bool
+	endpoint               string
+	restEndpoint           string
+	tokenSource            TokenSource
+	httpClient             HTTPClient
+	restPolicy             RESTBudgetPolicy
+	logger                 *slog.Logger
+	mu                     sync.RWMutex
+	rateLimit              connector.GraphQLRateLimit
+	queryCosts             map[string]connector.GraphQLQueryCost
+	hasRateLimit           bool
+	graphQLRateLimitStatus string
+	restRateLimit          connector.RESTRateLimit
+	restRequests           map[string]connector.RESTEndpointUsage
+	restBackoffUntil       time.Time
+	restBackoffKey         string
+	restBackoffs           *restBackoffRegistry
+	hasRestRateLimit       bool
+	authHealth             connector.AuthHealth
+	hasAuthHealth          bool
 }
 
 type restProbeResult struct {
@@ -195,6 +196,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
 		}
+		c.recordGraphQLRateLimitFailure(err, headerRateLimit)
 		return err
 	}
 
@@ -213,6 +215,7 @@ func (c *Client) graphQLWithType(ctx context.Context, queryType string, query st
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.graphQLWithType(ctx, queryType, query, variables, out, false)
 		}
+		c.recordGraphQLRateLimitFailure(err, headerRateLimit)
 		return err
 	}
 	if out == nil {
@@ -502,6 +505,7 @@ func (c *Client) ResetGraphQLRateLimitUsage() {
 	defer c.mu.Unlock()
 
 	c.queryCosts = nil
+	c.graphQLRateLimitStatus = ""
 }
 
 func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
@@ -509,15 +513,17 @@ func (c *Client) FlushGraphQLRateLimitUsage() connector.GraphQLRateLimitUsage {
 	defer c.mu.Unlock()
 
 	usage := connector.GraphQLRateLimitUsage{
-		RateLimit:    c.rateLimit,
-		HasRateLimit: c.hasRateLimit,
-		QueryCosts:   sortedGraphQLQueryCosts(c.queryCosts),
+		RateLimit:       c.rateLimit,
+		HasRateLimit:    c.hasRateLimit,
+		RateLimitStatus: c.graphQLRateLimitStatus,
+		QueryCosts:      sortedGraphQLQueryCosts(c.queryCosts),
 	}
 	for _, cost := range usage.QueryCosts {
 		usage.TotalQueries += cost.Count
 		usage.TotalCost += cost.Cost
 	}
 	c.queryCosts = nil
+	c.graphQLRateLimitStatus = ""
 	return usage
 }
 
@@ -964,6 +970,44 @@ func (c *Client) recordGraphQLQueryCostFromHeaders(queryType string, snapshot gr
 		cost = 0
 	}
 	c.addGraphQLQueryCost(queryType, cost)
+}
+
+func (c *Client) recordGraphQLRateLimitFailure(err error, snapshot graphQLHeaderRateLimit) {
+	status := graphQLRateLimitFailureStatus(err, snapshot)
+	if status == "" {
+		return
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	if c.graphQLRateLimitStatus == connector.GraphQLRateLimitStatusExhausted {
+		return
+	}
+	c.graphQLRateLimitStatus = status
+}
+
+func graphQLRateLimitFailureStatus(err error, snapshot graphQLHeaderRateLimit) string {
+	if !errors.Is(err, ErrRateLimited) {
+		return ""
+	}
+
+	var statusErr *StatusError
+	if errors.As(err, &statusErr) {
+		switch statusErr.RateLimitKind {
+		case restRateLimitKindPrimaryExhausted:
+			return connector.GraphQLRateLimitStatusExhausted
+		case restRateLimitKindSecondaryThrottled:
+			return connector.GraphQLRateLimitStatusBackoff
+		}
+	}
+	if snapshot.HasPrimarySnapshot && snapshot.Current.Remaining <= 0 {
+		return connector.GraphQLRateLimitStatusExhausted
+	}
+	if snapshot.Current.RetryAfter > 0 {
+		return connector.GraphQLRateLimitStatusBackoff
+	}
+	return connector.GraphQLRateLimitStatusExhausted
 }
 
 func validateEndpoint(endpoint string) error {

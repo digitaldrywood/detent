@@ -817,6 +817,44 @@ func TestClientGraphQLAggregatesRateLimitCostsByQueryType(t *testing.T) {
 	}
 }
 
+func TestClientGraphQLRecordsRateLimitStatusWithoutSnapshot(t *testing.T) {
+	t.Parallel()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`{"errors":[{"type":"RATE_LIMITED","message":"API rate limit exceeded"}]}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.GraphQLWithType(context.Background(), "issue_parent_metadata", "query { viewer { login } }", nil, nil)
+	if !errors.Is(err, ErrRateLimited) {
+		t.Fatalf("GraphQLWithType() error = %v, want ErrRateLimited", err)
+	}
+
+	usage := client.FlushGraphQLRateLimitUsage()
+	if usage.HasRateLimit {
+		t.Fatalf("FlushGraphQLRateLimitUsage().HasRateLimit = true, want false with no snapshot")
+	}
+	if usage.RateLimitStatus != connector.GraphQLRateLimitStatusExhausted {
+		t.Fatalf("FlushGraphQLRateLimitUsage().RateLimitStatus = %q, want %q", usage.RateLimitStatus, connector.GraphQLRateLimitStatusExhausted)
+	}
+
+	usage = client.FlushGraphQLRateLimitUsage()
+	if usage.RateLimitStatus != "" {
+		t.Fatalf("second FlushGraphQLRateLimitUsage().RateLimitStatus = %q, want cleared", usage.RateLimitStatus)
+	}
+}
+
 func TestClientGraphQLInfersMutationCostsFromHeaders(t *testing.T) {
 	t.Parallel()
 

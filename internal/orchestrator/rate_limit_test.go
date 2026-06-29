@@ -205,6 +205,37 @@ func TestTickPublishesAndLogsGitHubGraphQLCostSummary(t *testing.T) {
 	}
 }
 
+func TestTickPublishesGitHubGraphQLExhaustionWithoutRateLimitSnapshot(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+	cfg := normalizeConfig(Config{
+		PollInterval:        30 * time.Second,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		TerminalStates:      []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &rateLimitConnector{
+		usage: connector.GraphQLRateLimitUsage{
+			RateLimitStatus: connector.GraphQLRateLimitStatusExhausted,
+		},
+	}
+	orch := newRateLimitTestOrchestrator(cfg, tracker)
+
+	orch.tick(context.Background(), &state, now)
+
+	if state.RateLimits == nil || state.RateLimits.GitHubGraphQL == nil {
+		t.Fatalf("RateLimits = %#v, want GitHub GraphQL status bucket", state.RateLimits)
+	}
+	if state.RateLimits.GitHubGraphQL.Status != telemetry.RateLimitStatusExhausted {
+		t.Fatalf("GitHubGraphQL.Status = %q, want %q", state.RateLimits.GitHubGraphQL.Status, telemetry.RateLimitStatusExhausted)
+	}
+	if state.RateLimits.GitHubGraphQL.Limit != 0 || state.RateLimits.GitHubGraphQL.Remaining != 0 {
+		t.Fatalf("GitHubGraphQL = %#v, want status-only exhausted bucket", state.RateLimits.GitHubGraphQL)
+	}
+}
+
 func TestTickCarriesGitHubGraphQLCostRecordedBetweenRefreshes(t *testing.T) {
 	t.Parallel()
 
