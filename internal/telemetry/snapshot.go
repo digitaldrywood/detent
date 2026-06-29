@@ -47,6 +47,7 @@ type Project struct {
 	ID          string `json:"id,omitempty"`
 	DisplayName string `json:"display_name,omitempty"`
 	URL         string `json:"url,omitempty"`
+	Repository  string `json:"repository,omitempty"`
 	Color       string `json:"color,omitempty"`
 }
 

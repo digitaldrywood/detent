@@ -604,6 +604,150 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 	}
 }
 
+func TestMergeSnapshotDeduplicatesIssueRowsByNodeID(t *testing.T) {
+	t.Parallel()
+
+	got := mergeSnapshot(telemetry.Snapshot{}, telemetry.Snapshot{
+		Project: telemetry.Project{ID: "digitaldrywood", DisplayName: "Digital Drywood"},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kwDORZINcs8AAAABHDv6cg",
+			Identifier: "digitaldrywood/pyroapex#1434",
+			Title:      "Duplicate board card",
+			State:      "In Progress",
+		}},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kwDORZINcs8AAAABHDv6cg",
+			Identifier: "digitaldrywood/pyroapex#1434",
+			Title:      "Duplicate pipeline card",
+			State:      "Human Review",
+		}},
+	})
+	got = mergeSnapshot(got, telemetry.Snapshot{
+		Project: telemetry.Project{ID: "pyroapex", DisplayName: "Pyro Apex"},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kwDORZINcs8AAAABHDv6cg",
+			Identifier: "digitaldrywood/pyroapex#1434",
+			Title:      "Duplicate board card",
+			State:      "In Progress",
+		}},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kwDORZINcs8AAAABHDv6cg",
+			Identifier: "digitaldrywood/pyroapex#1434",
+			Title:      "Duplicate pipeline card",
+			State:      "Human Review",
+		}},
+	})
+
+	if len(got.BoardIssues) != 1 {
+		t.Fatalf("BoardIssues len = %d, want 1: %#v", len(got.BoardIssues), got.BoardIssues)
+	}
+	if len(got.Pipeline) != 1 {
+		t.Fatalf("Pipeline len = %d, want 1: %#v", len(got.Pipeline), got.Pipeline)
+	}
+	if got.BoardIssues[0].ProjectID != "digitaldrywood" {
+		t.Fatalf("BoardIssues[0].ProjectID = %q, want first-seen project", got.BoardIssues[0].ProjectID)
+	}
+	if got.Pipeline[0].ProjectID != "digitaldrywood" {
+		t.Fatalf("Pipeline[0].ProjectID = %q, want first-seen project", got.Pipeline[0].ProjectID)
+	}
+}
+
+func TestMergeSnapshotPrefersRepositoryProjectForDuplicateIssueRows(t *testing.T) {
+	t.Parallel()
+
+	got := mergeSnapshot(telemetry.Snapshot{}, telemetry.Snapshot{
+		Project: telemetry.Project{
+			ID:          "digitaldrywood",
+			DisplayName: "Digital Drywood",
+			Repository:  "digitaldrywood/digitaldrywood",
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kwDORZINcs8AAAABHDv6cg",
+			Identifier: "digitaldrywood/pyroapex#1434",
+			Title:      "Duplicate board card",
+			State:      "In Progress",
+		}},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kwDORZINcs8AAAABHDv6cg",
+			Identifier: "digitaldrywood/pyroapex#1434",
+			Title:      "Duplicate pipeline card",
+			State:      "Human Review",
+		}},
+	})
+	got = mergeSnapshot(got, telemetry.Snapshot{
+		Project: telemetry.Project{
+			ID:          "pyroapex",
+			DisplayName: "Pyro Apex",
+			Repository:  "digitaldrywood/pyroapex",
+		},
+		BoardIssues: []telemetry.Issue{{
+			ID:         "I_kwDORZINcs8AAAABHDv6cg",
+			Identifier: "digitaldrywood/pyroapex#1434",
+			Title:      "Duplicate board card",
+			State:      "In Progress",
+		}},
+		Pipeline: []telemetry.Issue{{
+			ID:         "I_kwDORZINcs8AAAABHDv6cg",
+			Identifier: "digitaldrywood/pyroapex#1434",
+			Title:      "Duplicate pipeline card",
+			State:      "Human Review",
+		}},
+	})
+
+	if len(got.BoardIssues) != 1 {
+		t.Fatalf("BoardIssues len = %d, want 1: %#v", len(got.BoardIssues), got.BoardIssues)
+	}
+	if got.BoardIssues[0].ProjectID != "pyroapex" {
+		t.Fatalf("BoardIssues[0].ProjectID = %q, want repository-owning project", got.BoardIssues[0].ProjectID)
+	}
+	if len(got.Pipeline) != 1 {
+		t.Fatalf("Pipeline len = %d, want 1: %#v", len(got.Pipeline), got.Pipeline)
+	}
+	if got.Pipeline[0].ProjectID != "pyroapex" {
+		t.Fatalf("Pipeline[0].ProjectID = %q, want repository-owning project", got.Pipeline[0].ProjectID)
+	}
+}
+
+func TestProjectRepositoryFromWorkflow(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		cfg  workflowconfig.Config
+		want string
+	}{
+		{
+			name: "repository",
+			cfg: workflowconfig.Config{
+				Tracker: workflowconfig.Tracker{Repository: "digitaldrywood/detent"},
+			},
+			want: "digitaldrywood/detent",
+		},
+		{
+			name: "write probe issue",
+			cfg: workflowconfig.Config{
+				Tracker: workflowconfig.Tracker{WriteProbeIssue: "digitaldrywood/pyroapex#1434"},
+			},
+			want: "digitaldrywood/pyroapex",
+		},
+		{
+			name: "empty",
+			cfg:  workflowconfig.Config{},
+			want: "",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := projectRepositoryFromWorkflow(tt.cfg); got != tt.want {
+				t.Fatalf("projectRepositoryFromWorkflow() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestMergeSnapshotMergesSchedulerRuntimeRows(t *testing.T) {
 	t.Parallel()
 

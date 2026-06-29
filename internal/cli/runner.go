@@ -454,8 +454,20 @@ func projectSnapshotMetadata(trackedProject *project.Project) telemetry.Project 
 		ID:          id,
 		DisplayName: id,
 		URL:         projectURLFromWorkflow(workflow.Config),
+		Repository:  projectRepositoryFromWorkflow(workflow.Config),
 		Color:       projectcolor.ColorFor(id, cfg.Color),
 	}
+}
+
+func projectRepositoryFromWorkflow(cfg workflowconfig.Config) string {
+	if repository := strings.TrimSpace(cfg.Tracker.Repository); repository != "" {
+		return repository
+	}
+	repository, _, ok := strings.Cut(strings.TrimSpace(cfg.Tracker.WriteProbeIssue), "#")
+	if ok && strings.Contains(repository, "/") {
+		return strings.TrimSpace(repository)
+	}
+	return ""
 }
 
 func projectURLFromWorkflow(cfg workflowconfig.Config) string {
@@ -593,8 +605,8 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 	current.Queue = append(current.Queue, next.Queue...)
 	current.Blocked = append(current.Blocked, next.Blocked...)
 	current.Completed = append(current.Completed, next.Completed...)
-	current.BoardIssues = append(current.BoardIssues, next.BoardIssues...)
-	current.Pipeline = append(current.Pipeline, next.Pipeline...)
+	current.BoardIssues = mergeIssueRows(current.BoardIssues, next.BoardIssues, current.Projects)
+	current.Pipeline = mergeIssueRows(current.Pipeline, next.Pipeline, current.Projects)
 	current.Budget.Refusals = append(current.Budget.Refusals, next.Budget.Refusals...)
 
 	current.Counts.Running += next.Counts.Running
@@ -611,6 +623,76 @@ func mergeSnapshot(current, next telemetry.Snapshot) telemetry.Snapshot {
 		current.RateLimits = next.RateLimits
 	}
 	return current
+}
+
+func mergeIssueRows(current, next []telemetry.Issue, projects []telemetry.ProjectSnapshot) []telemetry.Issue {
+	if len(current) == 0 && len(next) == 0 {
+		return current
+	}
+
+	projectRepositories := projectRepositories(projects)
+	combined := make([]telemetry.Issue, 0, len(current)+len(next))
+	combined = append(combined, current...)
+	combined = append(combined, next...)
+
+	out := make([]telemetry.Issue, 0, len(combined))
+	seen := make(map[string]int, len(combined))
+	for _, issue := range combined {
+		id := strings.TrimSpace(issue.ID)
+		if id == "" {
+			out = append(out, issue)
+			continue
+		}
+
+		index, ok := seen[id]
+		if !ok {
+			seen[id] = len(out)
+			out = append(out, issue)
+			continue
+		}
+		if preferIssueProject(issue, out[index], projectRepositories) {
+			out[index] = issue
+		}
+	}
+	return out
+}
+
+func projectRepositories(projects []telemetry.ProjectSnapshot) map[string]string {
+	out := make(map[string]string, len(projects))
+	for _, snapshot := range projects {
+		projectID := strings.ToLower(strings.TrimSpace(snapshot.Project.ID))
+		repository := strings.ToLower(strings.TrimSpace(snapshot.Project.Repository))
+		if projectID != "" && repository != "" {
+			out[projectID] = repository
+		}
+	}
+	return out
+}
+
+func preferIssueProject(candidate, incumbent telemetry.Issue, projectRepositories map[string]string) bool {
+	candidateMatches := issueProjectMatchesRepository(candidate, projectRepositories)
+	incumbentMatches := issueProjectMatchesRepository(incumbent, projectRepositories)
+	return candidateMatches && !incumbentMatches
+}
+
+func issueProjectMatchesRepository(issue telemetry.Issue, projectRepositories map[string]string) bool {
+	repository := strings.ToLower(strings.TrimSpace(issueRepository(issue)))
+	if repository == "" {
+		return false
+	}
+	projectID := strings.ToLower(strings.TrimSpace(issue.ProjectID))
+	return projectID != "" && projectRepositories[projectID] == repository
+}
+
+func issueRepository(issue telemetry.Issue) string {
+	if issue.MergeTiming != nil && strings.TrimSpace(issue.MergeTiming.Repository) != "" {
+		return strings.TrimSpace(issue.MergeTiming.Repository)
+	}
+	repository, _, ok := strings.Cut(strings.TrimSpace(issue.Identifier), "#")
+	if ok && strings.Contains(repository, "/") {
+		return strings.TrimSpace(repository)
+	}
+	return ""
 }
 
 func stampSnapshotProjectID(snapshot telemetry.Snapshot) telemetry.Snapshot {
