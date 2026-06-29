@@ -33,6 +33,29 @@ func TestLoadWorkflowUsesWorkingTreeWhenWorkflowRefUnset(t *testing.T) {
 	}
 }
 
+func TestLoadWorkflowRejectsRelativeWorkflowWhenWorkflowRefUnset(t *testing.T) {
+	root := t.TempDir()
+	daemonDir := filepath.Join(root, "daemon")
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(daemonDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+	writeWorkflowSourceFile(t, filepath.Join(daemonDir, "WORKFLOW.md"), "daemon")
+	writeWorkflowSourceFile(t, filepath.Join(projectDir, "WORKFLOW.md"), "project")
+	t.Chdir(daemonDir)
+
+	_, err := LoadWorkflow(globalconfig.Project{
+		Workflow: "WORKFLOW.md",
+		Workdir:  projectDir,
+	})
+	if !errors.Is(err, errRelativeWorkflowPath) {
+		t.Fatalf("LoadWorkflow() error = %v, want %v", err, errRelativeWorkflowPath)
+	}
+}
+
 func TestLoadWorkflowUsesConfiguredGitRef(t *testing.T) {
 	t.Parallel()
 

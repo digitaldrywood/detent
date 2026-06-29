@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -17,6 +18,7 @@ import (
 
 var (
 	errMissingWorkflowRefRoot = errors.New("workflow_ref requires project workdir")
+	errRelativeWorkflowPath   = errors.New("workflow path must be absolute or home-relative when workflow_ref is empty")
 	errUnsafeWorkflowPath     = errors.New("workflow path must stay inside the source root")
 )
 
@@ -38,7 +40,11 @@ func LoadWorkflow(cfg globalconfig.Project) (workflowconfig.Workflow, error) {
 
 func LoadWorkflowContext(ctx context.Context, cfg globalconfig.Project) (workflowconfig.Workflow, error) {
 	if strings.TrimSpace(cfg.WorkflowRef) == "" {
-		return workflowconfig.LoadWorkflow(cfg.Workflow)
+		workflowPath, err := plainWorkflowPath(cfg.Workflow)
+		if err != nil {
+			return workflowconfig.Workflow{}, err
+		}
+		return workflowconfig.LoadWorkflow(workflowPath)
 	}
 	if ctx == nil {
 		ctx = context.Background()
@@ -76,6 +82,29 @@ func newWorkflowGitRefSource(cfg globalconfig.Project) (workflowGitRefSource, er
 		ref:        ref,
 		path:       workflowPath,
 	}, nil
+}
+
+func plainWorkflowPath(workflowPath string) (string, error) {
+	workflowPath = strings.TrimSpace(workflowPath)
+	if workflowPath == "" {
+		return "", errors.New("workflow path must not be blank")
+	}
+	if filepath.IsAbs(workflowPath) {
+		return filepath.Clean(workflowPath), nil
+	}
+
+	if workflowPath == "~" || strings.HasPrefix(workflowPath, "~/") {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return "", fmt.Errorf("resolve home workflow path: %w", err)
+		}
+		if workflowPath == "~" {
+			return filepath.Clean(home), nil
+		}
+		return filepath.Join(home, strings.TrimPrefix(workflowPath, "~/")), nil
+	}
+
+	return "", errRelativeWorkflowPath
 }
 
 func workflowRefPath(sourceRoot string, workflowPath string) (string, error) {

@@ -318,6 +318,38 @@ projects:
 	}
 }
 
+func TestReadRejectsPlainRelativeWorkflowPath(t *testing.T) {
+	root := t.TempDir()
+	daemonDir := filepath.Join(root, "daemon")
+	projectDir := filepath.Join(root, "project")
+	writeFile(t, filepath.Join(daemonDir, "WORKFLOW.md"), "---\ntracker:\n  kind: memory\n---\ndaemon\n")
+	writeFile(t, filepath.Join(projectDir, "WORKFLOW.md"), "---\ntracker:\n  kind: memory\n---\nproject\n")
+	configPath := filepath.Join(root, "global.yaml")
+	writeFile(t, configPath, `apiVersion: detent/v1
+kind: GlobalConfig
+global:
+  max_concurrent_agents: 8
+  scheduling: weighted
+projects:
+  - id: detent
+    workflow: WORKFLOW.md
+    workdir: `+projectDir+`
+    weight: 1
+    priority: 0
+`)
+
+	t.Chdir(daemonDir)
+
+	_, err := Read(configPath)
+	if err == nil {
+		t.Fatal("Read() error = nil, want relative workflow validation error")
+	}
+	want := "projects[0].workflow: must be absolute or home-relative when workflow_ref is empty"
+	if !strings.Contains(err.Error(), want) {
+		t.Fatalf("Read() error = %q, want substring %q", err, want)
+	}
+}
+
 func TestReadOrDefaultUsesDefaultForMissingFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing", "global.yaml")
 

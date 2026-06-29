@@ -25,7 +25,7 @@ var (
 )
 
 const (
-	addProjectExampleCommand = "detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api"
+	addProjectExampleCommand = "detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api"
 	configPathCommand        = "detent config path"
 	forceInitCommand         = "detent init --force"
 	ghAuthLoginCommand       = `gh auth login --scopes "repo,read:org,project"`
@@ -690,7 +690,7 @@ func newAddProjectCommand(configPath *string, opts options) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:     "add-project",
 		Short:   "Add a project to global config",
-		Example: "detent add-project --id api --workflow ./WORKFLOW.md --workdir ~/code/api --weight 2",
+		Example: "detent add-project --id api --workflow ~/code/api/WORKFLOW.md --workdir ~/code/api --weight 2",
 		Args:    NoArgs,
 		RunE: func(cmd *cobra.Command, _ []string) error {
 			out, err := OutputForCommand(cmd)
