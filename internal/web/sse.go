@@ -83,7 +83,7 @@ func (s *Server) events(c echo.Context) error {
 			if !ok {
 				return nil
 			}
-			snapshot = s.cachedEnrichedSnapshot(ctx, snapshot)
+			snapshot = s.withManualRefresh(s.cachedEnrichedSnapshot(ctx, snapshot))
 			data := s.dashboardData(ctx, snapshot)
 			if selectedProjectID != "" {
 				if scopedData, ok := s.projectDashboardData(ctx, selectedProjectID, snapshot); ok {

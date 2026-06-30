@@ -3147,14 +3147,48 @@ templ dashboardHealth(data DashboardData) {
 
 templ snapshotReadiness(snapshot telemetry.Snapshot) {
 	<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm" aria-label="Snapshot readiness">
-		<div class="flex items-start gap-3">
+		<div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+			<div class="flex min-w-0 items-start gap-3">
 			<span class={ "mt-1 h-2.5 w-2.5 rounded-full " + snapshotReadinessDotClass(snapshot) }></span>
-			<div>
+			<div class="min-w-0">
 				<h2 class="text-sm font-semibold">{ snapshotReadinessTitle(snapshot) }</h2>
 				<p class="mt-1 text-sm text-warning">{ snapshotReadinessDetail(snapshot) }</p>
 			</div>
 		</div>
+			if manualRefreshVisible(snapshot) {
+				<div class="flex min-w-0 flex-col gap-2 sm:max-w-sm sm:items-end">
+					<form class="flex justify-start sm:justify-end" hx-post="/api/v1/refresh" hx-target="#manual-refresh-status" hx-swap="outerHTML">
+						@button.Button(button.Props{
+							Type:    button.TypeSubmit,
+							Variant: button.VariantOutline,
+							Size:    button.SizeSm,
+							Class:   "border-warning bg-card text-warning hover:border-accent hover:text-accent",
+							Attributes: templ.Attributes{
+								"aria-label": "Force tracker refresh",
+							},
+						}) {
+							@icon.RefreshCw(icon.Props{Class: "size-3.5 shrink-0"})
+							<span>Force refresh</span>
+						}
+					</form>
+					@ManualRefreshFeedback(snapshot.Refresh.Manual)
+				</div>
+			}
+		</div>
 	</section>
+}
+
+templ ManualRefreshFeedback(attempt *telemetry.RefreshAttempt) {
+	<div id="manual-refresh-status" role="status" aria-live="polite" class="min-w-0">
+		if manualRefreshStatusVisible(attempt) {
+			<div class={ manualRefreshStatusClass(attempt) }>
+				<div class="font-semibold">{ manualRefreshStatusLabel(attempt) }</div>
+				if manualRefreshStatusDetail(attempt) != "" {
+					<div class="mt-1 break-words opacity-90">{ manualRefreshStatusDetail(attempt) }</div>
+				}
+			</div>
+		}
+	</div>
 }
 
 templ metricCard(label string, term helpTerm, value string, detail string, borderClass string, dotClass string) {

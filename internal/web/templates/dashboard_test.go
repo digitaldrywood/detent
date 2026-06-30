@@ -1441,6 +1441,9 @@ func TestProjectSnapshotsRenderDegradedRefreshWithPriorSnapshotState(t *testing.
 			"Tracker refresh degraded.",
 			"GitHub returned a transient 502 while fetching workspace cleanup candidates. Detent will retry on the next refresh.",
 			"Last successful refresh: Jun 22 09:24:30 UTC.",
+			"Force refresh",
+			`hx-post="/api/v1/refresh"`,
+			`hx-target="#manual-refresh-status"`,
 		} {
 			if !strings.Contains(html, want) {
 				t.Fatalf("%s missing degraded refresh copy %q:\n%s", name, want, html)
@@ -1474,6 +1477,71 @@ func TestProjectSnapshotsRenderDegradedRefreshWithPriorSnapshotState(t *testing.
 	} {
 		if strings.Contains(kanbanHTML, forbidden) {
 			t.Fatalf("kanban degraded prior snapshot rendered mutation affordance %q:\n%s", forbidden, kanbanHTML)
+		}
+	}
+}
+
+func TestProjectSnapshotsRenderManualRefreshRefusal(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 22, 9, 27, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-30 * time.Second)
+	lastErrorAt := now.Add(-5 * time.Second)
+	manualRequestedAt := now.Add(-2 * time.Second)
+	data := templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress"},
+		},
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				Status:        telemetry.RefreshStatusDegraded,
+				LastRefreshAt: &lastRefreshAt,
+				LastError:     "fetch candidate issues failed: github transient error: status 502",
+				LastErrorAt:   &lastErrorAt,
+				Manual: &telemetry.RefreshAttempt{
+					ID:          "manual-refused",
+					Status:      telemetry.RefreshAttemptStatusRefused,
+					RequestedAt: &manualRequestedAt,
+					LastError:   "GitHub GraphQL backoff is active until Jun 22 09:32:00 UTC. Force refresh was refused to preserve hard rate-limit constraints.",
+					LastErrorAt: &lastErrorAt,
+					Operations:  []string{"poll", "reconcile"},
+				},
+			},
+			BoardIssues: []telemetry.Issue{
+				{
+					ID:         "issue-681",
+					Identifier: "digitaldrywood/detent#681",
+					ProjectID:  "detent",
+					Title:      "Keep degraded board visible",
+					State:      "Todo",
+				},
+			},
+		},
+	}
+
+	html := renderDashboard(t, data)
+	for _, want := range []string{
+		"Tracker refresh degraded.",
+		"Force refresh",
+		"Refresh refused",
+		"GitHub GraphQL backoff is active until Jun 22 09:32:00 UTC.",
+		`id="manual-refresh-status"`,
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing manual refresh refusal %q:\n%s", want, html)
+		}
+	}
+	for _, forbidden := range []string{
+		"Loading tracker state...",
+		"Detent could not load the first tracker snapshot.",
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard rendered %q while prior degraded snapshot is available:\n%s", forbidden, html)
 		}
 	}
 }

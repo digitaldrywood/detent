@@ -13,7 +13,11 @@ type RefreshResponse struct {
 	Status      telemetry.RefreshAttemptStatus `json:"status,omitempty"`
 	Queued      bool                           `json:"queued"`
 	Coalesced   bool                           `json:"coalesced"`
+	Refused     bool                           `json:"refused"`
 	RequestedAt time.Time                      `json:"requested_at"`
+	LastError   string                         `json:"last_error,omitempty"`
+	LastErrorAt *time.Time                     `json:"last_error_at,omitempty"`
+	RetryAt     *time.Time                     `json:"retry_at,omitempty"`
 	Operations  []string                       `json:"operations"`
 }
 

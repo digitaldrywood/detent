@@ -5458,6 +5458,182 @@ func TestAPIRefreshOverlaysManualRequestOnStaleDegradedState(t *testing.T) {
 	}
 }
 
+func TestServerEventsOverlayManualRefreshOnStaleDegradedState(t *testing.T) {
+	t.Parallel()
+
+	generatedAt := time.Date(2026, 6, 24, 14, 0, 0, 0, time.UTC)
+	requestedAt := generatedAt.Add(5 * time.Minute)
+	snapshots := hub.New[telemetry.Snapshot]()
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: generatedAt,
+		Refresh: telemetry.Refresh{
+			Status:    telemetry.RefreshStatusDegraded,
+			LastError: "fetch tracker state failed: status 504",
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	refresher := &refreshProbe{
+		response: web.RefreshResponse{
+			RequestID:   "manual-sse",
+			Status:      telemetry.RefreshAttemptStatusInProgress,
+			Queued:      true,
+			RequestedAt: requestedAt,
+			Operations:  []string{"poll", "reconcile"},
+		},
+	}
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Refresher = refresher
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	refresh := requestJSON(t, server, http.MethodPost, "/api/v1/refresh", http.StatusAccepted)
+	if refresh["request_id"] != "manual-sse" || refresh["status"] != string(telemetry.RefreshAttemptStatusInProgress) {
+		t.Fatalf("refresh response = %#v, want correlated in-progress manual refresh", refresh)
+	}
+
+	body := openEventStream(t, server)
+	defer body.Close()
+
+	event := readSSEEvent(t, body)
+	if event.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", event.name)
+	}
+	for _, want := range []string{
+		`id="manual-refresh-status"`,
+		"Retrying",
+	} {
+		if !strings.Contains(event.data, want) {
+			t.Fatalf("snapshot event missing %q:\n%s", want, event.data)
+		}
+	}
+}
+
+func TestAPIRefreshRefusesDuringGitHubGraphQLBackoff(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	retryAt := now.Add(5 * time.Minute)
+	snapshots := hub.New[telemetry.Snapshot]()
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: now.Add(-time.Minute),
+		Refresh: telemetry.Refresh{
+			Status: telemetry.RefreshStatusDegraded,
+		},
+		RateLimits: &telemetry.RateLimits{
+			GitHubGraphQL: &telemetry.RateLimitBucket{
+				Remaining: 0,
+				Used:      5000,
+				Limit:     5000,
+				ResetAt:   &retryAt,
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	refresher := &refreshProbe{
+		response: web.RefreshResponse{
+			RequestID:   "manual-unexpected",
+			Status:      telemetry.RefreshAttemptStatusInProgress,
+			Queued:      true,
+			RequestedAt: now,
+			Operations:  []string{"poll", "reconcile"},
+		},
+	}
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Refresher = refresher
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	refresh := requestJSON(t, server, http.MethodPost, "/api/v1/refresh", http.StatusTooManyRequests)
+	if refresher.calls != 0 {
+		t.Fatalf("refresh calls = %d, want 0 while hard backoff is active", refresher.calls)
+	}
+	if refresh["status"] != string(telemetry.RefreshAttemptStatusRefused) || refresh["refused"] != true {
+		t.Fatalf("refresh response = %#v, want refused status", refresh)
+	}
+	if refresh["queued"] != false || refresh["coalesced"] != false {
+		t.Fatalf("refresh response = %#v, want not queued or coalesced", refresh)
+	}
+	if lastError, ok := refresh["last_error"].(string); !ok || !strings.Contains(lastError, "GitHub GraphQL backoff is active") {
+		t.Fatalf("last_error = %#v, want GitHub GraphQL backoff reason", refresh["last_error"])
+	}
+	if refresh["retry_at"] == "" {
+		t.Fatalf("retry_at = %#v, want populated retry time", refresh["retry_at"])
+	}
+
+	state := requestJSON(t, server, http.MethodGet, "/api/v1/state", http.StatusOK)
+	refreshState := state["refresh"].(map[string]any)
+	manual := refreshState["manual"].(map[string]any)
+	if manual["status"] != string(telemetry.RefreshAttemptStatusRefused) {
+		t.Fatalf("refresh.manual = %#v, want refused overlay", manual)
+	}
+}
+
+func TestAPIRefreshHTMXRendersRefusalFragment(t *testing.T) {
+	t.Parallel()
+
+	now := time.Now().UTC()
+	retryAt := now.Add(5 * time.Minute)
+	snapshots := hub.New[telemetry.Snapshot]()
+	if err := snapshots.Publish(telemetry.Snapshot{
+		GeneratedAt: now.Add(-time.Minute),
+		Refresh: telemetry.Refresh{
+			Status: telemetry.RefreshStatusDegraded,
+		},
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST: &telemetry.RateLimitBucket{
+				Remaining:      100,
+				Used:           4900,
+				Limit:          5000,
+				ResetAt:        &retryAt,
+				ResetInSeconds: int64((5 * time.Minute) / time.Second),
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	refresher := &refreshProbe{}
+	deps := testDeps(t)
+	deps.Hub = snapshots
+	deps.Refresher = refresher
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/refresh", nil)
+	req.Header.Set("HX-Request", "true")
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/refresh status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	if refresher.calls != 0 {
+		t.Fatalf("refresh calls = %d, want 0 while hard backoff is active", refresher.calls)
+	}
+	body := rec.Body.String()
+	for _, want := range []string{
+		`id="manual-refresh-status"`,
+		"Refresh refused",
+		"GitHub REST backoff is active",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("HTMX fragment missing %q:\n%s", want, body)
+		}
+	}
+}
+
 func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	t.Parallel()
 

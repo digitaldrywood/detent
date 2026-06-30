@@ -102,6 +102,7 @@ const (
 	RefreshAttemptStatusCoalesced  RefreshAttemptStatus = "coalesced"
 	RefreshAttemptStatusSucceeded  RefreshAttemptStatus = "succeeded"
 	RefreshAttemptStatusFailed     RefreshAttemptStatus = "failed"
+	RefreshAttemptStatusRefused    RefreshAttemptStatus = "refused"
 )
 
 type Refresh struct {
