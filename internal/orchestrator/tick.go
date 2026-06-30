@@ -144,8 +144,11 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched,
 		o.transitionCompletedActiveIssuesToReview(ctx, state, fetched.candidates, now),
 	)
-	state.BoardIssues = boardIssuesFromFetched(fetched)
 	o.dispatchTickIssues(ctx, state, fetched, transitions, previous, completedEpics, now)
+	if refreshSucceeded(state) {
+		state.BoardIssues = boardIssuesFromFetched(fetched)
+		o.markRefreshSucceeded(state, now)
+	}
 	completed = true
 }
 
@@ -340,6 +343,12 @@ func clearRefreshError(state *State) {
 	}
 	state.LastRefreshError = ""
 	state.LastRefreshErrorAt = time.Time{}
+}
+
+func refreshSucceeded(state *State) bool {
+	return state != nil &&
+		strings.TrimSpace(state.LastRefreshError) == "" &&
+		state.LastRefreshErrorAt.IsZero()
 }
 
 func (o *Orchestrator) observedWorkExists(ctx context.Context, observedStates []string) bool {

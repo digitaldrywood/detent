@@ -1455,6 +1455,27 @@ func TestProjectSnapshotsRenderDegradedRefreshWithPriorSnapshotState(t *testing.
 			}
 		}
 	}
+
+	kanbanHTML := renderProjectKanbanPage(t, data)
+	for _, want := range []string{
+		`data-project-kanban-card="digitaldrywood/detent#680"`,
+		"Summarize degraded refresh errors",
+		"Todo (1)",
+		"Tracker refresh degraded.",
+	} {
+		if !strings.Contains(kanbanHTML, want) {
+			t.Fatalf("kanban degraded prior snapshot missing %q:\n%s", want, kanbanHTML)
+		}
+	}
+	for _, forbidden := range []string{
+		`data-kanban-action="move"`,
+		`hx-post="/api/v1/kanban/move"`,
+		`draggable="true"`,
+	} {
+		if strings.Contains(kanbanHTML, forbidden) {
+			t.Fatalf("kanban degraded prior snapshot rendered mutation affordance %q:\n%s", forbidden, kanbanHTML)
+		}
+	}
 }
 
 func TestProjectSnapshotsSummarizeGitHubTransientHTMLReadinessError(t *testing.T) {
