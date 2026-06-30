@@ -2028,8 +2028,18 @@ func projectKanbanActionsEnabled(data DashboardData) bool {
 	return false
 }
 
+func projectKanbanFeedbackVisible(data DashboardData) bool {
+	return strings.TrimSpace(data.Kanban.Feedback) != "" ||
+		(projectKanbanActionsEnabled(data) && snapshotReady(data.Snapshot))
+}
+
+func projectKanbanBoardLoaded(data DashboardData) bool {
+	return snapshotReady(data.Snapshot) ||
+		(snapshotDegraded(data.Snapshot) && snapshotHasPriorTrackerSnapshot(data.Snapshot))
+}
+
 func projectKanbanDragDropEnabled(data DashboardData) bool {
-	return isProjectDashboard(data) && kanbanIntegrationEnabled(data)
+	return isProjectDashboard(data) && kanbanIntegrationEnabled(data) && snapshotReady(data.Snapshot)
 }
 
 func projectKanbanCardKanbanData(data DashboardData, card projectKanbanCard) KanbanData {
@@ -2085,6 +2095,8 @@ func kanbanFeedbackClass(data KanbanData) string {
 	switch strings.TrimSpace(data.FeedbackKind) {
 	case "success":
 		return class + "border-success bg-success-soft text-success"
+	case "warning":
+		return class + "border-warning bg-warning-soft text-warning"
 	case "danger", "error":
 		return class + "border-danger bg-danger-soft text-danger"
 	default:
@@ -2827,7 +2839,7 @@ func kanbanCardAttributes(data DashboardData, card kanbanCard) templ.Attributes 
 }
 
 func projectKanbanCardCanMove(data DashboardData, card projectKanbanCard) bool {
-	return projectKanbanCardIntegrationEnabled(data, card) && card.Movable && len(projectKanbanMoveTargetStates(data, card)) > 0
+	return snapshotReady(data.Snapshot) && projectKanbanCardIntegrationEnabled(data, card) && card.Movable && len(projectKanbanMoveTargetStates(data, card)) > 0
 }
 
 func projectKanbanCardActionsVisible(data DashboardData, card projectKanbanCard) bool {
@@ -2835,22 +2847,22 @@ func projectKanbanCardActionsVisible(data DashboardData, card projectKanbanCard)
 }
 
 func kanbanCardCanMove(data DashboardData, card kanbanCard) bool {
-	return kanbanIntegrationEnabled(data) && card.Movable && len(kanbanMoveTargetStates(data, card.State)) > 0
+	return snapshotReady(data.Snapshot) && kanbanIntegrationEnabled(data) && card.Movable && len(kanbanMoveTargetStates(data, card.State)) > 0
 }
 
 func projectKanbanCardCanRemove(data DashboardData, card projectKanbanCard) bool {
-	return isProjectDashboard(data) && kanbanIntegrationEnabled(data) && strings.TrimSpace(card.IssueID) != ""
+	return snapshotReady(data.Snapshot) && isProjectDashboard(data) && kanbanIntegrationEnabled(data) && strings.TrimSpace(card.IssueID) != ""
 }
 
 func projectKanbanCardCanComment(data DashboardData, card projectKanbanCard) bool {
-	if !isProjectDashboard(data) || !kanbanIntegrationEnabled(data) {
+	if !snapshotReady(data.Snapshot) || !isProjectDashboard(data) || !kanbanIntegrationEnabled(data) {
 		return false
 	}
 	return strings.TrimSpace(card.IssueID) != "" || (card.PRNumber > 0 && strings.TrimSpace(card.PRRepository) != "")
 }
 
 func kanbanCardCanRemove(data DashboardData, card kanbanCard) bool {
-	return kanbanIntegrationEnabled(data) && strings.TrimSpace(card.IssueID) != ""
+	return snapshotReady(data.Snapshot) && kanbanIntegrationEnabled(data) && strings.TrimSpace(card.IssueID) != ""
 }
 
 func projectKanbanMoveDisabledText(data DashboardData, card projectKanbanCard) string {
@@ -6109,6 +6121,13 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 		view.Detail = "GitHub secondary endpoint throttle is active for " + families + ". " + primaryContext + ". " + retrySentence + "."
 		return view
 	}
+	if gitHubAPITrackerDegraded(snapshot) {
+		view.State = gitHubAPIHealthStateWarning
+		view.Label = "GitHub tracker degraded"
+		view.Summary = primarySummary
+		view.Detail = gitHubAPITrackerDegradedDetail(snapshot)
+		return view
+	}
 	if gitHubAPIPrimaryWarning(snapshot.RateLimits) {
 		view.State = gitHubAPIHealthStateWarning
 		view.Label = "GitHub primary quota low"
@@ -6130,6 +6149,17 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 	view.Summary = primarySummary
 	view.Detail = "Primary quota is available and no secondary REST backoff is active."
 	return view
+}
+
+func gitHubAPITrackerDegraded(snapshot telemetry.Snapshot) bool {
+	return snapshot.Refresh.Degraded()
+}
+
+func gitHubAPITrackerDegradedDetail(snapshot telemetry.Snapshot) string {
+	if snapshotHasPriorTrackerSnapshot(snapshot) {
+		return "Tracker refresh degraded. " + snapshotDegradedRefreshDetail(snapshot)
+	}
+	return "Tracker refresh failed. " + snapshotFirstRefreshFailureDetail(snapshot)
 }
 
 func gitHubAPIHealthClass(snapshot telemetry.Snapshot) string {

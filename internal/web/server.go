@@ -116,6 +116,7 @@ type Server struct {
 	projects            *projectSmallMultipleRecorder
 	snapshots           *snapshotEnrichmentCache
 	kanbanMutations     *kanbanMutationLocks
+	kanbanRefreshes     *kanbanRefreshFeedbackTracker
 	refreshes           *manualRefreshTracker
 	demo                *demoScenarioSet
 }
@@ -177,6 +178,7 @@ func NewServer(cfg Config, deps Dependencies) (*Server, error) {
 		projects:            newProjectSmallMultipleRecorder(),
 		snapshots:           newSnapshotEnrichmentCache(),
 		kanbanMutations:     newKanbanMutationLocks(),
+		kanbanRefreshes:     newKanbanRefreshFeedbackTracker(),
 		refreshes:           newManualRefreshTracker(),
 		demo:                newDemoScenarioSet(cfg.Demo),
 	}
@@ -272,6 +274,7 @@ func (s *Server) fleetKanban(c echo.Context) error {
 	}
 	ctx := c.Request().Context()
 	data := s.fleetKanbanData(ctx, s.latestSnapshot(ctx))
+	data = s.withKanbanRefreshFeedback(data)
 	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 	return render(c, templates.ProjectKanbanPage(data))
 }
@@ -295,6 +298,7 @@ func (s *Server) projectDashboard(c echo.Context) error {
 	case "kanban":
 		data.ActiveNav = "kanban"
 		data.Title = s.projectPageTitle(data, "Kanban")
+		data = s.withKanbanRefreshFeedback(data)
 		return render(c, templates.ProjectKanbanPage(data))
 	case "runs":
 		data.ActiveNav = "runs"
@@ -431,6 +435,21 @@ func (s *Server) projectDashboardData(ctx context.Context, projectID string, sna
 		ProjectName:     name,
 		ProjectPaused:   project.Paused,
 	}, true
+}
+
+func (s *Server) withKanbanRefreshFeedback(data templates.DashboardData) templates.DashboardData {
+	if s == nil || s.kanbanRefreshes == nil {
+		return data
+	}
+	data.Kanban = s.kanbanRefreshes.apply(kanbanRefreshFeedbackKey(data), data.Kanban, data.Snapshot)
+	return data
+}
+
+func kanbanRefreshFeedbackKey(data templates.DashboardData) string {
+	if projectID := strings.TrimSpace(data.ProjectID); projectID != "" {
+		return "project:" + projectID
+	}
+	return "fleet"
 }
 
 func (s *Server) dashboardProject(selectedProjectID string, projects []templates.ProjectSmallMultiple, snapshot telemetry.Snapshot) (templates.ProjectSmallMultiple, bool) {

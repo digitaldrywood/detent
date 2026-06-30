@@ -1722,7 +1722,8 @@ func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	t.Parallel()
 
 	transientErr := errors.New("fetch github issues: github transient error: status 504")
-	tracker := newFakeConnector()
+	issue := testIssue("issue-refresh", "digitaldrywood/detent#504", "Todo")
+	tracker := newFakeConnector(issue)
 
 	orch, err := orchestrator.New(orchestrator.Config{
 		PollInterval:        time.Hour,
@@ -1740,6 +1741,17 @@ func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	defer stop()
 
 	waitForFetchCalls(t, tracker, 1)
+	first := waitForState(t, orch, func(state orchestrator.State) bool {
+		snapshot := state.Snapshot(time.Now())
+		return snapshot.Refresh.LastRefreshAt != nil &&
+			len(snapshot.BoardIssues) == 1 &&
+			snapshot.BoardIssues[0].ID == issue.ID
+	})
+	firstRefreshAt := first.Snapshot(time.Now()).Refresh.LastRefreshAt
+	if firstRefreshAt == nil {
+		t.Fatal("first snapshot Refresh.LastRefreshAt = nil")
+	}
+
 	tracker.setFetchCandidateError(transientErr, 2)
 
 	refresh, err := orch.RequestRefresh(context.Background())
@@ -1767,8 +1779,106 @@ func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	if state.LastRefreshError == "" || !strings.Contains(state.LastRefreshError, "fetch candidate issues failed") {
 		t.Fatalf("LastRefreshError = %q, want candidate fetch failure", state.LastRefreshError)
 	}
-	if got := state.Snapshot(time.Now()).Refresh.ReadinessStatus(); got != telemetry.RefreshStatusDegraded {
+	snapshot := state.Snapshot(time.Now())
+	if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusDegraded {
 		t.Fatalf("snapshot Refresh status = %q, want degraded", got)
+	}
+	if snapshot.Refresh.LastRefreshAt == nil || !snapshot.Refresh.LastRefreshAt.Equal(*firstRefreshAt) {
+		t.Fatalf("snapshot Refresh.LastRefreshAt = %v, want preserved successful refresh %v", snapshot.Refresh.LastRefreshAt, firstRefreshAt)
+	}
+	if len(snapshot.BoardIssues) != 1 || snapshot.BoardIssues[0].ID != issue.ID {
+		t.Fatalf("snapshot BoardIssues = %#v, want preserved issue %q", snapshot.BoardIssues, issue.ID)
+	}
+}
+
+func TestRequestRefreshPreservesBoardAfterObservedStateFailure(t *testing.T) {
+	t.Parallel()
+
+	statusErr := errors.New("fetch github issues: github transient error: status 401: Bad credentials")
+	candidate := testIssue("issue-refresh", "digitaldrywood/detent#504", "Todo")
+	observed := testIssue("issue-backlog", "digitaldrywood/detent#505", "Backlog")
+	tracker := newFakeConnector(candidate)
+	tracker.setStateIssues(observed)
+
+	orch, err := orchestrator.New(orchestrator.Config{
+		PollInterval:        time.Hour,
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Todo", "In Progress"},
+		ObservedStates:      []string{"Backlog"},
+		TerminalStates:      []string{"Done"},
+	}, orchestrator.Dependencies{
+		Connector: tracker,
+		Runner:    &staticRunner{},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForFetchByStatesCalls(t, tracker, 1)
+	first := waitForState(t, orch, func(state orchestrator.State) bool {
+		snapshot := state.Snapshot(time.Now())
+		return snapshot.Refresh.LastRefreshAt != nil && len(snapshot.BoardIssues) == 2
+	})
+	firstRefreshAt := first.Snapshot(time.Now()).Refresh.LastRefreshAt
+	if firstRefreshAt == nil {
+		t.Fatal("first snapshot Refresh.LastRefreshAt = nil")
+	}
+	tracker.setFetchByStatesError(statusErr)
+
+	refresh, err := orch.RequestRefresh(context.Background())
+	if err != nil {
+		t.Fatalf("RequestRefresh() error = %v", err)
+	}
+	waitForFetchByStatesCalls(t, tracker, 2)
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		snapshot := state.Snapshot(time.Now())
+		return snapshot.Refresh.Manual != nil &&
+			snapshot.Refresh.Manual.ID == refresh.RequestID &&
+			snapshot.Refresh.Manual.Status == telemetry.RefreshAttemptStatusFailed
+	})
+	snapshot := state.Snapshot(time.Now())
+	if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusDegraded {
+		t.Fatalf("snapshot Refresh status = %q, want degraded", got)
+	}
+	if snapshot.Refresh.LastRefreshAt == nil || !snapshot.Refresh.LastRefreshAt.Equal(*firstRefreshAt) {
+		t.Fatalf("snapshot Refresh.LastRefreshAt = %v, want preserved successful refresh %v", snapshot.Refresh.LastRefreshAt, firstRefreshAt)
+	}
+	got := map[string]string{}
+	for _, issue := range snapshot.BoardIssues {
+		got[issue.ID] = issue.State
+	}
+	want := map[string]string{
+		candidate.ID: candidate.State,
+		observed.ID:  observed.State,
+	}
+	if !maps.Equal(got, want) {
+		t.Fatalf("snapshot BoardIssues = %#v, want preserved board %#v", got, want)
+	}
+}
+
+func TestInitialRefreshFailureDoesNotClaimSuccessfulRefresh(t *testing.T) {
+	t.Parallel()
+
+	transientErr := errors.New("fetch github issues: github transient error: status 401: Bad credentials")
+	tracker := newFakeConnector()
+	tracker.setFetchCandidateError(transientErr, 1)
+	orch := newTestOrchestrator(t, tracker, &staticRunner{})
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	waitForFetchCalls(t, tracker, 1)
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		return strings.Contains(state.LastRefreshError, "Bad credentials")
+	})
+	snapshot := state.Snapshot(time.Now())
+	if got := snapshot.Refresh.ReadinessStatus(); got != telemetry.RefreshStatusDegraded {
+		t.Fatalf("snapshot Refresh status = %q, want degraded", got)
+	}
+	if snapshot.Refresh.LastRefreshAt != nil {
+		t.Fatalf("snapshot Refresh.LastRefreshAt = %v, want nil after first failed refresh", snapshot.Refresh.LastRefreshAt)
 	}
 }
 
@@ -2256,6 +2366,13 @@ func (c *fakeConnector) setFetchCandidateError(err error, atCall int) {
 
 	c.fetchCandidateErr = err
 	c.fetchCandidateErrAt = atCall
+}
+
+func (c *fakeConnector) setFetchByStatesError(err error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
+	c.fetchByStatesErr = err
 }
 
 func (c *fakeConnector) applyIssueStateLocked(issueID string, state string) {

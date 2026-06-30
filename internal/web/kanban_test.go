@@ -2,10 +2,13 @@ package web
 
 import (
 	"slices"
+	"strings"
 	"testing"
+	"time"
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
 func TestKanbanStateNamesIgnoreCompletedSessionStates(t *testing.T) {
@@ -108,5 +111,48 @@ func TestKanbanSnapshotWithPendingStatesUpdatesBlockedRefs(t *testing.T) {
 	}
 	if snapshot.BoardIssues[1].BlockedBy[0].State != "In Progress" {
 		t.Fatalf("source blocked ref state = %q, want original In Progress", snapshot.BoardIssues[1].BlockedBy[0].State)
+	}
+}
+
+func TestKanbanRefreshFeedbackTransitionsOnce(t *testing.T) {
+	t.Parallel()
+
+	tracker := newKanbanRefreshFeedbackTracker()
+	now := time.Date(2026, 6, 30, 20, 45, 0, 0, time.UTC)
+	lastRefreshAt := now.Add(-time.Minute)
+	lastErrorAt := now
+	ready := telemetry.Snapshot{
+		GeneratedAt: now.Add(-2 * time.Minute),
+		Refresh: telemetry.Refresh{
+			Status:        telemetry.RefreshStatusReady,
+			LastRefreshAt: &lastRefreshAt,
+		},
+	}
+	degraded := telemetry.Snapshot{
+		GeneratedAt: now,
+		Refresh: telemetry.Refresh{
+			Status:        telemetry.RefreshStatusDegraded,
+			LastRefreshAt: &lastRefreshAt,
+			LastError:     "fetch candidate issues failed: fetch github issues: github transient error: status 401: Bad credentials",
+			LastErrorAt:   &lastErrorAt,
+		},
+	}
+
+	if got := tracker.apply("project:detent", templates.KanbanData{}, ready); got.Feedback != "" {
+		t.Fatalf("first ready feedback = %q, want none", got.Feedback)
+	}
+	firstDegraded := tracker.apply("project:detent", templates.KanbanData{}, degraded)
+	if firstDegraded.FeedbackKind != "warning" || !strings.Contains(firstDegraded.Feedback, "Tracker refresh degraded") || !strings.Contains(firstDegraded.Feedback, "Bad credentials") {
+		t.Fatalf("first degraded feedback = %#v, want warning with failure reason", firstDegraded)
+	}
+	if got := tracker.apply("project:detent", templates.KanbanData{}, degraded); got.Feedback != "" {
+		t.Fatalf("second degraded feedback = %q, want one-time transition", got.Feedback)
+	}
+	recovered := tracker.apply("project:detent", templates.KanbanData{}, ready)
+	if recovered.FeedbackKind != "success" || recovered.Feedback != "Tracker refresh recovered." {
+		t.Fatalf("recovered feedback = %#v, want success recovery flash", recovered)
+	}
+	if got := tracker.apply("project:detent", templates.KanbanData{}, ready); got.Feedback != "" {
+		t.Fatalf("second ready feedback = %q, want one-time recovery", got.Feedback)
 	}
 }

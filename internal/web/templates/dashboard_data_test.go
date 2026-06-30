@@ -252,6 +252,30 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantSummaryPart: "REST primary: 240 remaining / 5,000 total (4,760 used)",
 		},
 		{
+			name: "tracker refresh failure degrades healthy github api",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Refresh: telemetry.Refresh{
+					Status:        telemetry.RefreshStatusDegraded,
+					LastRefreshAt: &lastRefresh,
+					LastError:     "fetch candidate issues failed: fetch github issues: github transient error: status 401: Bad credentials",
+					LastErrorAt:   &expiredBackoffUntil,
+				},
+				RateLimits: &telemetry.RateLimits{
+					GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+					GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+				},
+			},
+			wantState:       gitHubAPIHealthStateWarning,
+			wantLabel:       "GitHub tracker degraded",
+			wantSummaryPart: "REST primary: 4,878 remaining / 5,000 total (122 used)",
+			wantDetailParts: []string{
+				"Tracker refresh degraded.",
+				"Bad credentials",
+				"Last successful refresh:",
+			},
+		},
+		{
 			name: "secondary throttle preserves healthy primary context",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,
