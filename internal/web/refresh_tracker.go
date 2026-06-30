@@ -27,9 +27,13 @@ func (t *manualRefreshTracker) recordResponse(response RefreshResponse) {
 		RequestedAt: optionalRefreshTime(response.RequestedAt),
 		Operations:  append([]string(nil), response.Operations...),
 		Coalesced:   response.Coalesced,
+		LastError:   strings.TrimSpace(response.LastError),
+		LastErrorAt: cloneTimePtr(response.LastErrorAt),
 	}
 	if attempt.Status == "" {
-		if response.Coalesced {
+		if response.Refused {
+			attempt.Status = telemetry.RefreshAttemptStatusRefused
+		} else if response.Coalesced {
 			attempt.Status = telemetry.RefreshAttemptStatusCoalesced
 		} else if response.Queued {
 			attempt.Status = telemetry.RefreshAttemptStatusInProgress
@@ -97,6 +101,8 @@ func refreshAttemptNewer(candidate *telemetry.RefreshAttempt, current *telemetry
 func refreshAttemptRank(status telemetry.RefreshAttemptStatus) int {
 	switch status {
 	case telemetry.RefreshAttemptStatusSucceeded, telemetry.RefreshAttemptStatusFailed:
+		return 3
+	case telemetry.RefreshAttemptStatusRefused:
 		return 3
 	case telemetry.RefreshAttemptStatusCoalesced:
 		return 2

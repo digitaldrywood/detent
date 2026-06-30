@@ -1512,6 +1512,86 @@ func snapshotReadinessDotClass(snapshot telemetry.Snapshot) string {
 	return "bg-warning"
 }
 
+func manualRefreshVisible(snapshot telemetry.Snapshot) bool {
+	return snapshotDegraded(snapshot)
+}
+
+func manualRefreshStatusVisible(attempt *telemetry.RefreshAttempt) bool {
+	return attempt != nil && !attempt.IsZero()
+}
+
+func manualRefreshStatusLabel(attempt *telemetry.RefreshAttempt) string {
+	if attempt == nil {
+		return ""
+	}
+	switch attempt.Status {
+	case telemetry.RefreshAttemptStatusInProgress:
+		return "Retrying"
+	case telemetry.RefreshAttemptStatusCoalesced:
+		return "Already retrying"
+	case telemetry.RefreshAttemptStatusSucceeded:
+		return "Refresh succeeded"
+	case telemetry.RefreshAttemptStatusFailed:
+		return "Refresh failed"
+	case telemetry.RefreshAttemptStatusRefused:
+		return "Refresh refused"
+	default:
+		return "Refresh requested"
+	}
+}
+
+func manualRefreshStatusDetail(attempt *telemetry.RefreshAttempt) string {
+	if attempt == nil {
+		return ""
+	}
+	switch attempt.Status {
+	case telemetry.RefreshAttemptStatusInProgress:
+		if attempt.RequestedAt != nil {
+			return "Requested " + timeLabel(*attempt.RequestedAt) + "."
+		}
+		return "Request queued."
+	case telemetry.RefreshAttemptStatusCoalesced:
+		if attempt.RequestedAt != nil {
+			return "Request joined the active refresh at " + timeLabel(*attempt.RequestedAt) + "."
+		}
+		return "Request joined the active refresh."
+	case telemetry.RefreshAttemptStatusSucceeded:
+		if attempt.CompletedAt != nil {
+			return "Completed " + timeLabel(*attempt.CompletedAt) + "."
+		}
+		return "Latest tracker snapshot is ready."
+	case telemetry.RefreshAttemptStatusFailed:
+		if err := sanitizeReadinessError(attempt.LastError); err != "" {
+			return err
+		}
+		return "The forced refresh failed."
+	case telemetry.RefreshAttemptStatusRefused:
+		if err := sanitizeReadinessError(attempt.LastError); err != "" {
+			return err
+		}
+		return "Hard rate-limit backoff is active."
+	default:
+		return ""
+	}
+}
+
+func manualRefreshStatusClass(attempt *telemetry.RefreshAttempt) string {
+	base := "min-w-0 rounded-md border px-3 py-2 text-xs"
+	if attempt == nil {
+		return base + " border-border bg-muted text-muted-foreground"
+	}
+	switch attempt.Status {
+	case telemetry.RefreshAttemptStatusSucceeded:
+		return base + " border-success bg-success-soft text-success"
+	case telemetry.RefreshAttemptStatusFailed, telemetry.RefreshAttemptStatusRefused:
+		return base + " border-danger bg-danger-soft text-danger"
+	case telemetry.RefreshAttemptStatusCoalesced:
+		return base + " border-accent bg-accent-soft text-accent"
+	default:
+		return base + " border-warning bg-warning-soft text-warning"
+	}
+}
+
 func issueIdentifier(issue telemetry.Issue) string {
 	if issue.Identifier != "" {
 		return issue.Identifier

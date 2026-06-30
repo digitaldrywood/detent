@@ -3,6 +3,7 @@ package web
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"net/url"
@@ -16,9 +17,13 @@ import (
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
+	"github.com/digitaldrywood/detent/internal/web/templates"
 )
 
-const issueDescriptionLimit = 250
+const (
+	issueDescriptionLimit              = 250
+	gitHubGraphQLRefreshPauseRemaining = int64(100)
+)
 
 type Refresher interface {
 	RequestRefresh(context.Context) (RefreshResponse, error)
@@ -193,18 +198,31 @@ func (s *Server) apiRefresh(c echo.Context) error {
 		return c.JSON(http.StatusServiceUnavailable, errorResponse("orchestrator_unavailable", "Orchestrator is unavailable"))
 	}
 
+	now := apiNow()
+	if payload, ok := s.refreshRefusal(now); ok {
+		if s.refreshes != nil {
+			s.refreshes.recordResponse(payload)
+		}
+		if htmxRequest(c) {
+			return render(c, templates.ManualRefreshFeedback(refreshAttemptFromResponse(payload)))
+		}
+		return c.JSON(http.StatusTooManyRequests, payload)
+	}
+
 	payload, err := s.refresher.RequestRefresh(c.Request().Context())
 	if err != nil {
 		return c.JSON(http.StatusServiceUnavailable, errorResponse("orchestrator_unavailable", "Orchestrator is unavailable"))
 	}
 	if payload.RequestedAt.IsZero() {
-		payload.RequestedAt = apiNow()
+		payload.RequestedAt = now
 	}
 	if payload.RequestID == "" {
 		payload.RequestID = "manual-" + strconv.FormatInt(payload.RequestedAt.UnixNano(), 10)
 	}
 	if payload.Status == "" {
-		if payload.Coalesced {
+		if payload.Refused {
+			payload.Status = telemetry.RefreshAttemptStatusRefused
+		} else if payload.Coalesced {
 			payload.Status = telemetry.RefreshAttemptStatusCoalesced
 		} else if payload.Queued {
 			payload.Status = telemetry.RefreshAttemptStatusInProgress
@@ -217,7 +235,118 @@ func (s *Server) apiRefresh(c echo.Context) error {
 		s.refreshes.recordResponse(payload)
 	}
 
+	if htmxRequest(c) {
+		return render(c, templates.ManualRefreshFeedback(refreshAttemptFromResponse(payload)))
+	}
 	return c.JSON(http.StatusAccepted, payload)
+}
+
+func (s *Server) refreshRefusal(now time.Time) (RefreshResponse, bool) {
+	if s == nil || s.hub == nil {
+		return RefreshResponse{}, false
+	}
+	snapshot, ok := s.hub.Latest()
+	if !ok {
+		return RefreshResponse{}, false
+	}
+	refusal, ok := refreshRefusalFromSnapshot(snapshot, now)
+	if !ok {
+		return RefreshResponse{}, false
+	}
+	lastErrorAt := now.UTC()
+	return RefreshResponse{
+		RequestID:   "manual-" + strconv.FormatInt(lastErrorAt.UnixNano(), 10),
+		Status:      telemetry.RefreshAttemptStatusRefused,
+		Refused:     true,
+		RequestedAt: lastErrorAt,
+		LastError:   refusal.reason,
+		LastErrorAt: &lastErrorAt,
+		RetryAt:     refusal.retryAt,
+		Operations:  []string{"poll", "reconcile"},
+	}, true
+}
+
+type refreshRefusal struct {
+	reason  string
+	retryAt *time.Time
+}
+
+func refreshRefusalFromSnapshot(snapshot telemetry.Snapshot, now time.Time) (refreshRefusal, bool) {
+	if snapshot.RateLimits == nil {
+		return refreshRefusal{}, false
+	}
+	if refusal, ok := refreshRefusalFromBucket("GitHub REST", snapshot.RateLimits.GitHubREST, now, 0); ok {
+		return refusal, true
+	}
+	if refusal, ok := refreshRefusalFromRESTUsage(snapshot.RateLimits.RESTUsage, now); ok {
+		return refusal, true
+	}
+	if refusal, ok := refreshRefusalFromBucket("GitHub GraphQL", snapshot.RateLimits.GitHubGraphQL, now, gitHubGraphQLRefreshPauseRemaining); ok {
+		return refusal, true
+	}
+	return refreshRefusal{}, false
+}
+
+func refreshRefusalFromRESTUsage(usage *telemetry.RESTUsage, now time.Time) (refreshRefusal, bool) {
+	if usage == nil || usage.BackoffUntil == nil || !usage.BackoffUntil.After(now) {
+		return refreshRefusal{}, false
+	}
+	retryAt := usage.BackoffUntil.UTC()
+	return refreshRefusal{
+		reason:  "GitHub REST backoff is active until " + refreshRefusalTimeLabel(retryAt) + ". Force refresh was refused to preserve hard rate-limit constraints.",
+		retryAt: &retryAt,
+	}, true
+}
+
+func refreshRefusalFromBucket(name string, bucket *telemetry.RateLimitBucket, now time.Time, pauseRemaining int64) (refreshRefusal, bool) {
+	if bucket == nil || bucket.ResetAt == nil || !bucket.ResetAt.After(now) {
+		return refreshRefusal{}, false
+	}
+	if !refreshBucketPaused(bucket, pauseRemaining) {
+		return refreshRefusal{}, false
+	}
+	retryAt := bucket.ResetAt.UTC()
+	return refreshRefusal{
+		reason:  fmt.Sprintf("%s backoff is active until %s. Force refresh was refused to preserve hard rate-limit constraints.", name, refreshRefusalTimeLabel(retryAt)),
+		retryAt: &retryAt,
+	}, true
+}
+
+func refreshBucketPaused(bucket *telemetry.RateLimitBucket, pauseRemaining int64) bool {
+	if bucket.ResetInSeconds > 0 {
+		return true
+	}
+	switch strings.TrimSpace(bucket.Status) {
+	case telemetry.RateLimitStatusBackoff, telemetry.RateLimitStatusExhausted:
+		return true
+	}
+	if pauseRemaining > 0 {
+		return bucket.Remaining < pauseRemaining
+	}
+	return bucket.Limit > 0 && bucket.Remaining <= 0
+}
+
+func htmxRequest(c echo.Context) bool {
+	return strings.EqualFold(c.Request().Header.Get("HX-Request"), "true")
+}
+
+func refreshRefusalTimeLabel(value time.Time) string {
+	if value.IsZero() {
+		return "n/a"
+	}
+	return value.UTC().Format("Jan 2 15:04:05 UTC")
+}
+
+func refreshAttemptFromResponse(response RefreshResponse) *telemetry.RefreshAttempt {
+	return &telemetry.RefreshAttempt{
+		ID:          strings.TrimSpace(response.RequestID),
+		Status:      response.Status,
+		RequestedAt: optionalRefreshTime(response.RequestedAt),
+		Operations:  append([]string(nil), response.Operations...),
+		Coalesced:   response.Coalesced,
+		LastError:   strings.TrimSpace(response.LastError),
+		LastErrorAt: cloneTimePtr(response.LastErrorAt),
+	}
 }
 
 func (s *Server) apiUsage(c echo.Context) error {

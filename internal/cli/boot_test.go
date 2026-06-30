@@ -24,6 +24,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
@@ -274,6 +275,44 @@ func TestRegistryRefresherRequestsProjectOrchestrators(t *testing.T) {
 		t.Fatalf("RequestRefresh() error = %v", err)
 	}
 	assertRefresh(t, response)
+}
+
+func TestMergeRefreshResponseKeepsInProgressWhenSomeProjectsAccepted(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 24, 14, 0, 0, 0, time.UTC)
+	retryAt := now.Add(5 * time.Minute)
+	current := web.RefreshResponse{
+		RequestID:   "manual-refused",
+		Status:      telemetry.RefreshAttemptStatusRefused,
+		Refused:     true,
+		RequestedAt: now,
+		LastError:   "GitHub REST backoff is active",
+		LastErrorAt: &now,
+		RetryAt:     &retryAt,
+		Operations:  []string{"poll"},
+	}
+	next := web.RefreshResponse{
+		RequestID:   "manual-accepted",
+		Status:      telemetry.RefreshAttemptStatusInProgress,
+		Queued:      true,
+		RequestedAt: now.Add(time.Second),
+		Operations:  []string{"reconcile"},
+	}
+
+	got := mergeRefreshResponse(current, next)
+	if got.Status != telemetry.RefreshAttemptStatusInProgress {
+		t.Fatalf("Status = %q, want %q; response = %#v", got.Status, telemetry.RefreshAttemptStatusInProgress, got)
+	}
+	if !got.Refused || !got.Queued {
+		t.Fatalf("Refused/Queued = %v/%v, want true/true; response = %#v", got.Refused, got.Queued, got)
+	}
+	if got.LastError != current.LastError || got.RetryAt == nil || !got.RetryAt.Equal(retryAt) {
+		t.Fatalf("backoff fields = error %q retry %v, want preserved refusal detail", got.LastError, got.RetryAt)
+	}
+	if !hasOperation(got.Operations, "poll") || !hasOperation(got.Operations, "reconcile") {
+		t.Fatalf("Operations = %#v, want merged operations", got.Operations)
+	}
 }
 
 func TestRegistryRefresherFallsBackWhenTargetRepositoryDoesNotMatch(t *testing.T) {

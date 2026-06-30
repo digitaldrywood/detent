@@ -919,6 +919,7 @@ func (r registryRefresher) RequestTargetedRefresh(ctx context.Context, target we
 func mergeRefreshResponse(current web.RefreshResponse, next web.RefreshResponse) web.RefreshResponse {
 	current.Queued = current.Queued || next.Queued
 	current.Coalesced = current.Coalesced || next.Coalesced
+	current.Refused = current.Refused || next.Refused
 	if current.RequestedAt.IsZero() || (!next.RequestedAt.IsZero() && next.RequestedAt.Before(current.RequestedAt)) {
 		current.RequestedAt = next.RequestedAt
 		current.RequestID = next.RequestID
@@ -926,6 +927,16 @@ func mergeRefreshResponse(current web.RefreshResponse, next web.RefreshResponse)
 	if current.RequestID == "" {
 		current.RequestID = next.RequestID
 	}
+	if strings.TrimSpace(next.LastError) != "" {
+		if strings.TrimSpace(current.LastError) == "" ||
+			current.LastErrorAt == nil ||
+			next.LastErrorAt == nil ||
+			current.LastErrorAt.Before(*next.LastErrorAt) {
+			current.LastError = next.LastError
+		}
+	}
+	current.LastErrorAt = latestTime(current.LastErrorAt, next.LastErrorAt)
+	current.RetryAt = earliestTime(current.RetryAt, next.RetryAt)
 	current.Operations = appendOperations(current.Operations, next.Operations)
 	current.Status = mergeRefreshResponseStatus(current, next)
 	return current
@@ -935,14 +946,17 @@ func mergeRefreshResponseStatus(current web.RefreshResponse, next web.RefreshRes
 	if current.Coalesced || next.Coalesced {
 		return telemetry.RefreshAttemptStatusCoalesced
 	}
+	if current.Queued || next.Queued {
+		return telemetry.RefreshAttemptStatusInProgress
+	}
+	if current.Refused || next.Refused {
+		return telemetry.RefreshAttemptStatusRefused
+	}
 	if current.Status != "" {
 		return current.Status
 	}
 	if next.Status != "" {
 		return next.Status
-	}
-	if current.Queued || next.Queued {
-		return telemetry.RefreshAttemptStatusInProgress
 	}
 	return ""
 }
