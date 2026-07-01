@@ -27,6 +27,7 @@ type AutoPromoteSummary struct {
 	MergeableState                        string
 	CIStatus                              string
 	ReviewState                           string
+	FailedChecks                          []string
 	P1Findings                            []AutoPromoteFinding
 	Validator                             gate.ValidatorResult
 	ArtifactStatus                        string

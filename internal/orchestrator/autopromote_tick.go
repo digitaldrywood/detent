@@ -1016,6 +1016,7 @@ func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 	summary.MergeableState = strings.ToLower(strings.TrimSpace(pullRequest.MergeableState))
 	summary.CIStatus = pullRequest.CIStatus
 	summary.ReviewState = pullRequest.CodexReviewState
+	summary.FailedChecks = autoPromoteFailedChecksFromPullRequest(pullRequest)
 	summary.P1Findings = autoPromoteFindingsFromPullRequest(pullRequest)
 	return summary
 }
@@ -1081,6 +1082,29 @@ func autoPromoteFindingsFromPullRequest(pullRequest *connector.PullRequest) []Au
 		})
 	}
 	return findings
+}
+
+func autoPromoteFailedChecksFromPullRequest(pullRequest *connector.PullRequest) []string {
+	if pullRequest == nil {
+		return nil
+	}
+	checks := make([]string, 0, len(pullRequest.SlowChecks))
+	for _, check := range pullRequest.SlowChecks {
+		if !autoPromoteCheckFailed(check) {
+			continue
+		}
+		checks = append(checks, check.Name)
+	}
+	return uniqueStrings(checks)
+}
+
+func autoPromoteCheckFailed(check connector.PullRequestCheck) bool {
+	switch strings.ToLower(strings.TrimSpace(check.Conclusion)) {
+	case "failure", "failed", "error", "timed_out", "startup_failure", "action_required", "cancelled", "canceled":
+		return true
+	default:
+		return false
+	}
 }
 
 func autoPromoteTargetState(action AutoPromoteAction, cfg AutoPromoteConfig) string {
@@ -1185,6 +1209,9 @@ func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision Au
 		if issue.PullRequest.HydrationNextRetryAt != nil && !issue.PullRequest.HydrationNextRetryAt.IsZero() {
 			attrs = append(attrs, "pull_request_hydration_next_retry_at", issue.PullRequest.HydrationNextRetryAt.UTC().Format(time.RFC3339))
 		}
+		if failedChecks := strings.Join(autoPromoteFailedChecksFromPullRequest(issue.PullRequest), ", "); failedChecks != "" {
+			attrs = append(attrs, "failed_checks", failedChecks)
+		}
 	}
 	if decision.QuietRemaining > 0 {
 		attrs = append(attrs, "quiet_remaining", decision.QuietRemaining)
@@ -1246,6 +1273,10 @@ func autoPromoteComment(
 	if decision.CIStatus != "" {
 		b.WriteString("\n- ci_status: ")
 		b.WriteString(decision.CIStatus)
+	}
+	if failedChecks := strings.Join(summary.FailedChecks, ", "); failedChecks != "" {
+		b.WriteString("\n- failed_checks: ")
+		b.WriteString(failedChecks)
 	}
 
 	if len(decision.Findings) > 0 {

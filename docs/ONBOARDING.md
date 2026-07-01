@@ -1999,9 +1999,9 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `require_automated_review: true`, it also requires a current-head automated
    GitHub PR review. With `require_automated_review: false`, bot PR review is
    not required to exist, but any observed P1 bot findings still route the item
-   to `Rework`. With `ci_failure_action: rework`, failed or cancelled
-   current-head CI also routes the item to `Rework`; the default `skip` leaves
-   non-green CI parked in `Human Review`. Pending CI stays parked. The quiet
+   to `Rework`. Failed or cancelled current-head CI also routes the item to
+   `Rework` by default; set `ci_failure_action: skip` only when red CI should
+   stay parked in `Human Review`. Pending CI stays parked. The quiet
    period resets on observed issue updates, Project
    status updates, automated PR review submission, and linked PR activity such
    as a fresh push to the PR head. With `gate.validator.enabled: true`, a

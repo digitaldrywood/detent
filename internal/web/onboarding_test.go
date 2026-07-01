@@ -372,7 +372,7 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 				"codex:\n  command: codex app-server",
 				"gate:\n  kind: command\n  run: make check",
 				"require_automated_review: false",
-				"ci_failure_action: skip",
+				"ci_failure_action: rework",
 				"validator:\n    enabled: false\n    model: \"\"\n    min_score: 0.8\n    block_on:\n      - p1",
 				"hooks:\n  timeout_ms: 60000",
 				"max_concurrent_agents_by_state:\n    Merging: 1",

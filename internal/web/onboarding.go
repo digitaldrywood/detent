@@ -550,7 +550,7 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	if hasDeliveryProfile {
 		writeScalar(&b, "  ", "require_automated_review", onboardingBool(settings.GateRequireAutomatedReview))
 	}
-	b.WriteString("  ci_failure_action: skip\n")
+	b.WriteString("  ci_failure_action: rework\n")
 	b.WriteString("  validator:\n")
 	b.WriteString("    enabled: false\n")
 	b.WriteString("    model: \"\"\n")
