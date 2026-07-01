@@ -45,6 +45,9 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 		`href="/reports"`,
 		`href="/settings"`,
 		`href="/projects/detent"`,
+		`id="github-api-health"`,
+		"Health",
+		"Unknown",
 		`Detent - active, 2 running`,
 		`<h1 class="sr-only">Settings</h1>`,
 		"Startup configuration, project paths, and runtime files.",
@@ -59,7 +62,6 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 	for _, forbidden := range []string{
 		"dashboard-nav flex min-w-0 items-center gap-4",
 		"dashboard-nav-link",
-		`id="github-api-health"`,
 		"underline decoration-2 underline-offset-4",
 	} {
 		if strings.Contains(html, forbidden) {
@@ -68,6 +70,7 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 	}
 
 	assertTemplateSharedDashboardShellOnce(t, html)
+	assertTemplateHealthInSidebar(t, html)
 	assertTemplateSingleCurrentSidebarItem(t, html)
 	assertTemplateActiveSidebarLink(t, html, "/settings")
 	assertTemplateInactiveSidebarLink(t, html, "/")

@@ -1607,7 +1607,7 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 	if err := writeSSEComponent(ctx, res.Writer, sseEventSidebar, templates.DashboardSidebarContent(templates.DashboardShellDataFromDashboard(data))); err != nil {
 		return err
 	}
-	return writeSSEComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthChrome(data.Snapshot))
+	return writeSSEComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(data.Snapshot))
 }
 
 func demoSSEViewForScenario(scenario demoScenario) string {

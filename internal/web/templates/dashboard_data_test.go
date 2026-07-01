@@ -181,6 +181,26 @@ func TestGitHubAPIHealthDerivesStatus(t *testing.T) {
 			wantSummaryPart: "No GitHub rate-limit snapshot",
 		},
 		{
+			name: "tracker degraded without GitHub snapshot",
+			snapshot: telemetry.Snapshot{
+				GeneratedAt: now,
+				Refresh: telemetry.Refresh{
+					Status:        telemetry.RefreshStatusDegraded,
+					LastRefreshAt: &lastRefresh,
+					LastError:     "fetch candidate issues failed: fetch github issues: github transient error: status 502",
+					LastErrorAt:   &expiredBackoffUntil,
+				},
+			},
+			wantState:       gitHubAPIHealthStateWarning,
+			wantLabel:       "GitHub tracker degraded",
+			wantSummaryPart: "No GitHub rate-limit snapshot",
+			wantDetailParts: []string{
+				"Tracker refresh degraded.",
+				"GitHub returned a transient 502",
+				"Last successful refresh:",
+			},
+		},
+		{
 			name: "healthy with primary budgets",
 			snapshot: telemetry.Snapshot{
 				GeneratedAt: now,

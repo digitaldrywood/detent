@@ -90,6 +90,9 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 		`href="/reports"`,
 		`href="/settings"`,
 		`href="/"`,
+		`id="github-api-health"`,
+		"Health",
+		"Unknown",
 		"dashboard-topbar",
 		`data-tui-sidebar-target="dashboard-sidebar"`,
 		`<h1 class="sr-only">Reports</h1>`,
@@ -111,6 +114,7 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 		}
 	}
 	assertTemplateSharedDashboardShellOnce(t, html)
+	assertTemplateHealthInSidebar(t, html)
 	assertTemplateSingleCurrentSidebarItem(t, html)
 	assertTemplateActiveSidebarLink(t, html, "/reports")
 	assertTemplateInactiveSidebarLink(t, html, "/")

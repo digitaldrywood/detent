@@ -116,7 +116,7 @@ func (s *Server) events(c echo.Context) error {
 			} else if ok {
 				sent = true
 			}
-			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthChrome(data.Snapshot), s.sseHealthInterval); err != nil {
+			if ok, err := stream.sendComponent(ctx, res.Writer, sseEventGitHubAPI, templates.GitHubAPIHealthSidebarItem(data.Snapshot), s.sseHealthInterval); err != nil {
 				return err
 			} else if ok {
 				sent = true
