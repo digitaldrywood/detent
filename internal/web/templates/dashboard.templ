@@ -149,12 +149,26 @@ templ DashboardShell(data DashboardShellData) {
 			}) {
 				@dashboardSidebar(data)
 				@sidebar.Inset(sidebar.InsetProps{Class: "dashboard-main min-w-0 px-3 py-3 sm:px-6 lg:px-8"}) {
+					@dashboardLiveUpdateWarning()
 					{ children... }
 				}
 			}
 			@projectKanbanVisibilityScript()
 		</body>
 	</html>
+}
+
+templ dashboardLiveUpdateWarning() {
+	<div id="detent-sse-warning" class="mb-3 hidden rounded-md border border-warning-soft bg-warning-soft/70 px-3 py-2 text-sm text-warning shadow-sm" role="status" aria-live="polite" data-detent-sse-warning hidden>
+		<div class="flex min-w-0 items-start gap-3">
+			@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warning"})
+			<div class="grid min-w-0 gap-1">
+				<p class="font-medium text-warning">Live updates delayed</p>
+				<p class="text-xs text-warning" data-detent-sse-warning-message>Snapshot events are queued but the page has not settled.</p>
+				<p class="break-words font-mono text-[11px] text-warning" data-detent-sse-warning-metrics></p>
+			</div>
+		</div>
+	</div>
 }
 
 templ dashboardPageHeading(title string) {
@@ -292,11 +306,14 @@ templ dashboardSSEMetricsScript() {
 	<script>
 			(function() {
 				const reportEvery = 60000;
-				const processingTimeout = 15000;
+				const processingTimeout = 2500;
+				const stallWarningAfter = 1200;
 				const state = {
 					events: {},
 					pending: {},
+					processing: {},
 					reportTimer: 0,
+					warningKey: "",
 				};
 				const encoder = window.TextEncoder ? new TextEncoder() : null;
 
@@ -311,9 +328,20 @@ templ dashboardSSEMetricsScript() {
 							skipped: 0,
 							queued: 0,
 							replayed: 0,
+							timeouts: 0,
+							prevented: 0,
+							swapErrors: 0,
+							lastReceivedAt: "",
+							lastQueuedAt: "",
+							lastReplayAt: "",
+							lastSwapAt: "",
 						};
 					}
 					return state.events[name];
+				}
+
+				function timestamp() {
+					return new Date().toISOString();
 				}
 
 				function byteLength(value) {
@@ -350,6 +378,16 @@ templ dashboardSSEMetricsScript() {
 					let count = 0;
 					Object.keys(state.pending).forEach(function(key) {
 						if (state.pending[key].name === name) {
+							count += 1;
+						}
+					});
+					return count;
+				}
+
+				function processingCount(name) {
+					let count = 0;
+					Object.keys(state.processing).forEach(function(key) {
+						if (state.processing[key].name === name) {
 							count += 1;
 						}
 					});
@@ -428,38 +466,109 @@ templ dashboardSSEMetricsScript() {
 					return target.closest("[sse-swap]");
 				}
 
-				function clearProcessing(target) {
-					if (target.dataset.detentSseTimer) {
-						window.clearTimeout(Number(target.dataset.detentSseTimer));
+				function targetForProcessing(processing) {
+					if (!processing) {
+						return null;
+					}
+					if (processing.targetID) {
+						const target = document.getElementById(processing.targetID);
+						if (target) {
+							return target;
+						}
+					}
+					return targetForEventName(processing.sseSwap || processing.name);
+				}
+
+				function clearTargetProcessingDataset(target, key) {
+					if (!(target instanceof HTMLElement)) {
+						return;
+					}
+					if (key && target.dataset.detentSseKey && target.dataset.detentSseKey !== key) {
+						return;
 					}
 					delete target.dataset.detentSseProcessing;
 					delete target.dataset.detentSseEvent;
 					delete target.dataset.detentSseStarted;
 					delete target.dataset.detentSseTimer;
+					delete target.dataset.detentSseKey;
+				}
+
+				function clearProcessingKey(key) {
+					const processing = state.processing[key];
+					if (!processing) {
+						return;
+					}
+					if (processing.timer) {
+						window.clearTimeout(processing.timer);
+					}
+					if (processing.warningTimer) {
+						window.clearTimeout(processing.warningTimer);
+					}
+					clearTargetProcessingDataset(targetForProcessing(processing), key);
+					delete state.processing[key];
+					if (state.warningKey === key && !state.pending[key]) {
+						state.warningKey = "";
+					}
+					updateWarning();
 				}
 
 				function markProcessing(target, name) {
-					if (target.dataset.detentSseTimer) {
-						window.clearTimeout(Number(target.dataset.detentSseTimer));
+					if (!(target instanceof Element)) {
+						return "";
 					}
-					target.dataset.detentSseProcessing = "true";
-					target.dataset.detentSseEvent = name;
-					target.dataset.detentSseStarted = String(performance.now());
-					target.dataset.detentSseTimer = String(window.setTimeout(function() {
-						clearProcessing(target);
-						replayPending(target, name);
-					}, processingTimeout));
+					const key = pendingKey(target, name);
+					clearProcessingKey(key);
+					const started = performance.now();
+					const processing = {
+						name: name,
+						targetID: target.id || "",
+						sseSwap: target.getAttribute("sse-swap") || name,
+						started: started,
+						timer: 0,
+						warningTimer: 0,
+					};
+					processing.warningTimer = window.setTimeout(function() {
+						if (state.processing[key]) {
+							state.warningKey = key;
+							updateWarning();
+							scheduleReport();
+						}
+					}, stallWarningAfter);
+					processing.timer = window.setTimeout(function() {
+						if (!state.processing[key]) {
+							return;
+						}
+						metricsFor(processing.name).timeouts += 1;
+						state.warningKey = key;
+						clearProcessingKey(key);
+						replayPendingKey(key);
+						scheduleReport();
+					}, processingTimeout);
+					state.processing[key] = processing;
+					if (target instanceof HTMLElement) {
+						target.dataset.detentSseProcessing = "true";
+						target.dataset.detentSseEvent = name;
+						target.dataset.detentSseStarted = String(started);
+						target.dataset.detentSseTimer = String(processing.timer);
+						target.dataset.detentSseKey = key;
+					}
+					updateWarning();
+					return key;
 				}
 
 				function rememberPending(target, name, payload) {
-					state.pending[pendingKey(target, name)] = {
+					const key = pendingKey(target, name);
+					state.pending[key] = {
 						name: name,
 						payload: payload,
 						targetID: target.id || "",
 						sseSwap: target.getAttribute("sse-swap") || name,
 						swapSpec: swapSpecFor(target),
+						queuedAt: performance.now(),
 					};
-					metricsFor(name).queued += 1;
+					const metrics = metricsFor(name);
+					metrics.queued += 1;
+					metrics.lastQueuedAt = timestamp();
 				}
 
 				function targetForPending(pending) {
@@ -474,54 +583,76 @@ templ dashboardSSEMetricsScript() {
 
 				function replayPending(target, name) {
 					const key = pendingKey(target, name);
+					replayPendingKey(key);
+				}
+
+				function replayPendingKey(key) {
 					const pending = state.pending[key];
 					if (!pending) {
 						return;
 					}
 					delete state.pending[key];
-					const nextTarget = targetForPending(pending) || target;
+					const nextTarget = targetForPending(pending);
 					if (!(nextTarget instanceof Element) || !nextTarget.isConnected) {
+						metricsFor(pending.name).swapErrors += 1;
+						updateWarning();
 						return;
 					}
-					metricsFor(pending.name).replayed += 1;
+					const metrics = metricsFor(pending.name);
+					metrics.replayed += 1;
+					metrics.lastReplayAt = timestamp();
 					markProcessing(nextTarget, pending.name);
 					window.setTimeout(function() {
 						if (!(nextTarget instanceof Element) || !nextTarget.isConnected) {
-							clearProcessing(nextTarget);
+							metricsFor(pending.name).swapErrors += 1;
+							clearProcessingKey(key);
 							scheduleReport();
 							return;
 						}
 						if (window.htmx && typeof window.htmx.swap === "function") {
-							window.htmx.swap(nextTarget, pending.payload, pending.swapSpec, {
-								contextElement: nextTarget,
-								eventInfo: { target: nextTarget, source: nextTarget },
-								afterSettleCallback: function() {
-									const settledTarget = targetForPending(pending) || nextTarget;
-									if (settledTarget instanceof Element) {
-										clearProcessing(settledTarget);
-										replayPending(settledTarget, pending.name);
-									}
-									scheduleReport();
-								},
-							});
-							return;
+							try {
+								window.htmx.swap(nextTarget, pending.payload, pending.swapSpec, {
+									contextElement: nextTarget,
+									eventInfo: { target: nextTarget, source: nextTarget },
+									afterSettleCallback: function() {
+										const settledTarget = targetForPending(pending) || nextTarget;
+										settleProcessing(settledTarget, pending.name);
+									},
+								});
+								return;
+							} catch (error) {
+								metricsFor(pending.name).swapErrors += 1;
+								if (window.console && console.warn) {
+									console.warn("[detent] SSE replay swap failed", error);
+								}
+							}
 						}
 						nextTarget.innerHTML = pending.payload;
-						clearProcessing(nextTarget);
-						replayPending(nextTarget, pending.name);
+						settleProcessing(nextTarget, pending.name);
 						scheduleReport();
 					}, 0);
 				}
 
-				function scheduleReport() {
-					if (state.reportTimer) {
+				function settleProcessing(target, name) {
+					if (!(target instanceof Element)) {
 						return;
 					}
-					state.reportTimer = window.setTimeout(report, reportEvery);
+					const key = pendingKey(target, name);
+					const processing = state.processing[key];
+					if (processing) {
+						const duration = performance.now() - processing.started;
+						const metrics = metricsFor(processing.name);
+						metrics.swaps += 1;
+						metrics.totalMs += duration;
+						metrics.maxMs = Math.max(metrics.maxMs, duration);
+						metrics.lastSwapAt = timestamp();
+					}
+					clearProcessingKey(key);
+					replayPendingKey(key);
+					scheduleReport();
 				}
 
-				function report() {
-					state.reportTimer = 0;
+				function metricsSnapshot() {
 					const snapshot = {};
 					Object.keys(state.events).sort().forEach(function(name) {
 						const metrics = state.events[name];
@@ -535,9 +666,87 @@ templ dashboardSSEMetricsScript() {
 							skipped: metrics.skipped,
 							queued: metrics.queued,
 							replayed: metrics.replayed,
+							timeouts: metrics.timeouts,
+							prevented: metrics.prevented,
+							swapErrors: metrics.swapErrors,
 							pending: pendingCount(name),
+							processing: processingCount(name),
+							lastReceivedAt: metrics.lastReceivedAt,
+							lastQueuedAt: metrics.lastQueuedAt,
+							lastReplayAt: metrics.lastReplayAt,
+							lastSwapAt: metrics.lastSwapAt,
 						};
 					});
+					return snapshot;
+				}
+
+				function diagnosticsFor(name) {
+					const metrics = metricsSnapshot()[name] || {};
+					const status = document.documentElement.dataset.detentSseStatus || "unknown";
+					return [
+						"stream=" + status,
+						"event=" + name,
+						"received=" + (metrics.received || 0),
+						"swaps=" + (metrics.swaps || 0),
+						"queued=" + (metrics.queued || 0),
+						"pending=" + (metrics.pending || 0),
+						"processing=" + (metrics.processing || 0),
+						"replayed=" + (metrics.replayed || 0),
+						"timeouts=" + (metrics.timeouts || 0),
+						"errors=" + (metrics.swapErrors || 0),
+					].join(" ");
+				}
+
+				function updateWarning() {
+					const warning = document.querySelector("[data-detent-sse-warning]");
+					if (!(warning instanceof HTMLElement)) {
+						return;
+					}
+					let key = state.warningKey;
+					if (!key || (!state.processing[key] && !state.pending[key])) {
+						key = "";
+						const now = performance.now();
+						Object.keys(state.processing).some(function(candidate) {
+							const processing = state.processing[candidate];
+							if (processing && now - processing.started >= stallWarningAfter) {
+								key = candidate;
+								return true;
+							}
+							return false;
+						});
+					}
+					if (!key) {
+						warning.hidden = true;
+						warning.classList.add("hidden");
+						state.warningKey = "";
+						return;
+					}
+					state.warningKey = key;
+					const pending = state.pending[key];
+					const processing = state.processing[key];
+					const name = (pending && pending.name) || (processing && processing.name) || "snapshot";
+					const message = warning.querySelector("[data-detent-sse-warning-message]");
+					const metrics = warning.querySelector("[data-detent-sse-warning-metrics]");
+					if (message) {
+						message.textContent = name + " events are queued or replaying, but the page has not settled yet.";
+					}
+					if (metrics) {
+						metrics.textContent = diagnosticsFor(name);
+					}
+					warning.hidden = false;
+					warning.classList.remove("hidden");
+				}
+
+				function scheduleReport() {
+					if (state.reportTimer) {
+						return;
+					}
+					state.reportTimer = window.setTimeout(report, reportEvery);
+				}
+
+				function report() {
+					state.reportTimer = 0;
+					const snapshot = metricsSnapshot();
 					if (window.console && console.info) {
 						console.info("[detent] SSE metrics", snapshot);
 					}
@@ -550,19 +759,29 @@ templ dashboardSSEMetricsScript() {
 					const payload = eventPayload(event);
 					metrics.received += 1;
 					metrics.bytes += byteLength(payload);
+					metrics.lastReceivedAt = timestamp();
 					const target = swapTarget(event) || targetForEventName(name);
 					if (!target) {
 						scheduleReport();
 						return;
 					}
-					if (target.dataset.detentSseProcessing === "true" && name !== "tick") {
+					const key = pendingKey(target, name);
+					if (state.processing[key] && name !== "tick") {
 						metrics.skipped += 1;
 						rememberPending(target, name, payload);
 						event.preventDefault();
 						scheduleReport();
+						updateWarning();
 						return;
 					}
-					markProcessing(target, name);
+					const processingKey = markProcessing(target, name);
+					window.setTimeout(function() {
+						if (event.defaultPrevented && state.processing[processingKey]) {
+							metrics.prevented += 1;
+							clearProcessingKey(processingKey);
+							scheduleReport();
+						}
+					}, 0);
 					scheduleReport();
 				});
 
@@ -580,17 +799,7 @@ templ dashboardSSEMetricsScript() {
 						return;
 					}
 					const name = target.dataset.detentSseEvent || target.getAttribute("sse-swap") || "message";
-					const started = Number(target.dataset.detentSseStarted || "0");
-					if (started > 0) {
-						const duration = performance.now() - started;
-						const metrics = metricsFor(name);
-						metrics.swaps += 1;
-						metrics.totalMs += duration;
-						metrics.maxMs = Math.max(metrics.maxMs, duration);
-					}
-					clearProcessing(target);
-					replayPending(target, name);
-					scheduleReport();
+					settleProcessing(target, name);
 				});
 
 				document.addEventListener("htmx:sseOpen", function() {
@@ -605,6 +814,10 @@ templ dashboardSSEMetricsScript() {
 
 				window.__detentSSEMetrics = {
 					events: state.events,
+					pending: state.pending,
+					processing: state.processing,
+					snapshot: metricsSnapshot,
+					diagnostics: diagnosticsFor,
 					report: report,
 				};
 			})();
