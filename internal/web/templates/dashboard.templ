@@ -1609,7 +1609,13 @@ templ DashboardSidebarContent(data DashboardShellData) {
 						<span class="inline-flex h-4 w-1.5 shrink-0 rounded-full border border-sidebar-border" aria-label={ item.Name + " project color" } title={ "Project color: " + item.Name } { projectColorAttributes(item.ProjectColor)... }></span>
 						<span class={ "inline-flex size-2.5 shrink-0 rounded-full " + item.DotClass }></span>
 						<span>{ item.Name }</span>
-						@sidebar.MenuBadge(sidebar.MenuBadgeProps{Class: "font-mono " + item.BadgeClass}) {
+						@sidebar.MenuBadge(sidebar.MenuBadgeProps{
+							Class: "font-mono " + item.BadgeClass,
+							Attributes: templ.Attributes{
+								"aria-label": item.RunningLabel,
+								"title":      item.RunningLabel,
+							},
+						}) {
 							{ item.CountLabel }
 						}
 					}
@@ -2411,7 +2417,7 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 						if snapshotDegraded(data.Snapshot) {
 							<span class="inline-flex min-h-8 items-center rounded-full border border-warning-soft bg-warning-soft px-2.5 py-1 text-xs font-semibold text-warning">Degraded</span>
 						}
-						<span class="inline-flex min-h-8 items-center rounded-full bg-muted px-2.5 py-1 font-mono text-xs font-medium text-muted-foreground">{ board.TotalLabel } cards</span>
+						<span class="inline-flex min-h-8 items-center rounded-full bg-muted px-2.5 py-1 font-mono text-xs font-medium text-muted-foreground" data-project-kanban-card-count-summary>{ projectKanbanCardCountSummary(board) }</span>
 						@projectKanbanVisibilityDropdown(board, projectKanbanVisibilityKey(data, board))
 					} else if snapshotDegraded(data.Snapshot) {
 						<span class="inline-flex min-h-8 items-center rounded-full border border-danger-soft bg-danger-soft px-2.5 py-1 text-xs font-semibold text-danger">Degraded</span>
@@ -2425,6 +2431,9 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 			}
 			if projectKanbanFeedbackVisible(data) {
 				<div id="kanban-feedback" role="status" aria-live="polite" class={ kanbanFeedbackClass(data.Kanban) }>{ kanbanFeedbackText(data.Kanban) }</div>
+			}
+			if projectKanbanBoardLoaded(data) {
+				@projectKanbanHiddenPopulatedNotice(board)
 			}
 			if !snapshotReady(data.Snapshot) && !projectKanbanBoardLoaded(data) {
 				<div class="mt-3">
@@ -2449,6 +2458,29 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 			}
 		</section>
 	}
+}
+
+templ projectKanbanHiddenPopulatedNotice(board projectKanbanBoard) {
+	<div class="mt-3 rounded-md border border-warning-soft bg-warning-soft/60 px-3 py-2 text-sm text-warning" role="status" aria-live="polite" data-project-kanban-hidden-populated-alert hidden?={ board.HiddenCardCount == 0 }>
+		<div class="flex min-w-0 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+			<div class="flex min-w-0 items-start gap-2">
+				@icon.CircleAlert(icon.Props{Class: "mt-0.5 size-4 shrink-0 text-warning"})
+				<p class="min-w-0 text-warning" data-project-kanban-hidden-populated-summary>{ projectKanbanHiddenPopulatedSummary(board) }</p>
+			</div>
+			@button.Button(button.Props{
+				Type:    button.TypeButton,
+				Variant: button.VariantOutline,
+				Size:    button.SizeSm,
+				Class:   "shrink-0 border-warning bg-card text-warning hover:border-accent hover:text-accent",
+				Attributes: templ.Attributes{
+					"data-project-kanban-visibility-action": "populated",
+				},
+			}) {
+				@icon.Eye(icon.Props{Class: "size-3.5 shrink-0"})
+				<span>Show populated lanes</span>
+			}
+		</div>
+	</div>
 }
 
 templ projectKanbanReadOnlyNotice(data DashboardData) {
@@ -2481,6 +2513,7 @@ templ projectKanbanVisibilityDropdown(board projectKanbanBoard, visibilityKey st
 		<div class="absolute right-0 z-50 mt-2 w-[18rem] rounded-md border border-border bg-popover p-2 text-popover-foreground shadow-sm">
 			<div class="mb-2 flex items-center justify-between gap-2 border-b border-border pb-2">
 				<div class="grid min-w-0 flex-1 grid-cols-2 gap-1">
+					<button type="button" class="col-span-2 min-h-8 rounded-md bg-warning-soft px-2 py-1 text-xs font-medium text-warning hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:pointer-events-none disabled:opacity-40" data-project-kanban-visibility-action="populated">Show populated lanes</button>
 					<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="all">All lanes</button>
 					<button type="button" class="min-h-8 rounded-md bg-muted px-2 py-1 text-xs font-medium text-muted-foreground hover:bg-accent-soft hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" data-project-kanban-visibility-action="reset">Reset to defaults</button>
 				</div>
@@ -2490,7 +2523,7 @@ templ projectKanbanVisibilityDropdown(board projectKanbanBoard, visibilityKey st
 			</div>
 			<div class="grid gap-1">
 				for _, lane := range board.AllLanes {
-					<div class="grid gap-1 rounded-md px-2 py-1 text-xs text-foreground hover:bg-muted" data-project-kanban-visibility-row data-project-kanban-visibility-lane={ lane.ID }>
+					<div class={ projectKanbanVisibilityRowClass(lane) } data-project-kanban-visibility-row data-project-kanban-visibility-lane={ lane.ID } data-project-kanban-visibility-card-count={ strconv.Itoa(len(lane.Cards)) } data-project-kanban-hidden-populated={ projectKanbanBool(projectKanbanLaneHiddenPopulated(lane)) }>
 						<label class="flex min-h-7 cursor-pointer items-center gap-2">
 							<input class="size-4 shrink-0 accent-accent" type="checkbox" name="visible_lane" value={ lane.ID } checked?={ lane.DefaultVisible } data-project-kanban-visibility-checkbox data-project-kanban-visibility-default={ projectKanbanBool(lane.DefaultVisible) } data-project-kanban-visibility-state="default" autocomplete="off"/>
 							<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
@@ -2498,7 +2531,7 @@ templ projectKanbanVisibilityDropdown(board projectKanbanBoard, visibilityKey st
 							<span class="shrink-0 rounded-full bg-muted px-1.5 py-0.5 font-mono text-muted-foreground">{ lane.CountLabel }</span>
 						</label>
 						<div class="ml-6 flex min-w-0 items-center justify-between gap-1.5">
-							<span class="min-w-0 truncate text-[11px] text-muted-foreground" data-project-kanban-visibility-status>{ projectKanbanDefaultVisibilityLabel(lane) }</span>
+							<span class="min-w-0 truncate text-[11px] text-muted-foreground" data-project-kanban-visibility-status>{ projectKanbanVisibilityStatusLabel(lane) }</span>
 							<button type="button" class="inline-flex size-6 shrink-0 items-center justify-center rounded-md text-muted-foreground hover:bg-card hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent disabled:pointer-events-none disabled:opacity-40" data-project-kanban-visibility-reset value={ lane.ID } aria-label={ "Reset " + lane.Title + " lane to default visibility" } title="Reset lane to default visibility" disabled>
 								@icon.RotateCcw(icon.Props{Class: "size-3.5"})
 							</button>
@@ -2547,8 +2580,24 @@ templ projectKanbanVisibilityScript() {
 				return lane.dataset.projectKanbanLaneDefaultVisible === "true";
 			}
 
+			function laneCardCount(lane) {
+				const parsed = Number.parseInt(lane.dataset.projectKanbanLaneCardCount || "0", 10);
+				if (!Number.isFinite(parsed) || parsed < 0) {
+					return 0;
+				}
+				return parsed;
+			}
+
 			function laneTitle(lane) {
 				return lane.dataset.projectKanbanLaneTitle || "lane";
+			}
+
+			function formatNumber(value) {
+				return new Intl.NumberFormat("en-US").format(value);
+			}
+
+			function cardCountLabel(count, singular, plural) {
+				return formatNumber(count) + " " + (count === 1 ? singular : plural);
 			}
 
 			function emptyOverrides() {
@@ -2692,7 +2741,7 @@ templ projectKanbanVisibilityScript() {
 				return checkbox.value || "";
 			}
 
-			function visibilityStateLabel(state, lane) {
+			function visibilityStateBaseLabel(state, lane) {
 				if (state === overrideShow) {
 					return "Forced visible";
 				}
@@ -2702,14 +2751,27 @@ templ projectKanbanVisibilityScript() {
 				return laneDefaultVisible(lane) ? "Default visible" : "Default hidden";
 			}
 
-			function visibilityStateTitle(state, lane) {
+			function visibilityStateLabel(state, lane, visible) {
+				const label = visibilityStateBaseLabel(state, lane);
+				if (!visible && laneCardCount(lane) > 0) {
+					return label + " with " + cardCountLabel(laneCardCount(lane), "hidden card", "hidden cards");
+				}
+				return label;
+			}
+
+			function visibilityStateTitle(state, lane, visible) {
+				let title = "";
 				if (state === overrideShow) {
-					return "Forced visible; reset to follow the board default.";
+					title = "Forced visible; reset to follow the board default.";
+				} else if (state === overrideHide) {
+					title = "Forced hidden; reset to follow the board default.";
+				} else {
+					title = laneDefaultVisible(lane) ? "Default-visible lane; no saved override." : "Default-hidden lane; no saved override.";
 				}
-				if (state === overrideHide) {
-					return "Forced hidden; reset to follow the board default.";
+				if (!visible && laneCardCount(lane) > 0) {
+					return title + " " + cardCountLabel(laneCardCount(lane), "card is", "cards are") + " hidden while this lane is off.";
 				}
-				return laneDefaultVisible(lane) ? "Default-visible lane; no saved override." : "Default-hidden lane; no saved override.";
+				return title;
 			}
 
 			function visibilityRow(board, id) {
@@ -2748,8 +2810,13 @@ templ projectKanbanVisibilityScript() {
 				}
 				row.dataset.projectKanbanVisibilityState = state;
 				row.dataset.projectKanbanVisibilityEffective = visible ? "visible" : "hidden";
-				const label = visibilityStateLabel(state, lane);
-				const title = visibilityStateTitle(state, lane);
+				const hiddenPopulated = !visible && laneCardCount(lane) > 0;
+				row.dataset.projectKanbanHiddenPopulated = hiddenPopulated ? "true" : "false";
+				row.classList.toggle("border-warning-soft", hiddenPopulated);
+				row.classList.toggle("bg-warning-soft/40", hiddenPopulated);
+				row.classList.toggle("border-transparent", !hiddenPopulated);
+				const label = visibilityStateLabel(state, lane, visible);
+				const title = visibilityStateTitle(state, lane, visible);
 				const status = row.querySelector("[data-project-kanban-visibility-status]");
 				if (status) {
 					status.textContent = label;
@@ -2763,15 +2830,68 @@ templ projectKanbanVisibilityScript() {
 				}
 			}
 
+			function hiddenLaneSummary(lanes) {
+				if (lanes.length === 0) {
+					return "All populated lanes are visible.";
+				}
+				if (lanes.length === 1) {
+					const lane = lanes[0];
+					return cardCountLabel(lane.count, "hidden card", "hidden cards") + " in " + lane.title + ".";
+				}
+				const total = lanes.reduce(function(sum, lane) {
+					return sum + lane.count;
+				}, 0);
+				const labels = lanes.map(function(lane) {
+					return lane.title + " (" + formatNumber(lane.count) + ")";
+				}).join(", ");
+				return cardCountLabel(total, "hidden card", "hidden cards") + " across " + cardCountLabel(lanes.length, "lane", "lanes") + ": " + labels + ".";
+			}
+
+			function updateBoardHiddenSummary(board, visibleCardCount, totalCardCount, hiddenLanes) {
+				const hiddenCardCount = hiddenLanes.reduce(function(sum, lane) {
+					return sum + lane.count;
+				}, 0);
+				const count = board.querySelector("[data-project-kanban-card-count-summary]");
+				if (count) {
+					count.textContent = hiddenCardCount > 0
+						? formatNumber(visibleCardCount) + " visible / " + formatNumber(totalCardCount) + " total cards"
+						: formatNumber(totalCardCount) + " cards";
+				}
+				const alert = board.querySelector("[data-project-kanban-hidden-populated-alert]");
+				if (alert instanceof HTMLElement) {
+					alert.hidden = hiddenCardCount === 0;
+				}
+				const summary = board.querySelector("[data-project-kanban-hidden-populated-summary]");
+				if (summary) {
+					summary.textContent = hiddenLaneSummary(hiddenLanes);
+				}
+				board.querySelectorAll("[data-project-kanban-visibility-action='populated']").forEach(function(button) {
+					if (!(button instanceof HTMLButtonElement)) {
+						return;
+					}
+					const disabled = hiddenCardCount === 0;
+					button.disabled = disabled;
+					button.setAttribute("aria-disabled", disabled ? "true" : "false");
+				});
+			}
+
 			function applyBoard(board) {
 				const overrides = visibilityOverrides(board);
 				let visibleCount = 0;
+				let visibleCardCount = 0;
+				let totalCardCount = 0;
+				const hiddenLanes = [];
 				const lanes = boardLanes(board);
 				lanes.forEach(function(lane) {
 					const effective = effectiveLaneVisibility(lane, overrides);
 					applyVisibilityState(board, lane, effective.state, effective.visible);
+					const cardCount = laneCardCount(lane);
+					totalCardCount += cardCount;
 					if (effective.visible) {
 						visibleCount += 1;
+						visibleCardCount += cardCount;
+					} else if (cardCount > 0) {
+						hiddenLanes.push({ title: laneTitle(lane), count: cardCount });
 					}
 				});
 				board.querySelectorAll("[data-project-kanban-visibility-checkbox]").forEach(function(input) {
@@ -2789,12 +2909,13 @@ templ projectKanbanVisibilityScript() {
 					input.dataset.projectKanbanVisibilityState = effective.state;
 					input.dataset.projectKanbanVisibilityEffective = effective.visible ? "visible" : "hidden";
 					input.setAttribute("aria-label", (effective.visible ? "Hide " : "Show ") + laneTitle(lane) + " lane");
-					input.title = visibilityStateTitle(effective.state, lane);
+					input.title = visibilityStateTitle(effective.state, lane, effective.visible);
 				});
 				const count = board.querySelector("[data-project-kanban-visibility-count]");
 				if (count) {
 					count.textContent = visibleCount + "/" + lanes.length;
 				}
+				updateBoardHiddenSummary(board, visibleCardCount, totalCardCount, hiddenLanes);
 			}
 
 			function applyBoards() {
@@ -2869,6 +2990,22 @@ templ projectKanbanVisibilityScript() {
 					boardLanes(board).forEach(function(lane) {
 						const id = laneID(lane);
 						if (id && !laneDefaultVisible(lane)) {
+							overrides.show.add(id);
+						}
+					});
+					saveVisibilityOverrides(board, overrides);
+				}
+				if (button.dataset.projectKanbanVisibilityAction === "populated") {
+					const overrides = visibilityOverrides(board);
+					boardLanes(board).forEach(function(lane) {
+						const id = laneID(lane);
+						if (!id || laneCardCount(lane) === 0) {
+							return;
+						}
+						overrides.hide.delete(id);
+						if (laneDefaultVisible(lane)) {
+							overrides.show.delete(id);
+						} else {
 							overrides.show.add(id);
 						}
 					});
@@ -3026,7 +3163,7 @@ templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 }
 
 templ projectKanbanLoadingLaneView(lane projectKanbanLane) {
-	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } data-project-kanban-lane-title={ lane.Title } data-project-kanban-lane-empty="true" data-project-kanban-lane-default-visible="true" data-project-kanban-lane-pinned="false" data-project-kanban-lane-visible="true" data-project-kanban-lane-visibility-state="default">
+	<section class={ projectKanbanLaneClass(lane) } aria-label={ lane.Title + " lane" } data-project-kanban-lane={ lane.ID } data-project-kanban-lane-title={ lane.Title } data-project-kanban-lane-empty="true" data-project-kanban-lane-default-visible="true" data-project-kanban-lane-card-count="0" data-project-kanban-lane-pinned="false" data-project-kanban-lane-visible="true" data-project-kanban-lane-visibility-state="default">
 		<div class="flex min-h-7 w-full min-w-0 max-w-full items-center gap-1.5 overflow-hidden">
 			<span class={ "h-2 w-2 shrink-0 rounded-full " + lane.DotClass }></span>
 			<h3 class="min-w-0 shrink truncate text-xs font-semibold text-foreground">{ lane.Title } ({ lane.CountLabel })</h3>

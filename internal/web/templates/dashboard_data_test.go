@@ -2044,6 +2044,52 @@ func TestProjectKanbanBoardHidesTerminalLanesByDefault(t *testing.T) {
 	}
 }
 
+func TestProjectKanbanBoardAccountsForHiddenPopulatedLanes(t *testing.T) {
+	t.Parallel()
+
+	issues := make([]telemetry.Issue, 0, 8)
+	for i := 1; i <= 3; i++ {
+		issues = append(issues, telemetry.Issue{
+			ID:         "backlog-" + strconv.Itoa(i),
+			Identifier: "digitaldrywood/detent#" + strconv.Itoa(520+i),
+			Title:      "Backlog work " + strconv.Itoa(i),
+			State:      "Backlog",
+		})
+	}
+	for i := 1; i <= 5; i++ {
+		issues = append(issues, telemetry.Issue{
+			ID:         "done-" + strconv.Itoa(i),
+			Identifier: "digitaldrywood/detent#" + strconv.Itoa(780+i),
+			Title:      "Done work " + strconv.Itoa(i),
+			State:      "Done",
+		})
+	}
+
+	board := projectKanbanBoardView(DashboardData{
+		Kanban: KanbanData{
+			States:         []string{"Backlog", "Done"},
+			TerminalStates: []string{"Done"},
+		},
+		Snapshot: telemetry.Snapshot{BoardIssues: issues},
+	})
+
+	if board.TotalCardCount != 8 || board.VisibleCardCount != 3 || board.HiddenCardCount != 5 {
+		t.Fatalf("card counts = total %d visible %d hidden %d, want 8/3/5", board.TotalCardCount, board.VisibleCardCount, board.HiddenCardCount)
+	}
+	if got := projectKanbanCardCountSummary(board); got != "3 visible / 8 total cards" {
+		t.Fatalf("projectKanbanCardCountSummary() = %q", got)
+	}
+	if got := projectKanbanHiddenPopulatedSummary(board); got != "5 hidden cards in Done." {
+		t.Fatalf("projectKanbanHiddenPopulatedSummary() = %q", got)
+	}
+	if len(board.HiddenPopulatedLanes) != 1 || board.HiddenPopulatedLanes[0].Title != "Done" {
+		t.Fatalf("HiddenPopulatedLanes = %#v, want Done", board.HiddenPopulatedLanes)
+	}
+	if got := projectKanbanVisibilityCountLabel(board); got != "1/2" {
+		t.Fatalf("projectKanbanVisibilityCountLabel() = %q, want 1/2", got)
+	}
+}
+
 func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 	t.Parallel()
 

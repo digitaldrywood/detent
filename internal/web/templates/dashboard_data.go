@@ -364,6 +364,7 @@ type sidebarProjectItem struct {
 	ProjectColor string
 	BadgeClass   string
 	CountLabel   string
+	RunningLabel string
 	DefaultIndex int
 	Active       bool
 	Current      bool
@@ -460,11 +461,17 @@ type issueIdentityView struct {
 }
 
 type projectKanbanBoard struct {
-	AllLanes        []projectKanbanLane
-	Lanes           []projectKanbanLane
-	EmptyLanes      []projectKanbanLane
-	TotalLabel      string
-	EmptyCountLabel string
+	AllLanes             []projectKanbanLane
+	Lanes                []projectKanbanLane
+	EmptyLanes           []projectKanbanLane
+	HiddenPopulatedLanes []projectKanbanLane
+	TotalCardCount       int
+	VisibleCardCount     int
+	HiddenCardCount      int
+	TotalLabel           string
+	VisibleCountLabel    string
+	HiddenCountLabel     string
+	EmptyCountLabel      string
 }
 
 type projectKanbanLane struct {
@@ -891,7 +898,7 @@ func sidebarFleetTooltip(data DashboardShellData) string {
 }
 
 func sidebarProjectTooltip(item sidebarProjectItem) string {
-	return item.Name + " - " + item.StatusLabel + ", " + item.CountLabel + " running"
+	return item.Name + " - " + item.StatusLabel + ", " + item.RunningLabel
 }
 
 func sidebarProjectSearchLabel(data DashboardShellData) string {
@@ -1009,7 +1016,8 @@ func sidebarProjectItems(data DashboardShellData) []sidebarProjectItem {
 			DotClass:     status.DotClass,
 			ProjectColor: projectColorForProject(project),
 			BadgeClass:   status.BadgeClass,
-			CountLabel:   formatCount(project.Running),
+			CountLabel:   "run " + formatCount(project.Running),
+			RunningLabel: formatCount(project.Running) + " running",
 			DefaultIndex: len(items),
 			Active:       active,
 			Current:      false,
@@ -1885,7 +1893,10 @@ func projectKanbanBoardView(data DashboardData) projectKanbanBoard {
 	allLanes := make([]projectKanbanLane, 0, len(states))
 	visibleLanes := make([]projectKanbanLane, 0, len(states))
 	emptyLanes := make([]projectKanbanLane, 0, len(states))
+	hiddenPopulatedLanes := make([]projectKanbanLane, 0, len(states))
 	total := 0
+	visibleTotal := 0
+	hiddenTotal := 0
 	for _, state := range states {
 		cards := cardsByState[projectKanbanStateKey(state)]
 		defaultVisible := len(cards) > 0 && !projectKanbanTerminalState(state, terminalStates)
@@ -1906,14 +1917,24 @@ func projectKanbanBoardView(data DashboardData) projectKanbanBoard {
 		total += len(cards)
 		if lane.DefaultVisible {
 			visibleLanes = append(visibleLanes, lane)
+			visibleTotal += len(cards)
+		} else if len(cards) > 0 {
+			hiddenPopulatedLanes = append(hiddenPopulatedLanes, lane)
+			hiddenTotal += len(cards)
 		}
 	}
 	return projectKanbanBoard{
-		AllLanes:        allLanes,
-		Lanes:           visibleLanes,
-		EmptyLanes:      emptyLanes,
-		TotalLabel:      formatCount(total),
-		EmptyCountLabel: formatCount(len(emptyLanes)),
+		AllLanes:             allLanes,
+		Lanes:                visibleLanes,
+		EmptyLanes:           emptyLanes,
+		HiddenPopulatedLanes: hiddenPopulatedLanes,
+		TotalCardCount:       total,
+		VisibleCardCount:     visibleTotal,
+		HiddenCardCount:      hiddenTotal,
+		TotalLabel:           formatCount(total),
+		VisibleCountLabel:    formatCount(visibleTotal),
+		HiddenCountLabel:     formatCount(hiddenTotal),
+		EmptyCountLabel:      formatCount(len(emptyLanes)),
 	}
 }
 
@@ -1958,6 +1979,9 @@ func projectOverviewCards(data DashboardData) []projectOverviewCard {
 func projectOverviewKanbanDetail(board projectKanbanBoard) string {
 	if len(board.AllLanes) == 0 {
 		return "No workflow lanes"
+	}
+	if board.HiddenCardCount > 0 {
+		return board.VisibleCountLabel + " visible / " + board.TotalLabel + " total cards"
 	}
 	return formatCount(len(board.Lanes)) + " active / " + formatCount(len(board.AllLanes)) + " lanes"
 }
@@ -2852,6 +2876,7 @@ func projectKanbanLaneAttributesForData(data DashboardData, lane projectKanbanLa
 	attrs := templ.Attributes{
 		"data-project-kanban-lane-empty":            projectKanbanBool(lane.Empty),
 		"data-project-kanban-lane-default-visible":  projectKanbanBool(lane.DefaultVisible),
+		"data-project-kanban-lane-card-count":       strconv.Itoa(len(lane.Cards)),
 		"data-project-kanban-lane-pinned":           "false",
 		"data-project-kanban-lane-visible":          projectKanbanBool(lane.DefaultVisible),
 		"data-project-kanban-lane-visibility-state": "default",
@@ -2925,6 +2950,61 @@ func projectKanbanDefaultVisibilityLabel(lane projectKanbanLane) string {
 		return "Default visible"
 	}
 	return "Default hidden"
+}
+
+func projectKanbanCardCountSummary(board projectKanbanBoard) string {
+	if board.HiddenCardCount > 0 {
+		return board.VisibleCountLabel + " visible / " + board.TotalLabel + " total cards"
+	}
+	return board.TotalLabel + " cards"
+}
+
+func projectKanbanHiddenPopulatedSummary(board projectKanbanBoard) string {
+	return projectKanbanHiddenPopulatedLaneSummary(board.HiddenPopulatedLanes)
+}
+
+func projectKanbanHiddenPopulatedLaneSummary(lanes []projectKanbanLane) string {
+	filtered := make([]projectKanbanLane, 0, len(lanes))
+	total := 0
+	for _, lane := range lanes {
+		if len(lane.Cards) == 0 {
+			continue
+		}
+		filtered = append(filtered, lane)
+		total += len(lane.Cards)
+	}
+	if len(filtered) == 0 {
+		return "All populated lanes are visible."
+	}
+	if len(filtered) == 1 {
+		lane := filtered[0]
+		return projectKanbanCountLabel(len(lane.Cards), "hidden card", "hidden cards") + " in " + lane.Title + "."
+	}
+	parts := make([]string, 0, len(filtered))
+	for _, lane := range filtered {
+		parts = append(parts, lane.Title+" ("+formatCount(len(lane.Cards))+")")
+	}
+	return projectKanbanCountLabel(total, "hidden card", "hidden cards") + " across " + projectKanbanCountLabel(len(filtered), "lane", "lanes") + ": " + strings.Join(parts, ", ") + "."
+}
+
+func projectKanbanLaneHiddenPopulated(lane projectKanbanLane) bool {
+	return len(lane.Cards) > 0 && !lane.DefaultVisible
+}
+
+func projectKanbanVisibilityRowClass(lane projectKanbanLane) string {
+	class := "grid gap-1 rounded-md border px-2 py-1 text-xs text-foreground hover:bg-muted"
+	if projectKanbanLaneHiddenPopulated(lane) {
+		return class + " border-warning-soft bg-warning-soft/40"
+	}
+	return class + " border-transparent"
+}
+
+func projectKanbanVisibilityStatusLabel(lane projectKanbanLane) string {
+	label := projectKanbanDefaultVisibilityLabel(lane)
+	if !projectKanbanLaneHiddenPopulated(lane) {
+		return label
+	}
+	return label + " with " + projectKanbanCountLabel(len(lane.Cards), "hidden card", "hidden cards")
 }
 
 func kanbanLaneAttributes(data DashboardData, lane kanbanLane) templ.Attributes {
