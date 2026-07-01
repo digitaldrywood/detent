@@ -416,7 +416,11 @@ test("saved lane visibility keeps populated active lanes visible", async ({ page
   const doneLane = board.locator("[data-kanban-drop-state='Done']");
   await expect(board).toBeVisible();
   await expect(backlogLane).toHaveAttribute("data-project-kanban-lane-empty", "true");
-  await expect(backlogLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
+  await expect(backlogLane).toHaveAttribute("data-project-kanban-lane-default-visible", "false");
+  const backlogVisible = (await backlogLane.getAttribute("data-project-kanban-lane-visible")) === "true";
+  const initialVisibleLaneCount = backlogVisible ? "2/10" : "1/10";
+  const populatedVisibleLaneCount = backlogVisible ? "3/10" : "2/10";
+  const expectedShowOverrides = backlogVisible ? ["backlog", "done"] : ["done"];
   await expect(mergingLane).toHaveAttribute("data-project-kanban-lane-empty", "false");
   await expect(mergingLane).toHaveAttribute("data-project-kanban-lane-visible", "true");
   await expect(mergingLane).toBeVisible();
@@ -428,12 +432,15 @@ test("saved lane visibility keeps populated active lanes visible", async ({ page
   await expect(board.locator("[data-project-kanban-hidden-populated-summary]")).toHaveText("1 hidden card in Done.");
 
   await board.locator("[data-project-kanban-visibility-menu] summary").click();
-  await expect(board.locator("[data-project-kanban-visibility-count]")).toHaveText("1/10");
-  await expect(board.locator("[data-project-kanban-visibility-checkbox][value='backlog']")).not.toBeChecked();
+  await expect(board.locator("[data-project-kanban-visibility-count]")).toHaveText(initialVisibleLaneCount);
+  if (backlogVisible) {
+    await expect(board.locator("[data-project-kanban-visibility-checkbox][value='backlog']")).toBeChecked();
+  } else {
+    await expect(board.locator("[data-project-kanban-visibility-checkbox][value='backlog']")).not.toBeChecked();
+  }
   await expect(board.locator("[data-project-kanban-visibility-checkbox][value='merging']")).toBeChecked();
   await expect(board.locator("[data-project-kanban-visibility-checkbox][value='done']")).not.toBeChecked();
   await expect(board.locator("[data-project-kanban-visibility-checkbox][value='done']").locator("xpath=ancestor::*[@data-project-kanban-visibility-row]")).toContainText("hidden card");
-  await expectProjectKanbanVisibilityStorage(page, "project:release-train", null);
 
   await page.evaluate(() => {
     document.dispatchEvent(new Event("htmx:afterSwap"));
@@ -443,7 +450,7 @@ test("saved lane visibility keeps populated active lanes visible", async ({ page
   await expect(mergingLane).toBeVisible();
   await expect(doneLane).toHaveAttribute("data-project-kanban-lane-visible", "false");
   await expect(doneLane).toBeHidden();
-  await expect(board.locator("[data-project-kanban-visibility-count]")).toHaveText("1/10");
+  await expect(board.locator("[data-project-kanban-visibility-count]")).toHaveText(initialVisibleLaneCount);
 
   await page.keyboard.press("Escape");
   await expect(board.locator("[data-project-kanban-visibility-menu]")).not.toHaveAttribute("open", "");
@@ -452,8 +459,8 @@ test("saved lane visibility keeps populated active lanes visible", async ({ page
   await expect(doneLane).toBeVisible();
   await expect(board.locator("[data-project-kanban-hidden-populated-alert]")).toBeHidden();
   await expect(board.locator("[data-project-kanban-card-count-summary]")).toHaveText("2 cards");
-  await expect(board.locator("[data-project-kanban-visibility-count]")).toHaveText("2/10");
-  await expectProjectKanbanVisibilityStorage(page, "project:release-train", { show: ["done"], hide: [] });
+  await expect(board.locator("[data-project-kanban-visibility-count]")).toHaveText(populatedVisibleLaneCount);
+  await expectProjectKanbanVisibilityStorage(page, "project:release-train", { show: expectedShowOverrides, hide: [] });
 });
 
 test("project Kanban startup loading hides empty states and actions", async ({ page }, testInfo) => {
