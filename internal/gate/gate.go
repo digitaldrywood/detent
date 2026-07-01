@@ -8,12 +8,14 @@ import (
 const (
 	KindCommand     = "command"
 	KindHumanReview = "human_review"
+	KindArtifact    = "artifact"
 
-	DefaultCommand           = "make check"
-	DefaultApprovalLabel     = "human-approved"
-	DefaultPlanApprovalLabel = "plan-approved"
-	DefaultPlanStop          = "Plan Review"
-	DefaultValidatorMinScore = 0.8
+	DefaultCommand             = "make check"
+	DefaultApprovalLabel       = "human-approved"
+	DefaultPlanApprovalLabel   = "plan-approved"
+	DefaultPlanStop            = "Plan Review"
+	DefaultValidatorMinScore   = 0.8
+	DefaultArtifactStatusField = "validation_status"
 
 	CIFailureActionSkip   = "skip"
 	CIFailureActionRework = "rework"
@@ -30,6 +32,14 @@ type Config struct {
 	RequireAutomatedReview *bool           `yaml:"require_automated_review"`
 	CIFailureAction        string          `yaml:"ci_failure_action"`
 	Validator              ValidatorConfig `yaml:"validator"`
+	Artifact               ArtifactConfig  `yaml:"artifact"`
+}
+
+type ArtifactConfig struct {
+	StatusField    string   `yaml:"status_field"`
+	PassStatuses   []string `yaml:"pass_statuses"`
+	WaitStatuses   []string `yaml:"wait_statuses"`
+	ReworkStatuses []string `yaml:"rework_statuses"`
 }
 
 type ValidatorConfig struct {
@@ -53,6 +63,7 @@ type Summary struct {
 	ReviewState        string
 	P1Findings         []Finding
 	Validator          ValidatorResult
+	ArtifactStatus     string
 	LastActivityAt     *time.Time
 }
 
@@ -106,6 +117,9 @@ const (
 	ReasonValidatorRework              Reason = "validator_rework"
 	ReasonValidatorScoreBelowThreshold Reason = "validator_score_below_threshold"
 	ReasonValidatorBlockedSeverity     Reason = "validator_blocked_severity"
+	ReasonArtifactStatusMissing        Reason = "artifact_status_missing"
+	ReasonArtifactStatusWait           Reason = "artifact_status_wait"
+	ReasonArtifactStatusRework         Reason = "artifact_status_rework"
 	ReasonPlanDisabled                 Reason = "plan_disabled"
 )
 
@@ -125,6 +139,7 @@ func DefaultConfig() Config {
 		RequireAutomatedReview: new(true),
 		CIFailureAction:        CIFailureActionSkip,
 		Validator:              effectiveValidatorConfig(ValidatorConfig{}),
+		Artifact:               effectiveArtifactConfig(ArtifactConfig{}),
 	}
 }
 
@@ -142,6 +157,7 @@ func Effective(cfg Config) Config {
 	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
 	cfg.CIFailureAction = NormalizeCIFailureAction(cfg.CIFailureAction)
 	cfg.Validator = effectiveValidatorConfig(cfg.Validator)
+	cfg.Artifact = effectiveArtifactConfig(cfg.Artifact)
 
 	if cfg.Kind == "" {
 		cfg.Kind = KindCommand
@@ -155,6 +171,9 @@ func Effective(cfg Config) Config {
 		if cfg.ApprovalLabel == "" {
 			cfg.ApprovalLabel = DefaultApprovalLabel
 		}
+	} else if cfg.Kind == KindArtifact {
+		cfg.Run = ""
+		cfg.RequireAutomatedReview = nil
 	} else if cfg.RequireAutomatedReview == nil {
 		cfg.RequireAutomatedReview = new(true)
 	}
@@ -189,6 +208,8 @@ func NormalizeKind(kind string) string {
 		return KindCommand
 	case KindHumanReview, "human-review", "humanreview":
 		return KindHumanReview
+	case KindArtifact, "artifact_status", "artifact-status", "domain":
+		return KindArtifact
 	default:
 		return strings.ToLower(strings.TrimSpace(kind))
 	}
@@ -221,9 +242,9 @@ func NormalizeCIFailureAction(action string) string {
 func Validate(prefix string, cfg Config) []string {
 	var problems []string
 	switch NormalizeKind(cfg.Kind) {
-	case KindCommand, KindHumanReview:
+	case KindCommand, KindHumanReview, KindArtifact:
 	default:
-		problems = append(problems, prefix+".kind must be one of command, human_review")
+		problems = append(problems, prefix+".kind must be one of command, human_review, artifact")
 	}
 	switch NormalizeCIFailureAction(cfg.CIFailureAction) {
 	case CIFailureActionSkip, CIFailureActionRework:
@@ -231,6 +252,7 @@ func Validate(prefix string, cfg Config) []string {
 		problems = append(problems, prefix+".ci_failure_action must be one of skip, rework")
 	}
 	problems = append(problems, validateValidator(prefix+".validator", cfg.Validator)...)
+	problems = append(problems, validateArtifact(prefix+".artifact", cfg.Artifact)...)
 	return problems
 }
 
@@ -253,6 +275,9 @@ func Instructions(cfg Config) string {
 	case KindHumanReview:
 		return "The validation gate is human review. Keep the pull request in Human Review until a human applies label `" +
 			cfg.ApprovalLabel + "`; do not move it to Merging before that label is present."
+	case KindArtifact:
+		return "The validation gate is artifact status. Detent evaluates `" + cfg.Artifact.StatusField +
+			"` from the work item fields or deliverable validation status. Passing statuses advance the item, waiting statuses keep it in place, and rework statuses route it to rework without requiring a pull request or CI."
 	default:
 		instructions := "The validation gate is a command. Run `" + cfg.Run +
 			"` from the workspace root before Human Review; the pull request still needs green CI before promotion. " +
@@ -300,6 +325,8 @@ func Evaluate(cfg Config, labels []string, summary Summary, now time.Time, opts 
 	switch cfg.Kind {
 	case KindHumanReview:
 		return evaluateHumanReview(cfg, labels, summary)
+	case KindArtifact:
+		return evaluateArtifact(cfg.Artifact, summary)
 	default:
 		return evaluateCommand(cfg, summary, now, opts)
 	}
@@ -344,6 +371,20 @@ func evaluateHumanReview(cfg Config, labels []string, summary Summary) Decision 
 		}
 	}
 	return decision(ActionWait, ReasonHumanApprovalMissing)
+}
+
+func evaluateArtifact(cfg ArtifactConfig, summary Summary) Decision {
+	status := normalizeArtifactStatus(summary.ArtifactStatus)
+	if status == "" {
+		return decision(ActionWait, ReasonArtifactStatusMissing)
+	}
+	if artifactStatusIn(status, cfg.ReworkStatuses) {
+		return decision(ActionRework, ReasonArtifactStatusRework)
+	}
+	if artifactStatusIn(status, cfg.PassStatuses) {
+		return decision(ActionPass, ReasonReady)
+	}
+	return decision(ActionWait, ReasonArtifactStatusWait)
 }
 
 func hasApprovalLabel(labels []string, approvalLabel string) bool {
@@ -453,6 +494,26 @@ func effectiveValidatorConfig(cfg ValidatorConfig) ValidatorConfig {
 	return cfg
 }
 
+func effectiveArtifactConfig(cfg ArtifactConfig) ArtifactConfig {
+	cfg.StatusField = strings.TrimSpace(cfg.StatusField)
+	if cfg.StatusField == "" {
+		cfg.StatusField = DefaultArtifactStatusField
+	}
+	cfg.PassStatuses = normalizeArtifactStatuses(cfg.PassStatuses)
+	if len(cfg.PassStatuses) == 0 {
+		cfg.PassStatuses = []string{"approved", "complete", "completed", "pass", "passed", "valid"}
+	}
+	cfg.WaitStatuses = normalizeArtifactStatuses(cfg.WaitStatuses)
+	if len(cfg.WaitStatuses) == 0 {
+		cfg.WaitStatuses = []string{"pending", "review", "reviewing", "waiting"}
+	}
+	cfg.ReworkStatuses = normalizeArtifactStatuses(cfg.ReworkStatuses)
+	if len(cfg.ReworkStatuses) == 0 {
+		cfg.ReworkStatuses = []string{"changes_requested", "failed", "invalid", "rework"}
+	}
+	return cfg
+}
+
 func validateValidator(prefix string, cfg ValidatorConfig) []string {
 	var problems []string
 	invalidScore := false
@@ -471,6 +532,57 @@ func validateValidator(prefix string, cfg ValidatorConfig) []string {
 		problems = append(problems, prefix+".min_score must be greater than 0 and less than or equal to 1")
 	}
 	return problems
+}
+
+func validateArtifact(prefix string, cfg ArtifactConfig) []string {
+	var problems []string
+	if strings.TrimSpace(cfg.StatusField) == "" && (len(cfg.PassStatuses) > 0 || len(cfg.WaitStatuses) > 0 || len(cfg.ReworkStatuses) > 0) {
+		problems = append(problems, prefix+".status_field must not be blank")
+	}
+	problems = append(problems, validateArtifactStatuses(prefix+".pass_statuses", cfg.PassStatuses)...)
+	problems = append(problems, validateArtifactStatuses(prefix+".wait_statuses", cfg.WaitStatuses)...)
+	problems = append(problems, validateArtifactStatuses(prefix+".rework_statuses", cfg.ReworkStatuses)...)
+	return problems
+}
+
+func validateArtifactStatuses(prefix string, values []string) []string {
+	for _, value := range values {
+		if strings.TrimSpace(value) == "" {
+			return []string{prefix + " values must not be blank"}
+		}
+	}
+	return nil
+}
+
+func normalizeArtifactStatuses(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		value = normalizeArtifactStatus(value)
+		if value == "" {
+			continue
+		}
+		if _, ok := seen[value]; ok {
+			continue
+		}
+		seen[value] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func normalizeArtifactStatus(value string) string {
+	return strings.ToLower(strings.TrimSpace(value))
+}
+
+func artifactStatusIn(status string, values []string) bool {
+	status = normalizeArtifactStatus(status)
+	for _, value := range values {
+		if status == normalizeArtifactStatus(value) {
+			return true
+		}
+	}
+	return false
 }
 
 func normalizeSeverities(values []string) []string {

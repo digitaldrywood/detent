@@ -45,7 +45,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 	}
 
 	result := autoPromoteTickResult{transitioned: map[string]struct{}{}}
-	for _, issue := range issuesInStates(issues, []string{autoPromoteSourceState}) {
+	for _, issue := range issuesInStates(issues, []string{cfg.SourceState}) {
 		issueID := strings.TrimSpace(issue.ID)
 		if issueID == "" {
 			continue
@@ -67,7 +67,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			}
 			decision = EvaluateAutoPromote(issue, summary, cfg, now)
 		}
-		targetState := autoPromoteTargetState(decision.Action)
+		targetState := autoPromoteTargetState(decision.Action, cfg)
 		if targetState == "" {
 			o.logAutoPromoteDecision(issue, decision, "")
 			continue
@@ -77,11 +77,8 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 		result.transitioned[issueID] = struct{}{}
 		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
-		if targetState == autoPromoteMergingState {
-			promoted := cloneIssue(issue)
-			promoted.State = targetState
-			promotedAt := now.UTC()
-			promoted.StageUpdatedAt = &promotedAt
+		if mergeWorkerIssue(promotedIssue(issue, targetState, now)) {
+			promoted := promotedIssue(issue, targetState, now)
 			o.recordMergeQueueEntered(state, promoted, now, "auto_promote")
 			result.dispatchCandidates = append(result.dispatchCandidates, promoted)
 			o.logMergeWorkerPickup(promoted, "auto_promote")
@@ -114,7 +111,7 @@ func (o *Orchestrator) reconcileStaleTodoPullRequestIssues(
 			continue
 		}
 		decision := staleTodoPullRequestDecision(issue, summary, o.cfg.AutoPromote, now)
-		targetState := staleTodoPullRequestTargetState(decision)
+		targetState := staleTodoPullRequestTargetState(decision, o.cfg.AutoPromote)
 		if targetState == "" {
 			o.logAutoPromoteDecision(issue, decision, "")
 			continue
@@ -729,15 +726,16 @@ func staleTodoPullRequestDecision(
 	return EvaluateAutoPromote(issue, summary, cfg, now)
 }
 
-func staleTodoPullRequestTargetState(decision AutoPromoteDecision) string {
-	if targetState := autoPromoteTargetState(decision.Action); targetState != "" {
+func staleTodoPullRequestTargetState(decision AutoPromoteDecision, cfg AutoPromoteConfig) string {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	if targetState := autoPromoteTargetState(decision.Action, cfg); targetState != "" {
 		return targetState
 	}
 	switch decision.Reason {
 	case AutoPromoteReasonMissingPullRequest:
 		return ""
 	default:
-		return autoPromoteSourceState
+		return cfg.SourceState
 	}
 }
 
@@ -1001,6 +999,7 @@ func validatorStageKey(issue connector.Issue) string {
 func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {
 	summary := AutoPromoteSummary{
 		LastActivityAt: autoPromoteLastActivityAt(issue),
+		ArtifactStatus: artifactStatusFromIssue(issue, gate.DefaultArtifactStatusField),
 	}
 	if issue.PullRequest == nil {
 		return summary
@@ -1084,15 +1083,24 @@ func autoPromoteFindingsFromPullRequest(pullRequest *connector.PullRequest) []Au
 	return findings
 }
 
-func autoPromoteTargetState(action AutoPromoteAction) string {
+func autoPromoteTargetState(action AutoPromoteAction, cfg AutoPromoteConfig) string {
+	cfg = normalizeAutoPromoteConfig(cfg)
 	switch action {
 	case AutoPromoteActionPromote:
-		return autoPromoteMergingState
+		return cfg.PassState
 	case AutoPromoteActionRework:
-		return autoPromoteReworkState
+		return cfg.ReworkState
 	default:
 		return ""
 	}
+}
+
+func promotedIssue(issue connector.Issue, targetState string, now time.Time) connector.Issue {
+	promoted := cloneIssue(issue)
+	promoted.State = targetState
+	promotedAt := now.UTC()
+	promoted.StageUpdatedAt = &promotedAt
+	return promoted
 }
 
 func (o *Orchestrator) applyAutoPromoteDecision(

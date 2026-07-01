@@ -20,7 +20,10 @@ import (
 	commandshell "github.com/digitaldrywood/detent/internal/shell"
 )
 
-const KindLocalGit = "local_git"
+const (
+	KindLocalGit   = "local_git"
+	KindFilesystem = "filesystem"
+)
 
 const defaultHookTimeout = time.Minute
 const workspaceCommandWaitDelay = time.Second
@@ -79,6 +82,7 @@ type Hooks struct {
 type LocalGitOptions struct {
 	Root       string
 	SourceRoot string
+	OutputRoot string
 	AutoBranch bool
 	Hooks      Hooks
 	Logger     *slog.Logger
@@ -194,6 +198,14 @@ func NewBackend(kind string, opts LocalGitOptions) (Backend, error) {
 	switch strings.ToLower(strings.TrimSpace(kind)) {
 	case KindLocalGit:
 		return NewLocalGit(opts)
+	case KindFilesystem:
+		return NewFilesystem(FilesystemOptions{
+			Root:       opts.Root,
+			SourceRoot: opts.SourceRoot,
+			OutputRoot: opts.OutputRoot,
+			Hooks:      opts.Hooks,
+			Logger:     opts.Logger,
+		})
 	default:
 		return nil, fmt.Errorf("%w: %s", ErrUnsupportedBackend, kind)
 	}

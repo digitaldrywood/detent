@@ -124,9 +124,18 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 	if sourceRoot == "" {
 		sourceRoot = root
 	}
-	backend, err := workspace.NewBackend(workspace.KindLocalGit, workspace.LocalGitOptions{
+	workspaceKind := strings.TrimSpace(cfg.Workspace.Kind)
+	if workspaceKind == "" {
+		workspaceKind = workspace.KindLocalGit
+	}
+	outputRoot := strings.TrimSpace(cfg.Workspace.OutputRoot)
+	if outputRoot == "" {
+		outputRoot = strings.TrimSpace(cfg.Deliverable.OutputRoot)
+	}
+	backend, err := workspace.NewBackend(workspaceKind, workspace.LocalGitOptions{
 		Root:       root,
 		SourceRoot: sourceRoot,
+		OutputRoot: outputRoot,
 		AutoBranch: cfg.Workspace.AutoBranch,
 		Hooks: workspace.Hooks{
 			Shell:        cfg.Hooks.Shell,

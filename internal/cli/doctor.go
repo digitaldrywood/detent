@@ -842,6 +842,15 @@ func checkDoctorProjectWithProgress(
 		setDoctorCurrentCheck("Project " + id + " blocked recovery")
 		checks = append(checks, checkDoctorBlockedRecovery(ctx, id, workflow.Config, deps))
 	}
+	if workflow.Config.Tracker.Kind == workflowconfig.TrackerLocalSQLite {
+		setDoctorCurrentCheck("Project " + id + " local SQLite tracker")
+		checks = append(checks, checkDoctorLocalSQLiteTracker(ctx, id, project, workflow.Config, deps))
+	}
+	if workflow.Config.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
+		setDoctorCurrentCheck("Project " + id + " filesystem workspace")
+		checks = append(checks, checkDoctorFilesystemWorkspace(id, workflow.Config))
+		return checks
+	}
 
 	sourceRepoCheckName := "Project " + id + " source repo"
 	setDoctorCurrentCheck(sourceRepoCheckName)
@@ -900,12 +909,28 @@ func checkDoctorAutoPromote(ctx context.Context, id string, cfg workflowconfig.C
 			Detail: "agent.auto_promote.enabled=false; live candidate diagnostics disabled",
 		}
 	}
-	if !doctorStateInList("Merging", cfg.Tracker.ActiveStates) {
+	passState := strings.TrimSpace(cfg.Agent.AutoPromote.PassState)
+	if passState == "" {
+		passState = "Merging"
+	}
+	reworkState := strings.TrimSpace(cfg.Agent.AutoPromote.ReworkState)
+	if reworkState == "" {
+		reworkState = "Rework"
+	}
+	if !doctorStateInList(passState, cfg.Tracker.ActiveStates) && !doctorStateInList(passState, cfg.Tracker.TerminalStates) {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorFail,
-			Detail: "agent.auto_promote.enabled=true but tracker.active_states does not include Merging",
-			Hint:   "Add Merging to tracker.active_states so promoted issues can enter the merge lane.",
+			Detail: "agent.auto_promote.enabled=true but pass_state " + passState + " is not configured in tracker.active_states or tracker.terminal_states",
+			Hint:   "Add " + passState + " to tracker.active_states or tracker.terminal_states.",
+		}
+	}
+	if !doctorStateInList(reworkState, cfg.Tracker.ActiveStates) && !doctorStateInList(reworkState, cfg.Tracker.TerminalStates) {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "agent.auto_promote.enabled=true but rework_state " + reworkState + " is not configured in tracker.active_states or tracker.terminal_states",
+			Hint:   "Add " + reworkState + " to tracker.active_states or tracker.terminal_states.",
 		}
 	}
 	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub {
@@ -953,23 +978,31 @@ func checkDoctorAutoPromoteLive(
 	projectConnector doctorAutoPromoteConnector,
 	now time.Time,
 ) doctorCheck {
+	sourceState := strings.TrimSpace(cfg.Agent.AutoPromote.SourceState)
+	if sourceState == "" {
+		sourceState = "Human Review"
+	}
+	passState := strings.TrimSpace(cfg.Agent.AutoPromote.PassState)
+	if passState == "" {
+		passState = "Merging"
+	}
 	if verifier, ok := projectConnector.(doctorStatusOptionVerifier); ok {
-		if err := verifier.VerifyStatusOptions(ctx, []string{"Human Review", "Merging"}); err != nil {
+		if err := verifier.VerifyStatusOptions(ctx, []string{sourceState, passState}); err != nil {
 			return doctorCheck{
 				Name:   name,
 				Status: doctorFail,
 				Detail: fmt.Sprintf("status option verification failed: %v", err),
-				Hint:   "Ensure Human Review and Merging resolve through tracker.state_map to existing GitHub Project Status options.",
+				Hint:   "Ensure source_state and pass_state resolve through tracker.state_map to existing GitHub Project Status options.",
 			}
 		}
 	}
 
-	issues, err := fetchDoctorAutoPromoteIssues(ctx, projectConnector, []string{"Human Review"})
+	issues, err := fetchDoctorAutoPromoteIssues(ctx, projectConnector, []string{sourceState})
 	if err != nil {
 		return doctorCheck{
 			Name:   name,
 			Status: doctorFail,
-			Detail: fmt.Sprintf("fetch Human Review candidates: %v", err),
+			Detail: fmt.Sprintf("fetch %s candidates: %v", sourceState, err),
 			Hint:   "Check GitHub Project access, Status field options, and repository pull request access.",
 		}
 	}
@@ -1001,8 +1034,9 @@ func checkDoctorAutoPromoteLive(
 	}
 
 	detail := fmt.Sprintf(
-		"agent.auto_promote.enabled=true; status options resolved; sampled %d Human Review candidate(s)",
+		"agent.auto_promote.enabled=true; status options resolved; sampled %d %s candidate(s)",
 		len(issues),
+		sourceState,
 	)
 	if len(reasonCounts) > 0 {
 		detail += "; reasons: " + doctorAutoPromoteReasonCounts(reasonCounts)
@@ -1045,6 +1079,9 @@ func doctorAutoPromoteConfig(cfg workflowconfig.Config) orchestrator.AutoPromote
 		QuietDuration:      time.Duration(cfg.Agent.AutoPromote.QuietSeconds) * time.Second,
 		OptoutLabel:        cfg.Agent.AutoPromote.OptoutLabel,
 		AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
+		SourceState:        cfg.Agent.AutoPromote.SourceState,
+		PassState:          cfg.Agent.AutoPromote.PassState,
+		ReworkState:        cfg.Agent.AutoPromote.ReworkState,
 		Gate:               cfg.Gate,
 	}
 }
@@ -2710,6 +2747,156 @@ func expandDoctorWorkspacePath(path string) (string, error) {
 		return "", fmt.Errorf("absolute path: %w", err)
 	}
 	return filepath.Clean(abs), nil
+}
+
+func checkDoctorLocalSQLiteTracker(
+	ctx context.Context,
+	id string,
+	project globalconfig.Project,
+	cfg workflowconfig.Config,
+	deps doctorDeps,
+) doctorCheck {
+	name := "Project " + id + " local SQLite tracker"
+	path := strings.TrimSpace(cfg.Tracker.LocalSQLite.Path)
+	if path == "" {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "tracker.local_sqlite.path is not configured",
+			Hint:   "Set tracker.local_sqlite.path to a SQLite database path for local work items.",
+		}
+	}
+	resolved, err := resolveDoctorProjectPath(project, path)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s: %v", path, err),
+			Hint:   "Set tracker.local_sqlite.path to an absolute, home-relative, or project workdir-relative path.",
+		}
+	}
+	db, err := deps.openSQLite(ctx, resolved)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s: %v", resolved, err),
+			Hint:   "Check local SQLite directory permissions and database integrity.",
+		}
+	}
+	if err := db.Close(); err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s close failed: %v", resolved, err),
+			Hint:   "Check for filesystem or SQLite errors, then rerun detent doctor.",
+		}
+	}
+	return doctorCheck{
+		Name:   name,
+		Status: doctorOK,
+		Detail: resolved + " is reachable",
+	}
+}
+
+func checkDoctorFilesystemWorkspace(id string, cfg workflowconfig.Config) doctorCheck {
+	name := "Project " + id + " filesystem workspace"
+	root := strings.TrimSpace(cfg.Workspace.Root)
+	if root == "" {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "workspace.root is not configured",
+			Hint:   "Set workspace.root to a directory Detent can use for filesystem workspaces.",
+		}
+	}
+	resolved, err := expandDoctorWorkspacePath(root)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s: %v", root, err),
+			Hint:   "Set workspace.root to an absolute or home-relative directory.",
+		}
+	}
+	if err := doctorPathDirectoryReady(resolved); err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("%s: %v", resolved, err),
+			Hint:   "Create workspace.root or its parent directory and ensure Detent can write there.",
+		}
+	}
+	if outputRoot := strings.TrimSpace(doctorFirstNonBlank(cfg.Workspace.OutputRoot, cfg.Deliverable.OutputRoot)); outputRoot != "" {
+		resolvedOutput, err := expandDoctorWorkspacePath(outputRoot)
+		if err != nil {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorFail,
+				Detail: fmt.Sprintf("%s: %v", outputRoot, err),
+				Hint:   "Set workspace.output_root or deliverable.output_root to an absolute or home-relative directory.",
+			}
+		}
+		if err := doctorPathDirectoryReady(resolvedOutput); err != nil {
+			return doctorCheck{
+				Name:   name,
+				Status: doctorFail,
+				Detail: fmt.Sprintf("%s: %v", resolvedOutput, err),
+				Hint:   "Create the artifact output directory or its parent and ensure Detent can write there.",
+			}
+		}
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: resolved + " is usable; artifact output " + resolvedOutput + " is usable",
+		}
+	}
+	return doctorCheck{
+		Name:   name,
+		Status: doctorOK,
+		Detail: resolved + " is usable",
+	}
+}
+
+func resolveDoctorProjectPath(project globalconfig.Project, path string) (string, error) {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return "", errors.New("path is required")
+	}
+	if filepath.IsAbs(path) || path == "~" || strings.HasPrefix(path, "~/") {
+		return expandDoctorWorkspacePath(path)
+	}
+	base := strings.TrimSpace(project.Workdir)
+	if base == "" {
+		return expandDoctorWorkspacePath(path)
+	}
+	expandedBase, err := expandDoctorWorkspacePath(base)
+	if err != nil {
+		return "", err
+	}
+	return filepath.Clean(filepath.Join(expandedBase, path)), nil
+}
+
+func doctorPathDirectoryReady(path string) error {
+	info, err := os.Stat(path)
+	if err == nil {
+		if !info.IsDir() {
+			return errors.New("path is not a directory")
+		}
+		return nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return err
+	}
+	parent := filepath.Dir(path)
+	info, err = os.Stat(parent)
+	if err != nil {
+		return fmt.Errorf("parent directory is not available: %w", err)
+	}
+	if !info.IsDir() {
+		return errors.New("parent path is not a directory")
+	}
+	return nil
 }
 
 func checkDoctorSQLite(ctx context.Context, resolution globalconfig.PathResolution, deps doctorDeps) doctorCheck {

@@ -60,7 +60,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		return "", err
 	}
 
-	rendered = prependWorkspaceIsolationBlock(rendered, opts.WorkspacePath, opts.Branch)
+	rendered = prependWorkspaceIsolationBlock(rendered, workflow.Config, opts.WorkspacePath, opts.Branch)
 	if opts.PlanOnly {
 		rendered = appendPlanOnlyBlock(rendered, workflow.Config.Plan)
 	}
@@ -70,8 +70,12 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		return "", err
 	}
 
+	rendered = appendDeliverableBlock(rendered, workflow.Config, issue, opts.WorkspacePath)
 	rendered = appendGateBlock(rendered, workflow.Config.Gate)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
+	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
+		return rendered, nil
+	}
 	return appendClosingReferenceInstruction(rendered, issue), nil
 }
 
@@ -126,10 +130,20 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 	return b.String()
 }
 
-func prependWorkspaceIsolationBlock(prompt string, workspacePath string, branch string) string {
+func prependWorkspaceIsolationBlock(prompt string, cfg config.Config, workspacePath string, branch string) string {
 	workspacePath = strings.TrimSpace(workspacePath)
 	branch = strings.TrimSpace(branch)
-	if workspacePath == "" || branch == "" {
+	if workspacePath == "" {
+		return prompt
+	}
+	if cfg.Workspace.Kind == config.WorkspaceFilesystem {
+		block := fmt.Sprintf("## Detent artifact workspace\n\n"+
+			"You are already isolated in a Detent-created filesystem workspace at `%s`. This workspace is authoritative and managed by Detent.\n\n"+
+			"Do not require a git branch, pull request, CI run, or merge train unless the workflow instructions explicitly ask for one.",
+			workspacePath)
+		return block + "\n\n" + strings.TrimLeft(prompt, " \t\r\n")
+	}
+	if branch == "" {
 		return prompt
 	}
 
@@ -140,6 +154,69 @@ func prependWorkspaceIsolationBlock(prompt string, workspacePath string, branch 
 		workspacePath, branch)
 
 	return block + "\n\n" + strings.TrimLeft(prompt, " \t\r\n")
+}
+
+func appendDeliverableBlock(prompt string, cfg config.Config, issue connector.Issue, workspacePath string) string {
+	deliverable := cfg.Deliverable
+	if promptDeliverableKind(deliverable) != config.DeliverableArtifact && issue.Deliverable == nil {
+		return prompt
+	}
+
+	var b strings.Builder
+	b.WriteString("## Deliverable\n\n")
+	if promptDeliverableKind(deliverable) == config.DeliverableArtifact {
+		b.WriteString("Produce artifact deliverables for this work item instead of a pull request.\n")
+	}
+	if workspacePath = strings.TrimSpace(workspacePath); workspacePath != "" {
+		b.WriteString("- workspace: `")
+		b.WriteString(workspacePath)
+		b.WriteString("`\n")
+	}
+	if outputRoot := strings.TrimSpace(deliverable.OutputRoot); outputRoot != "" {
+		b.WriteString("- configured output root: `")
+		b.WriteString(outputRoot)
+		b.WriteString("`\n")
+	}
+	if reviewURL := strings.TrimSpace(deliverable.ReviewURL); reviewURL != "" {
+		b.WriteString("- review URL: ")
+		b.WriteString(reviewURL)
+		b.WriteString("\n")
+	}
+	if issue.Deliverable != nil {
+		if kind := strings.TrimSpace(issue.Deliverable.Kind); kind != "" {
+			b.WriteString("- work item deliverable kind: ")
+			b.WriteString(kind)
+			b.WriteString("\n")
+		}
+		if path := strings.TrimSpace(issue.Deliverable.Path); path != "" {
+			b.WriteString("- work item artifact path: `")
+			b.WriteString(path)
+			b.WriteString("`\n")
+		}
+		if reviewURL := strings.TrimSpace(issue.Deliverable.ReviewURL); reviewURL != "" {
+			b.WriteString("- work item review URL: ")
+			b.WriteString(reviewURL)
+			b.WriteString("\n")
+		}
+		if externalID := strings.TrimSpace(issue.Deliverable.ExternalID); externalID != "" {
+			b.WriteString("- external id: ")
+			b.WriteString(externalID)
+			b.WriteString("\n")
+		}
+	}
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimRight(b.String(), "\n")
+}
+
+func promptDeliverableKind(cfg config.Deliverable) string {
+	kind := strings.ToLower(strings.TrimSpace(cfg.Kind))
+	switch kind {
+	case "", "pr", "pull-request":
+		return config.DeliverablePullRequest
+	case config.DeliverableArtifact, "artifacts", "file", "files":
+		return config.DeliverableArtifact
+	default:
+		return kind
+	}
 }
 
 func appendPlanOnlyBlock(prompt string, cfg gate.PlanConfig) string {
@@ -259,11 +336,21 @@ func promptAssigns(cfg config.Config, issue connector.Issue, opts PromptOptions)
 		},
 		"workspace": map[string]any{
 			"auto_branch": autoBranch,
+			"kind":        cfg.Workspace.Kind,
 			"path":        opts.WorkspacePath,
 			"branch":      opts.Branch,
 		},
-		"gate": gateAssigns(cfg.Gate),
-		"plan": planAssigns(cfg.Plan),
+		"deliverable": deliverableAssigns(cfg.Deliverable),
+		"gate":        gateAssigns(cfg.Gate),
+		"plan":        planAssigns(cfg.Plan),
+	}
+}
+
+func deliverableAssigns(cfg config.Deliverable) map[string]any {
+	return map[string]any{
+		"kind":        cfg.Kind,
+		"output_root": cfg.OutputRoot,
+		"review_url":  cfg.ReviewURL,
 	}
 }
 
@@ -315,10 +402,33 @@ func issueAssigns(issue connector.Issue) map[string]any {
 		"blocked_by":         issue.BlockedBy,
 		"labels":             issue.Labels,
 		"fields":             issue.Fields,
+		"metadata":           issue.Metadata,
+		"deliverable":        issueDeliverableAssigns(issue.Deliverable),
 		"assigned_to_worker": issue.AssignedToWorker,
 		"created_at":         timePointerValue(issue.CreatedAt),
 		"updated_at":         timePointerValue(issue.UpdatedAt),
 		"model_override":     issue.ModelOverride,
+	}
+}
+
+func issueDeliverableAssigns(deliverable *connector.Deliverable) map[string]any {
+	if deliverable == nil {
+		return map[string]any{
+			"kind":              "",
+			"path":              "",
+			"review_url":        "",
+			"validation_status": "",
+			"external_id":       "",
+			"metadata":          map[string]string{},
+		}
+	}
+	return map[string]any{
+		"kind":              deliverable.Kind,
+		"path":              deliverable.Path,
+		"review_url":        deliverable.ReviewURL,
+		"validation_status": deliverable.ValidationStatus,
+		"external_id":       deliverable.ExternalID,
+		"metadata":          deliverable.Metadata,
 	}
 }
 

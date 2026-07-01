@@ -1029,6 +1029,84 @@ Prompt
 	}
 }
 
+func TestParseWorkflowLocalSQLiteArtifactWorkflow(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: local_sqlite
+  local_sqlite:
+    path: .detent/work-items.db
+    project_id: video-production
+  active_states:
+    - Todo
+    - Production
+  observed_states:
+    - Review
+  terminal_states:
+    - Done
+workspace:
+  kind: filesystem
+  root: .detent/workspaces
+  source_root: assets
+  output_root: .detent/renders
+deliverable:
+  kind: artifact
+  output_root: .detent/renders
+  review_url: http://127.0.0.1:8080/review
+agent:
+  auto_promote:
+    enabled: true
+    source_state: Review
+    pass_state: Done
+    rework_state: Production
+gate:
+  kind: artifact
+  artifact:
+    status_field: render_status
+    pass_statuses:
+      - approved
+    wait_statuses:
+      - queued
+    rework_statuses:
+      - recut
+server:
+  kanban:
+    mode: integration
+---
+Produce the video artifact.
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	cfg := workflow.Config
+	if cfg.Tracker.Kind != TrackerLocalSQLite || cfg.Tracker.LocalSQLite.Path != ".detent/work-items.db" || cfg.Tracker.LocalSQLite.ProjectID != "video-production" {
+		t.Fatalf("Tracker local sqlite config = %#v", cfg.Tracker)
+	}
+	if cfg.Workspace.Kind != WorkspaceFilesystem || cfg.Workspace.Root != ".detent/workspaces" || cfg.Workspace.OutputRoot != ".detent/renders" {
+		t.Fatalf("Workspace = %#v", cfg.Workspace)
+	}
+	if cfg.Deliverable.Kind != DeliverableArtifact || cfg.Deliverable.OutputRoot != ".detent/renders" {
+		t.Fatalf("Deliverable = %#v", cfg.Deliverable)
+	}
+	if cfg.Agent.AutoPromote.SourceState != "Review" || cfg.Agent.AutoPromote.PassState != "Done" || cfg.Agent.AutoPromote.ReworkState != "Production" {
+		t.Fatalf("AutoPromote = %#v", cfg.Agent.AutoPromote)
+	}
+	if cfg.Gate.Kind != gate.KindArtifact ||
+		cfg.Gate.Artifact.StatusField != "render_status" ||
+		len(cfg.Gate.Artifact.PassStatuses) != 1 ||
+		cfg.Gate.Artifact.PassStatuses[0] != "approved" {
+		t.Fatalf("Gate = %#v", cfg.Gate)
+	}
+	if cfg.Server.Kanban.Mode != KanbanModeIntegration {
+		t.Fatalf("Kanban mode = %q, want %q", cfg.Server.Kanban.Mode, KanbanModeIntegration)
+	}
+}
+
 func TestParseWorkflowNormalizesGitHubAppIDs(t *testing.T) {
 	t.Parallel()
 

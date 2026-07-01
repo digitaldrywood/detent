@@ -310,6 +310,43 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 	}
 }
 
+func TestObservedStatusFetchStatesForTickDoesNotThrottleCustomPassState(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		MaxConcurrentAgentsByState: map[string]int{
+			"Merging": 1,
+		},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:     true,
+			SourceState: "Review",
+			PassState:   "Ready for Pickup",
+			ReworkState: "Production Rework",
+			Gate: gate.Config{
+				Kind: gate.KindArtifact,
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Production Rework"},
+		ObservedStates: []string{"Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	state.Running["issue-merging"] = Running{
+		Issue: connector.Issue{
+			ID:    "issue-merging",
+			State: "Merging",
+		},
+	}
+	orch := Orchestrator{cfg: cfg}
+
+	got := orch.observedStatusFetchStatesForTick(&state)
+	want := []string{"Blocked", "Review", "Merging"}
+	if !autoPromoteTickStatesEqual(got, want) {
+		t.Fatalf("observedStatusFetchStatesForTick() = %#v, want %#v", got, want)
+	}
+}
+
 func TestTickAutoPromoteLogsNonTransitionDecisionsAtInfo(t *testing.T) {
 	t.Parallel()
 

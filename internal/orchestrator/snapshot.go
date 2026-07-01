@@ -327,11 +327,27 @@ func telemetryIssue(issue connector.Issue, quietDuration time.Duration, pollInte
 		Comments:              telemetryIssueComments(issue.Comments),
 		BlockedBy:             telemetryBlockedRefs(issue.BlockedBy),
 		PullRequest:           telemetryPullRequest(issue, quietDuration, pollInterval),
+		Deliverable:           telemetryDeliverable(issue.Deliverable),
+		Metadata:              cloneStringMap(issue.Metadata),
 		CreatedAt:             timePointerFromPtr(issue.CreatedAt),
 		UpdatedAt:             timePointerFromPtr(issue.UpdatedAt),
 		StageUpdatedAt:        timePointerFromPtr(issue.StageUpdatedAt),
 		CurrentLaneEnteredAt:  timePointerFromPtr(laneEnteredAt),
 		CurrentLaneAgeSeconds: telemetryIssueLaneAgeSeconds(laneEnteredAt, now),
+	}
+}
+
+func telemetryDeliverable(deliverable *connector.Deliverable) *telemetry.Deliverable {
+	if deliverable == nil {
+		return nil
+	}
+	return &telemetry.Deliverable{
+		Kind:             deliverable.Kind,
+		Path:             deliverable.Path,
+		ReviewURL:        deliverable.ReviewURL,
+		ValidationStatus: deliverable.ValidationStatus,
+		ExternalID:       deliverable.ExternalID,
+		Metadata:         cloneStringMap(deliverable.Metadata),
 	}
 }
 

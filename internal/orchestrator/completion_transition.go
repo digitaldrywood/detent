@@ -29,7 +29,14 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		if !ok {
 			continue
 		}
-		targetState := completedActiveReviewTargetState(issue, completed.FinalState, o.cfg.ActiveStates, o.cfg.TerminalStates)
+		targetState := completedActiveReviewTargetState(
+			issue,
+			completed.FinalState,
+			o.cfg.ActiveStates,
+			o.cfg.TerminalStates,
+			normalizeAutoPromoteConfig(o.cfg.AutoPromote).SourceState,
+			gateRequiresPullRequest(o.cfg.AutoPromote.Gate),
+		)
 		if targetState == "" {
 			continue
 		}
@@ -71,26 +78,40 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 	return handled
 }
 
-func completedActiveReviewTargetState(issue connector.Issue, finalState string, activeStates []string, terminalStates []string) string {
+func completedActiveReviewTargetState(
+	issue connector.Issue,
+	finalState string,
+	activeStates []string,
+	terminalStates []string,
+	reviewState string,
+	requirePullRequest bool,
+) string {
 	if !stateIn(issue.State, activeStates) || stateIn(issue.State, terminalStates) {
 		return ""
 	}
+	reviewState = strings.TrimSpace(reviewState)
+	if reviewState == "" {
+		reviewState = autoPromoteSourceState
+	}
 	switch normalizeState(issue.State) {
-	case normalizeState(autoPromoteSourceState), normalizeState(autoPromoteReworkState), normalizeState(autoPromoteMergingState):
+	case normalizeState(reviewState), normalizeState(autoPromoteReworkState), normalizeState(autoPromoteMergingState):
 		return ""
 	}
-	if !completedActiveIssueReadyForReview(issue) {
+	if !completedActiveIssueReadyForReview(issue, requirePullRequest) {
 		return ""
 	}
 	switch normalizeState(finalState) {
-	case "", normalizeState(FinalStateCompleted), normalizeState(autoPromoteSourceState):
-		return autoPromoteSourceState
+	case "", normalizeState(FinalStateCompleted), normalizeState(reviewState):
+		return reviewState
 	default:
 		return ""
 	}
 }
 
-func completedActiveIssueReadyForReview(issue connector.Issue) bool {
+func completedActiveIssueReadyForReview(issue connector.Issue, requirePullRequest bool) bool {
+	if !requirePullRequest {
+		return true
+	}
 	if issue.PullRequest == nil {
 		return false
 	}

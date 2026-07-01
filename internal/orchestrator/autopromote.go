@@ -13,6 +13,9 @@ type AutoPromoteConfig struct {
 	QuietDuration      time.Duration
 	OptoutLabel        string
 	AllowedIssueLabels []string
+	SourceState        string
+	PassState          string
+	ReworkState        string
 	Gate               gate.Config
 }
 
@@ -26,6 +29,7 @@ type AutoPromoteSummary struct {
 	ReviewState                           string
 	P1Findings                            []AutoPromoteFinding
 	Validator                             gate.ValidatorResult
+	ArtifactStatus                        string
 	LastActivityAt                        *time.Time
 }
 
@@ -65,6 +69,9 @@ const (
 	AutoPromoteReasonValidatorRework                 AutoPromoteReason = "validator_rework"
 	AutoPromoteReasonValidatorScoreBelowThreshold    AutoPromoteReason = "validator_score_below_threshold"
 	AutoPromoteReasonValidatorBlockedSeverity        AutoPromoteReason = "validator_blocked_severity"
+	AutoPromoteReasonArtifactStatusMissing           AutoPromoteReason = "artifact_status_missing"
+	AutoPromoteReasonArtifactStatusWait              AutoPromoteReason = "artifact_status_wait"
+	AutoPromoteReasonArtifactStatusRework            AutoPromoteReason = "artifact_status_rework"
 )
 
 type AutoPromoteDecision struct {
@@ -92,12 +99,17 @@ func EvaluateAutoPromote(
 	if !autoPromoteAllowedIssueLabel(issue, cfg) {
 		return autoPromoteDecision(AutoPromoteActionAwaitReview, AutoPromoteReasonLabelNotAllowed)
 	}
-	if autoPromoteMergeConflicts(summary.MergeableState) {
-		return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonMergeConflicts)
+	if gateRequiresPullRequest(cfg.Gate) {
+		if autoPromoteMergeConflicts(summary.MergeableState) {
+			return autoPromoteDecision(AutoPromoteActionRework, AutoPromoteReasonMergeConflicts)
+		}
+		if strings.TrimSpace(summary.PullRequestHydrationUnavailableReason) != "" ||
+			strings.TrimSpace(summary.PullRequestHydrationDegradedReason) != "" {
+			return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonPullRequestHydrationUnavailable)
+		}
 	}
-	if strings.TrimSpace(summary.PullRequestHydrationUnavailableReason) != "" ||
-		strings.TrimSpace(summary.PullRequestHydrationDegradedReason) != "" {
-		return autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonPullRequestHydrationUnavailable)
+	if strings.TrimSpace(summary.ArtifactStatus) == "" {
+		summary.ArtifactStatus = artifactStatusFromIssue(issue, cfg.Gate.Artifact.StatusField)
 	}
 	gateDecision := gate.Evaluate(cfg.Gate, issue.Labels, gateSummary(summary), now, gate.EvaluationOptions{
 		QuietDuration: cfg.QuietDuration,
@@ -122,6 +134,18 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 	}
 	cfg.OptoutLabel = normalizeLabel(cfg.OptoutLabel)
 	cfg.AllowedIssueLabels = normalizeLabels(cfg.AllowedIssueLabels)
+	cfg.SourceState = strings.TrimSpace(cfg.SourceState)
+	if cfg.SourceState == "" {
+		cfg.SourceState = autoPromoteSourceState
+	}
+	cfg.PassState = strings.TrimSpace(cfg.PassState)
+	if cfg.PassState == "" {
+		cfg.PassState = autoPromoteMergingState
+	}
+	cfg.ReworkState = strings.TrimSpace(cfg.ReworkState)
+	if cfg.ReworkState == "" {
+		cfg.ReworkState = autoPromoteReworkState
+	}
 	cfg.Gate = gate.Effective(cfg.Gate)
 	return cfg
 }
@@ -194,8 +218,29 @@ func gateSummary(summary AutoPromoteSummary) gate.Summary {
 		ReviewState:        summary.ReviewState,
 		P1Findings:         gateFindings(summary.P1Findings),
 		Validator:          summary.Validator,
+		ArtifactStatus:     summary.ArtifactStatus,
 		LastActivityAt:     summary.LastActivityAt,
 	}
+}
+
+func gateRequiresPullRequest(cfg gate.Config) bool {
+	return gate.Effective(cfg).Kind != gate.KindArtifact
+}
+
+func artifactStatusFromIssue(issue connector.Issue, statusField string) string {
+	if issue.Deliverable != nil && strings.TrimSpace(issue.Deliverable.ValidationStatus) != "" {
+		return strings.TrimSpace(issue.Deliverable.ValidationStatus)
+	}
+	statusField = strings.TrimSpace(statusField)
+	if statusField == "" {
+		statusField = gate.DefaultArtifactStatusField
+	}
+	for key, value := range issue.Fields {
+		if strings.EqualFold(strings.TrimSpace(key), statusField) {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func gateFindings(findings []AutoPromoteFinding) []gate.Finding {
@@ -263,6 +308,12 @@ func autoPromoteReasonFromGate(reason gate.Reason) AutoPromoteReason {
 		return AutoPromoteReasonValidatorScoreBelowThreshold
 	case gate.ReasonValidatorBlockedSeverity:
 		return AutoPromoteReasonValidatorBlockedSeverity
+	case gate.ReasonArtifactStatusMissing:
+		return AutoPromoteReasonArtifactStatusMissing
+	case gate.ReasonArtifactStatusWait:
+		return AutoPromoteReasonArtifactStatusWait
+	case gate.ReasonArtifactStatusRework:
+		return AutoPromoteReasonArtifactStatusRework
 	default:
 		return AutoPromoteReasonDisabled
 	}

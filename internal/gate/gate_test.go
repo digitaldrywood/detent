@@ -45,6 +45,26 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: DefaultApprovalLabel, CIFailureAction: CIFailureActionSkip},
 		},
 		{
+			name: "artifact gate gets status defaults and drops PR command settings",
+			cfg: Config{
+				Kind:                   "artifact-status",
+				Run:                    "make check",
+				RequireAutomatedReview: new(true),
+			},
+			want: Config{
+				Kind:            KindArtifact,
+				Run:             "",
+				ApprovalLabel:   DefaultApprovalLabel,
+				CIFailureAction: CIFailureActionSkip,
+				Artifact: ArtifactConfig{
+					StatusField:    DefaultArtifactStatusField,
+					PassStatuses:   []string{"approved", "complete", "completed", "pass", "passed", "valid"},
+					WaitStatuses:   []string{"pending", "review", "reviewing", "waiting"},
+					ReworkStatuses: []string{"changes_requested", "failed", "invalid", "rework"},
+				},
+			},
+		},
+		{
 			name: "validator defaults stay disabled with score threshold and p1 blocker",
 			cfg:  Config{Kind: KindCommand, Validator: ValidatorConfig{}},
 			want: Config{
@@ -68,6 +88,7 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 			got := Effective(tt.cfg)
 			want := tt.want
 			want.Validator = effectiveValidatorConfig(want.Validator)
+			want.Artifact = effectiveArtifactConfig(want.Artifact)
 			if !configsEqual(got, want) {
 				t.Fatalf("Effective() = %#v, want %#v", got, want)
 			}
@@ -353,6 +374,38 @@ func TestEvaluate(t *testing.T) {
 			labels: []string{" Approved-By-Human "},
 			want:   Decision{Action: ActionPass, Reason: ReasonReady},
 		},
+		{
+			name:  "artifact gate waits for missing status",
+			cfg:   Config{Kind: KindArtifact},
+			input: Summary{},
+			want:  Decision{Action: ActionWait, Reason: ReasonArtifactStatusMissing},
+		},
+		{
+			name:  "artifact gate waits for pending status without pull request",
+			cfg:   Config{Kind: KindArtifact},
+			input: Summary{ArtifactStatus: " Pending "},
+			want:  Decision{Action: ActionWait, Reason: ReasonArtifactStatusWait},
+		},
+		{
+			name:  "artifact gate routes rework status without pull request",
+			cfg:   Config{Kind: KindArtifact},
+			input: Summary{ArtifactStatus: "invalid"},
+			want:  Decision{Action: ActionRework, Reason: ReasonArtifactStatusRework},
+		},
+		{
+			name: "artifact gate passes custom valid status without pull request",
+			cfg: Config{
+				Kind: KindArtifact,
+				Artifact: ArtifactConfig{
+					StatusField:    "render_status",
+					PassStatuses:   []string{"ready"},
+					WaitStatuses:   []string{"queued"},
+					ReworkStatuses: []string{"recut"},
+				},
+			},
+			input: Summary{ArtifactStatus: "Ready"},
+			want:  Decision{Action: ActionPass, Reason: ReasonReady},
+		},
 	}
 
 	for _, tt := range tests {
@@ -485,7 +538,8 @@ func configsEqual(left Config, right Config) bool {
 		left.ApprovalLabel == right.ApprovalLabel &&
 		left.CIFailureAction == right.CIFailureAction &&
 		boolPointerEqual(left.RequireAutomatedReview, right.RequireAutomatedReview) &&
-		validatorConfigsEqual(left.Validator, right.Validator)
+		validatorConfigsEqual(left.Validator, right.Validator) &&
+		artifactConfigsEqual(left.Artifact, right.Artifact)
 }
 
 func boolPointerEqual(left *bool, right *bool) bool {
@@ -501,6 +555,25 @@ func validatorConfigsEqual(left ValidatorConfig, right ValidatorConfig) bool {
 	}
 	for i := range left.BlockOn {
 		if left.BlockOn[i] != right.BlockOn[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func artifactConfigsEqual(left ArtifactConfig, right ArtifactConfig) bool {
+	return left.StatusField == right.StatusField &&
+		stringSlicesEqual(left.PassStatuses, right.PassStatuses) &&
+		stringSlicesEqual(left.WaitStatuses, right.WaitStatuses) &&
+		stringSlicesEqual(left.ReworkStatuses, right.ReworkStatuses)
+}
+
+func stringSlicesEqual(left []string, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for i := range left {
+		if left[i] != right[i] {
 			return false
 		}
 	}
