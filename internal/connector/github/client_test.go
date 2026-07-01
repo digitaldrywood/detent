@@ -549,6 +549,57 @@ func TestClientRESTStopsFanoutAtRequestCap(t *testing.T) {
 	}
 }
 
+func TestClientRESTCountsRepositoryIssuesAsFanout(t *testing.T) {
+	t.Parallel()
+
+	var calls atomic.Int64
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if calls.Add(1) != 1 {
+			t.Fatalf("unexpected REST call to %s", r.URL.Path)
+		}
+		if r.URL.Path != "/repos/digitaldrywood/detent/issues" {
+			t.Fatalf("path = %s, want repository issues path", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("X-RateLimit-Limit", "5000")
+		w.Header().Set("X-RateLimit-Used", "100")
+		w.Header().Set("X-RateLimit-Remaining", "4900")
+		w.WriteHeader(http.StatusOK)
+		_, _ = w.Write([]byte(`[]`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(ClientConfig{
+		Endpoint:    server.URL,
+		TokenSource: StaticTokenSource("test-token"),
+		HTTPClient:  server.Client(),
+		RESTPolicy:  RESTBudgetPolicy{FanoutMaxRequests: 1},
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	var issues []restIssue
+	if err := client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/issues?state=open", nil, &issues); err != nil {
+		t.Fatalf("REST() repository issues error = %v", err)
+	}
+	err = client.REST(context.Background(), http.MethodGet, "/repos/digitaldrywood/detent/pulls?state=all", nil, nil)
+	if !errors.Is(err, ErrRESTBudgetReserved) {
+		t.Fatalf("REST() capped fanout error = %v, want ErrRESTBudgetReserved", err)
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("REST calls = %d, want only repository issues request sent", calls.Load())
+	}
+
+	usage := client.FlushRESTRateLimitUsage()
+	if got := restEndpointUsageCount(usage.Requests, "repository issues"); got != 1 {
+		t.Fatalf("repository issues usage count = %d, want 1; usage = %#v", got, usage.Requests)
+	}
+	if got := restEndpointUsageCount(usage.Requests, "pull requests"); got != 1 {
+		t.Fatalf("pull requests usage count = %d, want throttled synthetic request; usage = %#v", got, usage.Requests)
+	}
+}
+
 func TestClientRESTStopsFanoutBelowReserve(t *testing.T) {
 	t.Parallel()
 
