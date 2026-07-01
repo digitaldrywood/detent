@@ -1604,6 +1604,7 @@ templ SnapshotView(data DashboardData) {
 
 templ ProjectOverviewSnapshot(data DashboardData) {
 	@dashboardHealth(data)
+	@trackerDriftWarning(data.Snapshot)
 	if data.ProjectPaused {
 		<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm" aria-label="Paused project">
 			<div class="flex items-start gap-3">
@@ -1645,6 +1646,7 @@ templ ProjectRunsSnapshot(data DashboardData) {
 
 templ ProjectDiagnosticsSnapshot(data DashboardData) {
 	@dashboardHealth(data)
+	@trackerDriftWarning(data.Snapshot)
 	if !snapshotReady(data.Snapshot) && !diagnosticsSnapshotHasLoadedData(data.Snapshot) {
 		@snapshotReadiness(data.Snapshot)
 	} else {
@@ -1947,6 +1949,7 @@ templ runtimeStoreEvidenceSection(report telemetry.WorkflowMetrics) {
 
 templ FleetSnapshot(data DashboardData) {
 	@dashboardHealth(data)
+	@trackerDriftWarning(data.Snapshot)
 	if !snapshotReady(data.Snapshot) {
 		@snapshotReadiness(data.Snapshot)
 	} else {
@@ -3144,6 +3147,54 @@ templ lifetimeCard(totals telemetry.LifetimeTotals) {
 
 templ LiveTick(timestamp time.Time) {
 	<span class="font-mono">Updated { timestamp.UTC().Format("15:04:05 UTC") }</span>
+}
+
+templ trackerDriftWarning(snapshot telemetry.Snapshot) {
+	if trackerDriftVisible(snapshot) {
+		<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm" aria-label="Tracker status drift">
+			<div class="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+				<div class="min-w-0">
+					<div class="flex min-w-0 items-center gap-2">
+						@icon.CircleAlert(icon.Props{Class: "size-4 shrink-0"})
+						<h2 class="truncate text-sm font-semibold">Tracker status drift</h2>
+						<span class="shrink-0 rounded-full bg-card/70 px-2 py-0.5 font-mono text-xs font-medium text-warning">{ trackerDriftTotalLabel(snapshot) }</span>
+					</div>
+					<p class="mt-1 text-sm text-warning">Open GitHub issues need status-label cleanup before the label-backed board is fully reconciled.</p>
+				</div>
+				<div class="grid min-w-0 gap-3 lg:min-w-[26rem] lg:max-w-2xl lg:grid-cols-2">
+					for _, row := range trackerDriftRows(snapshot) {
+						<div class="min-w-0 rounded-md border border-warning-soft bg-card/70 p-3">
+							<div class="flex min-w-0 items-center justify-between gap-3">
+								<h3 class="truncate text-sm font-semibold text-foreground">{ row.Title }</h3>
+								<span class="shrink-0 rounded-full bg-warning-soft px-2 py-0.5 font-mono text-xs font-medium text-warning">{ row.CountLabel }</span>
+							</div>
+							<p class="mt-1 text-xs text-muted-foreground">{ row.Detail }</p>
+							<ul class="mt-3 grid gap-2">
+								for _, issue := range row.Issues {
+									<li class="min-w-0 text-xs">
+										<a class="inline-flex max-w-full items-center gap-1.5 font-medium text-accent hover:underline" href={ issue.URL } target="_blank" rel="noopener noreferrer">
+											<span class="shrink-0 font-mono">{ issue.Number }</span>
+											<span class="truncate">{ issue.Title }</span>
+										</a>
+										if issue.State != "" || issue.Labels != "" {
+											<div class="mt-1 flex min-w-0 flex-wrap gap-1.5 text-[0.7rem] text-muted-foreground">
+												if issue.State != "" {
+													<span class="rounded-sm bg-muted px-1.5 py-0.5">State { issue.State }</span>
+												}
+												if issue.Labels != "" {
+													<span class="min-w-0 truncate rounded-sm bg-muted px-1.5 py-0.5" title={ issue.Labels }>{ issue.Labels }</span>
+												}
+											</div>
+										}
+									</li>
+								}
+							</ul>
+						</div>
+					}
+				</div>
+			</div>
+		</section>
+	}
 }
 
 templ dashboardHealth(data DashboardData) {

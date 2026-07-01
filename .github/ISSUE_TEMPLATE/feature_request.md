@@ -2,7 +2,7 @@
 name: Feature request
 about: Propose a Detent capability or improvement.
 title: "feat: "
-labels: ""
+labels: "detent:backlog"
 assignees: ""
 ---
 

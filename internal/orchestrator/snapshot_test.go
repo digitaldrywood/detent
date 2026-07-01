@@ -40,6 +40,39 @@ func TestStateSnapshotEmpty(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotIncludesStatusDrift(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	state := newState(normalizeConfig(Config{}))
+	state.StatusDrift = connector.StatusDrift{
+		UntrackedOpen: []connector.Issue{{
+			ID:         "I_771",
+			Identifier: "digitaldrywood/detent#771",
+			Title:      "Untracked issue",
+			URL:        "https://github.com/digitaldrywood/detent/issues/771",
+			Labels:     []string{"bug"},
+		}},
+		OpenTerminal: []connector.Issue{{
+			ID:         "I_583",
+			Identifier: "digitaldrywood/detent#583",
+			Title:      "Done but open",
+			State:      "Done",
+			URL:        "https://github.com/digitaldrywood/detent/issues/583",
+			Labels:     []string{"detent:done"},
+		}},
+	}
+
+	snapshot := state.Snapshot(now)
+
+	if len(snapshot.TrackerDrift.UntrackedOpen) != 1 || snapshot.TrackerDrift.UntrackedOpen[0].Identifier != "digitaldrywood/detent#771" {
+		t.Fatalf("TrackerDrift.UntrackedOpen = %#v, want #771", snapshot.TrackerDrift.UntrackedOpen)
+	}
+	if len(snapshot.TrackerDrift.OpenTerminal) != 1 || snapshot.TrackerDrift.OpenTerminal[0].State != "Done" {
+		t.Fatalf("TrackerDrift.OpenTerminal = %#v, want Done #583", snapshot.TrackerDrift.OpenTerminal)
+	}
+}
+
 func TestStateSnapshotIncludesInstanceIdentityAndScope(t *testing.T) {
 	t.Parallel()
 

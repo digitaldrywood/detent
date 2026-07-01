@@ -188,6 +188,21 @@ type gitHubAPIHealthRefreshRow struct {
 	Value string
 }
 
+type trackerDriftRow struct {
+	Title      string
+	CountLabel string
+	Detail     string
+	Issues     []trackerDriftIssueRow
+}
+
+type trackerDriftIssueRow struct {
+	Number string
+	Title  string
+	URL    string
+	State  string
+	Labels string
+}
+
 type boardStateRow struct {
 	State      string
 	Count      int
@@ -3964,6 +3979,50 @@ func issueNumber(issue telemetry.Issue) string {
 		return identifier[index:]
 	}
 	return identifier
+}
+
+func trackerDriftVisible(snapshot telemetry.Snapshot) bool {
+	return len(snapshot.TrackerDrift.UntrackedOpen) > 0 || len(snapshot.TrackerDrift.OpenTerminal) > 0
+}
+
+func trackerDriftTotalLabel(snapshot telemetry.Snapshot) string {
+	total := len(snapshot.TrackerDrift.UntrackedOpen) + len(snapshot.TrackerDrift.OpenTerminal)
+	return projectKanbanCountLabel(total, "cleanup issue", "cleanup issues")
+}
+
+func trackerDriftRows(snapshot telemetry.Snapshot) []trackerDriftRow {
+	rows := []trackerDriftRow{}
+	if len(snapshot.TrackerDrift.UntrackedOpen) > 0 {
+		rows = append(rows, trackerDriftRow{
+			Title:      "Untracked open issues",
+			CountLabel: projectKanbanCountLabel(len(snapshot.TrackerDrift.UntrackedOpen), "issue", "issues"),
+			Detail:     "Open issues without a configured Detent status label.",
+			Issues:     trackerDriftIssueRows(snapshot.TrackerDrift.UntrackedOpen),
+		})
+	}
+	if len(snapshot.TrackerDrift.OpenTerminal) > 0 {
+		rows = append(rows, trackerDriftRow{
+			Title:      "Open terminal issues",
+			CountLabel: projectKanbanCountLabel(len(snapshot.TrackerDrift.OpenTerminal), "issue", "issues"),
+			Detail:     "Open issues carrying a terminal Detent status label.",
+			Issues:     trackerDriftIssueRows(snapshot.TrackerDrift.OpenTerminal),
+		})
+	}
+	return rows
+}
+
+func trackerDriftIssueRows(issues []telemetry.Issue) []trackerDriftIssueRow {
+	rows := make([]trackerDriftIssueRow, 0, len(issues))
+	for _, issue := range issues {
+		rows = append(rows, trackerDriftIssueRow{
+			Number: issueNumber(issue),
+			Title:  strings.TrimSpace(issue.Title),
+			URL:    strings.TrimSpace(issue.URL),
+			State:  strings.TrimSpace(issue.State),
+			Labels: strings.Join(issue.Labels, ", "),
+		})
+	}
+	return rows
 }
 
 func prPipelineURL(issue telemetry.Issue) string {

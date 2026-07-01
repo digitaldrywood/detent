@@ -1519,7 +1519,16 @@ You choose where GitHub status lives; Detent fills in the rest.
 - **Blank `Status` values and missing status labels are not `Backlog`.** In the
   current release, an issue with no configured issue-field value or status label
   is not dispatchable through the state machine. Put unready work in the
-  `Backlog` option or `detent:backlog` label explicitly.
+  `Backlog` option or `detent:backlog` label explicitly. Detent's own GitHub
+  issue templates default to `detent:backlog` so new dogfood issues are visible
+  to operators but are not dispatchable until triaged to `detent:todo` or
+  another active state. Remove that label only when an issue is intentionally
+  outside Detent.
+- **Label-mode drift is surfaced as cleanup work.** In label mode,
+  `detent doctor` and the dashboard report open repository issues with zero
+  configured status labels, plus open issues that still carry a configured
+  terminal status label such as `detent:done`. Add exactly one configured status
+  label to untracked issues, and close or relabel stale-open terminal issues.
 - **Detent reads** status, priority, labels, blockers, assignees, and linked
   pull requests from each issue, and **writes back** status transitions and a
   `## Codex Workpad` comment as the agent works.

@@ -565,6 +565,14 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 		BoardIssues: []telemetry.Issue{
 			{ID: "board", Identifier: "digitaldrywood/detent#6"},
 		},
+		TrackerDrift: telemetry.TrackerDrift{
+			UntrackedOpen: []telemetry.Issue{
+				{ID: "untracked", Identifier: "digitaldrywood/detent#771"},
+			},
+			OpenTerminal: []telemetry.Issue{
+				{ID: "terminal", Identifier: "digitaldrywood/detent#583", State: "Done"},
+			},
+		},
 		Pipeline: []telemetry.Issue{
 			{ID: "pipeline", Identifier: "digitaldrywood/detent#1", StageUpdatedAt: &stageAt},
 		},
@@ -588,6 +596,8 @@ func TestMergeSnapshotStampsProjectIDOnIssueRows(t *testing.T) {
 	}{
 		{name: "pipeline", got: got.Pipeline[0].ProjectID},
 		{name: "board", got: got.BoardIssues[0].ProjectID},
+		{name: "untracked drift", got: got.TrackerDrift.UntrackedOpen[0].ProjectID},
+		{name: "terminal drift", got: got.TrackerDrift.OpenTerminal[0].ProjectID},
 		{name: "running", got: got.Running[0].ProjectID},
 		{name: "queued", got: got.Queue[0].ProjectID},
 		{name: "blocked", got: got.Blocked[0].ProjectID},

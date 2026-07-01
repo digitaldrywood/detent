@@ -787,6 +787,63 @@ func TestCheckDoctorBlockedRecovery(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorLabelStatusDriftReportsUntrackedAndTerminalIssues(t *testing.T) {
+	t.Parallel()
+
+	cfg := validDoctorWorkflow("/repo")
+	cfg.Tracker.Kind = workflowconfig.TrackerGitHub
+	cfg.Tracker.GitHubStatusSource = workflowconfig.GitHubStatusSourceLabel
+	cfg.Tracker.Repository = "digitaldrywood/detent"
+	cfg.Tracker.StatusLabelPrefix = "detent:"
+	fake := &fakeDoctorAutoPromoteConnector{
+		drift: connector.StatusDrift{
+			UntrackedOpen: []connector.Issue{{
+				ID:         "I_771",
+				Identifier: "digitaldrywood/detent#771",
+				Title:      "Untracked issue",
+				URL:        "https://github.com/digitaldrywood/detent/issues/771",
+				Labels:     []string{"bug"},
+			}},
+			OpenTerminal: []connector.Issue{{
+				ID:         "I_583",
+				Identifier: "digitaldrywood/detent#583",
+				Title:      "Done but open",
+				State:      "Done",
+				URL:        "https://github.com/digitaldrywood/detent/issues/583",
+				Labels:     []string{"detent:done"},
+			}},
+		},
+	}
+
+	got := checkDoctorLabelStatusDrift(context.Background(), "alpha", cfg, doctorDeps{
+		autoPromoteConnector: func(workflowconfig.Config) (doctorAutoPromoteConnector, error) {
+			return fake, nil
+		},
+	})
+
+	if got.Status != doctorWarn {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorWarn, got)
+	}
+	for _, want := range []string{
+		"1 open issue(s) without configured status label",
+		"digitaldrywood/detent#771",
+		"https://github.com/digitaldrywood/detent/issues/771",
+		"1 open issue(s) with terminal status label",
+		"digitaldrywood/detent#583",
+		"https://github.com/digitaldrywood/detent/issues/583",
+	} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+	if len(got.UntrackedIssues) != 1 || got.UntrackedIssues[0].IssueIdentifier != "digitaldrywood/detent#771" {
+		t.Fatalf("UntrackedIssues = %#v, want #771 diagnostic", got.UntrackedIssues)
+	}
+	if len(got.OpenTerminalIssues) != 1 || got.OpenTerminalIssues[0].State != "Done" {
+		t.Fatalf("OpenTerminalIssues = %#v, want Done diagnostic", got.OpenTerminalIssues)
+	}
+}
+
 func TestDoctorWorkflowDetailSurfacesIdentityAndAuthorization(t *testing.T) {
 	t.Parallel()
 
@@ -2691,6 +2748,8 @@ type fakeDoctorAutoPromoteConnector struct {
 	issues         []connector.Issue
 	hydratedIssues []connector.Issue
 	resolvedIssues []connector.Issue
+	drift          connector.StatusDrift
+	driftErr       error
 	verifyErr      error
 	verifyStates   []string
 	limit          int
@@ -2722,6 +2781,10 @@ func (c *fakeDoctorAutoPromoteConnector) FetchIssueStatesByIdentifiers(_ context
 func (c *fakeDoctorAutoPromoteConnector) VerifyStatusOptions(_ context.Context, states []string) error {
 	c.verifyStates = append([]string(nil), states...)
 	return c.verifyErr
+}
+
+func (c *fakeDoctorAutoPromoteConnector) FetchStatusDrift(context.Context) (connector.StatusDrift, error) {
+	return c.drift, c.driftErr
 }
 
 func stringSliceContains(values []string, want string) bool {

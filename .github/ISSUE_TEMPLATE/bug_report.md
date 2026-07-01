@@ -2,7 +2,7 @@
 name: Bug report
 about: Report reproducible Detent behavior that is broken or incorrect.
 title: "bug: "
-labels: ""
+labels: "bug, detent:backlog"
 assignees: ""
 ---
 

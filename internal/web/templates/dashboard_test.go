@@ -373,6 +373,68 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersTrackerStatusDriftWarning(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 1, 15, 0, 0, 0, time.UTC)
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Detent",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				LastRefreshAt: &now,
+			},
+			Counts: telemetry.Counts{Running: 1},
+			Running: []telemetry.Running{{
+				Issue: telemetry.Issue{
+					ID:         "issue-running",
+					Identifier: "digitaldrywood/detent#782",
+					Title:      "Normal board row remains visible",
+					State:      "In Progress",
+				},
+			}},
+			TrackerDrift: telemetry.TrackerDrift{
+				UntrackedOpen: []telemetry.Issue{{
+					ID:         "I_771",
+					Identifier: "digitaldrywood/detent#771",
+					URL:        "https://github.com/digitaldrywood/detent/issues/771",
+					Title:      "Untracked issue",
+					Labels:     []string{"bug"},
+				}},
+				OpenTerminal: []telemetry.Issue{{
+					ID:         "I_583",
+					Identifier: "digitaldrywood/detent#583",
+					URL:        "https://github.com/digitaldrywood/detent/issues/583",
+					Title:      "Done but open",
+					State:      "Done",
+					Labels:     []string{"detent:done"},
+				}},
+			},
+		},
+	})
+
+	for _, want := range []string{
+		`aria-label="Tracker status drift"`,
+		"Tracker status drift",
+		"2 cleanup issues",
+		"Untracked open issues",
+		"Open terminal issues",
+		`href="https://github.com/digitaldrywood/detent/issues/771"`,
+		"#771",
+		"Untracked issue",
+		`href="https://github.com/digitaldrywood/detent/issues/583"`,
+		"#583",
+		"Done but open",
+		"detent:done",
+		"Normal board row remains visible",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+}
+
 func TestDashboardRendersSidebarGitHubAPIHealth(t *testing.T) {
 	t.Parallel()
 

@@ -1435,6 +1435,8 @@ func restEndpointFamily(method string, path string) string {
 	switch {
 	case len(segments) == 4 && segments[3] == "issues" && parsed.Query().Get("labels") != "":
 		return "label issues"
+	case len(segments) == 4 && segments[3] == "issues":
+		return "repository issues"
 	case len(segments) == 5 && segments[3] == "issues" && segments[4] == "comments":
 		return "issue comments"
 	case len(segments) == 6 && segments[3] == "issues" && segments[5] == "comments":
@@ -1463,6 +1465,8 @@ func restRequestPurpose(method string, path string) string {
 	switch family {
 	case "label issues":
 		return "fetch_issues_by_status_label"
+	case "repository issues":
+		return "fetch_repository_issues"
 	case "issue reads":
 		return "hydrate_issue"
 	case "issue comments":
@@ -1511,7 +1515,7 @@ func retryAfterSeconds(err error) int64 {
 
 func restFanoutEndpointFamily(family string) bool {
 	switch family {
-	case "pull requests", "check runs", "commit statuses", "reviews":
+	case "pull requests", "check runs", "commit statuses", "reviews", "repository issues":
 		return true
 	default:
 		return false

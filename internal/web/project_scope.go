@@ -65,6 +65,7 @@ func projectScopedSnapshotForProject(snapshot telemetry.Snapshot, selectedProjec
 	out.Project = selectedProject
 	out.Projects = nil
 	out.BoardIssues = scopedIssues(snapshot.BoardIssues, selectedProjectID, fallbackProjectID)
+	out.TrackerDrift = scopedTrackerDrift(snapshot.TrackerDrift, selectedProjectID, fallbackProjectID)
 	out.Pipeline = scopedIssues(snapshot.Pipeline, selectedProjectID, fallbackProjectID)
 	out.Running = scopedRunning(snapshot.Running, selectedProjectID, fallbackProjectID)
 	out.Queue = scopedQueue(snapshot.Queue, selectedProjectID, fallbackProjectID)
@@ -177,6 +178,13 @@ func scopedIssues(entries []telemetry.Issue, selectedProjectID string, fallbackP
 		}
 	}
 	return out
+}
+
+func scopedTrackerDrift(drift telemetry.TrackerDrift, selectedProjectID string, fallbackProjectID string) telemetry.TrackerDrift {
+	return telemetry.TrackerDrift{
+		UntrackedOpen: scopedIssues(drift.UntrackedOpen, selectedProjectID, fallbackProjectID),
+		OpenTerminal:  scopedIssues(drift.OpenTerminal, selectedProjectID, fallbackProjectID),
+	}
 }
 
 func scopedRunning(entries []telemetry.Running, selectedProjectID string, fallbackProjectID string) []telemetry.Running {

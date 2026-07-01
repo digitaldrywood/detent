@@ -39,6 +39,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Shutdown:           shutdownSnapshot(s),
 		Events:             cloneActivityEvents(s.RecentEvents),
 		Refresh:            refresh,
+		TrackerDrift:       statusDriftSnapshot(s.StatusDrift, s.AutoPromoteQuietDuration, s.PollInterval, now),
 		BoardIssues:        issueSnapshots(s.BoardIssues, s.AutoPromoteQuietDuration, s.PollInterval, now),
 		Pipeline:           pipelineSnapshots(s.Pipeline, s.AutoPromoteQuietDuration, s.PollInterval, s.MergeTimings, now),
 		Running:            runningSnapshots(s.Running, s.Claimed, s.MergeTimings, now),
@@ -60,6 +61,18 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Completed: len(snapshot.Completed),
 	}
 	return snapshot
+}
+
+func statusDriftSnapshot(
+	drift connector.StatusDrift,
+	quietDuration time.Duration,
+	pollInterval time.Duration,
+	now time.Time,
+) telemetry.TrackerDrift {
+	return telemetry.TrackerDrift{
+		UntrackedOpen: issueSnapshots(drift.UntrackedOpen, quietDuration, pollInterval, now),
+		OpenTerminal:  issueSnapshots(drift.OpenTerminal, quietDuration, pollInterval, now),
+	}
 }
 
 func telemetryAuthHealth(health connector.AuthHealth) telemetry.AuthHealth {

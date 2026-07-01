@@ -57,6 +57,45 @@ func TestConnectorFetchCandidateIssuesUsesStatusLabels(t *testing.T) {
 	}
 }
 
+func TestConnectorFetchStatusDriftReportsUntrackedAndOpenTerminalIssues(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/digitaldrywood/detent/issues?page=1&per_page=100&state=open",
+			body:   `[{"node_id":"I_771","number":771,"title":"Untracked issue","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/771","assignees":[],"labels":[{"name":"bug"}]},{"node_id":"I_770","number":770,"title":"Normal backlog","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/770","assignees":[],"labels":[{"name":"detent:backlog"}]},{"node_id":"I_583","number":583,"title":"Done but open","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/issues/583","assignees":[],"labels":[{"name":"detent:done"},{"name":"bug"}]},{"node_id":"PR_12","number":12,"title":"Pull request","body":"","state":"open","html_url":"https://github.com/digitaldrywood/detent/pull/12","assignees":[],"labels":[],"pull_request":{}}]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		GitHubStatusSource: GitHubStatusSourceLabel,
+		Repository:         "digitaldrywood/detent",
+		ActiveStates:       []string{"Todo"},
+		ObservedStates:     []string{"Backlog"},
+		TerminalStates:     []string{"Done"},
+	})
+
+	got, err := c.FetchStatusDrift(context.Background())
+	if err != nil {
+		t.Fatalf("FetchStatusDrift() error = %v", err)
+	}
+	if len(got.UntrackedOpen) != 1 {
+		t.Fatalf("UntrackedOpen = %#v, want one issue", got.UntrackedOpen)
+	}
+	if got.UntrackedOpen[0].Identifier != "digitaldrywood/detent#771" || got.UntrackedOpen[0].State != "" {
+		t.Fatalf("UntrackedOpen[0] = %#v, want unlabeled #771 with blank state", got.UntrackedOpen[0])
+	}
+	if len(got.OpenTerminal) != 1 {
+		t.Fatalf("OpenTerminal = %#v, want one issue", got.OpenTerminal)
+	}
+	if got.OpenTerminal[0].Identifier != "digitaldrywood/detent#583" || got.OpenTerminal[0].State != "Done" {
+		t.Fatalf("OpenTerminal[0] = %#v, want open terminal #583 Done", got.OpenTerminal[0])
+	}
+	if len(server.requests()) != 1 {
+		t.Fatalf("request count = %d, want one open issue scan", len(server.requests()))
+	}
+}
+
 func TestConnectorFetchLabelIssuesByStatesAttachesCurrentAgentBranchPullRequest(t *testing.T) {
 	t.Parallel()
 
