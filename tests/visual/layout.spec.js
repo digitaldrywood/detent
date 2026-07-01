@@ -604,6 +604,106 @@ test("direct Kanban drag success does not shift board layout", async ({ page }, 
   await expect(page.locator("#kanban-dialog-content")).toContainText("Move card");
 });
 
+test("project Kanban applies out-of-band snapshot updates without reload", async ({ page }) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, { waitUntil: "domcontentloaded" });
+  await page.request.post(`${kanbanRuntime.url}/api/v1/refresh`);
+  await page.waitForFunction(() => document.documentElement.dataset.detentSseStatus === "open");
+
+  const beforeURL = page.url();
+  await expect(page.locator("[data-kanban-drop-state='Human Review'] [data-kanban-issue-id='kanban-demo-review']")).toHaveCount(1);
+
+  const response = await page.request.post(`${kanbanRuntime.url}/api/v1/kanban/move`, {
+    form: {
+      project_id: "demo-project",
+      issue_id: "kanban-demo-review",
+      current_state: "Human Review",
+      target_state: "Merging",
+    },
+  });
+  expect(response.ok()).toBeTruthy();
+
+  await expect(page.locator("[data-kanban-drop-state='Merging'] [data-kanban-issue-id='kanban-demo-review']")).toHaveCount(1);
+  expect(page.url()).toBe(beforeURL);
+  await expectSSESnapshotApplied(page);
+});
+
+test("fleet Kanban applies project snapshot updates without reload", async ({ page }) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/kanban`, { waitUntil: "domcontentloaded" });
+  await page.request.post(`${kanbanRuntime.url}/api/v1/refresh`);
+  await page.waitForFunction(() => document.documentElement.dataset.detentSseStatus === "open");
+
+  const beforeURL = page.url();
+  const cardSelector = "[data-project-kanban-card='digitaldrywood/detent#9512']";
+  await expect(page.locator(`[data-project-kanban-lane-title='Todo'] ${cardSelector}`)).toHaveCount(1);
+
+  const response = await page.request.post(`${kanbanRuntime.url}/api/v1/kanban/move`, {
+    form: {
+      kanban_board: "fleet",
+      project_id: "docs-site",
+      issue_id: "kanban-demo-todo",
+      current_state: "Todo",
+      target_state: "In Progress",
+    },
+  });
+  expect(response.ok()).toBeTruthy();
+
+  await expect(page.locator(`[data-project-kanban-lane-title='In Progress'] ${cardSelector}`)).toHaveCount(1);
+  expect(page.url()).toBe(beforeURL);
+  await expectSSESnapshotApplied(page);
+});
+
+test("rapid Kanban snapshots render latest payload after missed settle", async ({ page }) => {
+  await page.setViewportSize(desktopViewport);
+  await page.goto(`${kanbanRuntime.url}/projects/demo-project/kanban`, { waitUntil: "domcontentloaded" });
+  await page.request.post(`${kanbanRuntime.url}/api/v1/refresh`);
+  await page.waitForFunction(() => Boolean(window.htmx && window.__detentSSEMetrics));
+  await expect(page.locator("#project-kanban")).toBeVisible();
+  await expect(page.locator("[data-kanban-issue-id='kanban-demo-backlog']")).toBeVisible();
+
+  const firstPayload = await kanbanSnapshotPayload(page, "first");
+  const stalePayload = await kanbanSnapshotPayload(page, "stale");
+  const latestPayload = await kanbanSnapshotPayload(page, "latest");
+  const results = await page.evaluate(
+    ({ firstPayload, stalePayload, latestPayload }) => {
+      const target = document.getElementById("snapshot");
+      if (!target) {
+        throw new Error("missing snapshot target");
+      }
+      function send(payload) {
+        const event = new CustomEvent("htmx:sseBeforeMessage", {
+          bubbles: true,
+          cancelable: true,
+          detail: {
+            type: "snapshot",
+            target,
+            message: { type: "snapshot", data: payload },
+          },
+        });
+        target.dispatchEvent(event);
+        return event.defaultPrevented;
+      }
+      send(firstPayload);
+      document.dispatchEvent(new CustomEvent("htmx:beforeSwap", { detail: { target } }));
+      return {
+        stalePrevented: send(stalePayload),
+        latestPrevented: send(latestPayload),
+      };
+    },
+    { firstPayload, stalePayload, latestPayload },
+  );
+  expect(results.stalePrevented).toBe(true);
+  expect(results.latestPrevented).toBe(true);
+
+  const warning = page.locator("[data-detent-sse-warning]");
+  await expect(warning).toBeVisible();
+  await expect(warning).toContainText("snapshot");
+  await expect(warning.locator("[data-detent-sse-warning-metrics]")).toContainText("queued");
+  await expect(page.locator("#project-kanban")).toHaveAttribute("data-detent-test-progress", "latest");
+  await expect(page.locator("[data-detent-test-progress='stale']")).toHaveCount(0);
+});
+
 test("project configuration page preserves project color layout", async ({ page }, testInfo) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
@@ -985,6 +1085,44 @@ async function kanbanDragSuccessMetrics(page) {
       todoTop: documentTop("[data-kanban-drop-state='Todo']"),
     };
   });
+}
+
+async function kanbanSnapshotPayload(page, marker) {
+  return page.evaluate((value) => {
+    const board = document.getElementById("project-kanban");
+    if (!board) {
+      throw new Error("missing project Kanban board");
+    }
+    const clone = board.cloneNode(true);
+    clone.dataset.detentTestProgress = value;
+    const card = clone.querySelector("[data-kanban-issue-id='kanban-demo-backlog']");
+    if (!card) {
+      throw new Error("missing demo backlog card");
+    }
+    card.dataset.detentTestProgress = value;
+    const chip = document.createElement("span");
+    chip.className = "inline-flex h-4 min-w-0 max-w-full items-center truncate rounded-sm border px-1 py-0 font-medium border-warning-soft bg-warning-soft text-warning";
+    chip.dataset.detentTestProgress = value;
+    chip.textContent = `progress ${value}`;
+    chip.title = `Synthetic progress ${value}`;
+    const chipRow = card.querySelector(".mt-1.flex");
+    if (!chipRow) {
+      throw new Error("missing card chip row");
+    }
+    chipRow.appendChild(chip);
+    return clone.outerHTML;
+  }, marker);
+}
+
+async function expectSSESnapshotApplied(page) {
+  await expect
+    .poll(async () => {
+      return page.evaluate(() => {
+        const metrics = window.__detentSSEMetrics?.events?.snapshot;
+        return Boolean(metrics && metrics.received > 0 && metrics.swaps + metrics.replayed > 0);
+      });
+    })
+    .toBe(true);
 }
 
 function assertNoTopShift(name, before, after) {
