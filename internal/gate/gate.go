@@ -137,7 +137,7 @@ func DefaultConfig() Config {
 		Run:                    DefaultCommand,
 		ApprovalLabel:          DefaultApprovalLabel,
 		RequireAutomatedReview: new(true),
-		CIFailureAction:        CIFailureActionSkip,
+		CIFailureAction:        CIFailureActionRework,
 		Validator:              effectiveValidatorConfig(ValidatorConfig{}),
 		Artifact:               effectiveArtifactConfig(ArtifactConfig{}),
 	}
@@ -152,6 +152,7 @@ func DefaultPlanConfig() PlanConfig {
 }
 
 func Effective(cfg Config) Config {
+	ciFailureActionSpecified := strings.TrimSpace(cfg.CIFailureAction) != ""
 	cfg.Kind = NormalizeKind(cfg.Kind)
 	cfg.Run = strings.TrimSpace(cfg.Run)
 	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
@@ -180,10 +181,17 @@ func Effective(cfg Config) Config {
 	if cfg.ApprovalLabel == "" {
 		cfg.ApprovalLabel = DefaultApprovalLabel
 	}
-	if cfg.CIFailureAction == "" {
-		cfg.CIFailureAction = CIFailureActionSkip
+	if !ciFailureActionSpecified {
+		cfg.CIFailureAction = defaultCIFailureAction(cfg.Kind)
 	}
 	return cfg
+}
+
+func defaultCIFailureAction(kind string) string {
+	if kind == KindCommand {
+		return CIFailureActionRework
+	}
+	return CIFailureActionSkip
 }
 
 func EffectivePlan(cfg PlanConfig) PlanConfig {

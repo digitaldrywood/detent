@@ -91,9 +91,28 @@ func TestEvaluateAutoPromote(t *testing.T) {
 			},
 		},
 		{
-			name:  "red ci skips",
+			name:  "red ci reworks by default",
 			issue: autoPromoteTestIssue("issue-red-ci", nil),
 			cfg:   enabled,
+			input: AutoPromoteSummary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "red",
+			},
+			want: AutoPromoteDecision{
+				Action:   AutoPromoteActionRework,
+				Reason:   AutoPromoteReasonCINotGreen,
+				CIStatus: "red",
+			},
+		},
+		{
+			name:  "red ci skips when configured",
+			issue: autoPromoteTestIssue("issue-red-ci-skip", nil),
+			cfg: AutoPromoteConfig{
+				Enabled:       true,
+				QuietDuration: 10 * time.Minute,
+				OptoutLabel:   "requires-human-review",
+				Gate:          gate.Config{Kind: gate.KindCommand, CIFailureAction: gate.CIFailureActionSkip},
+			},
 			input: AutoPromoteSummary{
 				PullRequestURL: "https://github.test/pull/42",
 				CIStatus:       "red",

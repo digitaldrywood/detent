@@ -3725,10 +3725,13 @@ func prPipelineCardForIssue(issue telemetry.Issue, state string, laneID string, 
 }
 
 func prPipelineWaitDetail(issue telemetry.Issue) string {
-	if issue.PullRequest == nil && issue.MergeTiming == nil {
-		return ""
-	}
 	parts := []string{}
+	if reason := prPipelineHumanReviewWaitReason(issue); reason != "" {
+		parts = append(parts, reason)
+	}
+	if issue.PullRequest == nil && issue.MergeTiming == nil {
+		return strings.Join(parts, " / ")
+	}
 	if issue.PullRequest != nil {
 		if hydration := pullRequestHydrationWaitDetail(
 			issue.PullRequest.HydrationUnavailableReason,
@@ -3757,6 +3760,38 @@ func prPipelineWaitDetail(issue telemetry.Issue) string {
 		parts = append(parts, merge)
 	}
 	return strings.Join(parts, " / ")
+}
+
+func prPipelineHumanReviewWaitReason(issue telemetry.Issue) string {
+	if prPipelineLaneID(issue.State) != "human-review" {
+		return ""
+	}
+	if issue.PullRequest == nil {
+		return "waiting for linked PR"
+	}
+	if pullRequestHydrationWaitDetail(
+		issue.PullRequest.HydrationUnavailableReason,
+		issue.PullRequest.HydrationDegradedReason,
+		issue.PullRequest.HydrationNextRetryAt,
+	) != "" {
+		return ""
+	}
+	switch prPipelineCIStatus(issue, "human-review") {
+	case "fail":
+		return "CI failed; Rework routing pending"
+	case "pending":
+		return "waiting for CI"
+	}
+	switch strings.ToUpper(strings.TrimSpace(issue.PullRequest.CodexReviewState)) {
+	case "":
+		return "waiting for automated review"
+	case "P1":
+		return "P1 review finding blocks promotion"
+	}
+	if issue.PullRequest.QuietWaitSeconds > 0 {
+		return ""
+	}
+	return "waiting for auto-promote"
 }
 
 func prPipelineMergeWaitDetail(timing *telemetry.MergeTiming) string {

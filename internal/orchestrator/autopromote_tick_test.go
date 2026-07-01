@@ -130,20 +130,21 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			},
 		},
 		{
-			name: "routes failing ci to rework when configured",
+			name: "routes failing ci to rework by default",
 			cfg: AutoPromoteConfig{
 				Enabled:       true,
 				QuietDuration: 10 * time.Minute,
-				Gate: gate.Config{
-					Kind:            gate.KindCommand,
-					CIFailureAction: gate.CIFailureActionRework,
-				},
 			},
 			issue: autoPromoteTickIssue("issue-red-ci", []string{"bug"}, &connector.PullRequest{
 				Number:   48,
 				URL:      "https://github.test/digitaldrywood/detent/pull/48",
 				State:    "OPEN",
 				CIStatus: "fail",
+				SlowChecks: []connector.PullRequestCheck{
+					{Name: "browser-e2e", Status: "completed", Conclusion: "failure"},
+					{Name: "lint", Status: "completed", Conclusion: "failure"},
+					{Name: "backend", Status: "completed", Conclusion: "success"},
+				},
 			}),
 			wantUpdates: []autoPromoteTickUpdate{{
 				issueID: "issue-red-ci",
@@ -153,7 +154,11 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 				"Auto-promote routed this issue from Human Review to Rework: current-head CI is failing.",
 				"reason: ci_not_green",
 				"ci_status: red",
+				"failed_checks: browser-e2e, lint",
 				"https://github.test/digitaldrywood/detent/pull/48",
+			},
+			wantLogFragments: []string{
+				"failed_checks=\"browser-e2e, lint\"",
 			},
 		},
 		{

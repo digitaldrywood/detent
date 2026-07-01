@@ -1356,7 +1356,7 @@ func TestProjectKanbanBoardGroupsSnapshotRowsByConfiguredStates(t *testing.T) {
 		{Lane: "Todo", IssueNumber: "#11", Title: "Todo issue", TimeInStage: "6m 0s", Metadata: "No linked PR"},
 		{Lane: "In Progress", IssueNumber: "#13", Title: "Running issue", TimeInStage: "5m 0s", Labels: "bug", Assignees: "bob", Metadata: "No linked PR"},
 		{Lane: "Blocked", IssueNumber: "#14", Title: "Blocked issue", TimeInStage: "4m 0s", Blockers: "digitaldrywood/detent#401 In Progress", Metadata: "No linked PR"},
-		{Lane: "Human Review", IssueNumber: "#12", Title: "Review lane PR", URL: "https://github.com/digitaldrywood/detent/issues/12", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", Labels: "enhancement, stage:s6", Assignees: "alice", ClearedBlockers: "digitaldrywood/detent#10 Done", Metadata: "PR #142"},
+		{Lane: "Human Review", IssueNumber: "#12", Title: "Review lane PR", URL: "https://github.com/digitaldrywood/detent/issues/12", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "3m 0s", WaitDetail: "waiting for auto-promote", Labels: "enhancement, stage:s6", Assignees: "alice", ClearedBlockers: "digitaldrywood/detent#10 Done", Metadata: "PR #142"},
 		{Lane: "Done", IssueNumber: "#15", Title: "Done lane PR", URL: "https://github.com/digitaldrywood/detent/issues/15", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s", Metadata: "PR #145"},
 	}
 	if len(got) != len(want) {
@@ -1937,7 +1937,7 @@ func TestProjectKanbanBoardUsesTrackerStateWhenCompletedSessionAlsoExists(t *tes
 
 	got := collectKanbanCards(board.Lanes)
 	want := []kanbanCardSnapshot{
-		{Lane: "Human Review", IssueNumber: "#550", Title: "Keep completed implementation visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "30s", Metadata: "PR #552"},
+		{Lane: "Human Review", IssueNumber: "#550", Title: "Keep completed implementation visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "30s", WaitDetail: "waiting for auto-promote", Metadata: "PR #552"},
 	}
 	if len(got) != len(want) {
 		t.Fatalf("kanban cards len = %d, want %d; got %#v", len(got), len(want), got)
@@ -2196,6 +2196,97 @@ func TestPRPipelineLanesMapSnapshotRows(t *testing.T) {
 	}
 }
 
+func TestPRPipelineWaitDetailExplainsHumanReviewReasons(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		issue telemetry.Issue
+		want  string
+	}{
+		{
+			name: "missing pull request",
+			issue: telemetry.Issue{
+				State: "Human Review",
+			},
+			want: "waiting for linked PR",
+		},
+		{
+			name: "pending ci",
+			issue: telemetry.Issue{
+				State: "Human Review",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus: "pending",
+				},
+			},
+			want: "waiting for CI",
+		},
+		{
+			name: "failed ci",
+			issue: telemetry.Issue{
+				State: "Human Review",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus: "failure",
+				},
+			},
+			want: "CI failed; Rework routing pending",
+		},
+		{
+			name: "missing automated review",
+			issue: telemetry.Issue{
+				State: "Human Review",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus: "success",
+				},
+			},
+			want: "waiting for automated review",
+		},
+		{
+			name: "blocking review finding",
+			issue: telemetry.Issue{
+				State: "Human Review",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus:         "success",
+					CodexReviewState: "P1",
+				},
+			},
+			want: "P1 review finding blocks promotion",
+		},
+		{
+			name: "ready for auto promote",
+			issue: telemetry.Issue{
+				State: "Human Review",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus:         "success",
+					CodexReviewState: "COMMENTED",
+				},
+			},
+			want: "waiting for auto-promote",
+		},
+		{
+			name: "hydration explains stale data instead",
+			issue: telemetry.Issue{
+				State: "Human Review",
+				PullRequest: &telemetry.PullRequest{
+					CIStatus:                "success",
+					HydrationDegradedReason: "stale_cached_pull_request",
+				},
+			},
+			want: "PR hydration using stale cached data",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := prPipelineWaitDetail(tt.issue); got != tt.want {
+				t.Fatalf("prPipelineWaitDetail() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestPRPipelineCardIncludesIssueAndPullRequestIdentity(t *testing.T) {
 	t.Parallel()
 
@@ -2320,7 +2411,7 @@ func TestPRPipelineLanesPreserveTrackerRefreshRows(t *testing.T) {
 				},
 			}))
 			want := []pipelineCardSnapshot{
-				{Lane: "Human Review", IssueNumber: "#552", Title: "Keep tracker row visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s"},
+				{Lane: "Human Review", IssueNumber: "#552", Title: "Keep tracker row visible", CIStatus: "pass", CodexReviewState: "clean", TimeInStage: "2m 0s", WaitDetail: "waiting for auto-promote"},
 			}
 			if len(got) != len(want) {
 				t.Fatalf("pipeline cards len = %d, want %d; got %#v", len(got), len(want), got)

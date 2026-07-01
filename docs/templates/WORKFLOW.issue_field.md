@@ -79,7 +79,7 @@ gate:
   kind: command
   run: make check
   require_automated_review: true
-  ci_failure_action: skip
+  ci_failure_action: rework
   validator:
     enabled: false
     model: ""

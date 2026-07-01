@@ -684,7 +684,7 @@ gate:
   kind: command
   run: make check
   require_automated_review: true
-  ci_failure_action: skip
+  ci_failure_action: rework
   validator:
     enabled: false
     model: ""
@@ -737,7 +737,7 @@ agent:
 gate:
   kind: command
   run: make check
-  ci_failure_action: skip
+  ci_failure_action: rework
   validator:
     enabled: false
     model: ""
@@ -781,7 +781,7 @@ agent:
 gate:
   kind: command
   run: make check
-  ci_failure_action: skip
+  ci_failure_action: rework
   validator:
     enabled: false
     model: ""
@@ -851,10 +851,10 @@ current-head automated PR review before auto-promotion. Set
 auto-promote from `Human Review` after a linked open PR, green CI, no P1 bot
 review findings, and the quiet period. The quiet period resets on observed
 issue updates, Project status updates, automated PR review submission, and
-linked PR activity such as a fresh push to the PR head. Set
-`ci_failure_action: rework` when failed or cancelled current-head CI should move
-a `Human Review` item back to `Rework`; the default `skip` parks it in
-`Human Review`, and pending CI stays parked. Use
+linked PR activity such as a fresh push to the PR head. Failed or cancelled
+current-head CI moves a `Human Review` item back to
+`Rework` by default. Set `ci_failure_action: skip` only when red CI should park
+in `Human Review`; pending CI stays parked. Use
 `kind: human_review` with `approval_label` only when the workflow explicitly
 requires a human approval label to promote.
 
@@ -1462,8 +1462,9 @@ of that state is controlled by the workflow:
   PR, green CI, no-P1, and quiet-period checks but does not require a bot PR
   review to exist.
 - `gate.ci_failure_action: rework` routes failed or cancelled current-head CI
-  from `Human Review` back to `Rework`; the default `skip` leaves the item
-  parked while CI is not green.
+  from `Human Review` back to `Rework` by default; set
+  `gate.ci_failure_action: skip` only when non-green CI should leave the item
+  parked.
 - `gate.validator.enabled: true` runs a validator-agent review before
   auto-promotion; verdicts below `min_score` or with severities in `block_on`
   route the issue to `Rework`.

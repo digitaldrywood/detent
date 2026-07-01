@@ -17,17 +17,22 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 		{
 			name: "omitted gate defaults to make check command",
 			cfg:  Config{},
-			want: Config{Kind: KindCommand, Run: DefaultCommand, ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionSkip},
+			want: Config{Kind: KindCommand, Run: DefaultCommand, ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionRework},
 		},
 		{
 			name: "command keeps custom run",
 			cfg:  Config{Kind: " command ", Run: " make verify "},
-			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionSkip},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionRework},
 		},
 		{
 			name: "command can disable automated review requirement",
 			cfg:  Config{Kind: KindCommand, Run: "make verify", RequireAutomatedReview: new(false)},
-			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(false), CIFailureAction: CIFailureActionSkip},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(false), CIFailureAction: CIFailureActionRework},
+		},
+		{
+			name: "command can explicitly skip failed ci",
+			cfg:  Config{Kind: KindCommand, Run: "make verify", CIFailureAction: " skip "},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionSkip},
 		},
 		{
 			name: "command can route failed ci to rework",
@@ -72,7 +77,7 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 				Run:                    DefaultCommand,
 				ApprovalLabel:          DefaultApprovalLabel,
 				RequireAutomatedReview: new(true),
-				CIFailureAction:        CIFailureActionSkip,
+				CIFailureAction:        CIFailureActionRework,
 				Validator: ValidatorConfig{
 					MinScore: DefaultValidatorMinScore,
 					BlockOn:  []string{"p1"},
@@ -165,7 +170,16 @@ func TestEvaluate(t *testing.T) {
 			want:  Decision{Action: ActionSkip, Reason: ReasonMissingPullRequest},
 		},
 		{
-			name: "command gate skips red ci",
+			name: "command gate reworks red ci by default",
+			input: Summary{
+				PullRequestURL: "https://github.test/pull/42",
+				CIStatus:       "red",
+			},
+			want: Decision{Action: ActionRework, Reason: ReasonCINotGreen, CIStatus: "red"},
+		},
+		{
+			name: "command gate skips red ci when configured",
+			cfg:  Config{Kind: KindCommand, CIFailureAction: CIFailureActionSkip},
 			input: Summary{
 				PullRequestURL: "https://github.test/pull/42",
 				CIStatus:       "red",

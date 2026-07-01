@@ -63,9 +63,10 @@ artifact workflows. GitHub PR delivery remains the default.
 - `gate.kind: command` with `require_automated_review: false` keeps the
   command, linked PR, green CI, no-P1, and quiet-period checks but does not
   require an automated GitHub PR review to exist before promotion.
-- `gate.kind: command` with `ci_failure_action: rework` routes failed or
-  cancelled current-head CI from `Human Review` back to `Rework`; the default
-  `skip` parks the item while CI is not green.
+- `gate.kind: command` routes failed or cancelled current-head CI from
+  `Human Review` back to `Rework` by default. Set
+  `ci_failure_action: skip` only when red CI should remain parked in
+  `Human Review`.
 - The quiet period resets on observed issue updates, Project status updates,
   automated PR review submission, and linked PR activity such as a fresh push
   to the PR head.

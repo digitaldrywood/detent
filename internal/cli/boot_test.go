@@ -6,12 +6,10 @@ import (
 	"errors"
 	"io"
 	"log/slog"
-	"net"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -344,7 +342,8 @@ func TestRegistryRefresherFallsBackWhenTargetRepositoryDoesNotMatch(t *testing.T
 }
 
 func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
-	host, port := freeLoopbackPort(t)
+	port := 0
+	output := newBootOutput()
 	globalPath := filepath.Join(t.TempDir(), "global.yaml")
 	global, err := globalconfig.DefaultAt(globalPath)
 	if err != nil {
@@ -358,12 +357,14 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 		done <- startRunning(ctx, BootConfig{
 			Mode:   BootModeRunning,
 			Global: global,
-			Host:   host,
+			Host:   "127.0.0.1",
 			Port:   &port,
+			Output: output,
 		})
 	}()
 
-	body := waitForDashboard(t, "http://"+net.JoinHostPort(host, strconv.Itoa(port))+"/", done)
+	baseURL := waitForBootDashboardURL(t, output, done)
+	body := waitForDashboard(t, baseURL+"/", done)
 	if !strings.Contains(body, "Detent") {
 		t.Fatalf("dashboard body missing Detent:\n%s", body)
 	}
@@ -380,7 +381,8 @@ func TestStartRunningBootsDashboardAndStopsOnContextCancel(t *testing.T) {
 }
 
 func TestStartRunningUsesWorkflowKanbanModeForFleetActions(t *testing.T) {
-	host, port := freeLoopbackPort(t)
+	port := 0
+	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
 	alpha := createBootProjectFiles(t)
 	writeBootKanbanWorkflow(t, alpha.workflowPath, workflowconfig.KanbanModeIntegration)
@@ -399,12 +401,13 @@ func TestStartRunningUsesWorkflowKanbanModeForFleetActions(t *testing.T) {
 		done <- startRunning(ctx, BootConfig{
 			Mode:   BootModeRunning,
 			Global: global,
-			Host:   host,
+			Host:   "127.0.0.1",
 			Port:   &port,
+			Output: output,
 		})
 	}()
 
-	baseURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port))
+	baseURL := waitForBootDashboardURL(t, output, done)
 	waitForDashboard(t, baseURL+"/kanban", done)
 	status, body := postDashboardForm(t, baseURL+"/api/v1/kanban/move", done, url.Values{
 		"issue_id":      {"issue-1"},
@@ -433,7 +436,8 @@ func TestStartRunningUsesWorkflowKanbanModeForFleetActions(t *testing.T) {
 }
 
 func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *testing.T) {
-	host, port := freeLoopbackPort(t)
+	port := 0
+	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
 	alpha := createBootProjectFiles(t)
 	writeBootGlobalConfig(t, configPath, []globalconfig.Project{
@@ -454,8 +458,9 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 		done <- startRunning(ctx, BootConfig{
 			Mode:   BootModeRunning,
 			Global: global,
-			Host:   host,
+			Host:   "127.0.0.1",
 			Port:   &port,
+			Output: output,
 			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
 				return bootProvisioningConnector{
 					provision: func(ctx context.Context) error {
@@ -482,7 +487,8 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 		t.Fatal("timed out waiting for project provisioning to start")
 	}
 
-	stateURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/api/v1/state"
+	baseURL := waitForBootDashboardURL(t, output, done)
+	stateURL := baseURL + "/api/v1/state"
 	body := waitForDashboardCondition(t, stateURL, done, "startup snapshot", func(body string) bool {
 		return strings.Contains(body, `"generated_at"`) &&
 			strings.Contains(body, `"alpha"`) &&
@@ -505,7 +511,8 @@ func TestStartRunningPublishesStartupSnapshotBeforeProjectStartCompletes(t *test
 }
 
 func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
-	host, port := freeLoopbackPort(t)
+	port := 0
+	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
 	alpha := createBootProjectFiles(t)
 	bravo := createBootProjectFiles(t)
@@ -524,12 +531,14 @@ func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 		done <- startRunning(ctx, BootConfig{
 			Mode:   BootModeRunning,
 			Global: global,
-			Host:   host,
+			Host:   "127.0.0.1",
 			Port:   &port,
+			Output: output,
 		})
 	}()
 
-	settingsURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/settings"
+	baseURL := waitForBootDashboardURL(t, output, done)
+	settingsURL := baseURL + "/settings"
 	body := waitForDashboard(t, settingsURL, done)
 	if !strings.Contains(body, "alpha") {
 		t.Fatalf("settings body missing alpha:\n%s", body)
@@ -568,7 +577,8 @@ func TestStartRunningHotReloadsGlobalConfigProjects(t *testing.T) {
 }
 
 func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing.T) {
-	host, port := freeLoopbackPort(t)
+	port := 0
+	output := newBootOutput()
 	configPath := filepath.Join(t.TempDir(), "global.yaml")
 	alpha := createBootProjectFiles(t)
 	bravo := createBootProjectFiles(t)
@@ -590,8 +600,9 @@ func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing
 		done <- startRunning(ctx, BootConfig{
 			Mode:   BootModeRunning,
 			Global: global,
-			Host:   host,
+			Host:   "127.0.0.1",
 			Port:   &port,
+			Output: output,
 			ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
 				return bootProvisioningConnector{
 					provision: func(ctx context.Context) error {
@@ -618,7 +629,8 @@ func TestStartRunningReconcilesGlobalConfigChangedBeforeWatcherStarts(t *testing
 		t.Fatal("timed out waiting for project provisioning to start")
 	}
 
-	settingsURL := "http://" + net.JoinHostPort(host, strconv.Itoa(port)) + "/settings"
+	baseURL := waitForBootDashboardURL(t, output, done)
+	settingsURL := baseURL + "/settings"
 	body := waitForDashboard(t, settingsURL, done)
 	if !strings.Contains(body, "alpha") {
 		t.Fatalf("settings body missing alpha:\n%s", body)
@@ -679,20 +691,50 @@ func TestRegistryRefresherReturnsProjectNotFoundWithoutOrchestrators(t *testing.
 	}
 }
 
-func freeLoopbackPort(t *testing.T) (string, int) {
+type bootOutput struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func newBootOutput() *bootOutput {
+	return &bootOutput{}
+}
+
+func (o *bootOutput) Write(p []byte) (int, error) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buffer.Write(p)
+}
+
+func (o *bootOutput) String() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return o.buffer.String()
+}
+
+func waitForBootDashboardURL(t *testing.T, output *bootOutput, done <-chan error) string {
 	t.Helper()
 
-	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("Listen() error = %v", err)
-	}
-	defer listener.Close()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
 
-	addr, ok := listener.Addr().(*net.TCPAddr)
-	if !ok {
-		t.Fatalf("listener addr = %T, want *net.TCPAddr", listener.Addr())
+	for ctx.Err() == nil {
+		select {
+		case err := <-done:
+			t.Fatalf("startRunning returned before boot banner was written: %v", err)
+		default:
+		}
+
+		for _, line := range strings.Split(output.String(), "\n") {
+			url, ok := strings.CutPrefix(line, "Dashboard: ")
+			if ok && strings.TrimSpace(url) != "" {
+				return strings.TrimSpace(url)
+			}
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
-	return "127.0.0.1", addr.Port
+	t.Fatalf("timed out waiting for boot dashboard URL; output:\n%s", output.String())
+	return ""
 }
 
 func waitForDashboard(t *testing.T, url string, done <-chan error) string {
