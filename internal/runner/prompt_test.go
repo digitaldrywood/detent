@@ -219,6 +219,61 @@ func TestBuildPromptAppendsGitHubClosingReferenceInstruction(t *testing.T) {
 	}
 }
 
+func TestBuildPromptArtifactWorkflowOmitsPullRequestContract(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := filepath.Join(t.TempDir(), "ad-1")
+	prompt, err := BuildPrompt(config.Workflow{
+		Config: config.Config{
+			Workspace: config.Workspace{Kind: config.WorkspaceFilesystem},
+			Deliverable: config.Deliverable{
+				Kind:       config.DeliverableArtifact,
+				OutputRoot: "/tmp/detent-renders",
+				ReviewURL:  "http://127.0.0.1:8080/review/ad-1",
+			},
+			Gate: gate.Config{Kind: gate.KindArtifact},
+		},
+		Prompt: "Deliver {{ deliverable.kind }} from {{ workspace.kind }} status={{ issue.deliverable.validation_status }} store={{ issue.metadata.store }}",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#780",
+		Title:      "Artifact prompt",
+		Metadata:   map[string]string{"store": "creswood"},
+		Deliverable: &connector.Deliverable{
+			Kind:             "video_ad",
+			Path:             "outputs/ad-1/manifest.json",
+			ReviewURL:        "http://127.0.0.1:8080/review/ad-1",
+			ValidationStatus: "pending",
+			ExternalID:       "creative-101",
+		},
+	}, PromptOptions{
+		WorkspacePath: workspacePath,
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"## Detent artifact workspace",
+		"filesystem workspace at `" + workspacePath + "`",
+		"Deliver artifact from filesystem status=pending store=creswood",
+		"## Deliverable",
+		"Produce artifact deliverables for this work item instead of a pull request.",
+		"- configured output root: `/tmp/detent-renders`",
+		"- work item artifact path: `outputs/ad-1/manifest.json`",
+		"## Validation gate",
+		"artifact status",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
+	}
+	for _, forbidden := range []string{"Fixes #780", "pull request in Human Review"} {
+		if strings.Contains(prompt, forbidden) {
+			t.Fatalf("prompt contains %q, want omitted:\n%s", forbidden, prompt)
+		}
+	}
+}
+
 func TestBuildPromptRejectsUnknownTemplateVariables(t *testing.T) {
 	t.Parallel()
 

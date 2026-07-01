@@ -2,9 +2,49 @@
 
 Detent's orchestration loop is mostly domain-neutral: it reads board state,
 dispatches work, tracks retries and budgets, and serializes the `Merging` lane.
-The execution edge still carries these code/git/PR assumptions.
+The execution edge now has explicit seams for code workflows and local
+artifact workflows. GitHub PR delivery remains the default.
 
 ## Now Pluggable
+
+### Work Item Source And Status Store
+
+- `tracker.kind: github` remains the default production source for code
+  workflows.
+- `tracker.kind: local_sqlite` stores domain-neutral work items in a
+  Detent-owned SQLite database configured by `tracker.local_sqlite.path`.
+- Local SQLite work items persist status, fields, metadata, deliverable
+  metadata, timestamps, comments, and state-change events across restarts.
+- Kanban integration-mode moves continue to call the connector state update
+  contract, so local SQLite projects write card moves into the local status
+  store instead of GitHub Projects, labels, or issue fields.
+- Relative local SQLite paths resolve against the project `workdir` at runtime
+  so a non-code project can keep `WORKFLOW.md`, inputs, outputs, and state under
+  one production directory.
+
+### Workspace
+
+- `workspace.kind: local_git` is still the default and creates git worktrees
+  and branches.
+- `workspace.kind: filesystem` creates an isolated task directory under
+  `workspace.root` with an `artifacts/` subdirectory and no git branch or PR
+  contract.
+- `workspace.output_root` or `deliverable.output_root` can point at a durable
+  artifact handoff directory. Detent creates a per-work-item output directory
+  there for external production systems to consume.
+- Filesystem workspace paths are project-workdir relative when configured as
+  relative paths.
+
+### Deliverable
+
+- `deliverable.kind: pull_request` is the default and keeps existing GitHub PR
+  behavior.
+- `deliverable.kind: artifact` suppresses prompt instructions that require a
+  PR closing reference and adds artifact workspace/output/review metadata to
+  the agent prompt.
+- `connector.Issue.Deliverable` and telemetry snapshots can carry artifact
+  kind, path, review URL, validation status, external id, and metadata without
+  requiring PR fields.
 
 ### Agent Backend
 
@@ -31,6 +71,11 @@ The execution edge still carries these code/git/PR assumptions.
   to the PR head.
 - `gate.kind: human_review` requires a PR plus `gate.approval_label`
   (`human-approved` by default) before promotion.
+- `gate.kind: artifact` evaluates a status value from
+  `issue.deliverable.validation_status` or a configured work-item field such as
+  `render_status`. Passing statuses advance the item, waiting statuses leave it
+  in place, and rework statuses route it to rework without requiring PR, CI, or
+  automated PR review state.
 - `internal/runner/prompt.go` renders gate variables and appends gate
   instructions so `Todo`, `Rework`, and `Merging` agents see the configured
   validation contract.
@@ -102,35 +147,25 @@ budget, confidence-check, and green no-op drift fails in local validation.
 
 ## Still Git/PR Coupled
 
-### Workspace
-
-- `internal/workspace` currently provides `local_git` only.
-- `LocalGit` creates git worktrees, derives `detent/<issue-key>` branches,
-  runs hooks, computes git diff stats, and removes worktrees.
-- `internal/runner` depends on that backend interface, but no non-git backend is
-  implemented yet.
-
-### Deliverable
-
 - `internal/connector/github` discovers pull requests by issue branch prefix and
   reads PR state, CI status, check-run timing, slow checks, running checks, and
   automated review state.
-- `connector.Issue` stores `PRNumber` and `PullRequest` directly.
 - The dashboard and telemetry models render a PR pipeline for `Human Review`,
-  `Merging`, and terminal states.
-- `internal/runner/prompt.go` appends a GitHub `Fixes #N` PR instruction when it
-  can parse a GitHub issue identifier.
+  `Merging`, and terminal states for pull-request workflows.
+- Merge workers, CI polling, PR hydration, and branch cleanup still apply only
+  to `deliverable.kind: pull_request` and `workspace.kind: local_git`.
 
 ## Follow-Up Surface
 
-Non-git or non-PR deliverables should start with a small deliverable backend
-interface that can report:
+The local SQLite source is Detent-owned. External production systems can consume
+`detent_work_items` and `detent_work_item_events`, or watch a configured output
+directory. A future backend can map Detent status changes into an
+operator-provided SQLite schema or application database when a stable schema
+contract is known.
 
-- workspace identity and artifact location,
-- review target URL or equivalent,
-- validation status,
-- final integration or publish result.
-
-The default implementation should remain git worktree to PR so code, docs,
-design assets, notebooks, and CSV models keep working as files-in-repo
-deliverables.
+`docs/templates/WORKFLOW.non_code_artifact.md` shows a video-production
+workflow that uses local SQLite status, filesystem workspaces, artifact
+deliverables, and artifact gates. That mode is broader than the GitHub local
+status mode described by #779: #779 keeps GitHub issues as the catalog while
+Detent owns status locally; the artifact template does not require GitHub
+issues, PRs, branches, CI, or merge trains at all.

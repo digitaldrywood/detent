@@ -1261,7 +1261,9 @@ repo is a real, working instance of this setup to copy from.
    The maintained templates are
    [`WORKFLOW.project_v2.md`](docs/templates/WORKFLOW.project_v2.md),
    [`WORKFLOW.issue_field.md`](docs/templates/WORKFLOW.issue_field.md), and
-   [`WORKFLOW.label.md`](docs/templates/WORKFLOW.label.md).
+   [`WORKFLOW.label.md`](docs/templates/WORKFLOW.label.md). Non-code artifact
+   workflows can start from
+   [`WORKFLOW.non_code_artifact.md`](docs/templates/WORKFLOW.non_code_artifact.md).
    They set `server.kanban.mode: integration` for trusted project boards;
    change that to `read_only` only for an observer or shared dashboard,
    explicit no-writes choice, or failed post-authorization write probes. They

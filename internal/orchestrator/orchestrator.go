@@ -45,8 +45,6 @@ const (
 	mergeWorkerTerminalStateMissing   = "merge worker completed without reaching a terminal issue or pull request state"
 )
 
-var prPipelineStates = []string{"Human Review", "Merging"}
-
 var (
 	ErrMissingConnector = errors.New("orchestrator connector is required")
 	ErrStopped          = errors.New("orchestrator stopped")
@@ -193,6 +191,9 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			QuietDuration:      durationFromSeconds(cfg.Agent.AutoPromote.QuietSeconds),
 			OptoutLabel:        cfg.Agent.AutoPromote.OptoutLabel,
 			AllowedIssueLabels: append([]string(nil), cfg.Agent.AutoPromote.AllowedIssueLabels...),
+			SourceState:        cfg.Agent.AutoPromote.SourceState,
+			PassState:          cfg.Agent.AutoPromote.PassState,
+			ReworkState:        cfg.Agent.AutoPromote.ReworkState,
 			Gate:               gate.Effective(cfg.Gate),
 		}),
 		Plan: gate.EffectivePlan(cfg.Plan),
@@ -437,7 +438,7 @@ func (o *Orchestrator) ForceQuit(ctx context.Context) error {
 }
 
 func (o *Orchestrator) observedStatusFetchStates() []string {
-	states := append([]string{blockedStatusState}, prPipelineFetchStates()...)
+	states := append([]string{blockedStatusState}, autoPromoteFetchStates(o.cfg.AutoPromote)...)
 	if cfg := gate.EffectivePlan(o.cfg.Plan); cfg.Enabled {
 		states = append(states, cfg.Stop)
 	}
@@ -451,7 +452,7 @@ func (o *Orchestrator) observedStatusFetchStates() []string {
 
 func (o *Orchestrator) observedStatusFetchStatesForTick(state *State) []string {
 	states := o.observedStatusFetchStates()
-	if o.mergeWorkerLocalSlotsAvailable(state) {
+	if !autoPromoteUsesMergePassState(o.cfg.AutoPromote) || o.mergeWorkerLocalSlotsAvailable(state) {
 		return states
 	}
 	return statesWithoutState(states, autoPromoteMergingState)
@@ -474,10 +475,20 @@ func statesWithoutState(states []string, omit string) []string {
 	return out
 }
 
-func prPipelineFetchStates() []string {
-	states := make([]string, 0, len(prPipelineStates))
-	seen := make(map[string]struct{}, len(prPipelineStates))
-	for _, state := range prPipelineStates {
+func autoPromoteUsesMergePassState(cfg AutoPromoteConfig) bool {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	return normalizeState(cfg.PassState) == normalizeState(autoPromoteMergingState)
+}
+
+func autoPromoteFetchStates(cfg AutoPromoteConfig) []string {
+	cfg = normalizeAutoPromoteConfig(cfg)
+	candidates := []string{cfg.SourceState}
+	if autoPromoteUsesMergePassState(cfg) {
+		candidates = append(candidates, cfg.PassState)
+	}
+	states := make([]string, 0, len(candidates))
+	seen := make(map[string]struct{}, len(candidates))
+	for _, state := range candidates {
 		key := normalizeState(state)
 		if key == "" {
 			continue

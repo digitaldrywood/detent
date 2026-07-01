@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -14,6 +15,7 @@ import (
 	configwatcher "github.com/digitaldrywood/detent/internal/config/watcher"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/connector/factory"
+	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 	"github.com/digitaldrywood/detent/internal/hub"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
@@ -827,6 +829,7 @@ func workflowConfigWithProjectIdentity(
 	project globalconfig.Project,
 	workflow workflowconfig.Config,
 ) workflowconfig.Config {
+	workflow = workflowConfigWithProjectPaths(project, workflow)
 	if !project.Identity.Configured() {
 		return workflow
 	}
@@ -834,6 +837,33 @@ func workflowConfigWithProjectIdentity(
 	identity.Normalize()
 	workflow.Identity = identity
 	return workflow
+}
+
+func workflowConfigWithProjectPaths(project globalconfig.Project, workflow workflowconfig.Config) workflowconfig.Config {
+	workdir := strings.TrimSpace(project.Workdir)
+	if workdir == "" {
+		return workflow
+	}
+	if workflow.Tracker.Kind == workflowconfig.TrackerLocalSQLite {
+		workflow.Tracker.LocalSQLite.Path = projectRelativePath(workdir, workflow.Tracker.LocalSQLite.Path)
+	}
+	if workflow.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
+		workflow.Workspace.Root = projectRelativePath(workdir, workflow.Workspace.Root)
+		workflow.Workspace.SourceRoot = projectRelativePath(workdir, workflow.Workspace.SourceRoot)
+		workflow.Workspace.OutputRoot = projectRelativePath(workdir, workflow.Workspace.OutputRoot)
+	}
+	if workflow.Deliverable.Kind == workflowconfig.DeliverableArtifact {
+		workflow.Deliverable.OutputRoot = projectRelativePath(workdir, workflow.Deliverable.OutputRoot)
+	}
+	return workflow
+}
+
+func projectRelativePath(base string, path string) string {
+	path = strings.TrimSpace(path)
+	if path == "" || filepath.IsAbs(path) || path == "~" || strings.HasPrefix(path, "~/") {
+		return path
+	}
+	return filepath.Clean(filepath.Join(base, path))
 }
 
 func workflowConfigWithGitHubToken(workflow workflowconfig.Config, token string) workflowconfig.Config {
@@ -989,8 +1019,16 @@ func defaultConnectorFactory(cfg workflowconfig.Config) (connector.Connector, er
 
 func defaultConnectorFactoryWithRefresh(cfg workflowconfig.Config, refreshGitHubToken func(context.Context) (string, error)) (connector.Connector, error) {
 	return factory.NewFromConfig(factory.Config{
-		Kind:                        cfg.Tracker.Kind,
-		Memory:                      memory.Config{Issues: cfg.Tracker.Issues},
+		Kind:   cfg.Tracker.Kind,
+		Memory: memory.Config{Issues: cfg.Tracker.Issues},
+		LocalSQLite: local.Config{
+			Path:           cfg.Tracker.LocalSQLite.Path,
+			ProjectID:      cfg.Tracker.LocalSQLite.ProjectID,
+			Issues:         cfg.Tracker.Issues,
+			ActiveStates:   cfg.Tracker.ActiveStates,
+			ObservedStates: cfg.Tracker.ObservedStates,
+			TerminalStates: cfg.Tracker.TerminalStates,
+		},
 		Endpoint:                    cfg.Tracker.Endpoint,
 		APIKey:                      cfg.Tracker.APIKey,
 		GitHubTokenRefresh:          refreshGitHubToken,

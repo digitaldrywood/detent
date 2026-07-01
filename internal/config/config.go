@@ -19,13 +19,20 @@ import (
 )
 
 const (
-	TrackerGitHub = "github"
-	TrackerLinear = "linear"
-	TrackerMemory = "memory"
+	TrackerGitHub      = "github"
+	TrackerLinear      = "linear"
+	TrackerMemory      = "memory"
+	TrackerLocalSQLite = "local_sqlite"
 
 	GitHubStatusSourceProjectV2  = "project_v2"
 	GitHubStatusSourceIssueField = "issue_field"
 	GitHubStatusSourceLabel      = "label"
+
+	WorkspaceLocalGit   = "local_git"
+	WorkspaceFilesystem = "filesystem"
+
+	DeliverablePullRequest = "pull_request"
+	DeliverableArtifact    = "artifact"
 
 	DependencyReadinessTerminal         = "terminal"
 	DependencyReadinessTerminalOrMerged = "terminal_or_merged"
@@ -59,6 +66,7 @@ type Config struct {
 	Tracker       Tracker         `yaml:"tracker"`
 	Polling       Polling         `yaml:"polling"`
 	Workspace     Workspace       `yaml:"workspace"`
+	Deliverable   Deliverable     `yaml:"deliverable,omitempty"`
 	Worker        Worker          `yaml:"worker"`
 	Agent         Agent           `yaml:"agent"`
 	Agents        Agents          `yaml:"agents"`
@@ -103,7 +111,13 @@ type Tracker struct {
 	AutoProvision               bool                  `yaml:"auto_provision"`
 	Claims                      Claims                `yaml:"claims,omitempty"`
 	Authorization               selector.Selector     `yaml:"authorization,omitempty"`
+	LocalSQLite                 LocalSQLite           `yaml:"local_sqlite,omitempty"`
 	Issues                      []connector.Issue     `yaml:"issues"`
+}
+
+type LocalSQLite struct {
+	Path      string `yaml:"path"`
+	ProjectID string `yaml:"project_id,omitempty"`
 }
 
 type DependencyAutoUnblock struct {
@@ -132,11 +146,19 @@ type Claims struct {
 }
 
 type Workspace struct {
+	Kind                   string `yaml:"kind"`
 	Root                   string `yaml:"root"`
 	SourceRoot             string `yaml:"source_root"`
+	OutputRoot             string `yaml:"output_root"`
 	AutoBranch             bool   `yaml:"auto_branch"`
 	CleanupIdleTTLMS       int    `yaml:"cleanup_idle_ttl_ms"`
 	CleanupSweepIntervalMS int    `yaml:"cleanup_sweep_interval_ms"`
+}
+
+type Deliverable struct {
+	Kind       string `yaml:"kind"`
+	OutputRoot string `yaml:"output_root,omitempty"`
+	ReviewURL  string `yaml:"review_url,omitempty"`
 }
 
 type Worker struct {
@@ -200,6 +222,9 @@ type AutoPromote struct {
 	QuietSeconds       int      `yaml:"quiet_seconds"`
 	OptoutLabel        string   `yaml:"optout_label"`
 	AllowedIssueLabels []string `yaml:"allowed_issue_labels"`
+	SourceState        string   `yaml:"source_state,omitempty"`
+	PassState          string   `yaml:"pass_state,omitempty"`
+	ReworkState        string   `yaml:"rework_state,omitempty"`
 }
 
 type Lessons struct {
@@ -536,10 +561,14 @@ func Default() Config {
 			IntervalMS: DefaultPollingIntervalMS,
 		},
 		Workspace: Workspace{
+			Kind:                   WorkspaceLocalGit,
 			Root:                   filepath.Join(os.TempDir(), "detent_workspaces"),
 			AutoBranch:             true,
 			CleanupIdleTTLMS:       86400000,
 			CleanupSweepIntervalMS: 600000,
+		},
+		Deliverable: Deliverable{
+			Kind: DeliverablePullRequest,
 		},
 		Worker: Worker{
 			SSHHosts: []string{},
@@ -556,6 +585,9 @@ func Default() Config {
 				QuietSeconds:       600,
 				OptoutLabel:        "requires-human-review",
 				AllowedIssueLabels: []string{},
+				SourceState:        "Human Review",
+				PassState:          "Merging",
+				ReworkState:        "Rework",
 			},
 			Budget:  budget,
 			Lessons: defaultLessons(),
@@ -624,6 +656,7 @@ func (c *Config) Validate() error {
 	c.Codex.validate(&problems)
 	problems = append(problems, gate.Validate("gate", c.Gate)...)
 	problems = append(problems, gate.ValidatePlan("plan", c.Plan)...)
+	c.Deliverable.validate(&problems)
 	c.Server.validate(&problems)
 	c.Observability.validate(&problems)
 	c.Budget.validate("budget", &problems)
@@ -682,15 +715,30 @@ func (c *Config) normalize() {
 		c.Tracker.StatusLabelPrefix = "detent:"
 	}
 	c.Tracker.WriteProbeIssue = strings.TrimSpace(c.Tracker.WriteProbeIssue)
+	c.Tracker.LocalSQLite.Normalize()
 	c.Tracker.Claims.Normalize()
 	c.Tracker.DependencyAutoUnblock.Normalize()
 	c.Tracker.Authorization.Normalize()
+	c.Workspace.Normalize()
+	c.Deliverable.Normalize()
 
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
 	c.Agent.DispatchPriorityByLabel = normalizeLabels(c.Agent.DispatchPriorityByLabel)
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
 	c.Agent.AutoPromote.AllowedIssueLabels = normalizeLabels(c.Agent.AutoPromote.AllowedIssueLabels)
+	c.Agent.AutoPromote.SourceState = strings.TrimSpace(c.Agent.AutoPromote.SourceState)
+	if c.Agent.AutoPromote.SourceState == "" {
+		c.Agent.AutoPromote.SourceState = "Human Review"
+	}
+	c.Agent.AutoPromote.PassState = strings.TrimSpace(c.Agent.AutoPromote.PassState)
+	if c.Agent.AutoPromote.PassState == "" {
+		c.Agent.AutoPromote.PassState = "Merging"
+	}
+	c.Agent.AutoPromote.ReworkState = strings.TrimSpace(c.Agent.AutoPromote.ReworkState)
+	if c.Agent.AutoPromote.ReworkState == "" {
+		c.Agent.AutoPromote.ReworkState = "Rework"
+	}
 	c.Agents.normalize()
 	c.Codex.Shell = commandshell.Normalize(c.Codex.Shell)
 	c.Gate = gate.Effective(c.Gate)
@@ -713,8 +761,10 @@ func (c *Config) validateTracker(problems *[]string) {
 		c.Tracker.validateGitHubAuth(problems)
 		c.Tracker.validateGitHubStatusSource(problems)
 	case TrackerMemory:
+	case TrackerLocalSQLite:
+		*problems = append(*problems, c.Tracker.LocalSQLite.Validate("tracker.local_sqlite")...)
 	default:
-		*problems = append(*problems, "tracker.kind must be one of github, linear, memory")
+		*problems = append(*problems, "tracker.kind must be one of github, linear, memory, local_sqlite")
 	}
 
 	validateStateList("tracker.active_states", c.Tracker.ActiveStates, problems)
@@ -735,6 +785,22 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.github_rest_fanout_max_requests", c.Tracker.GitHubRESTFanoutMaxRequests, problems)
 	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
+}
+
+func (l *LocalSQLite) Normalize() {
+	if l == nil {
+		return
+	}
+	l.Path = strings.TrimSpace(l.Path)
+	l.ProjectID = strings.TrimSpace(l.ProjectID)
+}
+
+func (l LocalSQLite) Validate(prefix string) []string {
+	l.Normalize()
+	if l.Path == "" {
+		return []string{prefix + ".path is required for local_sqlite"}
+	}
+	return nil
 }
 
 func (t *Tracker) validateGitHubStatusSource(problems *[]string) {
@@ -807,8 +873,62 @@ func validRepositoryName(value string) bool {
 }
 
 func (w *Workspace) validate(problems *[]string) {
+	switch w.Kind {
+	case "", WorkspaceLocalGit, WorkspaceFilesystem:
+	default:
+		*problems = append(*problems, "workspace.kind must be one of local_git, filesystem")
+	}
 	validatePositive("workspace.cleanup_idle_ttl_ms", w.CleanupIdleTTLMS, problems)
 	validatePositive("workspace.cleanup_sweep_interval_ms", w.CleanupSweepIntervalMS, problems)
+}
+
+func (w *Workspace) Normalize() {
+	if w == nil {
+		return
+	}
+	w.Kind = normalizeWorkspaceKind(w.Kind)
+	w.Root = strings.TrimSpace(w.Root)
+	w.SourceRoot = strings.TrimSpace(w.SourceRoot)
+	w.OutputRoot = strings.TrimSpace(w.OutputRoot)
+}
+
+func normalizeWorkspaceKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", WorkspaceLocalGit, "git", "localgit":
+		return WorkspaceLocalGit
+	case WorkspaceFilesystem, "file_system", "file-system", "files":
+		return WorkspaceFilesystem
+	default:
+		return strings.ToLower(strings.TrimSpace(kind))
+	}
+}
+
+func (d *Deliverable) Normalize() {
+	if d == nil {
+		return
+	}
+	d.Kind = normalizeDeliverableKind(d.Kind)
+	d.OutputRoot = strings.TrimSpace(d.OutputRoot)
+	d.ReviewURL = strings.TrimSpace(d.ReviewURL)
+}
+
+func (d *Deliverable) validate(problems *[]string) {
+	switch d.Kind {
+	case "", DeliverablePullRequest, DeliverableArtifact:
+	default:
+		*problems = append(*problems, "deliverable.kind must be one of pull_request, artifact")
+	}
+}
+
+func normalizeDeliverableKind(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "", DeliverablePullRequest, "pr", "pull-request":
+		return DeliverablePullRequest
+	case DeliverableArtifact, "artifacts", "file", "files":
+		return DeliverableArtifact
+	default:
+		return strings.ToLower(strings.TrimSpace(kind))
+	}
 }
 
 func (a *Agent) validate(prefix string, problems *[]string) {
@@ -956,6 +1076,15 @@ func (a *AutoPromote) validate(prefix string, problems *[]string) {
 			*problems = append(*problems, prefix+".allowed_issue_labels labels must not be blank")
 			return
 		}
+	}
+	if strings.TrimSpace(a.SourceState) == "" {
+		*problems = append(*problems, prefix+".source_state must not be blank")
+	}
+	if strings.TrimSpace(a.PassState) == "" {
+		*problems = append(*problems, prefix+".pass_state must not be blank")
+	}
+	if strings.TrimSpace(a.ReworkState) == "" {
+		*problems = append(*problems, prefix+".rework_state must not be blank")
 	}
 }
 

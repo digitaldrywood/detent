@@ -260,6 +260,78 @@ func TestEvaluateAutoPromote(t *testing.T) {
 				Reason: AutoPromoteReasonReady,
 			},
 		},
+		{
+			name: "artifact gate promotes from summary without pull request",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-summary", nil)
+				issue.PullRequest = nil
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindArtifact},
+			},
+			input: AutoPromoteSummary{
+				ArtifactStatus: "valid",
+				MergeableState: "dirty",
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "artifact gate promotes from configured work item field",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-field", nil)
+				issue.Fields = map[string]string{"render_status": "Ready"}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate: gate.Config{
+					Kind: gate.KindArtifact,
+					Artifact: gate.ArtifactConfig{
+						StatusField:    "render_status",
+						PassStatuses:   []string{"ready"},
+						WaitStatuses:   []string{"queued"},
+						ReworkStatuses: []string{"recut"},
+					},
+				},
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionPromote,
+				Reason: AutoPromoteReasonReady,
+			},
+		},
+		{
+			name: "artifact gate routes rework from deliverable validation status",
+			issue: func() connector.Issue {
+				issue := autoPromoteTestIssue("issue-artifact-deliverable", nil)
+				issue.Deliverable = &connector.Deliverable{ValidationStatus: "invalid"}
+				return issue
+			}(),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindArtifact},
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionRework,
+				Reason: AutoPromoteReasonArtifactStatusRework,
+			},
+		},
+		{
+			name:  "artifact gate waits when status is missing",
+			issue: autoPromoteTestIssue("issue-artifact-missing", nil),
+			cfg: AutoPromoteConfig{
+				Enabled: true,
+				Gate:    gate.Config{Kind: gate.KindArtifact},
+			},
+			want: AutoPromoteDecision{
+				Action: AutoPromoteActionAwaitReview,
+				Reason: AutoPromoteReasonArtifactStatusMissing,
+			},
+		},
 	}
 
 	for _, tt := range tests {

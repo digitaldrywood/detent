@@ -106,6 +106,48 @@ func TestStateSnapshotCarriesIssueComments(t *testing.T) {
 	}
 }
 
+func TestStateSnapshotCarriesArtifactDeliverableMetadata(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+	state := newState(normalizeConfig(Config{}))
+	state.Pipeline = []connector.Issue{{
+		ID:         "ad-1",
+		Identifier: "store/ad-1",
+		Title:      "Summer sale video ad",
+		State:      "Review",
+		Metadata:   map[string]string{"store": "creswood"},
+		Deliverable: &connector.Deliverable{
+			Kind:             "video_ad",
+			Path:             "outputs/ad-1/manifest.json",
+			ReviewURL:        "http://127.0.0.1:8080/review/ad-1",
+			ValidationStatus: "pending",
+			ExternalID:       "creative-101",
+			Metadata:         map[string]string{"aspect_ratio": "9:16"},
+		},
+	}}
+
+	snapshot := state.Snapshot(now)
+	if len(snapshot.Pipeline) != 1 {
+		t.Fatalf("Pipeline len = %d, want 1", len(snapshot.Pipeline))
+	}
+	got := snapshot.Pipeline[0]
+	if got.Metadata["store"] != "creswood" {
+		t.Fatalf("Metadata = %#v", got.Metadata)
+	}
+	if got.Deliverable == nil {
+		t.Fatal("Deliverable = nil, want artifact deliverable")
+	}
+	if got.Deliverable.Kind != "video_ad" ||
+		got.Deliverable.Path != "outputs/ad-1/manifest.json" ||
+		got.Deliverable.ReviewURL != "http://127.0.0.1:8080/review/ad-1" ||
+		got.Deliverable.ValidationStatus != "pending" ||
+		got.Deliverable.ExternalID != "creative-101" ||
+		got.Deliverable.Metadata["aspect_ratio"] != "9:16" {
+		t.Fatalf("Deliverable = %#v", got.Deliverable)
+	}
+}
+
 func TestStateSnapshotIncludesAuthHealth(t *testing.T) {
 	t.Parallel()
 

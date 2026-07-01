@@ -1947,6 +1947,51 @@ func TestCheckDoctorSQLite(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorLocalSQLiteTrackerResolvesProjectRelativePath(t *testing.T) {
+	t.Parallel()
+
+	workdir := t.TempDir()
+	cfg := workflowconfig.Default()
+	cfg.Tracker.Kind = workflowconfig.TrackerLocalSQLite
+	cfg.Tracker.LocalSQLite.Path = ".detent/work-items.db"
+
+	var opened string
+	got := checkDoctorLocalSQLiteTracker(context.Background(), "video", globalconfig.Project{Workdir: workdir}, cfg, doctorDeps{
+		openSQLite: func(_ context.Context, path string) (doctorStore, error) {
+			opened = path
+			return fakeDoctorStore{}, nil
+		},
+	})
+	if got.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorOK, got)
+	}
+	want := filepath.Join(workdir, ".detent", "work-items.db")
+	if opened != want {
+		t.Fatalf("opened path = %q, want %q", opened, want)
+	}
+}
+
+func TestCheckDoctorFilesystemWorkspaceValidatesRootAndOutput(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	outputRoot := t.TempDir()
+	cfg := workflowconfig.Default()
+	cfg.Workspace.Kind = workflowconfig.WorkspaceFilesystem
+	cfg.Workspace.Root = root
+	cfg.Deliverable.OutputRoot = outputRoot
+
+	got := checkDoctorFilesystemWorkspace("video", cfg)
+	if got.Status != doctorOK {
+		t.Fatalf("Status = %s, want %s: %#v", got.Status, doctorOK, got)
+	}
+	for _, want := range []string{root, outputRoot, "artifact output"} {
+		if !strings.Contains(got.Detail, want) {
+			t.Fatalf("Detail = %q, want containing %q", got.Detail, want)
+		}
+	}
+}
+
 func TestDoctorSQLitePingErrorWrapsPingAndCloseErrors(t *testing.T) {
 	t.Parallel()
 

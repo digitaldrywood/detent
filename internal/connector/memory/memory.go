@@ -496,6 +496,11 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 		pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
 		issue.PullRequest = &pullRequest
 	}
+	if issue.Deliverable != nil {
+		deliverable := *issue.Deliverable
+		deliverable.Metadata = cloneStringMap(issue.Deliverable.Metadata)
+		issue.Deliverable = &deliverable
+	}
 	if issue.BlockedBy != nil {
 		issue.BlockedBy = append([]connector.BlockedRef(nil), issue.BlockedBy...)
 	}
@@ -513,6 +518,9 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 	}
 	if issue.Fields != nil {
 		issue.Fields = cloneStringMap(issue.Fields)
+	}
+	if issue.Metadata != nil {
+		issue.Metadata = cloneStringMap(issue.Metadata)
 	}
 	issue.CreatedAt = cloneTime(issue.CreatedAt)
 	issue.UpdatedAt = cloneTime(issue.UpdatedAt)

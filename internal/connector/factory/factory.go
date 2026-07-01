@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 )
 
@@ -20,6 +21,7 @@ var (
 type Config struct {
 	Kind                        string
 	Memory                      memory.Config
+	LocalSQLite                 local.Config
 	Endpoint                    string
 	APIKey                      string
 	GitHubTokenRefresh          githubconnector.TokenRefreshFunc
@@ -50,6 +52,8 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 	switch connector.Backend(kind) {
 	case connector.BackendMemory:
 		return memory.New(cfg.Memory), nil
+	case connector.BackendLocalSQLite:
+		return local.New(cfg.LocalSQLite)
 	case connector.BackendLinear:
 		return unimplementedConnector{name: kind}, nil
 	case connector.BackendGitHub:

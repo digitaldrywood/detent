@@ -449,7 +449,7 @@ func (o *Orchestrator) refreshTransitionSets(
 	}
 	if fetched.statusOK {
 		transitionIssues = append(transitionIssues, fetched.status...)
-		state.Pipeline = issuesInStates(fetched.status, prPipelineFetchStates())
+		state.Pipeline = issuesInStates(fetched.status, autoPromoteFetchStates(o.cfg.AutoPromote))
 		if !pipelineRefreshOK || !o.mergeWorkerLocalSlotsAvailable(state) {
 			state.Pipeline = mergeIssueSlices(state.Pipeline, previous.pipeline)
 		}

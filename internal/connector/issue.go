@@ -29,6 +29,8 @@ type Issue struct {
 	Labels           []string          `json:"labels" yaml:"labels"`
 	Comments         []IssueComment    `json:"comments,omitempty" yaml:"comments,omitempty"`
 	Fields           map[string]string `json:"fields,omitempty" yaml:"fields,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	Deliverable      *Deliverable      `json:"deliverable,omitempty" yaml:"deliverable,omitempty"`
 	AssignedToWorker bool              `json:"assigned_to_worker" yaml:"assigned_to_worker"`
 	CreatedAt        *time.Time        `json:"created_at,omitempty" yaml:"created_at,omitempty"`
 	UpdatedAt        *time.Time        `json:"updated_at,omitempty" yaml:"updated_at,omitempty"`
@@ -98,12 +100,22 @@ type IssueComment struct {
 	URL  string `json:"url,omitempty" yaml:"url,omitempty"`
 }
 
+type Deliverable struct {
+	Kind             string            `json:"kind,omitempty" yaml:"kind,omitempty"`
+	Path             string            `json:"path,omitempty" yaml:"path,omitempty"`
+	ReviewURL        string            `json:"review_url,omitempty" yaml:"review_url,omitempty"`
+	ValidationStatus string            `json:"validation_status,omitempty" yaml:"validation_status,omitempty"`
+	ExternalID       string            `json:"external_id,omitempty" yaml:"external_id,omitempty"`
+	Metadata         map[string]string `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+}
+
 func NewIssue() Issue {
 	return Issue{
 		BlockedBy:        []BlockedRef{},
 		Labels:           []string{},
 		Assignees:        []string{},
 		Fields:           map[string]string{},
+		Metadata:         map[string]string{},
 		AssignedToWorker: true,
 	}
 }

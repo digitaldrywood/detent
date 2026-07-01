@@ -10,37 +10,52 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 	t.Parallel()
 
 	tests := []struct {
-		name       string
-		issue      connector.Issue
-		finalState string
-		want       string
+		name               string
+		issue              connector.Issue
+		finalState         string
+		reviewState        string
+		requirePullRequest bool
+		want               string
 	}{
 		{
-			name:       "todo completed with open pull request advances to human review",
-			issue:      completionTransitionIssue("Todo", "OPEN"),
-			finalState: FinalStateCompleted,
-			want:       autoPromoteSourceState,
+			name:               "todo completed with open pull request advances to human review",
+			issue:              completionTransitionIssue("Todo", "OPEN"),
+			finalState:         FinalStateCompleted,
+			requirePullRequest: true,
+			want:               autoPromoteSourceState,
 		},
 		{
-			name:       "in progress completed with open pull request advances to human review",
-			issue:      completionTransitionIssue("In Progress", "OPEN"),
-			finalState: FinalStateCompleted,
-			want:       autoPromoteSourceState,
+			name:               "in progress completed with open pull request advances to human review",
+			issue:              completionTransitionIssue("In Progress", "OPEN"),
+			finalState:         FinalStateCompleted,
+			requirePullRequest: true,
+			want:               autoPromoteSourceState,
 		},
 		{
-			name:       "rework completed with open pull request waits for dispatch",
-			issue:      completionTransitionIssue("Rework", "OPEN"),
-			finalState: FinalStateCompleted,
+			name:               "artifact todo completed without pull request advances to configured review",
+			issue:              completionTransitionIssue("Todo", ""),
+			finalState:         FinalStateCompleted,
+			reviewState:        "Review",
+			requirePullRequest: false,
+			want:               "Review",
 		},
 		{
-			name:       "merging completed with open pull request waits for merge lifecycle",
-			issue:      completionTransitionIssue("Merging", "OPEN"),
-			finalState: FinalStateCompleted,
+			name:               "rework completed with open pull request waits for dispatch",
+			issue:              completionTransitionIssue("Rework", "OPEN"),
+			finalState:         FinalStateCompleted,
+			requirePullRequest: true,
 		},
 		{
-			name:       "todo completed without pull request waits",
-			issue:      completionTransitionIssue("Todo", ""),
-			finalState: FinalStateCompleted,
+			name:               "merging completed with open pull request waits for merge lifecycle",
+			issue:              completionTransitionIssue("Merging", "OPEN"),
+			finalState:         FinalStateCompleted,
+			requirePullRequest: true,
+		},
+		{
+			name:               "todo completed without pull request waits when pull request required",
+			issue:              completionTransitionIssue("Todo", ""),
+			finalState:         FinalStateCompleted,
+			requirePullRequest: true,
 		},
 	}
 
@@ -50,7 +65,18 @@ func TestCompletedActiveReviewTargetState(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			t.Parallel()
 
-			got := completedActiveReviewTargetState(tt.issue, tt.finalState, activeStates, terminalStates)
+			reviewState := tt.reviewState
+			if reviewState == "" {
+				reviewState = autoPromoteSourceState
+			}
+			got := completedActiveReviewTargetState(
+				tt.issue,
+				tt.finalState,
+				activeStates,
+				terminalStates,
+				reviewState,
+				tt.requirePullRequest,
+			)
 			if got != tt.want {
 				t.Fatalf("completedActiveReviewTargetState() = %q, want %q", got, tt.want)
 			}
