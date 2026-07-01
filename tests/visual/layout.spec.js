@@ -129,7 +129,7 @@ test("project diagnostics tabs cover operational states", async ({ page }, testI
   }
 });
 
-test("GitHub API health chrome covers key rate-limit states", async ({ page }, testInfo) => {
+test("GitHub API sidebar health covers key rate-limit states", async ({ page }, testInfo) => {
   const scenarios = [
     ["github-api-healthy", "GitHub API healthy"],
     ["github-api-warning", "GitHub primary quota low"],
@@ -141,15 +141,18 @@ test("GitHub API health chrome covers key rate-limit states", async ({ page }, t
     await openScenario(page, {
       runtime: screenshotsRuntime,
       scenario,
-      viewport: scenario === "github-api-secondary-backoff" ? narrowViewport : desktopViewport,
+      viewport: desktopViewport,
     });
 
     const indicator = page.locator("#github-api-health");
     await expect(indicator).toBeVisible();
+    await expect(indicator).toContainText("Health");
+    await indicator.locator("summary").click();
+    await expect(indicator).toHaveJSProperty("open", true);
     await expect(indicator).toContainText(label);
     await assertElementFitsViewport(page, "#github-api-health");
     await captureClipAndAttach(page, "#github-api-health", `${scenario}.png`, testInfo, {
-      maxHeight: 280,
+      maxHeight: 520,
     });
   }
 });

@@ -4290,7 +4290,7 @@ func TestServerEventsStreamsPublishedSnapshots(t *testing.T) {
 	}
 }
 
-func TestServerEventsStreamsGitHubAPIHealthChrome(t *testing.T) {
+func TestServerEventsStreamsSidebarGitHubAPIHealth(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 25, 14, 30, 0, 0, time.UTC)
@@ -4336,6 +4336,8 @@ func TestServerEventsStreamsGitHubAPIHealthChrome(t *testing.T) {
 	for _, want := range []string{
 		`id="github-api-health"`,
 		`data-preserve-details="github-api-health"`,
+		"Health",
+		"Backoff",
 		"GitHub secondary throttle active for pull requests/check runs",
 		"Primary REST quota is healthy: 4,878/5,000 remaining",
 		"Retrying at 14:35 UTC",

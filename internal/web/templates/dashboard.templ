@@ -149,7 +149,6 @@ templ DashboardShell(data DashboardShellData) {
 			}) {
 				@dashboardSidebar(data)
 				@sidebar.Inset(sidebar.InsetProps{Class: "dashboard-main min-w-0 px-3 py-3 sm:px-6 lg:px-8"}) {
-					@dashboardStatusStrip(data)
 					{ children... }
 				}
 			}
@@ -166,84 +165,103 @@ templ dashboardTopbarDivider() {
 	<span aria-hidden="true">/</span>
 }
 
-templ dashboardStatusStrip(data DashboardShellData) {
-	if dashboardStatusStripVisible(data) {
-		<div class="mx-auto mb-3 flex w-full max-w-7xl justify-end">
-			@GitHubAPIHealthChrome(data.Snapshot)
-		</div>
-	}
-}
-
-templ GitHubAPIHealthChrome(snapshot telemetry.Snapshot) {
+templ GitHubAPIHealthSidebarItem(snapshot telemetry.Snapshot) {
 	<details
 		id="github-api-health"
-		class={ "relative w-full max-w-full rounded-md border text-sm shadow-sm sm:w-fit " + gitHubAPIHealthClass(snapshot) }
+		class="group/health relative min-w-0"
 		sse-swap="github-api-health"
 		hx-swap="morph:outerHTML"
-		aria-label="GitHub API health"
+		aria-label={ gitHubAPIHealthAriaLabel(snapshot) }
+		title={ gitHubAPIHealthTitle(snapshot) }
 		data-preserve-details="github-api-health"
 		data-github-api-health-state={ string(gitHubAPIHealth(snapshot).State) }
 	>
-		<summary class="flex min-h-10 cursor-pointer list-none items-center gap-2 px-3 py-2 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent">
-			<span class="h-2.5 w-2.5 shrink-0 rounded-full bg-current"></span>
-			@icon.Github(icon.Props{Class: "size-4 shrink-0"})
-			<span class="grid min-w-0 flex-1 gap-0.5 text-left">
-				<span class="truncate font-semibold">{ gitHubAPIHealth(snapshot).Label }</span>
-				<span class="truncate font-mono text-[11px] opacity-85">{ gitHubAPIHealth(snapshot).Summary }</span>
+		<summary class="relative flex min-h-8 w-full cursor-pointer list-none items-center gap-2 overflow-hidden rounded-md p-2 text-left text-sm text-sidebar-foreground transition-[width,height,padding] hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-sidebar-ring group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:!size-8 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:!p-2">
+			@icon.Activity(icon.Props{Class: "size-4 shrink-0"})
+			<span class={ "size-2.5 shrink-0 rounded-full group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:absolute group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:right-1 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:top-1 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:size-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:ring-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:ring-sidebar-border " + gitHubAPIHealthDotClass(snapshot) } aria-hidden="true"></span>
+			<span class="min-w-0 flex-1 truncate group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden">Health</span>
+			<span class={ "ml-auto inline-flex min-h-5 shrink-0 items-center rounded-md border px-1.5 text-[11px] font-medium group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden " + gitHubAPIHealthBadgeClass(snapshot) }>
+				{ gitHubAPIHealthStateLabel(snapshot) }
 			</span>
-			@icon.ChevronDown(icon.Props{Class: "size-3.5 shrink-0"})
+			@icon.ChevronDown(icon.Props{Class: "size-3.5 shrink-0 transition-transform group-open/health:rotate-180 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden"})
 		</summary>
-		<div class="z-50 mt-2 grid w-full gap-3 rounded-md border border-border bg-popover p-3 text-popover-foreground shadow-sm sm:absolute sm:right-0 sm:w-[24rem]" role="region" aria-label="GitHub API health details">
-			<p class="text-xs text-muted-foreground">{ gitHubAPIHealth(snapshot).Detail }</p>
-			if len(gitHubAPIHealth(snapshot).Buckets) == 0 {
-				@dashboardEmptyState("No GitHub primary budget snapshot.", "REST and GraphQL primary buckets will appear after the tracker reports them.", "bg-muted-foreground")
-			} else {
-				<div class="grid gap-2">
-					for _, bucket := range gitHubAPIHealth(snapshot).Buckets {
-						<div class="grid gap-1 rounded-md bg-muted/60 px-2 py-2 text-xs">
-							<div class="flex items-center justify-between gap-3">
-								<span class="font-medium text-foreground">{ bucket.Name }</span>
-								<span class="font-mono text-muted-foreground">{ bucket.Reset }</span>
-							</div>
-							<div class="grid grid-cols-3 gap-2 font-mono text-muted-foreground">
-								<span>{ bucket.Remaining }</span>
-								<span>{ bucket.Used }</span>
-								<span>{ bucket.Limit }</span>
-							</div>
+		@GitHubAPIHealthDetails(snapshot)
+	</details>
+}
+
+templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
+	<div class="mt-1 grid max-h-[min(70vh,34rem)] min-w-0 gap-3 overflow-y-auto rounded-md border border-sidebar-border bg-sidebar-accent/30 p-3 text-sidebar-foreground shadow-sm group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden" role="region" aria-label="GitHub API health details">
+		<div class="grid min-w-0 gap-1">
+			<p class="text-sm font-semibold">{ gitHubAPIHealth(snapshot).Label }</p>
+			<p class="text-xs text-sidebar-foreground/70">{ gitHubAPIHealth(snapshot).Detail }</p>
+		</div>
+		if len(gitHubAPIHealth(snapshot).Buckets) == 0 {
+			@dashboardEmptyState("No GitHub primary budget snapshot.", "REST and GraphQL primary buckets will appear after the tracker reports them.", "bg-muted-foreground")
+		} else {
+			<div class="grid gap-2">
+				for _, bucket := range gitHubAPIHealth(snapshot).Buckets {
+					<div class="grid gap-1 rounded-md bg-background/60 px-2 py-2 text-xs">
+						<div class="flex items-center justify-between gap-3">
+							<span class="font-medium text-foreground">{ bucket.Name }</span>
+							<span class="font-mono text-muted-foreground">{ bucket.Reset }</span>
 						</div>
-					}
-				</div>
-			}
-			if len(gitHubAPIHealth(snapshot).Endpoints) == 0 {
-				@dashboardEmptyState("No endpoint backoff active.", "Secondary REST throttling will list paused endpoint families here.", "bg-success")
-			} else {
-				<div class="grid gap-2">
-					for _, endpoint := range gitHubAPIHealth(snapshot).Endpoints {
-						<div class="grid gap-1 rounded-md bg-muted/60 px-2 py-2 text-xs">
-							<div class="flex items-center justify-between gap-3">
-								<span class="truncate font-medium text-foreground">{ endpoint.EndpointFamily }</span>
-								<span class="font-mono text-muted-foreground">{ endpoint.Status }</span>
-							</div>
-							<div class="grid grid-cols-2 gap-2 font-mono text-muted-foreground">
-								<span>{ endpoint.Count }</span>
-								<span>{ endpoint.Remaining }</span>
-								<span>{ endpoint.RetryAfter }</span>
-								<span>{ endpoint.Retry }</span>
-							</div>
+						<div class="grid grid-cols-3 gap-2 font-mono text-muted-foreground">
+							<span>{ bucket.Remaining }</span>
+							<span>{ bucket.Used }</span>
+							<span>{ bucket.Limit }</span>
 						</div>
-					}
-				</div>
-			}
-			<div class="grid gap-2 border-t border-border pt-2">
-				for _, row := range gitHubAPIHealth(snapshot).Refreshes {
-					<div class="flex items-center justify-between gap-3 text-xs">
-						<span class="text-muted-foreground">{ row.Label }</span>
-						<span class="font-mono text-foreground">{ row.Value }</span>
 					</div>
 				}
 			</div>
+		}
+		if len(gitHubAPIHealth(snapshot).Endpoints) == 0 {
+			@dashboardEmptyState("No endpoint backoff active.", "Secondary REST throttling will list paused endpoint families here.", "bg-success")
+		} else {
+			<div class="grid gap-2">
+				for _, endpoint := range gitHubAPIHealth(snapshot).Endpoints {
+					<div class="grid gap-1 rounded-md bg-background/60 px-2 py-2 text-xs">
+						<div class="flex items-center justify-between gap-3">
+							<span class="truncate font-medium text-foreground">{ endpoint.EndpointFamily }</span>
+							<span class="font-mono text-muted-foreground">{ endpoint.Status }</span>
+						</div>
+						<div class="grid grid-cols-2 gap-2 font-mono text-muted-foreground">
+							<span>{ endpoint.Count }</span>
+							<span>{ endpoint.Remaining }</span>
+							<span>{ endpoint.RetryAfter }</span>
+							<span>{ endpoint.Retry }</span>
+						</div>
+					</div>
+				}
+			</div>
+		}
+		<div class="grid gap-2 border-t border-sidebar-border pt-2">
+			for _, row := range gitHubAPIHealth(snapshot).Refreshes {
+				<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-3 text-xs">
+					<span class="min-w-0 truncate text-sidebar-foreground/70">{ row.Label }</span>
+					<span class="min-w-0 max-w-[9rem] truncate text-right font-mono text-sidebar-foreground" title={ row.Value }>{ row.Value }</span>
+				</div>
+			}
 		</div>
-	</details>
+		if manualRefreshVisible(snapshot) {
+			<div class="grid gap-2 border-t border-sidebar-border pt-2">
+				<form class="flex justify-start" hx-post="/api/v1/refresh" hx-target="#github-api-manual-refresh-status" hx-swap="outerHTML">
+					@button.Button(button.Props{
+						Type:    button.TypeSubmit,
+						Variant: button.VariantOutline,
+						Size:    button.SizeSm,
+						Class:   "border-warning bg-background text-warning hover:border-accent hover:text-accent",
+						Attributes: templ.Attributes{
+							"aria-label": "Force tracker refresh",
+						},
+					}) {
+						@icon.RefreshCw(icon.Props{Class: "size-3.5 shrink-0"})
+						<span>Force refresh</span>
+					}
+				</form>
+				@ManualRefreshFeedbackWithID("github-api-manual-refresh-status", snapshot.Refresh.Manual)
+			</div>
+		}
+	</div>
 }
 
 templ kanbanDialogHost() {
@@ -1461,6 +1479,9 @@ templ DashboardSidebarContent(data DashboardShellData) {
 	@sidebar.Group() {
 		@sidebar.Menu() {
 			@sidebar.MenuItem() {
+				@GitHubAPIHealthSidebarItem(data.Snapshot)
+			}
+			@sidebar.MenuItem() {
 				@sidebar.MenuButton(sidebar.MenuButtonProps{
 					Href:       sidebarReportsPath(data),
 					IsActive:   sidebarStaticNavActive(data, "reports"),
@@ -2188,7 +2209,7 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 			if projectKanbanFeedbackVisible(data) {
 				<div id="kanban-feedback" role="status" aria-live="polite" class={ kanbanFeedbackClass(data.Kanban) }>{ kanbanFeedbackText(data.Kanban) }</div>
 			}
-			if !snapshotReady(data.Snapshot) {
+			if !snapshotReady(data.Snapshot) && !projectKanbanBoardLoaded(data) {
 				<div class="mt-3">
 					@snapshotReadiness(data.Snapshot)
 				</div>
@@ -3146,15 +3167,23 @@ templ dashboardHealth(data DashboardData) {
 }
 
 templ snapshotReadiness(snapshot telemetry.Snapshot) {
-	<section class="rounded-md border border-warning bg-warning-soft p-4 text-warning shadow-sm" aria-label="Snapshot readiness">
+	<section
+		class={ snapshotReadinessClass(snapshot) }
+		aria-label="Snapshot readiness"
+		if snapshotDegraded(snapshot) && !snapshotHasPriorTrackerSnapshot(snapshot) {
+			role="alert"
+		} else {
+			role="status"
+		}
+	>
 		<div class="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
 			<div class="flex min-w-0 items-start gap-3">
-			<span class={ "mt-1 h-2.5 w-2.5 rounded-full " + snapshotReadinessDotClass(snapshot) }></span>
-			<div class="min-w-0">
-				<h2 class="text-sm font-semibold">{ snapshotReadinessTitle(snapshot) }</h2>
-				<p class="mt-1 text-sm text-warning">{ snapshotReadinessDetail(snapshot) }</p>
+				<span class={ "mt-1 h-2.5 w-2.5 shrink-0 rounded-full " + snapshotReadinessDotClass(snapshot) }></span>
+				<div class="min-w-0">
+					<h2 class="text-sm font-semibold">{ snapshotReadinessTitle(snapshot) }</h2>
+					<p class={ "mt-1 text-sm " + snapshotReadinessDetailClass(snapshot) }>{ snapshotReadinessDetail(snapshot) }</p>
+				</div>
 			</div>
-		</div>
 			if manualRefreshVisible(snapshot) {
 				<div class="flex min-w-0 flex-col gap-2 sm:max-w-sm sm:items-end">
 					<form class="flex justify-start sm:justify-end" hx-post="/api/v1/refresh" hx-target="#manual-refresh-status" hx-swap="outerHTML">
@@ -3179,7 +3208,11 @@ templ snapshotReadiness(snapshot telemetry.Snapshot) {
 }
 
 templ ManualRefreshFeedback(attempt *telemetry.RefreshAttempt) {
-	<div id="manual-refresh-status" role="status" aria-live="polite" class="min-w-0">
+	@ManualRefreshFeedbackWithID("manual-refresh-status", attempt)
+}
+
+templ ManualRefreshFeedbackWithID(id string, attempt *telemetry.RefreshAttempt) {
+	<div id={ id } role="status" aria-live="polite" class="min-w-0">
 		if manualRefreshStatusVisible(attempt) {
 			<div class={ manualRefreshStatusClass(attempt) }>
 				<div class="font-semibold">{ manualRefreshStatusLabel(attempt) }</div>

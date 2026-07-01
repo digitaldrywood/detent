@@ -1512,6 +1512,27 @@ func snapshotReadinessDotClass(snapshot telemetry.Snapshot) string {
 	return "bg-warning"
 }
 
+func snapshotReadinessClass(snapshot telemetry.Snapshot) string {
+	base := "rounded-md border p-3 shadow-sm"
+	if snapshotDegraded(snapshot) && snapshotHasPriorTrackerSnapshot(snapshot) {
+		return base + " border-warning-soft bg-muted/40 text-foreground"
+	}
+	if snapshotDegraded(snapshot) {
+		return base + " border-danger-soft bg-danger-soft text-danger"
+	}
+	return base + " border-warning-soft bg-warning-soft text-warning"
+}
+
+func snapshotReadinessDetailClass(snapshot telemetry.Snapshot) string {
+	if snapshotDegraded(snapshot) && snapshotHasPriorTrackerSnapshot(snapshot) {
+		return "text-muted-foreground"
+	}
+	if snapshotDegraded(snapshot) {
+		return "text-danger"
+	}
+	return "text-warning"
+}
+
 func manualRefreshVisible(snapshot telemetry.Snapshot) bool {
 	return snapshotDegraded(snapshot)
 }
@@ -6169,6 +6190,11 @@ func gitHubAPIHealth(snapshot telemetry.Snapshot) gitHubAPIHealthView {
 		Refreshes: gitHubAPIHealthRefreshRows(snapshot.Refresh),
 	}
 	if !gitHubAPIHasSnapshot(snapshot.RateLimits) {
+		if gitHubAPITrackerDegraded(snapshot) {
+			view.State = gitHubAPIHealthStateWarning
+			view.Label = "GitHub tracker degraded"
+			view.Detail = gitHubAPITrackerDegradedDetail(snapshot)
+		}
 		return view
 	}
 
@@ -6255,8 +6281,55 @@ func gitHubAPIHealthClass(snapshot telemetry.Snapshot) string {
 	}
 }
 
-func dashboardStatusStripVisible(data DashboardShellData) bool {
-	return !data.Snapshot.GeneratedAt.IsZero() || gitHubAPIHasSnapshot(data.Snapshot.RateLimits)
+func gitHubAPIHealthDotClass(snapshot telemetry.Snapshot) string {
+	switch gitHubAPIHealth(snapshot).State {
+	case gitHubAPIHealthStateHealthy:
+		return "bg-success"
+	case gitHubAPIHealthStateWarning, gitHubAPIHealthStateBackoff:
+		return "bg-warning"
+	case gitHubAPIHealthStateExhausted:
+		return "bg-danger"
+	default:
+		return "bg-muted-foreground"
+	}
+}
+
+func gitHubAPIHealthBadgeClass(snapshot telemetry.Snapshot) string {
+	switch gitHubAPIHealth(snapshot).State {
+	case gitHubAPIHealthStateHealthy:
+		return "border-success-soft bg-success-soft text-success"
+	case gitHubAPIHealthStateWarning, gitHubAPIHealthStateBackoff:
+		return "border-warning-soft bg-warning-soft text-warning"
+	case gitHubAPIHealthStateExhausted:
+		return "border-danger-soft bg-danger-soft text-danger"
+	default:
+		return "border-sidebar-border bg-sidebar-accent text-sidebar-foreground/70"
+	}
+}
+
+func gitHubAPIHealthStateLabel(snapshot telemetry.Snapshot) string {
+	switch gitHubAPIHealth(snapshot).State {
+	case gitHubAPIHealthStateHealthy:
+		return "Healthy"
+	case gitHubAPIHealthStateWarning:
+		return "Warning"
+	case gitHubAPIHealthStateBackoff:
+		return "Backoff"
+	case gitHubAPIHealthStateExhausted:
+		return "Exhausted"
+	default:
+		return "Unknown"
+	}
+}
+
+func gitHubAPIHealthAriaLabel(snapshot telemetry.Snapshot) string {
+	view := gitHubAPIHealth(snapshot)
+	return "Health: " + view.Label + ". " + view.Summary
+}
+
+func gitHubAPIHealthTitle(snapshot telemetry.Snapshot) string {
+	view := gitHubAPIHealth(snapshot)
+	return view.Label + " - " + view.Summary
 }
 
 func gitHubAPIHasSnapshot(limits *telemetry.RateLimits) bool {
@@ -6674,6 +6747,12 @@ func gitHubAPIHealthRefreshRows(refresh telemetry.Refresh) []gitHubAPIHealthRefr
 	}
 	if refresh.NextRefreshAt != nil {
 		rows[1].Value = timeLabel(*refresh.NextRefreshAt)
+	}
+	if manualRefreshStatusVisible(refresh.Manual) {
+		rows = append(rows, gitHubAPIHealthRefreshRow{Label: "Manual refresh", Value: manualRefreshStatusLabel(refresh.Manual)})
+		if detail := manualRefreshStatusDetail(refresh.Manual); detail != "" {
+			rows = append(rows, gitHubAPIHealthRefreshRow{Label: "Manual detail", Value: detail})
+		}
 	}
 	return rows
 }

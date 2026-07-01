@@ -200,8 +200,8 @@ templ helpScript() {
 				const detailTarget = event.detail && event.detail.target
 				const target = detailTarget instanceof Element ? detailTarget : event.target
 				if (!(target instanceof Element)) return null
-				if (target.id === "snapshot" || target.id === "github-api-health") return target
-				return target.closest("#snapshot, #github-api-health")
+				if (target.id === "snapshot" || target.id === "dashboard-sidebar-live" || target.id === "github-api-health") return target
+				return target.closest("#snapshot, #dashboard-sidebar-live, #github-api-health")
 			}
 
 			function scrollKey(element) {
