@@ -1461,6 +1461,9 @@ func TestProjectSnapshotsRenderDegradedRefreshWithPriorSnapshotState(t *testing.
 			if !strings.Contains(html, `hx-target="#github-api-manual-refresh-status"`) {
 				t.Fatalf("kanban missing sidebar health manual refresh target:\n%s", html)
 			}
+			if !strings.Contains(html, `name="manual_refresh_status_id" value="github-api-manual-refresh-status"`) {
+				t.Fatalf("kanban missing sidebar health manual refresh status id:\n%s", html)
+			}
 		} else if !strings.Contains(html, `hx-target="#manual-refresh-status"`) {
 			t.Fatalf("%s missing page manual refresh target:\n%s", name, html)
 		}

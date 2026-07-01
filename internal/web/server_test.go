@@ -5634,6 +5634,30 @@ func TestAPIRefreshHTMXRendersRefusalFragment(t *testing.T) {
 			t.Fatalf("HTMX fragment missing %q:\n%s", want, body)
 		}
 	}
+
+	form := url.Values{`manual_refresh_status_id`: {`github-api-manual-refresh-status`}}
+	rec = httptest.NewRecorder()
+	req = httptest.NewRequest(http.MethodPost, "/api/v1/refresh", strings.NewReader(form.Encode()))
+	req.Header.Set("HX-Request", "true")
+	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	server.Handler().ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("POST /api/v1/refresh sidebar status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	body = rec.Body.String()
+	for _, want := range []string{
+		`id="github-api-manual-refresh-status"`,
+		"Refresh refused",
+		"GitHub REST backoff is active",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("HTMX sidebar fragment missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, `id="manual-refresh-status"`) {
+		t.Fatalf("HTMX sidebar fragment rendered legacy status id:\n%s", body)
+	}
 }
 
 func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {

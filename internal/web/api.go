@@ -23,6 +23,9 @@ import (
 const (
 	issueDescriptionLimit              = 250
 	gitHubGraphQLRefreshPauseRemaining = int64(100)
+	manualRefreshStatusID              = "manual-refresh-status"
+	gitHubAPIManualRefreshStatusID     = "github-api-manual-refresh-status"
+	manualRefreshStatusIDFormField     = "manual_refresh_status_id"
 )
 
 type Refresher interface {
@@ -204,7 +207,7 @@ func (s *Server) apiRefresh(c echo.Context) error {
 			s.refreshes.recordResponse(payload)
 		}
 		if htmxRequest(c) {
-			return render(c, templates.ManualRefreshFeedback(refreshAttemptFromResponse(payload)))
+			return renderManualRefreshFeedback(c, refreshAttemptFromResponse(payload))
 		}
 		return c.JSON(http.StatusTooManyRequests, payload)
 	}
@@ -236,9 +239,20 @@ func (s *Server) apiRefresh(c echo.Context) error {
 	}
 
 	if htmxRequest(c) {
-		return render(c, templates.ManualRefreshFeedback(refreshAttemptFromResponse(payload)))
+		return renderManualRefreshFeedback(c, refreshAttemptFromResponse(payload))
 	}
 	return c.JSON(http.StatusAccepted, payload)
+}
+
+func renderManualRefreshFeedback(c echo.Context, attempt *telemetry.RefreshAttempt) error {
+	return render(c, templates.ManualRefreshFeedbackWithID(manualRefreshStatusResponseID(c), attempt))
+}
+
+func manualRefreshStatusResponseID(c echo.Context) string {
+	if c.FormValue(manualRefreshStatusIDFormField) == gitHubAPIManualRefreshStatusID {
+		return gitHubAPIManualRefreshStatusID
+	}
+	return manualRefreshStatusID
 }
 
 func (s *Server) refreshRefusal(now time.Time) (RefreshResponse, bool) {

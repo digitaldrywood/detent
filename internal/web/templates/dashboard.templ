@@ -245,6 +245,7 @@ templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
 		if manualRefreshVisible(snapshot) {
 			<div class="grid gap-2 border-t border-sidebar-border pt-2">
 				<form class="flex justify-start" hx-post="/api/v1/refresh" hx-target="#github-api-manual-refresh-status" hx-swap="outerHTML">
+					<input type="hidden" name="manual_refresh_status_id" value="github-api-manual-refresh-status"/>
 					@button.Button(button.Props{
 						Type:    button.TypeSubmit,
 						Variant: button.VariantOutline,
