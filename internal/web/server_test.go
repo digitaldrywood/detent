@@ -4571,7 +4571,8 @@ func TestServerEventsStreamsSidebarUpdates(t *testing.T) {
 		"Detent - active, 7 running",
 		`data-dashboard-project-entry`,
 		`data-tui-sidebar="menu-badge"`,
-		">7</span>",
+		`aria-label="7 running"`,
+		">run 7</span>",
 	} {
 		if !strings.Contains(sidebarEvent.data, want) {
 			t.Fatalf("sidebar event missing %q:\n%s", want, sidebarEvent.data)

@@ -1823,6 +1823,100 @@ func TestDashboardRendersFleetKanbanReadOnlyBoard(t *testing.T) {
 	}
 }
 
+func TestDashboardKanbanCallsOutHiddenPopulatedLanes(t *testing.T) {
+	t.Parallel()
+
+	issues := make([]telemetry.Issue, 0, 8)
+	for i := 1; i <= 3; i++ {
+		issues = append(issues, telemetry.Issue{
+			ID:         "backlog-" + strconv.Itoa(i),
+			Identifier: "digitaldrywood/detent#" + strconv.Itoa(520+i),
+			ProjectID:  "detent",
+			Title:      "Backlog work " + strconv.Itoa(i),
+			State:      "Backlog",
+		})
+	}
+	for i := 1; i <= 5; i++ {
+		issues = append(issues, telemetry.Issue{
+			ID:         "done-" + strconv.Itoa(i),
+			Identifier: "digitaldrywood/detent#" + strconv.Itoa(780+i),
+			ProjectID:  "detent",
+			Title:      "Done work " + strconv.Itoa(i),
+			State:      "Done",
+		})
+	}
+
+	tests := []struct {
+		name      string
+		data      templates.DashboardData
+		wantLabel string
+		wantKey   string
+	}{
+		{
+			name: "fleet",
+			data: templates.DashboardData{
+				Title:     "Detent / Kanban",
+				ActiveNav: "kanban",
+				Kanban: templates.KanbanData{
+					Mode:           "read_only",
+					States:         []string{"Backlog", "Done"},
+					TerminalStates: []string{"Done"},
+				},
+				Snapshot: telemetry.Snapshot{BoardIssues: issues},
+			},
+			wantLabel: "Fleet Kanban",
+			wantKey:   `data-project-kanban-visibility-key="fleet"`,
+		},
+		{
+			name: "project",
+			data: templates.DashboardData{
+				Title:       "Detent",
+				ProjectID:   "detent",
+				ProjectName: "Detent",
+				Kanban: templates.KanbanData{
+					Mode:           "read_only",
+					States:         []string{"Backlog", "Done"},
+					TerminalStates: []string{"Done"},
+				},
+				Snapshot: telemetry.Snapshot{BoardIssues: issues},
+			},
+			wantLabel: "Project Kanban",
+			wantKey:   `data-project-kanban-visibility-key="project:detent"`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			html := renderProjectKanbanPage(t, tt.data)
+			section := dashboardTail(t, html, `aria-label="`+tt.wantLabel+`"`)
+			if endIndex := strings.Index(section, `<script>`); endIndex >= 0 {
+				section = section[:endIndex]
+			}
+			for _, want := range []string{
+				tt.wantLabel,
+				tt.wantKey,
+				`data-project-kanban-card-count-summary>3 visible / 8 total cards</span>`,
+				`data-project-kanban-hidden-populated-alert`,
+				`5 hidden cards in Done.`,
+				`Show populated lanes`,
+				`data-project-kanban-visibility-action="populated"`,
+				`data-project-kanban-visibility-count>1/2</span>`,
+				`data-project-kanban-lane-title="Done"`,
+				`data-project-kanban-lane-card-count="5"`,
+				`data-project-kanban-lane-visible="false"`,
+				`data-project-kanban-hidden-populated="true"`,
+				`Default hidden with 5 hidden cards`,
+			} {
+				if !strings.Contains(section, want) {
+					t.Fatalf("kanban section missing %q:\n%s", want, section)
+				}
+			}
+		})
+	}
+}
+
 func TestDashboardRendersFleetKanbanMoveForEligibleProjectCards(t *testing.T) {
 	t.Parallel()
 
