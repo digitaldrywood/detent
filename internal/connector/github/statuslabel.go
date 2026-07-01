@@ -83,6 +83,47 @@ func (c *Connector) fetchLabelIssuesByStates(ctx context.Context, stateNames []s
 	return issues, nil
 }
 
+func (c *Connector) FetchStatusDrift(ctx context.Context) (connector.StatusDrift, error) {
+	if !c.usesLabelStatus() {
+		return connector.StatusDrift{}, nil
+	}
+	if !validPullRequestRepo(c.repository) {
+		return connector.StatusDrift{}, ErrMissingRepository
+	}
+
+	drift := connector.StatusDrift{}
+	for page := 1; ; page++ {
+		var response []restIssue
+		if err := c.client.REST(ctx, http.MethodGet, restRepositoryOpenIssuesPath(c.repository, page), nil, &response); err != nil {
+			return connector.StatusDrift{}, fmt.Errorf("fetch github label status drift: %w", err)
+		}
+		if len(response) == 0 {
+			break
+		}
+		for _, item := range response {
+			if item.PullRequest != nil {
+				continue
+			}
+			ref := issueRef{Owner: c.repository.Owner, Name: c.repository.Name, Number: item.Number}
+			issue := githubIssueNodeFromREST(ref, item)
+			if strings.TrimSpace(issue.ID) == "" {
+				continue
+			}
+			c.cacheIssueRef(issue)
+			if !c.hasConfiguredStatusLabel(issue.Labels) {
+				drift.UntrackedOpen = append(drift.UntrackedOpen, c.buildLabelIssue(issue, ""))
+			}
+			if terminalStatus := c.terminalStatusFromLabels(issue.Labels); terminalStatus != "" {
+				drift.OpenTerminal = append(drift.OpenTerminal, c.buildLabelIssue(issue, terminalStatus))
+			}
+		}
+		if len(response) < repositoryIssuesPageSize {
+			break
+		}
+	}
+	return drift, nil
+}
+
 func (c *Connector) fetchLabelIssueByRef(ctx context.Context, ref issueRef) (connector.Issue, bool, error) {
 	issue, err := c.fetchRESTIssue(ctx, ref)
 	if err != nil {
@@ -270,6 +311,21 @@ func (c *Connector) labelStatusResolutionFromLabels(labels nodeConnection[label]
 	return c.labelStatusResolutionFromNames(labelNames(labels))
 }
 
+func (c *Connector) hasConfiguredStatusLabel(labels nodeConnection[label]) bool {
+	resolution := c.labelStatusResolutionFromLabels(labels)
+	return resolution.Status != "" || len(resolution.ConflictLabels) > 0
+}
+
+func (c *Connector) terminalStatusFromLabels(labels nodeConnection[label]) string {
+	statesByLabel := c.statusLabelStates(c.terminalStates)
+	for _, labelName := range labelNames(labels) {
+		if stateName, ok := statesByLabel[normalizeLabelName(labelName)]; ok {
+			return stateName
+		}
+	}
+	return ""
+}
+
 func (c *Connector) labelStatusResolutionFromNames(names []string) labelStatusResolution {
 	statesByLabel := c.statusLabelStates(c.configuredStatusStates())
 	seen := map[string]struct{}{}
@@ -437,6 +493,14 @@ func restRepositoryIssuesByLabelPath(repo pullRequestRepo, labelName string, pag
 	values := url.Values{}
 	values.Set("state", "all")
 	values.Set("labels", labelName)
+	values.Set("per_page", strconv.Itoa(repositoryIssuesPageSize))
+	values.Set("page", strconv.Itoa(page))
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/issues?" + values.Encode()
+}
+
+func restRepositoryOpenIssuesPath(repo pullRequestRepo, page int) string {
+	values := url.Values{}
+	values.Set("state", "open")
 	values.Set("per_page", strconv.Itoa(repositoryIssuesPageSize))
 	values.Set("page", strconv.Itoa(page))
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/issues?" + values.Encode()

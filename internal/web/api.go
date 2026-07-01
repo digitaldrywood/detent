@@ -443,6 +443,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceN
 		Refresh:         snapshot.Refresh,
 		Events:          recentEventsFromTelemetry(snapshot.Events, nil, "", ""),
 		Counts:          countsResponse(snapshot),
+		TrackerDrift:    snapshot.TrackerDrift,
 		Running:         runningEntries(snapshot.Running),
 		Retrying:        retryEntries(snapshot.Queue),
 		Blocked:         blockedEntries(snapshot.Blocked),
@@ -1273,6 +1274,7 @@ type stateAPIResponse struct {
 	Refresh         telemetry.Refresh           `json:"refresh"`
 	Events          []recentEventAPIResponse    `json:"events"`
 	Counts          countsAPIResponse           `json:"counts"`
+	TrackerDrift    telemetry.TrackerDrift      `json:"tracker_drift"`
 	Running         []runningAPIResponse        `json:"running"`
 	Retrying        []retryAPIResponse          `json:"retrying"`
 	Blocked         []blockedAPIResponse        `json:"blocked"`

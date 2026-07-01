@@ -76,6 +76,8 @@ type doctorCheck struct {
 	Hint                      string                                     `json:"hint,omitempty"`
 	AutoPromoteCandidates     []doctorAutoPromoteCandidateDiagnostic     `json:"auto_promote_candidates,omitempty"`
 	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
+	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
+	OpenTerminalIssues        []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
 }
 
 type doctorReport struct {
@@ -115,6 +117,14 @@ type doctorBlockedRecoveryCandidateDiagnostic struct {
 	TargetState     string `json:"target_state,omitempty"`
 	Reason          string `json:"reason"`
 	Detail          string `json:"detail,omitempty"`
+}
+
+type doctorStatusDriftIssueDiagnostic struct {
+	IssueID         string   `json:"issue_id,omitempty"`
+	IssueIdentifier string   `json:"issue_identifier,omitempty"`
+	IssueURL        string   `json:"issue_url,omitempty"`
+	State           string   `json:"state,omitempty"`
+	Labels          []string `json:"labels,omitempty"`
 }
 
 type doctorSummary struct {
@@ -837,6 +847,10 @@ func checkDoctorProjectWithProgress(
 		checks = append(checks, checkDoctorAutoPromote(ctx, id, workflow.Config, deps, time.Now()))
 	}
 	if workflow.Config.Tracker.Kind == workflowconfig.TrackerGitHub {
+		if workflow.Config.Tracker.GitHubStatusSource == workflowconfig.GitHubStatusSourceLabel {
+			setDoctorCurrentCheck("Project " + id + " label status drift")
+			checks = append(checks, checkDoctorLabelStatusDrift(ctx, id, workflow.Config, deps))
+		}
 		setDoctorCurrentCheck("Project " + id + " dependency auto-unblock")
 		checks = append(checks, checkDoctorDependencyAutoUnblock(ctx, id, workflow.Config, deps))
 		setDoctorCurrentCheck("Project " + id + " blocked recovery")
@@ -1071,6 +1085,137 @@ func fetchDoctorAutoPromoteIssues(
 		issues = issues[:doctorAutoPromoteSampleLimit]
 	}
 	return issues, nil
+}
+
+func checkDoctorLabelStatusDrift(ctx context.Context, id string, cfg workflowconfig.Config, deps doctorDeps) doctorCheck {
+	name := "Project " + id + " label status drift"
+	if cfg.Tracker.Kind != workflowconfig.TrackerGitHub || cfg.Tracker.GitHubStatusSource != workflowconfig.GitHubStatusSourceLabel {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "label status drift diagnostics skipped for " + cfg.Tracker.Kind + " tracker",
+		}
+	}
+
+	if deps.autoPromoteConnector == nil {
+		deps.autoPromoteConnector = defaultDoctorAutoPromoteConnector
+	}
+	projectConnector, err := deps.autoPromoteConnector(cfg)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("create label status drift diagnostic connector: %v", err),
+			Hint:   "Fix GitHub tracker credentials and repository configuration.",
+		}
+	}
+	if projectConnector == nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "create label status drift diagnostic connector: connector is nil",
+			Hint:   "Fix GitHub tracker configuration.",
+		}
+	}
+
+	check := checkDoctorLabelStatusDriftLive(ctx, name, projectConnector)
+	if err := closeDoctorAutoPromoteConnector(projectConnector); err != nil && check.Status != doctorFail {
+		check.Status = doctorWarn
+		check.Detail = check.Detail + "; connector close failed: " + err.Error()
+		check.Hint = "Rerun detent doctor and check local network resources."
+	}
+	return check
+}
+
+func checkDoctorLabelStatusDriftLive(
+	ctx context.Context,
+	name string,
+	projectConnector doctorAutoPromoteConnector,
+) doctorCheck {
+	reader, ok := projectConnector.(connector.StatusDriftReader)
+	if !ok {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: "GitHub connector does not support label status drift diagnostics",
+			Hint:   "Upgrade the configured connector or run a current Detent build.",
+		}
+	}
+	drift, err := reader.FetchStatusDrift(ctx)
+	if err != nil {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorFail,
+			Detail: fmt.Sprintf("fetch label status drift: %v", err),
+			Hint:   "Check GitHub repository issue access and rate limits.",
+		}
+	}
+
+	untracked := doctorStatusDriftDiagnostics(drift.UntrackedOpen)
+	openTerminal := doctorStatusDriftDiagnostics(drift.OpenTerminal)
+	if len(untracked) == 0 && len(openTerminal) == 0 {
+		return doctorCheck{
+			Name:   name,
+			Status: doctorOK,
+			Detail: "sampled open repository issues; 0 untracked open issues and 0 open terminal issues",
+		}
+	}
+
+	detail := fmt.Sprintf(
+		"label status drift: %d open issue(s) without configured status label",
+		len(untracked),
+	)
+	if len(untracked) > 0 {
+		detail += ": " + doctorStatusDriftIssueSummaries(untracked)
+	}
+	detail += fmt.Sprintf("; %d open issue(s) with terminal status label", len(openTerminal))
+	if len(openTerminal) > 0 {
+		detail += ": " + doctorStatusDriftIssueSummaries(openTerminal)
+	}
+	return doctorCheck{
+		Name:               name,
+		Status:             doctorWarn,
+		Detail:             detail,
+		Hint:               "Apply exactly one configured status label such as detent:backlog or detent:todo to untracked open issues; close or relabel open terminal-labeled issues.",
+		UntrackedIssues:    untracked,
+		OpenTerminalIssues: openTerminal,
+	}
+}
+
+func doctorStatusDriftDiagnostics(issues []connector.Issue) []doctorStatusDriftIssueDiagnostic {
+	out := make([]doctorStatusDriftIssueDiagnostic, 0, len(issues))
+	for _, issue := range issues {
+		out = append(out, doctorStatusDriftIssueDiagnostic{
+			IssueID:         strings.TrimSpace(issue.ID),
+			IssueIdentifier: strings.TrimSpace(issue.Identifier),
+			IssueURL:        strings.TrimSpace(issue.URL),
+			State:           strings.TrimSpace(issue.State),
+			Labels:          append([]string(nil), issue.Labels...),
+		})
+	}
+	return out
+}
+
+func doctorStatusDriftIssueSummaries(issues []doctorStatusDriftIssueDiagnostic) string {
+	parts := make([]string, 0, len(issues))
+	for _, issue := range issues {
+		parts = append(parts, doctorStatusDriftIssueSummary(issue))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func doctorStatusDriftIssueSummary(issue doctorStatusDriftIssueDiagnostic) string {
+	label := strings.TrimSpace(issue.IssueIdentifier)
+	if label == "" {
+		label = strings.TrimSpace(issue.IssueID)
+	}
+	if label == "" {
+		label = "sampled issue"
+	}
+	if url := strings.TrimSpace(issue.IssueURL); url != "" {
+		return label + " " + url
+	}
+	return label
 }
 
 func doctorAutoPromoteConfig(cfg workflowconfig.Config) orchestrator.AutoPromoteConfig {

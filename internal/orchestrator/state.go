@@ -26,6 +26,7 @@ type State struct {
 	LastWorkspaceCleanupAt   time.Time
 	RecentEvents             []telemetry.ActivityEvent
 	Auth                     connector.AuthHealth
+	StatusDrift              connector.StatusDrift
 	BoardIssues              []connector.Issue
 	Pipeline                 []connector.Issue
 	Running                  map[string]Running
@@ -161,6 +162,7 @@ func (s State) clone() State {
 		LastWorkspaceCleanupAt:   s.LastWorkspaceCleanupAt,
 		RecentEvents:             cloneActivityEvents(s.RecentEvents),
 		Auth:                     s.Auth,
+		StatusDrift:              cloneStatusDrift(s.StatusDrift),
 		BoardIssues:              cloneIssues(s.BoardIssues),
 		Pipeline:                 cloneIssues(s.Pipeline),
 		WorkAttempts:             cloneTelemetryWorkAttempts(s.WorkAttempts),
@@ -221,6 +223,13 @@ func (s State) clone() State {
 	maps.Copy(cloned.planRework, s.planRework)
 
 	return cloned
+}
+
+func cloneStatusDrift(drift connector.StatusDrift) connector.StatusDrift {
+	return connector.StatusDrift{
+		UntrackedOpen: cloneIssues(drift.UntrackedOpen),
+		OpenTerminal:  cloneIssues(drift.OpenTerminal),
+	}
 }
 
 func cloneIssue(issue connector.Issue) connector.Issue {

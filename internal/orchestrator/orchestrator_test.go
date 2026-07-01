@@ -83,6 +83,41 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	}
 }
 
+func TestRunRefreshesStatusDrift(t *testing.T) {
+	t.Parallel()
+
+	tracker := &statusDriftConnector{
+		fakeConnector: newFakeConnector(),
+		drift: connector.StatusDrift{
+			UntrackedOpen: []connector.Issue{{
+				ID:         "I_771",
+				Identifier: "digitaldrywood/detent#771",
+				Title:      "Untracked issue",
+			}},
+			OpenTerminal: []connector.Issue{{
+				ID:         "I_583",
+				Identifier: "digitaldrywood/detent#583",
+				Title:      "Done but open",
+				State:      "Done",
+			}},
+		},
+	}
+	orch := newTestOrchestrator(t, tracker, &staticRunner{})
+	stop := runOrchestrator(t, orch)
+	defer stop()
+
+	state := waitForState(t, orch, func(state orchestrator.State) bool {
+		return len(state.StatusDrift.UntrackedOpen) == 1 && len(state.StatusDrift.OpenTerminal) == 1
+	})
+
+	if state.StatusDrift.UntrackedOpen[0].Identifier != "digitaldrywood/detent#771" {
+		t.Fatalf("UntrackedOpen = %#v, want #771", state.StatusDrift.UntrackedOpen)
+	}
+	if state.StatusDrift.OpenTerminal[0].State != "Done" {
+		t.Fatalf("OpenTerminal = %#v, want Done issue", state.StatusDrift.OpenTerminal)
+	}
+}
+
 func TestRunCompletionTransitionsLabelModeIssueToHumanReview(t *testing.T) {
 	t.Parallel()
 
@@ -2113,6 +2148,19 @@ type authHealthConnector struct {
 
 func (c *authHealthConnector) AuthHealth() (connector.AuthHealth, bool) {
 	return c.health, c.ok
+}
+
+type statusDriftConnector struct {
+	*fakeConnector
+	drift connector.StatusDrift
+	err   error
+}
+
+func (c *statusDriftConnector) FetchStatusDrift(context.Context) (connector.StatusDrift, error) {
+	return connector.StatusDrift{
+		UntrackedOpen: cloneIssues(c.drift.UntrackedOpen),
+		OpenTerminal:  cloneIssues(c.drift.OpenTerminal),
+	}, c.err
 }
 
 type setFieldCall struct {

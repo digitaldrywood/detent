@@ -36,6 +36,16 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 			{ID: "detent-board", Identifier: "digitaldrywood/detent#6", ProjectID: "detent"},
 			{ID: "pyro-board", Identifier: "digitaldrywood/pyroapex#6", ProjectID: "pyroapex"},
 		},
+		TrackerDrift: telemetry.TrackerDrift{
+			UntrackedOpen: []telemetry.Issue{
+				{ID: "detent-untracked", Identifier: "digitaldrywood/detent#771", ProjectID: "detent"},
+				{ID: "pyro-untracked", Identifier: "digitaldrywood/pyroapex#71", ProjectID: "pyroapex"},
+			},
+			OpenTerminal: []telemetry.Issue{
+				{ID: "detent-terminal", Identifier: "digitaldrywood/detent#583", ProjectID: "detent"},
+				{ID: "pyro-terminal", Identifier: "digitaldrywood/pyroapex#58", ProjectID: "pyroapex"},
+			},
+		},
 		Running: []telemetry.Running{
 			{Issue: telemetry.Issue{ID: "detent-running", Identifier: "digitaldrywood/detent#2", ProjectID: "detent"}},
 			{Issue: telemetry.Issue{ID: "pyro-running", Identifier: "digitaldrywood/pyroapex#2", ProjectID: "pyroapex"}},
@@ -71,6 +81,12 @@ func TestProjectScopedSnapshotFiltersRowsAndUsesProjectTotals(t *testing.T) {
 	}
 	if len(got.BoardIssues) != 1 || got.BoardIssues[0].ID != "detent-board" {
 		t.Fatalf("BoardIssues = %#v, want only detent row", got.BoardIssues)
+	}
+	if len(got.TrackerDrift.UntrackedOpen) != 1 || got.TrackerDrift.UntrackedOpen[0].ID != "detent-untracked" {
+		t.Fatalf("TrackerDrift.UntrackedOpen = %#v, want only detent row", got.TrackerDrift.UntrackedOpen)
+	}
+	if len(got.TrackerDrift.OpenTerminal) != 1 || got.TrackerDrift.OpenTerminal[0].ID != "detent-terminal" {
+		t.Fatalf("TrackerDrift.OpenTerminal = %#v, want only detent row", got.TrackerDrift.OpenTerminal)
 	}
 	if len(got.Running) != 1 || got.Running[0].ID != "detent-running" {
 		t.Fatalf("Running = %#v, want only detent row", got.Running)

@@ -16,6 +16,7 @@ type Snapshot struct {
 	Refresh            Refresh             `json:"refresh"`
 	Events             []ActivityEvent     `json:"events,omitempty"`
 	Counts             Counts              `json:"counts"`
+	TrackerDrift       TrackerDrift        `json:"tracker_drift,omitzero"`
 	BoardIssues        []Issue             `json:"board_issues,omitempty"`
 	Pipeline           []Issue             `json:"pipeline,omitempty"`
 	Running            []Running           `json:"running"`
@@ -174,6 +175,15 @@ type Counts struct {
 	Queue     int `json:"queue"`
 	Blocked   int `json:"blocked"`
 	Completed int `json:"completed"`
+}
+
+type TrackerDrift struct {
+	UntrackedOpen []Issue `json:"untracked_open,omitempty"`
+	OpenTerminal  []Issue `json:"open_terminal,omitempty"`
+}
+
+func (d TrackerDrift) IsZero() bool {
+	return len(d.UntrackedOpen) == 0 && len(d.OpenTerminal) == 0
 }
 
 type Issue struct {

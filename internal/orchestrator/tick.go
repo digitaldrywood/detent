@@ -88,6 +88,7 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 	if !ok {
 		return
 	}
+	o.refreshStatusDrift(ctx, state, now, reserve)
 	fetched = retainUnavailablePullRequestsFromPrevious(fetched, previous)
 	fetched = applyStatusPullRequestHydrationBlocksToCandidates(fetched)
 
@@ -312,6 +313,40 @@ func (o *Orchestrator) fetchCandidateIssuesForTick(ctx context.Context, state *S
 		return fetcher.FetchCandidateIssuesByStates(ctx, states)
 	}
 	return o.connector.FetchCandidateIssues(ctx)
+}
+
+func (o *Orchestrator) refreshStatusDrift(
+	ctx context.Context,
+	state *State,
+	now time.Time,
+	reserve githubBudgetReserveDecision,
+) {
+	reader, ok := o.connector.(connector.StatusDriftReader)
+	if !ok {
+		state.StatusDrift = connector.StatusDrift{}
+		return
+	}
+	if reserve.degraded {
+		o.logger.Warn(
+			"tracker status drift polling skipped to preserve shared github budget",
+			"rest_remaining", reserve.restRemaining,
+			"rest_reserve", reserve.restReserve,
+			"graphql_remaining", reserve.graphRemaining,
+			"graphql_reserve", reserve.graphReserve,
+		)
+		return
+	}
+	drift, err := reader.FetchStatusDrift(ctx)
+	if err != nil {
+		o.logger.Warn("fetch tracker status drift failed", "error", err)
+		recordStateEvent(state, telemetry.ActivityEvent{
+			At:      now,
+			Event:   "tracker_status_drift_failed",
+			Message: "fetch tracker status drift failed: " + err.Error(),
+		})
+		return
+	}
+	state.StatusDrift = cloneStatusDrift(drift)
 }
 
 func (o *Orchestrator) candidateFetchStatesForTick(state *State) []string {

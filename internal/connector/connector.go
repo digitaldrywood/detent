@@ -78,6 +78,10 @@ type IssueStateProber interface {
 	FetchIssueStateProbe(context.Context, []string, int) ([]Issue, error)
 }
 
+type StatusDriftReader interface {
+	FetchStatusDrift(context.Context) (StatusDrift, error)
+}
+
 type IssueReferenceResolver interface {
 	FetchIssueStatesByIdentifiers(context.Context, []string) ([]Issue, error)
 }
@@ -88,4 +92,9 @@ type IssueParentResolver interface {
 
 type IssueChildrenResolver interface {
 	FetchIssueChildren(context.Context, string) ([]BlockedRef, error)
+}
+
+type StatusDrift struct {
+	UntrackedOpen []Issue `json:"untracked_open,omitempty" yaml:"untracked_open,omitempty"`
+	OpenTerminal  []Issue `json:"open_terminal,omitempty" yaml:"open_terminal,omitempty"`
 }
