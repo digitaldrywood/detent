@@ -10,12 +10,86 @@ func TestDefaultPricingTable(t *testing.T) {
 	t.Parallel()
 
 	pricing := DefaultPricingTable()
-	row, ok := pricing.Lookup(" GPT-5.5 ")
-	if !ok {
-		t.Fatal("DefaultPricingTable().Lookup() ok = false, want true")
+
+	tests := []struct {
+		model      string
+		wantInput  float64
+		wantOutput float64
+	}{
+		{
+			model:      " GPT-5.5 ",
+			wantInput:  0.000005,
+			wantOutput: 0.000030,
+		},
+		{
+			model:      "gpt-5.4",
+			wantInput:  0.0000025,
+			wantOutput: 0.000015,
+		},
+		{
+			model:      "gpt-5.4-mini",
+			wantInput:  0.00000075,
+			wantOutput: 0.0000045,
+		},
+		{
+			model:      "gpt-5.3-codex",
+			wantInput:  0.00000175,
+			wantOutput: 0.000014,
+		},
+		{
+			model:      "claude-fable-5",
+			wantInput:  0.000010,
+			wantOutput: 0.000050,
+		},
+		{
+			model:      "fable",
+			wantInput:  0.000010,
+			wantOutput: 0.000050,
+		},
+		{
+			model:      "claude-opus-4-8",
+			wantInput:  0.000005,
+			wantOutput: 0.000025,
+		},
+		{
+			model:      "opus",
+			wantInput:  0.000005,
+			wantOutput: 0.000025,
+		},
+		{
+			model:      "claude-sonnet-5",
+			wantInput:  0.000002,
+			wantOutput: 0.000010,
+		},
+		{
+			model:      "sonnet",
+			wantInput:  0.000002,
+			wantOutput: 0.000010,
+		},
+		{
+			model:      "claude-haiku-4-5",
+			wantInput:  0.000001,
+			wantOutput: 0.000005,
+		},
+		{
+			model:      "haiku",
+			wantInput:  0.000001,
+			wantOutput: 0.000005,
+		},
 	}
-	assertInDelta(t, row.USDPerInputToken, 0.000005)
-	assertInDelta(t, row.USDPerOutputToken, 0.000030)
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			t.Parallel()
+
+			row, ok := pricing.Lookup(tt.model)
+			if !ok {
+				t.Fatal("DefaultPricingTable().Lookup() ok = false, want true")
+			}
+			assertInDelta(t, row.USDPerInputToken, tt.wantInput)
+			assertInDelta(t, row.USDPerOutputToken, tt.wantOutput)
+		})
+	}
 }
 
 func TestDecodePricing(t *testing.T) {
@@ -154,6 +228,69 @@ func TestUsageCostUSD(t *testing.T) {
 			t.Parallel()
 
 			got, ok := UsageCostUSD(pricing, tt.model, tt.inputTokens, tt.outputTokens)
+			if ok != tt.wantOK {
+				t.Fatalf("UsageCostUSD() ok = %v, want %v", ok, tt.wantOK)
+			}
+			assertInDelta(t, got, tt.want)
+		})
+	}
+}
+
+func TestUsageCostUSDDefaultClaudePricing(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		model  string
+		want   float64
+		wantOK bool
+	}{
+		{
+			model:  "claude-fable-5",
+			want:   60,
+			wantOK: true,
+		},
+		{
+			model:  "fable",
+			want:   60,
+			wantOK: true,
+		},
+		{
+			model:  "claude-opus-4-8",
+			want:   30,
+			wantOK: true,
+		},
+		{
+			model:  "opus",
+			want:   30,
+			wantOK: true,
+		},
+		{
+			model:  "claude-sonnet-5",
+			want:   12,
+			wantOK: true,
+		},
+		{
+			model:  "sonnet",
+			want:   12,
+			wantOK: true,
+		},
+		{
+			model:  "claude-haiku-4-5",
+			want:   6,
+			wantOK: true,
+		},
+		{
+			model:  "haiku",
+			want:   6,
+			wantOK: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.model, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := UsageCostUSD(nil, tt.model, 1_000_000, 1_000_000)
 			if ok != tt.wantOK {
 				t.Fatalf("UsageCostUSD() ok = %v, want %v", ok, tt.wantOK)
 			}
