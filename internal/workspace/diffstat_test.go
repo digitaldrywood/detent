@@ -205,6 +205,64 @@ func TestLocalGitDiffIsBounded(t *testing.T) {
 	}
 }
 
+func TestLocalGitDiffUsesBaseRefForCleanBranch(t *testing.T) {
+	t.Parallel()
+
+	source := initSourceRepo(t)
+	root := filepath.Join(t.TempDir(), "workspaces")
+
+	backend, err := NewBackend(KindLocalGit, LocalGitOptions{
+		Root:       root,
+		SourceRoot: source,
+		AutoBranch: true,
+	})
+	if err != nil {
+		t.Fatalf("NewBackend() error = %v", err)
+	}
+	provider, ok := backend.(DiffProvider)
+	if !ok {
+		t.Fatal("NewBackend() did not return a DiffProvider")
+	}
+
+	info, err := backend.Create(context.Background(), Issue{Identifier: "DD-PR-DIFF"})
+	if err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+	baseRef := strings.TrimSpace(runGit(t, info.Path, "rev-parse", "HEAD"))
+	if err := os.WriteFile(filepath.Join(info.Path, "README.md"), []byte("source repo\nvalidator diff\n"), 0o600); err != nil {
+		t.Fatalf("write README.md: %v", err)
+	}
+	runGit(t, info.Path, "add", "README.md")
+	runGit(t, info.Path, "commit", "-m", "change readme")
+
+	cleanStatus := runGit(t, info.Path, "status", "--short")
+	if cleanStatus != "" {
+		t.Fatalf("git status = %q, want clean branch", cleanStatus)
+	}
+
+	withoutBase, err := provider.Diff(context.Background(), info, Issue{Identifier: "DD-PR-DIFF"}, 4096)
+	if err != nil {
+		t.Fatalf("Diff() without base error = %v", err)
+	}
+	if withoutBase.Stat != (DiffStat{}) || withoutBase.Patch != "" {
+		t.Fatalf("Diff() without base = %+v, want clean HEAD diff", withoutBase)
+	}
+
+	withBase, err := provider.Diff(context.Background(), info, Issue{Identifier: "DD-PR-DIFF", BaseRef: baseRef}, 4096)
+	if err != nil {
+		t.Fatalf("Diff() with base error = %v", err)
+	}
+	if withBase.Stat != (DiffStat{Files: 1, Added: 1}) {
+		t.Fatalf("Diff().Stat = %+v, want 1 file, 1 added", withBase.Stat)
+	}
+	if withBase.Truncated {
+		t.Fatal("Diff().Truncated = true, want false")
+	}
+	if !strings.Contains(withBase.Patch, "+validator diff") {
+		t.Fatalf("Diff().Patch missing committed branch change:\n%s", withBase.Patch)
+	}
+}
+
 func TestGitDiffStatMissingWorkspaceIsClassified(t *testing.T) {
 	t.Parallel()
 

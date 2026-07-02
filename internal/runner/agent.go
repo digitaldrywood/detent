@@ -1011,11 +1011,16 @@ func durationFromMillis(ms int) time.Duration {
 }
 
 func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
+	baseRef := ""
+	if issue.PullRequest != nil {
+		baseRef = strings.TrimSpace(issue.PullRequest.BaseSHA)
+	}
 	return workspace.Issue{
 		ProjectID:  projectID,
 		ID:         issue.ID,
 		Identifier: issue.Identifier,
 		BranchName: issue.BranchName,
+		BaseRef:    baseRef,
 	}
 }
 

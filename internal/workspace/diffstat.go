@@ -49,7 +49,7 @@ func (l *LocalGit) Diff(ctx context.Context, info Info, issue Issue, maxBytes in
 	if err != nil {
 		return Diff{}, err
 	}
-	return GitDiff(ctx, normalized.Path, maxBytes)
+	return GitDiffFrom(ctx, normalized.Path, issue.BaseRef, maxBytes)
 }
 
 func GitDiffStat(ctx context.Context, workspacePath string) (DiffStat, error) {
@@ -71,6 +71,10 @@ func GitDiffStat(ctx context.Context, workspacePath string) (DiffStat, error) {
 }
 
 func GitDiff(ctx context.Context, workspacePath string, maxBytes int) (Diff, error) {
+	return GitDiffFrom(ctx, workspacePath, "", maxBytes)
+}
+
+func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxBytes int) (Diff, error) {
 	if strings.TrimSpace(workspacePath) == "" {
 		return Diff{}, errors.New("workspace path is required")
 	}
@@ -98,7 +102,8 @@ func GitDiff(ctx context.Context, workspacePath string, maxBytes int) (Diff, err
 	if _, err := runGitAtWithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
 		return Diff{}, fmt.Errorf("git add intent to add: %w", err)
 	}
-	statOutput, err := runGitAtWithEnv(ctx, workspacePath, env, "diff", "--stat", "HEAD")
+	diffBase := gitDiffBase(ctx, workspacePath, baseRef)
+	statOutput, err := runGitAtWithEnv(ctx, workspacePath, env, "diff", "--stat", diffBase)
 	if err != nil {
 		return Diff{}, fmt.Errorf("git diff stat: %w", err)
 	}
@@ -110,7 +115,7 @@ func GitDiff(ctx context.Context, workspacePath string, maxBytes int) (Diff, err
 		return Diff{Stat: stat, Truncated: stat != (DiffStat{})}, nil
 	}
 
-	patch, truncated, err := gitDiffOutputWithinLimit(ctx, workspacePath, env, maxBytes)
+	patch, truncated, err := gitDiffOutputWithinLimit(ctx, workspacePath, env, diffBase, maxBytes)
 	if err != nil {
 		return Diff{}, err
 	}
@@ -142,8 +147,24 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string) (string, error
 	return output, nil
 }
 
-func gitDiffOutputWithinLimit(ctx context.Context, workspacePath string, env []string, maxBytes int) (string, bool, error) {
-	gitArgs := []string{"git", "-C", workspacePath, "diff", "HEAD"}
+func gitDiffBase(ctx context.Context, workspacePath string, baseRef string) string {
+	baseRef = strings.TrimSpace(baseRef)
+	if baseRef == "" {
+		return "HEAD"
+	}
+	output, err := runGitAt(ctx, workspacePath, "merge-base", baseRef, "HEAD")
+	if err != nil {
+		return baseRef
+	}
+	mergeBase := strings.TrimSpace(output)
+	if mergeBase == "" {
+		return baseRef
+	}
+	return mergeBase
+}
+
+func gitDiffOutputWithinLimit(ctx context.Context, workspacePath string, env []string, diffBase string, maxBytes int) (string, bool, error) {
+	gitArgs := []string{"git", "-C", workspacePath, "diff", diffBase}
 	cmd := exec.CommandContext(ctx, "git")
 	cmd.Args = gitArgs
 	cmd.WaitDelay = workspaceCommandWaitDelay

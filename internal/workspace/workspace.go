@@ -62,6 +62,7 @@ type Issue struct {
 	ID         string
 	Identifier string
 	BranchName string
+	BaseRef    string
 }
 
 type Info struct {
