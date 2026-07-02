@@ -654,6 +654,7 @@ func TestConnectorFetchCandidateIssuesAttachesPullRequestByBranchPrefix(t *testi
 	pr := byID["I_182"].PullRequest
 	if pr == nil {
 		t.Fatal("I_182 PullRequest = nil, want matching open PR")
+		return
 	}
 	if pr.Number != 187 || pr.State != "OPEN" || pr.BranchName != "detent/digitaldrywood_detent_182_followup" || pr.CIStatus != "pass" || pr.CodexReviewState != "COMMENTED" {
 		t.Fatalf("I_182 PullRequest = %#v, want PR 187 open followup", pr)
@@ -721,6 +722,7 @@ func TestConnectorFetchIssuesByStatesAttachesLinkedPullRequestBeforeBranchPrefix
 	pr := got[0].PullRequest
 	if pr == nil {
 		t.Fatal("PullRequest = nil, want linked PR")
+		return
 	}
 	if pr.Number != 376 || pr.URL != "https://github.com/corylanou/detent/pull/376" || pr.State != "OPEN" || pr.BranchName != "detent/detent-digitaldrywood_detent_370-e71678a9ca7e" || pr.CIStatus != "pass" || pr.CodexReviewState != "COMMENTED" {
 		t.Fatalf("PullRequest = %#v, want linked PR 376 with hydrated status", pr)
@@ -816,6 +818,7 @@ func TestConnectorFetchCandidateIssuesPaginatesPullRequestStatusRESTEndpoints(t 
 	pr := got[0].PullRequest
 	if pr == nil {
 		t.Fatal("PullRequest = nil, want matching PR")
+		return
 	}
 	if pr.CIStatus != "fail" || pr.CodexReviewState != "P1" {
 		t.Fatalf("PullRequest status = CI %q review %q, want fail/P1", pr.CIStatus, pr.CodexReviewState)
@@ -1004,6 +1007,7 @@ func TestConnectorFetchCandidateIssuesStopsBranchPullRequestHydrationAfterSecond
 		pr := byID[id].PullRequest
 		if pr == nil {
 			t.Fatalf("%s PullRequest = nil, want hydration marker", id)
+			continue
 		}
 		if pr.HydrationUnavailableReason != connector.PullRequestHydrationReasonSecondaryThrottled {
 			t.Fatalf("%s HydrationUnavailableReason = %q, want secondary_throttled", id, pr.HydrationUnavailableReason)
@@ -1301,6 +1305,7 @@ func TestConnectorFetchIssuesByStatesMarksLinkedPullRequestHydrationSecondaryThr
 	pr := got[0].PullRequest
 	if pr == nil {
 		t.Fatal("PullRequest = nil, want retained linked PR shell")
+		return
 	}
 	if pr.Number != 411 {
 		t.Fatalf("PullRequest.Number = %d, want 411", pr.Number)
@@ -1548,6 +1553,7 @@ func TestConnectorFetchIssuesByStatesSurfacesStaleCodexReview(t *testing.T) {
 	pr := got[0].PullRequest
 	if pr == nil {
 		t.Fatal("PullRequest = nil, want linked PR")
+		return
 	}
 	if pr.HeadSHA != "head-current" {
 		t.Fatalf("HeadSHA = %q, want head-current", pr.HeadSHA)
@@ -1922,6 +1928,7 @@ func TestConnectorFetchIssuesByStatesAttachesBlockedPullRequest(t *testing.T) {
 	pr := got[0].PullRequest
 	if pr == nil {
 		t.Fatal("PullRequest = nil, want linked blocked PR")
+		return
 	}
 	if pr.Number != 426 || pr.State != "OPEN" || pr.HeadSHA != "head-current" || pr.MergeableState != "dirty" || pr.CIStatus != "" || pr.CheckRunCount != 0 {
 		t.Fatalf("PullRequest = %#v, want dirty PR with no current-head checks", pr)
