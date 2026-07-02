@@ -99,29 +99,45 @@ func TestTickAutoUnblocksLightweightDependencyWaitingIssue(t *testing.T) {
 func TestTickAutoUnblocksDependencyFromIssueBody(t *testing.T) {
 	t.Parallel()
 
-	waiting := dependencyAutoUnblockIssue("issue-body-blocked", "Blocked")
-	waiting.Description = "Depends on: #415"
-	blocker := dependencyAutoUnblockIssue("issue-done", "Done")
-	blocker.Identifier = "digitaldrywood/detent#415"
-	tracker := &dependencyAutoUnblockConnector{
-		stateIssues: []connector.Issue{waiting},
-		blockers:    []connector.Issue{blocker},
+	tests := []struct {
+		name        string
+		description string
+	}{
+		{name: "depends on colon", description: "Depends on: #415"},
+		{name: "depends on no colon", description: "Depends on #415"},
+		{name: "blocked by no colon", description: "Blocked by #415"},
+		{name: "depends hyphen owner repo", description: "depends-on digitaldrywood/detent#415"},
 	}
-	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
-		Enabled:      true,
-		SourceStates: []string{"Blocked"},
-		TargetState:  "Todo",
-		Readiness:    DependencyReadinessTerminalOrMerged,
-	})
-	state := newState(orch.cfg)
 
-	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 3, 30, 0, time.UTC))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
 
-	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
-		t.Fatalf("updates = %#v, want Blocked issue moved to Todo", got)
-	}
-	if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#415") {
-		t.Fatalf("identifier calls = %#v, want dependency lookup", tracker.identifierCalls)
+			waiting := dependencyAutoUnblockIssue("issue-body-blocked", "Blocked")
+			waiting.Description = tt.description
+			blocker := dependencyAutoUnblockIssue("issue-done", "Done")
+			blocker.Identifier = "digitaldrywood/detent#415"
+			tracker := &dependencyAutoUnblockConnector{
+				stateIssues: []connector.Issue{waiting},
+				blockers:    []connector.Issue{blocker},
+			}
+			orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+				Enabled:      true,
+				SourceStates: []string{"Blocked"},
+				TargetState:  "Todo",
+				Readiness:    DependencyReadinessTerminalOrMerged,
+			})
+			state := newState(orch.cfg)
+
+			orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 3, 30, 0, time.UTC))
+
+			if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: waiting.ID, state: "Todo"}) {
+				t.Fatalf("updates = %#v, want Blocked issue moved to Todo", got)
+			}
+			if !slices.Contains(tracker.identifierCalls, "digitaldrywood/detent#415") {
+				t.Fatalf("identifier calls = %#v, want dependency lookup", tracker.identifierCalls)
+			}
+		})
 	}
 }
 

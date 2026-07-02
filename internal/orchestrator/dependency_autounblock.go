@@ -9,6 +9,7 @@ import (
 
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -31,7 +32,6 @@ type dependencyBlocker struct {
 }
 
 var (
-	dependencyTextLinePattern = regexp.MustCompile("(?i)^\\s*(?:>\\s*)?(?:[-*+]\\s+)?(?:[*_`~]+)?\\s*(?:blocked\\s+by|depends[\\s-]+on)(?:[*_`~]+)?\\s*:\\s*(?:[*_`~]+)?\\s*(.+)\\s*$")
 	dependencyIssueRefPattern = regexp.MustCompile(`(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(\d+)`)
 	dependencyIssueURLPattern = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)`)
 )
@@ -192,11 +192,11 @@ func dependencyLineRefs(body string, repo string) []connector.BlockedRef {
 	for _, line := range strings.FieldsFunc(body, func(r rune) bool {
 		return r == '\n' || r == '\r'
 	}) {
-		lineMatches := dependencyTextLinePattern.FindStringSubmatch(line)
-		if len(lineMatches) != 2 {
+		text, ok := dependencyline.Match(line)
+		if !ok {
 			continue
 		}
-		refs = append(refs, dependencyRefsInText(lineMatches[1], repo)...)
+		refs = append(refs, dependencyRefsInText(text, repo)...)
 	}
 	return refs
 }
