@@ -43,8 +43,7 @@ linters:
         - (github.com/labstack/echo/v4.Context).String
         - (github.com/labstack/echo/v4.Context).NoContent
         - (*encoding/json.Encoder).Encode
-        - (io.Closer).Close
-        - (*os.File).Close
+        - (io.ReadCloser).Close
         - (*net/http.Response.Body).Close
         - (*database/sql.DB).Close
         - (*database/sql.Rows).Close

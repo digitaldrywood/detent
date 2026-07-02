@@ -102,8 +102,14 @@ func copyGitIndex(indexPath string) (string, func(), error) {
 		}
 	}
 	if _, err := file.Write(data); err != nil {
-		_ = file.Close()
+		closeErr := file.Close()
 		cleanup()
+		if closeErr != nil {
+			return "", nil, errors.Join(
+				fmt.Errorf("write temporary git index: %w", err),
+				fmt.Errorf("close temporary git index: %w", closeErr),
+			)
+		}
 		return "", nil, fmt.Errorf("write temporary git index: %w", err)
 	}
 	if err := file.Close(); err != nil {

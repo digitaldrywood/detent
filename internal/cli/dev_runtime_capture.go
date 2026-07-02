@@ -575,12 +575,16 @@ Deterministic Detent demo capture workflow.
 `) + "\n"
 }
 
-func writeDemoTerminalCast(path string) error {
+func writeDemoTerminalCast(path string) (err error) {
 	file, err := os.Create(path)
 	if err != nil {
 		return fmt.Errorf("create terminal capture cast %s: %w", path, err)
 	}
-	defer file.Close()
+	defer func() {
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close terminal capture cast: %w", closeErr))
+		}
+	}()
 
 	header := struct {
 		Version   int               `json:"version"`
