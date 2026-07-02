@@ -31,6 +31,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector/factory"
 	ghconnector "github.com/digitaldrywood/detent/internal/connector/github"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
+	"github.com/digitaldrywood/detent/internal/dependencyline"
 	"github.com/digitaldrywood/detent/internal/orchestrator"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 )
@@ -2192,30 +2193,7 @@ func doctorDependencyBlockerIdentifier(refRepo string, number string, repo strin
 }
 
 func doctorDependencyLineReference(line string) (string, bool) {
-	line = strings.TrimSpace(line)
-	for {
-		switch {
-		case strings.HasPrefix(line, ">"):
-			line = strings.TrimSpace(strings.TrimPrefix(line, ">"))
-		case strings.HasPrefix(line, "- "):
-			line = strings.TrimSpace(strings.TrimPrefix(line, "- "))
-		case strings.HasPrefix(line, "* "):
-			line = strings.TrimSpace(strings.TrimPrefix(line, "* "))
-		case strings.HasPrefix(line, "+ "):
-			line = strings.TrimSpace(strings.TrimPrefix(line, "+ "))
-		default:
-			goto trimmed
-		}
-	}
-trimmed:
-	lower := strings.ToLower(line)
-	for _, prefix := range []string{"depends on:", "depends-on:", "blocked by:"} {
-		if strings.HasPrefix(lower, prefix) {
-			ref := strings.TrimSpace(line[len(prefix):])
-			return ref, ref != ""
-		}
-	}
-	return "", false
+	return dependencyline.Match(line)
 }
 
 func doctorDependencyBlockerLabels(blockers []doctorDependencyBlocker) []string {
