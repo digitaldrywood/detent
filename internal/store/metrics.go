@@ -45,30 +45,33 @@ func (s *sqliteStore) RecordWorkflowPhaseEvent(ctx context.Context, attrs Workfl
 	}
 
 	event, err := s.queries.CreateWorkflowPhaseEvent(ctx, sqlc.CreateWorkflowPhaseEventParams{
-		ProjectID:         projectID,
-		RunID:             nullPositiveInt64(attrs.RunID),
-		SessionID:         nullPositiveInt64(attrs.SessionID),
-		IssueID:           nullString(attrs.IssueID),
-		Identifier:        nullString(attrs.Identifier),
-		IssueURL:          nullString(attrs.IssueURL),
-		PrNumber:          nullOptionalInt64(attrs.PRNumber),
-		PhaseType:         phaseType,
-		PhaseName:         phaseName,
-		PreviousPhaseName: nullString(attrs.PreviousPhaseName),
-		Reason:            nullString(attrs.Reason),
-		Status:            nullString(attrs.Status),
-		StartedAt:         startedAt,
-		FinishedAt:        finishedAt,
-		DurationSeconds:   workflowEventDuration(attrs),
-		EventDay:          eventAt.UTC().Format("2006-01-02"),
-		CommandName:       nullString(attrs.CommandName),
-		ExitCode:          nullOptionalInt64(attrs.ExitCode),
-		Turns:             nonNegative(attrs.Turns),
-		InputTokens:       nonNegative(attrs.InputTokens),
-		OutputTokens:      nonNegative(attrs.OutputTokens),
-		TotalTokens:       nonNegative(attrs.TotalTokens),
-		EndpointFamily:    nullString(attrs.EndpointFamily),
-		MetadataJson:      metadataJSON,
+		ProjectID:             projectID,
+		RunID:                 nullPositiveInt64(attrs.RunID),
+		SessionID:             nullPositiveInt64(attrs.SessionID),
+		IssueID:               nullString(attrs.IssueID),
+		Identifier:            nullString(attrs.Identifier),
+		IssueURL:              nullString(attrs.IssueURL),
+		PrNumber:              nullOptionalInt64(attrs.PRNumber),
+		PhaseType:             phaseType,
+		PhaseName:             phaseName,
+		PreviousPhaseName:     nullString(attrs.PreviousPhaseName),
+		Reason:                nullString(attrs.Reason),
+		Status:                nullString(attrs.Status),
+		StartedAt:             startedAt,
+		FinishedAt:            finishedAt,
+		DurationSeconds:       workflowEventDuration(attrs),
+		EventDay:              eventAt.UTC().Format("2006-01-02"),
+		CommandName:           nullString(attrs.CommandName),
+		ExitCode:              nullOptionalInt64(attrs.ExitCode),
+		Turns:                 nonNegative(attrs.Turns),
+		InputTokens:           nonNegative(attrs.InputTokens),
+		CachedInputTokens:     nullNonNegativeInt64(attrs.CachedInputTokens),
+		OutputTokens:          nonNegative(attrs.OutputTokens),
+		ReasoningOutputTokens: nullNonNegativeInt64(attrs.ReasoningOutputTokens),
+		TotalTokens:           nonNegative(attrs.TotalTokens),
+		ModelContextWindow:    nullOptionalInt64(attrs.ModelContextWindow),
+		EndpointFamily:        nullString(attrs.EndpointFamily),
+		MetadataJson:          metadataJSON,
 	})
 	if err != nil {
 		return 0, fmt.Errorf("recording workflow phase event: %w", err)
@@ -158,15 +161,17 @@ type workflowMetricRow struct {
 }
 
 type workflowMetricBucket struct {
-	projectID      string
-	phaseType      string
-	phaseName      string
-	endpointFamily string
-	durations      []int64
-	inputTokens    int64
-	outputTokens   int64
-	totalTokens    int64
-	turns          int64
+	projectID             string
+	phaseType             string
+	phaseName             string
+	endpointFamily        string
+	durations             []int64
+	inputTokens           int64
+	cachedInputTokens     int64
+	outputTokens          int64
+	reasoningOutputTokens int64
+	totalTokens           int64
+	turns                 int64
 }
 
 type workflowLaneFlow struct {
@@ -226,7 +231,9 @@ func workflowMetricsReport(rows []workflowMetricRow, flowRows []workflowMetricRo
 		}
 		bucket.durations = append(bucket.durations, event.DurationSeconds)
 		bucket.inputTokens += event.InputTokens
+		bucket.cachedInputTokens += event.CachedInputTokens
 		bucket.outputTokens += event.OutputTokens
+		bucket.reasoningOutputTokens += event.ReasoningOutputTokens
 		bucket.totalTokens += event.TotalTokens
 		bucket.turns += event.Turns
 	}
@@ -684,20 +691,22 @@ func workflowPhaseMetricFromBucket(bucket *workflowMetricBucket) WorkflowPhaseMe
 	}
 
 	return WorkflowPhaseMetric{
-		ProjectID:      bucket.projectID,
-		PhaseType:      bucket.phaseType,
-		PhaseName:      bucket.phaseName,
-		Count:          count,
-		TotalSeconds:   total,
-		AverageSeconds: average,
-		P50Seconds:     percentileSeconds(bucket.durations, 0.50),
-		P90Seconds:     percentileSeconds(bucket.durations, 0.90),
-		P95Seconds:     percentileSeconds(bucket.durations, 0.95),
-		InputTokens:    bucket.inputTokens,
-		OutputTokens:   bucket.outputTokens,
-		TotalTokens:    bucket.totalTokens,
-		Turns:          bucket.turns,
-		EndpointFamily: bucket.endpointFamily,
+		ProjectID:             bucket.projectID,
+		PhaseType:             bucket.phaseType,
+		PhaseName:             bucket.phaseName,
+		Count:                 count,
+		TotalSeconds:          total,
+		AverageSeconds:        average,
+		P50Seconds:            percentileSeconds(bucket.durations, 0.50),
+		P90Seconds:            percentileSeconds(bucket.durations, 0.90),
+		P95Seconds:            percentileSeconds(bucket.durations, 0.95),
+		InputTokens:           bucket.inputTokens,
+		CachedInputTokens:     bucket.cachedInputTokens,
+		OutputTokens:          bucket.outputTokens,
+		ReasoningOutputTokens: bucket.reasoningOutputTokens,
+		TotalTokens:           bucket.totalTokens,
+		Turns:                 bucket.turns,
+		EndpointFamily:        bucket.endpointFamily,
 	}
 }
 
@@ -756,26 +765,28 @@ func workflowPhaseEventFromRow(row sqlc.WorkflowPhaseEvent) (WorkflowPhaseEvent,
 	}
 
 	event := WorkflowPhaseEvent{
-		ID:                row.ID,
-		ProjectID:         strings.TrimSpace(row.ProjectID),
-		IssueID:           row.IssueID.String,
-		Identifier:        row.Identifier.String,
-		IssueURL:          row.IssueURL.String,
-		PhaseType:         WorkflowPhaseType(row.PhaseType),
-		PhaseName:         row.PhaseName,
-		PreviousPhaseName: row.PreviousPhaseName.String,
-		Reason:            row.Reason.String,
-		Status:            row.Status.String,
-		StartedAt:         startedAt.UTC(),
-		FinishedAt:        finishedAt.UTC(),
-		DurationSeconds:   nonNegative(row.DurationSeconds),
-		CommandName:       row.CommandName.String,
-		Turns:             nonNegative(row.Turns),
-		InputTokens:       nonNegative(row.InputTokens),
-		OutputTokens:      nonNegative(row.OutputTokens),
-		TotalTokens:       nonNegative(row.TotalTokens),
-		EndpointFamily:    row.EndpointFamily.String,
-		MetadataJSON:      row.MetadataJson,
+		ID:                    row.ID,
+		ProjectID:             strings.TrimSpace(row.ProjectID),
+		IssueID:               row.IssueID.String,
+		Identifier:            row.Identifier.String,
+		IssueURL:              row.IssueURL.String,
+		PhaseType:             WorkflowPhaseType(row.PhaseType),
+		PhaseName:             row.PhaseName,
+		PreviousPhaseName:     row.PreviousPhaseName.String,
+		Reason:                row.Reason.String,
+		Status:                row.Status.String,
+		StartedAt:             startedAt.UTC(),
+		FinishedAt:            finishedAt.UTC(),
+		DurationSeconds:       nonNegative(row.DurationSeconds),
+		CommandName:           row.CommandName.String,
+		Turns:                 nonNegative(row.Turns),
+		InputTokens:           nonNegative(row.InputTokens),
+		CachedInputTokens:     nonNegative(row.CachedInputTokens.Int64),
+		OutputTokens:          nonNegative(row.OutputTokens),
+		ReasoningOutputTokens: nonNegative(row.ReasoningOutputTokens.Int64),
+		TotalTokens:           nonNegative(row.TotalTokens),
+		EndpointFamily:        row.EndpointFamily.String,
+		MetadataJSON:          row.MetadataJson,
 	}
 	if row.RunID.Valid {
 		event.RunID = row.RunID.Int64
@@ -790,6 +801,10 @@ func workflowPhaseEventFromRow(row sqlc.WorkflowPhaseEvent) (WorkflowPhaseEvent,
 	if row.ExitCode.Valid {
 		value := row.ExitCode.Int64
 		event.ExitCode = &value
+	}
+	if row.ModelContextWindow.Valid {
+		value := row.ModelContextWindow.Int64
+		event.ModelContextWindow = &value
 	}
 	return event, nil
 }

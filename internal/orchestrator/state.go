@@ -484,10 +484,32 @@ func cloneTelemetrySchedulerDecisions(values []telemetry.SchedulerDecision) []te
 
 func addTokenTotals(left, right TokenTotals) TokenTotals {
 	return TokenTotals{
-		InputTokens:    left.InputTokens + right.InputTokens,
-		OutputTokens:   left.OutputTokens + right.OutputTokens,
-		TotalTokens:    left.TotalTokens + right.TotalTokens,
-		RuntimeSeconds: left.RuntimeSeconds + right.RuntimeSeconds,
+		InputTokens:           left.InputTokens + right.InputTokens,
+		CachedInputTokens:     left.CachedInputTokens + right.CachedInputTokens,
+		OutputTokens:          left.OutputTokens + right.OutputTokens,
+		ReasoningOutputTokens: left.ReasoningOutputTokens + right.ReasoningOutputTokens,
+		TotalTokens:           left.TotalTokens + right.TotalTokens,
+		ModelContextWindow:    maxModelContextWindow(left.ModelContextWindow, right.ModelContextWindow),
+		RuntimeSeconds:        left.RuntimeSeconds + right.RuntimeSeconds,
+	}
+}
+
+func maxModelContextWindow(left *int64, right *int64) *int64 {
+	switch {
+	case left == nil && right == nil:
+		return nil
+	case left == nil:
+		value := *right
+		return &value
+	case right == nil:
+		value := *left
+		return &value
+	case *right > *left:
+		value := *right
+		return &value
+	default:
+		value := *left
+		return &value
 	}
 }
 

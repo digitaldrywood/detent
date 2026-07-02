@@ -57,14 +57,88 @@ func TestAgentBackendRunTurnSuccess(t *testing.T) {
 	if firstDelta.Delta != "hello " || secondDelta.Delta != "world" {
 		t.Fatalf("message deltas = %q %q, want hello/world", firstDelta.Delta, secondDelta.Delta)
 	}
-	if got := requireUpdate(t, updates, 4).Tokens; got.InputTokens != 10 || got.CachedInputTokens != 5 || got.OutputTokens != 4 || got.TotalTokens != 14 {
-		t.Fatalf("message token usage = %#v, want 10 input, 5 cached, 4 output, 14 total", got)
+	if got := requireUpdate(t, updates, 1).Model; got != "fable" {
+		t.Fatalf("TurnStarted model = %q, want fable", got)
 	}
-	if got := requireUpdate(t, updates, 5).Tokens; got.InputTokens != 12 || got.CachedInputTokens != 6 || got.OutputTokens != 6 || got.TotalTokens != 18 {
-		t.Fatalf("final token usage = %#v, want 12 input, 6 cached, 6 output, 18 total", got)
+	if got := requireUpdate(t, updates, 4).Tokens; got.InputTokens != 15 || got.CachedInputTokens != 3 || got.OutputTokens != 4 || got.ReasoningOutputTokens != 2 || got.TotalTokens != 19 {
+		t.Fatalf("message token usage = %#v, want 15 input, 3 cached, 4 output, 2 reasoning, 19 total", got)
 	}
-	if got := requireUpdate(t, updates, 6); got.Status != runner.FinalStateCompleted {
+	if got := requireUpdate(t, updates, 4).Model; got != "fable" {
+		t.Fatalf("message token model = %q, want fable", got)
+	}
+	if got := requireUpdate(t, updates, 5).Tokens; got.InputTokens != 18 || got.CachedInputTokens != 4 || got.OutputTokens != 6 || got.ReasoningOutputTokens != 3 || got.TotalTokens != 24 {
+		t.Fatalf("final token usage = %#v, want 18 input, 4 cached, 6 output, 3 reasoning, 24 total", got)
+	}
+	if got := requireUpdate(t, updates, 6); got.Status != runner.FinalStateCompleted || got.Model != "fable" {
 		t.Fatalf("TurnCompleted status = %q, want completed", got.Status)
+	}
+}
+
+func TestClaudeUsageAgentUsageNormalizesCacheTokens(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		usage claudeUsage
+		want  runner.AgentTokenUsage
+	}{
+		{
+			name: "cache creation and reads",
+			usage: claudeUsage{
+				InputTokens:              50,
+				CacheCreationInputTokens: 20,
+				CacheReadInputTokens:     100_000,
+				OutputTokens:             5,
+			},
+			want: runner.AgentTokenUsage{
+				InputTokens:       100_070,
+				CachedInputTokens: 100_000,
+				OutputTokens:      5,
+				TotalTokens:       100_075,
+			},
+		},
+		{
+			name: "reported total larger than normalized total",
+			usage: claudeUsage{
+				InputTokens:           10,
+				CachedInputTokens:     3,
+				OutputTokens:          4,
+				TotalTokens:           25,
+				ReasoningOutputTokens: 2,
+			},
+			want: runner.AgentTokenUsage{
+				InputTokens:           13,
+				CachedInputTokens:     3,
+				OutputTokens:          4,
+				ReasoningOutputTokens: 2,
+				TotalTokens:           25,
+			},
+		},
+		{
+			name: "reported total cannot undercount cache tokens",
+			usage: claudeUsage{
+				InputTokens:          10,
+				CacheReadInputTokens: 90,
+				OutputTokens:         4,
+				TotalTokens:          14,
+			},
+			want: runner.AgentTokenUsage{
+				InputTokens:       100,
+				CachedInputTokens: 90,
+				OutputTokens:      4,
+				TotalTokens:       104,
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			if got := tt.usage.agentUsage(); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("agentUsage() = %#v, want %#v", got, tt.want)
+			}
+		})
 	}
 }
 

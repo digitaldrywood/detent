@@ -13,7 +13,7 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 
 	transport := newFakeAppServerTransport([]Message{
 		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
-		responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5-codex-resolved"}}`),
 		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
 		notificationMessage(t, "turn/completed", `{"threadId":"thread-1","turn":{"id":"turn-1","status":"completed"}}`),
 	})
@@ -37,12 +37,16 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 		t.Fatalf("NewAgentBackend() error = %v", err)
 	}
 
+	var updates []runner.AgentUpdate
 	_, err = backend.RunTurn(context.Background(), runner.AgentTurnRequest{
 		Workspace:          "/tmp/detent-workspace",
 		Prompt:             "Ship issue #820",
 		Model:              "gpt-5-codex",
 		ExtraWritableRoots: []string{"/extra", "/existing", " "},
-	}, nil)
+	}, func(update runner.AgentUpdate) error {
+		updates = append(updates, update)
+		return nil
+	})
 	if err != nil {
 		t.Fatalf("RunTurn() error = %v", err)
 	}
@@ -63,4 +67,8 @@ func TestAgentBackendAppliesOptionsAndExtraWritableRoots(t *testing.T) {
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.networkAccess", true)
 	assertJSONContains(t, sent[3].Params, "sandboxPolicy.writableRoots", []any{"/existing", "/extra"})
 	assertJSONContains(t, sent[3].Params, "model", "gpt-5-codex")
+
+	if len(updates) == 0 || updates[0].Type != runner.AgentUpdateTurnStarted || updates[0].Model != "gpt-5-codex-resolved" {
+		t.Fatalf("updates = %#v, want resolved model on turn started", updates)
+	}
 }

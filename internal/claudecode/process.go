@@ -86,6 +86,7 @@ func (b *AgentBackend) RunTurn(
 		ThreadID: state.sessionID,
 		TurnID:   state.sessionID,
 		Status:   status,
+		Model:    state.model,
 	}); err != nil {
 		return result, err
 	}

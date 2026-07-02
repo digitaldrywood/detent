@@ -188,59 +188,68 @@ type SessionStart struct {
 }
 
 type SessionFinish struct {
-	CompletedAt    time.Time
-	Turns          int64
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	RuntimeSeconds int64
-	FinalState     string
-	Model          string
+	CompletedAt           time.Time
+	Turns                 int64
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	ModelContextWindow    *int64
+	RuntimeSeconds        int64
+	FinalState            string
+	Model                 string
 }
 
 type UsageEvent struct {
-	ProjectID      string
-	RunID          int64
-	SessionID      int64
-	IssueID        string
-	Identifier     string
-	PRNumber       *int64
-	Model          string
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	CostUSD        float64
-	RuntimeSeconds int64
-	StartedAt      time.Time
-	FinishedAt     time.Time
-	Outcome        string
+	ProjectID             string
+	RunID                 int64
+	SessionID             int64
+	IssueID               string
+	Identifier            string
+	PRNumber              *int64
+	Model                 string
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	ModelContextWindow    *int64
+	CostUSD               float64
+	RuntimeSeconds        int64
+	StartedAt             time.Time
+	FinishedAt            time.Time
+	Outcome               string
 }
 
 type WorkflowPhaseEvent struct {
-	ID                int64
-	ProjectID         string
-	RunID             int64
-	SessionID         int64
-	IssueID           string
-	Identifier        string
-	IssueURL          string
-	PRNumber          *int64
-	PhaseType         WorkflowPhaseType
-	PhaseName         string
-	PreviousPhaseName string
-	Reason            string
-	Status            string
-	StartedAt         time.Time
-	FinishedAt        time.Time
-	DurationSeconds   int64
-	CommandName       string
-	ExitCode          *int64
-	Turns             int64
-	InputTokens       int64
-	OutputTokens      int64
-	TotalTokens       int64
-	EndpointFamily    string
-	MetadataJSON      string
+	ID                    int64
+	ProjectID             string
+	RunID                 int64
+	SessionID             int64
+	IssueID               string
+	Identifier            string
+	IssueURL              string
+	PRNumber              *int64
+	PhaseType             WorkflowPhaseType
+	PhaseName             string
+	PreviousPhaseName     string
+	Reason                string
+	Status                string
+	StartedAt             time.Time
+	FinishedAt            time.Time
+	DurationSeconds       int64
+	CommandName           string
+	ExitCode              *int64
+	Turns                 int64
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	ModelContextWindow    *int64
+	EndpointFamily        string
+	MetadataJSON          string
 }
 
 type ValidatorVerdictKey struct {
@@ -435,24 +444,26 @@ type WorkflowMetricsReport struct {
 }
 
 type WorkflowPhaseMetric struct {
-	ProjectID       string
-	PhaseType       string
-	PhaseName       string
-	Count           int64
-	TotalSeconds    int64
-	AverageSeconds  int64
-	P50Seconds      int64
-	P90Seconds      int64
-	P95Seconds      int64
-	InputTokens     int64
-	OutputTokens    int64
-	TotalTokens     int64
-	Turns           int64
-	EndpointFamily  string
-	ActiveSeconds   int64
-	WaitSeconds     int64
-	ActivePercent   float64
-	Representatives []WorkflowRepresentativeRun
+	ProjectID             string
+	PhaseType             string
+	PhaseName             string
+	Count                 int64
+	TotalSeconds          int64
+	AverageSeconds        int64
+	P50Seconds            int64
+	P90Seconds            int64
+	P95Seconds            int64
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	Turns                 int64
+	EndpointFamily        string
+	ActiveSeconds         int64
+	WaitSeconds           int64
+	ActivePercent         float64
+	Representatives       []WorkflowRepresentativeRun
 }
 
 type WorkflowRepresentativeRun struct {
@@ -506,31 +517,40 @@ type UsageReport struct {
 }
 
 type UsageReportTotals struct {
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	RuntimeSeconds int64
-	Events         int64
-	Models         []UsageReportModel
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	ModelContextWindow    int64
+	RuntimeSeconds        int64
+	Events                int64
+	Models                []UsageReportModel
 }
 
 type UsageReportRow struct {
-	Key            string
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	RuntimeSeconds int64
-	Events         int64
-	Models         []UsageReportModel
+	Key                   string
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	ModelContextWindow    int64
+	RuntimeSeconds        int64
+	Events                int64
+	Models                []UsageReportModel
 }
 
 type UsageReportModel struct {
-	Model          string
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	RuntimeSeconds int64
-	Events         int64
+	Model                 string
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	ModelContextWindow    int64
+	RuntimeSeconds        int64
+	Events                int64
 }
 
 type CycleTimeReport struct {
@@ -561,21 +581,25 @@ type IssueIdentity struct {
 }
 
 type TokenSpend struct {
-	Date         string
-	InputTokens  int64
-	OutputTokens int64
-	TotalTokens  int64
-	Sessions     int64
-	ByModel      []ModelTokenSpend
+	Date                  string
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	Sessions              int64
+	ByModel               []ModelTokenSpend
 }
 
 type LifetimeTotals struct {
-	InputTokens    int64
-	OutputTokens   int64
-	TotalTokens    int64
-	RuntimeSeconds int64
-	Sessions       int64
-	Runs           int64
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	RuntimeSeconds        int64
+	Sessions              int64
+	Runs                  int64
 }
 
 type BudgetCostQuery struct {
@@ -591,11 +615,13 @@ type BudgetCostEvent struct {
 }
 
 type ModelTokenSpend struct {
-	Model        string
-	InputTokens  int64
-	OutputTokens int64
-	TotalTokens  int64
-	Sessions     int64
+	Model                 string
+	InputTokens           int64
+	CachedInputTokens     int64
+	OutputTokens          int64
+	ReasoningOutputTokens int64
+	TotalTokens           int64
+	Sessions              int64
 }
 
 type FairShareUsage struct {

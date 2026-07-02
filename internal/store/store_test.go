@@ -9,6 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/pressly/goose/v3"
+
 	"github.com/digitaldrywood/detent/internal/store/sqlc"
 )
 
@@ -44,6 +46,68 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	}
 	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions', 'validator_verdicts')"); got != 8 {
 		t.Fatalf("migrated table count = %d, want 8", got)
+	}
+}
+
+func TestCachedTokenTelemetryMigrationUpDown(t *testing.T) {
+	ctx := context.Background()
+	dbPath := filepath.Join(t.TempDir(), "detent.db")
+	db, err := sql.Open("sqlite", dbPath)
+	if err != nil {
+		t.Fatalf("sql.Open() error = %v", err)
+	}
+	db.SetMaxOpenConns(1)
+	t.Cleanup(func() {
+		if err := db.Close(); err != nil {
+			t.Fatalf("db.Close() error = %v", err)
+		}
+	})
+	if err := configureSQLite(ctx, db, 0); err != nil {
+		t.Fatalf("configureSQLite() error = %v", err)
+	}
+
+	migrationMu.Lock()
+	defer migrationMu.Unlock()
+	goose.SetBaseFS(migrationsFS)
+	defer goose.SetBaseFS(nil)
+	if err := goose.SetDialect("sqlite3"); err != nil {
+		t.Fatalf("goose.SetDialect() error = %v", err)
+	}
+	if err := goose.UpToContext(ctx, db, "migrations", 6); err != nil {
+		t.Fatalf("goose.UpToContext(6) error = %v", err)
+	}
+
+	if _, err := db.ExecContext(ctx, `
+INSERT INTO codex_sessions (started_at, input_tokens, output_tokens, total_tokens)
+VALUES ('2026-05-31T13:00:00Z', 10, 2, 12);
+INSERT INTO usage_events (project_id, model, input_tokens, output_tokens, total_tokens, runtime_seconds, started_at, finished_at, event_day, outcome, cost_usd)
+VALUES ('detent', 'gpt-5', 10, 2, 12, 5, '2026-05-31T13:00:00Z', '2026-05-31T13:00:05Z', '2026-05-31', 'completed', 0.001);
+INSERT INTO workflow_phase_events (project_id, phase_type, phase_name, started_at, duration_seconds, event_day, input_tokens, output_tokens, total_tokens)
+VALUES ('detent', 'agent_session', 'agent_active', '2026-05-31T13:00:00Z', 5, '2026-05-31', 10, 2, 12);
+`); err != nil {
+		t.Fatalf("seed old schema rows error = %v", err)
+	}
+	for _, table := range []string{"codex_sessions", "usage_events", "workflow_phase_events"} {
+		assertColumnAbsent(t, db, table, "cached_input_tokens")
+	}
+
+	if err := goose.UpToContext(ctx, db, "migrations", 8); err != nil {
+		t.Fatalf("goose.UpToContext(8) error = %v", err)
+	}
+	for _, table := range []string{"codex_sessions", "usage_events", "workflow_phase_events"} {
+		assertColumnPresent(t, db, table, "cached_input_tokens")
+		assertColumnPresent(t, db, table, "reasoning_output_tokens")
+		assertColumnPresent(t, db, table, "model_context_window")
+		assertTelemetryColumnsNull(t, db, table)
+	}
+
+	if err := goose.DownToContext(ctx, db, "migrations", 6); err != nil {
+		t.Fatalf("goose.DownToContext(6) error = %v", err)
+	}
+	for _, table := range []string{"codex_sessions", "usage_events", "workflow_phase_events"} {
+		assertColumnAbsent(t, db, table, "cached_input_tokens")
+		assertColumnAbsent(t, db, table, "reasoning_output_tokens")
+		assertColumnAbsent(t, db, table, "model_context_window")
 	}
 }
 
@@ -453,15 +517,20 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("StartSession() error = %v", err)
 			}
+			modelContextWindow := int64(200000)
 
 			if err := backend.FinishSession(ctx, sessionID, SessionFinish{
-				CompletedAt:    time.Date(2026, 5, 30, 12, 5, 0, 0, time.UTC),
-				Turns:          2,
-				InputTokens:    100,
-				OutputTokens:   25,
-				TotalTokens:    125,
-				RuntimeSeconds: 240,
-				FinalState:     "Human Review",
+				CompletedAt:           time.Date(2026, 5, 30, 12, 5, 0, 0, time.UTC),
+				Turns:                 2,
+				InputTokens:           100,
+				CachedInputTokens:     40,
+				OutputTokens:          25,
+				ReasoningOutputTokens: 7,
+				TotalTokens:           125,
+				ModelContextWindow:    &modelContextWindow,
+				RuntimeSeconds:        240,
+				FinalState:            "Human Review",
+				Model:                 "gpt-5-resolved",
 			}); err != nil {
 				t.Fatalf("FinishSession() error = %v", err)
 			}
@@ -506,18 +575,27 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 			if session.FinalState.String != "Human Review" {
 				t.Fatalf("session final_state = %q, want Human Review", session.FinalState.String)
 			}
-			if session.Model.String != "gpt-5" {
-				t.Fatalf("session model = %q, want gpt-5", session.Model.String)
+			if session.Model.String != "gpt-5-resolved" {
+				t.Fatalf("session model = %q, want gpt-5-resolved", session.Model.String)
+			}
+			if !session.CachedInputTokens.Valid || session.CachedInputTokens.Int64 != 40 {
+				t.Fatalf("session cached_input_tokens = %#v, want 40", session.CachedInputTokens)
+			}
+			if !session.ReasoningOutputTokens.Valid || session.ReasoningOutputTokens.Int64 != 7 {
+				t.Fatalf("session reasoning_output_tokens = %#v, want 7", session.ReasoningOutputTokens)
+			}
+			if !session.ModelContextWindow.Valid || session.ModelContextWindow.Int64 != modelContextWindow {
+				t.Fatalf("session model_context_window = %#v, want %d", session.ModelContextWindow, modelContextWindow)
 			}
 
 			spend, err := backend.DailyTokenSpend(ctx, time.Date(2026, 5, 30, 0, 0, 0, 0, time.UTC))
 			if err != nil {
 				t.Fatalf("DailyTokenSpend() error = %v", err)
 			}
-			if spend.InputTokens != 100 || spend.OutputTokens != 25 || spend.TotalTokens != 125 || spend.Sessions != 1 {
+			if spend.InputTokens != 100 || spend.CachedInputTokens != 40 || spend.OutputTokens != 25 || spend.ReasoningOutputTokens != 7 || spend.TotalTokens != 125 || spend.Sessions != 1 {
 				t.Fatalf("DailyTokenSpend() = %#v", spend)
 			}
-			if len(spend.ByModel) != 1 || spend.ByModel[0].Model != "gpt-5" {
+			if len(spend.ByModel) != 1 || spend.ByModel[0].Model != "gpt-5-resolved" || spend.ByModel[0].CachedInputTokens != 40 || spend.ByModel[0].ReasoningOutputTokens != 7 {
 				t.Fatalf("DailyTokenSpend().ByModel = %#v", spend.ByModel)
 			}
 
@@ -525,10 +603,10 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("IssueTokenSpend() error = %v", err)
 			}
-			if issueSpend.InputTokens != 100 || issueSpend.OutputTokens != 25 || issueSpend.TotalTokens != 125 || issueSpend.Sessions != 1 {
+			if issueSpend.InputTokens != 100 || issueSpend.CachedInputTokens != 40 || issueSpend.OutputTokens != 25 || issueSpend.ReasoningOutputTokens != 7 || issueSpend.TotalTokens != 125 || issueSpend.Sessions != 1 {
 				t.Fatalf("IssueTokenSpend() = %#v", issueSpend)
 			}
-			if len(issueSpend.ByModel) != 1 || issueSpend.ByModel[0].Model != "gpt-5" {
+			if len(issueSpend.ByModel) != 1 || issueSpend.ByModel[0].Model != "gpt-5-resolved" || issueSpend.ByModel[0].CachedInputTokens != 40 || issueSpend.ByModel[0].ReasoningOutputTokens != 7 {
 				t.Fatalf("IssueTokenSpend().ByModel = %#v", issueSpend.ByModel)
 			}
 
@@ -552,7 +630,7 @@ func TestStatsStoreRoundTrip(t *testing.T) {
 			if err != nil {
 				t.Fatalf("LifetimeTotals() error = %v", err)
 			}
-			if lifetime.InputTokens != 100 || lifetime.OutputTokens != 25 || lifetime.TotalTokens != 125 || lifetime.RuntimeSeconds != 240 {
+			if lifetime.InputTokens != 100 || lifetime.CachedInputTokens != 40 || lifetime.OutputTokens != 25 || lifetime.ReasoningOutputTokens != 7 || lifetime.TotalTokens != 125 || lifetime.RuntimeSeconds != 240 {
 				t.Fatalf("LifetimeTotals() token/runtime totals = %#v", lifetime)
 			}
 			if lifetime.Sessions != 1 || lifetime.Runs != 1 {
@@ -1202,6 +1280,7 @@ func TestFairShareStoreRoundTrip(t *testing.T) {
 func TestUsageLedgerRoundTrip(t *testing.T) {
 	t.Parallel()
 
+	modelContextWindow := int64(128000)
 	tests := []struct {
 		name  string
 		event UsageEvent
@@ -1209,21 +1288,24 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 		{
 			name: "persists usage event across reopen",
 			event: UsageEvent{
-				ProjectID:      " detent ",
-				RunID:          11,
-				SessionID:      42,
-				IssueID:        " I_kwDOSskuwc8AAAABD6psJQ ",
-				Identifier:     " digitaldrywood/detent#117 ",
-				PRNumber:       new(int64(91)),
-				Model:          " gpt-5-codex ",
-				InputTokens:    123,
-				OutputTokens:   45,
-				TotalTokens:    168,
-				CostUSD:        0.00123,
-				RuntimeSeconds: 73,
-				StartedAt:      time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC),
-				FinishedAt:     time.Date(2026, 5, 31, 13, 1, 13, 0, time.UTC),
-				Outcome:        " completed ",
+				ProjectID:             " detent ",
+				RunID:                 11,
+				SessionID:             42,
+				IssueID:               " I_kwDOSskuwc8AAAABD6psJQ ",
+				Identifier:            " digitaldrywood/detent#117 ",
+				PRNumber:              int64Ptr(91),
+				Model:                 " gpt-5-codex ",
+				InputTokens:           123,
+				CachedInputTokens:     67,
+				OutputTokens:          45,
+				ReasoningOutputTokens: 9,
+				TotalTokens:           168,
+				ModelContextWindow:    &modelContextWindow,
+				CostUSD:               0.00123,
+				RuntimeSeconds:        73,
+				StartedAt:             time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC),
+				FinishedAt:            time.Date(2026, 5, 31, 13, 1, 13, 0, time.UTC),
+				Outcome:               " completed ",
 			},
 		},
 	}
@@ -1270,6 +1352,15 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 			if got.InputTokens != 123 || got.OutputTokens != 45 || got.TotalTokens != 168 || got.RuntimeSeconds != 73 {
 				t.Fatalf("tokens/runtime = %d/%d/%d/%d", got.InputTokens, got.OutputTokens, got.TotalTokens, got.RuntimeSeconds)
 			}
+			if !got.CachedInputTokens.Valid || got.CachedInputTokens.Int64 != 67 {
+				t.Fatalf("cached_input_tokens = %#v, want 67", got.CachedInputTokens)
+			}
+			if !got.ReasoningOutputTokens.Valid || got.ReasoningOutputTokens.Int64 != 9 {
+				t.Fatalf("reasoning_output_tokens = %#v, want 9", got.ReasoningOutputTokens)
+			}
+			if !got.ModelContextWindow.Valid || got.ModelContextWindow.Int64 != modelContextWindow {
+				t.Fatalf("model_context_window = %#v, want %d", got.ModelContextWindow, modelContextWindow)
+			}
 			if got.CostUsd != 0.00123 {
 				t.Fatalf("cost_usd = %.12f, want 0.001230000000", got.CostUsd)
 			}
@@ -1307,6 +1398,15 @@ func TestUsageLedgerRoundTrip(t *testing.T) {
 			if persisted.TotalTokens != 168 {
 				t.Fatalf("persisted total_tokens = %d, want 168", persisted.TotalTokens)
 			}
+			if !persisted.CachedInputTokens.Valid || persisted.CachedInputTokens.Int64 != 67 {
+				t.Fatalf("persisted cached_input_tokens = %#v, want 67", persisted.CachedInputTokens)
+			}
+			if !persisted.ReasoningOutputTokens.Valid || persisted.ReasoningOutputTokens.Int64 != 9 {
+				t.Fatalf("persisted reasoning_output_tokens = %#v, want 9", persisted.ReasoningOutputTokens)
+			}
+			if !persisted.ModelContextWindow.Valid || persisted.ModelContextWindow.Int64 != modelContextWindow {
+				t.Fatalf("persisted model_context_window = %#v, want %d", persisted.ModelContextWindow, modelContextWindow)
+			}
 			if persisted.CostUsd != 0.00123 {
 				t.Fatalf("persisted cost_usd = %.12f, want 0.001230000000", persisted.CostUsd)
 			}
@@ -1331,20 +1431,26 @@ func TestUsageReportAggregates(t *testing.T) {
 			query: UsageReportQuery{By: UsageReportByDay, From: dateOnly(2026, 5, 31), To: dateOnly(2026, 6, 1)},
 			want: []UsageReportRow{
 				{
-					Key:            "2026-05-31",
-					InputTokens:    150,
-					OutputTokens:   75,
-					TotalTokens:    225,
-					RuntimeSeconds: 45,
-					Events:         2,
+					Key:                   "2026-05-31",
+					InputTokens:           150,
+					CachedInputTokens:     45,
+					OutputTokens:          75,
+					ReasoningOutputTokens: 15,
+					TotalTokens:           225,
+					ModelContextWindow:    200000,
+					RuntimeSeconds:        45,
+					Events:                2,
 				},
 				{
-					Key:            "2026-06-01",
-					InputTokens:    70,
-					OutputTokens:   30,
-					TotalTokens:    100,
-					RuntimeSeconds: 25,
-					Events:         1,
+					Key:                   "2026-06-01",
+					InputTokens:           70,
+					CachedInputTokens:     70,
+					OutputTokens:          30,
+					ReasoningOutputTokens: 12,
+					TotalTokens:           100,
+					ModelContextWindow:    100000,
+					RuntimeSeconds:        25,
+					Events:                1,
 				},
 			},
 		},
@@ -1353,12 +1459,15 @@ func TestUsageReportAggregates(t *testing.T) {
 			query: UsageReportQuery{By: UsageReportByProject, From: dateOnly(2026, 5, 31), To: dateOnly(2026, 6, 1)},
 			want: []UsageReportRow{
 				{
-					Key:            "detent",
-					InputTokens:    220,
-					OutputTokens:   105,
-					TotalTokens:    325,
-					RuntimeSeconds: 70,
-					Events:         3,
+					Key:                   "detent",
+					InputTokens:           220,
+					CachedInputTokens:     115,
+					OutputTokens:          105,
+					ReasoningOutputTokens: 27,
+					TotalTokens:           325,
+					ModelContextWindow:    200000,
+					RuntimeSeconds:        70,
+					Events:                3,
 				},
 			},
 		},
@@ -1367,20 +1476,26 @@ func TestUsageReportAggregates(t *testing.T) {
 			query: UsageReportQuery{By: UsageReportByIssue},
 			want: []UsageReportRow{
 				{
-					Key:            "digitaldrywood/detent#117",
-					InputTokens:    100,
-					OutputTokens:   50,
-					TotalTokens:    150,
-					RuntimeSeconds: 30,
-					Events:         1,
+					Key:                   "digitaldrywood/detent#117",
+					InputTokens:           100,
+					CachedInputTokens:     30,
+					OutputTokens:          50,
+					ReasoningOutputTokens: 10,
+					TotalTokens:           150,
+					ModelContextWindow:    200000,
+					RuntimeSeconds:        30,
+					Events:                1,
 				},
 				{
-					Key:            "digitaldrywood/detent#119",
-					InputTokens:    120,
-					OutputTokens:   55,
-					TotalTokens:    175,
-					RuntimeSeconds: 40,
-					Events:         2,
+					Key:                   "digitaldrywood/detent#119",
+					InputTokens:           120,
+					CachedInputTokens:     85,
+					OutputTokens:          55,
+					ReasoningOutputTokens: 17,
+					TotalTokens:           175,
+					ModelContextWindow:    128000,
+					RuntimeSeconds:        40,
+					Events:                2,
 				},
 				{
 					Key:            "unassigned",
@@ -1397,20 +1512,26 @@ func TestUsageReportAggregates(t *testing.T) {
 			query: UsageReportQuery{By: UsageReportByPR},
 			want: []UsageReportRow{
 				{
-					Key:            "detent#133",
-					InputTokens:    100,
-					OutputTokens:   50,
-					TotalTokens:    150,
-					RuntimeSeconds: 30,
-					Events:         1,
+					Key:                   "detent#133",
+					InputTokens:           100,
+					CachedInputTokens:     30,
+					OutputTokens:          50,
+					ReasoningOutputTokens: 10,
+					TotalTokens:           150,
+					ModelContextWindow:    200000,
+					RuntimeSeconds:        30,
+					Events:                1,
 				},
 				{
-					Key:            "detent#141",
-					InputTokens:    120,
-					OutputTokens:   55,
-					TotalTokens:    175,
-					RuntimeSeconds: 40,
-					Events:         2,
+					Key:                   "detent#141",
+					InputTokens:           120,
+					CachedInputTokens:     85,
+					OutputTokens:          55,
+					ReasoningOutputTokens: 17,
+					TotalTokens:           175,
+					ModelContextWindow:    128000,
+					RuntimeSeconds:        40,
+					Events:                2,
 				},
 				{
 					Key:            "pyroapex#141",
@@ -1427,20 +1548,26 @@ func TestUsageReportAggregates(t *testing.T) {
 			query: UsageReportQuery{By: UsageReportByModel, From: dateOnly(2026, 5, 31), To: dateOnly(2026, 6, 1)},
 			want: []UsageReportRow{
 				{
-					Key:            "gpt-5.4",
-					InputTokens:    150,
-					OutputTokens:   75,
-					TotalTokens:    225,
-					RuntimeSeconds: 45,
-					Events:         2,
+					Key:                   "gpt-5.4",
+					InputTokens:           150,
+					CachedInputTokens:     45,
+					OutputTokens:          75,
+					ReasoningOutputTokens: 15,
+					TotalTokens:           225,
+					ModelContextWindow:    200000,
+					RuntimeSeconds:        45,
+					Events:                2,
 				},
 				{
-					Key:            "gpt-5.4-mini",
-					InputTokens:    70,
-					OutputTokens:   30,
-					TotalTokens:    100,
-					RuntimeSeconds: 25,
-					Events:         1,
+					Key:                   "gpt-5.4-mini",
+					InputTokens:           70,
+					CachedInputTokens:     70,
+					OutputTokens:          30,
+					ReasoningOutputTokens: 12,
+					TotalTokens:           100,
+					ModelContextWindow:    100000,
+					RuntimeSeconds:        25,
+					Events:                1,
 				},
 			},
 		},
@@ -1600,52 +1727,64 @@ func seedCycleSession(t *testing.T, ctx context.Context, backend Store, seed cyc
 func seedUsageReportEvents(t *testing.T, ctx context.Context, backend Store) {
 	t.Helper()
 
+	contextWindow200K := int64(200000)
+	contextWindow128K := int64(128000)
+	contextWindow100K := int64(100000)
 	events := []UsageEvent{
 		{
-			ProjectID:      "detent",
-			IssueID:        "issue-117",
-			Identifier:     "digitaldrywood/detent#117",
-			PRNumber:       new(int64(133)),
-			Model:          "gpt-5.4",
-			InputTokens:    100,
-			OutputTokens:   50,
-			TotalTokens:    150,
-			RuntimeSeconds: 30,
-			StartedAt:      time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC),
-			FinishedAt:     time.Date(2026, 5, 31, 9, 1, 0, 0, time.UTC),
-			Outcome:        "completed",
+			ProjectID:             "detent",
+			IssueID:               "issue-117",
+			Identifier:            "digitaldrywood/detent#117",
+			PRNumber:              int64Ptr(133),
+			Model:                 "gpt-5.4",
+			InputTokens:           100,
+			CachedInputTokens:     30,
+			OutputTokens:          50,
+			ReasoningOutputTokens: 10,
+			TotalTokens:           150,
+			ModelContextWindow:    &contextWindow200K,
+			RuntimeSeconds:        30,
+			StartedAt:             time.Date(2026, 5, 31, 9, 0, 0, 0, time.UTC),
+			FinishedAt:            time.Date(2026, 5, 31, 9, 1, 0, 0, time.UTC),
+			Outcome:               "completed",
 		},
 		{
-			ProjectID:      "detent",
-			IssueID:        "issue-119",
-			Identifier:     "digitaldrywood/detent#119",
-			PRNumber:       new(int64(141)),
-			Model:          "gpt-5.4",
-			InputTokens:    50,
-			OutputTokens:   25,
-			TotalTokens:    75,
-			RuntimeSeconds: 15,
-			StartedAt:      time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC),
-			FinishedAt:     time.Date(2026, 5, 31, 10, 1, 0, 0, time.UTC),
-			Outcome:        "completed",
+			ProjectID:             "detent",
+			IssueID:               "issue-119",
+			Identifier:            "digitaldrywood/detent#119",
+			PRNumber:              int64Ptr(141),
+			Model:                 "gpt-5.4",
+			InputTokens:           50,
+			CachedInputTokens:     15,
+			OutputTokens:          25,
+			ReasoningOutputTokens: 5,
+			TotalTokens:           75,
+			ModelContextWindow:    &contextWindow128K,
+			RuntimeSeconds:        15,
+			StartedAt:             time.Date(2026, 5, 31, 10, 0, 0, 0, time.UTC),
+			FinishedAt:            time.Date(2026, 5, 31, 10, 1, 0, 0, time.UTC),
+			Outcome:               "completed",
 		},
 		{
-			ProjectID:      "detent",
-			IssueID:        "issue-119",
-			Identifier:     "digitaldrywood/detent#119",
-			PRNumber:       new(int64(141)),
-			Model:          "gpt-5.4-mini",
-			InputTokens:    70,
-			OutputTokens:   30,
-			TotalTokens:    100,
-			RuntimeSeconds: 25,
-			StartedAt:      time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC),
-			FinishedAt:     time.Date(2026, 6, 1, 11, 1, 0, 0, time.UTC),
-			Outcome:        "completed",
+			ProjectID:             "detent",
+			IssueID:               "issue-119",
+			Identifier:            "digitaldrywood/detent#119",
+			PRNumber:              int64Ptr(141),
+			Model:                 "gpt-5.4-mini",
+			InputTokens:           70,
+			CachedInputTokens:     70,
+			OutputTokens:          30,
+			ReasoningOutputTokens: 12,
+			TotalTokens:           100,
+			ModelContextWindow:    &contextWindow100K,
+			RuntimeSeconds:        25,
+			StartedAt:             time.Date(2026, 6, 1, 11, 0, 0, 0, time.UTC),
+			FinishedAt:            time.Date(2026, 6, 1, 11, 1, 0, 0, time.UTC),
+			Outcome:               "completed",
 		},
 		{
 			ProjectID:      "pyroapex",
-			PRNumber:       new(int64(141)),
+			PRNumber:       int64Ptr(141),
 			Model:          "",
 			InputTokens:    5,
 			OutputTokens:   2,
@@ -1673,13 +1812,20 @@ func assertUsageRows(t *testing.T, got []UsageReportRow, want []UsageReportRow) 
 	for i := range want {
 		if got[i].Key != want[i].Key ||
 			got[i].InputTokens != want[i].InputTokens ||
+			got[i].CachedInputTokens != want[i].CachedInputTokens ||
 			got[i].OutputTokens != want[i].OutputTokens ||
+			got[i].ReasoningOutputTokens != want[i].ReasoningOutputTokens ||
 			got[i].TotalTokens != want[i].TotalTokens ||
+			got[i].ModelContextWindow != want[i].ModelContextWindow ||
 			got[i].RuntimeSeconds != want[i].RuntimeSeconds ||
 			got[i].Events != want[i].Events {
 			t.Fatalf("row %d = %#v, want %#v", i, got[i], want[i])
 		}
 	}
+}
+
+func int64Ptr(value int64) *int64 {
+	return &value
 }
 
 func dateOnly(year int, month time.Month, day int) time.Time {
@@ -1708,4 +1854,51 @@ func queryInt(t *testing.T, db *sql.DB, query string) int64 {
 		t.Fatalf("querying %q: %v", query, err)
 	}
 	return value
+}
+
+func assertColumnPresent(t *testing.T, db *sql.DB, table string, column string) {
+	t.Helper()
+
+	if count := columnCount(t, db, table, column); count != 1 {
+		t.Fatalf("%s.%s column count = %d, want 1", table, column, count)
+	}
+}
+
+func assertColumnAbsent(t *testing.T, db *sql.DB, table string, column string) {
+	t.Helper()
+
+	if count := columnCount(t, db, table, column); count != 0 {
+		t.Fatalf("%s.%s column count = %d, want 0", table, column, count)
+	}
+}
+
+func columnCount(t *testing.T, db *sql.DB, table string, column string) int64 {
+	t.Helper()
+
+	var count int64
+	if err := db.QueryRow("SELECT COUNT(*) FROM pragma_table_info(?) WHERE name = ?", tableIdentifier(t, table), column).Scan(&count); err != nil {
+		t.Fatalf("querying %s.%s column: %v", table, column, err)
+	}
+	return count
+}
+
+func assertTelemetryColumnsNull(t *testing.T, db *sql.DB, table string) {
+	t.Helper()
+
+	query := "SELECT CASE WHEN cached_input_tokens IS NULL AND reasoning_output_tokens IS NULL AND model_context_window IS NULL THEN 1 ELSE 0 END FROM " + tableIdentifier(t, table) + " LIMIT 1"
+	if got := queryInt(t, db, query); got != 1 {
+		t.Fatalf("%s new telemetry columns null = %d, want 1", table, got)
+	}
+}
+
+func tableIdentifier(t *testing.T, table string) string {
+	t.Helper()
+
+	switch table {
+	case "codex_sessions", "usage_events", "workflow_phase_events":
+		return table
+	default:
+		t.Fatalf("unexpected table %q", table)
+		return ""
+	}
 }

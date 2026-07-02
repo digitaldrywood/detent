@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"log/slog"
+	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -32,6 +33,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 
 	startedAt := time.Date(2026, 5, 31, 13, 0, 0, 0, time.UTC)
 	completedAt := startedAt.Add(4 * time.Second)
+	modelContextWindow := int64(200000)
 	workspaceBackend := &fakeWorkspaceBackend{
 		info: workspace.Info{
 			Path:   workspacePath,
@@ -59,10 +61,14 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 				Type:     AgentUpdateTokenUsage,
 				ThreadID: "thread-1",
 				TurnID:   "turn-1",
+				Model:    "gpt-5-codex-resolved",
 				Tokens: AgentTokenUsage{
-					InputTokens:  100,
-					OutputTokens: 25,
-					TotalTokens:  125,
+					InputTokens:           100,
+					CachedInputTokens:     40,
+					OutputTokens:          25,
+					ReasoningOutputTokens: 7,
+					TotalTokens:           125,
+					ModelContextWindow:    &modelContextWindow,
 				},
 			},
 			{
@@ -109,8 +115,14 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 		Store:        sessionStore,
 		Pricing: budget.PricingTable{
 			"gpt-5-codex-high": {
-				USDPerInputToken:  0.000004,
-				USDPerOutputToken: 0.00002,
+				USDPerInputToken:       0.000004,
+				USDPerCachedInputToken: 0.000001,
+				USDPerOutputToken:      0.00002,
+			},
+			"gpt-5-codex-resolved": {
+				USDPerInputToken:       0.000004,
+				USDPerCachedInputToken: 0.000001,
+				USDPerOutputToken:      0.00002,
 			},
 		},
 		Now: now.Now,
@@ -146,6 +158,12 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 	if result.Tokens.TotalTokens != 125 || result.Tokens.RuntimeSeconds != 4 {
 		t.Fatalf("Tokens = %#v, want total 125 and runtime 4s", result.Tokens)
+	}
+	if result.Model != "gpt-5-codex-resolved" || result.Tokens.CachedInputTokens != 40 || result.Tokens.ReasoningOutputTokens != 7 {
+		t.Fatalf("RunResult telemetry = %#v, want resolved model and cached/reasoning tokens", result)
+	}
+	if result.Tokens.ModelContextWindow == nil || *result.Tokens.ModelContextWindow != modelContextWindow {
+		t.Fatalf("RunResult ModelContextWindow = %#v, want %d", result.Tokens.ModelContextWindow, modelContextWindow)
 	}
 	if len(usageUpdates) != 3 {
 		t.Fatalf("usage updates len = %d, want 3", len(usageUpdates))
@@ -231,8 +249,14 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if sessionStore.started.Identifier != "digitaldrywood/detent#22" || sessionStore.started.Model != "gpt-5-codex-high" {
 		t.Fatalf("SessionStart = %#v, want issue identity and model", sessionStore.started)
 	}
-	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 {
+	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 || sessionStore.finished.Model != "gpt-5-codex-resolved" {
 		t.Fatalf("SessionFinish = %#v, want completed session with tokens", sessionStore.finished)
+	}
+	if sessionStore.finished.CachedInputTokens != 40 || sessionStore.finished.ReasoningOutputTokens != 7 {
+		t.Fatalf("SessionFinish cached/reasoning = %#v, want 40/7", sessionStore.finished)
+	}
+	if sessionStore.finished.ModelContextWindow == nil || *sessionStore.finished.ModelContextWindow != modelContextWindow {
+		t.Fatalf("SessionFinish ModelContextWindow = %#v, want %d", sessionStore.finished.ModelContextWindow, modelContextWindow)
 	}
 	if sessionStore.usage.ProjectID != "detent" || sessionStore.usage.SessionID != 42 {
 		t.Fatalf("UsageEvent identity = %#v, want project detent and session 42", sessionStore.usage)
@@ -240,11 +264,14 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if sessionStore.usage.IssueID != "issue-22" || sessionStore.usage.Identifier != "digitaldrywood/detent#22" {
 		t.Fatalf("UsageEvent issue = %#v, want issue-22/digitaldrywood/detent#22", sessionStore.usage)
 	}
-	if sessionStore.usage.Model != "gpt-5-codex-high" || sessionStore.usage.TotalTokens != 125 {
-		t.Fatalf("UsageEvent totals = %#v, want model gpt-5-codex-high and total 125", sessionStore.usage)
+	if sessionStore.usage.Model != "gpt-5-codex-resolved" || sessionStore.usage.TotalTokens != 125 || sessionStore.usage.CachedInputTokens != 40 || sessionStore.usage.ReasoningOutputTokens != 7 {
+		t.Fatalf("UsageEvent totals = %#v, want resolved model, total 125, cached 40, reasoning 7", sessionStore.usage)
 	}
-	if sessionStore.usage.CostUSD != 0.0009 {
-		t.Fatalf("UsageEvent CostUSD = %.12f, want 0.000900000000", sessionStore.usage.CostUSD)
+	if sessionStore.usage.ModelContextWindow == nil || *sessionStore.usage.ModelContextWindow != modelContextWindow {
+		t.Fatalf("UsageEvent ModelContextWindow = %#v, want %d", sessionStore.usage.ModelContextWindow, modelContextWindow)
+	}
+	if math.Abs(sessionStore.usage.CostUSD-0.00078) > 0.000000000001 {
+		t.Fatalf("UsageEvent CostUSD = %.12f, want 0.000780000000", sessionStore.usage.CostUSD)
 	}
 	if sessionStore.usage.PRNumber == nil || *sessionStore.usage.PRNumber != 133 {
 		t.Fatalf("UsageEvent PRNumber = %v, want 133", sessionStore.usage.PRNumber)
@@ -267,8 +294,11 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if sessionStore.phase.StartedAt != startedAt || sessionStore.phase.FinishedAt != completedAt || sessionStore.phase.DurationSeconds != 4 {
 		t.Fatalf("WorkflowPhaseEvent timing = %#v, want 4s session", sessionStore.phase)
 	}
-	if sessionStore.phase.Turns != 1 || sessionStore.phase.InputTokens != 100 || sessionStore.phase.OutputTokens != 25 || sessionStore.phase.TotalTokens != 125 {
+	if sessionStore.phase.Turns != 1 || sessionStore.phase.InputTokens != 100 || sessionStore.phase.CachedInputTokens != 40 || sessionStore.phase.OutputTokens != 25 || sessionStore.phase.ReasoningOutputTokens != 7 || sessionStore.phase.TotalTokens != 125 {
 		t.Fatalf("WorkflowPhaseEvent usage = %#v, want turns and token totals", sessionStore.phase)
+	}
+	if sessionStore.phase.ModelContextWindow == nil || *sessionStore.phase.ModelContextWindow != modelContextWindow {
+		t.Fatalf("WorkflowPhaseEvent ModelContextWindow = %#v, want %d", sessionStore.phase.ModelContextWindow, modelContextWindow)
 	}
 }
 
@@ -770,11 +800,11 @@ func TestRunnerUsageCostWarnsForUnknownModel(t *testing.T) {
 		logger:  slog.New(slog.NewTextHandler(&logs, nil)),
 	}
 
-	cost := runner.usageCostUSD(" missing-model ", 10, 5)
+	cost := runner.usageCostUSD(" missing-model ", 10, 2, 5, "codex")
 	if cost != 0 {
 		t.Fatalf("usageCostUSD() = %.12f, want 0", cost)
 	}
-	if got := logs.String(); !strings.Contains(got, "usage event model pricing not found") || !strings.Contains(got, "missing-model") {
+	if got := logs.String(); !strings.Contains(got, "usage event model pricing not found") || !strings.Contains(got, "missing-model") || !strings.Contains(got, "backend_kind=codex") {
 		t.Fatalf("log output = %q, want unknown pricing warning", got)
 	}
 }
@@ -790,7 +820,7 @@ func TestRunnerUsageCostSkipsPricingWarningForEmptyModel(t *testing.T) {
 		})),
 	}
 
-	cost := runner.usageCostUSD(" \t", 10, 5)
+	cost := runner.usageCostUSD(" \t", 10, 2, 5, "claude_code")
 	if cost != 0 {
 		t.Fatalf("usageCostUSD() = %.12f, want 0", cost)
 	}
@@ -800,6 +830,9 @@ func TestRunnerUsageCostSkipsPricingWarningForEmptyModel(t *testing.T) {
 	}
 	if !strings.Contains(got, "usage event model unavailable; skipping cost pricing") {
 		t.Fatalf("log output = %q, want empty-model diagnostic", got)
+	}
+	if !strings.Contains(got, "backend_kind=claude_code") {
+		t.Fatalf("log output = %q, want backend kind diagnostic", got)
 	}
 }
 

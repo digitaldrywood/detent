@@ -17,7 +17,7 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 
 	transport := newFakeAppServerTransport([]Message{
 		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
-		responseMessage(t, 2, `{"thread":{"id":"thread-1"}}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-1","model":"gpt-5-codex-resolved"}}`),
 		responseMessage(t, 3, `{"turn":{"id":"turn-1"}}`),
 		notificationMessage(t, "item/agentMessage/delta", `{
 			"threadId":"thread-1",
@@ -132,7 +132,7 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	if updates[0].Type != UpdateProcessStarted || updates[0].ProcessIdentity != "4242" {
 		t.Fatalf("updates[0] = %#v, want process identity", updates[0])
 	}
-	if updates[1].Type != UpdateTurnStarted || updates[1].ThreadID != "thread-1" || updates[1].TurnID != "turn-1" {
+	if updates[1].Type != UpdateTurnStarted || updates[1].ThreadID != "thread-1" || updates[1].TurnID != "turn-1" || updates[1].Model != "gpt-5-codex-resolved" {
 		t.Fatalf("updates[1] = %#v, want turn started", updates[1])
 	}
 	if updates[2].Type != UpdateAgentMessageDelta || updates[2].Delta != "hello" {

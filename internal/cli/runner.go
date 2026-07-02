@@ -609,13 +609,15 @@ func lifetimeTotals(ctx context.Context, source lifetimeTotalsSource) telemetry.
 		return telemetry.LifetimeTotals{DegradedReason: "read runtime store lifetime totals: " + err.Error()}
 	}
 	return telemetry.LifetimeTotals{
-		Available:      true,
-		InputTokens:    totals.InputTokens,
-		OutputTokens:   totals.OutputTokens,
-		TotalTokens:    totals.TotalTokens,
-		RuntimeSeconds: totals.RuntimeSeconds,
-		Sessions:       totals.Sessions,
-		Runs:           totals.Runs,
+		Available:             true,
+		InputTokens:           totals.InputTokens,
+		CachedInputTokens:     totals.CachedInputTokens,
+		OutputTokens:          totals.OutputTokens,
+		ReasoningOutputTokens: totals.ReasoningOutputTokens,
+		TotalTokens:           totals.TotalTokens,
+		RuntimeSeconds:        totals.RuntimeSeconds,
+		Sessions:              totals.Sessions,
+		Runs:                  totals.Runs,
 	}
 }
 
