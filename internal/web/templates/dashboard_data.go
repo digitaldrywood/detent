@@ -2184,11 +2184,6 @@ func projectKanbanActionsEnabled(data DashboardData) bool {
 	return false
 }
 
-func projectKanbanFeedbackVisible(data DashboardData) bool {
-	return strings.TrimSpace(data.Kanban.Feedback) != "" ||
-		(projectKanbanActionsEnabled(data) && snapshotReady(data.Snapshot))
-}
-
 func projectKanbanBoardLoaded(data DashboardData) bool {
 	return snapshotReady(data.Snapshot) ||
 		(snapshotDegraded(data.Snapshot) && snapshotHasPriorTrackerSnapshot(data.Snapshot))
@@ -2239,11 +2234,11 @@ func projectKanbanStatesConfigured(data DashboardData) bool {
 }
 
 func kanbanFeedbackText(data KanbanData) string {
-	feedback := strings.TrimSpace(data.Feedback)
-	if feedback == "" {
-		return "Ready."
-	}
-	return feedback
+	return strings.TrimSpace(data.Feedback)
+}
+
+func kanbanFeedbackVisible(data KanbanData) bool {
+	return strings.TrimSpace(data.Feedback) != ""
 }
 
 func kanbanFeedbackClass(data KanbanData) string {

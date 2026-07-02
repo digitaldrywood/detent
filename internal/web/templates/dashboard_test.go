@@ -1242,6 +1242,7 @@ func TestProjectKanbanStartupReadinessSuppressesEmptyLaneCopyAndActions(t *testi
 		`aria-label="Snapshot readiness"`,
 		`data-project-kanban-lane-title="Todo"`,
 		`data-project-kanban-lane-title="In Progress"`,
+		`id="kanban-feedback" role="status" aria-live="polite" hidden`,
 	} {
 		if !strings.Contains(section, want) {
 			t.Fatalf("startup project Kanban missing %q:\n%s", want, section)
@@ -1253,7 +1254,6 @@ func TestProjectKanbanStartupReadinessSuppressesEmptyLaneCopyAndActions(t *testi
 		`data-kanban-action`,
 		`hx-post="/api/v1/kanban/move"`,
 		`hx-post="/api/v1/kanban/comment"`,
-		`id="kanban-feedback"`,
 	} {
 		if strings.Contains(section, forbidden) {
 			t.Fatalf("startup project Kanban rendered loaded affordance %q:\n%s", forbidden, section)
@@ -1451,11 +1451,13 @@ func TestProjectSnapshotsRenderFirstRefreshFailureState(t *testing.T) {
 			"No issues in this state.",
 			"No active issue sessions.",
 			`>0 cards<`,
-			`id="kanban-feedback"`,
 		} {
 			if strings.Contains(html, forbidden) {
 				t.Fatalf("%s rendered loaded state %q after first refresh failure:\n%s", name, forbidden, html)
 			}
+		}
+		if name == "kanban" && !strings.Contains(html, `id="kanban-feedback" role="status" aria-live="polite" hidden`) {
+			t.Fatalf("%s missing hidden feedback target after first refresh failure:\n%s", name, html)
 		}
 	}
 }
@@ -1884,6 +1886,7 @@ func TestDashboardRendersFleetKanbanReadOnlyBoard(t *testing.T) {
 		`href="/projects/detent/kanban"`,
 		`href="/projects/docs-site/kanban"`,
 		projectKanbanFixedLaneClass,
+		`id="kanban-feedback" role="status" aria-live="polite" hidden`,
 		`>detent</span>`,
 		`>docs-site</span>`,
 		"Add fleet Kanban",
@@ -1901,7 +1904,6 @@ func TestDashboardRendersFleetKanbanReadOnlyBoard(t *testing.T) {
 		`data-kanban-action`,
 		`hx-post="/api/v1/kanban/move"`,
 		`hx-post="/api/v1/kanban/comment"`,
-		`id="kanban-feedback"`,
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("fleet Kanban rendered mutation affordance %q:\n%s", forbidden, html)
@@ -2798,6 +2800,7 @@ func TestDashboardKanbanIntegrationControls(t *testing.T) {
 		`hx-post="/api/v1/kanban/remove"`,
 		`hx-confirm="Remove this item from project?"`,
 		`hx-target="#kanban-feedback"`,
+		`target.hidden = text === "";`,
 		`hx-target="#kanban-dialog-content"`,
 		`data-kanban-drag-move-form`,
 		`Remove from project`,

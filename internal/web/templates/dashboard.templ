@@ -2569,9 +2569,7 @@ templ projectKanbanSection(data DashboardData, board projectKanbanBoard) {
 			if projectKanbanReadOnlySetupNotice(data) {
 				@projectKanbanReadOnlyNotice(data)
 			}
-			if projectKanbanFeedbackVisible(data) {
-				<div id="kanban-feedback" role="status" aria-live="polite" class={ kanbanFeedbackClass(data.Kanban) }>{ kanbanFeedbackText(data.Kanban) }</div>
-			}
+			<div id="kanban-feedback" role="status" aria-live="polite" hidden?={ !kanbanFeedbackVisible(data.Kanban) } class={ kanbanFeedbackClass(data.Kanban) }>{ kanbanFeedbackText(data.Kanban) }</div>
 			if projectKanbanBoardLoaded(data) {
 				@projectKanbanHiddenPopulatedNotice(board)
 			}
@@ -4067,7 +4065,9 @@ templ kanbanScript() {
 			function feedback(message) {
 				const target = document.getElementById("kanban-feedback");
 				if (target) {
-					target.textContent = message;
+					const text = String(message || "").trim();
+					target.textContent = text;
+					target.hidden = text === "";
 				}
 			}
 
