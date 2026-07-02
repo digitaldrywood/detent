@@ -1681,6 +1681,30 @@ Prompt
 			},
 		},
 		{
+			name: "auto promote rework limit requires blocked state",
+			raw: `---
+tracker:
+  kind: memory
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+    - Merging
+  observed_states:
+    - Human Review
+  terminal_states:
+    - Done
+agent:
+  auto_promote:
+    rework_limit: 1
+---
+Prompt
+`,
+			want: []string{
+				"tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.rework_limit is greater than 0",
+			},
+		},
+		{
 			name: "invalid paths and priority map",
 			raw: `---
 tracker:

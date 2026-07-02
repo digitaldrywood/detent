@@ -1509,7 +1509,9 @@ of that state is controlled by the workflow:
   auto-promotion; verdicts below `min_score` or with severities in `block_on`
   route the issue to `Rework`.
 - `agent.auto_promote.rework_limit` bounds repeated `Human Review` to `Rework`
-  loops using persisted lane events; `0` leaves the loop unlimited.
+  loops using persisted lane events; `0` leaves the loop unlimited. Positive
+  limits require `Blocked` in a configured tracker state list and route the next
+  over-limit rework decision there with repeated reasons summarized for handoff.
 - `gate.kind: human_review` requires a linked open PR plus the configured
   `approval_label` on the issue.
 

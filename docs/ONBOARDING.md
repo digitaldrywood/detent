@@ -2089,8 +2089,9 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    to `Rework`. Failed or cancelled current-head CI also routes the item to
    `Rework` by default; set `ci_failure_action: skip` only when red CI should
    stay parked in `Human Review`. `agent.auto_promote.rework_limit: 0` leaves
-   repeated rework unlimited; a positive value blocks the next lap after that
-   many persisted Rework entries. Pending CI stays parked. The quiet
+   repeated rework unlimited; a positive value requires `Blocked` in a configured
+   tracker state list and blocks the next lap after that many persisted Rework
+   entries. Pending CI stays parked. The quiet
    period resets on observed issue updates, Project
    status updates, automated PR review submission, and linked PR activity such
    as a fresh push to the PR head. With `gate.validator.enabled: true`, a
