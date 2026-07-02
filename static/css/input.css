@@ -125,6 +125,32 @@
     --project-kanban-lane-width: 18rem;
   }
 
+  .project-kanban-lane-scroll {
+    --project-kanban-lane-scrollbar-thumb: var(--color-border);
+    --project-kanban-lane-scrollbar-thumb-hover: var(--color-muted-foreground);
+    scrollbar-color: var(--project-kanban-lane-scrollbar-thumb) transparent;
+    scrollbar-width: thin;
+  }
+
+  .project-kanban-lane-scroll::-webkit-scrollbar {
+    height: 0.375rem;
+    width: 0.375rem;
+  }
+
+  .project-kanban-lane-scroll::-webkit-scrollbar-track,
+  .project-kanban-lane-scroll::-webkit-scrollbar-corner {
+    background: transparent;
+  }
+
+  .project-kanban-lane-scroll::-webkit-scrollbar-thumb {
+    background: var(--project-kanban-lane-scrollbar-thumb);
+    border-radius: 9999px;
+  }
+
+  .project-kanban-lane-scroll::-webkit-scrollbar-thumb:hover {
+    background: var(--project-kanban-lane-scrollbar-thumb-hover);
+  }
+
   .help-tip-button {
     align-items: center;
     background: var(--color-muted);

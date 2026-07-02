@@ -3274,7 +3274,7 @@ templ projectKanbanLaneView(data DashboardData, lane projectKanbanLane) {
 				@dashboardEmptyState("No issues in this state.", "This configured state stays hidden unless this lane is pinned visible.", lane.DotClass)
 			</div>
 		} else {
-			<div class="project-kanban-lane-scroll mt-2 grid auto-rows-max min-w-0 max-w-full max-h-[32rem] gap-1.5 overflow-x-hidden overflow-y-auto pr-1" data-preserve-scroll={ "project-kanban-" + lane.ID }>
+			<div class="project-kanban-lane-scroll mt-2 grid auto-rows-max min-w-0 max-w-full max-h-[calc(100dvh-14rem)] gap-1.5 overflow-x-hidden overflow-y-auto pr-1" data-preserve-scroll={ "project-kanban-" + lane.ID }>
 				for _, card := range lane.Cards {
 					@projectKanbanCardView(data, card)
 				}
