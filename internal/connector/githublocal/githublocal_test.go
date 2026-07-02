@@ -56,6 +56,9 @@ func TestConnectorImportPersistsAndDetectsClosedUpstreamDivergence(t *testing.T)
 	if imported[0].Metadata[MetadataDivergence] != DivergenceClosedUpstreamLocalActive {
 		t.Fatalf("divergence = %q, want %q", imported[0].Metadata[MetadataDivergence], DivergenceClosedUpstreamLocalActive)
 	}
+	if imported[0].Closed || imported[0].ClosedReason != "" {
+		t.Fatalf("imported closed metadata = (%v, %q), want active local issue", imported[0].Closed, imported[0].ClosedReason)
+	}
 
 	restarted, err := New(cfg)
 	if err != nil {
@@ -84,6 +87,9 @@ func TestConnectorImportPersistsAndDetectsClosedUpstreamDivergence(t *testing.T)
 	}
 	if issues[0].Metadata[MetadataDivergence] != DivergenceClosedUpstreamLocalActive {
 		t.Fatalf("divergence after restart = %q", issues[0].Metadata[MetadataDivergence])
+	}
+	if issues[0].Closed || issues[0].ClosedReason != "" {
+		t.Fatalf("closed metadata after restart = (%v, %q), want active local issue", issues[0].Closed, issues[0].ClosedReason)
 	}
 }
 

@@ -485,6 +485,8 @@ func (c *Connector) applyDivergence(issue connector.Issue) connector.Issue {
 	if issue.Closed && !c.isTerminalState(issue.State) {
 		metadata[MetadataDivergence] = DivergenceClosedUpstreamLocalActive
 		metadata[MetadataDivergenceDetail] = "closed upstream while locally active"
+		issue.Closed = false
+		issue.ClosedReason = ""
 	} else {
 		delete(metadata, MetadataDivergence)
 		delete(metadata, MetadataDivergenceDetail)
