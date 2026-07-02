@@ -21,6 +21,9 @@ const (
 
 	RunModeImplement = "implement"
 	RunModePlan      = "plan"
+	RunModeMerge     = "merge"
+
+	RunOutputMergeFastPathClean = "merge_fast_path_clean"
 )
 
 var ErrSessionTokenCeilingExceeded = errors.New("session token ceiling exceeded")

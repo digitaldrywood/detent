@@ -197,6 +197,7 @@ type Agent struct {
 	MaxConcurrentAgentsByState   map[string]int `yaml:"max_concurrent_agents_by_state"`
 	DispatchPriorityByState      []string       `yaml:"dispatch_priority_by_state"`
 	DispatchPriorityByLabel      []string       `yaml:"dispatch_priority_by_label"`
+	MergeFastPath                MergeFastPath  `yaml:"merge_fast_path"`
 	AutoPromote                  AutoPromote    `yaml:"auto_promote"`
 	Budget                       Budget         `yaml:"budget"`
 	Lessons                      Lessons        `yaml:"lessons"`
@@ -205,6 +206,10 @@ type Agent struct {
 
 type Shutdown struct {
 	DrainTimeoutMS int `yaml:"drain_timeout_ms"`
+}
+
+type MergeFastPath struct {
+	Enabled bool `yaml:"enabled"`
 }
 
 type Agents struct {

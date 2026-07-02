@@ -47,6 +47,29 @@ type Backend interface {
 	DiffStat(context.Context, Info, Issue) (DiffStat, error)
 }
 
+type MergePreparer interface {
+	PrepareMerge(context.Context, Info, Issue, MergePrepareOptions) (MergePrepareResult, error)
+}
+
+type MergePrepareOptions struct {
+	Remote       string
+	TargetBranch string
+}
+
+type MergePrepareResult struct {
+	Status   MergePrepareStatus
+	DiffStat DiffStat
+	Message  string
+}
+
+type MergePrepareStatus string
+
+const (
+	MergePrepareStatusClean    MergePrepareStatus = "clean"
+	MergePrepareStatusConflict MergePrepareStatus = "conflict"
+	MergePrepareStatusDirty    MergePrepareStatus = "dirty"
+)
+
 type CleanupResult struct {
 	Worktrees int
 	Branches  int

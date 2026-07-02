@@ -8,6 +8,8 @@ const FinalStateCompleted = runner.FinalStateCompleted
 
 const RunModePlan = runner.RunModePlan
 
+const RunModeMerge = runner.RunModeMerge
+
 type Runner = runner.Backend
 
 type Validator = runner.Validator

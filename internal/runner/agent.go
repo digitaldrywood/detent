@@ -276,6 +276,8 @@ func normalizeRunMode(mode string) string {
 		return RunModeImplement
 	case RunModePlan:
 		return RunModePlan
+	case RunModeMerge:
+		return RunModeMerge
 	default:
 		return RunModeImplement
 	}
@@ -290,6 +292,43 @@ func extraWritableRootsForWorkspace(ctx context.Context, workspacePath string, l
 		return nil
 	}
 	return roots
+}
+
+func (r *Runner) prepareMergeFastPath(
+	ctx context.Context,
+	req RunRequest,
+	info workspace.Info,
+	issue workspace.Issue,
+) (RunResult, workspace.MergePrepareResult, bool, error) {
+	preparer, ok := r.workspace.(workspace.MergePreparer)
+	if !ok {
+		return RunResult{}, workspace.MergePrepareResult{}, false, nil
+	}
+	precheck, err := preparer.PrepareMerge(ctx, info, issue, workspace.MergePrepareOptions{})
+	if err != nil {
+		return RunResult{}, precheck, false, fmt.Errorf("merge fast-path precheck: %w", err)
+	}
+	switch precheck.Status {
+	case workspace.MergePrepareStatusClean:
+		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_clean",
+			"workspace_path", info.Path,
+			"workspace_branch", info.Branch,
+		)
+		return RunResult{
+			FinalState: FinalStateCompleted,
+			Output:     RunOutputMergeFastPathClean,
+			DiffStats:  diffStatsFromWorkspace(precheck.DiffStat),
+		}, precheck, true, nil
+	case workspace.MergePrepareStatusConflict, workspace.MergePrepareStatusDirty:
+		r.logWorkerEvent(req.Issue, "worker_merge_fast_path_fallback",
+			"workspace_path", info.Path,
+			"workspace_branch", info.Branch,
+			"status", string(precheck.Status),
+		)
+		return RunResult{}, precheck, false, nil
+	default:
+		return RunResult{}, precheck, false, fmt.Errorf("merge fast-path precheck returned unknown status %q", precheck.Status)
+	}
 }
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -323,19 +362,41 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		}
 	}()
 
+	mode := normalizeRunMode(req.Mode)
+	mergePrecheck := workspace.MergePrepareResult{}
+	mergeFallback := false
+	if mode == RunModeMerge {
+		precheckResult, precheck, handled, err := r.prepareMergeFastPath(ctx, req, info, workspaceIssue)
+		if err != nil {
+			return RunResult{}, err
+		}
+		mergePrecheck = precheck
+		if handled {
+			r.afterRun(info, workspaceIssue)
+			afterRunPending = false
+			r.logWorkerEvent(req.Issue, "worker_after_run_finished",
+				"workspace_path", info.Path,
+			)
+			return precheckResult, nil
+		}
+		mergeFallback = true
+	}
+
+	attempt := req.Attempt
 	availableSkills, err := r.availableSkills(workflow, info.Path)
 	if err != nil {
 		return RunResult{}, err
 	}
-
-	attempt := req.Attempt
 	prompt, err := BuildPrompt(workflow, req.Issue, PromptOptions{
-		Attempt:         &attempt,
-		PlanOnly:        normalizeRunMode(req.Mode) == RunModePlan,
-		WorkspacePath:   info.Path,
-		Branch:          info.Branch,
-		AvailableSkills: availableSkills,
-		PriorAttempt:    req.PriorAttempt,
+		Attempt:              &attempt,
+		PlanOnly:             mode == RunModePlan,
+		MergeFallback:        mergeFallback,
+		MergePrecheckStatus:  string(mergePrecheck.Status),
+		MergePrecheckMessage: mergePrecheck.Message,
+		WorkspacePath:        info.Path,
+		Branch:               info.Branch,
+		AvailableSkills:      availableSkills,
+		PriorAttempt:         req.PriorAttempt,
 	})
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
@@ -363,7 +424,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"route", selection.RouteName,
 		"role", RoleCode,
 		"model", sessionModel,
-		"mode", normalizeRunMode(req.Mode),
+		"mode", mode,
 	)
 	result := RunResult{FinalState: FinalStateCompleted}
 	progress := newAgentRunProgress()
