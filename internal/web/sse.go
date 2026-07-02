@@ -23,6 +23,7 @@ const (
 	sseEventGitHubAPI    = "github-api-health"
 	sseEventTick         = "tick"
 	sseViewHealth        = "health"
+	sseViewAnalytics     = "analytics"
 	sseViewKanban        = "kanban"
 	sseViewRuns          = "runs"
 	sseViewDiagnostics   = "diagnostics"
@@ -33,6 +34,8 @@ func staticSidebarNav(value string) string {
 	switch strings.TrimSpace(value) {
 	case "health":
 		return "health"
+	case "analytics":
+		return "analytics"
 	case "reports":
 		return "reports"
 	case "settings":
@@ -99,6 +102,8 @@ func (s *Server) events(c echo.Context) error {
 			snapshotComponent := templates.SnapshotView(data)
 			if selectedNav == sseViewHealth {
 				snapshotComponent = templates.HealthSnapshot(data)
+			} else if selectedNav == sseViewAnalytics {
+				snapshotComponent = templates.AnalyticsSnapshot(data)
 			} else if selectedView == sseViewKanban && (selectedProjectID == "" || data.ProjectID != "") {
 				data.ActiveNav = "kanban"
 				data = s.withKanbanRefreshFeedback(data)

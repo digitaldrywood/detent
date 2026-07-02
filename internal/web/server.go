@@ -228,6 +228,7 @@ func (s *Server) registerRoutes() {
 	s.echo.GET("/", s.dashboard)
 	s.echo.GET("/kanban", s.fleetKanban)
 	s.echo.GET("/health/ui", s.healthDashboard)
+	s.echo.GET("/analytics", s.analyticsDashboard)
 	s.echo.GET("/projects/*", s.projectDashboard)
 	s.echo.GET("/settings", s.settings)
 	s.echo.GET("/reports", s.reports)
@@ -290,6 +291,18 @@ func (s *Server) healthDashboard(c echo.Context) error {
 	data := s.healthDashboardData(ctx, s.latestSnapshot(ctx))
 	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
 	return render(c, templates.HealthPage(data))
+}
+
+func (s *Server) analyticsDashboard(c echo.Context) error {
+	if scenario, ok, err := s.demoScenarioOrError(c); err != nil {
+		return err
+	} else if ok {
+		return s.demoAnalyticsDashboard(c, scenario)
+	}
+	ctx := c.Request().Context()
+	data := s.analyticsDashboardData(ctx, s.latestSnapshot(ctx))
+	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	return render(c, templates.AnalyticsPage(data))
 }
 
 func (s *Server) projectDashboard(c echo.Context) error {
@@ -413,6 +426,13 @@ func (s *Server) healthDashboardData(ctx context.Context, snapshot telemetry.Sna
 	data := s.dashboardData(ctx, snapshot)
 	data.ActiveNav = "health"
 	data.Title = instancePageTitle(s.instanceName(), "Health - Detent")
+	return data
+}
+
+func (s *Server) analyticsDashboardData(ctx context.Context, snapshot telemetry.Snapshot) templates.DashboardData {
+	data := s.dashboardData(ctx, snapshot)
+	data.ActiveNav = "analytics"
+	data.Title = instancePageTitle(s.instanceName(), "Analytics - Detent")
 	return data
 }
 
