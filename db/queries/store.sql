@@ -36,6 +36,10 @@ INSERT INTO codex_sessions (
   identifier,
   issue_url,
   started_at,
+  requested_model,
+  agent_backend_id,
+  agent_backend_kind,
+  agent_role,
   completed_at,
   turns,
   input_tokens,
@@ -46,8 +50,11 @@ INSERT INTO codex_sessions (
   model_context_window,
   runtime_seconds,
   final_state,
-  model
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  model,
+  provider_thread_id,
+  provider_session_id,
+  resumed_from_session_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 RETURNING *;
 
 -- name: GetCodexSession :one
@@ -57,18 +64,48 @@ WHERE id = ?;
 
 -- name: FinishCodexSession :execrows
 UPDATE codex_sessions
-SET completed_at = ?,
-    turns = ?,
-    input_tokens = ?,
-    cached_input_tokens = ?,
-    output_tokens = ?,
-    reasoning_output_tokens = ?,
-    total_tokens = ?,
-    model_context_window = COALESCE(?, model_context_window),
-    runtime_seconds = ?,
-    final_state = ?,
-    model = COALESCE(?, model)
-WHERE id = ?;
+SET completed_at = sqlc.arg(completed_at),
+    turns = sqlc.arg(turns),
+    input_tokens = sqlc.arg(input_tokens),
+    cached_input_tokens = sqlc.narg(cached_input_tokens),
+    output_tokens = sqlc.arg(output_tokens),
+    reasoning_output_tokens = sqlc.narg(reasoning_output_tokens),
+    total_tokens = sqlc.arg(total_tokens),
+    model_context_window = COALESCE(sqlc.narg(model_context_window), model_context_window),
+    runtime_seconds = sqlc.arg(runtime_seconds),
+    final_state = sqlc.narg(final_state),
+    model = COALESCE(sqlc.narg(model), model),
+    provider_thread_id = COALESCE(sqlc.narg(provider_thread_id), provider_thread_id),
+    provider_session_id = COALESCE(sqlc.narg(provider_session_id), provider_session_id),
+    resumed_from_session_id = COALESCE(sqlc.narg(resumed_from_session_id), resumed_from_session_id)
+WHERE id = sqlc.arg(id);
+
+-- name: GetLatestCompletedAgentResumeState :one
+SELECT
+  id,
+  CAST(COALESCE(provider_thread_id, '') AS TEXT) AS provider_thread_id,
+  CAST(COALESCE(provider_session_id, '') AS TEXT) AS provider_session_id,
+  CAST(COALESCE(requested_model, '') AS TEXT) AS requested_model,
+  CAST(COALESCE(model, '') AS TEXT) AS model,
+  CAST(COALESCE(agent_backend_id, '') AS TEXT) AS agent_backend_id,
+  CAST(COALESCE(agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
+  CAST(COALESCE(agent_role, '') AS TEXT) AS agent_role,
+  CAST(completed_at AS TEXT) AS completed_at
+FROM codex_sessions
+WHERE completed_at IS NOT NULL
+  AND lower(trim(COALESCE(final_state, ''))) = 'completed'
+  AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
+  AND COALESCE(agent_backend_id, '') = sqlc.arg(agent_backend_id)
+  AND COALESCE(agent_backend_kind, '') = sqlc.arg(agent_backend_kind)
+  AND COALESCE(agent_role, '') = sqlc.arg(agent_role)
+  AND COALESCE(NULLIF(requested_model, ''), COALESCE(model, '')) = sqlc.arg(requested_model)
+  AND (
+    (sqlc.arg(issue_id) != '' AND COALESCE(issue_id, '') = sqlc.arg(issue_id))
+    OR (sqlc.arg(identifier) != '' AND COALESCE(identifier, '') = sqlc.arg(identifier))
+    OR (sqlc.arg(issue_url) != '' AND COALESCE(issue_url, '') = sqlc.arg(issue_url))
+  )
+ORDER BY completed_at DESC, id DESC
+LIMIT 1;
 
 -- name: ListRecentCodexSessions :many
 SELECT *

@@ -120,6 +120,9 @@ func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {
 	if model := strings.TrimSpace(req.Model); model != "" {
 		args = append(args, "--model", model)
 	}
+	if sessionID := strings.TrimSpace(req.Resume.SessionID); sessionID != "" {
+		args = append(args, "--resume", sessionID)
+	}
 	if mode := strings.TrimSpace(b.options.PermissionMode); mode != "" {
 		args = append(args, "--permission-mode", mode)
 	}

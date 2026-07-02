@@ -12,10 +12,11 @@ import (
 )
 
 const (
-	initializeRequestID  = 1
-	threadStartRequestID = 2
-	turnStartRequestID   = 3
-	methodNotFoundCode   = -32601
+	initializeRequestID   = 1
+	threadStartRequestID  = 2
+	turnStartRequestID    = 3
+	threadResumeRequestID = 4
+	methodNotFoundCode    = -32601
 
 	defaultClientName    = "detent-orchestrator"
 	defaultClientTitle   = "Detent Orchestrator"
@@ -49,6 +50,7 @@ type ClientInfo struct {
 type RunTurnRequest struct {
 	Workspace         string
 	Prompt            string
+	ResumeThreadID    string
 	ApprovalPolicy    any
 	ThreadSandbox     string
 	TurnSandboxPolicy any
@@ -203,9 +205,18 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		return RunTurnResult{}, err
 	}
 
-	threadID, model, err := s.startThread(ctx, transport, req, onUpdate)
-	if err != nil {
-		return RunTurnResult{}, err
+	threadID := strings.TrimSpace(req.ResumeThreadID)
+	var model string
+	if threadID != "" {
+		threadID, model, err = s.resumeThread(ctx, transport, req, threadID, onUpdate)
+		if err != nil {
+			return RunTurnResult{}, err
+		}
+	} else {
+		threadID, model, err = s.startThread(ctx, transport, req, onUpdate)
+		if err != nil {
+			return RunTurnResult{}, err
+		}
 	}
 
 	turnID, err := s.startTurn(ctx, transport, req, threadID, onUpdate)
@@ -314,6 +325,71 @@ func (s *AppServer) startThread(
 		response.Model,
 		response.ResolvedModel,
 		response.ModelID,
+	)
+
+	return response.Thread.ID, model, nil
+}
+
+func (s *AppServer) resumeThread(
+	ctx context.Context,
+	transport Transport,
+	req RunTurnRequest,
+	threadID string,
+	onUpdate UpdateHandler,
+) (string, string, error) {
+	params := map[string]any{
+		"threadId": threadID,
+		"cwd":      req.Workspace,
+	}
+	setOptional(params, "approvalPolicy", req.ApprovalPolicy)
+	if req.ThreadSandbox != "" {
+		params["sandbox"] = req.ThreadSandbox
+	}
+	if req.Model != "" {
+		params["model"] = req.Model
+	}
+	if req.ModelProvider != "" {
+		params["modelProvider"] = req.ModelProvider
+	}
+	if req.ServiceTier != "" {
+		params["serviceTier"] = req.ServiceTier
+	}
+
+	if err := sendRequest(ctx, transport, threadResumeRequestID, "thread/resume", params); err != nil {
+		return "", "", err
+	}
+
+	result, err := s.awaitResponse(ctx, transport, threadResumeRequestID, onUpdate)
+	if err != nil {
+		return "", "", err
+	}
+
+	var response struct {
+		Thread struct {
+			ID            string `json:"id"`
+			Model         string `json:"model"`
+			ModelID       string `json:"model_id"`
+			ResolvedModel string `json:"resolvedModel"`
+		} `json:"thread"`
+		Model         string `json:"model"`
+		ModelID       string `json:"model_id"`
+		ResolvedModel string `json:"resolvedModel"`
+	}
+	if err := json.Unmarshal(result, &response); err != nil {
+		return "", "", fmt.Errorf("%w: decode thread/resume result: %w", ErrInvalidResponse, err)
+	}
+	if response.Thread.ID == "" {
+		return "", "", fmt.Errorf("%w: thread/resume result missing thread id", ErrInvalidResponse)
+	}
+
+	model := firstNonBlank(
+		response.Thread.Model,
+		response.Thread.ResolvedModel,
+		response.Thread.ModelID,
+		response.Model,
+		response.ResolvedModel,
+		response.ModelID,
+		req.Model,
 	)
 
 	return response.Thread.ID, model, nil
@@ -726,6 +802,8 @@ func requestName(id int) string {
 		return "thread/start"
 	case turnStartRequestID:
 		return "turn/start"
+	case threadResumeRequestID:
+		return "thread/resume"
 	default:
 		return strconv.Itoa(id)
 	}

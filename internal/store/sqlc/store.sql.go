@@ -193,6 +193,10 @@ INSERT INTO codex_sessions (
   identifier,
   issue_url,
   started_at,
+  requested_model,
+  agent_backend_id,
+  agent_backend_kind,
+  agent_role,
   completed_at,
   turns,
   input_tokens,
@@ -203,9 +207,12 @@ INSERT INTO codex_sessions (
   model_context_window,
   runtime_seconds,
   final_state,
-  model
-) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window
+  model,
+  provider_thread_id,
+  provider_session_id,
+  resumed_from_session_id
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+RETURNING id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id
 `
 
 type CreateCodexSessionParams struct {
@@ -214,6 +221,10 @@ type CreateCodexSessionParams struct {
 	Identifier            sql.NullString `json:"identifier"`
 	IssueURL              sql.NullString `json:"issue_url"`
 	StartedAt             sql.NullString `json:"started_at"`
+	RequestedModel        sql.NullString `json:"requested_model"`
+	AgentBackendID        sql.NullString `json:"agent_backend_id"`
+	AgentBackendKind      sql.NullString `json:"agent_backend_kind"`
+	AgentRole             sql.NullString `json:"agent_role"`
 	CompletedAt           sql.NullString `json:"completed_at"`
 	Turns                 int64          `json:"turns"`
 	InputTokens           int64          `json:"input_tokens"`
@@ -225,6 +236,9 @@ type CreateCodexSessionParams struct {
 	RuntimeSeconds        int64          `json:"runtime_seconds"`
 	FinalState            sql.NullString `json:"final_state"`
 	Model                 sql.NullString `json:"model"`
+	ProviderThreadID      sql.NullString `json:"provider_thread_id"`
+	ProviderSessionID     sql.NullString `json:"provider_session_id"`
+	ResumedFromSessionID  sql.NullInt64  `json:"resumed_from_session_id"`
 }
 
 func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSessionParams) (CodexSession, error) {
@@ -234,6 +248,10 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		arg.Identifier,
 		arg.IssueURL,
 		arg.StartedAt,
+		arg.RequestedModel,
+		arg.AgentBackendID,
+		arg.AgentBackendKind,
+		arg.AgentRole,
 		arg.CompletedAt,
 		arg.Turns,
 		arg.InputTokens,
@@ -245,6 +263,9 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		arg.RuntimeSeconds,
 		arg.FinalState,
 		arg.Model,
+		arg.ProviderThreadID,
+		arg.ProviderSessionID,
+		arg.ResumedFromSessionID,
 	)
 	var i CodexSession
 	err := row.Scan(
@@ -265,6 +286,13 @@ func (q *Queries) CreateCodexSession(ctx context.Context, arg CreateCodexSession
 		&i.CachedInputTokens,
 		&i.ReasoningOutputTokens,
 		&i.ModelContextWindow,
+		&i.RequestedModel,
+		&i.AgentBackendID,
+		&i.AgentBackendKind,
+		&i.AgentRole,
+		&i.ProviderThreadID,
+		&i.ProviderSessionID,
+		&i.ResumedFromSessionID,
 	)
 	return i, err
 }
@@ -830,18 +858,21 @@ func (q *Queries) DailyTokenSpend(ctx context.Context, completedAt sql.NullStrin
 
 const finishCodexSession = `-- name: FinishCodexSession :execrows
 UPDATE codex_sessions
-SET completed_at = ?,
-    turns = ?,
-    input_tokens = ?,
-    cached_input_tokens = ?,
-    output_tokens = ?,
-    reasoning_output_tokens = ?,
-    total_tokens = ?,
-    model_context_window = COALESCE(?, model_context_window),
-    runtime_seconds = ?,
-    final_state = ?,
-    model = COALESCE(?, model)
-WHERE id = ?
+SET completed_at = ?1,
+    turns = ?2,
+    input_tokens = ?3,
+    cached_input_tokens = ?4,
+    output_tokens = ?5,
+    reasoning_output_tokens = ?6,
+    total_tokens = ?7,
+    model_context_window = COALESCE(?8, model_context_window),
+    runtime_seconds = ?9,
+    final_state = ?10,
+    model = COALESCE(?11, model),
+    provider_thread_id = COALESCE(?12, provider_thread_id),
+    provider_session_id = COALESCE(?13, provider_session_id),
+    resumed_from_session_id = COALESCE(?14, resumed_from_session_id)
+WHERE id = ?15
 `
 
 type FinishCodexSessionParams struct {
@@ -856,6 +887,9 @@ type FinishCodexSessionParams struct {
 	RuntimeSeconds        int64          `json:"runtime_seconds"`
 	FinalState            sql.NullString `json:"final_state"`
 	Model                 sql.NullString `json:"model"`
+	ProviderThreadID      sql.NullString `json:"provider_thread_id"`
+	ProviderSessionID     sql.NullString `json:"provider_session_id"`
+	ResumedFromSessionID  sql.NullInt64  `json:"resumed_from_session_id"`
 	ID                    int64          `json:"id"`
 }
 
@@ -872,6 +906,9 @@ func (q *Queries) FinishCodexSession(ctx context.Context, arg FinishCodexSession
 		arg.RuntimeSeconds,
 		arg.FinalState,
 		arg.Model,
+		arg.ProviderThreadID,
+		arg.ProviderSessionID,
+		arg.ResumedFromSessionID,
 		arg.ID,
 	)
 	if err != nil {
@@ -881,7 +918,7 @@ func (q *Queries) FinishCodexSession(ctx context.Context, arg FinishCodexSession
 }
 
 const getCodexSession = `-- name: GetCodexSession :one
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id
 FROM codex_sessions
 WHERE id = ?
 `
@@ -907,6 +944,13 @@ func (q *Queries) GetCodexSession(ctx context.Context, id int64) (CodexSession, 
 		&i.CachedInputTokens,
 		&i.ReasoningOutputTokens,
 		&i.ModelContextWindow,
+		&i.RequestedModel,
+		&i.AgentBackendID,
+		&i.AgentBackendKind,
+		&i.AgentRole,
+		&i.ProviderThreadID,
+		&i.ProviderSessionID,
+		&i.ResumedFromSessionID,
 	)
 	return i, err
 }
@@ -931,6 +975,81 @@ func (q *Queries) GetDetentRun(ctx context.Context, id int64) (DetentRun, error)
 		&i.OutputTokens,
 		&i.TotalTokens,
 		&i.RuntimeSeconds,
+	)
+	return i, err
+}
+
+const getLatestCompletedAgentResumeState = `-- name: GetLatestCompletedAgentResumeState :one
+SELECT
+  id,
+  CAST(COALESCE(provider_thread_id, '') AS TEXT) AS provider_thread_id,
+  CAST(COALESCE(provider_session_id, '') AS TEXT) AS provider_session_id,
+  CAST(COALESCE(requested_model, '') AS TEXT) AS requested_model,
+  CAST(COALESCE(model, '') AS TEXT) AS model,
+  CAST(COALESCE(agent_backend_id, '') AS TEXT) AS agent_backend_id,
+  CAST(COALESCE(agent_backend_kind, '') AS TEXT) AS agent_backend_kind,
+  CAST(COALESCE(agent_role, '') AS TEXT) AS agent_role,
+  CAST(completed_at AS TEXT) AS completed_at
+FROM codex_sessions
+WHERE completed_at IS NOT NULL
+  AND lower(trim(COALESCE(final_state, ''))) = 'completed'
+  AND (COALESCE(provider_thread_id, '') != '' OR COALESCE(provider_session_id, '') != '')
+  AND COALESCE(agent_backend_id, '') = ?1
+  AND COALESCE(agent_backend_kind, '') = ?2
+  AND COALESCE(agent_role, '') = ?3
+  AND COALESCE(NULLIF(requested_model, ''), COALESCE(model, '')) = ?4
+  AND (
+    (?5 != '' AND COALESCE(issue_id, '') = ?5)
+    OR (?6 != '' AND COALESCE(identifier, '') = ?6)
+    OR (?7 != '' AND COALESCE(issue_url, '') = ?7)
+  )
+ORDER BY completed_at DESC, id DESC
+LIMIT 1
+`
+
+type GetLatestCompletedAgentResumeStateParams struct {
+	AgentBackendID   sql.NullString `json:"agent_backend_id"`
+	AgentBackendKind sql.NullString `json:"agent_backend_kind"`
+	AgentRole        sql.NullString `json:"agent_role"`
+	RequestedModel   sql.NullString `json:"requested_model"`
+	IssueID          interface{}    `json:"issue_id"`
+	Identifier       interface{}    `json:"identifier"`
+	IssueURL         interface{}    `json:"issue_url"`
+}
+
+type GetLatestCompletedAgentResumeStateRow struct {
+	ID                int64  `json:"id"`
+	ProviderThreadID  string `json:"provider_thread_id"`
+	ProviderSessionID string `json:"provider_session_id"`
+	RequestedModel    string `json:"requested_model"`
+	Model             string `json:"model"`
+	AgentBackendID    string `json:"agent_backend_id"`
+	AgentBackendKind  string `json:"agent_backend_kind"`
+	AgentRole         string `json:"agent_role"`
+	CompletedAt       string `json:"completed_at"`
+}
+
+func (q *Queries) GetLatestCompletedAgentResumeState(ctx context.Context, arg GetLatestCompletedAgentResumeStateParams) (GetLatestCompletedAgentResumeStateRow, error) {
+	row := q.db.QueryRowContext(ctx, getLatestCompletedAgentResumeState,
+		arg.AgentBackendID,
+		arg.AgentBackendKind,
+		arg.AgentRole,
+		arg.RequestedModel,
+		arg.IssueID,
+		arg.Identifier,
+		arg.IssueURL,
+	)
+	var i GetLatestCompletedAgentResumeStateRow
+	err := row.Scan(
+		&i.ID,
+		&i.ProviderThreadID,
+		&i.ProviderSessionID,
+		&i.RequestedModel,
+		&i.Model,
+		&i.AgentBackendID,
+		&i.AgentBackendKind,
+		&i.AgentRole,
+		&i.CompletedAt,
 	)
 	return i, err
 }
@@ -1329,7 +1448,7 @@ func (q *Queries) ListFairShareUsage(ctx context.Context) ([]FairShareUsage, err
 }
 
 const listRecentCodexSessions = `-- name: ListRecentCodexSessions :many
-SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window
+SELECT id, run_id, issue_id, identifier, issue_url, started_at, completed_at, turns, input_tokens, output_tokens, total_tokens, runtime_seconds, final_state, model, cached_input_tokens, reasoning_output_tokens, model_context_window, requested_model, agent_backend_id, agent_backend_kind, agent_role, provider_thread_id, provider_session_id, resumed_from_session_id
 FROM codex_sessions
 ORDER BY completed_at DESC, id DESC
 LIMIT ?
@@ -1362,6 +1481,13 @@ func (q *Queries) ListRecentCodexSessions(ctx context.Context, limit int64) ([]C
 			&i.CachedInputTokens,
 			&i.ReasoningOutputTokens,
 			&i.ModelContextWindow,
+			&i.RequestedModel,
+			&i.AgentBackendID,
+			&i.AgentBackendKind,
+			&i.AgentRole,
+			&i.ProviderThreadID,
+			&i.ProviderSessionID,
+			&i.ResumedFromSessionID,
 		); err != nil {
 			return nil, err
 		}

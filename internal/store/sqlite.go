@@ -186,17 +186,28 @@ func (s *sqliteStore) StartSession(ctx context.Context, attrs SessionStart) (int
 	if err != nil {
 		return 0, err
 	}
+	requestedModel := strings.TrimSpace(attrs.RequestedModel)
+	if requestedModel == "" {
+		requestedModel = strings.TrimSpace(attrs.Model)
+	}
 
 	session, err := s.queries.CreateCodexSession(ctx, sqlc.CreateCodexSessionParams{
-		RunID:              nullPositiveInt64(attrs.RunID),
-		IssueID:            nullString(attrs.IssueID),
-		Identifier:         nullString(attrs.Identifier),
-		IssueURL:           nullString(attrs.IssueURL),
-		StartedAt:          sql.NullString{String: startedAt, Valid: true},
-		CompletedAt:        sql.NullString{},
-		ModelContextWindow: sql.NullInt64{},
-		FinalState:         sql.NullString{},
-		Model:              nullString(attrs.Model),
+		RunID:                nullPositiveInt64(attrs.RunID),
+		IssueID:              nullString(attrs.IssueID),
+		Identifier:           nullString(attrs.Identifier),
+		IssueURL:             nullString(attrs.IssueURL),
+		StartedAt:            sql.NullString{String: startedAt, Valid: true},
+		RequestedModel:       nullString(requestedModel),
+		AgentBackendID:       nullString(attrs.AgentBackendID),
+		AgentBackendKind:     nullString(attrs.AgentBackendKind),
+		AgentRole:            nullString(attrs.AgentRole),
+		CompletedAt:          sql.NullString{},
+		ModelContextWindow:   sql.NullInt64{},
+		FinalState:           sql.NullString{},
+		Model:                nullString(attrs.Model),
+		ProviderThreadID:     sql.NullString{},
+		ProviderSessionID:    sql.NullString{},
+		ResumedFromSessionID: sql.NullInt64{},
 	})
 	if err != nil {
 		return 0, fmt.Errorf("starting codex session: %w", err)
@@ -222,12 +233,68 @@ func (s *sqliteStore) FinishSession(ctx context.Context, sessionID int64, attrs 
 		RuntimeSeconds:        nonNegative(attrs.RuntimeSeconds),
 		FinalState:            nullString(attrs.FinalState),
 		Model:                 nullString(attrs.Model),
+		ProviderThreadID:      nullString(attrs.ProviderThreadID),
+		ProviderSessionID:     nullString(attrs.ProviderSessionID),
+		ResumedFromSessionID:  nullPositiveInt64(attrs.ResumedFromSessionID),
 		ID:                    sessionID,
 	})
 	if err != nil {
 		return fmt.Errorf("finishing codex session: %w", err)
 	}
 	return requireAffected(rows, "codex session", sessionID)
+}
+
+func (s *sqliteStore) LatestCompletedAgentResumeState(ctx context.Context, attrs AgentResumeLookup) (AgentResumeState, error) {
+	attrs = normalizeAgentResumeLookup(attrs)
+	if attrs.RequestedModel == "" || attrs.AgentBackendID == "" || attrs.AgentBackendKind == "" || attrs.AgentRole == "" {
+		return AgentResumeState{}, ErrNotFound
+	}
+	if attrs.IssueID == "" && attrs.Identifier == "" && attrs.IssueURL == "" {
+		return AgentResumeState{}, ErrNotFound
+	}
+
+	row, err := s.queries.GetLatestCompletedAgentResumeState(ctx, sqlc.GetLatestCompletedAgentResumeStateParams{
+		AgentBackendID:   nullString(attrs.AgentBackendID),
+		AgentBackendKind: nullString(attrs.AgentBackendKind),
+		AgentRole:        nullString(attrs.AgentRole),
+		RequestedModel:   nullString(attrs.RequestedModel),
+		IssueID:          attrs.IssueID,
+		Identifier:       attrs.Identifier,
+		IssueURL:         attrs.IssueURL,
+	})
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			return AgentResumeState{}, ErrNotFound
+		}
+		return AgentResumeState{}, fmt.Errorf("reading latest agent resume state: %w", err)
+	}
+	completedAt, err := parseTimestamp("completed_at", row.CompletedAt)
+	if err != nil {
+		return AgentResumeState{}, err
+	}
+	return AgentResumeState{
+		DetentSessionID:   row.ID,
+		ProviderThreadID:  strings.TrimSpace(row.ProviderThreadID),
+		ProviderSessionID: strings.TrimSpace(row.ProviderSessionID),
+		RequestedModel:    strings.TrimSpace(row.RequestedModel),
+		Model:             strings.TrimSpace(row.Model),
+		AgentBackendID:    strings.TrimSpace(row.AgentBackendID),
+		AgentBackendKind:  strings.TrimSpace(row.AgentBackendKind),
+		AgentRole:         strings.TrimSpace(row.AgentRole),
+		CompletedAt:       completedAt,
+	}, nil
+}
+
+func normalizeAgentResumeLookup(attrs AgentResumeLookup) AgentResumeLookup {
+	return AgentResumeLookup{
+		IssueID:          strings.TrimSpace(attrs.IssueID),
+		Identifier:       strings.TrimSpace(attrs.Identifier),
+		IssueURL:         strings.TrimSpace(attrs.IssueURL),
+		RequestedModel:   strings.TrimSpace(attrs.RequestedModel),
+		AgentBackendID:   strings.TrimSpace(attrs.AgentBackendID),
+		AgentBackendKind: strings.TrimSpace(attrs.AgentBackendKind),
+		AgentRole:        strings.TrimSpace(attrs.AgentRole),
+	}
 }
 
 func (s *sqliteStore) RecordUsageEvent(ctx context.Context, attrs UsageEvent) (int64, error) {

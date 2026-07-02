@@ -392,6 +392,115 @@ func (r *Runner) prepareMergeFastPath(
 	}
 }
 
+type agentTurnExecution struct {
+	turnResult  AgentTurnResult
+	result      RunResult
+	err         error
+	turnStarted bool
+}
+
+func (r *Runner) runAgentTurn(
+	ctx context.Context,
+	backend AgentBackend,
+	turnRequest AgentTurnRequest,
+	runRequest RunRequest,
+	info workspace.Info,
+	workspaceIssue workspace.Issue,
+	agentConfig config.Agent,
+	runStartedAt time.Time,
+) agentTurnExecution {
+	result := RunResult{FinalState: FinalStateCompleted}
+	progress := newAgentRunProgress()
+	turnStarted := false
+	turnResult, turnErr := backend.RunTurn(ctx, turnRequest, func(update AgentUpdate) error {
+		if update.Type == AgentUpdateTurnStarted || strings.TrimSpace(update.TurnID) != "" {
+			turnStarted = true
+		}
+		r.logAgentUpdate(runRequest.Issue, update)
+		applyAgentUpdate(&result, update)
+		eventAt := r.now()
+		progress.apply(update, eventAt)
+		if err := r.publishRunUpdate(ctx, runRequest, info, workspaceIssue, progress, result, eventAt, runStartedAt); err != nil {
+			return err
+		}
+		if err := r.enforceSessionTokenCeiling(agentConfig, runRequest.Issue, info.Path, update, eventAt); err != nil {
+			return err
+		}
+		return nil
+	})
+	result.Output = progress.outputText()
+	if turnErr != nil {
+		result.FinalState = finalStateForTurnError(turnErr)
+	}
+	return agentTurnExecution{
+		turnResult:  turnResult,
+		result:      result,
+		err:         turnErr,
+		turnStarted: turnStarted,
+	}
+}
+
+func (r *Runner) agentResumeState(
+	ctx context.Context,
+	cfg config.Agent,
+	issue connector.Issue,
+	model string,
+	backendID string,
+	backendKind string,
+	agentRole string,
+) store.AgentResumeState {
+	if !cfg.ExperimentalThreadResume {
+		return store.AgentResumeState{}
+	}
+	model = strings.TrimSpace(model)
+	backendID = strings.TrimSpace(backendID)
+	backendKind = strings.TrimSpace(backendKind)
+	agentRole = strings.TrimSpace(agentRole)
+	if model == "" || backendID == "" || backendKind == "" || agentRole == "" {
+		return store.AgentResumeState{}
+	}
+	resumeStore, ok := r.store.(store.AgentResumeStore)
+	if !ok {
+		return store.AgentResumeState{}
+	}
+	state, err := resumeStore.LatestCompletedAgentResumeState(ctx, store.AgentResumeLookup{
+		IssueID:          issue.ID,
+		Identifier:       issue.Identifier,
+		IssueURL:         issue.URL,
+		RequestedModel:   model,
+		AgentBackendID:   backendID,
+		AgentBackendKind: backendKind,
+		AgentRole:        agentRole,
+	})
+	if err != nil {
+		if !errors.Is(err, store.ErrNotFound) {
+			r.logger.Warn(
+				"agent resume state lookup failed",
+				slog.String("issue_id", issue.ID),
+				slog.String("issue_identifier", issue.Identifier),
+				slog.String("model", model),
+				slog.String("backend_id", backendID),
+				slog.String("backend_kind", backendKind),
+				slog.String("agent_role", agentRole),
+				slog.Any("error", err),
+			)
+		}
+		return store.AgentResumeState{}
+	}
+	return state
+}
+
+func agentResumeFromState(state store.AgentResumeState) AgentResume {
+	return AgentResume{
+		ThreadID:  strings.TrimSpace(state.ProviderThreadID),
+		SessionID: strings.TrimSpace(state.ProviderSessionID),
+	}
+}
+
+func agentResumeEmpty(resume AgentResume) bool {
+	return strings.TrimSpace(resume.ThreadID) == "" && strings.TrimSpace(resume.SessionID) == ""
+}
+
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if ctx == nil {
 		ctx = context.Background()
@@ -488,7 +597,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		)
 		return result, nil
 	}
-	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel)
+	resumeState := r.agentResumeState(ctx, workflow.Config.Agent, req.Issue, sessionModel, selection.BackendID, backendKind, RoleCode)
+	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel, selection.BackendID, backendKind, RoleCode)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -501,31 +611,31 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"model", sessionModel,
 		"mode", mode,
 	)
-	result := RunResult{FinalState: FinalStateCompleted}
-	progress := newAgentRunProgress()
-	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
+	turnRequest := AgentTurnRequest{
 		Workspace:          info.Path,
 		Prompt:             prompt,
 		Model:              selectedModel,
+		Resume:             agentResumeFromState(resumeState),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
-	}, func(update AgentUpdate) error {
-		r.logAgentUpdate(req.Issue, update)
-		applyAgentUpdate(&result, update)
-		eventAt := r.now()
-		progress.apply(update, eventAt)
-		if err := r.publishRunUpdate(ctx, req, info, workspaceIssue, progress, result, eventAt, runStartedAt); err != nil {
-			return err
-		}
-		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
-			return err
-		}
-		return nil
-	})
-	_ = turnResult
-	result.Output = progress.outputText()
-	if turnErr != nil {
-		result.FinalState = finalStateForTurnError(turnErr)
 	}
+	execution := r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt)
+	if execution.err != nil && !agentResumeEmpty(turnRequest.Resume) && !execution.turnStarted {
+		r.logWorkerEvent(req.Issue, "worker_resume_failed_fallback",
+			"workspace_path", info.Path,
+			"backend_id", selection.BackendID,
+			"route", selection.RouteName,
+			"role", RoleCode,
+			"thread_id", turnRequest.Resume.ThreadID,
+			"provider_session_id", turnRequest.Resume.SessionID,
+			"error", errorString(execution.err),
+		)
+		turnRequest.Resume = AgentResume{}
+		resumeState = store.AgentResumeState{}
+		execution = r.runAgentTurn(ctx, backend, turnRequest, req, info, workspaceIssue, workflow.Config.Agent, runStartedAt)
+	}
+	turnResult := execution.turnResult
+	turnErr := execution.err
+	result := execution.result
 	r.logWorkerEvent(req.Issue, "worker_command_finished",
 		"workspace_path", info.Path,
 		"backend_id", selection.BackendID,
@@ -552,7 +662,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1, turnResult, resumeState.DetentSessionID),
 		)
 	}
 
@@ -569,7 +679,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			)
 			finishedAt := r.now().UTC()
 			result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1); err != nil {
+			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1, turnResult, resumeState.DetentSessionID); err != nil {
 				return result, err
 			}
 			return result, nil
@@ -582,14 +692,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("workspace diff stat: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1, turnResult, resumeState.DetentSessionID),
 		)
 	}
 
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	finishedAt := r.now().UTC()
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, sessionModel, backendKind, 1, turnResult, resumeState.DetentSessionID); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -702,7 +812,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		startedAt = r.now().UTC()
 	}
 	runStartedAt := r.now()
-	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel)
+	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel, selection.BackendID, backendKind, RoleValidator)
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
@@ -745,7 +855,6 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 		return nil
 	})
-	_ = turnResult
 	r.logWorkerEvent(req.Issue, "worker_check_finished",
 		"workspace_path", info.Path,
 		"backend_id", selection.BackendID,
@@ -768,7 +877,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = finalStateForTurnError(turnErr)
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("run validator turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1, turnResult, 0),
 		)
 	}
 
@@ -777,10 +886,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("parse validator result: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1, turnResult, 0),
 		)
 	}
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, sessionModel, backendKind, 1, turnResult, 0); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	return validation, nil
@@ -1010,17 +1119,24 @@ func (r *Runner) startSession(
 	issue connector.Issue,
 	startedAt time.Time,
 	model string,
+	backendID string,
+	backendKind string,
+	agentRole string,
 ) (int64, bool, error) {
 	if r.store == nil {
 		return 0, false, nil
 	}
 
 	sessionID, err := r.store.StartSession(ctx, store.SessionStart{
-		IssueID:    issue.ID,
-		Identifier: issue.Identifier,
-		IssueURL:   issue.URL,
-		StartedAt:  startedAt,
-		Model:      model,
+		IssueID:          issue.ID,
+		Identifier:       issue.Identifier,
+		IssueURL:         issue.URL,
+		StartedAt:        startedAt,
+		Model:            model,
+		RequestedModel:   model,
+		AgentBackendID:   backendID,
+		AgentBackendKind: backendKind,
+		AgentRole:        agentRole,
 	})
 	if err != nil {
 		return 0, false, fmt.Errorf("start agent session: %w", err)
@@ -1043,6 +1159,8 @@ func (r *Runner) finishSession(
 	model string,
 	backendKind string,
 	turns int64,
+	turnResult AgentTurnResult,
+	resumedFromSessionID int64,
 ) error {
 	if !started {
 		return nil
@@ -1064,6 +1182,9 @@ func (r *Runner) finishSession(
 		RuntimeSeconds:        int64(math.Round(result.Tokens.RuntimeSeconds)),
 		FinalState:            result.FinalState,
 		Model:                 model,
+		ProviderThreadID:      turnResult.ThreadID,
+		ProviderSessionID:     turnResult.SessionID,
+		ResumedFromSessionID:  resumedFromSessionID,
 	}); err != nil {
 		return fmt.Errorf("finish agent session: %w", err)
 	}

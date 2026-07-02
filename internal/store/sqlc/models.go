@@ -26,6 +26,13 @@ type CodexSession struct {
 	CachedInputTokens     sql.NullInt64  `json:"cached_input_tokens"`
 	ReasoningOutputTokens sql.NullInt64  `json:"reasoning_output_tokens"`
 	ModelContextWindow    sql.NullInt64  `json:"model_context_window"`
+	RequestedModel        sql.NullString `json:"requested_model"`
+	AgentBackendID        sql.NullString `json:"agent_backend_id"`
+	AgentBackendKind      sql.NullString `json:"agent_backend_kind"`
+	AgentRole             sql.NullString `json:"agent_role"`
+	ProviderThreadID      sql.NullString `json:"provider_thread_id"`
+	ProviderSessionID     sql.NullString `json:"provider_session_id"`
+	ResumedFromSessionID  sql.NullInt64  `json:"resumed_from_session_id"`
 }
 
 type DetentRun struct {

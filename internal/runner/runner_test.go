@@ -246,11 +246,14 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 			t.Fatalf("codex prompt missing %q:\n%s", want, codexClient.request.Prompt)
 		}
 	}
-	if sessionStore.started.Identifier != "digitaldrywood/detent#22" || sessionStore.started.Model != "gpt-5-codex-high" {
-		t.Fatalf("SessionStart = %#v, want issue identity and model", sessionStore.started)
+	if sessionStore.started.Identifier != "digitaldrywood/detent#22" || sessionStore.started.Model != "gpt-5-codex-high" || sessionStore.started.AgentRole != RoleCode {
+		t.Fatalf("SessionStart = %#v, want issue identity, model, and code role", sessionStore.started)
 	}
 	if sessionStore.finished.FinalState != FinalStateCompleted || sessionStore.finished.TotalTokens != 125 || sessionStore.finished.Turns != 1 || sessionStore.finished.Model != "gpt-5-codex-resolved" {
 		t.Fatalf("SessionFinish = %#v, want completed session with tokens", sessionStore.finished)
+	}
+	if sessionStore.finished.ProviderThreadID != "thread-1" || sessionStore.finished.ProviderSessionID != "thread-1-turn-1" {
+		t.Fatalf("SessionFinish provider IDs = %#v, want thread-1/thread-1-turn-1", sessionStore.finished)
 	}
 	if sessionStore.finished.CachedInputTokens != 40 || sessionStore.finished.ReasoningOutputTokens != 7 {
 		t.Fatalf("SessionFinish cached/reasoning = %#v, want 40/7", sessionStore.finished)
@@ -396,6 +399,186 @@ func TestRunnerRunRefusesDispatchWhenBudgetExceeded(t *testing.T) {
 	}
 	if estimator.model != "gpt-budget" {
 		t.Fatalf("estimator model = %q, want gpt-budget", estimator.model)
+	}
+}
+
+func TestRunnerRunLeavesThreadResumeDisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 2, 16, 0, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-859", Branch: "detent/issue-859"},
+	}
+	agentBackend := &fakeCodexClient{
+		result: AgentTurnResult{ThreadID: "thread-fresh", TurnID: "turn-1", SessionID: "thread-fresh-turn-1"},
+	}
+	sessionStore := &fakeSessionStore{
+		sessionID: 859,
+		resumeState: store.AgentResumeState{
+			DetentSessionID:   100,
+			ProviderThreadID:  "thread-old",
+			ProviderSessionID: "session-old",
+		},
+	}
+
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Work"},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-859",
+			Identifier:    "digitaldrywood/detent#859",
+			Title:         "Thread resume spike",
+			ModelOverride: "gpt-5-codex",
+		},
+		StartedAt: startedAt,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if sessionStore.resumeLookups != 0 {
+		t.Fatalf("resume lookups = %d, want 0 with flag disabled", sessionStore.resumeLookups)
+	}
+	if !agentResumeEmpty(agentBackend.request.Resume) {
+		t.Fatalf("AgentTurnRequest.Resume = %#v, want empty with flag disabled", agentBackend.request.Resume)
+	}
+}
+
+func TestRunnerRunFallsBackFreshWhenResumeFails(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 2, 16, 30, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-859", Branch: "detent/issue-859"},
+	}
+	agentBackend := &resumeFallbackAgentBackend{}
+	sessionStore := &fakeSessionStore{
+		sessionID: 860,
+		resumeState: store.AgentResumeState{
+			DetentSessionID:   100,
+			ProviderThreadID:  "thread-old",
+			ProviderSessionID: "session-old",
+		},
+	}
+
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Agent: config.Agent{ExperimentalThreadResume: true},
+			},
+			Prompt: "Work",
+		},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-859",
+			Identifier:    "digitaldrywood/detent#859",
+			Title:         "Thread resume spike",
+			ModelOverride: "gpt-5-codex",
+		},
+		StartedAt: startedAt,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v, want fresh fallback success", err)
+	}
+	if result.FinalState != FinalStateCompleted {
+		t.Fatalf("FinalState = %q, want completed", result.FinalState)
+	}
+	if sessionStore.resumeLookups != 1 {
+		t.Fatalf("resume lookups = %d, want 1", sessionStore.resumeLookups)
+	}
+	if sessionStore.resumeLookup.AgentRole != RoleCode {
+		t.Fatalf("resume lookup role = %q, want code", sessionStore.resumeLookup.AgentRole)
+	}
+	if len(agentBackend.requests) != 2 {
+		t.Fatalf("backend requests = %d, want resumed attempt plus fresh fallback", len(agentBackend.requests))
+	}
+	if agentBackend.requests[0].Resume.ThreadID != "thread-old" || agentBackend.requests[0].Resume.SessionID != "session-old" {
+		t.Fatalf("first request resume = %#v, want stored resume IDs", agentBackend.requests[0].Resume)
+	}
+	if !agentResumeEmpty(agentBackend.requests[1].Resume) {
+		t.Fatalf("second request resume = %#v, want fresh fallback", agentBackend.requests[1].Resume)
+	}
+	if sessionStore.finished.ProviderThreadID != "thread-fresh" || sessionStore.finished.ProviderSessionID != "session-fresh" {
+		t.Fatalf("SessionFinish provider IDs = %#v, want fresh IDs", sessionStore.finished)
+	}
+	if sessionStore.finished.ResumedFromSessionID != 0 {
+		t.Fatalf("SessionFinish.ResumedFromSessionID = %d, want 0 after fallback", sessionStore.finished.ResumedFromSessionID)
+	}
+}
+
+func TestRunnerRunDoesNotFallbackAfterResumedTurnStarts(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 2, 16, 45, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-859", Branch: "detent/issue-859"},
+	}
+	agentBackend := &resumeStartedFailureAgentBackend{}
+	sessionStore := &fakeSessionStore{
+		sessionID: 861,
+		resumeState: store.AgentResumeState{
+			DetentSessionID:   100,
+			ProviderThreadID:  "thread-old",
+			ProviderSessionID: "session-old",
+		},
+	}
+
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Agent: config.Agent{ExperimentalThreadResume: true},
+			},
+			Prompt: "Work",
+		},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Now:          newFakeClock(startedAt, startedAt.Add(time.Second)).Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:            "issue-859",
+			Identifier:    "digitaldrywood/detent#859",
+			Title:         "Thread resume spike",
+			ModelOverride: "gpt-5-codex",
+		},
+		StartedAt: startedAt,
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want resumed turn failure")
+	}
+	if len(agentBackend.requests) != 1 {
+		t.Fatalf("backend requests = %d, want no fresh fallback after turn start", len(agentBackend.requests))
+	}
+	if agentBackend.requests[0].Resume.ThreadID != "thread-old" || agentBackend.requests[0].Resume.SessionID != "session-old" {
+		t.Fatalf("request resume = %#v, want stored resume IDs", agentBackend.requests[0].Resume)
+	}
+	if sessionStore.finished.FinalState != FinalStateFailed {
+		t.Fatalf("SessionFinish.FinalState = %q, want failed", sessionStore.finished.FinalState)
+	}
+	if sessionStore.finished.ResumedFromSessionID != 100 {
+		t.Fatalf("SessionFinish.ResumedFromSessionID = %d, want resumed source", sessionStore.finished.ResumedFromSessionID)
 	}
 }
 
@@ -2190,6 +2373,52 @@ func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpd
 	return c.result, c.err
 }
 
+type resumeFallbackAgentBackend struct {
+	requests []AgentTurnRequest
+}
+
+func (b *resumeFallbackAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	b.requests = append(b.requests, req)
+	if !agentResumeEmpty(req.Resume) {
+		return AgentTurnResult{}, errors.New("resume failed")
+	}
+	if onUpdate != nil {
+		if err := onUpdate(AgentUpdate{
+			Type:     AgentUpdateTokenUsage,
+			ThreadID: "thread-fresh",
+			TurnID:   "turn-fresh",
+			Model:    "gpt-5-codex",
+			Tokens: AgentTokenUsage{
+				InputTokens:  10,
+				OutputTokens: 5,
+				TotalTokens:  15,
+			},
+		}); err != nil {
+			return AgentTurnResult{}, err
+		}
+	}
+	return AgentTurnResult{ThreadID: "thread-fresh", TurnID: "turn-fresh", SessionID: "session-fresh"}, nil
+}
+
+type resumeStartedFailureAgentBackend struct {
+	requests []AgentTurnRequest
+}
+
+func (b *resumeStartedFailureAgentBackend) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	b.requests = append(b.requests, req)
+	if onUpdate != nil {
+		if err := onUpdate(AgentUpdate{
+			Type:     AgentUpdateTurnStarted,
+			ThreadID: "thread-old",
+			TurnID:   "turn-old",
+			Model:    "gpt-5-codex",
+		}); err != nil {
+			return AgentTurnResult{}, err
+		}
+	}
+	return AgentTurnResult{ThreadID: "thread-old", TurnID: "turn-old", SessionID: "session-old"}, errors.New("resumed turn failed")
+}
+
 type cancelingCodexClient struct {
 	cancel context.CancelFunc
 }
@@ -2200,14 +2429,18 @@ func (c *cancelingCodexClient) RunTurn(context.Context, AgentTurnRequest, AgentU
 }
 
 type fakeSessionStore struct {
-	sessionID   int64
-	started     store.SessionStart
-	finished    store.SessionFinish
-	usage       store.UsageEvent
-	phase       store.WorkflowPhaseEvent
-	startCalls  int
-	finishCalls int
-	usageCalls  int
+	sessionID     int64
+	started       store.SessionStart
+	finished      store.SessionFinish
+	usage         store.UsageEvent
+	phase         store.WorkflowPhaseEvent
+	startCalls    int
+	finishCalls   int
+	usageCalls    int
+	resumeState   store.AgentResumeState
+	resumeErr     error
+	resumeLookups int
+	resumeLookup  store.AgentResumeLookup
 }
 
 func (s *fakeSessionStore) StartSession(_ context.Context, attrs store.SessionStart) (int64, error) {
@@ -2275,6 +2508,18 @@ func (s *fakeRunnerBudgetSpendStore) DailyTokenSpend(context.Context, time.Time)
 func (s *fakeRunnerBudgetSpendStore) IssueTokenSpend(context.Context, store.IssueIdentity) (store.TokenSpend, error) {
 	s.issueCalls++
 	return s.issue, nil
+}
+
+func (s *fakeSessionStore) LatestCompletedAgentResumeState(_ context.Context, attrs store.AgentResumeLookup) (store.AgentResumeState, error) {
+	s.resumeLookups++
+	s.resumeLookup = attrs
+	if s.resumeErr != nil {
+		return store.AgentResumeState{}, s.resumeErr
+	}
+	if s.resumeState.DetentSessionID == 0 && s.resumeState.ProviderThreadID == "" && s.resumeState.ProviderSessionID == "" {
+		return store.AgentResumeState{}, store.ErrNotFound
+	}
+	return s.resumeState, nil
 }
 
 type fakeClock struct {
