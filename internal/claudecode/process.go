@@ -20,9 +20,13 @@ func (b *AgentBackend) RunTurn(
 	onUpdate runner.AgentUpdateHandler,
 ) (runner.AgentTurnResult, error) {
 	ctx = contextOrBackground(ctx)
-	if b.options.TurnTimeout > 0 {
+	turnTimeout := b.options.TurnTimeout
+	if req.TurnTimeout > 0 {
+		turnTimeout = req.TurnTimeout
+	}
+	if turnTimeout > 0 {
 		var cancel context.CancelFunc
-		ctx, cancel = context.WithTimeout(ctx, b.options.TurnTimeout)
+		ctx, cancel = context.WithTimeout(ctx, turnTimeout)
 		defer cancel()
 	}
 

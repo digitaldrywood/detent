@@ -2,6 +2,8 @@ package runner
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
@@ -11,12 +13,17 @@ import (
 )
 
 const (
-	FinalStateCompleted = "completed"
-	FinalStateFailed    = "failed"
+	FinalStateCompleted             = "completed"
+	FinalStateFailed                = "failed"
+	FinalStateTokenCeilingExceeded  = "token_ceiling_exceeded"
+	TokenCeilingSourceAbsolute      = "max_session_tokens"
+	TokenCeilingSourceContextWindow = "max_session_context_multiplier"
 
 	RunModeImplement = "implement"
 	RunModePlan      = "plan"
 )
+
+var ErrSessionTokenCeilingExceeded = errors.New("session token ceiling exceeded")
 
 type Backend interface {
 	Run(context.Context, RunRequest) (RunResult, error)
@@ -44,6 +51,7 @@ type AgentTurnRequest struct {
 	Workspace          string
 	Prompt             string
 	Model              string
+	TurnTimeout        time.Duration
 	ExtraWritableRoots []string
 }
 
@@ -86,6 +94,33 @@ type AgentTokenUsage struct {
 	ReasoningOutputTokens int64
 	TotalTokens           int64
 	ModelContextWindow    *int64
+}
+
+type SessionTokenCeilingError struct {
+	TotalTokens        int64
+	CeilingTokens      int64
+	Source             string
+	ModelContextWindow int64
+	ContextMultiplier  float64
+}
+
+func (e *SessionTokenCeilingError) Error() string {
+	source := e.Source
+	if source == "" {
+		source = "unknown"
+	}
+	message := fmt.Sprintf("%s: total_tokens=%d ceiling_tokens=%d source=%s", ErrSessionTokenCeilingExceeded, e.TotalTokens, e.CeilingTokens, source)
+	if e.ModelContextWindow > 0 {
+		message += fmt.Sprintf(" model_context_window=%d", e.ModelContextWindow)
+	}
+	if e.ContextMultiplier > 0 {
+		message += fmt.Sprintf(" context_multiplier=%g", e.ContextMultiplier)
+	}
+	return message
+}
+
+func (e *SessionTokenCeilingError) Unwrap() error {
+	return ErrSessionTokenCeilingExceeded
 }
 
 type RunRequest struct {

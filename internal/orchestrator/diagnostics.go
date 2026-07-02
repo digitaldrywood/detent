@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
@@ -190,6 +191,8 @@ func workerOutcome(err error, finalState string) string {
 		return workerOutcomeCancelled
 	case errors.Is(err, context.DeadlineExceeded):
 		return workerOutcomeTimedOut
+	case errors.Is(err, runpkg.ErrSessionTokenCeilingExceeded):
+		return runpkg.FinalStateTokenCeilingExceeded
 	case err != nil:
 		return workerOutcomeFailed
 	case strings.EqualFold(strings.TrimSpace(finalState), FinalStateCompleted), strings.TrimSpace(finalState) == "":

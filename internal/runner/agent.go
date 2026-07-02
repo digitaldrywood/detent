@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/store"
@@ -361,6 +362,9 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		if err := r.publishRunUpdate(ctx, req, info, workspaceIssue, progress, result, eventAt, runStartedAt); err != nil {
 			return err
 		}
+		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
+			return err
+		}
 		return nil
 	})
 	_ = turnResult
@@ -382,7 +386,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	)
 
 	if turnErr != nil {
-		result.FinalState = FinalStateFailed
+		result.FinalState = finalStateForTurnError(turnErr)
 		finishedAt := r.now().UTC()
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
@@ -502,6 +506,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		Workspace:          info.Path,
 		Prompt:             prompt,
 		Model:              model,
+		TurnTimeout:        durationFromMillis(workflow.Config.Gate.Validator.TurnTimeoutMS),
 		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
 	}, func(update AgentUpdate) error {
 		r.logAgentUpdate(req.Issue, update)
@@ -512,6 +517,9 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		eventAt := r.now()
 		progress.apply(update, eventAt)
 		if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt); err != nil {
+			return err
+		}
+		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
 			return err
 		}
 		return nil
@@ -536,7 +544,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	finishedAt := r.now().UTC()
 	runResult.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 	if turnErr != nil {
-		runResult.FinalState = FinalStateFailed
+		runResult.FinalState = finalStateForTurnError(turnErr)
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("run validator turn: %w", turnErr),
 			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendKind, 1),
@@ -827,6 +835,128 @@ func (r *Runner) usageCostUSD(model string, inputTokens int64, outputTokens int6
 		return 0
 	}
 	return cost
+}
+
+type sessionTokenCeiling struct {
+	tokens             int64
+	source             string
+	modelContextWindow int64
+	contextMultiplier  float64
+}
+
+func (r *Runner) enforceSessionTokenCeiling(cfg config.Agent, issue connector.Issue, workspacePath string, update AgentUpdate, eventAt time.Time) error {
+	if update.Type != AgentUpdateTokenUsage || sessionTokenCeilingBypassed(cfg, issue) {
+		return nil
+	}
+	ceiling, ok := sessionTokenCeilingForUsage(cfg, update.Tokens)
+	if !ok || update.Tokens.TotalTokens <= ceiling.tokens {
+		return nil
+	}
+
+	err := &SessionTokenCeilingError{
+		TotalTokens:        update.Tokens.TotalTokens,
+		CeilingTokens:      ceiling.tokens,
+		Source:             ceiling.source,
+		ModelContextWindow: ceiling.modelContextWindow,
+		ContextMultiplier:  ceiling.contextMultiplier,
+	}
+	if appendErr := appendSessionTokenCeilingLesson(cfg.Lessons, issue, workspacePath, err, eventAt); appendErr != nil {
+		r.logger.Warn("session token ceiling lesson append failed", "error", appendErr)
+		return errors.Join(err, appendErr)
+	}
+	return err
+}
+
+func sessionTokenCeilingForUsage(cfg config.Agent, tokens AgentTokenUsage) (sessionTokenCeiling, bool) {
+	var ceiling sessionTokenCeiling
+	if cfg.MaxSessionTokens > 0 {
+		ceiling = sessionTokenCeiling{
+			tokens: cfg.MaxSessionTokens,
+			source: TokenCeilingSourceAbsolute,
+		}
+	}
+	if cfg.MaxSessionContextMultiplier > 0 && tokens.ModelContextWindow != nil && *tokens.ModelContextWindow > 0 {
+		limit := int64(math.Ceil(float64(*tokens.ModelContextWindow) * cfg.MaxSessionContextMultiplier))
+		if limit > 0 && (ceiling.tokens == 0 || limit < ceiling.tokens) {
+			ceiling = sessionTokenCeiling{
+				tokens:             limit,
+				source:             TokenCeilingSourceContextWindow,
+				modelContextWindow: *tokens.ModelContextWindow,
+				contextMultiplier:  cfg.MaxSessionContextMultiplier,
+			}
+		}
+	}
+	return ceiling, ceiling.tokens > 0
+}
+
+func sessionTokenCeilingBypassed(cfg config.Agent, issue connector.Issue) bool {
+	if label := strings.TrimSpace(cfg.MaxSessionTokenOverrideLabel); label != "" && issueHasLabel(issue, label) {
+		return true
+	}
+	if field := strings.TrimSpace(cfg.MaxSessionTokenOverrideField); field != "" {
+		value, ok := issueFieldValue(issue.Fields, field)
+		return ok && tokenCeilingOverrideEnabled(value)
+	}
+	return false
+}
+
+func issueHasLabel(issue connector.Issue, want string) bool {
+	want = strings.ToLower(strings.TrimSpace(want))
+	if want == "" {
+		return false
+	}
+	for _, label := range issue.Labels {
+		if strings.ToLower(strings.TrimSpace(label)) == want {
+			return true
+		}
+	}
+	return false
+}
+
+func tokenCeilingOverrideEnabled(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "y", "on", "allow", "allowed", "bypass", "disabled":
+		return true
+	default:
+		return false
+	}
+}
+
+func appendSessionTokenCeilingLesson(cfg config.Lessons, issue connector.Issue, workspacePath string, ceilingErr *SessionTokenCeilingError, eventAt time.Time) error {
+	if strings.TrimSpace(workspacePath) == "" {
+		return nil
+	}
+	path := cfg.Path
+	if strings.TrimSpace(path) == "" {
+		path = lessons.DefaultPath
+	}
+	lessonPath, err := promptWorkspaceRelativePath(workspacePath, path)
+	if err != nil {
+		return err
+	}
+	return lessons.Append(lessonPath, lessons.Entry{
+		IssueNumber: githubIssueNumber(issue.Identifier),
+		IssueRef:    issue.Identifier,
+		Title:       issue.Title,
+		FailureKind: FinalStateTokenCeilingExceeded,
+		Symptom:     fmt.Sprintf("session reached %d tokens, above configured ceiling %d", ceilingErr.TotalTokens, ceilingErr.CeilingTokens),
+		Hypothesis:  "the agent session is consuming tokens faster than the configured per-session ceiling permits",
+		Hint:        "retry with a narrower task split, stronger stop conditions, or a deliberate per-issue token ceiling override",
+	}, lessons.AppendOptions{Date: eventAt.UTC(), MaxEntries: cfg.MaxEntries})
+}
+
+func finalStateForTurnError(err error) string {
+	if errors.Is(err, ErrSessionTokenCeilingExceeded) {
+		return FinalStateTokenCeilingExceeded
+	}
+	return FinalStateFailed
+}
+
+func durationFromMillis(ms int) time.Duration {
+	if ms <= 0 {
+		return 0
+	}
+	return time.Duration(ms) * time.Millisecond
 }
 
 func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
@@ -1181,6 +1311,8 @@ func workerRunOutcome(err error, finalState string) string {
 		return "cancelled"
 	case errors.Is(err, context.DeadlineExceeded):
 		return "timed_out"
+	case errors.Is(err, ErrSessionTokenCeilingExceeded):
+		return FinalStateTokenCeilingExceeded
 	case err != nil:
 		return "failed"
 	case strings.EqualFold(strings.TrimSpace(finalState), FinalStateCompleted), strings.TrimSpace(finalState) == "":

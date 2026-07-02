@@ -54,6 +54,7 @@ type RunTurnRequest struct {
 	Model             string
 	ModelProvider     string
 	ServiceTier       string
+	TurnTimeout       time.Duration
 }
 
 type RunTurnResult struct {
@@ -225,7 +226,7 @@ func (s *AppServer) RunTurn(ctx context.Context, req RunTurnRequest, onUpdate Up
 		return RunTurnResult{}, err
 	}
 
-	if err := s.streamTurn(ctx, transport, onUpdate); err != nil {
+	if err := s.streamTurn(ctx, transport, req.turnTimeout(s.turnTimeout), onUpdate); err != nil {
 		return RunTurnResult{}, err
 	}
 
@@ -386,9 +387,16 @@ func (s *AppServer) awaitResponse(
 	}
 }
 
-func (s *AppServer) streamTurn(ctx context.Context, transport Transport, onUpdate UpdateHandler) error {
+func (r RunTurnRequest) turnTimeout(fallback time.Duration) time.Duration {
+	if r.TurnTimeout > 0 {
+		return r.TurnTimeout
+	}
+	return fallback
+}
+
+func (s *AppServer) streamTurn(ctx context.Context, transport Transport, turnTimeout time.Duration, onUpdate UpdateHandler) error {
 	for {
-		msg, err := receiveWithTimeout(ctx, transport, s.turnTimeout)
+		msg, err := receiveWithTimeout(ctx, transport, turnTimeout)
 		if err != nil {
 			return fmt.Errorf("stream turn: %w", err)
 		}

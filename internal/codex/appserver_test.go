@@ -161,6 +161,39 @@ func TestAppServerRunTurnStartsLifecycleAndStreamsUpdates(t *testing.T) {
 	}
 }
 
+func TestAppServerRunTurnRequestTurnTimeoutOverridesDefault(t *testing.T) {
+	t.Parallel()
+
+	transport := newBlockingAppServerTransport([]Message{
+		responseMessage(t, 1, `{"userAgent":"codex-cli/0.135.0"}`),
+		responseMessage(t, 2, `{"thread":{"id":"thread-timeout"}}`),
+		responseMessage(t, 3, `{"turn":{"id":"turn-timeout"}}`),
+	})
+	server, err := NewAppServer(staticTransportFactory{transport: transport},
+		WithReadTimeout(time.Second),
+		WithTurnTimeout(time.Hour),
+	)
+	if err != nil {
+		t.Fatalf("NewAppServer() error = %v", err)
+	}
+
+	startedAt := time.Now()
+	_, err = server.RunTurn(context.Background(), RunTurnRequest{
+		Workspace:   "/tmp/detent-workspace",
+		Prompt:      "timeout",
+		TurnTimeout: 10 * time.Millisecond,
+	}, nil)
+	if err == nil {
+		t.Fatal("RunTurn() error = nil, want request timeout")
+	}
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("RunTurn() error = %v, want context deadline exceeded", err)
+	}
+	if elapsed := time.Since(startedAt); elapsed > time.Second {
+		t.Fatalf("RunTurn() elapsed = %v, want request timeout instead of default", elapsed)
+	}
+}
+
 func TestAppServerRunTurnRespondsToServerRequests(t *testing.T) {
 	t.Parallel()
 
@@ -271,6 +304,24 @@ func (t *fakeAppServerTransport) ProcessIdentity() string {
 
 func (t *fakeAppServerTransport) sentMessages() []Message {
 	return append([]Message(nil), t.sent...)
+}
+
+type blockingAppServerTransport struct {
+	*fakeAppServerTransport
+}
+
+func newBlockingAppServerTransport(received []Message) *blockingAppServerTransport {
+	return &blockingAppServerTransport{fakeAppServerTransport: newFakeAppServerTransport(received)}
+}
+
+func (t *blockingAppServerTransport) Receive(ctx context.Context) (Message, error) {
+	if len(t.received) > 0 {
+		msg := t.received[0]
+		t.received = t.received[1:]
+		return msg, nil
+	}
+	<-ctx.Done()
+	return Message{}, ctx.Err()
 }
 
 func responseMessage(t *testing.T, id int, result string) Message {

@@ -271,6 +271,317 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 }
 
+func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := t.TempDir()
+	startedAt := time.Date(2026, 7, 2, 14, 0, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: workspacePath, Key: "issue-853", Branch: "detent/issue-853"},
+	}
+	agentBackend := &fakeCodexClient{
+		updates: []AgentUpdate{
+			{
+				Type:     AgentUpdateTokenUsage,
+				ThreadID: "thread-853",
+				TurnID:   "turn-1",
+				Tokens: AgentTokenUsage{
+					InputTokens:  80,
+					OutputTokens: 10,
+					TotalTokens:  90,
+				},
+			},
+			{
+				Type:     AgentUpdateTokenUsage,
+				ThreadID: "thread-853",
+				TurnID:   "turn-1",
+				Tokens: AgentTokenUsage{
+					InputTokens:  100,
+					OutputTokens: 20,
+					TotalTokens:  120,
+				},
+			},
+		},
+	}
+	sessionStore := &fakeSessionStore{sessionID: 853}
+	clock := newFakeClock(
+		startedAt,
+		startedAt.Add(time.Second),
+		startedAt.Add(2*time.Second),
+		startedAt.Add(3*time.Second),
+	)
+
+	runner, err := NewRunner(Dependencies{
+		Workflow: config.Workflow{
+			Config: config.Config{
+				Agent: config.Agent{
+					MaxSessionTokens: 100,
+					Lessons: config.Lessons{
+						Path:       ".detent/lessons.md",
+						MaxEntries: 5,
+					},
+				},
+			},
+			Prompt: "Work on {{ issue.identifier }}",
+		},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Store:        sessionStore,
+		Now:          clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	var usageUpdates []UsageUpdate
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-853",
+			Identifier: "digitaldrywood/detent#853",
+			Title:      "Per-session token ceiling",
+		},
+		StartedAt: startedAt,
+		OnUsageUpdate: func(update UsageUpdate) error {
+			usageUpdates = append(usageUpdates, update)
+			return nil
+		},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want token ceiling error")
+	}
+	if !errors.Is(err, ErrSessionTokenCeilingExceeded) {
+		t.Fatalf("Run() error = %v, want ErrSessionTokenCeilingExceeded", err)
+	}
+	var ceilingErr *SessionTokenCeilingError
+	if !errors.As(err, &ceilingErr) {
+		t.Fatalf("Run() error = %T, want SessionTokenCeilingError", err)
+	}
+	if ceilingErr.TotalTokens != 120 || ceilingErr.CeilingTokens != 100 || ceilingErr.Source != TokenCeilingSourceAbsolute {
+		t.Fatalf("ceiling error = %#v, want total 120 ceiling 100 absolute source", ceilingErr)
+	}
+	if result.FinalState != FinalStateTokenCeilingExceeded {
+		t.Fatalf("FinalState = %q, want %q", result.FinalState, FinalStateTokenCeilingExceeded)
+	}
+	if sessionStore.finished.FinalState != FinalStateTokenCeilingExceeded || sessionStore.finished.TotalTokens != 120 {
+		t.Fatalf("SessionFinish = %#v, want token ceiling final state and 120 tokens", sessionStore.finished)
+	}
+	if sessionStore.usage.Outcome != FinalStateTokenCeilingExceeded || sessionStore.usage.TotalTokens != 120 {
+		t.Fatalf("UsageEvent = %#v, want token ceiling outcome and 120 tokens", sessionStore.usage)
+	}
+	if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
+		t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
+	}
+	if len(usageUpdates) != 2 {
+		t.Fatalf("usage update count = %d, want 2", len(usageUpdates))
+	}
+	if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
+		t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
+	}
+
+	lesson, err := os.ReadFile(filepath.Join(workspacePath, ".detent", "lessons.md"))
+	if err != nil {
+		t.Fatalf("ReadFile(lessons) error = %v", err)
+	}
+	for _, want := range []string{
+		"Failure kind:** token_ceiling_exceeded",
+		"session reached 120 tokens",
+		"configured ceiling 100",
+	} {
+		if !strings.Contains(string(lesson), want) {
+			t.Fatalf("lesson missing %q:\n%s", want, lesson)
+		}
+	}
+}
+
+func TestRunnerRunLeavesSessionTokenCeilingDisabledByDefault(t *testing.T) {
+	t.Parallel()
+
+	startedAt := time.Date(2026, 7, 2, 14, 30, 0, 0, time.UTC)
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: t.TempDir(), Key: "issue-default", Branch: "detent/issue-default"},
+	}
+	contextWindow := int64(100)
+	agentBackend := &fakeCodexClient{
+		updates: []AgentUpdate{{
+			Type:     AgentUpdateTokenUsage,
+			ThreadID: "thread-default",
+			TurnID:   "turn-1",
+			Tokens: AgentTokenUsage{
+				InputTokens:        1000000,
+				OutputTokens:       250000,
+				TotalTokens:        1250000,
+				ModelContextWindow: &contextWindow,
+			},
+		}},
+	}
+	clock := newFakeClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second))
+
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}, Prompt: "Work"},
+		Workspace:    workspaceBackend,
+		AgentBackend: agentBackend,
+		Now:          clock.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	result, err := runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-default",
+			Identifier: "digitaldrywood/detent#854",
+			Title:      "Default behavior",
+		},
+		StartedAt: startedAt,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+	if result.FinalState != FinalStateCompleted || result.Tokens.TotalTokens != 1250000 {
+		t.Fatalf("Run() result = %#v, want completed with large token total", result)
+	}
+}
+
+func TestRunnerRunSessionTokenOverrideBypassesLimit(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		cfg   config.Agent
+		issue connector.Issue
+	}{
+		{
+			name: "label",
+			cfg: config.Agent{
+				MaxSessionTokens:             100,
+				MaxSessionTokenOverrideLabel: "allow-large-session",
+			},
+			issue: connector.Issue{
+				ID:         "issue-label",
+				Identifier: "digitaldrywood/detent#855",
+				Title:      "Large label session",
+				Labels:     []string{"Allow-Large-Session"},
+			},
+		},
+		{
+			name: "field",
+			cfg: config.Agent{
+				MaxSessionTokens:             100,
+				MaxSessionTokenOverrideField: "Token Override",
+			},
+			issue: connector.Issue{
+				ID:         "issue-field",
+				Identifier: "digitaldrywood/detent#856",
+				Title:      "Large field session",
+				Fields:     map[string]string{"Token Override": "true"},
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			startedAt := time.Date(2026, 7, 2, 15, 0, 0, 0, time.UTC)
+			agentBackend := &fakeCodexClient{
+				updates: []AgentUpdate{{
+					Type:     AgentUpdateTokenUsage,
+					ThreadID: "thread-override",
+					TurnID:   "turn-1",
+					Tokens: AgentTokenUsage{
+						InputTokens:  100,
+						OutputTokens: 20,
+						TotalTokens:  120,
+					},
+				}},
+			}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{
+					Config: config.Config{Agent: tt.cfg},
+					Prompt: "Work",
+				},
+				Workspace: &fakeWorkspaceBackend{
+					info: workspace.Info{Path: t.TempDir(), Key: tt.issue.ID, Branch: "detent/" + tt.issue.ID},
+				},
+				AgentBackend: agentBackend,
+				Now:          newFakeClock(startedAt, startedAt.Add(time.Second), startedAt.Add(2*time.Second)).Now,
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			result, err := runner.Run(context.Background(), RunRequest{Issue: tt.issue, StartedAt: startedAt})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+			if result.FinalState != FinalStateCompleted || result.Tokens.TotalTokens != 120 {
+				t.Fatalf("Run() result = %#v, want completed with 120 tokens", result)
+			}
+		})
+	}
+}
+
+func TestSessionTokenCeilingForUsageUsesTightestConfiguredLimit(t *testing.T) {
+	t.Parallel()
+
+	contextWindow := int64(1000)
+	tests := []struct {
+		name   string
+		cfg    config.Agent
+		tokens AgentTokenUsage
+		want   sessionTokenCeiling
+		ok     bool
+	}{
+		{
+			name:   "disabled",
+			cfg:    config.Agent{},
+			tokens: AgentTokenUsage{TotalTokens: 1000000, ModelContextWindow: &contextWindow},
+		},
+		{
+			name:   "absolute",
+			cfg:    config.Agent{MaxSessionTokens: 5000},
+			tokens: AgentTokenUsage{ModelContextWindow: &contextWindow},
+			want:   sessionTokenCeiling{tokens: 5000, source: TokenCeilingSourceAbsolute},
+			ok:     true,
+		},
+		{
+			name:   "context multiplier",
+			cfg:    config.Agent{MaxSessionContextMultiplier: 2.5},
+			tokens: AgentTokenUsage{ModelContextWindow: &contextWindow},
+			want: sessionTokenCeiling{
+				tokens:             2500,
+				source:             TokenCeilingSourceContextWindow,
+				modelContextWindow: 1000,
+				contextMultiplier:  2.5,
+			},
+			ok: true,
+		},
+		{
+			name:   "tighter context multiplier",
+			cfg:    config.Agent{MaxSessionTokens: 5000, MaxSessionContextMultiplier: 2},
+			tokens: AgentTokenUsage{ModelContextWindow: &contextWindow},
+			want: sessionTokenCeiling{
+				tokens:             2000,
+				source:             TokenCeilingSourceContextWindow,
+				modelContextWindow: 1000,
+				contextMultiplier:  2,
+			},
+			ok: true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got, ok := sessionTokenCeilingForUsage(tt.cfg, tt.tokens)
+			if ok != tt.ok || got != tt.want {
+				t.Fatalf("sessionTokenCeilingForUsage() = %#v, %v; want %#v, %v", got, ok, tt.want, tt.ok)
+			}
+		})
+	}
+}
+
 func TestRunnerRunAddsGitMetadataExtraRootsForManagedWorkspace(t *testing.T) {
 	t.Parallel()
 
@@ -516,10 +827,11 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 			Config: config.Config{
 				Gate: gate.Config{
 					Validator: gate.ValidatorConfig{
-						Enabled:  true,
-						Model:    "gpt-5-validator-override",
-						MinScore: 0.8,
-						BlockOn:  []string{"p1"},
+						Enabled:       true,
+						Model:         "gpt-5-validator-override",
+						MinScore:      0.8,
+						BlockOn:       []string{"p1"},
+						TurnTimeoutMS: 120000,
 					},
 				},
 				Agents: config.Agents{
@@ -572,6 +884,9 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	}
 	if validatorBackend.request.Model != "gpt-5-validator-override" {
 		t.Fatalf("validator model = %q, want gate override", validatorBackend.request.Model)
+	}
+	if validatorBackend.request.TurnTimeout != 2*time.Minute {
+		t.Fatalf("validator turn timeout = %v, want 2m", validatorBackend.request.TurnTimeout)
 	}
 	if validatorBackend.request.Workspace != workspacePath {
 		t.Fatalf("validator workspace = %q, want %q", validatorBackend.request.Workspace, workspacePath)

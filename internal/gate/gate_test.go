@@ -580,7 +580,11 @@ func boolPointerEqual(left *bool, right *bool) bool {
 }
 
 func validatorConfigsEqual(left ValidatorConfig, right ValidatorConfig) bool {
-	if left.Enabled != right.Enabled || left.Model != right.Model || left.MinScore != right.MinScore || len(left.BlockOn) != len(right.BlockOn) {
+	if left.Enabled != right.Enabled ||
+		left.Model != right.Model ||
+		left.MinScore != right.MinScore ||
+		left.TurnTimeoutMS != right.TurnTimeoutMS ||
+		len(left.BlockOn) != len(right.BlockOn) {
 		return false
 	}
 	for i := range left.BlockOn {

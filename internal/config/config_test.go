@@ -85,6 +85,10 @@ worker:
   max_concurrent_agents_per_host: 2
 agent:
   max_concurrent_agents: 5
+  max_session_tokens: 10000000
+  max_session_context_multiplier: 3.5
+  max_session_token_override_label: Allow-Large-Session
+  max_session_token_override_field: Token Override
   shutdown:
     drain_timeout_ms: 300000
   max_concurrent_agents_by_state:
@@ -277,6 +281,18 @@ Ticket prompt {{ issue.title }}
 	}
 	if got := cfg.Agent.MaxConcurrentAgentsByState["merging"]; got != 1 {
 		t.Fatalf("Agent.MaxConcurrentAgentsByState[merging] = %d, want 1", got)
+	}
+	if cfg.Agent.MaxSessionTokens != 10000000 {
+		t.Fatalf("Agent.MaxSessionTokens = %d, want 10000000", cfg.Agent.MaxSessionTokens)
+	}
+	if cfg.Agent.MaxSessionContextMultiplier != 3.5 {
+		t.Fatalf("Agent.MaxSessionContextMultiplier = %v, want 3.5", cfg.Agent.MaxSessionContextMultiplier)
+	}
+	if cfg.Agent.MaxSessionTokenOverrideLabel != "allow-large-session" {
+		t.Fatalf("Agent.MaxSessionTokenOverrideLabel = %q, want allow-large-session", cfg.Agent.MaxSessionTokenOverrideLabel)
+	}
+	if cfg.Agent.MaxSessionTokenOverrideField != "Token Override" {
+		t.Fatalf("Agent.MaxSessionTokenOverrideField = %q, want Token Override", cfg.Agent.MaxSessionTokenOverrideField)
 	}
 	if cfg.Agent.Shutdown.DrainTimeoutMS != 300000 {
 		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want 300000", cfg.Agent.Shutdown.DrainTimeoutMS)
@@ -544,6 +560,12 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.MaxConcurrentAgents != 10 {
 		t.Fatalf("Agent.MaxConcurrentAgents = %d, want 10", cfg.Agent.MaxConcurrentAgents)
+	}
+	if cfg.Agent.MaxSessionTokens != 0 {
+		t.Fatalf("Agent.MaxSessionTokens = %d, want disabled default", cfg.Agent.MaxSessionTokens)
+	}
+	if cfg.Agent.MaxSessionContextMultiplier != 0 {
+		t.Fatalf("Agent.MaxSessionContextMultiplier = %v, want disabled default", cfg.Agent.MaxSessionContextMultiplier)
 	}
 	if cfg.Agent.Shutdown.DrainTimeoutMS != DefaultShutdownDrainTimeoutMS {
 		t.Fatalf("Agent.Shutdown.DrainTimeoutMS = %d, want %d", cfg.Agent.Shutdown.DrainTimeoutMS, DefaultShutdownDrainTimeoutMS)
@@ -1097,6 +1119,7 @@ gate:
     enabled: true
     model: gpt-5-validator
     min_score: 0.85
+    turn_timeout_ms: 120000
     block_on:
       - P1
       - p2
@@ -1119,6 +1142,9 @@ Prompt
 	}
 	if validator.MinScore != 0.85 {
 		t.Fatalf("Gate.Validator.MinScore = %v, want 0.85", validator.MinScore)
+	}
+	if validator.TurnTimeoutMS != 120000 {
+		t.Fatalf("Gate.Validator.TurnTimeoutMS = %d, want 120000", validator.TurnTimeoutMS)
 	}
 	if got := validator.BlockOn; !reflect.DeepEqual(got, []string{"p1", "p2"}) {
 		t.Fatalf("Gate.Validator.BlockOn = %#v, want p1/p2", got)
@@ -1533,6 +1559,8 @@ workspace:
   cleanup_sweep_interval_ms: 0
 agent:
   max_concurrent_agents: 0
+  max_session_tokens: -1
+  max_session_context_multiplier: -0.5
   max_concurrent_agents_by_state:
     Todo: 0
   dispatch_priority_by_state: ["Todo", "Todo"]
@@ -1567,6 +1595,8 @@ Prompt
 				"workspace.cleanup_idle_ttl_ms must be greater than 0",
 				"workspace.cleanup_sweep_interval_ms must be greater than 0",
 				"agent.max_concurrent_agents must be greater than 0",
+				"agent.max_session_tokens must be greater than or equal to 0",
+				"agent.max_session_context_multiplier must be greater than or equal to 0",
 				"agent.max_concurrent_agents_by_state limits must be positive integers",
 				"agent.dispatch_priority_by_state state names must be unique",
 				"agent.dispatch_priority_by_label labels must not be blank",
@@ -1959,6 +1989,7 @@ gate:
   validator:
     enabled: true
     min_score: 1.2
+    turn_timeout_ms: -1
     block_on:
       - ""
 ---
@@ -1966,6 +1997,7 @@ Prompt
 `,
 			want: []string{
 				"gate.validator.min_score must be greater than 0 and less than or equal to 1",
+				"gate.validator.turn_timeout_ms must be greater than or equal to 0",
 			},
 		},
 	}

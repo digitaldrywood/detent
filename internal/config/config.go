@@ -186,17 +186,21 @@ type Worker struct {
 }
 
 type Agent struct {
-	MaxConcurrentAgents        int            `yaml:"max_concurrent_agents"`
-	MaxTurns                   int            `yaml:"max_turns"`
-	MaxRetryBackoffMS          int            `yaml:"max_retry_backoff_ms"`
-	Shutdown                   Shutdown       `yaml:"shutdown"`
-	MaxConcurrentAgentsByState map[string]int `yaml:"max_concurrent_agents_by_state"`
-	DispatchPriorityByState    []string       `yaml:"dispatch_priority_by_state"`
-	DispatchPriorityByLabel    []string       `yaml:"dispatch_priority_by_label"`
-	AutoPromote                AutoPromote    `yaml:"auto_promote"`
-	Budget                     Budget         `yaml:"budget"`
-	Lessons                    Lessons        `yaml:"lessons"`
-	Skills                     Skills         `yaml:"skills"`
+	MaxConcurrentAgents          int            `yaml:"max_concurrent_agents"`
+	MaxTurns                     int            `yaml:"max_turns"`
+	MaxRetryBackoffMS            int            `yaml:"max_retry_backoff_ms"`
+	MaxSessionTokens             int64          `yaml:"max_session_tokens"`
+	MaxSessionContextMultiplier  float64        `yaml:"max_session_context_multiplier"`
+	MaxSessionTokenOverrideLabel string         `yaml:"max_session_token_override_label"`
+	MaxSessionTokenOverrideField string         `yaml:"max_session_token_override_field"`
+	Shutdown                     Shutdown       `yaml:"shutdown"`
+	MaxConcurrentAgentsByState   map[string]int `yaml:"max_concurrent_agents_by_state"`
+	DispatchPriorityByState      []string       `yaml:"dispatch_priority_by_state"`
+	DispatchPriorityByLabel      []string       `yaml:"dispatch_priority_by_label"`
+	AutoPromote                  AutoPromote    `yaml:"auto_promote"`
+	Budget                       Budget         `yaml:"budget"`
+	Lessons                      Lessons        `yaml:"lessons"`
+	Skills                       Skills         `yaml:"skills"`
 }
 
 type Shutdown struct {
@@ -947,6 +951,8 @@ func (c *Config) normalize() {
 	c.Agent.MaxConcurrentAgentsByState = normalizeStateLimits(c.Agent.MaxConcurrentAgentsByState)
 	c.Agent.DispatchPriorityByState = normalizeStateList(c.Agent.DispatchPriorityByState)
 	c.Agent.DispatchPriorityByLabel = normalizeLabels(c.Agent.DispatchPriorityByLabel)
+	c.Agent.MaxSessionTokenOverrideLabel = normalizeLabel(c.Agent.MaxSessionTokenOverrideLabel)
+	c.Agent.MaxSessionTokenOverrideField = strings.TrimSpace(c.Agent.MaxSessionTokenOverrideField)
 	c.Agent.AutoPromote.OptoutLabel = normalizeLabel(c.Agent.AutoPromote.OptoutLabel)
 	c.Agent.AutoPromote.AllowedIssueLabels = normalizeLabels(c.Agent.AutoPromote.AllowedIssueLabels)
 	c.Agent.AutoPromote.SourceState = strings.TrimSpace(c.Agent.AutoPromote.SourceState)
@@ -1188,6 +1194,12 @@ func (a *Agent) validate(prefix string, problems *[]string) {
 	validatePositive(prefix+".max_concurrent_agents", a.MaxConcurrentAgents, problems)
 	validatePositive(prefix+".max_turns", a.MaxTurns, problems)
 	validatePositive(prefix+".max_retry_backoff_ms", a.MaxRetryBackoffMS, problems)
+	if a.MaxSessionTokens < 0 {
+		*problems = append(*problems, prefix+".max_session_tokens must be greater than or equal to 0")
+	}
+	if a.MaxSessionContextMultiplier < 0 {
+		*problems = append(*problems, prefix+".max_session_context_multiplier must be greater than or equal to 0")
+	}
 	a.Shutdown.validate(prefix+".shutdown", problems)
 	validateStateLimits(prefix+".max_concurrent_agents_by_state", a.MaxConcurrentAgentsByState, problems)
 	validateStateList(prefix+".dispatch_priority_by_state", a.DispatchPriorityByState, problems)
