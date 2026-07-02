@@ -219,10 +219,6 @@ func routesFromConfig(routes []config.AgentRoute) []Route {
 	return out
 }
 
-func (r agentRuntime) selectBackend(issue connector.Issue, ctx selector.Context) (RouteSelection, AgentBackend, string, error) {
-	return r.selectBackendForRole(issue, ctx, RoleCode)
-}
-
 func (r agentRuntime) selectBackendForRole(issue connector.Issue, ctx selector.Context, role string) (RouteSelection, AgentBackend, string, error) {
 	selection, err := r.router.RouteForRole(issue, ctx, role)
 	if err != nil {
@@ -280,6 +276,20 @@ func normalizeRunMode(mode string) string {
 		return RunModeMerge
 	default:
 		return RunModeImplement
+	}
+}
+
+func runRole(mode string, issue connector.Issue) string {
+	if normalizeRunMode(mode) == RunModePlan {
+		return RolePlan
+	}
+	switch strings.ToLower(strings.TrimSpace(issue.State)) {
+	case RoleRework:
+		return RoleRework
+	case RoleMerge, "merging":
+		return RoleMerge
+	default:
+		return RoleCode
 	}
 }
 
@@ -401,7 +411,8 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
-	selection, backend, backendKind, err := agentRuntime.selectBackend(req.Issue, selectorContext(req.SelectorContext, workflow))
+	role := runRole(req.Mode, req.Issue)
+	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -422,7 +433,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"workspace_path", info.Path,
 		"backend_id", selection.BackendID,
 		"route", selection.RouteName,
-		"role", RoleCode,
+		"role", role,
 		"model", sessionModel,
 		"mode", mode,
 	)
@@ -455,7 +466,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		"workspace_path", info.Path,
 		"backend_id", selection.BackendID,
 		"route", selection.RouteName,
-		"role", RoleCode,
+		"role", role,
 		"model", effectiveModel(result.Model, sessionModel),
 		"outcome", workerRunOutcome(turnErr, result.FinalState),
 		"error", errorString(turnErr),

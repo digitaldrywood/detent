@@ -905,6 +905,201 @@ func TestRunnerPlanModeCapturesOutputAndConstrainsPrompt(t *testing.T) {
 	}
 }
 
+func TestRunRoleDerivesStageFromModeAndState(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		mode  string
+		state string
+		want  string
+	}{
+		{name: "empty mode todo uses code", state: "Todo", want: RoleCode},
+		{name: "implement mode in progress uses code", mode: RunModeImplement, state: "In Progress", want: RoleCode},
+		{name: "plan mode uses plan", mode: RunModePlan, state: "Todo", want: RolePlan},
+		{name: "plan mode overrides rework state", mode: RunModePlan, state: "Rework", want: RolePlan},
+		{name: "rework state uses rework", mode: RunModeImplement, state: "Rework", want: RoleRework},
+		{name: "rework state trims and folds case", mode: RunModeImplement, state: " reWORK ", want: RoleRework},
+		{name: "merging state uses merge", mode: RunModeImplement, state: "Merging", want: RoleMerge},
+		{name: "unknown mode normalizes to implement", mode: "unknown", state: "Merging", want: RoleMerge},
+		{name: "observed review state uses code", mode: RunModeImplement, state: "Human Review", want: RoleCode},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := runRole(tt.mode, connector.Issue{State: tt.state})
+			if got != tt.want {
+				t.Fatalf("runRole(%q, %q) = %q, want %q", tt.mode, tt.state, got, tt.want)
+			}
+		})
+	}
+}
+
+func TestRunnerRunRoutesPerStageRoles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name        string
+		mode        string
+		state       string
+		wantBackend string
+		wantModel   string
+	}{
+		{name: "code default", state: "Todo", wantBackend: "codex-code", wantModel: "gpt-5-code"},
+		{name: "plan mode", mode: RunModePlan, state: "Todo", wantBackend: "codex-plan", wantModel: "gpt-5-plan"},
+		{name: "rework state", mode: RunModeImplement, state: "Rework", wantBackend: "codex-rework", wantModel: "gpt-5-rework"},
+		{name: "merge state", mode: RunModeImplement, state: "Merging", wantBackend: "codex-merge", wantModel: "gpt-5-merge"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: t.TempDir(), Key: "issue-stage", Branch: "detent/issue-stage"},
+			}
+			clients := map[string]*fakeCodexClient{
+				"codex-code":   {},
+				"codex-plan":   {},
+				"codex-rework": {},
+				"codex-merge":  {},
+			}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{
+					Config: config.Config{
+						Agents: config.Agents{
+							Backends: []config.AgentBackend{
+								{ID: "codex-code", Kind: "codex", Protocol: "app-server", Command: "codex app-server"},
+								{ID: "codex-plan", Kind: "codex", Protocol: "app-server", Command: "codex app-server --profile plan"},
+								{ID: "codex-rework", Kind: "codex", Protocol: "app-server", Command: "codex app-server --profile rework"},
+								{ID: "codex-merge", Kind: "codex", Protocol: "app-server", Command: "codex app-server --profile merge"},
+							},
+							Routes: []config.AgentRoute{
+								{Name: "plan", Role: RolePlan, Backend: "codex-plan", Model: "gpt-5-plan"},
+								{Name: "rework", Role: RoleRework, Backend: "codex-rework", Model: "gpt-5-rework"},
+								{Name: "merge", Role: RoleMerge, Backend: "codex-merge", Model: "gpt-5-merge"},
+								{Name: "default", Backend: "codex-code", Model: "gpt-5-code", Default: true},
+							},
+						},
+					},
+					Prompt: "work {{ issue.identifier }}",
+				},
+				Workspace: workspaceBackend,
+				AgentBackends: map[string]AgentBackend{
+					"codex-code":   clients["codex-code"],
+					"codex-plan":   clients["codex-plan"],
+					"codex-rework": clients["codex-rework"],
+					"codex-merge":  clients["codex-merge"],
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			_, err = runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-stage",
+					Identifier: "digitaldrywood/detent#861",
+					Title:      "Per-stage roles",
+					State:      tt.state,
+				},
+				Mode: tt.mode,
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+
+			for backendID, client := range clients {
+				wantCalls := 0
+				if backendID == tt.wantBackend {
+					wantCalls = 1
+				}
+				if client.calls != wantCalls {
+					t.Fatalf("%s calls = %d, want %d", backendID, client.calls, wantCalls)
+				}
+			}
+			if clients[tt.wantBackend].request.Model != tt.wantModel {
+				t.Fatalf("Model = %q, want %q", clients[tt.wantBackend].request.Model, tt.wantModel)
+			}
+		})
+	}
+}
+
+func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		mode  string
+		state string
+	}{
+		{name: "plan role", mode: RunModePlan, state: "Todo"},
+		{name: "rework role", mode: RunModeImplement, state: "Rework"},
+		{name: "merge role", mode: RunModeImplement, state: "Merging"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: t.TempDir(), Key: "issue-fallback", Branch: "detent/issue-fallback"},
+			}
+			backend := &fakeCodexClient{}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{
+					Config: config.Config{
+						Agents: config.Agents{
+							Backends: []config.AgentBackend{{
+								ID:       "codex-code",
+								Kind:     "codex",
+								Protocol: "app-server",
+								Command:  "codex app-server",
+							}},
+							Routes: []config.AgentRoute{{
+								Name:    "default",
+								Backend: "codex-code",
+								Model:   "gpt-5-code",
+								Default: true,
+							}},
+						},
+					},
+					Prompt: "work {{ issue.identifier }}",
+				},
+				Workspace: workspaceBackend,
+				AgentBackends: map[string]AgentBackend{
+					"codex-code": backend,
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			_, err = runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-fallback",
+					Identifier: "digitaldrywood/detent#861",
+					Title:      "Per-stage fallback",
+					State:      tt.state,
+				},
+				Mode: tt.mode,
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+
+			if backend.calls != 1 {
+				t.Fatalf("RunTurn calls = %d, want 1", backend.calls)
+			}
+			if backend.request.Model != "gpt-5-code" {
+				t.Fatalf("Model = %q, want code default model", backend.request.Model)
+			}
+		})
+	}
+}
+
 func TestRunnerUsageCostWarnsForUnknownModel(t *testing.T) {
 	t.Parallel()
 
@@ -1645,9 +1840,11 @@ type fakeCodexClient struct {
 	updates []AgentUpdate
 	result  AgentTurnResult
 	err     error
+	calls   int
 }
 
 func (c *fakeCodexClient) RunTurn(_ context.Context, req AgentTurnRequest, onUpdate AgentUpdateHandler) (AgentTurnResult, error) {
+	c.calls++
 	c.request = req
 	for _, update := range c.updates {
 		if err := onUpdate(update); err != nil {

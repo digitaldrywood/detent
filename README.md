@@ -1962,10 +1962,13 @@ omitted, routes can reference the legacy `codex` backend built from the top-leve
 non-default selector match wins, then the single `default` route is used. A
 route can set a fixed `model`, read a model from a ProjectV2 field with
 `model_field`, or fall back to an issue model override when neither is set.
-Routes without `role` are code-agent routes. Set `role: validator` to give the
-validator-agent review its own backend/model route when
-`gate.validator.enabled` is true; if no validator route matches, Detent falls
-back to the code default route.
+Routes without `role` are code-agent routes. `Runner.Run` dispatches plan mode
+with `role: plan`, Rework-state issues with `role: rework`, Merging-state
+issues with `role: merge`, and all other implementation dispatches with
+`role: code`. Set `role: validator` to give the validator-agent review its own
+backend/model route when `gate.validator.enabled` is true. If a stage-specific
+route does not match, Detent falls back to that role's default route and then to
+the code default route, preserving the zero-config behavior.
 If the validator runs through the Codex backend, prefer setting
 `gate.validator.model: gpt-5.4-mini` as the cheap-tier override before adding a
 separate validator route. Treat rework-rate per validator model as the quality
@@ -1975,6 +1978,18 @@ that rate worsens.
 ```yaml
 agents:
   routes:
+    - name: plan-cheap
+      role: plan
+      backend: codex
+      model: gpt-5.4-mini
+    - name: rework-high-context
+      role: rework
+      backend: codex
+      model: gpt-5-codex-high
+    - name: merge-standard
+      role: merge
+      backend: codex
+      model: gpt-5-codex
     - name: high-context
       backend: codex
       model: gpt-5-codex-high

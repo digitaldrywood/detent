@@ -83,6 +83,25 @@ codex:
   turn_sandbox_policy:
     type: workspaceWrite
     networkAccess: true
+# Optional per-stage model routing. Unrouted roles fall back to the default code route.
+# agents:
+#   routes:
+#     - name: plan-cheap
+#       role: plan
+#       backend: codex
+#       model: gpt-5.4-mini
+#     - name: rework-high-context
+#       role: rework
+#       backend: codex
+#       model: gpt-5-codex-high
+#     - name: merge-standard
+#       role: merge
+#       backend: codex
+#       model: gpt-5-codex
+#     - name: default
+#       backend: codex
+#       model: gpt-5-codex
+#       default: true
 gate:
   kind: command
   run: make check

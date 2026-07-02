@@ -16,6 +16,9 @@ var (
 
 const (
 	RoleCode      = "code"
+	RolePlan      = "plan"
+	RoleRework    = "rework"
+	RoleMerge     = "merge"
 	RoleValidator = "validator"
 )
 
