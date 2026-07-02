@@ -5272,70 +5272,79 @@ templ sessionCopyButton(sessionID string) {
 }
 
 templ budgetCard(snapshot telemetry.Snapshot) {
-	<section class="dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
-		<div class="flex items-start justify-between gap-3">
-			@helpHeading2("Budget", helpBudget, "budget-card")
-			<span class="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ budgetStatus(snapshot.Budget) }</span>
-		</div>
-		<div class="mt-5 grid gap-4 text-sm">
-			<div class="grid gap-2">
-				<div class="flex items-center justify-between gap-4">
-					@plainInlineLabel("Spend today", "text-muted-foreground")
-					<strong class="font-mono font-medium text-foreground">{ budgetSpendTodayLabel(snapshot.Budget) }</strong>
-				</div>
-				<div class="h-2 overflow-hidden rounded-full bg-muted" aria-label="Daily budget usage">
-					<div class="h-full rounded-full bg-accent transition-all" style={ budgetDailyUsageStyle(snapshot.Budget) }></div>
-				</div>
+	<section class={ budgetCardClass(snapshot.Budget) } aria-label="Budget">
+		if budgetDisabled(snapshot.Budget) {
+			@budgetDisabledNote()
+		}
+		if !budgetDisabled(snapshot.Budget) {
+			<div class="flex items-start justify-between gap-3">
+				@helpHeading2("Budget", helpBudget, "budget-card")
+				<span class="shrink-0 rounded-full bg-muted px-2 py-1 text-xs font-medium text-muted-foreground">{ budgetStatus(snapshot.Budget) }</span>
 			</div>
-			if !budgetBurnDownView(snapshot).Available {
-				@dashboardEmptyState(budgetBurnDownView(snapshot).EmptyTitle, budgetBurnDownView(snapshot).EmptyDetail, "bg-accent")
-			} else {
-				<div class="grid gap-3">
-					<div class="flex items-center justify-between gap-4">
-						@plainInlineLabel("Cost burn-down", "font-medium text-muted-foreground")
-						<span class="font-mono text-xs text-muted-foreground">{ budgetBurnDownView(snapshot).PeriodLabel }</span>
-					</div>
-					@BudgetProjectionChart(budgetBurnDownView(snapshot).Chart)
-					<div class="grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground">
-						<span>Spend { budgetBurnDownView(snapshot).CurrentLabel }</span>
-						<span>Cap { budgetBurnDownView(snapshot).CapLabel }</span>
-						<span>Projected { budgetBurnDownView(snapshot).ProjectionLabel }</span>
-					</div>
-				</div>
-			}
-			if len(budgetHistoryBars(snapshot.Budget)) == 0 {
-				@dashboardEmptyState("No budget history yet.", "Spend bars will appear after daily budget samples are recorded.", "bg-accent")
-			} else {
+			<div class="mt-5 grid gap-4 text-sm">
 				<div class="grid gap-2">
 					<div class="flex items-center justify-between gap-4">
-						@plainInlineLabel("Budget history", "font-medium text-muted-foreground")
-						<span class="font-mono text-xs text-muted-foreground">{ budgetHistoryCount(snapshot.Budget) }</span>
+						@plainInlineLabel("Spend today", "text-muted-foreground")
+						<strong class="font-mono font-medium text-foreground">{ budgetSpendTodayLabel(snapshot.Budget) }</strong>
 					</div>
-					<div class="grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-border bg-muted px-2 py-2" aria-label="Spend over the last seven days">
-						for _, bar := range budgetHistoryBars(snapshot.Budget) {
-							<span class="block min-h-1 rounded-t bg-accent opacity-80" style={ bar.Style } title={ bar.Title }>
-								<span class="sr-only">{ bar.Title }</span>
-							</span>
-						}
+					<div class="h-2 overflow-hidden rounded-full bg-muted" aria-label="Daily budget usage">
+						<div class="h-full rounded-full bg-accent transition-all" style={ budgetDailyUsageStyle(snapshot.Budget) }></div>
 					</div>
 				</div>
-			}
-			<div class="grid gap-3 border-t border-border pt-3">
-				<div class="flex items-center justify-between gap-4">
-					@plainInlineLabel("Projected", "text-muted-foreground")
-					<strong class="font-mono font-medium text-foreground">{ budgetBurnDownView(snapshot).ProjectionLabel }</strong>
-				</div>
-				<div class="flex items-center justify-between gap-4">
-					@plainInlineLabel("Daily cap", "text-muted-foreground")
-					<strong class="font-mono font-medium text-foreground">{ optionalUSD(snapshot.Budget.PerDayMaxUSD) }</strong>
-				</div>
-				<div class="flex items-center justify-between gap-4">
-					@plainInlineLabel("Issue cap", "text-muted-foreground")
-					<strong class="font-mono font-medium text-foreground">{ optionalUSD(snapshot.Budget.PerIssueMaxUSD) }</strong>
+				if !budgetBurnDownView(snapshot).Available {
+					@dashboardEmptyState(budgetBurnDownView(snapshot).EmptyTitle, budgetBurnDownView(snapshot).EmptyDetail, "bg-accent")
+				} else {
+					<div class="grid gap-3">
+						<div class="flex items-center justify-between gap-4">
+							@plainInlineLabel("Cost burn-down", "font-medium text-muted-foreground")
+							<span class="font-mono text-xs text-muted-foreground">{ budgetBurnDownView(snapshot).PeriodLabel }</span>
+						</div>
+						@BudgetProjectionChart(budgetBurnDownView(snapshot).Chart)
+						<div class="grid grid-cols-3 gap-2 font-mono text-xs text-muted-foreground">
+							<span>Spend { budgetBurnDownView(snapshot).CurrentLabel }</span>
+							<span>Cap { budgetBurnDownView(snapshot).CapLabel }</span>
+							<span>Projected { budgetBurnDownView(snapshot).ProjectionLabel }</span>
+						</div>
+					</div>
+				}
+				if len(budgetHistoryBars(snapshot.Budget)) == 0 {
+					@dashboardEmptyState("No budget history yet.", "Spend bars will appear after daily budget samples are recorded.", "bg-accent")
+				} else {
+					<div class="grid gap-2">
+						<div class="flex items-center justify-between gap-4">
+							@plainInlineLabel("Budget history", "font-medium text-muted-foreground")
+							<span class="font-mono text-xs text-muted-foreground">{ budgetHistoryCount(snapshot.Budget) }</span>
+						</div>
+						<div class="grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-border bg-muted px-2 py-2" aria-label="Spend over the last seven days">
+							for _, bar := range budgetHistoryBars(snapshot.Budget) {
+								<span class="block min-h-1 rounded-t bg-accent opacity-80" style={ bar.Style } title={ bar.Title }>
+									<span class="sr-only">{ bar.Title }</span>
+								</span>
+							}
+						</div>
+					</div>
+				}
+				<div class="grid gap-3 border-t border-border pt-3">
+					<div class="flex items-center justify-between gap-4">
+						@plainInlineLabel("Projected", "text-muted-foreground")
+						<strong class="font-mono font-medium text-foreground">{ budgetBurnDownView(snapshot).ProjectionLabel }</strong>
+					</div>
+					<div class="flex items-center justify-between gap-4">
+						@plainInlineLabel("Daily cap", "text-muted-foreground")
+						<strong class="font-mono font-medium text-foreground">{ optionalUSD(snapshot.Budget.PerDayMaxUSD) }</strong>
+					</div>
+					<div class="flex items-center justify-between gap-4">
+						@plainInlineLabel("Issue cap", "text-muted-foreground")
+						<strong class="font-mono font-medium text-foreground">{ optionalUSD(snapshot.Budget.PerIssueMaxUSD) }</strong>
+					</div>
 				</div>
 			</div>
-		</div>
+		}
 	</section>
+}
+
+templ budgetDisabledNote() {
+	<p class="truncate text-sm text-muted-foreground">Budget disabled - enable a daily cap in configuration.</p>
 }
 
 templ rateLimitsCard(limits *RateLimits) {
@@ -5435,16 +5444,25 @@ templ restBudgetCard(data DashboardData) {
 				if len(restBudgetContributorRows(data.Snapshot.RateLimits)) == 0 {
 					@dashboardEmptyState("No REST requests this cycle.", "REST contributors will appear after GitHub REST endpoints are called.", "bg-warning")
 				} else {
-					<div class="grid gap-2 border-t border-border pt-3">
-						for _, row := range restBudgetContributorRows(data.Snapshot.RateLimits) {
-							<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-sm">
-								<span class="truncate font-mono font-medium text-foreground">{ row.EndpointFamily }</span>
-								<span class="font-mono text-muted-foreground">{ row.Count }</span>
-								<span class="font-mono text-xs text-muted-foreground">{ row.Remaining }</span>
-								<span class="text-right font-mono text-xs text-muted-foreground">{ row.Status }</span>
-							</div>
-						}
-					</div>
+					<details class="group border-t border-border pt-3" data-preserve-details="rest-budget-contributors">
+						<summary class="flex cursor-pointer list-none items-center justify-between gap-3 text-sm text-muted-foreground marker:hidden">
+							<span class="font-medium text-foreground">Endpoint details</span>
+							<span class="inline-flex shrink-0 items-center gap-2">
+								<span class="rounded-md bg-muted px-2 py-1 font-mono text-xs text-muted-foreground">{ formatInt(int64(len(restBudgetContributorRows(data.Snapshot.RateLimits)))) }</span>
+								@icon.ChevronDown(icon.Props{Class: "size-3.5 shrink-0 transition-transform group-open:rotate-180"})
+							</span>
+						</summary>
+						<div class="mt-3 grid gap-2">
+							for _, row := range restBudgetContributorRows(data.Snapshot.RateLimits) {
+								<div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-1 text-sm">
+									<span class="truncate font-mono font-medium text-foreground">{ row.EndpointFamily }</span>
+									<span class="font-mono text-muted-foreground">{ row.Count }</span>
+									<span class="font-mono text-xs text-muted-foreground">{ row.Remaining }</span>
+									<span class="text-right font-mono text-xs text-muted-foreground">{ row.Status }</span>
+								</div>
+							}
+						</div>
+					</details>
 				}
 			</div>
 		</section>

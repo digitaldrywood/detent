@@ -5516,6 +5516,17 @@ func budgetStatus(budget telemetry.Budget) string {
 	return "Budget disabled"
 }
 
+func budgetDisabled(budget telemetry.Budget) bool {
+	return !budget.Enabled && strings.TrimSpace(budget.DegradedReason) == ""
+}
+
+func budgetCardClass(budget telemetry.Budget) string {
+	if budgetDisabled(budget) {
+		return "dashboard-panel min-w-0 rounded-md border border-border bg-card px-4 py-3 shadow-sm sm:px-5"
+	}
+	return "dashboard-panel min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5"
+}
+
 func budgetSpendTodayLabel(budget telemetry.Budget) string {
 	if strings.TrimSpace(budget.DegradedReason) != "" && budget.CurrentSpendUSD <= 0 && len(budget.SpendPoints) == 0 {
 		return "unavailable / " + budgetDailyCapLabel(budget)
