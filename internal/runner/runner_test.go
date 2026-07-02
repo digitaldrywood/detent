@@ -1100,6 +1100,161 @@ func TestRunnerRunUnroutedStageRolesUseCodeDefaultRoute(t *testing.T) {
 	}
 }
 
+func TestRunnerRunUnroutedStageRolesUseCodeSelectorRoutes(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		mode  string
+		state string
+	}{
+		{name: "plan role", mode: RunModePlan, state: "Todo"},
+		{name: "rework role", mode: RunModeImplement, state: "Rework"},
+		{name: "merge role", mode: RunModeImplement, state: "Merging"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: t.TempDir(), Key: "issue-selector", Branch: "detent/issue-selector"},
+			}
+			codeBackend := &fakeCodexClient{}
+			highBackend := &fakeCodexClient{}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{
+					Config: config.Config{
+						Agents: config.Agents{
+							Backends: []config.AgentBackend{
+								{ID: "codex-code", Kind: "codex", Protocol: "app-server", Command: "codex app-server"},
+								{ID: "codex-high", Kind: "codex", Protocol: "app-server", Command: "codex app-server --profile high"},
+							},
+							Routes: []config.AgentRoute{
+								{
+									Name:    "high-label",
+									Backend: "codex-high",
+									Model:   "gpt-5-high",
+									Selector: selector.Selector{
+										Labels: selector.Labels{Include: []string{"tier:high"}},
+									},
+								},
+								{Name: "default", Backend: "codex-code", Model: "gpt-5-code", Default: true},
+							},
+						},
+					},
+					Prompt: "work {{ issue.identifier }}",
+				},
+				Workspace: workspaceBackend,
+				AgentBackends: map[string]AgentBackend{
+					"codex-code": codeBackend,
+					"codex-high": highBackend,
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			_, err = runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-selector",
+					Identifier: "digitaldrywood/detent#861",
+					Title:      "Per-stage selector fallback",
+					State:      tt.state,
+					Labels:     []string{"tier:high"},
+				},
+				Mode: tt.mode,
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+
+			if highBackend.calls != 1 {
+				t.Fatalf("high backend calls = %d, want 1", highBackend.calls)
+			}
+			if codeBackend.calls != 0 {
+				t.Fatalf("code backend calls = %d, want 0", codeBackend.calls)
+			}
+			if highBackend.request.Model != "gpt-5-high" {
+				t.Fatalf("Model = %q, want code selector model", highBackend.request.Model)
+			}
+		})
+	}
+}
+
+func TestRunnerRunUnroutedStageRolesUseCodeModelFieldRouteWithoutDefault(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name  string
+		mode  string
+		state string
+	}{
+		{name: "plan role", mode: RunModePlan, state: "Todo"},
+		{name: "rework role", mode: RunModeImplement, state: "Rework"},
+		{name: "merge role", mode: RunModeImplement, state: "Merging"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			workspaceBackend := &fakeWorkspaceBackend{
+				info: workspace.Info{Path: t.TempDir(), Key: "issue-field", Branch: "detent/issue-field"},
+			}
+			backend := &fakeCodexClient{}
+			runner, err := NewRunner(Dependencies{
+				Workflow: config.Workflow{
+					Config: config.Config{
+						Agents: config.Agents{
+							Backends: []config.AgentBackend{{
+								ID:       "codex-code",
+								Kind:     "codex",
+								Protocol: "app-server",
+								Command:  "codex app-server",
+							}},
+							Routes: []config.AgentRoute{{
+								Name:       "board-model",
+								Backend:    "codex-code",
+								ModelField: "Model",
+							}},
+						},
+					},
+					Prompt: "work {{ issue.identifier }}",
+				},
+				Workspace: workspaceBackend,
+				AgentBackends: map[string]AgentBackend{
+					"codex-code": backend,
+				},
+			})
+			if err != nil {
+				t.Fatalf("NewRunner() error = %v", err)
+			}
+
+			_, err = runner.Run(context.Background(), RunRequest{
+				Issue: connector.Issue{
+					ID:         "issue-field",
+					Identifier: "digitaldrywood/detent#861",
+					Title:      "Per-stage model field fallback",
+					State:      tt.state,
+					Fields:     map[string]string{"Model": "gpt-5-field"},
+				},
+				Mode: tt.mode,
+			})
+			if err != nil {
+				t.Fatalf("Run() error = %v", err)
+			}
+
+			if backend.calls != 1 {
+				t.Fatalf("RunTurn calls = %d, want 1", backend.calls)
+			}
+			if backend.request.Model != "gpt-5-field" {
+				t.Fatalf("Model = %q, want code model_field model", backend.request.Model)
+			}
+		})
+	}
+}
+
 func TestRunnerUsageCostWarnsForUnknownModel(t *testing.T) {
 	t.Parallel()
 

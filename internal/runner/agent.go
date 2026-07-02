@@ -250,6 +250,14 @@ func (r agentRuntime) defaultModelForRole(role string) string {
 	return strings.TrimSpace(r.router.routes[index].Model)
 }
 
+func (r agentRuntime) effectiveRunRole(role string) string {
+	role = normalizeRole(role)
+	if role == RoleCode || r.router.HasRole(role) {
+		return role
+	}
+	return RoleCode
+}
+
 func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
 	if len(in) == 0 {
 		return nil
@@ -411,7 +419,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
-	role := runRole(req.Mode, req.Issue)
+	role := agentRuntime.effectiveRunRole(runRole(req.Mode, req.Issue))
 	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), role)
 	if err != nil {
 		return RunResult{}, err

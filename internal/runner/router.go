@@ -78,6 +78,19 @@ func (r *Router) Route(issue connector.Issue, ctx selector.Context) (RouteSelect
 	return r.RouteForRole(issue, ctx, RoleCode)
 }
 
+func (r *Router) HasRole(role string) bool {
+	if r == nil {
+		return false
+	}
+	role = normalizeRole(role)
+	for _, route := range r.routes {
+		if route.Role == role {
+			return true
+		}
+	}
+	return false
+}
+
 func (r *Router) RouteForRole(issue connector.Issue, ctx selector.Context, role string) (RouteSelection, error) {
 	if r == nil || len(r.routes) == 0 {
 		return RouteSelection{}, ErrMissingAgentRoutes
