@@ -796,7 +796,7 @@ func splitOnboardingList(value string) []string {
 	return values
 }
 
-func writeWorkflowFile(path string, content string, replace bool) error {
+func writeWorkflowFile(path string, content string, replace bool) (err error) {
 	if replace {
 		return os.WriteFile(path, []byte(content), 0o600)
 	}
@@ -809,7 +809,9 @@ func writeWorkflowFile(path string, content string, replace bool) error {
 		return err
 	}
 	defer func() {
-		_ = file.Close()
+		if closeErr := file.Close(); closeErr != nil {
+			err = errors.Join(err, fmt.Errorf("close workflow file: %w", closeErr))
+		}
 	}()
 
 	_, err = file.WriteString(content)

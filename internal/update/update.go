@@ -845,7 +845,9 @@ func backupBinary(target string) (string, error) {
 	if err != nil {
 		return "", fmt.Errorf("open current binary for backup: %w", err)
 	}
-	defer source.Close()
+	defer func() {
+		discardUpdateError(source.Close())
+	}()
 
 	info, err := source.Stat()
 	if err != nil {
@@ -1212,6 +1214,8 @@ func removeFile(path string) {
 		return
 	}
 }
+
+func discardUpdateError(error) {}
 
 func extractTarGzipBinary(archive []byte) (_ []byte, _ os.FileMode, err error) {
 	gz, err := gzip.NewReader(bytes.NewReader(archive))

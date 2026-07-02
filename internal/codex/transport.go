@@ -75,13 +75,25 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
-		_ = stdin.Close()
+		closeErr := stdin.Close()
+		if closeErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("create stdout pipe: %w", err),
+				fmt.Errorf("close stdin pipe: %w", closeErr),
+			)
+		}
 		return nil, fmt.Errorf("create stdout pipe: %w", err)
 	}
 
 	procgroup.Configure(cmd)
 	if err := cmd.Start(); err != nil {
-		_ = stdin.Close()
+		closeErr := stdin.Close()
+		if closeErr != nil {
+			return nil, errors.Join(
+				fmt.Errorf("start command: %w", err),
+				fmt.Errorf("close stdin pipe: %w", closeErr),
+			)
+		}
 		return nil, fmt.Errorf("start command: %w", err)
 	}
 
