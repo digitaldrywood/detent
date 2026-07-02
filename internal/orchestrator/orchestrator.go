@@ -122,6 +122,7 @@ type Orchestrator struct {
 	logger             *slog.Logger
 	globalDispatchGate scheduler.ProjectDispatchGate
 	validatorMu        sync.Mutex
+	validatorWG        sync.WaitGroup
 	validatorRuns      map[string]struct{}
 	validatorResults   map[string]validatorStageResult
 	stateRequests      chan stateRequest
@@ -294,6 +295,7 @@ func (o *Orchestrator) Run(ctx context.Context) error {
 	defer ticker.Stop()
 
 	state := newState(o.cfg)
+	defer o.validatorWG.Wait()
 	defer o.releaseRunningSlots(&state)
 	o.recoverDurableWorkAttempts(ctx, &state, time.Now())
 	o.tick(ctx, &state, time.Now())
