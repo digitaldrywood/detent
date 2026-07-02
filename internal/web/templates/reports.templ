@@ -29,10 +29,10 @@ templ Reports(data ReportsData) {
 				</section>
 			}
 			<section class="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-				@reportsMetricCard("Total spend", helpReportsSpend, formatUSD(data.Day.Totals.SpendUSD), reportsWindowLabel(data), "border-t-accent", "bg-accent")
-				@reportsMetricCard("Tokens", helpReportsTokens, formatInt(data.Day.Totals.TotalTokens), reportInputOutputTotals(data.Day.Totals), "border-t-success", "bg-success")
-				@reportsMetricCard("Usage events", helpReportsEvents, formatInt(data.Day.Totals.Events), "Completed ledger rows", "border-t-warning", "bg-warning")
-				@reportsMetricCard("Models", helpReportsModels, reportsModelCount(data), "Distinct model buckets", "border-t-danger", "bg-danger")
+				@reportsMetricCard("Total spend", formatUSD(data.Day.Totals.SpendUSD), reportsWindowLabel(data), "border-t-accent", "bg-accent")
+				@reportsMetricCard("Tokens", formatInt(data.Day.Totals.TotalTokens), reportInputOutputTotals(data.Day.Totals), "border-t-success", "bg-success")
+				@reportsMetricCard("Usage events", formatInt(data.Day.Totals.Events), "Completed ledger rows", "border-t-warning", "bg-warning")
+				@reportsMetricCard("Models", reportsModelCount(data), "Distinct model buckets", "border-t-danger", "bg-danger")
 			</section>
 			<section class="grid min-w-0 gap-5 xl:grid-cols-2">
 				<article class="min-w-0 rounded-md border border-border bg-card p-4 shadow-sm sm:p-5">
@@ -104,11 +104,11 @@ templ Reports(data ReportsData) {
 	}
 }
 
-templ reportsMetricCard(label string, term helpTerm, value string, detail string, borderClass string, dotClass string) {
+templ reportsMetricCard(label string, value string, detail string, borderClass string, dotClass string) {
 	<article class={ "min-w-0 rounded-md border border-border border-t-2 bg-card p-4 shadow-sm transition-colors hover:bg-muted/40 " + borderClass }>
 		<div class="flex items-start justify-between gap-3">
 			<div class="grid min-w-0 gap-1">
-				@helpInlineLabel(label, term, "reports", "text-sm font-medium text-muted-foreground")
+				@plainInlineLabel(label, "text-sm font-medium text-muted-foreground")
 				<span class="text-xs text-muted-foreground">{ detail }</span>
 			</div>
 			<span class={ "h-2.5 w-2.5 shrink-0 rounded-full " + dotClass }></span>

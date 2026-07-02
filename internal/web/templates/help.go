@@ -148,18 +148,3 @@ func helpIDPart(value string) string {
 	}
 	return result
 }
-
-func rateLimitHelpTerm(name string) helpTerm {
-	switch strings.ToLower(strings.TrimSpace(name)) {
-	case "primary":
-		return helpPrimaryRateBucket
-	case "secondary":
-		return helpSecondaryRateBucket
-	case "credits":
-		return helpCreditsRateBucket
-	case "github graphql":
-		return helpRateLimits
-	default:
-		return helpRateLimits
-	}
-}

@@ -3501,22 +3501,28 @@ func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 	for _, want := range []string{
 		"Spend today",
 		"$12.50 / $100.00",
-		`aria-label="Help: Current spend"`,
 		`aria-label="Daily budget usage"`,
 		`style="width: 13%;"`,
 		"Budget history",
-		`aria-label="Help: Budget history"`,
 		`aria-label="Spend over the last seven days"`,
 		`title="2026-05-25: $4.00"`,
 		`title="2026-05-30: $15.00"`,
 		`style="height: 100%;"`,
-		`aria-label="Help: Projected spend"`,
-		`aria-label="Help: Daily cap"`,
-		`aria-label="Help: Issue cap"`,
 		"$25.00",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+	for _, forbidden := range []string{
+		`aria-label="Help: Current spend"`,
+		`aria-label="Help: Budget history"`,
+		`aria-label="Help: Projected spend"`,
+		`aria-label="Help: Daily cap"`,
+		`aria-label="Help: Issue cap"`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard rendered inline budget help %q:\n%s", forbidden, html)
 		}
 	}
 }
@@ -3569,13 +3575,10 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 		`aria-label="Help: Running"`,
 		`role="tooltip"`,
 		`aria-label="Help: Token throughput"`,
-		`aria-label="Help: Runtime"`,
 		`aria-label="Help: Backoff queue"`,
 		`aria-label="Help: Budget"`,
 		`aria-label="Help: Rate limits"`,
 		`aria-label="Help: Tokens"`,
-		`aria-label="Help: Diff"`,
-		`aria-label="Help: Session"`,
 		`tps`,
 		`USD`,
 	} {
@@ -3583,13 +3586,40 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
 		}
 	}
+	for _, headerCell := range regexp.MustCompile(`(?s)<th(?:\s|>)[^>]*>.*?</th>`).FindAllString(html, -1) {
+		if strings.Contains(headerCell, "data-help-trigger") {
+			t.Fatalf("dashboard rendered help trigger inside table header:\n%s", headerCell)
+		}
+	}
 	for _, forbidden := range []string{
 		`onmouseenter=`,
 		`onfocus=`,
 		`popovertarget=`,
+		`data-help-scope="dashboard"`,
+		`data-help-scope="dashboard-stat-strip"`,
+		`data-help-scope="running-table"`,
+		`data-help-scope="running-mobile"`,
+		`data-help-scope="retry-table"`,
+		`data-help-scope="blocked-table"`,
+		`data-help-scope="blocked-table-error"`,
+		`data-help-scope="recent-table"`,
+		`data-help-scope="recent-mobile"`,
+		`data-help-scope="budget-current-spend"`,
+		`data-help-scope="budget-burn-down"`,
+		`data-help-scope="budget-history"`,
+		`data-help-scope="budget-projected"`,
+		`data-help-scope="budget-daily-cap"`,
+		`data-help-scope="budget-issue-cap"`,
+		`data-help-scope="rate-limit-primary"`,
+		`aria-label="Help: Runtime / turns"`,
+		`aria-label="Help: Event"`,
+		`aria-label="Help: Diff"`,
+		`aria-label="Help: Session"`,
+		`aria-label="Help: Current spend"`,
+		`aria-label="Help: Token trend"`,
 	} {
 		if strings.Contains(html, forbidden) {
-			t.Fatalf("dashboard contains flicker-prone popover markup %q:\n%s", forbidden, html)
+			t.Fatalf("dashboard contains disallowed help or popover markup %q:\n%s", forbidden, html)
 		}
 	}
 }
