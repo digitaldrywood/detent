@@ -18,6 +18,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/hub"
 	projectpkg "github.com/digitaldrywood/detent/internal/project"
 	runnerpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -43,23 +44,52 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	}
 }
 
-func TestBuildRunnerRejectsClaudeCodeBackendUntilFactoryWiring(t *testing.T) {
+func TestBuildRunnerSupportsClaudeCodeBackendRoutes(t *testing.T) {
 	t.Parallel()
+
+	source := initRunnerSourceRepo(t)
+	claudeCommand, argsPath, stdinPath := writeRunnerClaudeStub(t)
+	sessionStore := &runnerSessionStore{sessionID: 833}
+	startedAt := time.Date(2026, 7, 2, 13, 30, 0, 0, time.UTC)
 
 	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
 tracker:
   kind: memory
 workspace:
-  root: ` + strconv.Quote(t.TempDir()) + `
+  root: ` + strconv.Quote(filepath.Join(t.TempDir(), "workspaces")) + `
 agents:
   backends:
-    - id: claude
+    - id: codex-main
+      kind: codex
+      command: codex app-server
+    - id: claude-worker
       kind: claude_code
+      command: ` + strconv.Quote(runnerShellQuote(claudeCommand)) + `
+      options:
+        permission_mode: acceptEdits
+        allowed_tools:
+          - Bash
+          - Edit
+        disallowed_tools:
+          - WebFetch
+        include_partial_messages: true
+        turn_timeout_ms: 60000
+        stall_timeout_ms: 10000
+        shell: sh
+        extra_args:
+          - --custom
+          - value
   routes:
-    - backend: claude
+    - name: validator-codex
+      role: validator
+      backend: codex-main
+      model: gpt-5-codex
+    - name: code-claude
+      backend: claude-worker
+      model: fable
       default: true
 ---
-Prompt
+Prompt {{ issue.identifier }}
 `))
 	if err != nil {
 		t.Fatalf("ParseWorkflow() error = %v", err)
@@ -68,12 +98,79 @@ Prompt
 		t.Fatalf("Validate() error = %v", err)
 	}
 
-	_, err = buildRunner(workflow, "alpha", "", nil, nil)
-	if err == nil {
-		t.Fatal("buildRunner() error = nil, want unsupported backend kind")
+	run, err := buildRunner(workflow, "detent", source, sessionStore, nil)
+	if err != nil {
+		t.Fatalf("buildRunner() error = %v", err)
 	}
-	if !strings.Contains(err.Error(), `unsupported agent backend kind "claude_code"`) {
-		t.Fatalf("buildRunner() error = %v, want unsupported claude_code backend", err)
+
+	result, err := run.Run(context.Background(), runnerpkg.RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-833",
+			Identifier: "digitaldrywood/detent#833",
+			Title:      "Wire claude_code into agent backend factory",
+			BranchName: "detent/issue-833",
+		},
+		StartedAt: startedAt,
+	})
+	if err != nil {
+		t.Fatalf("Run() error = %v", err)
+	}
+
+	if result.FinalState != runnerpkg.FinalStateCompleted || result.Output != "claude streamed" {
+		t.Fatalf("Run() result = %#v, want completed claude streamed output", result)
+	}
+	if result.Tokens.InputTokens != 11 || result.Tokens.OutputTokens != 5 || result.Tokens.TotalTokens != 16 {
+		t.Fatalf("Run() tokens = %#v, want final claude usage", result.Tokens)
+	}
+	if sessionStore.started.Model != "fable" || sessionStore.usage.Model != "fable" {
+		t.Fatalf("recorded models = start %q usage %q, want fable", sessionStore.started.Model, sessionStore.usage.Model)
+	}
+	if sessionStore.phase.EndpointFamily != workflowconfig.AgentBackendClaudeCode {
+		t.Fatalf("WorkflowPhaseEvent EndpointFamily = %q, want claude_code", sessionStore.phase.EndpointFamily)
+	}
+	if sessionStore.phase.TotalTokens != 16 {
+		t.Fatalf("WorkflowPhaseEvent TotalTokens = %d, want 16", sessionStore.phase.TotalTokens)
+	}
+
+	args := readRunnerLines(t, argsPath)
+	wantPrefix := []string{
+		"-p", "--output-format", "stream-json", "--verbose",
+		"--model", "fable",
+		"--permission-mode", "acceptEdits",
+		"--allowedTools", "Bash", "Edit",
+		"--disallowedTools", "WebFetch",
+		"--include-partial-messages",
+	}
+	if len(args) < len(wantPrefix) {
+		t.Fatalf("claude args = %#v, want prefix %#v", args, wantPrefix)
+	}
+	if !runnerStringPrefix(args, wantPrefix) {
+		t.Fatalf("claude args = %#v, want prefix %#v", args, wantPrefix)
+	}
+	if len(args) < 2 || args[len(args)-2] != "--custom" || args[len(args)-1] != "value" {
+		t.Fatalf("claude args = %#v, want extra args at end", args)
+	}
+	stdin := readRunnerFile(t, stdinPath)
+	if !strings.Contains(stdin, "Prompt digitaldrywood/detent#833") {
+		t.Fatalf("claude stdin = %q, want rendered issue prompt", stdin)
+	}
+}
+
+func TestBuildAgentBackendUnsupportedKindNamesSupportedKinds(t *testing.T) {
+	t.Parallel()
+
+	_, err := buildAgentBackend(workflowconfig.AgentBackend{
+		ID:      "local-llama",
+		Kind:    "llama",
+		Command: "llama",
+	})
+	if err == nil {
+		t.Fatal("buildAgentBackend() error = nil, want unsupported kind")
+	}
+	for _, want := range []string{"unsupported agent backend kind \"llama\"", "supported kinds: codex, claude_code"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("buildAgentBackend() error = %v, missing %q", err, want)
+		}
 	}
 }
 
@@ -893,6 +990,84 @@ func readRunnerFile(t *testing.T, path string) string {
 		t.Fatalf("read %s: %v", path, err)
 	}
 	return string(raw)
+}
+
+func readRunnerLines(t *testing.T, path string) []string {
+	t.Helper()
+
+	raw := strings.TrimSuffix(readRunnerFile(t, path), "\n")
+	if raw == "" {
+		return []string{}
+	}
+	return strings.Split(raw, "\n")
+}
+
+func runnerStringPrefix(values []string, prefix []string) bool {
+	if len(values) < len(prefix) {
+		return false
+	}
+	for index, want := range prefix {
+		if values[index] != want {
+			return false
+		}
+	}
+	return true
+}
+
+func writeRunnerClaudeStub(t *testing.T) (string, string, string) {
+	t.Helper()
+
+	dir := t.TempDir()
+	scriptPath := filepath.Join(dir, "claude-stub")
+	argsPath := filepath.Join(dir, "claude-args.txt")
+	stdinPath := filepath.Join(dir, "claude-stdin.txt")
+	lines := []string{
+		"#!/bin/sh",
+		"printf '%s\\n' \"$@\" > " + runnerShellQuote(argsPath),
+		"cat > " + runnerShellQuote(stdinPath),
+		"printf '%s\\n' " + runnerShellQuote(`{"type":"system","subtype":"init","session_id":"session-cli","model":"fable"}`),
+		"printf '%s\\n' " + runnerShellQuote(`{"type":"stream_event","session_id":"session-cli","event":{"type":"message_start","message":{"id":"msg-cli","type":"message","role":"assistant","model":"fable","content":[]}}}`),
+		"printf '%s\\n' " + runnerShellQuote(`{"type":"stream_event","session_id":"session-cli","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"claude "}}}`),
+		"printf '%s\\n' " + runnerShellQuote(`{"type":"stream_event","session_id":"session-cli","event":{"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"streamed"}}}`),
+		"printf '%s\\n' " + runnerShellQuote(`{"type":"assistant","session_id":"session-cli","message":{"id":"msg-cli","type":"message","role":"assistant","model":"fable","content":[{"type":"text","text":"ignored full text"}],"usage":{"input_tokens":7,"output_tokens":3}}}`),
+		"printf '%s\\n' " + runnerShellQuote(`{"type":"result","subtype":"success","session_id":"session-cli","usage":{"input_tokens":11,"output_tokens":5}}`),
+	}
+	if err := os.WriteFile(scriptPath, []byte(strings.Join(lines, "\n")+"\n"), 0o700); err != nil {
+		t.Fatalf("write claude stub: %v", err)
+	}
+	return scriptPath, argsPath, stdinPath
+}
+
+func runnerShellQuote(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+type runnerSessionStore struct {
+	sessionID int64
+	started   store.SessionStart
+	finished  store.SessionFinish
+	usage     store.UsageEvent
+	phase     store.WorkflowPhaseEvent
+}
+
+func (s *runnerSessionStore) StartSession(_ context.Context, attrs store.SessionStart) (int64, error) {
+	s.started = attrs
+	return s.sessionID, nil
+}
+
+func (s *runnerSessionStore) FinishSession(_ context.Context, _ int64, attrs store.SessionFinish) error {
+	s.finished = attrs
+	return nil
+}
+
+func (s *runnerSessionStore) RecordUsageEvent(_ context.Context, attrs store.UsageEvent) (int64, error) {
+	s.usage = attrs
+	return 1, nil
+}
+
+func (s *runnerSessionStore) RecordWorkflowPhaseEvent(_ context.Context, attrs store.WorkflowPhaseEvent) (int64, error) {
+	s.phase = attrs
+	return 1, nil
 }
 
 func newRefreshProjectWithConnector(t *testing.T, id string, projectConnector connector.Connector) *projectpkg.Project {
