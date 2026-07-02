@@ -422,6 +422,8 @@ Requirements:
 - The [OpenAI Codex CLI](https://github.com/openai/codex) installed and signed
   in, so `codex app-server` runs on the host that dispatches agents. Detent
   drives every agent through this app-server. Verify with `codex --version`.
+  To route selected work to a local Ollama model without Detent code changes,
+  see [Local Models With Codex And Ollama](docs/local-models-ollama.md).
 - The [GitHub CLI](https://cli.github.com) (`gh`) for authentication and GitHub
   lookups (optional but assumed throughout this guide).
 - A GitHub token for the selected tracker mode. ProjectV2 mode usually needs
@@ -1920,7 +1922,9 @@ For explicit backend profiles, configure `agents.backends` and route to those
 ids. Today the shipped backend kind is `codex` with `protocol: app-server`.
 Backend `options` use the same runtime fields as the top-level `codex` block,
 including `shell`, `approval_policy`, `thread_sandbox`,
-`turn_sandbox_policy`, `turn_timeout_ms`, and `read_timeout_ms`.
+`turn_sandbox_policy`, `turn_timeout_ms`, and `read_timeout_ms`. When a backend
+needs different Codex configuration, launch `codex app-server` with a dedicated
+`CODEX_HOME` or `-c` overrides.
 
 ```yaml
 agents:
@@ -1932,7 +1936,7 @@ agents:
     - id: codex-high
       kind: codex
       protocol: app-server
-      command: codex app-server --profile high
+      command: env CODEX_HOME=/opt/detent/codex-high codex app-server
   routes:
     - name: validator
       role: validator
