@@ -5,6 +5,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/digitaldrywood/detent/internal/telemetry"
 	webchart "github.com/digitaldrywood/detent/internal/web/chart"
 )
 
@@ -15,6 +16,7 @@ type ReportsData struct {
 	ApplicationName  string
 	InstanceName     string
 	ConnectorName    string
+	Snapshot         telemetry.Snapshot
 	GeneratedAt      time.Time
 	Day              UsageReportData
 	Project          UsageReportData
@@ -88,6 +90,7 @@ func reportsDashboardShellData(data ReportsData) DashboardShellData {
 		ApplicationName:  data.ApplicationName,
 		InstanceName:     data.InstanceName,
 		ConnectorName:    data.ConnectorName,
+		Snapshot:         data.Snapshot,
 		Projects:         data.Projects,
 		Assets:           data.Assets,
 		ActiveNav:        activeNav,

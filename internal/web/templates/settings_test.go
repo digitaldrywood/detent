@@ -45,6 +45,7 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 		`href="/reports"`,
 		`href="/settings"`,
 		`href="/projects/detent"`,
+		`href="/health/ui"`,
 		`id="github-api-health"`,
 		"Health",
 		"Unknown",

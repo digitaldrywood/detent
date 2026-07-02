@@ -87,6 +87,7 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 		`/static/js/templui/dialog.min.js`,
 		`/static/js/templui/popover.min.js`,
 		`href="/projects/detent"`,
+		`href="/health/ui"`,
 		`href="/reports"`,
 		`href="/settings"`,
 		`href="/"`,

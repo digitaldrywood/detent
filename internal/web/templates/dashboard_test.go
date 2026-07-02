@@ -435,7 +435,7 @@ func TestDashboardRendersTrackerStatusDriftWarning(t *testing.T) {
 	}
 }
 
-func TestDashboardRendersSidebarGitHubAPIHealth(t *testing.T) {
+func TestDashboardRendersCompactSidebarGitHubAPIHealth(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 25, 14, 30, 0, 0, time.UTC)
@@ -443,9 +443,62 @@ func TestDashboardRendersSidebarGitHubAPIHealth(t *testing.T) {
 	nextRefresh := now.Add(90 * time.Second)
 	resetAt := now.Add(30 * time.Minute)
 	backoffUntil := now.Add(5 * time.Minute)
-	html := renderDashboard(t, templates.DashboardData{
+	data := templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Refresh: telemetry.Refresh{
+				LastRefreshAt: &lastRefresh,
+				NextRefreshAt: &nextRefresh,
+			},
+			RateLimits: &telemetry.RateLimits{
+				GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000, ResetAt: &resetAt},
+				GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000, ResetAt: &resetAt},
+				RESTUsage: &telemetry.RESTUsage{
+					RateLimited:  true,
+					BackoffUntil: &backoffUntil,
+					Contributors: []telemetry.RESTUsageContributor{
+						{EndpointFamily: "pull requests", Count: 2, RetryAfterMS: (5 * time.Minute).Milliseconds(), RateLimited: true, LastStatus: 429},
+						{EndpointFamily: "check runs", Count: 1, RateLimited: true, LastStatus: 429},
+					},
+				},
+			},
+			LifetimeTotals: telemetry.LifetimeTotals{Available: true},
+		},
+	}
+	html := renderDashboard(t, data)
+
+	for _, want := range []string{
+		`id="github-api-health"`,
+		`href="/health/ui"`,
+		`sse-swap="github-api-health"`,
+		`hx-swap="morph:outerHTML"`,
+		`data-dashboard-static-nav="health"`,
+		`aria-label="Health: Backoff. GitHub secondary throttle active for pull requests/check runs"`,
+		"Health",
+		"Backoff",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing GitHub API health marker %q:\n%s", want, html)
+		}
+	}
+	assertTemplateHealthInSidebar(t, html)
+	assertTemplateHealthSidebarOmitsDiagnostics(t, html)
+}
+
+func TestHealthPageRendersGitHubAPIHealthDetails(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 14, 30, 0, 0, time.UTC)
+	lastRefresh := now.Add(-30 * time.Second)
+	nextRefresh := now.Add(90 * time.Second)
+	resetAt := now.Add(30 * time.Minute)
+	backoffUntil := now.Add(5 * time.Minute)
+	html := renderHealthPage(t, templates.DashboardData{
+		Title:         "Health - Detent",
+		ConnectorName: "github",
+		ActiveNav:     "health",
 		Snapshot: telemetry.Snapshot{
 			GeneratedAt: now,
 			Refresh: telemetry.Refresh{
@@ -469,13 +522,14 @@ func TestDashboardRendersSidebarGitHubAPIHealth(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		`id="github-api-health"`,
-		`sse-swap="github-api-health"`,
-		`hx-swap="morph:outerHTML"`,
-		`aria-label="Health: GitHub secondary throttle active for pull requests/check runs.`,
-		`data-preserve-details="github-api-health"`,
-		"Health",
-		"Backoff",
+		`id="health-dashboard"`,
+		`href="/health/ui"`,
+		`data-dashboard-static-nav="health"`,
+		`aria-label="GitHub API health details"`,
+		"Aggregate status",
+		"Backoff state",
+		"Primary quota",
+		"Retry timing",
 		"GitHub secondary throttle active for pull requests/check runs",
 		"Primary REST quota is healthy: 4,878/5,000 remaining",
 		"GitHub secondary endpoint throttle is active for pull requests/check runs.",
@@ -494,13 +548,10 @@ func TestDashboardRendersSidebarGitHubAPIHealth(t *testing.T) {
 		"retry 14:35 UTC",
 	} {
 		if !strings.Contains(html, want) {
-			t.Fatalf("dashboard missing GitHub API health marker %q:\n%s", want, html)
+			t.Fatalf("health page missing GitHub API health marker %q:\n%s", want, html)
 		}
 	}
-	assertTemplateHealthInSidebar(t, html)
-	if strings.Contains(html, `class="relative w-full max-w-full rounded-md border text-sm shadow-sm sm:w-fit`) {
-		t.Fatalf("dashboard rendered page-level GitHub API health banner:\n%s", html)
-	}
+	assertActiveSidebarLink(t, html, "/health/ui")
 }
 
 func TestDashboardRendersSidebarGitHubAPIHealthStateMetadata(t *testing.T) {
@@ -603,7 +654,7 @@ func TestDashboardRendersSidebarGitHubAPIHealthStateMetadata(t *testing.T) {
 
 			for _, want := range []string{
 				`id="github-api-health"`,
-				`data-preserve-details="github-api-health"`,
+				`href="/health/ui"`,
 				`data-github-api-health-state="` + tt.wantState + `"`,
 				tt.wantLabel,
 				"Health",
@@ -1449,7 +1500,6 @@ func TestProjectSnapshotsKeepFirstRefreshFailureWithLocalStats(t *testing.T) {
 	}
 
 	for name, html := range map[string]string{
-		"kanban":   renderProjectKanbanPage(t, data),
 		"overview": renderDashboard(t, data),
 		"runs":     renderProjectRunsSnapshot(t, data),
 	} {
@@ -1466,6 +1516,10 @@ func TestProjectSnapshotsKeepFirstRefreshFailureWithLocalStats(t *testing.T) {
 			t.Fatalf("%s rendered prior-snapshot degraded copy from local stats:\n%s", name, html)
 		}
 	}
+
+	kanbanHTML := renderProjectKanbanPage(t, data)
+	assertTemplateHealthInSidebar(t, kanbanHTML)
+	assertTemplateHealthSidebarOmitsDiagnostics(t, kanbanHTML)
 }
 
 func TestProjectSnapshotsRenderDegradedRefreshWithPriorSnapshotState(t *testing.T) {
@@ -1504,9 +1558,9 @@ func TestProjectSnapshotsRenderDegradedRefreshWithPriorSnapshotState(t *testing.
 	}
 
 	for name, html := range map[string]string{
-		"kanban":   renderProjectKanbanPage(t, data),
 		"overview": renderDashboard(t, data),
 		"runs":     renderProjectRunsSnapshot(t, data),
+		"health":   renderHealthPage(t, data),
 	} {
 		for _, want := range []string{
 			"Tracker refresh degraded.",
@@ -1519,14 +1573,7 @@ func TestProjectSnapshotsRenderDegradedRefreshWithPriorSnapshotState(t *testing.
 				t.Fatalf("%s missing degraded refresh copy %q:\n%s", name, want, html)
 			}
 		}
-		if name == "kanban" {
-			if !strings.Contains(html, `hx-target="#github-api-manual-refresh-status"`) {
-				t.Fatalf("kanban missing sidebar health manual refresh target:\n%s", html)
-			}
-			if !strings.Contains(html, `name="manual_refresh_status_id" value="github-api-manual-refresh-status"`) {
-				t.Fatalf("kanban missing sidebar health manual refresh status id:\n%s", html)
-			}
-		} else if !strings.Contains(html, `hx-target="#manual-refresh-status"`) {
+		if name != "health" && !strings.Contains(html, `hx-target="#manual-refresh-status"`) {
 			t.Fatalf("%s missing page manual refresh target:\n%s", name, html)
 		}
 		for _, forbidden := range []string{
@@ -1550,6 +1597,8 @@ func TestProjectSnapshotsRenderDegradedRefreshWithPriorSnapshotState(t *testing.
 			t.Fatalf("kanban degraded prior snapshot missing %q:\n%s", want, kanbanHTML)
 		}
 	}
+	assertTemplateHealthInSidebar(t, kanbanHTML)
+	assertTemplateHealthSidebarOmitsDiagnostics(t, kanbanHTML)
 	kanbanSection := projectKanbanSection(t, kanbanHTML)
 	for _, forbidden := range []string{
 		`aria-label="Snapshot readiness"`,
@@ -4124,6 +4173,16 @@ func renderDashboard(t *testing.T, data templates.DashboardData) string {
 	return buf.String()
 }
 
+func renderHealthPage(t *testing.T, data templates.DashboardData) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := templates.HealthPage(data).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	return buf.String()
+}
+
 func renderProjectRunsSnapshot(t *testing.T, data templates.DashboardData) string {
 	t.Helper()
 
@@ -4197,6 +4256,37 @@ func assertTemplateHealthInSidebar(t *testing.T, body string) {
 	if healthIndex < sidebarIndex || healthIndex > mainIndex {
 		t.Fatalf("github api health rendered outside sidebar: sidebar=%d health=%d main=%d\n%s", sidebarIndex, healthIndex, mainIndex, body)
 	}
+}
+
+func assertTemplateHealthSidebarOmitsDiagnostics(t *testing.T, body string) {
+	t.Helper()
+
+	link := templateHealthSidebarLink(t, body)
+	for _, forbidden := range []string{
+		`data-preserve-details="github-api-health"`,
+		"REST primary",
+		"GraphQL primary",
+		"Last tracker refresh",
+		"Next tracker refresh",
+		"4,878 / 5,000 remaining",
+		"retry 14:35 UTC",
+		"retry-after",
+		"429",
+	} {
+		if strings.Contains(link, forbidden) {
+			t.Fatalf("sidebar health link rendered diagnostic content %q:\n%s", forbidden, link)
+		}
+	}
+}
+
+func templateHealthSidebarLink(t *testing.T, body string) string {
+	t.Helper()
+
+	matches := regexp.MustCompile(`(?s)<a[^>]*id="github-api-health"[^>]*>.*?</a>`).FindAllString(body, -1)
+	if len(matches) != 1 {
+		t.Fatalf("body rendered %d health sidebar links, want 1:\n%s", len(matches), body)
+	}
+	return matches[0]
 }
 
 func gitHubAPIHealthStateTestLabel(state string) string {

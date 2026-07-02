@@ -1,12 +1,17 @@
 package templates
 
-import "strings"
+import (
+	"strings"
+
+	"github.com/digitaldrywood/detent/internal/telemetry"
+)
 
 type SettingsData struct {
 	Title            string
 	ApplicationName  string
 	InstanceName     string
 	Version          string
+	Snapshot         telemetry.Snapshot
 	Global           SettingsGlobal
 	Projects         []SettingsProject
 	Runtime          SettingsRuntime
@@ -59,6 +64,7 @@ func settingsDashboardShellData(data SettingsData) DashboardShellData {
 		ApplicationName:  data.ApplicationName,
 		InstanceName:     data.InstanceName,
 		Version:          data.Version,
+		Snapshot:         data.Snapshot,
 		Projects:         data.SidebarProjects,
 		Assets:           data.Assets,
 		ActiveNav:        activeNav,

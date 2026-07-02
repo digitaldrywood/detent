@@ -761,6 +761,12 @@ func TestSidebarStaticNavActiveRespectsProjectContext(t *testing.T) {
 		wantActive bool
 	}{
 		{
+			name:       "global health",
+			data:       DashboardShellData{ActiveNav: "health"},
+			id:         "health",
+			wantActive: true,
+		},
+		{
 			name:       "global settings",
 			data:       DashboardShellData{ActiveNav: "settings"},
 			id:         "settings",
@@ -788,6 +794,14 @@ func TestSidebarStaticNavActiveRespectsProjectContext(t *testing.T) {
 				t.Fatalf("sidebarStaticNavActive(%q) = %t, want %t", tt.id, got, tt.wantActive)
 			}
 		})
+	}
+}
+
+func TestSidebarFleetActiveExcludesHealthNav(t *testing.T) {
+	t.Parallel()
+
+	if sidebarFleetActive(DashboardShellData{ActiveNav: "health"}) {
+		t.Fatalf("sidebarFleetActive() must be false for health nav")
 	}
 }
 
