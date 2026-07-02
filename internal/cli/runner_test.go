@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -39,6 +40,40 @@ func TestBuildRunnerReturnsRunner(t *testing.T) {
 	}
 	if _, ok := run.(*runnerpkg.Runner); !ok {
 		t.Fatalf("buildRunner() = %T, want *runner.Runner", run)
+	}
+}
+
+func TestBuildRunnerRejectsClaudeCodeBackendUntilFactoryWiring(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := workflowconfig.ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+workspace:
+  root: ` + strconv.Quote(t.TempDir()) + `
+agents:
+  backends:
+    - id: claude
+      kind: claude_code
+  routes:
+    - backend: claude
+      default: true
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	_, err = buildRunner(workflow, "alpha", "", nil, nil)
+	if err == nil {
+		t.Fatal("buildRunner() error = nil, want unsupported backend kind")
+	}
+	if !strings.Contains(err.Error(), `unsupported agent backend kind "claude_code"`) {
+		t.Fatalf("buildRunner() error = %v, want unsupported claude_code backend", err)
 	}
 }
 
