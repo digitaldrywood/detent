@@ -328,6 +328,25 @@ templ helpIcon(term helpTerm, scope string) {
 	}
 }
 
+templ panelHeader(iconComponent templ.Component, title string, term helpTerm, scope string) {
+	<div class="flex min-h-8 min-w-0 flex-wrap items-center justify-between gap-2">
+		<div class="inline-flex min-w-0 items-center gap-2">
+			if iconComponent != nil {
+				<span class="inline-flex size-4 shrink-0 items-center justify-center text-accent" aria-hidden="true">
+					@iconComponent
+				</span>
+			}
+			<h2 class="inline-flex min-w-0 items-center gap-1.5 text-sm font-semibold text-foreground">
+				<span class="truncate">{ title }</span>
+				@helpIcon(term, scope)
+			</h2>
+		</div>
+		<div class="ml-auto flex min-w-0 max-w-full flex-wrap items-center justify-end gap-2">
+			{ children... }
+		</div>
+	</div>
+}
+
 templ plainInlineLabel(label string, class string) {
 	<span class={ "inline-flex min-w-0 items-center gap-1.5 " + class }>
 		<span>{ label }</span>
