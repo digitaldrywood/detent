@@ -205,22 +205,24 @@ templ dashboardTopbarDivider() {
 }
 
 templ GitHubAPIHealthSidebarItem(data DashboardShellData) {
-	@sidebar.MenuButton(sidebar.MenuButtonProps{
-		Href:       sidebarHealthPath(data),
-		IsActive:   sidebarStaticNavActive(data, "health"),
-		Tooltip:    "Health",
-		Class:      "relative",
-		Attributes: gitHubAPIHealthSidebarAttributes(data),
-	}) {
-		@icon.Activity(icon.Props{Class: "size-4 shrink-0"})
-		<span class={ "size-2.5 shrink-0 rounded-full group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:absolute group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:right-1 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:top-1 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:size-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:ring-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:ring-sidebar-border " + gitHubAPIHealthDotClass(data.Snapshot) } aria-hidden="true"></span>
-		<span class="min-w-0 flex-1 truncate group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden">Health</span>
-		@sidebar.MenuBadge(sidebar.MenuBadgeProps{
-			Class: "border " + gitHubAPIHealthBadgeClass(data.Snapshot),
+	<div class="min-w-0" { gitHubAPIHealthSidebarTargetAttributes(data)... }>
+		@sidebar.MenuButton(sidebar.MenuButtonProps{
+			Href:       sidebarHealthPath(data),
+			IsActive:   sidebarStaticNavActive(data, "health"),
+			Tooltip:    "Health",
+			Class:      "relative",
+			Attributes: gitHubAPIHealthSidebarLinkAttributes(data),
 		}) {
-			{ gitHubAPIHealthStateLabel(data.Snapshot) }
+			@icon.Activity(icon.Props{Class: "size-4 shrink-0"})
+			<span class={ "size-2.5 shrink-0 rounded-full group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:absolute group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:right-1 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:top-1 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:size-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:ring-2 group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:ring-sidebar-border " + gitHubAPIHealthDotClass(data.Snapshot) } aria-hidden="true"></span>
+			<span class="min-w-0 flex-1 truncate group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:hidden">Health</span>
+			@sidebar.MenuBadge(sidebar.MenuBadgeProps{
+				Class: "border " + gitHubAPIHealthBadgeClass(data.Snapshot),
+			}) {
+				{ gitHubAPIHealthStateLabel(data.Snapshot) }
+			}
 		}
-	}
+	</div>
 }
 
 templ HealthSnapshot(data DashboardData) {

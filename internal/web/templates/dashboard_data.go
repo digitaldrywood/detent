@@ -882,15 +882,24 @@ func sidebarStaticNavAttributes(data DashboardShellData, id string) templ.Attrib
 	return attrs
 }
 
-func gitHubAPIHealthSidebarAttributes(data DashboardShellData) templ.Attributes {
-	label := "Health: " + gitHubAPIHealthStateLabel(data.Snapshot) + ". " + gitHubAPIHealth(data.Snapshot).Label
-	attrs := templ.Attributes{
+func gitHubAPIHealthSidebarLabel(data DashboardShellData) string {
+	return "Health: " + gitHubAPIHealthStateLabel(data.Snapshot) + ". " + gitHubAPIHealth(data.Snapshot).Label
+}
+
+func gitHubAPIHealthSidebarTargetAttributes(data DashboardShellData) templ.Attributes {
+	return templ.Attributes{
 		"id":                           "github-api-health",
 		"sse-swap":                     "github-api-health",
 		"hx-swap":                      "morph:outerHTML",
-		"aria-label":                   label,
-		"title":                        label,
 		"data-github-api-health-state": string(gitHubAPIHealth(data.Snapshot).State),
+	}
+}
+
+func gitHubAPIHealthSidebarLinkAttributes(data DashboardShellData) templ.Attributes {
+	label := gitHubAPIHealthSidebarLabel(data)
+	attrs := templ.Attributes{
+		"aria-label": label,
+		"title":      label,
 	}
 	maps.Copy(attrs, sidebarStaticNavAttributes(data, "health"))
 	return attrs

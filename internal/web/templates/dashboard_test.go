@@ -484,6 +484,7 @@ func TestDashboardRendersCompactSidebarGitHubAPIHealth(t *testing.T) {
 		}
 	}
 	assertTemplateHealthInSidebar(t, html)
+	assertTemplateHealthSSETargetWrapsSidebarLink(t, html)
 	assertTemplateHealthSidebarOmitsDiagnostics(t, html)
 }
 
@@ -4279,10 +4280,45 @@ func assertTemplateHealthSidebarOmitsDiagnostics(t *testing.T, body string) {
 	}
 }
 
+func assertTemplateHealthSSETargetWrapsSidebarLink(t *testing.T, body string) {
+	t.Helper()
+
+	target := templateHealthSidebarTarget(t, body)
+	link := templateHealthSidebarLink(t, body)
+	for _, want := range []string{
+		`id="github-api-health"`,
+		`sse-swap="github-api-health"`,
+		`hx-swap="morph:outerHTML"`,
+	} {
+		if !strings.Contains(target, want) {
+			t.Fatalf("sidebar health SSE target missing %q:\n%s", want, target)
+		}
+	}
+	for _, forbidden := range []string{
+		`id="github-api-health"`,
+		`sse-swap="github-api-health"`,
+		`hx-swap="morph:outerHTML"`,
+	} {
+		if strings.Contains(link, forbidden) {
+			t.Fatalf("sidebar health link rendered SSE target attribute %q:\n%s", forbidden, link)
+		}
+	}
+}
+
+func templateHealthSidebarTarget(t *testing.T, body string) string {
+	t.Helper()
+
+	matches := regexp.MustCompile(`(?s)<div[^>]*id="github-api-health"[^>]*>`).FindAllString(body, -1)
+	if len(matches) != 1 {
+		t.Fatalf("body rendered %d health sidebar SSE targets, want 1:\n%s", len(matches), body)
+	}
+	return matches[0]
+}
+
 func templateHealthSidebarLink(t *testing.T, body string) string {
 	t.Helper()
 
-	matches := regexp.MustCompile(`(?s)<a[^>]*id="github-api-health"[^>]*>.*?</a>`).FindAllString(body, -1)
+	matches := regexp.MustCompile(`(?s)<a[^>]*href="/health/ui"[^>]*>.*?</a>`).FindAllString(body, -1)
 	if len(matches) != 1 {
 		t.Fatalf("body rendered %d health sidebar links, want 1:\n%s", len(matches), body)
 	}

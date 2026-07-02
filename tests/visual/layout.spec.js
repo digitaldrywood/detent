@@ -166,8 +166,10 @@ test("GitHub API sidebar health stays compact", async ({ page }) => {
   });
 
   const indicator = page.locator("#github-api-health");
+  const indicatorLink = indicator.locator('a[href="/health/ui"]');
   await expect(indicator).toBeVisible();
-  await expect(indicator).toHaveAttribute("href", "/health/ui");
+  await expect(indicator).toHaveAttribute("sse-swap", "github-api-health");
+  await expect(indicatorLink).toBeVisible();
   await expect(indicator).toContainText("Health");
   await expect(indicator).toContainText("Backoff");
   await expect(indicator).not.toContainText("REST primary");
