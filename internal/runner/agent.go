@@ -148,8 +148,9 @@ func (r *Runner) UpdateWorkflow(workflow config.Workflow) {
 }
 
 type agentRuntime struct {
-	backends map[string]AgentBackend
-	router   *Router
+	backends     map[string]AgentBackend
+	backendKinds map[string]string
+	router       *Router
 }
 
 func newAgentRuntime(
@@ -159,10 +160,12 @@ func newAgentRuntime(
 ) (agentRuntime, error) {
 	backendConfigs := effectiveAgentBackendConfigs(workflow.Config)
 	backends := make(map[string]AgentBackend, len(backendConfigs))
+	backendKinds := make(map[string]string, len(backendConfigs))
 	for _, backendConfig := range backendConfigs {
 		if strings.TrimSpace(backendConfig.ID) == "" {
 			continue
 		}
+		backendKinds[backendConfig.ID] = backendConfig.Kind
 		if factory != nil {
 			backend, err := factory.NewAgentBackend(backendConfig)
 			if err != nil {
@@ -192,8 +195,9 @@ func newAgentRuntime(
 	}
 
 	return agentRuntime{
-		backends: backends,
-		router:   router,
+		backends:     backends,
+		backendKinds: backendKinds,
+		router:       router,
 	}, nil
 }
 
@@ -229,20 +233,24 @@ func routesFromConfig(routes []config.AgentRoute) []Route {
 	return out
 }
 
-func (r agentRuntime) selectBackend(issue connector.Issue, ctx selector.Context) (RouteSelection, AgentBackend, error) {
+func (r agentRuntime) selectBackend(issue connector.Issue, ctx selector.Context) (RouteSelection, AgentBackend, string, error) {
 	return r.selectBackendForRole(issue, ctx, RoleCode)
 }
 
-func (r agentRuntime) selectBackendForRole(issue connector.Issue, ctx selector.Context, role string) (RouteSelection, AgentBackend, error) {
+func (r agentRuntime) selectBackendForRole(issue connector.Issue, ctx selector.Context, role string) (RouteSelection, AgentBackend, string, error) {
 	selection, err := r.router.RouteForRole(issue, ctx, role)
 	if err != nil {
-		return RouteSelection{}, nil, err
+		return RouteSelection{}, nil, "", err
 	}
 	backend, ok := r.backends[selection.BackendID]
 	if !ok {
-		return RouteSelection{}, nil, fmt.Errorf("%w: %s", ErrMissingAgentBackend, selection.BackendID)
+		return RouteSelection{}, nil, "", fmt.Errorf("%w: %s", ErrMissingAgentBackend, selection.BackendID)
 	}
-	return selection, backend, nil
+	backendKind, ok := r.backendKinds[selection.BackendID]
+	if !ok {
+		return RouteSelection{}, nil, "", fmt.Errorf("agent backend kind not found: %s", selection.BackendID)
+	}
+	return selection, backend, backendKind, nil
 }
 
 func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
@@ -330,7 +338,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
-	selection, backend, err := agentRuntime.selectBackend(req.Issue, selectorContext(req.SelectorContext, workflow))
+	selection, backend, backendKind, err := agentRuntime.selectBackend(req.Issue, selectorContext(req.SelectorContext, workflow))
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -395,7 +403,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1),
 		)
 	}
 
@@ -412,7 +420,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			)
 			finishedAt := r.now().UTC()
 			result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1); err != nil {
+			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1); err != nil {
 				return result, err
 			}
 			return result, nil
@@ -422,14 +430,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("workspace diff stat: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1),
 		)
 	}
 
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	finishedAt := r.now().UTC()
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -470,7 +478,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		WorkspacePath: info.Path,
 		Branch:        info.Branch,
 	})
-	selection, backend, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
+	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
@@ -547,7 +555,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("run validator turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendConfig.Kind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendKind, 1),
 		)
 	}
 
@@ -556,10 +564,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("parse validator result: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendConfig.Kind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendKind, 1),
 		)
 	}
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendConfig.Kind, 1); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendKind, 1); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	return validation, nil
