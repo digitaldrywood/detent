@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -23,6 +24,13 @@ const (
 	eventKindStateUpdate   = "state_update"
 	eventKindFieldUpdate   = "field_update"
 	eventKindProjectRemove = "project_remove"
+	eventKindClose         = "close"
+
+	MetadataGitHubNodeID        = "github_node_id"
+	MetadataGitHubRepositoryID  = "github_repository_id"
+	MetadataGitHubIssueNumber   = "github_issue_number"
+	MetadataGitHubUpstreamState = "github_upstream_state"
+	MetadataGitHubOrphaned      = "github_orphaned"
 )
 
 type Config struct {
@@ -47,7 +55,11 @@ type Connector struct {
 var _ connector.Connector = (*Connector)(nil)
 var _ connector.CandidateIssuesByStatesFetcher = (*Connector)(nil)
 var _ connector.IssuesByStatesLimiter = (*Connector)(nil)
+var _ connector.IssueCloser = (*Connector)(nil)
 var _ connector.IssueCommentReader = (*Connector)(nil)
+var _ connector.IssueFieldClearer = (*Connector)(nil)
+var _ connector.IssueFieldSetter = (*Connector)(nil)
+var _ connector.IssueReferenceResolver = (*Connector)(nil)
 var _ connector.IssueStateProber = (*Connector)(nil)
 var _ connector.ProjectRemover = (*Connector)(nil)
 
@@ -144,6 +156,24 @@ func (c *Connector) FetchIssueStatesByIDs(ctx context.Context, issueIDs []string
 	return out, nil
 }
 
+func (c *Connector) FetchIssueStatesByIdentifiers(ctx context.Context, identifiers []string) ([]connector.Issue, error) {
+	wanted := normalizedIdentifierSet(identifiers)
+	if len(wanted) == 0 {
+		return []connector.Issue{}, nil
+	}
+	issues, err := c.fetchIssues(ctx, nil, 0)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]connector.Issue, 0, len(identifiers))
+	for _, issue := range issues {
+		if _, ok := wanted[strings.ToLower(strings.TrimSpace(issue.Identifier))]; ok {
+			out = append(out, issue)
+		}
+	}
+	return out, nil
+}
+
 func (c *Connector) FetchIssueComments(ctx context.Context, issue connector.Issue) ([]connector.IssueComment, error) {
 	rows, err := c.db.QueryContext(ctx, `
 select body from detent_work_item_events
@@ -218,6 +248,37 @@ where project_id = ? and id = ?`, fieldsJSON, formatTime(now), c.projectID, stri
 	return c.recordEvent(ctx, strings.TrimSpace(issueID), eventKindFieldUpdate, "", "", map[string]string{fieldName: value})
 }
 
+func (c *Connector) SetIssueField(ctx context.Context, issueID string, fieldID int, value string) error {
+	if fieldID <= 0 {
+		return connector.ErrNotImplemented
+	}
+	return c.SetField(ctx, issueID, issueFieldKey(fieldID), value)
+}
+
+func (c *Connector) ClearIssueField(ctx context.Context, issueID string, fieldID int) error {
+	if fieldID <= 0 {
+		return connector.ErrNotImplemented
+	}
+	return c.clearField(ctx, issueID, issueFieldKey(fieldID))
+}
+
+func (c *Connector) CloseIssue(ctx context.Context, issueID string) error {
+	state := c.closedState()
+	issueID = strings.TrimSpace(issueID)
+	now := c.now().UTC()
+	result, err := c.db.ExecContext(ctx, `
+update detent_work_items
+set state = ?, stage_updated_at = ?, updated_at = ?
+where project_id = ? and id = ?`, state, formatTime(now), formatTime(now), c.projectID, issueID)
+	if err != nil {
+		return err
+	}
+	if rows, err := result.RowsAffected(); err == nil && rows == 0 {
+		return sql.ErrNoRows
+	}
+	return c.recordEvent(ctx, issueID, eventKindClose, state, "", nil)
+}
+
 func (c *Connector) RemoveIssueFromProject(ctx context.Context, issueID string) error {
 	issueID = strings.TrimSpace(issueID)
 	result, err := c.db.ExecContext(ctx, `
@@ -260,6 +321,11 @@ created_at text not null default '',
 updated_at text not null default '',
 stage_updated_at text not null default '',
 model_override text not null default '',
+github_node_id text not null default '',
+github_repository_id integer not null default 0,
+github_issue_number integer not null default 0,
+github_upstream_state text not null default '',
+github_orphaned integer not null default 0,
 primary key (project_id, id)
 )`,
 		`create table if not exists detent_work_item_events (
@@ -280,6 +346,53 @@ created_at text not null
 			return fmt.Errorf("migrate local sqlite connector: %w", err)
 		}
 	}
+	if err := c.addMissingWorkItemColumns(ctx); err != nil {
+		return fmt.Errorf("migrate local sqlite connector: %w", err)
+	}
+	return nil
+}
+
+func (c *Connector) addMissingWorkItemColumns(ctx context.Context) error {
+	rows, err := c.db.QueryContext(ctx, `pragma table_info(detent_work_items)`)
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+
+	existing := map[string]struct{}{}
+	for rows.Next() {
+		var cid int
+		var name, typ string
+		var notNull int
+		var defaultValue sql.NullString
+		var pk int
+		if err := rows.Scan(&cid, &name, &typ, &notNull, &defaultValue, &pk); err != nil {
+			return err
+		}
+		existing[name] = struct{}{}
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+
+	columns := []struct {
+		name       string
+		definition string
+	}{
+		{name: "github_node_id", definition: "text not null default ''"},
+		{name: "github_repository_id", definition: "integer not null default 0"},
+		{name: "github_issue_number", definition: "integer not null default 0"},
+		{name: "github_upstream_state", definition: "text not null default ''"},
+		{name: "github_orphaned", definition: "integer not null default 0"},
+	}
+	for _, column := range columns {
+		if _, ok := existing[column.name]; ok {
+			continue
+		}
+		if _, err := c.db.ExecContext(ctx, "alter table detent_work_items add column "+column.name+" "+column.definition); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 
@@ -290,6 +403,99 @@ func (c *Connector) seed(ctx context.Context, issues []connector.Issue) error {
 		}
 	}
 	return nil
+}
+
+func (c *Connector) UpsertIssues(ctx context.Context, issues []connector.Issue) error {
+	for _, issue := range issues {
+		if err := c.upsertIssue(ctx, issue); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (c *Connector) upsertIssue(ctx context.Context, issue connector.Issue) error {
+	id := strings.TrimSpace(issue.ID)
+	if id == "" {
+		id = strings.TrimSpace(issue.Identifier)
+	}
+	if id == "" {
+		return errors.New("local sqlite upsert issue id or identifier is required")
+	}
+	identifier := strings.TrimSpace(issue.Identifier)
+	if identifier == "" {
+		identifier = id
+	}
+	now := c.now().UTC()
+	createdAt := timeOrDefault(issue.CreatedAt, now)
+	updatedAt := timeOrDefault(issue.UpdatedAt, createdAt)
+	stageUpdatedAt := timeOrDefault(issue.StageUpdatedAt, updatedAt)
+	assigneesJSON, err := marshalStringSlice(issue.Assignees)
+	if err != nil {
+		return err
+	}
+	labelsJSON, err := marshalStringSlice(issue.Labels)
+	if err != nil {
+		return err
+	}
+	fieldsJSON, err := marshalStringMap(issue.Fields)
+	if err != nil {
+		return err
+	}
+	metadataJSON, err := marshalStringMap(issue.Metadata)
+	if err != nil {
+		return err
+	}
+	deliverableMetadataJSON := "{}"
+	deliverable := connector.Deliverable{}
+	if issue.Deliverable != nil {
+		deliverable = *issue.Deliverable
+		deliverableMetadataJSON, err = marshalStringMap(issue.Deliverable.Metadata)
+		if err != nil {
+			return err
+		}
+	}
+	githubIdentity := githubIdentityFromIssue(issue)
+	assigned := 0
+	if issue.AssignedToWorker {
+		assigned = 1
+	}
+	_, err = c.db.ExecContext(ctx, `
+insert into detent_work_items (
+project_id, id, identifier, title, description, priority, state, url,
+author_id, assignee_id, assignees_json, labels_json, fields_json, metadata_json,
+deliverable_kind, deliverable_path, deliverable_review_url, deliverable_validation_status,
+deliverable_external_id, deliverable_metadata_json, assigned_to_worker,
+created_at, updated_at, stage_updated_at, model_override,
+github_node_id, github_repository_id, github_issue_number, github_upstream_state, github_orphaned
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+on conflict(project_id, id) do update set
+identifier = excluded.identifier,
+title = excluded.title,
+description = excluded.description,
+state = case when excluded.state <> '' then excluded.state else detent_work_items.state end,
+stage_updated_at = case when excluded.state <> '' and excluded.state <> detent_work_items.state then excluded.stage_updated_at else detent_work_items.stage_updated_at end,
+url = excluded.url,
+author_id = excluded.author_id,
+assignee_id = excluded.assignee_id,
+assignees_json = excluded.assignees_json,
+labels_json = excluded.labels_json,
+metadata_json = excluded.metadata_json,
+assigned_to_worker = excluded.assigned_to_worker,
+updated_at = excluded.updated_at,
+model_override = excluded.model_override,
+github_node_id = excluded.github_node_id,
+github_repository_id = excluded.github_repository_id,
+github_issue_number = excluded.github_issue_number,
+github_upstream_state = excluded.github_upstream_state,
+github_orphaned = excluded.github_orphaned`,
+		c.projectID, id, identifier, issue.Title, issue.Description, nullableInt(issue.Priority), issue.State, issue.URL,
+		issue.AuthorID, issue.AssigneeID, assigneesJSON, labelsJSON, fieldsJSON, metadataJSON,
+		deliverable.Kind, deliverable.Path, deliverable.ReviewURL, deliverable.ValidationStatus,
+		deliverable.ExternalID, deliverableMetadataJSON, assigned,
+		formatTime(createdAt), formatTime(updatedAt), formatTime(stageUpdatedAt), issue.ModelOverride,
+		githubIdentity.NodeID, githubIdentity.RepositoryID, githubIdentity.IssueNumber, githubIdentity.UpstreamState, boolInt(githubIdentity.Orphaned))
+	return err
 }
 
 func (c *Connector) insertSeedIssue(ctx context.Context, issue connector.Issue) error {
@@ -333,6 +539,7 @@ func (c *Connector) insertSeedIssue(ctx context.Context, issue connector.Issue) 
 			return err
 		}
 	}
+	githubIdentity := githubIdentityFromIssue(issue)
 	assigned := 0
 	if issue.AssignedToWorker {
 		assigned = 1
@@ -343,14 +550,16 @@ project_id, id, identifier, title, description, priority, state, url,
 author_id, assignee_id, assignees_json, labels_json, fields_json, metadata_json,
 deliverable_kind, deliverable_path, deliverable_review_url, deliverable_validation_status,
 deliverable_external_id, deliverable_metadata_json, assigned_to_worker,
-created_at, updated_at, stage_updated_at, model_override
-) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+created_at, updated_at, stage_updated_at, model_override,
+github_node_id, github_repository_id, github_issue_number, github_upstream_state, github_orphaned
+) values (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 on conflict(project_id, id) do nothing`,
 		c.projectID, id, identifier, issue.Title, issue.Description, nullableInt(issue.Priority), issue.State, issue.URL,
 		issue.AuthorID, issue.AssigneeID, assigneesJSON, labelsJSON, fieldsJSON, metadataJSON,
 		deliverable.Kind, deliverable.Path, deliverable.ReviewURL, deliverable.ValidationStatus,
 		deliverable.ExternalID, deliverableMetadataJSON, assigned,
-		formatTime(createdAt), formatTime(updatedAt), formatTime(stageUpdatedAt), issue.ModelOverride)
+		formatTime(createdAt), formatTime(updatedAt), formatTime(stageUpdatedAt), issue.ModelOverride,
+		githubIdentity.NodeID, githubIdentity.RepositoryID, githubIdentity.IssueNumber, githubIdentity.UpstreamState, boolInt(githubIdentity.Orphaned))
 	return err
 }
 
@@ -359,7 +568,8 @@ func (c *Connector) fetchIssues(ctx context.Context, states []string, limit int)
 author_id, assignee_id, assignees_json, labels_json, fields_json, metadata_json,
 deliverable_kind, deliverable_path, deliverable_review_url, deliverable_validation_status,
 deliverable_external_id, deliverable_metadata_json, assigned_to_worker,
-created_at, updated_at, stage_updated_at, model_override
+created_at, updated_at, stage_updated_at, model_override,
+github_node_id, github_repository_id, github_issue_number, github_upstream_state, github_orphaned
 from detent_work_items
 where project_id = ?`
 	args := []any{c.projectID}
@@ -428,6 +638,45 @@ values (?, ?, ?, ?, ?, ?, ?)`,
 	return err
 }
 
+func (c *Connector) clearField(ctx context.Context, issueID string, fieldName string) error {
+	issue, err := c.issueByID(ctx, issueID)
+	if err != nil {
+		return err
+	}
+	fieldName = strings.TrimSpace(fieldName)
+	if fieldName == "" {
+		return nil
+	}
+	delete(issue.Fields, fieldName)
+	fieldsJSON, err := marshalStringMap(issue.Fields)
+	if err != nil {
+		return err
+	}
+	now := c.now().UTC()
+	_, err = c.db.ExecContext(ctx, `
+update detent_work_items
+set fields_json = ?, updated_at = ?
+where project_id = ? and id = ?`, fieldsJSON, formatTime(now), c.projectID, strings.TrimSpace(issueID))
+	if err != nil {
+		return err
+	}
+	return c.recordEvent(ctx, strings.TrimSpace(issueID), eventKindFieldUpdate, "", "", map[string]string{fieldName: ""})
+}
+
+func (c *Connector) closedState() string {
+	for _, state := range c.terminalStates {
+		if strings.EqualFold(strings.TrimSpace(state), "Done") {
+			return strings.TrimSpace(state)
+		}
+	}
+	for _, state := range c.terminalStates {
+		if state = strings.TrimSpace(state); state != "" {
+			return state
+		}
+	}
+	return "Done"
+}
+
 type issueScanner interface {
 	Scan(dest ...any) error
 }
@@ -441,12 +690,16 @@ func scanIssue(scanner issueScanner) (connector.Issue, error) {
 	var deliverableMetadataJSON string
 	var assigned int
 	var createdAt, updatedAt, stageUpdatedAt string
+	var githubNodeID, githubUpstreamState string
+	var githubRepositoryID, githubIssueNumber int64
+	var githubOrphaned int
 	err := scanner.Scan(
 		&projectID, &issue.ID, &issue.Identifier, &issue.Title, &issue.Description, &priority, &issue.State, &issue.URL,
 		&issue.AuthorID, &issue.AssigneeID, &assigneesJSON, &labelsJSON, &fieldsJSON, &metadataJSON,
 		&deliverable.Kind, &deliverable.Path, &deliverable.ReviewURL, &deliverable.ValidationStatus,
 		&deliverable.ExternalID, &deliverableMetadataJSON, &assigned,
 		&createdAt, &updatedAt, &stageUpdatedAt, &issue.ModelOverride,
+		&githubNodeID, &githubRepositoryID, &githubIssueNumber, &githubUpstreamState, &githubOrphaned,
 	)
 	if err != nil {
 		return connector.Issue{}, err
@@ -459,6 +712,13 @@ func scanIssue(scanner issueScanner) (connector.Issue, error) {
 	issue.Labels = unmarshalStringSlice(labelsJSON)
 	issue.Fields = unmarshalStringMap(fieldsJSON)
 	issue.Metadata = unmarshalStringMap(metadataJSON)
+	applyGitHubIdentityMetadata(&issue, githubIdentity{
+		NodeID:        githubNodeID,
+		RepositoryID:  githubRepositoryID,
+		IssueNumber:   githubIssueNumber,
+		UpstreamState: githubUpstreamState,
+		Orphaned:      githubOrphaned != 0,
+	})
 	issue.AssignedToWorker = assigned != 0
 	issue.CreatedAt = parseTimePointer(createdAt)
 	issue.UpdatedAt = parseTimePointer(updatedAt)
@@ -496,6 +756,89 @@ func normalizedSet(values []string) map[string]struct{} {
 		}
 	}
 	return out
+}
+
+func normalizedIdentifierSet(values []string) map[string]struct{} {
+	out := map[string]struct{}{}
+	for _, value := range values {
+		value = strings.ToLower(strings.TrimSpace(value))
+		if value != "" {
+			out[value] = struct{}{}
+		}
+	}
+	return out
+}
+
+func issueFieldKey(fieldID int) string {
+	return "issue_field:" + strconv.Itoa(fieldID)
+}
+
+type githubIdentity struct {
+	NodeID        string
+	RepositoryID  int64
+	IssueNumber   int64
+	UpstreamState string
+	Orphaned      bool
+}
+
+func githubIdentityFromIssue(issue connector.Issue) githubIdentity {
+	metadata := issue.Metadata
+	return githubIdentity{
+		NodeID:        strings.TrimSpace(metadata[MetadataGitHubNodeID]),
+		RepositoryID:  int64Metadata(metadata, MetadataGitHubRepositoryID),
+		IssueNumber:   int64Metadata(metadata, MetadataGitHubIssueNumber),
+		UpstreamState: strings.TrimSpace(metadata[MetadataGitHubUpstreamState]),
+		Orphaned:      boolMetadata(metadata, MetadataGitHubOrphaned),
+	}
+}
+
+func applyGitHubIdentityMetadata(issue *connector.Issue, identity githubIdentity) {
+	if issue.Metadata == nil {
+		issue.Metadata = map[string]string{}
+	}
+	if identity.NodeID != "" {
+		issue.Metadata[MetadataGitHubNodeID] = identity.NodeID
+	}
+	if identity.RepositoryID != 0 {
+		issue.Metadata[MetadataGitHubRepositoryID] = strconv.FormatInt(identity.RepositoryID, 10)
+	}
+	if identity.IssueNumber != 0 {
+		issue.Metadata[MetadataGitHubIssueNumber] = strconv.FormatInt(identity.IssueNumber, 10)
+	}
+	if identity.UpstreamState != "" {
+		issue.Metadata[MetadataGitHubUpstreamState] = identity.UpstreamState
+	}
+	if identity.Orphaned {
+		issue.Metadata[MetadataGitHubOrphaned] = "true"
+	}
+}
+
+func int64Metadata(metadata map[string]string, key string) int64 {
+	value := strings.TrimSpace(metadata[key])
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil {
+		return 0
+	}
+	return parsed
+}
+
+func boolMetadata(metadata map[string]string, key string) bool {
+	switch strings.ToLower(strings.TrimSpace(metadata[key])) {
+	case "1", "true", "yes":
+		return true
+	default:
+		return false
+	}
+}
+
+func boolInt(value bool) int {
+	if value {
+		return 1
+	}
+	return 0
 }
 
 func cloneStrings(values []string) []string {

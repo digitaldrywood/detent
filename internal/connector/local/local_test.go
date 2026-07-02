@@ -136,3 +136,62 @@ func TestConnectorFetchIssuesByStatesLimit(t *testing.T) {
 		t.Fatalf("FetchIssuesByStatesLimit() len = %d, want 1", len(issues))
 	}
 }
+
+func TestConnectorUpsertGitHubIdentityAndLocalIssueFields(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	store, err := New(Config{
+		Path:           filepath.Join(t.TempDir(), "github-local.db"),
+		ProjectID:      "detent",
+		TerminalStates: []string{"Done"},
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+	defer store.Close()
+
+	issue := connector.NewIssue()
+	issue.ID = "github:123:779"
+	issue.Identifier = "digitaldrywood/detent#779"
+	issue.Title = "Add local status mode"
+	issue.State = "Todo"
+	issue.Metadata = map[string]string{
+		MetadataGitHubNodeID:        "I_kwDOtest779",
+		MetadataGitHubRepositoryID:  "123",
+		MetadataGitHubIssueNumber:   "779",
+		MetadataGitHubUpstreamState: "open",
+	}
+	if err := store.UpsertIssues(ctx, []connector.Issue{issue}); err != nil {
+		t.Fatalf("UpsertIssues() error = %v", err)
+	}
+	if err := store.SetIssueField(ctx, "github:123:779", 42, "agent-1"); err != nil {
+		t.Fatalf("SetIssueField() error = %v", err)
+	}
+	if err := store.ClearIssueField(ctx, "github:123:779", 42); err != nil {
+		t.Fatalf("ClearIssueField() error = %v", err)
+	}
+	if err := store.CloseIssue(ctx, "github:123:779"); err != nil {
+		t.Fatalf("CloseIssue() error = %v", err)
+	}
+
+	issues, err := store.FetchIssueStatesByIdentifiers(ctx, []string{"digitaldrywood/detent#779"})
+	if err != nil {
+		t.Fatalf("FetchIssueStatesByIdentifiers() error = %v", err)
+	}
+	if len(issues) != 1 {
+		t.Fatalf("issues len = %d, want 1", len(issues))
+	}
+	got := issues[0]
+	if got.State != "Done" {
+		t.Fatalf("State = %q, want Done", got.State)
+	}
+	if got.Metadata[MetadataGitHubNodeID] != "I_kwDOtest779" ||
+		got.Metadata[MetadataGitHubRepositoryID] != "123" ||
+		got.Metadata[MetadataGitHubIssueNumber] != "779" {
+		t.Fatalf("GitHub metadata = %#v", got.Metadata)
+	}
+	if value, ok := got.Fields[issueFieldKey(42)]; ok || value != "" {
+		t.Fatalf("issue field persisted = %q, ok=%v; want cleared", value, ok)
+	}
+}

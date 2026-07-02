@@ -1,0 +1,41 @@
+package github
+
+import (
+	"context"
+	"fmt"
+	"net/http"
+	"strings"
+)
+
+type RepositoryInfo struct {
+	ID            int64
+	NameWithOwner string
+	HTMLURL       string
+}
+
+func (c *Connector) FetchRepositoryInfo(ctx context.Context, repository string) (RepositoryInfo, error) {
+	repository = strings.TrimSpace(repository)
+	if repository == "" {
+		return RepositoryInfo{}, ErrMissingRepository
+	}
+	var response struct {
+		ID       int64  `json:"id"`
+		FullName string `json:"full_name"`
+		HTMLURL  string `json:"html_url"`
+	}
+	if err := c.client.REST(ctx, http.MethodGet, restRepositoryPath(repository), nil, &response); err != nil {
+		return RepositoryInfo{}, fmt.Errorf("fetch github repository info: %w", err)
+	}
+	if response.ID == 0 {
+		return RepositoryInfo{}, ErrInvalidResponse
+	}
+	info := RepositoryInfo{
+		ID:            response.ID,
+		NameWithOwner: strings.TrimSpace(response.FullName),
+		HTMLURL:       strings.TrimSpace(response.HTMLURL),
+	}
+	if info.NameWithOwner == "" {
+		info.NameWithOwner = repository
+	}
+	return info, nil
+}

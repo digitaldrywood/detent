@@ -844,7 +844,7 @@ func workflowConfigWithProjectPaths(project globalconfig.Project, workflow workf
 	if workdir == "" {
 		return workflow
 	}
-	if workflow.Tracker.Kind == workflowconfig.TrackerLocalSQLite {
+	if workflow.Tracker.Kind == workflowconfig.TrackerLocalSQLite || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal {
 		workflow.Tracker.LocalSQLite.Path = projectRelativePath(workdir, workflow.Tracker.LocalSQLite.Path)
 	}
 	if workflow.Workspace.Kind == workflowconfig.WorkspaceFilesystem {
@@ -868,7 +868,7 @@ func projectRelativePath(base string, path string) string {
 
 func workflowConfigWithGitHubToken(workflow workflowconfig.Config, token string) workflowconfig.Config {
 	token = strings.TrimSpace(token)
-	if token != "" && workflow.Tracker.Kind == workflowconfig.TrackerGitHub {
+	if token != "" && (workflow.Tracker.Kind == workflowconfig.TrackerGitHub || workflow.Tracker.Kind == workflowconfig.TrackerGitHubLocal) {
 		workflow.Tracker.APIKey = token
 	}
 	return workflow

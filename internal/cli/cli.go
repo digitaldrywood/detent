@@ -414,6 +414,7 @@ detent --format json config path`),
 			project.Paused = false
 			return nil
 		}),
+		newGitHubLocalCommand(&configPath, opts),
 		newConfigCommand(&configPath, opts),
 		newOnboardingCommand(&configPath, opts),
 		newPromoteCommand(&configPath, opts),

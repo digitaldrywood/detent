@@ -1277,9 +1277,11 @@ repo is a real, working instance of this setup to copy from.
 
    The maintained templates are
    [`WORKFLOW.project_v2.md`](docs/templates/WORKFLOW.project_v2.md),
-   [`WORKFLOW.issue_field.md`](docs/templates/WORKFLOW.issue_field.md), and
-   [`WORKFLOW.label.md`](docs/templates/WORKFLOW.label.md). Non-code artifact
-   workflows can start from
+   [`WORKFLOW.issue_field.md`](docs/templates/WORKFLOW.issue_field.md),
+   [`WORKFLOW.label.md`](docs/templates/WORKFLOW.label.md), and the CLI-only
+   local-status template
+   [`WORKFLOW.github_local.md`](docs/templates/WORKFLOW.github_local.md).
+   Non-code artifact workflows can start from
    [`WORKFLOW.non_code_artifact.md`](docs/templates/WORKFLOW.non_code_artifact.md).
    They set `server.kanban.mode: integration` for trusted project boards;
    change that to `read_only` only for an observer or shared dashboard,
@@ -1298,9 +1300,16 @@ repo is a real, working instance of this setup to copy from.
    issue_field`, `tracker.repository: <repo-owner>/<repo-name>`, and optionally
    `tracker.status_field`. For boardless label mode, set
    `tracker.github_status_source: label`, `tracker.repository:
-   <repo-owner>/<repo-name>`, and `tracker.status_label_prefix`. In every mode,
-   set `workspace.source_root` (`<source-root>`), `workspace.root` (a worktrees
-   directory), `write_probe_issue` when using write probes, and the prompt body.
+   <repo-owner>/<repo-name>`, and `tracker.status_label_prefix`. For
+   externally owned or open-source repositories where Detent must not pollute
+   issues, labels, fields, Projects, or issue comments, use
+   `tracker.kind: github_local` from `WORKFLOW.github_local.md`; do not set
+   `tracker.github_status_source`, configure `tracker.local_sqlite.path`, and
+   import explicit issue numbers with
+   `detent github-local import <project-id> <issue-number> --state Todo`. In
+   every mode, set `workspace.source_root` (`<source-root>`), `workspace.root`
+   (a worktrees directory), `write_probe_issue` when using write probes, and the
+   prompt body.
    If the repository already has a `WORKFLOW.md`, audit its prompt body for the
    same Required Execution Flow and `Current Detent status: {{ issue.state }}`
    line before dispatching Detent against it.
@@ -1367,11 +1376,12 @@ repo is a real, working instance of this setup to copy from.
    access; it is not limited to Tailscale.
 
 10. **Dispatch work.** Move an issue to `Todo` through the configured status
-    source: ProjectV2 `Status`, issue-field `Status`, or the `detent:todo`
-    status label. Detent claims it, creates an isolated worktree, dispatches an
-    agent, and the issue appears under Running on the dashboard. Drive the rest
-    through the configured status source (`Todo` → `In Progress` →
-    `Human Review` → `Merging` → `Done`).
+    source: ProjectV2 `Status`, issue-field `Status`, the `detent:todo` status
+    label, or the local SQLite state used by `github_local`. Detent claims it,
+    creates an isolated worktree, dispatches an agent, and the issue appears
+    under Running on the dashboard. Drive the rest through the configured
+    status source (`Todo` → `In Progress` → `Human Review` → `Merging` →
+    `Done`).
 
 ## Concepts
 
@@ -1379,9 +1389,9 @@ repo is a real, working instance of this setup to copy from.
 
 Detent isolates tracker integration behind a connector interface. The current
 production connector is GitHub. It supports the current ProjectV2-backed board
-mode, boardless issue-field mode, and boardless label mode. A memory connector
-is available for local development, and the connector boundary is where GitLab
-and Jira support will land later.
+mode, boardless issue-field mode, boardless label mode, and `github_local`
+hybrid mode. A memory connector is available for local development, and the
+connector boundary is where GitLab and Jira support will land later.
 
 GitHub configuration lives in each project's `WORKFLOW.md` frontmatter. The
 default `github_status_source: project_v2` mode uses `project_slug` as the
@@ -1394,6 +1404,14 @@ that field for state transitions. Boardless `github_status_source: label` mode
 uses `repository: owner/name` and repository labels named by
 `status_label_prefix`; Detent reads issues by configured status labels and
 updates state by replacing the previous status label with the target one.
+`tracker.kind: github_local` is a separate backend, not a fourth
+`tracker.github_status_source` value. GitHub is read-only for issue, dependency,
+parent/child, comment, PR, review, check, and rate-limit facts; Detent's SQLite
+database is the source of truth for workflow state, claim fields, audit-trail
+comments, priority, and local close decisions. In this mode Detent does not
+create or mutate GitHub Projects, issue fields, repository labels, status
+labels, GitHub issue comments, or GitHub issue close state. Pull request
+lifecycle writes for Detent-owned PRs remain allowlisted.
 Set `tracker.write_probe_issue` to a scratch issue already present on that
 ProjectV2 board or in the boardless repository if
 `detent doctor --allow-write-probes` should prove write operations by replaying
@@ -1538,6 +1556,15 @@ You choose where GitHub status lives; Detent fills in the rest.
   label at a time. Detent's Kanban/dashboard view becomes the board surface; no
   GitHub ProjectV2 board, `tracker.project_slug`, or organization issue field
   is needed.
+- **GitHub local-status mode:** configure `tracker.kind: github_local`,
+  `tracker.repository: owner/name`, and `tracker.local_sqlite.path`. Do not set
+  `tracker.github_status_source`. Import issues explicitly with
+  `detent github-local import <project-id> 123,456 --state Todo`; unimported
+  issues do not appear on Detent boards. Detent updates local workflow state
+  only, while GitHub remains the read-only source for issue text, labels,
+  assignees, dependencies, linked PRs, reviews, checks, and rate-limit health.
+  The board surfaces divergence such as an upstream-closed issue that is still
+  locally active.
 - **Blank `Status` values and missing status labels are not `Backlog`.** In the
   current release, an issue with no configured issue-field value or status label
   is not dispatchable through the state machine. Put unready work in the
@@ -1553,7 +1580,8 @@ You choose where GitHub status lives; Detent fills in the rest.
   label to untracked issues, and close or relabel stale-open terminal issues.
 - **Detent reads** status, priority, labels, blockers, assignees, and linked
   pull requests from each issue, and **writes back** status transitions and a
-  `## Codex Workpad` comment as the agent works.
+  `## Codex Workpad` comment as the agent works, except in `github_local`,
+  where those workflow writes are durable local records.
 
 ### Kanban Modes
 
@@ -1593,6 +1621,22 @@ one configured status label per issue, then change the workflow to
 ProjectV2 items or issue-field values into labels. After the switch, run
 `detent doctor --port 0 --allow-write-probes` and fix label mapping, issue reads
 by label, write-probe, comment-write, and rate-limit checks before dispatching.
+
+To switch a repository to local-only status mode, copy
+`docs/templates/WORKFLOW.github_local.md`, set `tracker.repository`,
+`tracker.local_sqlite.path`, workspace paths, and the prompt body, then import
+only the issue numbers Detent should see:
+
+```sh
+detent github-local import <project-id> 123,456 --state Todo
+detent doctor --project <project-id> --port 0
+```
+
+This mode does not migrate or mutate GitHub status data. Existing ProjectV2
+items, issue fields, labels, and GitHub issue comments stay untouched. If
+GitHub closes or transfers an imported issue while local state is still active,
+Detent keeps the local row and surfaces the divergence on the board instead of
+auto-resolving it.
 
 ### Dependency workflows
 

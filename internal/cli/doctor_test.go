@@ -2189,6 +2189,32 @@ func TestCheckDoctorSQLite(t *testing.T) {
 	}
 }
 
+func TestDoctorGitHubLocalReadinessUsesLocalStatusMode(t *testing.T) {
+	t.Parallel()
+
+	workflow := validDoctorWorkflow("/repo")
+	workflow.Tracker.Kind = workflowconfig.TrackerGitHubLocal
+	workflow.Tracker.Repository = "digitaldrywood/detent"
+	workflow.Tracker.LocalSQLite.Path = ".detent/work-items.db"
+	workflow.Tracker.ActiveStates = []string{"Todo", "In Progress"}
+	workflow.Tracker.ObservedStates = []string{"Blocked", "Human Review"}
+	workflow.Tracker.TerminalStates = []string{"Done"}
+
+	got := doctorGitHubReadinessConfig(context.Background(), globalconfig.Project{Workdir: "/repo"}, workflow, doctorDeps{}, RuntimeSecret{}, "/repo")
+	if !got.LocalStatusMode {
+		t.Fatalf("LocalStatusMode = false, want true")
+	}
+	if got.RequireProjectRead || got.RequireProjectStatusWrite || got.RequireIssueFieldStatusWrite || got.RequireLabelStatusWrite || got.RequireIssueComments {
+		t.Fatalf("write/status requirements = %#v, want local-only status mode", got)
+	}
+	if !got.RequireIssueCommentsRead || !got.RequireDependencyMetadataRead || !got.RequirePullRequestRead || !got.RequirePullRequestReviews || !got.RequirePullRequestChecks {
+		t.Fatalf("read requirements = %#v, want GitHub issue/PR/check reads", got)
+	}
+	if len(got.Repositories) != 1 || got.Repositories[0] != "digitaldrywood/detent" {
+		t.Fatalf("Repositories = %#v, want digitaldrywood/detent", got.Repositories)
+	}
+}
+
 func TestCheckDoctorLocalSQLiteTrackerResolvesProjectRelativePath(t *testing.T) {
 	t.Parallel()
 

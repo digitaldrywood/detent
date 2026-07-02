@@ -9,6 +9,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	githubconnector "github.com/digitaldrywood/detent/internal/connector/github"
+	"github.com/digitaldrywood/detent/internal/connector/githublocal"
 	"github.com/digitaldrywood/detent/internal/connector/local"
 	"github.com/digitaldrywood/detent/internal/connector/memory"
 )
@@ -87,6 +88,52 @@ func NewFromConfig(cfg Config) (connector.Connector, error) {
 			StateMap:                cfg.StateMap,
 			PriorityMap:             cfg.PriorityMap,
 		})
+	case connector.BackendGitHubLocal:
+		var tokenSource githubconnector.TokenSource
+		if strings.TrimSpace(cfg.APIKey) != "" && cfg.GitHubTokenRefresh != nil && !cfg.hasGitHubAppCredentials() {
+			tokenSource = githubconnector.NewRefreshableTokenSource(cfg.APIKey, cfg.GitHubTokenRefresh)
+		}
+		localCfg := cfg.LocalSQLite
+		if len(localCfg.ActiveStates) == 0 {
+			localCfg.ActiveStates = cloneStrings(cfg.ActiveStates)
+		}
+		if len(localCfg.ObservedStates) == 0 {
+			localCfg.ObservedStates = cloneStrings(cfg.ObservedStates)
+		}
+		if len(localCfg.TerminalStates) == 0 {
+			localCfg.TerminalStates = cloneStrings(cfg.TerminalStates)
+		}
+		return githublocal.New(githublocal.Config{
+			GitHub: githubconnector.Config{
+				Endpoint:    cfg.Endpoint,
+				APIKey:      cfg.APIKey,
+				TokenSource: tokenSource,
+				HTTPTransport: githubconnector.HTTPTransportConfig{
+					MaxIdleConns:        cfg.HTTPMaxIdleConns,
+					MaxIdleConnsPerHost: cfg.HTTPMaxIdleConnsPerHost,
+					IdleConnTimeout:     time.Duration(cfg.HTTPIdleConnTimeoutMS) * time.Millisecond,
+				},
+				RESTMinRemainingReserve: cfg.GitHubRESTMinReserve,
+				RESTFanoutMaxRequests:   cfg.GitHubRESTFanoutMaxRequests,
+				GitHubAppID:             cfg.GitHubAppID,
+				GitHubAppPrivateKey:     cfg.GitHubAppPrivateKey,
+				GitHubAppPrivateKeyPath: cfg.GitHubAppPrivateKeyPath,
+				GitHubAppInstallationID: cfg.GitHubAppInstallationID,
+				Repository:              cfg.Repository,
+				StatusField:             cfg.StatusField,
+				StatusLabelPrefix:       cfg.StatusLabelPrefix,
+				ActiveStates:            cfg.ActiveStates,
+				ObservedStates:          cfg.ObservedStates,
+				TerminalStates:          cfg.TerminalStates,
+				StateMap:                cfg.StateMap,
+				PriorityMap:             cfg.PriorityMap,
+			},
+			Local:          localCfg,
+			Repository:     cfg.Repository,
+			InitialState:   firstNonBlank(cfg.ActiveStates),
+			ActiveStates:   cfg.ActiveStates,
+			TerminalStates: cfg.TerminalStates,
+		})
 	case connector.BackendGitLab, connector.BackendJira:
 		return nil, fmt.Errorf("%w: %s", ErrBackendNotReady, kind)
 	default:
@@ -145,4 +192,17 @@ func normalizeKind(kind string) string {
 		return connector.BackendMemory.String()
 	}
 	return normalized
+}
+
+func cloneStrings(values []string) []string {
+	return append([]string(nil), values...)
+}
+
+func firstNonBlank(values []string) string {
+	for _, value := range values {
+		if value = strings.TrimSpace(value); value != "" {
+			return value
+		}
+	}
+	return ""
 }
