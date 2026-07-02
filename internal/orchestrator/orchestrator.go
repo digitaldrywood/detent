@@ -2060,6 +2060,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		refusal := *event.Result.BudgetRefusal
 		refusal.Issue = cloneIssue(running.Issue)
 		state.BudgetRefusals[event.IssueID] = refusal
+		o.commentBudgetRefusal(ctx, event.IssueID, refusal)
 	}
 
 	if state.Draining {
@@ -2067,6 +2068,28 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		return
 	}
 	o.scheduleRetry(state, running.Issue, 1, event.CompletedAt, "", true, running.WorkerHost)
+}
+
+func (o *Orchestrator) commentBudgetRefusal(ctx context.Context, issueID string, refusal BudgetRefusal) {
+	if o.connector == nil {
+		return
+	}
+	body := strings.TrimSpace(refusal.Comment)
+	if body == "" {
+		body = strings.TrimSpace(refusal.Message)
+	}
+	if body == "" {
+		return
+	}
+	if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
+		o.logger.Warn(
+			"budget refusal comment failed",
+			"issue_id", issueID,
+			"identifier", refusal.Issue.Identifier,
+			"code", refusal.Code,
+			"error", err,
+		)
+	}
 }
 
 func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issueID string) {

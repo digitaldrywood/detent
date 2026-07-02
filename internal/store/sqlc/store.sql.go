@@ -1462,6 +1462,90 @@ func (q *Queries) MarkValidatorVerdictCommented(ctx context.Context, arg MarkVal
 	return result.RowsAffected()
 }
 
+const recentModelTokenQuantiles = `-- name: RecentModelTokenQuantiles :one
+WITH recent AS (
+  SELECT
+    input_tokens,
+    COALESCE(cached_input_tokens, 0) AS cached_input_tokens,
+    output_tokens,
+    total_tokens
+  FROM codex_sessions
+  WHERE completed_at IS NOT NULL
+    AND lower(trim(COALESCE(model, ''))) = lower(trim(?1))
+  ORDER BY completed_at DESC, id DESC
+  LIMIT ?2
+),
+counts AS (
+  SELECT
+    CAST(COUNT(*) AS INTEGER) AS sessions
+  FROM recent
+),
+targets AS (
+  SELECT
+    sessions,
+    CAST((sessions + 1) / 2 AS INTEGER) AS p50_rank,
+    CAST(((sessions * 9) + 9) / 10 AS INTEGER) AS p90_rank
+  FROM counts
+),
+ranked AS (
+  SELECT
+    input_tokens,
+    cached_input_tokens,
+    output_tokens,
+    total_tokens,
+    ROW_NUMBER() OVER (ORDER BY input_tokens) AS input_rank,
+    ROW_NUMBER() OVER (ORDER BY cached_input_tokens) AS cached_input_rank,
+    ROW_NUMBER() OVER (ORDER BY output_tokens) AS output_rank,
+    ROW_NUMBER() OVER (ORDER BY total_tokens) AS total_rank
+  FROM recent
+)
+SELECT
+  CAST(targets.sessions AS INTEGER) AS sessions,
+  CAST(COALESCE((SELECT input_tokens FROM ranked WHERE input_rank = targets.p50_rank), 0) AS INTEGER) AS p50_input_tokens,
+  CAST(COALESCE((SELECT input_tokens FROM ranked WHERE input_rank = targets.p90_rank), 0) AS INTEGER) AS p90_input_tokens,
+  CAST(COALESCE((SELECT cached_input_tokens FROM ranked WHERE cached_input_rank = targets.p50_rank), 0) AS INTEGER) AS p50_cached_input_tokens,
+  CAST(COALESCE((SELECT cached_input_tokens FROM ranked WHERE cached_input_rank = targets.p90_rank), 0) AS INTEGER) AS p90_cached_input_tokens,
+  CAST(COALESCE((SELECT output_tokens FROM ranked WHERE output_rank = targets.p50_rank), 0) AS INTEGER) AS p50_output_tokens,
+  CAST(COALESCE((SELECT output_tokens FROM ranked WHERE output_rank = targets.p90_rank), 0) AS INTEGER) AS p90_output_tokens,
+  CAST(COALESCE((SELECT total_tokens FROM ranked WHERE total_rank = targets.p50_rank), 0) AS INTEGER) AS p50_total_tokens,
+  CAST(COALESCE((SELECT total_tokens FROM ranked WHERE total_rank = targets.p90_rank), 0) AS INTEGER) AS p90_total_tokens
+FROM targets
+`
+
+type RecentModelTokenQuantilesParams struct {
+	Model string `json:"model"`
+	Limit int64  `json:"limit"`
+}
+
+type RecentModelTokenQuantilesRow struct {
+	Sessions             int64 `json:"sessions"`
+	P50InputTokens       int64 `json:"p50_input_tokens"`
+	P90InputTokens       int64 `json:"p90_input_tokens"`
+	P50CachedInputTokens int64 `json:"p50_cached_input_tokens"`
+	P90CachedInputTokens int64 `json:"p90_cached_input_tokens"`
+	P50OutputTokens      int64 `json:"p50_output_tokens"`
+	P90OutputTokens      int64 `json:"p90_output_tokens"`
+	P50TotalTokens       int64 `json:"p50_total_tokens"`
+	P90TotalTokens       int64 `json:"p90_total_tokens"`
+}
+
+func (q *Queries) RecentModelTokenQuantiles(ctx context.Context, arg RecentModelTokenQuantilesParams) (RecentModelTokenQuantilesRow, error) {
+	row := q.db.QueryRowContext(ctx, recentModelTokenQuantiles, arg.Model, arg.Limit)
+	var i RecentModelTokenQuantilesRow
+	err := row.Scan(
+		&i.Sessions,
+		&i.P50InputTokens,
+		&i.P90InputTokens,
+		&i.P50CachedInputTokens,
+		&i.P90CachedInputTokens,
+		&i.P50OutputTokens,
+		&i.P90OutputTokens,
+		&i.P50TotalTokens,
+		&i.P90TotalTokens,
+	)
+	return i, err
+}
+
 const reclaimActiveWorkAttempts = `-- name: ReclaimActiveWorkAttempts :many
 UPDATE work_attempts
 SET status = ?,

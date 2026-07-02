@@ -47,6 +47,7 @@ type StatsStore interface {
 	LifetimeTotals(context.Context) (LifetimeTotals, error)
 	DailyTokenSpend(context.Context, time.Time) (TokenSpend, error)
 	IssueTokenSpend(context.Context, IssueIdentity) (TokenSpend, error)
+	RecentModelTokenQuantiles(context.Context, ModelTokenQuantileQuery) (ModelTokenQuantiles, error)
 }
 
 type FairShareStore interface {
@@ -589,6 +590,24 @@ type TokenSpend struct {
 	TotalTokens           int64
 	Sessions              int64
 	ByModel               []ModelTokenSpend
+}
+
+type ModelTokenQuantileQuery struct {
+	Model string
+	Limit int64
+}
+
+type ModelTokenQuantiles struct {
+	Model                string
+	Sessions             int64
+	P50InputTokens       int64
+	P90InputTokens       int64
+	P50CachedInputTokens int64
+	P90CachedInputTokens int64
+	P50OutputTokens      int64
+	P90OutputTokens      int64
+	P50TotalTokens       int64
+	P90TotalTokens       int64
 }
 
 type LifetimeTotals struct {

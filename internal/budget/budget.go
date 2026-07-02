@@ -329,10 +329,11 @@ func (c *Checker) refusal(code ReasonCode, req DispatchRequest, now time.Time, c
 
 func (e TokenEstimate) normalized() TokenEstimate {
 	out := TokenEstimate{
-		InputTokens:  nonNegative(e.InputTokens),
-		OutputTokens: nonNegative(e.OutputTokens),
-		TotalTokens:  nonNegative(e.TotalTokens),
-		Sessions:     nonNegative(e.Sessions),
+		InputTokens:       nonNegative(e.InputTokens),
+		CachedInputTokens: nonNegative(e.CachedInputTokens),
+		OutputTokens:      nonNegative(e.OutputTokens),
+		TotalTokens:       nonNegative(e.TotalTokens),
+		Sessions:          nonNegative(e.Sessions),
 	}
 	if out.InputTokens == 0 && out.OutputTokens == 0 && out.TotalTokens == 0 {
 		return defaultTokenEstimate

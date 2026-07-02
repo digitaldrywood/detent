@@ -45,6 +45,14 @@ type SessionStore interface {
 	RecordUsageEvent(context.Context, store.UsageEvent) (int64, error)
 }
 
+type BudgetChecker interface {
+	CheckDispatch(context.Context, budget.DispatchRequest) (budget.Decision, error)
+}
+
+type DispatchEstimator interface {
+	EstimateDispatch(context.Context, string) (budget.TokenEstimate, error)
+}
+
 type workflowPhaseStore interface {
 	RecordWorkflowPhaseEvent(context.Context, store.WorkflowPhaseEvent) (int64, error)
 }
@@ -68,6 +76,8 @@ type Dependencies struct {
 	AgentBackendFactory AgentBackendFactory
 	Store               SessionStore
 	Pricing             budget.PricingTable
+	BudgetChecker       BudgetChecker
+	DispatchEstimator   DispatchEstimator
 	Now                 func() time.Time
 	Logger              *slog.Logger
 	AfterRunTimeout     time.Duration
@@ -82,6 +92,8 @@ type Runner struct {
 	agentBackendFactory AgentBackendFactory
 	store               SessionStore
 	pricing             budget.PricingTable
+	budgetChecker       BudgetChecker
+	dispatchEstimator   DispatchEstimator
 	now                 func() time.Time
 	logger              *slog.Logger
 	afterRunTimeout     time.Duration
@@ -124,6 +136,8 @@ func NewRunner(deps Dependencies) (*Runner, error) {
 		agentBackendFactory: deps.AgentBackendFactory,
 		store:               deps.Store,
 		pricing:             deps.Pricing,
+		budgetChecker:       deps.BudgetChecker,
+		dispatchEstimator:   deps.DispatchEstimator,
 		now:                 deps.Now,
 		logger:              deps.Logger,
 		afterRunTimeout:     deps.AfterRunTimeout,
@@ -432,6 +446,19 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	runStartedAt := r.now()
 	selectedModel := selection.Model
 	sessionModel := effectiveModel("", selectedModel, agentRuntime.defaultModelForRole(RoleCode))
+	if result, refused, err := r.checkDispatchBudget(ctx, req.Issue, sessionModel, startedAt); err != nil {
+		return RunResult{}, err
+	} else if refused {
+		r.logWorkerEvent(req.Issue, "worker_budget_refused",
+			"workspace_path", info.Path,
+			"backend_id", selection.BackendID,
+			"route", selection.RouteName,
+			"role", RoleCode,
+			"model", sessionModel,
+			"code", result.BudgetRefusal.Code,
+		)
+		return result, nil
+	}
 	sessionID, sessionStarted, err := r.startSession(ctx, req.Issue, startedAt, sessionModel)
 	if err != nil {
 		return RunResult{}, err
@@ -537,6 +564,63 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		return result, err
 	}
 	return result, nil
+}
+
+func (r *Runner) checkDispatchBudget(ctx context.Context, issue connector.Issue, model string, now time.Time) (RunResult, bool, error) {
+	if r.budgetChecker == nil {
+		return RunResult{}, false, nil
+	}
+
+	estimate := budget.TokenEstimate{}
+	if r.dispatchEstimator != nil {
+		var err error
+		estimate, err = r.dispatchEstimator.EstimateDispatch(ctx, model)
+		if err != nil {
+			return RunResult{}, false, fmt.Errorf("estimate dispatch budget: %w", err)
+		}
+	}
+	decision, err := r.budgetChecker.CheckDispatch(ctx, budget.DispatchRequest{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		IssueURL:   issue.URL,
+		Model:      model,
+		Now:        now,
+		Estimate:   estimate,
+	})
+	if err != nil {
+		return RunResult{}, false, fmt.Errorf("check dispatch budget: %w", err)
+	}
+	if decision.Allowed || decision.Refusal == nil {
+		return RunResult{}, false, nil
+	}
+	return RunResult{
+		FinalState:    FinalStateCompleted,
+		BudgetRefusal: budgetRefusalFromDecision(issue, *decision.Refusal),
+	}, true, nil
+}
+
+func budgetRefusalFromDecision(issue connector.Issue, refusal budget.Refusal) *BudgetRefusal {
+	var maxUSD *float64
+	if refusal.MaxUSD != nil {
+		value := *refusal.MaxUSD
+		maxUSD = &value
+	}
+	var resetAt *time.Time
+	if refusal.ResetAt != nil {
+		value := *refusal.ResetAt
+		resetAt = &value
+	}
+	return &BudgetRefusal{
+		Issue:            issue,
+		Code:             string(refusal.Code),
+		Message:          refusal.Message,
+		Comment:          refusal.Comment(),
+		CurrentSpendUSD:  refusal.CurrentSpendUSD,
+		ProjectedCostUSD: refusal.ProjectedCostUSD,
+		MaxUSD:           maxUSD,
+		ResetAt:          resetAt,
+		RefusedAt:        refusal.RefusedAt,
+	}
 }
 
 func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {

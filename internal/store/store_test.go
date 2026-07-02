@@ -708,6 +708,66 @@ func TestBudgetCostEvents(t *testing.T) {
 	}
 }
 
+func TestRecentModelTokenQuantilesUsesRecentCompletedSessions(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend := openTestStore(t, ctx)
+	base := time.Date(2026, 6, 1, 12, 0, 0, 0, time.UTC)
+
+	seedQuantileSession(t, ctx, backend, "gpt-5", base, 1_000_000, 100_000, 100_000)
+	for index, inputTokens := range []int64{10, 20, 30, 40, 50} {
+		seedQuantileSession(
+			t,
+			ctx,
+			backend,
+			"gpt-5",
+			base.Add(time.Duration(index+1)*time.Minute),
+			inputTokens,
+			inputTokens/10,
+			inputTokens/5,
+		)
+	}
+	seedQuantileSession(t, ctx, backend, "other-model", base.Add(10*time.Minute), 9_000, 900, 900)
+	if _, err := backend.StartSession(ctx, SessionStart{
+		StartedAt: base.Add(11 * time.Minute),
+		Model:     "gpt-5",
+	}); err != nil {
+		t.Fatalf("StartSession() incomplete error = %v", err)
+	}
+
+	quantiles, err := backend.RecentModelTokenQuantiles(ctx, ModelTokenQuantileQuery{
+		Model: " GPT-5 ",
+		Limit: 5,
+	})
+	if err != nil {
+		t.Fatalf("RecentModelTokenQuantiles() error = %v", err)
+	}
+	if quantiles.Sessions != 5 {
+		t.Fatalf("Sessions = %d, want 5", quantiles.Sessions)
+	}
+	if quantiles.P50InputTokens != 30 || quantiles.P90InputTokens != 50 {
+		t.Fatalf("input quantiles = p50 %d p90 %d, want 30/50", quantiles.P50InputTokens, quantiles.P90InputTokens)
+	}
+	if quantiles.P50CachedInputTokens != 3 || quantiles.P90CachedInputTokens != 5 {
+		t.Fatalf("cached quantiles = p50 %d p90 %d, want 3/5", quantiles.P50CachedInputTokens, quantiles.P90CachedInputTokens)
+	}
+	if quantiles.P50OutputTokens != 6 || quantiles.P90OutputTokens != 10 {
+		t.Fatalf("output quantiles = p50 %d p90 %d, want 6/10", quantiles.P50OutputTokens, quantiles.P90OutputTokens)
+	}
+	if quantiles.P50TotalTokens != 36 || quantiles.P90TotalTokens != 60 {
+		t.Fatalf("total quantiles = p50 %d p90 %d, want 36/60", quantiles.P50TotalTokens, quantiles.P90TotalTokens)
+	}
+
+	empty, err := backend.RecentModelTokenQuantiles(ctx, ModelTokenQuantileQuery{Model: "missing", Limit: 5})
+	if err != nil {
+		t.Fatalf("RecentModelTokenQuantiles(missing) error = %v", err)
+	}
+	if empty.Sessions != 0 || empty.P90InputTokens != 0 {
+		t.Fatalf("missing quantiles = %#v, want zero values", empty)
+	}
+}
+
 func TestCycleTimeReportFromCompletedSessions(t *testing.T) {
 	t.Parallel()
 
@@ -1719,6 +1779,38 @@ func seedCycleSession(t *testing.T, ctx context.Context, backend Store, seed cyc
 		RuntimeSeconds: int64(seed.CompletedAt.Sub(seed.StartedAt) / time.Second),
 		FinalState:     seed.FinalState,
 		Model:          "gpt-5-codex",
+	}); err != nil {
+		t.Fatalf("FinishSession() error = %v", err)
+	}
+}
+
+func seedQuantileSession(
+	t *testing.T,
+	ctx context.Context,
+	backend Store,
+	model string,
+	completedAt time.Time,
+	inputTokens int64,
+	cachedInputTokens int64,
+	outputTokens int64,
+) {
+	t.Helper()
+
+	sessionID, err := backend.StartSession(ctx, SessionStart{
+		StartedAt: completedAt.Add(-time.Minute),
+		Model:     model,
+	})
+	if err != nil {
+		t.Fatalf("StartSession() error = %v", err)
+	}
+	if err := backend.FinishSession(ctx, sessionID, SessionFinish{
+		CompletedAt:       completedAt,
+		InputTokens:       inputTokens,
+		CachedInputTokens: cachedInputTokens,
+		OutputTokens:      outputTokens,
+		TotalTokens:       inputTokens + outputTokens,
+		FinalState:        "completed",
+		Model:             model,
 	}); err != nil {
 		t.Fatalf("FinishSession() error = %v", err)
 	}

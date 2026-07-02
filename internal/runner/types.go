@@ -176,6 +176,7 @@ type BudgetRefusal struct {
 	Issue            connector.Issue
 	Code             string
 	Message          string
+	Comment          string
 	CurrentSpendUSD  float64
 	ProjectedCostUSD float64
 	MaxUSD           *float64
