@@ -359,10 +359,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		applyAgentUpdate(&result, update)
 		eventAt := r.now()
 		progress.apply(update, eventAt)
-		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
+		if err := r.publishRunUpdate(ctx, req, info, workspaceIssue, progress, result, eventAt, runStartedAt); err != nil {
 			return err
 		}
-		if err := r.publishRunUpdate(ctx, req, info, workspaceIssue, progress, result, eventAt, runStartedAt); err != nil {
+		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
 			return err
 		}
 		return nil
@@ -516,10 +516,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		applyAgentUpdate(&runResult, update)
 		eventAt := r.now()
 		progress.apply(update, eventAt)
-		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
+		if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt); err != nil {
 			return err
 		}
-		if err := r.publishRunUpdate(ctx, runReq, info, workspaceIssue, progress, runResult, eventAt, runStartedAt); err != nil {
+		if err := r.enforceSessionTokenCeiling(workflow.Config.Agent, req.Issue, info.Path, update, eventAt); err != nil {
 			return err
 		}
 		return nil

@@ -333,6 +333,7 @@ func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
 		t.Fatalf("NewRunner() error = %v", err)
 	}
 
+	var usageUpdates []UsageUpdate
 	result, err := runner.Run(context.Background(), RunRequest{
 		Issue: connector.Issue{
 			ID:         "issue-853",
@@ -340,6 +341,10 @@ func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
 			Title:      "Per-session token ceiling",
 		},
 		StartedAt: startedAt,
+		OnUsageUpdate: func(update UsageUpdate) error {
+			usageUpdates = append(usageUpdates, update)
+			return nil
+		},
 	})
 	if err == nil {
 		t.Fatal("Run() error = nil, want token ceiling error")
@@ -365,6 +370,12 @@ func TestRunnerRunKillsSessionAtTokenCeilingAndRecordsLesson(t *testing.T) {
 	}
 	if sessionStore.phase.Status != FinalStateTokenCeilingExceeded || sessionStore.phase.TotalTokens != 120 {
 		t.Fatalf("WorkflowPhaseEvent = %#v, want token ceiling status and 120 tokens", sessionStore.phase)
+	}
+	if len(usageUpdates) != 2 {
+		t.Fatalf("usage update count = %d, want 2", len(usageUpdates))
+	}
+	if got := usageUpdates[len(usageUpdates)-1].Tokens.TotalTokens; got != 120 {
+		t.Fatalf("last live usage total tokens = %d, want ceiling-crossing 120", got)
 	}
 
 	lesson, err := os.ReadFile(filepath.Join(workspacePath, ".detent", "lessons.md"))
