@@ -548,6 +548,7 @@ func renderWorkflow(form templates.OnboardingForm, sourceRoot string) string {
 	b.WriteString("# If you uncomment this block, define every backend referenced by routes.\n")
 	b.WriteString("# Claude auth is ambient: use a logged-in claude CLI, or set ANTHROPIC_API_KEY in the Detent service environment.\n")
 	b.WriteString("# For parallel Claude workers, give each process a CLAUDE_CONFIG_DIR and consider --no-session-persistence.\n")
+	b.WriteString("# Claude bypassPermissions is not an OS sandbox; use container, VM, or OS sandbox isolation for hard host boundaries.\n")
 	b.WriteString("# agents:\n")
 	b.WriteString("#   backends:\n")
 	b.WriteString("#     - id: codex-default\n")

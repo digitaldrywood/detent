@@ -1998,8 +1998,10 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    `--no-session-persistence` through `extra_args` when session continuity is
    not needed. Codex uses an OS-level `workspace-write` sandbox; Claude Code
    runs with `permission_mode: bypassPermissions` inside the Detent git
-   worktree, so the worktree bounds the blast radius and
-   `allowed_tools`/`disallowed_tools` tighten the role. For local
+   worktree, which is a checkout boundary, not an OS sandbox. Allowed shell
+   tools can reach host files as the Detent worker user, so use container, VM,
+   or OS sandbox isolation for a hard blast-radius boundary and
+   `allowed_tools`/`disallowed_tools` to tighten the role. For local
    Anthropic-compatible inference, point `ANTHROPIC_BASE_URL` at a local server
    such as Ollama and use the same `claude_code` backend; see
    [Local Models With Codex And Ollama](local-models-ollama.md) for model and

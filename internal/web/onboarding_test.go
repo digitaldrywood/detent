@@ -372,6 +372,7 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 				"codex:\n  command: codex app-server",
 				"# Optional explicit backend routing. Leave commented to use the generated Codex default above.",
 				"# Claude auth is ambient: use a logged-in claude CLI, or set ANTHROPIC_API_KEY in the Detent service environment.",
+				"# Claude bypassPermissions is not an OS sandbox; use container, VM, or OS sandbox isolation for hard host boundaries.",
 				"#       kind: claude_code",
 				"#       command: env CLAUDE_CONFIG_DIR=/var/lib/detent/claude/worker-1 claude",
 				"#           - --no-session-persistence",

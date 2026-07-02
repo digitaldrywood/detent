@@ -2000,10 +2000,13 @@ need Claude Code session continuity; otherwise sessions accumulate under
 
 The sandbox model differs by backend. Codex runs turns under an OS-level
 `workspace-write` sandbox. Claude Code headless runs inside Detent's isolated
-git worktree with `permission_mode: bypassPermissions`; the worktree bounds the
-blast radius, and `allowed_tools` plus `disallowed_tools` are the tightening
-mechanism. Choose backend routes with that trade-off in mind, especially for
-roles that can execute shell commands or edit files.
+git worktree with `permission_mode: bypassPermissions`, but that is not an OS
+sandbox: allowed shell tools can still access the host as the Detent worker
+user. Treat the worktree as the checkout boundary, use container, VM, or OS
+sandbox isolation when you need a hard blast-radius boundary, and tighten role
+exposure with `allowed_tools` plus `disallowed_tools`. Choose backend routes
+with that trade-off in mind, especially for roles that can execute shell
+commands or edit files.
 
 For local Anthropic-compatible inference, point `ANTHROPIC_BASE_URL` at a local
 server such as Ollama, which has native Anthropic API compatibility as of
