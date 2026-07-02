@@ -397,6 +397,77 @@ func TestConnectorFetchCandidateIssuesDoesNotBlockOnBlankProjectStatusDefaulting
 	}
 }
 
+func TestConnectorFetchCandidateIssuesDefaultStatusWriteSurvivesParentCancellation(t *testing.T) {
+	t.Parallel()
+
+	type traceContextKey struct{}
+	traceKey := traceContextKey{}
+	const traceValue = "trace-1"
+	contextValues := make(chan any, 3)
+	releaseDefaultWrite := make(chan struct{})
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			close(releaseDefaultWrite)
+		})
+	}
+	defer release()
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			body: `{"data":{"node":{"items":{"pageInfo":{"hasNextPage":false,"endCursor":null},"nodes":[{"id":"PVTI_blank","content":{"__typename":"Issue","id":"I_blank","number":30,"title":"Blank status","body":"","state":"OPEN","url":"https://github.com/digitaldrywood/detent/issues/30","createdAt":null,"updatedAt":null,"assignees":{"nodes":[]},"labels":{"nodes":[]},"repository":{"nameWithOwner":"digitaldrywood/detent"},"closedByPullRequestsReferences":{"nodes":[]}},"statusValue":null,"priorityValue":null}]}}}}`,
+		},
+		{
+			release: releaseDefaultWrite,
+			body:    `{"data":{"node":{"field":{"id":"PVTSSF_status","options":[{"id":"OPT_backlog","name":"Backlog"},{"id":"OPT_todo","name":"Todo"}]}}}}`,
+		},
+		{
+			body: `{"data":{"updateProjectV2ItemFieldValue":{"projectV2Item":{"id":"PVTI_blank"}}}}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{
+		ProjectSlug:  "PVT_1",
+		ActiveStates: []string{"Todo"},
+		HTTPClient: contextValueCaptureClient{
+			base:   server.Client(),
+			key:    traceKey,
+			values: contextValues,
+		},
+	})
+
+	parentCtx, cancel := context.WithCancel(context.WithValue(context.Background(), traceKey, traceValue))
+	got, err := c.FetchCandidateIssues(parentCtx)
+	if err != nil {
+		t.Fatalf("FetchCandidateIssues() error = %v", err)
+	}
+	if len(got) != 0 {
+		t.Fatalf("FetchCandidateIssues() len = %d, want 0", len(got))
+	}
+
+	requests := waitForGraphQLRequests(t, server, 2)
+	if len(requests) != 2 {
+		t.Fatalf("request count before cancellation = %d, want 2", len(requests))
+	}
+	cancel()
+	release()
+
+	requests = waitForGraphQLRequests(t, server, 3)
+	updateVariables := requestVariables(t, requests[2])
+	if updateVariables["itemId"] != "PVTI_blank" || updateVariables["optionId"] != "OPT_backlog" {
+		t.Fatalf("update variables = %#v, want blank item moved to Backlog", updateVariables)
+	}
+
+	for i := range 3 {
+		select {
+		case got := <-contextValues:
+			if got != traceValue {
+				t.Fatalf("request context value %d = %#v, want %q", i, got, traceValue)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("request context value %d was not captured", i)
+		}
+	}
+}
+
 func TestConnectorFetchIssuesByStatesIgnoresBlankStatusDefaultWriteFailure(t *testing.T) {
 	t.Parallel()
 
@@ -3129,7 +3200,9 @@ func newGitHubTestConnector(t *testing.T, server *graphqlTestServer, cfg Config)
 
 	cfg.Endpoint = server.URL
 	cfg.APIKey = "token"
-	cfg.HTTPClient = server.Client()
+	if cfg.HTTPClient == nil {
+		cfg.HTTPClient = server.Client()
+	}
 	cfg.GHToken = func(context.Context, string) (string, error) {
 		t.Fatal("gh token fallback should not run")
 		return "", nil
@@ -3139,6 +3212,20 @@ func newGitHubTestConnector(t *testing.T, server *graphqlTestServer, cfg Config)
 		t.Fatalf("NewConnector() error = %v", err)
 	}
 	return c
+}
+
+type contextValueCaptureClient struct {
+	base   HTTPClient
+	key    any
+	values chan<- any
+}
+
+func (c contextValueCaptureClient) Do(req *http.Request) (*http.Response, error) {
+	select {
+	case c.values <- req.Context().Value(c.key):
+	default:
+	}
+	return c.base.Do(req)
 }
 
 func githubIssueIDs(issues []connector.Issue) []string {

@@ -3005,6 +3005,8 @@ func (c *Connector) defaultBlankProjectItemStatuses(ctx context.Context, itemIDs
 func (c *Connector) defaultBlankProjectItemStatusesAsync(parentCtx context.Context, itemIDs []string, statusName string) {
 	baseCtx := context.Background()
 	if parentCtx != nil {
+		// Default status repair is a must-finish write: detach cancellation
+		// while keeping caller values for logs and traces.
 		baseCtx = context.WithoutCancel(parentCtx)
 	}
 	ctx, cancel := context.WithTimeout(baseCtx, defaultProjectItemStatusWriteTimeout)
