@@ -1,6 +1,7 @@
 package notes
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -97,5 +98,78 @@ func TestAppendPreservesUntimestampedNotes(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("notes missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestReadRejectsSymlinkNotesFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	notesDir := filepath.Join(root, ".detent")
+	if err := os.MkdirAll(notesDir, 0o700); err != nil {
+		t.Fatalf("mkdir notes dir: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(target, []byte("outside secret"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	path := filepath.Join(notesDir, "notes.md")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if _, err := Read(path, ReadOptions{}); err == nil {
+		t.Fatal("Read() error = nil, want symlink rejection")
+	}
+}
+
+func TestAppendRejectsSymlinkNotesFile(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	notesDir := filepath.Join(root, ".detent")
+	if err := os.MkdirAll(notesDir, 0o700); err != nil {
+		t.Fatalf("mkdir notes dir: %v", err)
+	}
+	target := filepath.Join(t.TempDir(), "outside.md")
+	if err := os.WriteFile(target, []byte("outside original"), 0o600); err != nil {
+		t.Fatalf("write target: %v", err)
+	}
+	path := filepath.Join(notesDir, "notes.md")
+	if err := os.Symlink(target, path); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	if err := Append(path, Entry{Title: "blocked", Body: "must not write"}, AppendOptions{}); err == nil {
+		t.Fatal("Append() error = nil, want symlink rejection")
+	}
+	content, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatalf("read target: %v", err)
+	}
+	if string(content) != "outside original" {
+		t.Fatalf("target content = %q, want unchanged", content)
+	}
+}
+
+func TestAppendRejectsSymlinkNotesDirectory(t *testing.T) {
+	t.Parallel()
+
+	root := t.TempDir()
+	targetDir := filepath.Join(t.TempDir(), "outside-detent")
+	if err := os.MkdirAll(targetDir, 0o700); err != nil {
+		t.Fatalf("mkdir target dir: %v", err)
+	}
+	notesDir := filepath.Join(root, ".detent")
+	if err := os.Symlink(targetDir, notesDir); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+
+	err := Append(filepath.Join(notesDir, "notes.md"), Entry{Title: "blocked", Body: "must not write"}, AppendOptions{})
+	if err == nil {
+		t.Fatal("Append() error = nil, want symlink directory rejection")
+	}
+	if _, err := os.Stat(filepath.Join(targetDir, "notes.md")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("target notes stat error = %v, want not exist", err)
 	}
 }

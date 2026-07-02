@@ -2,6 +2,7 @@ package notes
 
 import (
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -39,6 +40,10 @@ func WorkspacePath(workspacePath string) (string, error) {
 }
 
 func Append(path string, entry Entry, opts AppendOptions) error {
+	if err := rejectSymlinkedNotesPath(path); err != nil {
+		return err
+	}
+
 	now := opts.Now
 	if now.IsZero() {
 		now = time.Now().UTC()
@@ -54,6 +59,9 @@ func Append(path string, entry Entry, opts AppendOptions) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	if err := rejectSymlinkedNotesPath(path); err != nil {
+		return err
+	}
 	return os.WriteFile(path, []byte(strings.Join(entries, "\n\n")+"\n"), 0o600)
 }
 
@@ -67,6 +75,9 @@ func Read(path string, opts ReadOptions) (string, error) {
 }
 
 func ReadAll(path string) ([]string, error) {
+	if err := rejectSymlinkedNotesPath(path); err != nil {
+		return nil, err
+	}
 	content, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
 		return []string{}, nil
@@ -75,6 +86,22 @@ func ReadAll(path string) ([]string, error) {
 		return nil, err
 	}
 	return parseEntries(string(content)), nil
+}
+
+func rejectSymlinkedNotesPath(path string) error {
+	for _, candidate := range []string{filepath.Dir(path), path} {
+		info, err := os.Lstat(candidate)
+		if errors.Is(err, os.ErrNotExist) {
+			continue
+		}
+		if err != nil {
+			return err
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return fmt.Errorf("handoff notes path must not be a symlink: %s", candidate)
+		}
+	}
+	return nil
 }
 
 func Tail(text string, limit int) string {
