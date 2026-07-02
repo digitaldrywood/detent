@@ -62,6 +62,10 @@ type PullRequestHydrator interface {
 	HydratePullRequest(context.Context, Issue) (Issue, error)
 }
 
+type PullRequestCheckRerunner interface {
+	RerunPullRequestChecks(context.Context, Issue, []PullRequestCheck) error
+}
+
 type IssueCommentReader interface {
 	FetchIssueComments(context.Context, Issue) ([]IssueComment, error)
 }

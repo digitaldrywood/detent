@@ -232,6 +232,7 @@ func clonePullRequestCI(ci pullRequestCI) pullRequestCI {
 		CIDurationSeconds:  ci.CIDurationSeconds,
 		SlowChecks:         append([]connector.PullRequestCheck(nil), ci.SlowChecks...),
 		RunningChecks:      append([]string(nil), ci.RunningChecks...),
+		TransientFailures:  append([]connector.PullRequestCheck(nil), ci.TransientFailures...),
 	}
 }
 

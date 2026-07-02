@@ -2496,6 +2496,102 @@ func TestConnectorHydratePullRequestRefreshesCurrentStatus(t *testing.T) {
 	}
 }
 
+func TestConnectorHydratePullRequestDetectsTransientKilledCheck(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/42",
+			body:   `{"number":42,"html_url":"https://github.com/example/repo/pull/42","state":"open","mergeable_state":"clean","head":{"ref":"detent/example","sha":"head-sha"},"base":{"sha":"base-sha"}}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/check-runs?per_page=100",
+			body:   `{"check_runs":[{"id":9001,"name":"Checks","status":"completed","conclusion":"failure","details_url":"https://github.com/example/repo/actions/runs/8001/job/9001"}]}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/actions/runs/8001",
+			body:   `{"id":8001}`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/commits/head-sha/statuses?per_page=100",
+			body:   `[]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/check-runs/9001/annotations?per_page=100",
+			body:   `[{"path":"internal/web/page_templ.go","annotation_level":"failure","message":"compile: signal: killed (typecheck)"}]`,
+		},
+		{
+			method: http.MethodGet,
+			path:   "/repos/example/repo/pulls/42/reviews?per_page=100",
+			body:   `[]`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	prNumber := 42
+	issue := connector.Issue{
+		ID:         "I_kw42",
+		Identifier: "example/repo#1",
+		PRNumber:   &prNumber,
+	}
+
+	got, err := c.HydratePullRequest(context.Background(), issue)
+	if err != nil {
+		t.Fatalf("HydratePullRequest() error = %v", err)
+	}
+	if got.PullRequest == nil {
+		t.Fatal("PullRequest = nil, want hydrated pull request")
+	}
+	checks := got.PullRequest.TransientFailedChecks
+	if len(checks) != 1 {
+		t.Fatalf("TransientFailedChecks = %#v, want one killed check", checks)
+	}
+	if checks[0].ID != 9001 || checks[0].WorkflowRunID != 8001 || checks[0].Name != "Checks" {
+		t.Fatalf("TransientFailedChecks[0] = %#v, want check and workflow run IDs", checks[0])
+	}
+}
+
+func TestConnectorRerunPullRequestChecksUsesWorkflowRun(t *testing.T) {
+	t.Parallel()
+
+	server := newGraphQLTestServer(t, []graphqlTestResponse{
+		{
+			method: http.MethodPost,
+			path:   "/repos/example/repo/actions/runs/8001/rerun-failed-jobs",
+			body:   `{}`,
+		},
+	})
+	c := newGitHubTestConnector(t, server, Config{})
+	prNumber := 42
+	issue := connector.Issue{
+		ID:           "I_kw42",
+		Identifier:   "example/repo#1",
+		PRNumber:     &prNumber,
+		PRRepository: "example/repo",
+	}
+
+	err := c.RerunPullRequestChecks(context.Background(), issue, []connector.PullRequestCheck{{
+		ID:            9001,
+		WorkflowRunID: 8001,
+		Name:          "Checks",
+	}})
+	if err != nil {
+		t.Fatalf("RerunPullRequestChecks() error = %v", err)
+	}
+
+	requests := server.requests()
+	if len(requests) != 1 {
+		t.Fatalf("requests len = %d, want 1", len(requests))
+	}
+	if requests[0]["method"] != http.MethodPost || requests[0]["path"] != "/repos/example/repo/actions/runs/8001/rerun-failed-jobs" {
+		t.Fatalf("request = %#v, want workflow rerun", requests[0])
+	}
+}
+
 func TestConnectorSetIssueFieldUsesIssueFieldEndpoint(t *testing.T) {
 	t.Parallel()
 

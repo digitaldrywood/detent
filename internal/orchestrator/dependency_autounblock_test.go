@@ -503,6 +503,113 @@ func TestTickLeavesTextDependencyBlockedPRIssueBlocked(t *testing.T) {
 	}
 }
 
+func TestTickAutoPromotesInactiveBlockerForDependencyWaitingIssue(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-416", "Blocked")
+	waiting.Description = "Blocked by #415"
+	blocker := dependencyAutoUnblockIssue("issue-415", "Backlog")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting, blocker},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	orch.cfg.BlockerAutoPromote = normalizeBlockerAutoPromoteConfig(BlockerAutoPromoteConfig{Enabled: true}, orch.cfg.ActiveStates, orch.cfg.DependencyAutoUnblock)
+	state := newState(orch.cfg)
+	now := time.Date(2026, 6, 12, 16, 9, 15, 0, time.UTC)
+
+	orch.tick(context.Background(), &state, now)
+
+	if got := tracker.updates; len(got) != 1 || got[0] != (dependencyAutoUnblockUpdate{issueID: blocker.ID, state: "Todo"}) {
+		t.Fatalf("updates = %#v, want Backlog blocker moved to Todo", got)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one blocker promotion comment", tracker.comments)
+	}
+	for _, want := range []string{"Dependency blocker queued.", "Backlog to Todo", "digitaldrywood/detent#416"} {
+		if !strings.Contains(tracker.comments[0].body, want) {
+			t.Fatalf("comment %q missing %q", tracker.comments[0].body, want)
+		}
+	}
+	if len(state.RecentEvents) != 1 || state.RecentEvents[0].Event != "blocker_auto_promote_transition" {
+		t.Fatalf("RecentEvents = %#v, want blocker auto-promote event", state.RecentEvents)
+	}
+}
+
+func TestTickDoesNotAutoPromoteInactiveBlockerWithOpenPullRequest(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-416", "Blocked")
+	waiting.Description = "Blocked by #415"
+	blocker := dependencyAutoUnblockIssue("issue-415", "Human Review")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	blocker.PullRequest = &connector.PullRequest{
+		Number: 415,
+		State:  "OPEN",
+		URL:    "https://github.test/digitaldrywood/detent/pull/415",
+	}
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting, blocker},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	orch.cfg.BlockerAutoPromote = normalizeBlockerAutoPromoteConfig(BlockerAutoPromoteConfig{Enabled: true}, orch.cfg.ActiveStates, orch.cfg.DependencyAutoUnblock)
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 9, 25, 0, time.UTC))
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none for blocker with open PR", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none without promotion", tracker.comments)
+	}
+}
+
+func TestTickAutoPromoteBlockerWaitsForAvailableCapacity(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-416", "Blocked")
+	waiting.Description = "Blocked by #415"
+	blocker := dependencyAutoUnblockIssue("issue-415", "Backlog")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting, blocker},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	orch.cfg.MaxConcurrentAgents = 1
+	orch.cfg.BlockerAutoPromote = normalizeBlockerAutoPromoteConfig(BlockerAutoPromoteConfig{Enabled: true}, orch.cfg.ActiveStates, orch.cfg.DependencyAutoUnblock)
+	state := newState(orch.cfg)
+	running := dependencyAutoUnblockIssue("issue-running", "In Progress")
+	state.Running[running.ID] = Running{Issue: running}
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 9, 30, 0, time.UTC))
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none without available capacity", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none without promotion", tracker.comments)
+	}
+}
+
 func TestDependencyAutoUnblockDoesNotChangeTodoDependencyGate(t *testing.T) {
 	t.Parallel()
 

@@ -108,6 +108,11 @@ func (o *Orchestrator) tickWithManual(ctx context.Context, state *State, now tim
 		fetched = filterReconciledTickIssues(
 			state,
 			fetched,
+			o.autoPromoteBlockerIssues(ctx, state, mergeIssueSlices(fetched.candidates, fetched.status), now),
+		)
+		fetched = filterReconciledTickIssues(
+			state,
+			fetched,
 			o.autoUnblockDependencyIssues(ctx, state, fetched.status, now),
 		)
 		fetched = filterReconciledTickIssues(

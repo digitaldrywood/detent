@@ -64,6 +64,7 @@ type PullRequest struct {
 	CIDurationSeconds            int64                `json:"ci_duration_seconds,omitempty" yaml:"ci_duration_seconds,omitempty"`
 	SlowChecks                   []PullRequestCheck   `json:"slow_checks,omitempty" yaml:"slow_checks,omitempty"`
 	RunningChecks                []string             `json:"running_checks,omitempty" yaml:"running_checks,omitempty"`
+	TransientFailedChecks        []PullRequestCheck   `json:"transient_failed_checks,omitempty" yaml:"transient_failed_checks,omitempty"`
 	CodexReviewState             string               `json:"codex_review_state,omitempty" yaml:"codex_review_state,omitempty"`
 	CodexReviewSubmittedAt       *time.Time           `json:"codex_review_submitted_at,omitempty" yaml:"codex_review_submitted_at,omitempty"`
 	CodexReviewFindings          []PullRequestFinding `json:"codex_review_findings,omitempty" yaml:"codex_review_findings,omitempty"`
@@ -81,9 +82,12 @@ const (
 )
 
 type PullRequestCheck struct {
+	ID              int64  `json:"id,omitempty" yaml:"id,omitempty"`
+	WorkflowRunID   int64  `json:"workflow_run_id,omitempty" yaml:"workflow_run_id,omitempty"`
 	Name            string `json:"name,omitempty" yaml:"name,omitempty"`
 	Status          string `json:"status,omitempty" yaml:"status,omitempty"`
 	Conclusion      string `json:"conclusion,omitempty" yaml:"conclusion,omitempty"`
+	DetailsURL      string `json:"details_url,omitempty" yaml:"details_url,omitempty"`
 	QueueSeconds    int64  `json:"queue_seconds,omitempty" yaml:"queue_seconds,omitempty"`
 	DurationSeconds int64  `json:"duration_seconds,omitempty" yaml:"duration_seconds,omitempty"`
 }

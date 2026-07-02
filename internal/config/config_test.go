@@ -63,6 +63,15 @@ tracker:
       - Waiting
     target_state: Todo
     readiness: terminal_or_merged
+  blocker_auto_promote:
+    enabled: true
+    source_states:
+      - Blocked
+      - Rework
+    blocker_states:
+      - Backlog
+      - Human Review
+    target_state: Todo
 polling:
   interval_ms: 60000
 workspace:
@@ -252,6 +261,18 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Tracker.DependencyAutoUnblock.Readiness != DependencyReadinessTerminalOrMerged {
 		t.Fatalf("Tracker.DependencyAutoUnblock.Readiness = %q, want %q", cfg.Tracker.DependencyAutoUnblock.Readiness, DependencyReadinessTerminalOrMerged)
+	}
+	if !cfg.Tracker.BlockerAutoPromote.Enabled {
+		t.Fatal("Tracker.BlockerAutoPromote.Enabled = false, want true")
+	}
+	if got := cfg.Tracker.BlockerAutoPromote.SourceStates; !reflect.DeepEqual(got, []string{"blocked", "rework"}) {
+		t.Fatalf("Tracker.BlockerAutoPromote.SourceStates = %#v, want blocked/rework", got)
+	}
+	if got := cfg.Tracker.BlockerAutoPromote.BlockerStates; !reflect.DeepEqual(got, []string{"backlog", "human review"}) {
+		t.Fatalf("Tracker.BlockerAutoPromote.BlockerStates = %#v, want backlog/human review", got)
+	}
+	if cfg.Tracker.BlockerAutoPromote.TargetState != "Todo" {
+		t.Fatalf("Tracker.BlockerAutoPromote.TargetState = %q, want Todo", cfg.Tracker.BlockerAutoPromote.TargetState)
 	}
 	if got := cfg.Agent.MaxConcurrentAgentsByState["merging"]; got != 1 {
 		t.Fatalf("Agent.MaxConcurrentAgentsByState[merging] = %d, want 1", got)
@@ -477,6 +498,15 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Tracker.DependencyAutoUnblock.Readiness != DependencyReadinessTerminalOrMerged {
 		t.Fatalf("Tracker.DependencyAutoUnblock.Readiness = %q, want %q", cfg.Tracker.DependencyAutoUnblock.Readiness, DependencyReadinessTerminalOrMerged)
+	}
+	if cfg.Tracker.BlockerAutoPromote.Enabled {
+		t.Fatal("Tracker.BlockerAutoPromote.Enabled = true, want disabled by default")
+	}
+	if got := cfg.Tracker.BlockerAutoPromote.BlockerStates; !reflect.DeepEqual(got, []string{"backlog", "blocked", "human review"}) {
+		t.Fatalf("Tracker.BlockerAutoPromote.BlockerStates = %#v, want backlog/blocked/human review", got)
+	}
+	if cfg.Tracker.BlockerAutoPromote.TargetState != "Todo" {
+		t.Fatalf("Tracker.BlockerAutoPromote.TargetState = %q, want Todo", cfg.Tracker.BlockerAutoPromote.TargetState)
 	}
 	if cfg.Polling.IntervalMS != 120000 {
 		t.Fatalf("Polling.IntervalMS = %d", cfg.Polling.IntervalMS)
@@ -848,6 +878,7 @@ gate:
   kind: command
   run: make check
   ci_failure_action: rework
+  transient_ci_retry_limit: 3
 ---
 Prompt
 `))
@@ -861,6 +892,30 @@ Prompt
 	cfg := workflow.Config.Gate
 	if cfg.CIFailureAction != gate.CIFailureActionRework {
 		t.Fatalf("Gate.CIFailureAction = %q, want %q", cfg.CIFailureAction, gate.CIFailureActionRework)
+	}
+	if cfg.TransientCIRetryLimit == nil || *cfg.TransientCIRetryLimit != 3 {
+		t.Fatalf("Gate.TransientCIRetryLimit = %v, want 3", cfg.TransientCIRetryLimit)
+	}
+}
+
+func TestParseWorkflowGateTransientCIRetryLimitCanDisable(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+gate:
+  transient_ci_retry_limit: 0
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+
+	cfg := workflow.Config.Gate
+	if cfg.TransientCIRetryLimit == nil || *cfg.TransientCIRetryLimit != 0 {
+		t.Fatalf("Gate.TransientCIRetryLimit = %v, want 0", cfg.TransientCIRetryLimit)
 	}
 }
 
@@ -1351,6 +1406,39 @@ Prompt
 `,
 			want: []string{
 				"tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true",
+			},
+		},
+		{
+			name: "invalid blocker auto promote config",
+			raw: `---
+tracker:
+  kind: memory
+  blocker_auto_promote:
+    enabled: true
+    source_states: [""]
+    blocker_states: [""]
+    target_state: ""
+---
+Prompt
+`,
+			want: []string{
+				"tracker.blocker_auto_promote.source_states state names must not be blank",
+				"tracker.blocker_auto_promote.blocker_states state names must not be blank",
+				"tracker.blocker_auto_promote.target_state is required when tracker.blocker_auto_promote.enabled is true",
+			},
+		},
+		{
+			name: "invalid transient ci retry limit",
+			raw: `---
+tracker:
+  kind: memory
+gate:
+  transient_ci_retry_limit: -1
+---
+Prompt
+`,
+			want: []string{
+				"gate.transient_ci_retry_limit must be greater than or equal to 0",
 			},
 		},
 		{

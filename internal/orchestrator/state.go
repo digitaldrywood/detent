@@ -37,6 +37,7 @@ type State struct {
 	Completed                map[string]Completed
 	Retry                    map[string]Retry
 	MergeTimings             map[string]MergeTiming
+	TransientCheckRetries    map[string]TransientCheckRetry
 	BudgetRefusals           map[string]BudgetRefusal
 	DiffStats                map[string]DiffStats
 	ReapedWorkspaces         map[string]time.Time
@@ -125,6 +126,16 @@ type Retry struct {
 	WorkerHost string
 }
 
+type TransientCheckRetry struct {
+	IssueID       string
+	HeadSHA       string
+	CheckName     string
+	CheckID       int64
+	WorkflowRunID int64
+	Attempts      int
+	RetriedAt     time.Time
+}
+
 func newState(cfg Config) State {
 	return State{
 		PollInterval:             cfg.PollInterval,
@@ -137,6 +148,7 @@ func newState(cfg Config) State {
 		Completed:                map[string]Completed{},
 		Retry:                    map[string]Retry{},
 		MergeTimings:             map[string]MergeTiming{},
+		TransientCheckRetries:    map[string]TransientCheckRetry{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
 		DiffStats:                map[string]DiffStats{},
 		ReapedWorkspaces:         map[string]time.Time{},
@@ -173,6 +185,7 @@ func (s State) clone() State {
 		Completed:                make(map[string]Completed, len(s.Completed)),
 		Retry:                    make(map[string]Retry, len(s.Retry)),
 		MergeTimings:             maps.Clone(s.MergeTimings),
+		TransientCheckRetries:    maps.Clone(s.TransientCheckRetries),
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
@@ -260,6 +273,9 @@ func cloneIssue(issue connector.Issue) connector.Issue {
 			nextRetryAt := *issue.PullRequest.HydrationNextRetryAt
 			pullRequest.HydrationNextRetryAt = &nextRetryAt
 		}
+		pullRequest.SlowChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.SlowChecks...)
+		pullRequest.RunningChecks = append([]string(nil), issue.PullRequest.RunningChecks...)
+		pullRequest.TransientFailedChecks = append([]connector.PullRequestCheck(nil), issue.PullRequest.TransientFailedChecks...)
 		pullRequest.CodexReviewFindings = append([]connector.PullRequestFinding(nil), issue.PullRequest.CodexReviewFindings...)
 		cloned.PullRequest = &pullRequest
 	}

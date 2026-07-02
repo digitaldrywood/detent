@@ -67,6 +67,11 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			}
 			decision = EvaluateAutoPromote(issue, summary, cfg, now)
 		}
+		if decision.Reason == AutoPromoteReasonCINotGreen &&
+			o.retryTransientPullRequestChecks(ctx, state, issue, now, string(AutoPromoteReasonCINotGreen)) {
+			o.logAutoPromoteDecision(issue, autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonCINotGreen), "")
+			continue
+		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
 		if targetState == "" {
 			o.logAutoPromoteDecision(issue, decision, "")
@@ -151,6 +156,11 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 			continue
 		}
 		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg.TerminalStates)
+		if decision.reason == string(AutoPromoteReasonCINotGreen) &&
+			o.retryTransientPullRequestChecks(ctx, state, issue, now, decision.reason) {
+			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
+			continue
+		}
 		if decision.targetState == "" {
 			if strings.TrimSpace(decision.reason) != "" {
 				o.logStaleMergingPullRequestDeferred(issue, decision)
@@ -1088,8 +1098,10 @@ func autoPromoteFailedChecksFromPullRequest(pullRequest *connector.PullRequest) 
 	if pullRequest == nil {
 		return nil
 	}
-	checks := make([]string, 0, len(pullRequest.SlowChecks))
-	for _, check := range pullRequest.SlowChecks {
+	allChecks := append([]connector.PullRequestCheck{}, pullRequest.SlowChecks...)
+	allChecks = append(allChecks, pullRequest.TransientFailedChecks...)
+	checks := make([]string, 0, len(allChecks))
+	for _, check := range allChecks {
 		if !autoPromoteCheckFailed(check) {
 			continue
 		}

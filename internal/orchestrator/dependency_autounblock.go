@@ -25,6 +25,13 @@ type DependencyAutoUnblockConfig struct {
 	Readiness    string
 }
 
+type BlockerAutoPromoteConfig struct {
+	Enabled       bool
+	SourceStates  []string
+	BlockerStates []string
+	TargetState   string
+}
+
 type dependencyBlocker struct {
 	Ref      connector.BlockedRef
 	Issue    connector.Issue
@@ -41,6 +48,35 @@ func normalizeDependencyAutoUnblockConfig(cfg DependencyAutoUnblockConfig) Depen
 	cfg.TargetState = strings.TrimSpace(defaultString(cfg.TargetState, "Todo"))
 	cfg.Readiness = strings.ToLower(strings.TrimSpace(defaultString(cfg.Readiness, DependencyReadinessTerminalOrMerged)))
 	return cfg
+}
+
+func normalizeBlockerAutoPromoteConfig(
+	cfg BlockerAutoPromoteConfig,
+	activeStates []string,
+	autoUnblock DependencyAutoUnblockConfig,
+) BlockerAutoPromoteConfig {
+	sourceDefaults := mergeStateLists(activeStates, normalizeDependencyAutoUnblockConfig(autoUnblock).SourceStates)
+	cfg.SourceStates = normalizedStates(defaultStringSlice(cfg.SourceStates, sourceDefaults))
+	cfg.BlockerStates = normalizedStates(defaultStringSlice(cfg.BlockerStates, []string{"Backlog", "Blocked", "Human Review"}))
+	cfg.TargetState = strings.TrimSpace(defaultString(cfg.TargetState, "Todo"))
+	return cfg
+}
+
+func mergeStateLists(left []string, right []string) []string {
+	out := make([]string, 0, len(left)+len(right))
+	seen := map[string]struct{}{}
+	for _, state := range append(append([]string{}, left...), right...) {
+		key := normalizeState(state)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, displayStateName(state))
+	}
+	return out
 }
 
 func (o *Orchestrator) autoUnblockDependencyIssues(
@@ -78,6 +114,180 @@ func (o *Orchestrator) autoUnblockDependencyIssues(
 		return nil
 	}
 	return transitioned
+}
+
+func (o *Orchestrator) autoPromoteBlockerIssues(
+	ctx context.Context,
+	state *State,
+	issues []connector.Issue,
+	now time.Time,
+) map[string]struct{} {
+	cfg := normalizeBlockerAutoPromoteConfig(o.cfg.BlockerAutoPromote, o.cfg.ActiveStates, o.cfg.DependencyAutoUnblock)
+	if !cfg.Enabled {
+		return nil
+	}
+
+	remaining := o.blockerAutoPromoteCapacity(state, cfg.TargetState)
+	if remaining <= 0 {
+		return nil
+	}
+
+	transitioned := map[string]struct{}{}
+	seenBlockers := map[string]struct{}{}
+	for _, dependent := range issuesInStates(issues, cfg.SourceStates) {
+		if remaining <= 0 {
+			break
+		}
+		dependent = issueWithTextDependencyRefs(dependent)
+		if len(dependent.BlockedBy) == 0 {
+			continue
+		}
+		for _, blocker := range o.resolveDependencyBlockers(ctx, dependent) {
+			if remaining <= 0 {
+				break
+			}
+			if !blockerAutoPromoteEligible(dependent, blocker, cfg, o.cfg.TerminalStates) {
+				continue
+			}
+			key := strings.ToLower(strings.TrimSpace(firstNonBlank(blocker.Issue.ID, blocker.Issue.Identifier)))
+			if key == "" {
+				continue
+			}
+			if _, ok := seenBlockers[key]; ok {
+				continue
+			}
+			seenBlockers[key] = struct{}{}
+			if !o.applyBlockerAutoPromote(ctx, state, dependent, blocker.Issue, cfg.TargetState, now) {
+				continue
+			}
+			transitioned[blocker.Issue.ID] = struct{}{}
+			remaining--
+		}
+	}
+	if len(transitioned) == 0 {
+		return nil
+	}
+	return transitioned
+}
+
+func (o *Orchestrator) blockerAutoPromoteCapacity(state *State, targetState string) int {
+	if state == nil {
+		return 0
+	}
+	available := availableSlots(state)
+	stats := o.projectStateSlotStats(connector.Issue{State: targetState}, state)
+	if stats.available < available {
+		available = stats.available
+	}
+	if available < 0 {
+		return 0
+	}
+	return available
+}
+
+func blockerAutoPromoteEligible(
+	dependent connector.Issue,
+	blocker dependencyBlocker,
+	cfg BlockerAutoPromoteConfig,
+	terminalStates []string,
+) bool {
+	if !blocker.Resolved {
+		return false
+	}
+	issue := blocker.Issue
+	if strings.TrimSpace(issue.ID) == "" {
+		return false
+	}
+	if !stateIn(issue.State, cfg.BlockerStates) {
+		return false
+	}
+	if stateIn(issue.State, terminalStates) || issue.Closed || pullRequestMerged(issue.PullRequest) || pullRequestOpen(issue.PullRequest) {
+		return false
+	}
+	if normalizeState(issue.State) == normalizeState(cfg.TargetState) {
+		return false
+	}
+	return sameDependencyRepository(dependent.Identifier, issue.Identifier)
+}
+
+func sameDependencyRepository(leftIdentifier string, rightIdentifier string) bool {
+	leftRepo := dependencyIssueRepo(leftIdentifier)
+	rightRepo := dependencyIssueRepo(rightIdentifier)
+	return leftRepo != "" && rightRepo != "" && strings.EqualFold(leftRepo, rightRepo)
+}
+
+func (o *Orchestrator) applyBlockerAutoPromote(
+	ctx context.Context,
+	state *State,
+	dependent connector.Issue,
+	blocker connector.Issue,
+	targetState string,
+	now time.Time,
+) bool {
+	issueID := strings.TrimSpace(blocker.ID)
+	if err := o.updateIssueStateByID(ctx, issueID, blocker, targetState, now, "blocker_auto_promote"); err != nil {
+		if o.logger != nil {
+			o.logger.Warn(
+				"blocker auto-promote transition failed",
+				"issue_id", issueID,
+				"identifier", blocker.Identifier,
+				"dependent_identifier", dependent.Identifier,
+				"from_state", blocker.State,
+				"target_state", targetState,
+				"error", err,
+			)
+		}
+		return false
+	}
+
+	body := blockerAutoPromoteComment(dependent, blocker, targetState)
+	if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
+		o.logger.Warn(
+			"blocker auto-promote comment failed",
+			"issue_id", issueID,
+			"identifier", blocker.Identifier,
+			"dependent_identifier", dependent.Identifier,
+			"target_state", targetState,
+			"error", err,
+		)
+	}
+
+	delete(state.Blocked, issueID)
+	recordStateEvent(state, telemetry.ActivityEvent{
+		At:      now,
+		Event:   "blocker_auto_promote_transition",
+		Message: "auto-promoted blocker " + issueLabel(blocker) + " from " + blocker.State + " to " + targetState + " for " + issueLabel(dependent),
+	})
+	if o.logger != nil {
+		o.logger.Info(
+			"blocker auto-promote transition",
+			"issue_id", issueID,
+			"identifier", blocker.Identifier,
+			"dependent_identifier", dependent.Identifier,
+			"from_state", blocker.State,
+			"target_state", targetState,
+		)
+	}
+	return true
+}
+
+func blockerAutoPromoteComment(dependent connector.Issue, blocker connector.Issue, targetState string) string {
+	var b strings.Builder
+	b.WriteString("Dependency blocker queued.")
+	if strings.TrimSpace(blocker.State) != "" && strings.TrimSpace(targetState) != "" {
+		b.WriteString(" Moved this blocker from ")
+		b.WriteString(strings.TrimSpace(blocker.State))
+		b.WriteString(" to ")
+		b.WriteString(strings.TrimSpace(targetState))
+		b.WriteString(".")
+	}
+	b.WriteString("\n\nDependent issue: ")
+	b.WriteString(issueLabel(dependent))
+	if url := strings.TrimSpace(dependent.URL); url != "" {
+		b.WriteString(" ")
+		b.WriteString(url)
+	}
+	return b.String()
 }
 
 func (o *Orchestrator) hydrateDependencyAutoUnblockIssue(
@@ -426,6 +636,10 @@ func dependencyBlockerReady(blocker dependencyBlocker, cfg DependencyAutoUnblock
 
 func pullRequestMerged(pullRequest *connector.PullRequest) bool {
 	return pullRequest != nil && normalizePullRequestState(pullRequest.State) == "merged"
+}
+
+func pullRequestOpen(pullRequest *connector.PullRequest) bool {
+	return pullRequest != nil && normalizePullRequestState(pullRequest.State) == "open"
 }
 
 func dependencyAutoUnblockTargetState(state *State, issue connector.Issue, configuredTarget string) string {
