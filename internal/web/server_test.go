@@ -321,10 +321,13 @@ func TestDemoScenarioEventsPreserveProjectSubview(t *testing.T) {
 	if event.name != "snapshot" {
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
-	for _, want := range []string{`id="project-kanban"`, "Project Kanban", "Integration"} {
+	for _, want := range []string{`id="project-kanban"`, "Project Kanban"} {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("demo Kanban SSE event missing %q:\n%s", want, event.data)
 		}
+	}
+	if strings.Contains(event.data, ">Integration</span>") {
+		t.Fatalf("demo Kanban SSE event rendered normal Integration badge:\n%s", event.data)
 	}
 	if strings.Contains(event.data, "Fleet grid") {
 		t.Fatalf("demo Kanban SSE event rendered fleet snapshot:\n%s", event.data)
@@ -3371,11 +3374,13 @@ func TestFleetKanbanRouteRendersEligibleMoveActions(t *testing.T) {
 		`aria-label="Open docs-site Kanban"`,
 		"Add top-level multi-project Kanban board",
 		"Document fleet Kanban",
-		"Integration",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("fleet Kanban page missing %q:\n%s", want, body)
 		}
+	}
+	if strings.Contains(body, ">Integration</span>") {
+		t.Fatalf("fleet Kanban page rendered normal Integration badge:\n%s", body)
 	}
 	if got := strings.Count(body, `hx-get="/api/v1/kanban/move?`); got != 1 {
 		t.Fatalf("fleet Kanban move trigger count = %d, want 1:\n%s", got, body)
@@ -4528,7 +4533,6 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	}
 	for _, want := range []string{
 		"Read-only",
-		"Read-only workflow lanes grouped by configured Detent states.",
 		"Live reload Kanban mode",
 	} {
 		if !strings.Contains(event.data, want) {
@@ -4559,8 +4563,6 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 		t.Fatalf("event name = %q, want snapshot", event.name)
 	}
 	for _, want := range []string{
-		"Integration",
-		"Workflow lanes grouped by configured Detent states with operator actions enabled.",
 		`hx-get="/api/v1/kanban/move?`,
 		`hx-get="/api/v1/kanban/comment?`,
 		`draggable="true"`,
@@ -4573,6 +4575,9 @@ func TestServerEventsProjectKanbanUsesReloadedConfigOnRepublishedSnapshot(t *tes
 	}
 	if strings.Contains(event.data, "Read-only") {
 		t.Fatalf("reloaded snapshot event kept read-only UI:\n%s", event.data)
+	}
+	if strings.Contains(event.data, ">Integration</span>") {
+		t.Fatalf("reloaded snapshot event rendered normal Integration badge:\n%s", event.data)
 	}
 }
 

@@ -2003,6 +2003,77 @@ func TestDashboardKanbanCallsOutHiddenPopulatedLanes(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersCompactProjectKanbanHeader(t *testing.T) {
+	t.Parallel()
+
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "integration",
+			States: []string{"Todo", "In Progress"},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{ID: "todo-1", Identifier: "digitaldrywood/detent#801", ProjectID: "detent", Title: "Compact header", State: "Todo"},
+			},
+		},
+	})
+	section := projectKanbanSection(t, html)
+
+	for _, want := range []string{
+		`aria-label="Project Kanban"`,
+		`<h2 class="inline-flex min-w-0 items-center gap-1.5 text-sm font-semibold text-foreground">`,
+		`class="size-4 shrink-0 text-accent"`,
+		`data-help-term="project-kanban"`,
+		`class="text-xs text-muted-foreground" data-project-kanban-card-count-summary>1 cards</span>`,
+		`data-project-kanban-visibility-menu`,
+	} {
+		if !strings.Contains(section, want) {
+			t.Fatalf("project Kanban compact header missing %q:\n%s", want, section)
+		}
+	}
+	for _, unwanted := range []string{
+		"Workflow lanes grouped by configured Detent states",
+		"Read-only workflow lanes grouped by configured Detent states.",
+		"Read-only workflow lanes across registered projects.",
+		">Integration</span>",
+		`bg-muted px-2.5 py-1 font-mono text-xs font-medium text-muted-foreground" data-project-kanban-card-count-summary`,
+	} {
+		if strings.Contains(section, unwanted) {
+			t.Fatalf("project Kanban compact header rendered unwanted %q:\n%s", unwanted, section)
+		}
+	}
+}
+
+func TestDashboardRendersReadOnlyProjectKanbanHeaderBadge(t *testing.T) {
+	t.Parallel()
+
+	html := renderProjectKanbanPage(t, templates.DashboardData{
+		Title:       "Detent",
+		ProjectID:   "detent",
+		ProjectName: "Detent",
+		Kanban: templates.KanbanData{
+			Mode:   "read_only",
+			States: []string{"Todo"},
+		},
+		Snapshot: telemetry.Snapshot{
+			BoardIssues: []telemetry.Issue{
+				{ID: "todo-1", Identifier: "digitaldrywood/detent#802", ProjectID: "detent", Title: "Read-only header", State: "Todo"},
+			},
+		},
+	})
+	section := projectKanbanSection(t, html)
+
+	if !strings.Contains(section, ">Read-only</span>") {
+		t.Fatalf("project Kanban read-only badge missing:\n%s", section)
+	}
+	if strings.Contains(section, ">Integration</span>") {
+		t.Fatalf("project Kanban rendered normal Integration badge:\n%s", section)
+	}
+}
+
 func TestDashboardRendersFleetKanbanMoveForEligibleProjectCards(t *testing.T) {
 	t.Parallel()
 
@@ -2043,7 +2114,6 @@ func TestDashboardRendersFleetKanbanMoveForEligibleProjectCards(t *testing.T) {
 	})
 
 	for _, want := range []string{
-		"Integration",
 		`id="kanban-feedback"`,
 		`hx-get="/api/v1/kanban/move?`,
 		`kanban_board=fleet`,
@@ -2055,6 +2125,9 @@ func TestDashboardRendersFleetKanbanMoveForEligibleProjectCards(t *testing.T) {
 		if !strings.Contains(html, want) {
 			t.Fatalf("fleet Kanban missing %q:\n%s", want, html)
 		}
+	}
+	if strings.Contains(html, ">Integration</span>") {
+		t.Fatalf("fleet Kanban rendered normal Integration badge:\n%s", html)
 	}
 	if got := strings.Count(html, `hx-get="/api/v1/kanban/move?`); got != 1 {
 		t.Fatalf("fleet Kanban move trigger count = %d, want 1:\n%s", got, html)

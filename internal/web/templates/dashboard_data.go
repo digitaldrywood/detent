@@ -2026,16 +2026,6 @@ func projectKanbanSectionLabel(data DashboardData) string {
 	return "Fleet Kanban"
 }
 
-func projectKanbanSectionDescription(data DashboardData) string {
-	if projectKanbanActionsEnabled(data) {
-		return "Workflow lanes grouped by configured Detent states with operator actions enabled."
-	}
-	if isProjectDashboard(data) {
-		return "Read-only workflow lanes grouped by configured Detent states."
-	}
-	return "Read-only workflow lanes across registered projects."
-}
-
 func projectOverviewRunsDetail(snapshot telemetry.Snapshot) string {
 	return formatCount(queueCount(snapshot)) + " queued / " + formatCount(blockedCount(snapshot)) + " blocked"
 }
