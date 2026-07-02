@@ -80,13 +80,15 @@ type doctorCheck struct {
 	BlockedRecoveryCandidates []doctorBlockedRecoveryCandidateDiagnostic `json:"blocked_recovery_candidates,omitempty"`
 	UntrackedIssues           []doctorStatusDriftIssueDiagnostic         `json:"untracked_issues,omitempty"`
 	OpenTerminalIssues        []doctorStatusDriftIssueDiagnostic         `json:"open_terminal_issues,omitempty"`
+	WorkflowOptimization      doctorWorkflowOptimizationReport           `json:"-"`
 }
 
 type doctorReport struct {
-	Checks  []doctorCheck `json:"checks"`
-	Scope   doctorScope   `json:"scope,omitzero"`
-	Summary doctorSummary `json:"summary"`
-	Result  string        `json:"result"`
+	Checks               []doctorCheck                    `json:"checks"`
+	Scope                doctorScope                      `json:"scope,omitzero"`
+	WorkflowOptimization doctorWorkflowOptimizationReport `json:"workflow_optimization"`
+	Summary              doctorSummary                    `json:"summary"`
+	Result               string                           `json:"result"`
 }
 
 type doctorScope struct {
@@ -136,10 +138,11 @@ type doctorSummary struct {
 }
 
 type doctorOutputReport struct {
-	Checks  []doctorCheck `json:"checks"`
-	Scope   doctorScope   `json:"scope,omitzero"`
-	Summary doctorSummary `json:"summary"`
-	Result  string        `json:"result"`
+	Checks               []doctorCheck                    `json:"checks"`
+	Scope                doctorScope                      `json:"scope,omitzero"`
+	WorkflowOptimization doctorWorkflowOptimizationReport `json:"workflow_optimization"`
+	Summary              doctorSummary                    `json:"summary"`
+	Result               string                           `json:"result"`
 }
 
 type doctorCheckJob struct {
@@ -179,10 +182,17 @@ type doctorConfig struct {
 	CheckTimeout     time.Duration
 	Build            buildinfo.Info
 	AllowWriteProbes bool
+	WorkflowDiff     bool
 }
 
 type doctorStore interface {
 	Close() error
+}
+
+type doctorTelemetryStore interface {
+	doctorStore
+	QueryContext(context.Context, string, ...any) (*sql.Rows, error)
+	QueryRowContext(context.Context, string, ...any) *sql.Row
 }
 
 type doctorAutoPromoteConnector interface {
@@ -210,6 +220,7 @@ type doctorDeps struct {
 	ghAuthToken          func(context.Context) (string, error)
 	listen               func(string, string) (net.Listener, error)
 	openSQLite           func(context.Context, string) (doctorStore, error)
+	openSQLiteReadOnly   func(context.Context, string) (doctorTelemetryStore, error)
 	gitWorkTree          func(context.Context, string) error
 	gitRemoteURL         func(context.Context, string) (string, error)
 	autoPromoteConnector func(workflowconfig.Config) (doctorAutoPromoteConnector, error)
@@ -223,6 +234,8 @@ func newDoctorCommand(configPath *string, env *string, logLevel *string, host *s
 func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string, host *string, port *int, opts options, deps doctorDeps) *cobra.Command {
 	timeout := doctorCheckTimeout
 	allowWriteProbes := false
+	workflowDiff := false
+	workflowWrite := false
 	projectID := ""
 	cmd := &cobra.Command{
 		Use:          "doctor",
@@ -247,12 +260,23 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 				CheckTimeout:     timeout,
 				Build:            opts.build,
 				AllowWriteProbes: allowWriteProbes,
+				WorkflowDiff:     workflowDiff || workflowWrite,
 				Flags: runtimeFlags{
 					Env:      runtimeStringFlag{Value: derefString(env), Set: flagChanged(cmd, "env")},
 					LogLevel: runtimeStringFlag{Value: derefString(logLevel), Set: flagChanged(cmd, "log-level")},
 					Port:     runtimeIntFlag{Value: derefInt(port, -1), Set: flagChanged(cmd, "port")},
 				},
 			}, opts, deps)
+			if workflowWrite {
+				if err := confirmDoctorWorkflowOptimizationWrite(cmd, report.WorkflowOptimization); err != nil {
+					return err
+				}
+				written, err := writeDoctorWorkflowOptimizationPatches(report.WorkflowOptimization)
+				if err != nil {
+					return err
+				}
+				report.WorkflowOptimization.Written = written
+			}
 			if err := out.Write(func(out io.Writer) error {
 				return writeDoctorReport(out, report)
 			}, newDoctorOutputReport(report)); err != nil {
@@ -266,6 +290,8 @@ func newDoctorCommandWithDeps(configPath *string, env *string, logLevel *string,
 	}
 	cmd.Flags().DurationVar(&timeout, "timeout", doctorCheckTimeout, "per-check timeout")
 	cmd.Flags().BoolVar(&allowWriteProbes, "allow-write-probes", false, "run configured GitHub write probes")
+	cmd.Flags().BoolVar(&workflowDiff, "diff", false, "print proposed WORKFLOW.md frontmatter changes for workflow optimization findings")
+	cmd.Flags().BoolVar(&workflowWrite, "write", false, "apply proposed WORKFLOW.md frontmatter changes after confirmation")
 	cmd.Flags().StringVar(&projectID, "project", "", "limit project checks to the selected project id")
 	cmd.SetContext(withCommandOutputOptions(context.Background(), commandOutputOptions{
 		lookupEnv: opts.lookupEnv,
@@ -374,6 +400,12 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		if projectScopeCheck == nil {
 			jobs = append(jobs, doctorProjectCheckJobs(globalConfig, deps, githubToken, cfg.AllowWriteProbes)...)
 		}
+		jobs = append(jobs, doctorCheckJob{
+			Name: "Workflow optimization",
+			Run: func(jobCtx context.Context) []doctorCheck {
+				return []doctorCheck{checkDoctorWorkflowOptimization(jobCtx, resolution, globalConfig, deps, cfg.WorkflowDiff)}
+			},
+		})
 	}
 	jobs = append(jobs,
 		doctorCheckJob{
@@ -405,7 +437,9 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 		},
 	)
 	for _, checks := range runDoctorChecks(ctx, jobs, timeout, progressOut) {
-		report.Checks = append(report.Checks, checks...)
+		for _, check := range checks {
+			report.Add(check)
+		}
 	}
 
 	return report
@@ -496,6 +530,7 @@ func writeDoctorProgressDone(out io.Writer, check doctorCheck) {
 }
 
 func (r *doctorReport) Add(check doctorCheck) {
+	r.WorkflowOptimization.Merge(check.WorkflowOptimization)
 	r.Checks = append(r.Checks, check)
 }
 
@@ -505,7 +540,7 @@ func (r doctorReport) HasFailures() bool {
 			return true
 		}
 	}
-	return false
+	return len(r.WorkflowOptimization.Findings) > 0
 }
 
 func (r doctorReport) counts() map[doctorStatus]int {
@@ -528,7 +563,7 @@ func (r doctorReport) withSummary() doctorReport {
 		Fail: counts[doctorFail],
 	}
 	r.Result = "PASS"
-	if r.Summary.Fail > 0 {
+	if r.Summary.Fail > 0 || len(r.WorkflowOptimization.Findings) > 0 {
 		r.Result = "FAIL"
 	}
 	return r
@@ -602,6 +637,9 @@ func writeDoctorReport(out io.Writer, report doctorReport, format ...OutputForma
 			}
 		}
 	}
+	if err := writeDoctorWorkflowOptimizationPretty(out, report.WorkflowOptimization); err != nil {
+		return err
+	}
 
 	if _, err := fmt.Fprintln(out); err != nil {
 		return err
@@ -617,12 +655,13 @@ func writeDoctorReport(out io.Writer, report doctorReport, format ...OutputForma
 func newDoctorOutputReport(report doctorReport) doctorOutputReport {
 	counts := report.counts()
 	result := "PASS"
-	if counts[doctorFail] > 0 {
+	if counts[doctorFail] > 0 || len(report.WorkflowOptimization.Findings) > 0 {
 		result = "FAIL"
 	}
 	return doctorOutputReport{
-		Checks: report.Checks,
-		Scope:  report.Scope,
+		Checks:               report.Checks,
+		Scope:                report.Scope,
+		WorkflowOptimization: report.WorkflowOptimization,
 		Summary: doctorSummary{
 			OK:   counts[doctorOK],
 			Warn: counts[doctorWarn],
@@ -3606,6 +3645,9 @@ func (d doctorDeps) withDefaults() doctorDeps {
 	if d.openSQLite == nil {
 		d.openSQLite = defaults.openSQLite
 	}
+	if d.openSQLiteReadOnly == nil {
+		d.openSQLiteReadOnly = defaults.openSQLiteReadOnly
+	}
 	if d.gitWorkTree == nil {
 		d.gitWorkTree = defaults.gitWorkTree
 	}
@@ -3633,6 +3675,7 @@ func defaultDoctorDeps() doctorDeps {
 		ghAuthToken:          defaultGHAuthToken,
 		listen:               net.Listen,
 		openSQLite:           openDoctorSQLite,
+		openSQLiteReadOnly:   openDoctorSQLiteReadOnly,
 		gitWorkTree:          defaultGitWorkTree,
 		gitRemoteURL:         defaultGitRemoteURL,
 		autoPromoteConnector: defaultDoctorAutoPromoteConnector,
