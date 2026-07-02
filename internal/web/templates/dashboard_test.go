@@ -2277,8 +2277,6 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 		"Codex clean",
 		"Codex P2",
 		"1 blocker",
-		"1 assignee",
-		"2 labels",
 		"digitaldrywood/detent#415 Todo",
 		"release-captain",
 		"enhancement",
@@ -2307,6 +2305,9 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 			`>Labels<`,
 			`>Assignees<`,
 			`>Blockers<`,
+			`1 assignee`,
+			`2 labels`,
+			`No PR`,
 			`truncate text-sm font-medium text-foreground`,
 		} {
 			if strings.Contains(defaultView, forbidden) {
@@ -2451,7 +2452,6 @@ func TestDashboardProjectKanbanControlsStayInsideLane(t *testing.T) {
 		`flex w-full min-w-0 max-w-full items-center justify-between gap-1.5 overflow-hidden`,
 		`flex min-w-0 flex-1 basis-0 items-center gap-1.5 overflow-hidden`,
 		`flex min-w-0 max-w-full flex-1 basis-0 items-center justify-end gap-1 overflow-hidden`,
-		`inline-flex h-5 min-w-0 max-w-[6rem] items-center truncate`,
 		`inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate`,
 		`mt-1 flex min-w-0 max-w-full flex-wrap items-center gap-1 text-[11px]`,
 		`inline-flex h-4 min-w-0 max-w-full items-center truncate`,
@@ -2467,6 +2467,14 @@ func TestDashboardProjectKanbanControlsStayInsideLane(t *testing.T) {
 	} {
 		if !strings.Contains(card, want) {
 			t.Fatalf("project Kanban compact card contract missing %q:\n%s", want, card)
+		}
+	}
+	for _, forbidden := range []string{
+		`inline-flex h-5 min-w-0 max-w-[6rem] items-center truncate`,
+		`No PR`,
+	} {
+		if strings.Contains(card, forbidden) {
+			t.Fatalf("project Kanban compact card contract rendered obsolete chip %q:\n%s", forbidden, card)
 		}
 	}
 }
@@ -3571,11 +3579,31 @@ func TestDashboardRendersProjectColorMarkersOnSidebarAndKanban(t *testing.T) {
 		`aria-label="Docs Site project color"`,
 		`aria-label="Project detent color marker"`,
 		`aria-label="Project docs-site color marker"`,
-		`>detent</span>`,
-		`>docs-site</span>`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing project color marker %q:\n%s", want, html)
+		}
+	}
+	for _, tt := range []struct {
+		title     string
+		projectID string
+	}{
+		{title: "Color Detent card", projectID: "detent"},
+		{title: "Color Docs card", projectID: "docs-site"},
+	} {
+		card := compactKanbanCardSection(t, html, tt.title)
+		firstDetails := strings.Index(card, `data-kanban-card-details`)
+		if firstDetails < 0 {
+			t.Fatalf("card %q missing details disclosure:\n%s", tt.title, card)
+		}
+		defaultView := card[:firstDetails]
+		for _, forbidden := range []string{
+			`aria-label="Open ` + tt.projectID + ` Kanban"`,
+			`>` + tt.projectID + `</span>`,
+		} {
+			if strings.Contains(defaultView, forbidden) {
+				t.Fatalf("project-scoped card %q rendered project chip %q:\n%s", tt.title, forbidden, card)
+			}
 		}
 	}
 }

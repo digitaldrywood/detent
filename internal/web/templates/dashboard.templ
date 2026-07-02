@@ -3310,10 +3310,11 @@ templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 						<span class="shrink-0 font-mono text-xs font-semibold text-accent">{ card.IssueNumber }</span>
 					}
 				</div>
-				<div class="flex min-w-0 max-w-full flex-1 basis-0 items-center justify-end gap-1 overflow-hidden">
-					<span class="inline-flex h-5 min-w-0 max-w-[6rem] items-center truncate rounded-sm bg-muted px-1.5 py-0.5 font-mono text-[11px] text-muted-foreground" title={ card.Identifier }>{ card.Stage }</span>
-					@projectKanbanPullRequestSignal(card)
-				</div>
+				if card.HasPullRequest {
+					<div class="flex min-w-0 max-w-full flex-1 basis-0 items-center justify-end gap-1 overflow-hidden">
+						@projectKanbanPullRequestSignal(card)
+					</div>
+				}
 			</div>
 			if card.URL != "" {
 				<a class="block w-full min-w-0 max-w-full overflow-hidden rounded-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ card.URL } target="_blank" rel="noopener noreferrer" aria-label={ "Open issue " + card.IssueNumber + ": " + card.Title }>
@@ -3324,7 +3325,7 @@ templ projectKanbanCardView(data DashboardData, card projectKanbanCard) {
 			}
 		</div>
 		<div class="mt-1 flex min-w-0 max-w-full flex-wrap items-center gap-1 text-[11px]">
-			if card.ProjectID != "" {
+			if card.ProjectID != "" && !isProjectDashboard(data) {
 				<a class="inline-flex h-4 min-w-0 max-w-full items-center truncate rounded-sm border border-border bg-muted px-1 py-0 font-mono font-medium text-muted-foreground hover:border-accent hover:text-accent focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ projectKanbanPath(card.ProjectID) } title={ "Project " + card.ProjectID } aria-label={ "Open " + card.ProjectID + " Kanban" }>
 					<span>{ card.ProjectID }</span>
 				</a>
@@ -3347,8 +3348,6 @@ templ projectKanbanPullRequestSignal(card projectKanbanCard) {
 		} else {
 			<span class="inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm bg-accent-soft px-1.5 py-0.5 font-mono text-[11px] font-medium text-accent">{ card.PullRequestLabel }</span>
 		}
-	} else {
-		<span class="inline-flex h-5 min-w-0 max-w-[5.5rem] items-center truncate rounded-sm border border-border bg-muted px-1.5 py-0.5 text-[11px] font-medium text-muted-foreground">No PR</span>
 	}
 }
 

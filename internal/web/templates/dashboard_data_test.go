@@ -1466,7 +1466,7 @@ func TestProjectKanbanCompactChipsSummarizeSecondaryMetadata(t *testing.T) {
 				Labels:           []string{"enhancement", "ui"},
 				Assignees:        []string{"release-captain"},
 			},
-			want: []string{"2m 0s", "CI pass", "Codex P2", "1 assignee", "2 labels"},
+			want: []string{"2m 0s", "CI pass", "Codex P2"},
 		},
 		{
 			name: "merge-lane-active",
