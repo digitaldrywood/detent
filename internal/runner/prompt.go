@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 const DefaultPromptTemplate = `You are working on a Linear issue.
@@ -44,8 +45,13 @@ type PromptOptions struct {
 }
 
 type ValidatorPromptOptions struct {
-	WorkspacePath string
-	Branch        string
+	WorkspacePath      string
+	Branch             string
+	DiffStat           *workspace.DiffStat
+	DiffPatch          string
+	DiffTruncated      bool
+	DiffError          string
+	MaxInlineDiffBytes int
 }
 
 func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOptions) (string, error) {
@@ -98,6 +104,7 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		b.WriteString(strings.TrimSpace(issue.PullRequest.URL))
 		b.WriteString("\n")
 	}
+	appendValidatorDiffContext(&b, opts)
 	b.WriteString("\nIssue: ")
 	b.WriteString(issue.Identifier)
 	if strings.TrimSpace(issue.Title) != "" {
@@ -113,7 +120,7 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 
 	validator := gate.Effective(workflow.Config.Gate).Validator
 	b.WriteString("Review instructions:\n")
-	b.WriteString("- Inspect the PR diff with `git diff` and compare the changes to the issue body, especially any Acceptance Criteria.\n")
+	b.WriteString("- Use the seeded diff context above first; when the full diff is omitted or you need more detail, inspect the PR diff with `git diff`.\n")
 	b.WriteString("- Do not modify files, commit, push, change labels, or transition issue state.\n")
 	b.WriteString("- Use severities p1, p2, p3, or p4 for findings; p1 means the work must not merge.\n")
 	b.WriteString("- Score is a confidence/trust score from 0 to 1 that the implementation satisfies the acceptance criteria.\n")
@@ -129,6 +136,74 @@ func BuildValidatorPrompt(workflow config.Workflow, issue connector.Issue, opts 
 		b.WriteString(".\n")
 	}
 	return b.String()
+}
+
+func appendValidatorDiffContext(b *strings.Builder, opts ValidatorPromptOptions) {
+	if opts.DiffStat == nil && strings.TrimSpace(opts.DiffError) == "" {
+		return
+	}
+
+	b.WriteString("\nDiff context:\n")
+	if opts.DiffStat != nil {
+		b.WriteString("- Stat: ")
+		b.WriteString(formatValidatorDiffStat(*opts.DiffStat))
+		b.WriteString("\n")
+	}
+	if opts.MaxInlineDiffBytes > 0 {
+		b.WriteString("- Inline diff limit: ")
+		b.WriteString(strconv.Itoa(opts.MaxInlineDiffBytes))
+		b.WriteString(" bytes (`gate.validator.max_inline_diff_bytes`).\n")
+	} else {
+		b.WriteString("- Inline diff limit: 0 bytes (`gate.validator.max_inline_diff_bytes`); full diff omitted.\n")
+	}
+	if diffErr := strings.TrimSpace(opts.DiffError); diffErr != "" {
+		b.WriteString("- Diff collection error: ")
+		b.WriteString(diffErr)
+		b.WriteString("\n")
+	}
+
+	diffPatch := strings.TrimRight(opts.DiffPatch, "\n")
+	diffBytes := len(opts.DiffPatch)
+	if diffPatch == "" {
+		if opts.DiffTruncated {
+			b.WriteString("- Full diff omitted because it exceeds the inline diff limit.\n")
+		} else if opts.DiffStat != nil && *opts.DiffStat == (workspace.DiffStat{}) {
+			b.WriteString("- Full diff: no workspace changes detected.\n")
+		}
+		return
+	}
+	if opts.MaxInlineDiffBytes <= 0 || opts.DiffTruncated || diffBytes > opts.MaxInlineDiffBytes {
+		b.WriteString("- Full diff omitted because it exceeds the inline diff limit.\n")
+		return
+	}
+
+	b.WriteString("\nInline diff (")
+	b.WriteString(strconv.Itoa(diffBytes))
+	b.WriteString(" bytes):\n~~~diff\n")
+	b.WriteString(diffPatch)
+	b.WriteString("\n~~~\n")
+}
+
+func formatValidatorDiffStat(stat workspace.DiffStat) string {
+	if stat == (workspace.DiffStat{}) {
+		return "0 files changed"
+	}
+
+	parts := []string{pluralizeCount(stat.Files, "file changed", "files changed")}
+	if stat.Added > 0 {
+		parts = append(parts, pluralizeCount(stat.Added, "insertion(+)", "insertions(+)"))
+	}
+	if stat.Removed > 0 {
+		parts = append(parts, pluralizeCount(stat.Removed, "deletion(-)", "deletions(-)"))
+	}
+	return strings.Join(parts, ", ")
+}
+
+func pluralizeCount(count int, singular string, plural string) string {
+	if count == 1 {
+		return "1 " + singular
+	}
+	return strconv.Itoa(count) + " " + plural
 }
 
 func prependWorkspaceIsolationBlock(prompt string, cfg config.Config, workspacePath string, branch string) string {
@@ -375,10 +450,11 @@ func gateAssigns(cfg gate.Config) map[string]any {
 		"ci_failure_action":        effective.CIFailureAction,
 		"transient_ci_retry_limit": transientCIRetryLimit,
 		"validator": map[string]any{
-			"enabled":   effective.Validator.Enabled,
-			"model":     effective.Validator.Model,
-			"min_score": effective.Validator.MinScore,
-			"block_on":  effective.Validator.BlockOn,
+			"enabled":               effective.Validator.Enabled,
+			"model":                 effective.Validator.Model,
+			"min_score":             effective.Validator.MinScore,
+			"block_on":              effective.Validator.BlockOn,
+			"max_inline_diff_bytes": validatorMaxInlineDiffBytes(effective.Validator),
 		},
 	}
 }

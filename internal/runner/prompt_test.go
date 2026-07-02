@@ -3,6 +3,7 @@ package runner
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -12,6 +13,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
 	"github.com/digitaldrywood/detent/internal/skills"
+	"github.com/digitaldrywood/detent/internal/workspace"
 )
 
 func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
@@ -106,7 +108,7 @@ func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
 				ApprovalLabel: "Plan-Approved",
 			},
 		},
-		Prompt: "Gate {{ gate.kind }} label={{ gate.approval_label }} run={{ gate.run }} ci={{ gate.ci_failure_action }} plan={{ plan.approval_label }}",
+		Prompt: "Gate {{ gate.kind }} label={{ gate.approval_label }} run={{ gate.run }} ci={{ gate.ci_failure_action }} max={{ gate.validator.max_inline_diff_bytes }} plan={{ plan.approval_label }}",
 	}, connector.Issue{
 		Identifier: "digitaldrywood/detent#266",
 		Title:      "Gate prompt",
@@ -116,13 +118,110 @@ func TestBuildPromptRendersGateAssignsAndInstructions(t *testing.T) {
 	}
 
 	for _, want := range []string{
-		"Gate human_review label=approved-by-human run= ci=skip plan=plan-approved",
+		"Gate human_review label=approved-by-human run= ci=skip max=65536 plan=plan-approved",
 		"## Validation gate",
 		"Keep the pull request in Human Review until a human applies label `approved-by-human`",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("prompt missing %q:\n%s", want, prompt)
 		}
+	}
+}
+
+func TestBuildValidatorPromptSeedsDiffContext(t *testing.T) {
+	t.Parallel()
+
+	patch := "diff --git a/README.md b/README.md\n+seeded validator diff\n"
+	stat := workspace.DiffStat{Files: 1, Added: 1}
+
+	tests := []struct {
+		name      string
+		opts      ValidatorPromptOptions
+		want      []string
+		forbidden []string
+	}{
+		{
+			name: "inline diff under threshold",
+			opts: ValidatorPromptOptions{
+				DiffStat:           &stat,
+				DiffPatch:          patch,
+				MaxInlineDiffBytes: len(patch),
+			},
+			want: []string{
+				"Diff context:",
+				"Stat: 1 file changed, 1 insertion(+)",
+				"Inline diff limit: " + strconv.Itoa(len(patch)) + " bytes (`gate.validator.max_inline_diff_bytes`).",
+				"Inline diff (" + strconv.Itoa(len(patch)) + " bytes):",
+				"+seeded validator diff",
+			},
+			forbidden: []string{"Full diff omitted because it exceeds"},
+		},
+		{
+			name: "stat only above threshold",
+			opts: ValidatorPromptOptions{
+				DiffStat:           &stat,
+				DiffPatch:          patch,
+				MaxInlineDiffBytes: len(patch) - 1,
+			},
+			want: []string{
+				"Diff context:",
+				"Stat: 1 file changed, 1 insertion(+)",
+				"Full diff omitted because it exceeds the inline diff limit.",
+			},
+			forbidden: []string{"+seeded validator diff"},
+		},
+		{
+			name: "stat only when threshold disabled",
+			opts: ValidatorPromptOptions{
+				DiffStat:           &stat,
+				DiffPatch:          patch,
+				MaxInlineDiffBytes: 0,
+			},
+			want: []string{
+				"Diff context:",
+				"Inline diff limit: 0 bytes (`gate.validator.max_inline_diff_bytes`); full diff omitted.",
+				"Full diff omitted because it exceeds the inline diff limit.",
+			},
+			forbidden: []string{"+seeded validator diff"},
+		},
+		{
+			name: "stat only when provider truncated",
+			opts: ValidatorPromptOptions{
+				DiffStat:           &stat,
+				DiffPatch:          "",
+				DiffTruncated:      true,
+				MaxInlineDiffBytes: len(patch),
+			},
+			want: []string{
+				"Diff context:",
+				"Stat: 1 file changed, 1 insertion(+)",
+				"Full diff omitted because it exceeds the inline diff limit.",
+			},
+			forbidden: []string{"+seeded validator diff"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			prompt := BuildValidatorPrompt(config.Workflow{}, connector.Issue{
+				Identifier:  "digitaldrywood/detent#854",
+				Title:       "Seed validator prompt",
+				Description: "## Acceptance Criteria\n- Inline small diffs.",
+			}, tt.opts)
+
+			for _, want := range tt.want {
+				if !strings.Contains(prompt, want) {
+					t.Fatalf("prompt missing %q:\n%s", want, prompt)
+				}
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(prompt, forbidden) {
+					t.Fatalf("prompt contains %q:\n%s", forbidden, prompt)
+				}
+			}
+		})
 	}
 }
 

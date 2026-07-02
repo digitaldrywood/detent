@@ -1120,6 +1120,7 @@ gate:
     model: gpt-5-validator
     min_score: 0.85
     turn_timeout_ms: 120000
+    max_inline_diff_bytes: 32768
     block_on:
       - P1
       - p2
@@ -1145,6 +1146,9 @@ Prompt
 	}
 	if validator.TurnTimeoutMS != 120000 {
 		t.Fatalf("Gate.Validator.TurnTimeoutMS = %d, want 120000", validator.TurnTimeoutMS)
+	}
+	if validator.MaxInlineDiffBytes == nil || *validator.MaxInlineDiffBytes != 32768 {
+		t.Fatalf("Gate.Validator.MaxInlineDiffBytes = %v, want 32768", validator.MaxInlineDiffBytes)
 	}
 	if got := validator.BlockOn; !reflect.DeepEqual(got, []string{"p1", "p2"}) {
 		t.Fatalf("Gate.Validator.BlockOn = %#v, want p1/p2", got)
@@ -1976,7 +1980,7 @@ gate:
 Prompt
 `,
 			want: []string{
-				"gate.kind must be one of command, human_review",
+				"gate.kind must be one of command, human_review, artifact",
 				"gate.ci_failure_action must be one of skip, rework",
 			},
 		},
@@ -1990,6 +1994,7 @@ gate:
     enabled: true
     min_score: 1.2
     turn_timeout_ms: -1
+    max_inline_diff_bytes: -1
     block_on:
       - ""
 ---
@@ -1998,6 +2003,7 @@ Prompt
 			want: []string{
 				"gate.validator.min_score must be greater than 0 and less than or equal to 1",
 				"gate.validator.turn_timeout_ms must be greater than or equal to 0",
+				"gate.validator.max_inline_diff_bytes must be greater than or equal to 0",
 			},
 		},
 	}
