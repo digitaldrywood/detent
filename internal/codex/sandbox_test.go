@@ -69,7 +69,7 @@ func TestOptionsFromConfigClonesApprovalPolicy(t *testing.T) {
 			"rules": true,
 		},
 	}
-	options := OptionsFromConfig(config.Codex{
+	options := OptionsFromConfig(config.CodexOptions{
 		ApprovalPolicy: config.MapValue(rawPolicy),
 		ThreadSandbox:  "workspace-write",
 		TurnSandboxPolicy: map[string]any{

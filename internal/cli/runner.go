@@ -157,20 +157,20 @@ func buildWorkspaceBackend(cfg workflowconfig.Config, sourceRootFallback string,
 func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBackend, error) {
 	switch backend.Kind {
 	case workflowconfig.AgentBackendCodex:
-		return buildCodexAgentBackend(backend.CodexConfig(workflowconfig.Codex{}))
+		return buildCodexAgentBackend(backend.Command, backend.CodexOptions())
 	default:
 		return nil, fmt.Errorf("unsupported agent backend kind %q", backend.Kind)
 	}
 }
 
-func buildCodexAgentBackend(cfg workflowconfig.Codex) (runnerpkg.AgentBackend, error) {
-	command := strings.TrimSpace(cfg.Command)
+func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions) (runnerpkg.AgentBackend, error) {
+	command = strings.TrimSpace(command)
 	if command == "" {
 		return nil, errors.New("codex command is required")
 	}
 
 	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {
-		return buildCodexCommandFromConfig(ctx, cfg)
+		return buildCodexCommandFromConfig(ctx, command, cfg.Shell)
 	})
 	if err != nil {
 		return nil, fmt.Errorf("create codex transport factory: %w", err)
@@ -196,11 +196,11 @@ func buildCodexAgentBackend(cfg workflowconfig.Codex) (runnerpkg.AgentBackend, e
 }
 
 func buildCodexCommand(ctx context.Context, cfg workflowconfig.Config) *exec.Cmd {
-	return buildCodexCommandFromConfig(ctx, cfg.Codex)
+	return buildCodexCommandFromConfig(ctx, cfg.Codex.Command, cfg.Codex.Shell)
 }
 
-func buildCodexCommandFromConfig(ctx context.Context, cfg workflowconfig.Codex) *exec.Cmd {
-	return commandshell.Command(ctx, strings.TrimSpace(cfg.Command), cfg.Shell)
+func buildCodexCommandFromConfig(ctx context.Context, command string, shell string) *exec.Cmd {
+	return commandshell.Command(ctx, strings.TrimSpace(command), shell)
 }
 
 // publishSnapshots ticks at interval, building a merged telemetry snapshot

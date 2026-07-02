@@ -14,7 +14,7 @@ type Options struct {
 	TurnSandboxPolicy any
 }
 
-func OptionsFromConfig(cfg config.Codex) Options {
+func OptionsFromConfig(cfg config.CodexOptions) Options {
 	return Options{
 		ApprovalPolicy:    stringOrMapValue(cfg.ApprovalPolicy),
 		ThreadSandbox:     cfg.ThreadSandbox,

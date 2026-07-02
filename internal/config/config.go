@@ -198,14 +198,22 @@ type Agents struct {
 }
 
 type AgentBackend struct {
-	ID       string              `yaml:"id"`
-	Kind     string              `yaml:"kind"`
-	Protocol string              `yaml:"protocol"`
-	Command  string              `yaml:"command"`
-	Options  AgentBackendOptions `yaml:"options"`
+	ID       string         `yaml:"id"`
+	Kind     string         `yaml:"kind"`
+	Protocol string         `yaml:"protocol"`
+	Command  string         `yaml:"command"`
+	Options  BackendOptions `yaml:"options"`
+
+	codexOptions    CodexOptions
+	codexOptionsSet bool
+	optionsErr      error
 }
 
-type AgentBackendOptions struct {
+type BackendOptions struct {
+	node *yaml.Node
+}
+
+type CodexOptions struct {
 	Shell             string         `yaml:"shell"`
 	ApprovalPolicy    StringOrMap    `yaml:"approval_policy"`
 	ThreadSandbox     string         `yaml:"thread_sandbox"`
@@ -272,6 +280,11 @@ func (c Config) AgentBackendConfigs() []AgentBackend {
 	if len(c.Agents.Backends) > 0 {
 		backends := make([]AgentBackend, len(c.Agents.Backends))
 		copy(backends, c.Agents.Backends)
+		for index := range backends {
+			if backends[index].Kind == AgentBackendCodex {
+				backends[index] = mergedCodexAgentBackend(c.Codex, backends[index])
+			}
+		}
 		return backends
 	}
 	return []AgentBackend{CodexAgentBackend(c.Codex)}
@@ -296,50 +309,101 @@ func (c Config) AgentRouteConfigs() []AgentRoute {
 }
 
 func CodexAgentBackend(codex Codex) AgentBackend {
+	options := CodexOptions{
+		Shell:             codex.Shell,
+		ApprovalPolicy:    codex.ApprovalPolicy,
+		ThreadSandbox:     codex.ThreadSandbox,
+		TurnSandboxPolicy: codex.TurnSandboxPolicy,
+		TurnTimeoutMS:     codex.TurnTimeoutMS,
+		ReadTimeoutMS:     codex.ReadTimeoutMS,
+		StallTimeoutMS:    codex.StallTimeoutMS,
+	}
+	options.normalize()
 	return AgentBackend{
 		ID:       DefaultAgentBackendID,
 		Kind:     AgentBackendCodex,
 		Protocol: defaultCodexProtocol,
 		Command:  strings.TrimSpace(codex.Command),
-		Options: AgentBackendOptions{
-			Shell:             codex.Shell,
-			ApprovalPolicy:    codex.ApprovalPolicy,
-			ThreadSandbox:     codex.ThreadSandbox,
-			TurnSandboxPolicy: codex.TurnSandboxPolicy,
-			TurnTimeoutMS:     codex.TurnTimeoutMS,
-			ReadTimeoutMS:     codex.ReadTimeoutMS,
-			StallTimeoutMS:    codex.StallTimeoutMS,
-		},
+		Options:  backendOptionsFrom(options),
+
+		codexOptions:    options,
+		codexOptionsSet: true,
 	}
 }
 
-func (b AgentBackend) CodexConfig(fallback Codex) Codex {
+func mergedCodexAgentBackend(fallback Codex, backend AgentBackend) AgentBackend {
 	cfg := fallback
-	if strings.TrimSpace(b.Command) != "" {
-		cfg.Command = strings.TrimSpace(b.Command)
+	if strings.TrimSpace(backend.Command) != "" {
+		cfg.Command = strings.TrimSpace(backend.Command)
 	}
-	if strings.TrimSpace(b.Options.Shell) != "" {
-		cfg.Shell = b.Options.Shell
+	options := backend.CodexOptions()
+	if strings.TrimSpace(options.Shell) != "" {
+		cfg.Shell = options.Shell
 	}
-	if b.Options.ApprovalPolicy.IsString || b.Options.ApprovalPolicy.IsMap {
-		cfg.ApprovalPolicy = b.Options.ApprovalPolicy
+	if options.ApprovalPolicy.IsString || options.ApprovalPolicy.IsMap {
+		cfg.ApprovalPolicy = options.ApprovalPolicy
 	}
-	if strings.TrimSpace(b.Options.ThreadSandbox) != "" {
-		cfg.ThreadSandbox = strings.TrimSpace(b.Options.ThreadSandbox)
+	if strings.TrimSpace(options.ThreadSandbox) != "" {
+		cfg.ThreadSandbox = strings.TrimSpace(options.ThreadSandbox)
 	}
-	if b.Options.TurnSandboxPolicy != nil {
-		cfg.TurnSandboxPolicy = b.Options.TurnSandboxPolicy
+	if options.TurnSandboxPolicy != nil {
+		cfg.TurnSandboxPolicy = options.TurnSandboxPolicy
 	}
-	if b.Options.TurnTimeoutMS > 0 {
-		cfg.TurnTimeoutMS = b.Options.TurnTimeoutMS
+	if options.TurnTimeoutMS > 0 {
+		cfg.TurnTimeoutMS = options.TurnTimeoutMS
 	}
-	if b.Options.ReadTimeoutMS > 0 {
-		cfg.ReadTimeoutMS = b.Options.ReadTimeoutMS
+	if options.ReadTimeoutMS > 0 {
+		cfg.ReadTimeoutMS = options.ReadTimeoutMS
 	}
-	if b.Options.StallTimeoutMS > 0 {
-		cfg.StallTimeoutMS = b.Options.StallTimeoutMS
+	if options.StallTimeoutMS > 0 {
+		cfg.StallTimeoutMS = options.StallTimeoutMS
 	}
-	return cfg
+	effective := CodexAgentBackend(cfg)
+	effective.ID = backend.ID
+	effective.Kind = backend.Kind
+	effective.Protocol = backend.Protocol
+	return effective
+}
+
+func (b AgentBackend) CodexOptions() CodexOptions {
+	options, err := b.decodedCodexOptions()
+	if err != nil {
+		return CodexOptions{}
+	}
+	return options
+}
+
+func (b AgentBackend) decodedCodexOptions() (CodexOptions, error) {
+	if b.optionsErr != nil {
+		return CodexOptions{}, b.optionsErr
+	}
+	if b.codexOptionsSet {
+		return b.codexOptions, nil
+	}
+
+	var options CodexOptions
+	if err := b.Options.Decode(&options); err != nil {
+		return CodexOptions{}, err
+	}
+	options.normalize()
+	return options, nil
+}
+
+func (b *AgentBackend) decodeOptions() {
+	b.codexOptions = CodexOptions{}
+	b.codexOptionsSet = false
+	b.optionsErr = nil
+	if b.Kind != AgentBackendCodex {
+		return
+	}
+
+	options, err := b.decodedCodexOptions()
+	if err != nil {
+		b.optionsErr = err
+		return
+	}
+	b.codexOptions = options
+	b.codexOptionsSet = true
 }
 
 type Server struct {
@@ -730,6 +794,68 @@ func (s *StringOrMap) UnmarshalYAML(value *yaml.Node) error {
 	}
 }
 
+func (s StringOrMap) MarshalYAML() (any, error) {
+	if s.IsString {
+		return s.String, nil
+	}
+	if s.IsMap {
+		return s.Map, nil
+	}
+	return yamlNullNode(), nil
+}
+
+func (o *BackendOptions) UnmarshalYAML(value *yaml.Node) error {
+	if value == nil || value.Kind == yaml.ScalarNode && value.Tag == "!!null" {
+		*o = BackendOptions{}
+		return nil
+	}
+	o.node = cloneYAMLNode(value)
+	return nil
+}
+
+func (o BackendOptions) MarshalYAML() (any, error) {
+	if o.node == nil {
+		return yamlNullNode(), nil
+	}
+	return o.node, nil
+}
+
+func (o BackendOptions) Decode(out any) error {
+	if o.node == nil {
+		return nil
+	}
+	return o.node.Decode(out)
+}
+
+func backendOptionsFrom(value any) BackendOptions {
+	var node yaml.Node
+	if err := node.Encode(value); err != nil {
+		return BackendOptions{}
+	}
+	return BackendOptions{node: &node}
+}
+
+func yamlNullNode() *yaml.Node {
+	return &yaml.Node{
+		Kind: yaml.ScalarNode,
+		Tag:  "!!null",
+	}
+}
+
+func cloneYAMLNode(in *yaml.Node) *yaml.Node {
+	if in == nil {
+		return nil
+	}
+	out := *in
+	if len(in.Content) > 0 {
+		out.Content = make([]*yaml.Node, len(in.Content))
+		for index := range in.Content {
+			out.Content[index] = cloneYAMLNode(in.Content[index])
+		}
+	}
+	return &out
+}
+
 func (c *Config) normalize() {
 	c.Identity.Normalize()
 	c.Tracker.Kind = strings.ToLower(strings.TrimSpace(c.Tracker.Kind))
@@ -996,11 +1122,7 @@ func (a *Agents) normalize() {
 			backend.Protocol = defaultCodexProtocol
 		}
 		backend.Command = strings.TrimSpace(backend.Command)
-		backend.Options.Shell = strings.TrimSpace(backend.Options.Shell)
-		if backend.Options.Shell != "" {
-			backend.Options.Shell = commandshell.Normalize(backend.Options.Shell)
-		}
-		backend.Options.ThreadSandbox = strings.TrimSpace(backend.Options.ThreadSandbox)
+		backend.decodeOptions()
 	}
 	for index := range a.Routes {
 		route := &a.Routes[index]
@@ -1047,7 +1169,7 @@ func (a *Agents) validate(problems *[]string) {
 			*problems = append(*problems, "agents.backends.protocol must be app-server for codex")
 		}
 		validateRequired("agents.backends.command", backend.Command, "", problems)
-		backend.Options.validate("agents.backends.options", problems)
+		backend.validateOptions("agents.backends.options", problems)
 	}
 
 	defaultRoutes := map[string]int{}
@@ -1078,7 +1200,27 @@ func normalizeAgentRouteRole(role string) string {
 	return role
 }
 
-func (o *AgentBackendOptions) validate(prefix string, problems *[]string) {
+func (b AgentBackend) validateOptions(prefix string, problems *[]string) {
+	switch b.Kind {
+	case AgentBackendCodex:
+		options, err := b.decodedCodexOptions()
+		if err != nil {
+			*problems = append(*problems, prefix+" must decode for codex: "+err.Error())
+			return
+		}
+		options.validate(prefix, problems)
+	}
+}
+
+func (o *CodexOptions) normalize() {
+	o.Shell = strings.TrimSpace(o.Shell)
+	if o.Shell != "" {
+		o.Shell = commandshell.Normalize(o.Shell)
+	}
+	o.ThreadSandbox = strings.TrimSpace(o.ThreadSandbox)
+}
+
+func (o CodexOptions) validate(prefix string, problems *[]string) {
 	if o.TurnTimeoutMS < 0 {
 		*problems = append(*problems, prefix+".turn_timeout_ms must be greater than or equal to 0")
 	}

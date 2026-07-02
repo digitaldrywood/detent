@@ -257,8 +257,8 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if sessionStore.phase.ProjectID != "detent" || sessionStore.phase.SessionID != 42 {
 		t.Fatalf("WorkflowPhaseEvent identity = %#v, want project detent and session 42", sessionStore.phase)
 	}
-	if sessionStore.phase.EndpointFamily != config.AgentBackendCodex {
-		t.Fatalf("WorkflowPhaseEvent EndpointFamily = %q, want %q", sessionStore.phase.EndpointFamily, config.AgentBackendCodex)
+	if sessionStore.phase.EndpointFamily != "codex" {
+		t.Fatalf("WorkflowPhaseEvent EndpointFamily = %q, want codex", sessionStore.phase.EndpointFamily)
 	}
 	if sessionStore.phase.PhaseType != store.WorkflowPhaseTypeAgentSession || sessionStore.phase.PhaseName != "agent_active" || sessionStore.phase.Status != FinalStateCompleted {
 		t.Fatalf("WorkflowPhaseEvent phase = %#v, want completed agent_active session", sessionStore.phase)
@@ -524,8 +524,8 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 				},
 				Agents: config.Agents{
 					Backends: []config.AgentBackend{
-						{ID: "codex-code", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server"},
-						{ID: "codex-validator", Kind: config.AgentBackendCodex, Protocol: "app-server", Command: "codex app-server --profile validator"},
+						{ID: "codex-code", Kind: "codex", Protocol: "app-server", Command: "codex app-server"},
+						{ID: "codex-validator", Kind: "codex", Protocol: "app-server", Command: "codex app-server --profile validator"},
 					},
 					Routes: []config.AgentRoute{
 						{Name: "validator", Role: RoleValidator, Backend: "codex-validator", Model: "gpt-5-route-validator"},
@@ -639,7 +639,7 @@ func TestRunnerRunUsesSingleConfiguredBackendDefaultRoute(t *testing.T) {
 				Agents: config.Agents{
 					Backends: []config.AgentBackend{{
 						ID:       "codex-high",
-						Kind:     config.AgentBackendCodex,
+						Kind:     "codex",
 						Protocol: "app-server",
 						Command:  "codex app-server --profile high",
 					}},
@@ -738,7 +738,7 @@ func TestRunnerRunRoutesAtMeSelectorsWithContext(t *testing.T) {
 			cfg.Agents = config.Agents{
 				Backends: []config.AgentBackend{{
 					ID:       "codex",
-					Kind:     config.AgentBackendCodex,
+					Kind:     "codex",
 					Protocol: "app-server",
 					Command:  "codex app-server",
 				}},
