@@ -197,6 +197,7 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			SourceState:        cfg.Agent.AutoPromote.SourceState,
 			PassState:          cfg.Agent.AutoPromote.PassState,
 			ReworkState:        cfg.Agent.AutoPromote.ReworkState,
+			ReworkLimit:        cfg.Agent.AutoPromote.ReworkLimit,
 			Gate:               gate.Effective(cfg.Gate),
 		}),
 		Plan: gate.EffectivePlan(cfg.Plan),

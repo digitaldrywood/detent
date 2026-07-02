@@ -100,6 +100,7 @@ agent:
     enabled: true
     quiet_seconds: 0
     optout_label: Requires-Human-Review
+    rework_limit: 3
     allowed_issue_labels:
       - enhancement
   lessons:
@@ -288,6 +289,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Agent.AutoPromote.OptoutLabel != "requires-human-review" {
 		t.Fatalf("Agent.AutoPromote.OptoutLabel = %q", cfg.Agent.AutoPromote.OptoutLabel)
+	}
+	if cfg.Agent.AutoPromote.ReworkLimit != 3 {
+		t.Fatalf("Agent.AutoPromote.ReworkLimit = %d, want 3", cfg.Agent.AutoPromote.ReworkLimit)
 	}
 	if !cfg.Codex.ApprovalPolicy.IsString || cfg.Codex.ApprovalPolicy.String != "never" {
 		t.Fatalf("Codex.ApprovalPolicy = %#v, want string never", cfg.Codex.ApprovalPolicy)
@@ -549,6 +553,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Agent.Skills.Path != ".detent/skills" {
 		t.Fatalf("Agent.Skills.Path = %q", cfg.Agent.Skills.Path)
+	}
+	if cfg.Agent.AutoPromote.ReworkLimit != 0 {
+		t.Fatalf("Agent.AutoPromote.ReworkLimit = %d, want unlimited default", cfg.Agent.AutoPromote.ReworkLimit)
 	}
 	if !cfg.Codex.ApprovalPolicy.IsMap {
 		t.Fatalf("Codex.ApprovalPolicy = %#v, want map default", cfg.Codex.ApprovalPolicy)
@@ -1656,6 +1663,45 @@ Prompt
 `,
 			want: []string{
 				"gate.transient_ci_retry_limit must be greater than or equal to 0",
+			},
+		},
+		{
+			name: "invalid auto promote rework limit",
+			raw: `---
+tracker:
+  kind: memory
+agent:
+  auto_promote:
+    rework_limit: -1
+---
+Prompt
+`,
+			want: []string{
+				"agent.auto_promote.rework_limit must be greater than or equal to 0",
+			},
+		},
+		{
+			name: "auto promote rework limit requires blocked state",
+			raw: `---
+tracker:
+  kind: memory
+  active_states:
+    - Todo
+    - In Progress
+    - Rework
+    - Merging
+  observed_states:
+    - Human Review
+  terminal_states:
+    - Done
+agent:
+  auto_promote:
+    rework_limit: 1
+---
+Prompt
+`,
+			want: []string{
+				"tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.rework_limit is greater than 0",
 			},
 		},
 		{

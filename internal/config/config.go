@@ -265,6 +265,7 @@ type AutoPromote struct {
 	SourceState        string   `yaml:"source_state,omitempty"`
 	PassState          string   `yaml:"pass_state,omitempty"`
 	ReworkState        string   `yaml:"rework_state,omitempty"`
+	ReworkLimit        int      `yaml:"rework_limit,omitempty"`
 }
 
 type Lessons struct {
@@ -809,6 +810,7 @@ func (c *Config) Validate() error {
 		validatePositive("worker.max_concurrent_agents_per_host", *c.Worker.MaxConcurrentAgentsPerHost, &problems)
 	}
 	c.Agent.validate("agent", &problems)
+	c.validateAutoPromoteReworkLimit(&problems)
 	c.Agents.validate(&problems)
 	c.Codex.validate(&problems)
 	problems = append(problems, gate.Validate("gate", c.Gate)...)
@@ -1008,6 +1010,18 @@ func (c *Config) validateTracker(problems *[]string) {
 	validatePositive("tracker.github_rest_fanout_max_requests", c.Tracker.GitHubRESTFanoutMaxRequests, problems)
 	*problems = append(*problems, c.Tracker.Claims.Validate("tracker.claims")...)
 	*problems = append(*problems, c.Tracker.Authorization.Validate("tracker.authorization")...)
+}
+
+func (c *Config) validateAutoPromoteReworkLimit(problems *[]string) {
+	if c.Agent.AutoPromote.ReworkLimit <= 0 {
+		return
+	}
+	if stateListContains(c.Tracker.ActiveStates, "Blocked") ||
+		stateListContains(c.Tracker.ObservedStates, "Blocked") ||
+		stateListContains(c.Tracker.TerminalStates, "Blocked") {
+		return
+	}
+	*problems = append(*problems, "tracker.active_states, tracker.observed_states, or tracker.terminal_states must include Blocked when agent.auto_promote.rework_limit is greater than 0")
 }
 
 func (l *LocalSQLite) Normalize() {
@@ -1387,6 +1401,9 @@ func (a *AutoPromote) validate(prefix string, problems *[]string) {
 	}
 	if strings.TrimSpace(a.ReworkState) == "" {
 		*problems = append(*problems, prefix+".rework_state must not be blank")
+	}
+	if a.ReworkLimit < 0 {
+		*problems = append(*problems, prefix+".rework_limit must be greater than or equal to 0")
 	}
 }
 

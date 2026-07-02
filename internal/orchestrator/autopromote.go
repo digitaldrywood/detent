@@ -16,6 +16,7 @@ type AutoPromoteConfig struct {
 	SourceState        string
 	PassState          string
 	ReworkState        string
+	ReworkLimit        int
 	Gate               gate.Config
 }
 
@@ -146,6 +147,9 @@ func normalizeAutoPromoteConfig(cfg AutoPromoteConfig) AutoPromoteConfig {
 	cfg.ReworkState = strings.TrimSpace(cfg.ReworkState)
 	if cfg.ReworkState == "" {
 		cfg.ReworkState = autoPromoteReworkState
+	}
+	if cfg.ReworkLimit < 0 {
+		cfg.ReworkLimit = 0
 	}
 	cfg.Gate = gate.Effective(cfg.Gate)
 	return cfg

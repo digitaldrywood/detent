@@ -33,6 +33,7 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 	cfg.Agent.AutoPromote.QuietSeconds = 30
 	cfg.Agent.AutoPromote.OptoutLabel = " Requires-Human-Review "
 	cfg.Agent.AutoPromote.AllowedIssueLabels = []string{" Docs ", "docs", "Chore"}
+	cfg.Agent.AutoPromote.ReworkLimit = 2
 	cfg.Identity.Name = "release-captain"
 	cfg.Identity.GitHubLogin = "detent-bot"
 	cfg.Tracker.Authorization = selector.Selector{
@@ -74,6 +75,9 @@ func TestConfigFromWorkflowIncludesDispatchControls(t *testing.T) {
 		got.AutoPromote.AllowedIssueLabels[0] != "docs" ||
 		got.AutoPromote.AllowedIssueLabels[1] != "chore" {
 		t.Fatalf("AutoPromote.AllowedIssueLabels = %#v, want docs and chore", got.AutoPromote.AllowedIssueLabels)
+	}
+	if got.AutoPromote.ReworkLimit != 2 {
+		t.Fatalf("AutoPromote.ReworkLimit = %d, want 2", got.AutoPromote.ReworkLimit)
 	}
 	if got.SelectorContext.InstanceLogin != "detent-bot" {
 		t.Fatalf("SelectorContext.InstanceLogin = %q, want detent-bot", got.SelectorContext.InstanceLogin)
