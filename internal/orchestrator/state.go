@@ -41,7 +41,7 @@ type State struct {
 	BudgetRefusals           map[string]BudgetRefusal
 	DiffStats                map[string]DiffStats
 	ReapedWorkspaces         map[string]time.Time
-	CodexTotals              CodexTotals
+	TokenTotals              TokenTotals
 	RateLimits               *telemetry.RateLimits
 	planRework               map[string]struct{}
 	epicTransitionWatch      []connector.Issue
@@ -64,7 +64,7 @@ type Running struct {
 	LastMessage     string
 	RecentEvents    []telemetry.ActivityEvent
 	DiffStats       DiffStats
-	Tokens          CodexTotals
+	Tokens          TokenTotals
 	globalSlot      scheduler.Slot
 	cancel          context.CancelFunc
 }
@@ -98,7 +98,7 @@ type Completed struct {
 	StartedAt   time.Time
 	CompletedAt time.Time
 	FinalState  string
-	Tokens      CodexTotals
+	Tokens      TokenTotals
 	MergeTiming MergeTiming
 }
 
@@ -189,7 +189,7 @@ func (s State) clone() State {
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
-		CodexTotals:              s.CodexTotals,
+		TokenTotals:              s.TokenTotals,
 		RateLimits:               cloneRateLimits(s.RateLimits),
 		planRework:               make(map[string]struct{}, len(s.planRework)),
 		epicTransitionWatch:      cloneIssues(s.epicTransitionWatch),
@@ -465,8 +465,8 @@ func cloneTelemetrySchedulerDecisions(values []telemetry.SchedulerDecision) []te
 	return append([]telemetry.SchedulerDecision(nil), values...)
 }
 
-func addCodexTotals(left, right CodexTotals) CodexTotals {
-	return CodexTotals{
+func addTokenTotals(left, right TokenTotals) TokenTotals {
+	return TokenTotals{
 		InputTokens:    left.InputTokens + right.InputTokens,
 		OutputTokens:   left.OutputTokens + right.OutputTokens,
 		TotalTokens:    left.TotalTokens + right.TotalTokens,

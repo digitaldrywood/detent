@@ -529,7 +529,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1),
 		)
 	}
 
@@ -546,7 +546,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			)
 			finishedAt := r.now().UTC()
 			result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, 1); err != nil {
+			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1); err != nil {
 				return result, err
 			}
 			return result, nil
@@ -556,14 +556,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("workspace diff stat: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1),
 		)
 	}
 
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	finishedAt := r.now().UTC()
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, 1); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -683,7 +683,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("run validator turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendConfig.Kind, 1),
 		)
 	}
 
@@ -692,10 +692,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("parse validator result: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendConfig.Kind, 1),
 		)
 	}
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, 1); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendConfig.Kind, 1); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	return validation, nil
@@ -848,7 +848,7 @@ func (r *Runner) startSession(
 		Model:      model,
 	})
 	if err != nil {
-		return 0, false, fmt.Errorf("start codex session: %w", err)
+		return 0, false, fmt.Errorf("start agent session: %w", err)
 	}
 	r.logWorkerEvent(issue, "worker_session_started",
 		"session_id", sessionID,
@@ -866,6 +866,7 @@ func (r *Runner) finishSession(
 	finishedAt time.Time,
 	result RunResult,
 	model string,
+	backendKind string,
 	turns int64,
 ) error {
 	if !started {
@@ -885,7 +886,7 @@ func (r *Runner) finishSession(
 		FinalState:     result.FinalState,
 		Model:          model,
 	}); err != nil {
-		return fmt.Errorf("finish codex session: %w", err)
+		return fmt.Errorf("finish agent session: %w", err)
 	}
 	r.logWorkerEvent(issue, "worker_session_finished",
 		"session_id", sessionID,
@@ -911,7 +912,7 @@ func (r *Runner) finishSession(
 	}); err != nil {
 		return fmt.Errorf("record usage event: %w", err)
 	}
-	if err := r.recordAgentSessionPhase(ctx, sessionID, issue, startedAt, finishedAt, result); err != nil {
+	if err := r.recordAgentSessionPhase(ctx, sessionID, issue, startedAt, finishedAt, result, backendKind); err != nil {
 		return err
 	}
 	return nil
@@ -924,6 +925,7 @@ func (r *Runner) recordAgentSessionPhase(
 	startedAt time.Time,
 	finishedAt time.Time,
 	result RunResult,
+	backendKind string,
 ) error {
 	phaseStore, ok := r.store.(workflowPhaseStore)
 	if !ok {
@@ -932,6 +934,7 @@ func (r *Runner) recordAgentSessionPhase(
 	if result.FinalState == "" {
 		result.FinalState = FinalStateCompleted
 	}
+	endpointFamily := strings.TrimSpace(backendKind)
 	if _, err := phaseStore.RecordWorkflowPhaseEvent(ctx, store.WorkflowPhaseEvent{
 		ProjectID:       r.projectID,
 		SessionID:       sessionID,
@@ -949,7 +952,7 @@ func (r *Runner) recordAgentSessionPhase(
 		InputTokens:     result.Tokens.InputTokens,
 		OutputTokens:    result.Tokens.OutputTokens,
 		TotalTokens:     result.Tokens.TotalTokens,
-		EndpointFamily:  "codex",
+		EndpointFamily:  endpointFamily,
 	}); err != nil {
 		return fmt.Errorf("record agent session phase: %w", err)
 	}

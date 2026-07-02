@@ -20,7 +20,7 @@ func TestUsageUpdateHandlerDoesNotBlockWhenBufferIsFull(t *testing.T) {
 	go func() {
 		done <- orch.usageUpdateHandler(context.Background(), "issue-1")(runpkg.UsageUpdate{
 			TurnCount: 1,
-			Tokens: runpkg.CodexTotals{
+			Tokens: runpkg.TokenTotals{
 				InputTokens:  10,
 				OutputTokens: 5,
 				TotalTokens:  15,

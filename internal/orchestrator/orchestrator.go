@@ -1907,7 +1907,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 
 	if workspaceIssueTerminal(running.Issue, o.cfg.TerminalStates) {
 		tokens := event.Result.Tokens
-		if tokens == (CodexTotals{}) {
+		if tokens == (TokenTotals{}) {
 			tokens = running.Tokens
 		}
 		if diffStatsPresent(event.Result.DiffStats) {
@@ -2013,7 +2013,7 @@ func (o *Orchestrator) handleRunResult(ctx context.Context, state *State, event 
 		FinalState:  finalState,
 		Tokens:      event.Result.Tokens,
 	}
-	state.CodexTotals = addCodexTotals(state.CodexTotals, event.Result.Tokens)
+	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
@@ -2073,7 +2073,7 @@ func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
 			return o.completeProgrammaticMergeWorkerResult(ctx, state, event, running, issue)
 		}
 		tokens := event.Result.Tokens
-		if tokens == (CodexTotals{}) {
+		if tokens == (TokenTotals{}) {
 			tokens = running.Tokens
 		}
 		if diffStatsPresent(event.Result.DiffStats) {
@@ -2150,7 +2150,7 @@ func (o *Orchestrator) completeProgrammaticMergeWorkerResult(
 	mergeTimingIssue := running.Issue
 	running.Issue = mergedIssue
 	tokens := event.Result.Tokens
-	if tokens == (CodexTotals{}) {
+	if tokens == (TokenTotals{}) {
 		tokens = running.Tokens
 	}
 	if diffStatsPresent(event.Result.DiffStats) {
@@ -2396,7 +2396,7 @@ func (o *Orchestrator) completePlanRunning(
 		FinalState:  cfg.Stop,
 		Tokens:      event.Result.Tokens,
 	}
-	state.CodexTotals = addCodexTotals(state.CodexTotals, event.Result.Tokens)
+	state.TokenTotals = addTokenTotals(state.TokenTotals, event.Result.Tokens)
 	if event.Result.RateLimits != nil {
 		state.RateLimits = mergeRateLimits(state.RateLimits, event.Result.RateLimits)
 	}
@@ -2455,7 +2455,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	issueID string,
 	running Running,
 	completedAt time.Time,
-	tokens CodexTotals,
+	tokens TokenTotals,
 ) {
 	o.completeDurableWorkAttempt(ctx, state, running, completedAt, store.WorkAttemptTerminalSuccess, "", "", "completed", "worker reached terminal state")
 	o.releaseGlobalDispatchSlot(running.globalSlot)
@@ -2490,7 +2490,7 @@ func (o *Orchestrator) completeTerminalRunning(
 		Tokens:      tokens,
 		MergeTiming: mergeTiming,
 	}
-	state.CodexTotals = addCodexTotals(state.CodexTotals, tokens)
+	state.TokenTotals = addTokenTotals(state.TokenTotals, tokens)
 	if diffStatsPresent(running.DiffStats) {
 		state.DiffStats[issueID] = running.DiffStats
 	}

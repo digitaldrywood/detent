@@ -265,6 +265,9 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	if sessionStore.phase.ProjectID != "detent" || sessionStore.phase.SessionID != 42 {
 		t.Fatalf("WorkflowPhaseEvent identity = %#v, want project detent and session 42", sessionStore.phase)
 	}
+	if sessionStore.phase.EndpointFamily != config.AgentBackendCodex {
+		t.Fatalf("WorkflowPhaseEvent EndpointFamily = %q, want %q", sessionStore.phase.EndpointFamily, config.AgentBackendCodex)
+	}
 	if sessionStore.phase.PhaseType != store.WorkflowPhaseTypeAgentSession || sessionStore.phase.PhaseName != "agent_active" || sessionStore.phase.Status != FinalStateCompleted {
 		t.Fatalf("WorkflowPhaseEvent phase = %#v, want completed agent_active session", sessionStore.phase)
 	}

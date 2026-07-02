@@ -49,7 +49,7 @@ func (s State) Snapshot(now time.Time) telemetry.Snapshot {
 		Blocked:            blockedSnapshots(s.Blocked, s.Claimed, now),
 		Completed:          completedSnapshots(s.Completed, s.Claimed, now),
 		RateLimits:         cloneRateLimits(s.RateLimits),
-		Tokens:             tokensFromCodexTotals(s.liveCodexTotals()),
+		Tokens:             tokensFromTokenTotals(s.liveTokenTotals()),
 		Budget: telemetry.Budget{
 			Refusals: budgetRefusalSnapshots(s.BudgetRefusals),
 		},
@@ -167,7 +167,7 @@ func runningSnapshots(running map[string]Running, claims map[string]Claimed, mer
 			DiffRemoved:     entry.DiffStats.RemovedLines,
 			DiffFiles:       entry.DiffStats.FilesChanged,
 			DiffStatus:      entry.DiffStats.Status,
-			Tokens:          tokensFromCodexTotals(entry.Tokens),
+			Tokens:          tokensFromTokenTotals(entry.Tokens),
 		})
 	}
 	return out
@@ -232,7 +232,7 @@ func completedSnapshots(completed map[string]Completed, claims map[string]Claime
 			CompletedAt:    entry.CompletedAt,
 			FinalState:     entry.FinalState,
 			RuntimeSeconds: entry.Tokens.RuntimeSeconds,
-			Tokens:         tokensFromCodexTotals(entry.Tokens),
+			Tokens:         tokensFromTokenTotals(entry.Tokens),
 		})
 	}
 	return out
@@ -500,7 +500,7 @@ func latestBefore(current *time.Time, candidate *time.Time, before time.Time) *t
 	return current
 }
 
-func tokensFromCodexTotals(totals CodexTotals) telemetry.Tokens {
+func tokensFromTokenTotals(totals TokenTotals) telemetry.Tokens {
 	return telemetry.Tokens{
 		Input:          totals.InputTokens,
 		Output:         totals.OutputTokens,
@@ -524,10 +524,10 @@ func timePointerFromPtr(value *time.Time) *time.Time {
 	return &cloned
 }
 
-func (s State) liveCodexTotals() CodexTotals {
-	totals := s.CodexTotals
+func (s State) liveTokenTotals() TokenTotals {
+	totals := s.TokenTotals
 	for _, running := range s.Running {
-		totals = addCodexTotals(totals, running.Tokens)
+		totals = addTokenTotals(totals, running.Tokens)
 	}
 	return totals
 }

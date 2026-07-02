@@ -171,7 +171,7 @@ func TestTickReapsTerminalRunningIssue(t *testing.T) {
 	state.Running[issue.ID] = Running{
 		Issue:      cloneIssue(issue),
 		StartedAt:  startedAt,
-		Tokens:     CodexTotals{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, RuntimeSeconds: 90},
+		Tokens:     TokenTotals{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, RuntimeSeconds: 90},
 		globalSlot: slot,
 		cancel:     cancel,
 	}
@@ -271,7 +271,7 @@ func TestTickCancelledRunningIssueAuditsWorkspaceCleanupAndReleasesLease(t *test
 	state.Running[issue.ID] = Running{
 		Issue:     cloneIssue(issue),
 		StartedAt: startedAt,
-		Tokens:    CodexTotals{TotalTokens: 15, RuntimeSeconds: 90},
+		Tokens:    TokenTotals{TotalTokens: 15, RuntimeSeconds: 90},
 		cancel:    cancel,
 	}
 	state.Claimed[issue.ID] = Claimed{Issue: cloneIssue(issue), ClaimedAt: startedAt, Owner: "detent-test"}
@@ -450,7 +450,7 @@ func TestTickMarksClosedCompletedRunningIssueDoneBeforeReaping(t *testing.T) {
 	state.Running[issue.ID] = Running{
 		Issue:     cloneIssue(issue),
 		StartedAt: startedAt,
-		Tokens:    CodexTotals{TotalTokens: 42, RuntimeSeconds: 90},
+		Tokens:    TokenTotals{TotalTokens: 42, RuntimeSeconds: 90},
 		cancel:    cancel,
 	}
 
@@ -517,7 +517,7 @@ func TestTickCompletesTerminalRunningIssueDuringWorkspaceCleanupSweep(t *testing
 		Issue:       cloneIssue(prior),
 		StartedAt:   startedAt,
 		LastMessage: "GoReleaser Snapshot remains in progress; continuing to wait.",
-		Tokens:      CodexTotals{TotalTokens: 42, RuntimeSeconds: 90},
+		Tokens:      TokenTotals{TotalTokens: 42, RuntimeSeconds: 90},
 		cancel:      cancel,
 	}
 	state.Claimed[prior.ID] = Claimed{Issue: cloneIssue(prior), ClaimedAt: startedAt, Owner: "worker-1"}

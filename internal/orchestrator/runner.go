@@ -22,7 +22,7 @@ type BudgetRefusal = runner.BudgetRefusal
 
 type DiffStats = runner.DiffStats
 
-type CodexTotals = runner.CodexTotals
+type TokenTotals = runner.TokenTotals
 
 type UsageUpdate = runner.UsageUpdate
 
