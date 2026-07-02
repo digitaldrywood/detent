@@ -72,6 +72,7 @@ type Config struct {
 	HTTPTransport           HTTPTransportConfig
 	RESTMinRemainingReserve int
 	RESTFanoutMaxRequests   int
+	RESTDebugLogging        bool
 	Logger                  *slog.Logger
 	Now                     func() time.Time
 	LookupEnv               func(string) string
@@ -136,7 +137,8 @@ func NewConnector(cfg Config) (*Connector, error) {
 			MinRemainingReserve: int64(cfg.RESTMinRemainingReserve),
 			FanoutMaxRequests:   int64(cfg.RESTFanoutMaxRequests),
 		},
-		Logger: logger,
+		RESTDebugLogging: cfg.RESTDebugLogging,
+		Logger:           logger,
 	})
 	if err != nil {
 		return nil, err

@@ -169,7 +169,9 @@ func TestTickPublishesAndLogsGitHubGraphQLCostSummary(t *testing.T) {
 	orch := &Orchestrator{
 		cfg:       cfg,
 		connector: tracker,
-		logger:    slog.New(slog.NewTextHandler(&logs, nil)),
+		logger: slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{
+			Level: slog.LevelDebug,
+		})),
 	}
 
 	orch.tick(context.Background(), &state, now)

@@ -33,6 +33,7 @@ tracker:
   github_graphql_min_remaining_reserve: 1750
   github_rest_min_remaining_reserve: 1500
   github_rest_fanout_max_requests: 42
+  github_rest_debug_logging: true
   claims:
     enabled: true
     lease_field: Detent Lease
@@ -229,6 +230,9 @@ Ticket prompt {{ issue.title }}
 	}
 	if cfg.Tracker.GitHubRESTFanoutMaxRequests != 42 {
 		t.Fatalf("Tracker.GitHubRESTFanoutMaxRequests = %d, want 42", cfg.Tracker.GitHubRESTFanoutMaxRequests)
+	}
+	if !cfg.Tracker.GitHubRESTDebugLogging {
+		t.Fatal("Tracker.GitHubRESTDebugLogging = false, want true")
 	}
 	if !cfg.Tracker.Claims.Enabled {
 		t.Fatal("Tracker.Claims.Enabled = false, want true")
@@ -552,6 +556,9 @@ func TestParseWorkflowDefaults(t *testing.T) {
 	}
 	if cfg.Tracker.GitHubRESTFanoutMaxRequests != 80 {
 		t.Fatalf("Tracker.GitHubRESTFanoutMaxRequests = %d, want 80", cfg.Tracker.GitHubRESTFanoutMaxRequests)
+	}
+	if cfg.Tracker.GitHubRESTDebugLogging {
+		t.Fatal("Tracker.GitHubRESTDebugLogging = true, want false by default")
 	}
 	if cfg.Workspace.AutoBranch != true {
 		t.Fatal("Workspace.AutoBranch = false, want true")

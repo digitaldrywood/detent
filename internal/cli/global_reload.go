@@ -237,6 +237,12 @@ func changedGlobalConfigFields(previous globalconfig.Config, next globalconfig.C
 	if previous.LogLevel != next.LogLevel {
 		fields = append(fields, globalConfigChange{Field: "log_level", RequiresRestart: true})
 	}
+	if !sameOptionalInt(previous.LogMaxSizeBytes, next.LogMaxSizeBytes) {
+		fields = append(fields, globalConfigChange{Field: "log_max_size_bytes", RequiresRestart: true})
+	}
+	if !sameOptionalInt(previous.LogMaxBackups, next.LogMaxBackups) {
+		fields = append(fields, globalConfigChange{Field: "log_max_backups", RequiresRestart: true})
+	}
 	if previous.GitHubToken != next.GitHubToken {
 		fields = append(fields, globalConfigChange{Field: "github_token"})
 	}

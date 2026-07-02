@@ -38,11 +38,12 @@ type HTTPClient interface {
 }
 
 type ClientConfig struct {
-	Endpoint    string
-	TokenSource TokenSource
-	HTTPClient  HTTPClient
-	RESTPolicy  RESTBudgetPolicy
-	Logger      *slog.Logger
+	Endpoint         string
+	TokenSource      TokenSource
+	HTTPClient       HTTPClient
+	RESTPolicy       RESTBudgetPolicy
+	RESTDebugLogging bool
+	Logger           *slog.Logger
 }
 
 type RESTBudgetPolicy struct {
@@ -56,6 +57,7 @@ type Client struct {
 	tokenSource            TokenSource
 	httpClient             HTTPClient
 	restPolicy             RESTBudgetPolicy
+	restDebugLogging       bool
 	logger                 *slog.Logger
 	mu                     sync.RWMutex
 	rateLimit              connector.GraphQLRateLimit
@@ -107,13 +109,14 @@ func NewClient(cfg ClientConfig) (*Client, error) {
 	}
 
 	return &Client{
-		endpoint:     endpoint,
-		restEndpoint: restEndpoint,
-		tokenSource:  cfg.TokenSource,
-		httpClient:   httpClient,
-		restPolicy:   normalizeRESTBudgetPolicy(cfg.RESTPolicy),
-		logger:       logger,
-		restBackoffs: defaultRESTBackoffs,
+		endpoint:         endpoint,
+		restEndpoint:     restEndpoint,
+		tokenSource:      cfg.TokenSource,
+		httpClient:       httpClient,
+		restPolicy:       normalizeRESTBudgetPolicy(cfg.RESTPolicy),
+		restDebugLogging: cfg.RESTDebugLogging,
+		logger:           logger,
+		restBackoffs:     defaultRESTBackoffs,
 	}, nil
 }
 
@@ -278,13 +281,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	}
 
 	family := restEndpointFamily(method, path)
-	c.logger.DebugContext(ctx, "github rest probe request",
-		"method", strings.ToUpper(strings.TrimSpace(method)),
-		"path", path,
-		"endpoint_family", family,
-		"request_purpose", restRequestPurpose(method, path),
-		"body_present", body != nil,
-	)
+	c.logRESTRequest(ctx, "github rest probe request", method, path, family, body != nil)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -304,13 +301,7 @@ func (c *Client) restProbeWithTokenRefresh(ctx context.Context, method string, p
 	}
 	receivedAt := time.Now()
 	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt)
-	c.logger.DebugContext(ctx, "github rest probe response",
-		"method", strings.ToUpper(strings.TrimSpace(method)),
-		"path", path,
-		"endpoint_family", family,
-		"request_purpose", restRequestPurpose(method, path),
-		"status", resp.StatusCode,
-	)
+	c.logRESTResponse(ctx, "github rest probe response", method, path, family, resp.StatusCode)
 	result := restProbeResult{
 		StatusCode: resp.StatusCode,
 		Headers:    resp.Header.Clone(),
@@ -388,15 +379,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	}
 
 	family := restEndpointFamily(method, path)
-	purpose := restRequestPurpose(method, path)
-	c.logger.DebugContext(ctx, "github rest request",
-		"method", strings.ToUpper(strings.TrimSpace(method)),
-		"path", path,
-		"endpoint_family", family,
-		"request_purpose", purpose,
-		"body_present", body != nil,
-		"live_connections", c.LiveConnections(),
-	)
+	c.logRESTRequest(ctx, "github rest request", method, path, family, body != nil)
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
@@ -410,14 +393,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		}
 	}()
 
-	c.logger.DebugContext(ctx, "github rest response",
-		"method", strings.ToUpper(strings.TrimSpace(method)),
-		"path", path,
-		"endpoint_family", family,
-		"request_purpose", purpose,
-		"status", resp.StatusCode,
-		"live_connections", c.LiveConnections(),
-	)
+	c.logRESTResponse(ctx, "github rest response", method, path, family, resp.StatusCode)
 	raw, err := io.ReadAll(resp.Body)
 	if err != nil {
 		return nil, fmt.Errorf("%w: read response: %w", ErrTransient, err)
@@ -426,6 +402,7 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 	c.recordRESTRateLimitFromHeaders(backoffKey, method, path, resp.StatusCode, resp.Header, receivedAt)
 	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
 		err := classifyStatusAt(resp.StatusCode, resp.Header, raw, receivedAt)
+		c.logRESTStatusError(ctx, method, path, family, resp.StatusCode, err)
 		if c.refreshAfterAuthFailure(ctx, err, allowTokenRefresh) {
 			return c.restWithTokenRefresh(ctx, method, path, body, out, false)
 		}
@@ -442,6 +419,46 @@ func (c *Client) restWithTokenRefresh(ctx context.Context, method string, path s
 		return nil, fmt.Errorf("%w: %w", ErrInvalidResponse, err)
 	}
 	return headers, nil
+}
+
+func (c *Client) logRESTRequest(ctx context.Context, message string, method string, path string, family string, bodyPresent bool) {
+	if !c.restDebugLogging {
+		return
+	}
+	c.logger.DebugContext(ctx, message,
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"request_purpose", restRequestPurpose(method, path),
+		"body_present", bodyPresent,
+		"live_connections", c.LiveConnections(),
+	)
+}
+
+func (c *Client) logRESTResponse(ctx context.Context, message string, method string, path string, family string, status int) {
+	if !c.restDebugLogging {
+		return
+	}
+	c.logger.DebugContext(ctx, message,
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"request_purpose", restRequestPurpose(method, path),
+		"status", status,
+		"live_connections", c.LiveConnections(),
+	)
+}
+
+func (c *Client) logRESTStatusError(ctx context.Context, method string, path string, family string, status int, err error) {
+	c.logger.WarnContext(ctx, "github rest request failed",
+		"method", strings.ToUpper(strings.TrimSpace(method)),
+		"path", path,
+		"endpoint_family", family,
+		"request_purpose", restRequestPurpose(method, path),
+		"status", status,
+		"rate_limited", errors.Is(err, ErrRateLimited),
+		"error", err,
+	)
 }
 
 func (c *Client) AuthHealth() (connector.AuthHealth, bool) {
@@ -764,7 +781,7 @@ func (c *Client) recordRESTRateLimitFromHeaders(backoffKey string, method string
 		if c.restBackoffs != nil && backoffKey != "" {
 			c.restBackoffs.set(backoffKey, backoffUntil)
 		}
-		c.logger.Debug(
+		c.logger.Warn(
 			"github rest shared backoff recorded",
 			"method", strings.ToUpper(strings.TrimSpace(method)),
 			"path", path,

@@ -41,6 +41,10 @@ Detent logs with `log/slog`.
 - `--env` and `--log-level` override environment variables for one run.
 - `DETENT_ENV` and `DETENT_LOG_LEVEL` remain deprecated fallbacks for one release. The unprefixed names win when both are set.
 - Text logs are written to stdout; JSON logs are written to stderr.
+- The terminal dashboard rotates `detent.log` with `log_max_size_bytes` and
+  `log_max_backups`.
+- Set `tracker.github_rest_debug_logging: true` only when per-request GitHub
+  REST diagnostics are needed.
 
 ## Global Config Discovery
 

@@ -313,7 +313,7 @@ func (s *sseStream) logMetricsIfDue(now time.Time) {
 		elapsed = 1
 	}
 	for name, metrics := range s.metrics {
-		s.logger.Info("dashboard sse stream metrics",
+		s.logger.Debug("dashboard sse stream metrics",
 			"event", name,
 			"elapsed_seconds", elapsed,
 			"rendered", metrics.rendered,

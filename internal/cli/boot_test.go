@@ -131,6 +131,46 @@ func TestRedirectDefaultLoggerWritesToFile(t *testing.T) {
 	}
 }
 
+func TestRedirectDefaultLoggerRotatesAndRetainsConfiguredBackups(t *testing.T) {
+	previous := slog.Default()
+	t.Cleanup(func() {
+		slog.SetDefault(previous)
+	})
+
+	path := filepath.Join(t.TempDir(), "runtime", "detent.log")
+	restore, err := redirectDefaultLoggerWithRotation(path, "info", logRotation{
+		MaxSizeBytes: 1,
+		MaxBackups:   2,
+	})
+	if err != nil {
+		t.Fatalf("redirectDefaultLoggerWithRotation() error = %v", err)
+	}
+
+	for index := 1; index <= 4; index++ {
+		slog.Info("rotate message", "index", index)
+	}
+	restore()
+
+	assertLogFileContains(t, path, `"index":4`)
+	assertLogFileContains(t, rotatedLogPath(path, 1), `"index":3`)
+	assertLogFileContains(t, rotatedLogPath(path, 2), `"index":2`)
+	if _, err := os.Stat(rotatedLogPath(path, 3)); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("rotated log %s exists or stat failed: %v", rotatedLogPath(path, 3), err)
+	}
+}
+
+func assertLogFileContains(t *testing.T, path string, want string) {
+	t.Helper()
+
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile(%s) error = %v", path, err)
+	}
+	if !strings.Contains(string(raw), want) {
+		t.Fatalf("log file %s missing %q:\n%s", path, want, string(raw))
+	}
+}
+
 func TestTerminalDashboardError(t *testing.T) {
 	t.Parallel()
 

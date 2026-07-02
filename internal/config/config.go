@@ -99,6 +99,7 @@ type Tracker struct {
 	GitHubGraphQLMinReserve     int                   `yaml:"github_graphql_min_remaining_reserve"`
 	GitHubRESTMinReserve        int                   `yaml:"github_rest_min_remaining_reserve"`
 	GitHubRESTFanoutMaxRequests int                   `yaml:"github_rest_fanout_max_requests"`
+	GitHubRESTDebugLogging      bool                  `yaml:"github_rest_debug_logging,omitempty"`
 	GitHubAppID                 string                `yaml:"github_app_id"`
 	GitHubAppPrivateKey         string                `yaml:"github_app_private_key"`
 	GitHubAppPrivateKeyPath     string                `yaml:"github_app_private_key_path"`

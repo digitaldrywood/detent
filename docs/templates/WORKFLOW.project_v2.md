@@ -11,6 +11,7 @@ tracker:
   github_graphql_min_remaining_reserve: 1000
   github_rest_min_remaining_reserve: 1000
   github_rest_fanout_max_requests: 80
+  github_rest_debug_logging: false
   auto_provision: true
   active_states:
     - Todo
