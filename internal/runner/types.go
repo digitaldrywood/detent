@@ -128,6 +128,7 @@ type RunRequest struct {
 	Attempt         int
 	WorkAttemptID   int64
 	Mode            string
+	PriorAttempt    PriorAttempt
 	StartedAt       time.Time
 	WorkerHost      string
 	SelectorContext selector.Context
@@ -189,6 +190,12 @@ type TokenTotals struct {
 	OutputTokens   int64
 	TotalTokens    int64
 	RuntimeSeconds float64
+}
+
+type PriorAttempt struct {
+	Source    string
+	Reason    string
+	Validator gate.ValidatorResult
 }
 
 type FakeRunner struct{}

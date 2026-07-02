@@ -102,6 +102,14 @@ func TestLocalGitDiffStat(t *testing.T) {
 	if err := os.Remove(filepath.Join(info.Path, "README.md")); err != nil {
 		t.Fatalf("remove README.md: %v", err)
 	}
+	if err := os.MkdirAll(filepath.Join(info.Path, ".detent"), 0o700); err != nil {
+		t.Fatalf("mkdir .detent: %v", err)
+	}
+	for _, name := range []string{"notes.md", "lessons.md"} {
+		if err := os.WriteFile(filepath.Join(info.Path, ".detent", name), []byte("handoff\n"), 0o600); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
 
 	got, err := backend.DiffStat(context.Background(), info, Issue{Identifier: "DD-DIFF"})
 	if err != nil {
@@ -115,6 +123,14 @@ func TestLocalGitDiffStat(t *testing.T) {
 	status := runGit(t, info.Path, "status", "--short")
 	if !strings.Contains(status, "?? added.txt") {
 		t.Fatalf("git status = %q, want added.txt to remain untracked", status)
+	}
+	if strings.Contains(status, ".detent/notes.md") || strings.Contains(status, ".detent/lessons.md") {
+		t.Fatalf("git status = %q, want handoff files ignored", status)
+	}
+	for _, path := range []string{".detent/notes.md", ".detent/lessons.md"} {
+		if ignored := runGit(t, info.Path, "check-ignore", path); strings.TrimSpace(ignored) != path {
+			t.Fatalf("check-ignore %s = %q, want %s", path, ignored, path)
+		}
 	}
 }
 

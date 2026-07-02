@@ -66,6 +66,7 @@ func (o *Orchestrator) transitionCompletedActiveIssuesToReview(
 		delete(state.Claimed, issueID)
 		delete(state.Retry, issueID)
 		delete(state.BudgetRefusals, issueID)
+		delete(state.PriorAttempts, issueID)
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      now,
 			Event:   "completed_issue_review_transition",

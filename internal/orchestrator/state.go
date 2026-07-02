@@ -6,6 +6,8 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
@@ -39,6 +41,7 @@ type State struct {
 	MergeTimings             map[string]MergeTiming
 	TransientCheckRetries    map[string]TransientCheckRetry
 	BudgetRefusals           map[string]BudgetRefusal
+	PriorAttempts            map[string]runpkg.PriorAttempt
 	DiffStats                map[string]DiffStats
 	ReapedWorkspaces         map[string]time.Time
 	TokenTotals              TokenTotals
@@ -150,6 +153,7 @@ func newState(cfg Config) State {
 		MergeTimings:             map[string]MergeTiming{},
 		TransientCheckRetries:    map[string]TransientCheckRetry{},
 		BudgetRefusals:           map[string]BudgetRefusal{},
+		PriorAttempts:            map[string]runpkg.PriorAttempt{},
 		DiffStats:                map[string]DiffStats{},
 		ReapedWorkspaces:         map[string]time.Time{},
 		planRework:               map[string]struct{}{},
@@ -187,6 +191,7 @@ func (s State) clone() State {
 		MergeTimings:             maps.Clone(s.MergeTimings),
 		TransientCheckRetries:    maps.Clone(s.TransientCheckRetries),
 		BudgetRefusals:           make(map[string]BudgetRefusal, len(s.BudgetRefusals)),
+		PriorAttempts:            clonePriorAttempts(s.PriorAttempts),
 		DiffStats:                make(map[string]DiffStats, len(s.DiffStats)),
 		ReapedWorkspaces:         make(map[string]time.Time, len(s.ReapedWorkspaces)),
 		TokenTotals:              s.TokenTotals,
@@ -236,6 +241,18 @@ func (s State) clone() State {
 	maps.Copy(cloned.planRework, s.planRework)
 
 	return cloned
+}
+
+func clonePriorAttempts(in map[string]runpkg.PriorAttempt) map[string]runpkg.PriorAttempt {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]runpkg.PriorAttempt, len(in))
+	for key, value := range in {
+		value.Validator.Findings = append([]gate.Finding(nil), value.Validator.Findings...)
+		out[key] = value
+	}
+	return out
 }
 
 func cloneStatusDrift(drift connector.StatusDrift) connector.StatusDrift {

@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
+	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/workspace"
 )
@@ -91,6 +92,66 @@ func TestBuildPromptRendersAssignsLessonsAndSkills(t *testing.T) {
 	}
 	if strings.Contains(prompt, "Add migrations.") {
 		t.Fatalf("prompt included skill description, want only when_to_use:\n%s", prompt)
+	}
+}
+
+func TestBuildPromptAppendsNotesAndPriorAttempt(t *testing.T) {
+	t.Parallel()
+
+	workspace := t.TempDir()
+	notesPath := filepath.Join(workspace, ".detent", "notes.md")
+	if err := notes.Append(notesPath, notes.Entry{
+		Title: "Implementation handoff",
+		Body:  "Key file: internal/runner/prompt.go\nValidation: go test ./internal/runner",
+	}, notes.AppendOptions{Now: time.Date(2026, 7, 2, 21, 45, 0, 0, time.UTC)}); err != nil {
+		t.Fatalf("append note: %v", err)
+	}
+
+	prompt, err := BuildPrompt(config.Workflow{
+		Prompt: "Base prompt",
+	}, connector.Issue{
+		Identifier: "digitaldrywood/detent#856",
+		Title:      "Handoff notes",
+	}, PromptOptions{
+		WorkspacePath: workspace,
+		PriorAttempt: PriorAttempt{
+			Source: "auto_promote",
+			Reason: "validator_rework",
+			Validator: gate.ValidatorResult{
+				Submitted: true,
+				Verdict:   gate.ValidatorVerdictRework,
+				Score:     0.42,
+				Summary:   "Missing deterministic rework context.",
+				Findings: []gate.Finding{{
+					Severity: "p1",
+					Body:     "Rework prompt does not include validator findings.",
+					Path:     "internal/runner/prompt.go",
+					Line:     44,
+				}},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+
+	for _, want := range []string{
+		"## Handoff notes",
+		"verify important facts against the repository",
+		"Maintain `.detent/notes.md`",
+		"## 2026-07-02T21:45:00Z - Implementation handoff",
+		"Key file: internal/runner/prompt.go",
+		"## Prior attempt handoff",
+		"- source: auto_promote",
+		"- failing gate reason: validator_rework",
+		"- validator verdict: rework",
+		"- validator score: 0.42",
+		"- validator summary: Missing deterministic rework context.",
+		"p1: Rework prompt does not include validator findings. (internal/runner/prompt.go:44)",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("prompt missing %q:\n%s", want, prompt)
+		}
 	}
 }
 

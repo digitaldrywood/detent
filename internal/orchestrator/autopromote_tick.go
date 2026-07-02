@@ -10,6 +10,7 @@ import (
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -94,6 +95,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		if !o.applyAutoPromoteDecision(ctx, state, issue, summary, decision, targetState, now) {
 			continue
 		}
+		o.recordAutoPromoteReworkHandoff(state, issue, summary, decision, targetState)
 		result.transitioned[issueID] = struct{}{}
 		o.clearAutoPromotedIssueDispatchMemory(state, issueID)
 		if mergeWorkerIssue(promotedIssue(issue, targetState, now)) {
@@ -1520,6 +1522,30 @@ func autoPromoteReworkReasonCounts(events []store.WorkflowPhaseEvent) []autoProm
 		out = append(out, autoPromoteReworkReasonCount{Reason: reason, Count: counts[reason]})
 	}
 	return out
+}
+
+func (o *Orchestrator) recordAutoPromoteReworkHandoff(
+	state *State,
+	issue connector.Issue,
+	summary AutoPromoteSummary,
+	decision AutoPromoteDecision,
+	targetState string,
+) {
+	if state == nil || normalizeState(targetState) != normalizeState(autoPromoteReworkState) {
+		return
+	}
+	issueID := strings.TrimSpace(issue.ID)
+	if issueID == "" {
+		return
+	}
+	if state.PriorAttempts == nil {
+		state.PriorAttempts = map[string]runpkg.PriorAttempt{}
+	}
+	state.PriorAttempts[issueID] = runpkg.PriorAttempt{
+		Source:    "auto_promote",
+		Reason:    string(decision.Reason),
+		Validator: summary.Validator,
+	}
 }
 
 func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision AutoPromoteDecision, targetState string) {

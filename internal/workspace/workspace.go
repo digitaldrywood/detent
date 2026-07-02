@@ -280,6 +280,9 @@ func (l *LocalGit) Create(ctx context.Context, issue Issue) (Info, error) {
 		return Info{}, err
 	}
 	info.Created = created
+	if err := ensureGitInfoExcludes(ctx, info.Path, detentHandoffDiffExcludes); err != nil {
+		return Info{}, err
+	}
 
 	if created {
 		if err := l.runHook(ctx, "after_create", l.hooks.AfterCreate, info, issue); err != nil {
