@@ -1,0 +1,283 @@
+package claudecode
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"io"
+	"os/exec"
+	"strconv"
+	"strings"
+	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
+	"github.com/digitaldrywood/detent/internal/runner"
+)
+
+func (b *AgentBackend) RunTurn(
+	ctx context.Context,
+	req runner.AgentTurnRequest,
+	onUpdate runner.AgentUpdateHandler,
+) (runner.AgentTurnResult, error) {
+	ctx = contextOrBackground(ctx)
+	if b.options.TurnTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, b.options.TurnTimeout)
+		defer cancel()
+	}
+
+	cmd, err := b.command(ctx, req)
+	if err != nil {
+		return runner.AgentTurnResult{}, err
+	}
+
+	stderr := newTailBuffer(b.options.StderrTailBytes)
+	cmd.Stderr = stderr
+	cmd.Stdin = strings.NewReader(req.Prompt)
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return runner.AgentTurnResult{}, fmt.Errorf("create stdout pipe: %w", err)
+	}
+
+	procgroup.Configure(cmd)
+	if err := cmd.Start(); err != nil {
+		return runner.AgentTurnResult{}, fmt.Errorf("start claude command: %w", err)
+	}
+	processGroupID := procgroup.GroupID(cmd)
+
+	processIdentity := "claude-" + strconv.Itoa(cmd.Process.Pid)
+	if err := emitUpdate(onUpdate, runner.AgentUpdate{
+		Type:            runner.AgentUpdateProcessStarted,
+		ProcessIdentity: processIdentity,
+	}); err != nil {
+		err = terminateWithCause(cmd, processGroupID, err)
+		if waitErr := waitAndCleanup(cmd, processGroupID); waitErr != nil {
+			err = errors.Join(err, fmt.Errorf("wait after terminating claude command: %w", waitErr))
+		}
+		return runner.AgentTurnResult{}, err
+	}
+
+	state, streamErr := b.consumeStream(ctx, cmd, processGroupID, stdout, onUpdate)
+	waitErr := waitAndCleanup(cmd, processGroupID)
+
+	result := runner.AgentTurnResult{
+		ThreadID:  state.sessionID,
+		TurnID:    state.sessionID,
+		SessionID: state.sessionID,
+	}
+
+	if streamErr != nil {
+		return result, streamErr
+	}
+
+	finalErr := finalTurnError(state, waitErr, stderr.String())
+	status := runner.FinalStateCompleted
+	if finalErr != nil {
+		status = runner.FinalStateFailed
+	}
+
+	if err := emitUpdate(onUpdate, runner.AgentUpdate{
+		Type:     runner.AgentUpdateTurnCompleted,
+		ThreadID: state.sessionID,
+		TurnID:   state.sessionID,
+		Status:   status,
+	}); err != nil {
+		return result, err
+	}
+
+	return result, finalErr
+}
+
+func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest) (*exec.Cmd, error) {
+	cmd := b.options.CommandFactory(ctx)
+	if cmd == nil {
+		return nil, ErrNilCommand
+	}
+	cmd.Dir = req.Workspace
+	if len(cmd.Args) == 0 {
+		cmd.Args = []string{cmd.Path}
+	}
+	cmd.Args = append(cmd.Args, b.argv(req)...)
+	return cmd, nil
+}
+
+func (b *AgentBackend) argv(req runner.AgentTurnRequest) []string {
+	args := []string{"-p", "--output-format", "stream-json", "--verbose"}
+	if model := strings.TrimSpace(req.Model); model != "" {
+		args = append(args, "--model", model)
+	}
+	if mode := strings.TrimSpace(b.options.PermissionMode); mode != "" {
+		args = append(args, "--permission-mode", mode)
+	}
+	if tools := nonEmptyStrings(b.options.AllowedTools); len(tools) > 0 {
+		args = append(args, "--allowedTools")
+		args = append(args, tools...)
+	}
+	if tools := nonEmptyStrings(b.options.DisallowedTools); len(tools) > 0 {
+		args = append(args, "--disallowedTools")
+		args = append(args, tools...)
+	}
+	if b.options.IncludePartialMessages {
+		args = append(args, "--include-partial-messages")
+	}
+	for _, root := range req.ExtraWritableRoots {
+		root = strings.TrimSpace(root)
+		if root == "" {
+			continue
+		}
+		args = append(args, "--add-dir", root)
+	}
+	args = append(args, b.options.ExtraArgs...)
+	return args
+}
+
+func (b *AgentBackend) consumeStream(
+	ctx context.Context,
+	cmd *exec.Cmd,
+	processGroupID int,
+	stdout io.Reader,
+	onUpdate runner.AgentUpdateHandler,
+) (turnState, error) {
+	items := scanClaudeStream(ctx, stdout, b.options.MaxScanTokenSize)
+	state := turnState{}
+	var streamErr error
+	ctxDone := ctx.Done()
+	stallTimer := newStallTimer(b.options.StallTimeout)
+	stallC := stallTimerChannel(stallTimer)
+	defer stopStallTimer(stallTimer)
+
+	for items != nil {
+		select {
+		case <-ctxDone:
+			streamErr = ctx.Err()
+			streamErr = terminateWithCause(cmd, processGroupID, streamErr)
+			ctxDone = nil
+			stallC = nil
+		case <-stallC:
+			streamErr = fmt.Errorf("%w after %s", ErrStreamStalled, b.options.StallTimeout)
+			streamErr = terminateWithCause(cmd, processGroupID, streamErr)
+			stallC = nil
+			ctxDone = nil
+		case item, ok := <-items:
+			if !ok {
+				items = nil
+				continue
+			}
+			if streamErr != nil {
+				continue
+			}
+			if item.err != nil {
+				streamErr = item.err
+				streamErr = terminateWithCause(cmd, processGroupID, streamErr)
+				ctxDone = nil
+				stallC = nil
+				continue
+			}
+			resetStallTimer(stallTimer, b.options.StallTimeout)
+			if err := state.apply(item.event, b.options.IncludePartialMessages, onUpdate); err != nil {
+				streamErr = err
+				streamErr = terminateWithCause(cmd, processGroupID, streamErr)
+				ctxDone = nil
+				stallC = nil
+			}
+		}
+	}
+
+	return state, streamErr
+}
+
+func terminateWithCause(cmd *exec.Cmd, processGroupID int, cause error) error {
+	if err := procgroup.TerminateTree(cmd, processGroupID); err != nil {
+		return errors.Join(cause, fmt.Errorf("terminate claude process tree: %w", err))
+	}
+	return cause
+}
+
+func newStallTimer(timeout time.Duration) *time.Timer {
+	if timeout <= 0 {
+		return nil
+	}
+	return time.NewTimer(timeout)
+}
+
+func stallTimerChannel(timer *time.Timer) <-chan time.Time {
+	if timer == nil {
+		return nil
+	}
+	return timer.C
+}
+
+func resetStallTimer(timer *time.Timer, timeout time.Duration) {
+	if timer == nil || timeout <= 0 {
+		return
+	}
+	stopStallTimer(timer)
+	timer.Reset(timeout)
+}
+
+func stopStallTimer(timer *time.Timer) {
+	if timer == nil {
+		return
+	}
+	if !timer.Stop() {
+		select {
+		case <-timer.C:
+		default:
+		}
+	}
+}
+
+func waitAndCleanup(cmd *exec.Cmd, processGroupID int) error {
+	err := cmd.Wait()
+	if cleanupErr := procgroup.Cleanup(processGroupID); cleanupErr != nil {
+		err = errors.Join(err, cleanupErr)
+	}
+	return err
+}
+
+func finalTurnError(state turnState, waitErr error, stderr string) error {
+	switch {
+	case !state.sawResult:
+		return withStderrTail(ErrMissingResult, stderr)
+	case state.resultIsError || !strings.EqualFold(strings.TrimSpace(state.resultSubtype), "success"):
+		subtype := strings.TrimSpace(state.resultSubtype)
+		if subtype == "" {
+			subtype = "unknown"
+		}
+		return withStderrTail(fmt.Errorf("%w: result subtype %q", ErrTurnFailed, subtype), stderr)
+	case waitErr != nil:
+		return withStderrTail(fmt.Errorf("%w: process exited: %w", ErrTurnFailed, waitErr), stderr)
+	default:
+		return nil
+	}
+}
+
+func withStderrTail(err error, stderr string) error {
+	stderr = strings.TrimSpace(stderr)
+	if stderr == "" {
+		return err
+	}
+	return fmt.Errorf("%w: stderr: %s", err, stderr)
+}
+
+func emitUpdate(onUpdate runner.AgentUpdateHandler, update runner.AgentUpdate) error {
+	if onUpdate == nil {
+		return nil
+	}
+	if err := onUpdate(update); err != nil {
+		return fmt.Errorf("%w: %w", ErrUpdateRejected, err)
+	}
+	return nil
+}
+
+func nonEmptyStrings(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
