@@ -861,10 +861,13 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.
 		return
 	}
 	o.validatorRuns[key] = struct{}{}
+	o.validatorWG.Add(1)
 	o.validatorMu.Unlock()
 
 	selectorContext := o.cfg.SelectorContext
 	go func() {
+		defer o.validatorWG.Done()
+
 		result, err := o.validator.Validate(ctx, ValidatorRequest{
 			Issue:           issue,
 			StartedAt:       now.UTC(),

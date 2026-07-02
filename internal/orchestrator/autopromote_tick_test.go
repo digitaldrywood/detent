@@ -14,6 +14,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
+	"github.com/digitaldrywood/detent/internal/scheduler"
 )
 
 func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
@@ -958,6 +959,108 @@ func TestTickAutoPromoteRunsValidatorStage(t *testing.T) {
 		if !strings.Contains(tracker.prComments[0].body, fragment) {
 			t.Fatalf("pull request comment %q missing %q", tracker.prComments[0].body, fragment)
 		}
+	}
+}
+
+func TestRunDrainsInFlightValidatorStageOnShutdown(t *testing.T) {
+	t.Parallel()
+
+	oldReview := time.Now().Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-validator-shutdown", []string{"bug"}, &connector.PullRequest{
+		Number:                 826,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/826",
+		BranchName:             "detent/digitaldrywood_detent_826",
+		HeadSHA:                "head-validator-shutdown",
+		State:                  "OPEN",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	runningIssue := dispatchTestIssue("issue-running-shutdown", "Todo")
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue, runningIssue}}
+	runner := newBlockingAutoPromoteValidatorRunner()
+	t.Cleanup(runner.Release)
+	globalGate := scheduler.NewGlobalDispatchGate(scheduler.NewRoundRobin(scheduler.Config{Capacity: 1}))
+
+	orch, err := New(Config{
+		PollInterval:        time.Hour,
+		MaxConcurrentAgents: 1,
+		Project:             scheduler.ProjectCandidate{ID: "alpha", Weight: 1},
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate: gate.Config{
+				Kind: gate.KindCommand,
+				Validator: gate.ValidatorConfig{
+					Enabled: true,
+				},
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	}, Dependencies{
+		Connector:          tracker,
+		Runner:             runner,
+		GlobalDispatchGate: globalGate,
+	})
+	if err != nil {
+		t.Fatalf("New() error = %v", err)
+	}
+
+	runCtx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	runDone := make(chan error, 1)
+	go func() {
+		runDone <- orch.Run(runCtx)
+	}()
+
+	select {
+	case request := <-runner.started:
+		if request.Issue.ID != issue.ID {
+			t.Fatalf("validator issue ID = %q, want %q", request.Issue.ID, issue.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("validator did not start")
+	}
+	select {
+	case request := <-runner.runStarted:
+		if request.Issue.ID != runningIssue.ID {
+			t.Fatalf("run issue ID = %q, want %q", request.Issue.ID, runningIssue.ID)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker run did not start")
+	}
+
+	cancel()
+
+	select {
+	case <-runner.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("validator did not observe shutdown cancellation")
+	}
+	waitForGlobalDispatchSlot(t, globalGate, "bravo")
+
+	select {
+	case err := <-runDone:
+		t.Fatalf("Run() returned before validator exited: %v", err)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	runner.Release()
+
+	select {
+	case <-runner.done:
+	case <-time.After(time.Second):
+		t.Fatal("validator did not exit")
+	}
+
+	select {
+	case err := <-runDone:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Run() error = %v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Run() did not return after validator exited")
 	}
 }
 
@@ -2981,6 +3084,51 @@ func (v *autoPromoteTickValidator) Validate(_ context.Context, req ValidatorRequ
 	return v.result, v.err
 }
 
+type blockingAutoPromoteValidatorRunner struct {
+	releaseOnce sync.Once
+	started     chan ValidatorRequest
+	runStarted  chan RunRequest
+	canceled    chan struct{}
+	release     chan struct{}
+	done        chan struct{}
+}
+
+func newBlockingAutoPromoteValidatorRunner() *blockingAutoPromoteValidatorRunner {
+	return &blockingAutoPromoteValidatorRunner{
+		started:    make(chan ValidatorRequest, 1),
+		runStarted: make(chan RunRequest, 1),
+		canceled:   make(chan struct{}),
+		release:    make(chan struct{}),
+		done:       make(chan struct{}),
+	}
+}
+
+func (r *blockingAutoPromoteValidatorRunner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
+	r.runStarted <- req
+	<-ctx.Done()
+	return RunResult{FinalState: runpkg.FinalStateFailed}, ctx.Err()
+}
+
+func (r *blockingAutoPromoteValidatorRunner) Validate(ctx context.Context, req ValidatorRequest) (gate.ValidatorResult, error) {
+	r.started <- req
+	defer close(r.done)
+
+	select {
+	case <-r.release:
+		return gate.ValidatorResult{Submitted: true, Verdict: gate.ValidatorVerdictPass, Score: 1}, nil
+	case <-ctx.Done():
+		close(r.canceled)
+		<-r.release
+		return gate.ValidatorResult{}, ctx.Err()
+	}
+}
+
+func (r *blockingAutoPromoteValidatorRunner) Release() {
+	r.releaseOnce.Do(func() {
+		close(r.release)
+	})
+}
+
 func (v *autoPromoteTickValidator) Requests() []ValidatorRequest {
 	v.mu.Lock()
 	defer v.mu.Unlock()
@@ -3011,6 +3159,33 @@ func waitForValidatorResult(t *testing.T, orch *Orchestrator, issue connector.Is
 		time.Sleep(time.Millisecond)
 	}
 	t.Fatal("validator result was not recorded")
+}
+
+func waitForGlobalDispatchSlot(t *testing.T, globalGate scheduler.ProjectDispatchGate, projectID string) {
+	t.Helper()
+
+	deadline := time.After(time.Second)
+	ticker := time.NewTicker(time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		slot, ok, err := globalGate.TryAcquire(t.Context(), scheduler.ProjectCandidate{ID: projectID, Weight: 1}, scheduler.SlotRequest{State: "Todo"}, time.Now())
+		if err != nil {
+			t.Fatalf("TryAcquire() error = %v", err)
+		}
+		if ok {
+			if err := globalGate.Release(slot); err != nil {
+				t.Fatalf("Release() error = %v", err)
+			}
+			return
+		}
+
+		select {
+		case <-deadline:
+			t.Fatal("global dispatch slot was not released before validator drain completed")
+		case <-ticker.C:
+		}
+	}
 }
 
 func (c *autoPromoteTickConnector) UpdateIssueState(_ context.Context, issueID string, state string) error {
