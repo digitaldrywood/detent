@@ -91,8 +91,8 @@ VALUES ('detent', 'agent_session', 'agent_active', '2026-05-31T13:00:00Z', 5, '2
 		assertColumnAbsent(t, db, table, "cached_input_tokens")
 	}
 
-	if err := goose.UpToContext(ctx, db, "migrations", 7); err != nil {
-		t.Fatalf("goose.UpToContext(7) error = %v", err)
+	if err := goose.UpToContext(ctx, db, "migrations", 8); err != nil {
+		t.Fatalf("goose.UpToContext(8) error = %v", err)
 	}
 	for _, table := range []string{"codex_sessions", "usage_events", "workflow_phase_events"} {
 		assertColumnPresent(t, db, table, "cached_input_tokens")
