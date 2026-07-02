@@ -5393,18 +5393,12 @@ templ issueIdentityLine(identity issueIdentityView, accent bool) {
 }
 
 templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails bool) {
-	<div class="grid min-w-0 max-w-full gap-2 overflow-hidden" data-popover data-issue-identifier={ issueIdentifier(issue) } data-issue-identity={ issueIdentity(issue).Label }>
+	<div class="grid min-w-0 max-w-full gap-2 overflow-hidden" data-issue-identifier={ issueIdentifier(issue) } data-issue-identity={ issueIdentity(issue).Label }>
 		<div class="flex min-w-0 items-start gap-2">
-			<button
-				type="button"
-				class="min-w-0 flex-1 basis-0 overflow-hidden text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-				aria-describedby={ issuePopoverID(prefix, rowIndex) }
-				aria-expanded="false"
-				data-popover-trigger
-			>
+			<div class="min-w-0 flex-1 basis-0 overflow-hidden text-left">
 				@issueIdentityLine(issueIdentity(issue), false)
 				<span class="line-clamp-2 break-words text-muted-foreground">{ issueTitle(issue) }</span>
-			</button>
+			</div>
 			<div class="flex shrink-0 flex-wrap items-start justify-end gap-1.5">
 				if issueProjectLabel(issue) != "" {
 					<span class="inline-flex max-w-[9rem] overflow-hidden rounded-full bg-muted px-2 py-1 font-mono text-xs text-muted-foreground" title={ "Project " + issueProjectLabel(issue) }>
@@ -5429,19 +5423,6 @@ templ issueCell(issue telemetry.Issue, prefix string, rowIndex int, jsonDetails 
 		if jsonDetails && issueDetailURL(issue) != "" {
 			<a class="w-fit text-xs font-medium text-accent underline-offset-4 hover:underline focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent" href={ issueDetailURL(issue) }>JSON details</a>
 		}
-		<div
-			id={ issuePopoverID(prefix, rowIndex) }
-			class="popover-panel issue-popover-panel max-w-sm text-foreground"
-			role="tooltip"
-			aria-hidden="true"
-			data-popover-panel
-			data-popover-width="320"
-		>
-			<p class="font-medium text-foreground">{ issueTitle(issue) }</p>
-			if issueDescriptionPreview(issue) != "" {
-				<p class="mt-1 text-muted-foreground">{ issueDescriptionPreview(issue) }</p>
-			}
-		</div>
 	</div>
 }
 

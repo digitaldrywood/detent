@@ -3717,6 +3717,120 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 	}
 }
 
+func TestDashboardIssueCellsDoNotRenderHoverPopovers(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
+	issues := []struct {
+		identifier  string
+		title       string
+		description string
+	}{
+		{
+			identifier:  "digitaldrywood/detent#191",
+			title:       "Running issue cell",
+			description: "Running issue description remains inline.",
+		},
+		{
+			identifier:  "digitaldrywood/detent#192",
+			title:       "Retry issue cell",
+			description: "Retry issue description remains inline.",
+		},
+		{
+			identifier:  "digitaldrywood/detent#193",
+			title:       "Blocked issue cell",
+			description: "Blocked issue description remains inline.",
+		},
+		{
+			identifier:  "digitaldrywood/detent#194",
+			title:       "Recent issue cell",
+			description: "Recent issue description remains inline.",
+		},
+	}
+	html := renderDashboard(t, templates.DashboardData{
+		Title:         "Detent",
+		ConnectorName: "github",
+		Snapshot: telemetry.Snapshot{
+			GeneratedAt: now,
+			Running: []telemetry.Running{
+				{
+					Issue: telemetry.Issue{
+						ID:          "issue-cell-running",
+						Identifier:  issues[0].identifier,
+						Title:       issues[0].title,
+						Description: issues[0].description,
+					},
+					SessionID: "thread-issue-cell-running",
+				},
+			},
+			Queue: []telemetry.Queued{
+				{
+					Issue: telemetry.Issue{
+						ID:          "issue-cell-retry",
+						Identifier:  issues[1].identifier,
+						Title:       issues[1].title,
+						Description: issues[1].description,
+					},
+					Attempt: 1,
+				},
+			},
+			Blocked: []telemetry.Blocked{
+				{
+					Issue: telemetry.Issue{
+						ID:          "issue-cell-blocked",
+						Identifier:  issues[2].identifier,
+						Title:       issues[2].title,
+						Description: issues[2].description,
+					},
+					SessionID: "thread-issue-cell-blocked",
+				},
+			},
+			Completed: []telemetry.Completed{
+				{
+					Issue: telemetry.Issue{
+						ID:          "issue-cell-recent",
+						Identifier:  issues[3].identifier,
+						Title:       issues[3].title,
+						Description: issues[3].description,
+					},
+					SessionID:   "thread-issue-cell-recent",
+					CompletedAt: now,
+				},
+			},
+		},
+	})
+
+	for _, issue := range issues {
+		tag := dashboardIssueCellOpeningTag(t, html, issue.identifier)
+		if !strings.Contains(tag, `data-issue-identity="`) {
+			t.Fatalf("issue cell %s missing identity attribute in opening tag %q", issue.identifier, tag)
+		}
+		for _, forbidden := range []string{
+			"data-popover",
+			"data-popover-trigger",
+			"aria-describedby",
+			"aria-expanded",
+		} {
+			if strings.Contains(tag, forbidden) {
+				t.Fatalf("issue cell %s opening tag contains %q: %q", issue.identifier, forbidden, tag)
+			}
+		}
+		if !strings.Contains(html, issue.description) {
+			t.Fatalf("dashboard missing inline description preview %q:\n%s", issue.description, html)
+		}
+	}
+
+	for _, forbidden := range []string{
+		"issue-popover-panel",
+		"-issue-popover-",
+		`data-popover-width="320"`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard rendered issue popover marker %q:\n%s", forbidden, html)
+		}
+	}
+}
+
 func TestDashboardRendersRunningActivityHoverCard(t *testing.T) {
 	t.Parallel()
 
@@ -3859,10 +3973,10 @@ func TestDashboardIncludesMobileResponsiveLayouts(t *testing.T) {
 		"hidden md:block",
 		"sm:hidden",
 		"hidden overflow-hidden rounded-md border border-border sm:block",
-		"running-mobile-issue-popover-0",
-		"retry-mobile-issue-popover-0",
-		"blocked-mobile-issue-popover-0",
-		"recent-mobile-issue-popover-0",
+		`data-issue-identifier="digitaldrywood/detent#170"`,
+		`data-issue-identifier="digitaldrywood/detent#171"`,
+		`data-issue-identifier="digitaldrywood/detent#172"`,
+		`data-issue-identifier="digitaldrywood/detent#173"`,
 		"dashboard-body-grid grid min-w-0 items-start gap-4 lg:grid-cols-[minmax(0,1fr)_20rem] lg:gap-5 xl:grid-cols-[minmax(0,1fr)_22rem]",
 		"dashboard-primary-column grid min-w-0 content-start gap-4 lg:gap-5",
 		"dashboard-aside-column grid min-w-0 content-start gap-4 lg:gap-5",
@@ -4172,6 +4286,17 @@ func renderDashboard(t *testing.T, data templates.DashboardData) string {
 		t.Fatalf("Render() error = %v", err)
 	}
 	return buf.String()
+}
+
+func dashboardIssueCellOpeningTag(t *testing.T, html string, identifier string) string {
+	t.Helper()
+
+	pattern := `<div[^>]*data-issue-identifier="` + regexp.QuoteMeta(identifier) + `"[^>]*>`
+	match := regexp.MustCompile(pattern).FindString(html)
+	if match == "" {
+		t.Fatalf("dashboard missing issue cell opening tag for %s:\n%s", identifier, html)
+	}
+	return match
 }
 
 func renderHealthPage(t *testing.T, data templates.DashboardData) string {

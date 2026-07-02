@@ -1804,10 +1804,6 @@ func issueDetailURL(issue telemetry.Issue) string {
 	return "/api/v1/" + url.PathEscape(identifier)
 }
 
-func issuePopoverID(prefix string, index int) string {
-	return prefix + "-issue-popover-" + strconv.Itoa(index)
-}
-
 func issueState(issue telemetry.Issue, fallback string) string {
 	if issue.State != "" {
 		return issue.State
