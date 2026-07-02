@@ -462,17 +462,16 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		}
 	}()
 
-	prompt := BuildValidatorPrompt(workflow, req.Issue, ValidatorPromptOptions{
-		WorkspacePath: info.Path,
-		Branch:        info.Branch,
-	})
+	validator := gate.Effective(workflow.Config.Gate).Validator
+	promptOptions := r.validatorPromptOptions(ctx, info, workspaceIssue, validatorMaxInlineDiffBytes(validator))
+	prompt := BuildValidatorPrompt(workflow, req.Issue, promptOptions)
 	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
 
 	model := selection.Model
-	if override := strings.TrimSpace(workflow.Config.Gate.Validator.Model); override != "" {
+	if override := strings.TrimSpace(validator.Model); override != "" {
 		model = override
 	}
 
@@ -563,6 +562,58 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		return gate.ValidatorResult{}, err
 	}
 	return validation, nil
+}
+
+func (r *Runner) validatorPromptOptions(ctx context.Context, info workspace.Info, issue workspace.Issue, maxInlineDiffBytes int) ValidatorPromptOptions {
+	opts := ValidatorPromptOptions{
+		WorkspacePath:      info.Path,
+		Branch:             info.Branch,
+		MaxInlineDiffBytes: maxInlineDiffBytes,
+	}
+
+	if provider, ok := r.workspace.(workspace.DiffProvider); ok {
+		diff, err := provider.Diff(ctx, info, issue, maxInlineDiffBytes)
+		if err == nil {
+			opts.DiffStat = &diff.Stat
+			opts.DiffPatch = diff.Patch
+			opts.DiffTruncated = diff.Truncated
+			return opts
+		}
+		opts.DiffError = err.Error()
+		r.logValidatorDiffError(issue, info, "workspace diff failed", err)
+	}
+
+	stat, err := r.workspace.DiffStat(ctx, info, issue)
+	if err != nil {
+		if opts.DiffError == "" {
+			opts.DiffError = err.Error()
+		}
+		r.logValidatorDiffError(issue, info, "workspace diff stat failed", err)
+		return opts
+	}
+	opts.DiffStat = &stat
+	return opts
+}
+
+func validatorMaxInlineDiffBytes(cfg gate.ValidatorConfig) int {
+	if cfg.MaxInlineDiffBytes == nil {
+		return gate.DefaultValidatorMaxInlineDiffBytes
+	}
+	return *cfg.MaxInlineDiffBytes
+}
+
+func (r *Runner) logValidatorDiffError(issue workspace.Issue, info workspace.Info, message string, err error) {
+	if r == nil || r.logger == nil || err == nil {
+		return
+	}
+	r.logger.Warn(
+		message,
+		slog.String("issue_id", issue.ID),
+		slog.String("issue_identifier", issue.Identifier),
+		slog.String("workspace_path", info.Path),
+		slog.String("phase", "validator"),
+		slog.String("error", err.Error()),
+	)
 }
 
 type validatorJSONResult struct {
@@ -960,11 +1011,16 @@ func durationFromMillis(ms int) time.Duration {
 }
 
 func workspaceIssue(projectID string, issue connector.Issue) workspace.Issue {
+	baseRef := ""
+	if issue.PullRequest != nil {
+		baseRef = strings.TrimSpace(issue.PullRequest.BaseSHA)
+	}
 	return workspace.Issue{
 		ProjectID:  projectID,
 		ID:         issue.ID,
 		Identifier: issue.Identifier,
 		BranchName: issue.BranchName,
+		BaseRef:    baseRef,
 	}
 }
 

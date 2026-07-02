@@ -90,8 +90,11 @@ gate:
   transient_ci_retry_limit: 2
   validator:
     enabled: false
+    # Recommended cheap override when enabled: gpt-5.4-mini.
+    # Watch rework-rate per validator model once cache/model telemetry lands.
     model: ""
     min_score: 0.8
+    max_inline_diff_bytes: 65536
     block_on:
       - p1
 plan:

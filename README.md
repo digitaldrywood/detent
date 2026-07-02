@@ -703,8 +703,11 @@ gate:
   transient_ci_retry_limit: 2
   validator:
     enabled: false
+    # Recommended cheap override when enabled: gpt-5.4-mini.
+    # Watch rework-rate per validator model once cache/model telemetry lands.
     model: ""
     min_score: 0.8
+    max_inline_diff_bytes: 65536
     block_on:
       - p1
 server:
@@ -757,8 +760,11 @@ gate:
   transient_ci_retry_limit: 2
   validator:
     enabled: false
+    # Recommended cheap override when enabled: gpt-5.4-mini.
+    # Watch rework-rate per validator model once cache/model telemetry lands.
     model: ""
     min_score: 0.8
+    max_inline_diff_bytes: 65536
     block_on:
       - p1
 ---
@@ -802,8 +808,11 @@ gate:
   transient_ci_retry_limit: 2
   validator:
     enabled: false
+    # Recommended cheap override when enabled: gpt-5.4-mini.
+    # Watch rework-rate per validator model once cache/model telemetry lands.
     model: ""
     min_score: 0.8
+    max_inline_diff_bytes: 65536
     block_on:
       - p1
 ---
@@ -882,6 +891,11 @@ criteria and returns a structured verdict, score, summary, and severity-tagged
 findings. `gate.validator.model` optionally overrides the selected validator
 route model, `min_score` below threshold routes to `Rework`, and any finding
 severity listed in `block_on` routes to `Rework` regardless of score.
+For Codex-backed validators, start with the cheap-tier override
+`gate.validator.model: gpt-5.4-mini` and watch rework-rate per validator model
+once cache/model telemetry lands. `gate.validator.max_inline_diff_bytes`
+defaults to `65536`; validator prompts include the full diff only at or below
+that size and otherwise seed stat-only context.
 
 `plan` controls the optional plan-approval stop before implementation. It is
 disabled by default, preserving the direct dispatch behavior. When enabled, the
@@ -1952,6 +1966,11 @@ Routes without `role` are code-agent routes. Set `role: validator` to give the
 validator-agent review its own backend/model route when
 `gate.validator.enabled` is true; if no validator route matches, Detent falls
 back to the code default route.
+If the validator runs through the Codex backend, prefer setting
+`gate.validator.model: gpt-5.4-mini` as the cheap-tier override before adding a
+separate validator route. Treat rework-rate per validator model as the quality
+signal once cache/model telemetry lands; increase the validator tier only when
+that rate worsens.
 
 ```yaml
 agents:

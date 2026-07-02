@@ -10,13 +10,14 @@ const (
 	KindHumanReview = "human_review"
 	KindArtifact    = "artifact"
 
-	DefaultCommand             = "make check"
-	DefaultApprovalLabel       = "human-approved"
-	DefaultPlanApprovalLabel   = "plan-approved"
-	DefaultPlanStop            = "Plan Review"
-	DefaultValidatorMinScore   = 0.8
-	DefaultArtifactStatusField = "validation_status"
-	DefaultTransientCIRetries  = 2
+	DefaultCommand                     = "make check"
+	DefaultApprovalLabel               = "human-approved"
+	DefaultPlanApprovalLabel           = "plan-approved"
+	DefaultPlanStop                    = "Plan Review"
+	DefaultValidatorMinScore           = 0.8
+	DefaultValidatorMaxInlineDiffBytes = 64 * 1024
+	DefaultArtifactStatusField         = "validation_status"
+	DefaultTransientCIRetries          = 2
 
 	CIFailureActionSkip   = "skip"
 	CIFailureActionRework = "rework"
@@ -45,11 +46,12 @@ type ArtifactConfig struct {
 }
 
 type ValidatorConfig struct {
-	Enabled       bool     `yaml:"enabled"`
-	Model         string   `yaml:"model"`
-	MinScore      float64  `yaml:"min_score"`
-	BlockOn       []string `yaml:"block_on"`
-	TurnTimeoutMS int      `yaml:"turn_timeout_ms"`
+	Enabled            bool     `yaml:"enabled"`
+	Model              string   `yaml:"model"`
+	MinScore           float64  `yaml:"min_score"`
+	BlockOn            []string `yaml:"block_on"`
+	TurnTimeoutMS      int      `yaml:"turn_timeout_ms"`
+	MaxInlineDiffBytes *int     `yaml:"max_inline_diff_bytes"`
 }
 
 type PlanConfig struct {
@@ -509,6 +511,9 @@ func effectiveValidatorConfig(cfg ValidatorConfig) ValidatorConfig {
 	if cfg.MinScore == 0 {
 		cfg.MinScore = DefaultValidatorMinScore
 	}
+	if cfg.MaxInlineDiffBytes == nil {
+		cfg.MaxInlineDiffBytes = newInt(DefaultValidatorMaxInlineDiffBytes)
+	}
 	cfg.BlockOn = normalizeSeverities(cfg.BlockOn)
 	if len(cfg.BlockOn) == 0 {
 		cfg.BlockOn = []string{"p1"}
@@ -551,6 +556,9 @@ func validateValidator(prefix string, cfg ValidatorConfig) []string {
 	}
 	if cfg.TurnTimeoutMS < 0 {
 		problems = append(problems, prefix+".turn_timeout_ms must be greater than or equal to 0")
+	}
+	if cfg.MaxInlineDiffBytes != nil && *cfg.MaxInlineDiffBytes < 0 {
+		problems = append(problems, prefix+".max_inline_diff_bytes must be greater than or equal to 0")
 	}
 	cfg = effectiveValidatorConfig(cfg)
 	if !invalidScore && (cfg.MinScore <= 0 || cfg.MinScore > 1) {

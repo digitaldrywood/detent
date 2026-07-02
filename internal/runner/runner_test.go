@@ -866,6 +866,7 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 			PullRequest: &connector.PullRequest{
 				URL:        "https://github.test/digitaldrywood/detent/pull/522",
 				BranchName: "detent/digitaldrywood_detent_522",
+				BaseSHA:    "base-sha",
 			},
 		},
 	})
@@ -890,6 +891,9 @@ func TestRunnerValidateUsesValidatorRouteModelOverrideAndParsesJSON(t *testing.T
 	}
 	if validatorBackend.request.Workspace != workspacePath {
 		t.Fatalf("validator workspace = %q, want %q", validatorBackend.request.Workspace, workspacePath)
+	}
+	if workspaceBackend.createIssue.BaseRef != "base-sha" {
+		t.Fatalf("workspace issue BaseRef = %q, want base-sha", workspaceBackend.createIssue.BaseRef)
 	}
 	for _, want := range []string{"validator-agent", "Acceptance Criteria", "git diff", "JSON"} {
 		if !strings.Contains(validatorBackend.request.Prompt, want) {

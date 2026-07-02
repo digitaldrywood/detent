@@ -380,7 +380,7 @@ func TestOnboardingWriteGitHubWorkflows(t *testing.T) {
 				"gate:\n  kind: command\n  run: make check",
 				"require_automated_review: false",
 				"ci_failure_action: rework",
-				"validator:\n    enabled: false\n    model: \"\"\n    min_score: 0.8\n    block_on:\n      - p1",
+				"validator:\n    enabled: false\n    # Recommended cheap override when enabled: gpt-5.4-mini.\n    # Watch rework-rate per validator model once cache/model telemetry lands.\n    model: \"\"\n    min_score: 0.8\n    max_inline_diff_bytes: 65536\n    block_on:\n      - p1",
 				"hooks:\n  timeout_ms: 60000",
 				"max_concurrent_agents_by_state:\n    Merging: 1",
 				"dispatch_priority_by_label:\n    - bug\n    - regression\n    - enhancement",

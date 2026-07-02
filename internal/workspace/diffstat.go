@@ -1,10 +1,13 @@
 package workspace
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -23,12 +26,30 @@ type DiffStat struct {
 	Removed int `json:"removed"`
 }
 
+type Diff struct {
+	Stat      DiffStat
+	Patch     string
+	Truncated bool
+}
+
+type DiffProvider interface {
+	Diff(context.Context, Info, Issue, int) (Diff, error)
+}
+
 func (l *LocalGit) DiffStat(ctx context.Context, info Info, issue Issue) (DiffStat, error) {
 	normalized, err := l.normalizeInfo(info, issue)
 	if err != nil {
 		return DiffStat{}, err
 	}
 	return GitDiffStat(ctx, normalized.Path)
+}
+
+func (l *LocalGit) Diff(ctx context.Context, info Info, issue Issue, maxBytes int) (Diff, error) {
+	normalized, err := l.normalizeInfo(info, issue)
+	if err != nil {
+		return Diff{}, err
+	}
+	return GitDiffFrom(ctx, normalized.Path, issue.BaseRef, maxBytes)
 }
 
 func GitDiffStat(ctx context.Context, workspacePath string) (DiffStat, error) {
@@ -47,6 +68,61 @@ func GitDiffStat(ctx context.Context, workspacePath string) (DiffStat, error) {
 		return DiffStat{}, err
 	}
 	return ParseDiffStat(output)
+}
+
+func GitDiff(ctx context.Context, workspacePath string, maxBytes int) (Diff, error) {
+	return GitDiffFrom(ctx, workspacePath, "", maxBytes)
+}
+
+func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxBytes int) (Diff, error) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return Diff{}, errors.New("workspace path is required")
+	}
+	if maxBytes < 0 {
+		return Diff{}, errors.New("max bytes must be greater than or equal to 0")
+	}
+	if _, err := os.Stat(workspacePath); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return Diff{}, fmt.Errorf("%w: %s: %w", ErrMissingWorkspace, workspacePath, err)
+		}
+		return Diff{}, fmt.Errorf("stat workspace path: %w", err)
+	}
+
+	indexPath, err := gitIndexPath(ctx, workspacePath)
+	if err != nil {
+		return Diff{}, err
+	}
+	tempIndex, cleanup, err := copyGitIndex(indexPath)
+	if err != nil {
+		return Diff{}, err
+	}
+	defer cleanup()
+
+	env := []string{"GIT_INDEX_FILE=" + tempIndex}
+	if _, err := runGitAtWithEnv(ctx, workspacePath, env, "add", "--intent-to-add", "--", "."); err != nil {
+		return Diff{}, fmt.Errorf("git add intent to add: %w", err)
+	}
+	diffBase := gitDiffBase(ctx, workspacePath, baseRef)
+	statOutput, err := runGitAtWithEnv(ctx, workspacePath, env, "diff", "--stat", diffBase)
+	if err != nil {
+		return Diff{}, fmt.Errorf("git diff stat: %w", err)
+	}
+	stat, err := ParseDiffStat(statOutput)
+	if err != nil {
+		return Diff{}, err
+	}
+	if maxBytes == 0 {
+		return Diff{Stat: stat, Truncated: stat != (DiffStat{})}, nil
+	}
+
+	patch, truncated, err := gitDiffOutputWithinLimit(ctx, workspacePath, env, diffBase, maxBytes)
+	if err != nil {
+		return Diff{}, err
+	}
+	if truncated {
+		patch = ""
+	}
+	return Diff{Stat: stat, Patch: patch, Truncated: truncated}, nil
 }
 
 func gitDiffStatOutput(ctx context.Context, workspacePath string) (string, error) {
@@ -69,6 +145,80 @@ func gitDiffStatOutput(ctx context.Context, workspacePath string) (string, error
 		return "", fmt.Errorf("git diff stat: %w", err)
 	}
 	return output, nil
+}
+
+func gitDiffBase(ctx context.Context, workspacePath string, baseRef string) string {
+	baseRef = strings.TrimSpace(baseRef)
+	if baseRef == "" {
+		return "HEAD"
+	}
+	output, err := runGitAt(ctx, workspacePath, "merge-base", baseRef, "HEAD")
+	if err != nil {
+		return baseRef
+	}
+	mergeBase := strings.TrimSpace(output)
+	if mergeBase == "" {
+		return baseRef
+	}
+	return mergeBase
+}
+
+func gitDiffOutputWithinLimit(ctx context.Context, workspacePath string, env []string, diffBase string, maxBytes int) (string, bool, error) {
+	gitArgs := []string{"git", "-C", workspacePath, "diff", diffBase}
+	cmd := exec.CommandContext(ctx, "git")
+	cmd.Args = gitArgs
+	cmd.WaitDelay = workspaceCommandWaitDelay
+	if len(env) > 0 {
+		cmd.Env = append(os.Environ(), env...)
+	}
+
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		return "", false, fmt.Errorf("git diff stdout pipe: %w", err)
+	}
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	if err := cmd.Start(); err != nil {
+		return "", false, fmt.Errorf("git diff start: %w", err)
+	}
+
+	output, readErr := io.ReadAll(io.LimitReader(stdout, int64(maxBytes)+1))
+	truncated := len(output) > maxBytes
+	var killErr error
+	if truncated && cmd.Process != nil {
+		killErr = cmd.Process.Kill()
+	}
+	waitErr := cmd.Wait()
+
+	if readErr != nil {
+		return "", false, fmt.Errorf("git diff read: %w", readErr)
+	}
+	if truncated {
+		if killErr != nil && !errors.Is(killErr, os.ErrProcessDone) {
+			return "", false, fmt.Errorf("git diff stop after limit: %w", killErr)
+		}
+		return "", true, nil
+	}
+	if waitErr == nil {
+		return string(output), false, nil
+	}
+
+	exitCode := -1
+	var exitErr *exec.ExitError
+	if errors.As(waitErr, &exitErr) {
+		exitCode = exitErr.ExitCode()
+	}
+	if ctx.Err() != nil {
+		waitErr = ctx.Err()
+	}
+	combined := append(output, stderr.Bytes()...)
+	return "", false, &CommandError{
+		Command:  "git",
+		Args:     gitArgs[1:],
+		ExitCode: exitCode,
+		Output:   string(combined),
+		Err:      waitErr,
+	}
 }
 
 func gitIndexPath(ctx context.Context, workspacePath string) (string, error) {
