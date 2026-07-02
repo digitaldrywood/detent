@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"sync"
 	"time"
+
+	"github.com/digitaldrywood/detent/internal/procgroup"
 )
 
 type Transport interface {
@@ -77,7 +79,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 		return nil, fmt.Errorf("create stdout pipe: %w", err)
 	}
 
-	configureCommandProcessGroup(cmd)
+	procgroup.Configure(cmd)
 	if err := cmd.Start(); err != nil {
 		_ = stdin.Close()
 		return nil, fmt.Errorf("start command: %w", err)
@@ -85,7 +87,7 @@ func (f *LocalTransportFactory) NewTransport(ctx context.Context) (Transport, er
 
 	transport := &localTransport{
 		cmd:            cmd,
-		processGroupID: commandProcessGroupID(cmd),
+		processGroupID: procgroup.GroupID(cmd),
 		stdin:          stdin,
 		codec:          NewCodec(stdout, stdin),
 		received:       make(chan transportResult, 64),
@@ -162,7 +164,7 @@ func (t *localTransport) Close(ctx context.Context) error {
 		return t.waitError()
 	case <-ctx.Done():
 		var killErr error
-		killErr = terminateCommandProcessTree(t.cmd, t.processGroupID)
+		killErr = procgroup.TerminateTree(t.cmd, t.processGroupID)
 
 		select {
 		case <-t.done:
@@ -249,7 +251,7 @@ func (t *localTransport) wait() {
 	<-t.readDone
 	t.stopReading()
 	err := t.cmd.Wait()
-	if cleanupErr := cleanupCommandProcessGroup(t.processGroupID); cleanupErr != nil {
+	if cleanupErr := procgroup.Cleanup(t.processGroupID); cleanupErr != nil {
 		err = errors.Join(err, cleanupErr)
 	}
 	t.waitMu.Lock()
