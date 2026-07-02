@@ -516,10 +516,9 @@ templ helpIcon(term helpTerm, scope string) {
 	}
 }
 
-templ helpInlineLabel(label string, term helpTerm, scope string, class string) {
+templ plainInlineLabel(label string, class string) {
 	<span class={ "inline-flex min-w-0 items-center gap-1.5 " + class }>
 		<span>{ label }</span>
-		@helpIcon(term, scope)
 	</span>
 }
 

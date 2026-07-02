@@ -5540,7 +5540,7 @@ func runningIssuesSection(data DashboardData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Runtime / turns", helpAgeTurn, "running-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Runtime / turns", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5548,7 +5548,7 @@ func runningIssuesSection(data DashboardData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Codex update", helpEvent, "running-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Codex update", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5556,7 +5556,7 @@ func runningIssuesSection(data DashboardData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Diff", helpDiff, "running-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Diff", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5564,7 +5564,7 @@ func runningIssuesSection(data DashboardData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Tokens", helpTokens, "running-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Tokens", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -5572,7 +5572,7 @@ func runningIssuesSection(data DashboardData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Session", helpSession, "running-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Session", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -9620,7 +9620,7 @@ func ManualRefreshFeedbackWithID(id string, attempt *telemetry.RefreshAttempt) t
 	})
 }
 
-func metricCard(label string, term helpTerm, value string, detail string, borderClass string, dotClass string) templ.Component {
+func metricCard(label string, value string, detail string, borderClass string, dotClass string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -9663,7 +9663,7 @@ func metricCard(label string, term helpTerm, value string, detail string, border
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel(label, term, "dashboard", "text-sm font-medium text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel(label, "text-sm font-medium text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9748,27 +9748,27 @@ func statStrip(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = statStripItem("Running", helpRunning, formatCount(runningCount(snapshot)), "Active issue sessions", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = statStripItem("Running", formatCount(runningCount(snapshot)), "Active issue sessions", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = statStripItem("Queue", helpQueue, formatCount(queueCount(snapshot)), "Waiting or retrying", "bg-warning").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = statStripItem("Queue", formatCount(queueCount(snapshot)), "Waiting or retrying", "bg-warning").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = statStripItem("Blocked", helpBlocked, formatCount(blockedCount(snapshot)), "Needs operator action", "bg-danger").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = statStripItem("Blocked", formatCount(blockedCount(snapshot)), "Needs operator action", "bg-danger").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = statStripItem("Completed", helpCompleted, formatCount(completedCount(snapshot)), "Finished sessions", "bg-success").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = statStripItem("Completed", formatCount(completedCount(snapshot)), "Finished sessions", "bg-success").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = statStripItem("tps", helpThroughput, throughputRate(snapshot), "Rolling tokens/sec", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = statStripItem("tps", throughputRate(snapshot), "Rolling tokens/sec", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = statStripItem("Uptime", helpRuntime, runtimeLabel(snapshot), "Aggregate agent uptime", "bg-success").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = statStripItem("Uptime", runtimeLabel(snapshot), "Aggregate agent uptime", "bg-success").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -9780,7 +9780,7 @@ func statStrip(snapshot telemetry.Snapshot) templ.Component {
 	})
 }
 
-func statStripItem(label string, term helpTerm, value string, detail string, dotClass string) templ.Component {
+func statStripItem(label string, value string, detail string, dotClass string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -9805,7 +9805,7 @@ func statStripItem(label string, term helpTerm, value string, detail string, dot
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel(label, term, "dashboard-stat-strip", "truncate text-xs font-medium uppercase text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel(label, "truncate text-xs font-medium uppercase text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12688,7 +12688,7 @@ func runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt tim
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel("Runtime / turns", helpAgeTurn, "running-mobile", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel("Runtime / turns", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12709,7 +12709,7 @@ func runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt tim
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel("Diff", helpDiff, "running-mobile", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel("Diff", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -12730,7 +12730,7 @@ func runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt tim
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel("Tokens", helpTokens, "running-mobile", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel("Tokens", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -15063,7 +15063,7 @@ func retryQueueSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Error", helpEvent, "retry-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Error", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -15677,7 +15677,7 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Session", helpSession, "blocked-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Session", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -15685,7 +15685,7 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Last update", helpEvent, "blocked-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Last update", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -15693,7 +15693,7 @@ func blockedSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Error", helpEvent, "blocked-table-error", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Error", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -16000,7 +16000,7 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Runtime / turns", helpAgeTurn, "recent-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Runtime / turns", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -16008,7 +16008,7 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Tokens", helpTokens, "recent-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Tokens", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -16016,7 +16016,7 @@ func recentSessionsSection(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Session", helpSession, "recent-table", "").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Session", "").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -16183,7 +16183,7 @@ func recentSessionMobileCard(row telemetry.Completed, rowIndex int) templ.Compon
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel("Runtime / turns", helpAgeTurn, "recent-mobile", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel("Runtime / turns", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -16204,7 +16204,7 @@ func recentSessionMobileCard(row telemetry.Completed, rowIndex int) templ.Compon
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel("Tokens", helpTokens, "recent-mobile", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel("Tokens", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -17201,7 +17201,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel("Spend today", helpCurrentSpend, "budget-current-spend", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel("Spend today", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -17245,7 +17245,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Cost burn-down", helpProjectedSpend, "budget-burn-down", "font-medium text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Cost burn-down", "font-medium text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -17324,7 +17324,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = helpInlineLabel("Budget history", helpBudgetHistory, "budget-history", "font-medium text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = plainInlineLabel("Budget history", "font-medium text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -17399,7 +17399,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel("Projected", helpProjectedSpend, "budget-projected", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel("Projected", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -17420,7 +17420,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel("Daily cap", helpDailyCap, "budget-daily-cap", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel("Daily cap", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -17441,7 +17441,7 @@ func budgetCard(snapshot telemetry.Snapshot) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel("Issue cap", helpIssueCap, "budget-issue-cap", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel("Issue cap", "text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
@@ -17535,7 +17535,7 @@ func rateLimitsCard(limits *RateLimits) templ.Component {
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
-				templ_7745c5c3_Err = helpInlineLabel(row.Name, rateLimitHelpTerm(row.Name), "rate-limit-"+helpIDPart(row.Name), "font-medium text-foreground").Render(ctx, templ_7745c5c3_Buffer)
+				templ_7745c5c3_Err = plainInlineLabel(row.Name, "font-medium text-foreground").Render(ctx, templ_7745c5c3_Buffer)
 				if templ_7745c5c3_Err != nil {
 					return templ_7745c5c3_Err
 				}
@@ -18043,7 +18043,7 @@ func tokenCard(data DashboardData) templ.Component {
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel("Token trend", helpTokenTrend, "tokens-card", "font-medium text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel("Token trend", "font-medium text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
