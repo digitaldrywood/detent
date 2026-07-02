@@ -548,11 +548,13 @@ func assertLocalTransportClosed(t *testing.T, transport *localTransport, scenari
 
 	if transport == nil {
 		t.Fatalf("%s: captured transport is nil", scenario)
+		return
 	}
 	assertChannelClosed(t, transport.readDone, scenario, "readLoop")
 	assertChannelClosed(t, transport.done, scenario, "wait")
 	if transport.cmd == nil {
 		t.Fatalf("%s: command is nil, want reaped process", scenario)
+		return
 	}
 	if transport.cmd.ProcessState == nil {
 		t.Fatalf("%s: ProcessState is nil, want reaped process", scenario)

@@ -56,6 +56,9 @@ linters:
       confidence: medium
       excludes:
         - G115
+        # Keep G304 excluded until read-only workspace paths such as
+        # internal/workspace/diffstat.go are migrated or separately justified.
+        # Issue #825 scopes os.Root enforcement to write/mutate paths.
         - G304
         - G306
         - G301
