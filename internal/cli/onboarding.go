@@ -166,6 +166,7 @@ func newOnboardingCommand(configPath *string, opts options) *cobra.Command {
 		newOnboardingExplainAnswersCommand(),
 		newOnboardingNormalizeAnswersCommand(),
 		newOnboardingDraftAnswersCommand(configPath, opts),
+		newOnboardingBuildWorkflowCommand(),
 		newOnboardingDiagnoseGateCommand(),
 	)
 	return cmd
@@ -1457,6 +1458,10 @@ func analyzeOnboardingDeliveryProfileAnswers(answers onboardingAnswers) onboardi
 }
 
 func validateOnboardingIdentityAnswers(answers onboardingAnswers, result *onboardingAnswersValidationResult) []string {
+	return validateOnboardingIdentityAnswersWithContext(context.Background(), answers, result)
+}
+
+func validateOnboardingIdentityAnswersWithContext(ctx context.Context, answers onboardingAnswers, result *onboardingAnswersValidationResult) []string {
 	var problems []string
 
 	customerID := strings.TrimSpace(answers.Values["CUSTOMER_ID"])
@@ -1493,7 +1498,7 @@ func validateOnboardingIdentityAnswers(answers onboardingAnswers, result *onboar
 	result.ReferenceRepositories = referenceRepositories
 
 	targetSourceRoot := strings.TrimSpace(answers.Values["TARGET_SOURCE_ROOT"])
-	sourceProblems := validateOnboardingTargetSourceRoot(targetSourceRoot, targetRepository, targetRepositoryValid)
+	sourceProblems := validateOnboardingTargetSourceRootWithContext(ctx, targetSourceRoot, targetRepository, targetRepositoryValid)
 	problems = append(problems, sourceProblems...)
 	if len(sourceProblems) == 0 {
 		result.TargetSourceRoot = targetSourceRoot
@@ -1543,7 +1548,7 @@ func validateOnboardingReferenceRepositories(answers onboardingAnswers, targetRe
 	return repositories, problems
 }
 
-func validateOnboardingTargetSourceRoot(path string, targetRepository string, targetRepositoryValid bool) []string {
+func validateOnboardingTargetSourceRootWithContext(ctx context.Context, path string, targetRepository string, targetRepositoryValid bool) []string {
 	if path == "" {
 		return []string{"TARGET_SOURCE_ROOT is required"}
 	}
@@ -1552,10 +1557,10 @@ func validateOnboardingTargetSourceRoot(path string, targetRepository string, ta
 	}
 
 	var problems []string
-	if err := defaultGitWorkTree(context.Background(), path); err != nil {
+	if err := defaultGitWorkTree(ctx, path); err != nil {
 		return []string{"TARGET_SOURCE_ROOT must be a git checkout: " + err.Error()}
 	}
-	remote, err := defaultGitRemoteURL(context.Background(), path)
+	remote, err := defaultGitRemoteURL(ctx, path)
 	if err != nil {
 		return []string{"TARGET_SOURCE_ROOT must have an origin remote: " + err.Error()}
 	}

@@ -58,6 +58,9 @@ agent:
   max_concurrent_agents: 5
   max_turns: 20
   max_retry_backoff_ms: 300000
+  max_session_tokens: 2000000
+  max_session_context_multiplier: 4
+  max_session_token_override_label: allow-large-session
   max_concurrent_agents_by_state:
     Merging: 1
   dispatch_priority_by_state:
@@ -112,7 +115,7 @@ gate:
     enabled: false
     # Recommended cheap override when enabled: gpt-5.4-mini.
     # Watch rework-rate per validator model once cache/model telemetry lands.
-    model: ""
+    model: gpt-5.4-mini
     min_score: 0.8
     max_inline_diff_bytes: 65536
     block_on:
@@ -127,6 +130,12 @@ server:
   port: 4000
   kanban:
     mode: integration
+budget:
+  enabled: true
+  per_day_max_usd: 50
+  per_issue_max_usd: 5
+  refusal_cooldown_seconds: 3600
+  pricing_path: priv/pricing/models.yaml
 hooks:
   timeout_ms: 60000
 ---
