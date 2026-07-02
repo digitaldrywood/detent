@@ -1741,6 +1741,7 @@ func TestRequestRefreshPublishesManualOutcome(t *testing.T) {
 	manual := state.Snapshot(time.Now()).Refresh.Manual
 	if manual == nil {
 		t.Fatal("snapshot Refresh.Manual = nil")
+		return
 	}
 	if manual.RequestedAt == nil || !manual.RequestedAt.Equal(refresh.RequestedAt) {
 		t.Fatalf("Manual.RequestedAt = %v, want %v", manual.RequestedAt, refresh.RequestedAt)
@@ -1804,6 +1805,7 @@ func TestRequestRefreshPublishesFailureWhileDegradedPersists(t *testing.T) {
 	manual := state.Snapshot(time.Now()).Refresh.Manual
 	if manual == nil {
 		t.Fatal("snapshot Refresh.Manual = nil")
+		return
 	}
 	if manual.LastError == "" || !strings.Contains(manual.LastError, "status 504") {
 		t.Fatalf("Manual.LastError = %q, want status 504", manual.LastError)
