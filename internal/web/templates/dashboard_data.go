@@ -543,28 +543,6 @@ type projectKanbanIssueCard struct {
 	index   int
 }
 
-type kanbanLane struct {
-	State      string
-	CountLabel string
-	DotClass   string
-	Cards      []kanbanCard
-}
-
-type kanbanCard struct {
-	IssueID      string
-	Identifier   string
-	ProjectID    string
-	ProjectColor string
-	Title        string
-	URL          string
-	State        string
-	PRNumber     int
-	PRRepository string
-	PRURL        string
-	Movable      bool
-	DisabledText string
-}
-
 func DashboardShellDataFromDashboard(data DashboardData) DashboardShellData {
 	return DashboardShellData{
 		Title:                  data.Title,
@@ -2315,16 +2293,6 @@ func projectKanbanCommentDialogPath(data DashboardData, card projectKanbanCard, 
 	return "/api/v1/kanban/comment?" + values.Encode()
 }
 
-func kanbanMoveDialogPath(data DashboardData, card kanbanCard) string {
-	values := kanbanMoveDialogValues(kanbanProjectID(data), card.IssueID, card.Identifier, card.Title, card.State, "", card.PRNumber, projectKanbanBoardScope(data))
-	return "/api/v1/kanban/move?" + values.Encode()
-}
-
-func kanbanCommentDialogPath(data DashboardData, card kanbanCard, target string) string {
-	values := kanbanCommentDialogValues(kanbanProjectID(data), target, card.IssueID, card.PRRepository, card.Identifier, card.Title, card.PRNumber)
-	return "/api/v1/kanban/comment?" + values.Encode()
-}
-
 func kanbanMoveDialogValues(projectID string, issueID string, identifier string, title string, currentState string, targetState string, prNumber int, board string) url.Values {
 	values := url.Values{}
 	addQueryValue(values, "project_id", projectID)
@@ -2399,95 +2367,6 @@ func kanbanCommentTargetLabel(target string) string {
 	default:
 		return "issue"
 	}
-}
-
-func kanbanLanes(data DashboardData) []kanbanLane {
-	states := kanbanStates(data)
-	cardsByState := make(map[string][]kanbanCard, len(states))
-	for _, state := range states {
-		cardsByState[normalizeDashboardState(state)] = []kanbanCard{}
-	}
-	for _, issue := range kanbanIssues(data.Snapshot) {
-		state := strings.TrimSpace(issue.State)
-		if state == "" {
-			continue
-		}
-		key := normalizeDashboardState(state)
-		if _, ok := cardsByState[key]; !ok {
-			states = append(states, state)
-			cardsByState[key] = []kanbanCard{}
-		}
-		cardsByState[key] = append(cardsByState[key], kanbanCardFromIssue(data, issue))
-	}
-
-	lanes := make([]kanbanLane, 0, len(states))
-	for _, state := range states {
-		cards := cardsByState[normalizeDashboardState(state)]
-		lanes = append(lanes, kanbanLane{
-			State:      state,
-			CountLabel: formatCount(len(cards)),
-			DotClass:   boardStateDotClass(state),
-			Cards:      cards,
-		})
-	}
-	return lanes
-}
-
-func kanbanStates(data DashboardData) []string {
-	states := make([]string, 0, len(data.Kanban.States))
-	seen := map[string]struct{}{}
-	for _, state := range data.Kanban.States {
-		state = strings.TrimSpace(state)
-		if state == "" {
-			continue
-		}
-		key := normalizeDashboardState(state)
-		if _, ok := seen[key]; ok {
-			continue
-		}
-		seen[key] = struct{}{}
-		states = append(states, state)
-	}
-	return states
-}
-
-func kanbanIssues(snapshot telemetry.Snapshot) []telemetry.Issue {
-	issues := make([]telemetry.Issue, 0, len(snapshot.Pipeline)+len(snapshot.Running)+len(snapshot.Queue)+len(snapshot.Blocked))
-	seen := map[string]struct{}{}
-	add := func(issue telemetry.Issue) {
-		key := kanbanIssueKey(issue)
-		if key == "" {
-			return
-		}
-		if _, ok := seen[key]; ok {
-			return
-		}
-		seen[key] = struct{}{}
-		issues = append(issues, issue)
-	}
-	for _, issue := range snapshot.Pipeline {
-		add(issue)
-	}
-	for _, row := range snapshot.Running {
-		add(row.Issue)
-	}
-	for _, row := range snapshot.Queue {
-		add(row.Issue)
-	}
-	for _, row := range snapshot.Blocked {
-		add(row.Issue)
-	}
-	return issues
-}
-
-func kanbanIssueKey(issue telemetry.Issue) string {
-	if id := strings.TrimSpace(issue.ID); id != "" {
-		return "issue:" + id
-	}
-	if identifier := strings.TrimSpace(issue.Identifier); identifier != "" {
-		return "identifier:" + identifier
-	}
-	return ""
 }
 
 func projectKanbanStateOrder(configuredStates []string, cardsByState map[string][]projectKanbanCard) []string {
@@ -2807,28 +2686,6 @@ func projectKanbanCountLabel(count int, singular string, plural string) string {
 	return strconv.Itoa(count) + " " + plural
 }
 
-func kanbanCardFromIssue(data DashboardData, issue telemetry.Issue) kanbanCard {
-	card := kanbanCard{
-		IssueID:      strings.TrimSpace(issue.ID),
-		Identifier:   issueIdentifier(issue),
-		ProjectID:    strings.TrimSpace(issue.ProjectID),
-		ProjectColor: projectColorForID(issue.ProjectID, data.Projects),
-		Title:        issueTitle(issue),
-		URL:          strings.TrimSpace(issue.URL),
-		State:        strings.TrimSpace(issue.State),
-		Movable:      strings.TrimSpace(issue.ID) != "",
-	}
-	if issue.PullRequest != nil {
-		card.PRNumber = issue.PullRequest.Number
-		card.PRURL = strings.TrimSpace(issue.PullRequest.URL)
-		card.PRRepository = pullRequestRepository(issue)
-	}
-	if !card.Movable && card.PRNumber > 0 {
-		card.DisabledText = "Cannot move PR-only card"
-	}
-	return card
-}
-
 func projectKanbanPullRequestLabel(issue telemetry.Issue) string {
 	if issue.PullRequest == nil {
 		return "No linked PR"
@@ -3043,43 +2900,12 @@ func projectKanbanVisibilityStatusLabel(lane projectKanbanLane) string {
 	return label + " with " + projectKanbanCountLabel(len(lane.Cards), "hidden card", "hidden cards")
 }
 
-func kanbanLaneAttributes(data DashboardData, lane kanbanLane) templ.Attributes {
-	attrs := templ.Attributes{}
-	if kanbanIntegrationEnabled(data) {
-		attrs["data-kanban-drop-state"] = lane.State
-		attrs["data-kanban-drop-key"] = projectKanbanStateKey(lane.State)
-	}
-	return attrs
-}
-
-func kanbanCardAttributes(data DashboardData, card kanbanCard) templ.Attributes {
-	attrs := templ.Attributes{
-		"data-kanban-card":          true,
-		"data-kanban-current-state": card.State,
-	}
-	if card.IssueID != "" {
-		attrs["data-kanban-issue-id"] = card.IssueID
-	}
-	if kanbanCardCanMove(data, card) {
-		attrs["draggable"] = "true"
-		attrs["data-kanban-action"] = "move"
-		attrs["data-kanban-allowed-targets"] = kanbanMoveTargetKeys(data, card.State)
-	} else {
-		attrs["aria-disabled"] = "true"
-	}
-	return attrs
-}
-
 func projectKanbanCardCanMove(data DashboardData, card projectKanbanCard) bool {
 	return snapshotReady(data.Snapshot) && projectKanbanCardIntegrationEnabled(data, card) && card.Movable && len(projectKanbanMoveTargetStates(data, card)) > 0
 }
 
 func projectKanbanCardActionsVisible(data DashboardData, card projectKanbanCard) bool {
 	return projectKanbanCardCanMove(data, card) || projectKanbanCardCanRemove(data, card) || projectKanbanCardCanComment(data, card)
-}
-
-func kanbanCardCanMove(data DashboardData, card kanbanCard) bool {
-	return snapshotReady(data.Snapshot) && kanbanIntegrationEnabled(data) && card.Movable && len(kanbanMoveTargetStates(data, card.State)) > 0
 }
 
 func projectKanbanCardCanRemove(data DashboardData, card projectKanbanCard) bool {
@@ -3093,10 +2919,6 @@ func projectKanbanCardCanComment(data DashboardData, card projectKanbanCard) boo
 	return strings.TrimSpace(card.IssueID) != "" || (card.PRNumber > 0 && strings.TrimSpace(card.PRRepository) != "")
 }
 
-func kanbanCardCanRemove(data DashboardData, card kanbanCard) bool {
-	return snapshotReady(data.Snapshot) && kanbanIntegrationEnabled(data) && strings.TrimSpace(card.IssueID) != ""
-}
-
 func projectKanbanMoveDisabledText(data DashboardData, card projectKanbanCard) string {
 	if card.DisabledText != "" {
 		return card.DisabledText
@@ -3107,30 +2929,12 @@ func projectKanbanMoveDisabledText(data DashboardData, card projectKanbanCard) s
 	return ""
 }
 
-func kanbanMoveDisabledText(data DashboardData, card kanbanCard) string {
-	if card.DisabledText != "" {
-		return card.DisabledText
-	}
-	if kanbanIntegrationEnabled(data) && card.Movable && len(kanbanMoveTargetStates(data, card.State)) == 0 {
-		return "No allowed moves from " + card.State
-	}
-	return ""
-}
-
 func projectKanbanMoveTargetStates(data DashboardData, card projectKanbanCard) []string {
 	return kanbanMoveTargets(projectKanbanCardKanbanData(data, card), card.Stage)
 }
 
-func kanbanMoveTargetStates(data DashboardData, source string) []string {
-	return kanbanMoveTargets(data.Kanban, source)
-}
-
 func projectKanbanMoveTargetKeys(data DashboardData, card projectKanbanCard) string {
 	return kanbanMoveTargetKeyList(projectKanbanCardKanbanData(data, card), card.Stage)
-}
-
-func kanbanMoveTargetKeys(data DashboardData, source string) string {
-	return kanbanMoveTargetKeyList(data.Kanban, source)
 }
 
 func kanbanMoveTargets(data KanbanData, source string) []string {
