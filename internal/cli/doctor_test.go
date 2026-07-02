@@ -89,6 +89,149 @@ func TestCheckDoctorBinary(t *testing.T) {
 	}
 }
 
+func TestCheckDoctorClaudeCodeUsesVersionAndHint(t *testing.T) {
+	t.Parallel()
+
+	var gotArgs []string
+	got := checkDoctorClaudeCode(context.Background(), doctorDeps{
+		lookPath: func(binary string) (string, error) {
+			if binary != "claude" {
+				t.Fatalf("lookPath(%q), want claude", binary)
+			}
+			return "/usr/bin/claude", nil
+		},
+		runCommand: func(_ context.Context, path string, args ...string) error {
+			if path != "/usr/bin/claude" {
+				t.Fatalf("runCommand path = %q, want /usr/bin/claude", path)
+			}
+			gotArgs = append([]string{}, args...)
+			return errors.New("not logged in")
+		},
+	})
+
+	if got.Status != doctorFail {
+		t.Fatalf("Status = %s, want %s", got.Status, doctorFail)
+	}
+	if !slices.Equal(gotArgs, []string{"--version"}) {
+		t.Fatalf("runCommand args = %#v, want --version", gotArgs)
+	}
+	if !strings.Contains(got.Hint, "Install Claude Code and run `claude` once to log in (or set ANTHROPIC_API_KEY).") {
+		t.Fatalf("Hint = %q, want Claude Code install/login hint", got.Hint)
+	}
+}
+
+func TestRunDoctorAgentBinaryChecksFollowWorkflowBackends(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name         string
+		projects     []string
+		workflows    map[string]workflowconfig.Config
+		loadErrors   map[string]error
+		wantChecks   []string
+		wantMissing  []string
+		wantCommands []string
+	}{
+		{
+			name:     "codex only keeps existing codex check",
+			projects: []string{"alpha"},
+			workflows: map[string]workflowconfig.Config{
+				"alpha/WORKFLOW.md": validDoctorWorkflow("/alpha"),
+			},
+			wantChecks:   []string{"codex binary"},
+			wantMissing:  []string{"claude binary"},
+			wantCommands: []string{"codex --version"},
+		},
+		{
+			name:     "claude only checks claude",
+			projects: []string{"alpha"},
+			workflows: map[string]workflowconfig.Config{
+				"alpha/WORKFLOW.md": validDoctorWorkflowWithBackends("/alpha", doctorClaudeCodeAgentBackend("claude-worker")),
+			},
+			wantChecks:   []string{"claude binary"},
+			wantMissing:  []string{"codex binary"},
+			wantCommands: []string{"claude --version"},
+		},
+		{
+			name:     "mixed backends are deduplicated",
+			projects: []string{"alpha", "beta"},
+			workflows: map[string]workflowconfig.Config{
+				"alpha/WORKFLOW.md": validDoctorWorkflowWithBackends("/alpha", doctorCodexAgentBackend("codex-worker"), doctorClaudeCodeAgentBackend("claude-worker")),
+				"beta/WORKFLOW.md":  validDoctorWorkflowWithBackends("/beta", doctorClaudeCodeAgentBackend("claude-worker")),
+			},
+			wantChecks:   []string{"codex binary", "claude binary"},
+			wantCommands: []string{"claude --version", "codex --version"},
+		},
+		{
+			name:     "falls back to codex when workflows cannot load",
+			projects: []string{"alpha"},
+			loadErrors: map[string]error{
+				"alpha/WORKFLOW.md": errors.New("missing workflow"),
+			},
+			wantChecks:   []string{"codex binary"},
+			wantMissing:  []string{"claude binary"},
+			wantCommands: []string{"codex --version"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			configPath := filepath.Join(t.TempDir(), "global.yaml")
+			global := validDoctorGlobalWithProjects(configPath, tt.projects...)
+			deps := successfulDoctorDeps()
+			deps.loadWorkflow = func(path string) (workflowconfig.Workflow, error) {
+				if err := tt.loadErrors[path]; err != nil {
+					return workflowconfig.Workflow{}, err
+				}
+				workflow, ok := tt.workflows[path]
+				if !ok {
+					return workflowconfig.Workflow{}, errors.New("unexpected workflow path: " + path)
+				}
+				return workflowconfig.Workflow{Config: workflow}, nil
+			}
+
+			var commandsMu sync.Mutex
+			commands := []string{}
+			deps.runCommand = func(_ context.Context, path string, args ...string) error {
+				binary := filepath.Base(path)
+				if binary == "codex" || binary == "claude" {
+					commandsMu.Lock()
+					commands = append(commands, binary+" "+strings.Join(args, " "))
+					commandsMu.Unlock()
+				}
+				return nil
+			}
+
+			report := runDoctor(context.Background(), doctorConfig{
+				ConfigPath:   configPath,
+				Output:       io.Discard,
+				CheckTimeout: time.Second,
+				Flags: runtimeFlags{
+					Port: runtimeIntFlag{Value: 0, Set: true},
+				},
+			}, successfulDoctorOptionsWithConfig(configPath, global), deps)
+
+			for _, want := range tt.wantChecks {
+				assertDoctorCheck(t, report, want, doctorOK, "is runnable")
+			}
+			for _, want := range tt.wantMissing {
+				assertDoctorMissingCheck(t, report, want)
+			}
+			commandsMu.Lock()
+			gotCommands := append([]string{}, commands...)
+			commandsMu.Unlock()
+			slices.Sort(gotCommands)
+			wantCommands := append([]string{}, tt.wantCommands...)
+			slices.Sort(wantCommands)
+			if !slices.Equal(gotCommands, wantCommands) {
+				t.Fatalf("agent commands = %#v, want %#v", gotCommands, wantCommands)
+			}
+		})
+	}
+}
+
 func TestCheckDoctorProjects(t *testing.T) {
 	t.Parallel()
 
@@ -2722,6 +2865,52 @@ func validDoctorWorkflow(sourceRoot string) workflowconfig.Config {
 	cfg.Tracker.Kind = workflowconfig.TrackerMemory
 	cfg.Workspace.Root = sourceRoot
 	return cfg
+}
+
+func validDoctorWorkflowWithBackends(sourceRoot string, backends ...workflowconfig.AgentBackend) workflowconfig.Config {
+	cfg := validDoctorWorkflow(sourceRoot)
+	cfg.Agents.Backends = append([]workflowconfig.AgentBackend{}, backends...)
+	return cfg
+}
+
+func doctorCodexAgentBackend(id string) workflowconfig.AgentBackend {
+	return workflowconfig.AgentBackend{
+		ID:       id,
+		Kind:     workflowconfig.AgentBackendCodex,
+		Protocol: "app-server",
+		Command:  "codex",
+	}
+}
+
+func doctorClaudeCodeAgentBackend(id string) workflowconfig.AgentBackend {
+	return workflowconfig.AgentBackend{
+		ID:       id,
+		Kind:     workflowconfig.AgentBackendClaudeCode,
+		Protocol: "headless",
+		Command:  "claude",
+	}
+}
+
+func validDoctorGlobalWithProjects(configPath string, ids ...string) globalconfig.Config {
+	projects := make([]globalconfig.Project, 0, len(ids))
+	for _, id := range ids {
+		projects = append(projects, globalconfig.Project{
+			ID:       id,
+			Workflow: id + "/WORKFLOW.md",
+			Workdir:  "/" + id,
+			Weight:   1,
+		})
+	}
+	return globalconfig.Config{
+		Path:       configPath,
+		APIVersion: globalconfig.APIVersion,
+		Kind:       globalconfig.Kind,
+		Global: globalconfig.Settings{
+			MaxConcurrentAgents: 1,
+			Scheduling:          globalconfig.SchedulingWeighted,
+		},
+		Projects: projects,
+	}
 }
 
 func validDoctorAutoPromoteWorkflow() workflowconfig.Config {

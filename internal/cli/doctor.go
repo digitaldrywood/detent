@@ -381,12 +381,9 @@ func runDoctor(ctx context.Context, cfg doctorConfig, opts options, deps doctorD
 				return []doctorCheck{checkDoctorSQLite(jobCtx, resolution, deps)}
 			},
 		},
-		doctorCheckJob{
-			Name: "codex binary",
-			Run: func(jobCtx context.Context) []doctorCheck {
-				return []doctorCheck{checkDoctorCodex(jobCtx, deps)}
-			},
-		},
+	)
+	jobs = append(jobs, doctorAgentBinaryCheckJobs(ctx, global, deps)...)
+	jobs = append(jobs,
 		doctorCheckJob{
 			Name: "GitHub token",
 			Run: func(jobCtx context.Context) []doctorCheck {
@@ -3060,6 +3057,74 @@ func checkDoctorSQLite(ctx context.Context, resolution globalconfig.PathResoluti
 
 func checkDoctorCodex(ctx context.Context, deps doctorDeps) doctorCheck {
 	return checkDoctorBinary(ctx, deps, "codex", "codex binary", "--version", "Install Codex and ensure codex --version succeeds.")
+}
+
+func checkDoctorClaudeCode(ctx context.Context, deps doctorDeps) doctorCheck {
+	return checkDoctorBinary(ctx, deps, "claude", "claude binary", "--version", "Install Claude Code and run `claude` once to log in (or set ANTHROPIC_API_KEY).")
+}
+
+func doctorAgentBinaryCheckJobs(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps) []doctorCheckJob {
+	kinds := doctorAgentBackendKinds(ctx, cfg, deps)
+	jobs := make([]doctorCheckJob, 0, len(kinds))
+	for _, kind := range kinds {
+		switch kind {
+		case workflowconfig.AgentBackendCodex:
+			jobs = append(jobs, doctorCodexBinaryCheckJob(deps))
+		case workflowconfig.AgentBackendClaudeCode:
+			jobs = append(jobs, doctorClaudeCodeBinaryCheckJob(deps))
+		}
+	}
+	if len(jobs) == 0 {
+		return []doctorCheckJob{doctorCodexBinaryCheckJob(deps)}
+	}
+	return jobs
+}
+
+func doctorAgentBackendKinds(ctx context.Context, cfg *globalconfig.Config, deps doctorDeps) []string {
+	if cfg == nil {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	kinds := []string{}
+	add := func(kind string) {
+		kind = strings.TrimSpace(kind)
+		if kind == "" {
+			return
+		}
+		if _, ok := seen[kind]; ok {
+			return
+		}
+		seen[kind] = struct{}{}
+		kinds = append(kinds, kind)
+	}
+	for _, project := range cfg.Projects {
+		workflow, err := loadDoctorProjectWorkflow(ctx, project, deps)
+		if err != nil {
+			continue
+		}
+		for _, backend := range workflow.Config.AgentBackendConfigs() {
+			add(backend.Kind)
+		}
+	}
+	return kinds
+}
+
+func doctorCodexBinaryCheckJob(deps doctorDeps) doctorCheckJob {
+	return doctorCheckJob{
+		Name: "codex binary",
+		Run: func(jobCtx context.Context) []doctorCheck {
+			return []doctorCheck{checkDoctorCodex(jobCtx, deps)}
+		},
+	}
+}
+
+func doctorClaudeCodeBinaryCheckJob(deps doctorDeps) doctorCheckJob {
+	return doctorCheckJob{
+		Name: "claude binary",
+		Run: func(jobCtx context.Context) []doctorCheck {
+			return []doctorCheck{checkDoctorClaudeCode(jobCtx, deps)}
+		},
+	}
 }
 
 func checkDoctorGit(ctx context.Context, deps doctorDeps) doctorCheck {
