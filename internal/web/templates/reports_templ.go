@@ -122,19 +122,19 @@ func Reports(data ReportsData) templ.Component {
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = reportsMetricCard("Total spend", helpReportsSpend, formatUSD(data.Day.Totals.SpendUSD), reportsWindowLabel(data), "border-t-accent", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = reportsMetricCard("Total spend", formatUSD(data.Day.Totals.SpendUSD), reportsWindowLabel(data), "border-t-accent", "bg-accent").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = reportsMetricCard("Tokens", helpReportsTokens, formatInt(data.Day.Totals.TotalTokens), reportInputOutputTotals(data.Day.Totals), "border-t-success", "bg-success").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = reportsMetricCard("Tokens", formatInt(data.Day.Totals.TotalTokens), reportInputOutputTotals(data.Day.Totals), "border-t-success", "bg-success").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = reportsMetricCard("Usage events", helpReportsEvents, formatInt(data.Day.Totals.Events), "Completed ledger rows", "border-t-warning", "bg-warning").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = reportsMetricCard("Usage events", formatInt(data.Day.Totals.Events), "Completed ledger rows", "border-t-warning", "bg-warning").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
-			templ_7745c5c3_Err = reportsMetricCard("Models", helpReportsModels, reportsModelCount(data), "Distinct model buckets", "border-t-danger", "bg-danger").Render(ctx, templ_7745c5c3_Buffer)
+			templ_7745c5c3_Err = reportsMetricCard("Models", reportsModelCount(data), "Distinct model buckets", "border-t-danger", "bg-danger").Render(ctx, templ_7745c5c3_Buffer)
 			if templ_7745c5c3_Err != nil {
 				return templ_7745c5c3_Err
 			}
@@ -298,7 +298,7 @@ func Reports(data ReportsData) templ.Component {
 	})
 }
 
-func reportsMetricCard(label string, term helpTerm, value string, detail string, borderClass string, dotClass string) templ.Component {
+func reportsMetricCard(label string, value string, detail string, borderClass string, dotClass string) templ.Component {
 	return templruntime.GeneratedTemplate(func(templ_7745c5c3_Input templruntime.GeneratedComponentInput) (templ_7745c5c3_Err error) {
 		templ_7745c5c3_W, ctx := templ_7745c5c3_Input.Writer, templ_7745c5c3_Input.Context
 		if templ_7745c5c3_CtxErr := ctx.Err(); templ_7745c5c3_CtxErr != nil {
@@ -341,7 +341,7 @@ func reportsMetricCard(label string, term helpTerm, value string, detail string,
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}
-		templ_7745c5c3_Err = helpInlineLabel(label, term, "reports", "text-sm font-medium text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
+		templ_7745c5c3_Err = plainInlineLabel(label, "text-sm font-medium text-muted-foreground").Render(ctx, templ_7745c5c3_Buffer)
 		if templ_7745c5c3_Err != nil {
 			return templ_7745c5c3_Err
 		}

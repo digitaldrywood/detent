@@ -149,6 +149,36 @@ func TestHelpIconUsesSharedTooltipMetadata(t *testing.T) {
 	}
 }
 
+func TestPlainInlineLabelRendersPlainLabel(t *testing.T) {
+	t.Parallel()
+
+	var buf bytes.Buffer
+	if err := plainInlineLabel("Tokens", "text-muted-foreground").Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	html := buf.String()
+
+	for _, want := range []string{
+		"Tokens",
+		"text-muted-foreground",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("help inline label missing %q:\n%s", want, html)
+		}
+	}
+	for _, unwanted := range []string{
+		`data-help-trigger`,
+		`data-help-tip`,
+		`aria-label="Help: Tokens"`,
+		`<button`,
+		`?`,
+	} {
+		if strings.Contains(html, unwanted) {
+			t.Fatalf("help inline label rendered help affordance %q:\n%s", unwanted, html)
+		}
+	}
+}
+
 func TestHelpTooltipHostRendersSharedBodyTooltip(t *testing.T) {
 	t.Parallel()
 

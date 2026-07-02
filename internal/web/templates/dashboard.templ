@@ -2367,19 +2367,19 @@ templ runningIssuesSection(data DashboardData) {
 								<th class="w-[30rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">State</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">
-									@helpInlineLabel("Runtime / turns", helpAgeTurn, "running-table", "")
+									@plainInlineLabel("Runtime / turns", "")
 								</th>
 								<th class="px-3 py-3 font-medium">
-									@helpInlineLabel("Codex update", helpEvent, "running-table", "")
+									@plainInlineLabel("Codex update", "")
 								</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">
-									@helpInlineLabel("Diff", helpDiff, "running-table", "")
+									@plainInlineLabel("Diff", "")
 								</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">
-									@helpInlineLabel("Tokens", helpTokens, "running-table", "")
+									@plainInlineLabel("Tokens", "")
 								</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">
-									@helpInlineLabel("Session", helpSession, "running-table", "")
+									@plainInlineLabel("Session", "")
 								</th>
 							</tr>
 						</thead>
@@ -3724,11 +3724,11 @@ templ ManualRefreshFeedbackWithID(id string, attempt *telemetry.RefreshAttempt) 
 	</div>
 }
 
-templ metricCard(label string, term helpTerm, value string, detail string, borderClass string, dotClass string) {
+templ metricCard(label string, value string, detail string, borderClass string, dotClass string) {
 	<article class={ "dashboard-metric-card min-w-0 rounded-md border border-border border-t-2 bg-card p-3 shadow-sm transition-colors hover:bg-muted/40 sm:p-4 " + borderClass }>
 		<div class="flex items-start justify-between gap-3">
 			<div class="grid min-w-0 gap-1">
-				@helpInlineLabel(label, term, "dashboard", "text-sm font-medium text-muted-foreground")
+				@plainInlineLabel(label, "text-sm font-medium text-muted-foreground")
 				<span class="text-xs text-muted-foreground">{ detail }</span>
 			</div>
 			<span class={ "h-2.5 w-2.5 shrink-0 rounded-full " + dotClass }></span>
@@ -3739,19 +3739,19 @@ templ metricCard(label string, term helpTerm, value string, detail string, borde
 
 templ statStrip(snapshot telemetry.Snapshot) {
 	<section class="dashboard-stat-strip grid min-w-0 gap-2 rounded-md border border-border bg-card p-2 shadow-sm sm:grid-cols-2 lg:grid-cols-6" aria-label="Dashboard statistics">
-		@statStripItem("Running", helpRunning, formatCount(runningCount(snapshot)), "Active issue sessions", "bg-accent")
-		@statStripItem("Queue", helpQueue, formatCount(queueCount(snapshot)), "Waiting or retrying", "bg-warning")
-		@statStripItem("Blocked", helpBlocked, formatCount(blockedCount(snapshot)), "Needs operator action", "bg-danger")
-		@statStripItem("Completed", helpCompleted, formatCount(completedCount(snapshot)), "Finished sessions", "bg-success")
-		@statStripItem("tps", helpThroughput, throughputRate(snapshot), "Rolling tokens/sec", "bg-accent")
-		@statStripItem("Uptime", helpRuntime, runtimeLabel(snapshot), "Aggregate agent uptime", "bg-success")
+		@statStripItem("Running", formatCount(runningCount(snapshot)), "Active issue sessions", "bg-accent")
+		@statStripItem("Queue", formatCount(queueCount(snapshot)), "Waiting or retrying", "bg-warning")
+		@statStripItem("Blocked", formatCount(blockedCount(snapshot)), "Needs operator action", "bg-danger")
+		@statStripItem("Completed", formatCount(completedCount(snapshot)), "Finished sessions", "bg-success")
+		@statStripItem("tps", throughputRate(snapshot), "Rolling tokens/sec", "bg-accent")
+		@statStripItem("Uptime", runtimeLabel(snapshot), "Aggregate agent uptime", "bg-success")
 	</section>
 }
 
-templ statStripItem(label string, term helpTerm, value string, detail string, dotClass string) {
+templ statStripItem(label string, value string, detail string, dotClass string) {
 	<div class="min-w-0 rounded-md bg-muted/60 px-3 py-2">
 		<div class="flex min-w-0 items-center justify-between gap-2">
-			@helpInlineLabel(label, term, "dashboard-stat-strip", "truncate text-xs font-medium uppercase text-muted-foreground")
+			@plainInlineLabel(label, "truncate text-xs font-medium uppercase text-muted-foreground")
 			<span class={ "h-2 w-2 shrink-0 rounded-full " + dotClass }></span>
 		</div>
 		<div class="mt-1 truncate font-mono text-lg font-semibold text-foreground">{ value }</div>
@@ -4438,15 +4438,15 @@ templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt ti
 				<span class="rounded-full bg-accent-soft px-2 py-1 font-medium text-accent">{ issueState(row.Issue, "Running") }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				@helpInlineLabel("Runtime / turns", helpAgeTurn, "running-mobile", "text-muted-foreground")
+				@plainInlineLabel("Runtime / turns", "text-muted-foreground")
 				<span class="font-mono text-foreground">{ runningRuntime(row, generatedAt) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				@helpInlineLabel("Diff", helpDiff, "running-mobile", "text-muted-foreground")
+				@plainInlineLabel("Diff", "text-muted-foreground")
 				<span class="font-mono text-foreground">{ formatDiffStat(row) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				@helpInlineLabel("Tokens", helpTokens, "running-mobile", "text-muted-foreground")
+				@plainInlineLabel("Tokens", "text-muted-foreground")
 				<span class="font-mono text-foreground">{ formatTokens(row.Tokens) }</span>
 			</div>
 		</div>
@@ -5023,7 +5023,7 @@ templ retryQueueSection(snapshot telemetry.Snapshot) {
 								<th class="w-[7rem] px-3 py-3 font-medium">Attempt</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Due time</th>
 								<th class="px-3 py-3 font-medium">
-									@helpInlineLabel("Error", helpEvent, "retry-table", "")
+									@plainInlineLabel("Error", "")
 								</th>
 							</tr>
 						</thead>
@@ -5202,14 +5202,14 @@ templ blockedSessionsSection(snapshot telemetry.Snapshot) {
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[9rem] px-3 py-3 font-medium">State</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">
-									@helpInlineLabel("Session", helpSession, "blocked-table", "")
+									@plainInlineLabel("Session", "")
 								</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Blocked time</th>
 								<th class="px-3 py-3 font-medium">
-									@helpInlineLabel("Last update", helpEvent, "blocked-table", "")
+									@plainInlineLabel("Last update", "")
 								</th>
 								<th class="w-[14rem] px-3 py-3 font-medium">
-									@helpInlineLabel("Error", helpEvent, "blocked-table-error", "")
+									@plainInlineLabel("Error", "")
 								</th>
 							</tr>
 						</thead>
@@ -5304,15 +5304,15 @@ templ recentSessionsSection(snapshot telemetry.Snapshot) {
 								<th class="w-[24rem] px-3 py-3 font-medium">Issue</th>
 								<th class="w-[13rem] px-3 py-3 font-medium">Completed</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">
-									@helpInlineLabel("Runtime / turns", helpAgeTurn, "recent-table", "")
+									@plainInlineLabel("Runtime / turns", "")
 								</th>
 								<th class="w-[10rem] px-3 py-3 font-medium">
-									@helpInlineLabel("Tokens", helpTokens, "recent-table", "")
+									@plainInlineLabel("Tokens", "")
 								</th>
 								<th class="w-[10rem] px-3 py-3 font-medium">Final state</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">Model</th>
 								<th class="w-[11rem] px-3 py-3 font-medium">
-									@helpInlineLabel("Session", helpSession, "recent-table", "")
+									@plainInlineLabel("Session", "")
 								</th>
 							</tr>
 						</thead>
@@ -5356,11 +5356,11 @@ templ recentSessionMobileCard(row telemetry.Completed, rowIndex int) {
 				<span class="font-mono text-foreground">{ completedAtLabel(row) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				@helpInlineLabel("Runtime / turns", helpAgeTurn, "recent-mobile", "text-muted-foreground")
+				@plainInlineLabel("Runtime / turns", "text-muted-foreground")
 				<span class="font-mono text-foreground">{ completedRuntime(row) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
-				@helpInlineLabel("Tokens", helpTokens, "recent-mobile", "text-muted-foreground")
+				@plainInlineLabel("Tokens", "text-muted-foreground")
 				<span class="font-mono text-foreground">{ formatTokens(row.Tokens) }</span>
 			</div>
 			<div class="flex min-h-10 items-center justify-between gap-3">
@@ -5518,7 +5518,7 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 		<div class="mt-5 grid gap-4 text-sm">
 			<div class="grid gap-2">
 				<div class="flex items-center justify-between gap-4">
-					@helpInlineLabel("Spend today", helpCurrentSpend, "budget-current-spend", "text-muted-foreground")
+					@plainInlineLabel("Spend today", "text-muted-foreground")
 					<strong class="font-mono font-medium text-foreground">{ budgetSpendTodayLabel(snapshot.Budget) }</strong>
 				</div>
 				<div class="h-2 overflow-hidden rounded-full bg-muted" aria-label="Daily budget usage">
@@ -5530,7 +5530,7 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 			} else {
 				<div class="grid gap-3">
 					<div class="flex items-center justify-between gap-4">
-						@helpInlineLabel("Cost burn-down", helpProjectedSpend, "budget-burn-down", "font-medium text-muted-foreground")
+						@plainInlineLabel("Cost burn-down", "font-medium text-muted-foreground")
 						<span class="font-mono text-xs text-muted-foreground">{ budgetBurnDownView(snapshot).PeriodLabel }</span>
 					</div>
 					@BudgetProjectionChart(budgetBurnDownView(snapshot).Chart)
@@ -5546,7 +5546,7 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 			} else {
 				<div class="grid gap-2">
 					<div class="flex items-center justify-between gap-4">
-						@helpInlineLabel("Budget history", helpBudgetHistory, "budget-history", "font-medium text-muted-foreground")
+						@plainInlineLabel("Budget history", "font-medium text-muted-foreground")
 						<span class="font-mono text-xs text-muted-foreground">{ budgetHistoryCount(snapshot.Budget) }</span>
 					</div>
 					<div class="grid h-12 grid-cols-7 items-end gap-1 rounded-md border border-border bg-muted px-2 py-2" aria-label="Spend over the last seven days">
@@ -5560,15 +5560,15 @@ templ budgetCard(snapshot telemetry.Snapshot) {
 			}
 			<div class="grid gap-3 border-t border-border pt-3">
 				<div class="flex items-center justify-between gap-4">
-					@helpInlineLabel("Projected", helpProjectedSpend, "budget-projected", "text-muted-foreground")
+					@plainInlineLabel("Projected", "text-muted-foreground")
 					<strong class="font-mono font-medium text-foreground">{ budgetBurnDownView(snapshot).ProjectionLabel }</strong>
 				</div>
 				<div class="flex items-center justify-between gap-4">
-					@helpInlineLabel("Daily cap", helpDailyCap, "budget-daily-cap", "text-muted-foreground")
+					@plainInlineLabel("Daily cap", "text-muted-foreground")
 					<strong class="font-mono font-medium text-foreground">{ optionalUSD(snapshot.Budget.PerDayMaxUSD) }</strong>
 				</div>
 				<div class="flex items-center justify-between gap-4">
-					@helpInlineLabel("Issue cap", helpIssueCap, "budget-issue-cap", "text-muted-foreground")
+					@plainInlineLabel("Issue cap", "text-muted-foreground")
 					<strong class="font-mono font-medium text-foreground">{ optionalUSD(snapshot.Budget.PerIssueMaxUSD) }</strong>
 				</div>
 			</div>
@@ -5591,7 +5591,7 @@ templ rateLimitsCard(limits *RateLimits) {
 				for _, row := range rateLimitRows(limits) {
 					<div class="grid gap-2">
 						<div class="flex items-center justify-between gap-3">
-							@helpInlineLabel(row.Name, rateLimitHelpTerm(row.Name), "rate-limit-"+helpIDPart(row.Name), "font-medium text-foreground")
+							@plainInlineLabel(row.Name, "font-medium text-foreground")
 							<span class="font-mono text-sm text-muted-foreground">{ row.Reset }</span>
 						</div>
 						<div class="h-2 overflow-hidden rounded-full bg-muted">
@@ -5701,7 +5701,7 @@ templ tokenCard(data DashboardData) {
 		</div>
 		<div class="mt-5">
 			<div class="mb-2 flex items-center justify-between gap-3 text-sm">
-				@helpInlineLabel("Token trend", helpTokenTrend, "tokens-card", "font-medium text-muted-foreground")
+				@plainInlineLabel("Token trend", "font-medium text-muted-foreground")
 				<span class="font-mono text-xs text-muted-foreground">{ formatDuration(data.Snapshot.Tokens.RuntimeSeconds) }</span>
 			</div>
 			if len(tokenTrendPoints(data.Snapshot)) == 0 {
