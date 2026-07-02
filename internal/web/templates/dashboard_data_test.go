@@ -977,6 +977,25 @@ func TestBudgetBurnDownView(t *testing.T) {
 	}
 }
 
+func TestRunningActivityIDUsesSessionID(t *testing.T) {
+	t.Parallel()
+
+	row := telemetry.Running{
+		SessionID: "thread/running activity #1",
+		Issue: telemetry.Issue{
+			ID:         "issue-running-activity",
+			Identifier: "digitaldrywood/detent#795",
+		},
+	}
+
+	if got, want := runningActivityID("running", row), "running-activity-thread-running-activity-1"; got != want {
+		t.Fatalf("runningActivityID() = %q, want %q", got, want)
+	}
+	if got, want := runningActivityDetailsID("running", row), "running-activity-thread-running-activity-1-details"; got != want {
+		t.Fatalf("runningActivityDetailsID() = %q, want %q", got, want)
+	}
+}
+
 func TestRunningActivityRowsUseRecentEventsNewestFirst(t *testing.T) {
 	t.Parallel()
 
