@@ -3133,7 +3133,7 @@ func checkDoctorGitHub(ctx context.Context, cfg *globalconfig.Config, token Runt
 		return doctorCheck{
 			Name:   "GitHub token",
 			Status: doctorOK,
-			Detail: fmt.Sprintf("%s did not expose classic OAuth scopes; treating as fine-grained or resource-scoped token and relying on operation checks", source),
+			Detail: source + " did not expose classic OAuth scopes; treating as fine-grained or resource-scoped token and relying on operation checks",
 		}
 	}
 	requiredScopes := doctorRequiredGitHubScopes(ctx, cfg, deps)

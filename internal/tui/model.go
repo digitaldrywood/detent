@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"math"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -761,7 +762,7 @@ func formatCount(value int64) string {
 		value = -value
 	}
 
-	text := fmt.Sprintf("%d", value)
+	text := strconv.FormatInt(value, 10)
 	for i := len(text) - 3; i > 0; i -= 3 {
 		text = text[:i] + "," + text[i:]
 	}

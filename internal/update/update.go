@@ -9,6 +9,7 @@ import (
 	"crypto/ed25519"
 	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -321,7 +322,7 @@ type Replacement struct {
 	Binary                []byte
 	Mode                  os.FileMode
 	GOOS                  string
-	Context               context.Context
+	Context               context.Context //nolint:containedctx // Replacement carries AfterReplace cancellation across Windows handoff.
 	StartProcess          ProcessStarter
 	Verify                BinaryVerifier
 	Sign                  BinarySigner
@@ -709,7 +710,7 @@ func VerifyChecksum(checksums []byte, assetName string, archive []byte) error {
 		return fmt.Errorf("checksum for %s not found", assetName)
 	}
 	sum := sha256.Sum256(archive)
-	actual := fmt.Sprintf("%x", sum)
+	actual := hex.EncodeToString(sum[:])
 	if !strings.EqualFold(actual, expected) {
 		return fmt.Errorf("checksum mismatch for %s: expected %s, got %s", assetName, expected, actual)
 	}

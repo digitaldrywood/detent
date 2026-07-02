@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -125,7 +126,7 @@ func demoCaptureBrowserPath(explicit string) (string, error) {
 			return path, nil
 		}
 	}
-	return "", fmt.Errorf("chrome or chromium was not found; pass --browser or set DETENT_CAPTURE_BROWSER")
+	return "", errors.New("chrome or chromium was not found; pass --browser or set DETENT_CAPTURE_BROWSER")
 }
 
 func demoCaptureBrowserNames() []string {
@@ -439,7 +440,7 @@ func (p *demoCapturePage) Eval(ctx context.Context, expression string, out any) 
 
 func (p *demoCapturePage) Call(ctx context.Context, method string, params any, out any) error {
 	if p == nil || p.client == nil {
-		return fmt.Errorf("browser page is closed")
+		return errors.New("browser page is closed")
 	}
 	if err := p.client.Call(ctx, method, params, out); err != nil {
 		return fmt.Errorf("CDP %s: %w", method, err)

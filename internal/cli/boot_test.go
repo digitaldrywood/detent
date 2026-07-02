@@ -910,7 +910,7 @@ func newTerminalDashboardProgramProbe() *terminalDashboardProgramProbe {
 func (p *terminalDashboardProgramProbe) Run() (tea.Model, error) {
 	close(p.started)
 	<-p.killed
-	return nil, nil
+	return nil, nil //nolint:nilnil // Test probe exits without yielding another Bubble Tea model.
 }
 
 func (p *terminalDashboardProgramProbe) Kill() {

@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os/exec"
@@ -165,7 +166,7 @@ func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBack
 func buildCodexAgentBackend(cfg workflowconfig.Codex) (runnerpkg.AgentBackend, error) {
 	command := strings.TrimSpace(cfg.Command)
 	if command == "" {
-		return nil, fmt.Errorf("codex command is required")
+		return nil, errors.New("codex command is required")
 	}
 
 	factory, err := codex.NewLocalTransportFactory(func(ctx context.Context) *exec.Cmd {

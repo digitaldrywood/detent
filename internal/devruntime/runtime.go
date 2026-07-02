@@ -333,7 +333,7 @@ func runtimeIssues(path string, demo string) ([]connector.Issue, string, error) 
 		return nil, "", fmt.Errorf("decode isolated runtime fixture: %w", err)
 	}
 	if len(fixture.Issues) == 0 {
-		return nil, "", fmt.Errorf("decode isolated runtime fixture: issues must not be empty")
+		return nil, "", errors.New("decode isolated runtime fixture: issues must not be empty")
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {

@@ -87,7 +87,7 @@ func TestManagerStartRejectsNilProjectFactoryResult(t *testing.T) {
 		Projects: []globalconfig.Project{{ID: "alpha", Weight: 1}},
 	}, project.ManagerDependencies{
 		ProjectFactory: func(globalconfig.Project) (*project.Project, error) {
-			return nil, nil
+			return nil, nil //nolint:nilnil // Test verifies manager rejects a nil project without a factory error.
 		},
 	})
 	if err != nil {
@@ -914,7 +914,7 @@ func TestManagerReconcileKeepsRegistryWhenNewProjectFactoryReturnsNil(t *testing
 		Events: events,
 		ProjectFactory: func(cfg globalconfig.Project) (*project.Project, error) {
 			if cfg.ID == "bravo" {
-				return nil, nil
+				return nil, nil //nolint:nilnil // Test verifies reconcile keeps the registry when a new project factory returns nil.
 			}
 			return newManagerTestProject(t, cfg, events)
 		},

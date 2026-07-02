@@ -748,7 +748,7 @@ func TestNewRejectsInvalidProjectConfig(t *testing.T) {
 			},
 			deps: project.Dependencies{
 				ConnectorFactory: func(workflowconfig.Config) (connector.Connector, error) {
-					return nil, nil
+					return nil, nil //nolint:nilnil // Test verifies project construction rejects a nil connector without a factory error.
 				},
 			},
 			want: project.ErrMissingConnector,

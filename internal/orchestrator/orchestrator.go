@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -151,7 +152,7 @@ type drainRequest struct {
 }
 
 type forceRequest struct {
-	ctx   context.Context
+	ctx   context.Context //nolint:containedctx // ForceQuit carries caller cancellation through the event loop.
 	at    time.Time
 	reply chan error
 }
@@ -2335,7 +2336,7 @@ func mergeWorkerRetryExhaustedComment(issue connector.Issue, attempt int, err er
 	b.WriteString("\n\n- reason: runner_failed_retry_exhausted")
 	if attempt > 0 {
 		b.WriteString("\n- attempt: ")
-		b.WriteString(fmt.Sprintf("%d", attempt))
+		b.WriteString(strconv.Itoa(attempt))
 	}
 	if errText := errorString(err); errText != "" {
 		b.WriteString("\n- error: ")

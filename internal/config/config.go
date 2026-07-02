@@ -1388,7 +1388,7 @@ func decodeAnyNode(node *yaml.Node) (any, error) {
 func decodeScalarNode(node *yaml.Node) (any, error) {
 	switch node.Tag {
 	case "!!null":
-		return nil, nil
+		return nil, nil //nolint:nilnil // YAML null decodes to a nil scalar value with no error.
 	case "!!bool":
 		return strconv.ParseBool(node.Value)
 	case "!!int":

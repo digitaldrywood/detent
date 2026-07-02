@@ -2,7 +2,7 @@ package orchestrator
 
 import (
 	"context"
-	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,12 +98,12 @@ func transientCheckRetryKey(issue connector.Issue, check connector.PullRequestCh
 	if issueID == "" || headSHA == "" {
 		return ""
 	}
-	identity := ""
+	var identity string
 	switch {
 	case check.WorkflowRunID > 0:
-		identity = fmt.Sprintf("run:%d", check.WorkflowRunID)
+		identity = "run:" + strconv.FormatInt(check.WorkflowRunID, 10)
 	case check.ID > 0:
-		identity = fmt.Sprintf("check:%d", check.ID)
+		identity = "check:" + strconv.FormatInt(check.ID, 10)
 	default:
 		identity = "name:" + strings.ToLower(strings.TrimSpace(check.Name))
 	}
@@ -134,7 +134,7 @@ func transientCIRetryComment(issue connector.Issue, checks []connector.PullReque
 		b.WriteString(strings.TrimSpace(reason))
 	}
 	b.WriteString("\n\nRerun limit: ")
-	b.WriteString(fmt.Sprintf("%d", limit))
+	b.WriteString(strconv.Itoa(limit))
 	b.WriteString("\nChecks:")
 	for _, check := range checks {
 		b.WriteString("\n- ")
@@ -144,9 +144,9 @@ func transientCIRetryComment(issue connector.Issue, checks []connector.PullReque
 		}
 		b.WriteString(name)
 		if check.WorkflowRunID > 0 {
-			b.WriteString(fmt.Sprintf(" (workflow run %d)", check.WorkflowRunID))
+			b.WriteString(" (workflow run " + strconv.FormatInt(check.WorkflowRunID, 10) + ")")
 		} else if check.ID > 0 {
-			b.WriteString(fmt.Sprintf(" (check run %d)", check.ID))
+			b.WriteString(" (check run " + strconv.FormatInt(check.ID, 10) + ")")
 		}
 		if url := strings.TrimSpace(check.DetailsURL); url != "" {
 			b.WriteString(" ")

@@ -54,7 +54,7 @@ func TestPooledHTTPClientReusesSequentialConnections(t *testing.T) {
 
 			var freshConns int
 			var reusedConns int
-			for i := 0; i < tt.requests; i++ {
+			for i := range tt.requests {
 				trace := &httptrace.ClientTrace{
 					GotConn: func(info httptrace.GotConnInfo) {
 						if info.Reused {
