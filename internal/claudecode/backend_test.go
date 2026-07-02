@@ -268,6 +268,43 @@ func TestAgentBackendBuildsCommandArgumentsAndWritesPromptToStdin(t *testing.T) 
 	}
 }
 
+func TestAgentBackendRequestTurnTimeoutOverridesOptions(t *testing.T) {
+	t.Parallel()
+
+	observedPath := filepath.Join(t.TempDir(), "observed.json")
+	var gotRemaining time.Duration
+	backend := newTestBackend(t, Options{
+		CommandFactoryWithArgs: func(ctx context.Context, _ []string) *exec.Cmd {
+			deadline, ok := ctx.Deadline()
+			if ok {
+				gotRemaining = time.Until(deadline)
+			}
+			cmd := exec.CommandContext(ctx, os.Args[0], "-test.run=TestClaudeCodeHelperProcess", "--")
+			cmd.Env = append(os.Environ(),
+				"CLAUDECODE_HELPER=argv",
+				"CLAUDECODE_OBSERVED_PATH="+observedPath,
+			)
+			return cmd
+		},
+		TurnTimeout: time.Hour,
+	})
+
+	_, err := backend.RunTurn(context.Background(), runner.AgentTurnRequest{
+		Workspace:   t.TempDir(),
+		Prompt:      "prompt from stdin",
+		TurnTimeout: 5 * time.Second,
+	}, nil)
+	if err != nil {
+		t.Fatalf("RunTurn() error = %v", err)
+	}
+	if gotRemaining == 0 {
+		t.Fatal("command context deadline is zero, want request turn timeout")
+	}
+	if gotRemaining <= 0 || gotRemaining > 10*time.Second {
+		t.Fatalf("command context deadline remaining = %v, want request timeout", gotRemaining)
+	}
+}
+
 func TestClaudeCodeHelperProcess(t *testing.T) {
 	if os.Getenv("CLAUDECODE_HELPER") != "argv" {
 		return

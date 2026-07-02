@@ -39,6 +39,7 @@ func (b *AgentBackend) RunTurn(
 		ThreadSandbox:     b.options.ThreadSandbox,
 		TurnSandboxPolicy: turnSandboxPolicyForWorkspace(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots),
 		Model:             req.Model,
+		TurnTimeout:       req.TurnTimeout,
 	}, func(update Update) error {
 		if onUpdate == nil {
 			return nil

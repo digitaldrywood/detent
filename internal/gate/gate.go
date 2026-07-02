@@ -45,10 +45,11 @@ type ArtifactConfig struct {
 }
 
 type ValidatorConfig struct {
-	Enabled  bool     `yaml:"enabled"`
-	Model    string   `yaml:"model"`
-	MinScore float64  `yaml:"min_score"`
-	BlockOn  []string `yaml:"block_on"`
+	Enabled       bool     `yaml:"enabled"`
+	Model         string   `yaml:"model"`
+	MinScore      float64  `yaml:"min_score"`
+	BlockOn       []string `yaml:"block_on"`
+	TurnTimeoutMS int      `yaml:"turn_timeout_ms"`
 }
 
 type PlanConfig struct {
@@ -547,6 +548,9 @@ func validateValidator(prefix string, cfg ValidatorConfig) []string {
 			problems = append(problems, prefix+".block_on severities must not be blank")
 			break
 		}
+	}
+	if cfg.TurnTimeoutMS < 0 {
+		problems = append(problems, prefix+".turn_timeout_ms must be greater than or equal to 0")
 	}
 	cfg = effectiveValidatorConfig(cfg)
 	if !invalidScore && (cfg.MinScore <= 0 || cfg.MinScore > 1) {
