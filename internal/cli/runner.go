@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/budget"
+	"github.com/digitaldrywood/detent/internal/claudecode"
 	"github.com/digitaldrywood/detent/internal/codex"
 	workflowconfig "github.com/digitaldrywood/detent/internal/config"
 	globalconfig "github.com/digitaldrywood/detent/internal/config/global"
@@ -158,9 +159,39 @@ func buildAgentBackend(backend workflowconfig.AgentBackend) (runnerpkg.AgentBack
 	switch backend.Kind {
 	case workflowconfig.AgentBackendCodex:
 		return buildCodexAgentBackend(backend.Command, backend.CodexOptions())
+	case workflowconfig.AgentBackendClaudeCode:
+		return buildClaudeAgentBackend(backend.Command, backend.ClaudeCodeOptions())
 	default:
-		return nil, fmt.Errorf("unsupported agent backend kind %q", backend.Kind)
+		return nil, fmt.Errorf("unsupported agent backend kind %q; supported kinds: %s, %s",
+			backend.Kind,
+			workflowconfig.AgentBackendCodex,
+			workflowconfig.AgentBackendClaudeCode,
+		)
 	}
+}
+
+func buildClaudeAgentBackend(command string, cfg workflowconfig.ClaudeCodeOptions) (runnerpkg.AgentBackend, error) {
+	command = strings.TrimSpace(command)
+	if command == "" {
+		return nil, errors.New("claude command is required")
+	}
+
+	backend, err := claudecode.NewAgentBackend(claudecode.Options{
+		CommandFactoryWithArgs: func(ctx context.Context, args []string) *exec.Cmd {
+			return buildClaudeCommandFromConfig(ctx, command, cfg.Shell, args)
+		},
+		PermissionMode:         cfg.PermissionMode,
+		AllowedTools:           cfg.AllowedTools,
+		DisallowedTools:        cfg.DisallowedTools,
+		IncludePartialMessages: cfg.IncludePartialMessages,
+		ExtraArgs:              cfg.ExtraArgs,
+		TurnTimeout:            durationFromMillis(cfg.TurnTimeoutMS),
+		StallTimeout:           durationFromMillis(cfg.StallTimeoutMS),
+	})
+	if err != nil {
+		return nil, fmt.Errorf("create claude backend: %w", err)
+	}
+	return backend, nil
 }
 
 func buildCodexAgentBackend(command string, cfg workflowconfig.CodexOptions) (runnerpkg.AgentBackend, error) {
@@ -201,6 +232,10 @@ func buildCodexCommand(ctx context.Context, cfg workflowconfig.Config) *exec.Cmd
 
 func buildCodexCommandFromConfig(ctx context.Context, command string, shell string) *exec.Cmd {
 	return commandshell.Command(ctx, strings.TrimSpace(command), shell)
+}
+
+func buildClaudeCommandFromConfig(ctx context.Context, command string, shell string, args []string) *exec.Cmd {
+	return commandshell.CommandWithArgs(ctx, strings.TrimSpace(command), shell, args)
 }
 
 // publishSnapshots ticks at interval, building a merged telemetry snapshot

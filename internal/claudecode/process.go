@@ -90,7 +90,13 @@ func (b *AgentBackend) RunTurn(
 }
 
 func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest) (*exec.Cmd, error) {
-	cmd := b.options.CommandFactory(ctx)
+	argv := b.argv(req)
+	var cmd *exec.Cmd
+	if b.options.CommandFactoryWithArgs != nil {
+		cmd = b.options.CommandFactoryWithArgs(ctx, argv)
+	} else {
+		cmd = b.options.CommandFactory(ctx)
+	}
 	if cmd == nil {
 		return nil, ErrNilCommand
 	}
@@ -98,7 +104,9 @@ func (b *AgentBackend) command(ctx context.Context, req runner.AgentTurnRequest)
 	if len(cmd.Args) == 0 {
 		cmd.Args = []string{cmd.Path}
 	}
-	cmd.Args = append(cmd.Args, b.argv(req)...)
+	if b.options.CommandFactoryWithArgs == nil {
+		cmd.Args = append(cmd.Args, argv...)
+	}
 	return cmd, nil
 }
 
