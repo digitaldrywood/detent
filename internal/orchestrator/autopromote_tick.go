@@ -899,6 +899,10 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.
 	o.validatorMu.Unlock()
 
 	selectorContext := o.cfg.SelectorContext
+	retryConfig := Config{
+		MaxRetryBackoff:       o.cfg.MaxRetryBackoff,
+		FailureRetryBaseDelay: o.cfg.FailureRetryBaseDelay,
+	}
 	go func() {
 		defer o.validatorWG.Done()
 
@@ -915,7 +919,7 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.
 			attempt := o.validatorFailures[identity.Key].Attempt + 1
 			o.validatorFailures[identity.Key] = validatorStageFailure{
 				Attempt:     attempt,
-				NextRetryAt: completedAt.Add(validatorStageRetryDelay(o.cfg, attempt)),
+				NextRetryAt: completedAt.Add(validatorStageRetryDelay(retryConfig, attempt)),
 				Error:       err.Error(),
 			}
 			failure := o.validatorFailures[identity.Key]
