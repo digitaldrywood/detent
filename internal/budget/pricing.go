@@ -18,7 +18,26 @@ type ModelPricing struct {
 
 type PricingTable map[string]ModelPricing
 
+// DefaultPricingTable returns published API token rates. Under subscription auth,
+// computed USD is notional but still used for budget pacing.
 func DefaultPricingTable() PricingTable {
+	claudeFable5 := ModelPricing{
+		USDPerInputToken:  0.000010,
+		USDPerOutputToken: 0.000050,
+	}
+	claudeOpus48 := ModelPricing{
+		USDPerInputToken:  0.000005,
+		USDPerOutputToken: 0.000025,
+	}
+	claudeSonnet5 := ModelPricing{
+		USDPerInputToken:  0.000002,
+		USDPerOutputToken: 0.000010,
+	}
+	claudeHaiku45 := ModelPricing{
+		USDPerInputToken:  0.000001,
+		USDPerOutputToken: 0.000005,
+	}
+
 	return PricingTable{
 		"gpt-5.5": {
 			USDPerInputToken:  0.000005,
@@ -36,6 +55,14 @@ func DefaultPricingTable() PricingTable {
 			USDPerInputToken:  0.00000175,
 			USDPerOutputToken: 0.000014,
 		},
+		"claude-fable-5":   claudeFable5,
+		"fable":            claudeFable5,
+		"claude-opus-4-8":  claudeOpus48,
+		"opus":             claudeOpus48,
+		"claude-sonnet-5":  claudeSonnet5,
+		"sonnet":           claudeSonnet5,
+		"claude-haiku-4-5": claudeHaiku45,
+		"haiku":            claudeHaiku45,
 	}
 }
 
