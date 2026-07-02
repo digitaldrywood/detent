@@ -641,6 +641,13 @@ tracker:
       - Blocked
     target_state: Todo
     readiness: terminal_or_merged
+  blocker_auto_promote:
+    enabled: false
+    blocker_states:
+      - Backlog
+      - Blocked
+      - Human Review
+    target_state: Todo
 polling:
   interval_ms: 120000
 workspace:
@@ -685,6 +692,7 @@ gate:
   run: make check
   require_automated_review: true
   ci_failure_action: rework
+  transient_ci_retry_limit: 2
   validator:
     enabled: false
     model: ""
@@ -738,6 +746,7 @@ gate:
   kind: command
   run: make check
   ci_failure_action: rework
+  transient_ci_retry_limit: 2
   validator:
     enabled: false
     model: ""
@@ -782,6 +791,7 @@ gate:
   kind: command
   run: make check
   ci_failure_action: rework
+  transient_ci_retry_limit: 2
   validator:
     enabled: false
     model: ""
@@ -1465,6 +1475,10 @@ of that state is controlled by the workflow:
   from `Human Review` back to `Rework` by default; set
   `gate.ci_failure_action: skip` only when non-green CI should leave the item
   parked.
+- `gate.transient_ci_retry_limit` controls how many times Detent reruns
+  failed checks with transient runner or infrastructure signals such as
+  timeouts, startup failures, OOM kills, or `signal: killed` annotations before
+  red CI is treated as a hard failure.
 - `gate.validator.enabled: true` runs a validator-agent review before
   auto-promotion; verdicts below `min_score` or with severities in `block_on`
   route the issue to `Rework`.
@@ -1593,6 +1607,16 @@ the wait should be visible on the board.
   `tracker.dependency_auto_unblock.enabled: true`, a `Blocked` issue is observed
   for display but will not be moved back to `Todo`. Human blockers without
   explicit dependency references stay blocked.
+- **Queue fixable blockers automatically.** Enable
+  `tracker.blocker_auto_promote` alongside dependency auto-unblock when a
+  dependency-waiting issue should pull same-repository blockers out of inactive
+  states such as `Backlog`, `Blocked`, or `Human Review`. Detent promotes only
+  resolved, same-repository blockers to the configured `target_state`, respects
+  current local agent capacity, and posts an audit comment on the promoted
+  blocker. Agents that move work to `Blocked` because of another tracked issue
+  or pull request must ensure the issue body contains a machine-readable
+  `Blocked by:` or `Depends on:` line; Workpad mentions alone are not a durable
+  dependency contract.
 
 Before you dispatch anything, run **`detent doctor --allow-write-probes`** after
 mutation authorization — it checks config

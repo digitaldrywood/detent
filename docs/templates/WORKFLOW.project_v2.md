@@ -38,6 +38,13 @@ tracker:
       - Blocked
     target_state: Todo
     readiness: terminal_or_merged
+  blocker_auto_promote:
+    enabled: false
+    blocker_states:
+      - Backlog
+      - Blocked
+      - Human Review
+    target_state: Todo
 polling:
   interval_ms: 120000
 workspace:
@@ -79,6 +86,7 @@ gate:
   run: make check
   require_automated_review: true
   ci_failure_action: rework
+  transient_ci_retry_limit: 2
   validator:
     enabled: false
     model: ""

@@ -40,6 +40,11 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionRework},
 		},
 		{
+			name: "command can explicitly disable transient ci retries",
+			cfg:  Config{Kind: KindCommand, Run: "make verify", TransientCIRetryLimit: newInt(0)},
+			want: Config{Kind: KindCommand, Run: "make verify", ApprovalLabel: DefaultApprovalLabel, RequireAutomatedReview: new(true), CIFailureAction: CIFailureActionRework, TransientCIRetryLimit: newInt(0)},
+		},
+		{
 			name: "human review normalizes alias and approval label",
 			cfg:  Config{Kind: "human-review", Run: "make check", ApprovalLabel: " Human-Approved "},
 			want: Config{Kind: KindHumanReview, Run: "", ApprovalLabel: "human-approved", CIFailureAction: CIFailureActionSkip},
@@ -92,6 +97,9 @@ func TestEffectiveSelectsGateDefaults(t *testing.T) {
 
 			got := Effective(tt.cfg)
 			want := tt.want
+			if want.TransientCIRetryLimit == nil {
+				want.TransientCIRetryLimit = newInt(DefaultTransientCIRetries)
+			}
 			want.Validator = effectiveValidatorConfig(want.Validator)
 			want.Artifact = effectiveArtifactConfig(want.Artifact)
 			if !configsEqual(got, want) {
@@ -551,9 +559,17 @@ func configsEqual(left Config, right Config) bool {
 		left.Run == right.Run &&
 		left.ApprovalLabel == right.ApprovalLabel &&
 		left.CIFailureAction == right.CIFailureAction &&
+		intPointerEqual(left.TransientCIRetryLimit, right.TransientCIRetryLimit) &&
 		boolPointerEqual(left.RequireAutomatedReview, right.RequireAutomatedReview) &&
 		validatorConfigsEqual(left.Validator, right.Validator) &&
 		artifactConfigsEqual(left.Artifact, right.Artifact)
+}
+
+func intPointerEqual(left *int, right *int) bool {
+	if left == nil || right == nil {
+		return left == right
+	}
+	return *left == *right
 }
 
 func boolPointerEqual(left *bool, right *bool) bool {

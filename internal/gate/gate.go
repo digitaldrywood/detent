@@ -16,6 +16,7 @@ const (
 	DefaultPlanStop            = "Plan Review"
 	DefaultValidatorMinScore   = 0.8
 	DefaultArtifactStatusField = "validation_status"
+	DefaultTransientCIRetries  = 2
 
 	CIFailureActionSkip   = "skip"
 	CIFailureActionRework = "rework"
@@ -31,6 +32,7 @@ type Config struct {
 	ApprovalLabel          string          `yaml:"approval_label"`
 	RequireAutomatedReview *bool           `yaml:"require_automated_review"`
 	CIFailureAction        string          `yaml:"ci_failure_action"`
+	TransientCIRetryLimit  *int            `yaml:"transient_ci_retry_limit"`
 	Validator              ValidatorConfig `yaml:"validator"`
 	Artifact               ArtifactConfig  `yaml:"artifact"`
 }
@@ -138,6 +140,7 @@ func DefaultConfig() Config {
 		ApprovalLabel:          DefaultApprovalLabel,
 		RequireAutomatedReview: new(true),
 		CIFailureAction:        CIFailureActionRework,
+		TransientCIRetryLimit:  newInt(DefaultTransientCIRetries),
 		Validator:              effectiveValidatorConfig(ValidatorConfig{}),
 		Artifact:               effectiveArtifactConfig(ArtifactConfig{}),
 	}
@@ -151,12 +154,19 @@ func DefaultPlanConfig() PlanConfig {
 	}
 }
 
+func newInt(value int) *int {
+	return &value
+}
+
 func Effective(cfg Config) Config {
 	ciFailureActionSpecified := strings.TrimSpace(cfg.CIFailureAction) != ""
 	cfg.Kind = NormalizeKind(cfg.Kind)
 	cfg.Run = strings.TrimSpace(cfg.Run)
 	cfg.ApprovalLabel = normalizeLabel(cfg.ApprovalLabel)
 	cfg.CIFailureAction = NormalizeCIFailureAction(cfg.CIFailureAction)
+	if cfg.TransientCIRetryLimit == nil {
+		cfg.TransientCIRetryLimit = newInt(DefaultTransientCIRetries)
+	}
 	cfg.Validator = effectiveValidatorConfig(cfg.Validator)
 	cfg.Artifact = effectiveArtifactConfig(cfg.Artifact)
 
@@ -258,6 +268,9 @@ func Validate(prefix string, cfg Config) []string {
 	case CIFailureActionSkip, CIFailureActionRework:
 	default:
 		problems = append(problems, prefix+".ci_failure_action must be one of skip, rework")
+	}
+	if cfg.TransientCIRetryLimit != nil && *cfg.TransientCIRetryLimit < 0 {
+		problems = append(problems, prefix+".transient_ci_retry_limit must be greater than or equal to 0")
 	}
 	problems = append(problems, validateValidator(prefix+".validator", cfg.Validator)...)
 	problems = append(problems, validateArtifact(prefix+".artifact", cfg.Artifact)...)

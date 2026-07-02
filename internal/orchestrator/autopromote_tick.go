@@ -52,6 +52,10 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 
 		summary := AutoPromoteSummaryFromIssue(issue)
+		if o.retryTransientPullRequestChecks(ctx, state, issue, now, string(AutoPromoteReasonCINotGreen)) {
+			o.logAutoPromoteDecision(issue, autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonCINotGreen), "")
+			continue
+		}
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if decision.Reason == AutoPromoteReasonValidatorMissing {
 			validation, shouldComment, ok := o.validatorStageResult(issue)
@@ -147,6 +151,10 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 			continue
 		}
 		if staleMergingPullRequestDispatchActive(state, issueID) {
+			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
+			continue
+		}
+		if o.retryTransientPullRequestChecks(ctx, state, issue, now, string(AutoPromoteReasonCINotGreen)) {
 			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
@@ -1088,8 +1096,10 @@ func autoPromoteFailedChecksFromPullRequest(pullRequest *connector.PullRequest) 
 	if pullRequest == nil {
 		return nil
 	}
-	checks := make([]string, 0, len(pullRequest.SlowChecks))
-	for _, check := range pullRequest.SlowChecks {
+	allChecks := append([]connector.PullRequestCheck{}, pullRequest.SlowChecks...)
+	allChecks = append(allChecks, pullRequest.TransientFailedChecks...)
+	checks := make([]string, 0, len(allChecks))
+	for _, check := range allChecks {
 		if !autoPromoteCheckFailed(check) {
 			continue
 		}

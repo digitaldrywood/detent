@@ -63,6 +63,7 @@ type Config struct {
 	AutoPromote                   AutoPromoteConfig
 	Plan                          gate.PlanConfig
 	DependencyAutoUnblock         DependencyAutoUnblockConfig
+	BlockerAutoPromote            BlockerAutoPromoteConfig
 	ActiveStates                  []string
 	ObservedStates                []string
 	TerminalStates                []string
@@ -203,6 +204,12 @@ func ConfigFromWorkflow(cfg workflowconfig.Config) Config {
 			TargetState:  cfg.Tracker.DependencyAutoUnblock.TargetState,
 			Readiness:    cfg.Tracker.DependencyAutoUnblock.Readiness,
 		}),
+		BlockerAutoPromote: BlockerAutoPromoteConfig{
+			Enabled:       cfg.Tracker.BlockerAutoPromote.Enabled,
+			SourceStates:  append([]string(nil), cfg.Tracker.BlockerAutoPromote.SourceStates...),
+			BlockerStates: append([]string(nil), cfg.Tracker.BlockerAutoPromote.BlockerStates...),
+			TargetState:   cfg.Tracker.BlockerAutoPromote.TargetState,
+		},
 		ActiveStates:                  append([]string(nil), cfg.Tracker.ActiveStates...),
 		ObservedStates:                append([]string(nil), cfg.Tracker.ObservedStates...),
 		TerminalStates:                append([]string(nil), cfg.Tracker.TerminalStates...),
@@ -446,6 +453,11 @@ func (o *Orchestrator) observedStatusFetchStates() []string {
 	cfg := normalizeDependencyAutoUnblockConfig(o.cfg.DependencyAutoUnblock)
 	if cfg.Enabled {
 		states = append(states, cfg.SourceStates...)
+	}
+	blockerCfg := normalizeBlockerAutoPromoteConfig(o.cfg.BlockerAutoPromote, o.cfg.ActiveStates, o.cfg.DependencyAutoUnblock)
+	if blockerCfg.Enabled {
+		states = append(states, blockerCfg.SourceStates...)
+		states = append(states, blockerCfg.BlockerStates...)
 	}
 	return displayStateNames(states)
 }
@@ -2605,6 +2617,7 @@ func normalizeConfig(cfg Config) Config {
 	cfg.AutoPromote = normalizeAutoPromoteConfig(cfg.AutoPromote)
 	cfg.Plan = gate.EffectivePlan(cfg.Plan)
 	cfg.DependencyAutoUnblock = normalizeDependencyAutoUnblockConfig(cfg.DependencyAutoUnblock)
+	cfg.BlockerAutoPromote = normalizeBlockerAutoPromoteConfig(cfg.BlockerAutoPromote, cfg.ActiveStates, cfg.DependencyAutoUnblock)
 	cfg.Authorization.Normalize()
 	cfg.SelectorContext.InstanceLogin = strings.TrimSpace(cfg.SelectorContext.InstanceLogin)
 	cfg.SelectorContext.Persona = strings.TrimSpace(cfg.SelectorContext.Persona)

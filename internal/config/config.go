@@ -108,6 +108,7 @@ type Tracker struct {
 	StateMap                    StringOrMap           `yaml:"state_map"`
 	PriorityMap                 StringOrMap           `yaml:"priority_map"`
 	DependencyAutoUnblock       DependencyAutoUnblock `yaml:"dependency_auto_unblock"`
+	BlockerAutoPromote          BlockerAutoPromote    `yaml:"blocker_auto_promote"`
 	AutoProvision               bool                  `yaml:"auto_provision"`
 	Claims                      Claims                `yaml:"claims,omitempty"`
 	Authorization               selector.Selector     `yaml:"authorization,omitempty"`
@@ -125,6 +126,13 @@ type DependencyAutoUnblock struct {
 	SourceStates []string `yaml:"source_states"`
 	TargetState  string   `yaml:"target_state"`
 	Readiness    string   `yaml:"readiness"`
+}
+
+type BlockerAutoPromote struct {
+	Enabled       bool     `yaml:"enabled"`
+	SourceStates  []string `yaml:"source_states"`
+	BlockerStates []string `yaml:"blocker_states"`
+	TargetState   string   `yaml:"target_state"`
 }
 
 type Identity struct {
@@ -475,6 +483,27 @@ func (d DependencyAutoUnblock) Validate(prefix string) []string {
 	return problems
 }
 
+func (b *BlockerAutoPromote) Normalize() {
+	if b == nil {
+		return
+	}
+	b.SourceStates = normalizeStateList(b.SourceStates)
+	b.BlockerStates = normalizeStateList(b.BlockerStates)
+	b.TargetState = strings.TrimSpace(b.TargetState)
+}
+
+func (b BlockerAutoPromote) Validate(prefix string) []string {
+	b.Normalize()
+
+	var problems []string
+	validateStateList(prefix+".source_states", b.SourceStates, &problems)
+	validateStateList(prefix+".blocker_states", b.BlockerStates, &problems)
+	if b.Enabled && strings.TrimSpace(b.TargetState) == "" {
+		problems = append(problems, prefix+".target_state is required when "+prefix+".enabled is true")
+	}
+	return problems
+}
+
 type StringOrMap struct {
 	IsString bool
 	String   string
@@ -554,6 +583,10 @@ func Default() Config {
 				SourceStates: []string{"Blocked"},
 				TargetState:  "Todo",
 				Readiness:    DependencyReadinessTerminalOrMerged,
+			},
+			BlockerAutoPromote: BlockerAutoPromote{
+				BlockerStates: []string{"Backlog", "Blocked", "Human Review"},
+				TargetState:   "Todo",
 			},
 			AutoProvision: true,
 		},
@@ -718,6 +751,7 @@ func (c *Config) normalize() {
 	c.Tracker.LocalSQLite.Normalize()
 	c.Tracker.Claims.Normalize()
 	c.Tracker.DependencyAutoUnblock.Normalize()
+	c.Tracker.BlockerAutoPromote.Normalize()
 	c.Tracker.Authorization.Normalize()
 	c.Workspace.Normalize()
 	c.Deliverable.Normalize()
@@ -776,6 +810,7 @@ func (c *Config) validateTracker(problems *[]string) {
 	if c.Tracker.DependencyAutoUnblock.Enabled && !stateListContains(c.Tracker.ActiveStates, "Rework") {
 		*problems = append(*problems, "tracker.active_states must include Rework when tracker.dependency_auto_unblock.enabled is true")
 	}
+	*problems = append(*problems, c.Tracker.BlockerAutoPromote.Validate("tracker.blocker_auto_promote")...)
 	validatePositive("tracker.http_max_idle_conns", c.Tracker.HTTPMaxIdleConns, problems)
 	validatePositive("tracker.http_max_idle_conns_per_host", c.Tracker.HTTPMaxIdleConnsPerHost, problems)
 	validatePositive("tracker.http_idle_conn_timeout_ms", c.Tracker.HTTPIdleConnTimeoutMS, problems)

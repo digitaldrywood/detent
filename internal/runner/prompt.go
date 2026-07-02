@@ -71,6 +71,7 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 	}
 
 	rendered = appendDeliverableBlock(rendered, workflow.Config, issue, opts.WorkspacePath)
+	rendered = appendBlockedHandoffBlock(rendered)
 	rendered = appendGateBlock(rendered, workflow.Config.Gate)
 	rendered = appendAvailableSkills(rendered, AvailableSkillsBlock(opts.AvailableSkills))
 	if promptDeliverableKind(workflow.Config.Deliverable) != config.DeliverablePullRequest {
@@ -258,6 +259,12 @@ func appendGateBlock(prompt string, cfg gate.Config) string {
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Validation gate\n\n" + instructions
 }
 
+func appendBlockedHandoffBlock(prompt string) string {
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Blocked handoff\n\n" +
+		"Before moving an issue to Blocked because it is waiting on another tracked GitHub issue or pull request, ensure the issue body contains a machine-readable dependency line such as `Blocked by: #123` or `Depends on: owner/repo#123`. " +
+		"Do not rely only on an issue mention in a Workpad comment. Use Blocked without dependency metadata only for blockers that require human action."
+}
+
 func appendClosingReferenceInstruction(prompt string, issue connector.Issue) string {
 	number := githubIssueNumber(issue.Identifier)
 	if number == "" {
@@ -356,12 +363,17 @@ func deliverableAssigns(cfg config.Deliverable) map[string]any {
 
 func gateAssigns(cfg gate.Config) map[string]any {
 	effective := gate.Effective(cfg)
+	transientCIRetryLimit := 0
+	if effective.TransientCIRetryLimit != nil {
+		transientCIRetryLimit = *effective.TransientCIRetryLimit
+	}
 	return map[string]any{
 		"kind":                     effective.Kind,
 		"run":                      effective.Run,
 		"approval_label":           effective.ApprovalLabel,
 		"require_automated_review": requireAutomatedReview(effective),
 		"ci_failure_action":        effective.CIFailureAction,
+		"transient_ci_retry_limit": transientCIRetryLimit,
 		"validator": map[string]any{
 			"enabled":   effective.Validator.Enabled,
 			"model":     effective.Validator.Model,

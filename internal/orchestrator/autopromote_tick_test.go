@@ -315,6 +315,126 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 	}
 }
 
+func TestTickRetriesTransientHumanReviewCIBeforeRework(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 14, 5, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-transient-ci", []string{"bug"}, &connector.PullRequest{
+		Number:     51,
+		URL:        "https://github.test/digitaldrywood/detent/pull/51",
+		State:      "OPEN",
+		HeadSHA:    "head-transient",
+		CIStatus:   "fail",
+		BranchName: "detent/transient-ci",
+		TransientFailedChecks: []connector.PullRequestCheck{{
+			ID:            9001,
+			WorkflowRunID: 8001,
+			Name:          "Checks",
+			Status:        "completed",
+			Conclusion:    "failure",
+			DetailsURL:    "https://github.test/digitaldrywood/detent/actions/runs/8001/job/9001",
+		}},
+	})
+	retryLimit := 2
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate: gate.Config{
+				Kind:                  gate.KindCommand,
+				CIFailureAction:       gate.CIFailureActionRework,
+				TransientCIRetryLimit: &retryLimit,
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{issue},
+		candidateIssuesSet: true,
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.reruns) != 1 || tracker.reruns[0].issueID != issue.ID || len(tracker.reruns[0].checks) != 1 {
+		t.Fatalf("reruns = %#v, want one rerun for transient check", tracker.reruns)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no Rework transition while retrying transient CI", tracker.updates)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "Transient CI failure detected") {
+		t.Fatalf("comments = %#v, want transient CI retry audit comment", tracker.comments)
+	}
+}
+
+func TestTickRetriesTransientMergingCIBeforeRework(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 14, 7, 0, 0, time.UTC)
+	issue := autoPromoteTickIssue("issue-merging-transient-ci", []string{"bug"}, &connector.PullRequest{
+		Number:     52,
+		URL:        "https://github.test/digitaldrywood/detent/pull/52",
+		State:      "OPEN",
+		HeadSHA:    "head-transient",
+		CIStatus:   "fail",
+		BranchName: "detent/transient-ci",
+		TransientFailedChecks: []connector.PullRequestCheck{{
+			ID:            9002,
+			WorkflowRunID: 8002,
+			Name:          "Checks",
+			Status:        "completed",
+			Conclusion:    "failure",
+			DetailsURL:    "https://github.test/digitaldrywood/detent/actions/runs/8002/job/9002",
+		}},
+	})
+	issue.State = "Merging"
+	retryLimit := 2
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled: true,
+			Gate: gate.Config{
+				Kind:                  gate.KindCommand,
+				CIFailureAction:       gate.CIFailureActionRework,
+				TransientCIRetryLimit: &retryLimit,
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		ObservedStates: []string{"Human Review", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{issue},
+		candidateIssuesSet: true,
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.reruns) != 1 || tracker.reruns[0].issueID != issue.ID || len(tracker.reruns[0].checks) != 1 {
+		t.Fatalf("reruns = %#v, want one rerun for transient check", tracker.reruns)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no Rework transition while retrying transient CI", tracker.updates)
+	}
+	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "Transient CI failure detected") {
+		t.Fatalf("comments = %#v, want transient CI retry audit comment", tracker.comments)
+	}
+}
+
 func TestObservedStatusFetchStatesForTickDoesNotThrottleCustomPassState(t *testing.T) {
 	t.Parallel()
 
@@ -2637,6 +2757,11 @@ type autoPromoteTickMerge struct {
 	headSHA    string
 }
 
+type autoPromoteTickRerun struct {
+	issueID string
+	checks  []connector.PullRequestCheck
+}
+
 type autoPromoteTickHydration struct {
 	issueID    string
 	repository string
@@ -2653,6 +2778,7 @@ type autoPromoteTickConnector struct {
 	comments              []autoPromoteTickComment
 	prComments            []autoPromoteTickComment
 	setFields             []autoPromoteTickSetField
+	reruns                []autoPromoteTickRerun
 }
 
 type autoPromoteTickMergeConnector struct {
@@ -2716,6 +2842,14 @@ func (c *autoPromoteTickConnector) CreateComment(_ context.Context, issueID stri
 
 func (c *autoPromoteTickConnector) CreatePullRequestComment(_ context.Context, repository string, number int, body string) error {
 	c.prComments = append(c.prComments, autoPromoteTickComment{issueID: repository, body: body})
+	return nil
+}
+
+func (c *autoPromoteTickConnector) RerunPullRequestChecks(_ context.Context, issue connector.Issue, checks []connector.PullRequestCheck) error {
+	c.reruns = append(c.reruns, autoPromoteTickRerun{
+		issueID: issue.ID,
+		checks:  append([]connector.PullRequestCheck(nil), checks...),
+	})
 	return nil
 }
 

@@ -831,13 +831,29 @@ type restCheckRuns struct {
 }
 
 type restCheckRun struct {
-	Status      string     `json:"status"`
-	Conclusion  string     `json:"conclusion"`
-	Name        string     `json:"name"`
-	DetailsURL  string     `json:"details_url"`
-	CreatedAt   *time.Time `json:"created_at"`
-	StartedAt   *time.Time `json:"started_at"`
-	CompletedAt *time.Time `json:"completed_at"`
+	ID          int64          `json:"id"`
+	Status      string         `json:"status"`
+	Conclusion  string         `json:"conclusion"`
+	Name        string         `json:"name"`
+	DetailsURL  string         `json:"details_url"`
+	HTMLURL     string         `json:"html_url"`
+	Output      checkRunOutput `json:"output"`
+	CreatedAt   *time.Time     `json:"created_at"`
+	StartedAt   *time.Time     `json:"started_at"`
+	CompletedAt *time.Time     `json:"completed_at"`
+}
+
+type checkRunOutput struct {
+	Title   string `json:"title"`
+	Summary string `json:"summary"`
+	Text    string `json:"text"`
+}
+
+type restCheckRunAnnotation struct {
+	Path            string `json:"path"`
+	AnnotationLevel string `json:"annotation_level"`
+	Message         string `json:"message"`
+	RawDetails      string `json:"raw_details"`
 }
 
 type restWorkflowRun struct {
@@ -860,6 +876,7 @@ type pullRequestCI struct {
 	CIDurationSeconds  int64
 	SlowChecks         []connector.PullRequestCheck
 	RunningChecks      []string
+	TransientFailures  []connector.PullRequestCheck
 }
 
 type checkRunTelemetrySummary struct {
@@ -2226,6 +2243,42 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 	return nil
 }
 
+func (c *Connector) RerunPullRequestChecks(ctx context.Context, issue connector.Issue, checks []connector.PullRequestCheck) error {
+	repo, _, ok := hydratedPullRequestRef(issue)
+	if !ok {
+		return fmt.Errorf("rerun github pull request checks: missing pull request repository")
+	}
+	seenRuns := map[int64]struct{}{}
+	seenChecks := map[int64]struct{}{}
+	var errs []error
+	for _, check := range checks {
+		if check.WorkflowRunID > 0 {
+			if _, ok := seenRuns[check.WorkflowRunID]; ok {
+				continue
+			}
+			seenRuns[check.WorkflowRunID] = struct{}{}
+			if err := c.client.REST(ctx, http.MethodPost, restWorkflowRunRerunFailedJobsPath(repo, check.WorkflowRunID), nil, nil); err != nil {
+				errs = append(errs, fmt.Errorf("rerun workflow run %d: %w", check.WorkflowRunID, err))
+			}
+			continue
+		}
+		if check.ID <= 0 {
+			continue
+		}
+		if _, ok := seenChecks[check.ID]; ok {
+			continue
+		}
+		seenChecks[check.ID] = struct{}{}
+		if err := c.client.REST(ctx, http.MethodPost, restCheckRunRerequestPath(repo, check.ID), nil, nil); err != nil {
+			errs = append(errs, fmt.Errorf("rerequest check run %d: %w", check.ID, err))
+		}
+	}
+	if len(errs) > 0 {
+		return fmt.Errorf("rerun github pull request checks: %w", errors.Join(errs...))
+	}
+	return nil
+}
+
 func hydratedPullRequestRef(issue connector.Issue) (pullRequestRepo, int, bool) {
 	number := 0
 	if issue.PullRequest != nil && issue.PullRequest.Number > 0 {
@@ -2408,6 +2461,7 @@ func attachPullRequestToIssue(issue *connector.Issue, repo pullRequestRepo, pull
 		CIDurationSeconds:            pullRequest.CI.CIDurationSeconds,
 		SlowChecks:                   append([]connector.PullRequestCheck(nil), pullRequest.CI.SlowChecks...),
 		RunningChecks:                append([]string(nil), pullRequest.CI.RunningChecks...),
+		TransientFailedChecks:        append([]connector.PullRequestCheck(nil), pullRequest.CI.TransientFailures...),
 		CodexReviewState:             pullRequestCodexReviewState(pullRequest),
 		CodexReviewSubmittedAt:       pullRequestCodexReviewSubmittedAt(pullRequest),
 		CodexReviewFindings:          pullRequestCodexReviewFindings(pullRequest),
@@ -2659,7 +2713,114 @@ func (c *Connector) fetchPullRequestCI(ctx context.Context, repo pullRequestRepo
 		CIDurationSeconds:  telemetry.DurationSeconds,
 		SlowChecks:         telemetry.SlowChecks,
 		RunningChecks:      telemetry.RunningChecks,
+		TransientFailures:  c.transientCheckRunFailures(ctx, repo, checkRuns),
 	}, nil
+}
+
+func (c *Connector) transientCheckRunFailures(ctx context.Context, repo pullRequestRepo, checkRuns []restCheckRun) []connector.PullRequestCheck {
+	failures := make([]connector.PullRequestCheck, 0)
+	for _, checkRun := range checkRuns {
+		if !completedFailedCheckRun(checkRun) {
+			continue
+		}
+		text := checkRunTransientText(checkRun)
+		if checkRun.ID > 0 {
+			annotations, err := fetchRESTCheckRunAnnotations(ctx, c.client, restCheckRunAnnotationsPath(repo, checkRun.ID))
+			if err != nil {
+				if c.logger != nil {
+					c.logger.DebugContext(ctx, "fetch github check run annotations failed", "check_run_id", checkRun.ID, "check_run_name", checkRun.Name, "error", err)
+				}
+			} else {
+				text = strings.TrimSpace(text + "\n" + checkRunAnnotationTransientText(annotations))
+			}
+		}
+		if !transientCheckFailureText(text) && !transientCheckConclusion(checkRun.Conclusion) {
+			continue
+		}
+		failures = append(failures, connector.PullRequestCheck{
+			ID:            checkRun.ID,
+			WorkflowRunID: checkRunWorkflowRunID(checkRun),
+			Name:          strings.TrimSpace(checkRun.Name),
+			Status:        strings.ToLower(strings.TrimSpace(checkRun.Status)),
+			Conclusion:    strings.ToLower(strings.TrimSpace(checkRun.Conclusion)),
+			DetailsURL:    firstNonBlank(checkRun.DetailsURL, checkRun.HTMLURL),
+		})
+	}
+	return failures
+}
+
+func completedFailedCheckRun(checkRun restCheckRun) bool {
+	if strings.ToLower(strings.TrimSpace(checkRun.Status)) != "completed" {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(checkRun.Conclusion)) {
+	case "", "success", "skipped", "neutral":
+		return false
+	default:
+		return true
+	}
+}
+
+func checkRunTransientText(checkRun restCheckRun) string {
+	return strings.Join([]string{
+		checkRun.Name,
+		checkRun.Conclusion,
+		checkRun.Output.Title,
+		checkRun.Output.Summary,
+		checkRun.Output.Text,
+	}, "\n")
+}
+
+func checkRunAnnotationTransientText(annotations []restCheckRunAnnotation) string {
+	parts := make([]string, 0, len(annotations)*3)
+	for _, annotation := range annotations {
+		parts = append(parts, annotation.Path, annotation.Message, annotation.RawDetails)
+	}
+	return strings.Join(parts, "\n")
+}
+
+func transientCheckConclusion(conclusion string) bool {
+	switch strings.ToLower(strings.TrimSpace(conclusion)) {
+	case "timed_out", "startup_failure":
+		return true
+	default:
+		return false
+	}
+}
+
+func transientCheckFailureText(text string) bool {
+	text = strings.ToLower(strings.Join(strings.Fields(text), " "))
+	if text == "" {
+		return false
+	}
+	for _, phrase := range []string{
+		"signal: killed",
+		"compile: signal: killed",
+		"out of memory",
+		"oom",
+		"oom-kill",
+		"oom killed",
+		"exit code 137",
+		"killed process",
+		"runner lost communication",
+		"the hosted runner",
+		"operation was canceled by the runner",
+		"no space left on device",
+	} {
+		if strings.Contains(text, phrase) {
+			return true
+		}
+	}
+	return false
+}
+
+func firstNonBlank(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (c *Connector) fetchPullRequestReviews(ctx context.Context, repo pullRequestRepo, number int, headSHA string) (pullRequestCodexReviews, error) {
@@ -3778,6 +3939,20 @@ func restWorkflowRunPath(repo pullRequestRepo, runID int64) string {
 	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/actions/runs/" + strconv.FormatInt(runID, 10)
 }
 
+func restWorkflowRunRerunFailedJobsPath(repo pullRequestRepo, runID int64) string {
+	return restWorkflowRunPath(repo, runID) + "/rerun-failed-jobs"
+}
+
+func restCheckRunAnnotationsPath(repo pullRequestRepo, checkRunID int64) string {
+	values := url.Values{}
+	values.Set("per_page", "100")
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/check-runs/" + strconv.FormatInt(checkRunID, 10) + "/annotations?" + values.Encode()
+}
+
+func restCheckRunRerequestPath(repo pullRequestRepo, checkRunID int64) string {
+	return "/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name) + "/check-runs/" + strconv.FormatInt(checkRunID, 10) + "/rerequest"
+}
+
 func restCommitStatusesPath(repo pullRequestRepo, sha string) string {
 	values := url.Values{}
 	values.Set("per_page", "100")
@@ -3818,6 +3993,23 @@ func fetchRESTCheckRuns(ctx context.Context, client *Client, path string) ([]res
 	return checkRuns, nil
 }
 
+func fetchRESTCheckRunAnnotations(ctx context.Context, client *Client, path string) ([]restCheckRunAnnotation, error) {
+	annotations := []restCheckRunAnnotation{}
+	for path != "" {
+		var page []restCheckRunAnnotation
+		headers, err := client.rest(ctx, http.MethodGet, path, nil, &page)
+		if err != nil {
+			return nil, err
+		}
+		annotations = append(annotations, page...)
+		path, err = client.nextRESTPage(headers)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return annotations, nil
+}
+
 func fetchRESTWorkflowRunsForCheckRuns(ctx context.Context, client *Client, repo pullRequestRepo, checkRuns []restCheckRun) ([]restWorkflowRun, error) {
 	runIDs := checkRunWorkflowRunIDs(checkRuns)
 	runs := make([]restWorkflowRun, 0, len(runIDs))
@@ -3835,12 +4027,8 @@ func fetchRESTWorkflowRunsForCheckRuns(ctx context.Context, client *Client, repo
 func checkRunWorkflowRunIDs(checkRuns []restCheckRun) []int64 {
 	seen := map[int64]struct{}{}
 	for _, checkRun := range checkRuns {
-		match := actionRunURLPattern.FindStringSubmatch(strings.TrimSpace(checkRun.DetailsURL))
-		if len(match) != 2 {
-			continue
-		}
-		runID, err := strconv.ParseInt(match[1], 10, 64)
-		if err != nil || runID <= 0 {
+		runID := checkRunWorkflowRunID(checkRun)
+		if runID <= 0 {
 			continue
 		}
 		seen[runID] = struct{}{}
@@ -3853,6 +4041,20 @@ func checkRunWorkflowRunIDs(checkRuns []restCheckRun) []int64 {
 		return runIDs[i] < runIDs[j]
 	})
 	return runIDs
+}
+
+func checkRunWorkflowRunID(checkRun restCheckRun) int64 {
+	for _, value := range []string{checkRun.DetailsURL, checkRun.HTMLURL} {
+		match := actionRunURLPattern.FindStringSubmatch(strings.TrimSpace(value))
+		if len(match) != 2 {
+			continue
+		}
+		runID, err := strconv.ParseInt(match[1], 10, 64)
+		if err == nil && runID > 0 {
+			return runID
+		}
+	}
+	return 0
 }
 
 func githubIssueNodeFromREST(ref issueRef, issue restIssue) githubIssueNode {
