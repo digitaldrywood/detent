@@ -2,13 +2,16 @@ package orchestrator
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
 )
 
@@ -28,6 +31,17 @@ type autoPromoteTickResult struct {
 type staleMergingPullRequestDecision struct {
 	targetState string
 	reason      string
+}
+
+type autoPromoteReworkLimitSummary struct {
+	Limit        int
+	Count        int
+	ReasonCounts []autoPromoteReworkReasonCount
+}
+
+type autoPromoteReworkReasonCount struct {
+	Reason string
+	Count  int
 }
 
 func (o *Orchestrator) autoPromoteHumanReviewIssues(
@@ -1152,7 +1166,32 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 	now time.Time,
 ) bool {
 	issueID := strings.TrimSpace(issue.ID)
-	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, string(decision.Reason)); err != nil {
+	transitionReason := string(decision.Reason)
+	body := autoPromoteComment(summary, decision, displayStateName(issue.State), targetState)
+	if decision.Action == AutoPromoteActionRework {
+		limit, err := o.autoPromoteReworkLimit(ctx, issue)
+		if err != nil {
+			if o.logger != nil {
+				o.logger.Warn(
+					"auto promote rework limit check failed",
+					"issue_id", issueID,
+					"identifier", issue.Identifier,
+					"action", decision.Action,
+					"reason", decision.Reason,
+					"target_state", targetState,
+					"error", err,
+				)
+			}
+			return false
+		}
+		if limit.Exceeded() {
+			targetState = blockedStatusState
+			transitionReason = "rework_limit"
+			body = autoPromoteReworkLimitComment(summary, decision, displayStateName(issue.State), limit)
+		}
+	}
+
+	if err := o.updateIssueStateByID(ctx, issueID, issue, targetState, now, transitionReason); err != nil {
 		if o.logger != nil {
 			o.logger.Warn(
 				"auto promote transition failed",
@@ -1167,7 +1206,6 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 		return false
 	}
 
-	body := autoPromoteComment(summary, decision, displayStateName(issue.State), targetState)
 	if strings.TrimSpace(body) != "" {
 		if err := o.connector.CreateComment(ctx, issueID, body); err != nil && o.logger != nil {
 			o.logger.Warn(
@@ -1189,6 +1227,80 @@ func (o *Orchestrator) applyAutoPromoteDecision(
 		Message: "auto-promoted " + issueLabel(issue) + " from " + autoPromoteSourceState + " to " + targetState,
 	})
 	return true
+}
+
+func (s autoPromoteReworkLimitSummary) Exceeded() bool {
+	return s.Limit > 0 && s.Count >= s.Limit
+}
+
+func (o *Orchestrator) autoPromoteReworkLimit(
+	ctx context.Context,
+	issue connector.Issue,
+) (autoPromoteReworkLimitSummary, error) {
+	cfg := normalizeAutoPromoteConfig(o.cfg.AutoPromote)
+	summary := autoPromoteReworkLimitSummary{Limit: cfg.ReworkLimit}
+	if cfg.ReworkLimit <= 0 {
+		return summary, nil
+	}
+	if normalizeState(issue.State) == normalizeState(cfg.ReworkState) {
+		return summary, nil
+	}
+	reader, ok := o.workflowMetrics.(WorkflowMetricsTimelineReader)
+	if !ok || reader == nil {
+		return summary, errors.New("workflow metrics timeline reader unavailable")
+	}
+
+	timeline, err := reader.IssueWorkflowTimeline(ctx, store.IssueIdentity{
+		IssueID:    issue.ID,
+		Identifier: issue.Identifier,
+		IssueURL:   issue.URL,
+	})
+	if err != nil {
+		return summary, err
+	}
+	entries := autoPromoteReworkLaneEntries(timeline.Events, cfg.ReworkState)
+	summary.Count = len(entries)
+	summary.ReasonCounts = autoPromoteReworkReasonCounts(entries)
+	return summary, nil
+}
+
+func autoPromoteReworkLaneEntries(events []store.WorkflowPhaseEvent, reworkState string) []store.WorkflowPhaseEvent {
+	reworkState = normalizeState(reworkState)
+	entries := make([]store.WorkflowPhaseEvent, 0, len(events))
+	for _, event := range events {
+		if event.PhaseType != store.WorkflowPhaseTypeLane {
+			continue
+		}
+		if normalizeState(event.PhaseName) != reworkState {
+			continue
+		}
+		if !strings.EqualFold(strings.TrimSpace(event.Status), "entered") {
+			continue
+		}
+		entries = append(entries, event)
+	}
+	return entries
+}
+
+func autoPromoteReworkReasonCounts(events []store.WorkflowPhaseEvent) []autoPromoteReworkReasonCount {
+	counts := map[string]int{}
+	order := make([]string, 0, len(events))
+	for _, event := range events {
+		reason := strings.TrimSpace(event.Reason)
+		if reason == "" {
+			reason = "state_transition"
+		}
+		if _, ok := counts[reason]; !ok {
+			order = append(order, reason)
+		}
+		counts[reason]++
+	}
+
+	out := make([]autoPromoteReworkReasonCount, 0, len(order))
+	for _, reason := range order {
+		out = append(out, autoPromoteReworkReasonCount{Reason: reason, Count: counts[reason]})
+	}
+	return out
 }
 
 func (o *Orchestrator) logAutoPromoteDecision(issue connector.Issue, decision AutoPromoteDecision, targetState string) {
@@ -1303,6 +1415,70 @@ func autoPromoteComment(
 	}
 
 	return b.String()
+}
+
+func autoPromoteReworkLimitComment(
+	summary AutoPromoteSummary,
+	decision AutoPromoteDecision,
+	sourceState string,
+	limit autoPromoteReworkLimitSummary,
+) string {
+	var b strings.Builder
+	sourceState = displayStateName(sourceState)
+	if sourceState == "" {
+		sourceState = autoPromoteSourceState
+	}
+	b.WriteString("Auto-promote routed this issue from ")
+	b.WriteString(sourceState)
+	b.WriteString(" to Blocked because the Rework limit was reached.")
+	b.WriteString("\n\n")
+	b.WriteString("- rework_limit: ")
+	b.WriteString(strconv.Itoa(limit.Limit))
+	b.WriteString("\n- prior_rework_transitions: ")
+	b.WriteString(strconv.Itoa(limit.Count))
+	b.WriteString("\n- current_rework_reason: ")
+	b.WriteString(string(decision.Reason))
+	if reasons := autoPromoteReworkReasonsText(limit.ReasonCounts); reasons != "" {
+		b.WriteString("\n- repeated_rework_reasons: ")
+		b.WriteString(reasons)
+	}
+	if summary.PullRequestURL != "" {
+		b.WriteString("\n- pull request: ")
+		b.WriteString(summary.PullRequestURL)
+	}
+	if summary.MergeableState != "" {
+		b.WriteString("\n- mergeable_state: ")
+		b.WriteString(summary.MergeableState)
+	}
+	if decision.CIStatus != "" {
+		b.WriteString("\n- ci_status: ")
+		b.WriteString(decision.CIStatus)
+	}
+	if failedChecks := strings.Join(summary.FailedChecks, ", "); failedChecks != "" {
+		b.WriteString("\n- failed_checks: ")
+		b.WriteString(failedChecks)
+	}
+
+	if len(decision.Findings) > 0 {
+		b.WriteString("\n\nCurrent findings:")
+		for _, finding := range decision.Findings {
+			b.WriteString("\n- ")
+			b.WriteString(autoPromoteFindingText(finding))
+		}
+	}
+
+	return b.String()
+}
+
+func autoPromoteReworkReasonsText(counts []autoPromoteReworkReasonCount) string {
+	parts := make([]string, 0, len(counts))
+	for _, count := range counts {
+		if strings.TrimSpace(count.Reason) == "" || count.Count <= 0 {
+			continue
+		}
+		parts = append(parts, fmt.Sprintf("%s x%d", count.Reason, count.Count))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func autoPromoteFindingText(finding AutoPromoteFinding) string {

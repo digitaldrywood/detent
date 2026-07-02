@@ -265,6 +265,7 @@ type AutoPromote struct {
 	SourceState        string   `yaml:"source_state,omitempty"`
 	PassState          string   `yaml:"pass_state,omitempty"`
 	ReworkState        string   `yaml:"rework_state,omitempty"`
+	ReworkLimit        int      `yaml:"rework_limit,omitempty"`
 }
 
 type Lessons struct {
@@ -1387,6 +1388,9 @@ func (a *AutoPromote) validate(prefix string, problems *[]string) {
 	}
 	if strings.TrimSpace(a.ReworkState) == "" {
 		*problems = append(*problems, prefix+".rework_state must not be blank")
+	}
+	if a.ReworkLimit < 0 {
+		*problems = append(*problems, prefix+".rework_limit must be greater than or equal to 0")
 	}
 }
 

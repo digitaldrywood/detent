@@ -15,6 +15,10 @@ type WorkflowMetricsRecorder interface {
 	RecordWorkflowPhaseEvent(context.Context, store.WorkflowPhaseEvent) (int64, error)
 }
 
+type WorkflowMetricsTimelineReader interface {
+	IssueWorkflowTimeline(context.Context, store.IssueIdentity) (store.WorkflowTimeline, error)
+}
+
 func (o *Orchestrator) updateIssueState(
 	ctx context.Context,
 	issue connector.Issue,

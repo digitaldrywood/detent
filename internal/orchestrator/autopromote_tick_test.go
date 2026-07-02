@@ -15,6 +15,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/gate"
 	runpkg "github.com/digitaldrywood/detent/internal/runner"
 	"github.com/digitaldrywood/detent/internal/scheduler"
+	"github.com/digitaldrywood/detent/internal/store"
 )
 
 func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
@@ -106,6 +107,7 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 			cfg: AutoPromoteConfig{
 				Enabled:       true,
 				QuietDuration: 10 * time.Minute,
+				ReworkLimit:   0,
 			},
 			issue: autoPromoteTickIssue("issue-p1", []string{"bug"}, &connector.PullRequest{
 				Number:                 43,
@@ -313,6 +315,91 @@ func TestTickAutoPromoteHumanReviewIssues(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestTickAutoPromoteBlocksWhenReworkLimitReached(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 7, 2, 16, 10, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-rework-limit", []string{"bug"}, &connector.PullRequest{
+		Number:                 43,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/43",
+		State:                  "OPEN",
+		CIStatus:               "pass",
+		CodexReviewState:       "P1",
+		CodexReviewSubmittedAt: &oldReview,
+		CodexReviewFindings: []connector.PullRequestFinding{{
+			Body: "![P1 Badge](https://example.test/p1.svg) Unsafe migration.",
+			URL:  "https://github.test/digitaldrywood/detent/pull/43#pullrequestreview-1",
+		}},
+	})
+	issue.Identifier = "digitaldrywood/detent#857"
+	issue.URL = "https://github.test/digitaldrywood/detent/issues/857"
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			ReworkLimit:   1,
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	metrics := &autoPromoteWorkflowMetricsRecorder{}
+	if _, err := metrics.RecordWorkflowPhaseEvent(context.Background(), store.WorkflowPhaseEvent{
+		ProjectID:    defaultWorkflowMetricsProjectID,
+		IssueID:      issue.ID,
+		Identifier:   issue.Identifier,
+		IssueURL:     issue.URL,
+		PhaseType:    store.WorkflowPhaseTypeLane,
+		PhaseName:    "Rework",
+		Reason:       string(AutoPromoteReasonP1Findings),
+		Status:       "entered",
+		StartedAt:    now.Add(-2 * time.Hour),
+		MetadataJSON: "{}",
+	}); err != nil {
+		t.Fatalf("RecordWorkflowPhaseEvent() error = %v", err)
+	}
+	orch := &Orchestrator{
+		cfg:             cfg,
+		connector:       tracker,
+		workflowMetrics: metrics,
+		logger:          slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: issue.ID, state: "Blocked"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	if len(tracker.comments) != 1 {
+		t.Fatalf("comments = %#v, want one Blocked handoff comment", tracker.comments)
+	}
+	for _, fragment := range []string{
+		"Auto-promote routed this issue from Human Review to Blocked because the Rework limit was reached.",
+		"rework_limit: 1",
+		"prior_rework_transitions: 1",
+		"current_rework_reason: p1_findings",
+		"repeated_rework_reasons: p1_findings x1",
+		"Unsafe migration.",
+		"https://github.test/digitaldrywood/detent/pull/43#pullrequestreview-1",
+	} {
+		if !strings.Contains(tracker.comments[0].body, fragment) {
+			t.Fatalf("comment %q missing fragment %q", tracker.comments[0].body, fragment)
+		}
+	}
+	events := metrics.snapshot()
+	if len(events) != 3 {
+		t.Fatalf("workflow metric events = %#v, want prior Rework plus exit/Blocked enter", events)
+	}
+	blocked := events[2]
+	if blocked.PhaseName != "Blocked" || blocked.Status != "entered" || blocked.Reason != "rework_limit" {
+		t.Fatalf("blocked metric = %#v, want Blocked entered with rework_limit reason", blocked)
 	}
 }
 
@@ -2935,6 +3022,47 @@ type autoPromoteTickHydration struct {
 	issueID    string
 	repository string
 	number     int
+}
+
+type autoPromoteWorkflowMetricsRecorder struct {
+	mu     sync.Mutex
+	events []store.WorkflowPhaseEvent
+}
+
+func (r *autoPromoteWorkflowMetricsRecorder) RecordWorkflowPhaseEvent(_ context.Context, event store.WorkflowPhaseEvent) (int64, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	r.events = append(r.events, event)
+	return int64(len(r.events)), nil
+}
+
+func (r *autoPromoteWorkflowMetricsRecorder) IssueWorkflowTimeline(_ context.Context, identity store.IssueIdentity) (store.WorkflowTimeline, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	events := make([]store.WorkflowPhaseEvent, 0, len(r.events))
+	for _, event := range r.events {
+		if event.IssueID != "" && event.IssueID == identity.IssueID {
+			events = append(events, event)
+			continue
+		}
+		if event.Identifier != "" && event.Identifier == identity.Identifier {
+			events = append(events, event)
+			continue
+		}
+		if event.IssueURL != "" && event.IssueURL == identity.IssueURL {
+			events = append(events, event)
+		}
+	}
+	return store.WorkflowTimeline{Events: events}, nil
+}
+
+func (r *autoPromoteWorkflowMetricsRecorder) snapshot() []store.WorkflowPhaseEvent {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	return append([]store.WorkflowPhaseEvent(nil), r.events...)
 }
 
 type autoPromoteTickConnector struct {

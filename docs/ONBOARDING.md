@@ -2036,7 +2036,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    policy, and dependency policy selected by the human. Verify:
 
    ```sh
-   rg -n 'max_concurrent_agents: <max>|Merging: 1|dispatch_priority_by_label:|auto_promote:|dependency_auto_unblock:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:|source_states:|target_state:|readiness:' \
+   rg -n 'max_concurrent_agents: <max>|Merging: 1|dispatch_priority_by_label:|auto_promote:|dependency_auto_unblock:|enabled: <true|false>|quiet_seconds: <seconds>|optout_label: <label>|allowed_issue_labels:|rework_limit:|source_states:|target_state:|readiness:' \
      <source-root>/WORKFLOW.md
    ```
 
@@ -2065,6 +2065,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
        quiet_seconds: 600
        optout_label: requires-human-review
        allowed_issue_labels: []
+       rework_limit: 0
    ```
 
    Criteria-based auto-promote example:
@@ -2077,6 +2078,7 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
        optout_label: <optout-label>
        allowed_issue_labels:
          - <allowed-label>
+       rework_limit: <0-or-max-rework-laps>
    ```
 
    For a command gate, auto-promote requires a linked open PR, green CI, no P1
@@ -2086,7 +2088,9 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
    not required to exist, but any observed P1 bot findings still route the item
    to `Rework`. Failed or cancelled current-head CI also routes the item to
    `Rework` by default; set `ci_failure_action: skip` only when red CI should
-   stay parked in `Human Review`. Pending CI stays parked. The quiet
+   stay parked in `Human Review`. `agent.auto_promote.rework_limit: 0` leaves
+   repeated rework unlimited; a positive value blocks the next lap after that
+   many persisted Rework entries. Pending CI stays parked. The quiet
    period resets on observed issue updates, Project
    status updates, automated PR review submission, and linked PR activity such
    as a fresh push to the PR head. With `gate.validator.enabled: true`, a

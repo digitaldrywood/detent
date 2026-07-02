@@ -36,6 +36,7 @@ agent:
     source_state: Review
     pass_state: Ready for Pickup
     rework_state: Rework
+    rework_limit: 0
 
 gate:
   kind: artifact
