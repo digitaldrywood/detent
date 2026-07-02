@@ -591,6 +591,13 @@ func HealthShellDataFromDashboard(data DashboardData) DashboardShellData {
 	return shell
 }
 
+func AnalyticsShellDataFromDashboard(data DashboardData) DashboardShellData {
+	shell := DashboardShellDataFromDashboard(data)
+	shell.ActiveNav = "analytics"
+	shell.IncludeDashboardCharts = true
+	return shell
+}
+
 func pageTitle(data DashboardShellData) string {
 	if data.Title != "" {
 		return data.Title
@@ -767,6 +774,10 @@ func sidebarReportsPath(data DashboardShellData) string {
 	return sidebarStaticPath(data, "/reports")
 }
 
+func sidebarAnalyticsPath(data DashboardShellData) string {
+	return "/analytics"
+}
+
 func sidebarHealthPath(data DashboardShellData) string {
 	return "/health/ui"
 }
@@ -836,6 +847,8 @@ func staticSidebarNav(activeNav string) string {
 	switch strings.TrimSpace(activeNav) {
 	case "health":
 		return "health"
+	case "analytics":
+		return "analytics"
 	case "reports":
 		return "reports"
 	case "settings":

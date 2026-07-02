@@ -29,7 +29,7 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 	leaseRenewedAt := now.Add(-30 * time.Second)
 	leaseExpiresAt := now.Add(90 * time.Second)
 
-	html := renderDashboard(t, templates.DashboardData{
+	data := templates.DashboardData{
 		Title:         "Detent",
 		Version:       "v1.2.3",
 		ConnectorName: "github",
@@ -255,7 +255,9 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 				},
 			},
 		},
-	})
+	}
+	html := renderDashboard(t, data)
+	analyticsHTML := renderAnalyticsPage(t, data)
 
 	for _, want := range []string{
 		"Running",
@@ -264,6 +266,7 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"Completed",
 		"v1.2.3",
 		`href="/"`,
+		`href="/analytics"`,
 		`href="/reports"`,
 		`href="/settings"`,
 		"release-captain",
@@ -299,8 +302,6 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"30,000",
 		"Human Review",
 		"gpt-5-codex",
-		"$12.50",
-		"$100.00",
 		"Rate limits",
 		"Primary",
 		"800",
@@ -331,29 +332,11 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 		"12",
 		"2h 0m",
 		"3",
-		"Cycle time",
-		"2 completed",
-		"1h 30m",
-		`aria-label="Cycle time histogram"`,
-		"<title>Cycle time histogram</title>",
-		"<title>&lt;1h: 1 issues</title>",
-		"<title>1-4h: 1 issues</title>",
 		`aria-label="Token trend"`,
 		"<title>Token trend</title>",
 		`stroke="currentColor"`,
 		"Input 14:55: 20,000 tokens",
 		"Output 15:00: 50,000 tokens",
-		"Board health",
-		"Current issue states",
-		`aria-label="Current issue state distribution"`,
-		"<title>Current issue state distribution</title>",
-		"Todo: 3 issues",
-		"In Progress: 2 issues",
-		"Review: 1 issues",
-		"Session completions",
-		`aria-label="Completed sessions over time"`,
-		"<title>Completed sessions over time</title>",
-		"14:59: 4 sessions",
 		"PR pipeline",
 		"Live merge-train lanes",
 		"#142",
@@ -371,13 +354,60 @@ func TestDashboardRendersTelemetrySnapshot(t *testing.T) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
 		}
 	}
+	for _, forbidden := range []string{
+		`id="fleet-analytics"`,
+		`aria-label="Board health"`,
+		`aria-label="Scheduler runtime"`,
+		`aria-label="Workflow metrics"`,
+		`aria-label="Cycle time"`,
+		`id="budget-card"`,
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard rendered moved analytics marker %q:\n%s", forbidden, html)
+		}
+	}
+	for _, want := range []string{
+		`href="/analytics"`,
+		`sse-connect="/events?nav=analytics"`,
+		`src="/static/vendor/chartjs/chart.umd.min`,
+		`src="/static/js/dashboard-charts`,
+		`id="fleet-analytics"`,
+		`aria-label="Analytics"`,
+		"Board health",
+		"Current issue states",
+		`aria-label="Current issue state distribution"`,
+		"<title>Current issue state distribution</title>",
+		"Todo: 3 issues",
+		"In Progress: 2 issues",
+		"Review: 1 issues",
+		"Session completions",
+		`aria-label="Completed sessions over time"`,
+		"<title>Completed sessions over time</title>",
+		"14:59: 4 sessions",
+		"Scheduler runtime",
+		"Workflow metrics",
+		"Cycle time",
+		"2 completed",
+		"1h 30m",
+		`aria-label="Cycle time histogram"`,
+		"<title>Cycle time histogram</title>",
+		"<title>&lt;1h: 1 issues</title>",
+		"<title>1-4h: 1 issues</title>",
+		"Budget",
+		"$12.50",
+		"$100.00",
+	} {
+		if !strings.Contains(analyticsHTML, want) {
+			t.Fatalf("analytics page missing %q:\n%s", want, analyticsHTML)
+		}
+	}
 }
 
 func TestDashboardRendersTrackerStatusDriftWarning(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 7, 1, 15, 0, 0, 0, time.UTC)
-	html := renderDashboard(t, templates.DashboardData{
+	data := templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
@@ -412,7 +442,8 @@ func TestDashboardRendersTrackerStatusDriftWarning(t *testing.T) {
 				}},
 			},
 		},
-	})
+	}
+	html := renderDashboard(t, data)
 
 	for _, want := range []string{
 		`aria-label="Tracker status drift"`,
@@ -768,7 +799,7 @@ func TestDashboardRendersBlockedIssueWithCompletedSessionAsCurrentBlocked(t *tes
 	t.Parallel()
 
 	now := time.Date(2026, 6, 13, 15, 0, 0, 0, time.UTC)
-	html := renderDashboard(t, templates.DashboardData{
+	data := templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
@@ -801,7 +832,9 @@ func TestDashboardRendersBlockedIssueWithCompletedSessionAsCurrentBlocked(t *tes
 				},
 			},
 		},
-	})
+	}
+	html := renderDashboard(t, data)
+	analyticsHTML := renderAnalyticsPage(t, data)
 
 	blockedSection := dashboardSection(t, html, "Blocked sessions", "Recent sessions")
 	for _, want := range []string{
@@ -834,7 +867,7 @@ func TestDashboardRendersBlockedIssueWithCompletedSessionAsCurrentBlocked(t *tes
 		}
 	}
 
-	boardSection := dashboardSection(t, html, "Board health", "Cycle time")
+	boardSection := dashboardSection(t, analyticsHTML, "Board health", "Cycle time")
 	for _, want := range []string{
 		"Current issue states",
 		"Blocked: 1 issues",
@@ -855,7 +888,7 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 
 	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
 	updatedAt := now.Add(-time.Minute)
-	html := renderDashboard(t, templates.DashboardData{
+	data := templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
@@ -895,7 +928,8 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 				},
 			},
 		},
-	})
+	}
+	html := renderDashboard(t, data)
 
 	for _, want := range []string{
 		"dashboard-topbar",
@@ -903,8 +937,7 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 		`aria-label="Agent activity timeline"`,
 		`aria-label="Pull request pipeline"`,
 		`aria-label="Fleet grid"`,
-		`aria-label="Board health"`,
-		`aria-label="Cycle time"`,
+		`id="dashboard-charts"`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
@@ -922,6 +955,7 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 		`href="/"`,
 		">Detent</span>",
 		`<h1 class="sr-only">Fleet</h1>`,
+		`href="/analytics"`,
 		`href="/reports"`,
 		`href="/settings"`,
 	} {
@@ -934,6 +968,8 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 		`aria-current="page">Dashboard</a>`,
 		`dashboard-topbar-chip`,
 		`href="http://localhost:4000"`,
+		`aria-label="Board health"`,
+		`aria-label="Cycle time"`,
 	} {
 		if strings.Contains(html, forbidden) {
 			t.Fatalf("dashboard slim navbar rendered forbidden marker %q:\n%s", forbidden, html)
@@ -945,13 +981,12 @@ func TestDashboardPrioritizesOperationalSections(t *testing.T) {
 	metricsIndex := strings.Index(html, `aria-label="Dashboard statistics"`)
 	pipelineIndex := strings.Index(html, `aria-label="Pull request pipeline"`)
 	projectsIndex := strings.Index(html, `aria-label="Fleet grid"`)
-	boardIndex := strings.Index(html, `aria-label="Board health"`)
-	cycleIndex := strings.Index(html, `aria-label="Cycle time"`)
-	if healthIndex < 0 || metricsIndex < 0 || activityIndex < 0 || pipelineIndex < 0 || projectsIndex < 0 || boardIndex < 0 || cycleIndex < 0 {
-		t.Fatalf("dashboard section indexes missing: health=%d metrics=%d activity=%d pipeline=%d projects=%d board=%d cycle=%d\n%s", healthIndex, metricsIndex, activityIndex, pipelineIndex, projectsIndex, boardIndex, cycleIndex, html)
+	chartsIndex := strings.Index(html, `id="dashboard-charts"`)
+	if healthIndex < 0 || metricsIndex < 0 || activityIndex < 0 || pipelineIndex < 0 || projectsIndex < 0 || chartsIndex < 0 {
+		t.Fatalf("dashboard section indexes missing: health=%d metrics=%d activity=%d pipeline=%d projects=%d charts=%d\n%s", healthIndex, metricsIndex, activityIndex, pipelineIndex, projectsIndex, chartsIndex, html)
 	}
-	if healthIndex >= activityIndex || activityIndex >= metricsIndex || metricsIndex >= projectsIndex || projectsIndex >= pipelineIndex || pipelineIndex >= boardIndex || boardIndex >= cycleIndex {
-		t.Fatalf("dashboard sections are not ordered as health, activity, stats, projects, pipeline, analytics: health=%d activity=%d metrics=%d projects=%d pipeline=%d board=%d cycle=%d\n%s", healthIndex, activityIndex, metricsIndex, projectsIndex, pipelineIndex, boardIndex, cycleIndex, html)
+	if healthIndex >= activityIndex || activityIndex >= metricsIndex || metricsIndex >= projectsIndex || projectsIndex >= pipelineIndex || pipelineIndex >= chartsIndex {
+		t.Fatalf("dashboard sections are not ordered as health, activity, stats, projects, pipeline, charts: health=%d activity=%d metrics=%d projects=%d pipeline=%d charts=%d\n%s", healthIndex, activityIndex, metricsIndex, projectsIndex, pipelineIndex, chartsIndex, html)
 	}
 }
 
@@ -960,7 +995,7 @@ func TestDashboardRendersBoundedPRPipelineLanes(t *testing.T) {
 
 	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
 	updatedAt := now.Add(-10 * time.Minute)
-	html := renderDashboard(t, templates.DashboardData{
+	data := templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
@@ -979,7 +1014,8 @@ func TestDashboardRendersBoundedPRPipelineLanes(t *testing.T) {
 				},
 			},
 		},
-	})
+	}
+	html := renderDashboard(t, data)
 
 	for _, want := range []string{
 		`aria-label="Human Review lane"`,
@@ -2874,7 +2910,7 @@ func TestDashboardPreservesSnapshotScrollContainersAcrossSSEMorph(t *testing.T) 
 
 	now := time.Date(2026, 6, 1, 15, 0, 0, 0, time.UTC)
 	stageAt := now.Add(-time.Minute)
-	html := renderDashboard(t, templates.DashboardData{
+	data := templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
@@ -2944,7 +2980,8 @@ func TestDashboardPreservesSnapshotScrollContainersAcrossSSEMorph(t *testing.T) 
 				},
 			},
 		},
-	})
+	}
+	html := renderDashboard(t, data)
 
 	for _, want := range []string{
 		`data-preserve-scroll="agent-activity"`,
@@ -3475,7 +3512,7 @@ func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 	perDay := 100.0
 	perIssue := 25.0
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
-	html := renderDashboard(t, templates.DashboardData{
+	html := renderAnalyticsPage(t, templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
@@ -3511,7 +3548,7 @@ func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 		"$25.00",
 	} {
 		if !strings.Contains(html, want) {
-			t.Fatalf("dashboard missing %q:\n%s", want, html)
+			t.Fatalf("analytics page missing %q:\n%s", want, html)
 		}
 	}
 	for _, forbidden := range []string{
@@ -3532,7 +3569,7 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 
 	dailyCap := 20.0
 	issueCap := 5.0
-	html := renderDashboard(t, templates.DashboardData{
+	data := templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
 		Snapshot: telemetry.Snapshot{
@@ -3569,7 +3606,9 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 				PerIssueMaxUSD: &issueCap,
 			},
 		},
-	})
+	}
+	html := renderDashboard(t, data)
+	analyticsHTML := renderAnalyticsPage(t, data)
 
 	for _, want := range []string{
 		`data-help-tip`,
@@ -3583,11 +3622,9 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 		`role="tooltip"`,
 		`aria-label="Help: Token throughput"`,
 		`aria-label="Help: Backoff queue"`,
-		`aria-label="Help: Budget"`,
 		`aria-label="Help: Rate limits"`,
 		`aria-label="Help: Tokens"`,
 		`tps`,
-		`USD`,
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
@@ -3596,6 +3633,15 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 	for _, headerCell := range regexp.MustCompile(`(?s)<th(?:\s|>)[^>]*>.*?</th>`).FindAllString(html, -1) {
 		if strings.Contains(headerCell, "data-help-trigger") {
 			t.Fatalf("dashboard rendered help trigger inside table header:\n%s", headerCell)
+		}
+	}
+	for _, want := range []string{
+		`aria-label="Help: Budget"`,
+		`data-help-term="budget"`,
+		`USD`,
+	} {
+		if !strings.Contains(analyticsHTML, want) {
+			t.Fatalf("analytics page missing %q:\n%s", want, analyticsHTML)
 		}
 	}
 	for _, forbidden := range []string{
@@ -4086,7 +4132,7 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 
 	now := time.Date(2026, 6, 22, 10, 0, 0, 0, time.UTC)
 	lastRefreshAt := now.Add(-time.Minute)
-	html := renderDashboard(t, templates.DashboardData{
+	data := templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "memory",
 		Snapshot: telemetry.Snapshot{
@@ -4096,17 +4142,15 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 				LastRefreshAt: &lastRefreshAt,
 			},
 		},
-	})
+	}
+	html := renderDashboard(t, data)
+	analyticsHTML := renderAnalyticsPage(t, data)
 
 	for _, want := range []string{
 		"No active issue sessions.",
 		"No issues are currently backing off.",
 		"No blocked sessions.",
 		"No completed sessions recorded.",
-		"No completed issues yet.",
-		"No board states recorded.",
-		"No completed session history yet.",
-		"Budget disabled",
 		"No rate-limit snapshot.",
 		"No token trend yet.",
 		"Lifetime totals unavailable.",
@@ -4115,6 +4159,20 @@ func TestDashboardRendersEmptyStates(t *testing.T) {
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+	for _, want := range []string{
+		"No completed issues yet.",
+		"No board states recorded.",
+		"No completed session history yet.",
+		"No scheduler runtime records yet.",
+		"Workflow metrics",
+		"Budget disabled",
+		"dashboard-empty-state",
+		"items-start gap-3",
+	} {
+		if !strings.Contains(analyticsHTML, want) {
+			t.Fatalf("analytics page missing %q:\n%s", want, analyticsHTML)
 		}
 	}
 	for _, forbidden := range []string{
@@ -4371,6 +4429,16 @@ func renderHealthPage(t *testing.T, data templates.DashboardData) string {
 
 	var buf bytes.Buffer
 	if err := templates.HealthPage(data).Render(context.Background(), &buf); err != nil {
+		t.Fatalf("Render() error = %v", err)
+	}
+	return buf.String()
+}
+
+func renderAnalyticsPage(t *testing.T, data templates.DashboardData) string {
+	t.Helper()
+
+	var buf bytes.Buffer
+	if err := templates.AnalyticsPage(data).Render(context.Background(), &buf); err != nil {
 		t.Fatalf("Render() error = %v", err)
 	}
 	return buf.String()

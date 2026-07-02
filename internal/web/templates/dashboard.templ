@@ -76,6 +76,31 @@ templ HealthPage(data DashboardData) {
 	}
 }
 
+templ AnalyticsPage(data DashboardData) {
+	@DashboardShell(AnalyticsShellDataFromDashboard(data)) {
+		<div class="mx-auto grid w-full max-w-7xl content-start gap-4 sm:gap-5">
+			<header class="dashboard-topbar min-w-0 border-b border-border py-2">
+				<div class="flex min-w-0 flex-wrap items-center gap-x-5 gap-y-2">
+					@dashboardMobileSidebarTrigger()
+					<div class="min-w-0">
+						<h1 class="truncate text-sm font-semibold text-foreground">Analytics</h1>
+					</div>
+					<div class="dashboard-topbar-actions ml-auto flex min-w-0 flex-wrap items-center justify-end gap-x-2 gap-y-1 text-xs text-muted-foreground">
+						<span class="truncate font-mono">{ dashboardBuildVersionLabel(data) }</span>
+						@dashboardTopbarDivider()
+						<span class="truncate">{ connectorName(data) }</span>
+						@dashboardTopbarDivider()
+						<span id="live-tick" class="sse-tick min-w-0 truncate font-mono" sse-swap="tick" hx-swap="innerHTML settle:120ms">{ generatedAtLabel(data.Snapshot) }</span>
+					</div>
+				</div>
+			</header>
+			<div id="snapshot" class="sse-surface grid min-w-0 gap-4 sm:gap-5" sse-swap="snapshot" hx-swap="morph:innerHTML">
+				@AnalyticsSnapshot(data)
+			</div>
+		</div>
+	}
+}
+
 templ ProjectKanbanPage(data DashboardData) {
 	@DashboardShell(ProjectKanbanShellDataFromDashboard(data)) {
 		<div id="snapshot" class="sse-surface grid min-w-0 content-start" sse-swap="snapshot" hx-swap="morph:innerHTML">
@@ -230,6 +255,20 @@ templ HealthSnapshot(data DashboardData) {
 		@dashboardHealth(data)
 		@GitHubAPIHealthDetails(data.Snapshot)
 	</section>
+}
+
+templ AnalyticsSnapshot(data DashboardData) {
+	if !snapshotReady(data.Snapshot) {
+		@snapshotReadiness(data.Snapshot)
+	} else {
+		<section id="fleet-analytics" class="dashboard-analytics grid min-w-0 gap-4 lg:gap-5" aria-label="Analytics">
+			@boardHealthSection(data.Snapshot)
+			@schedulerRuntimeSection(data.Snapshot)
+			@workflowMetricsSection(data.Snapshot.WorkflowMetrics, data.Snapshot.Project)
+			@cycleTimeSection(data.Snapshot.CycleTime)
+			@budgetCard(data.Snapshot)
+		</section>
+	}
 }
 
 templ GitHubAPIHealthDetails(snapshot telemetry.Snapshot) {
@@ -951,6 +990,9 @@ templ dashboardSidebarActiveScript() {
 				}
 				if (path === "/health/ui") {
 					return "health";
+				}
+				if (path === "/analytics") {
+					return "analytics";
 				}
 				return "";
 			}
@@ -1801,6 +1843,17 @@ templ DashboardSidebarContent(data DashboardShellData) {
 			}
 			@sidebar.MenuItem() {
 				@sidebar.MenuButton(sidebar.MenuButtonProps{
+					Href:       sidebarAnalyticsPath(data),
+					IsActive:   sidebarStaticNavActive(data, "analytics"),
+					Tooltip:    "Analytics",
+					Attributes: sidebarStaticNavAttributes(data, "analytics"),
+				}) {
+					@icon.ChartSpline(icon.Props{Class: "size-4 shrink-0"})
+					<span>Analytics</span>
+				}
+			}
+			@sidebar.MenuItem() {
+				@sidebar.MenuButton(sidebar.MenuButtonProps{
 					Href:       sidebarReportsPath(data),
 					IsActive:   sidebarStaticNavActive(data, "reports"),
 					Tooltip:    "Reports",
@@ -2291,13 +2344,6 @@ templ FleetSnapshot(data DashboardData) {
 				@tokenCard(data)
 				@lifetimeCard(data.Snapshot.LifetimeTotals)
 			</aside>
-		</section>
-		<section class="dashboard-analytics grid min-w-0 gap-4 lg:gap-5" aria-label="Dashboard analytics">
-			@boardHealthSection(data.Snapshot)
-			@schedulerRuntimeSection(data.Snapshot)
-			@workflowMetricsSection(data.Snapshot.WorkflowMetrics, data.Snapshot.Project)
-			@cycleTimeSection(data.Snapshot.CycleTime)
-			@budgetCard(data.Snapshot)
 		</section>
 	}
 }

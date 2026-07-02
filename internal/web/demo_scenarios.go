@@ -292,6 +292,14 @@ func (s *Server) demoHealthDashboard(c echo.Context, scenario demoScenario) erro
 	return render(c, templates.HealthPage(data))
 }
 
+func (s *Server) demoAnalyticsDashboard(c echo.Context, scenario demoScenario) error {
+	data := s.demoDashboardData(c.Request().Context(), scenario)
+	data.ActiveNav = "analytics"
+	data.Title = instancePageTitle(s.instanceName(), "Analytics - Detent")
+	data.SidebarCollapsed = dashboardSidebarCollapsed(c.Request())
+	return render(c, templates.AnalyticsPage(data))
+}
+
 func (s *Server) demoProjectDashboard(c echo.Context, scenario demoScenario, view string) error {
 	if scenario.Status == http.StatusNotFound || scenario.Variant == "not-found" {
 		return c.JSON(http.StatusNotFound, errorResponse("project_not_found", "Project not found"))
@@ -1603,6 +1611,9 @@ func (s *Server) writeDemoSSE(ctx context.Context, res *echo.Response, scenario 
 	case sseViewHealth:
 		data.ActiveNav = "health"
 		snapshotComponent = templates.HealthSnapshot(data)
+	case sseViewAnalytics:
+		data.ActiveNav = "analytics"
+		snapshotComponent = templates.AnalyticsSnapshot(data)
 	case sseViewKanban:
 		data.ActiveNav = "kanban"
 		snapshotComponent = templates.ProjectKanbanSnapshot(data)
@@ -1628,6 +1639,8 @@ func demoSSEViewForScenario(scenario demoScenario) string {
 	switch scenario.Page {
 	case "health":
 		return sseViewHealth
+	case "analytics":
+		return sseViewAnalytics
 	case "fleet-kanban":
 		return sseViewKanban
 	case "kanban":

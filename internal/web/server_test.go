@@ -35,6 +35,8 @@ import (
 	"github.com/digitaldrywood/detent/internal/web"
 )
 
+const sseTestReadTimeout = 5 * time.Second
+
 func TestNewServerValidatesDependencies(t *testing.T) {
 	t.Parallel()
 
@@ -147,6 +149,12 @@ func TestServerRoutes(t *testing.T) {
 			path:        "/settings",
 			wantStatus:  http.StatusOK,
 			wantContent: "Settings",
+		},
+		{
+			name:        "analytics",
+			path:        "/analytics",
+			wantStatus:  http.StatusOK,
+			wantContent: "Analytics",
 		},
 		{
 			name:        "reports",
@@ -1785,6 +1793,7 @@ func TestServerRendersInstanceNameInPagesStateAndMetadata(t *testing.T) {
 		title   string
 	}{
 		{name: "dashboard", handler: server.Handler(), path: "/", title: "buildbox · Detent"},
+		{name: "analytics", handler: server.Handler(), path: "/analytics", title: "buildbox · Analytics - Detent"},
 		{name: "reports", handler: server.Handler(), path: "/reports", title: "buildbox · Detent reports"},
 		{name: "settings", handler: server.Handler(), path: "/settings", title: "buildbox · Detent settings"},
 		{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding", title: "buildbox · Detent onboarding"},
@@ -2044,6 +2053,7 @@ func TestServerStaticAssetsUseFingerprintsAndCacheHeaders(t *testing.T) {
 			path    string
 		}{
 			{name: "dashboard", handler: server.Handler(), path: "/"},
+			{name: "analytics", handler: server.Handler(), path: "/analytics"},
 			{name: "settings", handler: server.Handler(), path: "/settings"},
 			{name: "reports", handler: server.Handler(), path: "/reports"},
 			{name: "onboarding", handler: onboardingServer.Handler(), path: "/onboarding"},
@@ -2448,7 +2458,16 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			sseConnect:   `sse-connect="/events"`,
 			reportsHref:  "/reports",
 			settingsHref: "/settings",
-			inactiveHref: []string{"/reports", "/settings"},
+			inactiveHref: []string{"/analytics", "/reports", "/settings"},
+		},
+		{
+			name:         "analytics",
+			path:         "/analytics",
+			activeHref:   "/analytics",
+			sseConnect:   `sse-connect="/events?nav=analytics"`,
+			reportsHref:  "/reports",
+			settingsHref: "/settings",
+			inactiveHref: []string{"/", "/reports", "/settings"},
 		},
 		{
 			name:         "reports",
@@ -2457,7 +2476,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			sseConnect:   `sse-connect="/events?nav=reports"`,
 			reportsHref:  "/reports",
 			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/settings"},
+			inactiveHref: []string{"/", "/analytics", "/settings"},
 		},
 		{
 			name:         "health",
@@ -2466,7 +2485,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			sseConnect:   `sse-connect="/events?nav=health"`,
 			reportsHref:  "/reports",
 			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/reports", "/settings"},
+			inactiveHref: []string{"/", "/analytics", "/reports", "/settings"},
 		},
 		{
 			name:         "project",
@@ -2475,7 +2494,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			sseConnect:   `sse-connect="/events?project=detent"`,
 			reportsHref:  "/reports?project=detent",
 			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/reports?project=detent", "/settings?project=detent"},
+			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent"},
 		},
 		{
 			name:         "project kanban",
@@ -2484,7 +2503,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			sseConnect:   `sse-connect="/events?project=detent&amp;view=kanban"`,
 			reportsHref:  "/reports?project=detent",
 			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/reports?project=detent", "/settings?project=detent", "/projects/detent"},
+			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent"},
 		},
 		{
 			name:         "project runs",
@@ -2493,7 +2512,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			sseConnect:   `sse-connect="/events?project=detent&amp;view=runs"`,
 			reportsHref:  "/reports?project=detent",
 			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/configuration", "/projects/detent/diagnostics"},
+			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/configuration", "/projects/detent/diagnostics"},
 		},
 		{
 			name:         "project configuration",
@@ -2502,7 +2521,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			sseConnect:   `sse-connect="/events?project=detent&amp;view=configuration"`,
 			reportsHref:  "/reports?project=detent",
 			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/runs", "/projects/detent/diagnostics"},
+			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/runs", "/projects/detent/diagnostics"},
 		},
 		{
 			name:         "project diagnostics",
@@ -2511,7 +2530,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			sseConnect:   `sse-connect="/events?project=detent&amp;view=diagnostics"`,
 			reportsHref:  "/reports?project=detent",
 			settingsHref: "/settings?project=detent",
-			inactiveHref: []string{"/", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/runs", "/projects/detent/configuration"},
+			inactiveHref: []string{"/", "/analytics", "/reports?project=detent", "/settings?project=detent", "/projects/detent", "/projects/detent/kanban", "/projects/detent/runs", "/projects/detent/configuration"},
 		},
 		{
 			name:         "settings",
@@ -2520,7 +2539,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			sseConnect:   `sse-connect="/events?nav=settings"`,
 			reportsHref:  "/reports",
 			settingsHref: "/settings",
-			inactiveHref: []string{"/", "/reports"},
+			inactiveHref: []string{"/", "/analytics", "/reports"},
 		},
 	}
 
@@ -2549,6 +2568,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 				`/static/js/templui/popover.min.js`,
 				`href="/"`,
 				`href="/health/ui"`,
+				`href="/analytics"`,
 				`href="` + tt.reportsHref + `"`,
 				`href="` + tt.settingsHref + `"`,
 				`href="/projects/detent"`,
@@ -2661,6 +2681,7 @@ func TestStaticPagesPreserveProjectSidebarContext(t *testing.T) {
 				`href="/projects/detent/configuration"`,
 				`href="/projects/detent/diagnostics"`,
 				`href="/health/ui"`,
+				`href="/analytics"`,
 				`href="/reports?project=detent"`,
 				`href="/settings?project=detent"`,
 				`data-dashboard-view="kanban"`,
@@ -2673,6 +2694,7 @@ func TestStaticPagesPreserveProjectSidebarContext(t *testing.T) {
 			assertSingleCurrentSidebarItem(t, body)
 			assertActiveSidebarLink(t, body, tt.activeHref)
 			assertInactiveSidebarLink(t, body, "/health/ui")
+			assertInactiveSidebarLink(t, body, "/analytics")
 			if tt.name == "settings" {
 				assertInactiveSidebarLink(t, body, "/settings?project=detent")
 			}
@@ -2991,6 +3013,7 @@ func TestProjectDashboardRoutesSplitOverviewAndDetailPages(t *testing.T) {
 		`href="/projects/detent/kanban"`,
 		`href="/projects/detent/runs"`,
 		`href="/projects/detent/diagnostics"`,
+		`href="/analytics"`,
 		`href="/reports?project=detent"`,
 		"Kanban",
 		"Runs",
@@ -4052,7 +4075,7 @@ func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
 	server.Handler().ServeHTTP(rec, req)
 
 	if rec.Code != http.StatusOK {
@@ -4065,7 +4088,7 @@ func TestDashboardEnrichesCycleTimeFromStore(t *testing.T) {
 		"<title>1-4h: 1 issues</title>",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())
+			t.Fatalf("analytics page missing %q:\n%s", want, rec.Body.String())
 		}
 	}
 }
@@ -4100,6 +4123,7 @@ func TestDashboardRendersServerMetadata(t *testing.T) {
 		"Build v9.8.7 (abcdef1) 2026-06-05T21:00:00Z",
 		`aria-label="Detent dashboard"`,
 		`href="/"`,
+		`href="/analytics"`,
 		`href="/reports"`,
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
@@ -4646,7 +4670,65 @@ func TestServerEventsPreservesStaticSidebarNavigation(t *testing.T) {
 	assertActiveSidebarLink(t, sidebarEvent.data, "/reports")
 	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
 	assertInactiveSidebarLink(t, sidebarEvent.data, "/health/ui")
+	assertInactiveSidebarLink(t, sidebarEvent.data, "/analytics")
 	assertInactiveSidebarLink(t, sidebarEvent.data, "/settings")
+}
+
+func TestServerEventsStreamsAnalyticsSnapshotForAnalyticsNav(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	addr := startWebServer(t, server)
+	conn, body, reader := openRawEventStream(t, addr, "/events?nav=analytics")
+	defer conn.Close()
+	defer body.Close()
+
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 12, 15, 0, 0, 0, time.UTC),
+		BoardIssues: []telemetry.Issue{
+			{ID: "issue-1", State: "Todo"},
+		},
+		CycleTime: telemetry.CycleTimeReport{
+			Available:      true,
+			AverageSeconds: int64(90 * time.Minute / time.Second),
+			Buckets:        []telemetry.CycleTimeBucket{{Label: "1-4h", Count: 1}},
+		},
+		Budget: telemetry.Budget{Enabled: true},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	snapshotEvent := readRawSSEEvent(t, conn, reader)
+	if snapshotEvent.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
+	}
+	for _, want := range []string{
+		`id="fleet-analytics"`,
+		`aria-label="Analytics"`,
+		`aria-label="Board health"`,
+		`id="scheduler-runtime"`,
+		`aria-label="Workflow metrics"`,
+		`aria-label="Cycle time"`,
+		"Budget",
+	} {
+		if !strings.Contains(snapshotEvent.data, want) {
+			t.Fatalf("analytics snapshot event missing %q:\n%s", want, snapshotEvent.data)
+		}
+	}
+
+	sidebarEvent := readRawSSEEvent(t, conn, reader)
+	if sidebarEvent.name != "sidebar" {
+		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
+	}
+	assertActiveSidebarLink(t, sidebarEvent.data, "/analytics")
+	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
+	assertInactiveSidebarLink(t, sidebarEvent.data, "/health/ui")
+	assertInactiveSidebarLink(t, sidebarEvent.data, "/reports")
 }
 
 func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
@@ -4706,6 +4788,7 @@ func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
 	}
 	assertActiveSidebarLink(t, sidebarEvent.data, "/health/ui")
 	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
+	assertInactiveSidebarLink(t, sidebarEvent.data, "/analytics")
 }
 
 func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing.T) {
@@ -4721,13 +4804,13 @@ func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing
 			name:         "reports",
 			path:         "/events?nav=reports&project=detent",
 			activeHref:   "/reports?project=detent",
-			inactiveHref: []string{"/projects/detent/kanban", "/settings?project=detent"},
+			inactiveHref: []string{"/analytics", "/projects/detent/kanban", "/settings?project=detent"},
 		},
 		{
 			name:         "settings",
 			path:         "/events?nav=settings&project=detent",
 			activeHref:   "/projects/detent/configuration",
-			inactiveHref: []string{"/reports?project=detent", "/settings?project=detent"},
+			inactiveHref: []string{"/analytics", "/reports?project=detent", "/settings?project=detent"},
 		},
 	}
 
@@ -4775,6 +4858,7 @@ func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing
 				`href="/projects/detent/configuration"`,
 				`href="/projects/detent/diagnostics"`,
 				`href="/health/ui"`,
+				`href="/analytics"`,
 				`href="/reports?project=detent"`,
 				`href="/settings?project=detent"`,
 			} {
@@ -5018,9 +5102,6 @@ func TestServerEventsStreamsLiveDashboardSections(t *testing.T) {
 		"3",
 		"Completed",
 		"2",
-		"$12.34",
-		"$19.74",
-		"Cost burn-down",
 		"DD-LIVE",
 		"Live dashboard row",
 		"+4 -2 (3 files)",
@@ -5829,10 +5910,10 @@ func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("analytics status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	for _, want := range []string{
 		"Cost burn-down",
@@ -5842,7 +5923,7 @@ func TestServerEnrichesBudgetBurnDownFromStoreAndRegistry(t *testing.T) {
 		"Projected period end: $7.00",
 	} {
 		if !strings.Contains(rec.Body.String(), want) {
-			t.Fatalf("dashboard missing %q:\n%s", want, rec.Body.String())
+			t.Fatalf("analytics page missing %q:\n%s", want, rec.Body.String())
 		}
 	}
 }
@@ -6066,18 +6147,18 @@ func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 			}
 
 			rec := httptest.NewRecorder()
-			req := httptest.NewRequest(http.MethodGet, "/", nil)
+			req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
 			server.Handler().ServeHTTP(rec, req)
 			if rec.Code != http.StatusOK {
-				t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+				t.Fatalf("analytics status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 			}
 			html := rec.Body.String()
 			if !strings.Contains(html, tt.wantHTML) {
-				t.Fatalf("dashboard missing %q:\n%s", tt.wantHTML, html)
+				t.Fatalf("analytics page missing %q:\n%s", tt.wantHTML, html)
 			}
 			for _, forbidden := range tt.forbiddenHTML {
 				if strings.Contains(html, forbidden) {
-					t.Fatalf("dashboard rendered %q:\n%s", forbidden, html)
+					t.Fatalf("analytics page rendered %q:\n%s", forbidden, html)
 				}
 			}
 		})
@@ -6102,14 +6183,14 @@ func TestDashboardRendersDisabledBudgetAsSingleNote(t *testing.T) {
 	}
 
 	rec := httptest.NewRecorder()
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req := httptest.NewRequest(http.MethodGet, "/analytics", nil)
 	server.Handler().ServeHTTP(rec, req)
 	if rec.Code != http.StatusOK {
-		t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+		t.Fatalf("analytics status = %d, want 200; body = %s", rec.Code, rec.Body.String())
 	}
 	html := rec.Body.String()
 	if !strings.Contains(html, "Budget disabled - enable a daily cap in configuration.") {
-		t.Fatalf("dashboard missing compact disabled budget note:\n%s", html)
+		t.Fatalf("analytics page missing compact disabled budget note:\n%s", html)
 	}
 	for _, forbidden := range []string{
 		"Spend today",
@@ -6120,7 +6201,7 @@ func TestDashboardRendersDisabledBudgetAsSingleNote(t *testing.T) {
 		"Issue cap",
 	} {
 		if strings.Contains(html, forbidden) {
-			t.Fatalf("dashboard rendered disabled budget detail %q:\n%s", forbidden, html)
+			t.Fatalf("analytics page rendered disabled budget detail %q:\n%s", forbidden, html)
 		}
 	}
 }
@@ -7943,7 +8024,7 @@ func openRawEventStreamWithHeaders(t *testing.T, addr string, path string, heade
 	if _, err := io.WriteString(conn, request.String()); err != nil {
 		t.Fatalf("WriteString() error = %v", err)
 	}
-	if err := conn.SetReadDeadline(time.Now().Add(time.Second)); err != nil {
+	if err := conn.SetReadDeadline(time.Now().Add(sseTestReadTimeout)); err != nil {
 		t.Fatalf("SetReadDeadline() error = %v", err)
 	}
 
@@ -7969,7 +8050,7 @@ func readRawSSEEvent(t *testing.T, conn net.Conn, reader *bufio.Reader) sseEvent
 	t.Helper()
 
 	var event sseEvent
-	deadline := time.Now().Add(time.Second)
+	deadline := time.Now().Add(sseTestReadTimeout)
 	for {
 		if err := conn.SetReadDeadline(deadline); err != nil {
 			t.Fatalf("SetReadDeadline() error = %v", err)
@@ -8016,7 +8097,7 @@ func readSSEEvent(t *testing.T, r io.Reader) sseEvent {
 	}()
 
 	var event sseEvent
-	deadline := time.After(time.Second)
+	deadline := time.After(sseTestReadTimeout)
 	for {
 		select {
 		case line, ok := <-lines:
