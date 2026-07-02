@@ -33,6 +33,7 @@ func (s *Server) settingsData(ctx context.Context, selectedProjectID string) tem
 		ApplicationName: applicationName(instanceName),
 		InstanceName:    instanceName,
 		Version:         s.version,
+		Snapshot:        snapshot,
 		Global: templates.SettingsGlobal{
 			ConfigPath: globalConfig.Path,
 			PathRule:   string(s.configRule),

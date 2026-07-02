@@ -129,7 +129,7 @@ test("project diagnostics tabs cover operational states", async ({ page }, testI
   }
 });
 
-test("GitHub API sidebar health covers key rate-limit states", async ({ page }, testInfo) => {
+test("GitHub API health page covers key rate-limit states", async ({ page }, testInfo) => {
   const scenarios = [
     ["github-api-healthy", "GitHub API healthy"],
     ["github-api-warning", "GitHub primary quota low"],
@@ -144,20 +144,21 @@ test("GitHub API sidebar health covers key rate-limit states", async ({ page }, 
       viewport: desktopViewport,
     });
 
-    const indicator = page.locator("#github-api-health");
-    await expect(indicator).toBeVisible();
-    await expect(indicator).toContainText("Health");
-    await indicator.locator("summary").click();
-    await expect(indicator).toHaveJSProperty("open", true);
-    await expect(indicator).toContainText(label);
-    await assertElementFitsViewport(page, "#github-api-health");
-    await captureClipAndAttach(page, "#github-api-health", `${scenario}.png`, testInfo, {
-      maxHeight: 520,
+    const dashboard = page.locator("#health-dashboard");
+    await expect(dashboard).toBeVisible();
+    await assertSidebarActive(page, "[data-dashboard-static-nav='health']");
+    await expect(page.locator("#github-api-health")).toContainText("Health");
+    await expect(dashboard).toContainText(label);
+    await expect(dashboard).toContainText("Primary quota");
+    await expect(dashboard).toContainText("Refresh timing");
+    await assertElementFitsViewport(page, "#health-dashboard");
+    await captureClipAndAttach(page, "#health-dashboard", `${scenario}.png`, testInfo, {
+      maxHeight: 760,
     });
   }
 });
 
-test("GitHub API health disclosure stays open across live refreshes", async ({ page }) => {
+test("GitHub API sidebar health stays compact", async ({ page }) => {
   await openScenario(page, {
     runtime: screenshotsRuntime,
     scenario: "github-api-secondary-backoff",
@@ -165,42 +166,16 @@ test("GitHub API health disclosure stays open across live refreshes", async ({ p
   });
 
   const indicator = page.locator("#github-api-health");
+  const indicatorLink = indicator.locator('a[href="/health/ui"]');
   await expect(indicator).toBeVisible();
-  await expect(indicator).toHaveAttribute("data-preserve-details", "github-api-health");
-
-  await indicator.locator("summary").click();
-  await expect(indicator).toHaveJSProperty("open", true);
-
-  await page.evaluate(() => {
-    const target = document.getElementById("github-api-health");
-    document.dispatchEvent(new CustomEvent("htmx:beforeSwap", { detail: { target } }));
-    if (target) {
-      const replacement = target.cloneNode(true);
-      if (replacement instanceof HTMLDetailsElement) {
-        replacement.open = false;
-      }
-      target.replaceWith(replacement);
-      document.dispatchEvent(new CustomEvent("htmx:afterSettle", { detail: { target: replacement } }));
-    }
-  });
-  await expect(indicator).toHaveJSProperty("open", true);
-
-  await indicator.locator("summary").click();
-  await expect(indicator).toHaveJSProperty("open", false);
-
-  await page.evaluate(() => {
-    const target = document.getElementById("github-api-health");
-    document.dispatchEvent(new CustomEvent("htmx:beforeSwap", { detail: { target } }));
-    if (target) {
-      const replacement = target.cloneNode(true);
-      if (replacement instanceof HTMLDetailsElement) {
-        replacement.open = true;
-      }
-      target.replaceWith(replacement);
-      document.dispatchEvent(new CustomEvent("htmx:afterSettle", { detail: { target: replacement } }));
-    }
-  });
-  await expect(indicator).toHaveJSProperty("open", false);
+  await expect(indicator).toHaveAttribute("sse-swap", "github-api-health");
+  await expect(indicatorLink).toBeVisible();
+  await expect(indicator).toContainText("Health");
+  await expect(indicator).toContainText("Backoff");
+  await expect(indicator).not.toContainText("REST primary");
+  await expect(indicator).not.toContainText("GraphQL primary");
+  await expect(indicator).not.toContainText("Last tracker refresh");
+  await expect(indicator).not.toContainText("retry 12:05 UTC");
 });
 
 test("fleet Kanban lanes stay fixed width across multiple projects", async ({ page }, testInfo) => {

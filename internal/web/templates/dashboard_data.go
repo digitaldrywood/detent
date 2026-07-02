@@ -606,6 +606,13 @@ func ProjectDiagnosticsShellDataFromDashboard(data DashboardData) DashboardShell
 	return shell
 }
 
+func HealthShellDataFromDashboard(data DashboardData) DashboardShellData {
+	shell := DashboardShellDataFromDashboard(data)
+	shell.ActiveNav = "health"
+	shell.IncludeDashboardCharts = false
+	return shell
+}
+
 func pageTitle(data DashboardShellData) string {
 	if data.Title != "" {
 		return data.Title
@@ -727,7 +734,7 @@ func sidebarFilterVisible(data DashboardShellData) bool {
 
 func sidebarFleetActive(data DashboardShellData) bool {
 	activeNav := strings.TrimSpace(data.ActiveNav)
-	return strings.TrimSpace(data.ProjectID) == "" && activeNav != "kanban" && activeNav != "reports" && activeNav != "settings"
+	return strings.TrimSpace(data.ProjectID) == "" && activeNav != "kanban" && staticSidebarNav(activeNav) == ""
 }
 
 func fleetKanbanNavVisible(data DashboardShellData) bool {
@@ -780,6 +787,10 @@ func projectSidebarConfigurationPath(data DashboardShellData) string {
 
 func sidebarReportsPath(data DashboardShellData) string {
 	return sidebarStaticPath(data, "/reports")
+}
+
+func sidebarHealthPath(data DashboardShellData) string {
+	return "/health/ui"
 }
 
 func sidebarSettingsPath(data DashboardShellData) string {
@@ -845,6 +856,8 @@ func projectSidebarViewAttributes(data DashboardShellData, view string) templ.At
 
 func staticSidebarNav(activeNav string) string {
 	switch strings.TrimSpace(activeNav) {
+	case "health":
+		return "health"
 	case "reports":
 		return "reports"
 	case "settings":
@@ -866,6 +879,29 @@ func sidebarStaticNavAttributes(data DashboardShellData, id string) templ.Attrib
 		"data-dashboard-static-nav": strings.TrimSpace(id),
 	}
 	maps.Copy(attrs, sidebarAriaCurrent(sidebarStaticNavActive(data, id)))
+	return attrs
+}
+
+func gitHubAPIHealthSidebarLabel(data DashboardShellData) string {
+	return "Health: " + gitHubAPIHealthStateLabel(data.Snapshot) + ". " + gitHubAPIHealth(data.Snapshot).Label
+}
+
+func gitHubAPIHealthSidebarTargetAttributes(data DashboardShellData) templ.Attributes {
+	return templ.Attributes{
+		"id":                           "github-api-health",
+		"sse-swap":                     "github-api-health",
+		"hx-swap":                      "morph:outerHTML",
+		"data-github-api-health-state": string(gitHubAPIHealth(data.Snapshot).State),
+	}
+}
+
+func gitHubAPIHealthSidebarLinkAttributes(data DashboardShellData) templ.Attributes {
+	label := gitHubAPIHealthSidebarLabel(data)
+	attrs := templ.Attributes{
+		"aria-label": label,
+		"title":      label,
+	}
+	maps.Copy(attrs, sidebarStaticNavAttributes(data, "health"))
 	return attrs
 }
 
@@ -6496,14 +6532,63 @@ func gitHubAPIHealthStateLabel(snapshot telemetry.Snapshot) string {
 	}
 }
 
-func gitHubAPIHealthAriaLabel(snapshot telemetry.Snapshot) string {
-	view := gitHubAPIHealth(snapshot)
-	return "Health: " + view.Label + ". " + view.Summary
+func gitHubAPIHealthBackoffLabel(snapshot telemetry.Snapshot) string {
+	switch {
+	case gitHubAPIGraphQLBackoff(snapshot):
+		return "GraphQL backoff active"
+	case gitHubAPIInBackoff(snapshot):
+		return "Secondary REST backoff active"
+	case gitHubAPIPrimaryExhausted(snapshot.RateLimits):
+		return "Primary quota exhausted"
+	default:
+		return "No active backoff"
+	}
 }
 
-func gitHubAPIHealthTitle(snapshot telemetry.Snapshot) string {
-	view := gitHubAPIHealth(snapshot)
-	return view.Label + " - " + view.Summary
+func gitHubAPIHealthBackoffDetail(snapshot telemetry.Snapshot) string {
+	switch {
+	case gitHubAPIGraphQLBackoff(snapshot), gitHubAPIInBackoff(snapshot), gitHubAPIPrimaryExhausted(snapshot.RateLimits):
+		return gitHubAPIHealth(snapshot).Detail
+	default:
+		return "No GitHub GraphQL or secondary REST backoff is active."
+	}
+}
+
+func gitHubAPIHealthPrimaryQuotaLabel(snapshot telemetry.Snapshot) string {
+	summary := gitHubAPIPrimarySummary(snapshot.RateLimits)
+	if summary == "" {
+		return "Primary quota unavailable"
+	}
+	return summary
+}
+
+func gitHubAPIHealthPrimaryQuotaDetail(snapshot telemetry.Snapshot) string {
+	if gitHubAPIHasSnapshot(snapshot.RateLimits) {
+		return "REST and GraphQL primary buckets are shown below with remaining quota, usage, limits, and reset timing."
+	}
+	return "Primary REST and GraphQL quota data has not arrived in the latest tracker snapshot."
+}
+
+func gitHubAPIHealthRetryLabel(snapshot telemetry.Snapshot) string {
+	switch {
+	case gitHubAPIGraphQLBackoff(snapshot):
+		return gitHubAPIGraphQLBackoffReset(snapshot.RateLimits)
+	case gitHubAPIInBackoff(snapshot):
+		return gitHubAPIBackoffRetrySentence(snapshot)
+	case gitHubAPIPrimaryExhausted(snapshot.RateLimits):
+		return gitHubAPIExhaustedReset(snapshot.RateLimits)
+	case gitHubAPIPrimaryWarning(snapshot.RateLimits):
+		return gitHubAPIWarningReset(snapshot.RateLimits)
+	default:
+		return "No retry waiting"
+	}
+}
+
+func gitHubAPIHealthRetryDetail(snapshot telemetry.Snapshot) string {
+	if gitHubAPIHealthRetryLabel(snapshot) == "No retry waiting" {
+		return "No GitHub throttle retry or exhausted-quota reset is currently gating tracker work."
+	}
+	return "Retry and reset timing is derived from active backoff, retry-after, and primary bucket reset data."
 }
 
 func gitHubAPIHasSnapshot(limits *telemetry.RateLimits) bool {

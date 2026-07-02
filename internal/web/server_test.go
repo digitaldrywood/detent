@@ -2460,6 +2460,15 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			inactiveHref: []string{"/", "/settings"},
 		},
 		{
+			name:         "health",
+			path:         "/health/ui",
+			activeHref:   "/health/ui",
+			sseConnect:   `sse-connect="/events?nav=health"`,
+			reportsHref:  "/reports",
+			settingsHref: "/settings",
+			inactiveHref: []string{"/", "/reports", "/settings"},
+		},
+		{
 			name:         "project",
 			path:         "/projects/detent",
 			activeHref:   "/projects/detent",
@@ -2539,6 +2548,7 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 				`/static/js/templui/dialog.min.js`,
 				`/static/js/templui/popover.min.js`,
 				`href="/"`,
+				`href="/health/ui"`,
 				`href="` + tt.reportsHref + `"`,
 				`href="` + tt.settingsHref + `"`,
 				`href="/projects/detent"`,
@@ -2552,6 +2562,9 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 			assertSharedDashboardShellOnce(t, body, tt.path)
 			assertSingleCurrentSidebarItem(t, body)
 			assertActiveSidebarLink(t, body, tt.activeHref)
+			if tt.activeHref != "/health/ui" {
+				assertInactiveSidebarLink(t, body, "/health/ui")
+			}
 			for _, href := range tt.inactiveHref {
 				assertInactiveSidebarLink(t, body, href)
 			}
@@ -2647,6 +2660,7 @@ func TestStaticPagesPreserveProjectSidebarContext(t *testing.T) {
 				`href="/projects/detent/runs"`,
 				`href="/projects/detent/configuration"`,
 				`href="/projects/detent/diagnostics"`,
+				`href="/health/ui"`,
 				`href="/reports?project=detent"`,
 				`href="/settings?project=detent"`,
 				`data-dashboard-view="kanban"`,
@@ -2658,6 +2672,7 @@ func TestStaticPagesPreserveProjectSidebarContext(t *testing.T) {
 			assertSharedDashboardShellOnce(t, body, tt.path)
 			assertSingleCurrentSidebarItem(t, body)
 			assertActiveSidebarLink(t, body, tt.activeHref)
+			assertInactiveSidebarLink(t, body, "/health/ui")
 			if tt.name == "settings" {
 				assertInactiveSidebarLink(t, body, "/settings?project=detent")
 			}
@@ -4335,15 +4350,27 @@ func TestServerEventsStreamsSidebarGitHubAPIHealth(t *testing.T) {
 	}
 	for _, want := range []string{
 		`id="github-api-health"`,
-		`data-preserve-details="github-api-health"`,
+		`href="/health/ui"`,
+		`sse-swap="github-api-health"`,
+		`hx-swap="morph:outerHTML"`,
+		`data-dashboard-static-nav="health"`,
 		"Health",
 		"Backoff",
 		"GitHub secondary throttle active for pull requests/check runs",
-		"Primary REST quota is healthy: 4,878/5,000 remaining",
-		"Retrying at 14:35 UTC",
 	} {
 		if !strings.Contains(event.data, want) {
 			t.Fatalf("github api health event missing %q:\n%s", want, event.data)
+		}
+	}
+	for _, forbidden := range []string{
+		`data-preserve-details="github-api-health"`,
+		"Primary REST quota is healthy",
+		"Retrying at 14:35 UTC",
+		"REST primary",
+		"GraphQL primary",
+	} {
+		if strings.Contains(event.data, forbidden) {
+			t.Fatalf("github api health event rendered diagnostic content %q:\n%s", forbidden, event.data)
 		}
 	}
 }
@@ -4618,7 +4645,67 @@ func TestServerEventsPreservesStaticSidebarNavigation(t *testing.T) {
 	}
 	assertActiveSidebarLink(t, sidebarEvent.data, "/reports")
 	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
+	assertInactiveSidebarLink(t, sidebarEvent.data, "/health/ui")
 	assertInactiveSidebarLink(t, sidebarEvent.data, "/settings")
+}
+
+func TestServerEventsStreamsHealthSnapshotForHealthNav(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 25, 14, 30, 0, 0, time.UTC)
+	backoffUntil := now.Add(5 * time.Minute)
+	deps := testDeps(t)
+	server, err := web.NewServer(web.Config{SSETickInterval: time.Hour}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	addr := startWebServer(t, server)
+	conn, body, reader := openRawEventStream(t, addr, "/events?nav=health")
+	defer conn.Close()
+	defer body.Close()
+
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: now,
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST:    &telemetry.RateLimitBucket{Remaining: 4878, Used: 122, Limit: 5000},
+			GitHubGraphQL: &telemetry.RateLimitBucket{Remaining: 4880, Used: 120, Limit: 5000},
+			RESTUsage: &telemetry.RESTUsage{
+				RateLimited:  true,
+				BackoffUntil: &backoffUntil,
+				Contributors: []telemetry.RESTUsageContributor{
+					{EndpointFamily: "pull requests", Count: 2, RateLimited: true, LastStatus: 429},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+
+	snapshotEvent := readRawSSEEvent(t, conn, reader)
+	if snapshotEvent.name != "snapshot" {
+		t.Fatalf("event name = %q, want snapshot", snapshotEvent.name)
+	}
+	for _, want := range []string{
+		`id="health-dashboard"`,
+		`aria-label="GitHub API health details"`,
+		"Backoff state",
+		"REST primary",
+		"Affected endpoints",
+		"pull requests",
+		"retry 14:35 UTC",
+	} {
+		if !strings.Contains(snapshotEvent.data, want) {
+			t.Fatalf("health snapshot event missing %q:\n%s", want, snapshotEvent.data)
+		}
+	}
+
+	sidebarEvent := readRawSSEEvent(t, conn, reader)
+	if sidebarEvent.name != "sidebar" {
+		t.Fatalf("event name = %q, want sidebar", sidebarEvent.name)
+	}
+	assertActiveSidebarLink(t, sidebarEvent.data, "/health/ui")
+	assertInactiveSidebarLink(t, sidebarEvent.data, "/")
 }
 
 func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing.T) {
@@ -4687,6 +4774,7 @@ func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing
 				`href="/projects/detent/runs"`,
 				`href="/projects/detent/configuration"`,
 				`href="/projects/detent/diagnostics"`,
+				`href="/health/ui"`,
 				`href="/reports?project=detent"`,
 				`href="/settings?project=detent"`,
 			} {
@@ -4695,6 +4783,7 @@ func TestServerEventsPreserveProjectContextForStaticSidebarNavigation(t *testing
 				}
 			}
 			assertActiveSidebarLink(t, sidebarEvent.data, tt.activeHref)
+			assertInactiveSidebarLink(t, sidebarEvent.data, "/health/ui")
 			for _, href := range tt.inactiveHref {
 				assertInactiveSidebarLink(t, sidebarEvent.data, href)
 			}
