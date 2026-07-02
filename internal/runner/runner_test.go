@@ -100,14 +100,6 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 						MaxSkillsInPrompt: 10,
 					},
 				},
-				Codex: config.Codex{
-					ApprovalPolicy: config.StringValue("never"),
-					ThreadSandbox:  "workspace-write",
-					TurnSandboxPolicy: map[string]any{
-						"type":          "workspaceWrite",
-						"networkAccess": true,
-					},
-				},
 			},
 			Prompt: "Work on {{ issue.identifier }} attempt {{ attempt }}",
 		},
@@ -279,7 +271,7 @@ func TestRunnerRunPreparesWorkspaceRunsCodexAndRecordsSession(t *testing.T) {
 	}
 }
 
-func TestRunnerRunAddsGitMetadataWritableRootsForManagedWorkspace(t *testing.T) {
+func TestRunnerRunAddsGitMetadataExtraRootsForManagedWorkspace(t *testing.T) {
 	t.Parallel()
 
 	source := initRunnerSourceRepo(t)
@@ -296,15 +288,7 @@ func TestRunnerRunAddsGitMetadataWritableRootsForManagedWorkspace(t *testing.T) 
 	agentBackend := &committingAgentBackend{}
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
-			Config: config.Config{
-				Codex: config.Codex{
-					ThreadSandbox: "workspace-write",
-					TurnSandboxPolicy: map[string]any{
-						"type":          "workspaceWrite",
-						"networkAccess": true,
-					},
-				},
-			},
+			Config: config.Config{},
 			Prompt: "Work on {{ issue.identifier }}",
 		},
 		Workspace:    workspaceBackend,
@@ -333,38 +317,14 @@ func TestRunnerRunAddsGitMetadataWritableRootsForManagedWorkspace(t *testing.T) 
 	if err != nil {
 		t.Fatalf("GitMetadataWritableRoots() error = %v", err)
 	}
-	gotRoots := sandboxPolicyWritableRoots(t, agentBackend.request.TurnSandboxPolicy)
+	gotRoots := agentBackend.request.ExtraWritableRoots
 	for _, want := range wantRoots {
 		if !containsRunnerString(gotRoots, want) {
-			t.Fatalf("sandbox writableRoots = %#v, missing %q", gotRoots, want)
+			t.Fatalf("extra roots = %#v, missing %q", gotRoots, want)
 		}
-	}
-	policy := sandboxPolicyMapForTest(t, agentBackend.request.TurnSandboxPolicy)
-	if policy["networkAccess"] != true {
-		t.Fatalf("sandboxPolicy.networkAccess = %#v, want true", policy["networkAccess"])
 	}
 	if got := strings.TrimSpace(runRunnerGit(t, agentBackend.request.Workspace, "log", "-1", "--pretty=%s")); got != "agent commit" {
 		t.Fatalf("latest commit subject = %q, want agent commit", got)
-	}
-}
-
-func TestWorkspaceWriteSandboxPolicyMapSkipsExplicitNonWorkspacePolicy(t *testing.T) {
-	t.Parallel()
-
-	policy := map[string]any{
-		"type":          "dangerFullAccess",
-		"networkAccess": true,
-	}
-
-	got, ok := workspaceWriteSandboxPolicyMap("workspace-write", policy)
-	if ok {
-		t.Fatalf("workspaceWriteSandboxPolicyMap() = %#v, true; want false for explicit non-workspace policy", got)
-	}
-	if policy["type"] != "dangerFullAccess" {
-		t.Fatalf("policy type = %#v, want dangerFullAccess", policy["type"])
-	}
-	if _, ok := policy["writableRoots"]; ok {
-		t.Fatalf("policy writableRoots = %#v, want absent", policy["writableRoots"])
 	}
 }
 
@@ -452,9 +412,7 @@ func TestRunnerPlanModeCapturesOutputAndConstrainsPrompt(t *testing.T) {
 	}
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
-			Config: config.Config{
-				Codex: config.Codex{ThreadSandbox: "workspace-write"},
-			},
+			Config: config.Config{},
 			Prompt: "Implement {{ issue.identifier }}",
 		},
 		Workspace:    workspaceBackend,
@@ -637,9 +595,7 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	codexClient := &fakeCodexClient{}
 	runner, err := NewRunner(Dependencies{
 		Workflow: config.Workflow{
-			Config: config.Config{
-				Codex: config.Codex{ThreadSandbox: "workspace-write"},
-			},
+			Config: config.Config{},
 			Prompt: "initial {{ issue.identifier }}",
 		},
 		Workspace:    workspaceBackend,
@@ -650,9 +606,7 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 	}
 
 	runner.UpdateWorkflow(config.Workflow{
-		Config: config.Config{
-			Codex: config.Codex{ThreadSandbox: "danger-full-access"},
-		},
+		Config: config.Config{},
 		Prompt: "reloaded {{ issue.identifier }}",
 	})
 
@@ -669,9 +623,6 @@ func TestRunnerUpdateWorkflowAppliesToFutureRuns(t *testing.T) {
 
 	if !strings.Contains(codexClient.request.Prompt, "reloaded digitaldrywood/detent#41") {
 		t.Fatalf("codex prompt = %q, want reloaded workflow prompt", codexClient.request.Prompt)
-	}
-	if codexClient.request.ThreadSandbox != "danger-full-access" {
-		t.Fatalf("ThreadSandbox = %q, want danger-full-access", codexClient.request.ThreadSandbox)
 	}
 }
 
@@ -1063,39 +1014,6 @@ func runRunnerGit(t *testing.T, dir string, args ...string) string {
 		t.Fatalf("git %s failed: %v\n%s", strings.Join(cmd.Args[1:], " "), err, output)
 	}
 	return string(output)
-}
-
-func sandboxPolicyWritableRoots(t *testing.T, policy any) []string {
-	t.Helper()
-
-	policyMap := sandboxPolicyMapForTest(t, policy)
-	values, ok := policyMap["writableRoots"].([]string)
-	if ok {
-		return values
-	}
-	rawValues, ok := policyMap["writableRoots"].([]any)
-	if !ok {
-		t.Fatalf("sandboxPolicy.writableRoots = %#v, want string list", policyMap["writableRoots"])
-	}
-	roots := make([]string, 0, len(rawValues))
-	for _, raw := range rawValues {
-		root, ok := raw.(string)
-		if !ok {
-			t.Fatalf("sandboxPolicy.writableRoots item = %#v, want string", raw)
-		}
-		roots = append(roots, root)
-	}
-	return roots
-}
-
-func sandboxPolicyMapForTest(t *testing.T, policy any) map[string]any {
-	t.Helper()
-
-	policyMap, ok := policy.(map[string]any)
-	if !ok {
-		t.Fatalf("TurnSandboxPolicy = %T, want map[string]any", policy)
-	}
-	return policyMap
 }
 
 func containsRunnerString(values []string, want string) bool {
