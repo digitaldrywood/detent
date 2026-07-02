@@ -339,14 +339,14 @@ func TestStateSnapshotPopulated(t *testing.T) {
 			{At: now.Add(-10 * time.Second), Event: "agent_message_delta", Message: "editing dashboard telemetry"},
 		},
 		DiffStats: DiffStats{FilesChanged: 3, AddedLines: 12, RemovedLines: 4, Status: "ok"},
-		Tokens:    CodexTotals{InputTokens: 20, OutputTokens: 8, TotalTokens: 28, RuntimeSeconds: 30},
+		Tokens:    TokenTotals{InputTokens: 20, OutputTokens: 8, TotalTokens: 28, RuntimeSeconds: 30},
 	}
 	state.Running["i-1"] = Running{
 		Issue:     connector.Issue{ID: "i-1", Identifier: "ISS-1", Title: "One", State: "In Progress"},
 		Attempt:   0,
 		StartedAt: startedAt,
 		TurnCount: 1,
-		Tokens:    CodexTotals{InputTokens: 2, OutputTokens: 1, TotalTokens: 3, RuntimeSeconds: 15},
+		Tokens:    TokenTotals{InputTokens: 2, OutputTokens: 1, TotalTokens: 3, RuntimeSeconds: 15},
 	}
 	state.Retry["i-3"] = Retry{
 		Issue:      connector.Issue{ID: "i-3", Identifier: "ISS-3", Title: "Three", State: "Todo"},
@@ -365,9 +365,9 @@ func TestStateSnapshotPopulated(t *testing.T) {
 		StartedAt:   startedAt,
 		CompletedAt: completedAt,
 		FinalState:  FinalStateCompleted,
-		Tokens:      CodexTotals{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, RuntimeSeconds: 60},
+		Tokens:      TokenTotals{InputTokens: 10, OutputTokens: 5, TotalTokens: 15, RuntimeSeconds: 60},
 	}
-	state.CodexTotals = CodexTotals{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, RuntimeSeconds: 120}
+	state.TokenTotals = TokenTotals{InputTokens: 100, OutputTokens: 50, TotalTokens: 150, RuntimeSeconds: 120}
 	state.RateLimits = &telemetry.RateLimits{LimitID: "lim", LimitName: "name"}
 
 	snapshot := state.Snapshot(now)

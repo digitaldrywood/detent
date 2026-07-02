@@ -28,7 +28,7 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	tracker := newFakeConnector(issue)
 	runner := &staticRunner{
 		result: orchestrator.RunResult{
-			Tokens: orchestrator.CodexTotals{
+			Tokens: orchestrator.TokenTotals{
 				InputTokens:    100,
 				OutputTokens:   25,
 				TotalTokens:    125,
@@ -69,8 +69,8 @@ func TestRunDispatchesCandidateAndRecordsCompletion(t *testing.T) {
 	if got := state.Retry[issue.ID].Attempt; got != 1 {
 		t.Fatalf("Retry[%q].Attempt = %d, want 1", issue.ID, got)
 	}
-	if got := state.CodexTotals.TotalTokens; got != 125 {
-		t.Fatalf("CodexTotals.TotalTokens = %d, want 125", got)
+	if got := state.TokenTotals.TotalTokens; got != 125 {
+		t.Fatalf("TokenTotals.TotalTokens = %d, want 125", got)
 	}
 	if got := state.DiffStats[issue.ID].AddedLines; got != 4 {
 		t.Fatalf("DiffStats[%q].AddedLines = %d, want 4", issue.ID, got)
@@ -785,7 +785,7 @@ func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 		LastEventAt:   lastEventAt,
 		LastEvent:     "agent_message_delta",
 		LastMessage:   "editing telemetry",
-		Tokens: orchestrator.CodexTotals{
+		Tokens: orchestrator.TokenTotals{
 			InputTokens:    40,
 			OutputTokens:   12,
 			TotalTokens:    52,
@@ -836,8 +836,8 @@ func TestRunAppliesUsageUpdateWhileRunnerIsInFlight(t *testing.T) {
 	if running.DiffStats.FilesChanged != 2 || running.DiffStats.AddedLines != 9 || running.DiffStats.RemovedLines != 1 || running.DiffStats.Status != "ok" {
 		t.Fatalf("Running[%q].DiffStats = %#v, want live diff stats", issue.ID, running.DiffStats)
 	}
-	if state.CodexTotals.TotalTokens != 0 {
-		t.Fatalf("CodexTotals.TotalTokens = %d, want completed totals only", state.CodexTotals.TotalTokens)
+	if state.TokenTotals.TotalTokens != 0 {
+		t.Fatalf("TokenTotals.TotalTokens = %d, want completed totals only", state.TokenTotals.TotalTokens)
 	}
 
 	close(runner.release)

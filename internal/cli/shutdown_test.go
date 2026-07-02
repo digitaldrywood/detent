@@ -753,7 +753,7 @@ func (r *shutdownBlockingRunner) Run(ctx context.Context, request orchestrator.R
 		if err := request.OnUsageUpdate(orchestrator.UsageUpdate{
 			SessionID:       "thread-641-turn-1",
 			ProcessIdentity: "4242",
-			Tokens: orchestrator.CodexTotals{
+			Tokens: orchestrator.TokenTotals{
 				RuntimeSeconds: 12,
 			},
 		}); err != nil {

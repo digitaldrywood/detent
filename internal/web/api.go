@@ -449,7 +449,7 @@ func stateResponse(snapshot telemetry.Snapshot, generatedAt time.Time, instanceN
 		Blocked:         blockedEntries(snapshot.Blocked),
 		Stats:           statsAPIResponse{Status: "enabled"},
 		Board:           boardResponse(snapshot),
-		CodexTotals:     totalsResponse(snapshot.Tokens),
+		TokenTotals:     totalsResponse(snapshot.Tokens),
 		Throughput:      throughputResponse(snapshot.Throughput),
 		LifetimeTotals:  lifetimeTotalsResponseFromTelemetry(snapshot.LifetimeTotals),
 		WorkflowMetrics: snapshot.WorkflowMetrics,
@@ -1280,7 +1280,7 @@ type stateAPIResponse struct {
 	Blocked         []blockedAPIResponse        `json:"blocked"`
 	Stats           statsAPIResponse            `json:"stats"`
 	Board           boardAPIResponse            `json:"board"`
-	CodexTotals     tokenTotalsAPIResponse      `json:"codex_totals"`
+	TokenTotals     tokenTotalsAPIResponse      `json:"codex_totals"`
 	Throughput      throughputAPIResponse       `json:"throughput"`
 	LifetimeTotals  lifetimeTotalsResponse      `json:"lifetime_totals"`
 	WorkflowMetrics telemetry.WorkflowMetrics   `json:"workflow_metrics"`

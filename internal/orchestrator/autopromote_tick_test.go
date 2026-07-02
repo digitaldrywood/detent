@@ -1660,7 +1660,7 @@ func TestMergeWorkerLogsRunResultSuccessAndFailure(t *testing.T) {
 		connector: &autoPromoteTickConnector{stateIssues: []connector.Issue{successIssue}},
 		logger:    slog.New(slog.NewTextHandler(&successLogs, nil)),
 	}
-	successOrch.completeTerminalRunning(context.Background(), &successState, successIssue.ID, successState.Running[successIssue.ID], now, CodexTotals{})
+	successOrch.completeTerminalRunning(context.Background(), &successState, successIssue.ID, successState.Running[successIssue.ID], now, TokenTotals{})
 	for _, fragment := range []string{
 		"merge_completed",
 		"final_state=Done",

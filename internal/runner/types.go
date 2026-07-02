@@ -113,7 +113,7 @@ type ValidatorRequest struct {
 type RunResult struct {
 	FinalState    string
 	Output        string
-	Tokens        CodexTotals
+	Tokens        TokenTotals
 	DiffStats     DiffStats
 	RateLimits    *telemetry.RateLimits
 	BudgetRefusal *BudgetRefusal
@@ -130,7 +130,7 @@ type UsageUpdate struct {
 	LastEvent       string
 	LastMessage     string
 	RecentEvents    []telemetry.ActivityEvent
-	Tokens          CodexTotals
+	Tokens          TokenTotals
 	DiffStats       DiffStats
 	RateLimits      *telemetry.RateLimits
 }
@@ -153,7 +153,7 @@ type DiffStats struct {
 	Status       string
 }
 
-type CodexTotals struct {
+type TokenTotals struct {
 	InputTokens    int64
 	OutputTokens   int64
 	TotalTokens    int64
