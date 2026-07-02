@@ -3717,7 +3717,7 @@ func TestDashboardRendersIssueAndSessionControls(t *testing.T) {
 	}
 }
 
-func TestDashboardRendersRunningActivityHoverCard(t *testing.T) {
+func TestDashboardRendersRunningActivityDisclosure(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 5, 31, 15, 0, 0, 0, time.UTC)
@@ -3738,7 +3738,7 @@ func TestDashboardRendersRunningActivityHoverCard(t *testing.T) {
 					TurnCount:      7,
 					LastEventAt:    &now,
 					LastEvent:      "agent_message_delta",
-					LastMessage:    "full latest codex activity message with enough detail to need a hover card",
+					LastMessage:    "full latest codex activity message with enough detail to need a click disclosure",
 					RuntimeSeconds: 150,
 					Tokens: telemetry.Tokens{
 						Input:  1200,
@@ -3758,28 +3758,58 @@ func TestDashboardRendersRunningActivityHoverCard(t *testing.T) {
 	for _, want := range []string{
 		"data-running-activity",
 		"data-running-activity-trigger",
-		"data-running-activity-panel",
-		"data-popover",
-		"data-popover-trigger",
-		"data-popover-panel",
-		`data-popover-interactive="true"`,
-		`data-popover-width="448"`,
-		`aria-describedby="running-activity-0"`,
-		`aria-hidden="true"`,
-		`role="tooltip"`,
+		"data-running-activity-details",
+		`data-preserve-details="running-activity-thread-running-activity"`,
+		`id="running-activity-thread-running-activity-details"`,
 		"Latest message",
-		"full latest codex activity message with enough detail to need a hover card",
+		"full latest codex activity message with enough detail to need a click disclosure",
 		"Recent activity",
 		"token_usage",
 		"tokens updated",
-		"Turn / tokens / runtime",
-		"Turn 7",
-		"In 1,200 / Out 340",
-		"2m 30s",
 	} {
 		if !strings.Contains(html, want) {
 			t.Fatalf("dashboard missing running activity marker %q:\n%s", want, html)
 		}
+	}
+
+	activityBlocks := runningActivityBlocks(t, html)
+	if len(activityBlocks) == 0 {
+		t.Fatalf("dashboard did not render running activity disclosures:\n%s", html)
+	}
+	for _, block := range activityBlocks {
+		for _, forbidden := range []string{
+			"data-popover",
+			"data-popover-trigger",
+			"data-popover-panel",
+			`data-popover-interactive="true"`,
+			`data-popover-width="448"`,
+			`aria-hidden="true"`,
+			`role="tooltip"`,
+		} {
+			if strings.Contains(block, forbidden) {
+				t.Fatalf("running activity disclosure contains %q:\n%s", forbidden, block)
+			}
+		}
+	}
+}
+
+func runningActivityBlocks(t *testing.T, html string) []string {
+	t.Helper()
+
+	remaining := html
+	blocks := make([]string, 0, 2)
+	for {
+		start := strings.Index(remaining, `<details class="running-activity`)
+		if start == -1 {
+			return blocks
+		}
+		end := strings.Index(remaining[start:], "</details>")
+		if end == -1 {
+			t.Fatalf("running activity details element is not closed:\n%s", remaining[start:])
+		}
+		end += start + len("</details>")
+		blocks = append(blocks, remaining[start:end])
+		remaining = remaining[end:]
 	}
 }
 

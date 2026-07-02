@@ -2394,7 +2394,7 @@ templ runningIssuesSection(data DashboardData) {
 									</td>
 									<td class="px-3 py-4 align-top font-mono text-muted-foreground whitespace-nowrap">{ runningRuntime(row, data.Snapshot.GeneratedAt) }</td>
 									<td class="px-3 py-4 align-top overflow-hidden" data-running-activity-cell>
-										@runningActivityCell(row, "running", i, data.Snapshot.GeneratedAt)
+										@runningActivityCell(row, "running")
 									</td>
 									<td class="px-3 py-4 align-top font-mono text-muted-foreground whitespace-nowrap" data-running-diff-cell>{ formatDiffStat(row) }</td>
 									<td class="px-3 py-4 align-top overflow-hidden" data-running-tokens-cell>
@@ -4451,7 +4451,7 @@ templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt ti
 			</div>
 		</div>
 		<div class="mt-3">
-			@runningActivityCell(row, "running-mobile", rowIndex, generatedAt)
+			@runningActivityCell(row, "running-mobile")
 		</div>
 		<div class="mt-3">
 			@sessionCopyButton(row.SessionID)
@@ -4459,80 +4459,55 @@ templ runningIssueMobileCard(row telemetry.Running, rowIndex int, generatedAt ti
 	</article>
 }
 
-templ runningActivityCell(row telemetry.Running, prefix string, rowIndex int, generatedAt time.Time) {
-	<div
-		class="running-activity relative min-w-0 max-w-full overflow-hidden"
-		data-popover
+templ runningActivityCell(row telemetry.Running, prefix string) {
+	<details
+		class="running-activity group min-w-0 max-w-full overflow-hidden"
+		data-preserve-details={ runningActivityID(prefix, row) }
 		data-running-activity
 	>
-		<button
-			type="button"
-			class="running-activity-trigger -m-2 grid w-full min-w-0 max-w-full gap-1 overflow-hidden rounded-md p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
-			aria-describedby={ runningActivityID(prefix, rowIndex) }
-			aria-expanded="false"
-			data-popover-trigger
+		<summary
+			class="running-activity-trigger -m-2 flex w-full min-w-0 max-w-full cursor-pointer list-none items-start justify-between gap-2 overflow-hidden rounded-md p-2 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent"
+			aria-controls={ runningActivityDetailsID(prefix, row) }
 			data-running-activity-trigger
 		>
-			<span class="line-clamp-2 break-words text-foreground">{ lastCodexUpdate(row) }</span>
-			<span class="truncate font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
-		</button>
-		@runningActivityPanel(row, prefix, rowIndex, generatedAt)
-	</div>
+			<span class="grid min-w-0 flex-1 basis-0 gap-1 overflow-hidden">
+				<span class="line-clamp-2 break-words text-foreground">{ lastCodexUpdate(row) }</span>
+				<span class="truncate font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</span>
+			</span>
+			@icon.ChevronDown(icon.Props{Class: "running-activity-chevron mt-0.5 size-3.5 shrink-0 text-muted-foreground"})
+		</summary>
+		@runningActivityDetails(row, prefix)
+	</details>
 }
 
-templ runningActivityPanel(row telemetry.Running, prefix string, rowIndex int, generatedAt time.Time) {
+templ runningActivityDetails(row telemetry.Running, prefix string) {
 	<div
-		id={ runningActivityID(prefix, rowIndex) }
-		class="popover-panel running-activity-panel"
-		aria-hidden="true"
-		data-popover-interactive="true"
-		data-popover-panel
-		data-popover-width="448"
-		data-running-activity-panel
-		role="tooltip"
+		id={ runningActivityDetailsID(prefix, row) }
+		class="running-activity-panel mt-3 grid min-w-0 max-w-full gap-2 overflow-hidden text-xs"
+		data-running-activity-details
 	>
-		<div class="grid gap-4">
-			<div class="grid gap-1">
-				<span class="text-xs font-medium uppercase text-muted-foreground">Latest message</span>
-				<p class="whitespace-pre-wrap break-words text-sm text-foreground">{ lastCodexUpdate(row) }</p>
-				<p class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</p>
-			</div>
-			<div class="grid gap-2">
-				<span class="text-xs font-medium uppercase text-muted-foreground">Recent activity</span>
-				if len(runningActivityRows(row)) == 0 {
-					<p class="rounded-md border border-dashed border-border bg-muted/60 px-3 py-3 text-sm text-muted-foreground">No activity recorded.</p>
-				} else {
-					<ol class="grid gap-2">
-						for _, activity := range runningActivityRows(row) {
-							<li class="rounded-md bg-muted/60 px-3 py-2">
-								<div class="flex flex-wrap items-center justify-between gap-2">
-									<span class="font-mono text-xs text-muted-foreground">{ activity.At }</span>
-									<span class="font-mono text-xs font-medium text-accent">{ activity.Event }</span>
-								</div>
-								<p class="mt-1 whitespace-pre-wrap break-words text-sm text-foreground">{ activity.Message }</p>
-							</li>
-						}
-					</ol>
-				}
-			</div>
-			<div class="grid gap-2 border-t border-border pt-3">
-				<span class="text-xs font-medium uppercase text-muted-foreground">Turn / tokens / runtime</span>
-				<div class="grid gap-2 sm:grid-cols-3">
-					<div class="rounded-md bg-muted/60 px-3 py-2">
-						<span class="block text-xs text-muted-foreground">Turn</span>
-						<strong class="font-mono text-sm font-medium text-foreground">{ runningTurnLabel(row) }</strong>
-					</div>
-					<div class="rounded-md bg-muted/60 px-3 py-2">
-						<span class="block text-xs text-muted-foreground">Tokens</span>
-						<strong class="font-mono text-sm font-medium text-foreground">{ formatTokens(row.Tokens) }</strong>
-						<span class="block font-mono text-xs text-muted-foreground">{ formatTokenBreakdown(row.Tokens) }</span>
-					</div>
-					<div class="rounded-md bg-muted/60 px-3 py-2">
-						<span class="block text-xs text-muted-foreground">Runtime</span>
-						<strong class="font-mono text-sm font-medium text-foreground">{ runningRuntimeOnly(row, generatedAt) }</strong>
-					</div>
-				</div>
-			</div>
+		<div class="grid min-w-0 max-w-full gap-1.5 overflow-hidden rounded-md bg-muted/40 p-2">
+			<span class="text-xs font-medium uppercase text-muted-foreground">Latest message</span>
+			<p class="whitespace-pre-wrap break-words text-sm text-foreground">{ lastCodexUpdate(row) }</p>
+			<p class="font-mono text-xs text-muted-foreground">{ lastCodexMeta(row) }</p>
+		</div>
+		<div class="grid min-w-0 max-w-full gap-2 overflow-hidden">
+			<span class="text-xs font-medium uppercase text-muted-foreground">Recent activity</span>
+			if len(runningActivityRows(row)) == 0 {
+				<p class="rounded-md border border-dashed border-border bg-muted/40 px-3 py-3 text-sm text-muted-foreground">No activity recorded.</p>
+			} else {
+				<ol class="grid min-w-0 max-w-full gap-2 overflow-hidden">
+					for _, activity := range runningActivityRows(row) {
+						<li class="min-w-0 max-w-full overflow-hidden rounded-md bg-muted/40 px-3 py-2">
+							<div class="flex flex-wrap items-center justify-between gap-2">
+								<span class="font-mono text-xs text-muted-foreground">{ activity.At }</span>
+								<span class="font-mono text-xs font-medium text-accent">{ activity.Event }</span>
+							</div>
+							<p class="mt-1 whitespace-pre-wrap break-words text-sm text-foreground">{ activity.Message }</p>
+						</li>
+					}
+				</ol>
+			}
 		</div>
 	</div>
 }

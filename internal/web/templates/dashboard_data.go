@@ -1837,17 +1837,6 @@ func runningRuntimeSeconds(row telemetry.Running, generatedAt time.Time) float64
 	return seconds
 }
 
-func runningRuntimeOnly(row telemetry.Running, generatedAt time.Time) string {
-	return formatDuration(runningRuntimeSeconds(row, generatedAt))
-}
-
-func runningTurnLabel(row telemetry.Running) string {
-	if row.TurnCount <= 0 {
-		return "Turn n/a"
-	}
-	return "Turn " + formatInt(int64(row.TurnCount))
-}
-
 func lastCodexUpdate(row telemetry.Running) string {
 	if row.LastMessage != "" {
 		return row.LastMessage
@@ -1872,8 +1861,22 @@ func lastCodexMeta(row telemetry.Running) string {
 	return strings.Join(parts, " / ")
 }
 
-func runningActivityID(prefix string, index int) string {
-	return prefix + "-activity-" + strconv.Itoa(index)
+func runningActivityID(prefix string, row telemetry.Running) string {
+	return projectKanbanLaneID(prefix) + "-activity-" + runningActivityKey(row)
+}
+
+func runningActivityDetailsID(prefix string, row telemetry.Running) string {
+	return runningActivityID(prefix, row) + "-details"
+}
+
+func runningActivityKey(row telemetry.Running) string {
+	for _, value := range []string{row.SessionID, row.ID, row.Identifier} {
+		key := projectKanbanLaneID(value)
+		if key != "unknown" {
+			return key
+		}
+	}
+	return "unknown"
 }
 
 func runningActivityRows(row telemetry.Running) []runningActivityRow {
