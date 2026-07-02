@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"os"
 	"regexp"
 	"strconv"
 	"strings"
@@ -2246,7 +2247,7 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 	for _, want := range []string{
 		"project-kanban-card-compact",
 		projectKanbanFixedLaneClass,
-		`project-kanban-lane-scroll mt-2 grid auto-rows-max min-w-0 max-w-full max-h-[32rem] gap-1.5 overflow-x-hidden overflow-y-auto pr-1`,
+		`project-kanban-lane-scroll mt-2 grid auto-rows-max min-w-0 max-w-full max-h-[calc(100dvh-14rem)] gap-1.5 overflow-x-hidden overflow-y-auto pr-1`,
 		`project-kanban-card project-kanban-card-compact w-full min-w-0 max-w-full overflow-hidden rounded-md border border-border bg-card p-1.5`,
 		`data-kanban-card-details`,
 		`data-preserve-details="project-kanban-details-digitaldrywood-detent-500"`,
@@ -2313,6 +2314,30 @@ func TestDashboardRendersCompactProjectKanbanCards(t *testing.T) {
 			if strings.Contains(defaultView, forbidden) {
 				t.Fatalf("card %q rendered expanded metadata by default marker %q:\n%s", title, forbidden, card)
 			}
+		}
+	}
+}
+
+func TestProjectKanbanCSSStylesLaneScrollbars(t *testing.T) {
+	t.Parallel()
+
+	css, err := os.ReadFile("../../../static/css/input.css")
+	if err != nil {
+		t.Fatalf("ReadFile() error = %v", err)
+	}
+	text := string(css)
+
+	for _, want := range []string{
+		".project-kanban-lane-scroll",
+		"scrollbar-width: thin;",
+		"scrollbar-color: var(--project-kanban-lane-scrollbar-thumb) transparent;",
+		".project-kanban-lane-scroll::-webkit-scrollbar",
+		".project-kanban-lane-scroll::-webkit-scrollbar-thumb",
+		"var(--color-border)",
+		"var(--color-muted-foreground)",
+	} {
+		if !strings.Contains(text, want) {
+			t.Fatalf("kanban CSS missing %q:\n%s", want, text)
 		}
 	}
 }
