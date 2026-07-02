@@ -78,6 +78,11 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 	if err != nil {
 		return Info{}, err
 	}
+	root, err := os.OpenRoot(f.root)
+	if err != nil {
+		return Info{}, fmt.Errorf("open filesystem workspace root: %w", err)
+	}
+	defer f.closeRoot("workspace", root)
 	exists, isDir, err := pathExists(info.Path)
 	if err != nil {
 		return Info{}, err
@@ -87,27 +92,31 @@ func (f *Filesystem) Create(ctx context.Context, issue Issue) (Info, error) {
 	}
 	created := false
 	if !exists {
-		if err := os.MkdirAll(info.Path, 0o700); err != nil {
+		if err := root.MkdirAll(info.Key, 0o700); err != nil {
 			return Info{}, fmt.Errorf("create filesystem workspace: %w", err)
 		}
 		created = true
 	}
-	if err := os.MkdirAll(filepath.Join(info.Path, "artifacts"), 0o700); err != nil {
+	if err := root.MkdirAll(filepath.Join(info.Key, "artifacts"), 0o700); err != nil {
 		return Info{}, fmt.Errorf("create artifact directory: %w", err)
 	}
 	if f.outputRoot != "" {
-		outputPath, err := validateWorkspacePath(f.outputRoot, filepath.Join(f.outputRoot, info.Key))
-		if err != nil {
+		if _, err := validateWorkspacePath(f.outputRoot, filepath.Join(f.outputRoot, info.Key)); err != nil {
 			return Info{}, err
 		}
-		if err := os.MkdirAll(outputPath, 0o700); err != nil {
+		outputRoot, err := os.OpenRoot(f.outputRoot)
+		if err != nil {
+			return Info{}, fmt.Errorf("open filesystem output root: %w", err)
+		}
+		defer f.closeRoot("output", outputRoot)
+		if err := outputRoot.MkdirAll(info.Key, 0o700); err != nil {
 			return Info{}, fmt.Errorf("create output workspace: %w", err)
 		}
 	}
 	info.Created = created
 	if created {
 		if err := f.runHook(ctx, "after_create", f.hooks.AfterCreate, info, issue); err != nil {
-			if cleanupErr := os.RemoveAll(info.Path); cleanupErr != nil {
+			if cleanupErr := root.RemoveAll(info.Key); cleanupErr != nil {
 				f.logger.Warn("failed to clean filesystem workspace after after_create hook error", slog.String("path", info.Path), slog.Any("error", cleanupErr))
 			}
 			return Info{}, err
@@ -126,6 +135,11 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if err != nil {
 		return CleanupResult{}, err
 	}
+	root, err := os.OpenRoot(f.root)
+	if err != nil {
+		return CleanupResult{}, fmt.Errorf("open filesystem workspace root: %w", err)
+	}
+	defer f.closeRoot("workspace", root)
 	result := CleanupResult{}
 	exists, _, err := pathExists(info.Path)
 	if err != nil {
@@ -138,7 +152,7 @@ func (f *Filesystem) CleanupIssue(ctx context.Context, issue Issue) (CleanupResu
 	if err := f.runHook(ctx, "before_remove", f.hooks.BeforeRemove, info, issue); err != nil {
 		f.logger.Warn("filesystem workspace before_remove hook failed", slog.String("path", info.Path), slog.Any("error", err))
 	}
-	if err := os.RemoveAll(info.Path); err != nil {
+	if err := root.RemoveAll(info.Key); err != nil {
 		return CleanupResult{}, fmt.Errorf("remove filesystem workspace: %w", err)
 	}
 	result.Worktrees = 1
@@ -296,11 +310,17 @@ func (f *Filesystem) runHook(ctx context.Context, name string, command string, i
 }
 
 func (f *Filesystem) writeHookLog(name string, command string, info Info, exitCode int, err error, output []byte) (string, error) {
-	dir := filepath.Join(f.root, ".detent", "hook-logs", SafeKey(info.Key))
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	root, rootErr := os.OpenRoot(f.root)
+	if rootErr != nil {
+		return "", fmt.Errorf("open filesystem workspace root: %w", rootErr)
+	}
+	defer f.closeRoot("workspace", root)
+	dir := filepath.Join(".detent", "hook-logs", SafeKey(info.Key))
+	if err := root.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	path := filepath.Join(dir, hookLogFileName(name, time.Now().UTC(), os.Getpid()))
+	relPath := filepath.Join(dir, hookLogFileName(name, time.Now().UTC(), os.Getpid()))
+	path := filepath.Join(f.root, relPath)
 	var buf bytes.Buffer
 	fmt.Fprintf(&buf, "hook: %s\n", name)
 	fmt.Fprintf(&buf, "command: %s\n", command)
@@ -314,8 +334,14 @@ func (f *Filesystem) writeHookLog(name string, command string, info Info, exitCo
 	if len(output) > 0 && output[len(output)-1] != '\n' {
 		fmt.Fprint(&buf, "\n")
 	}
-	if err := os.WriteFile(path, buf.Bytes(), 0o600); err != nil {
+	if err := root.WriteFile(relPath, buf.Bytes(), 0o600); err != nil {
 		return "", err
 	}
 	return path, nil
+}
+
+func (f *Filesystem) closeRoot(name string, root *os.Root) {
+	if err := root.Close(); err != nil {
+		f.logger.Warn("filesystem root close failed", slog.String("root", name), slog.Any("error", err))
+	}
 }

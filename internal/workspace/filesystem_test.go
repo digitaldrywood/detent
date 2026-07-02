@@ -61,3 +61,35 @@ func TestFilesystemWorkspaceCreatesArtifactWorkspaceAndOutputRoot(t *testing.T) 
 		t.Fatalf("workspace still exists or unexpected stat error: %v", err)
 	}
 }
+
+func TestFilesystemCreateRejectsArtifactSymlinkEscape(t *testing.T) {
+	t.Parallel()
+	skipWindows(t)
+
+	testRoot := t.TempDir()
+	root := filepath.Join(testRoot, "workspaces")
+	workspacePath := filepath.Join(root, "DD-SYM")
+	outside := filepath.Join(testRoot, "outside")
+	if err := os.MkdirAll(workspacePath, 0o700); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.MkdirAll(outside, 0o700); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	if err := os.Symlink(outside, filepath.Join(workspacePath, "artifacts")); err != nil {
+		t.Fatalf("create symlink: %v", err)
+	}
+
+	backend, err := NewFilesystem(FilesystemOptions{Root: root})
+	if err != nil {
+		t.Fatalf("NewFilesystem() error = %v", err)
+	}
+
+	_, err = backend.Create(context.Background(), Issue{Identifier: "DD-SYM"})
+	if err == nil {
+		t.Fatal("Create() error = nil, want symlink escape rejection")
+	}
+	if _, err := os.Lstat(filepath.Join(workspacePath, "artifacts")); err != nil {
+		t.Fatalf("symlink stat error = %v", err)
+	}
+}
