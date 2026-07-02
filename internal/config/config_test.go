@@ -810,14 +810,22 @@ Prompt
 	if backend.Command != "codex app-server --profile high" {
 		t.Fatalf("backend Command = %q, want configured command", backend.Command)
 	}
-	if backend.Options.Shell != "bash" {
-		t.Fatalf("backend shell = %q, want bash", backend.Options.Shell)
+	options := backend.CodexOptions()
+	if options.Shell != "bash" {
+		t.Fatalf("backend shell = %q, want bash", options.Shell)
 	}
-	if !backend.Options.ApprovalPolicy.IsString || backend.Options.ApprovalPolicy.String != "never" {
-		t.Fatalf("backend approval policy = %#v, want never", backend.Options.ApprovalPolicy)
+	if !options.ApprovalPolicy.IsString || options.ApprovalPolicy.String != "never" {
+		t.Fatalf("backend approval policy = %#v, want never", options.ApprovalPolicy)
 	}
-	if backend.Options.TurnSandboxPolicy["type"] != "dangerFullAccess" {
-		t.Fatalf("backend turn sandbox policy = %#v, want dangerFullAccess", backend.Options.TurnSandboxPolicy)
+	if options.TurnSandboxPolicy["type"] != "dangerFullAccess" {
+		t.Fatalf("backend turn sandbox policy = %#v, want dangerFullAccess", options.TurnSandboxPolicy)
+	}
+	var decoded CodexOptions
+	if err := backend.Options.Decode(&decoded); err != nil {
+		t.Fatalf("backend options Decode() error = %v", err)
+	}
+	if decoded.ReadTimeoutMS != 1000 {
+		t.Fatalf("decoded read timeout = %d, want 1000", decoded.ReadTimeoutMS)
 	}
 	if len(agents.Routes) != 4 {
 		t.Fatalf("Agents.Routes len = %d, want 4", len(agents.Routes))
@@ -833,6 +841,82 @@ Prompt
 	}
 	if !agents.Routes[3].Default {
 		t.Fatal("default route Default = false, want true")
+	}
+}
+
+func TestAgentBackendConfigsMergesLegacyCodexDefaults(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+codex:
+  command: codex app-server
+  shell: bash
+  approval_policy:
+    reject:
+      sandbox_approval: true
+  thread_sandbox: workspace-write
+  turn_sandbox_policy:
+    type: workspaceWrite
+  turn_timeout_ms: 700000
+  read_timeout_ms: 7000
+  stall_timeout_ms: 70000
+agents:
+  backends:
+    - id: codex-custom
+      kind: codex
+      protocol: app-server
+      command: codex app-server --profile custom
+      options:
+        approval_policy: never
+        read_timeout_ms: 1000
+        stall_timeout_ms: 0
+  routes:
+    - backend: codex-custom
+      default: true
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	backends := workflow.Config.AgentBackendConfigs()
+	if len(backends) != 1 {
+		t.Fatalf("AgentBackendConfigs() len = %d, want 1", len(backends))
+	}
+	backend := backends[0]
+	if backend.ID != "codex-custom" {
+		t.Fatalf("backend ID = %q, want codex-custom", backend.ID)
+	}
+	if backend.Command != "codex app-server --profile custom" {
+		t.Fatalf("backend Command = %q, want configured command", backend.Command)
+	}
+	options := backend.CodexOptions()
+	if options.Shell != "bash" {
+		t.Fatalf("backend shell = %q, want legacy default", options.Shell)
+	}
+	if !options.ApprovalPolicy.IsString || options.ApprovalPolicy.String != "never" {
+		t.Fatalf("backend approval policy = %#v, want backend override", options.ApprovalPolicy)
+	}
+	if options.ThreadSandbox != "workspace-write" {
+		t.Fatalf("backend thread sandbox = %q, want legacy default", options.ThreadSandbox)
+	}
+	if got := options.TurnSandboxPolicy["type"]; got != "workspaceWrite" {
+		t.Fatalf("backend turn sandbox policy type = %v, want workspaceWrite", got)
+	}
+	if options.TurnTimeoutMS != 700000 {
+		t.Fatalf("backend turn timeout = %d, want legacy default", options.TurnTimeoutMS)
+	}
+	if options.ReadTimeoutMS != 1000 {
+		t.Fatalf("backend read timeout = %d, want backend override", options.ReadTimeoutMS)
+	}
+	if options.StallTimeoutMS != 70000 {
+		t.Fatalf("backend stall timeout = %d, want legacy default for zero backend value", options.StallTimeoutMS)
 	}
 }
 
@@ -1491,6 +1575,56 @@ Prompt
 				"agents.routes.backend must reference a configured backend",
 				"agents.routes.selector.priority_in values must be integers 1 through 4",
 				"agents.routes must not define multiple default routes for the same role",
+			},
+		},
+		{
+			name: "invalid agent backend options decode",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex
+      kind: codex
+      protocol: app-server
+      command: codex app-server
+      options:
+        approval_policy: [never]
+  routes:
+    - backend: codex
+      default: true
+---
+Prompt
+`,
+			want: []string{
+				"agents.backends.options must decode for codex",
+			},
+		},
+		{
+			name: "invalid agent backend option timeouts",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: codex
+      kind: codex
+      protocol: app-server
+      command: codex app-server
+      options:
+        turn_timeout_ms: -1
+        read_timeout_ms: -1
+        stall_timeout_ms: -1
+  routes:
+    - backend: codex
+      default: true
+---
+Prompt
+`,
+			want: []string{
+				"agents.backends.options.turn_timeout_ms must be greater than or equal to 0",
+				"agents.backends.options.read_timeout_ms must be greater than or equal to 0",
+				"agents.backends.options.stall_timeout_ms must be greater than or equal to 0",
 			},
 		},
 		{

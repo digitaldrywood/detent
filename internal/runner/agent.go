@@ -158,7 +158,7 @@ func newAgentRuntime(
 	staticBackends map[string]AgentBackend,
 	factory AgentBackendFactory,
 ) (agentRuntime, error) {
-	backendConfigs := effectiveAgentBackendConfigs(workflow.Config)
+	backendConfigs := workflow.Config.AgentBackendConfigs()
 	backends := make(map[string]AgentBackend, len(backendConfigs))
 	backendKinds := make(map[string]string, len(backendConfigs))
 	for _, backendConfig := range backendConfigs {
@@ -199,22 +199,6 @@ func newAgentRuntime(
 		backendKinds: backendKinds,
 		router:       router,
 	}, nil
-}
-
-func effectiveAgentBackendConfigs(cfg config.Config) []config.AgentBackend {
-	configs := cfg.AgentBackendConfigs()
-	for index, backend := range configs {
-		if backend.Kind != config.AgentBackendCodex {
-			continue
-		}
-		effectiveCodex := backend.CodexConfig(cfg.Codex)
-		effective := config.CodexAgentBackend(effectiveCodex)
-		effective.ID = backend.ID
-		effective.Kind = backend.Kind
-		effective.Protocol = backend.Protocol
-		configs[index] = effective
-	}
-	return configs
 }
 
 func routesFromConfig(routes []config.AgentRoute) []Route {
