@@ -40,14 +40,22 @@ const (
 	defaultLinearEndpoint = "https://api.linear.app/graphql"
 	defaultGitHubEndpoint = "https://api.github.com/graphql"
 
-	DefaultAgentBackendID = "codex"
-	AgentBackendCodex     = "codex"
+	DefaultAgentBackendID  = "codex"
+	AgentBackendCodex      = "codex"
+	AgentBackendClaudeCode = "claude_code"
 
 	DefaultPollingIntervalMS      = 120000
 	MinPollingIntervalMS          = 60000
 	DefaultShutdownDrainTimeoutMS = 75000
 
-	defaultCodexProtocol = "app-server"
+	defaultCodexProtocol                      = "app-server"
+	defaultClaudeCodeProtocol                 = "headless"
+	defaultClaudeCodeCommand                  = "claude"
+	defaultClaudeCodePermissionMode           = "bypassPermissions"
+	claudeCodePermissionModeDefault           = "default"
+	claudeCodePermissionModeAcceptEdits       = "acceptEdits"
+	claudeCodePermissionModeBypassPermissions = "bypassPermissions"
+	claudeCodePermissionModePlan              = "plan"
 
 	IdentityOwnershipAssignee = "assignee"
 	IdentityOwnershipField    = "field"
@@ -204,9 +212,11 @@ type AgentBackend struct {
 	Command  string         `yaml:"command"`
 	Options  BackendOptions `yaml:"options"`
 
-	codexOptions    CodexOptions
-	codexOptionsSet bool
-	optionsErr      error
+	codexOptions         CodexOptions
+	codexOptionsSet      bool
+	claudeCodeOptions    ClaudeCodeOptions
+	claudeCodeOptionsSet bool
+	optionsErr           error
 }
 
 type BackendOptions struct {
@@ -221,6 +231,17 @@ type CodexOptions struct {
 	TurnTimeoutMS     int            `yaml:"turn_timeout_ms"`
 	ReadTimeoutMS     int            `yaml:"read_timeout_ms"`
 	StallTimeoutMS    int            `yaml:"stall_timeout_ms"`
+}
+
+type ClaudeCodeOptions struct {
+	PermissionMode         string   `yaml:"permission_mode"`
+	AllowedTools           []string `yaml:"allowed_tools"`
+	DisallowedTools        []string `yaml:"disallowed_tools"`
+	IncludePartialMessages bool     `yaml:"include_partial_messages"`
+	TurnTimeoutMS          int      `yaml:"turn_timeout_ms"`
+	StallTimeoutMS         int      `yaml:"stall_timeout_ms"`
+	Shell                  string   `yaml:"shell"`
+	ExtraArgs              []string `yaml:"extra_args"`
 }
 
 type AgentRoute struct {
@@ -389,21 +410,55 @@ func (b AgentBackend) decodedCodexOptions() (CodexOptions, error) {
 	return options, nil
 }
 
+func (b AgentBackend) ClaudeCodeOptions() ClaudeCodeOptions {
+	options, err := b.decodedClaudeCodeOptions()
+	if err != nil {
+		return ClaudeCodeOptions{}
+	}
+	return options
+}
+
+func (b AgentBackend) decodedClaudeCodeOptions() (ClaudeCodeOptions, error) {
+	if b.optionsErr != nil {
+		return ClaudeCodeOptions{}, b.optionsErr
+	}
+	if b.claudeCodeOptionsSet {
+		return b.claudeCodeOptions, nil
+	}
+
+	var options ClaudeCodeOptions
+	if err := b.Options.Decode(&options); err != nil {
+		return ClaudeCodeOptions{}, err
+	}
+	options.normalize()
+	return options, nil
+}
+
 func (b *AgentBackend) decodeOptions() {
 	b.codexOptions = CodexOptions{}
 	b.codexOptionsSet = false
+	b.claudeCodeOptions = ClaudeCodeOptions{}
+	b.claudeCodeOptionsSet = false
 	b.optionsErr = nil
-	if b.Kind != AgentBackendCodex {
-		return
-	}
 
-	options, err := b.decodedCodexOptions()
-	if err != nil {
-		b.optionsErr = err
-		return
+	switch b.Kind {
+	case AgentBackendCodex:
+		options, err := b.decodedCodexOptions()
+		if err != nil {
+			b.optionsErr = err
+			return
+		}
+		b.codexOptions = options
+		b.codexOptionsSet = true
+	case AgentBackendClaudeCode:
+		options, err := b.decodedClaudeCodeOptions()
+		if err != nil {
+			b.optionsErr = err
+			return
+		}
+		b.claudeCodeOptions = options
+		b.claudeCodeOptionsSet = true
 	}
-	b.codexOptions = options
-	b.codexOptionsSet = true
 }
 
 type Server struct {
@@ -1122,6 +1177,12 @@ func (a *Agents) normalize() {
 			backend.Protocol = defaultCodexProtocol
 		}
 		backend.Command = strings.TrimSpace(backend.Command)
+		if backend.Protocol == "" && backend.Kind == AgentBackendClaudeCode {
+			backend.Protocol = defaultClaudeCodeProtocol
+		}
+		if backend.Command == "" && backend.Kind == AgentBackendClaudeCode {
+			backend.Command = defaultClaudeCodeCommand
+		}
 		backend.decodeOptions()
 	}
 	for index := range a.Routes {
@@ -1161,12 +1222,19 @@ func (a *Agents) validate(problems *[]string) {
 		switch backend.Kind {
 		case "":
 			*problems = append(*problems, "agents.backends.kind is required")
-		case AgentBackendCodex:
+		case AgentBackendCodex, AgentBackendClaudeCode:
 		default:
-			*problems = append(*problems, "agents.backends.kind must be codex")
+			*problems = append(*problems, "agents.backends.kind must be one of codex, claude_code")
 		}
-		if backend.Kind == AgentBackendCodex && backend.Protocol != defaultCodexProtocol {
-			*problems = append(*problems, "agents.backends.protocol must be app-server for codex")
+		switch backend.Kind {
+		case AgentBackendCodex:
+			if backend.Protocol != defaultCodexProtocol {
+				*problems = append(*problems, "agents.backends.protocol must be app-server for codex")
+			}
+		case AgentBackendClaudeCode:
+			if backend.Protocol != defaultClaudeCodeProtocol {
+				*problems = append(*problems, "agents.backends.protocol must be headless for claude_code")
+			}
 		}
 		validateRequired("agents.backends.command", backend.Command, "", problems)
 		backend.validateOptions("agents.backends.options", problems)
@@ -1209,6 +1277,13 @@ func (b AgentBackend) validateOptions(prefix string, problems *[]string) {
 			return
 		}
 		options.validate(prefix, problems)
+	case AgentBackendClaudeCode:
+		options, err := b.decodedClaudeCodeOptions()
+		if err != nil {
+			*problems = append(*problems, prefix+" must decode for claude_code: "+err.Error())
+			return
+		}
+		options.validate(prefix, problems)
 	}
 }
 
@@ -1226,6 +1301,33 @@ func (o CodexOptions) validate(prefix string, problems *[]string) {
 	}
 	if o.ReadTimeoutMS < 0 {
 		*problems = append(*problems, prefix+".read_timeout_ms must be greater than or equal to 0")
+	}
+	if o.StallTimeoutMS < 0 {
+		*problems = append(*problems, prefix+".stall_timeout_ms must be greater than or equal to 0")
+	}
+}
+
+func (o *ClaudeCodeOptions) normalize() {
+	o.PermissionMode = strings.TrimSpace(o.PermissionMode)
+	if o.PermissionMode == "" {
+		o.PermissionMode = defaultClaudeCodePermissionMode
+	}
+	o.Shell = strings.TrimSpace(o.Shell)
+	if o.Shell != "" {
+		o.Shell = commandshell.Normalize(o.Shell)
+	}
+}
+
+func (o ClaudeCodeOptions) validate(prefix string, problems *[]string) {
+	switch o.PermissionMode {
+	case claudeCodePermissionModeDefault, claudeCodePermissionModeAcceptEdits, claudeCodePermissionModeBypassPermissions:
+	case claudeCodePermissionModePlan:
+		*problems = append(*problems, prefix+".permission_mode must not be plan for unattended workers")
+	default:
+		*problems = append(*problems, prefix+".permission_mode must be one of default, acceptEdits, bypassPermissions")
+	}
+	if o.TurnTimeoutMS < 0 {
+		*problems = append(*problems, prefix+".turn_timeout_ms must be greater than or equal to 0")
 	}
 	if o.StallTimeoutMS < 0 {
 		*problems = append(*problems, prefix+".stall_timeout_ms must be greater than or equal to 0")

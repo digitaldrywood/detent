@@ -844,6 +844,81 @@ Prompt
 	}
 }
 
+func TestParseWorkflowClaudeCodeAgentBackendConfig(t *testing.T) {
+	t.Parallel()
+
+	workflow, err := ParseWorkflow([]byte(`---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: claude-worker
+      kind: claude_code
+      options:
+        allowed_tools:
+          - Bash
+          - Edit
+        disallowed_tools:
+          - WebFetch
+        include_partial_messages: true
+        turn_timeout_ms: 600000
+        stall_timeout_ms: 0
+        shell: bash
+        extra_args:
+          - --model
+          - claude-sonnet-4
+  routes:
+    - backend: claude-worker
+      default: true
+---
+Prompt
+`))
+	if err != nil {
+		t.Fatalf("ParseWorkflow() error = %v", err)
+	}
+	if err := workflow.Config.Validate(); err != nil {
+		t.Fatalf("Validate() error = %v", err)
+	}
+
+	backends := workflow.Config.AgentBackendConfigs()
+	if len(backends) != 1 {
+		t.Fatalf("AgentBackendConfigs() len = %d, want 1", len(backends))
+	}
+	backend := backends[0]
+	if backend.ID != "claude-worker" || backend.Kind != AgentBackendClaudeCode || backend.Protocol != "headless" {
+		t.Fatalf("backend identity = %#v, want claude-worker claude_code headless", backend)
+	}
+	if backend.Command != "claude" {
+		t.Fatalf("backend Command = %q, want default claude", backend.Command)
+	}
+
+	options := backend.ClaudeCodeOptions()
+	if options.PermissionMode != "bypassPermissions" {
+		t.Fatalf("permission mode = %q, want bypassPermissions", options.PermissionMode)
+	}
+	if !reflect.DeepEqual(options.AllowedTools, []string{"Bash", "Edit"}) {
+		t.Fatalf("allowed tools = %#v, want Bash/Edit", options.AllowedTools)
+	}
+	if !reflect.DeepEqual(options.DisallowedTools, []string{"WebFetch"}) {
+		t.Fatalf("disallowed tools = %#v, want WebFetch", options.DisallowedTools)
+	}
+	if !options.IncludePartialMessages {
+		t.Fatal("include partial messages = false, want true")
+	}
+	if options.TurnTimeoutMS != 600000 {
+		t.Fatalf("turn timeout = %d, want 600000", options.TurnTimeoutMS)
+	}
+	if options.StallTimeoutMS != 0 {
+		t.Fatalf("stall timeout = %d, want 0", options.StallTimeoutMS)
+	}
+	if options.Shell != "bash" {
+		t.Fatalf("shell = %q, want bash", options.Shell)
+	}
+	if !reflect.DeepEqual(options.ExtraArgs, []string{"--model", "claude-sonnet-4"}) {
+		t.Fatalf("extra args = %#v, want model args", options.ExtraArgs)
+	}
+}
+
 func TestAgentBackendConfigsMergesLegacyCodexDefaults(t *testing.T) {
 	t.Parallel()
 
@@ -1570,11 +1645,31 @@ agents:
 Prompt
 `,
 			want: []string{
-				"agents.backends.kind must be codex",
+				"agents.backends.kind must be one of codex, claude_code",
 				"agents.backends.command is required",
 				"agents.routes.backend must reference a configured backend",
 				"agents.routes.selector.priority_in values must be integers 1 through 4",
 				"agents.routes must not define multiple default routes for the same role",
+			},
+		},
+		{
+			name: "invalid claude code protocol",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: claude
+      kind: claude_code
+      protocol: app-server
+  routes:
+    - backend: claude
+      default: true
+---
+Prompt
+`,
+			want: []string{
+				"agents.backends.protocol must be headless for claude_code",
 			},
 		},
 		{
@@ -1598,6 +1693,71 @@ Prompt
 `,
 			want: []string{
 				"agents.backends.options must decode for codex",
+			},
+		},
+		{
+			name: "invalid claude code permission mode",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: claude
+      kind: claude_code
+      options:
+        permission_mode: ask
+  routes:
+    - backend: claude
+      default: true
+---
+Prompt
+`,
+			want: []string{
+				"agents.backends.options.permission_mode must be one of default, acceptEdits, bypassPermissions",
+			},
+		},
+		{
+			name: "invalid claude code plan permission mode",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: claude
+      kind: claude_code
+      options:
+        permission_mode: plan
+  routes:
+    - backend: claude
+      default: true
+---
+Prompt
+`,
+			want: []string{
+				"agents.backends.options.permission_mode must not be plan for unattended workers",
+			},
+		},
+		{
+			name: "invalid claude code option timeouts",
+			raw: `---
+tracker:
+  kind: memory
+agents:
+  backends:
+    - id: claude
+      kind: claude_code
+      options:
+        turn_timeout_ms: -1
+        stall_timeout_ms: -1
+  routes:
+    - backend: claude
+      default: true
+---
+Prompt
+`,
+			want: []string{
+				"agents.backends.options.turn_timeout_ms must be greater than or equal to 0",
+				"agents.backends.options.stall_timeout_ms must be greater than or equal to 0",
 			},
 		},
 		{
