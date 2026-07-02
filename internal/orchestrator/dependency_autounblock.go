@@ -201,7 +201,7 @@ func blockerAutoPromoteEligible(
 	if !stateIn(issue.State, cfg.BlockerStates) {
 		return false
 	}
-	if stateIn(issue.State, terminalStates) || issue.Closed || pullRequestMerged(issue.PullRequest) {
+	if stateIn(issue.State, terminalStates) || issue.Closed || pullRequestMerged(issue.PullRequest) || pullRequestOpen(issue.PullRequest) {
 		return false
 	}
 	if normalizeState(issue.State) == normalizeState(cfg.TargetState) {
@@ -636,6 +636,10 @@ func dependencyBlockerReady(blocker dependencyBlocker, cfg DependencyAutoUnblock
 
 func pullRequestMerged(pullRequest *connector.PullRequest) bool {
 	return pullRequest != nil && normalizePullRequestState(pullRequest.State) == "merged"
+}
+
+func pullRequestOpen(pullRequest *connector.PullRequest) bool {
+	return pullRequest != nil && normalizePullRequestState(pullRequest.State) == "open"
 }
 
 func dependencyAutoUnblockTargetState(state *State, issue connector.Issue, configuredTarget string) string {

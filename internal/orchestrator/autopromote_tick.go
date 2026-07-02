@@ -52,10 +52,6 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		}
 
 		summary := AutoPromoteSummaryFromIssue(issue)
-		if o.retryTransientPullRequestChecks(ctx, state, issue, now, string(AutoPromoteReasonCINotGreen)) {
-			o.logAutoPromoteDecision(issue, autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonCINotGreen), "")
-			continue
-		}
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if decision.Reason == AutoPromoteReasonValidatorMissing {
 			validation, shouldComment, ok := o.validatorStageResult(issue)
@@ -70,6 +66,11 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 				o.markValidatorResultCommented(issue)
 			}
 			decision = EvaluateAutoPromote(issue, summary, cfg, now)
+		}
+		if decision.Reason == AutoPromoteReasonCINotGreen &&
+			o.retryTransientPullRequestChecks(ctx, state, issue, now, string(AutoPromoteReasonCINotGreen)) {
+			o.logAutoPromoteDecision(issue, autoPromoteDecision(AutoPromoteActionSkip, AutoPromoteReasonCINotGreen), "")
+			continue
 		}
 		targetState := autoPromoteTargetState(decision.Action, cfg)
 		if targetState == "" {
@@ -154,11 +155,12 @@ func (o *Orchestrator) reconcileStaleMergingPullRequestIssues(
 			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
-		if o.retryTransientPullRequestChecks(ctx, state, issue, now, string(AutoPromoteReasonCINotGreen)) {
+		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg.TerminalStates)
+		if decision.reason == string(AutoPromoteReasonCINotGreen) &&
+			o.retryTransientPullRequestChecks(ctx, state, issue, now, decision.reason) {
 			consumedRepositories = consumeMergeWorkerRepository(consumedRepositories, repository)
 			continue
 		}
-		decision := staleMergingPullRequestDecisionForIssue(issue, o.cfg.TerminalStates)
 		if decision.targetState == "" {
 			if strings.TrimSpace(decision.reason) != "" {
 				o.logStaleMergingPullRequestDeferred(issue, decision)

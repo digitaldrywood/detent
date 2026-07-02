@@ -542,6 +542,41 @@ func TestTickAutoPromotesInactiveBlockerForDependencyWaitingIssue(t *testing.T) 
 	}
 }
 
+func TestTickDoesNotAutoPromoteInactiveBlockerWithOpenPullRequest(t *testing.T) {
+	t.Parallel()
+
+	waiting := dependencyAutoUnblockIssue("issue-416", "Blocked")
+	waiting.Description = "Blocked by #415"
+	blocker := dependencyAutoUnblockIssue("issue-415", "Human Review")
+	blocker.Identifier = "digitaldrywood/detent#415"
+	blocker.PullRequest = &connector.PullRequest{
+		Number: 415,
+		State:  "OPEN",
+		URL:    "https://github.test/digitaldrywood/detent/pull/415",
+	}
+	tracker := &dependencyAutoUnblockConnector{
+		stateIssues: []connector.Issue{waiting, blocker},
+		blockers:    []connector.Issue{blocker},
+	}
+	orch := dependencyAutoUnblockOrchestrator(tracker, DependencyAutoUnblockConfig{
+		Enabled:      true,
+		SourceStates: []string{"Blocked"},
+		TargetState:  "Todo",
+		Readiness:    DependencyReadinessTerminalOrMerged,
+	})
+	orch.cfg.BlockerAutoPromote = normalizeBlockerAutoPromoteConfig(BlockerAutoPromoteConfig{Enabled: true}, orch.cfg.ActiveStates, orch.cfg.DependencyAutoUnblock)
+	state := newState(orch.cfg)
+
+	orch.tick(context.Background(), &state, time.Date(2026, 6, 12, 16, 9, 25, 0, time.UTC))
+
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want none for blocker with open PR", tracker.updates)
+	}
+	if len(tracker.comments) != 0 {
+		t.Fatalf("comments = %#v, want none without promotion", tracker.comments)
+	}
+}
+
 func TestTickAutoPromoteBlockerWaitsForAvailableCapacity(t *testing.T) {
 	t.Parallel()
 

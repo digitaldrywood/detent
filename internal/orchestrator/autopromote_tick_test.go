@@ -319,13 +319,16 @@ func TestTickRetriesTransientHumanReviewCIBeforeRework(t *testing.T) {
 	t.Parallel()
 
 	now := time.Date(2026, 6, 12, 14, 5, 0, 0, time.UTC)
+	reviewedAt := now.Add(-20 * time.Minute)
 	issue := autoPromoteTickIssue("issue-transient-ci", []string{"bug"}, &connector.PullRequest{
-		Number:     51,
-		URL:        "https://github.test/digitaldrywood/detent/pull/51",
-		State:      "OPEN",
-		HeadSHA:    "head-transient",
-		CIStatus:   "fail",
-		BranchName: "detent/transient-ci",
+		Number:                 51,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/51",
+		State:                  "OPEN",
+		HeadSHA:                "head-transient",
+		CIStatus:               "fail",
+		BranchName:             "detent/transient-ci",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &reviewedAt,
 		TransientFailedChecks: []connector.PullRequestCheck{{
 			ID:            9001,
 			WorkflowRunID: 8001,
@@ -371,6 +374,69 @@ func TestTickRetriesTransientHumanReviewCIBeforeRework(t *testing.T) {
 	}
 	if len(tracker.comments) != 1 || !strings.Contains(tracker.comments[0].body, "Transient CI failure detected") {
 		t.Fatalf("comments = %#v, want transient CI retry audit comment", tracker.comments)
+	}
+}
+
+func TestTickDoesNotRetryTransientHumanReviewCIBeforeGateBlocksOnCI(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 12, 14, 6, 0, 0, time.UTC)
+	reviewedAt := now.Add(-20 * time.Minute)
+	issue := autoPromoteTickIssue("issue-transient-ci-waiting-review", []string{"bug"}, &connector.PullRequest{
+		Number:                 53,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/53",
+		State:                  "OPEN",
+		HeadSHA:                "head-transient",
+		CIStatus:               "fail",
+		BranchName:             "detent/transient-ci",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &reviewedAt,
+		TransientFailedChecks: []connector.PullRequestCheck{{
+			ID:            9003,
+			WorkflowRunID: 8003,
+			Name:          "Checks",
+			Status:        "completed",
+			Conclusion:    "failure",
+			DetailsURL:    "https://github.test/digitaldrywood/detent/actions/runs/8003/job/9003",
+		}},
+	})
+	retryLimit := 2
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:            true,
+			AllowedIssueLabels: []string{"allowed"},
+			Gate: gate.Config{
+				Kind:                  gate.KindCommand,
+				CIFailureAction:       gate.CIFailureActionRework,
+				TransientCIRetryLimit: &retryLimit,
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	state := newState(cfg)
+	tracker := &autoPromoteTickConnector{
+		stateIssues:        []connector.Issue{issue},
+		candidateIssuesSet: true,
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	orch.tick(context.Background(), &state, now)
+
+	if len(tracker.reruns) != 0 {
+		t.Fatalf("reruns = %#v, want no reruns before CI is the blocking gate reason", tracker.reruns)
+	}
+	if len(state.TransientCheckRetries) != 0 {
+		t.Fatalf("TransientCheckRetries = %#v, want none before CI blocks promotion", state.TransientCheckRetries)
+	}
+	if len(tracker.updates) != 0 {
+		t.Fatalf("updates = %#v, want no Rework transition while label is disallowed", tracker.updates)
 	}
 }
 
