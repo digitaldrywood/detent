@@ -3266,10 +3266,15 @@ func TestProjectKanbanRouteHidesMutationControlsInReadOnlyMode(t *testing.T) {
 	if !strings.Contains(body, "Read-only") {
 		t.Fatalf("Kanban page missing read-only mode label:\n%s", body)
 	}
+	if !strings.Contains(body, `id="kanban-feedback" role="status" aria-live="polite" hidden`) {
+		t.Fatalf("read-only Kanban page missing hidden feedback target:\n%s", body)
+	}
+	if feedback := kanbanFeedbackTextFromHTML(t, body); feedback != "" {
+		t.Fatalf("read-only Kanban feedback = %q, want empty:\n%s", feedback, body)
+	}
 	for _, forbidden := range []string{
 		"/api/v1/kanban/",
 		"data-kanban-action",
-		`id="kanban-feedback"`,
 	} {
 		if strings.Contains(body, forbidden) {
 			t.Fatalf("read-only Kanban page rendered mutation UI %q:\n%s", forbidden, body)
@@ -3361,7 +3366,7 @@ func TestFleetKanbanRouteRendersEligibleMoveActions(t *testing.T) {
 		`data-project-kanban-card="digitaldrywood/detent#542"`,
 		`data-project-kanban-card="digitaldrywood/docs-site#12"`,
 		`data-project-color="#1192e8"`,
-		`id="kanban-feedback"`,
+		`id="kanban-feedback" role="status" aria-live="polite" hidden`,
 		`hx-get="/api/v1/kanban/move?`,
 		`kanban_board=fleet`,
 		`project_id=detent`,
@@ -3378,6 +3383,9 @@ func TestFleetKanbanRouteRendersEligibleMoveActions(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("fleet Kanban page missing %q:\n%s", want, body)
 		}
+	}
+	if feedback := kanbanFeedbackTextFromHTML(t, body); feedback != "" {
+		t.Fatalf("fleet Kanban feedback = %q, want empty:\n%s", feedback, body)
 	}
 	if strings.Contains(body, ">Integration</span>") {
 		t.Fatalf("fleet Kanban page rendered normal Integration badge:\n%s", body)
