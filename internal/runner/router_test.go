@@ -188,6 +188,39 @@ func TestRouterRoutesValidatorRoleWithFallbackDefault(t *testing.T) {
 	}
 }
 
+func TestRouterNewStageRolesFallbackToCodeDefault(t *testing.T) {
+	t.Parallel()
+
+	router, err := NewRouter([]Route{{
+		Name:      "default",
+		BackendID: "codex",
+		Model:     "gpt-5-code",
+		Default:   true,
+	}})
+	if err != nil {
+		t.Fatalf("NewRouter() error = %v", err)
+	}
+
+	code, err := router.Route(connector.Issue{}, selector.Context{})
+	if err != nil {
+		t.Fatalf("Route(code) error = %v", err)
+	}
+
+	for _, role := range []string{RolePlan, RoleRework, RoleMerge} {
+		t.Run(role, func(t *testing.T) {
+			t.Parallel()
+
+			got, err := router.RouteForRole(connector.Issue{}, selector.Context{}, role)
+			if err != nil {
+				t.Fatalf("RouteForRole(%s) error = %v", role, err)
+			}
+			if got != code {
+				t.Fatalf("RouteForRole(%s) = %#v, want code route %#v", role, got, code)
+			}
+		})
+	}
+}
+
 func TestRouterRejectsInvalidRoutes(t *testing.T) {
 	t.Parallel()
 
