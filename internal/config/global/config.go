@@ -1383,7 +1383,7 @@ func optionalString(value any, field string) (string, error) {
 
 func optionalIntPointer(value any, field string) (*int, error) {
 	if value == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // Absent optional integer is represented as a nil pointer.
 	}
 	number, err := intValue(value, field)
 	if err != nil {

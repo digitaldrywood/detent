@@ -9,18 +9,24 @@ linters:
   default: none
   enable:
     - bodyclose
+    - containedctx
     - contextcheck
     - errcheck
     - errorlint
+    - fatcontext
     - gosec
     - govet
     - ineffassign
+    - intrange
     - misspell
+    - nilnil
     - noctx
+    - perfsprint
     - sqlclosecheck
     - staticcheck
     - unconvert
     - unused
+    - wastedassign
 
   settings:
     errcheck:

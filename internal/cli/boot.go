@@ -755,7 +755,7 @@ func globalFairShareHalfLife(settings map[string]any) (time.Duration, error) {
 	case time.Duration:
 		return halfLife, nil
 	default:
-		return 0, fmt.Errorf("global.fair_share.half_life: must be a duration string")
+		return 0, errors.New("global.fair_share.half_life: must be a duration string")
 	}
 }
 

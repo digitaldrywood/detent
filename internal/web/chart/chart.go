@@ -183,7 +183,7 @@ func SmoothLinePath(points []ScaledPoint) string {
 	path.WriteString(FormatCoord(points[0].X))
 	path.WriteByte(' ')
 	path.WriteString(FormatCoord(points[0].Y))
-	for i := 0; i < len(points)-1; i++ {
+	for i := range len(points) - 1 {
 		p0 := boundedPoint(points, i-1)
 		p1 := boundedPoint(points, i)
 		p2 := boundedPoint(points, i+1)

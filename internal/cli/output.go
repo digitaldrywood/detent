@@ -103,11 +103,10 @@ func OutputForCommand(cmd *cobra.Command) (CommandOutput, error) {
 
 func ResolveCommandOutputFormat(cmd *cobra.Command, lookupEnv func(string) string, stdoutTTY bool) (OutputFormat, error) {
 	value, set := outputFormatFlagValue(cmd)
-	envValue := ""
 	if lookupEnv == nil {
 		lookupEnv = os.Getenv
 	}
-	envValue = lookupEnv(outputFormatEnv)
+	envValue := lookupEnv(outputFormatEnv)
 	return ResolveOutputFormat(value, set, envValue, stdoutTTY)
 }
 
@@ -200,7 +199,7 @@ func parseOutputFormat(value string, source string) (OutputFormat, error) {
 	case OutputFormatJSON:
 		return OutputFormatJSON, nil
 	default:
-		detail := fmt.Sprintf("%s must be pretty or json", source)
+		detail := source + " must be pretty or json"
 		return "", NewClassifiedError(
 			WrapValidation(fmt.Errorf("%w: %s", ErrInvalidOutputFormat, detail)),
 			errorCodeValidation,

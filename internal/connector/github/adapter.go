@@ -2246,7 +2246,7 @@ func (c *Connector) MergePullRequest(ctx context.Context, repository string, num
 func (c *Connector) RerunPullRequestChecks(ctx context.Context, issue connector.Issue, checks []connector.PullRequestCheck) error {
 	repo, _, ok := hydratedPullRequestRef(issue)
 	if !ok {
-		return fmt.Errorf("rerun github pull request checks: missing pull request repository")
+		return errors.New("rerun github pull request checks: missing pull request repository")
 	}
 	seenRuns := map[int64]struct{}{}
 	seenChecks := map[int64]struct{}{}

@@ -14,6 +14,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"time"
 
@@ -809,7 +810,7 @@ func hookOutputTail(output string, limit int) string {
 	if len(output) <= limit {
 		return output
 	}
-	return "[truncated to last " + fmt.Sprint(limit/1024) + " KiB]\n" + output[len(output)-limit:]
+	return "[truncated to last " + strconv.Itoa(limit/1024) + " KiB]\n" + output[len(output)-limit:]
 }
 
 func (l *LocalGit) runGit(ctx context.Context, args ...string) (string, error) {

@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -1027,7 +1028,7 @@ func onboardingDetentFreshnessPrettyLines(evidence onboardingDetentFreshnessEvid
 	lines := []string{
 		"",
 		"Detent source freshness:",
-		"source_checked: " + fmt.Sprint(evidence.SourceChecked),
+		"source_checked: " + strconv.FormatBool(evidence.SourceChecked),
 	}
 	if evidence.SourceRoot != "" {
 		lines = append(lines, "source_root: "+evidence.SourceRoot)
@@ -1039,9 +1040,9 @@ func onboardingDetentFreshnessPrettyLines(evidence onboardingDetentFreshnessEvid
 		lines = append(lines, "canonical_main: "+evidence.CanonicalMain)
 	}
 	lines = append(lines,
-		"source_matches_canonical: "+fmt.Sprint(evidence.SourceMatchesCanonical),
+		"source_matches_canonical: "+strconv.FormatBool(evidence.SourceMatchesCanonical),
 		"source_status: "+evidence.SourceStatus,
-		"binary_checked: "+fmt.Sprint(evidence.BinaryChecked),
+		"binary_checked: "+strconv.FormatBool(evidence.BinaryChecked),
 	)
 	if evidence.BinaryVersion != "" {
 		lines = append(lines, "binary_version: "+evidence.BinaryVersion)
@@ -1053,9 +1054,9 @@ func onboardingDetentFreshnessPrettyLines(evidence onboardingDetentFreshnessEvid
 		lines = append(lines, "binary_build_date: "+evidence.BinaryBuildDate)
 	}
 	lines = append(lines,
-		"binary_matches_canonical: "+fmt.Sprint(evidence.BinaryMatchesCanonical),
+		"binary_matches_canonical: "+strconv.FormatBool(evidence.BinaryMatchesCanonical),
 		"binary_status: "+evidence.BinaryStatus,
-		"phase2_recommendations_blocked: "+fmt.Sprint(evidence.Phase2RecommendationsBlocked),
+		"phase2_recommendations_blocked: "+strconv.FormatBool(evidence.Phase2RecommendationsBlocked),
 	)
 	if evidence.Phase2RecommendationsBlocked {
 		lines = append(lines, "phase2_stop: update/reinstall Detent or read docs from GitHub at the canonical head before Phase 2 recommendations.")

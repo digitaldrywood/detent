@@ -247,7 +247,7 @@ func decodeProjectSingleSelectField(fieldName string, field *projectOptionsField
 
 func decodeOptionalProjectSingleSelectField(fieldName string, field *projectOptionsFieldResponse) (*projectSingleSelectField, error) {
 	if field == nil {
-		return nil, nil
+		return nil, nil //nolint:nilnil // Missing optional project field is represented as a nil field.
 	}
 	decoded, err := decodeProjectSingleSelectField(fieldName, field)
 	if err != nil {

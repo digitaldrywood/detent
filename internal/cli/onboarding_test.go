@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"os/exec"
@@ -1134,7 +1135,7 @@ func TestOnboardingDraftAnswersCommandBlocksFailedRemoteDetentDocsWithoutLocalCh
 					return "", fmt.Errorf("unexpected gh args: %s", strings.Join(args, " "))
 				}
 				ghRefRequested = true
-				return "", fmt.Errorf("gh auth failed")
+				return "", errors.New("gh auth failed")
 			}
 			return onboardingTestCommandRunner(detentVersionJSON("local"))(ctx, name, args...)
 		}),

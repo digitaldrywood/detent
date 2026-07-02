@@ -451,7 +451,7 @@ func handleServerRequest(ctx context.Context, transport Transport, msg Message) 
 	} else {
 		response.Error = &RPCError{
 			Code:    methodNotFoundCode,
-			Message: fmt.Sprintf("unsupported server request: %s", msg.Method),
+			Message: "unsupported server request: " + msg.Method,
 		}
 	}
 

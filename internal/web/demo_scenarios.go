@@ -1036,7 +1036,7 @@ func demoLongContentSnapshot() telemetry.Snapshot {
 
 func demoDenseSnapshot() telemetry.Snapshot {
 	snapshot := demoHealthySnapshot()
-	for i := 0; i < 12; i++ {
+	for i := range 12 {
 		state := []string{"Backlog", "Todo", "In Progress", "Blocked", "Human Review", "Rework"}[i%6]
 		snapshot.BoardIssues = append(snapshot.BoardIssues, demoIssue(demoPrimaryProjectID, fmt.Sprintf("demo-dense-%02d", i), fmt.Sprintf("digitaldrywood/detent-core#54%02d", i), fmt.Sprintf("Dense lane card %02d exercises compact chips and overflow", i+1), state, i+1))
 	}

@@ -8,6 +8,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -549,7 +550,7 @@ func detentArchive(t *testing.T, content string) []byte {
 
 func archiveChecksum(content []byte) string {
 	sum := sha256.Sum256(content)
-	return fmt.Sprintf("%x", sum)
+	return hex.EncodeToString(sum[:])
 }
 
 func newInstallReleaseServer(tag string, archiveName string, archive []byte, checksum string) *httptest.Server {
