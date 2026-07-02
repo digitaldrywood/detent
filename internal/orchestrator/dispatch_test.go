@@ -608,6 +608,48 @@ func TestDispatchCandidatesClaimsDuplicateIssueWithinCycle(t *testing.T) {
 	}
 }
 
+func TestDispatchReadyIssuesPassesPriorAttemptToRunner(t *testing.T) {
+	t.Parallel()
+
+	cfg := normalizeConfig(Config{
+		MaxConcurrentAgents: 1,
+		ActiveStates:        []string{"Rework"},
+		TerminalStates:      []string{"Done"},
+	})
+	runner := newWorkerHostRunner()
+	orch := Orchestrator{
+		cfg:        cfg,
+		supervisor: newTestSupervisor(t, runner, cfg),
+		runResults: make(chan runpkg.Completion),
+	}
+	state := newState(cfg)
+	now := time.Date(2026, 7, 2, 22, 0, 0, 0, time.UTC)
+	issue := dispatchTestIssue("issue-prior-attempt", "Rework")
+	state.PriorAttempts[issue.ID] = runpkg.PriorAttempt{
+		Source: "auto_promote",
+		Reason: "validator_rework",
+		Validator: gate.ValidatorResult{
+			Submitted: true,
+			Verdict:   gate.ValidatorVerdictRework,
+			Findings: []gate.Finding{{
+				Severity: "p1",
+				Body:     "Missing handoff.",
+				Path:     "internal/runner/prompt.go",
+				Line:     44,
+			}},
+		},
+	}
+
+	orch.dispatchReadyIssues(t.Context(), &state, []connector.Issue{issue}, now)
+	request := receiveWorkerHostRunRequest(t, runner.started)
+	if request.PriorAttempt.Reason != "validator_rework" {
+		t.Fatalf("PriorAttempt = %#v, want validator_rework", request.PriorAttempt)
+	}
+	if len(request.PriorAttempt.Validator.Findings) != 1 || request.PriorAttempt.Validator.Findings[0].Line != 44 {
+		t.Fatalf("PriorAttempt.Validator.Findings = %#v", request.PriorAttempt.Validator.Findings)
+	}
+}
+
 func TestDispatchReadyIssuesRechecksStartTransitionStateCapacity(t *testing.T) {
 	t.Parallel()
 

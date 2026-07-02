@@ -1407,6 +1407,7 @@ func (o *Orchestrator) forceQuit(ctx context.Context, state *State, now time.Tim
 		delete(state.Claimed, issueID)
 		delete(state.Retry, issueID)
 		delete(state.BudgetRefusals, issueID)
+		delete(state.PriorAttempts, issueID)
 	}
 	o.markGlobalProjectIdle()
 	return err
@@ -1684,6 +1685,7 @@ func (o *Orchestrator) dispatchIssueWithOutcome(
 		Attempt:         attempt,
 		WorkAttemptID:   workAttemptID,
 		Mode:            runMode,
+		PriorAttempt:    state.PriorAttempts[issue.ID],
 		StartedAt:       now,
 		WorkerHost:      workerHost,
 		SelectorContext: o.selectorContext(),
@@ -2069,6 +2071,7 @@ func (o *Orchestrator) cleanupDrainedRun(ctx context.Context, state *State, issu
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
 }
 
 func (o *Orchestrator) completeLatestTerminalMergeWorkerResult(
@@ -2347,6 +2350,7 @@ func (o *Orchestrator) reworkExhaustedMergeWorker(
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
 	delete(state.Completed, issueID)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      completedAt,
@@ -2435,6 +2439,7 @@ func (o *Orchestrator) completePlanRunning(
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
 	recordStateEvent(state, telemetry.ActivityEvent{
 		At:      event.CompletedAt,
 		Event:   "plan_review_created",
@@ -2476,6 +2481,7 @@ func (o *Orchestrator) releaseClaim(state *State, issueID string) {
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
 }
 
 func (o *Orchestrator) completeTerminalRunning(
@@ -2495,6 +2501,7 @@ func (o *Orchestrator) completeTerminalRunning(
 	delete(state.Claimed, issueID)
 	delete(state.Retry, issueID)
 	delete(state.BudgetRefusals, issueID)
+	delete(state.PriorAttempts, issueID)
 	if err := o.abandonClaim(ctx, issueID); err != nil {
 		recordStateEvent(state, telemetry.ActivityEvent{
 			At:      cleanupEventAt(completedAt),

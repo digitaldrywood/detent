@@ -17,6 +17,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/config"
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
+	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/selector"
 	"github.com/digitaldrywood/detent/internal/store"
 	"github.com/digitaldrywood/detent/internal/telemetry"
@@ -1130,6 +1131,79 @@ func TestRunnerRunFinishesFailedSessionAndAfterRunOnCodexError(t *testing.T) {
 	}
 	if sessionStore.finished.FinalState != FinalStateFailed {
 		t.Fatalf("SessionFinish.FinalState = %q, want %q", sessionStore.finished.FinalState, FinalStateFailed)
+	}
+}
+
+func TestRunnerRunRecordsFailedOutputTailNote(t *testing.T) {
+	t.Parallel()
+
+	workspacePath := t.TempDir()
+	workspaceBackend := &fakeWorkspaceBackend{
+		info: workspace.Info{Path: workspacePath, Key: "issue-856", Branch: "detent/issue-856"},
+	}
+	oldOutput := strings.Repeat("old output ", 2048)
+	codexClient := &fakeCodexClient{
+		updates: []AgentUpdate{{
+			Type:   AgentUpdateMessageDelta,
+			ItemID: "msg-1",
+			Delta:  oldOutput + "useful failure tail",
+		}},
+		err: errors.New("codex failed"),
+	}
+	nowValue := time.Date(2026, 7, 2, 21, 50, 0, 0, time.UTC)
+	now := newFakeClock(nowValue, nowValue, nowValue, nowValue, nowValue)
+
+	runner, err := NewRunner(Dependencies{
+		Workflow:     config.Workflow{Config: config.Config{}},
+		Workspace:    workspaceBackend,
+		AgentBackend: codexClient,
+		Now:          now.Now,
+	})
+	if err != nil {
+		t.Fatalf("NewRunner() error = %v", err)
+	}
+
+	_, err = runner.Run(context.Background(), RunRequest{
+		Issue: connector.Issue{
+			ID:         "issue-856",
+			Identifier: "digitaldrywood/detent#856",
+			Title:      "Failure handoff",
+		},
+	})
+	if err == nil {
+		t.Fatal("Run() error = nil, want codex failure")
+	}
+
+	notesPath, err := notes.WorkspacePath(workspacePath)
+	if err != nil {
+		t.Fatalf("notes path: %v", err)
+	}
+	content, err := notes.Read(notesPath, notes.ReadOptions{})
+	if err != nil {
+		t.Fatalf("read notes: %v", err)
+	}
+	for _, want := range []string{
+		"## 2026-07-02T21:50:00Z - Failed run output tail",
+		"- final_state: failed",
+		"- error: codex failed",
+		"useful failure tail",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("notes missing %q:\n%s", want, content)
+		}
+	}
+	if strings.Contains(content, oldOutput) {
+		t.Fatalf("notes included unbounded old output")
+	}
+
+	prompt, err := BuildPrompt(config.Workflow{Prompt: "Retry prompt"}, connector.Issue{
+		Identifier: "digitaldrywood/detent#856",
+	}, PromptOptions{WorkspacePath: workspacePath})
+	if err != nil {
+		t.Fatalf("BuildPrompt() error = %v", err)
+	}
+	if !strings.Contains(prompt, "useful failure tail") {
+		t.Fatalf("retry prompt missing failure tail:\n%s", prompt)
 	}
 }
 

@@ -20,6 +20,11 @@ var (
 	diffStatRemovedPattern = regexp.MustCompile(`(\d+)\s+deletions?\(-\)`)
 )
 
+var detentHandoffDiffExcludes = []string{
+	".detent/lessons.md",
+	".detent/notes.md",
+}
+
 type DiffStat struct {
 	Files   int `json:"files"`
 	Added   int `json:"added"`
@@ -87,6 +92,9 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 		}
 		return Diff{}, fmt.Errorf("stat workspace path: %w", err)
 	}
+	if err := ensureGitInfoExcludes(ctx, workspacePath, detentHandoffDiffExcludes); err != nil {
+		return Diff{}, err
+	}
 
 	indexPath, err := gitIndexPath(ctx, workspacePath)
 	if err != nil {
@@ -126,6 +134,9 @@ func GitDiffFrom(ctx context.Context, workspacePath string, baseRef string, maxB
 }
 
 func gitDiffStatOutput(ctx context.Context, workspacePath string) (string, error) {
+	if err := ensureGitInfoExcludes(ctx, workspacePath, detentHandoffDiffExcludes); err != nil {
+		return "", err
+	}
 	indexPath, err := gitIndexPath(ctx, workspacePath)
 	if err != nil {
 		return "", err
@@ -219,6 +230,64 @@ func gitDiffOutputWithinLimit(ctx context.Context, workspacePath string, env []s
 		Output:   string(combined),
 		Err:      waitErr,
 	}
+}
+
+func ensureGitInfoExcludes(ctx context.Context, workspacePath string, patterns []string) error {
+	if len(patterns) == 0 {
+		return nil
+	}
+	output, err := runGitAt(ctx, workspacePath, "rev-parse", "--git-path", "info/exclude")
+	if err != nil {
+		return fmt.Errorf("git info exclude path: %w", err)
+	}
+	excludePath := strings.TrimSpace(output)
+	if excludePath == "" {
+		return errors.New("git info exclude path is empty")
+	}
+	if !filepath.IsAbs(excludePath) {
+		excludePath = filepath.Join(workspacePath, excludePath)
+	}
+	excludePath = filepath.Clean(excludePath)
+
+	content, err := os.ReadFile(excludePath)
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("read git info exclude: %w", err)
+	}
+	existing := map[string]struct{}{}
+	for _, line := range strings.Split(string(content), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		existing[line] = struct{}{}
+	}
+
+	var b strings.Builder
+	b.Write(content)
+	for _, pattern := range patterns {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if _, ok := existing[pattern]; ok {
+			continue
+		}
+		if b.Len() > 0 && !strings.HasSuffix(b.String(), "\n") {
+			b.WriteString("\n")
+		}
+		b.WriteString(pattern)
+		b.WriteString("\n")
+	}
+	if b.String() == string(content) {
+		return nil
+	}
+	if err := os.MkdirAll(filepath.Dir(excludePath), 0o700); err != nil {
+		return fmt.Errorf("create git info exclude directory: %w", err)
+	}
+	if err := os.WriteFile(excludePath, []byte(b.String()), 0o600); err != nil {
+		return fmt.Errorf("write git info exclude: %w", err)
+	}
+	return nil
 }
 
 func gitIndexPath(ctx context.Context, workspacePath string) (string, error) {

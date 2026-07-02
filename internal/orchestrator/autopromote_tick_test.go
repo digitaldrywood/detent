@@ -1245,6 +1245,85 @@ func TestTickAutoPromoteValidatorFailureBackoff(t *testing.T) {
 	waitForValidatorRequests(t, validator, 2)
 }
 
+func TestTickAutoPromoteRecordsValidatorReworkHandoff(t *testing.T) {
+	t.Parallel()
+
+	now := time.Date(2026, 6, 14, 11, 0, 0, 0, time.UTC)
+	oldReview := now.Add(-20 * time.Minute)
+	cfg := normalizeConfig(Config{
+		PollInterval:        time.Minute,
+		MaxConcurrentAgents: 1,
+		AutoPromote: AutoPromoteConfig{
+			Enabled:       true,
+			QuietDuration: 10 * time.Minute,
+			Gate: gate.Config{
+				Kind: gate.KindCommand,
+				Validator: gate.ValidatorConfig{
+					Enabled:  true,
+					MinScore: 0.8,
+					BlockOn:  []string{"p1"},
+				},
+			},
+		},
+		ActiveStates:   []string{"Todo", "In Progress", "Rework", "Merging"},
+		TerminalStates: []string{"Done", "Cancelled"},
+	})
+	issue := autoPromoteTickIssue("issue-validator-rework", []string{"enhancement"}, &connector.PullRequest{
+		Number:                 856,
+		URL:                    "https://github.test/digitaldrywood/detent/pull/856",
+		BranchName:             "detent/digitaldrywood_detent_856",
+		HeadSHA:                "head-validator-rework",
+		State:                  "OPEN",
+		CIStatus:               "success",
+		CodexReviewState:       "COMMENTED",
+		CodexReviewSubmittedAt: &oldReview,
+	})
+	tracker := &autoPromoteTickConnector{stateIssues: []connector.Issue{issue}}
+	validator := &autoPromoteTickValidator{
+		result: gate.ValidatorResult{
+			Submitted: true,
+			Verdict:   gate.ValidatorVerdictRework,
+			Score:     0.42,
+			Summary:   "Missing deterministic rework context.",
+			Findings: []gate.Finding{{
+				Severity: "p1",
+				Body:     "Prior validator finding is absent from rework prompt.",
+				Path:     "internal/runner/prompt.go",
+				Line:     44,
+			}},
+		},
+	}
+	orch := &Orchestrator{
+		cfg:       cfg,
+		connector: tracker,
+		validator: validator,
+		logger:    slog.New(slog.NewTextHandler(io.Discard, nil)),
+	}
+
+	state := newState(cfg)
+	orch.tick(context.Background(), &state, now)
+	waitForValidatorRequests(t, validator, 1)
+	waitForValidatorResult(t, orch, issue)
+	orch.tick(context.Background(), &state, now.Add(time.Second))
+
+	if got, want := tracker.updates, []autoPromoteTickUpdate{{issueID: "issue-validator-rework", state: "Rework"}}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("updates = %#v, want %#v", got, want)
+	}
+	handoff, ok := state.PriorAttempts[issue.ID]
+	if !ok {
+		t.Fatalf("PriorAttempts[%q] missing", issue.ID)
+	}
+	if handoff.Source != "auto_promote" || handoff.Reason != string(AutoPromoteReasonValidatorBlockedSeverity) {
+		t.Fatalf("handoff = %#v, want auto_promote validator_blocked_severity", handoff)
+	}
+	if handoff.Validator.Verdict != gate.ValidatorVerdictRework || handoff.Validator.Score != 0.42 {
+		t.Fatalf("handoff validator = %#v", handoff.Validator)
+	}
+	if len(handoff.Validator.Findings) != 1 || handoff.Validator.Findings[0].Path != "internal/runner/prompt.go" || handoff.Validator.Findings[0].Line != 44 {
+		t.Fatalf("handoff findings = %#v", handoff.Validator.Findings)
+	}
+}
+
 func TestRunDrainsInFlightValidatorStageOnShutdown(t *testing.T) {
 	t.Parallel()
 

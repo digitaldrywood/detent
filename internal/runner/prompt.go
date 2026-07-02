@@ -12,6 +12,7 @@ import (
 	"github.com/digitaldrywood/detent/internal/connector"
 	"github.com/digitaldrywood/detent/internal/gate"
 	"github.com/digitaldrywood/detent/internal/lessons"
+	"github.com/digitaldrywood/detent/internal/notes"
 	"github.com/digitaldrywood/detent/internal/pathsafe"
 	"github.com/digitaldrywood/detent/internal/skills"
 	"github.com/digitaldrywood/detent/internal/workspace"
@@ -42,6 +43,7 @@ type PromptOptions struct {
 	Branch          string
 	AutoBranch      *bool
 	AvailableSkills []skills.Skill
+	PriorAttempt    PriorAttempt
 }
 
 type ValidatorPromptOptions struct {
@@ -76,6 +78,12 @@ func BuildPrompt(workflow config.Workflow, issue connector.Issue, opts PromptOpt
 		return "", err
 	}
 
+	rendered, err = appendNotesBlock(rendered, opts.WorkspacePath)
+	if err != nil {
+		return "", err
+	}
+
+	rendered = appendPriorAttemptBlock(rendered, opts.PriorAttempt)
 	rendered = appendDeliverableBlock(rendered, workflow.Config, issue, opts.WorkspacePath)
 	rendered = appendBlockedHandoffBlock(rendered)
 	rendered = appendGateBlock(rendered, workflow.Config.Gate)
@@ -395,6 +403,96 @@ func appendLessonsBlock(prompt string, cfg config.Lessons, workspacePath string)
 	}
 
 	return strings.TrimRight(prompt, " \t\r\n") + "\n\n## Lessons from prior runs\n\n" + strings.Join(entries, "\n\n"), nil
+}
+
+func appendNotesBlock(prompt string, workspacePath string) (string, error) {
+	if strings.TrimSpace(workspacePath) == "" {
+		return prompt, nil
+	}
+
+	notesPath, err := notes.WorkspacePath(workspacePath)
+	if err != nil {
+		return "", err
+	}
+
+	content, err := notes.Read(notesPath, notes.ReadOptions{MaxBytes: notes.DefaultMaxBytes})
+	if err != nil {
+		content = ""
+	}
+	if strings.TrimSpace(content) == "" {
+		content = "No handoff notes have been recorded yet."
+	}
+
+	block := "## Handoff notes\n\n" +
+		"These notes are persisted from earlier Detent agents for this issue. They may be stale or wrong; verify important facts against the repository, issue, pull request, and current files before relying on them.\n\n" +
+		"Maintain `.detent/notes.md` as you work. Keep it concise: key files, architecture facts, validation commands and results, open items, blockers, and anything the next stage should verify.\n\n" +
+		content
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + block, nil
+}
+
+func appendPriorAttemptBlock(prompt string, prior PriorAttempt) string {
+	if !priorAttemptPresent(prior) {
+		return prompt
+	}
+
+	var b strings.Builder
+	b.WriteString("## Prior attempt handoff\n\n")
+	b.WriteString("Detent generated this from structured workflow state, not from agent cooperation. Verify it before relying on it.\n")
+	if source := strings.TrimSpace(prior.Source); source != "" {
+		b.WriteString("\n- source: ")
+		b.WriteString(source)
+	}
+	if reason := strings.TrimSpace(prior.Reason); reason != "" {
+		b.WriteString("\n- failing gate reason: ")
+		b.WriteString(reason)
+	}
+	if prior.Validator.Submitted {
+		b.WriteString("\n- validator verdict: ")
+		b.WriteString(strings.TrimSpace(prior.Validator.Verdict))
+		if prior.Validator.Score > 0 {
+			b.WriteString("\n- validator score: ")
+			b.WriteString(strconv.FormatFloat(prior.Validator.Score, 'f', 2, 64))
+		}
+		if summary := strings.TrimSpace(prior.Validator.Summary); summary != "" {
+			b.WriteString("\n- validator summary: ")
+			b.WriteString(summary)
+		}
+		if len(prior.Validator.Findings) > 0 {
+			b.WriteString("\n\nValidator findings:")
+			for _, finding := range prior.Validator.Findings {
+				b.WriteString("\n- ")
+				b.WriteString(priorAttemptFindingText(finding))
+			}
+		}
+	}
+
+	return strings.TrimRight(prompt, " \t\r\n") + "\n\n" + strings.TrimRight(b.String(), "\n")
+}
+
+func priorAttemptPresent(prior PriorAttempt) bool {
+	return strings.TrimSpace(prior.Source) != "" ||
+		strings.TrimSpace(prior.Reason) != "" ||
+		prior.Validator.Submitted
+}
+
+func priorAttemptFindingText(finding gate.Finding) string {
+	severity := strings.TrimSpace(finding.Severity)
+	if severity == "" {
+		severity = "unspecified"
+	}
+	body := strings.Join(strings.Fields(finding.Body), " ")
+	if body == "" {
+		body = "Finding"
+	}
+	if finding.Path != "" && finding.Line > 0 {
+		body = body + " (" + finding.Path + ":" + strconv.Itoa(finding.Line) + ")"
+	} else if finding.Path != "" {
+		body = body + " (" + finding.Path + ")"
+	}
+	if finding.URL != "" {
+		body = body + " " + finding.URL
+	}
+	return severity + ": " + body
 }
 
 func promptAssigns(cfg config.Config, issue connector.Issue, opts PromptOptions) map[string]any {
