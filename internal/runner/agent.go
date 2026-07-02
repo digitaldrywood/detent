@@ -148,9 +148,9 @@ func (r *Runner) UpdateWorkflow(workflow config.Workflow) {
 }
 
 type agentRuntime struct {
-	backends       map[string]AgentBackend
-	backendConfigs map[string]config.AgentBackend
-	router         *Router
+	backends     map[string]AgentBackend
+	backendKinds map[string]string
+	router       *Router
 }
 
 func newAgentRuntime(
@@ -160,12 +160,12 @@ func newAgentRuntime(
 ) (agentRuntime, error) {
 	backendConfigs := effectiveAgentBackendConfigs(workflow.Config)
 	backends := make(map[string]AgentBackend, len(backendConfigs))
-	configsByID := make(map[string]config.AgentBackend, len(backendConfigs))
+	backendKinds := make(map[string]string, len(backendConfigs))
 	for _, backendConfig := range backendConfigs {
 		if strings.TrimSpace(backendConfig.ID) == "" {
 			continue
 		}
-		configsByID[backendConfig.ID] = backendConfig
+		backendKinds[backendConfig.ID] = backendConfig.Kind
 		if factory != nil {
 			backend, err := factory.NewAgentBackend(backendConfig)
 			if err != nil {
@@ -195,9 +195,9 @@ func newAgentRuntime(
 	}
 
 	return agentRuntime{
-		backends:       backends,
-		backendConfigs: configsByID,
-		router:         router,
+		backends:     backends,
+		backendKinds: backendKinds,
+		router:       router,
 	}, nil
 }
 
@@ -233,24 +233,24 @@ func routesFromConfig(routes []config.AgentRoute) []Route {
 	return out
 }
 
-func (r agentRuntime) selectBackend(issue connector.Issue, ctx selector.Context) (RouteSelection, AgentBackend, config.AgentBackend, error) {
+func (r agentRuntime) selectBackend(issue connector.Issue, ctx selector.Context) (RouteSelection, AgentBackend, string, error) {
 	return r.selectBackendForRole(issue, ctx, RoleCode)
 }
 
-func (r agentRuntime) selectBackendForRole(issue connector.Issue, ctx selector.Context, role string) (RouteSelection, AgentBackend, config.AgentBackend, error) {
+func (r agentRuntime) selectBackendForRole(issue connector.Issue, ctx selector.Context, role string) (RouteSelection, AgentBackend, string, error) {
 	selection, err := r.router.RouteForRole(issue, ctx, role)
 	if err != nil {
-		return RouteSelection{}, nil, config.AgentBackend{}, err
+		return RouteSelection{}, nil, "", err
 	}
 	backend, ok := r.backends[selection.BackendID]
 	if !ok {
-		return RouteSelection{}, nil, config.AgentBackend{}, fmt.Errorf("%w: %s", ErrMissingAgentBackend, selection.BackendID)
+		return RouteSelection{}, nil, "", fmt.Errorf("%w: %s", ErrMissingAgentBackend, selection.BackendID)
 	}
-	backendConfig, ok := r.backendConfigs[selection.BackendID]
+	backendKind, ok := r.backendKinds[selection.BackendID]
 	if !ok {
-		return RouteSelection{}, nil, config.AgentBackend{}, fmt.Errorf("agent backend config not found: %s", selection.BackendID)
+		return RouteSelection{}, nil, "", fmt.Errorf("agent backend kind not found: %s", selection.BackendID)
 	}
-	return selection, backend, backendConfig, nil
+	return selection, backend, backendKind, nil
 }
 
 func cloneAgentBackends(in map[string]AgentBackend) map[string]AgentBackend {
@@ -280,139 +280,15 @@ func normalizeRunMode(mode string) string {
 	}
 }
 
-func turnSandboxPolicyForWorkspace(ctx context.Context, workspacePath string, threadSandbox string, policy any, logger *slog.Logger) any {
-	policyMap, ok := workspaceWriteSandboxPolicyMap(threadSandbox, policy)
-	if !ok {
-		return policy
-	}
+func extraWritableRootsForWorkspace(ctx context.Context, workspacePath string, logger *slog.Logger) []string {
 	roots, err := workspace.GitMetadataWritableRoots(ctx, workspacePath)
 	if err != nil {
 		if logger != nil {
 			logger.Warn("workspace git metadata writable roots unavailable", slog.String("workspace_path", workspacePath), slog.Any("error", err))
 		}
-		return policy
+		return nil
 	}
-	if len(roots) == 0 {
-		return policy
-	}
-	return mergeSandboxWritableRoots(policyMap, roots)
-}
-
-func workspaceWriteSandboxPolicyMap(threadSandbox string, policy any) (map[string]any, bool) {
-	policyMap, ok := sandboxPolicyMap(policy)
-	if !ok {
-		return nil, false
-	}
-	policyKind := strings.TrimSpace(policyType(policyMap))
-	if isWorkspaceWriteSandboxName(policyKind) {
-		return policyMap, true
-	}
-	if policyKind != "" || !isWorkspaceWriteSandboxName(threadSandbox) {
-		return nil, false
-	}
-	policyMap["type"] = "workspaceWrite"
-	return policyMap, true
-}
-
-func sandboxPolicyMap(policy any) (map[string]any, bool) {
-	if policy == nil {
-		return map[string]any{}, true
-	}
-	switch value := policy.(type) {
-	case map[string]any:
-		out := make(map[string]any, len(value))
-		maps.Copy(out, value)
-		return out, true
-	case json.RawMessage:
-		return decodeSandboxPolicyMap(value)
-	case []byte:
-		return decodeSandboxPolicyMap(value)
-	case string:
-		return decodeSandboxPolicyMap([]byte(value))
-	default:
-		raw, err := json.Marshal(value)
-		if err != nil {
-			return nil, false
-		}
-		return decodeSandboxPolicyMap(raw)
-	}
-}
-
-func decodeSandboxPolicyMap(raw []byte) (map[string]any, bool) {
-	var policy map[string]any
-	if err := json.Unmarshal(raw, &policy); err != nil {
-		return nil, false
-	}
-	if policy == nil {
-		policy = map[string]any{}
-	}
-	return policy, true
-}
-
-func policyType(policy map[string]any) string {
-	value, ok := policy["type"]
-	if !ok {
-		return ""
-	}
-	text, ok := value.(string)
-	if !ok {
-		return ""
-	}
-	return text
-}
-
-func isWorkspaceWriteSandboxName(value string) bool {
-	normalized := strings.ToLower(strings.TrimSpace(value))
-	normalized = strings.ReplaceAll(normalized, "_", "-")
-	return normalized == "workspace-write" || normalized == "workspacewrite"
-}
-
-func mergeSandboxWritableRoots(policy map[string]any, roots []string) map[string]any {
-	merged := []string{}
-	merged = appendPolicyStringSlice(merged, policy["writableRoots"])
-	merged = appendPolicyStringSlice(merged, policy["writable_roots"])
-	merged = appendUniqueStrings(merged, roots...)
-	if strings.TrimSpace(policyType(policy)) == "" {
-		policy["type"] = "workspaceWrite"
-	}
-	policy["writableRoots"] = merged
-	delete(policy, "writable_roots")
-	return policy
-}
-
-func appendPolicyStringSlice(out []string, value any) []string {
-	switch values := value.(type) {
-	case []string:
-		return appendUniqueStrings(out, values...)
-	case []any:
-		for _, item := range values {
-			text, ok := item.(string)
-			if !ok {
-				continue
-			}
-			out = appendUniqueStrings(out, text)
-		}
-	}
-	return out
-}
-
-func appendUniqueStrings(out []string, values ...string) []string {
-	seen := make(map[string]struct{}, len(out)+len(values))
-	for _, value := range out {
-		seen[value] = struct{}{}
-	}
-	for _, value := range values {
-		value = strings.TrimSpace(value)
-		if value == "" {
-			continue
-		}
-		if _, ok := seen[value]; ok {
-			continue
-		}
-		seen[value] = struct{}{}
-		out = append(out, value)
-	}
-	return out
+	return roots
 }
 
 func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
@@ -462,7 +338,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	if err != nil {
 		return RunResult{}, fmt.Errorf("build prompt: %w", err)
 	}
-	selection, backend, backendConfig, err := agentRuntime.selectBackend(req.Issue, selectorContext(req.SelectorContext, workflow))
+	selection, backend, backendKind, err := agentRuntime.selectBackend(req.Issue, selectorContext(req.SelectorContext, workflow))
 	if err != nil {
 		return RunResult{}, err
 	}
@@ -489,12 +365,10 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 	result := RunResult{FinalState: FinalStateCompleted}
 	progress := newAgentRunProgress()
 	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
-		Workspace:         info.Path,
-		Prompt:            prompt,
-		ApprovalPolicy:    stringOrMapValue(backendConfig.Options.ApprovalPolicy),
-		ThreadSandbox:     backendConfig.Options.ThreadSandbox,
-		TurnSandboxPolicy: turnSandboxPolicyForWorkspace(ctx, info.Path, backendConfig.Options.ThreadSandbox, backendConfig.Options.TurnSandboxPolicy, r.logger),
-		Model:             model,
+		Workspace:          info.Path,
+		Prompt:             prompt,
+		Model:              model,
+		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
 	}, func(update AgentUpdate) error {
 		r.logAgentUpdate(req.Issue, update)
 		applyAgentUpdate(&result, update)
@@ -529,7 +403,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("run agent turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1),
 		)
 	}
 
@@ -546,7 +420,7 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 			)
 			finishedAt := r.now().UTC()
 			result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1); err != nil {
+			if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1); err != nil {
 				return result, err
 			}
 			return result, nil
@@ -556,14 +430,14 @@ func (r *Runner) Run(ctx context.Context, req RunRequest) (RunResult, error) {
 		result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
 		return result, errors.Join(
 			fmt.Errorf("workspace diff stat: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1),
 		)
 	}
 
 	result.DiffStats = diffStatsFromWorkspace(diffStat)
 	finishedAt := r.now().UTC()
 	result.Tokens.RuntimeSeconds = runtimeSeconds(runStartedAt, finishedAt)
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendConfig.Kind, 1); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, result, model, backendKind, 1); err != nil {
 		return result, err
 	}
 	return result, nil
@@ -604,7 +478,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		WorkspacePath: info.Path,
 		Branch:        info.Branch,
 	})
-	selection, backend, backendConfig, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
+	selection, backend, backendKind, err := agentRuntime.selectBackendForRole(req.Issue, selectorContext(req.SelectorContext, workflow), RoleValidator)
 	if err != nil {
 		return gate.ValidatorResult{}, err
 	}
@@ -641,12 +515,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 	progress := newAgentRunProgress()
 	var output strings.Builder
 	turnResult, turnErr := backend.RunTurn(ctx, AgentTurnRequest{
-		Workspace:         info.Path,
-		Prompt:            prompt,
-		ApprovalPolicy:    stringOrMapValue(backendConfig.Options.ApprovalPolicy),
-		ThreadSandbox:     backendConfig.Options.ThreadSandbox,
-		TurnSandboxPolicy: turnSandboxPolicyForWorkspace(ctx, info.Path, backendConfig.Options.ThreadSandbox, backendConfig.Options.TurnSandboxPolicy, r.logger),
-		Model:             model,
+		Workspace:          info.Path,
+		Prompt:             prompt,
+		Model:              model,
+		ExtraWritableRoots: extraWritableRootsForWorkspace(ctx, info.Path, r.logger),
 	}, func(update AgentUpdate) error {
 		r.logAgentUpdate(req.Issue, update)
 		if update.Type == AgentUpdateMessageDelta {
@@ -683,7 +555,7 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("run validator turn: %w", turnErr),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendConfig.Kind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendKind, 1),
 		)
 	}
 
@@ -692,10 +564,10 @@ func (r *Runner) Validate(ctx context.Context, req ValidatorRequest) (gate.Valid
 		runResult.FinalState = FinalStateFailed
 		return gate.ValidatorResult{}, errors.Join(
 			fmt.Errorf("parse validator result: %w", err),
-			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendConfig.Kind, 1),
+			r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendKind, 1),
 		)
 	}
-	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendConfig.Kind, 1); err != nil {
+	if err := r.finishSession(ctx, sessionID, sessionStarted, req.Issue, startedAt, finishedAt, runResult, model, backendKind, 1); err != nil {
 		return gate.ValidatorResult{}, err
 	}
 	return validation, nil
@@ -1257,32 +1129,6 @@ func diffStatsFromWorkspace(stat workspace.DiffStat) DiffStats {
 		RemovedLines: stat.Removed,
 		Status:       status,
 	}
-}
-
-func stringOrMapValue(value config.StringOrMap) any {
-	if value.IsMap {
-		return cloneMap(value.Map)
-	}
-	if value.IsString {
-		return value.String
-	}
-	return nil
-}
-
-func cloneMap(value map[string]any) map[string]any {
-	if value == nil {
-		return nil
-	}
-
-	data, err := json.Marshal(value)
-	if err != nil {
-		return value
-	}
-	var cloned map[string]any
-	if err := json.Unmarshal(data, &cloned); err != nil {
-		return value
-	}
-	return cloned
 }
 
 func (r *Runner) logWorkerEvent(issue connector.Issue, event string, attrs ...any) {

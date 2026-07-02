@@ -187,7 +187,7 @@ func buildCodexAgentBackend(cfg workflowconfig.Codex) (runnerpkg.AgentBackend, e
 	if err != nil {
 		return nil, fmt.Errorf("create codex app-server: %w", err)
 	}
-	backend, err := codex.NewAgentBackend(client)
+	backend, err := codex.NewAgentBackend(client, codex.OptionsFromConfig(cfg))
 	if err != nil {
 		return nil, fmt.Errorf("create codex backend: %w", err)
 	}

@@ -13,14 +13,18 @@ import (
 var ErrMissingAppServer = errors.New("codex app-server is required")
 
 type AgentBackend struct {
-	client *AppServer
+	client  *AppServer
+	options Options
 }
 
-func NewAgentBackend(client *AppServer) (*AgentBackend, error) {
+func NewAgentBackend(client *AppServer, options Options) (*AgentBackend, error) {
 	if client == nil {
 		return nil, ErrMissingAppServer
 	}
-	return &AgentBackend{client: client}, nil
+	return &AgentBackend{
+		client:  client,
+		options: options,
+	}, nil
 }
 
 func (b *AgentBackend) RunTurn(
@@ -31,12 +35,10 @@ func (b *AgentBackend) RunTurn(
 	result, err := b.client.RunTurn(ctx, RunTurnRequest{
 		Workspace:         req.Workspace,
 		Prompt:            req.Prompt,
-		ApprovalPolicy:    req.ApprovalPolicy,
-		ThreadSandbox:     req.ThreadSandbox,
-		TurnSandboxPolicy: req.TurnSandboxPolicy,
+		ApprovalPolicy:    b.options.ApprovalPolicy,
+		ThreadSandbox:     b.options.ThreadSandbox,
+		TurnSandboxPolicy: turnSandboxPolicyForWorkspace(b.options.ThreadSandbox, b.options.TurnSandboxPolicy, req.ExtraWritableRoots),
 		Model:             req.Model,
-		ModelProvider:     req.ModelProvider,
-		ServiceTier:       req.ServiceTier,
 	}, func(update Update) error {
 		if onUpdate == nil {
 			return nil

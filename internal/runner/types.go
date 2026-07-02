@@ -41,14 +41,10 @@ type AgentBackend interface {
 }
 
 type AgentTurnRequest struct {
-	Workspace         string
-	Prompt            string
-	ApprovalPolicy    any
-	ThreadSandbox     string
-	TurnSandboxPolicy any
-	Model             string
-	ModelProvider     string
-	ServiceTier       string
+	Workspace          string
+	Prompt             string
+	Model              string
+	ExtraWritableRoots []string
 }
 
 type AgentTurnResult struct {
