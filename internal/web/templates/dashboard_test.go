@@ -3530,6 +3530,8 @@ func TestDashboardRendersBudgetHistoryAndDailyCap(t *testing.T) {
 func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 	t.Parallel()
 
+	dailyCap := 20.0
+	issueCap := 5.0
 	html := renderDashboard(t, templates.DashboardData{
 		Title:         "Detent",
 		ConnectorName: "github",
@@ -3560,6 +3562,11 @@ func TestDashboardRendersAccessibleHelpAffordances(t *testing.T) {
 				{
 					Issue: telemetry.Issue{Identifier: "DD-176"},
 				},
+			},
+			Budget: telemetry.Budget{
+				Enabled:        true,
+				PerDayMaxUSD:   &dailyCap,
+				PerIssueMaxUSD: &issueCap,
 			},
 		},
 	})

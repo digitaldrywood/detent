@@ -6084,6 +6084,106 @@ func TestServerDistinguishesNoBudgetSpendFromSpendQueryFailure(t *testing.T) {
 	}
 }
 
+func TestDashboardRendersDisabledBudgetAsSingleNote(t *testing.T) {
+	t.Parallel()
+
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 30, 14, 0, 0, 0, time.UTC),
+		RateLimits: &telemetry.RateLimits{
+			Primary: &telemetry.RateLimitBucket{Remaining: 95, Used: 5, Limit: 100},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	html := rec.Body.String()
+	if !strings.Contains(html, "Budget disabled - enable a daily cap in configuration.") {
+		t.Fatalf("dashboard missing compact disabled budget note:\n%s", html)
+	}
+	for _, forbidden := range []string{
+		"Spend today",
+		"Budget history",
+		"No budget history yet.",
+		"Projected",
+		"Daily cap",
+		"Issue cap",
+	} {
+		if strings.Contains(html, forbidden) {
+			t.Fatalf("dashboard rendered disabled budget detail %q:\n%s", forbidden, html)
+		}
+	}
+}
+
+func TestDashboardRendersRESTBudgetContributorsCollapsed(t *testing.T) {
+	t.Parallel()
+
+	resetAt := time.Date(2026, 6, 30, 15, 0, 0, 0, time.UTC)
+	deps := testDeps(t)
+	if err := deps.Hub.Publish(telemetry.Snapshot{
+		GeneratedAt: time.Date(2026, 6, 30, 14, 30, 0, 0, time.UTC),
+		RateLimits: &telemetry.RateLimits{
+			GitHubREST: &telemetry.RateLimitBucket{
+				Remaining: 4200,
+				Used:      800,
+				Limit:     5000,
+				ResetAt:   &resetAt,
+			},
+			RESTUsage: &telemetry.RESTUsage{
+				TotalRequests: 8,
+				Contributors: []telemetry.RESTUsageContributor{
+					{EndpointFamily: "pull requests", Count: 5, Remaining: 4200, Limit: 5000, LastStatus: 200},
+					{EndpointFamily: "check runs", Count: 3, Remaining: 4197, Limit: 5000, LastStatus: 200},
+				},
+			},
+		},
+	}); err != nil {
+		t.Fatalf("Publish() error = %v", err)
+	}
+	server, err := web.NewServer(web.Config{}, deps)
+	if err != nil {
+		t.Fatalf("NewServer() error = %v", err)
+	}
+
+	rec := httptest.NewRecorder()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	server.Handler().ServeHTTP(rec, req)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("dashboard status = %d, want 200; body = %s", rec.Code, rec.Body.String())
+	}
+	html := rec.Body.String()
+	for _, want := range []string{
+		"REST budget",
+		"4,200 / 5,000",
+		"30m 0s",
+		`data-preserve-details="rest-budget-contributors"`,
+		"Endpoint details",
+		"pull requests",
+		"check runs",
+	} {
+		if !strings.Contains(html, want) {
+			t.Fatalf("dashboard missing %q:\n%s", want, html)
+		}
+	}
+	detailsTag := regexp.MustCompile(`<details[^>]*data-preserve-details="rest-budget-contributors"[^>]*>`).FindString(html)
+	if detailsTag == "" {
+		t.Fatalf("dashboard missing REST budget details tag:\n%s", html)
+	}
+	if strings.Contains(detailsTag, " open") {
+		t.Fatalf("REST budget details rendered open by default: %s", detailsTag)
+	}
+}
+
 func TestServerAPIPreservesUnknownDiffStatus(t *testing.T) {
 	t.Parallel()
 
