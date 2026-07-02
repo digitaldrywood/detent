@@ -68,7 +68,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 		summary := AutoPromoteSummaryFromIssue(issue)
 		decision := EvaluateAutoPromote(issue, summary, cfg, now)
 		if decision.Reason == AutoPromoteReasonValidatorMissing {
-			validation, shouldComment, ok := o.validatorStageResult(issue)
+			validation, shouldComment, ok := o.validatorStageResult(ctx, issue)
 			if !ok {
 				o.startValidatorStage(ctx, issue, now)
 				o.logAutoPromoteDecision(issue, decision, "")
@@ -77,7 +77,7 @@ func (o *Orchestrator) autoPromoteHumanReviewIssues(
 			summary.Validator = validation
 			if shouldComment {
 				o.commentValidatorResult(ctx, issue, validation)
-				o.markValidatorResultCommented(issue)
+				o.markValidatorResultCommented(ctx, issue)
 			}
 			decision = EvaluateAutoPromote(issue, summary, cfg, now)
 		}
@@ -854,8 +854,11 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.
 		return
 	}
 
-	key := validatorStageKey(issue)
-	if key == "" {
+	identity := validatorStageIdentityForIssue(issue)
+	if identity.Key == "" {
+		return
+	}
+	if _, _, ok := o.validatorStageResult(ctx, issue); ok {
 		return
 	}
 
@@ -866,15 +869,32 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.
 	if o.validatorResults == nil {
 		o.validatorResults = map[string]validatorStageResult{}
 	}
-	if _, ok := o.validatorRuns[key]; ok {
+	if o.validatorFailures == nil {
+		o.validatorFailures = map[string]validatorStageFailure{}
+	}
+	if _, ok := o.validatorRuns[identity.Key]; ok {
 		o.validatorMu.Unlock()
 		return
 	}
-	if _, ok := o.validatorResults[key]; ok {
+	if _, ok := o.validatorResults[identity.Key]; ok {
 		o.validatorMu.Unlock()
 		return
 	}
-	o.validatorRuns[key] = struct{}{}
+	if failure, ok := o.validatorFailures[identity.Key]; ok && failure.NextRetryAt.After(now) {
+		o.validatorMu.Unlock()
+		if o.logger != nil {
+			o.logger.Debug(
+				"validator stage backoff active",
+				"issue_id", identity.IssueID,
+				"identifier", issue.Identifier,
+				"head_sha", identity.HeadSHA,
+				"retry_at", failure.NextRetryAt,
+				"attempt", failure.Attempt,
+			)
+		}
+		return
+	}
+	o.validatorRuns[identity.Key] = struct{}{}
 	o.validatorWG.Add(1)
 	o.validatorMu.Unlock()
 
@@ -888,51 +908,81 @@ func (o *Orchestrator) startValidatorStage(ctx context.Context, issue connector.
 			SelectorContext: selectorContext,
 		})
 
+		completedAt := o.clockNow().UTC()
 		o.validatorMu.Lock()
-		defer o.validatorMu.Unlock()
-		delete(o.validatorRuns, key)
 		if err != nil {
+			delete(o.validatorRuns, identity.Key)
+			attempt := o.validatorFailures[identity.Key].Attempt + 1
+			o.validatorFailures[identity.Key] = validatorStageFailure{
+				Attempt:     attempt,
+				NextRetryAt: completedAt.Add(validatorStageRetryDelay(o.cfg, attempt)),
+				Error:       err.Error(),
+			}
+			failure := o.validatorFailures[identity.Key]
+			o.validatorMu.Unlock()
 			if o.logger != nil {
 				o.logger.Warn(
 					"validator stage failed",
 					"issue_id", strings.TrimSpace(issue.ID),
 					"identifier", issue.Identifier,
+					"head_sha", identity.HeadSHA,
+					"retry_at", failure.NextRetryAt,
+					"attempt", attempt,
 					"error", err,
 				)
 			}
 			return
 		}
-		o.validatorResults[key] = validatorStageResult{Result: result}
+		o.validatorMu.Unlock()
+		o.recordValidatorVerdict(ctx, issue, identity, result, completedAt)
+
+		o.validatorMu.Lock()
+		delete(o.validatorRuns, identity.Key)
+		delete(o.validatorFailures, identity.Key)
+		o.validatorResults[identity.Key] = validatorStageResult{Result: result}
+		o.validatorMu.Unlock()
 	}()
 }
 
-func (o *Orchestrator) validatorStageResult(issue connector.Issue) (gate.ValidatorResult, bool, bool) {
-	key := validatorStageKey(issue)
-	if key == "" {
+func (o *Orchestrator) validatorStageResult(ctx context.Context, issue connector.Issue) (gate.ValidatorResult, bool, bool) {
+	identity := validatorStageIdentityForIssue(issue)
+	if identity.Key == "" {
 		return gate.ValidatorResult{}, false, false
 	}
 	o.validatorMu.Lock()
-	defer o.validatorMu.Unlock()
-	result, ok := o.validatorResults[key]
+	result, ok := o.validatorResults[identity.Key]
+	o.validatorMu.Unlock()
 	if !ok {
-		return gate.ValidatorResult{}, false, false
+		var loaded bool
+		result, loaded = o.loadValidatorVerdict(ctx, issue, identity)
+		if !loaded {
+			return gate.ValidatorResult{}, false, false
+		}
+		o.validatorMu.Lock()
+		if o.validatorResults == nil {
+			o.validatorResults = map[string]validatorStageResult{}
+		}
+		o.validatorResults[identity.Key] = result
+		o.validatorMu.Unlock()
 	}
 	return result.Result, !result.Commented, true
 }
 
-func (o *Orchestrator) markValidatorResultCommented(issue connector.Issue) {
-	key := validatorStageKey(issue)
-	if key == "" {
+func (o *Orchestrator) markValidatorResultCommented(ctx context.Context, issue connector.Issue) {
+	identity := validatorStageIdentityForIssue(issue)
+	if identity.Key == "" {
 		return
 	}
 	o.validatorMu.Lock()
-	defer o.validatorMu.Unlock()
-	result, ok := o.validatorResults[key]
+	result, ok := o.validatorResults[identity.Key]
 	if !ok {
+		o.validatorMu.Unlock()
 		return
 	}
 	result.Commented = true
-	o.validatorResults[key] = result
+	o.validatorResults[identity.Key] = result
+	o.validatorMu.Unlock()
+	o.markValidatorVerdictCommented(ctx, identity)
 }
 
 func (o *Orchestrator) commentValidatorResult(ctx context.Context, issue connector.Issue, result gate.ValidatorResult) {
@@ -1005,10 +1055,16 @@ func pullRequestNumber(issue connector.Issue) int {
 	return 0
 }
 
-func validatorStageKey(issue connector.Issue) string {
+type validatorStageIdentity struct {
+	Key     string
+	IssueID string
+	HeadSHA string
+}
+
+func validatorStageIdentityForIssue(issue connector.Issue) validatorStageIdentity {
 	issueID := strings.TrimSpace(issue.ID)
 	if issueID == "" {
-		return ""
+		return validatorStageIdentity{}
 	}
 	headSHA := ""
 	if issue.PullRequest != nil {
@@ -1020,7 +1076,166 @@ func validatorStageKey(issue connector.Issue) string {
 	if headSHA == "" {
 		headSHA = strings.TrimSpace(issue.BranchName)
 	}
-	return issueID + ":" + headSHA
+	if headSHA == "" {
+		return validatorStageIdentity{}
+	}
+	return validatorStageIdentity{
+		Key:     issueID + ":" + headSHA,
+		IssueID: issueID,
+		HeadSHA: headSHA,
+	}
+}
+
+func validatorStageRetryDelay(cfg Config, attempt int) time.Duration {
+	if attempt < 1 {
+		attempt = 1
+	}
+	maxRetryBackoff := cfg.MaxRetryBackoff
+	if maxRetryBackoff <= 0 {
+		maxRetryBackoff = defaultMaxRetryBackoff
+	}
+	failureRetryBaseDelay := cfg.FailureRetryBaseDelay
+	if failureRetryBaseDelay <= 0 {
+		failureRetryBaseDelay = defaultFailureRetryBaseDelay
+	}
+	delay := failureRetryBaseDelay
+	for range attempt - 1 {
+		if delay >= maxRetryBackoff || delay > maxRetryBackoff/2 {
+			return maxRetryBackoff
+		}
+		delay *= 2
+	}
+	if delay > maxRetryBackoff {
+		return maxRetryBackoff
+	}
+	return delay
+}
+
+func (o *Orchestrator) loadValidatorVerdict(ctx context.Context, issue connector.Issue, identity validatorStageIdentity) (validatorStageResult, bool) {
+	if o.validatorMemo == nil {
+		return validatorStageResult{}, false
+	}
+	verdict, err := o.validatorMemo.ValidatorVerdict(ctx, store.ValidatorVerdictKey{
+		ProjectID: o.workflowMetricsProjectID(),
+		IssueID:   identity.IssueID,
+		HeadSHA:   identity.HeadSHA,
+	})
+	if err != nil {
+		if errors.Is(err, store.ErrNotFound) {
+			return validatorStageResult{}, false
+		}
+		if o.logger != nil {
+			o.logger.Warn(
+				"validator verdict lookup failed",
+				"issue_id", identity.IssueID,
+				"identifier", issue.Identifier,
+				"head_sha", identity.HeadSHA,
+				"error", err,
+			)
+		}
+		return validatorStageResult{}, false
+	}
+	return validatorStageResult{
+		Result: gate.ValidatorResult{
+			Submitted: verdict.Submitted,
+			Verdict:   verdict.Verdict,
+			Score:     verdict.Score,
+			Summary:   verdict.Summary,
+			Findings:  gateFindingsFromStore(verdict.Findings),
+		},
+		Commented: verdict.Commented,
+	}, true
+}
+
+func (o *Orchestrator) recordValidatorVerdict(
+	ctx context.Context,
+	issue connector.Issue,
+	identity validatorStageIdentity,
+	result gate.ValidatorResult,
+	recordedAt time.Time,
+) {
+	if o.validatorMemo == nil {
+		return
+	}
+	if recordedAt.IsZero() {
+		recordedAt = o.clockNow().UTC()
+	}
+	if err := o.validatorMemo.RecordValidatorVerdict(ctx, store.ValidatorVerdict{
+		ProjectID:  o.workflowMetricsProjectID(),
+		IssueID:    identity.IssueID,
+		HeadSHA:    identity.HeadSHA,
+		Identifier: issue.Identifier,
+		IssueURL:   issue.URL,
+		PRNumber:   workflowMetricsPRNumber(issue),
+		Submitted:  result.Submitted,
+		Verdict:    result.Verdict,
+		Score:      result.Score,
+		Summary:    result.Summary,
+		Findings:   storeFindingsFromGate(result.Findings),
+		RecordedAt: recordedAt,
+		UpdatedAt:  recordedAt,
+	}); err != nil && o.logger != nil {
+		o.logger.Warn(
+			"validator verdict persistence failed",
+			"issue_id", identity.IssueID,
+			"identifier", issue.Identifier,
+			"head_sha", identity.HeadSHA,
+			"error", err,
+		)
+	}
+}
+
+func (o *Orchestrator) markValidatorVerdictCommented(ctx context.Context, identity validatorStageIdentity) {
+	if o.validatorMemo == nil {
+		return
+	}
+	if err := o.validatorMemo.MarkValidatorVerdictCommented(ctx, store.ValidatorVerdictKey{
+		ProjectID: o.workflowMetricsProjectID(),
+		IssueID:   identity.IssueID,
+		HeadSHA:   identity.HeadSHA,
+	}, o.clockNow().UTC()); err != nil && !errors.Is(err, store.ErrNotFound) && o.logger != nil {
+		o.logger.Warn(
+			"validator verdict comment marker failed",
+			"issue_id", identity.IssueID,
+			"head_sha", identity.HeadSHA,
+			"error", err,
+		)
+	}
+}
+
+func (o *Orchestrator) clockNow() time.Time {
+	if o != nil && o.now != nil {
+		return o.now()
+	}
+	return time.Now()
+}
+
+func storeFindingsFromGate(findings []gate.Finding) []store.ValidatorFinding {
+	out := make([]store.ValidatorFinding, 0, len(findings))
+	for _, finding := range findings {
+		out = append(out, store.ValidatorFinding{
+			Severity: finding.Severity,
+			Body:     finding.Body,
+			URL:      finding.URL,
+			Path:     finding.Path,
+			Line:     finding.Line,
+		})
+	}
+	return out
+}
+
+func gateFindingsFromStore(findings []store.ValidatorFinding) []gate.Finding {
+	out := make([]gate.Finding, 0, len(findings))
+	for _, finding := range findings {
+		out = append(out, gate.Finding{
+			Severity: finding.Severity,
+			Body:     finding.Body,
+			URL:      finding.URL,
+			Path:     finding.Path,
+			Line:     finding.Line,
+		})
+	}
+	return out
 }
 
 func AutoPromoteSummaryFromIssue(issue connector.Issue) AutoPromoteSummary {

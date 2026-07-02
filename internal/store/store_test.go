@@ -42,8 +42,8 @@ func TestOpenSQLiteAppliesMigrationsAndPragmas(t *testing.T) {
 	if got := queryInt(t, sqliteBackend.db, "PRAGMA busy_timeout"); got != 5000 {
 		t.Fatalf("busy_timeout = %d, want 5000", got)
 	}
-	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions')"); got != 7 {
-		t.Fatalf("migrated table count = %d, want 7", got)
+	if got := queryInt(t, sqliteBackend.db, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'table' AND name IN ('detent_runs', 'codex_sessions', 'fair_share_usage', 'usage_events', 'workflow_phase_events', 'work_attempts', 'scheduler_decisions', 'validator_verdicts')"); got != 8 {
+		t.Fatalf("migrated table count = %d, want 8", got)
 	}
 }
 
@@ -99,7 +99,7 @@ func TestRuntimeEvidenceReportsSQLiteTelemetry(t *testing.T) {
 	if evidence.Backend != BackendSQLite || evidence.Path != dbPath || !evidence.Healthy {
 		t.Fatalf("RuntimeEvidence() = %#v, want healthy sqlite evidence for %q", evidence, dbPath)
 	}
-	if evidence.MigrationVersion < 6 || evidence.MigrationStatus == "" {
+	if evidence.MigrationVersion < 7 || evidence.MigrationStatus == "" {
 		t.Fatalf("migration evidence = version %d status %q, want applied version", evidence.MigrationVersion, evidence.MigrationStatus)
 	}
 	if got := runtimeEvidenceTableCount(evidence.Tables, "usage_events"); got != 1 {
@@ -116,6 +116,82 @@ func TestRuntimeEvidenceReportsSQLiteTelemetry(t *testing.T) {
 	}
 	if evidence.WorkflowPhaseEvents.NewestFinishedAt == nil || !evidence.WorkflowPhaseEvents.NewestFinishedAt.Equal(finishedAt) {
 		t.Fatalf("NewestFinishedAt = %#v, want %s", evidence.WorkflowPhaseEvents.NewestFinishedAt, finishedAt)
+	}
+}
+
+func TestSQLiteValidatorVerdictRoundTrip(t *testing.T) {
+	t.Parallel()
+
+	ctx := context.Background()
+	backend, err := Open(ctx, Config{
+		Backend: BackendSQLite,
+		Path:    filepath.Join(t.TempDir(), "detent.db"),
+	})
+	if err != nil {
+		t.Fatalf("Open() error = %v", err)
+	}
+	t.Cleanup(func() {
+		if err := backend.Close(); err != nil {
+			t.Fatalf("Close() error = %v", err)
+		}
+	})
+
+	recordedAt := time.Date(2026, 7, 2, 14, 0, 0, 0, time.UTC)
+	key := ValidatorVerdictKey{ProjectID: "detent", IssueID: "issue-858", HeadSHA: "abc123"}
+	if err := backend.RecordValidatorVerdict(ctx, ValidatorVerdict{
+		ProjectID:  key.ProjectID,
+		IssueID:    key.IssueID,
+		HeadSHA:    key.HeadSHA,
+		Identifier: "digitaldrywood/detent#858",
+		IssueURL:   "https://github.test/digitaldrywood/detent/issues/858",
+		PRNumber:   int64Pointer(875),
+		Submitted:  true,
+		Verdict:    "pass",
+		Score:      0.93,
+		Summary:    "acceptance criteria pass",
+		Findings: []ValidatorFinding{{
+			Severity: "p2",
+			Body:     "minor follow-up",
+			URL:      "https://github.test/digitaldrywood/detent/pull/875#discussion_r1",
+			Path:     "internal/orchestrator/autopromote_tick.go",
+			Line:     42,
+		}},
+		RecordedAt: recordedAt,
+		UpdatedAt:  recordedAt,
+	}); err != nil {
+		t.Fatalf("RecordValidatorVerdict() error = %v", err)
+	}
+
+	got, err := backend.ValidatorVerdict(ctx, key)
+	if err != nil {
+		t.Fatalf("ValidatorVerdict() error = %v", err)
+	}
+	if got.ProjectID != key.ProjectID || got.IssueID != key.IssueID || got.HeadSHA != key.HeadSHA {
+		t.Fatalf("verdict key = %#v, want %#v", got, key)
+	}
+	if !got.Submitted || got.Verdict != "pass" || got.Score != 0.93 || got.Summary != "acceptance criteria pass" {
+		t.Fatalf("verdict result = %#v, want submitted pass score", got)
+	}
+	if got.PRNumber == nil || *got.PRNumber != 875 {
+		t.Fatalf("PRNumber = %#v, want 875", got.PRNumber)
+	}
+	if len(got.Findings) != 1 || got.Findings[0].Severity != "p2" || got.Findings[0].Path != "internal/orchestrator/autopromote_tick.go" {
+		t.Fatalf("Findings = %#v, want persisted finding", got.Findings)
+	}
+	if got.Commented {
+		t.Fatalf("Commented = true, want false")
+	}
+
+	commentedAt := recordedAt.Add(time.Minute)
+	if err := backend.MarkValidatorVerdictCommented(ctx, key, commentedAt); err != nil {
+		t.Fatalf("MarkValidatorVerdictCommented() error = %v", err)
+	}
+	got, err = backend.ValidatorVerdict(ctx, key)
+	if err != nil {
+		t.Fatalf("ValidatorVerdict() after commented error = %v", err)
+	}
+	if !got.Commented || !got.UpdatedAt.Equal(commentedAt) {
+		t.Fatalf("commented verdict = %#v, want commented at %s", got, commentedAt)
 	}
 }
 
@@ -1608,6 +1684,10 @@ func assertUsageRows(t *testing.T, got []UsageReportRow, want []UsageReportRow) 
 
 func dateOnly(year int, month time.Month, day int) time.Time {
 	return time.Date(year, month, day, 0, 0, 0, 0, time.UTC)
+}
+
+func int64Pointer(value int64) *int64 {
+	return &value
 }
 
 func queryString(t *testing.T, db *sql.DB, query string) string {

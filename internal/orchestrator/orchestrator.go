@@ -99,7 +99,9 @@ type Dependencies struct {
 	WorkspaceReaper    WorkspaceReaper
 	WorkflowMetrics    WorkflowMetricsRecorder
 	WorkAttempts       store.WorkAttemptStore
+	ValidatorMemo      store.ValidatorMemoStore
 	GlobalDispatchGate scheduler.ProjectDispatchGate
+	Now                func() time.Time
 	Logger             *slog.Logger
 }
 
@@ -126,6 +128,9 @@ type Orchestrator struct {
 	validatorWG        sync.WaitGroup
 	validatorRuns      map[string]struct{}
 	validatorResults   map[string]validatorStageResult
+	validatorFailures  map[string]validatorStageFailure
+	validatorMemo      store.ValidatorMemoStore
+	now                func() time.Time
 	stateRequests      chan stateRequest
 	drainRequests      chan drainRequest
 	forceRequests      chan forceRequest
@@ -140,6 +145,12 @@ type Orchestrator struct {
 type validatorStageResult struct {
 	Result    gate.ValidatorResult
 	Commented bool
+}
+
+type validatorStageFailure struct {
+	Attempt     int
+	NextRetryAt time.Time
+	Error       string
 }
 
 type stateRequest struct {
@@ -254,10 +265,21 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 	if logger == nil {
 		logger = slog.Default()
 	}
+	now := deps.Now
+	if now == nil {
+		now = time.Now
+	}
+	validatorMemo := deps.ValidatorMemo
+	if validatorMemo == nil {
+		if candidate, ok := deps.WorkflowMetrics.(store.ValidatorMemoStore); ok {
+			validatorMemo = candidate
+		}
+	}
 
 	supervisor, err := runpkg.NewSupervisor(runner, runpkg.SupervisorConfig{
 		MaxRetryBackoff:       cfg.MaxRetryBackoff,
 		FailureRetryBaseDelay: cfg.FailureRetryBaseDelay,
+		Now:                   now,
 		Logger:                logger,
 	})
 	if err != nil {
@@ -276,6 +298,9 @@ func New(cfg Config, deps Dependencies) (*Orchestrator, error) {
 		globalDispatchGate: deps.GlobalDispatchGate,
 		validatorRuns:      map[string]struct{}{},
 		validatorResults:   map[string]validatorStageResult{},
+		validatorFailures:  map[string]validatorStageFailure{},
+		validatorMemo:      validatorMemo,
+		now:                now,
 		stateRequests:      make(chan stateRequest),
 		drainRequests:      make(chan drainRequest),
 		forceRequests:      make(chan forceRequest),

@@ -522,3 +522,49 @@ FROM scheduler_decisions
 WHERE sqlc.arg(filter_project_id) = '' OR project_id = sqlc.arg(filter_project_id)
 ORDER BY decision_at DESC, id DESC
 LIMIT sqlc.arg(limit);
+
+-- name: UpsertValidatorVerdict :one
+INSERT INTO validator_verdicts (
+  project_id,
+  issue_id,
+  head_sha,
+  identifier,
+  issue_url,
+  pr_number,
+  submitted,
+  verdict,
+  score,
+  summary,
+  findings_json,
+  commented,
+  recorded_at,
+  updated_at
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+ON CONFLICT(project_id, issue_id, head_sha) DO UPDATE SET
+  identifier = excluded.identifier,
+  issue_url = excluded.issue_url,
+  pr_number = excluded.pr_number,
+  submitted = excluded.submitted,
+  verdict = excluded.verdict,
+  score = excluded.score,
+  summary = excluded.summary,
+  findings_json = excluded.findings_json,
+  commented = excluded.commented,
+  recorded_at = excluded.recorded_at,
+  updated_at = excluded.updated_at
+RETURNING *;
+
+-- name: GetValidatorVerdict :one
+SELECT *
+FROM validator_verdicts
+WHERE project_id = ?
+  AND issue_id = ?
+  AND head_sha = ?;
+
+-- name: MarkValidatorVerdictCommented :execrows
+UPDATE validator_verdicts
+SET commented = 1,
+    updated_at = ?
+WHERE project_id = ?
+  AND issue_id = ?
+  AND head_sha = ?;

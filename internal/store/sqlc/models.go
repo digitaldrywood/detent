@@ -89,6 +89,24 @@ type UsageEvent struct {
 	CostUsd        float64        `json:"cost_usd"`
 }
 
+type ValidatorVerdict struct {
+	ID           int64          `json:"id"`
+	ProjectID    string         `json:"project_id"`
+	IssueID      string         `json:"issue_id"`
+	HeadSha      string         `json:"head_sha"`
+	Identifier   sql.NullString `json:"identifier"`
+	IssueURL     sql.NullString `json:"issue_url"`
+	PrNumber     sql.NullInt64  `json:"pr_number"`
+	Submitted    int64          `json:"submitted"`
+	Verdict      string         `json:"verdict"`
+	Score        float64        `json:"score"`
+	Summary      sql.NullString `json:"summary"`
+	FindingsJson string         `json:"findings_json"`
+	Commented    int64          `json:"commented"`
+	RecordedAt   string         `json:"recorded_at"`
+	UpdatedAt    string         `json:"updated_at"`
+}
+
 type WorkAttempt struct {
 	ID                     int64          `json:"id"`
 	ProjectID              string         `json:"project_id"`

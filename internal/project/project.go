@@ -89,6 +89,7 @@ type Dependencies struct {
 	GlobalDispatchGate     scheduler.ProjectDispatchGate
 	WorkflowMetrics        orchestrator.WorkflowMetricsRecorder
 	WorkAttempts           store.WorkAttemptStore
+	ValidatorMemo          store.ValidatorMemoStore
 	Events                 *hub.Hub[Event]
 	Logger                 *slog.Logger
 	GitHubToken            string
@@ -179,6 +180,7 @@ func New(cfg Config, deps Dependencies) (*Project, error) {
 		GlobalDispatchGate: deps.GlobalDispatchGate,
 		WorkflowMetrics:    deps.WorkflowMetrics,
 		WorkAttempts:       deps.WorkAttempts,
+		ValidatorMemo:      deps.ValidatorMemo,
 		Logger:             logger,
 	}
 	orch, err := orchestratorFactory(orchConfig, orchDeps)
