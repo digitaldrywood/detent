@@ -1946,6 +1946,65 @@ awk 'NF {last=$0} END {exit last == "MUTATION_CONFIRMED=true" ? 0 : 1}' "$ONBOAR
      approval_label: <approval-label>
    ```
 
+   The generated web-onboarding workflow leaves Codex as the default backend.
+   To route a specific role to Claude Code, add an explicit `agents:` block that
+   defines every referenced backend and keeps a Codex default route:
+
+   ```yaml
+   agents:
+     backends:
+       - id: codex-default
+         kind: codex
+         protocol: app-server
+         command: codex app-server
+         options:
+           approval_policy: never
+           thread_sandbox: workspace-write
+           turn_sandbox_policy:
+             type: workspaceWrite
+             networkAccess: true
+       - id: claude-worker
+         kind: claude_code
+         protocol: headless
+         command: env CLAUDE_CONFIG_DIR=/var/lib/detent/claude/worker-1 claude
+         options:
+           permission_mode: bypassPermissions
+           allowed_tools:
+             - Bash
+             - Edit
+           disallowed_tools:
+             - WebFetch
+           extra_args:
+             - --no-session-persistence
+     routes:
+       - name: validator-claude
+         role: validator
+         backend: claude-worker
+         model: fable
+       - name: default
+         backend: codex-default
+         model: gpt-5-codex
+         default: true
+   ```
+
+   Claude Code auth is ambient. A logged-in `claude` CLI uses subscription
+   limits; `ANTHROPIC_API_KEY` uses API billing and takes precedence when both
+   are present. Detent stores no Anthropic keys. Subscription limits in
+   headless `claude -p` runs are opaque, with no in-band warning before 5-hour
+   window or weekly caps; a cap hit only appears as an error result. Use
+   subscription auth for bounded or bursty personal operation and
+   `ANTHROPIC_API_KEY` for sustained or parallel fleet runs. For fleet
+   isolation, set a distinct `CLAUDE_CONFIG_DIR` per worker and use
+   `--no-session-persistence` through `extra_args` when session continuity is
+   not needed. Codex uses an OS-level `workspace-write` sandbox; Claude Code
+   runs with `permission_mode: bypassPermissions` inside the Detent git
+   worktree, so the worktree bounds the blast radius and
+   `allowed_tools`/`disallowed_tools` tighten the role. For local
+   Anthropic-compatible inference, point `ANTHROPIC_BASE_URL` at a local server
+   such as Ollama and use the same `claude_code` backend; see
+   [Local Models With Codex And Ollama](local-models-ollama.md) for model and
+   context-window guidance.
+
 6. **Set dispatch ordering, review policy, dependency waiting policy, and
    concurrency.** Keep `Merging: 1`. Use the dispatch label ordering, review
    policy, and dependency policy selected by the human. Verify:

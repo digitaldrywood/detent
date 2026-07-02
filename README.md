@@ -284,9 +284,10 @@ important question is how that mode is metered.
   over, and overages move to usage credits at standard API rates when enabled.
 
 For an orchestrator that runs agents around the clock in parallel, the Codex
-subscription is the one that makes the economics work. Codex is the agent
-backend Detent ships; the `agents.backends` config keeps the door open for
-others as their automation terms allow.
+subscription is the default that makes the economics work. Detent still supports
+explicit backend routing, including Claude Code, so operators can choose a
+backend per role when the limits, auth mode, and isolation trade-offs fit that
+work.
 
 ## Install
 
@@ -424,6 +425,10 @@ Requirements:
   drives every agent through this app-server. Verify with `codex --version`.
   To route selected work to a local Ollama model without Detent code changes,
   see [Local Models With Codex And Ollama](docs/local-models-ollama.md).
+- The Claude Code CLI installed and signed in when routing selected roles to
+  `claude_code`. Verify with `claude --version`. Detent does not store Claude
+  credentials; it uses the ambient `claude` CLI login or the
+  `ANTHROPIC_API_KEY` environment visible to the Detent worker.
 - The [GitHub CLI](https://cli.github.com) (`gh`) for authentication and GitHub
   lookups (optional but assumed throughout this guide).
 - A GitHub token for the selected tracker mode. ProjectV2 mode usually needs
@@ -1919,12 +1924,17 @@ agents:
 ```
 
 For explicit backend profiles, configure `agents.backends` and route to those
-ids. Today the shipped backend kind is `codex` with `protocol: app-server`.
-Backend `options` use the same runtime fields as the top-level `codex` block,
-including `shell`, `approval_policy`, `thread_sandbox`,
-`turn_sandbox_policy`, `turn_timeout_ms`, and `read_timeout_ms`. When a backend
-needs different Codex configuration, launch `codex app-server` with a dedicated
-`CODEX_HOME` or `-c` overrides.
+ids. Supported backend kinds are `codex` with `protocol: app-server` and
+`claude_code` with `protocol: headless`. Codex backend `options` use the same
+runtime fields as the top-level `codex` block, including `shell`,
+`approval_policy`, `thread_sandbox`, `turn_sandbox_policy`, `turn_timeout_ms`,
+`read_timeout_ms`, and `stall_timeout_ms`. Claude Code backend `options`
+include `permission_mode`, `allowed_tools`, `disallowed_tools`,
+`include_partial_messages`, `turn_timeout_ms`, `stall_timeout_ms`, `shell`, and
+`extra_args`. When a Codex backend needs different configuration, launch
+`codex app-server` with a dedicated `CODEX_HOME` or `-c` overrides. When a
+Claude Code backend needs isolated state, launch `claude` with a dedicated
+`CLAUDE_CONFIG_DIR`.
 
 ```yaml
 agents:
@@ -1937,11 +1947,24 @@ agents:
       kind: codex
       protocol: app-server
       command: env CODEX_HOME=/opt/detent/codex-high codex app-server
+    - id: claude-worker
+      kind: claude_code
+      protocol: headless
+      command: env CLAUDE_CONFIG_DIR=/var/lib/detent/claude/worker-1 claude
+      options:
+        permission_mode: bypassPermissions
+        allowed_tools:
+          - Bash
+          - Edit
+        disallowed_tools:
+          - WebFetch
+        extra_args:
+          - --no-session-persistence
   routes:
     - name: validator
       role: validator
-      backend: codex-high
-      model: gpt-5-validator
+      backend: claude-worker
+      model: fable
     - name: high-label
       backend: codex-high
       model: gpt-5-codex-high
@@ -1954,6 +1977,40 @@ agents:
       model: gpt-5-codex
       default: true
 ```
+
+Claude Code auth is ambient and the backend is auth-agnostic. A logged-in
+`claude` CLI uses the operator's subscription login. Setting
+`ANTHROPIC_API_KEY` in the Detent worker environment switches the same backend
+to API billing, and that key takes precedence over the subscription login.
+Detent stores no Anthropic keys, mirroring the way Codex credentials stay
+outside Detent.
+
+Claude Pro/Max subscription limits are opaque in headless `claude -p` mode.
+The 5-hour windows and weekly caps do not expose an in-band "limit approaching"
+signal; a cap hit appears only as an error result from the turn. Use
+subscription auth for bounded or bursty personal operation. Use
+`ANTHROPIC_API_KEY` for sustained or parallel fleet runs where predictable
+billing and capacity matter.
+
+For fleet isolation, set a distinct `CLAUDE_CONFIG_DIR` per worker process so
+concurrent `claude` invocations do not race on config or session state. Add
+`--no-session-persistence` through `options.extra_args` when workers do not
+need Claude Code session continuity; otherwise sessions accumulate under
+`~/.claude/projects/`.
+
+The sandbox model differs by backend. Codex runs turns under an OS-level
+`workspace-write` sandbox. Claude Code headless runs inside Detent's isolated
+git worktree with `permission_mode: bypassPermissions`; the worktree bounds the
+blast radius, and `allowed_tools` plus `disallowed_tools` are the tightening
+mechanism. Choose backend routes with that trade-off in mind, especially for
+roles that can execute shell commands or edit files.
+
+For local Anthropic-compatible inference, point `ANTHROPIC_BASE_URL` at a local
+server such as Ollama, which has native Anthropic API compatibility as of
+January 2026, and keep using the `claude_code` backend. See
+[Local Models With Codex And Ollama](docs/local-models-ollama.md) for the
+model sizing and context-window checks that also apply when evaluating local
+agent backends.
 
 The dashboard and `/api/v1/state` surface each instance identity, authorization
 scope, owner, lease renewal time, lease expiry, and selected model usage, which
