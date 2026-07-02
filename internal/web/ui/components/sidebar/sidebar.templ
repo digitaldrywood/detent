@@ -7,7 +7,6 @@ import "github.com/digitaldrywood/detent/internal/web/ui/utils"
 import "github.com/digitaldrywood/detent/internal/web/ui/components/icon"
 import "github.com/digitaldrywood/detent/internal/web/ui/components/button"
 import "github.com/digitaldrywood/detent/internal/web/ui/components/sheet"
-import "github.com/digitaldrywood/detent/internal/web/ui/components/tooltip"
 
 type contextKey string
 
@@ -225,6 +224,20 @@ type MenuButtonProps struct {
 	IsActive   bool
 	Size       MenuButtonSize // default: "default"
 	Tooltip    string         // Tooltip text to show when sidebar is collapsed
+}
+
+func menuButtonAttributes(p MenuButtonProps) templ.Attributes {
+	if p.Tooltip == "" {
+		return p.Attributes
+	}
+	attributes := templ.Attributes{}
+	for key, value := range p.Attributes {
+		attributes[key] = value
+	}
+	if _, ok := attributes["title"]; !ok {
+		attributes["title"] = p.Tooltip
+	}
+	return attributes
 }
 
 type MenuBadgeProps struct {
@@ -555,28 +568,8 @@ templ MenuButton(props ...MenuButtonProps) {
 	if p.Size == "" {
 		{{ p.Size = MenuButtonSizeDefault }}
 	}
-	if p.Tooltip != "" {
-		{{ tooltipID := utils.RandomID() }}
-		@tooltip.Tooltip() {
-			@tooltip.Trigger(tooltip.TriggerProps{}) {
-				@menuButtonContent(p, "") {
-					{ children... }
-				}
-			}
-			@tooltip.Content(tooltip.ContentProps{
-				ID:            tooltipID,
-				Class:         "hidden group-data-[tui-sidebar-state=collapsed]:group-data-[tui-sidebar-collapsible=icon]:block",
-				Position:      tooltip.PositionRight,
-				HoverDelay:    200,
-				HoverOutDelay: 100,
-			}) {
-				{ p.Tooltip }
-			}
-		}
-	} else {
-		@menuButtonContent(p, "") {
-			{ children... }
-		}
+	@menuButtonContent(p, "") {
+		{ children... }
 	}
 }
 
@@ -610,7 +603,7 @@ templ menuButtonContent(p MenuButtonProps, buttonID string) {
 			if p.IsActive {
 				data-tui-sidebar-active="true"
 			}
-			{ p.Attributes... }
+			{ menuButtonAttributes(p)... }
 		>
 			{ children... }
 		</a>
@@ -643,7 +636,7 @@ templ menuButtonContent(p MenuButtonProps, buttonID string) {
 			if p.IsActive {
 				data-tui-sidebar-active="true"
 			}
-			{ p.Attributes... }
+			{ menuButtonAttributes(p)... }
 		>
 			{ children... }
 		</button>
@@ -743,7 +736,6 @@ var scriptOnce = templ.NewOnceHandle()
 templ Script() {
 	@scriptOnce.Once() {
 		@sheet.Script()
-		@tooltip.Script()
 		@utils.ComponentScript("sidebar")
 	}
 }

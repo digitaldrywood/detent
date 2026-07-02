@@ -40,7 +40,6 @@ func TestSettingsIncludesSharedSidebarShell(t *testing.T) {
 		`data-tui-sheet`,
 		`/static/js/templui/sidebar.min.js`,
 		`/static/js/templui/dialog.min.js`,
-		`/static/js/templui/popover.min.js`,
 		`href="/"`,
 		`href="/reports"`,
 		`href="/settings"`,

@@ -3,194 +3,6 @@ package templates
 templ helpScript() {
 	<script>
 		(() => {
-			const margin = 16
-			const offset = 10
-			const showDelay = 110
-			const hideDelay = 220
-			const states = new WeakMap()
-			let activePopover = null
-			let repositionFrame = 0
-
-			function stateFor(root) {
-				let state = states.get(root)
-				if (!state) {
-					state = { showTimer: 0, hideTimer: 0 }
-					states.set(root, state)
-				}
-				return state
-			}
-
-			function targetRoot(target) {
-				if (!(target instanceof Element)) return null
-				return target.closest("[data-popover]")
-			}
-
-			function panelFor(root) {
-				return root.querySelector("[data-popover-panel]")
-			}
-
-			function triggerFor(root) {
-				return root.querySelector("[data-popover-trigger]")
-			}
-
-			function clearPopoverTimers(root) {
-				const state = stateFor(root)
-				clearTimeout(state.showTimer)
-				clearTimeout(state.hideTimer)
-			}
-
-			function closePopover(root, force) {
-				if (!root) return
-				if (!force && root.matches(":focus-within")) return
-				clearPopoverTimers(root)
-				root.dataset.open = "false"
-				const trigger = triggerFor(root)
-				const panel = panelFor(root)
-				if (trigger) trigger.setAttribute("aria-expanded", "false")
-				if (panel) panel.setAttribute("aria-hidden", "true")
-				if (activePopover === root) activePopover = null
-			}
-
-			function closeOtherPopovers(root) {
-				document.querySelectorAll("[data-popover][data-open='true']").forEach((other) => {
-					if (other !== root) closePopover(other, true)
-				})
-			}
-
-			function positionPopover(root) {
-				const trigger = triggerFor(root)
-				const panel = panelFor(root)
-				if (!trigger || !panel) return
-
-				const requestedWidth = Number(panel.dataset.popoverWidth || "256")
-				const width = Math.min(Math.max(160, requestedWidth), Math.max(160, window.innerWidth - margin * 2))
-				panel.style.width = width + "px"
-
-				const triggerRect = trigger.getBoundingClientRect()
-				const maxLeft = Math.max(margin, window.innerWidth - width - margin)
-				const left = Math.min(Math.max(margin, triggerRect.left + triggerRect.width / 2 - width / 2), maxLeft)
-				const availableBelow = Math.max(0, window.innerHeight - triggerRect.bottom - offset - margin)
-				const availableAbove = Math.max(0, triggerRect.top - offset - margin)
-				const desiredHeight = Math.min(panel.scrollHeight || panel.offsetHeight || 96, Math.max(48, window.innerHeight - margin * 2))
-				const useTop = desiredHeight > availableBelow && availableAbove > availableBelow
-				const available = useTop ? availableAbove : availableBelow
-				const maxHeight = Math.max(48, available)
-				panel.style.maxHeight = maxHeight + "px"
-				const height = Math.min(desiredHeight, maxHeight)
-				let top = triggerRect.bottom + offset
-				let placement = "bottom"
-
-				if (useTop) {
-					top = triggerRect.top - height - offset
-					placement = "top"
-				}
-
-				panel.style.left = left + "px"
-				panel.style.top = Math.min(Math.max(margin, top), Math.max(margin, window.innerHeight - height - margin)) + "px"
-				panel.dataset.placement = placement
-			}
-
-			function openPopover(root) {
-				const trigger = triggerFor(root)
-				const panel = panelFor(root)
-				if (!trigger || !panel) return
-
-				clearPopoverTimers(root)
-				closeOtherPopovers(root)
-				panel.style.left = "-9999px"
-				panel.style.top = "-9999px"
-				root.dataset.open = "true"
-				trigger.setAttribute("aria-expanded", "true")
-				panel.setAttribute("aria-hidden", "false")
-				positionPopover(root)
-				activePopover = root
-			}
-
-			function scheduleOpen(root, delay) {
-				clearPopoverTimers(root)
-				const state = stateFor(root)
-				state.showTimer = setTimeout(() => openPopover(root), delay)
-			}
-
-			function scheduleClose(root, delay) {
-				const state = stateFor(root)
-				clearTimeout(state.showTimer)
-				clearTimeout(state.hideTimer)
-				state.hideTimer = setTimeout(() => closePopover(root, false), delay)
-			}
-
-			function containsRelated(root, relatedTarget) {
-				return relatedTarget instanceof Node && root.contains(relatedTarget)
-			}
-
-			function repositionActivePopover() {
-				if (!activePopover || repositionFrame) return
-				repositionFrame = requestAnimationFrame(() => {
-					repositionFrame = 0
-					if (activePopover && activePopover.dataset.open === "true") positionPopover(activePopover)
-				})
-			}
-
-			document.addEventListener("pointerover", (event) => {
-				const root = targetRoot(event.target)
-				if (!root || containsRelated(root, event.relatedTarget)) return
-				scheduleOpen(root, showDelay)
-			})
-
-			document.addEventListener("pointerout", (event) => {
-				const root = targetRoot(event.target)
-				if (!root || containsRelated(root, event.relatedTarget)) return
-				scheduleClose(root, hideDelay)
-			})
-
-			document.addEventListener("focusin", (event) => {
-				const root = targetRoot(event.target)
-				if (root) openPopover(root)
-			})
-
-			document.addEventListener("focusout", (event) => {
-				const root = targetRoot(event.target)
-				if (!root || containsRelated(root, event.relatedTarget)) return
-				scheduleClose(root, hideDelay)
-			})
-
-			document.addEventListener("click", (event) => {
-				const trigger = event.target instanceof Element ? event.target.closest("[data-popover-trigger]") : null
-				if (trigger) {
-					const root = trigger.closest("[data-popover]")
-					if (!root) return
-					openPopover(root)
-					return
-				}
-				document.querySelectorAll("[data-popover][data-open='true']").forEach((root) => {
-					if (!(event.target instanceof Node) || !root.contains(event.target)) closePopover(root, true)
-				})
-			})
-
-			document.addEventListener("keydown", (event) => {
-				if (event.key !== "Escape") return
-				document.querySelectorAll("[data-popover][data-open='true']").forEach((root) => closePopover(root, true))
-			})
-
-			window.addEventListener("resize", repositionActivePopover)
-			window.addEventListener("scroll", repositionActivePopover, true)
-
-			// The live region (#snapshot) is morphed in place on every SSE update, so
-			// popover roots persist instead of being destroyed. Morphing still reconciles
-			// attributes/inline styles back to the server markup, which would drop an open
-			// popover's open state and position. Re-assert the active popover after each
-			// settle so an open card stays put while telemetry streams underneath it.
-			document.addEventListener("htmx:afterSettle", () => {
-				if (!activePopover) return
-				if (!document.documentElement.contains(activePopover)) {
-					activePopover = null
-					return
-				}
-				openPopover(activePopover)
-			})
-		})();
-
-		(() => {
 			const scrollSelector = "[data-preserve-scroll]"
 			const detailsSelector = "details[data-preserve-details]"
 			const positions = new Map()
@@ -343,7 +155,7 @@ templ helpScript() {
 				const trigger = activeHelpTrigger
 				if (!tip || !trigger || !trigger.isConnected) return
 
-				const requestedWidth = Number(tip.dataset.popoverWidth || "256")
+				const requestedWidth = Number(tip.dataset.helpTooltipWidth || "256")
 				const width = Math.min(Math.max(160, requestedWidth), Math.max(160, window.innerWidth - margin * 2))
 				tip.style.width = width + "px"
 
@@ -490,7 +302,7 @@ templ helpTooltipHost() {
 		class="popover-panel help-tooltip"
 		aria-hidden="true"
 		data-help-tooltip
-		data-popover-width="256"
+		data-help-tooltip-width="256"
 	>
 		<span class="help-tip-title" data-help-tooltip-title></span>
 		<span class="help-tip-description" data-help-tooltip-description></span>
