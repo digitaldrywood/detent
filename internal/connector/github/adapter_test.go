@@ -467,18 +467,22 @@ func TestParseBlockedByRecognizesIssueReferences(t *testing.T) {
 	t.Parallel()
 
 	body := strings.Join([]string{
-		"Depends on: #24",
-		"Blocked by: digitaldrywood/agent-runtime#25",
-		"Depends on: https://github.com/digitaldrywood/detent/issues/26",
-		"Depends on: https://github.com/digitaldrywood/detent/issues/26 and #24",
-		"Mention only: #27",
+		"Depends on #24",
+		"Blocked by #25",
+		"Depends on: #26",
+		"depends-on digitaldrywood/agent-runtime#27",
+		"Depends on: https://github.com/digitaldrywood/detent/issues/28",
+		"Depends on: https://github.com/digitaldrywood/detent/issues/28 and #24",
+		"Mention only: #29",
 	}, "\n")
 
 	got := parseBlockedBy(body, "digitaldrywood/detent")
 	want := []connector.BlockedRef{
 		{Identifier: "digitaldrywood/detent#24"},
-		{Identifier: "digitaldrywood/agent-runtime#25"},
+		{Identifier: "digitaldrywood/detent#25"},
 		{Identifier: "digitaldrywood/detent#26"},
+		{Identifier: "digitaldrywood/agent-runtime#27"},
+		{Identifier: "digitaldrywood/detent#28"},
 	}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseBlockedBy() = %#v, want %#v", got, want)

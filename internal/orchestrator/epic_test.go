@@ -57,6 +57,8 @@ func TestEpicChildRefs(t *testing.T) {
 		"- [ ] #251",
 		"- [x] https://github.com/digitaldrywood/detent/issues/252",
 		"Depends on: #253 digitaldrywood/detent#253",
+		"Blocked by #256",
+		"depends-on digitaldrywood/detent#257",
 	}, "\n"))
 	issue.BlockedBy = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#254"}}
 	issue.ChildIssues = []connector.BlockedRef{{Identifier: "digitaldrywood/detent#255"}}
@@ -66,6 +68,8 @@ func TestEpicChildRefs(t *testing.T) {
 		{Identifier: "digitaldrywood/detent#251"},
 		{Identifier: "digitaldrywood/detent#252"},
 		{Identifier: "digitaldrywood/detent#253"},
+		{Identifier: "digitaldrywood/detent#256"},
+		{Identifier: "digitaldrywood/detent#257"},
 		{Identifier: "digitaldrywood/detent#254"},
 		{Identifier: "digitaldrywood/detent#255"},
 	}

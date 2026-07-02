@@ -716,6 +716,48 @@ func TestCheckDoctorDependencyAutoUnblock(t *testing.T) {
 	}
 }
 
+func TestDoctorDependencyTextBlockedRefsAcceptsSharedDependencyLines(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name string
+		body string
+		want []string
+	}{
+		{
+			name: "depends on no colon",
+			body: "Depends on #414",
+			want: []string{"digitaldrywood/detent#414"},
+		},
+		{
+			name: "blocked by no colon",
+			body: "Blocked by #415",
+			want: []string{"digitaldrywood/detent#415"},
+		},
+		{
+			name: "depends on colon",
+			body: "Depends on: #416",
+			want: []string{"digitaldrywood/detent#416"},
+		},
+		{
+			name: "depends hyphen owner repo",
+			body: "depends-on digitaldrywood/agent-runtime#27",
+			want: []string{"digitaldrywood/agent-runtime#27"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+
+			got := doctorBlockedRefLabels(doctorDependencyTextBlockedRefs(doctorDependencyIssueWithBody("issue-416", tt.body)))
+			if !slices.Equal(got, tt.want) {
+				t.Fatalf("doctorDependencyTextBlockedRefs() = %#v, want %#v", got, tt.want)
+			}
+		})
+	}
+}
+
 func TestCheckDoctorDependencyAutoUnblockRequiresActiveRework(t *testing.T) {
 	t.Parallel()
 

@@ -8,13 +8,13 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dependencyline"
 )
 
 var (
-	epicDependencyLinePattern = regexp.MustCompile("(?i)^\\s*(?:>\\s*)?(?:[-*+]\\s+)?(?:[*_`~]+)?\\s*(?:blocked\\s+by|depends[\\s-]+on)(?:[*_`~]+)?\\s*:\\s*(?:[*_`~]+)?\\s*(.+)\\s*$")
-	epicChecklistLinePattern  = regexp.MustCompile(`^\s*[-*+]\s+\[[ xX]\]\s+(.+)$`)
-	epicIssueRefPattern       = regexp.MustCompile(`(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(\d+)`)
-	epicIssueURLPattern       = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)`)
+	epicChecklistLinePattern = regexp.MustCompile(`^\s*[-*+]\s+\[[ xX]\]\s+(.+)$`)
+	epicIssueRefPattern      = regexp.MustCompile(`(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(\d+)`)
+	epicIssueURLPattern      = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)`)
 )
 
 type completedEpicPlan struct {
@@ -551,8 +551,8 @@ func parseEpicBodyChildRefs(body string, repo string) []connector.BlockedRef {
 	for _, line := range strings.FieldsFunc(body, func(r rune) bool {
 		return r == '\n' || r == '\r'
 	}) {
-		if matches := epicDependencyLinePattern.FindStringSubmatch(line); len(matches) == 2 {
-			children = append(children, parseEpicRefs(matches[1], repo)...)
+		if text, ok := dependencyline.Match(line); ok {
+			children = append(children, parseEpicRefs(text, repo)...)
 			continue
 		}
 		if matches := epicChecklistLinePattern.FindStringSubmatch(line); len(matches) == 2 {

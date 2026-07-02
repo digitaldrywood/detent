@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/digitaldrywood/detent/internal/connector"
+	"github.com/digitaldrywood/detent/internal/dependencyline"
 )
 
 const (
@@ -615,13 +616,12 @@ mutation DetentGitHubDeleteProjectItem($projectId: ID!, $itemId: ID!) {
 }`
 
 var (
-	modelOverridePattern  = regexp.MustCompile(`(?i)<!--\s*model:\s*(\S+?)\s*-->`)
-	dependencyLinePattern = regexp.MustCompile("(?i)^\\s*(?:>\\s*)?(?:[-*+]\\s+)?(?:[*_`~]+)?\\s*(?:blocked\\s+by|depends[\\s-]+on)(?:[*_`~]+)?\\s*:\\s*(?:[*_`~]+)?\\s*(.+)\\s*$")
-	issueRefPattern       = regexp.MustCompile(`(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(\d+)`)
-	issueURLPattern       = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)`)
-	numberedListPattern   = regexp.MustCompile(`^\d+[.)]\s+`)
-	branchKeyPattern      = regexp.MustCompile(`[^A-Za-z0-9._-]`)
-	actionRunURLPattern   = regexp.MustCompile(`/actions/runs/([0-9]+)(?:/|$)`)
+	modelOverridePattern = regexp.MustCompile(`(?i)<!--\s*model:\s*(\S+?)\s*-->`)
+	issueRefPattern      = regexp.MustCompile(`(?:([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+))?#(\d+)`)
+	issueURLPattern      = regexp.MustCompile(`https?://github\.com/([A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+)/issues/(\d+)`)
+	numberedListPattern  = regexp.MustCompile(`^\d+[.)]\s+`)
+	branchKeyPattern     = regexp.MustCompile(`[^A-Za-z0-9._-]`)
+	actionRunURLPattern  = regexp.MustCompile(`/actions/runs/([0-9]+)(?:/|$)`)
 )
 
 type pageInfo struct {
@@ -4621,11 +4621,11 @@ func parseBlockedBy(body string, repo string) []connector.BlockedRef {
 	for _, line := range strings.FieldsFunc(body, func(r rune) bool {
 		return r == '\n' || r == '\r'
 	}) {
-		lineMatches := dependencyLinePattern.FindStringSubmatch(line)
-		if len(lineMatches) != 2 {
+		text, ok := dependencyline.Match(line)
+		if !ok {
 			continue
 		}
-		for _, identifier := range issueReferencesInText(lineMatches[1], repo) {
+		for _, identifier := range issueReferencesInText(text, repo) {
 			key := normalizedIssueIdentifier(identifier)
 			if key == "" {
 				continue
