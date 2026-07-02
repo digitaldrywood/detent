@@ -3203,7 +3203,6 @@ func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
 		`data-tui-sidebar-state="collapsed"`,
 		`/static/js/templui/sidebar.min.js`,
 		`/static/js/templui/dialog.min.js`,
-		`/static/js/templui/popover.min.js`,
 		`data-tui-sheet`,
 		`data-tui-sidebar-target="dashboard-sidebar"`,
 		`href="/projects/detent"`,
@@ -3223,7 +3222,6 @@ func TestDashboardShellRendersSharedAppChrome(t *testing.T) {
 		`data-tui-sidebar-layout`,
 		`/static/js/templui/sidebar.min.js`,
 		`/static/js/templui/dialog.min.js`,
-		`/static/js/templui/popover.min.js`,
 	} {
 		if got := strings.Count(html, wantSingle); got != 1 {
 			t.Fatalf("dashboard shell rendered %q %d times, want 1:\n%s", wantSingle, got, html)
@@ -4219,7 +4217,6 @@ func TestDashboardIncludesMotionAndThemeHooks(t *testing.T) {
 		`htmx:sseError`,
 		`detentSseStatus`,
 		`/static/js/templui/dialog.min.js`,
-		`/static/js/templui/popover.min.js`,
 		`/static/js/templui/sidebar.min.js`,
 	} {
 		if !strings.Contains(html, want) {
@@ -4249,8 +4246,10 @@ func TestDashboardRendersTemplUISidebar(t *testing.T) {
 		`data-tui-sidebar-collapsible="icon"`,
 		`data-tui-sidebar-keyboard-shortcut="b"`,
 		`data-tui-sidebar="menu-badge"`,
-		`data-tui-popover-root`,
-		`data-tui-popover-trigger`,
+		`title="Detent - active, 2 running"`,
+		`title="Fleet - 0 running, 0 queued, 0 blocked"`,
+		`title="Reports"`,
+		`title="Settings"`,
 		`data-tui-dialog`,
 		`data-tui-sheet`,
 		`Detent - active, 2 running`,

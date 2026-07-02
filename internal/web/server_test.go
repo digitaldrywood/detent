@@ -2565,7 +2565,6 @@ func TestDashboardRoutesRenderSharedSidebarNavigation(t *testing.T) {
 				`data-tui-sheet`,
 				`/static/js/templui/sidebar.min.js`,
 				`/static/js/templui/dialog.min.js`,
-				`/static/js/templui/popover.min.js`,
 				`href="/"`,
 				`href="/health/ui"`,
 				`href="/analytics"`,
@@ -6875,7 +6874,6 @@ func assertSharedDashboardShellOnce(t *testing.T, body string, path string) {
 		`data-tui-sidebar-layout`,
 		`/static/js/templui/sidebar.min.js`,
 		`/static/js/templui/dialog.min.js`,
-		`/static/js/templui/popover.min.js`,
 	} {
 		if got := strings.Count(body, marker); got != 1 {
 			t.Fatalf("%s rendered %q %d times, want 1:\n%s", path, marker, got, body)

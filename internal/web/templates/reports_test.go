@@ -85,7 +85,6 @@ func TestReportsIncludesResponsiveLayoutClasses(t *testing.T) {
 		`id="dashboard-sidebar"`,
 		`/static/js/templui/sidebar.min.js`,
 		`/static/js/templui/dialog.min.js`,
-		`/static/js/templui/popover.min.js`,
 		`href="/projects/detent"`,
 		`href="/health/ui"`,
 		`href="/reports"`,
@@ -158,7 +157,6 @@ func assertTemplateSharedDashboardShellOnce(t *testing.T, html string) {
 		`data-tui-sidebar-layout`,
 		`/static/js/templui/sidebar.min.js`,
 		`/static/js/templui/dialog.min.js`,
-		`/static/js/templui/popover.min.js`,
 	} {
 		if got := strings.Count(html, marker); got != 1 {
 			t.Fatalf("page rendered %q %d times, want 1:\n%s", marker, got, html)

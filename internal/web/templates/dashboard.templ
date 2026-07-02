@@ -8,7 +8,6 @@ import (
 	"github.com/digitaldrywood/detent/internal/web/ui/components/button"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/dialog"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/icon"
-	"github.com/digitaldrywood/detent/internal/web/ui/components/popover"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/sheet"
 	"github.com/digitaldrywood/detent/internal/web/ui/components/sidebar"
 )
@@ -184,7 +183,6 @@ templ DashboardShell(data DashboardShellData) {
 				<script src={ dashboardChartsScriptPath(data.Assets) } defer></script>
 			}
 			@sidebar.Script()
-			@popover.Script()
 			@dialog.Script()
 		</head>
 		<body class="min-h-screen overflow-x-hidden bg-background text-foreground antialiased">

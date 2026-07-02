@@ -178,15 +178,6 @@
     z-index: 50;
   }
 
-  [data-popover][data-open="true"] .popover-panel {
-    visibility: visible;
-    opacity: 1;
-  }
-
-  [data-popover][data-open="true"] .popover-panel[data-popover-interactive="true"] {
-    pointer-events: auto;
-  }
-
   .help-tooltip {
     display: block;
     width: min(16rem, calc(100vw - 2rem));
@@ -208,41 +199,6 @@
     color: var(--color-muted-foreground);
     display: block;
     margin-top: 0.25rem;
-  }
-
-  .issue-popover-panel {
-    font-size: 0.875rem;
-    line-height: 1.5;
-  }
-
-  .running-activity-trigger {
-    border: 1px solid transparent;
-    transition:
-      background-color 120ms ease,
-      border-color 120ms ease,
-      color 120ms ease;
-  }
-
-  .running-activity-trigger:hover {
-    background: color-mix(in oklab, var(--color-muted) 60%, transparent);
-    border-color: var(--color-border);
-  }
-
-  .running-activity-trigger:focus-visible {
-    border-color: var(--color-accent);
-  }
-
-  .running-activity-panel {
-    color: var(--color-foreground);
-    line-height: 1.5;
-  }
-
-  .running-activity-chevron {
-    transition: transform 120ms ease;
-  }
-
-  .running-activity[open] .running-activity-chevron {
-    transform: rotate(180deg);
   }
 
   .dashboard-project-entry[data-project-order-ready="true"] {
