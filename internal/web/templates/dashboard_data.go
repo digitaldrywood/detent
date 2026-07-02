@@ -2656,12 +2656,6 @@ func projectKanbanCompactChips(card projectKanbanCard) []projectKanbanCompactChi
 	if len(card.Blockers) > 0 {
 		chips = append(chips, newProjectKanbanCompactChip(projectKanbanCountLabel(len(card.Blockers), "blocker", "blockers"), strings.Join(card.Blockers, ", "), "border-danger-soft bg-danger-soft text-danger"))
 	}
-	if len(card.Assignees) > 0 {
-		chips = append(chips, newProjectKanbanCompactChip(projectKanbanCountLabel(len(card.Assignees), "assignee", "assignees"), strings.Join(card.Assignees, ", "), "border-border bg-muted text-muted-foreground"))
-	}
-	if len(card.Labels) > 0 {
-		chips = append(chips, newProjectKanbanCompactChip(projectKanbanCountLabel(len(card.Labels), "label", "labels"), strings.Join(card.Labels, ", "), "border-border bg-muted text-muted-foreground"))
-	}
 	if strings.TrimSpace(card.WaitDetail) != "" {
 		chips = append(chips, newProjectKanbanCompactChip("Waits", card.WaitDetail, "border-warning-soft bg-warning-soft text-warning"))
 	}
